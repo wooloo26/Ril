@@ -786,6 +786,7 @@ assert(a == 42 && b == 43)
 | Binding | `let`, `var` | `let mut`, `var mut`, `let ref`, `var ref` | `E0402` |
 | Member / pattern target | Default immutable, `var` | `mut`, `var mut`, `ref`, `var ref` | `E0402` |
 | Parameter / argument | Ordinary value | `mut`, `^mut`, `ref` | `E0401` |
+| Result | `-> T` | `-> new T`; `-> ref(x) T` / `-> ^mut(x) T` | `E0546`; `E0402` |
 
 ### Reference Types
 
@@ -1202,7 +1203,7 @@ let copied = snapshot(ref live)
 assert(read(copied) == 2)
 ```
 
-Ascription never grants permissions or makes a resource ordinary data. A plain data result `-> T` requires immutable publication at the return boundary; it cannot carry unpublished write authority. `-> new T` preserves eligible construction authority so the caller's receiving mode can select writable reception or immutable publication. `ref(sources) T` and `^mut(sources) T` preserve their checked reference dependencies under the [return contracts](#return-construction-permissions-and-sources).
+Ascription never grants permissions or makes a resource ordinary data. Value results use `-> T`; plain reference results require deep immutability. `new T` proves a newly constructed root with preserved write authority, not whole-graph publication or fresh-storage eligibility. Parameter-root returns and contained dependencies follow the [return contracts](#return-construction-permissions-and-sources).
 
 ### Type Identity and Subtyping
 
@@ -1271,7 +1272,7 @@ alias.count += 1
 -- swap(mut first, mut alias)         -- Error [E0523]: different names for the same writable object
 ```
 
-- **Local Construction**: A fresh ordinary result may enter `let` when its construction scope or call ends and no external writer or active environment survives. A `new` return preserves construction eligibility for the caller; a plain data return publishes immutable. Parameter/external aliases retain their restrictions (`E0528`). Ordinary writable bindings retain their authority until their lexical scope ends; merely having no later textual use does not revoke it. Reassigning `var mut` replaces that binding's path but does not revoke other paths to the old value.
+- **Local Construction**: A fresh ordinary result may enter `let` when its construction scope or call ends and no relevant outside writer, live dependency, or active environment survives. `new` records root freshness and write authority; complete provenance separately decides publication and initial-reception eligibility. Parameter/external aliases retain their restrictions (`E0528`). Ordinary writable bindings retain their authority until lexical scope ends; last textual use does not revoke it. Reassigning `var mut` replaces its path without revoking other paths.
 
 - **Fresh Evaluation**: Each successful ordinary allocation creates new storage distinct from pre-existing storage. A newly constructed aggregate may still contain references to pre-existing objects; freshness of its outer slots does not establish disjointness of its reachable graph. Each ordinary deep clone creates new writable regions isolated from the source and all pre-existing writable regions, preserving aliases within that one copy. Repeated evaluations of one expression do not denote one shared allocation. Calling an arbitrary function twice does not establish freshness; the function's actual return relation must supply it.
 
@@ -1280,12 +1281,12 @@ alias.count += 1
 ```ril
 -- Cell and swap have the preceding contracts; choose_order is a run-time bool input.
 fn permute(flag: bool, ^mut a: Cell, ^mut b: Cell)
-    -> new (mut ^mut(a, b) Cell, mut ^mut(a, b) Cell) &^mut {
+    -> new (mut Cell, mut Cell) &^mut &{return, ^mut a, ^mut b} {
     if flag { (^mut a, ^mut b) } else { (^mut b, ^mut a) }
 }
 let mut left = Cell.{ count: 1 }
 let mut right = Cell.{ count: 2 }
-let mut pair = permute(choose_order, ^mut left, ^mut right)
+let mut pair = ^mut permute(choose_order, ^mut left, ^mut right)
 swap(mut pair.0, mut pair.1)           -- OK: either ordering preserves the inputs' proven disjointness
 
 let mut cells = [Cell.{ count: 0 }, Cell.{ count: 1 }]
@@ -3617,13 +3618,19 @@ fn declared_field() -> () &{mut global_count} { invoke_field(.{ run: tick }) }
 
 The compiler MUST infer the full checked contract of every function and require its prescribed annotations in executable source. This applies equally to public, private, local, anonymous, and test functions. Inference is mandatory analysis; leaving its required source spelling absent is a development error, not a different execution mode.
 
-- **Inferred Facts**: Infer parameter and result types/modes, construction eligibility, immutable/live origins, reference projections, possible aliases, retained writers, captures, effects, named state, escape/ownership constraints, and callback dependencies. Classify immutable data, writable data, immutable sharing, read-only live sharing, and writable sharing at every affected path; report possible sharing when exact overlap is unproved. Scalar copies carry no reference relation.
-- **Required Spelling**: Require explicit parameter types and necessary modes, a result contract, nonempty concrete effect/capability rows, and concrete capture-source groups. Empty first-order rows keep their canonical omitted spelling; do not add prohibited `@{}` or `&{}`. Immutable sharing and still-symbolic callback/termination dependencies remain in verified metadata where no source notation is prescribed. No visibility or anonymous-function exception permits missing required annotations.
-- **Development Diagnostics**: As soon as enough context exists, show the inferred contract and the missing or conflicting annotation. A missing parameter type or result contract is `E0544`; existing missing state/effect/argument-mode diagnostics remain `E0510`, `E0612`, and `E0405`. An explicit but invalid return-source claim uses `E0545`; malformed syntax retains its syntax diagnostic. Unresolved type inference remains `E0344`. A build with missing required annotations is rejected. A compiler/editor may offer completion, but must not silently accept an incomplete definition.
-- **Annotation-Only Completion**: Completion may insert only annotations justified by already lawful operations and origins. It cannot clone, freeze a surviving writer, invent a pinned root, consume a resource, grant an ordinary `mut` parameter escaping write authority, or change evaluation order. An actual permission or escape violation retains its own diagnostic. An explicitly chosen immutable result may lawfully publish eligible private construction; annotations cannot publish an external live graph.
-- **Anonymous Signatures**: An explicit, complete contextual callable type may provide parameter and result annotations by position. Otherwise require a typed binding or another explicit callable-signature context for the anonymous value; its concrete effect/state/source annotations remain checked. Projection-accessor sugar uses the same contextual-signature rule. Schematic fixtures may display the abbreviated form under the document conventions.
-- **Boundaries and Proof Limits**: Preserve inferred contracts and relations in compiled module interfaces, callable values/types, generic instantiations, closures, and opaque abstractions. A bodyless foreign declaration supplies a trusted explicit contract; the compiler cannot infer an absent implementation. Loops, recursion, and run-time selections retain conservative alternatives. Failure to prove a permission-dependent fact cannot be repaired by adding an annotation.
-- **Explanations**: Make each classification and its origin/propagation chain available during development, for accepted as well as rejected uses. Show all possible origins and unproved overlap rather than inventing a unique source. This is a static guarantee within the language's checked model and explicit foreign contracts, not a claim that arbitrary run-time behavior is decidable.
+| Inference / completion | Requirement |
+| :--- | :--- |
+| Scope | Same rules for public, private, local, anonymous, and test functions |
+| Facts | Types, permissions/history, root and contained origins, aliases, writes, retention, captures, effects, escape/ownership, and callback dependencies |
+| Required source | Parameter types/modes, result contracts, contained dependency groups, and concrete effect/state/capture annotations; empty first-order rows stay omitted |
+| Root-return normalization | `^mut(x)` covers only root-return retention; actual writes and extra escape paths keep their own annotations |
+| Anonymous/accessor context | A complete explicit contextual callable type may supply parameter/result annotations; concrete lexical source access still requires checked groups |
+| Diagnostics | Missing type/result contract: `E0544`; state/reception marker: `E0510`; effects: `E0612`; argument marker: `E0405`; unresolved type: `E0344`; invalid sources: `E0545` |
+| Explanations | Show inferred classifications and origin/propagation chains during development, including possible sharing and unproved overlap |
+| Interfaces | Preserve fine paths, permission history, store/return relations, and output correlations in semantic summaries; changes invalidate dependent proofs |
+| Proof limits | Unknown facts never prove permission, immutability, freshness, separation, or escape. Bodyless foreign declarations remain trusted explicit contracts |
+
+Incomplete executable definitions are rejected; completion may insert annotations, not silently clone, grant authority, freeze surviving writers, extend lifetimes, consume resources, or reorder evaluation. Immutable sharing and still-symbolic callback/termination facts remain in metadata where no source spelling is prescribed.
 
 ```ril
 -- Annotation-completion cases: these incomplete definitions are rejected as written.
@@ -3678,7 +3685,7 @@ fn give_action() -> Action @{} &{} { plain }
 -- pub fn noisy_foreign() -> () @{}             -- Error [E0542]: first-order external declaration
 ```
 
-`@{}` closes the invocation's effect row; `&{}` closes its capability row, including captures and inherited access. Returned callables retain their own inferred rows.
+`@{}` closes the invocation's effect row; `&{}` closes its total capability obligations, including root-return retention, captures, and inherited access. Returned callables retain their own inferred rows.
 
 ```ril
 -- Log and logged have the preceding contracts.
@@ -3716,14 +3723,14 @@ fn call_logged_alias() -> () @Log {
 
 | Callable contract | Rule |
 | :--- | :--- |
-| Omitted type rows | Preserve each actual value's effects, environment mode, named origins, and sharing obligations, including across modules and private abstractions |
+| Omitted type rows | Preserve actual effects, environment mode, root-return and contained provenance, named origins, and sharing obligations across modules and abstractions |
 | Alternatives | Retain every possible obligation under [provenance](#complete-provenance-and-required-annotations) |
-| Nonempty type rows | Total upper bounds; parameter modes and handle permissions do not change |
-| Higher-order empty rows | Constrain total invocation obligations, including concrete and symbolic callback dependencies |
+| Nonempty type rows | Effects are total upper bounds; capability bounds combine explicit invocation bounds with retention supplied by the return contract. Parameter modes and handle permissions do not change |
+| Higher-order empty rows | Constrain total obligations, including root-return retention and concrete/symbolic callback dependencies |
 | Definition annotations | Compiler-inferred concrete obligations must be written; still-symbolic callback dependencies continue to forward |
 | Closed-constraint failure | Incompatible actual argument: E0534; fixed incompatible body: reject the definition |
 | Bodyless foreign declarations | Omitted effect/state rows are closed; no termination or budget-coverage guarantee |
-| `&closure` | Abstract capture details; cannot erase actual retained publication `&^mut` (E0534) |
+| `&closure` | Abstract capture details; cannot erase root-return or other retained publication (E0534) |
 
 Invoking already shared storage does not itself publish another writer. Actual environment mode still determines whether a callable needs a writable handle. Termination and budget-coverage conditions remain separate from both rows; type ascription preserves them. Returns require their inferred construction/mode/source contract; still-symbolic callback forwarding remains verified metadata. Provenance diagnostics expose the full dependencies as well as their required source spelling.
 
@@ -3783,30 +3790,26 @@ Forwarding preserves the contract above. Callback-handle authority and callback 
 
 ### Return Construction, Permissions, and Sources
 
-A function result distinguishes unpublished construction, immutable data, read-only references, and retained writable references. `new` is a return-contract keyword, not an allocation expression or an operation that upgrades existing data. `ref` is the same read-only permission used by bindings and parameters; its parenthesized source list records the returned reference relationship.
+A value result needs only `-> T`. Reference results distinguish the root from its contained references; all reception checks use the complete graph.
 
 ```ebnf
-ReturnContract   ::= [ ReturnMode ] ReturnShape
+ReturnContract   ::= [ ReturnMode ] TypeExpression
 ReturnMode       ::= "new" | ( "ref" | "^mut" ) "(" ReturnSources ")"
-ReturnSources    ::= ReturnSource { "," ReturnSource } [ "," ]
-ReturnSource     ::= QualifiedName { ReturnSourceStep }
-ReturnSourceStep ::= "." ( FieldLabel | TupleIndex | "(" Expression ")" )
-                   | "[" Expression "]"
-ReturnShape      ::= TypeExpression | ReturnRecord | ReturnTuple
-ReturnRecord     ::= "{" [ ReturnField { "," ReturnField } [ "," ] ] "}"
-ReturnField      ::= [ MemberMode ] FieldLabel ":" ReturnContract
-ReturnTuple      ::= "(" ReturnMember "," ReturnMember { "," ReturnMember } [ "," ] ")"
-ReturnMember     ::= [ MemberMode ] ReturnContract
+ReturnSources    ::= SnakeCase { "|" SnakeCase }
 ```
 
-`ReturnRecord` and `ReturnTuple` extend the ordinary record/tuple schema only inside a result contract. Erasing their result annotations leaves the declared member modes and data types. Member modes still bound access: a `ref` member cannot carry a writable authority, and a default member must be immutable. Within a `new` schema, a member without its own result modifier follows its member mode and actual provenance; it is not a separate immutable-return boundary. These annotations do not create new standalone data types or permit `new` at arbitrary expression positions.
+Root source names denote formal parameters; field/index paths are retained in metadata. `|` selects possible existing sources, never a newly allocated alternative. Modifiers are return contracts, not standalone data types or allocation expressions.
 
 | Result contract | Checked guarantee |
 | :--- | :--- |
-| `new Cell` | Unpublished construction authority reaches the caller; lawful receiving modes select immutable publication or writable reception |
-| `Cell` | Deeply immutable ordinary data; immutable sharing is permitted and tracked, but no writer or live observation may be hidden |
-| `ref(x.cell) Cell` | Read-only reference derived from `x.cell`; preserve whether its target is immutable or live |
-| `^mut(x.cell) Cell &^mut` | A retained writable reference derived from the parameter path `x.cell`; both parameter and argument must permit `^mut` |
+| `int`, `str`, `bytes`, other value types | Copy the value; no return-reference source or sharing annotation |
+| Plain reference `T` | Deeply immutable; existing immutable storage may be shared |
+| `new Cell` | Root constructed during this invocation with legal root write authority still present; graph permissions remain checked |
+| `ref(x) Cell` | Root is an existing object provided by parameter `x`, including a projected child; read-only |
+| `^mut(x) Cell` | Same root relation with retained write authority; parameter/argument require `^mut`; root return needs no duplicate `&^mut` |
+| `ref(a \| b) Cell`, `^mut(a \| b) Cell` | Root comes from either entry source; does not mean it contains both or that inputs are disjoint |
+| `new Holder &{return, ref x}` | New root contains an observed dependency on `x` |
+| `new Holder &^mut &{return, ^mut x}` | New root contains a retained writable dependency on `x` |
 
 ```ril
 type Cell = { var count: int }
@@ -3814,9 +3817,25 @@ type Box = { mut cell: Cell }
 
 fn make() -> new Cell { Cell.{ count: 0 } }
 fn same(cell: Cell) -> Cell { cell }
-fn observe(ref box: Box) -> ref(box.cell) Cell { box.cell }
-fn share(^mut box: Box) -> ^mut(box.cell) Cell &^mut { box.cell }
-let getter: fn(ref box: Box) -> ref(box.cell) Cell = observe
+fn value(ref cell: Cell) -> int { cell.count }
+fn take_and_zero(mut cell: Cell) -> int &mut {
+    let count = cell.count
+    cell.count = 0
+    count
+}
+fn observe(ref box: Box) -> ref(box) Cell { box.cell }
+fn share(^mut box: Box) -> ^mut(box) Cell { box.cell }
+fn bump_alias(^mut cell: Cell) -> ^mut(cell) Cell &mut {
+    cell.count += 1
+    cell
+}
+let update: fn(^mut c: Cell) -> ^mut(c) Cell &mut = bump_alias -- Return retention + invocation writes
+fn pick(flag: bool, ^mut a: Cell, ^mut b: Cell) -> ^mut(a | b) Cell {
+    if flag { a } else { b }
+}
+-- fn duplicate(^mut x: Cell) -> ^mut(x) Cell &^mut { x }
+-- Error [E0529]: root-return retention already has its required spelling
+let getter: fn(ref box: Box) -> ref(box) Cell = observe
 -- let erased: fn(ref box: Box) -> Cell = observe -- Error [E0534]: the live return relation cannot be erased
 
 let immutable = make()                 -- Immutable publication at reception
@@ -3827,26 +3846,56 @@ let same_immutable = same(immutable)    -- Tracked immutable sharing
 
 let mut box = Box.{ cell: Cell.{ count: 0 } }
 let ref reader = observe(ref box)
-let mut writer = share(^mut box)       -- Retention already marked at the call boundary
+let mut writer = ^mut share(^mut box)  -- Explicit shared reception
 writer.count += 1
 assert(reader.count == 1 && box.cell.count == 1)
 -- let hidden = observe(ref box)       -- Error [E0535]: a live observer cannot become immutable
 -- let mut stolen = observe(ref box)   -- Error [E0528]: a read-only return cannot grant writes
+-- let mut hidden_writer = share(^mut box) -- Error [E0510]: missing shared-reception marker
 ```
 
-- **Construction (`E0546`)**: `new` requires eligible private construction on every possible returned path to which it applies. The result is produced internally, or forwarded from a verified `new` result without an intervening read-only reception. Its construction-writable regions must be isolated from pre-existing external writable regions; they cannot have a surviving outside observer, writer, or active environment. Proven immutable constituents may remain shared and never acquire write permission. `new` does not imply unique ownership, absence of internal aliases, or universally writable members.
-- **Reception**: `let` and plain `var` publish an eligible ordinary `new` result immutable; `let mut` and `var mut` receive its eligible construction authority, subject to member permissions and alias checks. A direct persistent `ref` still needs an established observation origin (`E0543`); passive observer wrappers retain their existing [origin rules](#normative-rules-for-read-only-references). Ordinary immutable parameter passage and plain data returns end construction eligibility. Resource and callable-environment restrictions still apply: for example, a new persistent mutating closure needs a writable handle and cannot be published through `let`.
-- **Publication**: A plain top-level data result `T` establishes deep immutability at the function return, even if a caller would request a writable binding. An explicit immutable result can publish lawful private construction. Existing immutable data, including data already received through `let` or an ordinary parameter, cannot be returned as `new` to recover construction authority (`E0546`). Scalar/value results use the plain form; they have no reference authority to mark with `new`, `ref`, or `^mut`.
-- **Sources (`E0545`)**: Every source resolves in the signature's declaration scope to a parameter, visible external binding, or captured binding with a verified origin. Source projections describe reference identity/reachability, not arithmetic data dependence. They are checked symbolic paths, never extra expression evaluation; index/key expressions may name parameters or compile-time values but cannot run calls or effects. `ref(a, b) T` / `^mut(a, b) T` preserve all possible sources, permissions, and correlations. Missing, invalid, or insufficient source relations are rejected; unproved overlap remains possible overlap. Copying a scalar or taking an isolated clone creates no borrowed relation to its input.
-- **Read-Only Escape**: A `ref(sources)` return preserves every origin's existing observation and escape restrictions. Call-time observation of a reassignable mutable root does not establish a persistent pinned origin (`E0531`). It never upgrades to writable access (`E0528`), and possible live sources cannot be published immutable (`E0535`). A proven immutable source remains immutable even when observed through `ref`.
-- **Writable Escape**: Returning a writable reference to a parameter, directly or through a field, element, wrapper, or closure, requires `^mut` on the parameter and argument plus `&^mut`. Ordinary `mut` authority ends at return and cannot escape (`E0528`). External/captured sources require their corresponding named retention capabilities. A result-source annotation does not replace an invocation capability, create a pinned origin, or repair an exclusivity conflict.
-- **Composites**: A newly allocated outer record, tuple, sum payload, collection, or environment does not make its reachable references new. Record/tuple result schemas may mark individual constituents as below. Other result shapes carry the same verified constituent provenance; a whole-result `ref(sources)` / `^mut(sources)` may summarize reachable external dependencies. A bare `new T` cannot conceal such dependencies. Newly created internal aliases, cycles, and relationships between result components remain in the inferred metadata, and any surviving independent writers still require `&^mut`.
-- **Calls and Abstraction**: Verify result modes and source relations in definitions, callable types, and effect-operation contracts, then substitute actual argument origins at each call. Callable types that mention parameter sources must name those parameters; renaming parameter labels also renames their bound source paths by position. Ascription cannot interchange `new`, immutable, read-only, and retained-writable guarantees or erase source relations (`E0534`); an explicit wrapper may perform lawful publication. Private/internal identities remain anchored in verified metadata without exposing private source names as public identifiers. Foreign declarations cannot claim ordinary `new` or live returns without an explicit supported exchange/resource contract.
-- **Inference**: Infer these result contracts along with the function's effects and state. Require missing result annotations under `E0544`; check explicit annotations against every retained alternative. An unresolved relation cannot justify freshness, immutability, disjointness, or escape. Existing non-annotation safety errors remain errors even if every annotation is present.
+| Rule | Required check |
+| :--- | :--- |
+| Value result | Plain `T`; copying a value has no return-reference dependency. Actual writes/effects still require their annotations |
+| Plain reference result | Deeply immutable graph at return; eligible private construction may be published, but surviving writers cannot be frozen (`E0535`) |
+| `new T` | Root created during this invocation, including verified factory calls, and returned through a path with preserved root write authority (`E0546`) |
+| Constructor syntax | Use the constructor's semantic contract: a zero-cost nominal wrapper does not create a root; a clone preserves its verified isolation |
+| `ref(x)` / `^mut(x)` | Root comes from the reference graph supplied by formal `x` at call entry; a child/element still displays only `x` (`E0545`) |
+| Source alternatives | Every returned root has a listed entry origin; `a \| b` allows either, excludes fresh roots, and proves no disjointness |
+| Root writable return | `^mut` parameter and argument required; ordinary `mut` cannot escape as writable (`E0528`) |
+| Return dependencies | `&{return, ref x, ^mut y}` lists possible contained dependencies; scalar copies and unchanged contents inherited from a root return add no new item |
+| State separation | Root-return retention, actual writes, contained retention, other storage, and environment creation are distinct inferred facts |
+| Scope | Observation stability, scoped-resource lifetime, task crossing, member permissions, and exclusivity remain checked; annotations extend none of them |
+
+`new` preserves root authority; it does not restore authority lost through `let`, a read-only parameter, or a `ref` path. External aliases may already exist. Parameter-origin relations use entry provenance, not reachability created by writes during the call.
+
+| Reception | Requirement |
+| :--- | :--- |
+| `let` / plain `var` | Entire result permits immutable publication; reject possible live dependencies or surviving writers (`E0535`) |
+| `let mut` / `var mut` | Receiving paths possess write authority; existing immutable or observed paths never upgrade (`E0528` for returned authority laundering) |
+| Shared writable result | Explicit `^mut expression` at binding, assignment, field/container insertion, or destructuring (`E0510` if absent) |
+| Persistent `ref` | Established observation origins or a lawful passive observer wrapper; independent allocations remain `E0543` |
+| Fresh-storage input | Prove the full unpublished initial-reception contract; the `new` label alone is insufficient |
+
+A reception marker confirms the same returned authority; it is not a second publication. Source annotations never grant absent authority. Compare callable capabilities after combining return retention with explicit invocation bounds. An explicit empty `&{}` closes that combined total; purity checks use the same total.
+
+| Branches | Result contract |
+| :--- | :--- |
+| All roots new and writable | `new T`; retain every branch's internal dependencies |
+| All roots from entry parameters | `ref(a \| b) T`, or `^mut(a \| b) T` when every alternative permits writes |
+| New root and existing immutable data | Plain `T` after lawful publication |
+| New root and entry live reference | No bare mixed-root contract; construct an explicit wrapper or result variant |
+| Locally created root published elsewhere, returned writable | `new T` plus the required independent retention/state capability |
+| Locally created root published elsewhere, returned only through `ref` | No bare-root contract in this version; use an explicit observer wrapper |
+| Existing live root supplied only by a global/capture | No bare-root contract in this version; use a wrapper or an explicit formal parameter. Immutable descriptors/data still use plain `T` |
+
+Verified interfaces retain root permissions/history, contained origins, store/return relations, and correlations between output components. These semantic summaries participate in dependency invalidation. Higher-order/dynamic joins preserve only common guarantees; absent summaries prove no separation. Opaque boundaries may hide names, not safety facts. Return-mode/source erasure is `E0534`; parameter-label renaming also renames bound source names by position.
+
+A generic signature must hold for every admitted instantiation. Unknown `T` is not presumed a reference: use a uniformly valid plain result or sufficient type constraints. Foreign and resource contracts retain their existing restrictions; return annotations supply no new exchange or resource authority.
 
 ```ril
 -- Cell and Box have the preceding declarations.
-fn wrap(ref box: Box) -> new { ref item: ref(box.cell) Cell } {
+fn wrap(ref box: Box) -> new { ref item: Cell } &{return, ref box} {
     .{ ref item: box.cell }
 }
 let mut source = Box.{ cell: Cell.{ count: 0 } }
@@ -3856,17 +3905,79 @@ assert(packet.item.count == 1)
 -- let hidden = wrap(ref source)       -- Error [E0535]: the new wrapper still contains a live reference
 
 -- fn false_new(cell: Cell) -> new Cell { cell }
--- Error [E0546]: the immutable parameter has no unpublished construction authority
+-- Error [E0546]: an immutable parameter is neither a new root nor a writable return path
 -- fn false_copy(ref cell: Cell) -> new Cell { cell }
 -- Error [E0546]: the result aliases its observed input
 -- fn mixed(flag: bool, cell: Cell) -> new Cell {
 --     if flag { Cell.{ count: 0 } } else { cell }
 -- }
--- Error [E0546]: the existing immutable alternative has no construction authority
+-- Error [E0546]: the existing immutable alternative is not a writable new root
 -- fn temporary_writer(mut cell: Cell) -> ^mut(cell) Cell &^mut { cell }
 -- Error [E0528]: call-scoped mut authority cannot survive the call
 -- fn wrong_source(ref a: Cell, ref b: Cell) -> ref(a) Cell { b }
 -- Error [E0545]: the return's b origin is absent from the declared relation
+```
+
+```ril
+-- Cell has the preceding schema.
+type Holder = { mut item: Cell }
+type Slot = { var mut child: Cell }
+
+fn pack(^mut x: Cell) -> new Holder &^mut &{return, ^mut x} {
+    Holder.{ item: ^mut x }
+}
+fn return_and_store(mut dst: Slot, ^mut x: Cell) -> ^mut(x) Cell &^mut {
+    dst.child = ^mut x                 -- Extra path beyond the root return
+    x
+}
+fn install(mut dst: Slot) -> new Cell &^mut {
+    let mut child = Cell.{ count: 0 }
+    dst.child = ^mut child
+    child                             -- Still writable; already shared outside
+}
+
+let mut source = Cell.{ count: 0 }
+let mut packed = ^mut pack(^mut source)
+packed.item.count += 1
+-- let hidden = pack(^mut source)      -- Error [E0535]: live contents forbid immutable publication
+
+let mut slot = Slot.{ child: Cell.{ count: 0 } }
+let mut installed = ^mut install(mut slot)
+installed.count += 1
+assert(slot.child.count == 1)
+-- let hidden = install(mut slot)      -- Error [E0535]: a surviving writer prevents publication
+-- let mut hidden = install(mut slot)  -- Error [E0510]: shared result needs explicit reception
+let mut cells: []Cell = []
+-- cells !> Array::push(install(mut slot)) -- Error [E0535]: new root is not an unpublished storage input
+cells !> Array::push(^mut installed)
+cells[0].count += 1
+
+fn frozen() -> Cell { let cell = Cell.{ count: 0 }; cell }
+-- fn false_frozen() -> new Cell { let cell = Cell.{ count: 0 }; cell }
+-- Error [E0546]: publication ended root write authority
+-- fn false_entry(mut dst: Slot) -> ^mut(dst) Cell &^mut {
+--     let mut child = Cell.{ count: 0 }
+--     dst.child = ^mut child
+--     child
+-- }
+-- Error [E0545]: writing a new object into dst does not make it an entry-provided root
+```
+
+```ril
+-- Cell and Slot have the preceding schemas.
+fn install_observer(mut dst: Slot) -> new { ref item: Cell } &^mut {
+    let mut child = Cell.{ count: 0 }
+    dst.child = ^mut child
+    .{ ref item: child }               -- Explicit observer wrapper, not a bare read-only new root
+}
+let mut slot = Slot.{ child: Cell.{ count: 0 } }
+let ref observed = install_observer(mut slot)
+slot.child.count += 1
+assert(observed.item.count == 1)
+
+type Step = fn() -> int &closure
+-- fn erase_return(^mut f: Step) -> ^mut(f) Step &{} { f }
+-- Error [E0534]: the closed capability row cannot erase root-return retention
 ```
 
 ### Termination and halt Contracts
@@ -3977,7 +4088,7 @@ type Cell = { var count: int }
 fn inspect(cell: Cell) -> int { cell.count }
 fn observe(ref cell: Cell) -> int { cell.count }
 fn bump(mut cell: Cell) -> () &mut { cell.count += 1 }
-fn retain(^mut cell: Cell) -> ^mut(cell) Cell &^mut { cell }
+fn retain(^mut cell: Cell) -> ^mut(cell) Cell { cell }
 
 let immutable = Cell.{ count: 0 }
 assert(inspect(immutable) == 0)
@@ -3985,7 +4096,7 @@ let mut cell = Cell.{ count: 0 }
 bump(mut cell)
 cell !> bump()                         -- Supplies mut, not ^mut
 assert(observe(ref cell) == 2)
-let mut alias = retain(^mut cell)
+let mut alias = ^mut retain(^mut cell)
 alias.count += 1
 assert(cell.count == 3)                -- Retained alias survives the call
 
@@ -4050,7 +4161,7 @@ fn copy_cell(cell: Cell) -> new Cell { clone(cell) }
 fn build_cell() -> new Cell {
     let mut cell = Cell.{ count: 0 }
     cell.count += 1
-    cell                               -- OK: private construction authority ends on return
+    cell                               -- OK: root write authority survives; full initial eligibility is verified
 }
 let original = Cell.{ count: 1 }
 let mut cells: []Cell = []
@@ -4065,7 +4176,7 @@ cells[3].count += 1
 assert(original.count == 1 && cells[0].count == 3 && cells[3].count == 2)
 ```
 
-Only `value` in `Array::push`, `Array::insert`, and `Map::set` has this initialization contract. It receives eligible construction authority before the ordinary immutable-parameter rule; it adds no parameter mode and does not apply to ordinary wrappers. Existing live data requires the operation's explicit `ref` observation-storage form or `^mut` retained-writer form. The `ref` storage form also checks persistent-`ref` origin and escape requirements; call-time observation alone does not permit retention.
+Only `value` in `Array::push`, `Array::insert`, and `Map::set` has this initialization contract. It receives verified unpublished construction authority before ordinary immutable reception; `new T` alone does not prove eligibility. The contract adds no parameter mode and does not apply to ordinary wrappers. Existing live data requires explicit `ref` observation-storage or `^mut` retained-writer arguments. The `ref` form also checks persistent observation origins and escape; call-time observation alone does not permit retention.
 
 ```ril
 -- Cell, original, and copy_cell have the preceding declarations/contracts.
@@ -4126,7 +4237,7 @@ assert(pairs[0].1.count == 2 && original.count == 1)
 | :--- | :--- |
 | Eligible regions | Newly constructed ordinary writable storage, isolated from pre-existing writable regions, with no surviving outside observer, writer, or active environment |
 | Established paths | Bindings select permissions; `let`, plain `var`, `ref` handles, and read-only parameters end eligibility. Existing writers, including retained returns, need `^mut` arguments |
-| Expressions / returns | Parentheses, blocks, and verified returns preserve actual provenance. Joins require eligibility in every possible alternative; unknown facts prove none |
+| Expressions / returns | Preserve actual provenance. A `new` root with outside aliases or contained live dependencies is not automatically eligible; every retained alternative must satisfy the full initialization contract |
 | Constituents | Preserve member schemas and nonfresh permissions. Default members stay immutable; fresh outer data cannot retain concealed existing writers |
 | Operation identity | Imports, aliases and type ascriptions preserve contracts; matching names/signatures do not create them |
 | Reception | Evaluate once in ordinary order. Success installs initial authority; failure installs no path. No additional standalone &^mut; other effects/state and access checks still apply |
@@ -4308,12 +4419,12 @@ assert(counter() == 1)
 ```ril
 type Cell = { var count: int }
 type Step = fn() -> int &closure
-fn make_shared_step(^mut cell: Cell) -> ^mut(cell) Step &capture &^mut {
+fn make_shared_step(^mut cell: Cell) -> new Step &capture &^mut &{return, ^mut cell} {
     \-> { cell.count += 1; cell.count }
 }
 
 let mut cell = Cell.{ count: 0 }
-let mut step = make_shared_step(^mut cell)
+let mut step = ^mut make_shared_step(^mut cell)
 assert(step() == 1)
 cell.count += 1
 assert(step() == 3)                   -- Both authorities still reach the same cell
@@ -4375,7 +4486,7 @@ fn test_internal_hub() -> int {
 
 ### Parameter Mutation
 
-A function mutating any parameter MUST declare at least `&mut`; anonymous `&^mut` includes this parameter-mutation obligation. Named external mutation still requires the corresponding named capability and cannot be concealed by an anonymous annotation.
+A function mutating any parameter MUST declare at least `&mut`; independent `&^mut` includes this obligation. A root return `^mut(x) T` covers only that return's retention, so actual writes still need `&mut`. Named external mutation keeps its named capability.
 
 ```ril
 fn clear_items(mut list: []int) -> () &mut {
@@ -4441,28 +4552,34 @@ assert(copied.1.count == 1)             -- Internal aliases survive the isolated
 
 - **Local Sharing Marker (`E0510`)**: A new local writable path to existing ordinary storage or an existing callable environment requires `^mut expression` at its binding, assignment, aggregate insertion, or destructuring site. The marker may cover one constituent or a whole construction/destructuring source; every constituent retains its own permissions. A writable reception of a deep copy with possible internal writable aliases also requires this marker. Proven immutable sharing needs none.
 - **Checked Meaning**: The marker evaluates its operand once and preserves identity. It neither clones nor freezes, transfers ownership, grants missing permissions, revives invalid resources, or extends temporary mutable authority. Missing markers and invalid authority are distinct errors; adding a marker cannot repair `E0520`–`E0528` violations. Possible internal aliases need not be resolved to one exact graph, but remain subject to all overlap checks.
-- **No Duplicate Boundary Spelling**: Receiving an authority already produced under a checked `^mut(sources)` return contract does not require another local sharing marker. Callable signatures must contain their inferred return and capture-source annotations; their return/tail expressions and handler environments do not need an additional local marker for that same checked publication. A plain block is not a callable retention boundary. Aliasing an already created mutable closure locally still requires the marker. A `clone` source/copy isolation contract does not itself mark the copy's possible internal writable aliases, including at a [fresh-value storage input](#fresh-values-in-storage-calls).
+- **Return and Reception**: `^mut(x) T` covers root-return retention without a duplicate independent `&^mut`; actual writes and extra escaping paths retain their own obligations. Shared writable reception still requires `^mut expression` at every receiving site. It confirms the same return publication and does not add a second capability obligation. A checked callable tail may forward authority under its declared return contract; a plain block cannot hide local alias creation. `clone` isolation alone does not mark internal writable aliases, including at [fresh storage inputs](#fresh-values-in-storage-calls).
 - **Confinement**: Local `^mut` does not by itself add external `&^mut` to the enclosing function. Conversely, local discharge does not remove required markers at local data-sharing sites. Captured and returned sharing still contributes its actual authority roots whether or not its facts are written explicitly.
 
 ```ril
-fn retain(^mut cell: Cell) -> ^mut(cell) Cell &^mut { cell }
+fn retain(^mut cell: Cell) -> ^mut(cell) Cell { cell }
 let mut original = Cell.{ count: 0 }
-let mut returned = retain(^mut original) -- Retention already marked at the call boundary
+let mut returned = ^mut retain(^mut original) -- Explicit reception of the returned writer
 returned.count += 1
 original.count += 1
--- let mut hidden = retain(original)  -- Error [E0405]: ordinary argument lacks the retention marker
--- let mut hidden = retain((^mut original)) -- Error [E0405]: sharing expression is not an argument-mode marker
--- let mut hidden = retain(^mut clone(original)) -- Error [E0410]: mutable argument must be an assignable target
+type Packet = { mut item: Cell }
+let mut packet = Packet.{ item: ^mut retain(^mut original) }
+packet.item.count += 1
+-- let mut hidden_packet = Packet.{ item: retain(^mut original) } -- Error [E0510]: wrapping does not hide shared reception
+-- let mut hidden = retain(^mut original) -- Error [E0510]: returned sharing still needs a reception marker
+-- let mut hidden = ^mut retain(original) -- Error [E0405]: ordinary argument lacks the retention marker
+-- let mut hidden = ^mut retain((^mut original)) -- Error [E0405]: sharing expression is not an argument-mode marker
+-- let mut hidden = ^mut retain(^mut clone(original)) -- Error [E0410]: mutable argument must be an assignable target
 ```
 
 | Surviving references | Sharing obligation |
 | :--- | :--- |
 | Repeated fields/cycles inside one fresh passive result graph | No additional external authority; still check internal aliasing |
-| Parameter/external origin retained elsewhere | `&^mut` or its named form |
+| Entry parameter root retained only through `^mut(x) T` | Root return covers retention; writes still require `&mut` |
+| Extra storage/contained/captured writable path, including to the same source | Independent `&^mut` or its named form |
 | One cell exposed through a closure and a direct graph reference | `&^mut`, even inside one returned tuple |
 | One cell exposed through multiple mutable closures | `&^mut` |
 
-Each surviving parameter/external root, escaped mutable environment, and separately exposed passive graph is an authority root; repeated graph traversal does not add roots.
+Each newly surviving external path, mutable environment, and separately exposed graph participates in retention. Merely returning an unchanged graph does not recreate its existing aliases, cycles, or environments, and adds no duplicate `&^mut` or `&capture`.
 - **Local Discharge**: Retention whose origins and authority roots all remain confined to the current frame is discharged locally. Mutation of already shared storage does not itself create another retention obligation. Existing sharing remains a provenance fact; it is not a repeated publication on every invocation.
 - **Bounds**: Concrete definitions cannot overstate capabilities (`E0529`); callable types may declare upper bounds. Bounds do not change parameter modes. Actual retention satisfies `E0527` for `^mut`.
 
@@ -4472,7 +4589,7 @@ fn make_private_ticker() -> new Step &capture {
     var count = 0
     \-> { count += 1; count }
 }
-fn make_shared_ticker(^mut cell: Cell) -> ^mut(cell) Step &capture &^mut {
+fn make_shared_ticker(^mut cell: Cell) -> new Step &capture &^mut &{return, ^mut cell} {
     \-> { cell.count += 1; cell.count }
 }
 fn make_dual_ticker() -> new (mut Step, mut Cell) &capture &^mut {
@@ -4485,7 +4602,7 @@ fn make_dual_ticker() -> new (mut Step, mut Cell) &capture &^mut {
 ```ril
 var active_connections = 0
 type Ticker = fn() -> int &closure
-fn share_connections() -> ^mut(active_connections) Ticker &capture &{^mut active_connections} {
+fn share_connections() -> new Ticker &capture &{^mut active_connections} &{return, ^mut active_connections} {
     \-> { active_connections += 1; active_connections }
 }
 ```
@@ -4563,15 +4680,27 @@ StateCapability  ::= "&mut"
                    | "&{" "}"
                    | GlobalStateGroup
                    | CapturedStateGroup
+                   | ReturnDependencyGroup
                    | StateContractRef
 GlobalStateGroup ::= "&{" StateItemList "}"
 CapturedStateGroup ::= "&{" "closure" [ CaptureOwner ] "," StateItemList "}"
+ReturnDependencyGroup ::= "&{" "return" "," ReturnDependencyList "}"
+ReturnDependencyList ::= ReturnDependency { "," ReturnDependency } [ "," ]
+ReturnDependency ::= ( "ref" | "^mut" ) QualifiedName
 CaptureOwner     ::= SnakeCase
 StateItemList    ::= StateItem { "," StateItem } [ "," ]
 StateItem        ::= [ StateMode ] QualifiedName
 StateMode        ::= "mut" | "^mut"
 StateContractRef ::= "&" QualifiedName
 ```
+
+| Group | Meaning | Source resolution |
+| :--- | :--- | :--- |
+| `&{mut cache, CONFIG}` | Current invocation's global access | Module bindings |
+| `&{closure, mut count}` | Current invocation's captured access | Existing callable-layer rules |
+| `&{return, ref x, ^mut y}` | Possible contained dependencies of the returned graph | Formal parameters or visible external/captured origins at the signature |
+
+Return dependencies are facts, not invocation permissions. They neither replace `&mut`, `&^mut`, `&capture`, or named state, nor add a general parameter group such as `&{mut x}`. Keep scalar copies out of this group; capturing a mutable scalar cell is a reference dependency. Body-local created regions and their correlations stay in verified metadata without inventing public names.
 
 ```ril
 var global_count = 0
@@ -4592,11 +4721,11 @@ where
 }
 ```
 
-- **Global Groups (`E0538`)**: A nonempty group without a `closure` header contains only module storage bindings. Qualified names and declaration imports follow ordinary name resolution; importing a binding does not create new local storage. A named function declaration itself is not a storage item.
+- **Global Groups (`E0538`)**: A nonempty group without a `closure` or `return` header contains only module storage bindings. Qualified names and declaration imports follow ordinary name resolution; importing a binding does not create new local storage. A named function declaration itself is not a storage item.
 - **Captured Groups (`E0538`)**: A group beginning with `closure` contains captured bindings from one enclosing callable layer. The current layer is the annotated callable's directly enclosing function or lambda. Its name may be omitted. A farther named layer requires its function name; a farther anonymous layer still uses the bare `closure` header. An explicit owner must match the actual source layer.
 - **Resolution Before Classification**: Resolve each item to its ordinary lexical binding first, then check its owner and the group's kind. A header cannot bypass shadowing, select another same-spelled variable, or rebind a local source to a global. The owner name verifies the already resolved layer; its spelling is not a dynamic environment identity.
 - **Layer and Identity**: Named functions and lambdas introduce callable layers; ordinary blocks, loop bodies, and handler arms do not introduce additional function layers. Their distinct bindings, activations, lifetimes, and handler identities nevertheless remain distinct. A binding may point into another layer, a caller, or global storage; those possible object origins do not change the binding's declaration layer.
-- **Grouping**: Items from one resolved layer may share a group. Items from different layers must not share one, even when both groups have the identical bare `closure` spelling. `mut` and `^mut` do not extend across commas. Grouping preserves every binding, access path, dynamic instance, alias relation, and transitive obligation.
+- **Grouping**: Invocation-access items from different callable layers must not share a group, even with identical bare `closure` spelling. A `return` group instead summarizes contained origins and retains each resolved source's identity; invalid dependencies use `E0545`. Modes do not extend across commas. Grouping preserves paths, dynamic instances, aliases, and transitive obligations.
 
 ```ril
 fn outer_layer() -> int {
@@ -4658,7 +4787,7 @@ fn read_both() -> int &{x, closure} { x + closure }
 
 Standalone `&capture`, `&mut`, `&^mut`, and the callable-type abstraction `&closure` are not group entries. `&{}` follows the [higher-order empty-row rules](#empty-rows-on-higher-order-signatures). No group declares that storage is unique, consumes authority, or merges a retained handler definition; those obligations retain their existing checks.
 
-The contextual `closure` group header takes precedence over the global-list production. A captured group requires at least one item: `&{closure,}` is `E0538`, while `&{closure}` reads a global binding named `closure`. Built-in `&mut`, `&^mut`, `&capture`, and `&closure` retain their meanings ahead of the reference production. A state contract reference is permitted only on an ordinary named function definition, subject to [its reference rules](#named-function-state-contract-references); the common grammar does not authorize it in other annotation positions.
+Reserved `return` selects the dependency production; contextual `closure` takes precedence over the global-list production. Both header forms require real items: `&{closure,}` is `E0538`, while `&{closure}` reads a global binding named `closure`. Built-in `&mut`, `&^mut`, `&capture`, and `&closure` retain their meanings ahead of state-contract references. Those references remain restricted to ordinary named definitions under [their rules](#named-function-state-contract-references).
 
 ### Named Function State Contract References
 
@@ -4674,7 +4803,7 @@ pub fn make_step() -> new Step &capture &{mut private_count} {
     \-> { local_count += 1; local_count }
 }
 pub type Cell = { var count: int }
-pub fn retain(^mut cell: Cell) -> ^mut(cell) Cell &^mut &{mut private_count} {
+pub fn retain(^mut cell: Cell) -> ^mut(cell) Cell &{mut private_count} {
     private_count += 1
     cell
 }
@@ -4691,14 +4820,12 @@ fn through_callback() -> () &Counter::advance { invoke(Counter::advance) }
 fn make_wrapped() -> new Counter::Step &capture &Counter::make_step {
     Counter::make_step()
 }
-fn retain_wrapped(^mut cell: Counter::Cell) -> ^mut(cell) Counter::Cell &^mut &Counter::retain {
+fn retain_wrapped(^mut cell: Counter::Cell) -> ^mut(cell) Counter::Cell &Counter::retain {
     Counter::retain(^mut cell)
 }
 -- fn missing_state() -> () { Counter::advance() } -- Error [E0510]
 -- fn missing_creation() -> new Counter::Step &Counter::make_step { Counter::make_step() }
 -- Error [E0510]: the reference does not include the surviving environment's &capture obligation
--- fn missing_retention(^mut cell: Counter::Cell) -> ^mut(cell) Counter::Cell &Counter::retain { Counter::retain(^mut cell) }
--- Error [E0510]: the reference does not include this parameter's independent &^mut obligation
 -- fn read_private() -> int &Counter::advance { Counter::private_count }
 -- Error [E0201]: a contract reference does not export the private binding
 ```
@@ -4706,7 +4833,7 @@ fn retain_wrapped(^mut cell: Counter::Cell) -> ^mut(cell) Counter::Cell &^mut &C
 - **Provider (`E0539`)**: `&callee` / `&Module::callee` selects a visible ordinary named Ril definition's verified named-state contract. Resolve names first: lexical absence `E0204`, absent module member `E0209`, private member `E0201`; then reject a wrong provider kind with `E0539`. Value aliases and callable parameters are not providers.
 - **Position (`E0539`)**: Allowed only on ordinary named function definitions. Reject it on callable types, anonymous functions, effect operations, and bodyless foreign declarations.
 - **Concrete Named Projection**: A reference denotes the provider's concrete global/captured source items and their verified access modes for its current invocation, including concrete named dependencies obtained through other calls. The bindings and lexical owners remain anchored to the provider's scope. It does not include effects, anonymous parameter permissions, standalone `&capture`/`&^mut`, symbolic callback dependencies, or a returned callable's future invocation obligations.
-- **Coverage**: After local discharge, match inherited concrete named obligations by origin and permission. The caller need not invoke the provider by name. Direct storage/handler access and required parameter `&mut`/`&^mut` remain separate. Unrelated references leave `E0510`; unnecessary references remain `E0529`.
+- **Coverage**: After local discharge, match inherited concrete named obligations by origin and permission. The caller need not invoke the provider by name. A reference imports no return relation: declare that separately. Actual parameter writes and extra retention still need `&mut`/`&^mut`; root-return retention follows its own annotation. Unrelated references leave `E0510`; unnecessary references remain `E0529`.
 - **No Erasure**: Calling through an alias or higher-order helper preserves the concrete dependencies. A provider reference cannot turn them into unknown callback dependencies, discharge conflicting mutable authority, or prove a recursive dependency empty. An admitted higher-order `&{}` constrains the total state, including referenced state.
 - **Declaration Identity**: A declaration import alias or re-export preserves its provider identity. `let action = callee` and a public callable-valued binding do not create provider declarations; references to such bindings are `E0539`. The built-in capability spellings keep their established meanings; a same-spelled function requires a qualified reference. Public callable values without a suitable visible provider do not acquire an implicit private-state permission.
 
@@ -4842,7 +4969,7 @@ let mut replacement = .{ mut child: Cell.{ count: 9 } }
 replacement.child.count += 1
 cursor = replacement
 
-fn project(ref box: { mut child: Cell }) -> ref(box.child) Cell { box.child }
+fn project(ref box: { mut child: Cell }) -> ref(box) Cell { box.child }
 -- let mut stolen = project(ref box) -- Error [E0528]: the observation return has no write authority
 ```
 
@@ -6386,7 +6513,7 @@ Forms preserve data schemas and operation identity. Resource contracts remain se
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | `len` | `len(value)` / `len(ref value) -> int` | Pure | Dual-phase | $O(1)$ / $O(n)$ text | Count of elements, entries, bytes, or Unicode scalars |
 | `inner` | `inner(wrapper) -> T` / `inner(ref wrapper) -> ref(wrapper) T` | Pure | Runtime | $O(1)$ | Preserve immutable/observed payload authority; value payloads use a plain result; unit nominal yields `()` |
-| `clone` | `clone(value)` / `clone(ref value)` | Pure | Runtime | $O(\text{graph})$ | Reference result `new T`, value result `T`; deep isolated ordinary graph copy preserving aliases, cycles, and member schemas |
+| `clone` | `clone(value)` / `clone(ref value)` | Pure | Runtime | $O(\text{graph})$ | Ordinary reference result `new T`, value result `T`; preserves graph aliases, cycles, and schemas. Resource cloning follows its separate contract |
 | `derive` | `derive(base, recipe) -> T` | Forwards recipe | Runtime | $O(\text{affected})$ | Functional update on immutable value via confined mutable draft |
 | `byte_size` | `meta fn byte_size<T>(value: type<T>) -> int` | Pure | Static only | $O(1)$ | Size in bytes of $T$'s value/handle on abstract target |
 | `type_name` | `meta fn type_name<T>(value: type<T>) -> str` | Pure | Static only | $O(\text{len})$ | Canonical string representation of $T$ for static diagnostics |
