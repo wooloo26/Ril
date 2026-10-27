@@ -23,7 +23,6 @@ Examples are independent unless marked complete. Local statements run inside an 
 | :--- | :--- |
 | `-- OK` | Valid program |
 | `-- Error [EXXXX]` | Static rejection with the stated code |
-| `-- Warning [WXXXX]` | Valid program; warning is advisory |
 | `-- Panics` | Run-time panic when evaluated |
 
 Each invalid example assumes otherwise valid surrounding code. Local expressions have their required handlers; named functions obey their declared effects. Blocks containing `...` are schematic. Diagnostic message text is illustrative.

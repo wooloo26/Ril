@@ -16,9 +16,8 @@ This document defines Ril grammar, typing, permissions, effects, abstract-machin
 - **Normative Code Annotations**: Code examples define normative verification cases in the stated fixture context:
   - `-- OK`: Syntactically and semantically valid Ril programs.
   - `-- Error [EXXXX]`: Programs that must be statically rejected by the compiler with the indicated diagnostic error code.
-  - `-- Warning [WXXXX]`: Valid programs meeting a specified advisory warning condition; reporting the warning is optional.
   - `-- Panics`: Programs that raise deterministic runtime panics under defect conditions.
-- **Diagnostic Text**: Codes and their triggering conditions are normative. Example message text, source highlighting, notes, and suggested repairs are illustrative. `-- OK` asserts validity, not the absence of advisory warnings.
+- **Diagnostic Text**: Error codes and their triggering conditions are normative. Example message text, source highlighting, notes, and suggested repairs are illustrative.
 - **Examples**: Blocks are independent fixtures unless marked as complete source files.
 - Local statements run in an enclosing callable; displayed declarations belong to its enclosing declaration scope. Free names are typed fixture inputs or supplied contracts.
 - Fixtures handle their local expressions' effects. Named functions and complete files obey their own annotations, casing, and initialization rules.
@@ -171,7 +170,6 @@ This document defines Ril grammar, typing, permissions, effects, abstract-machin
     - [Declaration Contexts, Control Flow, and Fallible Values](#declaration-contexts-control-flow-and-fallible-values)
     - [Static Computation and Totality](#static-computation-and-totality)
     - [Module Forms, Entry Points, and External Contracts](#module-forms-entry-points-and-external-contracts)
-  - [Advisory Warnings](#advisory-warnings)
 
 ## Notation, Abstract Machine, and Conformance
 
@@ -209,12 +207,12 @@ A conforming Ril implementation MUST:
 
 ```ril
 let value: str = 1                    -- Error [E0301]: incompatible expression type
-let unused_value = 1                  -- Warning [W0001]: valid unused read-only binding
+let unused_value = 1                  -- OK: valid unused read-only binding
 let quotient = 1 / 0                  -- Panics: integer division by zero
 meta let QUOTIENT = 1 / 0             -- Error [E0831]: panic during static evaluation
 ```
 
-An `E` diagnostic rejects a program under a specified syntactic or semantic rule. A `W` diagnostic is advisory and cannot change language validity. A panic is an execution outcome, not a static diagnostic or an algebraic effect. Recoverable `Result` and `Option` values are ordinary data, not diagnostic categories.
+An `E` diagnostic rejects a program under a specified syntactic or semantic rule. A panic is an execution outcome, not a static diagnostic or an algebraic effect. Recoverable `Result` and `Option` values are ordinary data, not diagnostic categories.
 
 An expression incompatible with its required type is `E0301` when no more specific condition applies. For an isolated violation, the diagnostic assigned by its defining rule is required. A specific applicable condition takes precedence over a general condition such as `E0301`; for example, an absent record member is `E0336`, not an arbitrary type mismatch. Dedicated placement restrictions, such as declarations in the sequential statement stream, retain their specific codes instead of a general syntax diagnostic. Independent violations may produce multiple diagnostics; their reporting order and the number of secondary diagnostics are unspecified. These rules do not prescribe error recovery or permit an invalid program to be accepted.
 
@@ -440,11 +438,11 @@ Unterminated literals and comments use their lexical diagnostics rather than `E0
 ### Identifiers and Casing Invariants
 
 ```ebnf
-Identifier         ::= PascalCase | SnakeCase | ScreamingSnakeCase | SuppressedVar
+Identifier         ::= PascalCase | SnakeCase | ScreamingSnakeCase | UnderscoreName
 PascalCase         ::= [A-Z] { [a-zA-Z0-9] }
 SnakeCase          ::= [a-z] [a-z0-9]* { "_" [a-z0-9]+ }
 ScreamingSnakeCase ::= [A-Z] [A-Z0-9]* { "_" [A-Z0-9]+ }
-SuppressedVar      ::= "_" [a-z] [a-z0-9]* { "_" [a-z0-9]+ }
+UnderscoreName     ::= "_" [a-z] [a-z0-9]* { "_" [a-z0-9]+ }
 Wildcard           ::= "_"
 QualifiedName    ::= Identifier { "::" Identifier }
 ```
@@ -456,7 +454,7 @@ Identifier grammatical roles obey the **Closed Casing Invariant**:
 - **`snake_case`**: Strictly used for runtime variables (local bindings, function parameters, reassignable variables `var`, and pinned mutable handles `let mut`), const generic parameters (`cap: int`), named functions (`fn`, `meta fn`), record fields, and module path segments (`ril/array`, `math/geometry`).
 - **`SCREAMING_SNAKE_CASE`**: Strictly reserved for compile-time constants (`meta let`) and top-level immutable constants (`let`). Top-level mutable variables (`var`, `let mut`) MUST use `snake_case`.
 - **Static Keys and Field Labels**: Static key binders (`K: keyof T`) and mapped-key binders (`[K in ...]`) use PascalCase. Ordinary field labels use snake_case, optionally with one leading underscore. A mapped record may expose valid PascalCase constructor labels; construction and projection against that mapped schema use those generated labels verbatim. This does not permit uppercase run-time variable bindings.
-- **Wildcard & Suppression**: A single underscore `_` is strictly the wildcard discard pattern, not an identifier (`E0322`). An identifier with a leading underscore `_snake_case` declares an intentionally unused read-only variable or parameter. It does not waive mutable-authority use requirements (`E0527`).
+- **Wildcard and Leading Underscores**: A single underscore `_` is strictly the wildcard discard pattern, not an identifier (`E0322`). An identifier with a leading underscore, such as `_snake_case`, follows the same binding and mutable-authority use requirements as other identifiers (`E0527`).
 
 ```ril
 type First { Shared }
@@ -498,9 +496,9 @@ meta fn pad_align(size: int) -> int { size }       -- OK: compile-time function
 meta let MAX_BUFFER_SIZE = 1024 * 64   -- OK: compile-time constant
 let DEFAULT_TIMEOUT_MS = 5000          -- OK: top-level immutable constant
 
--- Wildcard and Unused Suppression
+-- Wildcard and Leading-Underscore Identifiers
 let _ = user_count                     -- OK: wildcard discard
-fn on_event(ev: Event, _ctx: Context) { handle(ev) } -- OK: '_ctx' is intentionally unused
+fn on_event(ev: Event, _ctx: Context) { handle(ev) } -- OK: '_ctx' is a parameter identifier
 
 -- Static Lexical Violations:
 -- type user_doc = { id: int }         -- Error [E0101]: type identifier must be PascalCase, found 'user_doc'
@@ -824,7 +822,7 @@ RecordField      ::= [ "mut" ] FieldLabel ":" TypeExpression
 TypeProjection ::= PrimaryType "." ( Identifier | TupleIndex | "(" Expression ")" )
 TupleIndex     ::= Digit { Digit }
 RecordFieldList  ::= ".." PascalCase | RecordField { "," RecordField } [ "," [ ".." PascalCase ] ]
-FieldLabel       ::= SnakeCase | SuppressedVar | PascalCase
+FieldLabel       ::= SnakeCase | UnderscoreName | PascalCase
 ```
 
 ```ril
@@ -6368,39 +6366,3 @@ This index assigns each code its diagnostic name and points to its defining rule
 | **`E0904`** | [`InvalidEntryPointError`](#program-entry-point) |
 | **`E0907`** | [`ForeignStructuralFieldPenetrationError`](#external-interface-declarations) |
 | **`E0908`** | [`UnsupportedExternalAuthorityContractError`](#external-interface-declarations) |
-
-## Advisory Warnings
-
-```ril
-fn example(unused_parameter: int) -> int { -- Warning [W0001]: parameter is never used
-    let unused_local = 1              -- Warning [W0001]: local binding is never used
-    let _intentional = 2              -- OK: intentionally unused
-    0
-}
-```
-
-```ril
--- Complete library module; push is neither used nor re-exported.
-use ril/array::{push}                  -- Warning [W0002]: unused private import
-pub fn answer() -> int { 42 }
-```
-
-```ril
-fn finish() {
-    return
-    let _unreachable = 2              -- Warning [W0003]: preceding return cannot complete normally
-}
-```
-
-| Code | Diagnostic Name | Advisory Condition |
-| :---: | :--- | :--- |
-| **`W0001`** | `UnusedReadOnlyBindingWarning` | Read-only local binding or parameter has no use in its scope |
-| **`W0002`** | `UnusedPrivateImportWarning` | A privately imported binding is neither referenced nor publicly re-exported |
-| **`W0003`** | `UnreachableStatementWarning` | Sequential executable statement follows an unconditional control transfer or an expression of type never in the same statement sequence |
-
-Implementations MAY report these conditions; absence of a warning is not a conformance failure. Warnings do not reject otherwise valid programs, discharge semantic obligations, or suppress static errors. Their names and conditions distinguish them from the mandatory `E` diagnostics; presentation and wording remain unspecified. This section adds no warning-control syntax.
-
-- `W0001` excludes `_` discards, names beginning with the permitted suppressing underscore, mutable authorities, and scoped resources used by implicit cleanup. Reads, captures, and passing a value are uses; unused-result duties remain independent. Only local bindings and parameters are covered, not externally usable public declarations.
-- `W0002` applies to the actual imported binding, including aliases or namespace bindings. A reference through its imported name counts as use. Public re-exports are excluded. For a private glob import, a diagnostic may identify unused imported bindings without declaring the module itself inaccessible.
-- `W0003` describes sequential unreachability after `return`, `last`, `next`, or another expression of type `never`. Resumption is not unconditionally terminating in general. An unreachable statement still obeys applicable static rules. This warning does not change static-boolean branch pruning or the exhaustive-pattern rules, and does not require proving arbitrary conditions constant.
-- Unexercised mutable authority remains `E0527`, abandoned fallible results remain `E0720`, and unreachable match arms remain `E0304`. A warning cannot replace any of these errors.
