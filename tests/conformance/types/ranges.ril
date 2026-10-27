@@ -1,33 +1,33 @@
--- [case: accept-live-window-structural-change, check-pass]
+-- [case: accept-live-view-structural-change, check-pass]
 -- spec: SPEC#range-and-slicing-expressions
--- companion: reject-live-window-structural-change
+-- companion: reject-live-view-structural-change
 fn example() {
     let mut items = [1, 2]
-    let view window = items[..]
-    assert(len(window) == 2)
+    let view observed = items
+    assert(len(observed) == 2)
     items !> Array::push(3)
 }
 
--- [case: reject-live-window-element-write, check-fail]
+-- [case: reject-live-view-element-write, check-fail]
 -- spec: SPEC#range-and-slicing-expressions
--- companion: window-observes-replacement
--- Error [E0520]: A slice window grants no element writer even when its backing has one.
+-- companion: live-view-observes-replacement
+-- Error [E0520]: A live view grants no element writer even when its source has one.
 fn invalid() {
     let mut items = [1, 2, 3]
     items[0] = 7
-    let view window = items[1..]
-    window[0] = 9
+    let view observed = items
+    observed[0] = 9
 }
 
--- [case: reject-live-window-structural-change, check-fail]
+-- [case: reject-live-view-structural-change, check-fail]
 -- spec: SPEC#range-and-slicing-expressions
--- companion: accept-live-window-structural-change
--- Error [E0537]: reject live window structural change
+-- companion: accept-live-view-structural-change
+-- Error [E0537]: A later use of the live array view requires structural stability.
 fn example() {
     let mut items = [1, 2]
-    let view window = items[..]
+    let view observed = items
     items !> Array::push(3)
-    assert(len(window) == 2)
+    assert(len(observed) == 2)
 }
 
 -- [pair: mixed-range-type]
@@ -175,13 +175,83 @@ pub fn test_reversed_slice() {
     let _ = values[2..1]
 }
 
--- [case: window-observes-replacement, run-pass]
+-- [case: live-view-observes-replacement, run-pass]
 -- spec: SPEC#range-and-slicing-expressions
-pub fn test_window_observes_replacement() {
+pub fn test_live_view_observes_replacement() {
     let mut items = [1, 2]
-    let view window = items[..]
+    let view observed = items
     items[0] = 9
-    assert(window[0] == 9)
+    assert(observed[0] == 9)
     items !> Array::push(3)
     assert(len(items) == 3)
+}
+
+-- [case: reject-full-slice-view, check-fail]
+-- spec: SPEC#range-and-slicing-expressions
+-- companion: slice-container-is-independent
+-- Error [E0543]: A full range still allocates a new array rather than a live view.
+fn invalid() {
+    let mut items = [1, 2]
+    items[0] = 9
+    let view observed = items[..]
+}
+
+-- [case: reject-partial-slice-view, check-fail]
+-- spec: SPEC#range-and-slicing-expressions
+-- companion: slice-container-is-independent
+-- Error [E0543]: A partial range also allocates a new array.
+fn invalid() {
+    let mut items = [1, 2, 3]
+    items[0] = 9
+    let view observed = items[1..]
+}
+
+-- [case: slice-container-is-independent, run-pass]
+-- spec: SPEC#range-and-slicing-expressions
+pub fn test_slice_container_is_independent() {
+    let mut items = [1, 2, 3]
+    let selected = items[1..]
+    items[1] = 9
+    items !> Array::push(4)
+    assert(selected == [2, 3] && items == [1, 9, 3, 4])
+}
+
+-- [case: reject-forwarded-slice-view, check-fail]
+-- spec: SPEC#range-and-slicing-expressions
+-- spec: SPEC#normative-rules-for-live-views
+-- companion: slice-container-is-independent
+-- Error [E0543]: A read-only call cannot relabel a new slice array as a live view.
+fn identity(items: []int) -> []int { items }
+
+fn invalid() {
+    let mut items = [1, 2]
+    items[0] = 9
+    let view observed = identity(items[..])
+}
+
+-- [case: slice-preserves-reference-sharing, run-pass]
+-- spec: SPEC#range-and-slicing-expressions
+-- spec: SPEC#retained-mutable-sharing
+type Cell = { mut count: int }
+
+pub fn test_slice_preserves_reference_sharing() {
+    let mut items: []Cell = [Cell.{ count: 1 }, Cell.{ count: 2 }]
+    items[1].count += 1
+    let mut selected = ^mut items[0..1]
+    selected[0].count = 9
+    selected !> Array::push(Cell.{ count: 4 })
+    assert(items[0].count == 9 && items[1].count == 3)
+    assert(len(items) == 2 && len(selected) == 2)
+}
+
+-- [case: pinned-slice-array-view, run-pass]
+-- spec: SPEC#range-and-slicing-expressions
+-- spec: SPEC#normative-rules-for-live-views
+pub fn test_pinned_slice_array_view() {
+    let mut items = [1, 2, 3]
+    items[0] = 9
+    let mut selected = items[1..]
+    let view observed = selected
+    selected[0] = 8
+    assert(observed[0] == 8 && items[1] == 2)
 }

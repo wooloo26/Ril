@@ -219,7 +219,7 @@ cells !> Array::push(base)             -- OK: existing immutable element
 | Other ordinary argument | Read-only |
 | `^mut target` | Retained writer under `&^mut` |
 
-Read-only Array operations also accept `[N]T`; length changes require `[]T`. Slice windows grant no writes. Callback operations also admit `mut callback` with `&mut`. Fold accumulators and returned elements preserve their original sharing and permissions.
+Read-only Array operations also accept `[N]T`; length changes require `[]T`. Range indexing creates an independent array whose elements retain their permissions; live views, including pattern remainder views, grant no writes. Callback operations also admit `mut callback` with `&mut`. Fold accumulators and returned elements preserve their original sharing and permissions.
 
 | Operation | Behavior and complexity |
 | :--- | :--- |
@@ -234,7 +234,7 @@ Read-only Array operations also accept `[N]T`; length changes require `[]T`. Sli
 | `find`, `any`, `all` | Stop at first match / true / false; empty outcomes `None`, false, true; O(n) worst case |
 | `for_each` | One invocation per element in order; O(n) |
 
-Active traversal forbids structural mutation through any source alias (`E0526`); a still-used live window retains `E0537`. Removal preserves the [common inspection duty](#interfaces-behavior-and-examples).
+Active traversal forbids structural mutation through any source alias (`E0526`); a still-used live array view retains `E0537`. Removal preserves the [common inspection duty](#interfaces-behavior-and-examples).
 
 ```ril
 let mut items = [1, 2]

@@ -257,3 +257,70 @@ fn example() {
     let unnamed: fn(int) -> int = identity
     let value = unnamed()
 }
+
+-- [case: anonymous-defaults-and-aliases, run-pass]
+-- spec: SPEC#anonymous-functions-trailing-closures-and-projection-accessors
+-- spec: SPEC#default-parameters-and-named-arguments
+pub fn test_anonymous_defaults_and_aliases() {
+    let pair = \first: int, second: int = first -> (first, second)
+    let alias = pair
+    assert(pair(2) == (2, 2))
+    assert(alias(second: 3, 2) == (2, 3))
+}
+
+-- [case: reject-anonymous-forward-default, check-fail]
+-- spec: SPEC#default-parameters-and-named-arguments
+-- companion: anonymous-defaults-and-aliases
+-- Error [E0408]: An anonymous parameter default cannot refer to a later parameter.
+fn invalid() {
+    let pair = \first: int = second, second: int = 1 -> (first, second)
+}
+
+-- [case: reject-anonymous-mutable-default, check-fail]
+-- spec: SPEC#default-parameters-and-named-arguments
+-- companion: anonymous-defaults-and-aliases
+-- Error [E0404]: Anonymous mutable parameters cannot have defaults.
+fn invalid() {
+    let append = \mut items: []int = [] -> { items !> Array::push(1) }
+}
+
+-- [case: reject-anonymous-effectful-default, check-fail]
+-- spec: SPEC#default-parameters-and-named-arguments
+-- companion: anonymous-defaults-and-aliases
+-- Error [E0409]: Anonymous defaults must have no residual effects.
+eff Read { get() -> int }
+
+fn invalid() {
+    let read = \value: int = Read::get() -> value
+}
+
+-- [case: reject-ascribed-anonymous-default, check-fail]
+-- spec: SPEC#default-parameters-and-named-arguments
+-- companion: anonymous-defaults-and-aliases
+-- Error [E0314]: Callable-type ascription also discards an anonymous default.
+fn invalid() {
+    let action: fn(int) -> int = \value: int = 1 -> value
+    let value = action()
+}
+
+-- [case: default-environment-publication, run-pass]
+-- spec: SPEC#default-parameters-and-named-arguments
+-- spec: SPEC#closures-factory-signatures-and-lexical-environments
+type Reader = fn() -> int &closure
+fn choose(value: int, reader: Reader = \-> value) -> Reader { reader }
+fn publish(value: int) -> Reader &capture { choose(value) }
+
+pub fn test_default_environment_publication() {
+    let first = publish(7)
+    let second = publish(9)
+    assert(first() == 7 && second() == 9 && first() == 7)
+}
+
+-- [case: reject-hidden-default-environment-publication, check-fail]
+-- spec: SPEC#default-parameters-and-named-arguments
+-- spec: SPEC#closures-factory-signatures-and-lexical-environments
+-- companion: default-environment-publication
+-- Error [E0510]: The caller publishes an environment created during argument preparation.
+type Reader = fn() -> int &closure
+fn choose(value: int, reader: Reader = \-> value) -> Reader { reader }
+fn publish(value: int) -> Reader { choose(value) }

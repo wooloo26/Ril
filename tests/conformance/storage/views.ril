@@ -1,0 +1,77 @@
+-- [case: observation-wrappers-preserve-live-origins, run-pass]
+-- spec: SPEC#normative-rules-for-live-views
+-- spec: SPEC#complete-provenance-and-optional-annotations
+type Cell = { mut count: int }
+fn identity(cell: Cell) -> Cell { cell }
+
+pub fn test_observation_wrappers_preserve_live_origins() {
+    let mut source = Cell.{ count: 1 }
+    let view packet = .{ item: identity(source) }
+    let view observed = identity(packet.item)
+    let offset = 1
+    let view read_count = \-> observed.count + offset
+    source.count = 5
+    assert(packet.item.count == 5 && read_count() == 6)
+}
+
+-- [case: view-cursor-selects-pinned-origins, run-pass]
+-- spec: SPEC#binding-permissions-and-storage-matrix
+-- spec: SPEC#normative-rules-for-live-views
+type Cell = { mut count: int }
+
+pub fn test_view_cursor_selects_pinned_origins() {
+    let mut first = Cell.{ count: 0 }
+    let mut second = Cell.{ count: 0 }
+    var view cursor = first
+    first.count = 1
+    assert(cursor.count == 1)
+    cursor = second
+    second.count = 2
+    assert(cursor.count == 2)
+}
+
+-- [case: mutable-tuple-bindings, run-pass]
+-- spec: SPEC#block-expressions-tail-values-and-hoisted-declarations
+-- spec: SPEC#reassignable-mutable-variables
+type Cell = { mut count: int }
+
+pub fn test_mutable_tuple_bindings() {
+    var mut (left, right) = (Cell.{ count: 0 }, Cell.{ count: 1 })
+    left.count += 1
+    right.count += 1
+    left = Cell.{ count: 10 }
+    right = Cell.{ count: 20 }
+    assert(left.count == 10 && right.count == 20)
+}
+
+-- [case: reject-wrapped-reassignable-origin, check-fail]
+-- spec: SPEC#normative-rules-for-live-views
+-- companion: observation-wrappers-preserve-live-origins
+-- Error [E0531]: A wrapper cannot turn a reassignable source into a pinned live origin.
+type Cell = { mut count: int }
+
+fn invalid() {
+    var mut source = Cell.{ count: 0 }
+    source.count += 1
+    source = Cell.{ count: 2 }
+    let view packet = .{ item: source }
+}
+
+-- [case: reject-new-data-view, check-fail]
+-- spec: SPEC#normative-rules-for-live-views
+-- companion: observation-wrappers-preserve-live-origins
+-- Error [E0543]: An independent allocation supplies no existing live origin.
+type Cell = { mut count: int }
+
+fn invalid() {
+    let view observed = Cell.{ count: 0 }
+}
+
+-- [case: reject-bytes-view, check-fail]
+-- spec: SPEC#normative-rules-for-live-views
+-- spec: SPEC#value-types
+-- Error [E0402]: Immutable byte values are not reference or callable view targets.
+fn invalid() {
+    let data: bytes = b"RIFF"
+    let view observed = data
+}

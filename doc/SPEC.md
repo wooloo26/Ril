@@ -1568,10 +1568,10 @@ Declarations cleanly separate slot reassignability (`let` pinned vs `var` reassi
 | :--- | :---: | :---: | :--- | :--- |
 | `let` | No (`E0501`) | No (`E0520`) | Fresh value or immutable graph without surviving writers (`E0535`) | Deeply immutable, freely shareable across tasks |
 | `let mut` | No (`E0502`) | Granted | Heap reference allocation or mutable closure; not scalar (`E0402`) | Pinned mutable handle; root for live views |
-| `let view` | No (`E0502`) | No (`E0520`) | Stable pinned mutable origin (`let mut`; `E0531`, `E0543`) | Pinned live view; non-owning observation |
+| `let view` | No (`E0502`) | No (`E0520`) | Stable pinned mutable origins, directly or in an eligible observation wrapper (`E0531`, `E0543`) | Pinned live view; non-owning observation |
 | `var` | Yes | No (`E0520`) | Primitive scalar value or read-only/immutable reference | Reassignable slot; referenced data remains read-only |
 | `var mut` | Yes | Granted | Heap reference allocation with write authority (`E0520`); not scalar (`E0402`) | Fully mutable variable; slot and interior mutable |
-| `var view` | Yes | No (`E0520`) | Stable pinned mutable origin (`let mut`; `E0531`, `E0543`) | Reassignable live view cursor; non-owning observation |
+| `var view` | Yes | No (`E0520`) | Stable pinned mutable origins, directly or in an eligible observation wrapper (`E0531`, `E0543`) | Reassignable live view cursor; non-owning observation |
 
 - **Authority Use (`E0527`)**: A mutable binding/parameter must exercise its write or reassignment authority on a statically possible path (`var` and `var view` require slot reassignment; `var mut` requires both slot reassignment and interior writes).
 
@@ -1580,6 +1580,7 @@ type Document = { mut title: str }
 let doc1 = Document.{ title: "Doc 1" }
 let doc2 = Document.{ title: "Doc 2" }
 let mut draft = clone(doc1)
+draft.title = "Draft"
 
 -- 1. let: pinned immutable binding
 let immutable_doc = doc1
@@ -1587,7 +1588,7 @@ let immutable_doc = doc1
 -- immutable_doc = doc2                 -- Error [E0501]: cannot reassign immutable binding
 
 -- 2. let mut: pinned mutable handle
-let mut pinned_draft = draft
+let mut pinned_draft = ^mut draft
 pinned_draft.title = "Revised"          -- OK: in-place interior write permitted
 -- pinned_draft = clone(doc2)           -- Error [E0502]: pinned handle cannot be rebound
 
@@ -1611,9 +1612,10 @@ active_draft.title = "Active 2"         -- OK: in-place write on new target perm
 -- 6. var view: reassignable live view cursor
 var view cursor = pinned_draft
 assert(cursor.title == "Revised")
-cursor = clone(doc2)                    -- Error [E0543]: new initializer cannot bind to view
+-- cursor = clone(doc2)                 -- Error [E0543]: independent new data cannot bind to view
 -- cursor = selected_doc                -- Error [E0531]: reassignable var slot is not a pinned origin
 let mut target_draft = clone(doc2)
+target_draft.title = "Selected"
 cursor = target_draft                   -- OK: cursor rebound to another pinned mutable origin
 -- cursor.title = "Hacked"              -- Error [E0520]: view cursor grants no write authority
 ```
@@ -1807,17 +1809,18 @@ VarViewDecl ::= [ "pub" ] "var" "view" Pattern [ ":" TypeExpression ] "=" Expres
 ```
 
 #### Normative Rules for Live Views
-- **Target Invariant (`E0531`, `E0543`, `E0402`)**: Must bind to a stable pinned mutable origin (`let mut`). Immutable targets and `var`/`var mut` slots rejected (`E0531`). New initializers and range indexing expressions rejected (`E0543`). Value types rejected (`E0402`).
+- **Target Invariant (`E0531`, `E0402`)**: A reference or callable view must observe at least one live origin rooted in a stable pinned mutable binding (`let mut`). Projections, existing views, and verified calls may preserve this origin evidence. Immutable reference/callable targets and paths supplied through `var`/`var mut` slots are rejected (`E0531`); forwarding or wrapping cannot repair an ineligible source. Value-type targets are rejected (`E0402`).
+- **Observation Wrappers (`E0531`, `E0543`)**: New passive aggregates and observer closures may package eligible live origins with immutable data. Every live constituent and every captured live source must satisfy the target invariant; immutable constituents and captures need no live origin. The wrapper and its access paths grant no write authority. This permits `let view packet = .{ item: identity(source) }` and `let view read = \-> observed.count`. An independent fresh allocation, a clone result, or a new writable closure environment cannot supply a live origin merely by being received as a view (`E0543`). Receiving a range indexing result as a view is also `E0543`; forwarding it through calls or wrappers cannot supply its missing pinned origin. A separate lawful `let mut` binding may establish a pinned origin for newly constructed data, including a slice array; a later view then observes that binding's object, not the slice's source array.
 - **Authority (`E0520`, `E0601`)**: Zero interior write authority; upgrade via `mut`/`^mut` rejected (`E0520`). Live views cannot cross concurrency task boundaries (`E0601`).
-- **GC Preservation**: Retains the heap object reference at binding time, not a reactive path; container slot replacements leave the view safely observing the original heap object via GC root tracking.
+- **GC Preservation**: Evaluate the initializer once and retain its references, including an observation wrapper's stored references or captured bindings. A projected reference retains the heap object selected at binding time, not a reactive path; container slot replacements leave that view safely observing the original heap object via GC root tracking. An observer closure evaluates its body on invocation under the usual capture rules.
 - **Pinned vs. Reassignable (`let view` vs `var view`)**:
   - `let view`: Pinned slot; identifier cannot be rebound (`E0502`).
-  - `var view`: Reassignable cursor; identifier can be rebound to another pinned mutable origin (`let mut`); must exercise reassignment on a statically possible path (`E0527`).
+  - `var view`: Reassignable cursor; each initializer or replacement must satisfy the same target and observation-wrapper rules; must exercise reassignment on a statically possible path (`E0527`).
 
 ```ril
 type Cell = { mut count: int }
 let mut cell1 = Cell.{ count: 1 }
-let mut cell2 = Cell.{ count: 2 }
+let mut cell2 = Cell.{ count: 0 }
 
 -- Pinned live view:
 let view observed = cell1
@@ -1828,19 +1831,21 @@ assert(read_count() == 5)
 -- observed = cell2                     -- Error [E0502]: cannot reassign pinned view handle
 -- let bad_reader = \-> observed.count  -- Error [E0535]: the captured live origin is not immutable
 -- mutate(mut observed)                -- Error [E0520]: a view cannot supply mutable authority
--- let view bad_immut = .{ val: 1 }      -- Error [E0531]: target of view must be a pinned mutable origin
--- let view bad_new = Cell.{ count: 0 } -- Error [E0543]: new initializers cannot bind directly to view
+let immutable = Cell.{ count: 1 }
+-- let view bad_immut = immutable      -- Error [E0531]: immutable data has no eligible live origin
+-- let view bad_new = Cell.{ count: 0 } -- Error [E0543]: independent new data is not a live origin
 let snapshot = clone_immut(observed)   -- OK: independent snapshot, not a live alias
 
 -- Reassignable live view cursor:
 var view cursor = cell1
 assert(cursor.count == 5)
+cell2.count = 2                        -- Updates remain visible when the cursor selects cell2
 cursor = cell2                         -- OK: reassigning view cursor to another pinned origin
 assert(cursor.count == 2)
 -- cursor.count = 20                   -- Error [E0520]: view cursor grants no interior write authority
 -- var mut reassignable = Cell.{ count: 0 }
 -- cursor = reassignable               -- Error [E0531]: a var slot is not a pinned view origin
--- cursor = Cell.{ count: 99 }         -- Error [E0543]: new initializers cannot bind directly to view
+-- cursor = Cell.{ count: 99 }         -- Error [E0543]: independent new data is not a live origin
 
 -- Single evaluation and GC root preservation:
 type Parent = { mut child: Cell }
@@ -1857,8 +1862,9 @@ tasks[0] = TaskStatus::Finished(42)     -- Slot 0 is updated; 'v' safely keeps t
 -- Pattern-level view destructuring:
 type NodePair = { mut left: Cell, mut right: Cell }
 let mut pair = NodePair.{ left: Cell.{ count: 10 }, right: Cell.{ count: 20 } }
+pair.left.count += 1
 let view .{ left: v_left, right: v_right } = pair
-assert(v_left.count == 10 && v_right.count == 20)
+assert(v_left.count == 11 && v_right.count == 20)
 ```
 
 ### Type Declarations and Opaque Types
@@ -2388,7 +2394,8 @@ assert(len(source) == 4 && len(sub) == 2)
 
 -- 2. Reference elements are NOT cloned (references shallow-copied):
 type Cell = { mut count: int }
-let mut cells: []mut Cell = [mut Cell.{ count: 1 }, mut Cell.{ count: 2 }]
+let mut cells: []Cell = [Cell.{ count: 1 }, Cell.{ count: 2 }]
+cells[1].count += 1
 let mut sub_cells = ^mut cells[0..1]  -- OK: '^mut' acknowledges duplicated writable paths
 sub_cells[0].count = 42
 assert(cells[0].count == 42)          -- Reference NOT cloned: points to same heap Cell!
@@ -2408,7 +2415,7 @@ assert(s[0..len(s)] == s)             -- Coordinate alignment ensures safe full 
 
 let b: bytes = b"RIFF\x00\x01"
 let b_sub: bytes = b[0..4]            -- b"RIFF" (byte sub-sequence)
-let view b_view: []u8 = b             -- OK: O(1) zero-copy view coercion
+-- let view b_view = b                -- Error [E0402]: bytes is an immutable value type
 ```
 
 - **New Array Allocation via Range Indexing**: Range indexing (`arr[a..b]`, `arr[a..=b]`, `arr[a..]`, `arr[..b]`, `arr[..]`) always allocates and evaluates to an independent, new dynamic array of static type **`new []T`** (or new `str` / `bytes`). The array container itself is newly allocated; structural mutations (resizing, adding, or removing elements) on the new array never affect the source array, and vice versa.
@@ -2421,7 +2428,8 @@ let view b_view: []u8 = b             -- OK: O(1) zero-copy view coercion
 - **Primitive Sub-Sequences**:
   - `str[a..b]` and `str[a..=b]` evaluate to an independent `str` based on Unicode scalar (code point) indices ($0 \le a \le b \le \text{scalar\_len}$). Range indexing and string length share the same Unicode scalar coordinate system; `s[0..len(s)]` safely selects the entire text.
   - `bytes[a..b]` and `bytes[a..=b]` evaluate to an independent `bytes` byte sub-sequence ($0 \le a \le b \le \text{byte\_len}$).
-- **Observation via `view`**: Non-owning inspection of an entire array without copying is achieved by binding directly to the pinned mutable array handle via `view []T` (`let view observer = source`). Modifying an array structurally (resizing, adding, or removing elements) while actively iterating over it or while a live array view is retained is statically rejected under `E0526` and `E0537`.
+- **Observation via `view`**: Non-owning inspection of an entire array without copying is achieved by binding directly to the pinned mutable array handle (`let view observer = source`). Structural mutation during active iteration is `E0526`; structural mutation while a live array view may still be used is `E0537`. The latter restriction ends after the last possible use of all derived views and observer environments; inactive aliases do not extend it merely to lexical scope exit. Element replacement remains allowed outside an overlapping invocation and is observed through the view.
+- **Byte Data**: `bytes` remains immutable value data, with no implicit conversion to a live `[]u8` view. Inspect it directly, or use `Bytes::to_array` for an independent array under the standard-library contract.
 
 ### Pipeline Operators
 
@@ -2607,6 +2615,8 @@ StatementSequence   ::= Statement { Separator Statement } [ Separator ]
 Statement           ::= LetDecl
                       | LetMutDecl
                       | VarDecl
+                      | VarMutDecl
+                      | VarViewDecl
                       | ScopedDecl
                       | LetViewDecl
                       | WithStatement
@@ -3849,10 +3859,14 @@ assert(pair(a: 10, 20) == (10, 20))
 -- pair(10, a: 20)                     -- Error [E0325]: a is already bound
 ```
 
-- Defaults have no residual effects or state obligations. Mutable parameters cannot have defaults (`E0404`).
+- Named and anonymous function parameters use the same default evaluation, scope, argument-binding, and purity rules. Defaults have no residual effects or state obligations. Mutable parameters cannot have defaults (`E0404`).
 - Explicit arguments evaluate in written left-to-right order; omitted defaults follow in parameter order. A default may use earlier parameters, not itself or later parameters.
 - Bind arguments in written order: a positional argument selects the first unbound parameter in declaration order; a named argument selects its named parameter. Selecting an already bound parameter is `E0325`. Binding selection does not reorder evaluation.
 - Function generic defaults are prohibited (`E0317`).
+
+Defaults execute as argument preparation in the caller's activation, before callee entry. Name resolution still uses the function's declaration scope and the already bound, read-only earlier arguments; this execution placement neither captures caller-local names nor grants writes. Each omitted default is evaluated anew. Environments and retained handlers constructed there belong to that preparation in the caller, with complete provenance. A callee merely returning such a prepared argument forwards an existing environment; it does not thereby require `&capture`. A caller that publishes the new environment beyond its own activation must account for `&capture` and any sharing or escape obligations under the ordinary rules. This accounting does not permit residual effects or state access in a default.
+
+Preparation introduces no additional callable frame or entry charge. Its calls, loops, handler entries, and resumptions remain subject to all already active finite-evaluation budgets; callee entry follows preparation. This placement changes neither lexical binding ownership nor actual origins, permissions, or lifetime restrictions, and cannot extend a temporary mutable authority. The [termination and `halt` checks](#termination-and-halt-contracts) still include the adopted defaults.
 
 An unknown parameter label is `E0339`; a non-callable callee is `E0338`. Missing or excess ordinary arguments retain `E0314`, after accounting for supplied names and defaults. Nullary variant parentheses retain the specific `E0353`. These diagnostics introduce no new restriction on the relative order of positional and named arguments.
 
@@ -3896,7 +3910,7 @@ assert(unnamed(2) == 2)
 
 | Callable use | Labels and defaults |
 | :--- | :--- |
-| Direct named call / unannotated value alias | Preserve that declaration's labels and defaults |
+| Direct named call / anonymous callable / unannotated value alias | Preserve that function's labels, defaults, and lexical default environment |
 | Callable-type ascription or typed parameter/field/element/return position | Use the destination signature's labels by position; no source defaults are imported |
 | Unnamed type parameter position | Positional calls only; a supplied label is `E0339` |
 | Callable alternatives | Retain a label only when every alternative has it at that position; retain a default only when every alternative preserves the same declaration's default and environment |
@@ -3909,7 +3923,7 @@ Callable types admit no default-expression syntax. An ascription may rename labe
 ```ebnf
 AnonFnExpr    ::= "\" [ AnonParams ] "->" [ EffectAnnot ] [ StateAnnot ] ( Expression | Block )
 AnonParams    ::= AnonParam { "," AnonParam } [ "," ]
-AnonParam     ::= [ ParameterMode ] Identifier [ ":" TypeExpression ]
+AnonParam     ::= [ ParameterMode ] Identifier [ ":" TypeExpression ] [ "=" Expression ]
 AccessorExpr  ::= "\" AccessorNav AccessorField { AccessorNav AccessorField }
 AccessorNav   ::= "." | "?."
 AccessorField ::= Identifier | TupleIndex
@@ -4015,7 +4029,7 @@ assert(step() == 3)                   -- Both authorities still reach the same c
 - **Definitions (`E0534`)**: Named definitions cannot replace direct source groups with standalone `&closure`. Parameter/return callable types may use it; anonymous captures remain inferred and explicit annotations remain checked.
 - **Creation**: New environments surviving the enclosing callable's return require `&capture`, including those nested in returned aggregates. Forwarding existing environments or using call-local ones does not.
 - Anonymous functions capture free value bindings, including module bindings. Module-level named functions use declared external access; escaping block-local functions retain their required lexical environments.
-- **Binding Choice**: A immutable environment can be bound with `let`. An environment that only observes live pinned roots can be bound with `let view`. A persistent mutable environment requires a writable handle. These are environment facts, not consequences of the visible `&closure` spelling.
+- **Binding Choice**: An immutable environment can be bound with `let`. An environment that only observes live pinned roots can be bound with `let view` under the [observation-wrapper rules](#normative-rules-for-live-views). A persistent mutable environment requires a writable handle. These are environment facts, not consequences of the visible `&closure` spelling.
 - **Sharing**: A private cell exposed only through one new closure requires `&capture`. Exposing another authority to that cell also requires `&^mut`.
 
 
