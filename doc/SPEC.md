@@ -1639,8 +1639,8 @@ Binding and origin permissions govern access. Effects govern evaluation and hand
 | `var` | Yes | No (`E0520`) | Deeply immutable; slot may select another value |
 | `let mut` | No (`E0502`) | Yes | Fixed writable target; root for live views |
 | `var mut` | Yes | Yes | Writable target; slot may select another object |
-| `let view` | No (`E0502`) | No (`E0520`) | Fixed live observation |
-| `var view` | Yes | No (`E0520`) | Live observation cursor |
+| `let view` | No (`E0502`) | No (`E0520`) | Fixed read-only reference; may observe live data |
+| `var view` | Yes | No (`E0520`) | Read-only reference cursor; immutable or live target |
 
 ```ril
 type Document = { var title: str }
@@ -1675,10 +1675,11 @@ Direct reception of an ordinary reference object follows this matrix. Every `var
 
 | Source | `let` / `var` | `let mut` / `var mut` | `let view` / `var view` |
 | :--- | :--- | :--- | :--- |
-| Immutable `let` / `var` data | Share immutable object | `E0520` | `E0531` |
+| Immutable `let` / `var` data | Share immutable object | `E0520` | Observe current object |
 | Pinned writable `let mut` | `E0535` | Share via `^mut source` | Observe same object |
 | Reassignable writable `var mut` | `E0535` | Share via `^mut source` | `E0531` |
-| Eligible `let view` / `var view` | `E0535` | `E0520` | Observe currently selected object |
+| View with only proven immutable origins | Share immutable object | `E0520` | Observe current object |
+| View with any possible live origin | `E0535` | `E0520` | Observe current object |
 | Independent fresh allocation / clone | Publish immutable | Receive construction authority | `E0543` |
 
 Fresh publication requires no surviving outside writer. [Writable sharing](#retained-mutable-sharing) also checks internal aliases; wrappers preserve every origin restriction.
@@ -1698,7 +1699,7 @@ LetDecl ::= [ "pub" ] "let" Pattern [ ":" TypeExpression ] "=" Expression [ "els
 
 - **Reassignment (`E0501`)**: Pinned slot; identifier cannot be rebound.
 - **Authority (`E0520`, `E0521`)**: Deeply immutable; no writes permitted through binding or destructured paths.
-- **Origin Requirement (`E0535`)**: Accepts fresh graphs without surviving writers; rejects live views and mutable environments.
+- **Origin Requirement (`E0535`)**: Accepts fresh graphs without surviving writers or proven immutable origins, including through views; rejects views with possible live origins and mutable environments.
 
 ```ril
 type Counter = { var count: int }
@@ -1772,7 +1773,7 @@ VarMutDecl ::= [ "pub" ] "var" "mut" Pattern [ ":" TypeExpression ] "=" Expressi
 
 - **Plain `var` (`E0520`, `E0535`)**: Reassignable slot receiving deeply immutable values/graphs. Live observation requires `var view`; receiving existing writable data without copying fails with `E0535`.
 - **`var mut` (`E0520`, `E0402`)**: Reassignable slot AND interior write authority. Scalars rejected (use plain `var`).
-- **View Origins (`E0531`)**: Neither `var` nor `var mut` can serve as an origin for `let view` or `var view`.
+- **View Origins (`E0531`)**: Plain `var` supplies its current immutable reference; later reassignment does not retarget a view. A `var mut` root cannot supply a persistent live view.
 - **Authority Use (`E0527`)**: Plain `var` must exercise reassignment; `var mut` must exercise both reassignment and interior writes.
 
 ```ril
@@ -1799,8 +1800,8 @@ active_buf = Buffer.{ items: [10, 20] } -- OK: handle reassignment permitted on 
 assert(len(view active_buf.items) == 2)
 -- var mut scalar = 0                  -- Error [E0402]: scalar mutation uses plain var
 
--- 4. Reassignable slot cannot serve as view origin:
--- let view bad_view = active_buf       -- Error [E0531]: a var slot is not a pinned view origin
+-- 4. Reassignable writable root cannot supply a persistent live view:
+-- let view bad_view = active_buf       -- Error [E0531]: var mut is not a pinned mutable root
 
 -- 5. Pattern-level var destructuring:
 var (start_idx, end_idx) = (0, 10)
@@ -1883,24 +1884,50 @@ LetViewDecl ::= [ "pub" ] "let" "view" Pattern [ ":" TypeExpression ] "=" Expres
 VarViewDecl ::= [ "pub" ] "var" "view" Pattern [ ":" TypeExpression ] "=" Expression [ "else" Block ]
 ```
 
+```ril
+type Cell = { var count: int }
+let fallback = Cell.{ count: 0 }
+let view fixed = fallback              -- Immutable reference is a valid target
+let immutable_alias = fixed            -- Proven immutable origin survives view reception
+
+var selected = fallback
+let view saved = selected              -- Select the current object once
+selected = Cell.{ count: 9 }
+assert(saved.count == 0 && selected.count == 9)
+
+let mut live = Cell.{ count: 1 }
+let view chosen = if use_live { live } else { fallback } -- use_live is a bool input
+var view cursor = fallback
+cursor = live
+live.count = 2
+assert(cursor.count == 2 && chosen.count == if use_live { 2 } else { 0 })
+cursor = fallback
+assert(cursor.count == 0 && immutable_alias.count == 0)
+-- let mut bad = ^mut fixed           -- Error [E0520]: immutable-backed views grant no writes
+-- let hidden = chosen                -- Error [E0535]: a possible live origin remains live
+```
+
 #### Normative Rules for Live Views
 
-Persistent views trace every live dependency to pinned `let mut` roots through projections, views, and verified calls.
+`view` grants read-only reference access. Immutable targets stay constant; writable targets remain live. Persistent views trace each origin through projections, views, and verified calls.
 
 | Target / operation | Rule |
 | :--- | :--- |
 | Value-type target | Reject with `E0402`; reading a value member copies its current value |
-| Immutable reference or `var` / `var mut` root | Reject with `E0531` |
-| Independent allocation, clone, or new writable environment | No live origin by itself (`E0543`) |
-| Passive aggregate / observer closure | May combine eligible live origins with immutable data; wrappers cannot repair origins |
+| Immutable reference / existing immutable callable environment | Accept from `let`, ordinary `var`, or a verified result; preserve immutable provenance |
+| Live reference | Require a pinned `let mut` origin; a `var mut` root fails with `E0531` |
+| Branch / cursor / forwarded view | Every possible origin must be immutable or an eligible live origin; preserve all alternatives |
+| Independent allocation, clone, or new writable environment | No established observation origin by itself (`E0543`); publish immutable or bind a lawful writable root first |
+| Passive aggregate / observer closure | May combine existing immutable reference origins, eligible live origins, and immutable values; wrappers cannot repair origins |
 | Interior write or `mut` / `^mut` upgrade | Reject with `E0520` |
-| Task crossing | Reject with `E0601` |
-| Initializer / projection | Evaluate once; keep the selected object alive; member replacement does not retarget it |
+| Ordinary immutable reception | Require every possible origin to be deeply immutable; any possible live origin fails with `E0535` |
+| View handle task crossing | Reject with `E0601` |
+| Initializer / projection | Evaluate once; keep the selected object alive; source-slot or member replacement does not retarget it |
 | Observer closure invocation | Read captures when invoked |
 | `let view` reassignment | Reject with `E0502` |
 | `var view` reassignment | Recheck origins; a reachable reassignment is required (`E0527`) |
 
-[View parameters](#parameter-modes-caller-obligations-and-defaults) also require reference targets but use call-time observation rules.
+The same origin rules apply to view members and reference pattern targets. [View parameters](#parameter-modes-caller-obligations-and-defaults) use call-time observation rules.
 
 ```ril
 type Cell = { var count: int }
@@ -1917,7 +1944,8 @@ assert(read_count() == 6)
 -- let reader = \-> observed.count    -- Error [E0535]: live capture
 -- let mut stolen = ^mut observed     -- Error [E0520]: no permission upgrade
 let immutable = Cell.{ count: 1 }
--- let view bad = immutable           -- Error [E0531]: immutable origin
+let view constant = immutable         -- OK: fixed immutable observation
+assert(constant.count == 1)
 -- let view bad = Cell.{ count: 0 }    -- Error [E0543]: independent new data
 let snapshot = clone(view observed)   -- Independent immutable copy
 
@@ -2494,6 +2522,9 @@ assert(observer[0] == 99)
 -- let view bad_new = source[0..2]    -- Error [E0543]: new array cannot bind to view
 -- let view bad_all = source[..]      -- Error [E0543]: new array cannot bind to view
 source !> Array::push(5)              -- OK: observer's last use has ended
+let snapshot = source[0..2]          -- Publishes an independent immutable array
+let view snapshot_view = snapshot
+assert(snapshot_view[0] == 99)
 let mut copied = source[0..2]
 let view copy_view = copied
 copied[0] = 7
@@ -2514,7 +2545,7 @@ assert(Bytes::at(b, 0) == Some(82u8)) -- The original bytes still start with 'R'
 
 - **Array Result**: Allocate ordinary `[]T` with independent slots and length. Clone value elements; preserve reference identities, aliases, and permissions. Tuples and other heap products are references. Freshness is provenance, not a type qualifier.
 - **Writable Sharing (`E0510`)**: Mark reception of duplicated writable reference paths with `^mut`.
-- **View Target (`E0543`)**: A new range result needs a separate lawful `let mut` binding before it can be observed as a live array origin, including after forwarding.
+- **View Target (`E0543`)**: A fresh range result cannot bind directly to a persistent view. Publish it immutable through `let` or an ordinary parameter, or receive it with a lawful `let mut` binding; a later view observes that established origin. Forwarding preserves whether publication actually occurred.
 - **Bounds**: For length N, a half-open range requires `0 <= lower <= upper <= N`; equal bounds produce an empty array, including at N. Omitted lower bounds mean zero; an omitted upper bound denotes the exclusive end N. A written inclusive upper bound h requires `0 <= lower <= h < N` and selects through h. Negative, reversed, or out-of-range bounds panic; bounds are never clamped. Safe range lookup (`arr?[a..b]`) returns `?[]T` (`None` when out of bounds).
 - **Primitive Sub-Sequences**:
   - `str[a..b]` and `str[a..=b]` evaluate to an independent `str` based on Unicode scalar (code point) indices ($0 \le a \le b \le \text{scalar\_len}$). Range indexing and string length share the same Unicode scalar coordinate system; `s[0..len(s)]` safely selects the entire text.
@@ -3357,11 +3388,12 @@ fn test_contradiction(g: Geometry) {
     }
 }
 
--- Reassignable roots cannot be laundered into pinned views:
+-- A view retains the selected immutable object, not the reassignable slot:
 fn test_aliased_hazard() {
     var raw: ?int = Some(10)
-    -- let view v = raw                        -- Error [E0531]: a var slot is not a pinned view origin
-    raw = None                                -- Exercises the reassignable slot
+    let view selected = raw
+    raw = None
+    assert(selected is Some(10) && raw is None)
 }
 
 -- is reads existing names and narrows the subject without binding payload names:
@@ -3880,7 +3912,7 @@ selected = Cell.{ count: 2 }
 -- let view bad = selected            -- Error [E0531]: no persistent pinned origin
 ```
 
-Call-time views may observe immutable reference data and reference expressions, including current objects reached through reassignable paths. They do not establish a pinned origin for persistent views.
+Call-time views may observe reference expressions, including current objects reached through reassignable paths. They preserve existing immutable or pinned live origins, but cannot establish a pinned mutable root for persistent views.
 
 | Callback declaration | Handle authority |
 | :--- | :--- |
@@ -4176,7 +4208,7 @@ assert(step() == 3)                   -- Both authorities still reach the same c
 - **Definitions (`E0534`)**: Named definitions cannot replace direct source groups with standalone `&closure`. Parameter/return callable types may use it; anonymous captures remain inferred and explicit annotations remain checked.
 - **Creation**: New environments surviving the enclosing callable's return require `&capture`, including those nested in returned aggregates. Forwarding existing environments or using call-local ones does not.
 - Anonymous functions capture free value bindings, including module bindings. Module-level named functions use declared external access; escaping block-local functions retain their required lexical environments.
-- **Binding Choice**: An immutable environment can be bound with `let`. An environment that only observes live pinned roots can be bound with `let view` under the [observation-wrapper rules](#normative-rules-for-live-views). A persistent mutable environment requires a writable handle. These are environment facts, not consequences of the visible `&closure` spelling.
+- **Binding Choice**: An immutable environment can be bound with `let`; an existing immutable environment may also be observed with `view`. Observer environments use `let view` under the [observation-wrapper rules](#normative-rules-for-live-views), preserving immutable and pinned live dependencies. A persistent mutable environment requires a writable handle. These are environment facts, not consequences of the visible `&closure` spelling.
 - **Sharing**: A private cell exposed only through one new closure requires `&capture`. Exposing another authority to that cell also requires `&^mut`.
 
 
@@ -6480,7 +6512,7 @@ This index assigns each code its diagnostic name and points to its defining rule
 | **`E0528`** | [`ReturnMutabilityLaunderingError`](#monotonic-permission-degradation-and-anti-laundering-matrix) |
 | **`E0529`** | [`ExcessiveCapabilityAnnotationError`](#retained-mutable-sharing); [Named Function State Contract References](#named-function-state-contract-references) |
 | **`E0530`** | [`IllegalCapabilityCloneError`](#deep-immutability) |
-| **`E0531`** | [`ImmutableTargetViewError`](#live-view-bindings) |
+| **`E0531`** | [`InvalidViewOriginError`](#live-view-bindings) |
 | **`E0532`** | [`ReassignableScopedResourceError`](#scoped-resource-bindings) |
 | **`E0533`** | [`AliasedNarrowingHazardError`](#flow-sensitive-type-narrowing) |
 | **`E0534`** | [`HazardErasureProhibitedError`](#callable-contracts); [Closures, Factory Signatures, and Lexical Environments](#closures-factory-signatures-and-lexical-environments) |

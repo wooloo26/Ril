@@ -434,32 +434,33 @@ fn example(choose: bool) {
     value !> Array::push(2)
 }
 
--- [pair: view-of-immutable]
+-- [pair: immutable-view-is-read-only]
 -- spec: SPEC#live-view-bindings
 
 -- accept
-type Cell = { mut count: int }
-
-fn example() {
-    let mut value = Cell.{ count: 0 }
-    let view seen = value
-    value.count += 1
-}
-
--- reject
--- Error [E0531]: reject view of immutable
-type Cell = { mut count: int }
+type Cell = { var count: int }
 
 fn example() {
     let value = Cell.{ count: 0 }
     let view seen = value
+    assert(seen.count == 0)
+}
+
+-- reject
+-- Error [E0520]: An immutable-backed view grants no write permission.
+type Cell = { var count: int }
+
+fn example() {
+    let value = Cell.{ count: 0 }
+    let view seen = value
+    seen.count += 1
 }
 
 -- [pair: view-of-reassignable]
 -- spec: SPEC#live-view-bindings
 
 -- accept
-type Cell = { mut count: int }
+type Cell = { var count: int }
 
 fn example() {
     let mut value = Cell.{ count: 0 }
@@ -468,8 +469,8 @@ fn example() {
 }
 
 -- reject
--- Error [E0531]: reject view of reassignable
-type Cell = { mut count: int }
+-- Error [E0531]: A reassignable writable root is not a persistent live view origin.
+type Cell = { var count: int }
 
 fn example() {
     var mut value = Cell.{ count: 0 }

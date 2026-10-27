@@ -441,7 +441,7 @@ Adapters retain read-only sources/callbacks; their latent obligations remain att
 | `indexed` state < 0 | Panic before element access |
 | `indexed` state < length | `Yielded(items[state], state + 1)` |
 | `indexed` state >= length | `Done` |
-| Retained items | Immutable data or a lawful live view with its stability obligations |
+| Retained items | Immutable data or a lawful view preserving immutable/live origins and stability obligations |
 
 Adapter construction invokes no callback. Pulls use the [common invocation contract](#interfaces-behavior-and-examples), with read-only step/callback handles only; mutable state may be an explicit successor S. No mutable callback is retained, and `for` gains no user-defined protocol. Retaining an affine `resume` is `E0611`.
 

@@ -216,17 +216,19 @@ pub fn test_range_result_has_independent_slots() {
     assert(selected == [2, 3] && items == [1, 9, 3, 4])
 }
 
--- [case: reject-forwarded-range-result-view, check-fail]
+-- [case: published-range-result-view, run-pass]
 -- spec: SPEC#range-and-sequence-indexing-expressions
 -- spec: SPEC#normative-rules-for-live-views
 -- companion: range-result-has-independent-slots
--- Error [E0543]: A read-only call cannot relabel an ordinary array result as a live view.
 fn identity(items: []int) -> []int { items }
 
-fn invalid() {
+pub fn test_published_range_result_view() {
     let mut items = [1, 2]
     items[0] = 9
-    let view observed = identity(items[..])
+    let view observed = identity(items[..]) -- Ordinary parameter publishes the independent copy
+    items[0] = 7
+    items !> Array::push(3)
+    assert(observed == [9, 2] && items == [7, 2, 3])
 }
 
 -- [case: range-result-preserves-reference-sharing, run-pass]

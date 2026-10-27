@@ -1,0 +1,213 @@
+-- [case: immutable-reference-views, run-pass]
+-- spec: SPEC#normative-rules-for-live-views
+-- spec: SPEC#immutable-bindings
+type Cell = { var count: int }
+
+pub fn test_immutable_reference_views() {
+    let source = Cell.{ count: 1 }
+    let view observed = source
+    let view alias = observed
+    let immutable_alias = alias
+    assert(observed.count == 1 && immutable_alias.count == 1)
+}
+
+-- [case: immutable-var-view-selects-current-object, run-pass]
+-- spec: SPEC#normative-rules-for-reassignable-variables
+-- spec: SPEC#normative-rules-for-live-views
+type Cell = { var count: int }
+
+pub fn test_immutable_var_view_selects_current_object() {
+    var selected = Cell.{ count: 1 }
+    let view saved = selected
+    var view cursor = selected
+    selected = Cell.{ count: 2 }
+    assert(saved.count == 1 && cursor.count == 1)
+    cursor = selected
+    assert(cursor.count == 2 && saved.count == 1)
+}
+
+-- [case: view-cursor-switches-immutable-and-live, run-pass]
+-- spec: SPEC#binding-permissions-and-storage-matrix
+type Cell = { var count: int }
+
+pub fn test_view_cursor_switches_immutable_and_live() {
+    let fallback = Cell.{ count: 0 }
+    let mut live = Cell.{ count: 1 }
+    var view cursor = fallback
+    let view initial = cursor
+    cursor = live
+    live.count = 2
+    assert(cursor.count == 2 && initial.count == 0)
+    cursor = fallback
+    assert(cursor.count == 0)
+}
+
+-- [case: fixed-view-selects-immutable-or-live, run-pass]
+-- spec: SPEC#complete-provenance-and-optional-annotations
+-- spec: SPEC#normative-rules-for-live-views
+type Cell = { var count: int }
+
+fn check_choice(use_live: bool) {
+    let fallback = Cell.{ count: 0 }
+    let mut live = Cell.{ count: 1 }
+    let view selected = if use_live { live } else { fallback }
+    live.count = 2
+    assert(selected.count == if use_live { 2 } else { 0 })
+}
+
+pub fn test_fixed_view_selects_immutable_or_live() {
+    check_choice(false)
+    check_choice(true)
+}
+
+-- [case: immutable-view-members-and-patterns, run-pass]
+-- spec: SPEC#record-types-and-row-polymorphism
+-- spec: SPEC#normative-rules-for-live-views
+type Cell = { var count: int }
+type Pair = { view left: Cell, var view right: Cell }
+
+pub fn test_immutable_view_members_and_patterns() {
+    let first = Cell.{ count: 1 }
+    let second = Cell.{ count: 2 }
+    let mut pair = Pair.{ left: first, right: first }
+    let view .{ left: saved_left, right: saved_right } = pair
+    pair.right = second
+    assert(saved_left.count == 1 && saved_right.count == 1 && pair.right.count == 2)
+}
+
+-- [case: immutable-view-origin-through-call, run-pass]
+-- spec: SPEC#complete-provenance-and-optional-annotations
+type Cell = { var count: int }
+fn forward(view cell: Cell) -> Cell { cell }
+
+pub fn test_immutable_view_origin_through_call() {
+    let source = Cell.{ count: 1 }
+    let view observed = forward(view source)
+    assert(observed.count == 1)
+}
+
+-- [case: immutable-observation-wrappers, run-pass]
+-- spec: SPEC#normative-rules-for-live-views
+type Cell = { var count: int }
+
+pub fn test_immutable_observation_wrappers() {
+    let source = Cell.{ count: 1 }
+    let view packet = .{ view item: source, offset: 1 }
+    let view read_count = \-> packet.item.count + packet.offset
+    assert(read_count() == 2)
+}
+
+-- [case: published-clone-view, run-pass]
+-- spec: SPEC#deep-immutability
+-- spec: SPEC#normative-rules-for-live-views
+type Cell = { var count: int }
+
+pub fn test_published_clone_view() {
+    let mut live = Cell.{ count: 1 }
+    let snapshot = clone(view live)
+    let view observed = snapshot
+    live.count = 2
+    assert(observed.count == 1 && live.count == 2)
+}
+
+-- [case: existing-immutable-environment-view, run-pass]
+-- spec: SPEC#closures-factory-signatures-and-lexical-environments
+type Reader = fn() -> int &closure
+fn make_reader(value: int) -> Reader &capture { \-> value }
+
+pub fn test_existing_immutable_environment_view() {
+    let reader = make_reader(7)
+    let view observed = reader
+    assert(observed() == 7)
+}
+
+-- [case: reject-immutable-view-write-upgrade, check-fail]
+-- spec: SPEC#normative-rules-for-live-views
+-- companion: immutable-reference-views
+-- Error [E0520]: An immutable-backed view cannot supply writable authority.
+type Cell = { var count: int }
+
+fn invalid() {
+    let source = Cell.{ count: 0 }
+    let view observed = source
+    let mut stolen = ^mut observed
+    stolen.count += 1
+}
+
+-- [case: reject-immutable-view-reassignment, check-fail]
+-- spec: SPEC#normative-rules-for-live-views
+-- companion: immutable-var-view-selects-current-object
+-- Error [E0502]: A let view slot stays pinned regardless of target immutability.
+type Cell = { var count: int }
+
+fn invalid() {
+    let first = Cell.{ count: 1 }
+    let second = Cell.{ count: 2 }
+    let view observed = first
+    observed = second
+}
+
+-- [case: reject-mixed-view-immutable-publication, check-fail]
+-- spec: SPEC#complete-provenance-and-optional-annotations
+-- companion: fixed-view-selects-immutable-or-live
+-- Error [E0535]: Every possible origin must be immutable at ordinary reception.
+type Cell = { var count: int }
+
+fn invalid(use_live: bool) {
+    let fallback = Cell.{ count: 0 }
+    let mut live = Cell.{ count: 1 }
+    live.count += 1
+    let view selected = if use_live { live } else { fallback }
+    let hidden = selected
+}
+
+-- [case: reject-live-cursor-immutable-publication, check-fail]
+-- spec: SPEC#immutable-bindings
+-- companion: view-cursor-switches-immutable-and-live
+-- Error [E0535]: Starting with immutable data cannot hide a later live target.
+type Cell = { var count: int }
+
+fn invalid() {
+    let fallback = Cell.{ count: 0 }
+    let mut live = Cell.{ count: 1 }
+    live.count += 1
+    var view cursor = fallback
+    cursor = live
+    let hidden = cursor
+}
+
+-- [case: reject-mixed-view-reassignable-writable-origin, check-fail]
+-- spec: SPEC#normative-rules-for-live-views
+-- companion: fixed-view-selects-immutable-or-live
+-- Error [E0531]: An immutable alternative cannot repair a var mut live origin.
+type Cell = { var count: int }
+
+fn invalid(use_live: bool) {
+    let fallback = Cell.{ count: 0 }
+    var mut live = Cell.{ count: 1 }
+    live.count += 1
+    live = Cell.{ count: 2 }
+    let view selected = if use_live { live } else { fallback }
+}
+
+-- [case: reject-unused-immutable-view-cursor, check-fail]
+-- spec: SPEC#binding-permissions-and-storage-matrix
+-- Error [E0527]: An immutable initial target does not waive cursor reassignment.
+type Cell = { var count: int }
+
+fn invalid() {
+    let source = Cell.{ count: 0 }
+    var view cursor = source
+    assert(cursor.count == 0)
+}
+
+-- [case: reject-direct-clone-view, check-fail]
+-- spec: SPEC#normative-rules-for-live-views
+-- companion: published-clone-view
+-- Error [E0543]: A fresh clone must first establish an immutable or pinned live origin.
+type Cell = { var count: int }
+
+fn invalid() {
+    let source = Cell.{ count: 0 }
+    let view observed = clone(source)
+}

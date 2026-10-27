@@ -1,13 +1,13 @@
 -- [case: observation-wrappers-preserve-live-origins, run-pass]
 -- spec: SPEC#normative-rules-for-live-views
 -- spec: SPEC#complete-provenance-and-optional-annotations
-type Cell = { mut count: int }
-fn identity(cell: Cell) -> Cell { cell }
+type Cell = { var count: int }
+fn identity(view cell: Cell) -> Cell { cell }
 
 pub fn test_observation_wrappers_preserve_live_origins() {
     let mut source = Cell.{ count: 1 }
-    let view packet = .{ item: identity(source) }
-    let view observed = identity(packet.item)
+    let view packet = .{ view item: identity(view source) }
+    let view observed = identity(view packet.item)
     let offset = 1
     let view read_count = \-> observed.count + offset
     source.count = 5
@@ -17,7 +17,7 @@ pub fn test_observation_wrappers_preserve_live_origins() {
 -- [case: view-cursor-selects-pinned-origins, run-pass]
 -- spec: SPEC#binding-permissions-and-storage-matrix
 -- spec: SPEC#normative-rules-for-live-views
-type Cell = { mut count: int }
+type Cell = { var count: int }
 
 pub fn test_view_cursor_selects_pinned_origins() {
     let mut first = Cell.{ count: 0 }
@@ -33,7 +33,7 @@ pub fn test_view_cursor_selects_pinned_origins() {
 -- [case: mutable-tuple-bindings, run-pass]
 -- spec: SPEC#block-expressions-tail-values-and-hoisted-declarations
 -- spec: SPEC#reassignable-mutable-variables
-type Cell = { mut count: int }
+type Cell = { var count: int }
 
 pub fn test_mutable_tuple_bindings() {
     var mut (left, right) = (Cell.{ count: 0 }, Cell.{ count: 1 })
@@ -47,21 +47,21 @@ pub fn test_mutable_tuple_bindings() {
 -- [case: reject-wrapped-reassignable-origin, check-fail]
 -- spec: SPEC#normative-rules-for-live-views
 -- companion: observation-wrappers-preserve-live-origins
--- Error [E0531]: A wrapper cannot turn a reassignable source into a pinned live origin.
-type Cell = { mut count: int }
+-- Error [E0531]: A wrapper cannot turn a var mut source into a pinned live origin.
+type Cell = { var count: int }
 
 fn invalid() {
     var mut source = Cell.{ count: 0 }
     source.count += 1
     source = Cell.{ count: 2 }
-    let view packet = .{ item: source }
+    let view packet = .{ view item: source }
 }
 
 -- [case: reject-new-data-view, check-fail]
 -- spec: SPEC#normative-rules-for-live-views
 -- companion: observation-wrappers-preserve-live-origins
--- Error [E0543]: An independent allocation supplies no existing live origin.
-type Cell = { mut count: int }
+-- Error [E0543]: A direct allocation has not established an immutable or pinned live origin.
+type Cell = { var count: int }
 
 fn invalid() {
     let view observed = Cell.{ count: 0 }
