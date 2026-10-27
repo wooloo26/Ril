@@ -782,7 +782,7 @@ Reference types are allocated on the managed garbage-collected heap: arrays (`[]
 
 ```ril
 -- Reference types: shared heap aliasing:
-type Node = { mut val: int }
+type Node = { var val: int }
 let mut n1 = Node.{ val: 10 }
 let view n2 = n1                       -- 'n2' aliases the exact same heap record as a live view
 n1.val = 99                            -- Mutate through 'n1'
@@ -794,7 +794,7 @@ assert(n2.val == 99)                   -- OK: 'n2' observes mutation due to refe
 
 ### Record Types and Row Polymorphism
 
-- Field `mut` permits replacing that slot. A projected reference retains its stored origin and permissions, limited by the permissions of the entire access path. Slot mutability neither upgrades a child reference nor makes its data immutable.
+- Record fields and tuple components use the same binding modes. Omitted mode means `let`; an explicit `let` member modifier is not admitted. `var` permits slot replacement, `mut` permits interior/environment writes, and `view` permits live observation. Every access also requires the enclosing path's permission.
 - Named rows contain the fields not explicitly declared. Overlapping labels between an explicit field and its named row are `E0212`.
 
 Records have structural named fields. Closed records reject width subtyping; open records use declared or structurally bound `..R`, never anonymous `..`.
@@ -818,12 +818,43 @@ Named row tail polymorphism (`..R`) allows generic functions to accept and prese
 
 ```ebnf
 RecordType       ::= "{" [ RecordFieldList ] "}"
-RecordField      ::= [ "mut" ] FieldLabel ":" TypeExpression
+MemberMode       ::= "var" [ "mut" | "view" ] | "mut" | "view"
+RecordField      ::= [ MemberMode ] FieldLabel ":" TypeExpression
 TypeProjection ::= PrimaryType "." ( Identifier | TupleIndex | "(" Expression ")" )
 TupleIndex     ::= Digit { Digit }
 RecordFieldList  ::= ".." PascalCase | RecordField { "," RecordField } [ "," [ ".." PascalCase ] ]
 FieldLabel       ::= SnakeCase | UnderscoreName | PascalCase
 ```
+
+```ril
+type Cell = { var count: int }
+type State = {
+    id: int,                         -- Implicit let: fixed, deeply immutable
+    var title: str,                  -- Replaceable immutable value
+    mut items: []int,                 -- Fixed writable array
+    var mut current: Cell,            -- Replaceable writable reference
+    view source: Cell,               -- Fixed live observation
+    var view cursor: Cell,           -- Replaceable live observation
+}
+let mut first = Cell.{ count: 0 }
+let mut second = Cell.{ count: 0 }
+first.count = 1; second.count = 2
+let mut state = State.{
+    id: 7, title: "draft", items: [1], current: Cell.{ count: 0 },
+    source: first, cursor: first,
+}
+state.title = "ready"
+state.items !> Array::push(2)
+state.current.count += 1
+state.current = Cell.{ count: 3 }
+state.cursor = second
+assert(state.source.count == 1 && state.cursor.count == 2)
+-- state.id = 8                      -- Error [E0520]: default member is immutable
+-- state.items = []                  -- Error [E0502]: mut pins the member's reference
+-- let hidden = state               -- Error [E0535]: writable/live origins survive
+```
+
+Apply enclosing immutable suppression before checking effective member reception; retain the original declaration schema. Thus `(mut immutable, mut immutable)` is valid under outer `let`, but cannot create writers to those existing objects. Default members require deeply immutable data. Modes bound permission rather than grant it; scalar members use `var`, not `mut`/`var mut` (`E0402`). `E0527` checks executable bindings/parameters, not each declared member. Conflicting immutable/writable aliases are `E0535`; copying must not split aliases to evade this check.
 
 ```ril
 type User = { id: int, name: str }
@@ -866,12 +897,27 @@ Bracket syntax defines arrays (`[]T`) and maps (`[K: V]`); tuples use `(T1, T2)`
 ```ebnf
 ArrayType   ::= "[]" TypeExpression
 MapType     ::= "[" TypeExpression ":" TypeExpression "]"
-TupleType   ::= "(" TypeExpression "," TypeExpression { "," TypeExpression } [ "," ] ")"
-TupleExpr   ::= "(" Expression "," Expression { "," Expression } [ "," ] ")"
+TupleType   ::= "(" TupleMember "," TupleMember { "," TupleMember } [ "," ] ")"
+TupleMember ::= [ MemberMode ] TypeExpression
+TupleExpr   ::= "(" TupleValue "," TupleValue { "," TupleValue } [ "," ] ")"
+TupleValue  ::= [ MemberMode ] Expression
 ArrayExpr   ::= "[" [ Expression { "," Expression } [ "," ] ] "]"
 MapExpr     ::= "[" ":" "]" | "[" MapEntry { "," MapEntry } [ "," ] "]"
 MapEntry    ::= Expression ":" Expression
 ```
+
+```ril
+let mut pair: (var int, mut []int) = (0, [1])
+pair.0 = 1
+pair.1 !> Array::push(2)
+-- pair.1 = []                       -- Error [E0502]: fixed mutable member
+let frozen = clone(view pair)
+-- frozen.0 = 2                      -- Error [E0520]: outer let removes member writes
+-- frozen.1 !> Array::push(3)         -- Error [E0520]: removal is recursive
+assert(frozen.0 == 1 && frozen.1 == [1, 2])
+```
+
+Typed product constructors inherit declared member modes; untyped literals default omitted modes to `let`. Explicit literal modes must match the expected schema (`E0301`). Arrays/maps keep their element-storage contracts; these member declarations do not introduce new collection types.
 
 ```ril
 -- Linear Array ([]T):
@@ -914,7 +960,7 @@ SumTypeDecl         ::= [ "pub" ] "type" Identifier [ GenericParams ] [ WhereCla
                         "{" VariantDecl { "," VariantDecl } [ "," ] "}"
 VariantDecl      ::= PascalCase [ GenericParams ] [ VariantPayload ] [ "->" TypeExpression ]
 VariantFields       ::= VariantField { "," VariantField } [ "," ]
-VariantField        ::= [ Identifier ":" ] TypeExpression
+VariantField        ::= [ MemberMode ] [ Identifier ":" ] TypeExpression
 RecordVariantFields ::= RecordField { "," RecordField } [ "," ]
 VariantDeclList  ::= VariantDecl { "," VariantDecl } [ "," ]
 VariantPayload   ::= "(" [ VariantFields ] ")" | "{" [ RecordFieldList ] "}"
@@ -974,6 +1020,8 @@ Substitution must satisfy every occurrence of a recovered parameter and its decl
 
 Data constructors (algebraic sum type variants and nominal type wrappers) establish a definitional equivalence between comma-separated multi-field declarations and single-tuple payloads:
 $$\text{Variant}(T_1, T_2, \dots, T_n) \equiv \text{Variant}((T_1, T_2, \dots, T_n)) \quad (n \ge 0)$$
+
+For multiple payload members this equivalence preserves every member mode. A single unnamed payload forwards its value's checked reception/retention contract; it does not add a default immutable member around that payload. Named and tuple payload members retain their own declared modes.
 
 Ril strictly possesses no 1-element tuples `(T,)` (`(x)` denotes parenthesized grouping; tuples require $\ge 2$ elements; `()` denotes unit). Constructor arity $n$ in expressions and patterns is strictly deterministic:
 - **Scope Restriction (Strict Constructor Boundary)**: Equivalence is confined strictly to Data Constructors. Ordinary functions (`fn`), closures, and methods maintain strictly separate parameter lists (`E0314` for an arity mismatch).
@@ -1088,11 +1136,11 @@ let make_user_id: fn(int) -> UserId = UserId -- OK: constructor function value
 ### Deep Immutability
 
 ```ril
-type Cell = { mut count: int }
+type Cell = { var count: int }
 let mut source = Cell.{ count: 1 }
 let view observed = source
-let mut independent = clone(observed)
-let immutable: Immut<Cell> = clone(observed) -- let publishes the fresh copy as immutable
+let mut independent = clone(view observed)
+let immutable = clone(view observed)   -- let recursively removes all member permissions
 independent.count = 2
 source.count = 3
 assert(observed.count == 3)
@@ -1101,41 +1149,34 @@ assert(immutable.count == 1)
 -- let mut bad = immutable                -- Error [E0520]: immutable data cannot acquire write permission
 ```
 
-- **Immutable Data**: `let` guarantees an immutable ordinary reachable graph, with sharing allowed. `Immut<T>` records this guarantee in the type; `Immut<Immut<T>> = Immut<T>`. Field declarations remain unchanged.
-- **Ordinary Clone**: `clone` separates the copy's writable storage from its source, preserving internal aliases and cycles. The receiver may choose immutable publication, read-only `var`, writable `let mut`/`var mut`, or a declared [fresh-value storage input](#fresh-values-in-storage-calls). A writable copy with possible internal writable aliases requires the local `^mut` sharing marker; distinct paths inside the copy are not necessarily disjoint.
-| Operation | Input | Result before binding |
-| :--- | :--- | :--- |
-| `clone` | `T` or an eligible view | Fresh `T`; receiving binding selects permissions |
-| `clone` | `Immut<T>` | Fresh `T`; explicit nested `Immut<U>` fields stay immutable |
-
-Cloning preserves field declarations. Immutable publication belongs to `let`; an `Immut<T>` annotation records its proven result without another copy.
+- **Default Immutability**: Plain `let`, plain `var` data, unmodified parameters, and default members receive deeply immutable ordinary data. Plain `var` may replace its slot; it does not permit live or writable referenced data.
+- **Recursive Permission Removal**: Outer `let` removes effective `var`, `mut`, and `view` permissions throughout the ordinary reachable graph. This is idempotent, including cycles; it preserves declaration schemas, nominal/opaque identities, and callable parameter/effect/state contracts. It cannot copy, freeze, consume, or revoke an existing writer. Surviving writable/live origins fail with `E0535`.
+- **Ordinary Clone**: `clone` preserves declaration schemas, aliases, and cycles in an isolated new graph. A lawful writable receiver may activate the new copy's declared writable members; default members remain immutable. Existing source permissions never increase. Internal writable aliases require the local `^mut` marker; conflicting immutable/writable member aliases remain `E0535`.
 - **Copy Isolation**: Ordinary deep copying does not suspend, invoke user callbacks, or permit an overlapping write during the copy. The source is preserved.
 - **Eligibility (`E0530`)**: Check every reachable ordinary constituent. Retained closure environments, scoped resources, tasks, unique receivers, and other non-clonable values cannot be hidden by wrapping or views.
 - Immutable environment-free function values are copyable. Opaque resources use only their explicit contracts.
 
 ```ril
-type Cell = { mut count: int }
+type Cell = { var count: int }
 fn read(cell: Cell) -> int { cell.count }
-fn snapshot(cell: Cell) -> Immut<Cell> {
-    let copied = clone(cell)
+fn read_live(view cell: Cell) -> int { cell.count }
+fn snapshot(view cell: Cell) -> Cell {
+    let copied = clone(view cell)
     copied
 }
 let original = Cell.{ count: 1 }
-let explicit: Immut<Cell> = original
-assert(read(explicit) == 1)
--- let mut upgraded: Cell = explicit   -- Error [E0520]: removing a qualifier does not grant writes
+assert(read(original) == 1)
+-- let mut upgraded = original       -- Error [E0520]: an existing immutable graph stays immutable
 let mut live = Cell.{ count: 1 }
 live.count += 1
-assert(read(live) == 2)                -- Plain parameters accept live read-only access
--- let invalid: Immut<Cell> = live     -- Error [E0535]: an ascription cannot freeze a live graph
+assert(read_live(view live) == 2)
+-- read(live)                        -- Error [E0535]: ordinary parameters require immutable data
+-- let invalid = live                -- Error [E0535]: let cannot freeze a surviving writer
+let copied = snapshot(view live)
+assert(read(copied) == 2)
 ```
 
-| Ascription | Requirement |
-| :--- | :--- |
-| `Immut<T>` to read-only T | Preserve immutable provenance |
-| T to `Immut<T>` | Entire ordinary reachable graph already proven immutable (`E0535` otherwise) |
-
-Ascription never copies, freezes, consumes, grants writes, or makes a resource ordinary data.
+Ascription never grants permissions or makes a resource ordinary data. Bare `-> T` preserves the result's actual construction/alias relation; it is not a new binding. A caller's receiving mode decides whether an eligible fresh result stays writable or is published immutable.
 
 ### Type Identity and Subtyping
 
@@ -1151,33 +1192,33 @@ let get_dog: Getter<Dog> = make_dog       -- OK
 | Type position | Subtyping |
 | :--- | :--- |
 | Closed record | No width subtyping; extra fields require an open row |
-| Record field | Mutable: invariant; read-only: covariant |
+| Record member | Writable/view schemas retain matching modes; immutable reception compares permission-suppressed data shapes. Writable/replaceable data is invariant; immutable data covariant |
 | Callable with identical parameter modes | Parameters contravariant; result covariant; actual obligations fit destination rows |
 | `&^mut` row bound | Admits `&mut`; never changes parameter modes or handle permissions |
 | Array / map | Element and key/value types invariant |
-| Tuple | Components invariant; writable access permits slot replacement |
+| Tuple | Components invariant; immutable reception suppresses modes, otherwise modes match; only `var` members permit slot replacement |
 | Sum / nominal arguments | Invariant; transparent aliases retain the expanded type's identity |
 
-Read-only access and Immut qualification add no container subtyping.
+Member modes participate in structural schemas. Outer immutable reception suppresses permissions without changing those declaration identities or introducing container subtyping.
 
 
 
 ### Complete Provenance and Optional Annotations
 
 ```ril
-fn identity<T>(value: T) -> T { value }
-type Cell = { mut count: int }
+fn identity<T>(view value: T) -> T { value }
+type Cell = { var count: int }
 let mut source = Cell.{ count: 0 }
-let view packet = .{ item: identity(source) }
-let view observed = identity(packet.item)
+let view packet = .{ view item: identity(view source) }
+let view observed = identity(view packet.item)
 source.count += 1
 assert(observed.count == 1)
--- let hidden = identity(packet.item)  -- Error [E0535]: source still has a surviving writer
--- let mut stolen = identity(observed) -- Error [E0528]: read-only return cannot grant write authority
+-- let hidden = identity(view packet.item) -- Error [E0535]: source still has a surviving writer
+-- let mut stolen = identity(view observed) -- Error [E0528]: a view return cannot grant writes
 ```
 
 - **Complete Static Provenance**: Track possible origins, permissions, immutable/live facts, aliases, retention/escape dependencies, and scope/task ownership for all storage, references, environments, and resources. Conservative judgments may overapproximate execution; obligations cannot be erased.
-- **Propagation**: Preserve these facts through aggregates, projections, branches, recursion, returns, calls, opaque boundaries, handlers, cleanup, and modules. Existing-reference permissions may be preserved or reduced, never upgraded by these operations. Every handle in an access path and the stored constituent limit the resulting authority; a field's lack of slot-replacement permission does not itself reduce its child reference's permission. Independent scalar copies carry no reference authority; capturing a scalar cell retains its origin.
+- **Propagation**: Preserve these facts through aggregates, projections, branches, recursion, returns, calls, opaque boundaries, handlers, cleanup, and modules. Every handle, member mode, and stored constituent limits the resulting authority. A default member imposes deep immutability; `mut` permits interior writes without slot replacement. Independent scalar copies carry no reference authority; capturing a scalar cell retains its origin.
 - **No Semantic Erasure**: An omitted annotation, plain `-> T`, abbreviated callable type, or ordinary call spelling does not discard these facts. Private source names need not become public identifiers; their semantic dependencies still participate in every access and boundary check. Anonymous captures and symbolic callback obligations remain inferred. Named definitions must declare their concrete invocation obligations; no return modes, symbolic callback-forwarding notation, or call-site annotation is required.
 - **Conservative Alternatives**: Retain the union of possible origins, accesses, retention, and escape obligations, and only permissions common to all alternatives. Preserve origin relations between inputs and outputs and between output components: a relation established in every retained alternative remains established after the join. Prune only branches excluded by the specified static computations and typing rules. An unproved run-time condition is not evidence of uniqueness or impossible escape. Unknown overlap remains possible overlap; an incomplete proof cannot authorize mutable access, immutable publication, or task crossing that requires it.
 - **Recursive Dependencies**: Loop and recursive call dependencies retain possible origins and unresolved relationships, including termination conditions and finite-budget coverage. A cycle is not evidence of freshness, disjointness, non-escape, termination, or an empty callable row. An obligation may be discharged only by an established fact; unresolved dependencies remain obligations at every affected use. Apply the use's existing diagnostic when its required proof is absent.
@@ -1185,10 +1226,10 @@ assert(observed.count == 1)
 - **Source Annotations**: Binding modes, explicit mutable arguments, local writable-sharing markers, and required concrete invocation capabilities remain checked. Inference may determine their required spelling, but adding an annotation cannot supply absent authority or change sharing, object identity, or resource ownership. A completion that would require such a semantic change is not a valid annotation-only correction.
 - **Diagnostic Provenance**: Semantic diagnostics MUST make the derived access, sharing, escape, and effect obligations and their source explanations available, including facts omitted from source. An explanation identifies the relevant origin or contract, propagation steps, involved use or boundary, and the rule that accepts or rejects it. Multiple possible origins and an unproved disjointness condition must be reported as such, not replaced with a fabricated exact origin. Explanations also apply to accepted programs and inferred obligations; their presentation is optional and cannot change validity.
 
-For the `hidden` error above, the explanation connects `source`'s writer to the read-only `identity` argument and return, `packet.item`, the second return, and the prohibited immutable binding. For `stolen`, it identifies the read-only result permission. These explanations introduce no additional Ril source syntax.
+For `hidden`, connect `source`'s writer through the view argument, view member, return, and prohibited immutable reception. For `stolen`, identify the return's view permission.
 
 ```ril
-type Cell = { mut count: int }
+type Cell = { var count: int }
 fn copy_cell(value: Cell) -> Cell { clone(value) }
 fn swap(mut a: Cell, mut b: Cell) &mut {
     let saved = a.count
@@ -1212,7 +1253,7 @@ alias.count += 1
 
 ```ril
 -- Cell and swap have the preceding contracts; choose_order is a run-time bool input.
-fn permute(flag: bool, ^mut a: Cell, ^mut b: Cell) -> (Cell, Cell) &^mut {
+fn permute(flag: bool, ^mut a: Cell, ^mut b: Cell) -> (mut Cell, mut Cell) &^mut {
     if flag { (^mut a, ^mut b) } else { (^mut b, ^mut a) }
 }
 let mut left = Cell.{ count: 1 }
@@ -1229,7 +1270,7 @@ cells[0].count += 1
 The two components returned by `permute` may each originate in either argument, but are disjoint whenever the two actual inputs are disjoint. That common relation survives the branch and return. Distinct parameter names alone establish no such relation. Unrelated run-time selections retain possible overlap unless an applicable rule proves otherwise.
 
 ```ril
-type Cell = { mut count: int }
+type Cell = { var count: int }
 let mut source = Cell.{ count: 0 }
 source.count += 1
 -- let frozen = source               -- Error [E0535]: source's scope has not ended, even without later use
@@ -1248,7 +1289,7 @@ Escaped environments and stored writable paths survive their creating scope and 
 ### Functional Updates via Derive
 
 ```ril
-type Cell = { mut count: int }
+type Cell = { var count: int }
 type Pair = { left: Cell, right: Cell }
 let shared = Cell.{ count: 1 }
 let base = Pair.{ left: shared, right: shared }
@@ -1269,8 +1310,8 @@ assert(inserted.left.count == 11)
 
 #### Normative Rules for Functional Updates
 
-- **Input (`E0536`)**: `derive` accepts immutable ordinary data; publish a live source's copy with `let snapshot = clone(live)` first. Input `T` yields immutable `T`; input `Immut<T>` yields `Immut<T>`.
-- **Draft**: The recipe receives `mut draft`, returns `()`, and may replace fields regardless of their original `mut` markers. An `Immut<T>` draft exposes T under this confined permission; output field declarations remain unchanged.
+- **Input (`E0536`)**: `derive` accepts immutable ordinary data; publish a live source's copy with `let snapshot = clone(view live)` first. The result is immutable data of the same declaration schema.
+- **Draft**: The recipe receives `mut draft`, returns `()`, and may temporarily replace or modify any data member regardless of its declared mode. This confined privilege ends before immutable publication; declaration schemas remain unchanged.
 - **Identity**: Each source object has one draft counterpart, including newly inserted immutable references. Repeated references and cycles are preserved; all draft aliases see the same changes.
 - **Sharing**: Copy every affected value/reference region, including changes needed to preserve graph identity. Unaffected immutable regions may be shared. Neither unique ownership nor a new root for a no-op recipe is guaranteed.
 - **Insertion (`E0535`)**: Accept immutable references or recipe-local fresh data without outside writers. Inserted immutable objects enter the same draft correspondence before later writes; existing draft aliases retain their identity.
@@ -1282,7 +1323,7 @@ let mut current = Cell.{ count: 0 }
 let view live = current
 -- let invalid = live |> derive \mut draft -> { draft.count += 1 }
 -- Error [E0536]: derive requires immutable input
-let snapshot = clone(live)
+let snapshot = clone(view live)
 let version = snapshot |> derive \mut draft -> { draft.count += 1 }
 current.count += 1
 assert(snapshot.count == 0 && version.count == 1)
@@ -1307,7 +1348,7 @@ PipelineConstraint    ::= QualifiedName [ GenericArgs ]
 ConstParamDecl        ::= SnakeCase ":" ValueType [ "=" Expression ]
 KindSignature         ::= "Type" "->" ( "Type" | KindSignature )
 RecordConstraint      ::= "{" [ RecordConstraintField { "," RecordConstraintField } "," ] ".." PascalCase "}"
-RecordConstraintField ::= [ "mut" ] Identifier ":" TypeExpression
+RecordConstraintField ::= [ MemberMode ] Identifier ":" TypeExpression
 KeyofConstraint       ::= "keyof" TypeExpression
 GenericArgs           ::= "<" GenericArg { "," GenericArg } [ "," ] ">"
 GenericArg            ::= TypeExpression | Expression
@@ -1455,7 +1496,7 @@ fn check_buf(runtime_size: int) {
 use ril/io::{IoError}
 eff Io { read_line() -> str, write_line(str) -> () }
 eff AsyncIo { Io, Fiber }
-type StateNode = { mut count: int, tag: str }
+type StateNode = { var count: int, tag: str }
 type ReaderFn = fn() -> str @Io
 type AsyncWorker<T> = fn(T) -> () @AsyncIo
 type Mutator<T> = fn(mut target: T) -> () &mut
@@ -1552,7 +1593,7 @@ NominalRef       ::= QualifiedName [ GenericArgs ]
 | Position | Rule |
 | :--- | :--- |
 | Data types | Inert shapes: structural products/collections, sums and GADTs, nominal wrappers, opaque types, or pure type-function results |
-| Record field `mut` | Slot-replacement permission in the shape; no ambient capability |
+| Record/tuple member mode | Binding permission bound; `var` controls replacement, `mut` interior writes, `view` observation; no ambient capability |
 | Callable arrow | Carries latent effects and capabilities; callable values may be stored, passed, returned, and nested in data |
 | Bare `@Eff` / `&Cap` as a type | `E0330` / `E0331`; effects use `eff` declarations, capabilities are not standalone values or types |
 | Direct effect/capability suffix on a variant | `E0332`, with or without a payload |
@@ -1574,14 +1615,14 @@ Declarations cleanly separate slot reassignability (`let` pinned vs `var` reassi
 | `let` | No (`E0501`) | No (`E0520`) | Fresh value or immutable graph without surviving writers (`E0535`) | Deeply immutable, freely shareable across tasks |
 | `let mut` | No (`E0502`) | Granted | Heap reference allocation or mutable closure; not scalar (`E0402`) | Pinned mutable handle; root for live views |
 | `let view` | No (`E0502`) | No (`E0520`) | Stable pinned mutable origins, directly or in an eligible observation wrapper (`E0531`, `E0543`) | Pinned live view; non-owning observation |
-| `var` | Yes | No (`E0520`) | Primitive scalar value or read-only/immutable reference | Reassignable slot; referenced data remains read-only |
+| `var` | Yes | No (`E0520`) | Immutable value/graph without surviving writers (`E0535`) | Reassignable slot; each received value is deeply immutable |
 | `var mut` | Yes | Granted | Heap reference allocation with write authority (`E0520`); not scalar (`E0402`) | Fully mutable variable; slot and interior mutable |
 | `var view` | Yes | No (`E0520`) | Stable pinned mutable origins, directly or in an eligible observation wrapper (`E0531`, `E0543`) | Reassignable live view cursor; non-owning observation |
 
 - **Authority Use (`E0527`)**: A mutable binding/parameter must exercise its write or reassignment authority on a statically possible path (`var` and `var view` require slot reassignment; `var mut` requires both slot reassignment and interior writes).
 
 ```ril
-type Document = { mut title: str }
+type Document = { var title: str }
 let doc1 = Document.{ title: "Doc 1" }
 let doc2 = Document.{ title: "Doc 2" }
 let mut draft = clone(doc1)
@@ -1636,12 +1677,13 @@ LetDecl ::= [ "pub" ] "let" Pattern [ ":" TypeExpression ] "=" Expression [ "els
 - **Origin Requirement (`E0535`)**: Accepts fresh graphs without surviving writers; rejects live views and mutable environments.
 
 ```ril
-type Counter = { mut count: int }
+type Counter = { var count: int }
 let x = 10
 -- x = 20                              -- Error [E0501]: cannot reassign immutable binding 'x'
 
 let mut source = Counter.{ count: 0 }
 let view observer = source
+source.count += 1
 -- let bad = source                    -- Error [E0535]: a surviving writer prevents immutable publication
 -- let bad_view = observer             -- Error [E0535]: wrapping or aliasing a live view is not immutable
 
@@ -1668,6 +1710,8 @@ capacity += 1                         -- OK: independent scalar copy
 ```ebnf
 LetMutDecl ::= [ "pub" ] "let" "mut" Pattern [ ":" TypeExpression ] "=" Expression [ "else" Block ]
 ```
+
+#### Normative Rules for Pinned Handles
 
 - **Pinned Handle (`E0502`)**: Identifier permanently pinned to initial allocation; cannot be rebound (`use 'var mut'`).
 - **Value Types (`E0402`)**: Scalars have no interior mutability; `let mut` is statically rejected (use `var`).
@@ -1700,7 +1744,9 @@ VarDecl    ::= [ "pub" ] "var" Pattern [ ":" TypeExpression ] "=" Expression [ "
 VarMutDecl ::= [ "pub" ] "var" "mut" Pattern [ ":" TypeExpression ] "=" Expression [ "else" Block ]
 ```
 
-- **Plain `var` (`E0520`)**: Reassignable slot for scalars or read-only/immutable references; no interior writes granted.
+#### Normative Rules for Reassignable Variables
+
+- **Plain `var` (`E0520`, `E0535`)**: Reassignable slot receiving deeply immutable values/graphs. Live observation requires `var view`; receiving existing writable data without copying fails with `E0535`.
 - **`var mut` (`E0520`, `E0402`)**: Reassignable slot AND interior write authority. Scalars rejected (use plain `var`).
 - **View Origins (`E0531`)**: Neither `var` nor `var mut` can serve as an origin for `let view` or `var view`.
 - **Authority Use (`E0527`)**: Plain `var` must exercise reassignment; `var mut` must exercise both reassignment and interior writes.
@@ -1716,9 +1762,9 @@ assert(counter == 10)
 type Node = { val: int, following: ?Node }
 let ro_node2 = Node.{ val: 2, following: None }
 let ro_node1 = Node.{ val: 1, following: Some(ro_node2) }
-var cursor = ro_node1                  -- OK: 'cursor' is a reassignable ReadOnly handle
+var cursor = ro_node1                  -- OK: reassignable slot containing immutable data
 assert(cursor.val == 1)
-cursor = ro_node2                      -- OK: reassignment permitted to matching ReadOnly type
+cursor = ro_node2                      -- OK: another immutable Node
 -- cursor.val = 99                     -- Error [E0520]: cannot mutate field 'val' through read-only handle 'cursor'
 
 -- 3. Fully mutable reference variable:
@@ -1726,7 +1772,7 @@ type Buffer = { mut items: []int }
 var mut active_buf = Buffer.{ items: [1] }
 active_buf.items !> Array::push(2)     -- OK: in-place mutation
 active_buf = Buffer.{ items: [10, 20] } -- OK: handle reassignment permitted on 'var mut'
-assert(len(active_buf.items) == 2)
+assert(len(view active_buf.items) == 2)
 -- var mut scalar = 0                  -- Error [E0402]: scalar mutation uses plain var
 
 -- 4. Reassignable slot cannot serve as view origin:
@@ -1743,7 +1789,7 @@ start_idx += 1; end_idx -= 1           -- OK: both variables reassignable
 ### Scoped Resource Bindings
 
 ```ril
-type Resource = { mut name: str, mut on_close: fn() -> () }
+type Resource = { var name: str, var mut on_close: fn() -> () }
 let mut events: []str = []
 {
     let scoped mut first = Resource.{
@@ -1780,7 +1826,7 @@ assert(events == ["new"])
 | Exit | Invoke once in reverse registration order, including cancellation/abort; double-fault exception below |
 | Callback selection | Read the current `on_close` at exit; retain no earlier snapshot. Opaque resources use their specified action |
 | Initialization/replacement | Preserve cleanup eligibility and permissions; no residual effects (`E0616`), and prove finite cleanup (`E0617`) |
-| Mutable cleanup environment | Requires `let scoped mut` and a mutable `on_close` field; cleanup invocation satisfies `E0527` |
+| Mutable cleanup environment | Requires `let scoped mut` and `mut`/`var mut on_close`; replacement also needs `var`; cleanup invocation satisfies `E0527` |
 | Other binding modes | Plain `let scoped` requires immutable data; rebinding: `E0502`; `var`/`var mut`: `E0532` |
 | Invocation | Internal handlers and permitted writes allowed; check exclusivity then, not as continuous registration access |
 | Escape | Views, closures, containers, and transfer cannot carry scoped authority out (`E0604`); detached ordinary-data copies are exempt |
@@ -1814,7 +1860,7 @@ VarViewDecl ::= [ "pub" ] "var" "view" Pattern [ ":" TypeExpression ] "=" Expres
 ```
 
 #### Normative Rules for Live Views
-- **Target Invariant (`E0531`, `E0402`)**: Require at least one live origin traced to pinned `let mut` bindings through projections, views, and verified calls. Immutable reference/callable or `var`/`var mut` origins fail with `E0531`; value targets with `E0402`.
+- **Target Invariant (`E0531`, `E0402`)**: Persistent view bindings/members require live origins traced to pinned `let mut` roots through projections, views, and verified calls. Immutable targets or reassignable `var`/`var mut` root bindings fail with `E0531`; value targets with `E0402`. Projecting a replaceable member under a pinned root retains the selected object once; later member replacement does not retarget the view. Call-time view parameters have the separate borrowing contract below.
 - **Observation Wrappers (`E0531`, `E0543`)**: Passive aggregates and observer closures may combine eligible live origins with immutable data; check every live dependency. Wrapping or forwarding cannot repair an ineligible origin. Independent fresh data, clone results, and new writable environments supply no live origin by themselves (`E0543`).
 - **Authority (`E0520`, `E0601`)**: Zero interior write authority; upgrade via `mut`/`^mut` rejected (`E0520`). Live views cannot cross concurrency task boundaries (`E0601`).
 - **GC Preservation**: Evaluate the initializer once. Stored/projected references keep the selected object alive; observer closures read their captures when invoked.
@@ -1823,13 +1869,13 @@ VarViewDecl ::= [ "pub" ] "var" "view" Pattern [ ":" TypeExpression ] "=" Expres
   - `var view`: Each replacement obeys the same origin rules; a reachable reassignment is required (`E0527`).
 
 ```ril
-type Cell = { mut count: int }
+type Cell = { var count: int }
 let mut cell1 = Cell.{ count: 1 }
 let mut cell2 = Cell.{ count: 0 }
 
 -- Pinned live view:
 let view observed = cell1
-let view packet = .{ item: observed, offset: 1 }
+let view packet = .{ view item: observed, offset: 1 }
 let view read_count = \-> packet.item.count + packet.offset
 cell1.count = 5
 assert(read_count() == 6)               -- Live origin plus immutable data
@@ -1840,7 +1886,7 @@ assert(read_count() == 6)               -- Live origin plus immutable data
 let immutable = Cell.{ count: 1 }
 -- let view bad_immut = immutable      -- Error [E0531]: immutable data has no eligible live origin
 -- let view bad_new = Cell.{ count: 0 } -- Error [E0543]: independent new data is not a live origin
-let snapshot = clone(observed)         -- OK: let publishes an independent immutable copy
+let snapshot = clone(view observed)   -- OK: let publishes an independent immutable copy
 
 -- Reassignable live view cursor:
 var view cursor = cell1
@@ -1854,7 +1900,7 @@ assert(cursor.count == 2)
 -- cursor = Cell.{ count: 99 }         -- Error [E0543]: independent new data is not a live origin
 
 -- Single evaluation and GC root preservation:
-type Parent = { mut child: Cell }
+type Parent = { var mut child: Cell }
 let mut parent = Parent.{ child: Cell.{ count: 1 } }
 let view child = parent.child
 parent.child = Cell.{ count: 9 }
@@ -1880,7 +1926,7 @@ TypeDecl         ::= [ "pub" ] [ "halt" ] "type" PascalCase [ GenericParams ] [ 
 OpaqueTypeDecl   ::= [ "pub" ] "opaque" "type" PascalCase [ GenericParams ] [ WhereClause ] "=" TypeExpression
 LocalTypeDecl    ::= TypeDecl | OpaqueTypeDecl | NominalDecl | SumTypeDecl
 WhereClause      ::= SignatureWhereClause
-TypeList         ::= TypeExpression { "," TypeExpression } [ "," ]
+TypeList         ::= TupleMember { "," TupleMember } [ "," ]
 TypeReference    ::= QualifiedName [ GenericArgs ]
 ```
 
@@ -2198,7 +2244,8 @@ let nan = 0.0 / 0.0
 assert(!(nan == nan) && nan != nan)
 let mut ordered: [str: int] = ["b": 1, "a": 2]
 ordered !> Map::set("b", 3)
-assert(Map::keys(ordered) == ["b", "a"]) -- Replacing a value preserves its key's position
+let snapshot = clone(view ordered)
+assert(Map::keys(snapshot) == ["b", "a"]) -- Replacing a value preserves its key's position
 -- let bad_keys: [f64: int] = [nan: 1] -- Error [E0328]: floating-point keys are not admitted
 -- let graph_key = [.{ id: 1 }: 0]    -- Error [E0328]: immutable records are still reference-type keys
 ```
@@ -2225,7 +2272,7 @@ For finite cyclic graphs, equality is the greatest binary relation satisfying th
 | :--- | :--- |
 | `bool`, integers including `bigint`, `str`, `bytes`, `()` | Allowed |
 | Nominal / ordinary opaque wrappers | Allowed when recursively preserving one of those value representations |
-| Floats, reference graphs (even Immut), callables, resources | `E0328` |
+| Floats, reference graphs (including immutable ones), callables, resources | `E0328` |
 
 Eligibility depends on the concrete type, not equality support alone. Keys are copied by value: source reassignment cannot change them. No freezing, graph cloning, or user equality/order/hash callbacks occur.
 
@@ -2396,10 +2443,10 @@ let sub: []int = source[0..2]         -- New ordinary array containing [1, 2]
 source !> Array::push(4)              -- Modifying source length does not affect sub
 source[0] = 99
 assert(sub[0] == 1)                   -- Scalar value was cloned; sub is unaffected!
-assert(len(source) == 4 && len(sub) == 2)
+assert(len(view source) == 4 && len(sub) == 2)
 
 -- 2. Reference elements are NOT cloned (references shallow-copied):
-type Cell = { mut count: int }
+type Cell = { var count: int }
 let mut cells: []Cell = [Cell.{ count: 1 }, Cell.{ count: 2 }]
 cells[1].count += 1
 let mut sub_cells = ^mut cells[0..1]  -- OK: '^mut' acknowledges duplicated writable paths
@@ -2407,7 +2454,7 @@ sub_cells[0].count = 42
 assert(cells[0].count == 42)          -- Reference NOT cloned: points to same heap Cell!
 sub_cells[0] = Cell.{ count: 9 }
 sub_cells !> Array::push(Cell.{ count: 10 })
-assert(cells[0].count == 42 && len(cells) == 2) -- Slots and length are independent
+assert(cells[0].count == 42 && len(view cells) == 2) -- Slots and length are independent
 -- let mut bad = cells[0..1]          -- Error [E0510]: new local writable alias needs '^mut'
 
 -- 3. Whole-array observation vs new array:
@@ -2449,6 +2496,7 @@ assert(Bytes::at(b, 0) == Some(82u8)) -- The original bytes still start with 'R'
 
 - **Linear Pipeline (`|>`)**: Passes the left expression as the first argument to the right callable: `x |> f` desugars to `f(x)`.
 - **Mutating Pipeline (`!>`)**: Passes the mutable left lvalue to the right mutating callable: `x !> f` desugars to `f(mut x)`. It never supplies `^mut` implicitly.
+- Neither pipeline supplies `view`; an observing first parameter uses an explicit call such as `f(view source, ...)`.
 - **Call Form and Propagation**: `x |> f(a)` means `f(x, a)`; `x !> f(a)` means `f(mut x, a)`. Evaluation follows source order: the left operand, the right callee expression, then written right arguments in written order. Each expression evaluates once; an abrupt exit prevents the remaining expressions and the call. Thus `left() |> computed()(arg())` evaluates `left()`, then `computed()`, then `arg()`, before invoking the selected callable. This also applies to mutating pipelines. Trailing closures supply the final argument. Postfix `?` keeps its ordinary precedence: use `(x !> f(a))?` to propagate the whole pipeline result.
 
 ```ril
@@ -2536,10 +2584,10 @@ Inside a callable, a postfix `?` operand other than `Option` or `Result` is `E07
 
 ```ebnf
 RecordExpr      ::= [ TypeReference ] ".{" [ RecordValueField { "," RecordValueField } [ "," ] ] "}"
-RecordValueField ::= FieldLabel [ ":" Expression ] | ".." Expression
+RecordValueField ::= [ MemberMode ] FieldLabel [ ":" Expression ] | ".." Expression
 ```
 
-Explicit fields override equally named fields from a value spread, independent of their written position. Multiple explicit definitions of one field are `E0210`; conflicting spread sources without an explicit override are `E0211`. A spread copies values and references with their existing permissions; it does not deep-clone live data or make it immutable.
+Explicit fields override equally named fields from a value spread, independent of written position. Multiple explicit definitions are `E0210`; conflicting spreads without an override are `E0211`. Spreads preserve member schemas, references, and actual permissions. A typed constructor inherits omitted modes; an untyped explicit field defaults to immutable. Neither spreading nor a written mode upgrades a stored source.
 
 ```ril
 let left = .{ id: 1 }
@@ -2605,7 +2653,7 @@ flags <<= 1                            -- 0b10010
 flags >>= 2                            -- 0b00100
 
 -- Pinned handles (let mut) permit field assignment but reject handle reassignment:
-type Buffer = { mut capacity: int }
+type Buffer = { var capacity: int }
 let mut pinned_buf = Buffer.{ capacity: 16 }
 pinned_buf.capacity = 32               -- OK: field assignment through pinned handle
 pinned_buf.("capacity") += 1           -- OK: same field permissions
@@ -2840,7 +2888,7 @@ assert(total == 3)
 | Integer range | Endpoint type, ascending bounds as specified for ranges |
 | Other values, including strings, bytes, and iterator Source records | No implicit iteration (`E0355`); use explicit conversion or operations |
 
-Evaluate the source once. Read each collection entry when visited; a later element replacement can be observed, but structural mutation during traversal remains `E0526`. Element patterns receive read-only access with the source's actual immutable/live facts. They do not publish live references as immutable data or grant element writers (`E0521`); independent scalar `var` pattern copies remain permitted. Existing source permissions and origins survive destructuring.
+Evaluate the source once. Read each entry when visited; later element replacement may be observed, but structural mutation during traversal is `E0526`. Default element bindings require immutable data (`E0535`); use an explicit `view` pattern for live reference observation. Destructuring cannot grant missing writers (`E0521`); independent scalar `var` copies remain permitted. Source identities and lifetime restrictions survive every pattern.
 
 ### Control Transfers
 
@@ -2975,7 +3023,7 @@ Pattern       ::= OrPattern
 OrPattern     ::= SinglePattern { "|" SinglePattern }
 SinglePattern      ::= LiteralPattern | VariablePattern | WildcardPattern
                      | TuplePattern | ArrayPattern | RecordPattern | ConstructorPattern | RangePattern
-BindingModifier    ::= "mut" | "var" [ "mut" ]
+BindingModifier    ::= MemberMode
 VariablePattern    ::= [ BindingModifier ] Identifier
 ConstructorPattern ::= QualifiedName [ "(" [ PatternList ] ")" ]
 PatternList        ::= Pattern { "," Pattern } [ "," ]
@@ -3156,7 +3204,7 @@ NarrowingExpr      ::= NarrowingPredicate
 - **Stability & Invalidation**:
    - `let`: Permanently narrowed across dominance region.
    - `var` / `var mut`: Slot assignment, including compound assignment, invalidates that slot's narrowing (`E0310`). Interior writes through `var mut`, including `!>` calls, invalidate overlapping facts according to their actual write origins; `!>` does not reassign the slot.
-   - `let mut`: Tag identity is pinned (`E0502`); `mut` fields invalidate upon write.
+   - `let mut`: Tag identity is pinned (`E0502`); writes through `var` or writable members invalidate overlapping facts.
 - **Transitive Latent Havoc**: Invoking a callable whose effective writes reach v, through a global or captured group, a contract reference, a callback, or an active handler, resets the affected refinement to $T_{\text{root}}$. Group spelling does not change the actual write origin.
 - **Anti-Aliasing (`E0533`)**: Preserving a live-origin refinement across a call requires proof that the call's possible writes are independent of that origin. Unknown overlap uses `E0533`; a known write invalidating an established refinement uses `E0310`. A view does not supply independence. The examples below contrast both failures with an immutable snapshot.
 - **Generic Confinement**:
@@ -3172,7 +3220,7 @@ NarrowingExpr      ::= NarrowingPredicate
     - **Loop Widening**: Unconverged loop variables widen to $T_{\text{root}}$ after $K = 3$ iterations.
 
 ```ril
-type Cell = { mut value: ?int }
+type Cell = { var value: ?int }
 
 -- E0533: the callback's possible writes are not known to be independent.
 -- An omitted state row on fn() -> () preserves actual obligations; it does not promise purity.
@@ -3196,7 +3244,7 @@ fn known_writer(mut cell: Cell) &mut {
 
 -- OK: the same unknown callback cannot change an independent immutable snapshot.
 fn snapshot_before_callback(mut cell: Cell, action: fn() -> ()) &mut {
-    let snapshot = clone(cell)
+    let snapshot = clone(view cell)
     if snapshot.value != None {
         action()
         let after = snapshot.value + 1        -- OK: snapshot.value remains narrowed to int
@@ -3346,7 +3394,8 @@ SignatureWhereItem   ::= LocalTypeDecl
 ParameterList        ::= Parameter { "," Parameter } [ "," ]
 Parameter            ::= [ ParameterMode ] Identifier [ ":" TypeExpression ] [ "=" Expression ]
 
-Argument             ::= [ Identifier ":" ] ( ParameterMode AssignTarget | Expression )
+Argument             ::= [ Identifier ":" ] ( MutableArgumentMode AssignTarget | "view" Expression | Expression )
+MutableArgumentMode  ::= "mut" | "^mut"
 ArgumentList         ::= Argument { "," Argument } [ "," ]
 CallExpr             ::= Expression "(" [ ArgumentList ] ")" [ TrailingClosure ] | Expression TrailingClosure
 TrailingClosure      ::= AnonFnExpr
@@ -3356,7 +3405,7 @@ ParameterTypeItem ::= [ ParameterMode ] [ SnakeCase ":" ] TypeExpression
 ReturnType       ::= "->" TypeExpression
 ```
 
-Leading `mut`/`^mut` arguments require assignable targets (`E0410` for `f(^mut clone(x))`). A parenthesized sharing expression is an ordinary argument: it cannot satisfy a mutable formal (`E0405`) or retain an existing writer. [Fresh storage inputs](#fresh-values-in-storage-calls) may receive its initial construction authority; other ordinary parameters remain read-only. Constructors follow the aggregate sharing rules.
+Leading `mut`/`^mut` arguments require assignable targets (`E0410` for `f(^mut clone(x))`); `view` observes an expression. A parenthesized sharing expression cannot replace a parameter-mode marker (`E0405`). [Fresh storage inputs](#fresh-values-in-storage-calls) receive construction authority before immutable publication; other ordinary parameters require immutable data. Constructors follow their product member and payload contracts.
 
 ```ril
 type DeferredFactory = fn() -> fn() -> int @Io -- Io belongs to the returned callable
@@ -3727,7 +3776,7 @@ fn skipped_progress(n: int) {
 }                                               -- MayDiverge: next bypasses progress
 -- halt fn bad_loop() { skipped_progress(1) }    -- Error [E0820]
 
-type Link = { mut following: ?Link }
+type Link = { var mut following: ?Link }
 fn follow(node: Link) {
     match node.following { Some(child) -> follow(child), None -> () }
 }                                               -- MayDiverge: Link need not be acyclic
@@ -3747,7 +3796,7 @@ Uncertified loops or recursion give `MayDiverge`, not an effect. The special [fi
 ### Parameter Modes, Caller Obligations, and Defaults
 
 ```ril
-type Cell = { mut count: int }
+type Cell = { var count: int }
 fn bump(mut cell: Cell) &mut { cell.count += 1 }
 let mut cell = Cell.{ count: 0 }
 bump(mut cell)
@@ -3759,29 +3808,34 @@ let view observed = cell
 
 | Parameter mode | Caller form | Authority |
 | :--- | :--- | :--- |
-| `p: T` | `expression` | Read-only access; preserves immutable/live origin facts |
+| `p: T` | `expression` | Deeply immutable data; fresh ordinary data is published immutable at reception |
+| `view p: T` | `view expression` | Read-only observation; preserve actual immutable/live origins; scalars copy |
 | `mut p: T` | `mut target` | Temporary interior/environment write access; no retained writable path after the call |
 | `^mut p: T` | `^mut target` | Write access plus permission to retain a writable path beyond the call |
 
 - Mutable parameters require reference data or a mutable callable environment (`E0401`), remain pinned (`E0502`), and cannot use `var` (`E0403`).
-- Annotations, forwarding, and subtyping do not infer parameter modes. Retaining an existing writer requires `^mut` and its capability (`E0510`); `!>` supplies only `mut`. A declared [fresh-value storage input](#fresh-values-in-storage-calls) may receive new construction authority without retaining an existing writer.
+- Annotations, forwarding, and subtyping do not infer parameter modes. An existing live graph cannot enter an ordinary parameter (`E0535`); use explicit `view` observation. Retaining a writer requires `^mut` and its capability (`E0510`); `!>` supplies only `mut`. A declared [fresh-value storage input](#fresh-values-in-storage-calls) receives construction authority before ordinary immutable publication.
 
-When a known parameter requires `mut` or `^mut`, supplying an ordinary argument without the required argument marker is `E0405`. An explicitly supplied argument mode that does not match the declared parameter mode is `E0406`. An explicitly mutable argument must designate an addressable target (`E0410`). A correct marker cannot grant missing authority (`E0520`). Callable types with incompatible data-parameter modes use `E0407`; callback-handle authority remains a separate requirement.
+Missing `view`/`mut`/`^mut` argument markers use `E0405`; wrong explicit modes use `E0406`. Only `mut`/`^mut` arguments require addressable targets (`E0410`). View parameters may observe expressions, immutable data, and current objects reached through reassignable paths; this call-time observation does not establish a pinned origin for a later view binding. No mode grants absent authority (`E0520`), changes lifetime, or bypasses exclusivity. Callable mode mismatch remains `E0407`.
 
 ```ril
-type Cell = { mut count: int }
+type Cell = { var count: int }
 fn bump(mut cell: Cell) &mut { cell.count += 1 }
 fn inspect(cell: Cell) -> int { cell.count }
+fn observe(view cell: Cell) -> int { cell.count }
 let mut cell = Cell.{ count: 0 }
+assert(observe(view cell) == 0)
+-- inspect(cell)                      -- Error [E0535]: cell still has a writer
+-- observe(cell)                      -- Error [E0405]: explicit observation required
 -- inspect(mut cell)                 -- Error [E0406]: parameter is read-only
 -- let reader: fn(Cell) -> () &mut = bump -- Error [E0407]: callable parameter modes differ
 bump(mut cell)                        -- OK
 ```
 
-A callback's parameter list and the mode of the callback handle are distinct. `f: fn(mut T) -> R` is a read-only function handle accepting a mutable *data argument*. `mut f: fn(T) -> R` grants permission to invoke a mutable *captured environment*. Both can be required by the same function. Mutable inline closures must first be bound to an appropriate writable handle before being passed with `mut`.
+A callback's data-parameter modes and handle mode are distinct. `f: fn(mut T) -> R` receives an immutable callable handle with a mutable data argument; `view f` may observe a live read-only environment, and `mut f` permits environment writes. Mutable inline closures must first enter writable handles before being passed with `mut`.
 
 ```ebnf
-ParameterMode    ::= "mut" | "^mut"
+ParameterMode    ::= "view" | "mut" | "^mut"
 ```
 
 Mutable modes do not apply to static key arguments.
@@ -3789,7 +3843,7 @@ Mutable modes do not apply to static key arguments.
 #### Fresh Values in Storage Calls
 
 ```ril
-type Cell = { mut count: int }
+type Cell = { var count: int }
 fn copy_cell(cell: Cell) -> Cell { clone(cell) }
 fn build_cell() -> Cell {
     let mut cell = Cell.{ count: 0 }
@@ -3809,7 +3863,7 @@ cells[3].count += 1
 assert(original.count == 1 && cells[0].count == 3 && cells[3].count == 2)
 ```
 
-Only `value` in `Array::push`, `Array::insert`, and `Map::set` has this initialization contract. It adds no parameter mode; ordinary formals remain read-only.
+Only `value` in `Array::push`, `Array::insert`, and `Map::set` has this initialization contract. It receives eligible construction authority before the ordinary immutable-parameter rule; it adds no parameter mode and does not apply to ordinary wrappers. Existing live data requires the operation's explicit `view` observation-storage form or `^mut` retained-writer form. The `view` storage form also checks persistent-view origin and escape requirements; call-time observation alone does not permit retention.
 
 ```ril
 -- Cell, original, and copy_cell have the preceding declarations/contracts.
@@ -3837,27 +3891,28 @@ cells[4].count += 1
 ```
 
 ```ril
-type Cell = { mut count: int }
-type Holder = { child: Immut<Cell> }
+type Cell = { var count: int }
+type Holder = { child: Cell }          -- Default member is deeply immutable
 let mut shared = Cell.{ count: 1 }
 let mut cells: []Cell = []
-cells !> Array::push(shared)            -- OK: ordinary read-only insertion
+cells !> Array::push(view shared)      -- OK: explicit read-only live element
+-- cells !> Array::push(shared)       -- Error [E0535]: no implicit live reception
 -- cells[0].count += 1                -- Error [E0522]: existing writer needs an argument marker
 cells !> Array::push(^mut shared)      -- OK: explicit retained writer
 cells[1].count += 1
 assert(shared.count == 2)
 
 let mut holders: []Holder = []
-let snapshot: Immut<Cell> = clone(shared)
+let snapshot = clone(view shared)
 holders !> Array::push(Holder.{ child: snapshot })
--- let mut child = ^mut holders[0].child -- Error [E0520]: fresh outer data preserves nested Immut
+-- let mut child = ^mut holders[0].child -- Error [E0520]: default member remains immutable
 ```
 
 ```ril
-type Cell = { mut count: int }
+type Cell = { var count: int }
 let original = Cell.{ count: 1 }
-let repeated = (original, original)
-let mut pairs: [](Cell, Cell) = []
+let repeated = (mut original, mut original)
+let mut pairs: [](mut Cell, mut Cell) = []
 pairs !> Array::push((^mut clone(repeated))) -- OK: marks internal sharing, not an argument mode
 pairs[0].0.count += 1
 assert(pairs[0].1.count == 2 && original.count == 1)
@@ -3870,7 +3925,7 @@ assert(pairs[0].1.count == 2 && original.count == 1)
 | Eligible regions | Newly constructed ordinary writable storage, isolated from pre-existing writable regions, with no surviving outside observer, writer, or active environment |
 | Established paths | Bindings select permissions; `let`, plain `var`, views, and read-only parameters end eligibility. Existing writers, including retained returns, need `^mut` arguments |
 | Expressions / returns | Parentheses, blocks, and verified returns preserve actual provenance. Joins require eligibility in every possible alternative; unknown facts prove none |
-| Constituents | Preserve field declarations, nested Immut and nonfresh permissions. Immutable children may be shared; fresh outer data cannot retain concealed existing writers |
+| Constituents | Preserve member schemas and nonfresh permissions. Default members stay immutable; fresh outer data cannot retain concealed existing writers |
 | Operation identity | Imports, aliases and type ascriptions preserve contracts; matching names/signatures do not create them |
 | Reception | Evaluate once in ordinary order. Success installs initial authority; failure installs no path. No additional standalone &^mut; other effects/state and access checks still apply |
 | Other obligations | Internal aliases obey exclusivity; traversal/live-array-view stability and Result inspection remain checked. Foreign exchange, resources and retained callable environments gain no exemption |
@@ -3884,7 +3939,7 @@ assert(pair(a: 10, 20) == (10, 20))
 -- pair(10, a: 20)                     -- Error [E0325]: a is already bound
 ```
 
-- Named and anonymous function parameters use the same default evaluation, scope, argument-binding, and purity rules. Defaults have no residual effects or state obligations. Mutable parameters cannot have defaults (`E0404`).
+- Named and anonymous parameters share the same default rules. Defaults have no residual effects or state obligations; `mut`/`^mut` defaults are forbidden (`E0404`). A `view` default is received in its declared mode without a caller token; explicit supplied arguments still require `view`. Earlier view parameters do not exempt a later ordinary default from immutable reception.
 - Explicit arguments evaluate in written left-to-right order; omitted defaults follow in parameter order. A default may use earlier parameters, not itself or later parameters.
 - Bind arguments in written order: a positional argument selects the first unbound parameter in declaration order; a named argument selects its named parameter. Selecting an already bound parameter is `E0325`. Binding selection does not reorder evaluation.
 - Function generic defaults are prohibited (`E0317`).
@@ -4049,7 +4104,7 @@ assert(counter() == 1)
 ```
 
 ```ril
-type Cell = { mut count: int }
+type Cell = { var count: int }
 type Step = fn() -> int &closure
 fn make_shared_step(^mut cell: Cell) -> Step &capture &^mut {
     \-> { cell.count += 1; cell.count }
@@ -4112,7 +4167,7 @@ fn test_internal_hub() -> int {
     let mut local_hub = NodeHub.{ nodes: [] }
     let local_node = 42
     link(mut local_hub, local_node)    -- &mut discharged locally: the scalar is copied
-    len(local_hub.nodes)               -- Pure: signature carries no external mutation obligation
+    len(view local_hub.nodes)          -- Pure: local observation adds no external mutation obligation
 }
 ```
 
@@ -4140,7 +4195,7 @@ SharingExpr     ::= "^mut" Expression
 ```
 
 ```ril
-type Entry = { mut id: int }
+type Entry = { var id: int }
 type Hub = { mut entries: []Entry }
 let mut global_hub = Hub.{ entries: [] }
 
@@ -4157,7 +4212,7 @@ fn publish_entry(^mut entry: Entry) &^mut &{mut global_hub} {
 - **Arguments**: Retaining a mutable argument writer requires `^mut` on both parameter and argument. Ordinary call-scoped `mut` authority ends at return. Indirection preserves retained permissions and source identities.
 
 ```ril
-type Cell = { mut count: int }
+type Cell = { var count: int }
 type Holder = { mut child: Cell }
 let mut source = Cell.{ count: 0 }
 let mut alias = ^mut source
@@ -4175,7 +4230,7 @@ let view observed = source
 -- let mut bad = ^mut immutable        -- Error [E0520]: marker cannot grant write permission
 -- let mut bad_view = ^mut observed    -- Error [E0520]: marker cannot upgrade a live view
 
-let repeated = (immutable, immutable)
+let repeated = (mut immutable, mut immutable)
 let mut copied = ^mut clone(repeated)
 copied.0.count += 1
 assert(copied.1.count == 1)             -- Internal aliases survive the isolated copy
@@ -4218,7 +4273,7 @@ fn make_private_ticker() -> Step &capture {
 fn make_shared_ticker(^mut cell: Cell) -> Step &capture &^mut {
     \-> { cell.count += 1; cell.count }
 }
-fn make_dual_ticker() -> (Step, Cell) &capture &^mut {
+fn make_dual_ticker() -> (mut Step, mut Cell) &capture &^mut {
     let mut cell = Cell.{ count: 0 }
     let mut step = \-> { cell.count += 1; cell.count }
     (^mut step, ^mut cell)
@@ -4416,7 +4471,7 @@ pub fn make_step() -> Step &capture &{mut private_count} {
     var local_count = 0
     \-> { local_count += 1; local_count }
 }
-pub type Cell = { mut count: int }
+pub type Cell = { var count: int }
 pub fn retain(^mut cell: Cell) -> Cell &^mut &{mut private_count} {
     private_count += 1
     cell
@@ -4490,7 +4545,7 @@ use counter
 ```
 
 ```ril
-type Cell = { mut count: int }
+type Cell = { var count: int }
 fn outer(mut cell: Cell) &mut {
     inner()
 where
@@ -4536,7 +4591,7 @@ let view observer = counter
 -- observer()                          -- Error [E0520]: observing a mutable callable does not permit invocation
 ```
 
-A callable that writes its persistent captured environment requires `let mut`, `var mut`, or a `mut`/`^mut` parameter at invocation. Plain `var` does not provide environment write permission. An observer callable that only reads permitted live origins can be invoked through `let view` or a read-only parameter. An immutable callable can be invoked through `let`.
+A callable that writes its persistent captured environment requires `let mut`, `var mut`, or a `mut`/`^mut` parameter at invocation. An observer callable that reads live origins uses a view handle/parameter. Plain `let`, plain `var`, and unmodified callable parameters require immutable environments; latent named-state/effect obligations remain checked independently.
 
 An immutable callable may still have effects or named external-state obligations. Invocation checks those obligations and all transitive access sets, including handlers; `let` does not erase them. Declared external access alone does not create a named function's mutable environment.
 
@@ -4549,7 +4604,7 @@ Use through the `mut` formal belongs to that call. Independent arguments, captur
 A call-local closure that captures a `mut` formal retains that formal's call-scoped authority and cannot extend its invocation lifetime. Access through this derived path belongs to the active call. An independently obtained ambient or captured path does not become part of that call authority merely because its object identity matches the formal's.
 
 ```ril
-type Cell = { mut count: int }
+type Cell = { var count: int }
 fn swap(mut a: Cell, mut b: Cell) &mut {
     let saved = a.count
     a.count = b.count
@@ -4560,7 +4615,7 @@ swap(mut cells[0], mut cells[1])        -- OK: distinct allocations, not merely 
 -- swap(mut cells[0], mut cells[0])    -- Error [E0523]: same writable origin
 
 let immutable_cell = Cell.{ count: 0 }
-let repeated = (immutable_cell, immutable_cell)
+let repeated = (mut immutable_cell, mut immutable_cell)
 let mut copied = ^mut clone(repeated)
 copied.0.count += 1
 assert(copied.1.count == 1)             -- clone preserves internal aliases
@@ -4574,24 +4629,27 @@ An explicit `^mut` publication permits sequential sharing, not overlapping exclu
 Apply [provenance propagation](#complete-provenance-and-optional-annotations) at every access path. The following cases distinguish permission failures from immutable-publication failures; clone and derive retain their explicit fresh-data contracts.
 
 ```ril
-type Cell = { mut count: int }
-let mut box = .{ child: Cell.{ count: 0 } }
-var cursor = box
+type Cell = { var count: int }
+let mut box = .{ mut child: Cell.{ count: 0 } }
+-- var hidden = box                  -- Error [E0535]: plain var requires immutable data
+var view cursor = box
 -- let mut stolen = ^mut cursor.child -- Error [E0520]: projection cannot escape the read-only path
 box.child.count += 1
 assert(cursor.child.count == 1)        -- The independent writer remains valid
-cursor = .{ child: Cell.{ count: 9 } }
+let mut replacement = .{ mut child: Cell.{ count: 9 } }
+replacement.child.count += 1
+cursor = replacement
 
-fn project(box: { child: Cell }) -> Cell { box.child }
--- let mut stolen = project(box)      -- Error [E0528]: ordinary parameter and return preserve read-only access
+fn project(view box: { mut child: Cell }) -> Cell { box.child }
+-- let mut stolen = project(view box) -- Error [E0528]: the observation return has no write authority
 ```
 
-Plain `var`, views, and read-only parameters restrict every data/environment path reached through them; they neither freeze the object nor revoke an independent writer. A callable's named external-state obligations are checked separately from access through its data handle.
+Plain `let`, plain `var`, ordinary parameters, and default members require immutable graphs. View bindings/parameters observe existing data without freezing it or revoking independent writers. A callable's named external-state obligations remain independent of its data handle.
 
 [Fresh storage reception](#fresh-values-in-storage-calls) precedes read-only binding or parameter passage; it cannot recover authority after either boundary.
 
 ```ril
-type Cell = { mut count: int }
+type Cell = { var count: int }
 let immutable = Cell.{ count: 0 }
 -- let mut upgraded = immutable           -- Error [E0520]: existing immutable reference
 let mut cells: []Cell = []
@@ -4607,7 +4665,7 @@ let same = identity(immutable)
 
 let mut active = create_counter(0)
 assert(active() == 1)
--- clone(active)                     -- Error [E0530]: mutable captured environment cannot be cloned
+-- clone(view active)                -- Error [E0530]: mutable captured environment cannot be cloned
 -- let observed_as_immutable = active   -- Error [E0535]: ordinary let cannot contain this environment
 ```
 
@@ -4761,7 +4819,7 @@ WithApplication ::= QualifiedName [ GenericArgs ] "(" [ ArgumentList ] ")"
 ResumeExpr    ::= "resume" Expression
 ```
 
-A leading `mut`/`^mut` on a handler parameter is its operation-parameter mode, before pattern interpretation. The remaining pattern must be irrefutable and contains no binding modifiers: `var` is `E0403`, and nested `mut`/`^mut` is `E0406`. The mode must exactly match the operation's declared parameter mode (`E0406`); omission does not infer writable or retained authority. Ordinary names in handler-target position remain grammatically admitted so non-operation targets receive `E0621`.
+A leading `view`/`mut`/`^mut` on a handler parameter is its operation-parameter mode, before pattern interpretation. The remaining pattern is irrefutable and contains no binding modifiers: `var` is `E0403`, and nested modes are `E0406`. Modes must match the operation declaration (`E0406`); omission does not infer observation or write authority. Ordinary names in handler-target position remain admitted so non-operation targets receive `E0621`.
 
 ```ril
 eff ReadAt { get(int) -> int }
@@ -4774,7 +4832,7 @@ fn read_zero() -> int {
 }
 -- with ReadAt::get(0) -> resume 1      -- Error [E0345]: handler parameter is refutable
 
-type Cell = { mut count: int }
+type Cell = { var count: int }
 eff Edit { apply(mut Cell) -> () &mut }
 fn edit_once(mut cell: Cell) -> int &mut {
     with Edit::apply(mut target) -> {
@@ -4798,7 +4856,7 @@ fn edit_once(mut cell: Cell) -> int &mut {
 | Discharge a declared effect instance | Cover every operation of that instance; built-in resource/system obligations follow their separate contracts |
 
 ```ril
-type Cell = { mut count: int }
+type Cell = { var count: int }
 eff Store { keep(^mut cell: Cell) -> () &^mut }
 let mut cell = Cell.{ count: 0 }
 let mut held: []Cell = []
@@ -4814,11 +4872,13 @@ assert(cell.count == 1)
 
 | Operation parameter | Handler binder | Granted authority |
 | :--- | :--- | :--- |
-| Read-only | Plain pattern | Read-only; scalars copy, references preserve immutable/live facts |
+| Default | Plain pattern | Deeply immutable data; scalars copy |
+| `view` | `view pattern` | Read-only observation; preserve live origins and source lifetimes |
 | `mut` | `mut pattern` | Temporary operation authority, ending when resumption starts |
 | `^mut` | `^mut pattern` | Retained writable authority; actual retention remains tracked |
 
 Destructured reference bindings receive no more than the mode and every source path permit; scalar constituents remain independent read-only copies. A `^mut` handler parameter still must exercise its authority under `E0527`. Resumption does not revoke lawful retained authority, but neither the handler mode nor the operation declaration extends a scoped lifetime or suspends exclusivity checks on independent origins.
+View parameters retain their observation restrictions across resumption; the following revocation rule concerns temporary `mut` authority only.
 
 | Operation's ordinary `mut` authority | Arm's permission |
 | :--- | :--- |
@@ -5172,7 +5232,7 @@ fn collect_first_evens() -> []int {
         if v % 2 == 0 {
             collected !> Array::push(v)
         }
-        if len(collected) >= 3 {
+        if len(view collected) >= 3 {
             -- Delimited early abort: returning without 'resume' cleanly terminates generator
             return collected
         }
@@ -5411,7 +5471,7 @@ A child panic may become a Result at its owning structured boundary. Synchronous
 
 ```ril
 use ril/parallel
-halt fn square_all(numbers: Immut<[]f64>) -> []f64 {
+halt fn square_all(numbers: []f64) -> []f64 {
     numbers |> Parallel::map(\x -> x * x)
 }
 -- @Parallel is not an effect annotation (E0620).
@@ -5419,7 +5479,7 @@ halt fn square_all(numbers: Immut<[]f64>) -> []f64 {
 
 Parallel invocation requires no residual effects and independently established finite computation; empty effect rows alone are insufficient (`E0820`). Outside mutable/live/resource dependencies, including those hidden in handlers or cleanup, are rejected (`E0605`), except the explicitly lent disjoint regions admitted by a concrete library operation. Overlapping or unproved-disjoint write/read or write/write regions are `E0619`. Checks are transitive; a distinct name, index, or copied graph path is not evidence of independence. Handling Div exhaustion alone does not establish finiteness. No live authority may escape the invocation.
 
-An ordinary read-only parameter such as `numbers: []f64` can denote live data; it does not establish `Immut<[]f64>`. Pure parallel collection inputs require the immutable view declared above or an explicitly detached immutable copy.
+The ordinary `numbers: []f64` parameter already requires deeply immutable data. Existing live data must be copied before this call; `view` observation alone does not satisfy a pure parallel input.
 
 Parallel reference evaluation determines result order and observable faults. Double faults in branch-local cleanup use the same visibility rule. Permitted writes remain confined to their explicitly lent regions.
 
@@ -5625,8 +5685,8 @@ Both branches still obey syntax, name resolution, and ordinary type compatibilit
 Ril unifies compile-time introspection across all three composite data forms (Records, Sum Types, Tuples) under a single operator pair: `keyof T` and constituent projection `T.(K)`.
 
 ```ebnf
-MappedRecordType ::= "{" [ "mut" ] "[" PascalCase "in" Expression "]" ":" TypeExpression "}"
-MappedTupleType  ::= "(" "[" PascalCase "in" Expression "]" ":" TypeExpression ")"
+MappedRecordType ::= "{" [ MemberMode ] "[" PascalCase "in" Expression "]" ":" TypeExpression "}"
+MappedTupleType  ::= "(" [ MemberMode ] "[" PascalCase "in" Expression "]" ":" TypeExpression ")"
 ```
 
 #### Universal Coordinate Indexing
@@ -5686,7 +5746,7 @@ Sum `keyof` lists declared variant names even when a supplied index excludes a v
 
 #### Symmetrical Mapped Comprehensions
 - **Mapped Records**: `{ [K in Expr]: TypeExpr }` requires static `[]str`; integer keys are `E0341`. Duplicate/invalid labels are `E0210`/`E0102`; ADT tables may use PascalCase constructor labels.
-- Fields are read-only unless written `{ mut [K in Expr]: TypeExpr }`; projecting a field type does not copy its mut marker. Records and sums use the same mapping form:
+- Mapped members default to immutable; an explicit `MemberMode` applies to every generated member. `T.(K)` projects the member's data type, not its binding mode. Records and sums use the same mapping form:
   ```ril
   -- Generic visitor / handler table valid for BOTH records and sum types:
   type SchemaTable = \T -> type<{
@@ -5699,14 +5759,16 @@ Sum `keyof` lists declared variant names even when a supplied index excludes a v
 ```ril
 type Readonly = \T -> type<{ [K in keyof T]: T.(K) }>
 type Bag = { mut items: []int }
-type FixedFields = Readonly<Bag>        -- { items: []int }; nested type unchanged
-let mut bag: FixedFields = .{ items: [1] }
-bag.items !> Array::push(2)            -- OK: removing slot mut does not freeze the array
--- bag.items = []                    -- Error [E0520]: the field slot is read-only
--- let frozen: Immut<FixedFields> = bag -- Error [E0535]: a writer still survives
+type FixedFields = Readonly<Bag>        -- { items: []int }; default member is deeply immutable
+type Box = { var tag: int, mut bag: FixedFields }
+let mut box = Box.{ tag: 0, bag: FixedFields.{ items: [1] } }
+box.tag = 1
+-- box.bag.items !> Array::push(2)    -- Error [E0520]: a default member blocks nested writes
+type Slots = \T -> type<{ var [K in keyof T]: T.(K) }>
+type PairSlots = (var [I in [0, 1]]: int) -- (var int, var int)
 ```
 
-`Readonly` is an ordinary record-shape type function; `Immut<T>` requires immutable graph provenance.
+`Readonly` constructs default-member schemas. Ordinary `let` already removes effective member permissions recursively; neither operation changes callable invocation contracts.
 
 ```ril
 -- Records:
@@ -5774,12 +5836,14 @@ PrimitivePattern ::= PrimitiveType
 ArrayPattern    ::= "[" [ Expression ] "]" TypePatternInner
 MapPattern      ::= "[" TypePatternInner ":" TypePatternInner "]"
 TypeRecordPattern ::= "{" [ TypePatternField { "," TypePatternField } [ "," TypeRestPattern ] [ "," ] ] "}"
-TypePatternField ::= [ "mut" ] FieldLabel ":" TypePatternInner
-TypeTuplePattern ::= "(" ")" | "(" TypePatternInner "," ( TypeRestPattern | TypePatternInner { "," TypePatternInner } [ "," TypeRestPattern ] [ "," ] ) ")"
+TypePatternField ::= [ MemberMode ] FieldLabel ":" TypePatternInner
+TypePatternMember ::= [ MemberMode ] TypePatternInner
+TypeTuplePattern ::= "(" ")" | "(" TypePatternMember "," ( TypeRestPattern | TypePatternMember { "," TypePatternMember } [ "," TypeRestPattern ] [ "," ] ) ")"
 TypeRestPattern ::= ".." "let" PascalCase
 ```
 
 - **Scoped Pattern Variables (`let U`)**: A `let U` binder inside `type<P>` introduces an immutable type variable scoped strictly to the arm's guard and RHS expression. `U` MUST be `PascalCase` (`E0101`).
+- **Member Modes**: Structural type patterns match declared member modes exactly; omission means the default mode. Row/tuple rests preserve remaining member modes. The `let U` type-variable binder is not a member modifier and remains explicit.
 - **Linearity Invariant**: Pattern variables MUST be linear; repeating the same identifier within a pattern branch is statically rejected (`E0347: DuplicatePatternBindingError`). Multi-position equality is asserted via explicit guards (`if type<A> == type<B>`).
 - **Tuple Rest**: A type-pattern rest is a tuple type of the remaining components; an empty rest is unit. A one-component rest cannot form a tuple and fails that pattern, allowing the next arm to match. It is not silently coerced to its component type.
 - **Rigid Application Head (`E0306`)**: Require a known rigid type constructor; no head binding or inverse type-function matching. Transparent aliases may expand. Primitive/structural patterns and whole-type `_`/`let U` remain legal.
@@ -6080,8 +6144,8 @@ assert(inner(UserId(1001)) == 1001)
 let original = [1, 2, 3]
 let mut detached = clone(original)
 detached !> Array::push(4)
-assert(original == [1, 2, 3] && len(detached) == 4)
-let snapshot: Immut<[]int> = clone(detached)
+assert(original == [1, 2, 3] && len(view detached) == 4)
+let snapshot = clone(view detached)
 let revised = .{ theme: "dark" } |> derive \mut draft -> {
     draft.theme = "light"
 }
@@ -6098,11 +6162,13 @@ Primitive type spellings (`int`, `str`, `bool`, etc.), `?T`, collection type syn
 
 Ril defines the following built-in foundational operations directly in the language prelude:
 
+Ordinary data forms use immutable parameters; explicit `view` forms observe existing live data without publishing it immutable. The forms preserve identical data schemas and operation identity. Listed resource contracts remain separate; neither form creates resource permissions. Operators, projections, indexing, and traversal are primitive observations, not implicit immutable-parameter receptions.
+
 | Operation | Signature | Effects | Phase | Complexity | Contract |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| `len` | `len(value) -> int` | Pure | Dual-phase | $O(1)$ / $O(n)$ text | Count of elements, entries, bytes, or Unicode scalars |
-| `inner` | `inner(wrapper) -> T` | Pure | Runtime | $O(1)$ | Unwraps a nominal wrapper to its underlying payload; unit nominal yields `()` |
-| `clone` | `clone(value) -> T` | Pure | Runtime | $O(\text{graph})$ | Deep isolated ordinary graph copy; preserves internal aliases and cycles |
+| `len` | `len(value)` / `len(view value) -> int` | Pure | Dual-phase | $O(1)$ / $O(n)$ text | Count of elements, entries, bytes, or Unicode scalars |
+| `inner` | `inner(wrapper)` / `inner(view wrapper) -> T` | Pure | Runtime | $O(1)$ | Preserve payload authority; unit nominal yields `()` |
+| `clone` | `clone(value)` / `clone(view value) -> T` | Pure | Runtime | $O(\text{graph})$ | Deep isolated ordinary graph copy; preserves aliases, cycles, and member schemas |
 | `derive` | `derive(base, recipe) -> T` | Forwards recipe | Runtime | $O(\text{affected})$ | Functional update on immutable value via confined mutable draft |
 | `byte_size` | `meta fn byte_size<T>(value: type<T>) -> int` | Pure | Static only | $O(1)$ | Size in bytes of $T$'s value/handle on abstract target |
 | `type_name` | `meta fn type_name<T>(value: type<T>) -> str` | Pure | Static only | $O(\text{len})$ | Canonical string representation of $T$ for static diagnostics |
@@ -6115,6 +6181,7 @@ Ril defines the following built-in foundational operations directly in the langu
 
 - **Length Invariant (`len`)**:
   - `len` is a pure, dual-phase built-in operation admitted in both runtime and static contexts.
+  - Use `len(view value)` for live inputs; `len(value)` receives immutable data.
   - For `str`, returns the total number of Unicode scalar values (code points), matching `s[a..b]` scalar indexing.
   - For `bytes`, returns the byte count in $O(1)$ time.
   - For arrays (`[]T`), returns the element count in $O(1)$ time.
@@ -6122,11 +6189,13 @@ Ril defines the following built-in foundational operations directly in the langu
   - For sets (`Set<T>`), returns the number of unique elements in $O(1)$ time.
 - **Unwrapping Invariant (`inner`)**:
   - Unwraps nominal type wrappers to their underlying declared representation ([Nominal Type Wrappers](#nominal-type-wrappers)).
+  - `inner(view wrapper)` preserves observed payload provenance; ordinary `inner(wrapper)` receives immutable data.
   - Single-payload nominal wrapper `type UserId(int)` unwraps to its payload (`int`). Unit nominal wrapper `type Marker` unwraps to `()`.
   - Nominal abstraction boundaries remain sealed across modules; `inner` cannot bypass opaque module access restrictions.
 - **Graph Isolation Invariants (`clone`)**:
   - `clone` creates an independent, isolated copy of an ordinary reachable graph, severing writable storage from the source while preserving internal aliases, shared references, and cyclic structures ([Deep Immutability](#deep-immutability)).
-  - Receiving an eligible fresh copy with `let` publishes immutable data; `let copy: Immut<T> = clone(value)` additionally records that guarantee in its type.
+  - `clone(view value)` observes live ordinary data during the isolated copy; no input is implicitly frozen. The selected receiver and the copy's member schema determine its new permissions.
+  - Receiving an eligible fresh copy with ordinary `let` publishes immutable data by recursively suppressing member permissions; no separate qualifier is required.
   - Non-clonable entities (retained closure environments, live tasks, unique receivers, and scoped resources) cannot be cloned through views or wrappers (`E0530`).
   - Cloning a channel `Sender` obeys the channel endpoint resource contract and requires `@Fiber`.
   - Copying costs $O(\text{graph})$ for the reachable ordinary graph inspected and copied; no storage-sharing guarantee is made for mutable copies.
@@ -6315,7 +6384,7 @@ This index assigns each code its diagnostic name and points to its defining rule
 | **`E0402`** | [`ValueTypePinnedMutError`](#value-types) |
 | **`E0403`** | [`VarParameterProhibitedError`](#parameter-modes-caller-obligations-and-defaults); [Effect Handlers](#effect-handlers) |
 | **`E0404`** | [`MutableParameterDefaultProhibitedError`](#default-parameters-and-named-arguments) |
-| **`E0405`** | [`MissingMutableArgumentMarkerError`](#parameter-modes-caller-obligations-and-defaults) |
+| **`E0405`** | [`MissingArgumentModeMarkerError`](#parameter-modes-caller-obligations-and-defaults) |
 | **`E0406`** | [`InvalidArgumentModeError`](#parameter-modes-caller-obligations-and-defaults); [Effect Handlers](#effect-handlers) |
 | **`E0407`** | [`CallableParameterModeMismatchError`](#parameter-modes-caller-obligations-and-defaults) |
 | **`E0408`** | [`InvalidDefaultParameterReferenceError`](#default-parameters-and-named-arguments) |
