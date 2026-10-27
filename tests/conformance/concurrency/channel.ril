@@ -11,7 +11,8 @@ fn example() @Async {
         let task = s.fork(\-> ())
         let (mut tx, mut rx) = Channel::bounded<Cell>(1)
         let mut cell = Cell.{ count: 0 }
-        assert((tx !> Channel::send(clone_immut(cell))) is Ok())
+        let snapshot = clone(cell)
+        assert((tx !> Channel::send(snapshot)) is Ok())
         assert((rx !> Channel::recv()) is Ok(_))
         cell.count += 1
         task.join()?

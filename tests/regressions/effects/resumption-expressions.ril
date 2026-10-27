@@ -92,7 +92,8 @@ where
 type Matrix = { mut values: [0][3]int, mut count: int }
 eff Read { get() -> int }
 fn original() -> Immut<Matrix> @Read {
-    clone_immut(Matrix.{ values: [], count: Read::get() })
+    let snapshot: Immut<Matrix> = clone(Matrix.{ values: [], count: Read::get() })
+    snapshot
 }
 fn revise(mut draft: Matrix) &mut { draft.count += 1 }
 pub fn test_derived_answer() {
@@ -131,9 +132,10 @@ type Matrix = { mut values: [0][3]int }
 eff Read { get() -> int }
 fn invalid() {
     let revised = {
-        with Read::get() -> (resume 7) |> derive \mut draft: Matrix -> ()
+        with Read::get() -> (resume 7) |> derive \mut draft: Matrix -> { draft.values = [] }
         let _ = Read::get()
-        clone_immut(Matrix.{ values: [] })
+        let snapshot: Immut<Matrix> = clone(Matrix.{ values: [] })
+        snapshot
     }
     let values: [0][2]int = revised.values
 }

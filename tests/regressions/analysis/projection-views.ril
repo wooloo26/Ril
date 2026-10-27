@@ -29,7 +29,8 @@ pub fn test_native() {
     assert(alias_view((Some(packet), true)) == 7)
     assert(generic_view(Wrap<Packet>.{ packet: Some(packet) }) == 7)
     assert(array_view([Some(packet)]) == 7)
-    assert(frozen_view(clone_immut(.{ packet: Some(packet) })) == 7)
+    let snapshot: Immut<{ packet: ?Packet }> = clone(.{ packet: Some(packet) })
+    assert(frozen_view(snapshot) == 7)
 }
 
 -- [case: optional-child-views-pointer32, check-pass]

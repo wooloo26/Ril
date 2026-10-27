@@ -70,6 +70,8 @@ pub fn test_clone_cyclic_graph() {
     let view back = copied.following ?? panic("cycle missing")
     copied.value = 2
     assert(back.value == 2 && original.value == 1)
-    let frozen = clone_immut(copied)
-    assert(frozen == clone_immut(copied))
+    let frozen: Immut<Node> = clone(copied)
+    let second: Immut<Node> = clone(copied)
+    copied.value = 3
+    assert(frozen == second && frozen.value == 2 && copied.value == 3)
 }

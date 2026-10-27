@@ -86,7 +86,11 @@ type Cell = { mut count: int }
 fn example() {
     var saved = Cell.{ count: 0 }
     let base = Cell.{ count: 1 }
-    let result = base |> derive \mut draft -> { draft.count += 1; saved = clone_immut(draft) }
+    let result = base |> derive \mut draft -> {
+        draft.count += 1
+        let snapshot = clone(draft)
+        saved = snapshot
+    }
 }
 
 -- reject
@@ -108,7 +112,8 @@ type Cell = { mut count: int }
 fn example() {
     let mut item = Cell.{ count: 0 }
     let view seen = item
-    let result = clone_immut(seen) |> derive \mut draft -> { draft.count += 1 }
+    let snapshot = clone(seen)
+    let result = snapshot |> derive \mut draft -> { draft.count += 1 }
     item.count += 1
 }
 
@@ -175,7 +180,7 @@ type Cell = { mut count: int }
 
 fn example() {
     let mut value = Cell.{ count: 0 }
-    let frozen = clone_immut(value)
+    let frozen = clone(value)
     value.count += 1
 }
 
@@ -219,7 +224,8 @@ fn example() {
 -- accept
 fn example() {
     let mut items = [1, 2]
-    for clone_immut(items) as item { items !> Array::push(item) }
+    let snapshot = clone(items)
+    for snapshot as item { items !> Array::push(item) }
 }
 
 -- reject
@@ -506,7 +512,7 @@ pub fn test_clone_isolation() {
     let mut source = Cell.{ count: 1 }
     let view seen = source
     let mut detached = clone(seen)
-    let frozen = clone_immut(seen)
+    let frozen = clone(seen)
     source.count = 3
     detached.count = 2
     assert(seen.count == 3 && detached.count == 2 && frozen.count == 1)

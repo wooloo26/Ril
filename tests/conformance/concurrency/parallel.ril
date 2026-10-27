@@ -63,7 +63,10 @@ use ril/parallel
 halt fn square_all(numbers:Immut<[]f64>)->[]f64{
     numbers |> Parallel::map(\x->x*x)
 }
-pub fn test_native(){assert(square_all(clone_immut([1.5,2.0]))==[2.25,4.0])}
+pub fn test_native(){
+    let numbers: Immut<[]f64> = clone([1.5, 2.0])
+    assert(square_all(numbers) == [2.25, 4.0])
+}
 
 -- [case: square-all-live-read-input, check-fail]
 -- spec: STD#deterministic-data-parallelism-and-divide-and-conquer-primitives

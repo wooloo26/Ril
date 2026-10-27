@@ -30,7 +30,7 @@ use ril/concurrent::{scope, TaskFault}
 pub fn test_fold_fault_source_index() @Concurrent {
     let mut data: []int = []
     for 0..130 as index { Array::push(mut data, index) }
-    let input = clone_immut(data)
+    let input = clone(data)
     let result = scope \mut tasks -> {
         tasks.fork(\-> Parallel::fold(input, \-> 0,
             \sum, item -> { if item == 65 { panic("fold local") }; sum + item },
@@ -95,7 +95,8 @@ pub fn test_fold_group_boundaries() {
     for [0, 1, 63, 64, 65, 128, 129] as size {
         let mut data: []int = []
         for 0..size as _index { data !> Array::push(0) }
-        let value = Parallel::fold(clone_immut(data), \-> 10, \sum, item -> sum + item, \left, right -> left + right)
+        let snapshot = clone(data)
+        let value = Parallel::fold(snapshot, \-> 10, \sum, item -> sum + item, \left, right -> left + right)
         let groups = if size == 0 { 1 } else { (size + 63) / 64 }
         assert(value == groups * 10)
     }

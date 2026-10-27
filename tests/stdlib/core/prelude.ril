@@ -9,7 +9,7 @@ pub fn test_foundational_operations() {
     let original = [1, 2]
     let mut detached = clone(original)
     detached !> Array::push(3)
-    let snapshot = clone_immut(detached)
+    let snapshot = clone(detached)
     detached !> Array::push(4)
     assert(original == [1, 2] && snapshot == [1, 2, 3])
     let revised = .{ theme: "dark" } |> derive \mut draft -> { draft.theme = "light" }

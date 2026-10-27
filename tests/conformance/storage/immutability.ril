@@ -1,0 +1,74 @@
+-- [case: clone-let-immutable-publication, run-pass]
+-- spec: SPEC#deep-immutability
+-- spec: SPEC#parameter-modes-caller-obligations-and-defaults
+type Cell = { mut count: int }
+fn read(cell: Cell) -> int { cell.count }
+fn snapshot(cell: Cell) -> Immut<Cell> {
+    let copied = clone(cell)
+    copied
+}
+
+pub fn test_clone_let_immutable_publication() {
+    let mut source = Cell.{ count: 1 }
+    let implicit = clone(source)
+    let explicit: Immut<Cell> = clone(source)
+    let wrapped = snapshot(source)
+    source.count = 2
+    assert(read(source) == 2)
+    assert(read(implicit) == 1 && explicit.count == 1 && wrapped.count == 1)
+    let mut writable = clone(explicit)
+    writable.count = 3
+    assert(writable.count == 3 && explicit.count == 1)
+}
+
+-- [case: reject-live-immut-ascription, check-fail]
+-- spec: SPEC#deep-immutability
+-- companion: clone-let-immutable-publication
+-- Error [E0535]: A type annotation cannot publish an existing writer as immutable data.
+type Cell = { mut count: int }
+
+fn invalid() {
+    let mut source = Cell.{ count: 1 }
+    source.count = 2
+    let frozen: Immut<Cell> = source
+}
+
+-- [case: readonly-record-shape, run-pass]
+-- spec: SPEC#symmetrical-mapped-comprehensions
+-- spec: SPEC#record-types-and-row-polymorphism
+type Readonly = \T -> type<{ [K in keyof T]: T.(K) }>
+type Bag = { mut items: []int }
+meta let _ = assert(type<Readonly<Bag>> == type<{ items: []int }>)
+
+pub fn test_readonly_record_shape() {
+    let mut bag: Readonly<Bag> = .{ items: [1] }
+    bag.items !> Array::push(2)
+    assert(bag.items == [1, 2])
+}
+
+-- [case: reject-readonly-record-slot-write, check-fail]
+-- spec: SPEC#symmetrical-mapped-comprehensions
+-- companion: readonly-record-shape
+-- Error [E0520]: The mapped record removed the field's slot-replacement permission.
+type Readonly = \T -> type<{ [K in keyof T]: T.(K) }>
+type Bag = { mut items: []int }
+
+fn invalid() {
+    let mut bag: Readonly<Bag> = .{ items: [1] }
+    bag.items !> Array::push(2)
+    bag.items = []
+}
+
+-- [case: reject-readonly-record-immut-ascription, check-fail]
+-- spec: SPEC#symmetrical-mapped-comprehensions
+-- spec: SPEC#deep-immutability
+-- companion: readonly-record-shape
+-- Error [E0535]: Removing a field's mut marker does not establish immutable graph provenance.
+type Readonly = \T -> type<{ [K in keyof T]: T.(K) }>
+type Bag = { mut items: []int }
+
+fn invalid() {
+    let mut bag: Readonly<Bag> = .{ items: [1] }
+    bag.items !> Array::push(2)
+    let frozen: Immut<Readonly<Bag>> = bag
+}

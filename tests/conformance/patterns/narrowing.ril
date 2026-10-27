@@ -38,7 +38,7 @@ fn example() {
 -- accept
 type Cell = { mut value: ?int }
 fn example(mut cell: Cell, action: fn() -> ()) &mut {
-    let snapshot = clone_immut(cell)
+    let snapshot = clone(cell)
     if snapshot.value != None {
         action()
         let _ = snapshot.value + 1

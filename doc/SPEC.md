@@ -1092,7 +1092,7 @@ type Cell = { mut count: int }
 let mut source = Cell.{ count: 1 }
 let view observed = source
 let mut independent = clone(observed)
-let immutable: Immut<Cell> = clone_immut(observed)
+let immutable: Immut<Cell> = clone(observed) -- let publishes the fresh copy as immutable
 independent.count = 2
 source.count = 3
 assert(observed.count == 3)
@@ -1103,25 +1103,30 @@ assert(immutable.count == 1)
 
 - **Immutable Data**: `let` guarantees an immutable ordinary reachable graph, with sharing allowed. `Immut<T>` records this guarantee in the type; `Immut<Immut<T>> = Immut<T>`. Field declarations remain unchanged.
 - **Ordinary Clone**: `clone` separates the copy's writable storage from its source, preserving internal aliases and cycles. The receiver may choose immutable publication, read-only `var`, writable `let mut`/`var mut`, or a declared [fresh-value storage input](#fresh-values-in-storage-calls). A writable copy with possible internal writable aliases requires the local `^mut` sharing marker; distinct paths inside the copy are not necessarily disjoint.
-| Operation | Input | Result |
+| Operation | Input | Result before binding |
 | :--- | :--- | :--- |
-| `clone_immut` | `T` or `Immut<T>` | Independent immutable `Immut<T>` |
+| `clone` | `T` or an eligible view | Fresh `T`; receiving binding selects permissions |
 | `clone` | `Immut<T>` | Fresh `T`; explicit nested `Immut<U>` fields stay immutable |
 
-Both accept eligible view data and preserve field declarations.
-- **Copy Isolation**: Ordinary deep copying does not suspend, invoke user callbacks, or permit an overlapping write during the copy. Both operations preserve the source.
+Cloning preserves field declarations. Immutable publication belongs to `let`; an `Immut<T>` annotation records its proven result without another copy.
+- **Copy Isolation**: Ordinary deep copying does not suspend, invoke user callbacks, or permit an overlapping write during the copy. The source is preserved.
 - **Eligibility (`E0530`)**: Check every reachable ordinary constituent. Retained closure environments, scoped resources, tasks, unique receivers, and other non-clonable values cannot be hidden by wrapping or views.
 - Immutable environment-free function values are copyable. Opaque resources use only their explicit contracts.
 
 ```ril
 type Cell = { mut count: int }
 fn read(cell: Cell) -> int { cell.count }
+fn snapshot(cell: Cell) -> Immut<Cell> {
+    let copied = clone(cell)
+    copied
+}
 let original = Cell.{ count: 1 }
 let explicit: Immut<Cell> = original
 assert(read(explicit) == 1)
 -- let mut upgraded: Cell = explicit   -- Error [E0520]: removing a qualifier does not grant writes
 let mut live = Cell.{ count: 1 }
 live.count += 1
+assert(read(live) == 2)                -- Plain parameters accept live read-only access
 -- let invalid: Immut<Cell> = live     -- Error [E0535]: an ascription cannot freeze a live graph
 ```
 
@@ -1264,7 +1269,7 @@ assert(inserted.left.count == 11)
 
 #### Normative Rules for Functional Updates
 
-- **Input (`E0536`)**: `derive` accepts immutable ordinary data; snapshot a live source with `clone_immut` first. Input `T` yields immutable `T`; input `Immut<T>` yields `Immut<T>`.
+- **Input (`E0536`)**: `derive` accepts immutable ordinary data; publish a live source's copy with `let snapshot = clone(live)` first. Input `T` yields immutable `T`; input `Immut<T>` yields `Immut<T>`.
 - **Draft**: The recipe receives `mut draft`, returns `()`, and may replace fields regardless of their original `mut` markers. An `Immut<T>` draft exposes T under this confined permission; output field declarations remain unchanged.
 - **Identity**: Each source object has one draft counterpart, including newly inserted immutable references. Repeated references and cycles are preserved; all draft aliases see the same changes.
 - **Sharing**: Copy every affected value/reference region, including changes needed to preserve graph identity. Unaffected immutable regions may be shared. Neither unique ownership nor a new root for a no-op recipe is guaranteed.
@@ -1277,7 +1282,7 @@ let mut current = Cell.{ count: 0 }
 let view live = current
 -- let invalid = live |> derive \mut draft -> { draft.count += 1 }
 -- Error [E0536]: derive requires immutable input
-let snapshot = clone_immut(live)
+let snapshot = clone(live)
 let version = snapshot |> derive \mut draft -> { draft.count += 1 }
 current.count += 1
 assert(snapshot.count == 0 && version.count == 1)
@@ -1835,7 +1840,7 @@ assert(read_count() == 6)               -- Live origin plus immutable data
 let immutable = Cell.{ count: 1 }
 -- let view bad_immut = immutable      -- Error [E0531]: immutable data has no eligible live origin
 -- let view bad_new = Cell.{ count: 0 } -- Error [E0543]: independent new data is not a live origin
-let snapshot = clone_immut(observed)   -- OK: independent snapshot, not a live alias
+let snapshot = clone(observed)         -- OK: let publishes an independent immutable copy
 
 -- Reassignable live view cursor:
 var view cursor = cell1
@@ -3191,7 +3196,7 @@ fn known_writer(mut cell: Cell) &mut {
 
 -- OK: the same unknown callback cannot change an independent immutable snapshot.
 fn snapshot_before_callback(mut cell: Cell, action: fn() -> ()) &mut {
-    let snapshot = clone_immut(cell)
+    let snapshot = clone(cell)
     if snapshot.value != None {
         action()
         let after = snapshot.value + 1        -- OK: snapshot.value remains narrowed to int
@@ -3843,7 +3848,8 @@ cells[1].count += 1
 assert(shared.count == 2)
 
 let mut holders: []Holder = []
-holders !> Array::push(Holder.{ child: clone_immut(shared) })
+let snapshot: Immut<Cell> = clone(shared)
+holders !> Array::push(Holder.{ child: snapshot })
 -- let mut child = ^mut holders[0].child -- Error [E0520]: fresh outer data preserves nested Immut
 ```
 
@@ -5691,6 +5697,18 @@ Sum `keyof` lists declared variant names even when a supplied index excludes a v
 - **Single-Element Tuple Prohibition (`E0343`)**: A mapped tuple comprehension evaluated over an index array of length 1 is statically rejected at compile time, preserving the invariant that Ril has no 1-tuples.
 
 ```ril
+type Readonly = \T -> type<{ [K in keyof T]: T.(K) }>
+type Bag = { mut items: []int }
+type FixedFields = Readonly<Bag>        -- { items: []int }; nested type unchanged
+let mut bag: FixedFields = .{ items: [1] }
+bag.items !> Array::push(2)            -- OK: removing slot mut does not freeze the array
+-- bag.items = []                    -- Error [E0520]: the field slot is read-only
+-- let frozen: Immut<FixedFields> = bag -- Error [E0535]: a writer still survives
+```
+
+`Readonly` is an ordinary record-shape type function; `Immut<T>` requires immutable graph provenance.
+
+```ril
 -- Records:
 type User = { id: int, name: str, active: bool }
 meta let USER_KEYS: []str = keyof User         -- ["active", "id", "name"] (UTF-8 sorted)
@@ -6063,7 +6081,7 @@ let original = [1, 2, 3]
 let mut detached = clone(original)
 detached !> Array::push(4)
 assert(original == [1, 2, 3] && len(detached) == 4)
-let snapshot: Immut<[]int> = clone_immut(detached)
+let snapshot: Immut<[]int> = clone(detached)
 let revised = .{ theme: "dark" } |> derive \mut draft -> {
     draft.theme = "light"
 }
@@ -6085,7 +6103,6 @@ Ril defines the following built-in foundational operations directly in the langu
 | `len` | `len(value) -> int` | Pure | Dual-phase | $O(1)$ / $O(n)$ text | Count of elements, entries, bytes, or Unicode scalars |
 | `inner` | `inner(wrapper) -> T` | Pure | Runtime | $O(1)$ | Unwraps a nominal wrapper to its underlying payload; unit nominal yields `()` |
 | `clone` | `clone(value) -> T` | Pure | Runtime | $O(\text{graph})$ | Deep isolated ordinary graph copy; preserves internal aliases and cycles |
-| `clone_immut` | `clone_immut(value) -> Immut<T>` | Pure | Runtime | $O(\text{graph})$ | Independent deeply immutable snapshot |
 | `derive` | `derive(base, recipe) -> T` | Forwards recipe | Runtime | $O(\text{affected})$ | Functional update on immutable value via confined mutable draft |
 | `byte_size` | `meta fn byte_size<T>(value: type<T>) -> int` | Pure | Static only | $O(1)$ | Size in bytes of $T$'s value/handle on abstract target |
 | `type_name` | `meta fn type_name<T>(value: type<T>) -> str` | Pure | Static only | $O(\text{len})$ | Canonical string representation of $T$ for static diagnostics |
@@ -6107,9 +6124,9 @@ Ril defines the following built-in foundational operations directly in the langu
   - Unwraps nominal type wrappers to their underlying declared representation ([Nominal Type Wrappers](#nominal-type-wrappers)).
   - Single-payload nominal wrapper `type UserId(int)` unwraps to its payload (`int`). Unit nominal wrapper `type Marker` unwraps to `()`.
   - Nominal abstraction boundaries remain sealed across modules; `inner` cannot bypass opaque module access restrictions.
-- **Graph Isolation Invariants (`clone`, `clone_immut`)**:
+- **Graph Isolation Invariants (`clone`)**:
   - `clone` creates an independent, isolated copy of an ordinary reachable graph, severing writable storage from the source while preserving internal aliases, shared references, and cyclic structures ([Deep Immutability](#deep-immutability)).
-  - `clone_immut` creates an independent, deeply immutable `Immut<T>` snapshot from an eligible value or view.
+  - Receiving an eligible fresh copy with `let` publishes immutable data; `let copy: Immut<T> = clone(value)` additionally records that guarantee in its type.
   - Non-clonable entities (retained closure environments, live tasks, unique receivers, and scoped resources) cannot be cloned through views or wrappers (`E0530`).
   - Cloning a channel `Sender` obeys the channel endpoint resource contract and requires `@Fiber`.
   - Copying costs $O(\text{graph})$ for the reachable ordinary graph inspected and copied; no storage-sharing guarantee is made for mutable copies.
@@ -6323,7 +6340,7 @@ This index assigns each code its diagnostic name and points to its defining rule
 | **`E0527`** | [`UnusedMutableBindingError`](#binding-permissions-and-storage-matrix) |
 | **`E0528`** | [`ReturnMutabilityLaunderingError`](#monotonic-permission-degradation-and-anti-laundering-matrix) |
 | **`E0529`** | [`ExcessiveCapabilityAnnotationError`](#retained-mutable-sharing); [Named Function State Contract References](#named-function-state-contract-references) |
-| **`E0530`** | [`IllegalCapabilityCloneImmutError`](#deep-immutability) |
+| **`E0530`** | [`IllegalCapabilityCloneError`](#deep-immutability) |
 | **`E0531`** | [`ImmutableTargetViewError`](#live-view-bindings) |
 | **`E0532`** | [`ReassignableScopedResourceError`](#scoped-resource-bindings) |
 | **`E0533`** | [`AliasedNarrowingHazardError`](#flow-sensitive-type-narrowing) |

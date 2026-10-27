@@ -233,7 +233,8 @@ type Cell = { mut count: int }
 type Holder = { mut count: int, child: Immut<Cell> }
 
 pub fn test_nested_immutable_field() {
-    let holder = Holder.{ count: 0, child: clone_immut(Cell.{ count: 7 }) }
+    let snapshot: Immut<Cell> = clone(Cell.{ count: 7 })
+    let holder = Holder.{ count: 0, child: snapshot }
     let mut values: []Holder = []
     values !> Array::push(clone(holder))
     values[0].count += 1
@@ -250,7 +251,8 @@ type Cell = { mut count: int }
 type Holder = { mut count: int, child: Immut<Cell> }
 
 fn example() {
-    let holder = Holder.{ count: 0, child: clone_immut(Cell.{ count: 7 }) }
+    let snapshot: Immut<Cell> = clone(Cell.{ count: 7 })
+    let holder = Holder.{ count: 0, child: snapshot }
     let mut values: []Holder = []
     values !> Array::push(clone(holder))
     let mut child = ^mut values[0].child
@@ -339,7 +341,8 @@ type Cell = { mut count: int }
 
 fn example() {
     let mut values: [str: Cell] = [:]
-    values !> Map::set("a", clone_immut(Cell.{ count: 1 }))
-    let mut item = ^mut (values["a"] ?? panic("missing a"))
+    let snapshot = clone(Cell.{ count: 1 })
+    values !> Map::set("a", snapshot)
+    let mut item = ^mut (values?["a"] ?? panic("missing a"))
     item.count += 1
 }

@@ -106,7 +106,7 @@ The following names are available without imports. Local declarations may shadow
 | `Options`, `Results` | `ril/option`, `ril/result` | Prelude module aliases |
 | `Array`, `Map`, `String` | `ril/array`, `ril/map`, `ril/string` | Module namespaces |
 | `Set<T>`, `Set` | `ril/set` | One predefined declaration with type and namespace roles |
-| `inner`, `clone`, `clone_immut`, `derive`, `len` | Language built-ins | Language-level foundational operations ([SPEC#built-in-foundational-operations](SPEC.md#built-in-foundational-operations)) |
+| `inner`, `clone`, `derive`, `len` | Language built-ins | Language-level foundational operations ([SPEC#built-in-foundational-operations](SPEC.md#built-in-foundational-operations)) |
 | `byte_size` | Language built-in | Static layout query ([SPEC#compile-time-execution-and-layout-cooperation](SPEC.md#compile-time-execution-and-layout-cooperation)) |
 | `panic`, `assert`, `print`, `println` | Language built-ins | Defect and output operations ([SPEC#built-in-foundational-operations](SPEC.md#built-in-foundational-operations)) |
 
@@ -1451,11 +1451,15 @@ use ril/parallel
 halt fn square_all(numbers: Immut<[]f64>) -> []f64 {
     numbers |> Parallel::map(\x -> x * x)
 }
+let mut live = [1.5, 2.0]
+live[0] = 3.0
+let snapshot: Immut<[]f64> = clone(live)
+assert(square_all(snapshot) == [9.0, 4.0])
 let first = [10, 20, 30, 40] |> Parallel::find(\x -> x > 25)
 assert(first == Some(30))
 ```
 
-An ordinary read-only `numbers: []f64` parameter can still be a live view and is not equivalent to `Immut<[]f64>`. A caller with live data may explicitly construct `clone_immut(numbers)` before passing it to a pure parallel collection operation.
+An ordinary read-only `numbers: []f64` parameter can still denote live data; pure parallel inputs require immutable provenance, as declared by `Immut<[]f64>` above.
 
 #### Callback Requirements
 
@@ -1494,7 +1498,7 @@ let biased = Parallel::fold(
 assert(biased == 13)                  -- One group, not two one-element groups
 let mut zeros: []int = []
 for 0..65 as _index { zeros !> Array::push(0) }
-let snapshot = clone_immut(zeros)
+let snapshot = clone(zeros)
 let grouped = Parallel::fold(
     snapshot, \-> 10, \acc, x -> acc + x, \left, right -> left + right,
 )
@@ -1604,7 +1608,7 @@ Sender/Receiver/Detached are scope-owned opaque resources that may enter `let`. 
 | Immutable Sender captured by a child | Clone-source only; no send/close/detach or acquisition of owner authority (`E0603`), even through aggregates/closures |
 | Owner close/detach while borrowed | Suspended until every borrowing task's terminal join or the scope's child barrier (`E0603`) |
 | Child progress, discarded Task, or last use of Sender | Do not end a clone-source borrow |
-| Clone Receiver/Detached; endpoint `clone_immut` | `E0530`, including inside containers |
+| Clone Receiver/Detached or an ordinary graph containing endpoints | `E0530`; only the explicit Sender clone contract is exempt |
 | Endpoint `derive` | `E0536`, including inside containers |
 
 ```ril

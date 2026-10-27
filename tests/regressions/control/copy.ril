@@ -31,7 +31,7 @@ pub fn test_native(){
     assert(child.left?.value==Some(12))
     assert(child.right?.value==Some(11))
     assert(head.value==3 && tail.value==4)
-    let snapshot=clone_immut(head)
+    let snapshot=clone(head)
     head.value=30
     tail.value=40
     assert(snapshot.value==3)
