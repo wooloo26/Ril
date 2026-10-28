@@ -519,16 +519,15 @@ fn on_event(ev: Event, _ctx: Context) -> () { handle(ev) } -- OK: '_ctx' is a pa
 
 ### Keywords
 
-The following 35 tokens are reserved; they cannot be ordinary identifiers or field labels:
+The following 36 tokens are reserved; they cannot be ordinary identifiers or field labels:
 
 ```
-as       eff      else     false    fn
-for      halt     if       in       is
-keyof    last     let      loop     match
-meta     module   mut      never    new
-next     opaque   pub      ref      resume
-return   scoped   true     type     typeof
-use      var      where    while    with
+as       eff      else     false    fn       for
+halt     if       in       is       keyof    last
+let      loop     match    meta     modeof   module
+mut      never    new      next     opaque   pub
+ref      resume   return   scoped   true     type
+typeof   use      var      where    while    with
 ```
 
 ```ril
@@ -1368,11 +1367,11 @@ assert(snapshot.count == 0 && version.count == 1)
 fn log_id<T: { id: int, ..R }>(item: T) -> int { item.id }
 ```
 
-Generics admit type, const-value, and [static-key](#static-key-parameters-and-computed-value-projection) parameters. They apply to data, wrapper, sum, and callable declarations.
+Generics admit type, const-value, member-mode, and [static-key](#static-key-parameters-and-computed-value-projection) parameters. They apply to data, wrapper, sum, and callable declarations.
 
 ```ebnf
 GenericParams         ::= "<" GenericParamDecl { "," GenericParamDecl } [ "," ] ">"
-GenericParamDecl      ::= TypeParamDecl | ConstParamDecl | StaticKeyParamDecl
+GenericParamDecl      ::= TypeParamDecl | ConstParamDecl | StaticKeyParamDecl | ModeParamDecl
 TypeParamDecl         ::= PascalCase [ TypeConstraint ] [ "=" TypeExpression ]
 TypeConstraint        ::= [ ":" TypeSort ] { "|>" PipelineConstraint }
 TypeSort              ::= TypeSetSort | "Type" | KindSignature | RecordConstraint
@@ -1386,11 +1385,14 @@ KeyofConstraint       ::= "keyof" TypeExpression
 GenericArgs           ::= "<" GenericArg { "," GenericArg } [ "," ] ">"
 GenericArg            ::= TypeExpression | Expression
 StaticKeyParamDecl    ::= PascalCase ":" KeyofConstraint [ "=" Expression ]
+ModeParamDecl         ::= PascalCase ":" ModeSortReference [ "=" ( MemberMode | QualifiedName ) ]
+ModeSortReference     ::= [ "ril/reflect::" ] "MemberMode"
 ValueType             ::= TypeExpression
 ```
 
 - **Trailing Defaults Invariant (`E0316`)**: If a generic parameter declares a default argument (`= Default`), all subsequent generic parameters in the same parameter list MUST declare default arguments.
 - **Telescopic Left-to-Right Scoping Invariant (`E0320`)**: A default argument expression $D_i$ may reference generic parameters declared to its left ($X_1, \dots, X_{i-1}$). Forward references and direct/indirect circular dependencies are statically rejected (`E0320`).
+- **Member Mode Sorts (`M: MemberMode`, `E0356`)**: A generic parameter may constrain its sort to `MemberMode` (`M: MemberMode`). The metatype `MemberMode` is an ambient sort available across static definitions, and is re-exported via `ril/reflect::MemberMode`. Arguments must evaluate to a valid member mode (either a member mode literal `var`, `mut`, `ref`, `var mut`, `var ref`, an expression yielding `MemberMode`, or `MemberMode::Let`). Supplying an incompatible type or non-mode sort triggers `E0356: InvalidModeSortError`.
 - **Generic Closed Type Sets (`TypeSetSort`, `E0301`)**: A generic parameter may constrain its admitted domain to a finite union of types (`T: int | f64`). Unlike value-level untagged unions (`E0318`), a type set constraint does not create an untagged runtime union type; monomorphization specializes $T$ to each concrete member. The compiler performs definition-site polyvariant type checking across all member types $\tau \in \{T_1, \dots, T_n\}$, verifying that the generic body's operations are well-typed for every alternative. Supplying a type outside the set triggers `E0301: TypeMismatchError`.
 - **Pipeline Type Constraints (`T |> Guard`, `E0301`, `E0306`)**: A type parameter may pipe into one or more pure type functions (`T |> Numeric`). The guard must be a compile-time pure `type` function of kind `Type -> Type` (`E0306`). An argument type $T_{arg}$ satisfies the guard if and only if:
   $$\text{Valid}(T_{arg}) \iff T_{arg} \not\equiv \text{never} \quad \wedge \quad \text{Guard}\langle T_{arg} \rangle \equiv T_{arg}$$
@@ -2239,7 +2241,8 @@ Expression      ::= Literal | QualifiedName [ GenericArgs ] | EffectOperationRef
                   | IfExpr | LoopExpr | WhileExpr | ForExpr | ControlTransfer
                   | ResumeExpr | AssignmentExpr | UnaryExpr | BinaryExpr | SharingExpr | ConstructionTransferExpr
                   | MemberExpr | IndexExpr | RangeExpr | IsExpr
-                  | Expression "?" | TypeQuoteExpr | "keyof" TypeExpression
+                  | Expression "?" | TypeQuoteExpr | "keyof" TypeExpression | ModeProjectionExpr
+ModeProjectionExpr ::= "modeof" TypeProjection
 UnaryExpr       ::= ( "-" | "!" | "~" ) Expression
 ConstructionTransferExpr ::= "new" Expression
 BinaryExpr      ::= Expression BinaryOperator Expression
@@ -2256,7 +2259,7 @@ IndexExpr       ::= Expression ( "[" | "?[" ) Expression "]"
 | Level | Operators | Associativity | Description |
 | :---: | :--- | :---: | :--- |
 | **1** | `.` `?.` `?[` `[]` `()` `::` postfix `?` | Left | Member access, safe navigation, indexing, invocation, postfix `?`; a type quote is a primary operand |
-| **2** | `-` `!` `~` `typeof` `^mut` | Unary Prefix | Arithmetic negation, logical NOT, bitwise NOT, static type introspection, explicit local writable sharing |
+| **2** | `-` `!` `~` `typeof` `keyof` `modeof` `^mut` | Unary Prefix | Arithmetic negation, logical NOT, bitwise NOT, static introspection (typeof, keyof, modeof), explicit local writable sharing |
 | **3** | `*` `/` `%` `/?` `%?` `*%` | Left | Multiplication, division, remainder, safe division/remainder, wrapping mul |
 | **4** | `+` `-` `+%` `-%` | Left | Addition, subtraction, wrapping add/sub |
 | **5** | `<<` `>>` | Left | Bitwise shift left, bitwise shift right |
@@ -6299,11 +6302,13 @@ Static callbacks capture symbolic constants. Mutable resources, handlers, and or
 Both branches still obey syntax, name resolution, and ordinary type compatibility. Type tokens expose no callable-value effects/provenance; no built-in `is_pure` exists.
 ### Unified Tripartite Introspection
 
-Ril unifies compile-time introspection across all three composite data forms (Records, Sum Types, Tuples) under a single operator pair: `keyof T` and constituent projection `T.(K)`.
+Ril unifies compile-time introspection across all composite data forms under coordinate indexing `keyof T`, constituent projection `T.(K)`, and member mode projection `modeof T.(K)`.
 
 ```ebnf
-MappedRecordType ::= "{" [ MemberMode ] "[" PascalCase "in" Expression "]" ":" TypeExpression "}"
-MappedTupleType  ::= "(" [ MemberMode ] "[" PascalCase "in" Expression "]" ":" TypeExpression ")"
+MappedRecordType   ::= "{" [ ModeExpression ] "[" PascalCase "in" Expression "]" ":" TypeExpression "}"
+MappedTupleType    ::= "(" [ ModeExpression ] "[" PascalCase "in" Expression "]" ":" TypeExpression ")"
+ModeExpression     ::= MemberMode | ModeProjectionExpr | PascalCase | "(" Expression ")"
+ModeProjectionExpr ::= "modeof" TypeProjection
 ```
 
 #### Universal Coordinate Indexing
@@ -6361,15 +6366,30 @@ type IntPayload = Expr<int>.Int       -- int
 
 Sum `keyof` lists declared variant names even when a supplied index excludes a variant. A GADT payload projection must satisfy the selected constructor's result equation under the existing constraints and recover each variant-local parameter. An incompatible or unresolved equation is `E0301`. Projection introduces no new ambient type equality; membership in `keyof` alone does not prove that a variant is possible.
 
+#### Universal Member Mode Projection
+For a product type $T$ (Record or Tuple) and coordinate key $K \in \text{keyof } T$, `modeof T.(K)` statically projects the declared `MemberMode` of that coordinate:
+- **Records**: `modeof User.id` or `modeof User.("id")` resolves to the field's declared `MemberMode` (`MemberMode::Let` for default immutable members, `MemberMode::Var`, `MemberMode::Mut`, `MemberMode::VarMut`, `MemberMode::Ref`, or `MemberMode::VarRef`).
+- **Tuples**: `modeof Pair.0` or `modeof Pair.(0)` resolves to the positional component's declared `MemberMode`.
+- **Target Restriction (`E0358`)**: `modeof` is strictly confined to product types (records and tuples). Applying `modeof` to a sum type variant, non-composite type, or nonexistent field label triggers `E0358: InvalidModeProjectionTargetError`.
+
+In mapped comprehensions, `modeof T.(K)` appears directly before the coordinate bracket without grouping parentheses:
+```ril
+type Pick = \T: { ..never }, included: []str -> {
+    let valid_keys = keyof T |> Array::filter(\k -> included |> Array::contains(k))
+    <{ modeof T.(K) [K in valid_keys]: T.(K) }>
+}
+```
+
 #### Symmetrical Mapped Comprehensions
 - **Mapped Records**: `{ [K in Expr]: TypeExpr }` requires static `[]str`; integer keys are `E0341`. Duplicate/invalid labels are `E0210`/`E0102`; ADT tables may use PascalCase constructor labels.
-- Mapped members default to immutable; an explicit `MemberMode` applies to every generated member. `T.(K)` projects the member's data type, not its binding mode. Records and sums use the same mapping form:
+- Mapped members default to immutable; an explicit `ModeExpression` (`MemberMode` literal, `modeof` projection, or static mode parameter) applies to generated members. `T.(K)` projects the member's data type, not its binding mode. Records and sums use the same mapping form:
   ```ril
   -- Generic visitor / handler table valid for BOTH records and sum types:
   type SchemaTable = \T -> <{
       [K in keyof T]: T.(K)
   }>
   ```
+- **Zero Implicit Downgrade Invariant (`E0402`, `E0357`)**: Mapped comprehensions enforce strict, explicit member mode assignments. If a mapped comprehension attempts to assign `mut`, `var mut`, `ref`, or `var ref` to a value type (such as scalar `int`, `f64`, `bool`, `str`), the compiler **strictly rejects** the type instantiation with `E0402: ValueTypeReferenceModeError` (or `E0357: IncompatibleMemberModeError`). Zero implicit coercion or automatic silent fallback occurs. If distinct modes are needed across different constituent types, the programmer must explicitly formulate the logic using type-level pattern matching or conditional type functions.
 - **Mapped Tuples (`( [I in Expr]: TypeExpr )`)**: `Expr` MUST evaluate to compile-time `[]int`. Supplying `[]str` triggers `E0342: InvalidTupleKeySortError`.
 - **Single-Element Tuple Prohibition (`E0343`)**: A mapped tuple comprehension evaluated over an index array of length 1 is statically rejected at compile time, preserving the invariant that Ril has no 1-tuples.
 
@@ -6394,9 +6414,9 @@ meta let USER_KEYS: []str = keyof User         -- ["active", "id", "name"] (UTF-
 type UserId = User.id                          -- int
 type UserName = User.("name")                  -- str
 
-type Pick = \T, included: []str -> {
+type Pick = \T: { ..never }, included: []str -> {
     let valid_keys = keyof T |> Array::filter(\k -> included |> Array::contains(k))
-    <{ [K in valid_keys]: T.(K) }>
+    <{ modeof T.(K) [K in valid_keys]: T.(K) }>
 }
 type PublicUser = Pick<User, ["id", "name"]>   -- { id: int, name: str }
 
@@ -6451,14 +6471,15 @@ PrimitivePattern ::= PrimitiveType
 TypeArrayPattern ::= "[" [ Expression ] "]" TypePatternInner
 TypeMapPattern  ::= "[" TypePatternInner ":" TypePatternInner "]"
 TypeRecordPattern ::= "{" [ TypePatternField { "," TypePatternField } [ "," TypeRestPattern ] [ "," ] ] "}"
-TypePatternField ::= [ MemberMode ] FieldLabel ":" TypePatternInner
-TypePatternMember ::= [ MemberMode ] TypePatternInner
+TypePatternField ::= [ ModePattern ] FieldLabel ":" TypePatternInner
+TypePatternMember ::= [ ModePattern ] TypePatternInner
+ModePattern      ::= MemberMode | "let" PascalCase
 TypeTuplePattern ::= "(" ")" | "(" TypePatternMember "," ( TypeRestPattern | TypePatternMember { "," TypePatternMember } [ "," TypeRestPattern ] [ "," ] ) ")"
 TypeRestPattern ::= ".." "let" PascalCase
 ```
 
 - **Scoped Pattern Variables (`let U`)**: A `let U` binder inside `<P>` introduces an immutable target-type variable scoped strictly to the arm's guard and RHS. `U` MUST be `PascalCase` (`E0101`); it alone proves no record structure or fields.
-- **Member Modes**: Structural type patterns match declared member modes exactly; omission means the default mode. Row/tuple rests preserve remaining member modes. The `let U` type-variable binder is not a member modifier and remains explicit.
+- **Member Modes and Mode Pattern Binders (`let M`)**: Structural type patterns match declared member modes exactly; omission means the default mode. A member mode may be explicitly matched against concrete modes (`var`, `mut`, etc.) or captured via a scoped mode variable `let M` (e.g. `<(let M let Head, ..let Tail)>` or `<{ let M field: let Type, ..let Rest }>`), where `M` is bound to the matched coordinate's `MemberMode`. Row/tuple rests preserve remaining member modes. The `let U` type-variable binder remains explicit.
 - **Linearity Invariant**: Pattern variables MUST be linear; repeating the same identifier within a pattern branch is statically rejected (`E0347: DuplicatePatternBindingError`). Multi-position equality is asserted via explicit guards (`if <A> == <B>`).
 - **Tuple Rest**: A type-pattern rest is a tuple type of the remaining components; an empty rest is unit. A one-component rest cannot form a tuple and fails that pattern, allowing the next arm to match. It is not silently coerced to its component type.
 - **Rigid Application Head (`E0306`)**: Require a known rigid type constructor; no head binding or inverse type-function matching. Transparent aliases may expand. Primitive/structural patterns and whole-type `_`/`let U` remain legal.
@@ -7045,6 +7066,9 @@ This index assigns each code its diagnostic name and points to its defining rule
 | **`E0353`** | [`NullaryVariantCallError`](#constructor-tuple-equivalence-invariant) |
 | **`E0354`** | [`InvalidVariantContractError`](#sum-types-and-gadts) |
 | **`E0355`** | [`NonIterableValueError`](#loop-expressions) |
+| **`E0356`** | [`InvalidModeSortError`](#generic-parameters-defaults-and-value-sorts) |
+| **`E0357`** | [`IncompatibleMemberModeError`](#symmetrical-mapped-comprehensions); [Record Types and Row Polymorphism](#record-types-and-row-polymorphism) |
+| **`E0358`** | [`InvalidModeProjectionTargetError`](#universal-member-mode-projection) |
 
 ### Parameters, Argument Modes, and Defaults
 
