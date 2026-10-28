@@ -1654,14 +1654,22 @@ Binding and origin permissions govern access. Effects govern evaluation and hand
 | `let ref` | No (`E0502`) | No (`E0520`) | Fixed read-only reference; may observe live data |
 | `var ref` | Yes | No (`E0520`) | Read-only reference cursor; immutable or live target |
 
+Plain `let` and plain `var` may initialize from one another, subject to ordinary type compatibility and deep-immutability checks. An existing plain `var` may also be reassigned from either. Each receiver has its own slot: value types are copied by value, while reference data shares the currently selected immutable object with its provenance preserved. No live link to the source slot is established, and later source reassignment does not retarget an earlier receiver. This interchange neither freezes nor copies writable data and does not relax the `mut` / `ref` reception rules below.
+
 ```ril
+let initial = 1
+var number = initial                   -- let -> var: copy the scalar value
+let saved_number = number              -- var -> let: copy its current scalar value
+number = 2
+assert(initial == 1 && saved_number == 1 && number == 2)
+
 type Document = { var title: str }
 let doc1 = Document.{ title: "Doc 1" }
 let doc2 = Document.{ title: "Doc 2" }
 
-var selected = doc1
-let saved = selected                   -- Shares doc1; does not follow the selected slot
-selected = doc2
+var selected = doc1                    -- let -> var: share the immutable object
+let saved = selected                   -- var -> let: share doc1, not the selected slot
+selected = doc2                        -- Reassign only selected; saved still shares doc1
 assert(saved.title == "Doc 1" && selected.title == "Doc 2")
 
 let mut draft = clone(doc1)
