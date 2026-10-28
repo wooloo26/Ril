@@ -545,7 +545,7 @@ type Config = { capture: bool }       -- OK: capture is an ordinary field label
 
 A reserved keyword used as an ordinary identifier or field label is `E0113`.
 
-`capture`, `up`, and `sub` remain ordinary identifiers. They have contextual roles in capability annotations: `&capture` is a capability annotation, bare `&up` is a callable-type environment abstraction, `&up(){...}` is a captured-source group, and `&up(sub){...}` is a module-storage group. In `&up(owner){...}`, an owner other than the literal `sub` identifies an enclosing callable layer. Within these parentheses, the literal `sub` selects module storage before name resolution; it is never interpreted as a capture owner or a state item. See [State Groups and Captured Layers](#state-groups-and-captured-layers).
+`capture`, `up`, and `sub` remain ordinary identifiers. They have contextual roles in capability annotations: `&capture` is a capability annotation, bare `&up` is a callable-type environment abstraction, `&up{...}` is a captured-source group, and `&up(sub){...}` is a module-storage group. In `&up(owner){...}`, an owner other than the literal `sub` identifies an enclosing callable layer. Within these parentheses, the literal `sub` selects module storage before name resolution; it is never interpreted as a capture owner or a state item. See [State Groups and Captured Layers](#state-groups-and-captured-layers).
 
 ```ril
 -- Reserved keywords in action:
@@ -2838,7 +2838,7 @@ fn read_after_init() -> int {
     let value = 1
     read_value()                       -- OK
 where
-    fn read_value() &up(){value} -> int { value }
+    fn read_value() &up{value} -> int { value }
 }
 ```
 
@@ -3479,7 +3479,7 @@ fn test_non_binding_predicate(g: Geometry) -> () {
 fn test_latent_havoc() -> () {
     var count: ?int = Some(10)
     if count != None {
-        let mut step = \&up(){mut count} -> { count = None }
+        let mut step = \&up{mut count} -> { count = None }
         step()                                 -- Mutating call invalidates 'count'
         -- let bad_use = count + 1             -- Error [E0310]: variable 'count' was narrowed to 'int', but refinement was invalidated by mutating call 'step()'; current flow type is '?int'
     }
@@ -3760,7 +3760,7 @@ type MutatorWithOpenState = fn(mut Cell) &mut & -> ()
 | Standalone `&` | Open capability dimension; written capability clauses remain requirements and additional actual obligations are preserved |
 | `@&` | The combined spelling of open effects and open capabilities |
 
-Only a whole effect dimension is opened: this version has no partial-effect-row form or source-level effect-row parameter. Capability openness may accompany concrete requirements such as `&mut`, `&up(sub){...}`, `&up(){...}`, or `&return{...}`. Opening one dimension leaves the other closed. An open marker is never permission to perform an operation, obtain a writable handle, retain an argument, or erase an actual obligation. An arrow cannot combine open capabilities (`&` or `@&`) with the explicit closed-total assertion `&{}` (`E0547`); use an effect-only `@` when capabilities must remain empty.
+Only a whole effect dimension is opened: this version has no partial-effect-row form or source-level effect-row parameter. Capability openness may accompany concrete requirements such as `&mut`, `&up(sub){...}`, `&up{...}`, or `&return{...}`. Opening one dimension leaves the other closed. An open marker is never permission to perform an operation, obtain a writable handle, retain an argument, or erase an actual obligation. An arrow cannot combine open capabilities (`&` or `@&`) with the explicit closed-total assertion `&{}` (`E0547`); use an effect-only `@` when capabilities must remain empty.
 
 Explicit empty rows are admitted on first-order and higher-order callable types and definitions. A named definition may spell an empty row when its completed contract satisfies it; otherwise the applicable contract diagnostic rejects it. Anonymous definitions infer their full contracts without a source-completion obligation, and any explicit annotations are checked against that inference. Named definitions still complete their concrete effect/state/return annotations; symbolic obligations genuinely inherited from callable parameters are inferred and preserved.
 
@@ -4875,7 +4875,7 @@ StateCapability     ::= "&mut" | "&^mut" | "&up" | "&capture" | "&" "{" "}"
                       | GlobalStateGroup | CapturedStateGroup
                       | ReturnDependencyGroup | StateContractRef
 GlobalStateGroup    ::= "&up" "(" "sub" ")" "{" StateItemList "}"
-CapturedStateGroup  ::= "&up" "(" [ CaptureOwner ] ")" "{" StateItemList "}"
+CapturedStateGroup  ::= "&up" [ "(" CaptureOwner ")" ] "{" StateItemList "}"
 ReturnDependencyGroup ::= "&return" "{" ReturnDependencyList "}"
 ReturnDependencyList ::= ReturnDependency { "," ReturnDependency } [ "," ]
 ReturnDependency    ::= ( "ref" | "^mut" ) QualifiedName
@@ -4890,7 +4890,7 @@ StateContractRef    ::= "&" QualifiedName
 | :--- | :--- | :--- |
 | `&up` | Callable-type environment abstraction | Actual captured origins remain in verified metadata |
 | `&up(sub){mut cache, CONFIG}` | Current invocation's module-storage access | Module bindings |
-| `&up(){mut count}` | Current invocation's captured access | Directly enclosing callable layer |
+| `&up{mut count}` | Current invocation's captured access | Directly enclosing callable layer |
 | `&up(outer_layer){mut count}` | Current invocation's farther named capture | The resolved binding must belong to `outer_layer` |
 | `&return{ref x, ^mut y}` | Possible contained dependencies of the returned graph | Formal parameters or visible external/captured origins |
 
@@ -4908,7 +4908,7 @@ fn outer() -> int {
     var count = 0
     inner()
 where
-    fn inner() &up(){mut count} -> int {
+    fn inner() &up{mut count} -> int {
         count += 1
         count
     }
@@ -4916,10 +4916,10 @@ where
 ```
 
 - **Module Groups (`E0538`)**: `&up(sub){...}` contains only resolved module-storage bindings. The literal `sub` is a contextual source selector, not a resolved name; it is excluded from `CaptureOwner` in this position. Qualified names and declaration imports preserve storage identity; a named function declaration is not a storage item.
-- **Environment Groups (`E0538`)**: `&up(){...}` contains captured bindings from one enclosing callable layer. A directly enclosing layer needs no owner. A farther named layer requires its function name in `&up(owner){...}`. A farther anonymous layer uses a separate ownerless `&up(){...}` group. An explicit owner verifies the source layer; it cannot select a same-spelled binding hidden by shadowing.
+- **Environment Groups (`E0538`)**: `&up{...}` contains captured bindings from one enclosing callable layer. A directly enclosing layer needs no owner. A farther named layer requires its function name in `&up(owner){...}`. A farther anonymous layer uses a separate ownerless `&up{...}` group. An explicit owner verifies the source layer; it cannot select a same-spelled binding hidden by shadowing.
 - **Resolution Before Classification**: Resolve each item by ordinary lexical rules, then verify its group and owner. Headers do not bypass shadowing, rebind a local source to a module source, or identify a dynamic activation by name.
 - **Layers and Activations**: Named functions and lambdas introduce callable layers. Blocks, loops, and handler arms do not introduce function layers; their binding identities, dynamic activations, lifetimes, and handler contexts remain distinct. An object's possible origin does not change its binding's declaration layer.
-- **Grouping**: Invocation-access items from different callable layers require separate groups, even when both use ownerless `&up(){...}`. A return group may summarize multiple resolved origins while preserving their identities. Each mode applies only to its own item. Empty or wrongly classified source groups are `E0538`; invalid return dependencies use `E0545`.
+- **Grouping**: Invocation-access items from different callable layers require separate groups, even when both use ownerless `&up{...}`. A return group may summarize multiple resolved origins while preserving their identities. Each mode applies only to its own item. Empty or wrongly classified source groups are `E0538`; invalid return dependencies use `E0545`.
 - **Definitions and Types**: Named definitions must spell their inferred concrete groups. Anonymous functions infer and retain these groups without a source-completion obligation. An explicitly written anonymous group is checked. In a callable type, names bind at the type's declaration site; [exact and open matching](#callable-contract-matching) cannot rebind them to similarly named captures in an assigned value.
 
 ```ril
@@ -4927,14 +4927,14 @@ fn outer_layer() -> int {
     var count = 0
     middle()
 where
-    fn middle() &up(){mut count} -> int {
+    fn middle() &up{mut count} -> int {
         inner()
     where
         fn inner() &up(outer_layer){mut count} -> int {
             count += 1
             count
         }
-        -- &up(){mut count} here is E0538: count belongs to a farther named layer.
+        -- &up{mut count} here is E0538: count belongs to a farther named layer.
     }
 }
 
@@ -4944,12 +4944,12 @@ let run = \-> {
         var y = 0
         leaf()
     where
-        fn leaf() &up(){mut x} &up(){mut y} -> int {
+        fn leaf() &up{mut x} &up{mut y} -> int {
             x += 1
             y += 1
             x + y
         }
-        -- &up(){mut x, mut y} is E0538: two source layers cannot share a group.
+        -- &up{mut x, mut y} is E0538: two source layers cannot share a group.
     }
     nested()
 }
@@ -4958,16 +4958,15 @@ assert(run() == 2)
 
 Standalone `&capture`, `&mut`, `&^mut`, and the callable-type environment abstraction `&up` remain separate forms. The open capability marker `&` belongs only to callable-type patterns; it supplies no group, authority, or source-completion exemption for a named definition. No group establishes uniqueness, consumes ordinary writable authority, or changes a retained handler's definition.
 
-In a contract position, unqualified `&up` takes precedence over state-contract references. Without a following `(`, it is the standalone callable-type environment abstraction. A following `(` selects a source group: empty parentheses select captured sources, the literal `sub` selects module storage, and any other capture-owner name selects an enclosing callable layer. Every parenthesized form requires a following nonempty `{...}` list; `&up{...}`, missing braces, repeated parenthesized selectors, and empty groups use `E0538`. This choice is fixed before name resolution and never falls back to another source kind. `&return{...}` also retains its group-head priority and requires braces. Use a qualified provider reference, such as `&Helpers::up`, for a same-spelled function. The words `up` and `sub` remain ordinary identifiers outside these contextual positions.
+In a contract position, unqualified `&up` takes precedence over state-contract references. A following `{` selects a captured-source group. A following `(` selects a source group with a required selector: the literal `sub` selects module storage, and any other capture-owner name selects an enclosing callable layer. Every source group requires a nonempty `{...}` list; empty parentheses, missing braces after a selector, repeated parenthesized selectors, and empty groups use `E0538`. Without a following `{` or `(`, `&up` is the standalone callable-type environment abstraction. This choice is fixed before name resolution and never falls back to another source kind. `&return{...}` also retains its group-head priority and requires braces. Use a qualified provider reference, such as `&Helpers::up`, for a same-spelled function. The words `up` and `sub` remain ordinary identifiers outside these contextual positions.
 
 ```ril
 var env = 0
 fn bump_env() &up(sub){mut env} -> () { env += 1 }
 var sub = 0
 fn bump_sub() &up(sub){mut sub} -> () { sub += 1 } -- Selector and storage item have distinct roles
--- fn empty_group() &up(){} -> () {} -- Error [E0538]: no captured source item
--- fn wrong_group() &up(){mut env} -> () {} -- Error [E0538]: env is module storage
--- fn missing_selector() &up{mut env} -> () {} -- Error [E0538]: source groups require parentheses
+-- fn empty_group() &up{} -> () {} -- Error [E0538]: no captured source item
+-- fn wrong_group() &up{mut env} -> () {} -- Error [E0538]: env is module storage
 -- fn missing_items() &up(sub) -> () {} -- Error [E0538]: source groups require a nonempty item list
 ```
 
@@ -5061,7 +5060,7 @@ type Cell = { var count: int }
 fn outer(mut cell: Cell) &mut -> () {
     inner()
 where
-    fn inner() &up(){mut cell} -> () { cell.count += 1 }
+    fn inner() &up{mut cell} -> () { cell.count += 1 }
 }
 -- inner's named capture is derived from outer's mutable parameter authority.
 
