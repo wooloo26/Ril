@@ -1392,7 +1392,7 @@ ValueType             ::= TypeExpression
 
 - **Trailing Defaults Invariant (`E0316`)**: If a generic parameter declares a default argument (`= Default`), all subsequent generic parameters in the same parameter list MUST declare default arguments.
 - **Telescopic Left-to-Right Scoping Invariant (`E0320`)**: A default argument expression $D_i$ may reference generic parameters declared to its left ($X_1, \dots, X_{i-1}$). Forward references and direct/indirect circular dependencies are statically rejected (`E0320`).
-- **Member Mode Sorts (`M: MemberMode`, `E0356`)**: A generic parameter may constrain its sort to `MemberMode` (`M: MemberMode`). The metatype `MemberMode` is an ambient sort available across static definitions, and is re-exported via `ril/reflect::MemberMode`. Arguments must evaluate to a valid member mode (either a member mode literal `var`, `mut`, `ref`, `var mut`, `var ref`, an expression yielding `MemberMode`, or `MemberMode::Let`). Supplying an incompatible type or non-mode sort triggers `E0356: InvalidModeSortError`.
+- **Member Mode Sorts (`M: MemberMode`, `E0356`)**: Static parameters may constrain to the ambient `MemberMode` sort. Arguments accept member mode literals (`var`, `mut`, `ref`, etc.) or static expressions yielding `MemberMode`. Incompatible sorts fail with `E0356`.
 - **Generic Closed Type Sets (`TypeSetSort`, `E0301`)**: A generic parameter may constrain its admitted domain to a finite union of types (`T: int | f64`). Unlike value-level untagged unions (`E0318`), a type set constraint does not create an untagged runtime union type; monomorphization specializes $T$ to each concrete member. The compiler performs definition-site polyvariant type checking across all member types $\tau \in \{T_1, \dots, T_n\}$, verifying that the generic body's operations are well-typed for every alternative. Supplying a type outside the set triggers `E0301: TypeMismatchError`.
 - **Pipeline Type Constraints (`T |> Guard`, `E0301`, `E0306`)**: A type parameter may pipe into one or more pure type functions (`T |> Numeric`). The guard must be a compile-time pure `type` function of kind `Type -> Type` (`E0306`). An argument type $T_{arg}$ satisfies the guard if and only if:
   $$\text{Valid}(T_{arg}) \iff T_{arg} \not\equiv \text{never} \quad \wedge \quad \text{Guard}\langle T_{arg} \rangle \equiv T_{arg}$$
@@ -1437,6 +1437,11 @@ type Choose = \entries: [str: int] ->
     if Map::keys(entries)[0] == "a" { <int> } else { <str> }
 type FirstOrder = Choose<["a": 1, "b": 2]>  -- int
 type OtherOrder = Choose<["b": 2, "a": 1]>  -- str
+
+-- Member Mode Sort Constraint:
+halt type ApplyMode = \T, M: MemberMode -> <{ M [K in keyof T]: T.(K) }>
+type Slots<T> = ApplyMode<T, var>              -- OK: keyword literal lifting to MemberMode::Var
+-- type BadMode<T> = ApplyMode<T, int>         -- Error [E0356]: expected MemberMode sort, found 'int'
 ```
 
 Static argument equivalence determines type and effect instantiation identity. It is distinct from run-time `==`. Arguments must first have the same admitted sort.
@@ -6367,18 +6372,18 @@ type IntPayload = Expr<int>.Int       -- int
 Sum `keyof` lists declared variant names even when a supplied index excludes a variant. A GADT payload projection must satisfy the selected constructor's result equation under the existing constraints and recover each variant-local parameter. An incompatible or unresolved equation is `E0301`. Projection introduces no new ambient type equality; membership in `keyof` alone does not prove that a variant is possible.
 
 #### Universal Member Mode Projection
-For a product type $T$ (Record or Tuple) and coordinate key $K \in \text{keyof } T$, `modeof T.(K)` statically projects the declared `MemberMode` of that coordinate:
-- **Records**: `modeof User.id` or `modeof User.("id")` resolves to the field's declared `MemberMode` (`MemberMode::Let` for default immutable members, `MemberMode::Var`, `MemberMode::Mut`, `MemberMode::VarMut`, `MemberMode::Ref`, or `MemberMode::VarRef`).
-- **Tuples**: `modeof Pair.0` or `modeof Pair.(0)` resolves to the positional component's declared `MemberMode`.
-- **Target Restriction (`E0358`)**: `modeof` is strictly confined to product types (records and tuples). Applying `modeof` to a sum type variant, non-composite type, or nonexistent field label triggers `E0358: InvalidModeProjectionTargetError`.
 
-In mapped comprehensions, `modeof T.(K)` appears directly before the coordinate bracket without grouping parentheses:
 ```ril
-type Pick = \T: { ..never }, included: []str -> {
-    let valid_keys = keyof T |> Array::filter(\k -> included |> Array::contains(k))
-    <{ modeof T.(K) [K in valid_keys]: T.(K) }>
-}
+type State = { id: int, var title: str, mut items: []int }
+meta let ID_MODE: MemberMode = modeof State.id          -- MemberMode::Let
+meta let TITLE_MODE = modeof State.title                -- MemberMode::Var
+meta let ITEMS_MODE = modeof State.items                -- MemberMode::Mut
+meta let TUPLE_MODE = modeof (var int, mut []int).0     -- MemberMode::Var
+-- meta let BAD_TARGET = modeof UiEvent.Click          -- Error [E0358]: modeof requires a product type
+-- meta let UNKNOWN = modeof State.missing             -- Error [E0336]: this product has no field 'missing'
 ```
+
+`modeof T.(K)` statically queries the declared `MemberMode` of a Record field or Tuple position. Applying `modeof` to a sum type variant, non-composite type, or nonexistent field label triggers `E0358`. In mapped comprehensions, `modeof T.(K)` appears directly before the coordinate bracket without grouping parentheses.
 
 #### Symmetrical Mapped Comprehensions
 - **Mapped Records**: `{ [K in Expr]: TypeExpr }` requires static `[]str`; integer keys are `E0341`. Duplicate/invalid labels are `E0210`/`E0102`; ADT tables may use PascalCase constructor labels.
@@ -6389,7 +6394,7 @@ type Pick = \T: { ..never }, included: []str -> {
       [K in keyof T]: T.(K)
   }>
   ```
-- **Zero Implicit Downgrade Invariant (`E0402`, `E0357`)**: Mapped comprehensions enforce strict, explicit member mode assignments. If a mapped comprehension attempts to assign `mut`, `var mut`, `ref`, or `var ref` to a value type (such as scalar `int`, `f64`, `bool`, `str`), the compiler **strictly rejects** the type instantiation with `E0402: ValueTypeReferenceModeError` (or `E0357: IncompatibleMemberModeError`). Zero implicit coercion or automatic silent fallback occurs. If distinct modes are needed across different constituent types, the programmer must explicitly formulate the logic using type-level pattern matching or conditional type functions.
+- **Zero Implicit Downgrade Invariant (`E0402`, `E0357`)**: Value types cannot receive `mut` or `ref`. Mapped comprehensions strictly reject incompatible modes without silent fallback. Distinct modes across field types must be formulated explicitly via type functions.
 - **Mapped Tuples (`( [I in Expr]: TypeExpr )`)**: `Expr` MUST evaluate to compile-time `[]int`. Supplying `[]str` triggers `E0342: InvalidTupleKeySortError`.
 - **Single-Element Tuple Prohibition (`E0343`)**: A mapped tuple comprehension evaluated over an index array of length 1 is statically rejected at compile time, preserving the invariant that Ril has no 1-tuples.
 
@@ -6403,6 +6408,14 @@ box.tag = 1
 -- box.bag.items !> Array::push(2)    -- Error [E0520]: a default member blocks nested writes
 type Slots = \T -> <{ var [K in keyof T]: T.(K) }>
 type PairSlots = (var [I in [0, 1]]: int) -- (var int, var int)
+
+-- Exact MemberMode preservation via modeof:
+type Pick = \T: { ..never }, included: []str -> {
+    let valid_keys = keyof T |> Array::filter(\k -> included |> Array::contains(k))
+    <{ modeof T.(K) [K in valid_keys]: T.(K) }>
+}
+type SubState = Pick<State, ["id", "items"]>   -- { id: int, mut items: []int }
+-- type BadMut = <{ mut [K in keyof { x: int }]: int }> -- Error [E0402]: value-type member cannot be mut
 ```
 
 `Readonly` constructs default-member schemas. Ordinary `let` already removes effective member permissions recursively; neither operation changes callable invocation contracts.
@@ -6413,11 +6426,6 @@ type User = { id: int, name: str, active: bool }
 meta let USER_KEYS: []str = keyof User         -- ["active", "id", "name"] (UTF-8 sorted)
 type UserId = User.id                          -- int
 type UserName = User.("name")                  -- str
-
-type Pick = \T: { ..never }, included: []str -> {
-    let valid_keys = keyof T |> Array::filter(\k -> included |> Array::contains(k))
-    <{ modeof T.(K) [K in valid_keys]: T.(K) }>
-}
 type PublicUser = Pick<User, ["id", "name"]>   -- { id: int, name: str }
 
 -- Sum Types (ADTs):
@@ -6535,11 +6543,19 @@ halt type DeconstructTuple = \T -> match <T> {
     _                            -> <never>,
 }
 
+-- Member Mode Pattern Destructuring:
+halt type DeconstructMember = \T -> match <T> {
+    <(let M let Head, ..let Tail)>       -> <{ mode: M, head: Head, tail: Tail }>,
+    <{ let M field: let U, ..let Rest }> -> <{ mode: M, field: U, rest: Rest }>,
+    _                                    -> <never>,
+}
+
 type Nested = Option<Result<int, str>>
 type Unwrapped = UnwrapAll<Nested>             -- int
 -- UnwrapAll uses the evaluation budget: recursive type graphs need not have a finite wrapper depth.
 type Elem = ElementOf<[]str>                   -- str
 type HeadTail = DeconstructTuple<(u8, i32, f64)>-- { head: u8, tail: (i32, f64) }
+type ExtractedTuple = DeconstructMember<(mut []int, str, bool)> -- { mode: MemberMode::Mut, head: []int, tail: (str, bool) }
 
 -- Rejection of Non-Rigid Type Patterns (E0306):
 -- type BadPattern = \T -> match <T> {
