@@ -1654,12 +1654,23 @@ Binding and origin permissions govern access. Effects govern evaluation and hand
 | `let ref` | No (`E0502`) | No (`E0520`) | Fixed read-only reference; may observe live data |
 | `var ref` | Yes | No (`E0520`) | Read-only reference cursor; immutable or live target |
 
-Plain `let` and plain `var` may initialize from one another, subject to ordinary type compatibility and deep-immutability checks. An existing plain `var` may also be reassigned from either. Each receiver has its own slot: value types are copied by value, while reference data shares the currently selected immutable object with its provenance preserved. No live link to the source slot is established, and later source reassignment does not retarget an earlier receiver. This interchange neither freezes nor copies writable data and does not relax the `mut` / `ref` reception rules below.
+For direct initialization and `var` replacement, unlisted combinations are allowed subject to ordinary typing, provenance, scope, and authority-use checks. Values copy; references share the selected object, not its source slot.
+
+| Source / condition | Prohibited receiver | Diagnostic |
+| :--- | :--- | :--- |
+| Value type | Any `mut`, `^mut`, or `ref` binding | `E0402` |
+| Immutable reference data or any `ref` | `let mut` / `var mut`, including `^mut` reception | `E0520` |
+| Reference graph with a surviving writer or live dependency | Plain `let` / `var` | `E0535` |
+| Writable aliases, including internal aliases in a fresh copy, without `^mut` acknowledgment | `let mut` / `var mut` | `E0510` |
+| Reassignable writable `var mut` | Persistent `let ref` / `var ref` | `E0531` |
+| Independent reference allocation / clone or new writable environment | Persistent `let ref` / `var ref` | `E0543` |
+
+Aliases retain all source restrictions; fresh immutable publication requires no surviving outside writer.
 
 ```ril
 let initial = 1
-var number = initial                   -- let -> var: copy the scalar value
-let saved_number = number              -- var -> let: copy its current scalar value
+var number = initial                   -- let -> var
+let saved_number = number              -- var -> let
 number = 2
 assert(initial == 1 && saved_number == 1 && number == 2)
 
@@ -1667,9 +1678,9 @@ type Document = { var title: str }
 let doc1 = Document.{ title: "Doc 1" }
 let doc2 = Document.{ title: "Doc 2" }
 
-var selected = doc1                    -- let -> var: share the immutable object
-let saved = selected                   -- var -> let: share doc1, not the selected slot
-selected = doc2                        -- Reassign only selected; saved still shares doc1
+var selected = doc1                    -- let -> var
+let saved = selected                   -- var -> let
+selected = doc2                        -- saved still shares doc1
 assert(saved.title == "Doc 1" && selected.title == "Doc 2")
 
 let mut draft = clone(doc1)
@@ -1690,19 +1701,6 @@ var ref cursor = draft
 cursor = other
 assert(cursor.title == "Selected")
 ```
-
-Direct reception of an ordinary reference object follows this matrix. Every `var` replacement rechecks the same requirements; `mut` / `ref` reject value types (`E0402`).
-
-| Source | `let` / `var` | `let mut` / `var mut` | `let ref` / `var ref` |
-| :--- | :--- | :--- | :--- |
-| Immutable `let` / `var` data | Share immutable object | `E0520` | Observe current object |
-| Pinned writable `let mut` | `E0535` | Share via `^mut source` | Observe same object |
-| Reassignable writable `var mut` | `E0535` | Share via `^mut source` | `E0531` |
-| `ref` with only proven immutable origins | Share immutable object | `E0520` | Observe current object |
-| `ref` with any possible live origin | `E0535` | `E0520` | Observe current object |
-| Independent fresh allocation / clone | Publish immutable | Receive construction authority | `E0543` |
-
-Fresh publication requires no surviving outside writer. [Writable sharing](#retained-mutable-sharing) also checks internal aliases; wrappers preserve every origin restriction.
 
 | Authority use (`E0527`) | Required on a statically possible path |
 | :--- | :--- |
