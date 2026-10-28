@@ -493,7 +493,7 @@ let user_count = 10                    -- OK: local variable identifier
 var total_score = 0                    -- OK: local reassignable variable
 total_score += 1
 var active_workers = 0                 -- OK: top-level reassignable mutable variable
-fn start_worker() &global{mut active_workers} -> () { active_workers += 1 }
+fn start_worker() &up(sub){mut active_workers} -> () { active_workers += 1 }
 fn compute_area(width: f64) -> f64 { width * 2.0 } -- OK: function identifier
 meta fn pad_align(size: int) -> int { size }       -- OK: compile-time function
 
@@ -538,12 +538,14 @@ use      var      where    while    with
 let while_count = 1                   -- OK
 let capture = 1                       -- OK: capture is an ordinary identifier
 let closure = 1                       -- OK: closure is an ordinary identifier
+let up = 1                            -- OK: up is an ordinary identifier
+let sub = 1                           -- OK: sub is an ordinary identifier
 type Config = { capture: bool }       -- OK: capture is an ordinary field label
 ```
 
 A reserved keyword used as an ordinary identifier or field label is `E0113`.
 
-`capture` and `closure` remain ordinary identifiers. They act as contextual keywords in capability and state-group annotations: `&capture` is a capability annotation, `&closure` is a callable-type capability bound, and in a state group, a leading `closure` followed by a comma, or by a capture-owner name and a comma, is a contextual group header. This interpretation is fixed before name resolution; it never falls back to a list of global names. The state-group rules specify the remaining cases.
+`capture`, `up`, and `sub` remain ordinary identifiers. They have contextual roles in capability annotations: `&capture` is a capability annotation, bare `&up` is a callable-type environment abstraction, `&up(){...}` is a captured-source group, and `&up(sub){...}` is a module-storage group. In `&up(owner){...}`, an owner other than the literal `sub` identifies an enclosing callable layer. Within these parentheses, the literal `sub` selects module storage before name resolution; it is never interpreted as a capture owner or a state item. See [State Groups and Captured Layers](#state-groups-and-captured-layers).
 
 ```ril
 -- Reserved keywords in action:
@@ -1534,7 +1536,7 @@ type StateNode = { var count: int, tag: str }
 type ReaderFn = fn() @Io -> str
 type AsyncWorker<T> = fn(T) @AsyncIo -> ()
 type Mutator<T> = fn(mut target: T) &mut -> ()
-type SharedLogger = fn(str) &closure &^mut -> ()
+type SharedLogger = fn(str) &up &^mut -> ()
 type SocketHandler =
     fn(mut buffer: []u8, timeout_ms: int) @Fiber &mut -> Result<int, IoError>
 
@@ -1580,21 +1582,21 @@ type NullableInt = MakeNullable<int>
 ```ril
 -- Io has the preceding declaration. Module storage for the named-state cases:
 var app_cache = 0
-fn update_cache() &global{mut app_cache} -> () { app_cache += 1 }
+fn update_cache() &up(sub){mut app_cache} -> () { app_cache += 1 }
 
 -- type BadEffect = @Io               -- Error [E0330]: a single effect is not a data type
 -- type BadCombined = @Io + Async     -- Error [E0330]: neither is an effect set
 -- type BadMut = &mut                 -- Error [E0331]
 -- type BadShare = &^mut              -- Error [E0331]
--- type BadGlobal = &global{mut app_cache}   -- Error [E0331]
--- type BadClosure = &closure         -- Error [E0331]
+-- type BadGlobal = &up(sub){mut app_cache}   -- Error [E0331]
+-- type BadClosure = &up              -- Error [E0331]
 
 -- type BadVariant { Running @Async } -- Error [E0332]: tag annotation
 -- type BadMutableVariant { Mutating &mut } -- Error [E0332]: capability on a tag
 -- type BadPayload { Suspended(int) @Fiber } -- Error [E0332]: payload does not permit a suffix
 -- type BadField = { value: str @Io } -- Error [E0333]
 -- type BadMutableField = { buffer: []u8 &mut } -- Error [E0333]: field type is not a callable
--- type BadNamedField = { value: int &global{mut app_cache} } -- Error [E0333]
+-- type BadNamedField = { value: int &up(sub){mut app_cache} } -- Error [E0333]
 -- type BadTuple = (str @Io, int)     -- Error [E0333]
 -- type BadArray = []int @Async       -- Error [E0613]
 
@@ -1602,7 +1604,7 @@ fn update_cache() &global{mut app_cache} -> () { app_cache += 1 }
 -- type BadStateBound<T: &mut> = T    -- Error [E0334]
 -- halt type BadTypeFn = \T @Io -> <T> -- Error [E0335]
 -- type BadTypeState = \T &mut -> <T>  -- Error [E0335]
--- halt type BadTypeBoth = \T @Async &closure -> <T> -- Error [E0335]
+-- halt type BadTypeBoth = \T @Async &up -> <T> -- Error [E0335]
 -- let bad: str @Io = "text"          -- Error [E0613]
 -- let @Io bad_prefix = "text"        -- Error [E0613]
 ```
@@ -2197,7 +2199,7 @@ where
 
 -- pub fn edit(mut items: []int) @Fiber &mut -> ()
 -- Error [E0908]: no listed contract grants ordinary mutable-data exchange
--- pub fn keep(^mut callback: fn() &closure -> ()) &^mut -> ()
+-- pub fn keep(^mut callback: fn() &up -> ()) &^mut -> ()
 -- Error [E0908]: default callback authority cannot be retained
 -- pub fn hidden_callback() -> { action: fn() -> () }
 -- Error [E0908]: ordinary returned data cannot conceal callable authority
@@ -2836,7 +2838,7 @@ fn read_after_init() -> int {
     let value = 1
     read_value()                       -- OK
 where
-    fn read_value() &env{value} -> int { value }
+    fn read_value() &up(){value} -> int { value }
 }
 ```
 
@@ -3477,7 +3479,7 @@ fn test_non_binding_predicate(g: Geometry) -> () {
 fn test_latent_havoc() -> () {
     var count: ?int = Some(10)
     if count != None {
-        let mut step = \&env{mut count} -> { count = None }
+        let mut step = \&up(){mut count} -> { count = None }
         step()                                 -- Mutating call invalidates 'count'
         -- let bad_use = count + 1             -- Error [E0310]: variable 'count' was narrowed to 'int', but refinement was invalidated by mutating call 'step()'; current flow type is '?int'
     }
@@ -3545,7 +3547,7 @@ Leading `mut`/`^mut` arguments require assignable targets (`E0410` for `f(^mut c
 ```ril
 type DeferredFactory = fn() -> fn() @Io -> int -- Io belongs to the returned callable
 type EffectfulFactory = fn() @Io -> fn() -> int -- Io belongs to the factory
-type CapturingFactory = fn() &capture -> new (fn() &closure -> int)
+type CapturingFactory = fn() &capture -> new (fn() &up -> int)
 ```
 
 Arrows associate right. Each effect/state clause belongs to the callable whose parameter list it follows, before that callable's return arrow. Return contracts follow [return construction, permissions, and sources](#return-construction-permissions-and-sources). Executable named definitions must complete missing required result annotations, including `-> ()`, under [mandatory contract completion](#mandatory-contract-inference-and-completion). A callable type or bodyless effect operation may abbreviate a unit result. Anonymous definitions retain the short lambda syntax and require no source type, result, effect, state, or capture annotation completion; the compiler infers their full contracts, and any explicit or contextual constraints are checked against them.
@@ -3573,10 +3575,10 @@ pub fn process_stream<T, R, E>(
     stream: []T,
     transform: TransformFn<T, R, E>,
     mut sink: AuditSink<R>,
-) @Async &mut &global{mut audit_log} -> Result<[]R, E>
+) @Async &mut &up(sub){mut audit_log} -> Result<[]R, E>
 where
     type TransformFn<In, Out, Err> = fn(In) @Async -> Result<Out, Err>
-    type AuditSink<Item>           = fn(Item) &global{mut audit_log} &closure -> ()
+    type AuditSink<Item>           = fn(Item) &up(sub){mut audit_log} &up -> ()
 {
     let mut out: []R = []
     for stream as item {
@@ -3636,8 +3638,8 @@ let r1 = calculate_tax(100)            -- OK: direct call
 | Aspect | Named Function (`fn`) | Stateless Anonymous Function (`\x -> ...`) | Stateful Anonymous Function (`\x -> ...`) |
 | :--- | :--- | :--- | :--- |
 | **Hoisting** | Module-wide newspaper ordering | Strictly lexical (definition before use) | Strictly lexical (definition before use) |
-| **Environment Capture** | Explicit named origins; block-local values can retain an environment | None (no captured state) | Actual lexical environment, abbreviated in types by `&closure` |
-| **Type Representation** | Item identity / `fn(P) -> R` | `fn(P) -> R` | `fn(P) &closure -> R` |
+| **Environment Capture** | Explicit named origins; block-local values can retain an environment | None (no captured state) | Actual lexical environment, abbreviated in types by `&up` |
+| **Type Representation** | Item identity / `fn(P) -> R` | `fn(P) -> R` | `fn(P) &up -> R` |
 | **Handle Requirement** | Direct declaration call; stored values follow actual environment permissions | Callable via `let` handle | `let` (immutable), `let ref` (live observer), or writable handle (mutable environment) |
 
 ### Callable Contracts
@@ -3649,8 +3651,8 @@ fn next_value(n: int) -> int {
     result
 }
 var global_count = 0
-fn tick() &global{mut global_count} -> () { global_count += 1 }
-fn visible() &global{mut global_count} -> () { tick() }
+fn tick() &up(sub){mut global_count} -> () { global_count += 1 }
+fn visible() &up(sub){mut global_count} -> () { tick() }
 -- fn hidden() -> () { tick() }             -- Error [E0510]: the ordinary wrapper has undeclared concrete state
 
 eff Log { write(str) -> () }
@@ -3665,7 +3667,7 @@ fn logged() @Log -> () { Log::write("event") }
 
 ```ril
 fn invoke(action: fn() @& -> ()) -> () { action() }
-fn declared_state() &global{mut global_count} -> () { invoke(tick) }
+fn declared_state() &up(sub){mut global_count} -> () { invoke(tick) }
 fn declared_effect() @Log -> () { invoke(logged) }
 -- fn hidden_through_callback() -> () { invoke(tick) } -- Error [E0510]: this caller's dependency is concrete
 -- fn hidden_through_alias() -> () { let action = tick; action() } -- Error [E0510]
@@ -3679,7 +3681,7 @@ invoke_pure(nothing)                  -- OK
 
 type Actions = { run: fn() @& -> () }
 fn invoke_field(actions: Actions) -> () { actions.run() }
-fn declared_field() &global{mut global_count} -> () { invoke_field(.{ run: tick }) }
+fn declared_field() &up(sub){mut global_count} -> () { invoke_field(.{ run: tick }) }
 -- fn hidden_field() -> () { invoke_field(.{ run: tick }) } -- Error [E0510]: wrapping the known callback does not erase state
 ```
 
@@ -3758,7 +3760,7 @@ type MutatorWithOpenState = fn(mut Cell) &mut & -> ()
 | Standalone `&` | Open capability dimension; written capability clauses remain requirements and additional actual obligations are preserved |
 | `@&` | The combined spelling of open effects and open capabilities |
 
-Only a whole effect dimension is opened: this version has no partial-effect-row form or source-level effect-row parameter. Capability openness may accompany concrete requirements such as `&mut`, `&global{...}`, `&env{...}`, or `&return{...}`. Opening one dimension leaves the other closed. An open marker is never permission to perform an operation, obtain a writable handle, retain an argument, or erase an actual obligation. An arrow cannot combine open capabilities (`&` or `@&`) with the explicit closed-total assertion `&{}` (`E0547`); use an effect-only `@` when capabilities must remain empty.
+Only a whole effect dimension is opened: this version has no partial-effect-row form or source-level effect-row parameter. Capability openness may accompany concrete requirements such as `&mut`, `&up(sub){...}`, `&up(){...}`, or `&return{...}`. Opening one dimension leaves the other closed. An open marker is never permission to perform an operation, obtain a writable handle, retain an argument, or erase an actual obligation. An arrow cannot combine open capabilities (`&` or `@&`) with the explicit closed-total assertion `&{}` (`E0547`); use an effect-only `@` when capabilities must remain empty.
 
 Explicit empty rows are admitted on first-order and higher-order callable types and definitions. A named definition may spell an empty row when its completed contract satisfies it; otherwise the applicable contract diagnostic rejects it. Anonymous definitions infer their full contracts without a source-completion obligation, and any explicit annotations are checked against that inference. Named definitions still complete their concrete effect/state/return annotations; symbolic obligations genuinely inherited from callable parameters are inferred and preserved.
 
@@ -3813,7 +3815,7 @@ Normalization expands effect-set and transparent aliases, compares effect instan
 
 Parameter data shapes retain their specified contravariant checks and result data shapes their covariant checks. Parameter modes must match. Independently check root construction/mode/source guarantees and every explicit contained dependency. An open row cannot admit a result whose root is outside the declared source alternatives, turn `ref` into `^mut`, publish live data as immutable, make an existing root `new`, or change a resource or scoped lifetime.
 
-The explicit `&closure` callable-type abstraction continues to admit an environment-free callable or the checked abstract environment shape without exposing private capture names. Normalize that declared environment abstraction for matching and preserve the actual captured origins, modes, lifetimes, and correlations in verified metadata. It does not cover additional effects, named global access, independent retained publication, or the current invocation's `&capture` obligation.
+The explicit `&up` callable-type abstraction continues to admit an environment-free callable or the checked abstract environment shape without exposing private capture names. Normalize that declared environment abstraction for matching and preserve the actual captured origins, modes, lifetimes, and correlations in verified metadata. It does not cover additional effects, named global access, independent retained publication, or the current invocation's `&capture` obligation.
 
 | Callable contract component | Rule |
 | :--- | :--- |
@@ -3837,7 +3839,7 @@ eff Log { write(str) -> () }
 var global_count = 0
 fn plain() -> () {}
 fn logged() @Log -> () { Log::write("event") }
-fn tick() &global{mut global_count} -> () { global_count += 1 }
+fn tick() &up(sub){mut global_count} -> () { global_count += 1 }
 type Action = fn() @& -> ()
 type PureAction = fn() -> ()
 type ExactLog = fn() @Log -> ()
@@ -3874,8 +3876,8 @@ fn repeat_plain() -> () { repeat(2, plain) }
 fn repeat_logged() @Log -> () { repeat(2, logged) }
 -- fn erase_recursive() -> () { repeat(2, logged) } -- Error [E0612]
 
-type StashingWorker = fn(^mut Entry) &closure &^mut -> ()
-type TemporaryWorker = fn(mut Entry) &closure &mut -> ()
+type StashingWorker = fn(^mut Entry) &up &^mut -> ()
+type TemporaryWorker = fn(mut Entry) &up &mut -> ()
 -- Open rows cannot make these parameter modes interchangeable.
 ```
 
@@ -3901,7 +3903,7 @@ assert(messages == ["calculating"])
 ```
 
 ```ril
-fn invoke_mut(mut f: fn() &closure -> int) &mut -> int { f() }
+fn invoke_mut(mut f: fn() &up -> int) &mut -> int { f() }
 let mut counter = create_counter(0)
 let first = invoke_mut(mut counter)
 
@@ -4102,7 +4104,7 @@ let ref observed = install_observer(mut slot)
 slot.child.count += 1
 assert(observed.item.count == 1)
 
-type Step = fn() &closure -> int
+type Step = fn() &up -> int
 -- fn erase_return(^mut f: Step) &{} -> ^mut(f) Step { f }
 -- Error [E0534]: the closed capability row cannot erase root-return retention
 ```
@@ -4144,7 +4146,7 @@ halt fn local_read() -> int {
 -- halt fn bad_io() @Fiber -> () { Fiber::yield() }     -- Error [E0821]: outward effect
 
 var outside_count = 0
--- halt fn bad_state() &global{mut outside_count} -> () { outside_count += 1 }
+-- halt fn bad_state() &up(sub){mut outside_count} -> () { outside_count += 1 }
 -- Error [E0821]: outward capability
 
 fn invoke(action: fn() -> ()) -> () { action() }
@@ -4454,7 +4456,7 @@ assert(pair(a: 10, 20) == (10, 20))
 - Function generic defaults are prohibited (`E0317`).
 
 ```ril
-type Reader = fn() &closure -> int
+type Reader = fn() &up -> int
 fn choose(value: int, reader: Reader = \-> value) -> Reader { reader }
 let first = choose(7)
 let second = choose(9)                 -- Default reevaluated for each omitted argument
@@ -4597,12 +4599,12 @@ let dept_names = opt_depts |> Array::map(\?.name)                -- Evaluates to
 ### Closures, Factory Signatures, and Lexical Environments
 
 ```ril
-type Adder = fn(int) &closure -> int
+type Adder = fn(int) &up -> int
 fn make_adder(base: int) &capture -> new Adder { \x -> base + x }
 let add5 = make_adder(5)                -- Immutable captured value
 assert(add5(10) == 15)
 
-type Step = fn() &closure -> int
+type Step = fn() &up -> int
 fn create_counter(start: int) &capture -> new Step {
     var count = start
     \-> { count += 1; count }
@@ -4614,7 +4616,7 @@ assert(counter() == 1)
 
 ```ril
 type Cell = { var count: int }
-type Step = fn() &closure -> int
+type Step = fn() &up -> int
 fn make_shared_step(^mut cell: Cell) &capture &^mut &return{^mut cell} -> new Step {
     \-> { cell.count += 1; cell.count }
 }
@@ -4627,11 +4629,11 @@ assert(step() == 3)                   -- Both authorities still reach the same c
 -- let frozen = make_shared_step(^mut cell) -- Error [E0535]: retained mutable environment
 ```
 
-- **Abstraction**: `&closure` follows [callable contract matching](#callable-contract-matching); direct named capture access still requires source groups.
-- **Definitions (`E0534`)**: A standalone `&closure` annotation on a definition cannot replace its concrete source obligations. Parameter/return callable types may use it as an abstraction under callable matching. Named definitions spell the required concrete capture-source annotations; anonymous definitions preserve the same concrete sources in their fully inferred contracts without mandatory source completion.
+- **Abstraction**: `&up` follows [callable contract matching](#callable-contract-matching); direct named capture access still requires source groups.
+- **Definitions (`E0534`)**: A standalone `&up` annotation on a definition cannot replace its concrete source obligations. Parameter/return callable types may use it as an abstraction under callable matching. Named definitions spell the required concrete capture-source annotations; anonymous definitions preserve the same concrete sources in their fully inferred contracts without mandatory source completion.
 - **Creation**: New environments surviving the enclosing callable's return contribute `&capture`, including those nested in returned aggregates. Named definitions must spell that obligation; anonymous definitions may retain it entirely in the inferred contract. Forwarding existing environments or using call-local ones adds no environment-creation obligation.
 - Anonymous functions capture free value bindings, including module bindings. Module-level named functions use declared external access; escaping block-local functions retain their required lexical environments.
-- **Binding Choice**: An immutable environment can be bound with `let`; an existing immutable environment may also be observed with `ref`. Observer environments use `let ref` under the [observation-wrapper rules](#normative-rules-for-read-only-references), preserving immutable and pinned live dependencies. A persistent mutable environment requires a writable handle. These are environment facts, not consequences of the visible `&closure` spelling.
+- **Binding Choice**: An immutable environment can be bound with `let`; an existing immutable environment may also be observed with `ref`. Observer environments use `let ref` under the [observation-wrapper rules](#normative-rules-for-read-only-references), preserving immutable and pinned live dependencies. A persistent mutable environment requires a writable handle. These are environment facts, not consequences of the visible `&up` spelling.
 - **Sharing**: A private cell exposed only through one new closure requires `&capture`. Exposing another authority to that cell also requires `&^mut`.
 
 
@@ -4711,7 +4713,7 @@ let mut global_hub = Hub.{ entries: [] }
 fn register_entry(mut hub: Hub, ^mut entry: Entry) &^mut -> () {
     hub.entries !> Array::push(^mut entry)
 }
-fn publish_entry(^mut entry: Entry) &^mut &global{mut global_hub} -> () {
+fn publish_entry(^mut entry: Entry) &^mut &up(sub){mut global_hub} -> () {
     global_hub.entries !> Array::push(^mut entry)
 }
 -- The retained origin is entry. Merely inserting it does not create a new authority to global_hub.
@@ -4780,7 +4782,7 @@ Each newly surviving external path, mutable environment, and separately exposed 
 - **Contract Matching**: Concrete definitions cannot overstate capabilities (`E0529`). Callable types use exact normalized closed contracts or explicit openness under [callable contract matching](#callable-contract-matching); neither changes parameter modes. Actual retention satisfies `E0527` for `^mut`.
 
 ```ril
-type Step = fn() &closure -> int
+type Step = fn() &up -> int
 fn make_private_ticker() &capture -> new Step {
     var count = 0
     \-> { count += 1; count }
@@ -4797,8 +4799,8 @@ fn make_dual_ticker() &capture &^mut -> new (mut Step, mut Cell) {
 
 ```ril
 var active_connections = 0
-type Ticker = fn() &closure -> int
-fn share_connections() &capture &global{^mut active_connections} &return{^mut active_connections} -> new Ticker {
+type Ticker = fn() &up -> int
+fn share_connections() &capture &up(sub){^mut active_connections} &return{^mut active_connections} -> new Ticker {
     \-> { active_connections += 1; active_connections }
 }
 ```
@@ -4812,22 +4814,22 @@ let APP_CONFIG_NAME = "Production"
 var transaction_count = 0
 
 -- Read-only external access:
-fn get_config_name() &global{APP_CONFIG_NAME} -> str {
-    APP_CONFIG_NAME                    -- OK: declared &global{APP_CONFIG_NAME}
+fn get_config_name() &up(sub){APP_CONFIG_NAME} -> str {
+    APP_CONFIG_NAME                    -- OK: declared &up(sub){APP_CONFIG_NAME}
 }
 
-fn read_transaction_count() &global{transaction_count} -> int {
+fn read_transaction_count() &up(sub){transaction_count} -> int {
     transaction_count                 -- Live source; scalar result is an independent value
 }
 
 -- Mutable external access:
-fn record_transaction() &global{mut transaction_count} -> () {
-    transaction_count += 1             -- OK: declared &global{mut transaction_count}
+fn record_transaction() &up(sub){mut transaction_count} -> () {
+    transaction_count += 1             -- OK: declared &up(sub){mut transaction_count}
 }
 
 -- Static errors on missing annotations:
--- fn bad_read() -> str { APP_CONFIG_NAME }          -- Error [E0510]: accessing external state requires caller signature to declare capability '&global{APP_CONFIG_NAME}'
--- fn bad_write() -> () { transaction_count += 1 }        -- Error [E0510]: mutating external state requires caller signature to declare capability '&global{mut transaction_count}'
+-- fn bad_read() -> str { APP_CONFIG_NAME }          -- Error [E0510]: accessing external state requires caller signature to declare capability '&up(sub){APP_CONFIG_NAME}'
+-- fn bad_write() -> () { transaction_count += 1 }        -- Error [E0510]: mutating external state requires caller signature to declare capability '&up(sub){mut transaction_count}'
 
 -- Prohibition of Anonymous Concealment:
 -- fn conceal_write() &mut -> () { transaction_count += 1 } -- Error [E0510]: cannot use anonymous '&mut' to conceal external state 'transaction_count'
@@ -4835,13 +4837,13 @@ fn record_transaction() &global{mut transaction_count} -> () {
 
 ```ril
 -- Use record_transaction, read_transaction_count, and transaction_count initialized above.
-fn direct_call() &global{mut transaction_count} -> () { record_transaction() }
-fn alias_call() &global{mut transaction_count} -> () {
+fn direct_call() &up(sub){mut transaction_count} -> () { record_transaction() }
+fn alias_call() &up(sub){mut transaction_count} -> () {
     let action = record_transaction  -- Immutable callable descriptor; named state still applies
     action()
 }
 fn invoke_action(action: fn() @& -> ()) -> () { action() }
-fn parameter_call() &global{mut transaction_count} -> () { invoke_action(record_transaction) }
+fn parameter_call() &up(sub){mut transaction_count} -> () { invoke_action(record_transaction) }
 
 direct_call()
 alias_call()
@@ -4859,7 +4861,7 @@ These forms use the same [callable contracts](#callable-contracts); spelling the
 
 Accessing module-level or captured bindings records the corresponding concrete named-source obligation. Named definitions must spell those source groups and must also declare concrete named obligations inherited from calls, either with a matching source group or an admissible function state contract reference. Anonymous definitions retain the same concrete source identities without mandatory source spelling. Only genuine callable-parameter dependencies retain symbolic forwarding; anonymous inference never reclassifies a known concrete source as an unknown parameter dependency.
 
-This includes reading a module-level `meta let NAME` in a run-time value expression: the inferred contract records that named source, and a named definition declares `&global{NAME}`. Compile-time evaluation and immutability do not erase the source. Reads performed in the static/type domain are exempt from this run-time state obligation, including type expressions and static arguments.
+This includes reading a module-level `meta let NAME` in a run-time value expression: the inferred contract records that named source, and a named definition declares `&up(sub){NAME}`. Compile-time evaluation and immutability do not erase the source. Reads performed in the static/type domain are exempt from this run-time state obligation, including type expressions and static arguments.
 
 Within either kind of source group, a bare item permits read-only access, whether its actual data is immutable or live. It does not promise deep immutability or create a `let ref` binding. `mut name` adds writes; `^mut name` additionally permits retained writable sharing. Each mode applies only to its own item.
 
@@ -4869,11 +4871,11 @@ Direct access includes storage access in a named definition's lexical anonymous 
 
 ```ebnf
 StateAnnot          ::= StateCapability { StateCapability }
-StateCapability     ::= "&mut" | "&^mut" | "&closure" | "&capture" | "&" "{" "}"
+StateCapability     ::= "&mut" | "&^mut" | "&up" | "&capture" | "&" "{" "}"
                       | GlobalStateGroup | CapturedStateGroup
                       | ReturnDependencyGroup | StateContractRef
-GlobalStateGroup    ::= "&global" "{" StateItemList "}"
-CapturedStateGroup  ::= "&env" [ "(" CaptureOwner ")" ] "{" StateItemList "}"
+GlobalStateGroup    ::= "&up" "(" "sub" ")" "{" StateItemList "}"
+CapturedStateGroup  ::= "&up" "(" [ CaptureOwner ] ")" "{" StateItemList "}"
 ReturnDependencyGroup ::= "&return" "{" ReturnDependencyList "}"
 ReturnDependencyList ::= ReturnDependency { "," ReturnDependency } [ "," ]
 ReturnDependency    ::= ( "ref" | "^mut" ) QualifiedName
@@ -4884,11 +4886,12 @@ StateMode           ::= "mut" | "^mut"
 StateContractRef    ::= "&" QualifiedName
 ```
 
-| Group | Meaning | Source resolution |
+| Form | Meaning | Source resolution |
 | :--- | :--- | :--- |
-| `&global{mut cache, CONFIG}` | Current invocation's module-storage access | Module bindings |
-| `&env{mut count}` | Current invocation's captured access | Directly enclosing callable layer |
-| `&env(outer_layer){mut count}` | Current invocation's farther named capture | The resolved binding must belong to `outer_layer` |
+| `&up` | Callable-type environment abstraction | Actual captured origins remain in verified metadata |
+| `&up(sub){mut cache, CONFIG}` | Current invocation's module-storage access | Module bindings |
+| `&up(){mut count}` | Current invocation's captured access | Directly enclosing callable layer |
+| `&up(outer_layer){mut count}` | Current invocation's farther named capture | The resolved binding must belong to `outer_layer` |
 | `&return{ref x, ^mut y}` | Possible contained dependencies of the returned graph | Formal parameters or visible external/captured origins |
 
 Return dependencies are facts, not invocation permissions. They neither replace `&mut`, `&^mut`, `&capture`, or named state, nor introduce a general parameter-access group. Scalar copies add no return dependency; capturing a mutable scalar cell retains its origin. Body-local regions and output correlations remain in verified metadata without inventing public identifiers.
@@ -4896,7 +4899,7 @@ Return dependencies are facts, not invocation permissions. They neither replace 
 ```ril
 var global_count = 0
 let GLOBAL_SCALE = 2
-fn tick() &global{mut global_count, GLOBAL_SCALE} -> int {
+fn tick() &up(sub){mut global_count, GLOBAL_SCALE} -> int {
     global_count += GLOBAL_SCALE
     global_count
 }
@@ -4905,18 +4908,18 @@ fn outer() -> int {
     var count = 0
     inner()
 where
-    fn inner() &env{mut count} -> int {
+    fn inner() &up(){mut count} -> int {
         count += 1
         count
     }
 }
 ```
 
-- **Module Groups (`E0538`)**: `&global{...}` contains only resolved module-storage bindings. Qualified names and declaration imports preserve storage identity; a named function declaration is not a storage item.
-- **Environment Groups (`E0538`)**: `&env{...}` contains captured bindings from one enclosing callable layer. A directly enclosing layer needs no owner. A farther named layer requires its function name in `&env(owner){...}`. A farther anonymous layer uses a separate ownerless `&env{...}` group. An explicit owner verifies the source layer; it cannot select a same-spelled binding hidden by shadowing.
+- **Module Groups (`E0538`)**: `&up(sub){...}` contains only resolved module-storage bindings. The literal `sub` is a contextual source selector, not a resolved name; it is excluded from `CaptureOwner` in this position. Qualified names and declaration imports preserve storage identity; a named function declaration is not a storage item.
+- **Environment Groups (`E0538`)**: `&up(){...}` contains captured bindings from one enclosing callable layer. A directly enclosing layer needs no owner. A farther named layer requires its function name in `&up(owner){...}`. A farther anonymous layer uses a separate ownerless `&up(){...}` group. An explicit owner verifies the source layer; it cannot select a same-spelled binding hidden by shadowing.
 - **Resolution Before Classification**: Resolve each item by ordinary lexical rules, then verify its group and owner. Headers do not bypass shadowing, rebind a local source to a module source, or identify a dynamic activation by name.
 - **Layers and Activations**: Named functions and lambdas introduce callable layers. Blocks, loops, and handler arms do not introduce function layers; their binding identities, dynamic activations, lifetimes, and handler contexts remain distinct. An object's possible origin does not change its binding's declaration layer.
-- **Grouping**: Invocation-access items from different callable layers require separate groups, even when both use ownerless `&env{...}`. A return group may summarize multiple resolved origins while preserving their identities. Each mode applies only to its own item. Empty or wrongly classified source groups are `E0538`; invalid return dependencies use `E0545`.
+- **Grouping**: Invocation-access items from different callable layers require separate groups, even when both use ownerless `&up(){...}`. A return group may summarize multiple resolved origins while preserving their identities. Each mode applies only to its own item. Empty or wrongly classified source groups are `E0538`; invalid return dependencies use `E0545`.
 - **Definitions and Types**: Named definitions must spell their inferred concrete groups. Anonymous functions infer and retain these groups without a source-completion obligation. An explicitly written anonymous group is checked. In a callable type, names bind at the type's declaration site; [exact and open matching](#callable-contract-matching) cannot rebind them to similarly named captures in an assigned value.
 
 ```ril
@@ -4924,14 +4927,14 @@ fn outer_layer() -> int {
     var count = 0
     middle()
 where
-    fn middle() &env{mut count} -> int {
+    fn middle() &up(){mut count} -> int {
         inner()
     where
-        fn inner() &env(outer_layer){mut count} -> int {
+        fn inner() &up(outer_layer){mut count} -> int {
             count += 1
             count
         }
-        -- &env{mut count} here is E0538: count belongs to a farther named layer.
+        -- &up(){mut count} here is E0538: count belongs to a farther named layer.
     }
 }
 
@@ -4941,27 +4944,31 @@ let run = \-> {
         var y = 0
         leaf()
     where
-        fn leaf() &env{mut x} &env{mut y} -> int {
+        fn leaf() &up(){mut x} &up(){mut y} -> int {
             x += 1
             y += 1
             x + y
         }
-        -- &env{mut x, mut y} is E0538: two source layers cannot share a group.
+        -- &up(){mut x, mut y} is E0538: two source layers cannot share a group.
     }
     nested()
 }
 assert(run() == 2)
 ```
 
-Standalone `&capture`, `&mut`, `&^mut`, and the callable-type environment abstraction `&closure` remain separate forms. The open capability marker `&` belongs only to callable-type patterns; it supplies no group, authority, or source-completion exemption for a named definition. No group establishes uniqueness, consumes ordinary writable authority, or changes a retained handler's definition.
+Standalone `&capture`, `&mut`, `&^mut`, and the callable-type environment abstraction `&up` remain separate forms. The open capability marker `&` belongs only to callable-type patterns; it supplies no group, authority, or source-completion exemption for a named definition. No group establishes uniqueness, consumes ordinary writable authority, or changes a retained handler's definition.
 
-The group heads `&global`, `&env`, and `&return` take precedence over state-contract references in a contract position. `&global{...}` and `&return{...}` require braces; `&env` requires its optional owner followed by braces. Use a qualified provider reference, such as `&Helpers::env`, for a same-spelled function. Malformed or empty groups use `E0538`; built-in capability spellings retain their priority. The words `global` and `env` remain ordinary identifiers outside these contract heads.
+In a contract position, unqualified `&up` takes precedence over state-contract references. Without a following `(`, it is the standalone callable-type environment abstraction. A following `(` selects a source group: empty parentheses select captured sources, the literal `sub` selects module storage, and any other capture-owner name selects an enclosing callable layer. Every parenthesized form requires a following nonempty `{...}` list; `&up{...}`, missing braces, repeated parenthesized selectors, and empty groups use `E0538`. This choice is fixed before name resolution and never falls back to another source kind. `&return{...}` also retains its group-head priority and requires braces. Use a qualified provider reference, such as `&Helpers::up`, for a same-spelled function. The words `up` and `sub` remain ordinary identifiers outside these contextual positions.
 
 ```ril
 var env = 0
-fn bump_env() &global{mut env} -> () { env += 1 }
--- fn empty_group() &env{} -> () {} -- Error [E0538]: no captured source item
--- fn wrong_group() &env{mut env} -> () {} -- Error [E0538]: env is module storage
+fn bump_env() &up(sub){mut env} -> () { env += 1 }
+var sub = 0
+fn bump_sub() &up(sub){mut sub} -> () { sub += 1 } -- Selector and storage item have distinct roles
+-- fn empty_group() &up(){} -> () {} -- Error [E0538]: no captured source item
+-- fn wrong_group() &up(){mut env} -> () {} -- Error [E0538]: env is module storage
+-- fn missing_selector() &up{mut env} -> () {} -- Error [E0538]: source groups require parentheses
+-- fn missing_items() &up(sub) -> () {} -- Error [E0538]: source groups require a nonempty item list
 ```
 
 
@@ -4970,16 +4977,16 @@ fn bump_env() &global{mut env} -> () { env += 1 }
 ```ril
 -- counter.ril
 var private_count = 0
-pub fn advance() &global{mut private_count} -> () { private_count += 1 }
-fn private_advance() &global{mut private_count} -> () { private_count += 1 }
-pub type Step = fn() &closure -> int
-pub fn make_step() &capture &global{mut private_count} -> new Step {
+pub fn advance() &up(sub){mut private_count} -> () { private_count += 1 }
+fn private_advance() &up(sub){mut private_count} -> () { private_count += 1 }
+pub type Step = fn() &up -> int
+pub fn make_step() &capture &up(sub){mut private_count} -> new Step {
     private_count += 1
     var local_count = 0
     \-> { local_count += 1; local_count }
 }
 pub type Cell = { var count: int }
-pub fn retain(^mut cell: Cell) &global{mut private_count} -> ^mut(cell) Cell {
+pub fn retain(^mut cell: Cell) &up(sub){mut private_count} -> ^mut(cell) Cell {
     private_count += 1
     cell
 }
@@ -5016,13 +5023,13 @@ fn retain_wrapped(^mut cell: Counter::Cell) &Counter::retain -> ^mut(cell) Count
 ```ril
 -- Same-module fixture:
 var count = 0
-fn advance() &global{mut count} -> () { count += 1 }
-fn other_advance() &global{mut count} -> () { count += 1 }
+fn advance() &up(sub){mut count} -> () { count += 1 }
+fn other_advance() &up(sub){mut count} -> () { count += 1 }
 fn equivalent_contract() &advance -> () { other_advance() } -- Same concrete inherited source and mode
 fn no_state() -> () {}
 -- fn excessive() &no_state -> () { no_state() } -- Error [E0529]: no concrete named state to declare
 -- fn hidden_direct() &advance -> () { count += 1; advance() }
--- Error [E0510]: the direct write still requires &global{mut count}
+-- Error [E0510]: the direct write still requires &up(sub){mut count}
 
 eff Tick { tick() -> () }
 -- fn hidden_handler() &advance -> () {
@@ -5054,12 +5061,12 @@ type Cell = { var count: int }
 fn outer(mut cell: Cell) &mut -> () {
     inner()
 where
-    fn inner() &env{mut cell} -> () { cell.count += 1 }
+    fn inner() &up(){mut cell} -> () { cell.count += 1 }
 }
 -- inner's named capture is derived from outer's mutable parameter authority.
 
 let mut global_cell = Cell.{ count: 0 }
-fn touch_global() &global{mut global_cell} -> () { global_cell.count += 1 }
+fn touch_global() &up(sub){mut global_cell} -> () { global_cell.count += 1 }
 fn parameter_and_ambient(mut cell: Cell) &mut &touch_global -> () {
     cell.count += 1
     touch_global()
@@ -5072,7 +5079,7 @@ parameter_and_ambient(mut local)     -- OK: the two actual write origins are dis
 ```ril
 -- counter.ril: a separate effect-bearing operation on its private_count.
 pub eff Log { write(str) -> () }
-pub fn logged_advance() @Log &global{mut private_count} -> () {
+pub fn logged_advance() @Log &up(sub){mut private_count} -> () {
     Log::write("advance")
     private_count += 1
 }
@@ -5409,7 +5416,7 @@ Outer function/callback activations stay active. Independent captures and ambien
 Escape alone is valid. Retention preserves dispatch, required outer definitions, and access/sharing/escape facts for provenance diagnostics, without extra capture syntax. Effect discharge never removes state, capture, live `ref`, or mutable-environment obligations.
 
 ```ril
-type Button = { label: str, on_click: fn() &closure -> () }
+type Button = { label: str, on_click: fn() &up -> () }
 fn make_button() -> Button {
     Button.{
         label: "Save",
@@ -5425,7 +5432,7 @@ fn make_button() -> Button {
 
 ```ril
 eff Read { get() -> int }
-type Reader = fn() &closure -> int
+type Reader = fn() &up -> int
 fn make_reader() &capture -> Reader {
     with Read::get() -> resume 7
     \-> Read::get()
@@ -5440,7 +5447,7 @@ assert(reader() == 7)                 -- Fresh invocation boundary with compatib
 
 ```ril
 eff Read { get() -> int }
-type Reader = fn() &closure -> int
+type Reader = fn() &up -> int
 type Deferred = fn() @Read -> int
 fn ask_read() @Read -> int { Read::get() }
 fn read_without_state(action: fn() @& -> int) &{} -> int { action() }
@@ -6172,12 +6179,12 @@ meta let NUMBER = meta_identity(1)
 
 meta let TOKEN = <int>
 meta let SIZE = byte_size(TOKEN)
-fn runtime_size() &global{SIZE} -> int { SIZE }
+fn runtime_size() &up(sub){SIZE} -> int { SIZE }
 fn runtime_client(value: int) -> int {
     -- let token = <int>              -- Error [E0816]: ordinary execution cannot materialize a token
     value
 }
--- fn leak_constant() &global{TOKEN} -> Type<int> { TOKEN } -- Error [E0816]: no run-time token values
+-- fn leak_constant() &up(sub){TOKEN} -> Type<int> { TOKEN } -- Error [E0816]: no run-time token values
 -- fn leak_shape(value: { token: Type }) -> () {} -- Error [E0816]: nested token type in a run-time parameter
 ```
 
@@ -6565,7 +6572,7 @@ A run-time value-expression read of a module-level meta constant retains its nam
 
 ```ril
 meta let ANSWER = 42
-fn answer() &global{ANSWER} -> int { ANSWER }
+fn answer() &up(sub){ANSWER} -> int { ANSWER }
 -- fn hidden_answer() -> int { ANSWER } -- Error [E0510]
 meta let _ = assert(ANSWER == 42)
 ```
@@ -6624,7 +6631,7 @@ Top-level items in both unit types are private to the file by default unless mar
 let PI = 3.141592653589793              -- Private to module 'geometry'
 pub let TAU = 6.283185307179586         -- Public: exported from module
 
-pub fn circle_area(radius: f64) &global{PI} -> f64 {
+pub fn circle_area(radius: f64) &up(sub){PI} -> f64 {
     PI * radius * radius                -- OK: internal access to private 'PI'
 }
 
@@ -6711,7 +6718,7 @@ fn calculate() -> () {
 let MAX_CONNECTIONS: int = 100
 let DEFAULT_TITLE: str = "Ril Application"
 var active_workers: int = 0            -- OK: initialized with constant expression
-fn start_worker() &global{mut active_workers} -> () { active_workers += 1 }
+fn start_worker() &up(sub){mut active_workers} -> () { active_workers += 1 }
 
 -- Prohibited top-level runtime side effects and error propagation:
 -- let current_time = Clock::now()      -- Error [E0202]: top-level declaration must be a pure constant expression
