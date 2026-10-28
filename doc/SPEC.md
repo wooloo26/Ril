@@ -402,7 +402,7 @@ Spaces and tabs separate tokens. A newline ends a complete statement except belo
 
 | Context | Newline rule |
 | :--- | :--- |
-| Parentheses, brackets, generic lists, record/declaration fields | Whitespace; nested executable blocks keep their own boundaries |
+| Parentheses, brackets, committed type quotes/patterns and generic lists, record/declaration fields | Whitespace; nested executable blocks keep their own boundaries |
 | Trailing operator, comma, `=`, `:`, `->` | Continue the required operand or body |
 | Required declaration body, `else`, `where` | Stay attached to the preceding construct |
 | Leading `\|>`, `!>`, `??` | Continue the preceding expression |
@@ -432,7 +432,7 @@ let values = [1, 2
 | :--- | :--- |
 | Unexpected token with no more specific lexical, delimiter, or construct restriction | `E0120` |
 | End of source where a required constituent is missing, with no open delimiter | `E0121` |
-| Open syntactic delimiter at end of source | `E0122` |
+| Open syntactic delimiter at end of source, including a committed type quote/pattern or generic list | `E0122` |
 | Closing delimiter disagrees with its corresponding opener | `E0123` |
 | A required separator or other grammar token is absent between otherwise identifiable constituents | `E0124` |
 
@@ -468,7 +468,7 @@ type Maybe<T> = Option<T>
 let value: Maybe<int> = Some(1)        -- OK: an alias adds no constructor candidate
 ```
 
-Declarations and imports share one namespace. Same-scope duplicates are `E0203`; inner declarations may shadow outer ones, including the enclosing prelude.
+Declarations and imports share one namespace. Same-scope duplicates are `E0203`; inner declarations may shadow outer ones, including the enclosing prelude. The intrinsic static type family `Type` is protected against user declarations, type binders, and type/namespace import aliases that would redefine or shadow it (`E0203`). It is not a new keyword.
 
 | Name | Resolution |
 | :--- | :--- |
@@ -1392,10 +1392,12 @@ ValueType             ::= TypeExpression
   $$\text{Valid}(T_{arg}) \iff T_{arg} \not\equiv \text{never} \quad \wedge \quad \text{Guard}\langle T_{arg} \rangle \equiv T_{arg}$$
   The bottom type `never` is statically rejected before guard evaluation, preventing vacuous satisfaction. If $\text{Guard}\langle T_{arg} \rangle$ does not produce definitional identity with $T_{arg}$, the argument is rejected under `E0301`. Multiple guards pipe from left to right: `T |> Guard1 |> Guard2` $\equiv \text{Guard2}\langle \text{Guard1}\langle T \rangle \rangle$.
 - **Orthogonal Constraint Composition**: Structural row polymorphism and pipeline guards compose naturally: `T: { id: int, ..R } |> AuditGuard` verifies that $T$ satisfies the open record structure and conforms to `AuditGuard`.
-- **Static Value Sorts**: Const parameters admit scalar values and finite immutable aggregate values whose constituents have no resource or callable authority. `ValueType` in the parameter grammar denotes such an admissible value sort, not permission to pass a run-time or live value.
+- **Static Value Sorts**: Const parameters admit scalar values, atomic type tokens, and finite immutable aggregates without resource or callable authority. `token: Type` is a static value parameter, distinct from a type parameter `T: Type`. Admission of static-only token values never permits their run-time materialization.
 - **Const Generic Evaluation & Purity Invariant (`E0814`, `E0323`)**: Const generic arguments evaluate at compile time within the pure symbolic domain ($\mathbf{Eff} = \emptyset, \mathbf{Cap} = \emptyset$). Non-constant runtime expressions passed to const parameters trigger `E0814`. Arguments failing sort constraints trigger `E0323`.
 - **No Untagged Literal or Storage Union Types (`E0318`)**: Concrete values (strings, integers, booleans) and untagged value unions (`int | str`) cannot serve as storage, variable, or binding types (`E0318`). Discrete domain states MUST be modeled via tagged sum types (`type HttpMethod { Get, Post }`). Concrete values enter the type system strictly as compile-time arguments to const parameters (`Buffer<u8, 1024>`, `Matrix<f64, 4>`). Finite type sets (`T: int | f64`) are permitted exclusively as static domain constraints on generic parameters (`TypeSetSort`), which are monomorphized to single rigid types.
 - **Function Generic Default Prohibition (`E0317`)**: Function generic parameters cannot declare defaults (`fn f<T = int>` is rejected); function types are inferred bidirectionally at call sites.
+
+Generic arguments are checked against the declaration's parameter category: type syntax for a type parameter, a static token/value expression for a value parameter. Quoting a type does not implicitly turn that value back into a type argument (`E0306`). `Type<T>` is an exact static metatype, not a literal storage type; `<42>` remains invalid and const arguments such as `Buffer<u8, 42>` keep their existing meaning.
 
 ```ril
 -- Closed Type Set Constraint:
@@ -1405,28 +1407,28 @@ assert(add(1.5, 2.5) == 4.0)
 -- let bad_add = add("a", "b")          -- Error [E0301]: type 'str' does not satisfy constraint 'int | f64'
 
 -- Pipeline Type Function Constraint:
-type Numeric = \T -> match type<T> {
-    type<int> | type<i64> | type<f64> -> type<T>,
-    _ -> type<never>,
+type Numeric = \T -> match <T> {
+    <int> | <i64> | <f64> -> <T>,
+    _ -> <never>,
 }
 fn multiply<T |> Numeric>(a: T, b: T) -> T { a * b }
 assert(multiply(3, 4) == 12)
 -- let bad_mul = multiply("x", "y")     -- Error [E0301]: type 'str' does not satisfy constraint 'Numeric'
 
 -- Composed Structural and Pipeline Constraint:
-type NonZero = \T -> match type<T> {
-    type<{ val: int, ..let _ }> -> type<T>,
-    _ -> type<never>,
+type NonZero = \T -> match <T> {
+    <{ val: int, ..let _ }> -> <T>,
+    _ -> <never>,
 }
 fn get_val<T: { val: int, ..R } |> NonZero>(item: T) -> int { item.val }
 assert(get_val(.{ val: 42, label: "ok" }) == 42)
 
 type Token<value: f64>(int)
-meta let _ = assert(type<Token<0.0>> != type<Token<-0.0>>)
-meta let _ = assert(type<Token<0.0 / 0.0>> == type<Token<0.0 / 0.0>>)
+meta let _ = assert(<Token<0.0>> != <Token<-0.0>>)
+meta let _ = assert(<Token<0.0 / 0.0>> == <Token<0.0 / 0.0>>)
 
 type Choose = \entries: [str: int] ->
-    if Map::keys(entries)[0] == "a" { type<int> } else { type<str> }
+    if Map::keys(entries)[0] == "a" { <int> } else { <str> }
 type FirstOrder = Choose<["a": 1, "b": 2]>  -- int
 type OtherOrder = Choose<["b": 2, "a": 1]>  -- str
 ```
@@ -1437,6 +1439,7 @@ Static argument equivalence determines type and effect instantiation identity. I
 | :--- | :--- |
 | Booleans, integers, strings, bytes, unit | Exact value; strings are exact scalar sequences |
 | Floating values | Canonical IEEE bit representation; signed zeros differ, canonical NaNs agree |
+| Type tokens, after adaptation to the formal value sort | Represented target types are definitionally equal, preserving nominal/opaque identity and full schemas; not token address, variable name, or display spelling |
 | Records | Same labels and recursively equivalent fields; written field order is irrelevant |
 | Arrays / tuples | Same length and recursively equivalent positional values |
 | Maps / sets | Same insertion-ordered entries/members, recursively equivalent |
@@ -1568,7 +1571,7 @@ fn test_valid_binding() -> () @Io {
 assert(ch.stream() == "ready")
 test_valid_binding()
 
-halt type MakeNullable = \T -> type<?T>
+halt type MakeNullable = \T -> <?T>
 type NullableInt = MakeNullable<int>
 ```
 
@@ -1595,9 +1598,9 @@ fn update_cache() -> () &{mut app_cache} { app_cache += 1 }
 
 -- type BadEffectBound<T: @Io> = T    -- Error [E0334]
 -- type BadStateBound<T: &mut> = T    -- Error [E0334]
--- halt type BadTypeFn = \T -> type<T> @Io -- Error [E0335]
--- type BadTypeState = \T -> type<T> &mut  -- Error [E0335]
--- halt type BadTypeBoth = \T -> type<T> @Async &closure -- Error [E0335]
+-- halt type BadTypeFn = \T -> <T> @Io -- Error [E0335]
+-- type BadTypeState = \T -> <T> &mut  -- Error [E0335]
+-- halt type BadTypeBoth = \T -> <T> @Async &closure -- Error [E0335]
 -- let bad: str @Io = "text"          -- Error [E0613]
 -- let @Io bad_prefix = "text"        -- Error [E0613]
 ```
@@ -1613,7 +1616,6 @@ TypeExpression   ::= PrimaryType
                    | TypeFunctionExpr
                    | "?" TypeExpression
                    | "typeof" Expression
-                   | "type" "<" TypeExpression ">"
                    | MappedRecordType | MappedTupleType
 PrimaryType      ::= PrimitiveType | NominalRef | "(" TypeExpression ")"
 NominalRef       ::= QualifiedName [ GenericArgs ]
@@ -2223,11 +2225,11 @@ Literal         ::= IntLiteral | FloatLiteral | StringLiteral | RawStringLiteral
                   | ByteStringLiteral | "true" | "false" | "(" ")"
 Expression      ::= Literal | QualifiedName [ GenericArgs ] | EffectOperationRef | "(" Expression ")"
                   | TupleExpr | RecordExpr | ArrayExpr | MapExpr | Block
-                  | CallExpr | AnonFnExpr | AccessorExpr | MatchExpr | TypeMatchExpr
+                  | CallExpr | AnonFnExpr | AccessorExpr | MatchExpr
                   | IfExpr | LoopExpr | WhileExpr | ForExpr | ControlTransfer
                   | ResumeExpr | AssignmentExpr | UnaryExpr | BinaryExpr | SharingExpr
                   | MemberExpr | IndexExpr | RangeExpr | IsExpr
-                  | Expression "?" | "type" "<" TypeExpression ">" | "keyof" TypeExpression
+                  | Expression "?" | TypeQuoteExpr | "keyof" TypeExpression
 UnaryExpr       ::= ( "-" | "!" | "~" ) Expression
 BinaryExpr      ::= Expression BinaryOperator Expression
 BinaryOperator  ::= "*" | "/" | "%" | "/?" | "%?" | "*%" | "+" | "-" | "+%" | "-%"
@@ -2242,7 +2244,7 @@ IndexExpr       ::= Expression ( "[" | "?[" ) Expression "]"
 
 | Level | Operators | Associativity | Description |
 | :---: | :--- | :---: | :--- |
-| **1** | `.` `?.` `?[` `[]` `()` `::` postfix `?` | Left | Member access (field or tuple index), safe navigation, indexing, invocation, postfix `?` |
+| **1** | `.` `?.` `?[` `[]` `()` `::` postfix `?` | Left | Member access, safe navigation, indexing, invocation, postfix `?`; a type quote is a primary operand |
 | **2** | `-` `!` `~` `typeof` `^mut` | Unary Prefix | Arithmetic negation, logical NOT, bitwise NOT, static type introspection, explicit local writable sharing |
 | **3** | `*` `/` `%` `/?` `%?` `*%` | Left | Multiplication, division, remainder, safe division/remainder, wrapping mul |
 | **4** | `+` `-` `+%` `-%` | Left | Addition, subtraction, wrapping add/sub |
@@ -2368,7 +2370,7 @@ assert(Map::keys(snapshot) == ["b", "a"]) -- Replacing a value preserves its key
 -- let graph_key = [.{ id: 1 }: 0]    -- Error [E0328]: immutable records are still reference-type keys
 ```
 
-`!=` negates `==`. Equality requires compatible same-typed values (`E0301` otherwise), except the Option/None tag test below.
+`!=` negates `==`. Equality requires compatible same-typed values (`E0301` otherwise), except the Option/None tag test below and static type tokens: any two tokens compare their represented types by definitional identity, independent of exact/widened metatypes. Token ordering remains unsupported (`E0327`).
 
 | Values | Equality |
 | :--- | :--- |
@@ -3144,7 +3146,7 @@ MatchArm      ::= Pattern [ "if" Expression ] "->" Expression
 Pattern       ::= OrPattern
 OrPattern     ::= SinglePattern { "|" SinglePattern }
 SinglePattern      ::= LiteralPattern | VariablePattern | WildcardPattern
-                     | TuplePattern | ArrayPattern | RecordPattern | ConstructorPattern | RangePattern
+                     | TuplePattern | ArrayPattern | RecordPattern | ConstructorPattern | RangePattern | TypePattern
 BindingModifier    ::= MemberMode
 VariablePattern    ::= [ BindingModifier ] Identifier
 ConstructorPattern ::= QualifiedName [ "(" [ PatternList ] ")" ]
@@ -3164,6 +3166,8 @@ RangePattern    ::= NumericPattern ( ".." | "..=" ) NumericPattern
 Matches are evaluated top-to-bottom and must be exhaustive (`E0303`). A trailing guard belongs to the whole or-pattern, not just its last alternative. Every alternative binds the same identifiers with compatible types and modes (`E0346`); within one alternative each identifier is bound at most once (`E0347`). Each tuple, array or record pattern permits at most one immediate rest (`E0347`); nested patterns count their rests independently. Thus `([a, ..xs], [b, ..ys])` is valid. A guard cannot establish exhaustiveness. Pattern/subject incompatibility uses `E0301`; incompatible result types across otherwise valid reachable arms use `E0351`.
 
 These binding patterns govern `match`, bindings, `if let` / `while let`, iteration and handler parameters. The nonbinding [is value tests](#value-tests-with-is) have their own grammar and admit expected-value expressions.
+
+`TypePattern` is the exception: it is admitted only in static `match` arms against token subjects/constituents (`E0306` for another pattern context). It does not introduce type binders through ordinary `let`, iteration, or handler patterns. Run-time token subjects remain `E0816`.
 
 A tuple or array pattern without a rest requires exactly its written number of elements. With a rest, its subject must contain at least the number of non-rest elements; prefix and suffix patterns select from their corresponding ends, and the rest may be empty. Tuple rests are anonymous. Named array rests use the range-indexing copy rules and ordinary array extent, permission, publication, and sharing checks.
 
@@ -5891,69 +5895,143 @@ A resource contract must state endpoint creation, cloning, transfer, closure, an
 ### Static Type Values and Type Quotation
 
 ```ebnf
+TypeQuoteExpr    ::= "<" TypeExpression ">"
+TokenType        ::= "Type" [ "<" TypeExpression ">" ]
 TypeFunctionExpr ::= "\" TypeFnParam { "," TypeFnParam } "->" Expression
 TypeFnParam      ::= StaticKeyParamDecl
                   | PascalCase [ ":" TypeSort ] [ "=" TypeExpression ]
                   | SnakeCase ":" TypeExpression [ "=" Expression ]
 ```
 
-- **Declarative Contexts**: Top-level type declarations and type annotations use direct type syntax without `type<...>`:
+`TokenType` is the protected intrinsic family resolved through `NominalRef`. A quote is a value expression, never a type annotation. Its root must denote one type, not a type-function program; stripping grouping parentheses cannot bypass that requirement (`E0306`). Existing const, `typeof`, and mapped-type expression slots keep their rules.
+
+| Position | Spelling / meaning |
+| :--- | :--- |
+| Type declaration / data annotation | `type User = { id: int }`, `x: User`; direct type syntax |
+| Static type value | `<User>`, `<int>`, `<{ id: int }>` |
+| Tuple / unit token | `<(T, U)>`, `<()>`; reuse ordinary tuple grammar |
+| Generic application | `F<T, U>`; two arguments, not a tuple quote |
+| Type pattern | `<Option<let U>>`; pattern-only binders/rests |
+| Token type | `Type` hides the target; `Type<T>` guarantees exactly T |
+| Type-parameter sort | `T: Type`; distinct from a value parameter `token: Type` |
+| Existing values | `Marker` remains a singleton and `UserId` a constructor; their types use `<Marker>` / `<UserId>` |
+
+The following local bindings are fragments of static type-function evaluation:
 
 ```ril
-type User = { id: int }
-let a: int = 10
-let b: typeof a = 20                   -- OK: direct 'typeof' in type annotation
+type User = { id: int, name: str }
+let exact = <User>                     -- Type<User>, not Type
+let tuple = <(int, str)>               -- Type<(int, str)>
+let unit = <()>
+let callable = <fn(int) -> str>
+let saved = exact                     -- Already a token; no second quote
+assert(<(int)> == <int> && <int> != <str>)
+-- let bad = int                      -- Error [E0319]: use <int> as a value
+-- let bad = <int, str>                -- Error [E0120]: quote contains one type
+-- let bad = <>                        -- Error [E0120]: missing type
+-- let bad = <(\T -> <T>)>             -- Error [E0306]: grouped type-function program is not a quoted type
+-- let bad: <int> = <int>              -- Error [E0120]: write Type<int> in an annotation
 ```
 
-`typeof e` checks names, types, and permissions without evaluating e: no effects, writes, or environment creation.
-
-- **Expression Contexts**: A type used as a static type value must be enclosed in `type<...>`. A bare nominal constructor or nullary tag in a value expression denotes its callable/value meaning, not its type. The following let bindings are in a symbolic type-computation fixture; type tokens do not become ordinary run-time data:
-
-```ril
-let t_int = type<int>                  -- OK: all types enclosed in type<...>
-let t_inferred = type<typeof (1 + 2)>  -- OK: 'typeof' enclosed in type<...> in expression position
--- let bad_t = int                     -- Error [E0319]: bare type 'int' used in expression context; wrap in 'type<int>'
--- let bad_inferred = typeof (1 + 2)   -- Error [E0319]: bare 'typeof' operator used in expression context; wrap in 'type<typeof (1 + 2)>'
-```
-
-- **Strict Phase Distinction & Runtime Quotation Prohibition (`E0816`)**: `type<...>` is strictly a compile-time static quotation permitted exclusively in static evaluation scopes (`meta let`, `meta fn`, pure `type` functions, and const generic arguments). In non-meta runtime expressions, using `type<...>` as a value operand is statically rejected under `E0816: RuntimeTypeQuotationProhibitedError`. Runtime invocations supply type arguments via angle brackets (`f<T>(x)`) or contextual bidirectional inference (`let x: T = f(x)`). Types are completely erased during AOT compilation; runtime execution passes no type tokens, witness tables, or phantom values.
+| Token typing | Rule |
+| :--- | :--- |
+| Default binding | `let` and `var` preserve `Type<T>`; completion must not silently widen to `Type` |
+| Exact target | `Type<A>` matches `Type<B>` only when A and B are definitionally equal; target subtyping is insufficient |
+| Widening | `Type<T>` may enter an explicitly general `Type` context without changing the represented target |
+| Immutability | Tokens are atomic immutable static values; `var` changes the selected token, not its target type |
+| Described schema | Preserve nominal/opaque identity, member modes, and callable contracts; immutable token reception suppresses none of them and grants no object authority |
+| Equality | Any two tokens support `==` / `!=` by target definitional identity, including different exact metatypes; no ordering (`E0327`) |
+| Kind | Static generics may admit meta-value types; materializing them at run time remains prohibited |
 
 ```ril
-fn json_decode<T>(raw: str) -> Result<T, str> { ... }
+-- Static fixture; User has the preceding schema.
+let exact: Type<User> = <User>
+let wide: Type = exact
+assert(wide == exact)
+-- let wrong: Type<int> = <never>       -- Error [E0301]: never being a subtype of int does not make targets equal
+var fixed = <int>                      -- Type<int>
+fixed = <int>
+-- fixed = <str>                      -- Error [E0301]: no retroactive widening
 
-fn runtime_client(raw: str) -> () {
-    -- let bad = json_decode(type<User>, raw)   -- Error [E0816]: 'type<...>' quotation prohibited in runtime context; use 'json_decode<User>(raw)' or contextual inference
-    let explicit = json_decode<User>(raw)       -- OK: explicit generic type argument
-    let inferred: Result<User, str> = json_decode(raw) -- OK: contextual bidirectional inference
+meta fn target_size<T>(token: Type<T>) -> int { byte_size(token) }
+meta fn object_size<T>(value: T) -> int { byte_size(<T>) }
+meta fn value_type_name<T>(value: T) -> str { type_name(<T>) }
+meta fn field_size<T: { ..R }, K: keyof T>(token: Type<T>, key: K) -> int {
+    byte_size(<T.(K)>)
 }
+var selected: Type = <User>
+let first_size = field_size(selected, "id") -- Proved current target: T = User, K = "id"
+selected = <int>
+-- let bad = field_size(selected, "id") -- Error [E0301]: current target fails the record constraint
+assert(first_size >= 0 && byte_size(selected) >= 0)
+-- let bad = object_size(<User>)        -- Error [E0306]: Type<User> has no ordinary run-time layout
 ```
 
-- **Type Functions & Invocation**: Unannotated type function parameters default to sort `Type` (`\T -> ...`). Type function application uses generic angle brackets `<...>`:
+| Inference at a use | Required evidence |
+| :--- | :--- |
+| `value: T` | Infer the argument's own checked value type: a token yields `Type<User>` or `Type`, never User |
+| `token: Type<T>` | Bind T from exact token typing or a proved current static target; then validate structural/kind constraints |
+| `key: K`, `K: keyof T` | Bind the static key value, then check membership against the determined target T |
+| General `Type` | It alone proves no target; do not invent T from desired fields or a key. A current static value, pattern, or explicit type-function evaluation can supply evidence |
+| Assignment / join | Invalidate stale slot/path proofs; preserve only guarantees common to retained alternatives until static evaluation selects one |
+| Unresolved proof | Defer dependent checks until the required static evaluation; unproved target information is `E0344`, a non-static argument is `E0814`, and a proved incompatible target keeps `E0301` |
+
+Target evidence checks a token against `Type<T>`; it never converts the token into an ordinary T value. `typeof e` checks names, types, and permissions without evaluating e or producing effects, writes, or environments.
 
 ```ril
-type Nullable = \T -> type<?T>
-type PairOf = \T, U -> type<{ first: T, second: U }>
+type Resolve = \token: Type -> token
+type Wrap = \token: Type -> <{ field: Resolve<token> }>
+type Nullable = \T -> <?T>
+type PairOf = \T, U -> <(T, U)>
 
--- Applying type functions via '<...>':
-type IntNullable = Nullable<int>          -- Resolves to ?int
-type StringIntPair = PairOf<str, int>     -- Resolves to { first: str, second: int }
+type IntNullable = Nullable<int>
+type StringIntPair = PairOf<str, int>
+type WrappedInt = Wrap< <int> >        -- Token value argument, not an implicit type argument
 
-let value: IntNullable = Some(42)         -- OK: used as concrete type annotation
-let pair: StringIntPair = .{ first: "id", second: 101 }
+-- Static fixture:
+var chosen: Type = <int>
+let before = Wrap<chosen>              -- Type<{ field: int }>
+chosen = <str>
+let after = Wrap<chosen>               -- Type<{ field: str }>; before is unchanged
+```
+
+Type functions retain their anonymous form and contextual type-producing result; no ordinary function return annotation is added. `Resolve` receives a static token by value; instance keys use target identity at argument evaluation, not a slot or later contents. Token variables and results of permitted type-function calls already are values and need no extra quote; this grants no new call-family permission. A token's value name is not type syntax: compose through a type function instead of silently unquoting.
+
+| Angle context | Deterministic parsing |
+| :--- | :--- |
+| Prefix `<T>` | Primary type quote; no top-level comma list. `<(T, U,)>` uses existing tuple rules; `<(T,)>` remains invalid |
+| Expression `QName<...>` | Commit to generic application only when the resolved declaration or preserved item/constructor alias supplies an application signature; otherwise `<` is infix comparison |
+| `F<T, U>` / `fn f<T, U>` | Generic argument / parameter lists; the declared parameter category controls checking |
+| `F< <T> >` | Explicit token value argument; keep `<<` as shift, so adjacent opening angles need separation |
+| Expected angle closure | Consume one original `>` character, then rescan the remainder: `<Box<T>>`, `<Type<T>>`, `<T>==<U>`, `type A<T>=T` |
+| Ordinary operators | `>=`, `>>`, and `>>=` retain their normal meanings outside an expected closure |
+| Const / `typeof` angle operations | Parenthesize: `Flag<(n > 0)>`, `Buffer<u8, (1 << n)>`, `<typeof (a > b)>` |
+| Pattern quote | Use the type-pattern extension, including `let U` and rests; those binders are not expression syntax |
+
+Resolve declaration-header/application metadata before committing an expression's postfix generic list; never choose the parse by testing operand types, constraints, or current variable contents. A named non-generic callable has an empty generic signature, so explicit arguments retain `E0340`. Type syntax, type patterns, and generic parameter declarations keep their own list productions; embedded expression slots use the expression rule. No post-commit backtracking is performed.
+
+An empty quote or top-level comma is `E0120`; missing/mismatched committed delimiters retain `E0122` / `E0123`. `Type<T, U>` is arity error `E0340`. `Type` is not `any` and grants no phase-polymorphic call privilege.
+
+```ril
+fn comparisons(a: int, b: int, c: int, d: int) -> bool { a < b && c > (d) }
+fn choose<flag: bool>(value: int) -> int { if flag { value } else { 0 } }
+assert(comparisons(1, 2, 4, 3))        -- a is an ordinary value parameter, not a generic declaration
+assert(choose<true && false>(4) == 0) -- Known declaration; const argument need not add parentheses for &&
+-- let bad = comparisons<int>(1, 2, 4, 3) -- Error [E0340]: known callable has no generic parameters
 ```
 
 ### Pure Type Functions and Type Return Privilege
 
 ```ril
 halt type SafeRecord = \T ->
-    if type<T> == type<int> { type<{ val: int, valid: bool }> }
-    else { type<{ val: T, valid: bool }> }
+    if <T> == <int> { <{ val: int, valid: bool }> }
+    else { <{ val: T, valid: bool }> }
 type IntRecord = SafeRecord<int>
 ```
 
 ```ril
-halt type Identity = \T -> type<T>              -- OK: type-producing function
-meta fn size_of<T>(t: type<T>) -> int { byte_size(t) } -- OK: reflection produces a value
+halt type Identity = \T -> <T>              -- OK: type-producing function
+meta fn size_of<T>(t: Type<T>) -> int { byte_size(t) } -- OK: reflection produces an ordinary value
 halt fn checked_increment(n: int) -> int { n + 1 } -- May panic at int's maximum
 -- halt fn yield_once() -> () @Fiber { Fiber::yield() } -- Error [E0821]: halt requires outward purity
 -- halt fn forever() -> () { loop {} }                  -- Error [E0820]: uncertified local loop
@@ -5962,11 +6040,34 @@ halt fn checked_increment(n: int) -> int { n + 1 } -- May panic at int's maximum
 
 | Static definition | Result / restriction |
 | :--- | :--- |
-| Type declaration/function | May synthesize and return types; effects/capabilities forbidden (`E0335`) |
-| `meta fn` | Returns values, never `Type`/`type<...>` (`E0812`); effect/state annotations forbidden (`E0813`) |
-| `type<T>` input to `meta fn` | Immutable, non-generative reflection token; cannot synthesize or mutate types |
+| Type declaration/function | Type functions produce one type token under the declaration's anonymous-function context; no ordinary result annotation. Effects/capabilities forbidden (`E0335`) |
+| `meta fn` result | Ordinary value free of tokens and type-producing capabilities; reject after generic instantiation (`E0812`). Effect/state annotations remain forbidden (`E0813`) |
+| `meta fn` reflection | May inspect immutable tokens and quote given type syntax, including anonymous shapes; cannot mutate described types or expose a type-producing result API |
+| `meta let` | May hold static tokens; only recursively token-free ordinary results can become run-time constants |
+| Run-time materialization | Reject tokens and static-only metatypes in materialized value parameters/results, storage, and captures (`E0816`), including through aliases, generics, and opaque wrappers; static generic metadata is excluded |
 
-Both run with empty effect/capability domains. Local `let`, `if`, `match`, pure meta helpers/combinators, and recursion are supported.
+Both run with empty effect/capability domains. Local bindings, control flow, pure static helpers, and recursion remain supported. Types used as generic metadata stay static; no run-time type token, witness, or phantom value is passed.
+
+```ril
+meta fn record_bytes() -> int { byte_size(<{ id: int }>) }
+meta fn meta_identity<T>(value: T) -> T { value }
+meta let NUMBER = meta_identity(1)
+-- meta let BAD_TOKEN = meta_identity(<int>) -- Error [E0812]: instantiated result is Type<int>
+-- meta fn leak<T>(token: Type<T>) -> { token: Type<T> } { .{ token: token } }
+-- Error [E0812]: wrapping does not remove the returned token
+
+meta let TOKEN = <int>
+meta let SIZE = byte_size(TOKEN)
+fn runtime_size() -> int &{SIZE} { SIZE }
+fn runtime_client(value: int) -> int {
+    -- let token = <int>              -- Error [E0816]: ordinary execution cannot materialize a token
+    value
+}
+-- fn leak_constant() -> Type<int> &{TOKEN} { TOKEN } -- Error [E0816]: no run-time token values
+-- fn leak_shape(value: { token: Type }) -> () {} -- Error [E0816]: nested token type in a run-time parameter
+```
+
+Phase checks inspect the entire instantiated result/value graph, opaque summaries, captured environments, and latent type-producing callable contracts. Inlining, wrappers, or generic names cannot erase the boundary. A computation that has reduced to ordinary constants without tokens or type-producing authority may cross as ordinary data. A bare `<T>` value expression at run time is `E0816`; forbidden calls retain `E0810`.
 
 Apply [Termination and halt Contracts](#termination-and-halt-contracts) to symbolic computation as well. All meta/type functions retain finite or possibly non-terminating judgments even though their effect and capability domains are empty. `halt type` requires finite symbolic computation, including every reached helper; invalid input or static defects may still fail. Uncertified `halt` computation is `E0820`; type/meta annotation prohibitions retain `E0335`/`E0813`.
 
@@ -5980,43 +6081,43 @@ Unmarked static loops and recursion remain admissible subject to the static-eval
 | Alias cycle | Separate `E0313` check |
 | Failed `assert` / other panic | Static `E0830` / `E0831` |
 
-- **Custom Diagnostics and Static Panic (`panic`, `E0831`)**: Type functions, pipeline guards, and meta evaluation blocks may emit developer-specified compile-time diagnostics by calling `panic(message)`. Because `panic` returns `never` ($\bot$), it conforms to any expected branch return type sort (including `type<T>`). When evaluated at compile time, `panic(message)` immediately terminates symbolic evaluation and emits diagnostic `E0831: StaticEvaluationPanicError`, presenting `message` as the primary diagnostic description without unwinding noise, attributed to the triggering instantiation site.
+- **Custom Diagnostics and Static Panic (`panic`, `E0831`)**: Type functions, pipeline guards, and meta evaluation blocks may emit developer-specified diagnostics with `panic(message)`. Its `never` result fits any expected branch result, including a type-producing branch. Static panic stops evaluation with `E0831: StaticEvaluationPanicError`, attributed to the triggering instantiation; no run-time unwinding occurs.
 
 ```ril
 -- Custom diagnostic in pure type function via static panic:
-type SizedRecord = \T -> match type<T> {
-    type<{ id: int, ..let _ }> -> type<T>,
+type SizedRecord = \T -> match <T> {
+    <{ id: int, ..let _ }> -> <T>,
     _ -> panic("SizedRecord requires a record containing an 'id: int' field"),
 }
 -- type BadRecord = SizedRecord<str> -- Error [E0831]: panic during static evaluation: SizedRecord requires a record containing an 'id: int' field
--- Meta helper function: value domain computation only (returns int, not type<T>)
+-- Meta helper: ordinary value computation only (returns int, not a type token)
 meta fn pad_align(size: int, align: int) -> int {
     assert(size >= 0 && align > 0 && (align & (align - 1)) == 0)
     (size + align - 1) & ~(align - 1)
 }
 
 -- Meta predicate consuming read-only type token (parametric generic, strictly no 'any'):
-meta fn is_compact<T>(t: type<T>) -> bool {
+meta fn is_compact<T>(t: Type<T>) -> bool {
     byte_size(t) <= 16                         -- OK: inspects shape, returns value bool
 }
 
--- Pure type function: monopolizes construction of type<T>
+-- Type functions provide type-producing interfaces; meta helpers return ordinary values.
 halt type PaddedBuffer = \raw_size: int, T -> {
     let actual_size = pad_align(raw_size, 8)   -- OK: consumes meta fn value output
-    if is_compact(type<T>) {                   -- OK: consumes meta predicate
-        type<{ inline_data: []T, len: int }>   -- OK: constructs shape
+    if is_compact(<T>) {                   -- OK: consumes meta predicate
+        <{ inline_data: []T, len: int }>   -- OK: constructs shape
     } else {
-        type<{ heap_ptr: int, cap: int }>      -- OK: constructs shape
+        <{ heap_ptr: int, cap: int }>      -- OK: constructs shape
     }
 }
 
 type FastBuf = PaddedBuffer<64, u8>            -- Resolves to { inline_data: []u8, len: int }
 
 -- Static Rejection of Violations:
--- meta fn bad_type_gen() -> type<int> {       -- Error [E0812]: 'meta fn' cannot return 'type<...>'; monopolized by type functions
---     type<int>
+-- meta fn bad_type_gen() -> Type<int> {       -- Error [E0812]: meta fn cannot expose a token result
+--     <int>
 -- }
--- halt type BadEffect = \T -> type<T> @Async  -- Error [E0335]: type functions cannot declare algebraic effects
+-- halt type BadEffect = \T -> <T> @Async  -- Error [E0335]: type functions cannot declare algebraic effects
 -- meta fn bad_eff() -> int @Io { 0 }          -- Error [E0813]: 'meta fn' cannot declare algebraic effects
 -- type BadInfinite<T> = BadInfinite<T>        -- Error [E0313]: cyclic alias without nominal or sum indirection
 -- type Spin = \T -> Spin<T>
@@ -6056,8 +6157,11 @@ fn run_logged() -> int @Audit { dispatch_worker<DispatchMode::Run>(logged_worker
 | Call family | Permitted calls |
 | :--- | :--- |
 | Type function | Other type functions and `meta fn`; no run-time `fn` (`E0810`) |
-| Run-time function | No type-function invocation (`E0810`) |
+| Meta value evaluation | `meta fn`, static reflection, and listed dual-phase operations; no ordinary run-time `fn` or direct type-function value call (`E0810`) |
+| Run-time value evaluation | No type-function or meta-function value invocation (`E0810`) |
 | Both phases | Pure arithmetic/comparison, `len`, `assert`, and library operations explicitly declared dual-phase |
+
+Type elaboration in declarations, annotations, quoted type syntax, and static type metadata remains static even inside an ordinary `fn`. Type-function evaluation there is not a run-time value call. Local type quotations and read-only reflection in meta code grant no token-result interface to `meta fn`.
 
 Static callbacks capture symbolic constants. Mutable resources, handlers, and ordinary run-time calls have no phase-polymorphic exception. Static budget exhaustion is `E0811`.
 
@@ -6136,7 +6240,7 @@ Sum `keyof` lists declared variant names even when a supplied index excludes a v
 - Mapped members default to immutable; an explicit `MemberMode` applies to every generated member. `T.(K)` projects the member's data type, not its binding mode. Records and sums use the same mapping form:
   ```ril
   -- Generic visitor / handler table valid for BOTH records and sum types:
-  type SchemaTable = \T -> type<{
+  type SchemaTable = \T -> <{
       [K in keyof T]: T.(K)
   }>
   ```
@@ -6144,14 +6248,14 @@ Sum `keyof` lists declared variant names even when a supplied index excludes a v
 - **Single-Element Tuple Prohibition (`E0343`)**: A mapped tuple comprehension evaluated over an index array of length 1 is statically rejected at compile time, preserving the invariant that Ril has no 1-tuples.
 
 ```ril
-type Readonly = \T -> type<{ [K in keyof T]: T.(K) }>
+type Readonly = \T -> <{ [K in keyof T]: T.(K) }>
 type Bag = { mut items: []int }
 type FixedFields = Readonly<Bag>        -- { items: []int }; default member is deeply immutable
 type Box = { var tag: int, mut bag: FixedFields }
 let mut box = Box.{ tag: 0, bag: FixedFields.{ items: [1] } }
 box.tag = 1
 -- box.bag.items !> Array::push(2)    -- Error [E0520]: a default member blocks nested writes
-type Slots = \T -> type<{ var [K in keyof T]: T.(K) }>
+type Slots = \T -> <{ var [K in keyof T]: T.(K) }>
 type PairSlots = (var [I in [0, 1]]: int) -- (var int, var int)
 ```
 
@@ -6166,7 +6270,7 @@ type UserName = User.("name")                  -- str
 
 type Pick = \T, included: []str -> {
     let valid_keys = keyof T |> Array::filter(\k -> included |> Array::contains(k))
-    type<{ [K in valid_keys]: T.(K) }>
+    <{ [K in valid_keys]: T.(K) }>
 }
 type PublicUser = Pick<User, ["id", "name"]>   -- { id: int, name: str }
 
@@ -6181,7 +6285,7 @@ type ClickPayload = UiEvent.Click              -- { x: int, y: int }
 type HoverPayload = UiEvent.("Hover")          -- (int, int)
 type FocusPayload = UiEvent.Focus              -- () (nullary injection domain)
 
-type EventHandlerTable = \T, R -> type<{
+type EventHandlerTable = \T, R -> <{
     [K in keyof T]: fn(T.(K)) -> R
 }>
 type UiHandlerTable = EventHandlerTable<UiEvent, ()>
@@ -6196,7 +6300,7 @@ type Second = Pair.(1)                         -- str
 -- Canonical Tuple Reversal via array pipeline:
 halt type ReverseTuple = \T -> {
     let rev_indices = keyof T |> Array::reverse
-    type<(
+    <(
         [I in rev_indices]: T.(I)
     )>
 }
@@ -6210,18 +6314,16 @@ type ReversedPair = ReverseTuple<Pair>         -- (str, int)
 
 ### Structural Type Pattern Matching
 
-Type functions match quoted types using type-specific products. Bare literals are permitted only in const-argument positions:
+Static tokens use the ordinary `MatchExpr`, with any token-valued expression as subject. Type patterns match its represented type; they are not run-time type tests. Bare literals inside a type pattern remain limited to const-argument positions.
 
 ```ebnf
-TypeMatchExpr    ::= "match" "type" "<" TypeExpression ">" "{" [ TypeMatchArm { "," TypeMatchArm } [ "," ] ] "}"
-TypeMatchArm     ::= TypePattern { "|" TypePattern } [ "if" Expression ] "->" Expression
-TypePattern      ::= "type" "<" TypePatternInner ">" | "_"
+TypePattern      ::= "<" TypePatternInner ">"
 TypePatternInner ::= RigidNominalPattern | TypeTuplePattern | TypeRecordPattern
-                   | ArrayPattern | MapPattern | PrimitivePattern | LiteralPattern | Wildcard | "let" ( PascalCase | Wildcard )
+                   | TypeArrayPattern | TypeMapPattern | PrimitivePattern | LiteralPattern | "_" | "let" ( PascalCase | "_" )
 RigidNominalPattern ::= QualifiedName [ "<" TypePatternInner { "," TypePatternInner } [ "," ] ">" ]
 PrimitivePattern ::= PrimitiveType
-ArrayPattern    ::= "[" [ Expression ] "]" TypePatternInner
-MapPattern      ::= "[" TypePatternInner ":" TypePatternInner "]"
+TypeArrayPattern ::= "[" [ Expression ] "]" TypePatternInner
+TypeMapPattern  ::= "[" TypePatternInner ":" TypePatternInner "]"
 TypeRecordPattern ::= "{" [ TypePatternField { "," TypePatternField } [ "," TypeRestPattern ] [ "," ] ] "}"
 TypePatternField ::= [ MemberMode ] FieldLabel ":" TypePatternInner
 TypePatternMember ::= [ MemberMode ] TypePatternInner
@@ -6229,32 +6331,61 @@ TypeTuplePattern ::= "(" ")" | "(" TypePatternMember "," ( TypeRestPattern | Typ
 TypeRestPattern ::= ".." "let" PascalCase
 ```
 
-- **Scoped Pattern Variables (`let U`)**: A `let U` binder inside `type<P>` introduces an immutable type variable scoped strictly to the arm's guard and RHS expression. `U` MUST be `PascalCase` (`E0101`).
+- **Scoped Pattern Variables (`let U`)**: A `let U` binder inside `<P>` introduces an immutable target-type variable scoped strictly to the arm's guard and RHS. `U` MUST be `PascalCase` (`E0101`); it alone proves no record structure or fields.
 - **Member Modes**: Structural type patterns match declared member modes exactly; omission means the default mode. Row/tuple rests preserve remaining member modes. The `let U` type-variable binder is not a member modifier and remains explicit.
-- **Linearity Invariant**: Pattern variables MUST be linear; repeating the same identifier within a pattern branch is statically rejected (`E0347: DuplicatePatternBindingError`). Multi-position equality is asserted via explicit guards (`if type<A> == type<B>`).
+- **Linearity Invariant**: Pattern variables MUST be linear; repeating the same identifier within a pattern branch is statically rejected (`E0347: DuplicatePatternBindingError`). Multi-position equality is asserted via explicit guards (`if <A> == <B>`).
 - **Tuple Rest**: A type-pattern rest is a tuple type of the remaining components; an empty rest is unit. A one-component rest cannot form a tuple and fails that pattern, allowing the next arm to match. It is not silently coerced to its component type.
 - **Rigid Application Head (`E0306`)**: Require a known rigid type constructor; no head binding or inverse type-function matching. Transparent aliases may expand. Primitive/structural patterns and whole-type `_`/`let U` remain legal.
 
+| Match evidence | Scope / invalidation |
+| :--- | :--- |
+| Subject evaluation | Evaluate once and match that token snapshot, including a variable or type-function result |
+| `<User>` arm | Matched value is `Type<User>`; named source paths retain the fact only while unchanged |
+| `<let U>` arm | Snapshot is `Type<U>`; U remains the original target even if a source slot is reassigned |
+| Structural arm | Restore only the member/mode/identity facts actually proved by that pattern |
+| Assignment / alias write | Invalidate affected source-path evidence; a fresh current static target may prove different facts |
+
+```ril
+-- User and field_size have the preceding contracts.
+meta fn inspect_wide(token: Type) -> int {
+    match token {
+        <User> -> field_size(token, "id"),
+        _ -> 0,
+    }
+}
+meta let _ = {
+    var selected: Type = <User>
+    match selected {
+        <let U> -> {
+            let snapshot = <U>
+            selected = <int>
+            assert(snapshot == <User>)
+            -- let stale = field_size(selected, "id") -- Error [E0301]: U does not retarget with selected
+        },
+    }
+}
+```
+
 ```ril
 -- Deep Recursive Unwrapping of Container / Fallible Types:
-type UnwrapAll = \T -> match type<T> {
-    type<Result<let OkVal, let _>> -> UnwrapAll<OkVal>,
-    type<Option<let SomeVal>>      -> UnwrapAll<SomeVal>,
-    _                              -> type<T>,
+type UnwrapAll = \T -> match <T> {
+    <Result<let OkVal, let _>> -> UnwrapAll<OkVal>,
+    <Option<let SomeVal>>      -> UnwrapAll<SomeVal>,
+    _                              -> <T>,
 }
 
 -- Element Extraction from Collections:
-halt type ElementOf = \T -> match type<T> {
-    type<[]let E>        -> type<E>,
-    type<Set<let E>>     -> type<E>,
-    type<[let _: let V]> -> type<V>,
-    _                    -> type<never>,
+halt type ElementOf = \T -> match <T> {
+    <[]let E>        -> <E>,
+    <Set<let E>>     -> <E>,
+    <[let _: let V]> -> <V>,
+    _                    -> <never>,
 }
 
 -- Tuple Destructuring:
-halt type DeconstructTuple = \T -> match type<T> {
-    type<(let Head, ..let Tail)> -> type<{ head: Head, tail: Tail }>,
-    _                            -> type<never>,
+halt type DeconstructTuple = \T -> match <T> {
+    <(let Head, ..let Tail)> -> <{ head: Head, tail: Tail }>,
+    _                            -> <never>,
 }
 
 type Nested = Option<Result<int, str>>
@@ -6264,9 +6395,9 @@ type Elem = ElementOf<[]str>                   -- str
 type HeadTail = DeconstructTuple<(u8, i32, f64)>-- { head: u8, tail: (i32, f64) }
 
 -- Rejection of Non-Rigid Type Patterns (E0306):
--- type BadPattern = \T -> match type<T> {
---     type<(let M)<let U>> -> type<U>,         -- Error [E0306]: rigid type pattern cannot bind constructor '(let M)' as a higher-kinded pattern variable
---     _                    -> type<never>,
+-- type BadPattern = \T -> match <T> {
+--     <(let M)<let U>> -> <U>,         -- Error [E0306]: rigid type pattern cannot bind constructor '(let M)' as a higher-kinded pattern variable
+--     _                    -> <never>,
 -- }
 ```
 
@@ -6275,28 +6406,36 @@ type HeadTail = DeconstructTuple<(u8, i32, f64)>-- { head: u8, tail: (i32, f64) 
 Type functions accept the following parameter sorts and constraints:
 
 - **Bare Types (`\T` or `\T: Type`)**: Accepts static type expressions. Unannotated parameters default to sort `Type`.
-- **Const Values (`\param: ValueType`)**: Accepts compile-time known constants (literals, `meta let`, statically foldable expressions). Passing runtime variables raises `E0814`.
+- **Const Values (`\param: ValueType`)**: Accepts compile-time known values (literals, `meta let`, statically foldable expressions), including `token: Type` / `token: Type<T>`. Passing runtime variables raises `E0814`. Token arguments are copied at argument evaluation and compared by target identity.
 - **Bounded Structural Types (`\T: { id: int, ..R }`) and Static Keys (`\K: keyof T`)**: Structural bounds constrain types; keyof bounds constrain static key values. These are distinct sorts even though both use PascalCase binders.
 - **Higher-Kinded Constructors (`\M: Type -> Type`)**: Enforces constructor kind arity (`E0306`).
 - **Default Sort Arguments**: Type function parameters support default expressions conforming to their sort: `\T = u8`, `\cap: int = 1024`. Default arguments follow the Telescopic scoping and trailing rules ([Generic Parameters, Defaults, and Value Sorts](#generic-parameters-defaults-and-value-sorts)).
+
+| Parameter | Kind / value category |
+| :--- | :--- |
+| `\T: Type` | Type argument |
+| `\M: Type -> Type` | Constructor receiving a type argument and producing a type |
+| `\token: Type` | Static token value argument, not a constructor of kind `Type -> Type` |
+| `\K: keyof T` | Static key value argument, not a type |
 
 ```ril
 type SchemaV1 = { id: int, name: str }
 type SchemaV2 = { id: int, name: str, email: str }
 
 type VersionedSchema = \version: int -> match version {
-    1 -> type<SchemaV1>,
-    2 -> type<SchemaV2>,
-    _ -> type<never>,
+    1 -> <SchemaV1>,
+    2 -> <SchemaV2>,
+    _ -> <never>,
 }
 
 type ActivePayload = VersionedSchema<2>        -- SchemaV2
 
-type PickField = \T: { ..R }, K: keyof T -> type<T.(K)>
+type PickField = \T: { ..R }, K: keyof T -> <T.(K)>
 type UserName = PickField<SchemaV1, "name">    -- str
 
-type Wrapper = \M: Type -> Type, T -> type<M<T>>
+type Wrapper = \M: Type -> Type, T -> <M<T>>
 type OptInt = Wrapper<Option, int>             -- Option<int>
+-- type BadKind = Wrapper<Resolve, int>         -- Error [E0306]: Resolve receives a token value, not a type argument
 ```
 
 ### Compile-Time Execution and Layout Cooperation
@@ -6306,7 +6445,7 @@ MetaLetDecl      ::= "meta" "let" ( ScreamingSnakeCase | "_" ) [ ":" TypeExpress
 MetaFnDecl       ::= [ "pub" ] "meta" "fn" SnakeCase [ GenericParams ] "(" [ ParameterList ] ")" ReturnType Block
 ```
 
-`meta let` and `meta fn` evaluate in the pure static domain. Results can be used as immutable run-time constants. Type functions can consume these values to select shapes. Arithmetic on sizes follows the ordinary integer rules.
+`meta let` and `meta fn` evaluate in the pure static domain. Only ordinary results recursively free of tokens, static-only metatypes, and type-producing authority may become immutable run-time constants. Token-valued `meta let` bindings remain static. Type functions may consume static values to select shapes; arithmetic on sizes follows ordinary integer rules.
 
 A run-time value-expression read of a module-level meta constant retains its named source obligation under [External State Tracking](#external-state-tracking). Static/type-domain reads have no such run-time obligation.
 
@@ -6325,9 +6464,9 @@ meta fn align_to(offset: int, alignment: int) -> int {
 }
 halt type BufferShape = \capacity: int ->
     if capacity <= 64 {
-        type<{ inline_data: []u8, len: int }>
+        <{ inline_data: []u8, len: int }>
     } else {
-        type<{ heap_ptr: int, capacity: int, len: int }>
+        <{ heap_ptr: int, capacity: int, len: int }>
     }
 meta let CAPACITY = align_to(60, 16)
 type Buffer = BufferShape<CAPACITY>
@@ -6339,15 +6478,17 @@ Shape declarations promise no packed order, offsets, pointer size, or external b
 
 ```ril
 -- Language-defined static declaration exposed by the prelude:
--- meta fn byte_size<T>(value: type<T>) -> int
-meta let BYTE_SIZE = byte_size(type<u8>)
+-- meta fn byte_size(value: Type) -> int
+meta let BYTE_SIZE = byte_size(<u8>)
 meta let _ = assert(BYTE_SIZE == 1)
--- let runtime_size = byte_size(type<u8>) -- Error [E0810]: query requires static evaluation
+-- let runtime_size = byte_size(<u8>) -- Error [E0810]: query requires static evaluation
 ```
 
 | `byte_size` contract | Rule |
 | :--- | :--- |
-| Result | Nonnegative `int` size of T's value/handle on the selected abstract target; not its reachable graph |
+| Input | A `Type` token; query its represented target, not the token implementation |
+| Result | Nonnegative `int` size of the represented target's value/handle on the selected abstract target; not its reachable graph |
+| Layout domain | Static-only metatypes such as `Type` / `Type<User>`, and shapes requiring their materialization, have no ordinary run-time layout (`E0306`) |
 | Phase | Static only; finite; usable by meta/type computations and other required static evaluations |
 | Ordinary execution | `E0810`; a `meta let` result may be used as an ordinary constant |
 | Visibility | Prelude declaration with ordinary lexical shadowing; not reserved syntax |
@@ -6541,9 +6682,9 @@ let count = len([1, 2, 3])
 println("Count: {count}")
 ```
 
-The prelude is an ambient lexical scope enclosing every Ril compilation unit. Its declarations are accessible without explicit import statements. Local declarations may shadow prelude names; within the same scope, duplicate declarations remain `E0203`. Shadowing does not alter built-in syntax, compiler intrinsics, or declaration identities required by language-defined operators.
+The prelude is an ambient lexical scope enclosing every Ril compilation unit. Its declarations are accessible without explicit import statements. Local declarations may shadow ordinary prelude names; the intrinsic type family `Type` cannot be shadowed (`E0203`). Shadowing does not alter built-in syntax, compiler intrinsics, or declaration identities required by language-defined operators.
 
-Primitive type spellings (`int`, `str`, `bool`, etc.), `?T`, collection type syntax (`[]T`, `[K: V]`), and built-in system effect identities (`Fiber`, `Concurrent`, `Async`, `Div`) are language constructs, not imported prelude declarations.
+Primitive type spellings (`int`, `str`, `bool`, etc.), static metatypes (`Type`, `Type<T>`), `?T`, collection type syntax (`[]T`, `[K: V]`), and built-in system effect identities (`Fiber`, `Concurrent`, `Async`, `Div`) are language constructs, not imported prelude declarations.
 
 #### Built-in Foundational Operations
 
@@ -6573,8 +6714,8 @@ Forms preserve data schemas and operation identity. Resource contracts remain se
 | `inner` | `inner(wrapper) -> T` / `inner(ref wrapper) -> ref(wrapper) T` | Pure | Runtime | $O(1)$ | Preserve immutable/observed payload authority; value payloads use a plain result; unit nominal yields `()` |
 | `clone` | `clone(value)` / `clone(ref value)` | Pure | Runtime | $O(\text{graph})$ | Ordinary reference result `new T`, value result `T`; preserves graph aliases, cycles, and schemas. Resource cloning follows its separate contract |
 | `derive` | `derive(base, recipe) -> T` | Forwards recipe | Runtime | $O(\text{affected})$ | Functional update on immutable value via confined mutable draft |
-| `byte_size` | `meta fn byte_size<T>(value: type<T>) -> int` | Pure | Static only | $O(1)$ | Size in bytes of $T$'s value/handle on abstract target |
-| `type_name` | `meta fn type_name<T>(value: type<T>) -> str` | Pure | Static only | $O(\text{len})$ | Canonical string representation of $T$ for static diagnostics |
+| `byte_size` | `meta fn byte_size(value: Type) -> int` | Pure | Static only | $O(1)$ | Size of the represented target's value/handle; static-only targets have no run-time layout |
+| `type_name` | `meta fn type_name(value: Type) -> str` | Pure | Static only | $O(\text{len})$ | Canonical representation of the token's target, including static metatypes, for diagnostics |
 | `panic` | `panic(message: str) -> never` | Defect | Dual-phase | Finite | Initiates panic unwinding at runtime; halts compile-time evaluation with E0831 |
 | `assert` | `assert(condition: bool, message: str = "assertion failed") -> ()` | Defect | Dual-phase | $O(1)$ | Panics on false condition; compile-time failure is `E0830` |
 | `print` | `print(text: str) -> () @Fiber` | `@Fiber` | Runtime | $O(\text{len})$ | Writes UTF-8 text to standard output without trailing newline |
@@ -6608,7 +6749,7 @@ Forms preserve data schemas and operation identity. Resource contracts remain se
   - Traps escaping draft references (`E0607`).
   - Forwards recipe algebraic effects and external state obligations; discharges draft-local writes.
 - **Static Layout Query (`byte_size`)**:
-  - `meta fn byte_size<T>(value: type<T>) -> int` queries the non-negative size in bytes of $T$'s value or handle representation on the selected abstract target ([Compile-Time Execution and Layout Cooperation](#compile-time-execution-and-layout-cooperation)).
+  - `meta fn byte_size(value: Type) -> int` queries the represented target's nonnegative value/handle size ([Compile-Time Execution and Layout Cooperation](#compile-time-execution-and-layout-cooperation)). Static-only metatypes have no ordinary layout (`E0306`); widening does not change the target being queried.
   - Static-only: permitted during compile-time static evaluation (`meta let`, type functions); calling `byte_size` in runtime code is `E0810`.
   - Grants no packed layout, field offset, or external ABI alignment guarantees.
 - **Defect Initiation and Assertions (`panic`, `assert`)**:
@@ -6623,7 +6764,7 @@ Forms preserve data schemas and operation identity. Resource contracts remain se
   - Both convenience operations panic on unrecoverable host I/O failure; fallible streaming I/O is provided separately by `ril/io`.
   - Concurrent writes across tasks may interleave at arbitrary byte boundaries without synchronization.
 - **Prelude Shadowing and Integrity**:
-  - Lexical declarations in inner scopes may shadow prelude names. A local binding named `clone`, `len`, `assert`, etc., shadows the prelude identifier.
+  - Lexical declarations in inner scopes may shadow ordinary prelude names such as `clone`, `len`, and `assert`; protected `Type` is excluded.
   - A locally defined function named `clone` does not acquire the prelude's freshness and copying guarantees (`E0522`).
 
 ### Mandatory Inspection of Fallible Results
@@ -6728,7 +6869,7 @@ This index assigns each code its diagnostic name and points to its defining rule
 | **`E0303`** | [`NonExhaustiveMatchError`](#pattern-matching) |
 | **`E0304`** | [`UnreachableMatchArmError`](#pattern-matching); [Sum Types and GADTs](#sum-types-and-gadts) |
 | **`E0305`** | [`NominalTypeMismatchError`](#nominal-type-wrappers) |
-| **`E0306`** | [`KindMismatchError`](#structural-type-pattern-matching) |
+| **`E0306`** | [`KindMismatchError`](#structural-type-pattern-matching); [Static Layout](#compile-time-execution-and-layout-cooperation) |
 | **`E0307`** | [`MissingFieldError`](#record-types-and-row-polymorphism) |
 | **`E0308`** | [`OpaqueBoundaryViolationError`](#type-declarations-and-opaque-types) |
 | **`E0309`** | [`VacuousBindingError`](#guarded-bindings-and-non-vacuous-invariant) |
@@ -6887,7 +7028,7 @@ This index assigns each code its diagnostic name and points to its defining rule
 | **`E0813`** | [`MetaComputationAnnotationError`](#pure-type-functions-and-type-return-privilege) |
 | **`E0814`** | [`StaticValueRequiredError`](#disjoint-call-families-evaluation-budgets-and-branch-pruning) |
 | **`E0815`** | [`InvalidStaticValueError`](#disjoint-call-families-evaluation-budgets-and-branch-pruning) |
-| **`E0816`** | [`RuntimeTypeQuotationProhibitedError`](#static-type-values-and-type-quotation) |
+| **`E0816`** | [`RuntimeTypeTokenProhibitedError`](#pure-type-functions-and-type-return-privilege) |
 | **`E0820`** | [`TotalityViolationError`](#termination-and-halt-contracts); [Deterministic Data Parallelism and Divide-and-Conquer Primitives](#deterministic-data-parallelism-and-divide-and-conquer-primitives) |
 | **`E0821`** | [`HaltPurityViolationError`](#termination-and-halt-contracts) |
 | **`E0822`** | [`InvalidBudgetBoundaryError`](#finite-evaluation-with-div) |
