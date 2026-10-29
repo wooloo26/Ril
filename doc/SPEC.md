@@ -835,10 +835,11 @@ Named row tail polymorphism (`..R`) allows generic functions to accept and prese
 
 ```ebnf
 RecordType       ::= "{" [ RecordFieldList ] "}"
-MemberMode       ::= "var" [ "mut" | "ref" ] | "mut" | "ref"
+MemberMode       ::= [ "var" ] [ "mut" | "^mut" | "ref" ]
+Authority        ::= "let" | "mut" | "^mut" | "ref"
 RecordField      ::= [ MemberMode ] FieldLabel ":" TypeExpression
-TypeProjection ::= PrimaryType "." ( Identifier | TupleIndex | "(" Expression ")" )
-TupleIndex     ::= Digit { Digit }
+TypeProjection   ::= PrimaryType "." ( Identifier | TupleIndex | "(" Expression ")" )
+TupleIndex       ::= Digit { Digit }
 RecordFieldList  ::= ".." PascalCase | RecordField { "," RecordField } [ "," [ ".." PascalCase ] ]
 FieldLabel       ::= SnakeCase | UnderscoreName | PascalCase
 ```
@@ -848,10 +849,11 @@ type Cell = { var count: int }
 type State = {
     id: int,                         -- Implicit let: fixed, deeply immutable
     var title: str,                  -- Replaceable immutable value
-    mut items: []int,                 -- Fixed writable array
-    var mut current: Cell,            -- Replaceable writable reference
-    ref source: Cell,               -- Fixed live observation
-    var ref cursor: Cell,           -- Replaceable live observation
+    mut items: []int,                -- Fixed writable array holding immutable scalar elements
+    ^mut shared_cell: Cell,          -- Fixed shared mutable handle
+    var mut current: Cell,           -- Replaceable writable reference
+    ref source: Cell,                -- Fixed live observation
+    var ref cursor: Cell,            -- Replaceable live observation
 }
 let mut first = Cell.{ count: 0 }
 let mut second = Cell.{ count: 0 }
@@ -923,18 +925,19 @@ assert(rest.role == "root")
 
 ### Array, Map, and Tuple Types
 
-Bracket syntax defines arrays (`[]T`) and maps (`[K: V]`); tuples use `(T1, T2)`. Range results remain ordinary arrays. `let ref` / `var ref` are binding modes, not array types. `Set<T>` and collection type extractors are standard-library declarations.
+Bracket syntax defines compact homogeneous arrays (`[]T`, `[mut]T`, `[^mut]T`, `[ref]T`) and maps (`[K: V]`, `[K: mut V]`, `[K: ^mut V]`, `[K: ref V]`); tuples use `(T1, T2)`. Range results (`arr[a..b]`) are pure syntax sugar returning ordinary newly allocated arrays without sharing underlying buffers. All authority modifiers (`let`, `mut`, `^mut`, `ref`) are pure compile-time static constraints with zero runtime overhead, completely erased from machine representations. In maps, keys are statically constrained to deeply immutable types (`let` authority) to preserve index hash and equality stability; specifying mutable authority modifiers on keys is rejected (`E0402`). `Set<T>` and collection type extractors are standard-library declarations.
 
 ```ebnf
-ArrayType   ::= "[]" TypeExpression
-MapType     ::= "[" TypeExpression ":" TypeExpression "]"
-TupleType   ::= "(" TupleMember "," TupleMember { "," TupleMember } [ "," ] ")"
-TupleMember ::= [ MemberMode ] TypeExpression
-TupleExpr   ::= "(" TupleValue "," TupleValue { "," TupleValue } [ "," ] ")"
-TupleValue  ::= [ MemberMode ] Expression
-ArrayExpr   ::= "[" [ Expression { "," Expression } [ "," ] ] "]"
-MapExpr     ::= "[" ":" "]" | "[" MapEntry { "," MapEntry } [ "," ] "]"
-MapEntry    ::= Expression ":" Expression
+ArrayType      ::= "[" [ ModeExpression ] "]" TypeExpression
+ModeExpression ::= "mut" | "^mut" | "ref" | PascalCase
+MapType        ::= "[" TypeExpression ":" [ ModeExpression ] TypeExpression "]"
+TupleType      ::= "(" TupleMember "," TupleMember { "," TupleMember } [ "," ] ")"
+TupleMember    ::= [ MemberMode ] TypeExpression
+TupleExpr      ::= "(" TupleValue "," TupleValue { "," TupleValue } [ "," ] ")"
+TupleValue     ::= [ MemberMode ] Expression
+ArrayExpr      ::= "[" [ Expression { "," Expression } [ "," ] ] "]"
+MapExpr        ::= "[" ":" "]" | "[" MapEntry { "," MapEntry } [ "," ] "]"
+MapEntry       ::= Expression ":" Expression
 ```
 
 ```ril
@@ -1392,7 +1395,7 @@ ValueType             ::= TypeExpression
 
 - **Trailing Defaults Invariant (`E0316`)**: If a generic parameter declares a default argument (`= Default`), all subsequent generic parameters in the same parameter list MUST declare default arguments.
 - **Telescopic Left-to-Right Scoping Invariant (`E0320`)**: A default argument expression $D_i$ may reference generic parameters declared to its left ($X_1, \dots, X_{i-1}$). Forward references and direct/indirect circular dependencies are statically rejected (`E0320`).
-- **Member Mode Sorts (`M: MemberMode`, `E0356`)**: Static parameters may constrain to the ambient `MemberMode` sort. Arguments accept member mode literals (`var`, `mut`, `ref`, etc.) or static expressions yielding `MemberMode`. Incompatible sorts fail with `E0356`.
+- **Member Mode Sorts (`M: MemberMode`, `E0356`)**: Static parameters may constrain to the ambient `MemberMode` sort. Arguments accept member mode literals (`var`, `mut`, `^mut`, `ref`, etc.) or static expressions yielding `MemberMode`. Incompatible sorts fail with `E0356`.
 - **Generic Closed Type Sets (`TypeSetSort`, `E0301`)**: A generic parameter may constrain its admitted domain to a finite union of types (`T: int | f64`). Unlike value-level untagged unions (`E0318`), a type set constraint does not create an untagged runtime union type; monomorphization specializes $T$ to each concrete member. The compiler performs definition-site polyvariant type checking across all member types $\tau \in \{T_1, \dots, T_n\}$, verifying that the generic body's operations are well-typed for every alternative. Supplying a type outside the set triggers `E0301: TypeMismatchError`.
 - **Pipeline Type Constraints (`T |> Guard`, `E0301`, `E0306`)**: A type parameter may pipe into one or more pure type functions (`T |> Numeric`). The guard must be a compile-time pure `type` function of kind `Type -> Type` (`E0306`). An argument type $T_{arg}$ satisfies the guard if and only if:
   $$\text{Valid}(T_{arg}) \iff T_{arg} \not\equiv \text{never} \quad \wedge \quad \text{Guard}\langle T_{arg} \rangle \equiv T_{arg}$$
@@ -1656,8 +1659,10 @@ Binding and origin permissions govern access. Effects govern evaluation and hand
 | :--- | :---: | :---: | :--- |
 | `let` | No (`E0501`) | No (`E0520`) | Deeply immutable, freely shareable across tasks |
 | `var` | Yes | No (`E0520`) | Deeply immutable; slot may select another value |
-| `let mut` / `let ^mut` | No (`E0502`) | Yes | Fixed writable target; `^mut` explicitly acknowledges initializer sharing |
-| `var mut` / `var ^mut` | Yes | Yes | Writable target; `^mut` covers initialization only, and replacement rechecks reception |
+| `let mut` | No (`E0502`) | Yes | Fixed exclusive writable target |
+| `let ^mut` | No (`E0502`) | Yes | Fixed shared mutable target; propagates `&^mut` capability obligations |
+| `var mut` | Yes | Yes | Reassignable exclusive writable target |
+| `var ^mut` | Yes | Yes | Reassignable shared mutable target; replacement rechecks reception |
 | `let ref` | No (`E0502`) | No (`E0520`) | Fixed read-only reference; may observe live data |
 | `var ref` | Yes | No (`E0520`) | Read-only reference cursor; immutable or live target |
 
@@ -1716,19 +1721,21 @@ assert(cursor.title == "Selected")
 | `var mut` | Both reassignment and interior writes |
 | `^mut` parameter | Actual retention |
 
-### Shared Writable Reception
+### Shared Writable Authority
+
+`let ^mut` and `var ^mut` are primary first-class static authority declarations, establishing a fixed or reassignable handle over shared mutable data. They explicitly declare that the target possesses active or potential outside writing aliases, requiring and propagating `&^mut` capability obligations.
 
 ```ebnf
 SharedMutDecl ::= [ "pub" ] ( "let" | "var" ) "^mut" Identifier
                   [ ":" TypeExpression ] "=" Expression
 ```
 
-| Declaration | Exact desugaring | Slot behavior |
+| Declaration | Authority | Slot behavior |
 | :--- | :--- | :--- |
-| `let ^mut x: T = expr` | `let mut x: T = ^mut (expr)` | Fixed target |
-| `var ^mut x: T = expr` | `var mut x: T = ^mut (expr)` | Reassignable target |
+| `let ^mut x: T = expr` | Shared mutable (`^mut`) | Fixed slot |
+| `var ^mut x: T = expr` | Shared mutable (`^mut`) | Reassignable slot |
 
-Types are optional in either spelling. The marker covers the complete initializer, including a pipeline or conditional, evaluated once in its original order. This sugar supplies the existing reception acknowledgment, not another permission, publication, or permanent sharing property. Both spellings retain identical origin, write-authority, lifetime, resource, and `E0527` checks.
+The left-hand declaration directly specifies the binding's static authority. Attempting to declare an exclusive mutable binding with a shared initializer (e.g. `let mut x = ^mut expr` or `var mut x = ^mut expr`) is statically rejected (`E0406`): exclusive `let mut` / `var mut` bindings demand unaliased targets, while shared references must be explicitly declared on the binding using `let ^mut` or `var ^mut`. Types are optional. Both declarations enforce origin, write-authority, lifetime, resource, and `E0527` checks.
 
 ```ril
 type Cell = { var count: int }
@@ -4365,7 +4372,9 @@ cell.count += 1
 
 `-> new T` is deliberately weaker than this input contract: a locally constructed root may already have been shared under its required retention contracts. A forwarding `new` formal must still possess unpublished authority at its explicit handoff. Verified summaries retain whether a returned root was allocated inside the invocation or arrived through a construction parameter, its true entry origins, all contained dependencies, and its permission history. Initial eligibility and disjointness must be proved from those facts, never from the word `new` alone.
 
-#### Fresh Values in Storage Calls
+#### Homogeneous Storage Authority and Container Self-Determination
+
+Storage containers define their element authority statically and homogeneously within their type signature (`[]T`, `[mut]T`, `[^mut]T`, `[ref]T`). Built-in container operations (`Array::push`, `Array::pop`, `Map::set`) have self-determined parameter contracts derived directly from the container's declared authority, eliminating heterogeneous element tracking and built-in privileges:
 
 ```ril
 type Cell = { var count: int }
@@ -4373,87 +4382,72 @@ fn copy_cell(cell: Cell) -> new Cell { clone(cell) }
 fn build_cell() -> new Cell {
     let mut cell = Cell.{ count: 0 }
     cell.count += 1
-    cell                               -- OK: root write authority survives; full initial eligibility is verified
+    cell
 }
+
+-- 1. Exclusive mutable container: [mut]T
 let original = Cell.{ count: 1 }
-let mut cells: []Cell = []
-cells !> Array::push(clone(original))   -- OK: initial writable reception
-cells !> Array::insert(0, Cell.{ count: 2 }) -- OK: constructor
-cells !> Array::push(copy_cell(original))   -- OK: verified fresh return
-cells !> Array::push(build_cell())
-cells[0].count += 1
-cells[1].count += 1
-cells[2].count += 1
-cells[3].count += 1
-assert(original.count == 1 && cells[0].count == 3 && cells[3].count == 2)
-```
+let mut owned_cells: [mut]Cell = []
+owned_cells !> Array::push(clone(original))       -- OK: verified fresh construction
+owned_cells !> Array::insert(0, Cell.{ count: 2 }) -- OK: direct constructor expression
+owned_cells !> Array::push(copy_cell(original))   -- OK: verified fresh return
+owned_cells !> Array::push(build_cell())          -- OK: fresh return
+owned_cells[0].count += 1                         -- OK: [mut]Cell grants exclusive interior writes
+owned_cells[1].count += 1
+owned_cells[2].count += 1
+owned_cells[3].count += 1
+assert(original.count == 1 && owned_cells[0].count == 3 && owned_cells[3].count == 2)
 
-The `value` input in `Array::push`, `Array::insert`, and `Map::set` retains its initial-storage contract and additionally accepts an explicit `new expression` construction handoff. Its existing ordinary immutable/value, `ref` observation-storage, and `^mut` retained-writer forms remain distinct valid receptions; this is not a single strict `new`-only parameter. An unmarked eligible construction expression continues to receive unpublished authority directly at these built-ins before ordinary immutable reception. An incoming `new` formal must instead be forwarded with its explicit `new` handoff. Ordinary wrappers can preserve this construction path by declaring a [fresh construction parameter](#fresh-construction-parameters); an ordinary read-only parameter still ends eligibility. A `-> new T` return label alone proves neither initial eligibility nor absence of outside aliases. Existing live data still requires explicit `ref` or `^mut` reception. The `ref` form checks persistent observation origins and escape; call-time observation alone does not permit retention.
-
-```ril
--- Cell, original, and copy_cell have the preceding declarations/contracts.
-fn identity(cell: Cell) -> Cell { cell }
-fn frozen_cell() -> Cell { let cell = Cell.{ count: 1 }; cell }
-fn append(mut target: []Cell, cell: Cell) &mut -> () { target !> Array::push(cell) }
-
-let frozen_copy = clone(original)
-let mut cells: []Cell = []
-cells !> Array::push(frozen_copy)       -- OK: stores a read-only element
--- cells[0].count += 1                -- Error [E0522]: let already published immutable data
-cells !> Array::push(identity(clone(original)))
--- cells[1].count += 1                -- Error [E0522]: read-only parameter path
-cells !> Array::push(frozen_cell())
--- cells[2].count += 1                -- Error [E0522]: fresh allocation, but already immutable
-append(mut cells, clone(original))
--- cells[3].count += 1                -- Error [E0522]: wrapper's parameter is read-only
-
-fn append_copy(mut target: []Cell, source: Cell) &mut -> () {
-    target !> Array::push(copy_cell(source)) -- OK: constructs a new result; &mut suffices
-}
-let push: fn(mut []Cell, Cell) &mut -> () = Array::push
-push(mut cells, clone(original))       -- OK: alias preserves the operation's contract
-cells[4].count += 1
+-- In-place freeze: exclusive [mut]T cleanly publishes to immutable []T once populated
+let frozen_cells: []Cell = owned_cells |> Array::freeze()
+-- frozen_cells[0].count += 1                     -- Error [E0520]: []Cell elements are deeply immutable
 ```
 
 ```ril
-type Cell = { var count: int }
-type Holder = { child: Cell }          -- Default member is deeply immutable
+-- 2. Immutable container ([]T) vs Shared container ([^mut]T) vs Observation container ([ref]T)
 let mut shared = Cell.{ count: 1 }
-let mut cells: []Cell = []
-cells !> Array::push(ref shared)      -- OK: explicit read-only live element
--- cells !> Array::push(shared)       -- Error [E0535]: no implicit live reception
--- cells[0].count += 1                -- Error [E0522]: existing writer needs an argument marker
-cells !> Array::push(^mut shared)      -- OK: explicit retained writer
-cells[1].count += 1
+
+-- Immutable container: []Cell holds deeply immutable elements
+let mut immut_cells: []Cell = []
+immut_cells !> Array::push(Cell.{ count: 0 })     -- OK: stores immutable data
+-- immut_cells[0].count += 1                      -- Error [E0520]: []Cell elements are immutable
+-- immut_cells !> Array::push(ref shared)         -- Error [E0406]: immutable container rejects references
+
+-- Shared mutable container: [^mut]Cell holds elements with active or potential outside writing aliases
+let mut shared_cells: [^mut]Cell = []
+shared_cells !> Array::push(^mut shared)          -- OK: explicit ^mut acknowledgment; requires &^mut
+shared_cells[0].count += 1
 assert(shared.count == 2)
 
-let mut holders: []Holder = []
-let snapshot = clone(ref shared)
-holders !> Array::push(Holder.{ child: snapshot })
--- let mut child = ^mut holders[0].child -- Error [E0520]: default member remains immutable
+-- Live observation container: [ref]Cell holds read-only observation views
+let mut view_cells: [ref]Cell = []
+view_cells !> Array::push(ref shared)             -- OK: explicit read-only live observation view
+-- view_cells[0].count += 1                       -- Error [E0520]: ref view grants no writes
+-- view_cells !> Array::push(shared)              -- Error [E0405]: missing ref argument marker
 ```
 
 ```ril
-type Cell = { var count: int }
-let original = Cell.{ count: 1 }
-let repeated = (mut original, mut original)
-let mut pairs: [](mut Cell, mut Cell) = []
-pairs !> Array::push((^mut clone(repeated))) -- OK: marks internal sharing, not an argument mode
-pairs[0].0.count += 1
-assert(pairs[0].1.count == 2 && original.count == 1)
--- pairs !> Array::push(clone(repeated)) -- Error [E0510]: internal writable sharing is unmarked
--- pairs !> Array::push(^mut clone(repeated)) -- Error [E0410]: argument mode requires a target
+-- 3. Observation Subsumption: Read-only observation context statically covers write authorities
+fn inspect_all(ref arr: [ref]Cell) -> int {
+    var total = 0
+    for arr as item { total += item.count }
+    total
+}
+
+-- Calling read-only inspection statically subsumes [mut]Cell and [^mut]Cell without runtime coercion
+let mut test_cells: [mut]Cell = []
+test_cells !> Array::push(new Cell.{ count: 5 })
+assert(inspect_all(ref test_cells) == 5)          -- OK: write permissions statically inactive during ref call
 ```
 
-| Check | Requirement |
-| :--- | :--- |
-| Eligible regions | Newly constructed ordinary writable storage, isolated from pre-existing writable regions, with no surviving outside observer, writer, or active environment |
-| Established paths | Bindings select permissions; `let`, plain `var`, `ref` handles, and read-only parameters end eligibility. A valid `new` formal can hand its construction path onward explicitly; ordinary established writers, including retained returns, still need `^mut` arguments |
-| Expressions / returns | Preserve actual provenance. A `new` root with outside aliases or contained live dependencies is not automatically eligible; every retained alternative must satisfy the full initialization contract |
-| Constituents | Preserve member schemas and nonfresh permissions. Default members stay immutable; fresh outer data cannot retain concealed existing writers |
-| Operation identity | Imports, aliases and type ascriptions preserve built-in reception contracts. A verified `new` parameter supplies the user-callable construction path; a matching name or ordinary read-only signature supplies none |
-| Reception | Evaluate once in ordinary order. Success installs initial authority and invalidates a forwarded `new` formal's old construction paths; failure installs no path and never revives an ended path. Initial transfer alone adds no standalone `&^mut`; actual sharing and other effects/state retain their checks |
-| Other obligations | Internal aliases obey exclusivity; traversal, live array `ref` stability, and Result inspection remain checked. Foreign exchange, resources and retained callable environments gain no exemption |
+| Container Authority | Input Push Contract | Pop Return Contract | Interior Writes on Elements | In-place Freeze (`-> []T`) |
+| :--- | :--- | :--- | :--- | :--- |
+| **`[]T`** (Immutable) | `item: T` (Immutable value) | `-> ?T` | Prohibited (`E0520`) | Identity |
+| **`[mut]T`** (Exclusive Mutable) | `new item: T` (Fresh construction) | `-> ?new T` | Granted (`&mut`) | Permitted when unaliased |
+| **`[^mut]T`** (Shared Mutable) | `^mut item: T` (Shared alias, `&^mut`) | `-> ?^mut T` (`&^mut`) | Granted (`&mut &^mut`) | Prohibited (`E0535`) |
+| **`[ref]T`** (Live Observation) | `ref item: T` (Live view) | `-> ?ref T` | Prohibited (`E0520`) | Prohibited (`E0535`) |
+
+User-defined collections (e.g. `ExclusiveVec<T>`, `SharedRegistry<T>`) follow identical static authority contracts without compiler-blessed magic or special-cased built-in overloads. All authority modifiers are compile-time static constraints with zero runtime overhead, erased before machine code generation.
 
 #### Default Parameters and Named Arguments
 
