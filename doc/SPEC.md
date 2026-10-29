@@ -859,7 +859,7 @@ let mut second = Cell.{ count: 0 }
 first.count = 1; second.count = 2
 let mut state = State.{
     id: 7, title: "draft", items: [1], current: Cell.{ count: 0 },
-    source: first, cursor: first,
+    shared_cell: ^mut first, source: first, cursor: first,
 }
 state.title = "ready"
 state.items !> Array::push(2)
@@ -1298,7 +1298,7 @@ let mut right = Cell.{ count: 2 }
 let ^mut pair = permute(choose_order, ^mut left, ^mut right)
 swap(mut pair.0, mut pair.1)           -- OK: either ordering preserves the inputs' proven disjointness
 
-let mut cells = [Cell.{ count: 0 }, Cell.{ count: 1 }]
+let mut cells: [mut]Cell = [Cell.{ count: 0 }, Cell.{ count: 1 }]
 cells[0].count += 1
 -- i and j are unconstrained run-time integer inputs:
 -- swap(mut cells[i], mut cells[j])   -- Error [E0523]: the indices may select the same writable origin
@@ -1661,7 +1661,7 @@ These are the common permission tables for bindings, members, patterns, and call
 | :--- | :--- |
 | `let` / `var` | Fixed / replaceable slot; independent of interior access |
 | Default access | Deeply immutable ordinary data; freely shareable across tasks |
-| `mut` | Exclusive interior/environment write authority |
+| `mut` | Exclusive writable reception; invocation checks current origins and aliases |
 | `^mut` | Shared interior/environment write authority; retention follows the capability contract and local discharge rules |
 | `ref` | Read-only observation; a writable target remains live |
 
@@ -1686,7 +1686,7 @@ Every access is bounded by its traced source, enclosing path, and member mode. V
 | Declare `var mut` / `var ^mut` without both reassignment and interior writes | `E0527` |
 | Declare a `^mut` parameter without actual retention | `E0527` |
 
-The `E0527` requirements concern statically possible paths, not every execution. Declared members have no independent authority-use requirement. Aliases retain all source restrictions; immutable publication cannot revoke a surviving writer.
+The `E0527` requirements concern statically possible paths, not every execution. Declared members have no independent authority-use requirement. Aliases retain all source restrictions; immutable publication cannot revoke a surviving writer. Creating an explicit shared alias preserves the original binding; each invocation checks the resulting alias facts rather than assuming uniqueness from its `mut` spelling.
 
 ```ril
 type Document = { var title: str }
@@ -2561,13 +2561,16 @@ assert(len(ref source) == 4 && len(sub) == 2)
 
 -- 2. Reference elements are NOT cloned (references shallow-copied):
 type Cell = { var count: int }
-let mut cells: []Cell = [Cell.{ count: 1 }, Cell.{ count: 2 }]
+let mut first = Cell.{ count: 1 }
+let mut second = Cell.{ count: 2 }
+let mut cells: [^mut]Cell = [^mut first, ^mut second]
 cells[1].count += 1
-let ^mut sub_cells = cells[0..1]      -- OK: '^mut' acknowledges duplicated writable paths
+let ^mut sub_cells: [^mut]Cell = cells[0..1] -- Acknowledge duplicated writable paths
 sub_cells[0].count = 42
 assert(cells[0].count == 42)          -- Reference NOT cloned: points to same heap Cell!
 sub_cells[0] = Cell.{ count: 9 }
-sub_cells !> Array::push(Cell.{ count: 10 })
+let mut extra = Cell.{ count: 10 }
+sub_cells !> Array::push(^mut extra)
 assert(cells[0].count == 42 && len(ref cells) == 2) -- Slots and length are independent
 -- let mut bad = cells[0..1]          -- Error [E0510]: new local writable alias needs '^mut'
 
@@ -2600,10 +2603,10 @@ byte_array[0] = 0u8
 assert(Bytes::at(b, 0) == Some(82u8)) -- The original bytes still start with 'R'
 ```
 
-- **Array Result**: Allocate ordinary `[]T` with independent slots and length. Clone value elements; preserve reference identities, aliases, and permissions. Tuples and other heap products are references. Freshness is provenance, not a type qualifier.
+- **Array Result**: Allocate an ordinary array with independent slots and length. Clone value elements; preserve reference identities, aliases, and effective permissions. Immutable elements use `[]T`, duplicated writable references use `[^mut]T`, and live read-only observations use `[ref]T`. Tuples and other heap products are references. Root freshness does not isolate referenced elements.
 - **Writable Sharing (`E0510`)**: Mark reception of duplicated writable reference paths with `^mut`.
 - **`ref` Target (`E0543`)**: A fresh range result cannot bind directly to a persistent `ref`. Publish it immutable through `let` or an ordinary parameter, or receive it with a lawful `let mut` binding; a later `ref` observes that established origin. Forwarding preserves whether publication actually occurred.
-- **Bounds**: For length N, a half-open range requires `0 <= lower <= upper <= N`; equal bounds produce an empty array, including at N. Omitted lower bounds mean zero; an omitted upper bound denotes the exclusive end N. A written inclusive upper bound h requires `0 <= lower <= h < N` and selects through h. Negative, reversed, or out-of-range bounds panic; bounds are never clamped. Safe range lookup (`arr?[a..b]`) returns `?[]T` (`None` when out of bounds).
+- **Bounds**: For length N, a half-open range requires `0 <= lower <= upper <= N`; equal bounds produce an empty array, including at N. Omitted lower bounds mean zero; an omitted upper bound denotes the exclusive end N. A written inclusive upper bound h requires `0 <= lower <= h < N` and selects through h. Negative, reversed, or out-of-range bounds panic; bounds are never clamped. Safe range lookup (`arr?[a..b]`) returns an Option of the corresponding array result (`None` when out of bounds).
 - **Primitive Sub-Sequences**:
   - `str[a..b]` and `str[a..=b]` evaluate to an independent `str` based on Unicode scalar (code point) indices ($0 \le a \le b \le \text{scalar\_len}$). Range indexing and string length share the same Unicode scalar coordinate system; `s[0..len(s)]` safely selects the entire text.
   - `bytes[a..b]` and `bytes[a..=b]` evaluate to an independent `bytes` byte sub-sequence ($0 \le a \le b \le \text{byte\_len}$).
@@ -4050,8 +4053,10 @@ installed.count += 1
 assert(slot.child.count == 1)
 -- let hidden = install(mut slot)      -- Error [E0535]: a surviving writer prevents publication
 -- let mut hidden = install(mut slot)  -- Error [E0510]: shared result needs explicit reception
-let mut cells: []Cell = []
--- cells !> Array::push(install(mut slot)) -- Error [E0535]: new root is not an unpublished storage input
+let mut exclusive_cells: [mut]Cell = []
+exclusive_cells !> Array::push(new Cell.{ count: 0 })
+-- exclusive_cells !> Array::push(install(mut slot)) -- Error [E0535]: new root is not an unpublished storage input
+let mut cells: [^mut]Cell = []
 cells !> Array::push(^mut installed)
 cells[0].count += 1
 
@@ -4265,7 +4270,7 @@ A `new value: T` parameter receives the unpublished construction authority of or
 
 ```ril
 type Cell = { var count: int }
-fn append_cell(mut target: []Cell, new cell: Cell) &mut -> () {
+fn append_cell(mut target: [mut]Cell, new cell: Cell) &mut -> () {
     target !> Array::push(new cell)
     -- target !> Array::push(new cell) -- Error [E0549]: the old construction path has ended
     -- let count = cell.count         -- Error [E0549]: reads through that path have ended too
@@ -4277,7 +4282,7 @@ fn normalize_cell(new cell: Cell) &mut -> new Cell {
     cell.count += 1                   -- Writes before handoff retain parameter-write obligations
     new cell
 }
-let mut cells: []Cell = []
+let mut cells: [mut]Cell = []
 append_cell(mut cells, new forward_cell(new Cell.{ count: 0 }))
 cells[0].count += 1
 ```
@@ -4311,7 +4316,8 @@ For a generic `new value: T`, this parameter mode restricts admitted instantiati
 let immutable = Cell.{ count: 0 }
 let mut established = Cell.{ count: 0 }
 established.count += 1
-let mut cells: []Cell = []
+let mut cells: [mut]Cell = []
+append_cell(mut cells, new Cell.{ count: 0 })
 -- append_cell(mut cells, Cell.{ count: 0 }) -- Error [E0405]: missing construction argument marker
 -- append_cell(mut cells, new immutable)    -- Error [E0548]: immutable publication cannot be undone
 -- append_cell(mut cells, new established)  -- Error [E0548]: ordinary writers are not moved
@@ -4350,9 +4356,11 @@ owned_cells[2].count += 1
 owned_cells[3].count += 1
 assert(original.count == 1 && owned_cells[0].count == 3 && owned_cells[3].count == 2)
 
--- In-place freeze: exclusive [mut]T cleanly publishes to immutable []T once populated
-let frozen_cells: []Cell = owned_cells |> Array::freeze()
--- frozen_cells[0].count += 1                     -- Error [E0520]: []Cell elements are deeply immutable
+-- Independent immutable snapshot; the original writable graph remains usable:
+let snapshot = clone(ref owned_cells)
+owned_cells[0].count += 1
+assert(snapshot[0].count == 3 && owned_cells[0].count == 4)
+-- snapshot[0].count += 1                        -- Error [E0520]: immutable reception removes effective writes
 ```
 
 ```ril
@@ -4382,7 +4390,7 @@ view_cells !> Array::push(ref shared)             -- OK: explicit read-only live
 -- 3. Observation Subsumption: Read-only observation context statically covers write authorities
 fn inspect_all(ref arr: [ref]Cell) -> int {
     var total = 0
-    for arr as item { total += item.count }
+    for arr as ref item { total += item.count }
     total
 }
 
@@ -4392,12 +4400,12 @@ test_cells !> Array::push(new Cell.{ count: 5 })
 assert(inspect_all(ref test_cells) == 5)          -- OK: write permissions statically inactive during ref call
 ```
 
-| Container Authority | Input Push Contract | Pop Return Contract | Interior Writes on Elements | In-place Freeze (`-> []T`) |
-| :--- | :--- | :--- | :--- | :--- |
-| **`[]T`** (Immutable) | `item: T` (Immutable value) | `-> ?T` | Prohibited (`E0520`) | Identity |
-| **`[mut]T`** (Exclusive Mutable) | `new item: T` (Fresh construction) | `-> ?new T` | Granted (`&mut`) | Permitted when unaliased |
-| **`[^mut]T`** (Shared Mutable) | `^mut item: T` (Shared alias, `&^mut`) | `-> ?^mut T` (`&^mut`) | Granted (`&mut &^mut`) | Prohibited (`E0535`) |
-| **`[ref]T`** (Live Observation) | `ref item: T` (Live view) | `-> ?ref T` | Prohibited (`E0520`) | Prohibited (`E0535`) |
+| Container Authority | Input Push Contract | Pop Return Contract | Interior Writes on Elements |
+| :--- | :--- | :--- | :--- |
+| **`[]T`** (Immutable) | `item: T` (Immutable value) | `-> ?T` | Prohibited (`E0520`) |
+| **`[mut]T`** (Exclusive Mutable) | `new item: T` (Fresh construction) | `-> ?new T` | Granted (`&mut`) |
+| **`[^mut]T`** (Shared Mutable) | `^mut item: T` (Shared alias, `&^mut`) | `-> ?^mut T` (`&^mut`) | Granted (`&mut &^mut`) |
+| **`[ref]T`** (Live Observation) | `ref item: T` (Live view) | `-> ?ref T` | Prohibited (`E0520`) |
 
 User-defined collections (e.g. `ExclusiveVec<T>`, `SharedRegistry<T>`) follow identical static authority contracts without compiler-blessed magic or special-cased built-in overloads. All authority modifiers are compile-time static constraints with zero runtime overhead, erased before machine code generation.
 
@@ -4672,7 +4680,7 @@ SharingExpr     ::= "^mut" Expression
 
 ```ril
 type Entry = { var id: int }
-type Hub = { mut entries: []Entry }
+type Hub = { mut entries: [^mut]Entry }
 let mut global_hub = Hub.{ entries: [] }
 
 fn register_entry(mut hub: Hub, ^mut entry: Entry) &^mut -> () {
@@ -5104,7 +5112,7 @@ fn swap(mut a: Cell, mut b: Cell) &mut -> () {
     a.count = b.count
     b.count = saved
 }
-let mut cells = [Cell.{ count: 1 }, Cell.{ count: 2 }]
+let mut cells: [mut]Cell = [Cell.{ count: 1 }, Cell.{ count: 2 }]
 swap(mut cells[0], mut cells[1])        -- OK: distinct allocations, not merely distinct indices
 -- swap(mut cells[0], mut cells[0])    -- Error [E0523]: same writable origin
 
@@ -5159,8 +5167,10 @@ let mut cells: []Cell = []
 cells !> Array::push(immutable)           -- OK: container is writable, inserted element remains immutable
 -- cells[0].count += 1                 -- Error [E0522]: container cannot grant its element write authority
 let mut copied = clone(immutable)
-cells !> Array::push(^mut copied)      -- Explicit retained writable element, locally discharged
+let mut shared_cells: [^mut]Cell = []
+shared_cells !> Array::push(^mut copied) -- Explicit retained writable element, locally discharged
 copied.count += 1
+assert(shared_cells[0].count == copied.count)
 
 fn identity(cell: Cell) -> Cell { cell }
 -- let mut stolen = identity(immutable)  -- Error [E0528]: returned origin remains immutable
@@ -5360,7 +5370,7 @@ fn edit_once(mut cell: Cell) &mut -> int {
 type Cell = { var count: int }
 eff Store { keep(^mut cell: Cell) &^mut -> () }
 let mut cell = Cell.{ count: 0 }
-let mut held: []Cell = []
+let mut held: [^mut]Cell = []
 with Store::keep(^mut value) -> {
     held !> Array::push(^mut value)
     resume ()
