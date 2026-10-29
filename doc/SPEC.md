@@ -65,6 +65,7 @@ This document defines Ril grammar, typing, permissions, effects, abstract-machin
     - [Type Definition Boundaries](#type-definition-boundaries)
   - [Declarations and Bindings](#declarations-and-bindings)
     - [Binding Permissions and Storage Matrix](#binding-permissions-and-storage-matrix)
+      - [Reachable Authority Use](#reachable-authority-use)
     - [Shared Writable Authority](#shared-writable-authority)
     - [Immutable Bindings](#immutable-bindings)
     - [Pinned Mutable Handles](#pinned-mutable-handles)
@@ -1257,7 +1258,7 @@ assert(observed.count == 1)
 - **Propagation**: Preserve these facts through aggregates, projections, branches, recursion, returns, calls, opaque boundaries, handlers, cleanup, and modules. Every handle, member mode, and stored constituent limits the resulting authority. A default member imposes deep immutability; `mut` permits interior writes without slot replacement. Independent scalar copies carry no reference authority; capturing a scalar cell retains its origin.
 - **No Semantic Erasure**: An omitted annotation, abbreviated callable type, or ordinary call spelling never discards these facts. The compiler infers the full contract of every function. Public, private, local, and test named definitions require their prescribed source spelling under [mandatory contract completion](#mandatory-contract-inference-and-completion); anonymous functions have no mandatory source-annotation completion. Private implementation names need not become public identifiers; their semantic dependencies and internal alias relations remain in verified contract metadata. A plain data return `-> T` establishes immutability; it cannot conceal a live or writable alias.
 - **Conservative Alternatives**: Retain the union of possible origins, accesses, retention, and escape obligations, and only permissions common to all alternatives. Preserve origin relations between inputs and outputs and between output components: a relation established in every retained alternative remains established after the join. Prune only branches excluded by the specified static computations and typing rules. An unproved run-time condition is not evidence of uniqueness or impossible escape. Unknown overlap remains possible overlap; an incomplete proof cannot authorize mutable access, immutable publication, or task crossing that requires it.
-- **Recursive Dependencies**: Loop and recursive call dependencies retain possible origins and unresolved relationships, including termination conditions and finite-budget coverage. A cycle is not evidence of freshness, disjointness, non-escape, termination, or an empty callable row. An obligation may be discharged only by an established fact; unresolved dependencies remain obligations at every affected use. Apply the use's existing diagnostic when its required proof is absent.
+- **Recursive Dependencies**: Loop and recursive call dependencies retain possible origins and unresolved relationships, including termination conditions and finite-budget coverage. A cycle is not evidence of freshness, disjointness, non-escape, termination, or an empty callable row. An obligation may be discharged only by an established fact; unresolved dependencies remain obligations at every affected use. [Authority-use evidence](#reachable-authority-use) must likewise be grounded in actual operations or verified contracts; annotations and forwarding cycles cannot prove their own use. Apply the use's existing diagnostic when its required proof is absent.
 - **Authority and Discharge**: Prove each permission from a declaration, a traced source, a fresh-data rule, or an explicitly specified resource contract. Local discharge requires all relevant authority roots and environments to be confined; a local variable name or locally handled effect is not evidence of confinement. Minimal concrete capabilities (`E0529`) are calculated under these conservative rules, not arbitrary run-time equivalence.
 - **Source Annotations**: Infer and check binding/parameter modes, argument markers, local writable-sharing markers, return construction/modes/sources, effects, captures, and concrete invocation capabilities. Named definitions must complete their required annotations. Anonymous functions may leave type, result, effect, state, capture, and returned-source contract annotations to inference; written annotations and contextual callable types remain checked constraints. Parameter modes, argument markers, binding modes, and shared-reception markers retain their permission semantics: omitting a contract annotation supplies no absent authority. Neither inference nor completion may change sharing, object identity, evaluation order, allocation, or resource ownership.
 - **Diagnostic Provenance**: Semantic diagnostics MUST make the derived access, sharing, escape, and effect obligations and their source explanations available, including facts omitted from source. An explanation identifies the relevant origin or contract, propagation steps, involved use or boundary, and the rule that accepts or rejects it. Multiple possible origins and an unproved disjointness condition must be reported as such, not replaced with a fabricated exact origin. Explanations also apply to accepted programs and inferred obligations; their presentation is optional and cannot change validity.
@@ -1681,12 +1682,57 @@ Every access is bounded by its traced source, enclosing path, and member mode. V
 | :--- | :--- |
 | Rebind plain `let`; rebind a fixed `mut`, `^mut`, or `ref` handle | `E0501`; `E0502` |
 | Write through default access or `ref` | `E0520`; specialized path diagnostics follow the [anti-laundering table](#monotonic-permission-degradation-and-anti-laundering-matrix) |
-| Declare `var` / `var ref` without a possible reassignment | `E0527` |
-| Declare `let mut` / `let ^mut` or an ordinary `mut` parameter without a possible interior write, mutable call, or authorized transfer | `E0527` |
-| Declare `var mut` / `var ^mut` without both reassignment and interior writes | `E0527` |
-| Declare a `^mut` parameter without actual retention | `E0527` |
 
-The `E0527` requirements concern statically possible paths, not every execution. Declared members have no independent authority-use requirement. Aliases retain all source restrictions; immutable publication cannot revoke a surviving writer. Creating an explicit shared alias preserves the original binding; each invocation checks the resulting alias facts rather than assuming uniqueness from its `mut` spelling.
+#### Reachable Authority Use
+
+The compiler infers uses from all retained possible sources and reachable operations before validating annotations. A written mode or marker supplies no evidence of its own necessity. Missing uses and excessive capabilities are hard errors (`E0527` / `E0529`), not warnings or permission upper bounds.
+
+| Declaration / executable marker | Required reachable evidence (`E0527` if absent) |
+| :--- | :--- |
+| `var` / `var ref` | Slot replacement |
+| `let mut` / ordinary `mut` parameter | Writable use: an interior write or an authorized writable return, store, capture, or forwarding use |
+| `var mut` | Slot replacement and writable use, checked independently |
+| `let ^mut` / `var ^mut` | Shared writable reception plus writable use; `var ^mut` also requires slot replacement. Check the entire binding lifetime, including later shared assignments and internal aliases in a copy |
+| `^mut` parameter / handler binder | Actual retention of that parameter's writer beyond its temporary call/operation authority; writing alone is insufficient |
+| `^mut expression` | A new shared writable receiving path in at least one covered constituent; a purely read-only reception does not use this marker |
+
+| Analysis concern | Rule |
+| :--- | :--- |
+| Paths | Use source-semantic reachability before optimization. Each required use is independently possible on a retained reachable path; uses need not occur on the same path or on every execution. Statically excluded operations do not count; executed operations before return, panic, or abort still count |
+| Call boundaries | Map verified callee, selected-handler, and implicit-cleanup uses to actual origins, lifetimes, and escape relations at the boundary being checked. A callee's returned writer is not caller-level retention unless it survives the caller's relevant boundary |
+| Recursion | Compute use summaries from actual base operations and verified primitive/foreign contracts to a monotone least fixed point; pure forwarding cycles and source annotations add no use evidence. This does not turn unknown provenance or obligations into empty sets |
+| Dependent uses | Preserve static/generic and callback-dependent use conditions in summaries; check them when the required arguments or callable values are determined. A known absent use is an error, not a reason to keep an idle annotation or silently change a mode |
+| Latent bodies | Creating a callable or installing an untriggered handler does not execute its body. Check that body's own invocation uses separately; count any actual capture, retention, or environment creation at its creation/escape site |
+| Local discharge | Remove discharged outward obligations, not the actual local use evidence. A confined write can justify a local writable binding without adding outward `&mut` |
+| Permitted degradation | A defined read-only observation or temporary `mut` call through a shared handle may reduce current access; preserve all origins, aliases, and lifetimes. It neither invents use nor permits idle stronger annotations or arbitrary parameter-mode conversion |
+
+Declared member schemas have no independent `E0527` requirement; immutable reception may suppress their effective permissions under [deep immutability](#deep-immutability). Otherwise-valid executable markers and bindings must meet the table above; existing type, mode, origin, and lifetime diagnostics retain precedence. In particular, `let ref seen = ^mut source` is `E0527` when `seen` could lawfully observe `source` without the unused marker. When writable reception is required, a fresh unshared root uses `mut`, not `^mut`, unless an independently specified context requires that degradation.
+
+Aliases retain all source restrictions; immutable publication cannot revoke a surviving writer. Creating an explicit shared alias preserves the original binding; each invocation checks the resulting alias facts rather than assuming uniqueness from its `mut` spelling.
+
+```ril
+type Cell = { var count: int }
+fn maybe_bump(flag: bool, mut cell: Cell) &mut -> () {
+    if flag { cell.count += 1 }
+}                                       -- OK: a possible write, not a write on every call
+fn keep(^mut cell: Cell) -> ^mut(cell) Cell { cell } -- OK: root return uses retention
+fn forward(^mut cell: Cell) -> ^mut(cell) Cell { keep(^mut cell) } -- OK: writer survives this call
+-- fn no_escape(^mut cell: Cell) -> () { keep(^mut cell); } -- Error [E0527]: child return alone supplies no retention across this call
+fn choose(flag: bool, ^mut a: Cell, ^mut b: Cell) -> ^mut(a | b) Cell {
+    var ^mut selected = a
+    if flag { selected = ^mut b }
+    selected                            -- OK: replacement plus writable return; no interior write needed
+}
+-- fn read(mut cell: Cell) -> int { cell.count } -- Error [E0527]: no writable use
+-- fn write_only(^mut cell: Cell) &mut -> () { cell.count += 1 } -- Error [E0527]: no retention
+-- fn circular(mut cell: Cell) -> () { circular(mut cell) } -- Error [E0527]: forwarding is ungrounded
+-- let ^mut excess = Cell.{ count: 0 }; excess.count += 1 -- Error [E0527]: no shared reception
+let mut source = Cell.{ count: 0 }
+source.count += 1
+let ref seen = source                    -- OK: required observation uses reduced access
+assert(seen.count == 1)
+-- let ref redundant = ^mut source     -- Error [E0527]: no writable receiving path
+```
 
 ```ril
 type Document = { var title: str }
@@ -1718,6 +1764,8 @@ SharedMutDecl ::= [ "pub" ] ( "let" | "var" ) "^mut" Identifier
 | Later assignment, field/container reception, or destructuring | Explicit `^mut expression` at that receiving site; each constituent retains its own mode |
 | Outward retention | Preserve `&^mut` or the corresponding named obligation after lawful local discharge |
 | Pattern, member, or scoped declaration | Keep its existing grammar; the single-identifier declaration form adds none |
+
+Shared reception, parameter retention, and outward capability obligations are distinct [use facts](#reachable-authority-use). Initializing a fresh root and writing it does not by itself justify a shared binding; conversely, a later genuine shared assignment can justify `var ^mut` even when its initializer was unshared.
 
 ```ril
 type Cell = { var count: int }
@@ -1822,7 +1870,7 @@ left.items !> Array::push(10)          -- OK: pinned mutable handle
 right.items !> Array::push(20)         -- Both destructured authorities are exercised
 -- left = Buffer.{ items: [] }        -- Error [E0502]: cannot reassign pinned handle 'left'
 
--- Definite Mutation Invariant:
+-- Reachable Authority-Use Requirement:
 -- let mut unused = Buffer.{ items: [] } -- Error [E0527]: variable 'unused' declared 'let mut' but never modified in-place
 ```
 
@@ -1868,7 +1916,7 @@ assert(len(ref active_buf.items) == 2)
 var (start_idx, end_idx) = (0, 10)
 start_idx += 1; end_idx -= 1           -- OK: both variables reassignable
 
--- 6. Definite Mutation Invariant:
+-- 6. Reachable Authority-Use Requirement:
 -- var unused_var = 100                -- Error [E0527]: variable 'unused_var' declared 'var' but never modified or reassigned
 ```
 
@@ -3335,9 +3383,9 @@ NarrowingExpr      ::= NarrowingPredicate
    - GADT equations on $x$ are local to $x$ and do not rebind $T$ elsewhere in scope.
    - Mutable fields preserve container invariance ([Type Identity and Subtyping](#type-identity-and-subtyping)).
 - **Dead Paths & Phase Ordering**:
-   - Divergent branches (`never`) are pruned from joins ($\Gamma \sqcup \bot = \Gamma$).
+   - A `never` branch contributes no normal-successor environment ($\Gamma \sqcup \bot = \Gamma$); effects, state access, and authority uses already executed before its termination remain in the invocation summary.
    - A narrowing predicate contradictory to an already active refinement is `E0311`. An ordinary constant-false condition is instead an inactive branch; it does not by itself produce this diagnostic.
-   - Dead-path pruning precedes Definite Mutation analysis (`E0527`); writes in dead paths do not count as reachable mutations.
+   - Static dead-path pruning precedes [reachable authority-use analysis](#reachable-authority-use) (`E0527`); excluded operations and statements after an unconditional transfer do not count. Reaching panic or abort does not erase an earlier operation.
 - **Bounded Analysis**:
     - **Path Bound**: Field paths are tracked through at most three projections after the root (`a.b.c.d`); deeper paths default to $T_{\text{root}}$.
     - **Loop Widening**: Unconverged loop variables widen to $T_{\text{root}}$ after $K = 3$ iterations.
@@ -3488,7 +3536,7 @@ fn test_generic_confinement<T>(x: Geometry) -> () {
 fn test_dead_write_phase_ordering() -> () {
     -- var unused: ?int = Some(10)            -- Error [E0527]: variable 'unused' declared 'var' is never modified along reachable paths
     -- if false {
-    --     unused = Some(20)                  -- Write in statically unreachable branch does not satisfy Definite Mutation Invariant
+    --     unused = Some(20)                  -- Write in statically unreachable branch does not satisfy Reachable Authority-Use Requirement
     -- }
 }
 
@@ -3681,6 +3729,12 @@ fn declared_field() &up(sub){mut global_count} -> () { invoke_field(.{ run: tick
 
 The compiler MUST infer the full checked contract of every function, including public, private, local, anonymous, and test functions. Named definitions must spell their prescribed annotations in executable source. Anonymous functions retain their short lambda form and have no mandatory source-annotation completion: the complete inferred contract remains available to checking, tooling, callers, and module summaries whether or not the developer chooses to write annotations.
 
+| Semantic stage | Requirement |
+| :--- | :--- |
+| Infer | Derive all possible origins, reachable uses, and normalized obligations from the body, context, and verified dependencies; source annotations cannot justify themselves |
+| Complete | Expose the full inferred contract and the source annotations required for named definitions; preserve the specified anonymous-function source omissions |
+| Validate | Check missing annotations, idle modes/markers, excess capabilities, and exact closed contracts against inference. Neither completion nor a permitted degradation creates absent authority or changes the program's sharing or execution |
+
 | Inference / completion | Requirement |
 | :--- | :--- |
 | Inference scope | The same complete analysis for public, private, local, anonymous, and test functions |
@@ -3692,7 +3746,8 @@ The compiler MUST infer the full checked contract of every function, including p
 | Shared-reception completion | Follow the [shared-site spelling](#shared-writable-authority); inference cannot substitute an exclusive declaration for shared authority |
 | Root-return normalization | `^mut(x)` covers only root-return retention; actual writes and extra escape paths remain distinct obligations |
 | Context and generality | Use body and contextual constraints to infer complete callable contracts, including generic/structural constraints and symbolic callback dependencies; lack of a unique monomorphic signature is not by itself a missing-annotation error |
-| Diagnostics | Missing named type/result contract: `E0544`; missing required named state or an independently required reception marker: `E0510`; missing named effect declaration or an actually unhandled effect boundary: `E0612`; argument marker: `E0405`; unresolved required type/static instantiation: `E0344`; invalid written return sources: `E0545` |
+| Missing-annotation diagnostics | Named type/result contract: `E0544`; named state or an independently required reception marker: `E0510`; named effect declaration or an actually unhandled effect boundary: `E0612`; argument marker: `E0405` |
+| Inconsistent-annotation diagnostics | Absent required authority use or redundant executable sharing marker: `E0527`; excess concrete capability: `E0529`; incompatible callable contract: `E0534` (parameter modes: `E0407`); unresolved required type/static instantiation: `E0344`; invalid return sources: `E0545` |
 | Explanations | Expose complete inferred classifications and origin/propagation chains, including possible sharing, actual anonymous captures, and unproved overlap |
 | Interfaces | Preserve fine paths, permission history, store/return relations, and output correlations in semantic summaries; changes invalidate dependent proofs |
 | Proof limits | Unknown facts never prove permission, immutability, freshness, separation, or escape. Bodyless foreign declarations remain trusted explicit contracts |
@@ -3713,7 +3768,7 @@ fn inspect(cell: Cell) -> int { cell.count }
 -- Anonymous functions need no complete contextual type or source contract:
 let identity = \value -> value        -- OK: infer its generic identity contract
 let inferred_read = \cell -> cell.count -- OK: retain the inferred structural parameter constraint
-let inferred_write = \mut cell: Cell -> { cell.count += 1 } -- OK: inferred &mut; explicit mut grants only its checked authority
+let inferred_write = \mut cell: Cell -> { cell.count += 1 } -- OK: infer the actual write and &mut; validate mut against its use
 
 -- Explicit contextual types remain available:
 let read: fn(cell: Cell) -> int = \cell -> cell.count
@@ -4654,8 +4709,9 @@ fn test_internal_hub() -> int {
 
 | Mutation context | Required capability |
 | :--- | :--- |
-| Parameter writes | At least `&mut`; an independent `&^mut` already includes that obligation |
-| Writes plus `^mut(x) T` root return | Actual writes still need `&mut`; the root contract covers retention only |
+| Parameter writes without independent retention | Infer `&mut`; writes alone do not justify `&^mut` |
+| Independent parameter retention beyond the root-return baseline | Infer `&^mut` from the retained writer; its normalized contract includes the prescribed write implication, without an idle or duplicate capability |
+| Writes plus only `^mut(x) T` root-return retention | Infer `&mut`; the root contract covers retention only |
 | Named external mutation | Keep the named capability and concrete origin |
 | Named / anonymous definition | Named definitions MUST spell required capabilities (`E0510` if absent); anonymous definitions may retain them in full inference |
 
@@ -4668,6 +4724,16 @@ fn clear_items(mut list: []int) &mut -> () {
 -- fn bad_clear(mut list: []int) -> () {     -- Error [E0510]: mutating operation requires caller signature to declare '&mut'
 --     list !> Array::truncate(0)
 -- }
+```
+
+```ril
+type Cell = { var count: int }
+fn bump_or_abort(flag: bool, mut cell: Cell) &mut -> () {
+    if flag { cell.count += 1; panic("stop") }
+}                                       -- OK: panic does not erase the reachable write
+-- fn dead(mut cell: Cell) -> () { if false { cell.count += 1 } } -- Error [E0527]: excluded write
+-- fn after_panic(mut cell: Cell) -> () { panic("stop"); cell.count += 1 } -- Error [E0527]: unreachable write
+-- fn excess(ref cell: Cell) &mut -> int { cell.count } -- Error [E0529]: observation supplies no write obligation
 ```
 
 ### Retained Mutable Sharing
@@ -6290,6 +6356,19 @@ Static callbacks capture symbolic constants. Mutable resources, handlers, and or
 | Static condition (boolean or pattern arm) | Selected branch only |
 | Run-time condition | Both branches' possible obligations |
 
+Static/generic and callable-dependent [use conditions](#reachable-authority-use) remain in inferred summaries until the required instantiation determines them. Reject a definition when its required use is already known absent; reject a selected instantiation with no required mode/marker use (`E0527`) or an excess concrete capability (`E0529`). An unresolved condition is not a use witness. Do not keep an idle annotation or silently rewrite parameter modes when static pruning removes its only use.
+
+```ril
+type Cell = { var count: int }
+fn selected_write<enabled: bool>(mut cell: Cell) &mut -> () {
+    if enabled { cell.count += 1 }
+}
+let mut cell = Cell.{ count: 0 }
+selected_write<true>(mut cell)           -- OK: selected instance has a write
+-- selected_write<false>(mut cell)      -- Error [E0527]: selected instance has no writable use
+-- Its fixed &mut annotation also has no inferred outward write (E0529).
+```
+
 Both branches still obey syntax, name resolution, and ordinary type compatibility. Type tokens expose no callable-value effects/provenance; no built-in `is_pure` exists.
 ### Unified Tripartite Introspection
 
@@ -7103,7 +7182,7 @@ This index assigns each code its diagnostic name and points to its defining rule
 | **`E0524`** | [`ReadMutAliasingHazardError`](#law-of-exclusivity-and-cross-argument-disjointness) |
 | **`E0525`** | [`SpreadLaunderingError`](#monotonic-permission-degradation-and-anti-laundering-matrix) |
 | **`E0526`** | [`CollectionMutationDuringIterationError`](#monotonic-permission-degradation-and-anti-laundering-matrix) |
-| **`E0527`** | [`UnusedMutableBindingError`](#binding-permissions-and-storage-matrix) |
+| **`E0527`** | [`UnusedMutableBindingError`](#reachable-authority-use); absent required use or redundant executable sharing marker |
 | **`E0528`** | [`ReturnMutabilityLaunderingError`](#monotonic-permission-degradation-and-anti-laundering-matrix) |
 | **`E0529`** | [`ExcessiveCapabilityAnnotationError`](#retained-mutable-sharing); [Named Function State Contract References](#named-function-state-contract-references) |
 | **`E0530`** | [`IllegalCapabilityCloneError`](#deep-immutability) |
