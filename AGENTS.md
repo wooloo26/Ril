@@ -17,6 +17,7 @@ use other branches unless the user explicitly requests them.
 | --- | --- |
 | Memory | Tracing GC; no raw pointers, pointer arithmetic, or manual memory management. Resource cleanup is separate from GC. |
 | Static checks | Permissions, provenance/aliasing, capabilities/effects, escape/exclusivity, and termination are compile-time judgments. Erase authority modifiers; preserve checking metadata across interfaces. No runtime permission objects, dynamic borrow checks, or runtime provenance tracking. |
+| Permission workflow | Developers specify a computation's starting intent and constraints; the compiler derives permission/provenance propagation, result contracts, and required annotations. Do not require developers to mentally track every intermediate permission state. If inferred contracts do not meet requirements, revise the starting constraints or refactor through verified abstractions that preserve complete provenance and safety checks. |
 | Runtime behavior | GC, mutation, copying, functional updates, handlers, cleanup, and `Div::budget` charging still execute as specified. |
 
 ### Terminology quick reference
