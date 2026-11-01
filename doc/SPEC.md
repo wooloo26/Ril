@@ -20,7 +20,7 @@ This document defines Ril grammar, typing, permissions, effects, abstract-machin
 - **Diagnostic Text**: Error codes and their triggering conditions are normative. Example message text, source highlighting, notes, and suggested repairs are illustrative.
 - **Examples**: Blocks are independent fixtures unless marked as complete source files.
 - Local statements run in an enclosing callable; displayed declarations belong to its enclosing declaration scope. Free names are typed fixture inputs or supplied contracts.
-- Fixtures handle their local expressions' effects. Except for examples testing missing named-function annotations, abbreviated named callable declarations in independent fixtures denote their compiler-completed signatures under [mandatory contract completion](#mandatory-contract-inference-and-completion). `-- OK` checks that completed form; complete source files must spell the annotations required for named definitions. Anonymous functions retain their full compiler-inferred contracts without mandatory source completion in either kind of fixture. Inference and completion never repair a permission violation or change evaluation, allocation, or sharing.
+- Fixtures handle their local expressions' effects. Except for examples testing missing named-function annotations, abbreviated named callable declarations in independent fixtures denote their compiler-completed signatures under [mandatory contract completion](#mandatory-contract-inference-and-completion). `-- OK` checks that completed form; complete source files spell the prescribed named annotations, while explicit `auto` positions retain their specified inference exemptions. Anonymous functions retain full inferred contracts without mandatory source completion. Inference and completion never repair a permission violation or change evaluation, allocation, or sharing beyond the explicitly requested preserving handoffs.
 - Negative statements are checked individually with valid setup. Blocks containing `...` are schematic.
 - Static-evaluation fixtures use the selected abstract target and a sufficient evaluation budget unless a budget-exhaustion case is explicitly specified.
 - **Semantic Cross-References**: Internal specifications and rule cross-references link directly to their defining sections via Markdown anchors.
@@ -59,6 +59,12 @@ This document defines Ril grammar, typing, permissions, effects, abstract-machin
     - [Deep Immutability](#deep-immutability)
     - [Type Identity and Subtyping](#type-identity-and-subtyping)
     - [Complete Provenance and Required Annotations](#complete-provenance-and-required-annotations)
+    - [Permission Inference with auto](#permission-inference-with-auto)
+      - [Member Modes and Implicit Schema Parameters](#member-modes-and-implicit-schema-parameters)
+      - [Inference Domains and Contract Completion](#inference-domains-and-contract-completion)
+      - [Preserving Reception and Forwarding](#preserving-reception-and-forwarding)
+      - [Lexical Permission Templates and Closures](#lexical-permission-templates-and-closures)
+      - [Inferred Interfaces and Callable Families](#inferred-interfaces-and-callable-families)
     - [Functional Updates via Derive](#functional-updates-via-derive)
       - [Normative Rules for Functional Updates](#normative-rules-for-functional-updates)
     - [Generic Parameters, Defaults, and Value Sorts](#generic-parameters-defaults-and-value-sorts)
@@ -66,6 +72,7 @@ This document defines Ril grammar, typing, permissions, effects, abstract-machin
   - [Declarations and Bindings](#declarations-and-bindings)
     - [Binding Permissions and Storage Matrix](#binding-permissions-and-storage-matrix)
       - [Reachable Authority Use](#reachable-authority-use)
+    - [Preserving Local Bindings](#preserving-local-bindings)
     - [Shared Writable Authority](#shared-writable-authority)
     - [Immutable Bindings](#immutable-bindings)
     - [Pinned Mutable Handles](#pinned-mutable-handles)
@@ -101,6 +108,7 @@ This document defines Ril grammar, typing, permissions, effects, abstract-machin
     - [Guarded Bindings and Non-Vacuous Invariant](#guarded-bindings-and-non-vacuous-invariant)
     - [Pattern Matching](#pattern-matching)
     - [Pattern Syntax, Or-Patterns, and Exhaustiveness](#pattern-syntax-or-patterns-and-exhaustiveness)
+    - [Pattern Reception and Decomposition](#pattern-reception-and-decomposition)
     - [Flow-Sensitive Type Narrowing](#flow-sensitive-type-narrowing)
       - [Flow-Sensitive Type Narrowing Rules and Invariants](#flow-sensitive-type-narrowing-rules-and-invariants)
   - [Functions, Closures, and Callables](#functions-closures-and-callables)
@@ -116,6 +124,7 @@ This document defines Ril grammar, typing, permissions, effects, abstract-machin
     - [Parameter Modes, Caller Obligations, and Defaults](#parameter-modes-caller-obligations-and-defaults)
       - [Fresh Construction Parameters](#fresh-construction-parameters)
       - [Homogeneous Storage Authority and Container Self-Determination](#homogeneous-storage-authority-and-container-self-determination)
+      - [Verified Storage Handoffs](#verified-storage-handoffs)
       - [Default Parameters and Named Arguments](#default-parameters-and-named-arguments)
     - [Anonymous Functions, Trailing Closures, and Projection Accessors](#anonymous-functions-trailing-closures-and-projection-accessors)
     - [Closures, Factory Signatures, and Lexical Environments](#closures-factory-signatures-and-lexical-environments)
@@ -533,7 +542,7 @@ typeof   use      var      where    while    with
 
 ```ril
 -- let while = 1                     -- Error [E0113]: reserved keyword in a binding position
--- let new = 1                       -- Error [E0113]: new is reserved for return contracts
+-- let new = 1                       -- Error [E0113]: new is reserved for construction contracts/handoffs
 -- type Record = { if: int }         -- Error [E0113]: reserved keyword as a field label
 let while_count = 1                   -- OK
 let capture = 1                       -- OK: capture is an ordinary identifier
@@ -544,6 +553,8 @@ type Config = { capture: bool }       -- OK: capture is an ordinary field label
 ```
 
 A reserved keyword used as an ordinary identifier or field label is `E0113`.
+
+`auto` is contextual in declared member/access modes, parameter modes, result contracts, and `let auto name` receivers. It remains an ordinary name outside these positions; `let auto = 1` and `{ auto: int }` use an identifier/label. Unsupported auto-mode placements use `E0412`. `take` is an ordinary identifier with no matching role. Match has one grammar; its optional leading `ref` selects observation, not a standalone expression modifier. Neither auto nor take is a reserved token.
 
 `capture`, `up`, and `sub` remain ordinary identifiers. They have contextual roles in capability annotations: `&capture` is a capability annotation, bare `&up` is a callable-type environment abstraction, `&up{...}` is a captured-source group, and `&up(sub){...}` is a module-storage group. In `&up(owner){...}`, an owner other than the literal `sub` identifies an enclosing callable layer. Within these parentheses, the literal `sub` selects module storage before name resolution; it is never interpreted as a capture owner or a state item. See [State Groups and Captured Layers](#state-groups-and-captured-layers).
 
@@ -837,7 +848,8 @@ Named row tail polymorphism (`..R`) allows generic functions to accept and prese
 RecordType       ::= "{" [ RecordFieldList ] "}"
 MemberMode       ::= [ "var" ] [ "mut" | "^mut" | "ref" ]
 Authority        ::= "let" | "mut" | "^mut" | "ref"
-RecordField      ::= [ MemberMode ] FieldLabel ":" TypeExpression
+DeclaredMemberMode ::= MemberMode | [ "var" ] "auto"
+RecordField      ::= [ DeclaredMemberMode ] FieldLabel ":" TypeExpression
 TypeProjection   ::= PrimaryType "." ( Identifier | TupleIndex | "(" Expression ")" )
 TupleIndex       ::= Digit { Digit }
 RecordFieldList  ::= ".." PascalCase | RecordField { "," RecordField } [ "," [ ".." PascalCase ] ]
@@ -926,11 +938,12 @@ assert(rest.role == "root")
 Bracket syntax defines compact homogeneous arrays (`[]T`, `[mut]T`, `[^mut]T`, `[ref]T`) and maps (`[K: V]`, `[K: mut V]`, `[K: ^mut V]`, `[K: ref V]`); tuples use `(T1, T2)`. Range results (`arr[a..b]`) are pure syntax sugar returning ordinary newly allocated arrays without sharing underlying buffers. All authority modifiers (`let`, `mut`, `^mut`, `ref`) are pure compile-time static constraints with zero runtime overhead, completely erased from machine representations. In maps, keys are statically constrained to deeply immutable types (`let` authority) to preserve index hash and equality stability; specifying mutable authority modifiers on keys is rejected (`E0402`). `Set<T>` and collection type extractors are standard-library declarations.
 
 ```ebnf
-ArrayType      ::= "[" [ ModeExpression ] "]" TypeExpression
+ArrayType      ::= "[" [ StorageModeExpression ] "]" TypeExpression
 ModeExpression ::= "mut" | "^mut" | "ref" | PascalCase
-MapType        ::= "[" TypeExpression ":" [ ModeExpression ] TypeExpression "]"
+StorageModeExpression ::= ModeExpression | "auto"
+MapType        ::= "[" TypeExpression ":" [ StorageModeExpression ] TypeExpression "]"
 TupleType      ::= "(" TupleMember "," TupleMember { "," TupleMember } [ "," ] ")"
-TupleMember    ::= [ MemberMode ] TypeExpression
+TupleMember    ::= [ DeclaredMemberMode ] TypeExpression
 TupleExpr      ::= "(" TupleValue "," TupleValue { "," TupleValue } [ "," ] ")"
 TupleValue     ::= [ MemberMode ] Expression
 ArrayExpr      ::= "[" [ Expression { "," Expression } [ "," ] ] "]"
@@ -979,7 +992,7 @@ type First = (int, str).0              -- Static tuple positional projection: in
 -- type BadMapKey = ([str: int]).key   -- Error [E0337]: collection type '[str: int]' has no named fields or member projections; use 'ril/map::{Key}'
 ```
 
-Empty array literals without contextual expected types require explicit annotation (`E0344`). Invalid index types on an otherwise indexable receiver use `E0301`. An index outside an array's bounds panics at run time.
+Empty array literals without contextual expected types require explicit annotation (`E0344`). `[auto]T` preserves that requirement: an unresolved required element access mode is also `E0344`. A concrete `MemberMode` expression used for element access must have a fixed slot component; it cannot silently discard `var` (`E0356`). Invalid index types on an otherwise indexable receiver use `E0301`. An index outside an array's bounds panics at run time.
 
 Map lookups must use safe bracket navigation (`m?[k]`), evaluating to `?V` (`Option<V>`). Plain bracket lookup expressions (`m[k]`) and compound assignments (`m[k] += v`) are prohibited (`E0352`). In-place slot assignment `m[k] = v` inserts or replaces an entry for `k` (requiring deeply immutable `k` under `E0535`).
 
@@ -992,7 +1005,7 @@ SumTypeDecl         ::= [ "pub" ] "type" Identifier [ GenericParams ] [ WhereCla
                         "{" VariantDecl { "," VariantDecl } [ "," ] "}"
 VariantDecl      ::= PascalCase [ GenericParams ] [ VariantPayload ] [ "->" TypeExpression ]
 VariantFields       ::= VariantField { "," VariantField } [ "," ]
-VariantField        ::= [ MemberMode ] [ Identifier ":" ] TypeExpression
+VariantField        ::= [ DeclaredMemberMode ] [ Identifier ":" ] TypeExpression
 RecordVariantFields ::= RecordField { "," RecordField } [ "," ]
 VariantDeclList  ::= VariantDecl { "," VariantDecl } [ "," ]
 VariantPayload   ::= "(" [ VariantFields ] ")" | "{" [ RecordFieldList ] "}"
@@ -1230,7 +1243,7 @@ let get_dog: Getter<Dog> = make_dog       -- OK
 | :--- | :--- |
 | Closed record | No width subtyping; extra fields require an open row |
 | Record member | Writable/`ref` schemas retain matching modes; immutable reception compares permission-suppressed data shapes. Writable/replaceable data is invariant; immutable data covariant |
-| Callable with identical parameter modes | Parameters contravariant; result shape covariant; independently check return construction/mode/source guarantees; closed normalized effect/capability contracts match exactly, while explicit open markers admit additional actual obligations only in their selected dimension |
+| Callable with identical concrete parameter modes | Parameters contravariant; result shape covariant; independently check result guarantees and exact closed rows. Explicit `auto` permission patterns retain their actual verified family; effect/capability openness alone does not change modes |
 | `&^mut` capability contract | Includes its prescribed write/retention implications during normalization; a closed `&^mut` row does not match an actual `&mut`-only row, and openness never changes parameter modes or handle permissions |
 | Array / map | Element and key/value types invariant |
 | Tuple | Components invariant; immutable reception suppresses modes, otherwise modes match; only `var` members permit slot replacement |
@@ -1256,11 +1269,11 @@ assert(observed.count == 1)
 
 - **Complete Static Provenance**: Track possible origins, permissions, immutable/live facts, aliases, retention/escape dependencies, and scope/task ownership for all storage, references, environments, and resources. Conservative judgments may overapproximate execution; obligations cannot be erased.
 - **Propagation**: Preserve these facts through aggregates, projections, branches, recursion, returns, calls, opaque boundaries, handlers, cleanup, and modules. Every handle, member mode, and stored constituent limits the resulting authority. A default member imposes deep immutability; `mut` permits interior writes without slot replacement. Independent scalar copies carry no reference authority; capturing a scalar cell retains its origin.
-- **No Semantic Erasure**: An omitted annotation, abbreviated callable type, or ordinary call spelling never discards these facts. The compiler infers the full contract of every function. Public, private, local, and test named definitions require their prescribed source spelling under [mandatory contract completion](#mandatory-contract-inference-and-completion); anonymous functions have no mandatory source-annotation completion. Private implementation names need not become public identifiers; their semantic dependencies and internal alias relations remain in verified contract metadata. A plain data return `-> T` establishes immutability; it cannot conceal a live or writable alias.
+- **No Semantic Erasure**: An omitted annotation, abbreviated callable type, or ordinary call spelling never discards these facts. All functions retain complete inferred contracts. Named source completion includes the specific `auto` exemptions defined under [permission inference](#permission-inference-with-auto); anonymous functions have no mandatory source completion. Private implementation names need not become public identifiers, but their dependencies and alias relations remain checked metadata. Plain `-> T` establishes immutability; only explicit `-> auto T` requests inferred result authority.
 - **Conservative Alternatives**: Retain the union of possible origins, accesses, retention, and escape obligations, and only permissions common to all alternatives. Preserve origin relations between inputs and outputs and between output components: a relation established in every retained alternative remains established after the join. Prune only branches excluded by the specified static computations and typing rules. An unproved run-time condition is not evidence of uniqueness or impossible escape. Unknown overlap remains possible overlap; an incomplete proof cannot authorize mutable access, immutable publication, or task crossing that requires it.
 - **Recursive Dependencies**: Loop and recursive call dependencies retain possible origins and unresolved relationships, including termination conditions and finite-budget coverage. A cycle is not evidence of freshness, disjointness, non-escape, termination, or an empty callable row. An obligation may be discharged only by an established fact; unresolved dependencies remain obligations at every affected use. [Authority-use evidence](#reachable-authority-use) must likewise be grounded in actual operations or verified contracts; annotations and forwarding cycles cannot prove their own use. Apply the use's existing diagnostic when its required proof is absent.
 - **Authority and Discharge**: Prove each permission from a declaration, a traced source, a fresh-data rule, or an explicitly specified resource contract. Local discharge requires all relevant authority roots and environments to be confined; a local variable name or locally handled effect is not evidence of confinement. Minimal concrete capabilities (`E0529`) are calculated under these conservative rules, not arbitrary run-time equivalence.
-- **Source Annotations**: Infer and check binding/parameter modes, argument markers, local writable-sharing markers, return construction/modes/sources, effects, captures, and concrete invocation capabilities. Named definitions must complete their required annotations. Anonymous functions may leave type, result, effect, state, capture, and returned-source contract annotations to inference; written annotations and contextual callable types remain checked constraints. Parameter modes, argument markers, binding modes, and shared-reception markers retain their permission semantics: omitting a contract annotation supplies no absent authority. Neither inference nor completion may change sharing, object identity, evaluation order, allocation, or resource ownership.
+- **Source Annotations**: Infer and check modes, argument/reception markers, result construction/sources, effects, captures, and capabilities. Named definitions complete concrete required annotations; explicit `auto` retains mode-dependent and selected result details in metadata. Anonymous contracts may remain inferred. Written/contextual constraints are checked, and ordinary markers retain their authority semantics. Lexical templates elaborate only their verified dependent transfers; inference supplies no absent authority, hidden copy, changed evaluation order, allocation identity, or resource ownership.
 - **Diagnostic Provenance**: Semantic diagnostics MUST make the derived access, sharing, escape, and effect obligations and their source explanations available, including facts omitted from source. An explanation identifies the relevant origin or contract, propagation steps, involved use or boundary, and the rule that accepts or rejects it. Multiple possible origins and an unproved disjointness condition must be reported as such, not replaced with a fabricated exact origin. Explanations also apply to accepted programs and inferred obligations; their presentation is optional and cannot change validity.
 
 For `hidden`, connect `source`'s writer through the `ref` argument, `ref` member, return, and prohibited immutable reception. For `stolen`, identify the return's `ref` permission.
@@ -1282,11 +1295,11 @@ alias.count += 1
 -- swap(mut first, mut alias)         -- Error [E0523]: different names for the same writable object
 ```
 
-- **Local Construction**: A fresh ordinary result may enter `let` when its construction scope or call ends and no relevant outside writer, live dependency, or active environment survives. `new` records root freshness and write authority; complete provenance separately decides publication and initial-reception eligibility. Parameter/external aliases retain their restrictions (`E0528`). Ordinary writable bindings retain their authority until lexical scope ends; last textual use does not revoke it. Reassigning `var mut` replaces its path without revoking other paths.
+- **Local Construction**: A fresh ordinary result may enter `let` when its construction scope or call ends and no relevant outside writer, live dependency, or active environment survives. `new` records construction/handoff and root write authority; complete provenance retains actual allocation history and separately decides publication and initial-reception eligibility. Parameter/external aliases retain their restrictions (`E0528`). Ordinary writable bindings retain their authority until lexical scope ends; last textual use does not revoke it. Reassigning `var mut` replaces its path without revoking other paths.
 
 - **Fresh Evaluation**: Each successful ordinary allocation creates new storage distinct from pre-existing storage. A newly constructed aggregate may still contain references to pre-existing objects; freshness of its outer slots does not establish disjointness of its reachable graph. Each ordinary deep clone creates new writable regions isolated from the source and all pre-existing writable regions, preserving aliases within that one copy. Repeated evaluations of one expression do not denote one shared allocation. Calling an arbitrary function twice does not establish freshness; the function's actual return relation must supply it.
 
-- **Initial Writable Reception**: [Fresh storage inputs](#homogeneous-storage-authority-and-container-self-determination) may receive unpublished construction authority. Read-only bindings and parameters end this eligibility; allocation identity or last use cannot restore it.
+- **Initial Writable Reception**: [Fresh storage inputs](#homogeneous-storage-authority-and-container-self-determination) and [qualified fixed writable locals](#preserving-local-bindings) may receive unpublished construction authority. Ordinary immutable reception ends that path's eligibility; read-only/borrowed parameters acquire none. Temporary observations retain their source's alias restrictions. Allocation identity or last use cannot restore ended qualification.
 
 ```ril
 -- Cell and swap have the preceding contracts; choose_order is a run-time bool input.
@@ -1323,6 +1336,222 @@ assert(finished.count == 1)           -- OK: construction scope ended without an
 ```
 
 Escaped environments and stored writable paths survive their creating scope and still prevent immutable publication. Last-use rules for temporary mutable access or `ref` handles do not implicitly consume an ordinary writable binding. Resource consumption follows only its listed contracts.
+
+### Permission Inference with auto
+
+```ril
+fn append<T>(mut xs: [auto]T, auto value: T) &mut -> () {
+    xs !> Array::push(value)
+}
+fn preserve<T>(auto value: T) -> auto T { value }
+
+type Packet<T> = { auto item: T }
+fn packet<T>(auto value: T) -> auto Packet<T> {
+    Packet.{ item: value }
+}
+fn relay<T>(auto value: T) -> auto Packet<T> {
+    let auto intermediate = preserve(value)
+    packet(intermediate)
+}
+```
+
+Auto binds static permission parameters, orthogonal to written type generics. Each declaration-owned input/schema occurrence binds independently; checked value flow relates them. A definition denotes a finite permission template, not a value carrying an auto mode or a run-time permission tag.
+
+| Position | Role |
+| :--- | :--- |
+| Input auto x: T / [auto]T / [K: auto V] | Bind this function's permission parameters |
+| Declared auto item: T / var auto item: T | Bind the type template's access parameters; never infer var |
+| let auto x = expression | Receive a contract dependent on bound modes or input callable permission patterns |
+| -> auto T | Infer the result contract; does not by itself introduce a forwarding scope |
+| fn(auto T) -> R | Open that callable's permission pattern, not an unrelated enclosing function |
+| Input callable with -> auto R | Retain its actual result relations as finite input-bound dependencies |
+
+Template checking may substitute an outer bound P for an inner parameter Q. This is closed relative to the lexical environment, not a free unknown. Before a closed invocation executes, its selected signature, local receptions, result and member schemas must be concrete. A closure is specialized with its enclosing instance; an explicitly quantified finite callable family may retain its bound parameters. Concrete objects, storage and single-instance entries cannot contain unresolved permission holes (E0344).
+
+Ordinary unqualified forms keep their meaning. Auto does not infer missing data types, slot replacement, authority or effect-row openness, and is not a concrete MemberMode. E0412 rejects it in static/meta/type-function parameters, effect-operation signatures/results, handler parameters, bodyless foreign interfaces, map keys, untyped literal modifiers, reassignable/scoped/module receivers, or local inference without an applicable lexical template. Mapped comprehensions preserve known modes; bodyless boundaries supply complete trusted contracts.
+
+#### Member Modes and Implicit Schema Parameters
+
+```ril
+type Fixed<T> = { auto item: T }       -- Fixed slot; infer access
+type Slot<T> = { var auto item: T }    -- Replaceable slot; infer access
+type Items<T> = [auto]T
+type Node<T> { End, Link { auto value: T, ref following: Node<T> } }
+type Alias<T> = Fixed<T>
+
+type Fields = { var tag: int, mut items: []int }
+meta let TAG_MODE = modeof Fields.tag       -- MemberMode::Var
+meta let ITEMS_MODE = modeof Fields.items   -- MemberMode::Mut
+```
+
+MemberMode preserves two independent components: slot replacement (var or fixed) and access (default, ref, mut, ^mut). Modeof returns the complete pair; access modes are not a linear strength scale. Auto never infers var.
+
+```ril
+type Cell = { var count: int }
+type Holder = { mut item: Cell }
+let mut source = Cell.{ count: 0 }
+let mut holder = Holder.{ item: ^mut source }
+holder.item.count += 1                         -- OK: acknowledged shared constituent
+
+let mut owned: [mut]Cell = []
+owned !> Array::push(new Cell.{ count: 0 })    -- OK: construction input
+-- owned !> Array::push(^mut source)           -- Error [E0406]: this boundary requires new
+```
+
+Reception checks the boundary, slot/access schema, input contract, full provenance, and lifetime. A record's mut schema alone proves no isolation; arrays retain their stricter storage contract. For a newly constructed auto member without a fixed context, use the canonical classification below. A fixed contextual schema instead keeps its existing reception rules.
+
+| Verified input | Inferred access |
+| :--- | :--- |
+| Immutable / copied value | Default |
+| Observation | ref |
+| Eligible construction / storage handoff | mut |
+| Acknowledged retained writer | ^mut |
+
+Temporary mut cannot become persistent writable storage. Auto cannot invent observation/sharing for ordinary writable inputs; unresolved or non-unique required instances are E0344, without a run-time union.
+
+| Implicit schema rule | Requirement |
+| :--- | :--- |
+| Binding | Each declaration-owned member/element/value auto binds access by declaration identity and coordinate path; function-owned occurrences belong to that function |
+| Instantiation | Freshen the finite whole signature at independent outside uses; one concrete instance has a fixed schema |
+| Recursion | Forward the current signature through self references; mutually recursive declarations use finite group equations, with no fresh binders on cycles |
+| Other declarations | Add only finite syntactic-site parameters; transparent aliases forward identity/signature, nominal/opaque types retain identity and checking facts |
+| Checking | Preserve schema identity, invariance, dependencies and homogeneous elements; symbolic reflection is allowed, required concrete resolution is E0344 |
+
+Implicit member parameters supplied by a function's input types may be bound schema parameters in its lexical checking environment, even without a written auto on that arrow. Dependent projections may use template elaboration under that schema and the parent's effective access. This does not make a fixed ref/mut root auto or grant an unrelated concrete operand a missing marker. A nested callable's own binders remain scoped to it; a verified selected call may nevertheless expose a finite result-contract dependency bound to that input callable.
+
+#### Inference Domains and Contract Completion
+
+```ril
+type Cell = { var count: int }
+fn bump(mut x: Cell) &mut -> () { x.count += 1 }
+
+-- fn redundant(auto x: Cell) &mut -> () { bump(x) }
+-- Error [E0550]: exact forwarding fixes the parameter to mut
+
+-- type Redundant = { auto count: int }
+-- Error [E0550]: a value member has only ordinary immutable access
+
+-- fn redundant_array(mut xs: [auto]int, n: int) &mut -> () {
+--     xs !> Array::push(n)
+-- } -- Error [E0550]: the declaration-owned element mode is fixed too
+
+-- fn mixed(flag: bool, ref x: Cell) -> auto Cell {
+--     if flag { Cell.{ count: 0 } } else { x }
+-- } -- Error [E0545]: no fresh/live bare-root union
+```
+
+Infer the admitted finite domain from the body, schemas, verified dependencies, and explicit semantic constraints; then normalize the whole family; finally validate named annotations. Missing annotations never prune alternatives. A proper inferred subdomain is allowed, but explicitly promised instances cannot be removed. Check every admitted alternative's type, authority use, provenance, escape, exclusivity, resources, effects, termination, and budget obligations; unknown facts remain obligations.
+
+E0550 rejects a declaration-owned auto parameter/schema whose mode is invariant over all admitted type/static arguments and dependencies, including nested array/map occurrences. A template-local let auto likewise requires a contract dependent on lexically bound permission parameters or selected-call relations from an input callable's open permission pattern, including contained schemas and consumption/source relations. Check the template, not a selected monomorphic instance. Open callable patterns and -> auto are not redundant parameter declarations. Invalid/empty families retain their underlying diagnostic. E0527 still checks each mutable/shared alternative's actual use.
+
+```ril
+fn store(mut xs: [^mut]Cell, ^mut value: Cell) &^mut -> () {
+    xs !> Array::push(^mut value)
+}
+-- The same body with only &mut: Error [E0510]
+-- Replacing value's fixed mode with auto also gives E0550, not a capability exemption.
+```
+
+Named definitions spell concrete effects/capabilities and known external/captured source groups, including known effect instances parameterized by ordinary type arguments. Only genuine mode/callback dependencies remain symbolic; selecting an instance makes its concrete obligations the caller's responsibility after lawful handling/discharge. A variable solved to a constant supplies no exemption. Explicit &{} closes the full total.
+
+-> auto T exempts result permission/source/dependency spelling, not its complete metadata or required data types. Check written constraints and every root/contained guarantee. It cannot invent a missing source, resource lifetime, guarantee, or run-time bare-root union; use an explicit aggregate/variant where required.
+
+#### Preserving Reception and Forwarding
+
+```ril
+type Cell = { var count: int }
+fn preserve<T>(auto x: T) -> auto T { x }
+
+let mut source = Cell.{ count: 0 }
+let ref seen = preserve(ref source)
+-- let auto seen = preserve(ref source)     -- Error [E0412]: no lexical permission template
+let ^mut writer = preserve(^mut source)
+writer.count += 1
+assert(seen.count == 1)
+
+let mut fresh = preserve(new Cell.{ count: 2 })
+let mut moved = preserve(new fresh)          -- Explicit concrete handoff
+moved.count += 1
+-- let count = fresh.count                  -- Error [E0549]
+
+let mut views: [ref]Cell = []
+append(mut views, ref source)               -- Preceding append contract
+-- append(mut views, source)                -- Error [E0405]: no caller marker is inferred
+```
+
+Within a lexical permission template, auto formals and legitimately dependent local/member/payload/capture contracts support automatic operand elaboration. Only relations to its bound permission parameters and input callable permission patterns propagate; merely being in an auto function grants no forwarding privilege to other values. The elaborated instance uses ordinary concrete operations, not an inheritable auto tag. Projections and captures remain bounded by every parent, current effective contract and true source; they never split a construction path.
+
+| Inferred operand contract | Argument | Root return | Persistent reception |
+| :--- | :--- | :--- | :--- |
+| Immutable/value | Ordinary | Ordinary | Immutable/copy rules |
+| Observation | ref | Bare value + ref(sources) | Preserve eligible origins |
+| Temporary writer | mut | No retained writable root | Cannot prolong authority |
+| Retained writer | ^mut | Bare value + ^mut(sources) | Sharing acknowledgment and extra-retention obligations |
+| Construction path | new handoff | Checked construction return | Qualified local/storage reception |
+
+```ril
+fn bump(mut x: Cell) &mut -> () { x.count += 1 }
+fn clear_and_bump(mut xs: [auto]Cell, mut x: Cell) &mut -> () {
+    xs !> Array::truncate(0)
+    -- let auto count = x.count            -- Error [E0550]: fixed scalar contract
+    -- bump(x)                             -- Error [E0405]: concrete x is not auto-dependent
+    bump(mut x)
+}
+```
+
+Concrete callers, independent locals and closed results use ordinary explicit argument markers. Neither the callee's auto, result inference, nor last use supplies one. A bound schema parameter permits elaboration only for its dependent contracts, never an unrelated fixed root. Exact template forwarding does not choose a different mode; explicit ref x / mut x may request permitted temporary access. Root returns add no duplicate sharing expression.
+
+Every transfer evaluates once and ends its old construction path during operand preparation, before later operands/defaults/cleanup; failure never revives it (E0549). Preserved metadata always includes sharing, origins, consumption and graph preconditions. It carries no automatic-forwarding privilege into an unrelated lexical scope.
+
+#### Lexical Permission Templates and Closures
+
+```ril
+fn make<T>(auto x: T) &capture
+    -> auto (fn() @& -> auto Packet<T>) {
+    \-> packet(x)
+}
+let build = make(3)
+assert(build().item == 3)                   -- Zero-parameter closure, concrete capture
+```
+
+A closure may reference the enclosing template's bound type/permission parameters and input-callable dependencies without adding auto parameters of its own. Capture schemas, call operands and result contracts specialize with the outer instance; the escaping closure has a concrete environment, not free auto unknowns. Lexically nested callables retain these bound relationships; invoking a separately supplied callback does not inject the caller's forwarding context into its body.
+
+Recheck the actual capture operation and each use through its resulting environment. Preserve the effective captured contract, not a copy of the outer formal's original authority. All required environment-handle, capture/retention, provenance, lifetime, exclusivity and budget checks still apply. Non-consuming observation/shared instances may be invoked repeatedly when those checks permit them.
+
+Bound permission parameters do not copy affine construction state. A call-local capture may use an active path only under its activation/lifetime and alias proofs. An escaping capture ends or lawfully consumes the originating construction qualification; an ordinary reusable closure cannot keep that same path available for repeated handoff. A claimed construction-consuming instance without a proved supported invocation/slot-extraction contract is rejected by the ordinary consumption rules; other valid instances remain admissible. No blanket closure prohibition or implicit once-only callable is introduced.
+
+#### Inferred Interfaces and Callable Families
+
+```ril
+fn apply<T, R>(auto value: T, action: fn(auto T) @& -> auto R) -> auto R {
+    action(value)
+}
+
+fn through<T, R>(ref x: T, action: fn(ref T) @& -> auto R) -> auto Packet<R> {
+    let auto intermediate = action(ref x)   -- Bound to this selected callback result
+    packet(intermediate)
+}
+```
+
+Callable auto opens only the permission-pattern dimension; @& opens only effects/capabilities. Preserve the supplied callable's actual domain, acceptance/use conditions, result relations and obligations; a concrete callback may satisfy a selected instance without becoming an all-mode family. Without auto, concrete modes match exactly (E0407). Handle and data-parameter permissions remain distinct.
+
+A selected call's result may depend on the input callable's declared open permission pattern. Instantiate that callable's own quantifiers, substitute actual argument/source relations, and project its verified result contract. Preserve origins, invocation-specific construction state/allocation history, consumption and all root/graph/lifetime preconditions; a repeated projection never duplicates an active path. This finite input-bound relation supports dependent reception/forwarding in the enclosing lexical template, without importing the callable's internal binders. It grants no automatic marker to the callable handle, fixed x, or other unrelated values; an enclosing -> auto or an arbitrary body call alone supplies no such input relation.
+
+Dynamic targets permit only calls valid for every target, with common guarantees and the union of obligations. Unknown origins/domains prove nothing. Determine ordinary type arguments before run-time family emission. Finite checked entries may share a lawful environment, with compile-time mode selection and ordinary dispatch costs; equivalent/static entries may be shared/specialized. No entry performs run-time permission/provenance checking.
+
+```ril
+-- Published compatibility baseline:
+type Cell = { var count: int }
+fn read(auto x: Cell) -> int { x.count }
+
+-- Replacement checked against that baseline:
+-- fn read(auto x: Cell) &mut -> int { x.count += 1; x.count }
+-- Error [E0552]: the same auto spelling no longer preserves the accepted read inputs
+```
+
+Every emitted interface MUST retain normalized domains, schemas, result/payload correlations, origins/history, store/return relations, consumption, graph preconditions, callback/environment dependencies, and termination/budget conditions. Opaque names may be hidden; facts may not. Tools expose concise summaries and full expansions without requiring source repetition.
+
+Against an existing declared/emitted compatibility baseline, E0552 rejects narrower inputs, stronger requirements, weaker results or incompatible schemas. An explicitly new interface version may establish a new baseline; otherwise invalidate/recheck dependents rather than use stale proofs. Local/private changes recheck ordinary dependents. Source auto is never the compatibility contract.
 
 ### Functional Updates via Derive
 
@@ -1373,7 +1602,7 @@ assert(snapshot.count == 0 && version.count == 1)
 fn log_id<T: { id: int, ..R }>(item: T) -> int { item.id }
 ```
 
-Generics admit type, const-value, member-mode, and [static-key](#static-key-parameters-and-computed-value-projection) parameters. They apply to data, wrapper, sum, and callable declarations.
+Generics admit type, const-value, member-mode, and [static-key](#static-key-parameters-and-computed-value-projection) parameters. They apply to data, wrapper, sum, and callable declarations. Permission inference supplies additional implicit access parameters, not new type variables or run-time arguments. `MemberMode` continues to denote both slot and access components; `auto` itself is not a member-mode literal or generic argument.
 
 ```ebnf
 GenericParams         ::= "<" GenericParamDecl { "," GenericParamDecl } [ "," ] ">"
@@ -1708,6 +1937,8 @@ The compiler infers uses from all retained possible sources and reachable operat
 
 Declared member schemas have no independent `E0527` requirement; immutable reception may suppress their effective permissions under [deep immutability](#deep-immutability). Otherwise-valid executable markers and bindings must meet the table above; existing type, mode, origin, and lifetime diagnostics retain precedence. In particular, `let ref seen = ^mut source` is `E0527` when `seen` could lawfully observe `source` without the unused marker. When writable reception is required, a fresh unshared root uses `mut`, not `^mut`, unless an independently specified context requires that degradation.
 
+For an inferred permission family, retain use conditions for every admitted alternative; a forwarding cycle, `auto` spelling, or a missing annotation is not evidence. Validate selected instance conditions when their arguments/dependencies are known. `E0550` rejects a declaration's redundant permission abstraction independently of these `E0527` use checks; it does not reject a valid family's value-type or otherwise monomorphic instantiation.
+
 Aliases retain all source restrictions; immutable publication cannot revoke a surviving writer. Creating an explicit shared alias preserves the original binding; each invocation checks the resulting alias facts rather than assuming uniqueness from its `mut` spelling.
 
 ```ril
@@ -1749,6 +1980,65 @@ assert(observed.title == "Final" && original.title == "Original")
 -- let mut wrong = ^mut draft          -- Error [E0406]: exclusive declaration with shared initializer
 ```
 
+### Preserving Local Bindings
+
+```ril
+type Cell = { var count: int }
+fn transform(new x: Cell) -> new Cell { x }
+
+fn make(flag: bool) -> new Cell {
+    let mut cell = if flag { Cell.{ count: 0 } } else { Cell.{ count: 1 } }
+    cell.count += 1
+    cell
+}
+fn normalize(new x: Cell) &mut -> new Cell {
+    let mut y = transform(new x)
+    y.count += 1
+    y                                      -- -> new Cell supplies the handoff context
+}
+fn put(mut cells: [mut]Cell) &mut -> () {
+    let mut cell = Cell.{ count: 0 }
+    cells !> Array::push(new cell)
+    -- let count = cell.count               -- Error [E0549]
+}
+```
+
+No let new modifier is needed. A fixed writable local directly receiving a checked constructor/prepared new result or explicit legal handoff may retain a construction path as static provenance. This includes branch results when every retained branch supplies a valid prepared construction result; a bare old binding/borrow alternative cannot acquire the path. The concrete receiver must first satisfy all its usual rules, including necessary shared acknowledgment.
+
+```ril
+fn receive(new x: Cell) -> new Cell {
+    let mut y = new x
+    -- let count = x.count                  -- Error [E0549]: ended during initialization
+    y                                      -- Return preparation ends y before cleanup
+}
+fn borrowed(mut x: Cell, mut cells: [mut]Cell) &mut -> () {
+    x.count += 1
+    cells !> Array::truncate(0)
+    -- cells !> Array::push(new x)          -- Error [E0548]: mut input did not transfer construction
+}
+```
+
+| Separate fact | Requirement |
+| :--- | :--- |
+| Construction history | Retain actual allocation identity and constructor/new-call/handoff origins |
+| Active construction qualification | Established by this checked initial reception; never inferred from mere historical freshness or last use |
+| Current root privacy | No independently usable surviving alias to the root |
+| Initial graph eligibility | Strong complete-graph qualification, checked again for new input / exclusive storage |
+
+Only eligible ordinary-reference data gain the construction path (E0411 otherwise); callable/environment/resource results keep their own existing reception contracts. A fixed let mut, or a let ^mut justified by its usual constituent/alias rules, can retain a private construction root. Shared constituents do not alone make the root shared, but remain graph/partition obligations. New alone proves neither privacy nor isolation.
+
+Immutable publication, independent escape/sharing of the qualifying path, or escaping capture ends the affected qualification. Alias death or last use cannot restore it. Existing ordinary parameters, globals, reassignable/scoped roots and bare alias initializers do not inherit it from the object's past. Temporary observation/mut borrowing may preserve it under the existing no-escape and lifetime checks.
+
+Active paths are pinned and affine. A declared `-> new T` supplies construction reception at the return boundary; a bare qualified formal/local is handed onward during return preparation, before cleanup. Argument and local-initializer handoffs keep their existing marker rules. Each handoff ends the source and derived accesses at its defined preparation point; failure never restores them. Parameter-derived local writes still require `&mut`: `normalize` is not frame-confined merely because `y` is local.
+
+```ebnf
+PreservingBinding ::= "let" "auto" Identifier [ ":" TypeExpression ] "=" Expression
+```
+
+Let auto is only a receiver within a lexical permission template, including a nested closure using its bound dependencies. Its reception/schema/contained/environment contract must genuinely depend on bound modes or selected-call relations from input callable permission patterns; a merely data-dependent scalar or otherwise fixed reception is redundant (E0550). Check that dependency in the template, not after selecting an instance. Each instance uses a concrete lawful reception; this syntax is not itself a new mode or permanent forwarding property.
+
+Ordinary let remains immutable even inside a template. Outside the template use the known let/ref/mut/^mut receiver; let auto is E0412. A bare existing writer supplies no sharing acknowledgment. Actual-use, capture, branch/loop and completion checks remain mandatory for every reception; the binding's location never discharges an origin-based obligation.
+
 ### Shared Writable Authority
 
 `let ^mut` and `var ^mut` declare shared writable authority directly. The [common permission tables](#binding-permissions-and-storage-matrix) define their slot behavior, rejected receptions, and authority-use checks.
@@ -1761,7 +2051,8 @@ SharedMutDecl ::= [ "pub" ] ( "let" | "var" ) "^mut" Identifier
 | Shared-reception site | Required spelling / contract |
 | :--- | :--- |
 | Single-identifier initialization | `let ^mut x[: T] = expr` or `var ^mut x[: T] = expr`; types are optional |
-| Later assignment, field/container reception, or destructuring | Explicit `^mut expression` at that receiving site; each constituent retains its own mode |
+| Later assignment, field/container reception, or destructuring | Explicit `^mut expression`, or a dependent template operand carrying that acknowledgment; each constituent retains its own mode |
+| Template-dependent fixed receiver | `let auto` retains a verified shared contract dependent on bound modes/input callable patterns; concrete reception uses the usual `let ^mut` rules. Neither form invents sharing from an ordinary writable initializer |
 | Outward retention | Preserve `&^mut` or the corresponding named obligation after lawful local discharge |
 | Pattern, member, or scoped declaration | Keep its existing grammar; the single-identifier declaration form adds none |
 
@@ -1812,6 +2103,7 @@ assert(count == 7 && packet.item.count == 1)
 
 ```ebnf
 LetDecl ::= [ "pub" ] "let" Pattern [ ":" TypeExpression ] "=" Expression [ "else" Block ]
+          | PreservingBinding
 ```
 
 Plain `let` uses default access in the [common permission tables](#binding-permissions-and-storage-matrix). The fixtures distinguish immutable publication from observing a still-live writer.
@@ -2757,6 +3049,8 @@ RecordValueField ::= [ MemberMode ] FieldLabel [ ":" Expression ] | ".." Express
 
 Explicit fields override equally named fields from a value spread, independent of written position. Multiple explicit definitions are `E0210`; conflicting spreads without an override are `E0211`. Spreads preserve member schemas, references, and actual permissions. A typed constructor inherits omitted modes; an untyped explicit field defaults to immutable. Neither spreading nor a written mode upgrades a stored source.
 
+A declared `auto` member resolves through the typed receiver's context and canonical reception rules; it does not make untyped fields permission-polymorphic. An explicit construction operand or its dependent template elaboration may initialize a compatible typed slot only after its complete receiving proof, consuming the old path. The expression grammar admits `new expression`, but these position checks still reject it in non-receiving expressions (`E0548`).
+
 ```ril
 let left = .{ id: 1 }
 let right = .{ id: 2 }
@@ -3057,7 +3351,7 @@ assert(total == 3)
 | Integer range | Endpoint type, ascending bounds as specified for ranges |
 | Other values, including strings, bytes, and iterator Source records | No implicit iteration (`E0355`); use explicit conversion or operations |
 
-Evaluate the source once. Read each entry when visited; later element replacement may be observed, but structural mutation during traversal is `E0526`. Default element bindings require immutable data (`E0535`); use an explicit `ref` pattern for live reference observation. Destructuring cannot grant missing writers (`E0521`); independent scalar `var` copies remain permitted. Source identities and lifetime restrictions survive every pattern.
+Evaluate the source once. Read each entry when visited; later element replacement may be observed, but structural mutation during traversal is `E0526`. Unmodified element patterns receive the bounded element-access contract under [pattern reception](#pattern-reception-and-decomposition): values copy, reference access follows the source/member schema, and borrowed writes remain temporary. Traversal creates no construction handoff, even for a fresh container or mut elements. Explicit ref may request permitted observation; retention still needs actual source authority and lifetime proofs. Destructuring cannot grant missing writers (`E0521`); independent scalar var copies remain permitted.
 
 ### Control Transfers
 
@@ -3186,7 +3480,7 @@ fn verify_session(cookie: str) -> Result<str, str> {
 ### Pattern Matching
 
 ```ebnf
-MatchExpr     ::= "match" Expression "{" [ MatchArm { "," MatchArm } [ "," ] ] "}"
+MatchExpr     ::= "match" [ "ref" ] Expression "{" [ MatchArm { "," MatchArm } [ "," ] ] "}"
 MatchArm      ::= Pattern [ "if" Expression ] "->" Expression
 Pattern       ::= OrPattern
 OrPattern     ::= SinglePattern { "|" SinglePattern }
@@ -3208,9 +3502,9 @@ WildcardPattern ::= "_"
 RangePattern    ::= NumericPattern ( ".." | "..=" ) NumericPattern
 ```
 
-Matches are evaluated top-to-bottom and must be exhaustive (`E0303`). A trailing guard belongs to the whole or-pattern, not just its last alternative. Every alternative binds the same identifiers with compatible types and modes (`E0346`); within one alternative each identifier is bound at most once (`E0347`). Each tuple, array or record pattern permits at most one immediate rest (`E0347`); nested patterns count their rests independently. Thus `([a, ..xs], [b, ..ys])` is valid. A guard cannot establish exhaustiveness. Pattern/subject incompatibility uses `E0301`; incompatible result types across otherwise valid reachable arms use `E0351`.
+Matches are evaluated top-to-bottom and must be exhaustive (`E0303`). A trailing guard belongs to the whole or-pattern, not just its last alternative. Every alternative binds the same identifiers with compatible committed receiver types/contracts (`E0346`), not merely compatible read-only previews; within one alternative each identifier is bound at most once (`E0347`). Each tuple, array or record pattern permits at most one immediate rest (`E0347`); nested patterns count their rests independently. Thus `([a, ..xs], [b, ..ys])` is valid. A guard cannot establish exhaustiveness. Pattern/subject incompatibility uses `E0301`; incompatible result types across otherwise valid reachable arms use `E0351`.
 
-These binding patterns govern `match`, bindings, `if let` / `while let`, iteration and handler parameters. The nonbinding [is value tests](#value-tests-with-is) have their own grammar and admit expected-value expressions.
+These binding patterns govern `match`, bindings, `if let` / `while let`, iteration and handler parameters. The enclosing operation supplies each receiver's contract under [pattern reception](#pattern-reception-and-decomposition); an omitted pattern access modifier does not override that contract. Ordinary let/var receivers retain their declared immutable default. The nonbinding [is value tests](#value-tests-with-is) have their own grammar and admit expected-value expressions.
 
 `TypePattern` is the exception: it is admitted only in static `match` arms against token subjects/constituents (`E0306` for another pattern context). It does not introduce type binders through ordinary `let`, iteration, or handler patterns. Run-time token subjects remain `E0816`.
 
@@ -3341,6 +3635,93 @@ match unit_res {
     Err(e) -> println(e),
 }
 ```
+
+### Pattern Reception and Decomposition
+
+```ril
+fn transfer_all<T>(auto src: [auto]T, mut dst: [auto]T) &mut -> () {
+    while let Some(item) = Array::pop(src) {
+        dst !> Array::push(item)
+    }
+}
+fn push_option<T>(mut dst: [auto]T, auto pending: ?T) &mut -> () {
+    match pending {
+        Some(item) -> dst !> Array::push(item),
+        None -> (),
+    }
+}
+fn each_read<T>(ref xs: [auto]T, auto action: fn(auto T) @& -> ()) -> () {
+    for xs as item { action(item) }
+}
+```
+
+```ril
+type Cell = { var count: int }
+let mut src: [mut]Cell = [Cell.{ count: 1 }]
+let mut dst: [mut]Cell = []
+let mut pending = Array::pop(mut src)
+
+match ref pending {                         -- Observe; keep pending active
+    Some(item) -> assert(item.count == 1),
+    None -> (),
+}
+match pending {                             -- Consume this qualified construction source
+    Some(item) if item.count > 0 -> dst !> Array::push(new item),
+    _ -> (),                                -- None/wildcard consumes the carrier too
+}
+-- match pending { ... }                    -- Error [E0549]
+
+fn inspect(ref pending: ?Cell) -> int {
+    match pending { Some(item) -> item.count, None -> 0 } -- Borrow; no new path
+}
+```
+
+Choose the root contract statically before checking arms, from current access and established qualification, never body demand or last use. It must hold for every retained alternative; preserve variant-guarded payload relations. No run-time permission choice/check is introduced.
+
+| Input | Match contract |
+| :--- | :--- |
+| Active qualified construction temporary/formal/local | Consume after arm selection; prove root privacy and ordinary-reference graph eligibility |
+| Immutable reference / value | Share immutable data / copy values |
+| Borrowed ref/mut / retained writer | Bounded observation/temporary write/shared access; no new construction path |
+| Explicit match ref expression | Observe without consuming; scalar constituents copy; ordinary ref-root rules apply |
+
+A direct construction/new result needs consuming-reception proof. Failure cannot fall back to borrowing, infer shared acknowledgment, or recover lost qualification. Use explicit match ref or first establish another lawful concrete receiver with its required acknowledgment. Ordinary borrowed parameters acquire no construction qualification from historical freshness.
+
+| Pattern context | Unmodified receiver |
+| :--- | :--- |
+| let/var, including let-else/destructuring | Declared access; plain receivers stay immutable/value. Copy selected scalars/rests without publishing an unbound parent |
+| match / if let / while let | Selected subject decomposition contract |
+| for | Borrow/project the visited element; a fresh container or mut element never implies detach |
+| Handler | Operation mode and required binder spelling, unchanged; no auto/new input |
+| Static TypePattern | Existing static-token/placement rules, outside the run-time protocol |
+
+Matching/traversal sub-bindings are fixed by default; declarations retain their slot syntax. Access is bounded by parents, member schemas, origins and lifetimes. Explicit access requests only permitted reception/degradation; var controls rebinding alone and cannot rebind construction paths. Borrowed mut never becomes retained sharing/new. Shared acknowledgment and ordinary type/use checks remain; inherited access supplies no writable-use evidence or independent written mutable declaration.
+
+Only lexically bound mode/callback dependencies permit implicit later arguments. Concrete callers still spell ref/^mut/new; pattern reception neither opens auto scope nor changes ordinary let.
+
+```ril
+-- Given a separate active private pending from a checked pop:
+-- match pending {
+--     Some(item) if { dst !> Array::push(new item); false } -> (),
+--     _ -> (),
+-- } -- Error [E0551]: guard cannot transfer the prospective payload
+
+-- match 1 {
+--     var n if { n = 2; true } -> { n += 1; n },
+--     _ -> 0,
+-- } -- Rejected: even var has a fixed preview; rebinding starts in the body
+```
+
+Run-time match/conditional matching uses these stages; static token matches and handler binders retain their own rules:
+
+1. Evaluate the subject once; test candidates top-to-bottom. Prepare required selections and real rest copies once per attempt, in ordinary pattern order. Reuse successful prepared values; no repeated allocation/evaluation or hidden run-time views.
+2. Give the pattern/guard fixed observation views and independent value copies. var/mut/^mut applies only after selection. Keep observation constraints through guard cleanup: no write, consumption/publication of prospective writable paths, or escaping live preview, including through the original subject, captures, globals or handlers. Prove unrelated writes independent; proven immutable sharing and value copies remain lawful.
+3. After successful selection and cleanup, end preview views; statically recheck qualification/privacy/partition, then commit. For construction input, end the whole carrier and derived accesses before establishing real receivers from the prepared values; None/wildcard arms consume that carrier too.
+4. False guards, failed conditional patterns or abrupt preview do not commit the subject. Unrelated effects, transfers, allocations and charges are not rolled back. if let/while let commits only on success; failure leaves a named subject active, while discarded temporaries follow ordinary completion. Track joins and loop backedges (E0549); failure after commit never restores paths.
+
+Every new payload region separately needs complete eligibility and separation from surviving siblings/external observers, writers, environments and dependencies. Immutable/ref/shared payloads keep their contracts without new-input isolation. Preserve legal aliases/cycles and immutable sharing; distinct names/roots prove no partition. Array/row rests keep their copy rules and count as surviving receivers.
+
+E0551 covers invalid construction decomposition and provisional-path consumption/escape; ordinary type/authority/exclusivity diagnostics keep their specific rules. Keep pure structural/tag/literal selection, exhaustiveness, live refinements, Result inspection and resource/task/cleanup rules. is only tests/observes. Tags, copies and other data operations still execute; path consumption is not heap deallocation.
 
 ### Flow-Sensitive Type Narrowing
 
@@ -3582,7 +3963,7 @@ ParameterTypeItem ::= [ ParameterMode ] [ SnakeCase ":" ] TypeExpression
 ReturnType       ::= "->" ReturnContract
 ```
 
-Leading `mut`/`^mut` arguments require assignable targets (`E0410` for `f(^mut clone(x))`); `ref` observes an expression. A parenthesized sharing expression cannot replace a parameter-mode marker (`E0405`). [Fresh storage inputs](#homogeneous-storage-authority-and-container-self-determination) receive construction authority before immutable publication; other ordinary parameters require immutable data. Constructors follow their product member and payload contracts.
+Leading `mut`/`^mut` arguments require assignable targets (`E0410` for `f(^mut clone(x))`); `ref` observes an expression. A parenthesized sharing expression cannot replace an ordinary argument-mode marker (`E0405`). Dependent lexical template operands elaborate only their already verified mode. [Fresh storage inputs](#homogeneous-storage-authority-and-container-self-determination) receive construction authority before publication; plain unqualified parameters still require immutable data. Constructors follow their product member and payload contracts.
 
 ```ril
 type DeferredFactory = fn() -> fn() @Io -> int -- Io belongs to the returned callable
@@ -3727,7 +4108,7 @@ fn declared_field() &up(sub){mut global_count} -> () { invoke_field(.{ run: tick
 
 #### Mandatory Contract Inference and Completion
 
-The compiler MUST infer the full checked contract of every function, including public, private, local, anonymous, and test functions. Named definitions must spell their prescribed annotations in executable source. Anonymous functions retain their short lambda form and have no mandatory source-annotation completion: the complete inferred contract remains available to checking, tooling, callers, and module summaries whether or not the developer chooses to write annotations.
+The compiler MUST infer the full checked contract of every function, including public, private, local, anonymous, and test functions. Named definitions spell prescribed concrete annotations; explicit [auto inference](#inference-domains-and-contract-completion) keeps genuine mode dependencies and requested result details in the verified interface without source expansion. Anonymous functions have no mandatory source completion. In every case the complete contract remains available to checking, tooling, callers, and module summaries.
 
 | Semantic stage | Requirement |
 | :--- | :--- |
@@ -3739,10 +4120,10 @@ The compiler MUST infer the full checked contract of every function, including p
 | :--- | :--- |
 | Inference scope | The same complete analysis for public, private, local, anonymous, and test functions |
 | Facts | Types, permissions/history, root and contained origins, aliases, writes, retention, captures, effects, escape/ownership, and callback dependencies |
-| Required named source | Parameter types/modes, result contracts, contained dependency groups, and concrete effect/state/capture annotations prescribed for named definitions |
+| Required named source | Data types, concrete parameter/result modes and dependencies, and concrete effect/state/capture annotations; an explicit `auto` mode/result and genuine mode-dependent clauses use their specified metadata-only completion |
 | Anonymous source | Type, result, effect, state, capture, and returned-source contract annotations are optional; absence alone is never `E0544`, `E0510`, or `E0612` |
 | Anonymous constraints | Written annotations and contextual callable types constrain the inferred contract; incompatible constraints are rejected by the applicable typing, permission, or callable-matching diagnostic |
-| Authority syntax | Parameter/binding modes, argument markers, shared-reception markers, and resource operations retain their existing semantic requirements for every function |
+| Authority syntax | Concrete modes, ordinary argument/sharing markers, and resource operations remain required; lexical templates elaborate only verified dependent reception/transfer contracts |
 | Shared-reception completion | Follow the [shared-site spelling](#shared-writable-authority); inference cannot substitute an exclusive declaration for shared authority |
 | Root-return normalization | `^mut(x)` covers only root-return retention; actual writes and extra escape paths remain distinct obligations |
 | Context and generality | Use body and contextual constraints to infer complete callable contracts, including generic/structural constraints and symbolic callback dependencies; lack of a unique monomorphic signature is not by itself a missing-annotation error |
@@ -3752,7 +4133,7 @@ The compiler MUST infer the full checked contract of every function, including p
 | Interfaces | Preserve fine paths, permission history, store/return relations, and output correlations in semantic summaries; changes invalidate dependent proofs |
 | Proof limits | Unknown facts never prove permission, immutability, freshness, separation, or escape. Bodyless foreign declarations remain trusted explicit contracts |
 
-Missing required annotations reject an executable named definition. Anonymous inference and optional source annotation are ordinary compilation behavior, not an abbreviated-fixture mode. Inference and completion cannot silently clone, grant authority, freeze surviving writers, extend lifetimes, consume resources, or reorder evaluation. Independently required authority syntax and safety conditions remain enforced. Immutable sharing and still-symbolic callback/termination facts remain in metadata where no source spelling is prescribed.
+Missing required annotations reject a named definition. The prescribed `auto` exemptions and anonymous inference are ordinary compilation behavior, not abbreviated fixtures. Inference cannot silently clone, grant authority, freeze surviving writers, extend lifetimes, consume resources, or reorder evaluation. Explicit and template-elaborated transfers consume construction paths at their defined point. All other authority syntax and safety conditions remain enforced; symbolic mode/callback/termination facts stay in metadata where source spelling is not prescribed.
 
 `E0344` retains the rules of the construct that requires a determined type or static argument; it is not a fallback error for an anonymous function whose complete inferred contract contains generic or structural constraints. Inference responsibility does not authorize the compiler to select an arbitrary nominal type, invent a run-time representation, or discharge an unresolved safety proof. Required instantiations and explicit constraints must still be validated.
 
@@ -3860,7 +4241,9 @@ Match a callable's complete normalized contract at every assignment, argument, a
 
 Normalization expands effect-set and transparent aliases, compares effect instances using static-argument identity, canonicalizes source and provider identities, combines equivalent access entries, and includes permissions implied by a return contract. Duplicate spellings do not create different contracts. Formal parameter labels and their bound return-source references are alpha-renamed by parameter position before comparison; external and captured sources retain their resolved declaration and activation identities.
 
-Parameter data shapes retain their specified contravariant checks and result data shapes their covariant checks. Parameter modes must match. Independently check root construction/mode/source guarantees and every explicit contained dependency. An open row cannot admit a result whose root is outside the declared source alternatives, turn `ref` into `^mut`, publish live data as immutable, make an existing root `new`, or change a resource or scoped lifetime.
+Parameter data shapes retain contravariance and result data shapes covariance. Concrete parameter modes match; explicit `auto` permission patterns instead retain and check the actual family and its acceptance conditions. Independently check root and contained guarantees. An open effect/capability row cannot open permission patterns, invent a source, upgrade `ref`, freeze live data, give an existing binding construction qualification without its checked reception, or change a resource/scoped lifetime. For a family, closed rows check every retained alternative; they cannot erase incompatible alternatives to force a match.
+
+Named definition annotations validate the required concrete projection plus preserved symbolic dependencies; they are not a permission-erasing ascription of the definition's full inferred callable type. Any later closed callable-type ascription checks that full actual contract. This preserves exact row matching while permitting the specified metadata-only completion of mode-dependent clauses.
 
 The explicit `&up` callable-type abstraction continues to admit an environment-free callable or the checked abstract environment shape without exposing private capture names. Normalize that declared environment abstraction for matching and preserve the actual captured origins, modes, lifetimes, and correlations in verified metadata. It does not cover additional effects, named global access, independent retained publication, or the current invocation's `&capture` obligation.
 
@@ -3968,19 +4351,35 @@ Forwarding preserves the contract above. Callback-handle authority and callback 
 
 A value result needs only `-> T`. Reference results distinguish the root from its contained references; all reception checks use the complete graph.
 
+```ril
+type Cell = { var count: int }
+fn forward(new cell: Cell) -> new Cell { cell }
+fn choose(flag: bool, new a: Cell, new b: Cell) -> new Cell {
+    if flag { a } else { b }            -- Only the selected active path is returned
+}
+-- fn invalid(mut cell: Cell) &mut -> new Cell {
+--     cell.count += 1
+--     cell                           -- Error [E0546]: mut input has no construction qualification
+-- }
+```
+
 ```ebnf
 ReturnContract   ::= [ ReturnMode ] TypeExpression
-ReturnMode       ::= "new" | ( "ref" | "^mut" ) "(" ReturnSources ")"
+ReturnMode       ::= "auto" | "new" | ( "ref" | "^mut" ) "(" ReturnSources ")"
 ReturnSources    ::= SnakeCase { "|" SnakeCase }
 ```
 
-Root source names denote formal parameters; field/index paths are retained in metadata. `|` selects possible existing sources, never a newly allocated alternative. Return modifiers are not standalone data types or allocation expressions. The separate `new expression` construction handoff is admitted only at a matching construction argument or a `-> new T` return; it preserves the actual object identity and ends the old construction path.
+Root source names denote formal parameters; field/index paths are retained in metadata. `|` selects possible existing sources, never a newly allocated alternative. Return modifiers are not standalone data types or allocation expressions. A `new expression` handoff is admitted at a matching construction argument, compatible construction return, qualified fixed writable local initializer, template-dependent receiver, or verified typed-storage receiver; it preserves object identity and ends the old construction path. A lexical permission template may elaborate that handoff under [permission inference](#preserving-reception-and-forwarding). `-> auto T` retains the entire inferred result and payload contract without adding new bare-root alternatives.
+
+A declared `-> new T` supplies the return expression's construction context: a bare qualified source needs no repeated `new` marker. Check every normal result path, including tail blocks and result-producing `if`/`match` arms. Evaluate the selected operand once; after reception succeeds, prepare the return value and end each transferred active source and its derived accesses before cleanup. Failure never revives them (`E0549`). Locally created roots keep their construction-return rules, including any separately required retention/sharing contracts.
+
+This context belongs to the current callable's return, not a nested callable's body or an argument inside the returned expression. It neither opens an auto template nor grants construction qualification, source authority, root privacy or graph isolation. Unqualified borrowed/observed inputs cannot satisfy it (`E0546`). An explicit `new x` remains permitted at a compatible construction return and performs the same single handoff.
 
 | Result contract | Required guarantee / rejection |
 | :--- | :--- |
 | Value `T` | Copy the value; no return-reference dependency. Actual writes/effects retain their obligations and required named annotations |
 | Plain reference `T` | Deeply immutable graph; immutable storage may be shared or eligible private construction published. Surviving writers fail with `E0535` |
-| `new T` | Root constructed in this invocation, including verified factories, or explicitly handed onward from an active `new` parameter; preserve root write authority and true origins (`E0546`) |
+| `new T` | Root constructed in this invocation, including verified factories, or lawfully handed onward from an active construction formal/local or verified storage extraction; preserve root write authority, actual allocation identity/history, and graph qualifications (`E0546`) |
 | `ref(x) T` | Read-only root from formal `x`'s graph at call entry; a projected child still names only `x` (`E0545`) |
 | `^mut(x) T` | Same entry-origin relation, with writable retention; require `^mut` parameter/argument (`E0528` for escaping ordinary `mut`). Root retention needs no duplicate `&^mut`; actual writes still require `&mut` |
 | `ref(a \| b) T` / `^mut(a \| b) T` | Every root has a listed entry origin; excludes fresh roots, does not mean both are contained, and proves no disjointness |
@@ -3988,7 +4387,7 @@ Root source names denote formal parameters; field/index paths are retained in me
 
 | Independent check | Requirement |
 | :--- | :--- |
-| Construction semantics | A nominal wrapper creates no root; clone retains its verified isolation. Forwarded construction consumes the old formal path under the [handoff rules](#fresh-construction-parameters) |
+| Construction semantics | A nominal wrapper creates no root; clone retains its verified isolation. Forwarded construction consumes the old formal/local path under the [handoff rules](#fresh-construction-parameters); a declared `-> new T` supplies that return's handoff context |
 | Complete graph | Root freshness does not establish publication or initial-storage eligibility. `new` cannot restore authority lost through immutable or `ref` reception; locally constructed roots may already have external aliases |
 | Retention and state | Root return, actual writes, contained retention, other storage, and environment creation remain separate facts; named definitions spell their required contracts |
 | Boundaries | Preserve observation stability, member permissions, scoped/task lifetimes, and exclusivity; annotations extend none of them |
@@ -4042,7 +4441,7 @@ A reception marker confirms the same returned authority; it is not a second publ
 
 | Branches | Result contract |
 | :--- | :--- |
-| All roots constructed here or lawfully handed onward from `new` parameters, and writable | `new T`; require each forwarded branch's explicit handoff and retain every branch's true origins and internal dependencies |
+| All roots constructed here or lawfully handed onward from active construction paths / verified storage handoffs, and writable | `new T`; the declared return context checks each branch's construction/transfer without repeated `new` operands; retain true origins, allocation history, and dependencies |
 | All roots from non-construction entry parameters | `ref(a \| b) T`, or `^mut(a \| b) T` when every alternative permits writes |
 | New root and existing immutable data | Plain `T` after lawful publication |
 | New root and entry live reference | No bare mixed-root contract; construct an explicit wrapper or result variant |
@@ -4050,9 +4449,40 @@ A reception marker confirms the same returned authority; it is not a second publ
 | Locally created root published elsewhere, returned only through `ref` | No bare-root contract in this version; use an explicit observer wrapper |
 | Existing live root supplied only by a global/capture | No bare-root contract in this version; use a wrapper or an explicit formal parameter. Immutable descriptors/data still use plain `T` |
 
+```ril
+fn with_cell<R>(
+    mut slot: { var mut cell: Cell }, create: bool,
+    auto action: fn(mut Cell) @& -> R,
+) &mut -> R {
+    if create { slot.cell = Cell.{ count: 0 } }
+    action(mut slot.cell)
+}
+```
+
+```ril
+-- Call-site counterexamples; slot/create are caller values:
+-- with_cell(mut slot, create, \ref cell -> cell.count)
+-- Error [E0407]: this interface requires mut data; reading needs a ref-data interface
+-- with_cell(mut slot, create, \mut cell -> { cell.count += 1; cell })
+-- Rejected: ordinary R cannot export the live input or freeze its surviving writer
+
+-- fn mixed(flag: bool, ^mut old: Cell) -> auto Cell {
+--     if flag { old } else { Cell.{ count: 0 } }
+-- } -- Error [E0545]: mixed constructed/entry-live bare roots
+```
+
+| API shape | Static boundary |
+| :--- | :--- |
+| Temporary callback returning ordinary R | Same access/result contract on every retained path; callback, alias, escape and effect checks remain |
+| Construction result new T | Construction or lawful handoff, including verified owned-storage detachment; preserve sharing/history, without assuming privacy or isolation |
+| Public ensure/add, then independent getter | Creation returns ordinary business data; the getter's result belongs to its own entry graph |
+| Outer wrapper around those phases | Substitute all store/return history; insertion cannot make a fresh root part of the outer entry graph |
+
+Runtime business choices are allowed under a proved contract. -> auto cannot erase the new/entry-live distinction or defer authority checks to run time. Complete implementations and costs appear in the [static access API trials](STATIC_ACCESS_API_TRIALS.md).
+
 Verified interfaces retain root permissions/history, contained origins, store/return relations, and correlations between output components. These semantic summaries participate in dependency invalidation. Higher-order/dynamic joins preserve only common guarantees; absent summaries prove no separation. Opaque boundaries may hide names, not safety facts. Return-mode/source erasure is `E0534`; parameter-label renaming also renames bound source names by position.
 
-A generic signature must hold for every admitted instantiation. Unknown `T` is not presumed a reference: use a uniformly valid plain result, sufficient type constraints, or a `new` parameter whose admitted instantiations satisfy the ordinary-reference construction restriction. A forwarding `-> new T` return is valid only for those admitted instantiations and an active explicit handoff. Foreign and resource contracts retain their existing restrictions; return annotations supply no new exchange or resource authority.
+A generic signature must hold for every admitted instantiation. Unknown `T` is not presumed a reference: use a uniformly valid plain result, sufficient constraints, or a qualified construction / auto family. A forwarding construction return is valid only for eligible instantiations and a lawful handoff, supplied by its declared construction return context, an explicit construction operand or a checked template dependency. `-> auto T` retains these qualifications rather than assuming them; it alone supplies no construction handoff context. Foreign and resource contracts retain their restrictions; return annotations supply no new exchange or resource authority.
 
 ```ril
 -- Cell and Box have the preceding declarations.
@@ -4279,7 +4709,7 @@ let ref observed = cell
 | `^mut p: T` / `^mut target` | Pinned writable reference/environment access; may retain a writer |
 | `new p: T` / `new expression` | Unpublished ordinary construction authority; explicit handoff ends the old construction paths |
 
-The ordinary `ref`/`mut`/`^mut` modes cover named/anonymous functions, callable types, effect operations/handlers, and generic/built-in instantiations. Fresh construction parameters add the verified `new` path for ordinary Ril callables and recognized storage inputs; effect and foreign restrictions remain explicit. [Fresh storage inputs](#homogeneous-storage-authority-and-container-self-determination) receive construction authority before ordinary immutable publication. A wrapper must declare `new` to preserve that path; an ordinary read-only wrapper still publishes immutable data.
+The ordinary `ref`/`mut`/`^mut` modes cover named/anonymous functions, callable types, effect operations/handlers, and generic/built-in instantiations. Fresh construction parameters add the verified `new` path for ordinary Ril callables and recognized storage inputs; effect and foreign restrictions remain explicit. [Fresh storage inputs](#homogeneous-storage-authority-and-container-self-determination) receive construction authority before ordinary immutable publication. A wrapper must declare `new` or an admitted preserving `auto` input to retain that path; an ordinary immutable wrapper still publishes data. `auto` is not admitted on effect/handler or foreign boundary parameters (`E0412`).
 
 | Invalid use | Diagnostic |
 | :--- | :--- |
@@ -4294,7 +4724,7 @@ The ordinary `ref`/`mut`/`^mut` modes cover named/anonymous functions, callable 
 | Callable parameter modes differ | `E0407` |
 | Omit a required retained-writer capability on a named definition, or omit an independently required sharing marker | `E0510`; anonymous contract inference never supplies absent authority |
 
-Modes remain explicit through forwarding and subtyping. The [common permission tables](#binding-permissions-and-storage-matrix) govern access, and [exclusivity](#law-of-exclusivity-and-cross-argument-disjointness) still applies; a parameter mode extends no lifetime.
+Concrete modes remain exact through forwarding and subtyping. A lexically bound `auto` parameter or its checked dependent contract permits template operand elaboration without repeating its marker; ordinary callers still supply the concrete marker. The [common permission tables](#binding-permissions-and-storage-matrix) govern access, and [exclusivity](#law-of-exclusivity-and-cross-argument-disjointness) still applies; a parameter mode extends no lifetime.
 
 ```ril
 -- Cell and observe have the preceding declarations.
@@ -4314,14 +4744,14 @@ Call-time `ref` parameters may observe reference expressions, including current 
 | `mut f: F` | Write the environment; bind mutable inline closures to writable handles before passing them |
 
 ```ebnf
-ParameterMode    ::= "ref" | "mut" | "^mut" | "new"
+ParameterMode    ::= "ref" | "mut" | "^mut" | "new" | "auto"
 ```
 
 Mutable modes do not apply to static key arguments.
 
 #### Fresh Construction Parameters
 
-A `new value: T` parameter receives the unpublished construction authority of ordinary reference data without first publishing it immutable. Its explicit argument is `new expression`. This mode is available to verified named and anonymous Ril functions, their callable types, and the recognized storage inputs below; it is not an allocation expression, a deep copy, a reference-to-resource conversion, or a general move of an established variable.
+A `new value: T` parameter receives the unpublished construction authority of ordinary reference data without first publishing it immutable. Its explicit argument is `new expression`. This mode is available to verified named and anonymous Ril functions, their callable types, and the recognized storage inputs below; it is not an allocation expression, a deep copy, a reference-to-resource conversion, or a general move of an unqualified existing variable.
 
 ```ril
 type Cell = { var count: int }
@@ -4331,11 +4761,11 @@ fn append_cell(mut target: [mut]Cell, new cell: Cell) &mut -> () {
     -- let count = cell.count         -- Error [E0549]: reads through that path have ended too
 }
 fn forward_cell(new cell: Cell) -> new Cell {
-    new cell                          -- Explicit root handoff; no allocation occurs here
+    cell                              -- Return contract supplies handoff; no allocation occurs here
 }
 fn normalize_cell(new cell: Cell) &mut -> new Cell {
     cell.count += 1                   -- Writes before handoff retain parameter-write obligations
-    new cell
+    cell
 }
 let mut cells: [mut]Cell = []
 append_cell(mut cells, new forward_cell(new Cell.{ count: 0 }))
@@ -4346,21 +4776,21 @@ cells[0].count += 1
 | :--- | :--- |
 | Eligible type (`E0411`) | Ordinary reference data only. Value types, resource/task/scope authority, callable roots, and any graph containing retained callable environments or non-ordinary authority are excluded; wrapping, opacity, or an outer fresh root cannot hide them |
 | Eligible expression (`E0548`) | Prove the complete initial-reception contract: eligible constructed writable regions are isolated from pre-existing writable regions and have no surviving outside writer, observer, or active environment. Preserve immutable constituent sharing, aliases, cycles, and member schemas |
-| Existing bindings (`E0548`) | `new immutable`, `new observed`, and `new ordinary_mutable_binding` do not thaw, copy, or consume those established bindings. Last use is not evidence of construction eligibility |
-| Forwarding source | A still-active root `new` formal, or a verified eligible construction expression, may be handed onward. Projection does not split a formal's construction authority into independently transferable roots |
-| Use before handoff | The formal is pinned: no rebinding (`E0502`). Reads, temporary `ref` observations, and schema-authorized writes are allowed while active; actual parameter writes require `&mut`. Observation aliases remain tied to the same construction authority |
-| Handoff | Evaluate each explicit `new` argument operand once in ordinary argument order. When that operand passes reception checks, transfer authority to its prepared argument and end all accesses through the old formal and its derived reference paths before evaluating later arguments or defaults. The callee receives that one active construction path; copied scalar values remain usable. A later argument failure discards the prepared transfer without reviving the old path. A direct construction return transfers to the prepared return value before subsequent cleanup |
+| Existing bindings (`E0548`) | A fixed writable local with active qualification from [checked initial reception](#preserving-local-bindings) may be handed onward. Immutable/observed, borrowed, published, reassignable or otherwise unqualified bindings cannot be thawed, copied or consumed by `new`; historical allocation and last use cannot restore qualification |
+| Forwarding source | An active construction formal/local, verified eligible construction expression, or checked storage handoff may be handed onward. Projection does not split construction authority; only a verified consuming decomposition establishes separately eligible payload paths |
+| Use before handoff | Construction formals and qualified locals are fixed: no rebinding (`E0502`). Reads, temporary `ref` observations, and schema-authorized writes are allowed while active; actual parameter-derived writes require `&mut`. Observation aliases remain tied to the same construction authority |
+| Handoff | Evaluate each explicit `new` argument operand once in ordinary argument order. When that operand passes reception checks, transfer authority to its prepared argument and end all accesses through the old formal/local and its derived reference paths before evaluating later arguments or defaults. The callee receives that one active construction path; copied scalar values remain usable. A later argument failure discards the prepared transfer without reviving the old path. A construction initializer/return transfers to its prepared receiver/value before subsequent cleanup |
 | Ended use (`E0549`) | Reject any possible read, write, forwarding, alias use, or capture access through an ended construction path. Branches and loops must establish that the path is active at each use; a path consumed on a possible branch is not proved active after the join |
 | Outside aliases | An outstanding derived reference or environment cannot remain independently usable across a handoff. Alias, lifetime, exclusivity, and task-boundary checks remain required; invalidating a source path does not invalidate or grant authority to unrelated established bindings |
-| Return | A compatible `-> new T` result may hand an active `new` formal onward using `new value` in a direct tail or `return new value`. The old path ends before the caller receives the result. Locally constructed roots retain their ordinary construction-return rules |
-| Publication and sharing | Read-only publication or creating an independent retained writer ends initial-forwarding eligibility. Deliberate `^mut` sharing still requires its source/retention contracts and markers; it cannot be disguised as another `new` reception. A root `new` handoff alone adds no `&^mut` |
+| Return | Declared `-> new T` checks and hands onward a bare qualified source; no repeated operand marker or auto parameter is needed. Forwarding an existing path through an inferred construction result still requires an explicit construction operand or checked template dependency. Each transferred active source and its derived accesses end during return preparation, before cleanup; failure does not restore them. Locally constructed roots retain their ordinary construction-return rules |
+| Publication and sharing | Immutable publication or independent escape/sharing of the qualifying path ends initial-forwarding eligibility. Temporary observation/borrowing may preserve it under the alias checks. Deliberate `^mut` sharing still requires its source/retention contracts and markers; it cannot be disguised as another `new` reception. A root `new` handoff alone adds no `&^mut`; already acknowledged shared constituents retain their separate graph obligations |
 | Omitted transfer | A construction parameter is affine: it may be discarded on completion only subject to outstanding Result-inspection and other ordinary completion obligations. Failure or abort does not return construction authority to an ended caller path. Any ordinary immutable result still must satisfy the usual whole-graph publication checks |
 | Higher-order use | Callable parameter modes must match (`E0407`); aliases, imports, ascriptions, and callback forwarding preserve construction-path consumption and result-source metadata. An ordinary parameter or an open effect/capability row cannot substitute for `new` mode |
 | Defaults | A `new` parameter cannot have a default (`E0404`); an actual handoff requires its explicit argument marker |
 | Effect/foreign boundary | This version supplies no construction-input contract for effect-operation parameters or handler binders (`E0411`), or for bodyless foreign calls (`E0908`). Ordinary temporary effect/foreign modes keep their existing rules |
 | Phase | This is a run-time construction contract. Static/meta/type computation has no construction-input mode; a `new` parameter in a static declaration is `E0411`, and run-time construction handoffs are not static computations |
 
-The only additional positions admitting a `new expression` handoff are a matching construction argument and a `-> new T` return. It is not a new binding, member, or standalone data-type modifier. Missing and wrong argument modes remain `E0405` and `E0406`; a `new` expression in another expression position is `E0548`. A construction parameter cannot be passed implicitly through an ordinary immutable parameter. Distinct expression evaluations keep their true allocation identities; handoff never creates a new allocation identity.
+The additional positions admitting a `new expression` handoff are a matching construction argument, compatible construction return, qualified fixed writable local initializer, template-dependent receiver, or verified typed-storage reception. Record/tuple/array/map initializers admit a construction operand only when their receiver proves the matching contract; an untyped immutable receiver cannot supply it. `new` is not a standalone data-type/member modifier or general binding mode. [Fixed writable locals](#preserving-local-bindings) retain eligible construction paths as provenance; no `let new` form is added. `let auto` is reserved for contracts dependent on lexically bound permission parameters. Missing and wrong ordinary argument modes remain `E0405` and `E0406`; a construction operand elsewhere is `E0548`. An ordinary immutable parameter never implicitly forwards construction authority. Distinct evaluations retain true allocation identities; handoff never creates one.
 
 In a caller with an active construction formal `cell`, `f(new cell, cell.count)` and `f(new cell, new cell)` both use an ended path in their second argument (`E0549`). Preparing all arguments before invoking `f` does not duplicate construction authority or defer its consumption.
 
@@ -4373,21 +4803,26 @@ let mut established = Cell.{ count: 0 }
 established.count += 1
 let mut cells: [mut]Cell = []
 append_cell(mut cells, new Cell.{ count: 0 })
+append_cell(mut cells, new established)       -- Qualified concrete local; no auto needed
+-- let count = established.count             -- Error [E0549]
+let mut published = Cell.{ count: 0 }
+let ^mut alias = published
+alias.count += 1
 -- append_cell(mut cells, Cell.{ count: 0 }) -- Error [E0405]: missing construction argument marker
 -- append_cell(mut cells, new immutable)    -- Error [E0548]: immutable publication cannot be undone
--- append_cell(mut cells, new established)  -- Error [E0548]: ordinary writers are not moved
+-- append_cell(mut cells, new published)    -- Error [E0548]: independent sharing ended qualification
 -- fn scalar(new value: int) -> int { value } -- Error [E0411]: new parameters require ordinary reference data
-fn forwarding<T>(new value: T) -> new T { new value }
+fn forwarding<T>(new value: T) -> new T { value }
 let mut cell = forwarding(new Cell.{ count: 0 })
 cell.count += 1
 -- let value = forwarding<int>(new 1)   -- Error [E0411]: ineligible generic instantiation
 ```
 
-`-> new T` is deliberately weaker than this input contract: a locally constructed root may already have been shared under its required retention contracts. A forwarding `new` formal must still possess unpublished authority at its explicit handoff. Verified summaries retain whether a returned root was allocated inside the invocation or arrived through a construction parameter, its true entry origins, all contained dependencies, and its permission history. Initial eligibility and disjointness must be proved from those facts, never from the word `new` alone.
+`-> new T` is deliberately weaker than this input contract: a constructed root may already have been shared under its required retention contracts. A forwarded construction path still needs its reception proof. Verified summaries distinguish roots allocated in this invocation, received through construction inputs, and detached by checked storage handoff; preserve true entry origins, dependencies, and permission history. A stored root does not become newly allocated when detached. Checks requiring allocation in this invocation use that specific fact, not `new` alone. Initial eligibility, root privacy, and disjointness must each be proved where required.
 
 #### Homogeneous Storage Authority and Container Self-Determination
 
-Storage containers define their element authority statically and homogeneously within their type signature (`[]T`, `[mut]T`, `[^mut]T`, `[ref]T`). Built-in container operations (`Array::push`, `Array::pop`, `Map::set`) have self-determined parameter contracts derived directly from the container's declared authority, eliminating heterogeneous element tracking and built-in privileges:
+Storage containers define their element authority statically and homogeneously (`[]T`, `[mut]T`, `[^mut]T`, `[ref]T`). `[auto]T` requests a family of these schemas, not per-element authority. Ordinary functions can express the same dependency with permission inference; no library name grants authority. Underlying GC storage primitives retain verified graph and mutation contracts, without raw pointers, heterogeneous authority tags, or run-time provenance checks:
 
 ```ril
 type Cell = { var count: int }
@@ -4401,10 +4836,10 @@ fn build_cell() -> new Cell {
 -- 1. Exclusive mutable container: [mut]T
 let original = Cell.{ count: 1 }
 let mut owned_cells: [mut]Cell = []
-owned_cells !> Array::push(clone(original))       -- OK: verified fresh construction
-owned_cells !> Array::insert(0, Cell.{ count: 2 }) -- OK: direct constructor expression
-owned_cells !> Array::push(copy_cell(original))   -- OK: verified fresh return
-owned_cells !> Array::push(build_cell())          -- OK: fresh return
+owned_cells !> Array::push(new clone(original))       -- OK: verified construction handoff
+owned_cells !> Array::insert(0, new Cell.{ count: 2 }) -- OK: direct construction handoff
+owned_cells !> Array::push(new copy_cell(original))   -- OK: verified eligible return
+owned_cells !> Array::push(new build_cell())          -- OK: verified eligible return
 owned_cells[0].count += 1                         -- OK: [mut]Cell grants exclusive interior writes
 owned_cells[1].count += 1
 owned_cells[2].count += 1
@@ -4455,14 +4890,43 @@ test_cells !> Array::push(new Cell.{ count: 5 })
 assert(inspect_all(ref test_cells) == 5)          -- OK: write permissions statically inactive during ref call
 ```
 
-| Container Authority | Input Push Contract | Pop Return Contract | Interior Writes on Elements |
+| Container authority | Push input | Pop receiver | Successful `Some` payload contract |
 | :--- | :--- | :--- | :--- |
-| **`[]T`** (Immutable) | `item: T` (Immutable value) | `-> ?T` | Prohibited (`E0520`) |
-| **`[mut]T`** (Exclusive Mutable) | `new item: T` (Fresh construction) | `-> ?new T` | Granted (`&mut`) |
-| **`[^mut]T`** (Shared Mutable) | `^mut item: T` (Shared alias, `&^mut`) | `-> ?^mut T` (`&^mut`) | Granted (`&mut &^mut`) |
-| **`[ref]T`** (Live Observation) | `ref item: T` (Live view) | `-> ?ref T` | Prohibited (`E0520`) |
+| **`[]T`** | `item: T` | `mut xs` | Ordinary immutable / copied T |
+| **`[mut]T`** | `new item: T` | `mut xs` | Construction handoff of T, only with a verified detach proof |
+| **`[^mut]T`** | `^mut item: T` | `^mut xs` | Retained writer with entry origin xs; contained-retention obligation |
+| **`[ref]T`** | `ref item: T` | `mut xs` | Observation with entry origin xs and all original lifetime/pinning facts |
+
+Push changes the container through `mut`; retained input adds its required capability. Pop likewise changes structure; a shared payload requires `^mut` receiver authorization and `&^mut`, not merely `mut` plus a capability annotation. Its newly constructed Option root and variant-guarded payload relation can be written `-> auto ?T`; the single unnamed payload rule preserves the payload contract. No `new T` or `ref T` storage type is introduced. Immutable/observation elements cannot be written; mutable elements still require their true source authority and every ordinary exclusivity check.
 
 User-defined collections (e.g. `ExclusiveVec<T>`, `SharedRegistry<T>`) follow identical static authority contracts without compiler-blessed magic or special-cased built-in overloads. All authority modifiers are compile-time static constraints with zero runtime overhead, erased before machine code generation.
+
+#### Verified Storage Handoffs
+
+```ril
+type Cell = { var count: int }
+let mut cells: [mut]Cell = []
+cells !> Array::push(new Cell.{ count: 0 })
+let mut pending = Array::pop(mut cells)
+match pending {
+    Some(cell) -> cells !> Array::push(new cell),
+    None -> (),
+}
+-- match pending { ... }                     -- Error [E0549]
+
+let mut shared: [^mut]Cell = []
+let mut source = Cell.{ count: 1 }
+shared !> Array::push(^mut source)
+-- Array::pop(mut shared)                    -- Error [E0406]: retention needs ^mut receiver
+let ^mut result = Array::pop(^mut shared)
+match result { Some(cell) -> { cell.count += 1 }, None -> () }
+```
+
+A checked managed-slot extraction establishes one active construction path only when its summary proves an eligible ordinary-reference region separated from the remaining container and every independently usable outside writer, observer or environment. Preserve immutable sharing, internal aliases/cycles, schemas, allocation identity and scope/task restrictions. Distinct indices, new, [mut]T or last use alone prove nothing.
+
+Check summary preconditions against actual origins at every call; unknown relations do not succeed or become run-time checks. Legal shared edges need not be globally prohibited, but can prevent detachment. Slot removal and transfer preparation expose neither an uninitialized slot nor a second path. A detached root is a lawful handoff source, not a new allocation; subsequent reception still needs its complete proof. Only a local with retained construction qualification can later hand off; ordinary old/borrowed bindings cannot recover it from historical freshness.
+
+Prepare arguments before the callee body: new ends the caller path before resize/allocation; failure cannot restore it. Resize preserves all element schemas/graph facts, and mutation/GC still execute. User collections compose the same verified primitives and permission templates; authority never depends on a privileged library name.
 
 #### Default Parameters and Named Arguments
 
@@ -4473,7 +4937,7 @@ assert(pair(a: 10, 20) == (10, 20))
 -- pair(10, a: 20)                     -- Error [E0325]: a is already bound
 ```
 
-- Named and anonymous parameters share the same default rules. Defaults have no residual effects or state obligations; `mut`/`^mut`/`new` defaults are forbidden (`E0404`). A `ref` default is received in its declared mode without a caller token; explicit supplied arguments still require `ref`. Earlier `ref` parameters do not exempt a later ordinary default from immutable reception.
+- Named and anonymous parameters share the same default rules. Defaults have no residual effects or state obligations; `mut`/`^mut`/`new`/`auto` defaults are forbidden (`E0404`). A `ref` default is received in its declared mode without a caller token; explicit supplied arguments still require `ref`. Earlier `ref` parameters do not exempt a later ordinary default from immutable reception.
 - Explicit arguments evaluate in written left-to-right order; omitted defaults follow in parameter order. A default may use earlier parameters, not itself or later parameters.
 - Bind arguments in written order: a positional argument selects the first unbound parameter in declaration order; a named argument selects its named parameter. Selecting an already bound parameter is `E0325`. Binding selection does not reorder evaluation.
 - Function generic defaults are prohibited (`E0317`).
@@ -4655,6 +5119,7 @@ assert(step() == 3)                   -- Both authorities still reach the same c
 - **Abstraction**: `&up` follows [callable contract matching](#callable-contract-matching); direct named capture access still requires source groups.
 - **Definitions (`E0534`)**: A standalone `&up` annotation on a definition cannot replace its concrete source obligations. Parameter/return callable types may use it as an abstraction under callable matching. Named definitions spell the required concrete capture-source annotations; anonymous definitions preserve the same concrete sources in their fully inferred contracts without mandatory source completion.
 - **Creation**: New environments surviving the enclosing callable's return contribute `&capture`, including those nested in returned aggregates. Named definitions must spell that obligation; anonymous definitions may retain it entirely in the inferred contract. Forwarding existing environments or using call-local ones adds no environment-creation obligation.
+- **Permission Templates**: Closures may use [lexically bound permission parameters](#lexical-permission-templates-and-closures), specialized with the enclosing instance. Infer their effective capture contracts independently; using bound modes does not duplicate an active construction path.
 - Anonymous functions capture free value bindings, including module bindings. Module-level named functions use declared external access; escaping block-local functions retain their required lexical environments.
 - **Binding Choice**: An immutable environment can be bound with `let`; an existing immutable environment may also be observed with `ref`. Observer environments use `let ref` under the [observation-wrapper rules](#normative-rules-for-read-only-references), preserving immutable and pinned live dependencies. A persistent mutable environment requires a writable handle. These are environment facts, not consequences of the visible `&up` spelling.
 - **Sharing**: A private cell exposed only through one new closure requires `&capture`. Exposing another authority to that cell also requires `&^mut`.
@@ -4713,7 +5178,7 @@ fn test_internal_hub() -> int {
 | Independent parameter retention beyond the root-return baseline | Infer `&^mut` from the retained writer; its normalized contract includes the prescribed write implication, without an idle or duplicate capability |
 | Writes plus only `^mut(x) T` root-return retention | Infer `&mut`; the root contract covers retention only |
 | Named external mutation | Keep the named capability and concrete origin |
-| Named / anonymous definition | Named definitions MUST spell required capabilities (`E0510` if absent); anonymous definitions may retain them in full inference |
+| Named / anonymous definition | Named definitions spell required concrete capabilities (`E0510` if absent); genuine auto-mode dependencies and anonymous contracts retain their specified inference exemptions |
 
 ```ril
 fn clear_items(mut list: []int) &mut -> () {
@@ -4905,7 +5370,7 @@ assert(read_transaction_count() == 3)
 
 These forms use the same [callable contracts](#callable-contracts); spelling the call differently does not change its concrete origins.
 
-Accessing module-level or captured bindings records the corresponding concrete named-source obligation. Named definitions must spell those source groups and must also declare concrete named obligations inherited from calls, either with a matching source group or an admissible function state contract reference. Anonymous definitions retain the same concrete source identities without mandatory source spelling. Only genuine callable-parameter dependencies retain symbolic forwarding; anonymous inference never reclassifies a known concrete source as an unknown parameter dependency.
+Accessing module-level or captured bindings records the corresponding concrete named-source obligation. Named definitions spell those source groups and concrete named obligations inherited from calls, directly or through an admissible function state contract reference. Anonymous definitions retain concrete source identities without mandatory source spelling. Genuine callable dependencies and genuinely varying auto-mode clauses may retain symbolic forwarding; neither mechanism reclassifies a known named source as an unknown parameter dependency or hides its prescribed annotation.
 
 This includes reading a module-level `meta let NAME` in a run-time value expression: the inferred contract records that named source, and a named definition declares `&up(sub){NAME}`. Compile-time evaluation and immutability do not erase the source. Reads performed in the static/type domain are exempt from this run-time state obligation, including type expressions and static arguments.
 
@@ -5158,6 +5623,8 @@ Callable handles use the [common permission tables](#binding-permissions-and-sto
 | Named state / effects | Check independently of handle mode, including transitive handler access; immutable handles erase no obligation |
 | Declared external access only | Does not itself create a mutable environment |
 
+These checks use the specialized effective environment contract, including captures dependent on an enclosing permission template. Lexical mode parameters never substitute for a required handle or make an affine construction path reusable.
+
 ### Law of Exclusivity and Cross-Argument Disjointness
 
 Check possible storage origins, not distinct field names or indices. Only conflicting cases require rejection:
@@ -5322,7 +5789,7 @@ EffectIdentifier ::= QualifiedName [ GenericArgs ]
 EffectOperationRef ::= EffectIdentifier "::" SnakeCase
 ```
 
-Effect identifiers resolve to PascalCase effect declarations. Operation signatures use the ordinary parameter-mode and capability rules; a declared operation may request read-only, temporary writable, or retained writable access. A `new` operation parameter is rejected with `E0411`: this version defines no effect-operation construction-input contract.
+Effect identifiers resolve to PascalCase effect declarations. Operation signatures use the ordinary parameter-mode and capability rules; a declared operation may request read-only, temporary writable, or retained writable access. A `new` operation parameter is rejected with `E0411`: this version defines no effect-operation construction-input contract. An `auto` operation parameter or result mode is `E0412`; the declaration has no implementation from which to infer a permission family or result relation.
 
 ```ril
 -- Console and BufferIo have the declarations above.
@@ -5396,7 +5863,7 @@ WithApplication ::= QualifiedName [ GenericArgs ] "(" [ ArgumentList ] ")"
 ResumeExpr    ::= "resume" Expression
 ```
 
-A leading `ref`/`mut`/`^mut` on a handler parameter is its operation-parameter mode, before pattern interpretation. A `new` binder is rejected with `E0411`. The remaining pattern is irrefutable and contains no binding modifiers: `var` is `E0403`, and nested modes are `E0406`. Modes must match the operation declaration (`E0406`); omission does not infer observation or write authority. Ordinary names in handler-target position remain admitted so non-operation targets receive `E0621`.
+A leading `ref`/`mut`/`^mut` on a handler parameter is its operation-parameter mode, before pattern interpretation. A `new` binder is rejected with `E0411`, and `auto` with `E0412`. The remaining pattern is irrefutable and contains no binding modifiers: `var` is `E0403`, and nested modes are `E0406`. Modes must match the operation declaration (`E0406`); omission does not infer observation or write authority. Ordinary names in handler-target position remain admitted so non-operation targets receive `E0621`.
 
 ```ril
 eff ReadAt { get(int) -> int }
@@ -6450,6 +6917,15 @@ meta let TUPLE_MODE = modeof (var int, mut []int).0     -- MemberMode::Var
 
 `modeof T.(K)` statically queries the declared `MemberMode` of a Record field or Tuple position. Applying `modeof` to a sum type variant, non-composite type, or nonexistent field label triggers `E0358`. In mapped comprehensions, `modeof T.(K)` appears directly before the coordinate bracket without grouping parentheses.
 
+The result preserves both slot and access components, including a well-sorted symbolic member parameter in a generic context. For an instantiated `auto` schema it exposes the actual resolved mode, never the source placeholder `auto`. A required unresolved instance remains `E0344`; reflection cannot create an instance, drop `var`, or materialize permission metadata at run time.
+
+```ril
+type Elements<T, M: MemberMode> = [M]T
+type Views = Elements<{ var count: int }, ref>
+-- type BadViews = Elements<{ var count: int }, var ref>
+-- Error [E0356]: complete replacement-bearing mode is not an element-access mode
+```
+
 #### Symmetrical Mapped Comprehensions
 - **Mapped Records**: `{ [K in Expr]: TypeExpr }` requires static `[]str`; integer keys are `E0341`. Duplicate/invalid labels are `E0210`/`E0102`; ADT tables may use PascalCase constructor labels.
 - Mapped members default to immutable; an explicit `ModeExpression` (`MemberMode` literal, `modeof` projection, or static mode parameter) applies to generated members. `T.(K)` projects the member's data type, not its binding mode. Records and sums use the same mapping form:
@@ -7166,6 +7642,7 @@ This index assigns each code its diagnostic name and points to its defining rule
 | **`E0409`** | [`ImpureParameterDefaultError`](#default-parameters-and-named-arguments) |
 | **`E0410`** | [`InvalidMutableArgumentTargetError`](#parameter-modes-caller-obligations-and-defaults) |
 | **`E0411`** | [`InvalidConstructionParameterError`](#fresh-construction-parameters) |
+| **`E0412`** | [`InvalidAutoPlacementError`](#permission-inference-with-auto) |
 
 ### Bindings, State, Permissions, and Resource Contracts
 
@@ -7204,6 +7681,9 @@ This index assigns each code its diagnostic name and points to its defining rule
 | **`E0547`** | [`InvalidOpenRowPlacementError`](#closed-and-open-callable-rows) |
 | **`E0548`** | [`InvalidConstructionInputError`](#fresh-construction-parameters) |
 | **`E0549`** | [`EndedConstructionAuthorityAccessError`](#fresh-construction-parameters) |
+| **`E0550`** | [`RedundantPermissionAutoError`](#inference-domains-and-contract-completion) |
+| **`E0551`** | [`InvalidPatternDecompositionError`](#pattern-reception-and-decomposition) |
+| **`E0552`** | [`IncompatibleInferredInterfaceError`](#inferred-interfaces-and-callable-families) |
 
 ### Effects, Resumption, Concurrency, and Escape
 
