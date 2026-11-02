@@ -1,9 +1,9 @@
 # Ril
 
-Ril is a programming language designed to reduce manual reasoning about data access, state, effects, and termination through explicit markers and static checking.
+Ril is a programming language designed to reduce manual reasoning about data access, state, provenance, effects, and termination through explicit markers and static checking.
 
 ```ril
--- Permission dependencies propagate through generic calls and local reception.
+-- Access-mode dependencies propagate through generic calls and local reception.
 type Cell = { var value: int }
 
 fn relay<T>(via value: T) -> infer T {
