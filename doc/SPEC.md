@@ -529,14 +529,13 @@ fn on_event(ev: Event, _ctx: Context) -> () { handle(ev) } -- OK: '_ctx' is a pa
 
 ### Keywords
 
-The following 36 tokens are reserved; they cannot be ordinary identifiers or field labels:
+The following 30 tokens are reserved; they cannot be ordinary identifiers or field labels:
 
 ```
 as       eff      else     false    fn       for
-halt     if       in       is       keyof    last
-let      loop     match    meta     modeof   module
-mut      never    new      next     opaque   pub
-ref      resume   return   scoped   true     type
+if       in       is       keyof    last     let
+loop     match    modeof   module   mut      new
+next     ref      resume   return   true     type
 typeof   use      var      where    while    with
 ```
 
@@ -549,17 +548,44 @@ let capture = 1                       -- OK: capture is an ordinary identifier
 let closure = 1                       -- OK: closure is an ordinary identifier
 let up = 1                            -- OK: up is an ordinary identifier
 let sub = 1                           -- OK: sub is an ordinary identifier
-type Config = { capture: bool }       -- OK: capture is an ordinary field label
+let halt = 1                          -- OK: ordinary identifier
+let scoped = 2                        -- OK: ordinary identifier
+let opaque = 3                        -- OK: ordinary identifier
+let meta = 4                          -- OK: ordinary identifier
+let pub = 5                           -- OK: ordinary identifier
+let never = 6                         -- OK: ordinary identifier
+assert(halt + scoped + opaque + meta + pub + never == 21)
+type Bottom = never                   -- Intrinsic bottom type in type syntax
+type Config = {
+    capture: bool, up: bool, sub: bool,
+    halt: bool, scoped: bool, opaque: bool, meta: bool, pub: bool,
+    via: bool, infer: bool, never: bool,
+}                                     -- OK: ordinary field labels
 ```
 
 A reserved keyword used as an ordinary identifier or field label is `E0113`.
 
-`via` is contextual in declared member/access modes, parameter modes, and `let via name` receivers. `infer` is contextual in return contracts. Outside these positions they are ordinary names; `let via = 1`, `let infer = 1`, `{ via: int }`, and `{ infer: int }` use identifiers/labels. Invalid permission-modifier placements use `E0412`.
+Contextual keywords are identifiers outside the forms below. Recognize each form by its grammatical position and required following tokens before name resolution. Each form follows its defining production's placement and semantic rules; ordinary names and field labels follow the [casing rules](#identifiers-and-casing-invariants).
 
-`capture`, `up`, and `sub` are ordinary identifiers with contextual roles in capability annotations: `&capture` is a capability annotation, bare `&up` is a callable-type environment abstraction, `&up{...}` is a captured-source group, and `&up(sub){...}` is a module-storage group. In `&up(owner){...}`, the literal `sub` selects module storage before name resolution; another owner identifies an enclosing callable layer. See [State Groups and Captured Layers](#state-groups-and-captured-layers).
+| Word | Contextual form | Meaning |
+| :--- | :--- | :--- |
+| `pub` | Visibility prefix on a declaration or import admitting it | [Public visibility or re-export](#module-imports-and-visibility) |
+| `halt` | `halt fn` / `halt type`, after optional visibility | [Finite computation and outward purity](#termination-and-halt-contracts) |
+| `opaque` | `opaque type`, after optional visibility | [Hidden type representation](#type-declarations-and-opaque-types) |
+| `meta` | `meta let` / `meta fn`, with visibility where admitted | [Static value computation](#compile-time-execution-and-layout-cooperation) |
+| `scoped` | Binding modifier in `let scoped [mut] Pattern` | [Scope-exit resource cleanup](#scoped-resource-bindings) |
+| `via` | Declared member/access mode, parameter mode, or `let via name` receiver | [Static permission parameters and dependent reception](#permission-inference-with-via-and-infer) |
+| `infer` | Return-contract modifier in `-> infer T` | [Inferred result permissions, sources and dependencies](#return-construction-permissions-and-sources) |
+| `capture` | `&capture` | [Surviving environment creation](#closures-factory-signatures-and-lexical-environments) |
+| `up` | `&up`, `&up{...}`, or `&up(owner){...}` | [Callable environment abstraction or named-source access](#state-groups-and-captured-layers) |
+| `sub` | Literal selector in `&up(sub){...}` | [Module-storage source group](#state-groups-and-captured-layers) |
+
+In `&up(owner){...}`, `sub` selects module storage; another owner identifies an enclosing callable layer. Invalid permission-modifier placements use `E0412` under [permission inference](#permission-inference-with-via-and-infer).
+
+Primitive type names, including `never`, denote their intrinsic types in type syntax and may be ordinary identifiers or field labels elsewhere. See [Value Types](#value-types).
 
 ```ril
--- Reserved keywords in action:
+-- Reserved and contextual keywords in action:
 pub opaque type Token = int            -- 'pub', 'opaque', 'type'
 meta let COMPILE_ID = 101              -- 'meta', 'let'
 eff Logger { log(str) -> () }          -- 'eff'
@@ -590,7 +616,7 @@ fn calculate(val: ?int) -> int {       -- 'fn'
     while false { loop {} }            -- 'while', 'false', 'loop'
     bound                              -- tail expression
 where                                  -- 'where' inside block
-    type Dummy = never                 -- 'never'
+    type Dummy = never                 -- Intrinsic bottom type
 }
 ```
 
