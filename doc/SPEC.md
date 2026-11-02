@@ -554,7 +554,7 @@ type Config = { capture: bool }       -- OK: capture is an ordinary field label
 
 A reserved keyword used as an ordinary identifier or field label is `E0113`.
 
-`auto` is contextual in declared member/access modes, parameter modes, result contracts, and `let auto name` receivers. It remains an ordinary name outside these positions; `let auto = 1` and `{ auto: int }` use an identifier/label. Unsupported auto-mode placements use `E0412`. `take` is an ordinary identifier with no matching role. Match has one grammar; its optional leading `ref` selects observation, not a standalone expression modifier. Neither auto nor take is a reserved token.
+`auto` is contextual in declared member/access modes, parameter modes, result contracts, and `let auto name` receivers. It remains an ordinary name outside these positions; `let auto = 1` and `{ auto: int }` use an identifier/label. Unsupported auto-mode placements use `E0412`. `take` is an ordinary identifier with no matching role. Neither auto nor take is a reserved token.
 
 `capture`, `up`, and `sub` remain ordinary identifiers. They have contextual roles in capability annotations: `&capture` is a capability annotation, bare `&up` is a callable-type environment abstraction, `&up{...}` is a captured-source group, and `&up(sub){...}` is a module-storage group. In `&up(owner){...}`, an owner other than the literal `sub` identifies an enclosing callable layer. Within these parentheses, the literal `sub` selects module storage before name resolution; it is never interpreted as a capture owner or a state item. See [State Groups and Captured Layers](#state-groups-and-captured-layers).
 
@@ -3480,7 +3480,7 @@ fn verify_session(cookie: str) -> Result<str, str> {
 ### Pattern Matching
 
 ```ebnf
-MatchExpr     ::= "match" [ "ref" ] Expression "{" [ MatchArm { "," MatchArm } [ "," ] ] "}"
+MatchExpr     ::= "match" Expression "{" [ MatchArm { "," MatchArm } [ "," ] ] "}"
 MatchArm      ::= Pattern [ "if" Expression ] "->" Expression
 Pattern       ::= OrPattern
 OrPattern     ::= SinglePattern { "|" SinglePattern }
@@ -3661,10 +3661,13 @@ let mut src: [mut]Cell = [Cell.{ count: 1 }]
 let mut dst: [mut]Cell = []
 let mut pending = Array::pop(mut src)
 
-match ref pending {                         -- Observe; keep pending active
-    Some(item) -> assert(item.count == 1),
-    None -> (),
-}
+{
+    let ref observed = pending              -- Observe through an ordinary ref binding
+    match observed {
+        Some(item) -> assert(item.count == 1),
+        None -> (),
+    }
+}                                           -- Observation ends; pending stays active
 match pending {                             -- Consume this qualified construction source
     Some(item) if item.count > 0 -> dst !> Array::push(new item),
     _ -> (),                                -- None/wildcard consumes the carrier too
@@ -3683,9 +3686,8 @@ Choose the root contract statically before checking arms, from current access an
 | Active qualified construction temporary/formal/local | Consume after arm selection; prove root privacy and ordinary-reference graph eligibility |
 | Immutable reference / value | Share immutable data / copy values |
 | Borrowed ref/mut / retained writer | Bounded observation/temporary write/shared access; no new construction path |
-| Explicit match ref expression | Observe without consuming; scalar constituents copy; ordinary ref-root rules apply |
 
-A direct construction/new result needs consuming-reception proof. Failure cannot fall back to borrowing, infer shared acknowledgment, or recover lost qualification. Use explicit match ref or first establish another lawful concrete receiver with its required acknowledgment. Ordinary borrowed parameters acquire no construction qualification from historical freshness.
+A direct construction/new result needs consuming-reception proof. Failure cannot fall back to borrowing, infer shared acknowledgment, or recover lost qualification. For observation, match an ordinary `ref` binding or parameter under its existing origin and lifetime rules. An independent construction result first needs a lawful concrete receiver with its required acknowledgment; derived observations must end before a later construction handoff. Ordinary borrowed parameters acquire no construction qualification from historical freshness.
 
 | Pattern context | Unmodified receiver |
 | :--- | :--- |
