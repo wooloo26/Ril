@@ -2,6 +2,8 @@
 
 Ril is a programming language designed to reduce manual reasoning about data access, state, provenance, effects, and termination through explicit markers and static checking.
 
+The [language specification](doc/SPEC.md) is canonical. The examples below are fragments of one library `.ril` file; later blocks reuse preceding declarations.
+
 ```ril
 -- Access-mode dependencies propagate through generic calls and local reception.
 type Cell = { var value: int }
@@ -56,7 +58,7 @@ fn update_graph() -> () {
 ```
 
 ```ril
--- A checked budget makes eligible unbounded work usable in a halt function.
+-- The budget bounds eligible computation; cleanup and recovery must also be finite.
 fn spin() -> int { loop {} }
 halt fn bounded() -> ?int {
     with Div::exhausted() -> None
@@ -74,5 +76,3 @@ type Select = \T: { ..R }, keys: []str -> {
 type Model = { id: int, var title: str, mut rows: []int }
 type Editable = Select<Model, ["title", "rows"]> -- { var title: str, mut rows: []int }
 ```
-
-[SPEC](doc/SPEC.md)
