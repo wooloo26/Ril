@@ -832,7 +832,9 @@ Value types, including `str`, `bytes`, and integer ranges, have no reference tar
 
 ### Shared Object Types
 
-Shared object types are allocated on the managed garbage-collected heap: arrays (`[]T`), maps (`[K: V]`), records, tuples, sets, and sum type instances.
+Shared object types have object identity and may be aliased: arrays (`[]T`), maps (`[K: V]`), records, tuples, sets, and sum type instances. Their objects are allocated on the managed garbage-collected heap.
+
+Ordinary reception preserves the selected object's identity; copying operations follow their own rules. This category does not require existing aliases or grant shared write authority. Private construction roots are also shared objects; access modes govern each path.
 
 ```ril
 -- Shared object types: shared heap aliasing:
@@ -1934,7 +1936,7 @@ These common mode tables apply to bindings, members, patterns, and callable hand
 | `^mut` | Shared interior/environment write authority; retention follows the state/provenance and local discharge rules |
 | `ref` | Read-only observation; a writable target remains live |
 
-Every access is bounded by its traced source, enclosing path, and member mode. Values copy; references select the current object. All initialization and `var` replacement requires ordinary typing, complete provenance, lawful scope, and authority use; the table lists prohibited exchanges. Specialized contexts use the [anti-laundering diagnostic](#monotonic-mode-degradation-and-anti-laundering-matrix).
+Every access is bounded by its traced source, enclosing path, and member mode. Value types copy; shared-object reception preserves the selected object's identity. All initialization and `var` replacement requires ordinary typing, complete provenance, lawful scope, and authority use; the table lists prohibited exchanges. Specialized contexts use the [anti-laundering diagnostic](#monotonic-mode-degradation-and-anti-laundering-matrix).
 
 | Source / condition | Prohibited receiver | Diagnostic |
 | :--- | :--- | :--- |
@@ -2745,7 +2747,7 @@ ordered !> Map::set("b", 3)
 let snapshot = clone(ref ordered)
 assert(Map::keys(snapshot) == ["b", "a"]) -- Replacing a value preserves its key's position
 -- let bad_keys: [f64: int] = [nan: 1] -- Error [E0328]: floating-point keys are not admitted
--- let graph_key = [.{ id: 1 }: 0]    -- Error [E0328]: immutable records are still reference-type keys
+-- let graph_key = [.{ id: 1 }: 0]    -- Error [E0328]: immutable records are still shared objects
 ```
 
 `!=` negates `==`. Equality requires compatible same-typed values (`E0301` otherwise), except the Option/None tag test below and static type tokens: any two tokens compare their represented types by definitional identity, independent of exact/widened metatypes. Token ordering remains unsupported (`E0327`).
@@ -2770,7 +2772,7 @@ For finite cyclic graphs, equality is the greatest binary relation satisfying th
 | :--- | :--- |
 | `bool`, integers including `bigint`, `str`, `bytes`, `()` | Allowed |
 | Nominal / ordinary opaque wrappers | Allowed when recursively preserving one of those value representations |
-| Floats, reference graphs (including immutable ones), callables, resources | `E0328` |
+| Floats, shared-object graphs (including immutable ones), callables, resources | `E0328` |
 
 Eligibility depends on the concrete type, not equality support alone. Keys are copied by value: source reassignment cannot change them. No freezing, graph cloning, or user equality/order/hash callbacks occur.
 
@@ -2935,15 +2937,15 @@ let empty = arr[len(arr)..len(arr)]   -- OK: empty array at the end
 Ranges are finite even when their integer cardinality exceeds `int`. Their value representation does not allocate one element per member. Range indexing instead uses `int` endpoints (`E0301` for another type) and the bounds below; reversed bounds panic.
 
 ```ril
--- 1. Value elements are cloned (copied by value):
+-- 1. Value elements are copied by value:
 let mut source: []int = [1, 2, 3]
 let slice: []int = source[0..2]       -- New ordinary array containing [1, 2]
 source !> Array::push(4)              -- Modifying source length does not affect slice
 source[0] = 99
-assert(slice[0] == 1)                 -- Scalar value was cloned; slice is unaffected!
+assert(slice[0] == 1)                 -- Independent value copy; slice is unaffected
 assert(len(ref source) == 4 && len(slice) == 2)
 
--- 2. Reference elements are NOT cloned (references shallow-copied):
+-- 2. Shared object elements preserve object identity:
 type Cell = { var count: int }
 let mut first = Cell.{ count: 1 }
 let mut second = Cell.{ count: 2 }
@@ -2951,7 +2953,7 @@ let mut cells: [^mut]Cell = [^mut first, ^mut second]
 cells[1].count += 1
 let ^mut sub_cells: [^mut]Cell = cells[0..1] -- Acknowledge duplicated writable paths
 sub_cells[0].count = 42
-assert(cells[0].count == 42)          -- Reference NOT cloned: points to same heap Cell!
+assert(cells[0].count == 42)          -- Same Cell object; no graph clone
 sub_cells[0] = Cell.{ count: 9 }
 let mut extra = Cell.{ count: 10 }
 sub_cells !> Array::push(^mut extra)
@@ -2987,7 +2989,7 @@ byte_array[0] = 0u8
 assert(Bytes::at(b, 0) == Some(82u8)) -- The original bytes still start with 'R'
 ```
 
-- **Array Result**: Allocate an ordinary array with independent slots and length. Clone value elements; preserve reference identities, aliases, and effective access modes. Immutable elements use `[]T`, duplicated writable references use `[^mut]T`, and live read-only observations use `[ref]T`. Tuples and other heap products are references. Root freshness does not isolate referenced elements.
+- **Array Result**: Allocate an ordinary array with independent slots and length. Copy value elements; preserve shared-object identities, aliases, and effective access modes. Immutable elements use `[]T`, duplicated writable references use `[^mut]T`, and live read-only observations use `[ref]T`. Tuples and other heap products are shared objects. Root freshness does not isolate shared-object elements.
 - **Writable Sharing (`E0510`)**: Mark reception of duplicated writable reference paths with `^mut`.
 - **`ref` Target (`E0543`)**: A fresh range result cannot bind directly to a persistent `ref`. Publish it immutable through `let` or an ordinary parameter, or receive it with a lawful `let mut` binding; a later `ref` observes that established origin. Forwarding preserves whether publication actually occurred.
 - **Bounds**: For length N, a half-open range requires `0 <= lower <= upper <= N`; equal bounds produce an empty array, including at N. Omitted lower bounds mean zero; an omitted upper bound denotes the exclusive end N. A written inclusive upper bound h requires `0 <= lower <= h < N` and selects through h. Negative, reversed, or out-of-range bounds panic; bounds are never clamped. Safe range lookup (`arr?[a..b]`) returns an Option of the corresponding array result (`None` when out of bounds).
@@ -3395,7 +3397,7 @@ assert(total == 3)
 | Integer range | Endpoint type, ascending bounds as specified for ranges |
 | Other values, including strings, bytes, and iterator Source records | No implicit iteration (`E0355`); use explicit conversion or operations |
 
-Evaluate the source once and read each entry when visited; later element replacement may be observed. Structural mutation during traversal is `E0526`. Under [pattern reception](#pattern-reception-and-decomposition), values copy and references receive bounded element access from the source/member schema. Borrowed writes are temporary; retention requires source authority and lifetime proofs. Explicit ref requests permitted observation. Missing write authority is `E0521`; independent scalar var copies are permitted. Construction handoff is separate from traversal.
+Evaluate the source once and read each entry when visited; later element replacement may be observed. Structural mutation during traversal is `E0526`. Under [pattern reception](#pattern-reception-and-decomposition), value elements copy and shared-object elements receive bounded access from the source/member schema. Borrowed writes are temporary; retention requires source authority and lifetime proofs. Explicit ref requests permitted observation. Missing write authority is `E0521`; independent scalar var copies are permitted. Construction handoff is separate from traversal.
 
 ### Control Transfers
 
@@ -3727,8 +3729,8 @@ Choose the subject decomposition mode statically from current access and establi
 
 | Input | Subject decomposition |
 | :--- | :--- |
-| Active qualified construction temporary/formal/local | Consume after arm selection; prove root privacy and ordinary-reference graph eligibility |
-| Immutable reference / value | Share immutable data / copy values |
+| Active qualified construction temporary/formal/local | Consume after arm selection; prove root privacy and ordinary shared-object graph eligibility |
+| Immutable shared object / value type | Share immutable data / copy values |
 | Borrowed ref/mut / retained writer | Bounded observation/temporary write/shared access; no new construction path |
 
 A direct construction/new result requires a consuming-reception proof. For observation, match an ordinary `ref` binding or parameter under its origin and lifetime rules. An independent construction result first needs a lawful concrete receiver with its required acknowledgment; derived observations must end before a later construction handoff.
@@ -4394,7 +4396,7 @@ Forwarding preserves the contract above. Callback-handle authority and callback 
 
 ### Return Construction, Access Modes, and Sources
 
-A value result needs only `-> T`. Reference results distinguish the root from its contained references; all reception checks use the complete graph.
+A value-type result needs only `-> T`. Shared-object results distinguish the root from its contained references; all reception checks use the complete graph.
 
 ```ril
 type Cell = { var count: int }
@@ -4422,8 +4424,8 @@ The construction context applies only to the current callable's return operands.
 
 | Return form | Required guarantee / rejection |
 | :--- | :--- |
-| Value `T` | Copy the value; no return-reference dependency. Actual writes/effects retain their obligations and required named annotations |
-| Plain reference `T` | Deeply immutable graph; immutable storage may be shared or eligible private construction published. Surviving writers fail with `E0535` |
+| Value type `T` | Copy the value; no return-reference dependency. Actual writes/effects retain their obligations and required named annotations |
+| Plain shared object `T` | Deeply immutable graph; immutable storage may be shared or eligible private construction published. Surviving writers fail with `E0535` |
 | `new T` | Root constructed in this invocation, including verified factories, or lawfully handed onward from an active construction formal/local or verified storage extraction; preserve root write authority, actual allocation identity/history, and graph qualifications (`E0546`) |
 | `ref(x) T` | Read-only root from formal `x`'s graph at call entry; a projected child still names only `x` (`E0545`) |
 | `^mut(x) T` | Same entry-origin relation, with writable retention; require `^mut` parameter/argument (`E0528` for escaping ordinary `mut`). Root retention needs no duplicate `&^mut`; actual writes still require `&mut` |
@@ -4527,7 +4529,7 @@ Run-time business choices operate under statically proved access modes and origi
 
 Verified interfaces retain root modes/history, contained origins, store/return relations and output correlations for checking and dependency invalidation. Higher-order/dynamic joins preserve only common guarantees; separation requires a verified relation. Opaque interfaces retain hidden-source facts in metadata. Return-mode/source erasure is `E0534`; parameter-label renaming also renames bound source names by position.
 
-A generic signature must hold for every admitted instantiation. Use a uniformly valid plain result, sufficient constraints, or a qualified construction or `via` family. Forwarding construction requires eligible ordinary-reference instantiations and a lawful handoff through a declared construction return context, explicit construction operand or checked template dependency. `-> infer T` infers and retains the result qualifications; handoff context follows those separate rules. Foreign exchange and resource authority follow their declared contracts.
+A generic signature must hold for every admitted instantiation. Use a uniformly valid plain result, sufficient constraints, or a qualified construction or `via` family. Forwarding construction requires eligible ordinary shared-object instantiations and a lawful handoff through a declared construction return context, explicit construction operand or checked template dependency. `-> infer T` infers and retains the result qualifications; handoff context follows those separate rules. Foreign exchange and resource authority follow their declared contracts.
 
 ```ril
 -- Cell and Box have the preceding declarations.
@@ -4749,9 +4751,9 @@ let ref observed = cell
 | Parameter / caller form | Boundary rule |
 | :--- | :--- |
 | `p: T` / `expression` | Ordinary immutable reception, including publishable fresh data |
-| `ref p: T` / `ref expression` | Observe reference data or a callable environment for the call; preserve immutable/live origins |
-| `mut p: T` / `mut target` or `!>` | Pinned writable reference/environment access; ends at return |
-| `^mut p: T` / `^mut target` | Pinned writable reference/environment access; may retain a writer |
+| `ref p: T` / `ref expression` | Observe shared-object data or a callable environment for the call; preserve immutable/live origins |
+| `mut p: T` / `mut target` or `!>` | Pinned writable shared-object/environment access; ends at return |
+| `^mut p: T` / `^mut target` | Pinned writable shared-object/environment access; may retain a writer |
 | `new p: T` / `new expression` | Unpublished ordinary construction authority; explicit handoff ends the old construction paths |
 
 The ordinary `ref`/`mut`/`^mut` modes cover named/anonymous functions, callable types, effect operations/handlers, and generic/built-in instantiations. Fresh construction parameters add the verified `new` path for ordinary Ril callables and recognized storage inputs; effect and foreign restrictions remain explicit. [Fresh storage inputs](#homogeneous-storage-authority-and-container-self-determination) receive construction authority before ordinary immutable publication. A wrapper must declare `new` or an admitted preserving `via` input to retain that path; an ordinary immutable wrapper still publishes data. `via` is not admitted on effect/handler or foreign boundary parameters (`E0412`).
@@ -4796,7 +4798,7 @@ Mutable modes do not apply to static key arguments.
 
 #### Fresh Construction Parameters
 
-A `new value: T` parameter receives unpublished construction authority for ordinary reference data through an explicit `new expression` handoff. The mode is available to verified named and anonymous Ril functions, their callable types, and the storage inputs below. Handoffs preserve object identity and consume the qualified source path.
+A `new value: T` parameter receives unpublished construction authority for ordinary shared-object data through an explicit `new expression` handoff. The mode is available to verified named and anonymous Ril functions, their callable types, and the storage inputs below. Handoffs preserve object identity and consume the qualified source path.
 
 ```ril
 type Cell = { var count: int }
@@ -4819,7 +4821,7 @@ cells[0].count += 1
 
 | Construction parameter concern | Normative rule |
 | :--- | :--- |
-| Eligible type (`E0411`) | Ordinary reference data only. Value types, resource/task/scope authority, callable roots, and any graph containing retained callable environments or non-ordinary authority are excluded; wrapping, opacity, or an outer fresh root cannot hide them |
+| Eligible type (`E0411`) | Ordinary shared-object data only. Value types, resource/task/scope authority, callable roots, and any graph containing retained callable environments or non-ordinary authority are excluded; wrapping, opacity, or an outer fresh root cannot hide them |
 | Eligible expression (`E0548`) | Prove complete initial-reception eligibility: eligible constructed writable regions are isolated from pre-existing writable regions and have no surviving outside writer, observer, or active environment. Preserve immutable constituent sharing, aliases, cycles, and member schemas |
 | Existing bindings (`E0548`) | Handoff requires a fixed writable local with active qualification from [checked initial reception](#construction-qualified-locals-and-mode-preserving-reception). Immutable/observed, borrowed, published, reassignable or otherwise unqualified bindings are ineligible |
 | Forwarding source | An active construction formal/local, verified eligible construction expression, or checked storage handoff may be handed onward. Projection does not split construction authority; only a verified consuming decomposition establishes separately eligible payload paths |
@@ -4839,7 +4841,7 @@ A `new expression` handoff requires a matching construction argument, compatible
 
 In a caller with an active construction formal `cell`, `f(new cell, cell.count)` and `f(new cell, new cell)` both use an ended path in their second argument (`E0549`). Preparing all arguments before invoking `f` does not duplicate construction authority or defer its consumption.
 
-For a generic `new value: T`, admitted instantiations are restricted to eligible ordinary reference data. An ineligible concrete parameter type or generic instantiation is `E0411`. Structural bounds may establish ordinary reference shape. Check the definition for every admitted instantiation and full graph eligibility at each handoff.
+For a generic `new value: T`, admitted instantiations are restricted to eligible ordinary shared-object data. An ineligible concrete parameter type or generic instantiation is `E0411`. Structural bounds may establish ordinary shared-object shape. Check the definition for every admitted instantiation and full graph eligibility at each handoff.
 
 ```ril
 -- Cell, append_cell, and forward_cell have the preceding declarations.
@@ -4856,7 +4858,7 @@ alias.count += 1
 -- append_cell(mut cells, Cell.{ count: 0 }) -- Error [E0405]: missing construction argument marker
 -- append_cell(mut cells, new immutable)    -- Error [E0548]: immutable publication cannot be undone
 -- append_cell(mut cells, new published)    -- Error [E0548]: independent sharing ended qualification
--- fn scalar(new value: int) -> int { value } -- Error [E0411]: new parameters require ordinary reference data
+-- fn scalar(new value: int) -> int { value } -- Error [E0411]: new parameters require ordinary shared-object data
 fn forwarding<T>(new value: T) -> new T { value }
 let mut cell = forwarding(new Cell.{ count: 0 })
 cell.count += 1
@@ -4967,7 +4969,7 @@ let ^mut result = Array::pop(^mut shared)
 match result { Some(cell) -> { cell.count += 1 }, None -> () }
 ```
 
-A checked managed-slot extraction establishes one active construction path only when its summary proves an eligible ordinary-reference region separated from the remaining container and every independently usable outside writer, observer or environment. Preserve immutable sharing, internal aliases/cycles, schemas, allocation identity and scope/task restrictions. Distinct indices, new, [mut]T or last use alone prove nothing.
+A checked managed-slot extraction establishes one active construction path only when its summary proves an eligible ordinary shared-object region separated from the remaining container and every independently usable outside writer, observer or environment. Preserve immutable sharing, internal aliases/cycles, schemas, allocation identity and scope/task restrictions. Distinct indices, new, [mut]T or last use alone prove nothing.
 
 Check summary preconditions against actual origins at every call, requiring established static proofs. Shared edges are permitted when the detach proof succeeds. Slot removal and transfer preparation preserve initialized storage and one active path. A detached root retains its allocation identity and requires a complete subsequent reception proof. Later local handoff requires [retained construction qualification](#construction-qualified-locals-and-mode-preserving-reception).
 
@@ -5962,11 +5964,11 @@ assert(cell.count == 1)
 | Operation parameter | Handler binder | Granted authority |
 | :--- | :--- | :--- |
 | Default | Plain pattern | Deeply immutable data; scalars copy |
-| `ref` | `ref pattern` | Read-only observation of reference data or callable environments; preserve live origins and source lifetimes |
+| `ref` | `ref pattern` | Read-only observation of shared-object data or callable environments; preserve live origins and source lifetimes |
 | `mut` | `mut pattern` | Temporary operation authority, ending when resumption starts |
 | `^mut` | `^mut pattern` | Retained writable authority; actual retention remains tracked |
 
-Destructured reference bindings receive no more than the mode and every source path permit; scalar constituents remain independent read-only copies. A `^mut` handler parameter still must exercise its authority under `E0527`. Resumption does not revoke lawful retained authority, but neither the handler mode nor the operation declaration extends a scoped lifetime or suspends exclusivity checks on independent origins.
+Destructured shared-object bindings receive no more than the mode and every source path permit; scalar constituents remain independent read-only copies. A `^mut` handler parameter still must exercise its authority under `E0527`. Resumption does not revoke lawful retained authority, but neither the handler mode nor the operation declaration extends a scoped lifetime or suspends exclusivity checks on independent origins.
 `ref` parameters retain their observation restrictions across resumption; the following revocation rule concerns temporary `mut` authority only.
 
 | Operation's ordinary `mut` authority | Arm's access |
@@ -7502,8 +7504,8 @@ For inputs supported by the selected operation:
 | Input | Ordinary form | Explicit `ref` form |
 | :--- | :--- | :--- |
 | Value type, including `str` / `bytes` | Receive value | `E0401` |
-| Immutable reference data | Receive immutable data | Observe same data |
-| Live reference data | `E0535` | Observe without freezing |
+| Immutable shared-object data | Receive immutable data | Observe same data |
+| Live shared-object data | `E0535` | Observe without freezing |
 
 Forms preserve data schemas and operation identity; resource operations require their own contracts. Operators, projections, indexing and traversal use primitive observation rules, while ordinary parameters use reception rules.
 
@@ -7511,7 +7513,7 @@ Forms preserve data schemas and operation identity; resource operations require 
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | `len` | `len(value)` / `len(ref value) -> int` | Pure | Dual-phase | $O(1)$ / $O(n)$ text | Count of elements, entries, bytes, or Unicode scalars |
 | `inner` | `inner(wrapper) -> T` / `inner(ref wrapper) -> ref(wrapper) T` | Pure | Runtime | $O(1)$ | Preserve immutable/observed payload authority; value payloads use a plain result; unit nominal yields `()` |
-| `clone` | `clone(value)` / `clone(ref value)` | Pure | Runtime | $O(\text{graph})$ | Ordinary reference result `new T`, value result `T`; preserves graph aliases, cycles, and schemas. Resource cloning follows its separate contract |
+| `clone` | `clone(value)` / `clone(ref value)` | Pure | Runtime | $O(\text{graph})$ | Ordinary shared-object result `new T`, value-type result `T`; preserves graph aliases, cycles, and schemas. Resource cloning follows its separate contract |
 | `derive` | `derive(base, recipe) -> T` | Forwards recipe | Runtime | $O(\text{affected})$ | Functional update on immutable value via confined mutable draft |
 | `byte_size` | `meta fn byte_size(value: Type) -> int` | Pure | Static only | $O(1)$ | Size of the represented target's value/handle; static-only targets have no run-time layout |
 | `type_name` | `meta fn type_name(value: Type) -> str` | Pure | Static only | $O(\text{len})$ | Canonical representation of the token's target, including static metatypes, for diagnostics |
@@ -7524,7 +7526,7 @@ Forms preserve data schemas and operation identity; resource operations require 
 
 - **Length Invariant (`len`)**:
   - `len` is a pure, dual-phase built-in operation admitted in both runtime and static contexts.
-  - `len(ref value)` observes reference data; `len(value)` receives immutable data.
+  - `len(ref value)` observes shared-object data; `len(value)` receives immutable data.
   - For `str`, returns the total number of Unicode scalar values (code points), matching `s[a..b]` scalar indexing.
   - For `bytes`, returns the byte count in $O(1)$ time.
   - For arrays (`[]T`), returns the element count in $O(1)$ time.
@@ -7537,7 +7539,7 @@ Forms preserve data schemas and operation identity; resource operations require 
   - Nominal abstraction boundaries remain sealed across modules; `inner` cannot bypass opaque module access restrictions.
 - **Graph Isolation Invariants (`clone`)**:
   - `clone` creates an independent, isolated copy of an ordinary reachable graph, severing writable storage from the source while preserving internal aliases, shared references, and cyclic structures ([Deep Immutability](#deep-immutability)).
-  - `clone(ref value)` copies observed reference data without freezing it. The receiver and member schema determine the copy's access modes.
+  - `clone(ref value)` copies observed shared-object data without freezing it. The receiver and member schema determine the copy's access modes.
   - Receiving an eligible fresh copy with ordinary `let` publishes immutable data by recursively suppressing member write/observation modes.
   - Non-clonable entities (retained closure environments, live tasks, unique receivers, and scoped resources) cannot be cloned through `ref` handles or wrappers (`E0530`).
   - Cloning a channel `Sender` obeys the channel endpoint resource contract and requires `@Fiber`.
