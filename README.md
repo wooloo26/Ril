@@ -1,95 +1,62 @@
 # Ril
 
-```ril
--- Ril aims to turn part of software engineering's cognitive load into explicit markers.
--- State intent; the compiler derives and checks the resulting contracts.
-
-type Counter = { var value: int }
-
-fn increment(mut counter: Counter) &mut -> () {
-    counter.value += 1
-}
-
-fn bindings() -> () {
-    let base = Counter.{ value: 0 }          -- Deeply immutable.
-    let mut counter = clone(base)           -- Writable interior.
-    let ref observed = counter              -- Live observation.
-    counter !> increment
-    let ^mut shared = counter               -- Another writer.
-    shared !> increment
-    assert(observed.value == 2 && base.value == 0)
-}
-```
+Ril is a programming language designed to reduce manual reasoning about data access, state, effects, and termination through explicit markers and statically checked contracts.
 
 ```ril
--- clone isolates a snapshot; derive updates immutable data through a confined draft.
-fn snapshots() -> () {
-    let mut working = Counter.{ value: 1 }
-    let ref live = working
-    let snapshot = clone(ref live)
-    let updated = snapshot |> derive \mut draft -> { draft.value += 1 }
-    working.value = 3
-    assert(snapshot.value == 1 && updated.value == 2 && live.value == 3)
-}
-```
+-- Permission dependencies propagate through generic calls and local reception.
+type Cell = { var value: int }
 
-```ril
--- via parameterizes permissions; infer derives the result contract.
 fn relay<T>(via value: T) -> infer T {
     let via item = value
     item
 }
 
-fn append<T>(mut xs: [via]T, via item: T) &mut -> () {
-    xs !> Array::push(item)
+fn append<T>(mut xs: [via]T, via value: T) &mut -> () {
+    xs !> Array::push(relay(value))
 }
 
-fn construction() -> () {
-    let mut cells: [mut]Counter = []
-    let mut cell = Counter.{ value: 1 }
-    append(mut cells, new cell)              -- Hand off the qualified construction path.
+fn transfer() -> () {
+    let mut cells: [mut]Cell = []
+    let mut cell = Cell.{ value: 1 }
+    append(mut cells, new cell)
     -- cell.value                           -- E0549: source path ended.
 }
 ```
 
 ```ril
--- Named state and surviving environments appear in callable contracts.
+-- Callable contracts retain environment creation, sharing, and contained origins.
+type Step = fn() &up -> int
+fn make_shared_step(^mut cell: Cell)
+    &capture &^mut &return{^mut cell} -> new Step {
+    \-> { cell.value += 1; cell.value }
+}
+
+fn sharing() -> () {
+    let mut cell = Cell.{ value: 0 }
+    let ^mut step = make_shared_step(^mut cell)
+    assert(step() == 1)
+    cell.value += 1
+    assert(step() == 3)
+}
+
 var visits = 0
 fn record_visit() &up(sub){mut visits} -> () { visits += 1 }
-fn visit() &record_visit -> () { record_visit() }
+fn visit() &record_visit -> () { record_visit() } -- Inherit verified named state.
+```
 
-type Step = fn() &up -> int
-fn make_step() &capture -> new Step {
-    var count = 0
-    \-> { count += 1; count }
+```ril
+-- Functional updates preserve graph aliases while confining draft mutation.
+type Pair = { left: Cell, right: Cell }
+fn update_graph() -> () {
+    let cell = Cell.{ value: 1 }
+    let base = Pair.{ left: cell, right: cell }
+    let updated = base |> derive \mut draft -> { draft.left.value += 1 }
+    assert(base.right.value == 1 && updated.right.value == 2)
 }
 ```
 
 ```ril
--- @ declares effects; with handles them; resume continues at most once.
-eff Ask { name() -> str }
-fn greet() @Ask -> str { "Hello, {Ask::name()}!" }
-
-fn greeting() -> str {
-    with Ask::name() -> resume "Ril"
-    greet()
-}
-```
-
-```ril
--- scoped runs cleanup at scope exit, including abrupt exits.
-type Resource = { mut on_close: fn() & -> () }
-fn cleanup() -> bool {
-    var closed = false
-    {
-        let scoped mut resource = Resource.{
-            on_close: \-> { closed = true },
-        }
-    }
-    closed
-}
-
--- halt requires finite, outwardly pure computation; Div::budget bounds eligible work.
+-- A checked budget makes eligible unbounded work usable in a finite, pure contract.
 fn spin() -> int { loop {} }
 halt fn bounded() -> ?int {
     with Div::exhausted() -> None
@@ -99,18 +66,13 @@ halt fn bounded() -> ?int {
 ```
 
 ```ril
--- meta and type functions compute schemas before execution.
-type User = { id: int, var name: str }
-meta let USER_KEYS = keyof User              -- ["id", "name"]
-meta let NAME_MODE = modeof User.name        -- MemberMode::Var
-type Readonly = \T -> <{ [keyof T as K]: T.(K) }>
-type PublicUser = Readonly<User>             -- { id: int, name: str }
-
-type UnwrapOption = \T -> match <T> {
-    <Option<let U>> -> <U>,
-    _ -> panic("expected Option<T>"),
+-- Schema transformations preserve both slot replacement and access modes.
+type Select = \T: { ..R }, keys: []str -> {
+    let selected = keyof T |> Array::filter(\key -> keys |> Array::contains(key))
+    <{ modeof T.(K) [selected as K]: T.(K) }>
 }
-type Item = UnwrapOption<Option<int>>        -- int
+type Model = { id: int, var title: str, mut rows: []int }
+type Editable = Select<Model, ["title", "rows"]> -- { var title: str, mut rows: []int }
 ```
 
 [SPEC](doc/SPEC.md)
