@@ -1,0 +1,20 @@
+// This parses SPEC's notation, not Ril source programs.
+?start: choice
+?choice: sequence ("|" sequence)*
+?sequence: term+
+?term: atom ["*" | "+"]
+?atom: NAME                 -> reference
+     | STRING               -> literal
+     | CHAR_CLASS           -> character_class
+     | "[" choice "]"       -> optional
+     | "{" choice "}"       -> repetition
+     | "(" choice ")"       -> group
+
+// Compact bracket expressions containing ranges, negation or escapes are
+// lexical classes. [Name] and [ Name ] remain optional nonterminal references.
+CHAR_CLASS.2: /\[(?=[^\]\s]*[-\\^])(?:\\[^\r\n]|[^\]\\\s])+\]/
+// SPEC quotes delimit terminal spellings; "\" denotes one backslash.
+STRING: /"[^"\r\n]*"|'[^'\r\n]*'/
+NAME: /[A-Za-z_][A-Za-z0-9_]*/
+%import common.WS
+%ignore WS

@@ -548,7 +548,7 @@ fn on_event(ev: Event, _ctx: Context) -> () { handle(ev) } -- OK: '_ctx' is a pa
 
 The following 32 keywords are reserved in all ordinary identifier and field-label positions:
 
-```
+```text
 as       eff      else     false    fn
 for      halt     if       is       keyof
 last     let      loop     match    meta

@@ -1,0 +1,56 @@
+[project]
+name = "ril-doccheck"
+version = "0.1.0"
+description = "Markdown structure and Ril specification grammar checks"
+requires-python = ">=3.13"
+dependencies = [
+    "lark>=1.3.1",
+    "markdown-it-py>=4.2.0",
+]
+
+[project.scripts]
+ril-doccheck = "ril_doccheck.cli:main"
+quality = "ril_doccheck.quality:main"
+
+[build-system]
+requires = ["uv_build>=0.12.5,<0.13.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "mypy>=2.4.1",
+    "pytest>=9.2.0",
+    "ruff>=0.17.3",
+]
+
+[tool.ruff]
+target-version = "py313"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+
+[tool.mypy]
+python_version = "3.13"
+strict = true
+files = ["src", "tests"]
+warn_unreachable = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = ["--strict-config", "--strict-markers", "-ra"]
+
+[tool.ril-doccheck]
+# Parse this explanatory block, but do not export its schematic productions
+# or resolve metavariables such as A and B against the language grammar.
+notation-sections = ["Grammar Notation"]
+
+[tool.ril-doccheck.externals]
+SourceChar = "Source character category: SPEC Character Set and Encoding / Comments"
+Newline = "Line ending: SPEC Grammar Notation / Whitespace and Layout Rules"
+EOF = "End of source: SPEC Grammar Notation"
+StringCharacter = "Character category defined in prose: SPEC Text and Byte Literals"
+EscapeSequence = "Escape rules defined in prose: SPEC Text and Byte Literals"
+RawCharacter = "Raw-string character category: SPEC Text and Byte Literals"
+ByteCharacter = "Byte-string character category: SPEC Text and Byte Literals"
+ByteEscape = "Byte escape rules defined in prose: SPEC Text and Byte Literals"
