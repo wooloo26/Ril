@@ -91,7 +91,7 @@ This document defines Ril grammar, typing, permissions, effects, abstract-machin
     - [Operator Precedence and Associativity](#operator-precedence-and-associativity)
     - [Arithmetic and Wrapping Operators](#arithmetic-and-wrapping-operators)
     - [Bitwise and Shift Operators](#bitwise-and-shift-operators)
-    - [Relational, Equality, and Containment Operators](#relational-equality-and-containment-operators)
+    - [Relational and Equality Operators](#relational-and-equality-operators)
       - [Value Tests with is](#value-tests-with-is)
     - [Logical Operators](#logical-operators)
     - [Range and Sequence Indexing Expressions](#range-and-sequence-indexing-expressions)
@@ -468,7 +468,7 @@ Identifier grammatical roles obey the **Closed Casing Invariant**:
    - **Acronym Title-Casing Rule**: Acronyms within `PascalCase` MUST be title-cased as regular words (`HttpServer`, `UserId`, `JsonParser`, NOT `HTTPServer`, `UserID`, `JSONParser`) (`E0102`).
 - **`snake_case`**: Strictly used for runtime variables (local bindings, function parameters, reassignable variables `var`, and pinned mutable handles `let mut`), const generic parameters (`cap: int`), named functions (`fn`, `meta fn`), record fields, and module path segments (`ril/array`, `math/geometry`).
 - **`SCREAMING_SNAKE_CASE`**: Strictly reserved for compile-time constants (`meta let`) and top-level immutable constants (`let`). Top-level mutable variables (`var`, `let mut`, `let ^mut`, and `var ^mut`) MUST use `snake_case`.
-- **Static Keys and Field Labels**: Static key binders (`K: keyof T`) and mapped-key binders (`[K in ...]`) use PascalCase. Ordinary field labels use snake_case, optionally with one leading underscore. A mapped record may expose valid PascalCase constructor labels; construction and projection against that mapped schema use those generated labels verbatim. This does not permit uppercase run-time variable bindings.
+- **Static Keys and Field Labels**: Static key binders (`K: keyof T`) and mapped-key binders (`[... as K]`) use PascalCase. Ordinary field labels use snake_case, optionally with one leading underscore. A mapped record may expose valid PascalCase constructor labels; construction and projection against that mapped schema use those generated labels verbatim. This does not permit uppercase run-time variable bindings.
 - **Wildcard and Leading Underscores**: A single underscore `_` is strictly the wildcard discard pattern, not an identifier (`E0322`). An identifier with a leading underscore, such as `_snake_case`, follows the same binding and mutable-authority use requirements as other identifiers (`E0527`).
 
 ```ril
@@ -529,14 +529,16 @@ fn on_event(ev: Event, _ctx: Context) -> () { handle(ev) } -- OK: '_ctx' is a pa
 
 ### Keywords
 
-The following 30 keywords are reserved in all ordinary identifier and field-label positions:
+The following 32 keywords are reserved in all ordinary identifier and field-label positions:
 
 ```
-as       eff      else     false    fn       for
-if       in       is       keyof    last     let
-loop     match    modeof   module   mut      new
-next     ref      resume   return   true     type
-typeof   use      var      where    while    with
+as       eff      else     false    fn
+for      halt     if       is       keyof
+last     let      loop     match    meta
+modeof   module   mut      new      next
+pub      ref      resume   return   true
+type     typeof   use      var      where
+while    with
 ```
 
 ```ril
@@ -548,20 +550,21 @@ let capture = 1                       -- OK: capture is an ordinary identifier
 let closure = 1                       -- OK: closure is an ordinary identifier
 let up = 1                            -- OK: up is an ordinary identifier
 let sub = 1                           -- OK: sub is an ordinary identifier
-let halt = 1                          -- OK: ordinary identifier
+-- let halt = 1                       -- Error [E0113]: reserved keyword
 let scoped = 2                        -- OK: ordinary identifier
 let opaque = 3                        -- OK: ordinary identifier
-let meta = 4                          -- OK: ordinary identifier
-let pub = 5                           -- OK: ordinary identifier
+-- let meta = 4                       -- Error [E0113]: reserved keyword
+-- let pub = 5                        -- Error [E0113]: reserved keyword
+let in = 1                            -- OK: ordinary identifier
 -- let never = 6                      -- Error [E0113]: intrinsic primitive type name
 -- let int = 0                        -- Error [E0113]: intrinsic primitive type name
 -- fn invalid(bool: int) -> () {}     -- Error [E0113]: intrinsic primitive type name
 -- type InvalidField = { str: bool }  -- Error [E0113]: intrinsic primitive type name
-assert(halt + scoped + opaque + meta + pub == 15)
+assert(scoped + opaque + in == 6)
 type Bottom = never                   -- Intrinsic bottom type in type syntax
 type Config = {
     capture: bool, up: bool, sub: bool,
-    halt: bool, scoped: bool, opaque: bool, meta: bool, pub: bool,
+    scoped: bool, opaque: bool, in: bool,
     via: bool, infer: bool,
 }                                     -- OK: ordinary field labels
 ```
@@ -572,10 +575,7 @@ Contextual keywords are identifiers outside the forms below. Recognize each form
 
 | Word | Contextual form | Meaning |
 | :--- | :--- | :--- |
-| `pub` | Visibility prefix on a declaration or import admitting it | [Public visibility or re-export](#module-imports-and-visibility) |
-| `halt` | `halt fn` / `halt type`, after optional visibility | [Finite computation and outward purity](#termination-and-halt-contracts) |
 | `opaque` | `opaque type`, after optional visibility | [Hidden type representation](#type-declarations-and-opaque-types) |
-| `meta` | `meta let` / `meta fn`, with visibility where admitted | [Static value computation](#compile-time-execution-and-layout-cooperation) |
 | `scoped` | Binding modifier in `let scoped [mut] Pattern` | [Scope-exit resource cleanup](#scoped-resource-bindings) |
 | `via` | Declared member/access mode, parameter mode, or `let via name` receiver | [Static permission parameters and dependent reception](#permission-inference-with-via-and-infer) |
 | `infer` | Return-contract modifier in `-> infer T` | [Inferred result permissions, sources and dependencies](#return-construction-permissions-and-sources) |
@@ -609,7 +609,6 @@ fn calculate(val: ?int) -> int {       -- 'fn'
         _ -> 0,
     }
     let is_positive = bound is 1..=10  -- 'is'
-    let in_bounds = bound in 1..=10    -- 'in'
     var sum = 0                        -- 'var'
     for [1, 2, 3] as n {               -- 'for', 'as'
         sum += n
@@ -1716,7 +1715,7 @@ type FirstOrder = Choose<["a": 1, "b": 2]>  -- int
 type OtherOrder = Choose<["b": 2, "a": 1]>  -- str
 
 -- Member Mode Sort Constraint:
-halt type ApplyMode = \T, M: MemberMode -> <{ M [K in keyof T]: T.(K) }>
+halt type ApplyMode = \T, M: MemberMode -> <{ M [keyof T as K]: T.(K) }>
 type Slots<T> = ApplyMode<T, var>              -- OK: keyword literal lifting to MemberMode::Var
 -- type BadMode<T> = ApplyMode<T, int>         -- Error [E0356]: expected MemberMode sort, found 'int'
 ```
@@ -2610,7 +2609,7 @@ ConstructionTransferExpr ::= "new" Expression
 BinaryExpr      ::= Expression BinaryOperator Expression
 BinaryOperator  ::= "*" | "/" | "%" | "/?" | "%?" | "*%" | "+" | "-" | "+%" | "-%"
                   | "<<" | ">>" | "&" | "^" | "|" | "==" | "!=" | "<" | "<=" | ">" | ">="
-                  | "in" | "&&" | "||" | "??" | "|>" | "!>"
+                  | "&&" | "||" | "??" | "|>" | "!>"
 MemberExpr      ::= Expression ( "." | "?." ) ( FieldLabel | TupleIndex )
                   | Expression "." "(" Expression ")"
 IndexExpr       ::= Expression ( "[" | "?[" ) Expression "]"
@@ -2629,7 +2628,7 @@ IndexExpr       ::= Expression ( "[" | "?[" ) Expression "]"
 | **7** | `^` | Left | Bitwise XOR |
 | **8** | `\|` | Left | Bitwise OR |
 | **9** | `..` `..=` | Non-associative | Half-open range, closed range |
-| **10** | `==` `!=` `<` `<=` `>` `>=` `is` `in` | Non-associative | Relational, equality, pattern match `is`, containment `in` |
+| **10** | `==` `!=` `<` `<=` `>` `>=` `is` | Non-associative | Relational, equality, value test `is` |
 | **11** | `&&` | Left | Logical AND (short-circuiting) |
 | **12** | `\|\|` | Left | Logical OR (short-circuiting) |
 | **13** | `??` | Right | Fallback coalescing operator |
@@ -2711,7 +2710,7 @@ let shl_val = 1 << 4                   -- 16
 let shr_val = 64 >> 2                  -- 16
 ```
 
-### Relational, Equality, and Containment Operators
+### Relational and Equality Operators
 
 ```ril
 let eq = (10 == 10)                    -- true
@@ -2720,12 +2719,6 @@ let lt = (5 < 10)                      -- true
 let lte = (10 <= 10)                   -- true
 let gt = (20 > 10)                     -- true
 let gte = (20 >= 20)                   -- true
-
--- Containment check via 'in':
-let in_array = 3 in [1, 2, 3]          -- true
-let in_range = 5 in 1..=10             -- true
-let in_map   = "key" in user_map       -- true (checks key containment)
-let in_set   = 42 in visited_set       -- true
 
 -- Value test via 'is' (bool result, no bindings):
 let opt: ?int = Some(42)
@@ -2899,8 +2892,9 @@ let r2 = 0..=5                         -- Closed range [0, 5]
 
 type IntRange = typeof (0..0)
 let reversed: IntRange = 5..1
-assert(!(3 in reversed))              -- Reversed ranges are empty
 var visited = 0
+for reversed as _ { visited += 1 }
+assert(visited == 0)                  -- Reversed ranges are empty
 for 254u8..=255u8 as value {
     assert(value >= 254u8)
     visited += 1
@@ -2927,7 +2921,6 @@ let empty = arr[len(arr)..len(arr)]   -- OK: empty array at the end
 | `lower > upper` | Empty for either spelling |
 | Equal endpoints | Half-open: empty; inclusive: one element |
 | Iteration | Ascending by one; stop after the last included value without an overflowing extra increment |
-| `value in range` | Value has the endpoint type; test the selected bounds, without iterating |
 | Other operations | Equality as specified above; no ordering, indexing, `len`, or map-key eligibility |
 
 Ranges are finite even when their integer cardinality exceeds `int`. Their value representation does not allocate one element per member. Range indexing instead uses `int` endpoints (`E0301` for another type) and the bounds below; reversed bounds panic.
@@ -6886,8 +6879,8 @@ Both branches require valid syntax, name resolution and ordinary type compatibil
 Ril unifies compile-time introspection across all composite data forms under coordinate indexing `keyof T`, constituent projection `T.(K)`, and member mode projection `modeof T.(K)`.
 
 ```ebnf
-MappedRecordType   ::= "{" [ ModeExpression ] "[" PascalCase "in" Expression "]" ":" TypeExpression "}"
-MappedTupleType    ::= "(" [ ModeExpression ] "[" PascalCase "in" Expression "]" ":" TypeExpression ")"
+MappedRecordType   ::= "{" [ ModeExpression ] "[" Expression "as" PascalCase "]" ":" TypeExpression "}"
+MappedTupleType    ::= "(" [ ModeExpression ] "[" Expression "as" PascalCase "]" ":" TypeExpression ")"
 ModeExpression     ::= MemberMode | ModeProjectionExpr | PascalCase | "(" Expression ")"
 ModeProjectionExpr ::= "modeof" TypeProjection
 ```
@@ -6971,36 +6964,39 @@ type Views = Elements<{ var count: int }, ref>
 ```
 
 #### Symmetrical Mapped Comprehensions
-- **Mapped Records**: `{ [K in Expr]: TypeExpr }` requires static `[]str`; integer keys are `E0341`. Duplicate/invalid labels are `E0210`/`E0102`; ADT tables may use PascalCase constructor labels.
+
+Each source expression is checked in its enclosing scope. The PascalCase binder names each selected key/index within the generated member's mode and type.
+
+- **Mapped Records**: `{ [Expr as K]: TypeExpr }` requires static `[]str`; integer keys are `E0341`. Duplicate/invalid labels are `E0210`/`E0102`; ADT tables may use PascalCase constructor labels.
 - Mapped members default to immutable; an explicit `ModeExpression` (`MemberMode` literal, `modeof` projection, or static mode parameter) applies to generated members. `T.(K)` projects the member's data type, not its binding mode. Records and sums use the same mapping form:
   ```ril
   -- Generic visitor / handler table valid for BOTH records and sum types:
   type SchemaTable = \T -> <{
-      [K in keyof T]: T.(K)
+      [keyof T as K]: T.(K)
   }>
   ```
 - **Zero Implicit Downgrade Invariant (`E0402`, `E0357`)**: Value types cannot receive `mut` or `ref`. Mapped comprehensions strictly reject incompatible modes without silent fallback. Distinct modes across field types must be formulated explicitly via type functions.
-- **Mapped Tuples (`( [I in Expr]: TypeExpr )`)**: `Expr` MUST evaluate to compile-time `[]int`. Supplying `[]str` triggers `E0342: InvalidTupleKeySortError`.
+- **Mapped Tuples (`( [Expr as I]: TypeExpr )`)**: `Expr` MUST evaluate to compile-time `[]int`. Supplying `[]str` triggers `E0342: InvalidTupleKeySortError`.
 - **Single-Element Tuple Prohibition (`E0343`)**: A mapped tuple comprehension evaluated over an index array of length 1 is statically rejected at compile time, preserving the invariant that Ril has no 1-tuples.
 
 ```ril
-type Readonly = \T -> <{ [K in keyof T]: T.(K) }>
+type Readonly = \T -> <{ [keyof T as K]: T.(K) }>
 type Bag = { mut items: []int }
 type FixedFields = Readonly<Bag>        -- { items: []int }; default member is deeply immutable
 type Box = { var tag: int, mut bag: FixedFields }
 let mut box = Box.{ tag: 0, bag: FixedFields.{ items: [1] } }
 box.tag = 1
 -- box.bag.items !> Array::push(2)    -- Error [E0520]: a default member blocks nested writes
-type Slots = \T -> <{ var [K in keyof T]: T.(K) }>
-type PairSlots = (var [I in [0, 1]]: int) -- (var int, var int)
+type Slots = \T -> <{ var [keyof T as K]: T.(K) }>
+type PairSlots = (var [[0, 1] as I]: int) -- (var int, var int)
 
 -- Exact MemberMode preservation via modeof:
 type Pick = \T: { ..never }, included: []str -> {
     let valid_keys = keyof T |> Array::filter(\k -> included |> Array::contains(k))
-    <{ modeof T.(K) [K in valid_keys]: T.(K) }>
+    <{ modeof T.(K) [valid_keys as K]: T.(K) }>
 }
 type SubState = Pick<State, ["id", "items"]>   -- { id: int, mut items: []int }
--- type BadMut = <{ mut [K in keyof { x: int }]: int }> -- Error [E0402]: value-type member cannot be mut
+-- type BadMut = <{ mut [keyof { x: int } as K]: int }> -- Error [E0402]: value-type member cannot be mut
 ```
 
 `Readonly` constructs default-member schemas. Ordinary `let` already removes effective member permissions recursively; neither operation changes callable invocation contracts.
@@ -7025,7 +7021,7 @@ type HoverPayload = UiEvent.("Hover")          -- (int, int)
 type FocusPayload = UiEvent.Focus              -- () (nullary injection domain)
 
 type EventHandlerTable = \T, R -> <{
-    [K in keyof T]: fn(T.(K)) -> R
+    [keyof T as K]: fn(T.(K)) -> R
 }>
 type UiHandlerTable = EventHandlerTable<UiEvent, ()>
 -- { Click: fn({ x: int, y: int }) -> (), Focus: fn(()) -> (), Hover: fn((int, int)) -> () }
@@ -7040,15 +7036,15 @@ type Second = Pair.(1)                         -- str
 halt type ReverseTuple = \T -> {
     let rev_indices = keyof T |> Array::reverse
     <(
-        [I in rev_indices]: T.(I)
+        [rev_indices as I]: T.(I)
     )>
 }
 type ReversedPair = ReverseTuple<Pair>         -- (str, int)
 
 -- Rejection of Invalid Mapped Comprehensions:
--- type BadRecordKeys = { [K in [0, 1]]: int } -- Error [E0341]: mapped record comprehension requires '[]str' keys, found '[]int'
--- type BadTupleKeys = ( [I in ["a", "b"]]: int ) -- Error [E0342]: mapped tuple comprehension requires '[]int' keys, found '[]str'
--- type Bad1Tuple = ( [I in [0]]: int )       -- Error [E0343]: mapped tuple comprehension produced single-element tuple (Ril strictly has no 1-tuples)
+-- type BadRecordKeys = { [[0, 1] as K]: int } -- Error [E0341]: mapped record comprehension requires '[]str' keys, found '[]int'
+-- type BadTupleKeys = ( [["a", "b"] as I]: int ) -- Error [E0342]: mapped tuple comprehension requires '[]int' keys, found '[]str'
+-- type Bad1Tuple = ( [[0] as I]: int )       -- Error [E0343]: mapped tuple comprehension produced single-element tuple (Ril strictly has no 1-tuples)
 ```
 
 ### Structural Type Pattern Matching
@@ -7639,7 +7635,7 @@ This index assigns each code its diagnostic name and points to its defining rule
 | **`E0325`** | [`DuplicateArgumentError`](#default-parameters-and-named-arguments) |
 | **`E0326`** | [`LiteralOutOfRangeError`](#numeric-literals) |
 | **`E0327`** | [`UnsupportedOperandTypeError`](#bitwise-and-shift-operators) |
-| **`E0328`** | [`InvalidCollectionKeyTypeError`](#relational-equality-and-containment-operators) |
+| **`E0328`** | [`InvalidCollectionKeyTypeError`](#relational-and-equality-operators) |
 | **`E0329`** | [`IncompatibleFormatSpecifierError`](#text-and-byte-literals) |
 | **`E0330`** | [`BareEffectTypeAliasError`](#type-definition-boundaries) |
 | **`E0331`** | [`BareCapabilityTypeAliasError`](#type-definition-boundaries) |

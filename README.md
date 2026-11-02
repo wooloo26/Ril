@@ -103,7 +103,7 @@ halt fn bounded() -> ?int {
 type User = { id: int, var name: str }
 meta let USER_KEYS = keyof User              -- ["id", "name"]
 meta let NAME_MODE = modeof User.name        -- MemberMode::Var
-type Readonly = \T -> <{ [K in keyof T]: T.(K) }>
+type Readonly = \T -> <{ [keyof T as K]: T.(K) }>
 type PublicUser = Readonly<User>             -- { id: int, name: str }
 
 type UnwrapOption = \T -> match <T> {
