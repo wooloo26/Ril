@@ -29,14 +29,15 @@ use other branches unless the user explicitly requests them.
 | [`ref`](doc/SPEC.md#read-only-reference-bindings) | Read-only observation of an established object; writable origins remain live. Persistent handles require eligible immutable or pinned live origins; parameters use call-time observation. |
 | [`mut` / `^mut`](doc/SPEC.md#parameter-modes-caller-obligations-and-defaults) | Parameter write access ending at return / access permitting retained writers. `let mut` receives exclusive writable authority; `let ^mut` and `var ^mut` receive shared writable authority. Every use follows source and alias checks. |
 | [Pinned handle](doc/SPEC.md#pinned-mutable-handles) | A fixed binding target providing a stable object root for persistent observation. |
-| [`auto`](doc/SPEC.md#permission-inference-with-auto) | Static permission templates: input/member access parameters, dependent `let auto` reception, and inferred `-> auto` results. Selected instances use concrete contracts. |
-| [`MemberMode` / `modeof`](doc/SPEC.md#universal-member-mode-projection) | Member modes pair slot replacement with access. `modeof` queries both components; `auto` varies access while `var` is explicit. |
+| [`via`](doc/SPEC.md#permission-inference-with-via-and-infer) | Static permission parameters in inputs/member schemas and dependent `let via` reception. Selected instances use concrete contracts. |
+| [`infer`](doc/SPEC.md#return-construction-permissions-and-sources) | Result-contract inference through `-> infer T`, with an explicit result data type. Retain inferred root permissions, origins, and contained dependencies. |
+| [`MemberMode` / `modeof`](doc/SPEC.md#universal-member-mode-projection) | Member modes pair slot replacement with access. `modeof` queries both components; `via` varies access while `var` is explicit. |
 | [`new`](doc/SPEC.md#return-construction-permissions-and-sources) | Construction result/input contract or qualified handoff, preserving object identity and root write authority. Consuming reception checks the complete graph. |
 | [Construction qualification](doc/SPEC.md#preserving-local-bindings) | An affine path established by checked initial reception. Handoff ends the source and derived accesses; root privacy and graph eligibility are checked separately. |
 | [Capabilities](doc/SPEC.md#state-and-capability-tracking) | `&mut` tracks parameter writes, `&^mut` independent retained sharing, and `&capture` surviving environment creation, after lawful local discharge. |
 | [State sources](doc/SPEC.md#state-groups-and-captured-layers) | `&up(sub){...}` names module access; `&up{...}` / `&up(owner){...}` name captured layers. Bare `&up` abstracts a callable type's environment while metadata preserves actual sources. |
 | [Return dependencies](doc/SPEC.md#return-construction-permissions-and-sources) | `ref(x)` / `^mut(x)` identify root origins in a formal's call-entry graph. `&return{...}` describes contained dependencies; invocation capabilities are checked separately. |
-| [Contract completion](doc/SPEC.md#mandatory-contract-inference-and-completion) | Every function has a complete inferred contract. Named definitions spell prescribed concrete annotations with the specified `auto` exemptions; anonymous source annotations are optional constraints. |
+| [Contract completion](doc/SPEC.md#mandatory-contract-inference-and-completion) | Every function has a complete inferred contract. Named definitions spell prescribed concrete annotations with the specified `via`/`infer` exemptions; anonymous source annotations are optional constraints. |
 | [Pure / `halt`](doc/SPEC.md#termination-and-halt-contracts) | Purity permits confined local mutation. `halt` requires finite computation and empty outward effect/capability rows after handling and local discharge; panic is a permitted finite outcome. |
 | [`Finite` / `MayDiverge` / `never`](doc/SPEC.md#termination-and-halt-contracts) | Proven finite invocation / finiteness unproved / absence of normal continuation. |
 | [`Div`](doc/SPEC.md#finite-evaluation-with-div) | Budget-exhaustion effect. `Div::budget` bounds eligible run-time computation; whole-expression finiteness also requires finite cleanup and recovery. |
@@ -49,6 +50,6 @@ use other branches unless the user explicitly requests them.
 | [`Async`](doc/SPEC.md#built-in-system-effects) | Effect alias `{Fiber, Concurrent}`: suspension/leaf I/O plus structured task branching and joining. |
 
 SPEC fixtures may abbreviate compiler-completed named contracts. Complete source
-follows named annotation requirements and the specified `auto` exemptions.
+follows named annotation requirements and the specified `via`/`infer` exemptions.
 All functions retain complete inferred contracts. See
 [contract completion](doc/SPEC.md#mandatory-contract-inference-and-completion).
