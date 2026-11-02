@@ -459,14 +459,14 @@ SnakeCase          ::= [a-z] [a-z0-9]* { "_" [a-z0-9]+ }
 ScreamingSnakeCase ::= [A-Z] [A-Z0-9]* { "_" [A-Z0-9]+ }
 UnderscoreName     ::= "_" [a-z] [a-z0-9]* { "_" [a-z0-9]+ }
 Wildcard           ::= "_"
-QualifiedName    ::= Identifier { "::" Identifier }
+QualifiedName    ::= { "Super" "::" } { PascalCase "::" } Identifier
 ```
 
 Identifier grammatical roles obey the **Closed Casing Invariant**:
 
-- **`PascalCase`**: Strictly reserved for types (`type`), ADT variant constructors, nominal wrappers, algebraic effects (`eff`), generic type parameters (`T`, `ItemType`), and module namespace identifiers (`Array`, `Channel`, `Geometry`).
+- **`PascalCase`**: Strictly reserved for types (`type`), ADT variant constructors, nominal wrappers, algebraic effects (`eff`), generic type parameters (`T`, `ItemType`), and `sub` namespace identifiers (`Array`, `Channel`, `Geometry`, `Super`).
    - **Acronym Title-Casing Rule**: Acronyms within `PascalCase` MUST be title-cased as regular words (`HttpServer`, `UserId`, `JsonParser`, NOT `HTTPServer`, `UserID`, `JSONParser`) (`E0102`).
-- **`snake_case`**: Strictly used for runtime variables (local bindings, function parameters, reassignable variables `var`, and pinned mutable handles `let mut`), const generic parameters (`cap: int`), named functions (`fn`, `meta fn`), record fields, and module path segments (`ril/array`, `math/geometry`).
+- **`snake_case`**: Strictly used for runtime variables (local bindings, function parameters, reassignable variables `var`, and pinned mutable handles `let mut`), const generic parameters (`cap: int`), named functions (`fn`, `meta fn`), record fields, and module file path segments (`ril/array`, `math/geometry`).
 - **`SCREAMING_SNAKE_CASE`**: Strictly reserved for compile-time constants (`meta let`) and top-level immutable constants (`let`). Top-level mutable variables (`var`, `let mut`, `let ^mut`, and `var ^mut`) MUST use `snake_case`.
 - **Static Keys and Field Labels**: Static key binders (`K: keyof T`) and mapped-key binders (`[... as K]`) use PascalCase. Ordinary field labels use snake_case, optionally with one leading underscore. A mapped record may expose valid PascalCase constructor labels; construction and projection against that mapped schema use those generated labels verbatim. This does not permit uppercase run-time variable bindings.
 - **Wildcard and Leading Underscores**: A single underscore `_` is strictly the wildcard discard pattern, not an identifier (`E0322`). An identifier with a leading underscore, such as `_snake_case`, follows the same binding and mutable-authority use requirements as other identifiers (`E0527`).
@@ -480,7 +480,7 @@ type Maybe<T> = Option<T>
 let value: Maybe<int> = Some(1)        -- OK: an alias adds no constructor candidate
 ```
 
-Declarations and imports share one namespace. Same-scope duplicates are `E0203`; inner declarations may shadow outer ones, including the enclosing prelude. The intrinsic static type family `Type` is protected against user declarations, type binders, and type/namespace import aliases that would redefine or shadow it (`E0203`).
+Declarations and imports share one namespace. Same-scope duplicates are `E0203`; inner declarations may shadow outer ones, including the enclosing prelude. The intrinsic static type family `Type` and parent-scope navigator `Super` are protected against user declarations, `sub` names, type binders, and import aliases that would redefine or shadow them (`E0203`).
 
 | Name | Resolution |
 | :--- | :--- |
@@ -535,8 +535,8 @@ The following 32 keywords are reserved in all ordinary identifier and field-labe
 as       eff      else     false    fn
 for      halt     if       is       keyof
 last     let      loop     match    meta
-modeof   module   mut      new      next
-pub      ref      resume   return   true
+modeof   mut      new      next     pub
+ref      resume   return   sub      true
 type     typeof   use      var      where
 while    with
 ```
@@ -549,7 +549,7 @@ let while_count = 1                   -- OK
 let capture = 1                       -- OK: capture is an ordinary identifier
 let closure = 1                       -- OK: closure is an ordinary identifier
 let up = 1                            -- OK: up is an ordinary identifier
-let sub = 1                           -- OK: sub is an ordinary identifier
+-- let sub = 1                       -- Error [E0113]: reserved keyword
 -- let halt = 1                       -- Error [E0113]: reserved keyword
 let scoped = 2                        -- OK: ordinary identifier
 let opaque = 3                        -- OK: ordinary identifier
@@ -563,7 +563,7 @@ let in = 1                            -- OK: ordinary identifier
 assert(scoped + opaque + in == 6)
 type Bottom = never                   -- Intrinsic bottom type in type syntax
 type Config = {
-    capture: bool, up: bool, sub: bool,
+    capture: bool, up: bool,
     scoped: bool, opaque: bool, in: bool,
     via: bool, infer: bool,
 }                                     -- OK: ordinary field labels
@@ -581,9 +581,8 @@ Contextual keywords are identifiers outside the forms below. Recognize each form
 | `infer` | Return modifier in `-> infer T` | [Inferred result permissions, sources and dependencies](#return-construction-permissions-and-sources) |
 | `capture` | `&capture` | [Surviving environment creation](#closures-factory-signatures-and-lexical-environments) |
 | `up` | `&up`, `&up{...}`, or `&up(owner){...}` | [Callable environment abstraction or named-source access](#state-groups-and-captured-layers) |
-| `sub` | Literal selector in `&up(sub){...}` | [Module-storage source group](#state-groups-and-captured-layers) |
 
-In `&up(owner){...}`, `sub` selects module storage; another owner identifies an enclosing callable layer. Invalid permission-modifier placements use `E0412` under [permission inference](#permission-inference-with-via-and-infer).
+In `&up(owner){...}`, the keyword `sub` selects module storage; another owner identifies an enclosing callable layer. Invalid permission-modifier placements use `E0412` under [permission inference](#permission-inference-with-via-and-infer).
 
 Primitive type spellings listed under [Value Types](#value-types), including `never`, are reserved type names. They denote their intrinsic types and are unavailable as ordinary identifiers or field labels (`E0113`).
 
@@ -2085,7 +2084,7 @@ Ordinary let is immutable, including inside a template. Outside a template, use 
 `let ^mut` and `var ^mut` declare shared writable authority directly. The [common permission tables](#binding-permissions-and-storage-matrix) define their slot behavior, rejected receptions, and authority-use checks.
 
 ```ebnf
-SharedMutDecl ::= [ "pub" ] ( "let" | "var" ) "^mut" Identifier
+SharedMutDecl ::= ( "let" | "var" ) "^mut" Identifier
                   [ ":" TypeExpression ] "=" Expression
 ```
 
@@ -2181,7 +2180,7 @@ capacity += 1                         -- OK: independent scalar copy
 ### Pinned Mutable Handles
 
 ```ebnf
-LetMutDecl ::= [ "pub" ] "let" "mut" Pattern [ ":" TypeExpression ] "=" Expression [ "else" Block ]
+LetMutDecl ::= "let" "mut" Pattern [ ":" TypeExpression ] "=" Expression [ "else" Block ]
 ```
 
 #### Normative Rules for Pinned Handles
@@ -2210,8 +2209,8 @@ right.items !> Array::push(20)         -- Both destructured authorities are exer
 ### Reassignable Mutable Variables
 
 ```ebnf
-VarDecl    ::= [ "pub" ] "var" Pattern [ ":" TypeExpression ] "=" Expression [ "else" Block ]
-VarMutDecl ::= [ "pub" ] "var" "mut" Pattern [ ":" TypeExpression ] "=" Expression [ "else" Block ]
+VarDecl    ::= "var" Pattern [ ":" TypeExpression ] "=" Expression [ "else" Block ]
+VarMutDecl ::= "var" "mut" Pattern [ ":" TypeExpression ] "=" Expression [ "else" Block ]
 ```
 
 #### Normative Rules for Reassignable Variables
@@ -2316,14 +2315,14 @@ Missing, inaccessible, or shape-incompatible scoped cleanup operations are `E054
 Abandoned computations cannot resume. A double fault fatally fails its task or an unsupervised program. A pure parallel branch exposes the double fault only when that branch is visible in reference evaluation.
 
 ```ebnf
-ScopedDecl ::= [ "pub" ] "let" "scoped" [ "mut" ] Pattern [ ":" TypeExpression ] "=" Expression [ "else" Block ]
+ScopedDecl ::= "let" "scoped" [ "mut" ] Pattern [ ":" TypeExpression ] "=" Expression [ "else" Block ]
 ```
 
 ### Read-Only Reference Bindings
 
 ```ebnf
-LetRefDecl ::= [ "pub" ] "let" "ref" Pattern [ ":" TypeExpression ] "=" Expression [ "else" Block ]
-VarRefDecl ::= [ "pub" ] "var" "ref" Pattern [ ":" TypeExpression ] "=" Expression [ "else" Block ]
+LetRefDecl ::= "let" "ref" Pattern [ ":" TypeExpression ] "=" Expression [ "else" Block ]
+VarRefDecl ::= "var" "ref" Pattern [ ":" TypeExpression ] "=" Expression [ "else" Block ]
 ```
 
 ```ril
@@ -2435,10 +2434,10 @@ type Point = { x: int, y: int }        -- Local record type alias
 -- Opaque Type Declarations:
 -- In file: auth/session.ril
 
--- Declares a zero-cost opaque type representation over 'str':
+-- Declares a zero-cost opaque type representation over 'str' within its defining sub:
 pub opaque type SessionToken = str
 
--- Inside defining file 'auth/session.ril': SessionToken and 'str' are bidirectionally equivalent:
+-- Inside defining sub 'Session': SessionToken and 'str' are bidirectionally equivalent:
 pub fn create_token(raw: str) -> ?SessionToken {
     if len(raw) >= 16 {
         Some(raw)                      -- OK: internal code constructs SessionToken from str directly
@@ -2451,9 +2450,17 @@ pub fn reveal_token(token: SessionToken) -> str {
     token                              -- OK: internal code unwraps SessionToken to str directly
 }
 
--- Inside defining file, underlying operations work natively:
+-- Inside defining sub, underlying operations work natively:
 fn validate_token(token: SessionToken) -> bool {
-    token == "admin_override"          -- OK: underlying string operations available inside file
+    token == "admin_override"          -- OK: underlying string operations available inside defining sub
+}
+
+-- Inline sub boundary seals opaque representation even within the same file:
+pub sub Audit {
+    pub fn check_same(a: Super::SessionToken, b: Super::SessionToken) -> bool {
+        -- let raw: str = a            -- Error [E0301]: opaque across sub boundary
+        a == b                         -- OK: same-type equality permitted
+    }
 }
 
 -- In file: app/main.ril
@@ -2492,7 +2499,10 @@ fn authenticate_client() -> ?SessionToken {
 External interface declarations are declaration-only modules in `.d.ril` files, specifying host contracts, opaque nominal types, and data-exchange rules without implementation bodies.
 
 ```ebnf
-DeclUnitItem     ::= [ "pub" ] ( DeclFunction | DeclType | DeclLet | DeclOpaqueType )
+DeclUnitItem     ::= [ "pub" ] ( DeclFunction | DeclType | DeclLet | DeclOpaqueType | DeclSub )
+                   | UseDecl
+
+DeclSub          ::= "sub" PascalCase "{" { DeclUnitItem Separator } [ DeclUnitItem ] "}"
 
 DeclFunction     ::= "fn" Identifier [ GenericParams ]
                      "(" [ ParameterList ] ")" [ EffectAnnot ] [ StateAnnot ]
@@ -2902,7 +2912,7 @@ for 254u8..=255u8 as value {
 assert(visited == 2)                  -- No increment beyond u8's maximum
 
 let arr = [10, 20, 30, 40, 50]
-let sub: []int = arr[1..4]            -- New ordinary array containing [20, 30, 40]
+let slice: []int = arr[1..4]          -- New ordinary array containing [20, 30, 40]
 let prefix = arr[..3]                 -- [10, 20, 30]
 let suffix = arr[2..]                 -- [30, 40, 50]
 let empty = arr[len(arr)..len(arr)]   -- OK: empty array at the end
@@ -2928,11 +2938,11 @@ Ranges are finite even when their integer cardinality exceeds `int`. Their value
 ```ril
 -- 1. Value elements are cloned (copied by value):
 let mut source: []int = [1, 2, 3]
-let sub: []int = source[0..2]         -- New ordinary array containing [1, 2]
-source !> Array::push(4)              -- Modifying source length does not affect sub
+let slice: []int = source[0..2]       -- New ordinary array containing [1, 2]
+source !> Array::push(4)              -- Modifying source length does not affect slice
 source[0] = 99
-assert(sub[0] == 1)                   -- Scalar value was cloned; sub is unaffected!
-assert(len(ref source) == 4 && len(sub) == 2)
+assert(slice[0] == 1)                 -- Scalar value was cloned; slice is unaffected!
+assert(len(ref source) == 4 && len(slice) == 2)
 
 -- 2. Reference elements are NOT cloned (references shallow-copied):
 type Cell = { var count: int }
@@ -5463,7 +5473,7 @@ where
 }
 ```
 
-- **Module Groups (`E0538`)**: `&up(sub){...}` contains only resolved module-storage bindings. The literal `sub` is a contextual source selector, not a resolved name; it is excluded from `CaptureOwner` in this position. Qualified names and declaration imports preserve storage identity; a named function declaration is not a storage item.
+- **Module Groups (`E0538`)**: `&up(sub){...}` contains only resolved module-storage bindings (in the current `sub`/root unit or qualified across `sub`s / `Super::`). The keyword `sub` selects module storage and is excluded from `CaptureOwner`. Qualified names and declaration imports preserve storage identity; a named function declaration is not a storage item.
 - **Environment Groups (`E0538`)**: `&up{...}` contains captured bindings from one enclosing callable layer. A directly enclosing layer needs no owner. A farther named layer requires its function name in `&up(owner){...}`. A farther anonymous layer uses a separate ownerless `&up{...}` group. An explicit owner verifies the source layer; it cannot select a same-spelled binding hidden by shadowing.
 - **Resolution Before Classification**: Resolve each item by ordinary lexical rules, including shadowing, then verify its group and declaration owner. Preserve its actual activation identity in metadata.
 - **Layers and Activations**: Named functions and lambdas introduce callable layers. Blocks, loops, and handler arms do not introduce function layers; their binding identities, dynamic activations, lifetimes, and handler contexts remain distinct. An object's possible origin does not change its binding's declaration layer.
@@ -5506,13 +5516,13 @@ assert(run() == 2)
 
 Standalone `&capture`, `&mut`, `&^mut` and the callable-type environment abstraction `&up` have their own rules. The open capability marker `&` belongs to callable-type patterns. Source groups describe invocation access; exclusivity, construction consumption and handler selection are checked separately.
 
-In a state annotation, unqualified `&up` takes precedence over state-contract references. A following `{` selects a captured-source group. A following `(` selects a source group: the literal `sub` selects module storage, and another capture-owner name selects an enclosing callable layer. Every source group requires a nonempty `{...}` list; empty parentheses, missing braces after a selector, repeated selectors and empty groups use `E0538`. Without `{` or `(`, `&up` is the callable-type environment abstraction. Select the form before name resolution. `&return{...}` likewise has group-head priority and requires braces. A same-spelled provider function requires a qualified reference such as `&Helpers::up`. Outside these positions, `up` and `sub` are ordinary identifiers.
+In a state annotation, unqualified `&up` takes precedence over state-contract references. A following `{` selects a captured-source group. A following `(` selects a source group: the keyword `sub` selects module storage, and another capture-owner name selects an enclosing callable layer. Every source group requires a nonempty `{...}` list; empty parentheses, missing braces after a selector, repeated selectors and empty groups use `E0538`. Without `{` or `(`, `&up` is the callable-type environment abstraction. Select the form before name resolution. `&return{...}` likewise has group-head priority and requires braces. A same-spelled provider function requires a qualified reference such as `&Helpers::up`. Outside these positions, `up` is an ordinary identifier.
 
 ```ril
 var env = 0
 fn bump_env() &up(sub){mut env} -> () { env += 1 }
-var sub = 0
-fn bump_sub() &up(sub){mut sub} -> () { sub += 1 } -- Selector and storage item have distinct roles
+var up = 0
+fn bump_up() &up(sub){mut up} -> () { up += 1 } -- Group head and storage item have distinct roles
 -- fn empty_group() &up{} -> () {} -- Error [E0538]: no captured source item
 -- fn wrong_group() &up{mut env} -> () {} -- Error [E0538]: env is module storage
 -- fn missing_items() &up(sub) -> () {} -- Error [E0538]: source groups require a nonempty item list
@@ -5560,7 +5570,7 @@ fn retain_wrapped(^mut cell: Counter::Cell) &Counter::retain -> ^mut(cell) Count
 -- Error [E0201]: a state reference does not export the private binding
 ```
 
-- **Provider (`E0539`)**: `&callee` / `&Module::callee` selects a visible ordinary named Ril definition's verified named-state contract. Resolve names first: lexical absence `E0204`, absent module member `E0209`, private member `E0201`; then reject a wrong provider kind with `E0539`. Value aliases and callable parameters are not providers.
+- **Provider (`E0539`)**: `&callee` / `&Module::callee` / `&Super::callee` selects a visible ordinary named Ril definition's verified named-state contract. Resolve names first: lexical absence `E0204`, unresolved module/parent scope `E0208`, absent module member `E0209`, private member `E0201`; then reject a wrong provider kind with `E0539`. Value aliases and callable parameters are not providers.
 - **Position (`E0539`)**: Allowed on ordinary named function definitions and callable types. Reject it as a direct annotation on anonymous definitions, effect operations, and bodyless foreign declarations. A nested callable type may use a verified provider reference independently of its enclosing construct.
 - **Concrete Named Projection**: A reference denotes the provider's concrete global/captured source items and their verified access modes for its current invocation, including concrete named dependencies obtained through other calls. The bindings and lexical owners remain anchored to the provider's scope. It does not include effects, anonymous parameter permissions, standalone `&capture`/`&^mut`, symbolic callback dependencies, or a returned callable's future invocation obligations.
 - **Coverage**: On a named definition, after local discharge, match inherited concrete named obligations by origin and permission; the caller need not invoke the provider by name. On a callable type, the verified named projection participates in exact closed matching or in an explicitly open capability row. A reference imports no return relation: declare that separately. Actual parameter writes and extra retention still need `&mut`/`&^mut`; root-return retention follows its own annotation. Unrelated references on a definition leave `E0510`; unnecessary references there remain `E0529`.
@@ -7185,7 +7195,7 @@ type OptInt = Wrapper<Option, int>             -- Option<int>
 ### Compile-Time Execution and Layout Cooperation
 
 ```ebnf
-MetaLetDecl      ::= "meta" "let" ( ScreamingSnakeCase | "_" ) [ ":" TypeExpression ] "=" Expression
+MetaLetDecl      ::= [ "pub" ] "meta" "let" ( ScreamingSnakeCase | "_" ) [ ":" TypeExpression ] "=" Expression
 MetaFnDecl       ::= [ "pub" ] "meta" "fn" SnakeCase [ GenericParams ] "(" [ ParameterList ] ")" ReturnType Block
 ```
 
@@ -7242,38 +7252,84 @@ meta let _ = assert(BYTE_SIZE == 1)
 
 ### Modules and Compilation Units
 
-Every source file is an independent compilation unit. Compilation units are partitioned into two mutually exclusive kinds:
-
-- **Implementation Units (`.ril`)**: Standard modules containing executable definitions. Functions in `.ril` modules MUST provide implementation bodies (`{ ... }`).
-- **External Interface Declaration Units (`.d.ril`)**: Contract-only modules declaring external types, ambient constants, and foreign signatures without implementation bodies ([External Interface Declarations](#external-interface-declarations)). When a module path resolves to `<path>.d.ril`, the module is designated as an `ExternalContractModule` providing foreign interface signatures without local definitions.
-
-Top-level items in both unit types are private to the file by default unless marked with `pub`.
+```ebnf
+SubDecl ::= [ "pub" ] "sub" PascalCase "{" { SubItem Separator } [ SubItem ] "}"
+SubItem ::= UseDecl | SubDecl | FunctionDecl | MetaFnDecl | MetaLetDecl
+          | LetDecl | LetMutDecl | SharedMutDecl | VarDecl | VarMutDecl
+          | LetRefDecl | VarRefDecl | OpaqueTypeDecl | TypeDecl | NominalDecl
+          | SumTypeDecl | EffectDecl
+```
 
 ```ril
--- In file: math/geometry.ril (Implementation Unit)
-let PI = 3.141592653589793              -- Private to module 'geometry'
-pub let TAU = 6.283185307179586         -- Public: exported from module
+-- 1. In file: math/geometry.ril (Library Implementation sub -> Geometry)
+let PI = 3.141592653589793              -- Private to file sub 'Geometry'
+pub let TAU = 6.283185307179586         -- Public immutable constant
+var call_count = 0                      -- Private mutable state
+-- pub var shared_count = 0             -- Error [E0906]: mutable static state cannot be 'pub'
+-- pub let mut shared_buf: []int = []   -- Error [E0906]: mutable static handle cannot be 'pub'
+-- use Super::{PI}                      -- Error [E0208]: file root has no enclosing 'Super' scope
 
-pub fn circle_area(radius: f64) &up(sub){PI} -> f64 {
-    PI * radius * radius                -- OK: internal access to private 'PI'
+fn record_call() &up(sub){mut call_count} -> () { call_count += 1 }
+
+pub sub Transform {
+    -- Hermetic scope: only Prelude is ambient; access enclosing scope via 'Super::'
+    -- let bad = PI                     -- Error [E0204]: 'PI' is not in scope without 'Super::'
+    -- fn touch() &up(sub){mut Super::call_count} -> () { Super::call_count += 1 }
+    -- Error [E0201]: parent mutable state is strictly private to its defining scope
+
+    pub fn scale_tau(k: f64) &Super::record_call &up(sub){Super::TAU} -> f64 {
+        Super::record_call()            -- OK: 'Super::' accesses enclosing non-pub declarations
+        Super::TAU * k
+    }
 }
 
--- In file: platform/fs.d.ril (External Interface Declaration Unit)
-pub type FileHandle                     -- OK: opaque nominal external type
-pub fn read_file(path: str) @Fiber -> Result<[]u8, str> -- OK: bodyless leaf-I/O signature
+-- 2. In file: platform/fs.d.ril (External Interface Declaration sub -> Fs)
+pub type FileHandle
+pub sub AsyncIo {
+    pub fn read_file(path: str) @Fiber -> Result<[]u8, str>
+}
 
--- In file: app/main.ril
-use math/geometry::{TAU, circle_area}   -- OK: importing from implementation unit
-use platform/fs::{FileHandle, read_file} -- OK: importing from declaration unit
--- use math/geometry::{PI}              -- Error [E0201]: symbol 'PI' is private to module 'math/geometry'
+-- 3. In file: app/main.ril (Executable Root Unit: non-sub, cannot be imported)
+use math/geometry::{TAU}
+use math/geometry::Transform
+use platform/fs::AsyncIo::{read_file}
+-- use app/main                         -- Error [E0208]: executable root is not an importable 'sub'
+
+let APP_VERSION = 1
+-- pub let EXPORTED = 1                 -- Error [E0905]: executable root cannot declare top-level 'pub'
+-- pub sub Exposed {}                   -- Error [E0905]: executable root cannot declare top-level 'pub'
+
+sub Metrics {                           -- OK: private inline sub inside executable root
+    var requests = 0
+    pub fn bump() &up(sub){mut requests, Super::APP_VERSION} -> int {
+        requests += Super::APP_VERSION  -- OK: 'Super::' reads root non-pub constant
+        requests
+    }
+}
+
+fn main() @Fiber &Metrics::bump -> () {
+    let _ = Metrics::bump()
+}
 ```
+
+| Unit / Scope | `sub` Identity | Top-Level `pub` | `fn main` | Hermetic / Visibility Rules |
+| :--- | :--- | :--- | :--- | :--- |
+| **Executable Root (`.ril`)** | Non-`sub`; unimportable (`E0208`) | Prohibited (`E0905`; `pub fn main` is `E0904`) | Required unmodified `fn main` (`E0903`) | Enclosing scope for its inline `sub`s via `Super::` |
+| **Library File (`.ril`)** | File is `sub` (`to_pascal_case(stem)`) | Allowed on immutable/type/fn/eff/sub/use items | Prohibited (`E0904`) | Private by default (`E0201`); mutable state is never `pub` (`E0906`) |
+| **External Contract (`.d.ril`)** | File is `sub` (`to_pascal_case(stem)`) | Allowed on bodyless contract items | Prohibited (`E0901` / `E0904`) | `DeclSub` enforces `.d.ril` rules recursively (`E0901`) |
+| **Inline `sub` (`[pub] sub Name`)** | `PascalCase` (`E0101`/`E0102`); `Super` is `E0203` | Allowed inside `sub` (mutable state is `E0906`) | Prohibited (`E0904`) | Hermetic (Prelude only); `Super::` reaches enclosing non-mutable items; downward access requires `pub` (`E0201`) |
+
+Inline `sub` declarations are permitted only at file top-level or directly inside another `sub` (rejected in sequential statements with `E0703`, block `where` with `E0702`, and signature `where` with `E0704`).
 
 ### Module Imports and Visibility
 
 ```ebnf
-UseDecl    ::= [ "pub" ] "use" ModulePath [ "as" PascalCase ]
+UseDecl    ::= [ "pub" ] "use" FilePath [ "as" PascalCase ]
              | [ "pub" ] "use" ModulePath "::" ( "{" ImportList "}" | "*" | ImportItem )
-ModulePath ::= SnakeCase { "/" SnakeCase }
+FilePath   ::= SnakeCase { "/" SnakeCase }
+ModulePath ::= FilePath { "::" PascalCase }
+             | "Super" { "::" "Super" } { "::" PascalCase }
+             | PascalCase { "::" PascalCase }
 ImportList ::= ImportItem { "," ImportItem } [ "," ]
 ImportItem ::= Identifier [ "as" Identifier ]
 ```
@@ -7282,71 +7338,73 @@ ImportItem ::= Identifier [ "as" Identifier ]
 
 ```ril
 -- Fixture module math/numbers.ril exports ONE; math/absent does not exist.
--- use math/absent                   -- Error [E0208]: no module at this path
--- use math/numbers::{TWO}           -- Error [E0209]: no member TWO in the resolved module
-use math/numbers::{ONE}              -- OK
+-- use math/absent                      -- Error [E0208]: no module at this path
+-- use math/numbers::{TWO}              -- Error [E0209]: no member TWO in the resolved module
+use math/numbers::{ONE}                 -- OK
 ```
 
-An unresolved module path is `E0208`. A selective import or qualified module access naming an absent member is `E0209`. An inaccessible member is `E0201`; an unavailable ordinary lexical name is `E0204`. Import name collisions are `E0203`.
+An unresolved module or `Super::` path is `E0208`. A selective import or qualified access naming an absent member is `E0209`. An inaccessible member is `E0201`; an unavailable ordinary lexical name is `E0204`. Import name collisions and protected names (`Type`, `Super`) are `E0203`.
 
-- **Automatic PascalCase Namespace Derivation**:
-   When a module path is imported directly without `::` and without an explicit `as` clause (`use ModulePath`), the module namespace bound in the current lexical scope defaults to the canonical PascalCase transformation of the terminal path segment (`to_pascal_case(last_segment)`):
-   - `use math/geometry` automatically binds the namespace identifier `Geometry`.
-   - `use ril/concurrent/channel` automatically binds `Channel`.
-   - `use data/string_builder` automatically binds `StringBuilder`.
-   Exported declarations use qualified member projection, such as `Geometry::circle_area(...)` or `Channel::bounded(...)`.
-- **Explicit Namespace Aliasing (`as PascalCase`)**:
-   Providing an explicit `as PascalCase` clause overrides the canonical derived namespace identifier (e.g., `use math/geometry as Geo`). Supplying a non-PascalCase alias is statically rejected under `E0101`.
-- **Selective Member Import (`use ModulePath::{ ... }`)**:
-   Imports specific exported declarations into the lexical scope without qualification. Each imported item may optionally specify a local alias via `as Identifier`, conforming to identifier casing invariants (`E0101`).
-- **Glob Import & Re-Export (`pub use ModulePath::*`)**:
-   Re-exports or imports all public symbols from the target module into the local scope.
-- **Lexical Scoping**:
-   `use` declarations evaluate within their enclosing scope (file-level or block-level). Block-scoped imports remain strictly private to the enclosing block.
+- **File-to-`PascalCase` Mapping (`to_pascal_case`)**:
+   - `use FilePath` without `::` or `as` binds `to_pascal_case(last_segment)` in the current scope (`math/geometry` $\rightarrow$ `Geometry`, `data/string_builder` $\rightarrow$ `StringBuilder`, `crypto/sha256_hash` $\rightarrow$ `Sha256Hash`).
+   - Every `_`-separated segment in a module file name must begin with `[a-z]`, and the derived `PascalCase` name must satisfy acronym title-casing (`E0102`, rejecting single-letter prefixes before letters such as `a_b` $\rightarrow$ `AB` and digit-leading segments after `_` such as `sha_256`) and protected-name rules (`E0203`, rejecting `super.ril`).
+- **Path Separators (`/` vs `::`) and `Super::`**:
+   - `/` separates `snake_case` file-system segments (`FilePath`); `::` navigates `PascalCase` `sub` namespaces and member projections (`E0101`).
+   - `Super` is valid only as a leading `Super::` prefix (`use Super::...` or `Super::member`), stepping into the immediately enclosing `sub` or root file scope.
+- **Scoping & Re-Exports**:
+   - `use` evaluates within its enclosing file, `sub`, or block scope. Re-exporting a parent mutable binding via `pub use Super::{...}` is rejected under `E0906`.
 
 ```ril
--- Automatic PascalCase Namespace Binding (omits redundant 'as'):
-use math/geometry                       -- Automatically binds namespace 'Geometry'
-let area = Geometry::circle_area(5.0)   -- OK: qualified static call
+-- 1. Automatic PascalCase Namespace Binding & Explicit Aliasing:
+use math/geometry                       -- Binds 'Geometry'
+let area = Geometry::circle_area(5.0)
+use ril/crypto as Hash                  -- Overrides derived name with 'Hash'
+-- use ril/crypto as hash               -- Error [E0101]: alias must be PascalCase
+-- use ril/crypto as Super              -- Error [E0203]: 'Super' is protected
+-- use math/Geometry                    -- Error [E0101]: file path segments must be snake_case
+-- use net/a_b                          -- Error [E0102]: derived 'AB' violates PascalCase acronym rule
+-- use crypto/sha_256                   -- Error [E0102]: segment after '_' must start with [a-z]
 
--- Explicit Namespace Aliasing:
-use ril/crypto as Hash                  -- OK: explicit alias override via 'as PascalCase'
-let digest = Hash::sha256("data")
--- use ril/crypto as hash               -- Error [E0101]: module namespace alias must be PascalCase, found 'hash'
+-- 2. Nested Inline sub & Super:: Imports:
+use math/geometry::Transform            -- Binds inline sub 'Transform' from 'math/geometry'
+use math/geometry::Transform::{scale_tau as scale}
+pub use ril/math::*                     -- Glob re-export of public items
 
--- Selective Member Import with Optional Renaming:
-use ril/array::{push, pop as remove_last}
-let mut arr = [1, 2]
-arr !> push(3)
-let last_item = arr !> remove_last()
-
--- Glob Re-Export:
-pub use ril/math::*                     -- Re-export all public math items
-
--- Lexical Block-Scoped Import:
-fn calculate() -> () {
-    use ril/crypto::{sha256}            -- Block-scoped import: visible strictly inside calculate()
-    let d = sha256("data")
+sub Outer {
+    type Shared = int
+    var count = 0
+    pub sub Sibling { pub fn ping() -> Shared { 1 } }
+    pub sub Child {
+        use Super::{Shared, Sibling}    -- OK: imports enclosing private type and sibling sub
+        -- pub use Super::{count}       -- Error [E0906]: cannot re-export mutable binding
+        pub fn run() -> Shared { Sibling::ping() }
+    }
 }
--- let bad = sha256("data")              -- Error [E0204]: unresolved identifier 'sha256'
+
+-- 3. Block-Scoped Import:
+fn calculate() -> () {
+    use ril/crypto::{sha256}
+    let _ = sha256("data")
+}
 ```
 
 ### Top-Level Initialization and Purity
 
-- Top-level initialization has no observable effects; mutable variables require constant initializers.
+- Top-level initialization in root and `sub` scopes has no observable effects (`E0202`); mutable variables require constant initializers and cannot be marked `pub` (`E0906`).
 - Ordinary `let` requires immutable data. Foreign resource constants expose stable descriptors with separate operation contracts.
 - Postfix `?` outside a callable is `E0205`, including module initializers.
 
 ```ril
 let MAX_CONNECTIONS: int = 100
-let DEFAULT_TITLE: str = "Ril Application"
-var active_workers: int = 0            -- OK: initialized with constant expression
+pub let DEFAULT_TITLE: str = "Ril Application"
+var active_workers: int = 0            -- OK: private mutable state with constant initializer
 fn start_worker() &up(sub){mut active_workers} -> () { active_workers += 1 }
 
--- Prohibited top-level runtime side effects and error propagation:
+-- Prohibited top-level visibility, side effects, and error propagation:
+-- pub var exposed_workers: int = 0     -- Error [E0906]: mutable state cannot be declared 'pub'
 -- let current_time = Clock::now()      -- Error [E0202]: top-level declaration must be a pure constant expression
 -- let db = Database::connect("db.loc") -- Error [E0202]: top-level declaration cannot invoke runtime I/O or effects
--- let top_parse = parse_id("10")?      -- Error [E0205]: postfix '?' operator used outside function or closure body; no enclosing activation frame to receive early return
+-- let top_parse = parse_id("10")?      -- Error [E0205]: postfix '?' operator used outside function or closure body
 ```
 
 ### Test Conventions and Execution Protocol
@@ -7357,21 +7415,19 @@ Tests are ordinary functions. Their handlers, scoped bindings, Result inspection
 
 ```ril
 -- Complete executable root; no root main is declared.
-pub fn helper() -> () {}              -- Error [E0903]: executable program lacks its root main
+fn helper() -> () {}                  -- Error [E0903]: executable program lacks its root main
 ```
 
-An executable program without its required root `main` declaration is `E0903`. A present declaration that does not satisfy the entry contract is `E0904`. An ordinary library module is not required to declare `main`. Duplicate declarations of root `main` retain `E0203`.
-
-Executable programs define one root `main` function. The examples below are alternatives, not two definitions in one program. Prelude print/println have `@Fiber`, and file-I/O examples use the corresponding leaf-I/O contract:
+An executable program without its required root `main` declaration is `E0903`. A declaration that violates the entry contract or declares `fn main` inside a `sub` is `E0904`. Top-level `pub` on non-entry declarations in the executable root is `E0905`. Duplicate declarations of root `main` retain `E0203`.
 
 ```ril
-pub fn main() @Fiber -> () {
+fn main() @Fiber -> () {
     println("Hello, Ril!")
 }
 
 -- Alternative complete fallible executable root:
 use ril/file
-pub fn main() @Fiber -> Result<(), str> {
+fn main() @Fiber -> Result<(), str> {
     let config = File::read("config.json")?
     if config == "" {
         Err("empty configuration")     -- Runtime halts with non-zero exit code (1)
@@ -7382,16 +7438,18 @@ pub fn main() @Fiber -> Result<(), str> {
 ```
 
 ```ril
--- Separate executable-root fixtures:
--- fn main() -> () {}                        -- Error [E0904]: entry must be public
--- pub fn main(value: int) -> () {}          -- Error [E0904]: entry has a parameter
--- pub fn main<T>() -> () {}                 -- Error [E0904]: entry has a generic parameter
--- pub fn main() -> int { 0 }          -- Error [E0904]: unsupported entry result
+-- Separate executable-root and sub entry violations:
+-- pub fn main() -> () {}                    -- Error [E0904]: entry must not be public
+-- fn main(value: int) -> () {}              -- Error [E0904]: entry has a parameter
+-- fn main<T>() -> () {}                     -- Error [E0904]: entry has a generic parameter
+-- fn main() -> int { 0 }                    -- Error [E0904]: unsupported entry result
+-- sub Inner { fn main() -> () {} }          -- Error [E0904]: 'main' cannot be declared inside a 'sub'
+-- pub fn extra() -> () {}                   -- Error [E0905]: top-level 'pub' is prohibited in executable root
 ```
 
 | Entry property | Requirement |
 | :--- | :--- |
-| Declaration | Public ordinary named Ril function in the executable root; `halt` is allowed subject to its usual checks |
+| Declaration | Unmodified (non-public) ordinary named Ril function at executable root top-level; `halt` is allowed subject to its usual checks |
 | Value / generic parameters | None, including defaulted parameters |
 | Result | `()` or the language's `Result<(), str>`, after transparent alias expansion |
 | Effects / state | Ordinary declaration and provenance rules; undeclared residual effects remain `E0612` |
@@ -7797,5 +7855,7 @@ This index assigns each code its diagnostic name and points to its defining rule
 | **`E0902`** | [`MissingBodyInStandardModuleError`](#external-interface-declarations) |
 | **`E0903`** | [`MissingEntryPointError`](#program-entry-point) |
 | **`E0904`** | [`InvalidEntryPointError`](#program-entry-point) |
+| **`E0905`** | [`RootUnitExportProhibitedError`](#modules-and-compilation-units) |
+| **`E0906`** | [`PublicMutableStateProhibitedError`](#modules-and-compilation-units); [Top-Level Initialization and Purity](#top-level-initialization-and-purity) |
 | **`E0907`** | [`ForeignStructuralFieldPenetrationError`](#external-interface-declarations) |
 | **`E0908`** | [`UnsupportedExternalAuthorityContractError`](#external-interface-declarations) |
