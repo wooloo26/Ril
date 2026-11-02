@@ -529,7 +529,7 @@ fn on_event(ev: Event, _ctx: Context) -> () { handle(ev) } -- OK: '_ctx' is a pa
 
 ### Keywords
 
-The following 30 tokens are reserved; they cannot be ordinary identifiers or field labels:
+The following 30 keywords are reserved in all ordinary identifier and field-label positions:
 
 ```
 as       eff      else     false    fn       for
@@ -553,17 +553,20 @@ let scoped = 2                        -- OK: ordinary identifier
 let opaque = 3                        -- OK: ordinary identifier
 let meta = 4                          -- OK: ordinary identifier
 let pub = 5                           -- OK: ordinary identifier
-let never = 6                         -- OK: ordinary identifier
-assert(halt + scoped + opaque + meta + pub + never == 21)
+-- let never = 6                      -- Error [E0113]: intrinsic primitive type name
+-- let int = 0                        -- Error [E0113]: intrinsic primitive type name
+-- fn invalid(bool: int) -> () {}     -- Error [E0113]: intrinsic primitive type name
+-- type InvalidField = { str: bool }  -- Error [E0113]: intrinsic primitive type name
+assert(halt + scoped + opaque + meta + pub == 15)
 type Bottom = never                   -- Intrinsic bottom type in type syntax
 type Config = {
     capture: bool, up: bool, sub: bool,
     halt: bool, scoped: bool, opaque: bool, meta: bool, pub: bool,
-    via: bool, infer: bool, never: bool,
+    via: bool, infer: bool,
 }                                     -- OK: ordinary field labels
 ```
 
-A reserved keyword used as an ordinary identifier or field label is `E0113`.
+A reserved keyword or intrinsic primitive type name used as an ordinary identifier or field label is `E0113`.
 
 Contextual keywords are identifiers outside the forms below. Recognize each form by its grammatical position and required following tokens before name resolution. Each form follows its defining production's placement and semantic rules; ordinary names and field labels follow the [casing rules](#identifiers-and-casing-invariants).
 
@@ -582,7 +585,7 @@ Contextual keywords are identifiers outside the forms below. Recognize each form
 
 In `&up(owner){...}`, `sub` selects module storage; another owner identifies an enclosing callable layer. Invalid permission-modifier placements use `E0412` under [permission inference](#permission-inference-with-via-and-infer).
 
-Primitive type names, including `never`, denote their intrinsic types in type syntax and may be ordinary identifiers or field labels elsewhere. See [Value Types](#value-types).
+Primitive type spellings listed under [Value Types](#value-types), including `never`, are reserved type names. They denote their intrinsic types and are unavailable as ordinary identifiers or field labels (`E0113`).
 
 ```ril
 -- Reserved and contextual keywords in action:
@@ -7581,7 +7584,7 @@ This index assigns each code its diagnostic name and points to its defining rule
 | **`E0110`** | [`InvalidByteLiteralError`](#text-and-byte-literals) |
 | **`E0111`** | [`MalformedNumericLiteralError`](#numeric-literals) |
 | **`E0112`** | [`MalformedInterpolationError`](#text-and-byte-literals) |
-| **`E0113`** | [`ReservedKeywordIdentifierError`](#keywords) |
+| **`E0113`** | [`ReservedIdentifierError`](#keywords) |
 | **`E0120`** | [`UnexpectedTokenError`](#syntactic-diagnostic-conditions) |
 | **`E0121`** | [`UnexpectedEndOfSourceError`](#syntactic-diagnostic-conditions) |
 | **`E0122`** | [`UnclosedDelimiterError`](#syntactic-diagnostic-conditions) |
