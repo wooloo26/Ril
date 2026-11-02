@@ -1,6 +1,6 @@
 # Ril
 
-Ril is a programming language designed to reduce manual reasoning about data access, state, effects, and termination through explicit markers and statically checked contracts.
+Ril is a programming language designed to reduce manual reasoning about data access, state, effects, and termination through explicit markers and static checking.
 
 ```ril
 -- Permission dependencies propagate through generic calls and local reception.
@@ -24,7 +24,7 @@ fn transfer() -> () {
 ```
 
 ```ril
--- Callable contracts retain environment creation, sharing, and contained origins.
+-- Function signatures record environment creation, sharing, and contained origins.
 type Step = fn() &up -> int
 fn make_shared_step(^mut cell: Cell)
     &capture &^mut &return{^mut cell} -> new Step {
@@ -56,7 +56,7 @@ fn update_graph() -> () {
 ```
 
 ```ril
--- A checked budget makes eligible unbounded work usable in a finite, pure contract.
+-- A checked budget makes eligible unbounded work usable in a halt function.
 fn spin() -> int { loop {} }
 halt fn bounded() -> ?int {
     with Div::exhausted() -> None
