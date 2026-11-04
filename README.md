@@ -1,6 +1,6 @@
 # Ril
 
-Ril is a programming language designed to reduce manual reasoning about data access, state, provenance, effects, and termination through explicit markers and static checking.
+Ril is a programming language designed to make data permissions flow explicitly through computation and remain fully traceable.
 
 [language specification](doc/SPEC.md) 
 

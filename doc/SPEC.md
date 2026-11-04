@@ -869,9 +869,8 @@ assert(n2.val == 99 && copied == 10)
 ### Record Types and Row Polymorphism
 
 - Record fields and tuple components use the [common binding and access mode axes](#binding-modes-and-storage-matrix). Omitted mode means default immutable access; an explicit `let` member modifier is not admitted.
-- Named rows contain the fields not explicitly declared. Overlapping labels between an explicit field and its named row are `E0212`.
 
-Records have structural named fields. Closed records reject width subtyping; open records use declared or structurally bound `..R`, never anonymous `..`.
+Records have structural named fields. `{}` is the closed empty record; closed records reject width subtyping. A final `..` permits extra fields in a structural constraint or direct record parameter of a Ril function/lambda definition. `..Fields` names or expands the remaining row; `Fields` is a user-chosen `PascalCase` name.
 
 ```ril
 type User = { id: int, name: str }
@@ -879,16 +878,43 @@ let user = User.{ id: 1, name: "Ada" }
 -- let missing: User = .{ id: 1 }     -- Error [E0307]: required field 'name' is absent
 -- let unknown = user.age            -- Error [E0336]: this product has no field 'age'
 -- type Repeated = { id: int, id: int } -- Error [E0210]: field label declared twice
-type WithId<R> = { id: int, ..R }
+type WithId<Fields> = { id: int, ..Fields }
 -- type Overlap = WithId<{ id: int }> -- Error [E0212]: row tail overlaps explicit 'id'
 type Extended = WithId<{ name: str }> -- OK: disjoint row labels
+type Extra = { name: str }
+type Combined = { id: int, ..Extra }  -- Same closed type as Extended; no generics
+-- type BadTail = WithId<int>        -- Error [E0306]: a row tail must be a record type
 ```
+
+```ril
+fn get_id(item: { id: int, .. }) -> int { item.id } -- Implicit anonymous row parameter
+fn sum_ids(a: { id: int, .. }, b: { id: int, .. }) -> int { a.id + b.id }
+fn keep<T: { id: int, .. }>(item: T) -> T { item }  -- T preserves the entire record
+fn keep_record<T: { .. }>(item: T) -> T { item }    -- Any record, including {}
+fn add_id<T: { ..Rest }>(item: T) -> { id: int, ..Rest } { .{ id: 1, ..item } }
+
+assert(get_id(.{ id: 1, name: "Ada" }) == 1)
+assert(sum_ids(.{ id: 1, name: "Ada" }, .{ id: 2, active: true }) == 3)
+let kept = keep(.{ id: 1, name: "Ada" })
+assert(kept.name == "Ada")
+assert(add_id(.{ name: "Ada" }).name == "Ada") -- Constraint binds Rest for the result
+let empty = keep_record(.{})
+-- keep_record(1)                    -- Error [E0301]: int is not a record
+
+-- fn unbound(item: { ..Missing }) -> () {} -- Error [E0204]: no binding for Missing
+-- type Anything = { .. }            -- Error [E0306]: anonymous row outside an admitted position
+-- let erased: { .. } = .{ id: 1 }   -- Error [E0306]: storage needs a determined type
+-- fn erased() -> { .. } { .{} }     -- Error [E0306]: an anonymous result row has no binder
+-- type Both<Fields> = { ..Fields, .. } -- Error [E0120]: at most one final row tail
+```
+
+Each anonymous input tail binds an independent implicit universally quantified row parameter, inferred at calls; it occupies no explicit generic-argument position. A structural constraint introduces an otherwise unbound tail name for its enclosing generic declaration; elsewhere named tails must already resolve (`E0204`). Reusing a bound name relates the same remaining fields and member modes. A tail must denote a record type; anonymous tails outside constraints, definition input records and type patterns are `E0306`. Checking preserves the complete actual schema, provenance and access obligations; anonymous tails introduce no erased open-record storage type.
 
 Missing required construction fields use `E0307`. Unknown labels projected or matched against a known product schema use `E0336`. Repeated declared, explicit, or generated field labels use `E0210`; overlap between an explicit type field and a named row uses `E0212`. Projection on a type that does not admit that product projection uses `E0337`. Opacity restrictions take precedence when the representation is inaccessible.
 
 Use `r.field` or a statically known `r.(key)`. Types use the corresponding `T.field`/`T.(key)`. Record bracket indexing and run-time keys are `E0324`.
 
-Named row tail polymorphism (`..R`) allows generic functions to accept and preserve additional caller fields across pipelines. Pattern destructuring with `..rest` extracts a concrete, statically typed sub-record containing the remaining known fields.
+Named tails preserve row relationships across inputs and results. Pattern destructuring with `..rest` extracts a concrete, statically typed sub-record containing the remaining known fields; bare `..` ignores them.
 
 ```ebnf
 RecordType       ::= "{" [ RecordFieldList ] "}"
@@ -897,7 +923,8 @@ DeclaredMemberMode ::= MemberMode | [ "var" ] "via"
 RecordField      ::= [ DeclaredMemberMode ] FieldLabel ":" TypeExpression
 TypeProjection   ::= PrimaryType "." ( FieldLabel | TupleIndex | "(" Expression ")" )
 TupleIndex       ::= Digit { Digit }
-RecordFieldList  ::= ".." PascalCase | RecordField { "," RecordField } [ "," [ ".." PascalCase ] ]
+RecordFieldList  ::= RecordTail | RecordField { "," RecordField } [ "," [ RecordTail ] ]
+RecordTail       ::= ".." [ PascalCase ]
 FieldLabel       ::= ValueName | PascalCase
 ```
 
@@ -961,7 +988,7 @@ type IdType = User.id                  -- OK: direct static field type extractio
 -- type BadIndex = User["id"]          -- Error [E0324]: record types do not support bracket indexing, use User.id
 
 -- Named row tail polymorphism (generic type preservation):
-fn with_timestamp<R>(r: { ..R }) -> { timestamp: int, ..R } {
+fn with_timestamp<Fields>(r: { ..Fields }) -> { timestamp: int, ..Fields } {
     .{ timestamp: 1600000000, ..r }
 }
 let stamped = with_timestamp(.{ id: 1, tag: "audit" })
@@ -1681,7 +1708,7 @@ assert(snapshot.count == 0 && version.count == 1)
 ### Generic Parameters, Defaults, and Value Sorts
 
 ```ril
-fn log_id<T: { id: int, ..R }>(item: T) -> int { item.id }
+fn log_id<T: { id: int, .. }>(item: T) -> int { item.id }
 ```
 
 Generics admit type, const-value, member-mode, and [static-key](#static-key-parameters-and-computed-value-projection) parameters. They apply to data, wrapper, sum, and callable declarations. Access-mode inference supplies implicit static access parameters. `MemberMode` denotes both slot and access components; generic member-mode arguments use concrete modes or static mode expressions.
@@ -1696,7 +1723,7 @@ TypeSetSort           ::= TypeReference "|" TypeReference { "|" TypeReference }
 PipelineConstraint    ::= QualifiedName [ GenericArgs ]
 ConstParamDecl        ::= ValueName ":" ValueType [ "=" Expression ]
 KindSignature         ::= "Type" "->" ( "Type" | KindSignature )
-RecordConstraint      ::= "{" [ RecordConstraintField { "," RecordConstraintField } "," ] ".." PascalCase "}"
+RecordConstraint      ::= "{" [ RecordConstraintField { "," RecordConstraintField } "," ] RecordTail "}"
 RecordConstraintField ::= [ MemberMode ] FieldLabel ":" TypeExpression
 KeyofConstraint       ::= "keyof" TypeExpression
 GenericArgs           ::= "<" GenericArg { "," GenericArg } [ "," ] ">"
@@ -1714,7 +1741,7 @@ ValueType             ::= TypeExpression
 - **Pipeline Type Constraints (`T |> Guard`, `E0301`, `E0306`)**: A type parameter may pipe into one or more pure type functions (`T |> Numeric`). The guard must be a compile-time pure `type` function of kind `Type -> Type` (`E0306`). An argument type $T_{arg}$ satisfies the guard if and only if:
   $$\text{Valid}(T_{arg}) \iff T_{arg} \not\equiv \text{never} \quad \wedge \quad \text{Guard}\langle T_{arg} \rangle \equiv T_{arg}$$
   The bottom type `never` is statically rejected before guard evaluation, preventing vacuous satisfaction. If $\text{Guard}\langle T_{arg} \rangle$ does not produce definitional identity with $T_{arg}$, the argument is rejected under `E0301`. Multiple guards pipe from left to right: `T |> Guard1 |> Guard2` $\equiv \text{Guard2}\langle \text{Guard1}\langle T \rangle \rangle$.
-- **Orthogonal Constraint Composition**: Structural row polymorphism and pipeline guards compose naturally: `T: { id: int, ..R } |> AuditGuard` verifies that $T$ satisfies the open record structure and conforms to `AuditGuard`.
+- **Orthogonal Constraint Composition**: Structural row polymorphism and pipeline guards compose naturally: `T: { id: int, .. } |> AuditGuard` verifies that $T$ satisfies the open record structure and conforms to `AuditGuard`.
 - **Static Value Sorts**: Const parameters admit scalar values, atomic type tokens, and finite immutable aggregates without resource or callable authority. `token: Type` is a static value parameter, distinct from a type parameter `T: Type`. Admission of static-only token values never permits their run-time materialization.
 - **Const Generic Evaluation & Purity Invariant (`E0814`, `E0323`)**: Const generic arguments evaluate at compile time within the pure static domain (with empty effect and state/provenance rows). Non-constant runtime expressions passed to const parameters trigger `E0814`. Arguments failing sort constraints trigger `E0323`.
 - **No Untagged Literal or Storage Union Types (`E0318`)**: Concrete values (strings, integers, booleans) and untagged value unions (`int | str`) cannot serve as storage, variable, or binding types (`E0318`). Tagged alternatives are declared with sum types (`type HttpMethod { Get, Post }`). Concrete values may be supplied as compile-time arguments to const parameters (`Buffer<u8, 1024>`, `Matrix<f64, 4>`). Finite type sets (`T: int | f64`) are permitted exclusively as static domain constraints on generic parameters (`TypeSetSort`), which are monomorphized to single rigid types.
@@ -1740,10 +1767,10 @@ assert(multiply(3, 4) == 12)
 
 -- Composed Structural and Pipeline Constraint:
 type NonZero = \T -> match <T> {
-    <{ val: int, ..let _ }> -> <T>,
+    <{ val: int, .. }> -> <T>,
     _ -> <never>,
 }
-fn get_val<T: { val: int, ..R } |> NonZero>(item: T) -> int { item.val }
+fn get_val<T: { val: int, .. } |> NonZero>(item: T) -> int { item.val }
 assert(get_val(.{ val: 42, label: "ok" }) == 42)
 
 type Token<value: f64>(int)
@@ -6697,7 +6724,7 @@ fixed = <int>
 meta fn target_size<T>(token: Type<T>) -> int { byte_size(token) }
 meta fn object_size<T>(value: T) -> int { byte_size(<T>) }
 meta fn value_type_name<T>(value: T) -> str { type_name(<T>) }
-meta fn field_size<T: { ..R }, K: keyof T>(token: Type<T>, key: K) -> int {
+meta fn field_size<T: { .. }, K: keyof T>(token: Type<T>, key: K) -> int {
     byte_size(<T.(K)>)
 }
 var selected: Type = <User>
@@ -6749,7 +6776,7 @@ Type functions use anonymous-function syntax with a contextual type-producing re
 | Const / `typeof` angle operations | Parenthesize: `Flag<(n > 0)>`, `Buffer<u8, (1 << n)>`, `<typeof (a > b)>` |
 | Pattern quote | Use the type-pattern extension, including `let U` and rests; those binders are not expression syntax |
 
-Resolve declaration-header/application metadata before committing an expression's postfix generic list; never choose the parse by testing operand types, constraints, or current variable contents. A named non-generic callable has an empty generic signature, so explicit arguments retain `E0340`. Type syntax, type patterns, and generic parameter declarations keep their own list productions; embedded expression slots use the expression rule. No post-commit backtracking is performed.
+Resolve declaration-header/application metadata before committing an expression's postfix generic list; never choose the parse by testing operand types, constraints, or current variable contents. A named callable without explicit generic parameters has an empty explicit generic signature, including one with inferred anonymous input rows; explicit arguments retain `E0340`. Type syntax, type patterns, and generic parameter declarations keep their own list productions; embedded expression slots use the expression rule. No post-commit backtracking is performed.
 
 An empty quote or top-level comma is `E0120`; missing/mismatched committed delimiters use `E0122` / `E0123`. `Type<T, U>` is arity error `E0340`.
 
@@ -6827,7 +6854,7 @@ Static loops and recursion are admissible subject to the static-evaluation budge
 ```ril
 -- Custom diagnostic in pure type function via static panic:
 type SizedRecord = \T -> match <T> {
-    <{ id: int, ..let _ }> -> <T>,
+    <{ id: int, .. }> -> <T>,
     _ -> panic("SizedRecord requires a record containing an 'id: int' field"),
 }
 -- type BadRecord = SizedRecord<str> -- Error [E0831]: panic during static evaluation: SizedRecord requires a record containing an 'id: int' field
@@ -6946,7 +6973,7 @@ In expression contexts, `keyof T` statically enumerates the coordinates of a rec
 #### Static Key Parameters and Computed Value Projection
 
 ```ril
-fn get_field<T: { ..R }, K: keyof T>(record: T, key: K) -> T.(K) {
+fn get_field<T: { .. }, K: keyof T>(record: T, key: K) -> T.(K) {
     record.(key)
 }
 type User = { id: int, name: str }
@@ -7109,16 +7136,18 @@ RigidNominalPattern ::= QualifiedName [ "<" TypePatternInner { "," TypePatternIn
 PrimitivePattern ::= PrimitiveType
 TypeArrayPattern ::= "[" [ Expression ] "]" TypePatternInner
 TypeMapPattern  ::= "[" TypePatternInner ":" TypePatternInner "]"
-TypeRecordPattern ::= "{" [ TypePatternField { "," TypePatternField } [ "," TypeRestPattern ] [ "," ] ] "}"
+TypeRecordPattern ::= "{" [ ( TypeRestPattern | TypePatternField { "," TypePatternField }
+                      [ "," TypeRestPattern ] ) [ "," ] ] "}"
 TypePatternField ::= [ ModePattern ] FieldLabel ":" TypePatternInner
 TypePatternMember ::= [ ModePattern ] TypePatternInner
 ModePattern      ::= MemberMode | "let" PascalCase
 TypeTuplePattern ::= "(" ")" | "(" TypePatternMember "," ( TypeRestPattern | TypePatternMember { "," TypePatternMember } [ "," TypeRestPattern ] [ "," ] ) ")"
-TypeRestPattern ::= ".." "let" PascalCase
+TypeRestPattern ::= ".." [ "let" ( PascalCase | "_" ) ]
 ```
 
 - **Scoped Pattern Variables (`let U`)**: A `let U` binder inside `<P>` introduces an immutable target-type variable scoped strictly to the arm's guard and RHS. `U` must be `PascalCase` (`E0101`); it alone proves no record structure or fields.
 - **Member Modes and Mode Pattern Binders (`let M`)**: Structural type patterns match declared member modes exactly; omission means the default mode. A member mode may be explicitly matched against concrete modes (`var`, `mut`, etc.) or captured via a scoped mode variable `let M` (e.g. `<(let M let Head, ..let Tail)>` or `<{ let M field: let U, ..let Rest }>`), where `M` is bound to the matched coordinate's `MemberMode`. Row/tuple rests preserve remaining member modes. The `let U` type-variable binder remains explicit.
+- **Anonymous Rest**: `..` (equivalently `..let _`) matches the remaining row/tuple without binding a name. `<{ .. }>` matches any record, including `{}`; `<{}>` matches only the empty record. A named type-pattern rest uses `..let Rest`, not `..Rest`.
 - **Unique Pattern Binders**: Each pattern branch may bind an identifier at most once; repeating it is statically rejected (`E0347: DuplicatePatternBindingError`). Multi-position equality is asserted via explicit guards (`if <A> == <B>`).
 - **Tuple Rest**: A type-pattern rest is a tuple type of the remaining components; an empty rest is unit. A one-component rest cannot form a tuple and fails that pattern, allowing the next arm to match. It is not silently coerced to its component type.
 - **Rigid Application Head (`E0306`)**: Require a known rigid type constructor; no head binding or inverse type-function matching. Transparent aliases may expand. Primitive/structural patterns and whole-type `_`/`let U` remain legal.
@@ -7153,6 +7182,13 @@ meta let _ = {
 ```
 
 ```ril
+halt type RecordOnly = \T -> match <T> {
+    <{ .. }> -> <T>,
+    _ -> <never>,
+}
+type EmptyRecord = RecordOnly<{}>               -- {}
+type NotRecord = RecordOnly<int>                -- never
+
 -- Deep Recursive Unwrapping of Container / Fallible Types:
 type UnwrapAll = \T -> match <T> {
     <Result<let OkVal, let _>> -> UnwrapAll<OkVal>,
@@ -7201,7 +7237,7 @@ Type functions accept the following parameter sorts and constraints:
 
 - **Bare Types (`\T` or `\T: Type`)**: Accepts static type expressions. Unannotated parameters default to sort `Type`.
 - **Const Values (`\param: ValueType`)**: Accepts compile-time known values (literals, `meta let`, statically foldable expressions), including `token: Type` / `token: Type<T>`. Passing runtime variables raises `E0814`. Token arguments are copied at argument evaluation and compared by target identity.
-- **Bounded Structural Types (`\T: { id: int, ..R }`) and Static Keys (`\K: keyof T`)**: Structural bounds constrain types; `keyof` bounds constrain static key values. These are distinct sorts even though both use `PascalCase` binders.
+- **Bounded Structural Types (`\T: { id: int, .. }`) and Static Keys (`\K: keyof T`)**: Structural bounds constrain types; `keyof` bounds constrain static key values. These are distinct sorts even though both use `PascalCase` binders.
 - **Higher-Kinded Constructors (`\M: Type -> Type`)**: Enforces constructor kind arity (`E0306`).
 - **Default Sort Arguments**: Type function parameters support default expressions conforming to their sort: `\T = u8`, `\cap: int = 1024`. Default arguments follow the left-to-right scoping and trailing-default rules ([Generic Parameters, Defaults, and Value Sorts](#generic-parameters-defaults-and-value-sorts)).
 
@@ -7224,7 +7260,7 @@ type VersionedSchema = \version: int -> match version {
 
 type ActivePayload = VersionedSchema<2>        -- SchemaV2
 
-type PickField = \T: { ..R }, K: keyof T -> <T.(K)>
+type PickField = \T: { .. }, K: keyof T -> <T.(K)>
 type UserName = PickField<SchemaV1, "name">    -- str
 
 type Wrapper = \M: Type -> Type, T -> <M<T>>
@@ -7714,7 +7750,7 @@ This index assigns each code its diagnostic name and points to its defining rule
 | **`E0303`** | [`NonExhaustiveMatchError`](#pattern-matching) |
 | **`E0304`** | [`UnreachableMatchArmError`](#pattern-matching); [Sum Types and GADTs](#sum-types-and-gadts) |
 | **`E0305`** | [`NominalTypeMismatchError`](#nominal-type-wrappers) |
-| **`E0306`** | [`KindMismatchError`](#structural-type-pattern-matching); [Static Layout](#compile-time-evaluation-and-layout-queries) |
+| **`E0306`** | [`KindMismatchError`](#structural-type-pattern-matching); [Record Rows](#record-types-and-row-polymorphism); [Static Layout](#compile-time-evaluation-and-layout-queries) |
 | **`E0307`** | [`MissingFieldError`](#record-types-and-row-polymorphism) |
 | **`E0308`** | [`OpaqueBoundaryViolationError`](#type-declarations-and-opaque-types) |
 | **`E0309`** | [`VacuousBindingError`](#guarded-bindings-and-non-vacuous-invariant) |
