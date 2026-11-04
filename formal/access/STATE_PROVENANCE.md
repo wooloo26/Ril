@@ -226,6 +226,15 @@ The theorem is relative to the resolved concrete semantics. If lowering omits
 a cleanup edge or a captured environment operation, it has changed the program
 whose sources are being covered. No property of the solver repairs that omission.
 
+Successful provenance analysis does not establish definite initialization or
+execution progress. Its missing-operand diagnostic asks whether the global
+may-source solution contains a source, not whether every incoming path has
+initialized the operand. For example, a CFG that first reads register 7 and then
+seeds it is accepted, although its initial configuration has no concrete step.
+The artifact proves both facts for this counterexample. Grounded Horn derivation
+does not imply temporal availability. A frontend needs a separate well-formedness
+judgment; the finite access/call checker in Section 4 separately proves progress.
+
 ### 3.4. Identity is not an explanation label
 
 A graph can contain two provenance explanations for one object. Traversing it
@@ -497,9 +506,28 @@ $$
 $$
 
 where $W,T,C,N$ record writes, independent retention, environment-creation
-obligations and named reads, respectively. The boundary kernel combines the
-body, handler and cleanup components before applying effect elimination.
-Eliminating an effect changes $\mathcal E$; it preserves every state component.
+obligations and named reads, respectively. For handled family $h$, the boundary
+kernel eliminates $h$ from the protected body's effect row before combining it
+with the operation arm and residual cleanup summaries:
+
+$$
+\mathcal E_{\mathrm{out}}=
+(\mathcal E_{\mathrm{body}}\setminus\{h\})\cup
+\mathcal E_{\mathrm{arm}}\cup\mathcal E_{\mathrm{cleanup}}^{\mathrm{res}}.
+$$
+
+An arm uses outer handlers even when it requests its own family. Consequently,
+an arm whose summary contains $h$ must leave $h$ outward; an enclosing handler
+can discharge that obligation later. Filtering the combined rows would wrongly
+make this example appear effect-free. `handled_effects_exact` proves the precise
+membership equation and is part of the aggregate certificate.
+
+Cleanup summaries here contain residual obligations after resolving the handlers
+at each cleanup site. Cleanup effects handled inside the protected body belong
+to its body summary instead. Establishing this site-specific dispatch is a
+boundary correspondence obligation, not a behavior implemented by this kernel.
+All body, handler and cleanup state components are combined unchanged;
+effect elimination never removes state.
 
 ### 7.1. When local state may be discharged
 
@@ -594,8 +622,9 @@ an unconditional universality claim about the implemented analyzer.
 
 The reported results cover the core and generic draft extension distributed with
 this paper, using Lean 4.33.0 and its bundled libraries. Verification passed
-255 positive and adversarial fixtures, including new identity, lifetime and
-boundary counterexamples. Declaration/theorem counts are diagnostic output,
+260 positive and adversarial fixtures, including identity, lifetime, effect
+routing and initialization counterexamples, plus ten audit rejection probes.
+Declaration/theorem counts are diagnostic output,
 not the completion criterion: ownership of compiled modules and the entire
 source import closure determine what is audited.
 
@@ -615,6 +644,9 @@ Representative cases exercise complementary sides of the checks:
 | A readonly reception without immutable admission | Rejected |
 | Draft capture/retention or an external write to an input | Rejected |
 | Local mutation with an outside handler environment | Discharge blocked |
+| An operation arm requests its own handled family | Its effect remains outward; an outer handler can discharge it |
+| An already-resolved cleanup has the same residual effect | Its obligation remains outward |
+| A CFG reads a register before its later seed | Provenance analysis accepts; concrete first-step impossibility is proved |
 | A second resume through an alias | Rejected; independent authority remains usable |
 | One physical parent with two source labels | Child path retained; false separation rejected |
 | Conflicting owner metadata for one ID | Entry validation rejects the contradiction |
@@ -632,7 +664,12 @@ unmeasured performance or full-language coverage.
 The axiom audit examines declarations owned by project modules, including those
 in other namespaces, private/generated helpers, fixture proofs and validation
 entrypoints. It also verifies that every model source module is imported into
-the audit environment. Namespace spelling cannot hide a project declaration. The permitted union is exactly `propext`, `Classical.choice`
+the audit environment. Both completed entrypoint modules, `Audit` and `Main`,
+are imported and scanned separately. A source-local audit only sees declarations
+preceding the command; replaying it cannot establish coverage of the completed
+module. A regression probe compiles a module whose local audit passes before a
+trailing axiom, then verifies rejection when the completed module is imported.
+Namespace spelling cannot hide a project declaration. The permitted union is exactly `propext`, `Classical.choice`
 and `Quot.sound`. No custom unproved axiom, unfinished proof or unsafe project
 declaration is accepted. Negative probes exercise added and inherited axioms, `sorryAx`, unsafe code,
 native proofs, cross-namespace declarations, unaudited source modules and
@@ -716,13 +753,14 @@ scope and remaining premises.
 | --- | --- | --- |
 | Theorem 1 | `solve_exact`, `solve_least`, `solve_nodup`; termination of `solveAux` | [Solver](RilAccess/Solver.lean) |
 | Theorem 2 | `provenance_coverage`, `program_point_coverage` | [Concrete semantics](RilAccess/Provenance/Semantics.lean) |
+| Provenance acceptance without progress | `future_seed_accepted`, `future_seed_has_no_first_step` | [Provenance cases](RilAccess/Examples/Provenance.lean) |
 | Theorem 3 | `Calls.every_prefix_authorized`, `Calls.source_progress`; supporting declaration/path lemmas | [Call proofs](RilAccess/Call/Proofs.lean), [access progress](RilAccess/Access/Progress.lean), [access proofs](RilAccess/Access/Proofs.lean) |
 | Graph separation | `CoreEntry.separated_paths_cannot_alias`, `GraphAuthority.analyze_exact` | [Entry graph](RilAccess/Call/Entry.lean), [graph oracle](RilAccess/Graph/Authority.lean) |
 | Theorem 4 | `Identity.objects_exact`, `CoreEntry.snapshot_objects`, `snapshot_sources_complete`, `checked_at_entry_parameter_is_reachable` | [Entry capture](RilAccess/Call/Entry.lean), [summary checker](RilAccess/Call/Summary.lean) |
 | Theorem 5 | `every_concrete_identity_survives`, `checked_distinct_fresh_objects`, `checked_fresh_origin_excludes_frozen_entry`, `checked_existing_origin_is_not_callee_local` | [Summary substitution](RilAccess/Call/Summary.lean) |
 | Theorem 6 | `checked_recipe_prefixes`, `trace_invariant`, `old_root_cannot_reach_draft`, `base_snapshot_preserved`, `source_counterpart_persists`, `copy_preserves_paths`, `trace_well_typed`, `published_schema_preserved`, `publication_ends_privilege` | [Draft execution/checking](RilAccess/Draft/Core.lean), [graph/type proofs](RilAccess/Draft/Proofs.lean), [boundary proofs](RilAccess/Draft/Boundary.lean) |
 | Draft admission, source coverage and exits | `admitted_mode_is_immutable`, `admitted_inputs_have_no_writer`, `recipe_source_coverage`, `trace_sources`, `conforming_external_cannot_escape`, `external_state_survives`, `abort_preserves_state` | [Draft proofs](RilAccess/Draft/Proofs.lean), [state/publication](RilAccess/Draft/Boundary.lean), [Draft cases](RilAccess/Examples/Draft.lean) |
-| Theorem 7 and effect conservation | `static_discharge_safe`, `handled_state_components`, `external_environment_blocks_discharge` | [Contracts](RilAccess/Contracts.lean), [effect boundary](RilAccess/Effects/Boundary.lean) |
+| Theorem 7 and effect conservation | `static_discharge_safe`, `handled_effects_exact`, `handled_state_components`, `external_environment_blocks_discharge` | [Contracts](RilAccess/Contracts.lean), [effect boundary](RilAccess/Effects/Boundary.lean) |
 | Theorem 8 | `aliases_cannot_resume_twice`, `derived_access_ends`, `dependent_operation_loan`, `retained_authority_survives`, `resume_keeps_committed_state` | [Resumption kernel](RilAccess/Effects/Resumption.lean) |
 | Exactness limit | `source_reachability_iff_halting`, `no_computable_exact_decider` | [Limits](RilAccess/Provenance/Limits.lean) |
 | Source-language transfer | `complete_sources_given_lowering`, with `Lowering` as premise | [Simulation](RilAccess/Provenance/Simulation.lean) |

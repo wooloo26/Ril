@@ -8,6 +8,8 @@ namespace RilAccess.CoreBoundary
 structure Boundary where
   body : Summary
   handler : Summary
+  /-- Residual obligations after resolving handlers at each cleanup site.
+  Cleanup effects handled inside the protected body belong to body instead. -/
   cleanup : Summary
   bodyRoots : Footprint
   handlerRoots : Footprint
@@ -23,7 +25,15 @@ def footprint (boundary : Boundary) : Footprint :=
     boundary.bodyRoots.escaping ++ boundary.handlerRoots.escaping ++ boundary.cleanupRoots.escaping⟩
 
 def handled (boundary : Boundary) (effect : Nat) : Summary :=
-  ((boundary.body.combine boundary.handler).combine boundary.cleanup).handle effect
+  ((boundary.body.handle effect).combine boundary.handler).combine boundary.cleanup
+
+/-- Operation arms use outer handlers, including for their own effect family.
+Already-resolved cleanup obligations must not be handled a second time. -/
+theorem handled_effects_exact (boundary : Boundary) (handledEffect effect : Nat) :
+    effect ∈ (handled boundary handledEffect).effects ↔
+      (effect ∈ boundary.body.effects ∧ effect ≠ handledEffect) ∨
+        effect ∈ boundary.handler.effects ∨ effect ∈ boundary.cleanup.effects := by
+  simp [handled, Summary.combine, Summary.handle]
 
 def events (summary : Summary) (mechanism : Mechanism) : List Event :=
   summary.rootReturn.map (fun origin => ⟨.rootReturn, origin, mechanism⟩) ++

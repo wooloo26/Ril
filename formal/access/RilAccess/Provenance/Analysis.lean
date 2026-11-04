@@ -110,6 +110,8 @@ def operands : Action → List Nat
   | .emit _ register _ _ => [register]
   | _ => []
 
+/-- Check may-source availability in the global solution, not definite
+initialization along every incoming path. Success does not imply progress. -/
 def missingOperands (p : ResolvedProgram) (facts : List Fact) : List (Nat × Nat) :=
   p.code.flatMap fun i =>
     if Fact.active i.pc ∈ facts then

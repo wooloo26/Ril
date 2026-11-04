@@ -25,6 +25,23 @@ def hiddenAlias : ResolvedProgram := { aliasWrite with checks := [.exactEvents [
 
 def rootless : ResolvedProgram := straight [.copy 0 1 .higherOrder, .emit .write 1 false .binding]
 
+/-- Future seeds can justify a may-source fact without making the first
+instruction executable. This analyzer does not check definite initialization. -/
+def futureSeed : ResolvedProgram :=
+  ⟨0, [⟨0, .emit .read 7 false .binding, [some 1]⟩,
+    ⟨1, .seed 7 freshA, [none]⟩], []⟩
+
+theorem future_seed_accepted : accepts futureSeed = true := by decide +kernel
+
+theorem future_seed_has_no_first_step : ∀ next, ¬ Step futureSeed (initial futureSeed.entry) next := by
+  intro next h
+  cases h with
+  | next hi hp hx ht =>
+    simp only [futureSeed, List.mem_cons, List.not_mem_nil, or_false] at hi
+    rcases hi with rfl | rfl
+    · cases hx <;> simp [initial] at *
+    · simp [initial, futureSeed] at hp
+
 def cyclicGraph : ResolvedProgram := straight
   [.seed 0 freshA, .seed 1 parameter, .store 0 0 1, .store 1 0 0,
     .emit .retain 0 true .aggregate]
@@ -165,6 +182,7 @@ def fixtures : List (String × Bool) :=
   [("shared alias accepted", accepts aliasWrite),
    ("hidden alias rejected", !accepts hiddenAlias),
    ("missing origin rejected", !accepts rootless),
+   ("provenance acceptance does not establish definite initialization", accepts futureSeed),
    ("cycles and contained origins", accepts cyclicGraph),
    ("hidden closure rejected", !accepts hiddenClosure),
    ("root/contained distinction", accepts containedReturn),

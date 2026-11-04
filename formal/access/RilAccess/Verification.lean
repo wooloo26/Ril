@@ -61,6 +61,10 @@ structure EntryGuarantees : Prop where
       CoreSummary.InputFacts actual frozen summary ∧ result = CoreSummary.instantiate actual summary
 
 structure EffectGuarantees : Prop where
+  residualEffects : ∀ (boundary : CoreBoundary.Boundary) handledEffect effect,
+    effect ∈ (CoreBoundary.handled boundary handledEffect).effects ↔
+      (effect ∈ boundary.body.effects ∧ effect ≠ handledEffect) ∨
+        effect ∈ boundary.handler.effects ∨ effect ∈ boundary.cleanup.effects
   environments : ∀ (boundary : CoreBoundary.Boundary) activation task scope origin,
     origin ∈ boundary.handlerEnvironment ++ boundary.cleanupEnvironment →
     owned activation task scope origin = false →
@@ -116,7 +120,8 @@ theorem verified : Guarantees where
   entry := ⟨fun _ _ _ => CoreEntry.snapshot_objects,
     fun _ _ _ _ _ _ _ => CoreSummary.checked_at_entry_parameter_is_reachable,
     fun _ _ _ _ h => ⟨CoreSummary.checked_facts h, (CoreSummary.checked_valid h).2⟩⟩
-  effects := ⟨fun _ _ _ _ _ => CoreBoundary.external_environment_blocks_discharge,
+  effects := ⟨CoreBoundary.handled_effects_exact,
+    fun _ _ _ _ _ => CoreBoundary.external_environment_blocks_discharge,
     fun _ _ _ _ => CoreResumption.aliases_cannot_resume_twice,
     fun _ _ _ _ _ _ => CoreResumption.derived_access_ends,
     fun _ _ _ _ => CoreResumption.dependent_operation_loan,

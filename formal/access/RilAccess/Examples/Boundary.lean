@@ -19,6 +19,15 @@ def cleanupEnvironment : Boundary := { privateBoundary with cleanupEnvironment :
 def handlerState : Boundary := { privateBoundary with handler := { emptySummary with writes := [external] } }
 def cleanupState : Boundary := { privateBoundary with cleanup := { emptySummary with writes := [foreign] } }
 
+def handlerEffect : Boundary := { privateBoundary with handler := { emptySummary with effects := [3] } }
+def cleanupEffect : Boundary := { privateBoundary with cleanup := { emptySummary with effects := [3] } }
+def mixedEffects : Boundary :=
+  { privateBoundary with
+    body := { emptySummary with effects := [3, 4] },
+    handler := { emptySummary with effects := [3, 5] },
+    cleanup := { emptySummary with effects := [3, 6] } }
+def outerHandler : Boundary := { privateBoundary with body := handled handlerEffect 3 }
+
 def callInstance : CoreSummary.CallInstance := ⟨(fun _ _ => localOrigin), [1, 3, 9], 12, 2, 14⟩
 
 def fixtures : List (String × Bool) :=
@@ -27,6 +36,10 @@ def fixtures : List (String × Bool) :=
    ("core boundary: hidden cleanup environment blocks discharge", !(outward cleanupEnvironment 7 0 9).isEmpty),
    ("core boundary: handling eliminates its effect only", (handled handlerState 3).effects.isEmpty &&
       decide (external ∈ (handled handlerState 3).writes)),
+   ("core boundary: handler's own-family effect remains outward", decide ((handled handlerEffect 3).effects = [3])),
+   ("core boundary: residual cleanup effect remains outward", decide ((handled cleanupEffect 3).effects = [3])),
+   ("core boundary: only protected body effects are eliminated", decide ((handled mixedEffects 3).effects = [4, 3, 5, 3, 6])),
+   ("core boundary: outer handler may discharge the inner arm's effect", (handled outerHandler 3).effects.isEmpty),
    ("core boundary: actual handler state survives handling and discharge", (outward handlerState 7 0 9).any
       (fun event => decide (event.kind = .write ∧ event.origin = external))),
    ("core boundary: actual cleanup state survives handling and discharge", (outward cleanupState 7 0 9).any

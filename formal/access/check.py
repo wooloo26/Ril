@@ -59,12 +59,63 @@ def audit_rejection(body: str, expected: str, namespace: str = "RilAccess") -> N
         print(f"PASS audit rejects {expected} ({namespace})", flush=True)
 
 
-def audit_entrypoint() -> None:
+def audit_entrypoint(module: str) -> str:
     # Main and Audit both define main; inspect their completed modules separately.
     with tempfile.TemporaryDirectory(prefix="entry-audit-", dir=PROJECT / ".lake") as directory:
         probe = Path(directory) / "Entry.lean"
-        probe.write_text("import Main\nimport AuditSupport\naudit_ril_access\n", encoding="utf-8")
-        verify_imports(audit_output(probe))
+        probe.write_text(
+            f"import {module}\nimport AuditSupport\naudit_ril_access\n", encoding="utf-8"
+        )
+        output = audit_output(probe)
+        verify_imports(output)
+        if module not in re.findall(r"Audit module: (\S+)", output):
+            raise RuntimeError(f"Unaudited entrypoint module: {module}")
+        return output
+
+
+def trailing_declaration_rejection() -> None:
+    # A source-local audit sees only earlier declarations. Import the compiled
+    # module to expose even a declaration after its apparent successful audit.
+    # Keep the generated module in Lake's actual RilAccess import tree.
+    library = PROJECT / ".lake" / "build" / "lib" / "lean"
+    with tempfile.TemporaryDirectory(
+        prefix="AuditTailProbe", dir=library / "RilAccess"
+    ) as directory:
+        root = Path(directory)
+        source = root / "Probe.lean"
+        source.write_text(
+            "import Audit\naudit_ril_access\nnamespace OutsideModel\n"
+            "axiom afterAudit : False\nend OutsideModel\n",
+            encoding="utf-8",
+        )
+        compiled = subprocess.run(
+            [
+                "lake",
+                "env",
+                "lean",
+                f"--root={library}",
+                "-o",
+                str(source.with_suffix(".olean")),
+                str(source),
+            ],
+            cwd=PROJECT,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=True,
+        )
+        if "Audit passed:" not in compiled.stdout:
+            raise RuntimeError("Trailing-declaration probe did not reach its source-local audit")
+        try:
+            audit_entrypoint(f"RilAccess.{root.name}.Probe")
+        except subprocess.CalledProcessError as error:
+            if "Unproved project axiom: OutsideModel.afterAudit" not in (error.stdout or ""):
+                raise RuntimeError(
+                    f"Unexpected trailing-declaration audit failure:\n{error.stdout}"
+                ) from error
+        else:
+            raise RuntimeError("Completed-module audit missed a trailing declaration")
+        print("PASS audit rejects declaration after source-local audit", flush=True)
 
 
 def orphan_rejection(output: str) -> None:
@@ -88,9 +139,8 @@ def main() -> None:
     argparse.ArgumentParser(description=__doc__).parse_args()
     run("lake", "build")
     run("lake", "exe", "access-check")
-    output = audit_output(PROJECT / "Audit.lean")
-    verify_imports(output)
-    audit_entrypoint()
+    output = audit_entrypoint("Audit")
+    audit_entrypoint("Main")
     audit_rejection("axiom auditProbe : False", "Unproved project axiom")
     audit_rejection("theorem auditProbe : False := by sorry", "Forbidden axiom sorryAx")
     audit_rejection("unsafe def auditProbe : Nat := 0", "Unsafe project declaration")
@@ -112,6 +162,7 @@ def main() -> None:
         "Native implementation replacement",
         "OutsideModel",
     )
+    trailing_declaration_rejection()
     orphan_rejection(output)
 
 
