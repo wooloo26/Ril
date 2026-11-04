@@ -224,7 +224,7 @@ Code examples throughout this specification use inline test annotations:
 
 ```ril
 let x = 42                             -- OK: valid declaration
-let y: str = 42                        -- Error [E0301]: expected type 'str', found 'int'
+let y: str = 42                        -- Error [E0301]: expected type 'str', found 'i64'
 let z = 10 / 0                         -- Panics: division by zero
 ```
 
@@ -253,11 +253,11 @@ Diagnostic explanations should identify the violated requirement and the relevan
 
 ### Abstract Machine and Memory Semantics
 
-Ril executes on an abstract machine with tracing garbage collection. Operands and arguments evaluate left-to-right in the order prescribed by each construct; short-circuiting and control transfers can skip later evaluation. Numeric operators produce the specified results across targets. The default integer type `int` is a transparent alias of `i64`, independent of target pointer width.
+Ril executes on an abstract machine with tracing garbage collection. Operands and arguments evaluate left-to-right in the order prescribed by each construct; short-circuiting and control transfers can skip later evaluation. Numeric operators produce the specified results across targets; the default integer type is `i64`.
 
 ```ril
 -- Strict left-to-right evaluation order across operands and arguments:
-let mut trace: []int = []
+let mut trace: []i64 = []
 let mut log = \n -> { trace !> Array::push(n); n }
 let result = log(1) + log(2) * log(3)  -- Evaluates log(1), then log(2), then log(3)
 -- trace is guaranteed to be [1, 2, 3]
@@ -267,11 +267,11 @@ let result = log(1) + log(2) * log(3)  -- Evaluates log(1), then log(2), then lo
 
 ```ril
 -- Recoverable error handling via Result and '?':
-fn parse_id(s: str) -> Result<int, str> {
+fn parse_id(s: str) -> Result<i64, str> {
     if s == "" { Err("empty input") } else { Ok(42) }
 }
 
-fn init_session() -> Result<int, str> {
+fn init_session() -> Result<i64, str> {
     let id = parse_id("10")?           -- OK: propagated via postfix '?' within function frame
     Ok(id)
 }
@@ -282,13 +282,13 @@ assert(parse_id("") is Err("empty input"))
 
 -- Run-time panic on the specified bounds defect:
 let arr = [1, 2, 3]
-let safe_item = arr?[5]                -- OK: safe index evaluates to Option<int> (None)
+let safe_item = arr?[5]                -- OK: safe index evaluates to Option<i64> (None)
 assert(safe_item == None)
 -- arr[5]                             -- Panics: index 5 is outside length 3
 ```
 
 ```ril
-fn faulty_frame() -> int {
+fn faulty_frame() -> i64 {
     let _ = 10 / 0                    -- Panics: synchronous evaluation stops here
     100                               -- Unreachable
 }
@@ -297,7 +297,7 @@ faulty_frame()                        -- Panics; no Result is produced
 
 ```ril
 use ril/concurrent::{scope, TaskFault}
-let scope_outcome: Result<int, TaskFault> = scope(\mut s -> {
+let scope_outcome: Result<i64, TaskFault> = scope(\mut s -> {
     s.fork(\-> panic("worker failure"))
     Ok(42)
 })
@@ -306,7 +306,7 @@ assert(scope_outcome is Err(TaskFault::Panicked(_))) -- Child failure defeats Ok
 
 ```ril
 use ril/concurrent::{scope, TaskFault}
-fn parent_fault() @Concurrent -> Result<int, TaskFault> {
+fn parent_fault() @Concurrent -> Result<i64, TaskFault> {
     scope \mut s -> {
         let child = s.fork(\-> 42)
         let value = child.join()?
@@ -487,7 +487,7 @@ Identifier grammatical roles obey the **Closed Casing Invariant**:
 
 - **`PascalCase`**: Reserved for types (`type`), sum type variant constructors, nominal wrappers, algebraic effects (`eff`), generic type parameters (`T`, `ItemType`), and `sub` namespace identifiers (`Array`, `Channel`, `Geometry`, `Super`).
    - **Acronym Title-Casing Rule**: Acronyms within `PascalCase` must be title-cased as regular words (`HttpServer`, `UserId`, `JsonParser`, not `HTTPServer`, `UserID`, `JSONParser`) (`E0102`).
-- **`snake_case`**: Used for run-time variables (local bindings, function parameters, reassignable variables `var`, and pinned mutable handles `let mut`), const generic parameters (`cap: int`), named functions (`fn`, `meta fn`), record fields, and module file path segments (`ril/array`, `math/geometry`).
+- **`snake_case`**: Used for run-time variables (local bindings, function parameters, reassignable variables `var`, and pinned mutable handles `let mut`), const generic parameters (`cap: i64`), named functions (`fn`, `meta fn`), record fields, and module file path segments (`ril/array`, `math/geometry`).
 - **`SCREAMING_SNAKE_CASE`**: Reserved for compile-time constants (`meta let`) and top-level immutable constants (`let`). Top-level mutable variables (`var`, `let mut`, `let ^mut`, and `var ^mut`) must use `snake_case`.
 - **Static Keys and Field Labels**: Static key binders (`K: keyof T`) and mapped-key binders (`[... as K]`) use `PascalCase`. Ordinary field labels use `snake_case`, optionally with one leading underscore. A mapped record may expose valid `PascalCase` constructor labels; construction and projection against that mapped schema use those generated labels verbatim. This does not permit uppercase run-time variable bindings.
 - **Wildcard and Leading Underscores**: A single underscore `_` is the wildcard discard pattern, not an identifier (`E0322`). An identifier with a leading underscore, such as `_snake_case`, follows the same binding and mutable-authority use requirements as other identifiers (`E0527`).
@@ -498,14 +498,14 @@ type Second { Shared }
 let first: First = First::Shared       -- OK: qualified constructor
 -- let ambiguous: First = Shared      -- Error [E0206]: expected type does not resolve the abbreviation
 type Maybe<T> = Option<T>
-let value: Maybe<int> = Some(1)        -- OK: an alias adds no constructor candidate
+let value: Maybe<i64> = Some(1)        -- OK: an alias adds no constructor candidate
 ```
 
 Declarations and imports share one namespace. Same-scope duplicates are `E0203`; inner declarations may shadow outer ones, including the enclosing prelude. The intrinsic static type family `Type` and parent-scope navigator `Super` are protected against user declarations, `sub` names, type binders, and import aliases that would redefine or shadow them (`E0203`).
 
 | Name | Resolution |
 | :--- | :--- |
-| Nominal type/constructor; predefined `Set<T>`/`Set::from` | Roles of one declaration; separate user declarations cannot merge |
+| Nominal type/constructor; predefined `Set<T>`/`Set::from`; `Concurrent` effect/`Concurrent::scope` | Roles of one declaration; separate user declarations cannot merge |
 | `S::V` | Variant member of S; no second enclosing-scope declaration |
 | Unqualified constructor name | Ordinary lexical binding first; otherwise require one variant candidate (`E0206` if ambiguous) |
 | Candidate set | Directly visible sum types; a module import alone does not expose its internal sums |
@@ -514,10 +514,10 @@ Declarations and imports share one namespace. Same-scope duplicates are `E0203`;
 
 ```ril
 -- PascalCase: Types, Constructors, Effects, and Generic Parameters
-type UserAccount = { id: int }         -- OK: type identifier
+type UserAccount = { id: i64 }         -- OK: type identifier
 type Result<T, E = str> { Ok(T), Err(E) } -- OK: generic parameters and constructors
 eff FileIo { read() -> str }           -- OK: effect identifier
-type HttpServerConfig = { port: int }  -- OK: title-cased acronym
+type HttpServerConfig = { port: i64 }  -- OK: title-cased acronym
 
 -- snake_case: Variables (local, param, top-level var / let mut), Functions, and Fields
 let user_count = 10                    -- OK: local variable identifier
@@ -526,7 +526,7 @@ total_score += 1
 var active_workers = 0                 -- OK: top-level reassignable mutable variable
 fn start_worker() &up(sub){mut active_workers} -> () { active_workers += 1 }
 fn compute_area(width: f64) -> f64 { width * 2.0 } -- OK: function identifier
-meta fn pad_align(size: int) -> int { size }       -- OK: compile-time function
+meta fn pad_align(size: i64) -> i64 { size }       -- OK: compile-time function
 
 -- SCREAMING_SNAKE_CASE: meta let and Top-Level Immutable Variables ONLY
 meta let MAX_BUFFER_SIZE = 1024 * 64   -- OK: compile-time constant
@@ -537,12 +537,12 @@ let _ = user_count                     -- OK: wildcard discard
 fn on_event(ev: Event, _ctx: Context) -> () { handle(ev) } -- OK: '_ctx' is a parameter identifier
 
 -- Static Lexical Violations:
--- type user_doc = { id: int }         -- Error [E0101]: type identifier must be PascalCase, found 'user_doc'
+-- type user_doc = { id: i64 }         -- Error [E0101]: type identifier must be PascalCase, found 'user_doc'
 -- fn Calculate() -> () {}             -- Error [E0101]: function identifier must be snake_case, found 'Calculate'
 -- let UserCount = 10                  -- Error [E0101]: variable identifier must be snake_case, found 'UserCount'
 -- meta let max_size = 100             -- Error [E0101]: compile-time constant must be SCREAMING_SNAKE_CASE, found 'max_size'
 -- var ACTIVE_FLAG = true              -- Error [E0101]: top-level mutable variable must be snake_case, found 'ACTIVE_FLAG'
--- type HTTPServer = { port: int }     -- Error [E0102]: acronym in PascalCase must be title-cased, expected 'HttpServer', found 'HTTPServer'
+-- type HTTPServer = { port: i64 }     -- Error [E0102]: acronym in PascalCase must be title-cased, expected 'HttpServer', found 'HTTPServer'
 -- let user__name = "Alice"            -- Error [E0102]: consecutive underscores are prohibited, found 'user__name'
 -- let Some(USER_ID) = opt             -- Error [E0103]: pattern binding position cannot use uppercase identifier 'USER_ID'
 -- let _ = 10; println(_)              -- Error [E0322]: wildcard '_' cannot be evaluated as an expression
@@ -565,7 +565,7 @@ while    with
 ```ril
 -- let while = 1                     -- Error [E0113]: reserved keyword in a binding position
 -- let new = 1                       -- Error [E0113]: new is reserved for construction annotations/handoffs
--- type Record = { if: int }         -- Error [E0113]: reserved keyword as a field label
+-- type Record = { if: i64 }         -- Error [E0113]: reserved keyword as a field label
 let while_count = 1                   -- OK
 let capture = 1                       -- OK: capture is an ordinary identifier
 let closure = 1                       -- OK: closure is an ordinary identifier
@@ -578,8 +578,8 @@ let opaque = 3                        -- OK: ordinary identifier
 -- let pub = 5                        -- Error [E0113]: reserved keyword
 let in = 1                            -- OK: ordinary identifier
 -- let never = 6                      -- Error [E0113]: intrinsic primitive type name
--- let int = 0                        -- Error [E0113]: intrinsic primitive type name
--- fn invalid(bool: int) -> () {}     -- Error [E0113]: intrinsic primitive type name
+-- let i64 = 0                        -- Error [E0113]: intrinsic primitive type name
+-- fn invalid(bool: i64) -> () {}     -- Error [E0113]: intrinsic primitive type name
 -- type InvalidField = { str: bool }  -- Error [E0113]: intrinsic primitive type name
 assert(scoped + opaque + in == 6)
 type Bottom = never                   -- Intrinsic bottom type in type syntax
@@ -609,7 +609,7 @@ Primitive type spellings listed under [Value Types](#value-types), including `ne
 
 ```ril
 -- Reserved and contextual keywords in action:
-pub opaque type Token = int            -- 'pub', 'opaque', 'type'
+pub opaque type Token = i64            -- 'pub', 'opaque', 'type'
 meta let COMPILE_ID = 101              -- 'meta', 'let'
 eff Logger { log(str) -> () }          -- 'eff'
 use ril/array::{push}                  -- 'use'
@@ -623,7 +623,7 @@ fn manage_resource() @Fiber -> Result<(), IoError> {
     Ok(())
 }
 
-fn calculate(val: ?int) -> int {       -- 'fn'
+fn calculate(val: ?i64) -> i64 {       -- 'fn'
     let bound = match val {            -- 'let', 'match'
         Some(x) if x > 0 -> x,         -- 'if'
         _ -> 0,
@@ -650,7 +650,7 @@ DecimalLiteral ::= Digit { [ "_" ] Digit } [ [ "_" ] IntSuffix ]
 HexLiteral     ::= "0" ( "x" | "X" ) HexDigit { [ "_" ] HexDigit } [ [ "_" ] IntSuffix ]
 OctalLiteral   ::= "0" ( "o" | "O" ) OctalDigit { [ "_" ] OctalDigit } [ [ "_" ] IntSuffix ]
 BinaryLiteral  ::= "0" ( "b" | "B" ) BinaryDigit { [ "_" ] BinaryDigit } [ [ "_" ] IntSuffix ]
-IntSuffix      ::= "i8" | "i16" | "i32" | "i64" | "u8" | "u16" | "u32" | "u64" | "int" | "bigint"
+IntSuffix      ::= "i8" | "i16" | "i32" | "i64" | "u8" | "u16" | "u32" | "u64" | "bigint"
 FloatLiteral   ::= Digit { [ "_" ] Digit } "." Digit { [ "_" ] Digit } [ Exponent ] [ [ "_" ] FloatSuffix ]
 Exponent       ::= ( "e" | "E" ) [ "+" | "-" ] Digit { Digit }
 FloatSuffix    ::= "f32" | "f64"
@@ -671,10 +671,10 @@ let valid_digit = 0b10                -- OK
 A numeric literal violating its base, digit, separator, exponent, or suffix production is `E0111`. A well-formed integer literal whose value does not fit its selected type is `E0326`; this is distinct from overflow while evaluating arithmetic. An immediately applied minus participates in the literal range check.
 
 ```ril
-let decimal = 1_000_000                -- Type: int
-let hex_val = 0xFF_AA                  -- Type: int
-let oct_val = 0o755                    -- Type: int (octal)
-let bin_val = 0b1010_0110              -- Type: int (binary)
+let decimal = 1_000_000                -- Type: i64
+let hex_val = 0xFF_AA                  -- Type: i64
+let oct_val = 0o755                    -- Type: i64 (octal)
+let bin_val = 0b1010_0110              -- Type: i64 (binary)
 let explicit_u8 = 255u8                -- Type: u8
 let explicit_i16 = -32_i16             -- Type: i16
 let float_val = 3.14159_f64            -- Type: f64
@@ -689,7 +689,7 @@ let smallest: i8 = -128i8               -- OK: signed literal is checked as a wh
 | Form | Type / check |
 | :--- | :--- |
 | Suffixed literal | Suffix fixes the type |
-| Unsuffixed integer | Compatible numeric context, otherwise `int`; round once if selected as floating-point |
+| Unsuffixed integer | Compatible numeric context, otherwise `i64`; round once if selected as floating-point |
 | Unsuffixed float | Contextual `f32`/`f64`, otherwise `f64` |
 | Integer-typed literal | Must fit its type (`E0326`); an immediately applied `-` is included in the range check |
 | Negating an evaluated fixed-width minimum | Panic; the literal exception does not apply |
@@ -794,7 +794,7 @@ assert("{text:.2s}" == "é🙂")
 | Explicit fill | One scalar other than a brace or line break; requires alignment |
 | Numeric width beginning with zero | Zero-pad after a minus sign, unless explicit fill/alignment is present; special floats use spaces |
 | Integer output | Sign plus magnitude, no prefix; `X` uses uppercase digits, other bases lowercase |
-| Width / precision bounds | Nonnegative decimal values representable as `int`; otherwise malformed format (`E0112`) |
+| Width / precision bounds | Nonnegative decimal values representable as `i64`; otherwise malformed format (`E0112`) |
 | Unsupported type/format/precision combination | `E0329`; formatting invokes no user conversion |
 
 Each interpolation expression evaluates once in source order. An empty format specifier is the default format. These conversions are available in both evaluation phases.
@@ -814,7 +814,7 @@ let unit_val = ()                      -- Type: ()
 ### Value Types
 
 ```ebnf
-PrimitiveType    ::= "bool" | "i8" | "i16" | "i32" | "i64" | "int"
+PrimitiveType    ::= "bool" | "i8" | "i16" | "i32" | "i64"
                   | "u8" | "u16" | "u32" | "u64" | "bigint"
                   | "f32" | "f64" | "str" | "bytes" | "(" ")" | "never"
 ```
@@ -824,7 +824,7 @@ Value types have copy-by-value semantics, regardless of their implementation rep
 | Category | Types | Description |
 | :--- | :--- | :--- |
 | Boolean | `bool` | Truth value (`true` or `false`) |
-| Signed Integers | `i8`, `i16`, `i32`, `i64`, `int` | Two's-complement signed integers; `int` is a transparent alias of `i64` |
+| Signed Integers | `i8`, `i16`, `i32`, `i64` | Two's-complement signed integers; default `i64` |
 | Unsigned Integers | `u8`, `u16`, `u32`, `u64` | Fixed-width unsigned integers |
 | Arbitrary Precision | `bigint` | Arbitrary-precision integer |
 | Floating-Point | `f32`, `f64` | IEEE 754 floating-point numbers |
@@ -832,24 +832,21 @@ Value types have copy-by-value semantics, regardless of their implementation rep
 | Integer ranges | `typeof (0..0)` | Immutable integer interval bounds |
 | Unit & Bottom | `()`, `never` | Singleton unit value `()`, empty uninhabited type |
 
-`int` and `i64` have the same definitional type identity, 64-bit arithmetic, literal range, and static layout size of eight bytes on every target. Both spellings remain reserved intrinsic type names. Defaults and the `int` literal suffix select that same type; crossing between the two spellings requires no conversion. Signed width N has range $-2^{N-1}$ through $2^{N-1}-1$; unsigned width N has range zero through $2^N-1$. These widths grant no pointer-conversion or foreign-ABI guarantee.
+| Integer property | Rule |
+| :--- | :--- |
+| Signed width N | $-2^{N-1}$ through $2^{N-1}-1$ |
+| Unsigned width N | Zero through $2^N-1$ |
+| `i64` layout | Eight bytes on every target |
 
 ```ril
-meta let _ = assert(<int> == <i64> && byte_size(<int>) == 8)
-let wide: i64 = 42
-let ordinary: int = wide               -- OK: identical types, not implicit numeric promotion
-assert(ordinary + 1i64 == 43int)
-```
-
-```ril
-let a: int = 42
+let a: i64 = 42
 var b = a
 b += 1
 assert(a == 42 && b == 43)
 
 -- let mut bad = a                    -- Error [E0402]: use var for value updates
 -- let ref bad = a                   -- Error [E0402]: values have no reference target
--- fn bad(ref x: int) -> () {}             -- Error [E0401]: pass values normally
+-- fn bad(ref x: i64) -> () {}             -- Error [E0401]: pass values normally
 ```
 
 Value types, including `str`, `bytes`, and integer ranges, have no shared-object identity and admit no reference/access-mode or construction modifiers:
@@ -868,7 +865,7 @@ Ordinary reception preserves the selected object's identity; copying operations 
 
 ```ril
 -- Shared object types: shared heap aliasing:
-type Node = { var val: int }
+type Node = { var val: i64 }
 let mut n1 = Node.{ val: 10 }
 let ref n2 = n1                       -- 'n2' aliases the exact same heap record as a live ref
 let copied = n2.val                    -- Independent value copied through a ref
@@ -886,25 +883,25 @@ assert(n2.val == 99 && copied == 10)
 Records have structural named fields. `{}` is the closed empty record; closed records reject width subtyping. A final `..` permits extra fields in a structural constraint or direct record parameter of a Ril function/lambda definition. `..Fields` names or expands the remaining row; `Fields` is a user-chosen `PascalCase` name.
 
 ```ril
-type User = { id: int, name: str }
+type User = { id: i64, name: str }
 let user = User.{ id: 1, name: "Ada" }
 -- let missing: User = .{ id: 1 }     -- Error [E0307]: required field 'name' is absent
 -- let unknown = user.age            -- Error [E0336]: this product has no field 'age'
--- type Repeated = { id: int, id: int } -- Error [E0210]: field label declared twice
-type WithId<Fields> = { id: int, ..Fields }
--- type Overlap = WithId<{ id: int }> -- Error [E0212]: row tail overlaps explicit 'id'
+-- type Repeated = { id: i64, id: i64 } -- Error [E0210]: field label declared twice
+type WithId<Fields> = { id: i64, ..Fields }
+-- type Overlap = WithId<{ id: i64 }> -- Error [E0212]: row tail overlaps explicit 'id'
 type Extended = WithId<{ name: str }> -- OK: disjoint row labels
 type Extra = { name: str }
-type Combined = { id: int, ..Extra }  -- Same closed type as Extended; no generics
--- type BadTail = WithId<int>        -- Error [E0306]: a row tail must be a record type
+type Combined = { id: i64, ..Extra }  -- Same closed type as Extended; no generics
+-- type BadTail = WithId<i64>        -- Error [E0306]: a row tail must be a record type
 ```
 
 ```ril
-fn get_id(item: { id: int, .. }) -> int { item.id } -- Implicit anonymous row parameter
-fn sum_ids(a: { id: int, .. }, b: { id: int, .. }) -> int { a.id + b.id }
-fn keep<T: { id: int, .. }>(item: T) -> T { item }  -- T preserves the entire record
+fn get_id(item: { id: i64, .. }) -> i64 { item.id } -- Implicit anonymous row parameter
+fn sum_ids(a: { id: i64, .. }, b: { id: i64, .. }) -> i64 { a.id + b.id }
+fn keep<T: { id: i64, .. }>(item: T) -> T { item }  -- T preserves the entire record
 fn keep_record<T: { .. }>(item: T) -> T { item }    -- Any record, including {}
-fn add_id<T: { ..Rest }>(item: T) -> { id: int, ..Rest } { .{ id: 1, ..item } }
+fn add_id<T: { ..Rest }>(item: T) -> { id: i64, ..Rest } { .{ id: 1, ..item } }
 
 assert(get_id(.{ id: 1, name: "Ada" }) == 1)
 assert(sum_ids(.{ id: 1, name: "Ada" }, .{ id: 2, active: true }) == 3)
@@ -912,7 +909,7 @@ let kept = keep(.{ id: 1, name: "Ada" })
 assert(kept.name == "Ada")
 assert(add_id(.{ name: "Ada" }).name == "Ada") -- Constraint binds Rest for the result
 let empty = keep_record(.{})
--- keep_record(1)                    -- Error [E0301]: int is not a record
+-- keep_record(1)                    -- Error [E0301]: i64 is not a record
 
 -- fn unbound(item: { ..Missing }) -> () {} -- Error [E0204]: no binding for Missing
 -- type Anything = { .. }            -- Error [E0306]: anonymous row outside an admitted position
@@ -942,11 +939,11 @@ FieldLabel       ::= ValueName | PascalCase
 ```
 
 ```ril
-type Cell = { var count: int }
+type Cell = { var count: i64 }
 type State = {
-    id: int,                         -- Implicit let: fixed, deeply immutable
+    id: i64,                         -- Implicit let: fixed, deeply immutable
     var title: str,                  -- Replaceable immutable value
-    mut items: []int,                -- Fixed writable array holding immutable scalar elements
+    mut items: []i64,                -- Fixed writable array holding immutable scalar elements
     ^mut shared_cell: Cell,          -- Fixed shared mutable handle
     var mut current: Cell,           -- Replaceable writable reference
     ref source: Cell,                -- Fixed live observation
@@ -971,11 +968,11 @@ assert(state.source.count == 1 && state.cursor.count == 2)
 ```
 
 ```ril
-type Counter = { var count: int }
+type Counter = { var count: i64 }
 let immutable = Counter.{ count: 0 }
 let repeated = (mut immutable, mut immutable) -- OK: outer let suppresses member access modes
 -- let mut bad = repeated.0                  -- Error [E0520]: no writer was created
--- type Bad = { ref count: int }           -- Error [E0402]: invalid even under outer let
+-- type Bad = { ref count: i64 }           -- Error [E0402]: invalid even under outer let
 ```
 
 | Member-specific rule | Requirement |
@@ -985,7 +982,7 @@ let repeated = (mut immutable, mut immutable) -- OK: outer let suppresses member
 | Immutable/writable aliases | Reject with `E0535`; copying must preserve aliases rather than split them |
 
 ```ril
-type User = { id: int, name: str }
+type User = { id: i64, name: str }
 let u: User = .{ id: 1, name: "Alice" } -- OK: exact closed record match
 
 -- Closed record rejects unexpected fields (E0302):
@@ -997,18 +994,18 @@ let user_id = u.id                     -- OK: static field projection
 let static_accessor = u.("name")       -- OK: a statically known key, not a dynamic lookup
 
 -- Type-level field projection:
-type IdType = User.id                  -- OK: direct static field type extraction (int)
+type IdType = User.id                  -- OK: direct static field type extraction (i64)
 -- type BadIndex = User["id"]          -- Error [E0324]: record types do not support bracket indexing, use User.id
 
 -- Named row tail polymorphism (generic type preservation):
-fn with_timestamp<Fields>(r: { ..Fields }) -> { timestamp: int, ..Fields } {
+fn with_timestamp<Fields>(r: { ..Fields }) -> { timestamp: i64, ..Fields } {
     .{ timestamp: 1600000000, ..r }
 }
 let stamped = with_timestamp(.{ id: 1, tag: "audit" })
 assert(stamped.tag == "audit" && stamped.timestamp == 1600000000)
 
 -- Type-precise rest destructuring:
-type Account = { id: int, username: str, email: str, role: str }
+type Account = { id: i64, username: str, email: str, role: str }
 let acc: Account = .{ id: 42, username: "admin", email: "adm@ril.org", role: "root" }
 
 let .{ id, ..rest } = acc
@@ -1037,7 +1034,7 @@ MapEntry       ::= Expression ":" Expression
 ```
 
 ```ril
-let mut pair: (var int, mut []int) = (0, [1])
+let mut pair: (var i64, mut []i64) = (0, [1])
 pair.0 = 1
 pair.1 !> Array::push(2)
 -- pair.1 = []                       -- Error [E0502]: fixed mutable member
@@ -1051,30 +1048,30 @@ Typed product constructors inherit declared member modes; untyped literals defau
 
 ```ril
 -- Array ([]T):
-let numbers: []int = [1, 2, 3]
-let empty: []int = []
+let numbers: []i64 = [1, 2, 3]
+let empty: []i64 = []
 -- let unconstrained = []             -- Error [E0344]: unconstrained empty array literal requires type annotation
 -- let indexed = 42[0]                -- Error [E0352]: target has no element lookup
 
 -- Associative Map ([K: V]):
 let mut config: [str: str] = ["env": "prod", "host": "127.0.0.1"]
-let empty_map: [str: int] = [:]        -- Empty map literal
+let empty_map: [str: i64] = [:]        -- Empty map literal
 let host: ?str = config?["host"]       -- Safe lookup evaluates to ?str (Some("127.0.0.1"))
 config["host"] = "10.0.0.1"            -- In-place slot assignment
 -- let bad_get = config["host"]        -- Error [E0352]: map lookups require 'm?[k]'
 -- config["host"] += "!"               -- Error [E0352]: map compound assignment prohibited
 
 -- Tuple ((T1, T2)):
-let coords: (int, str) = (10, "Alice") -- Type: (int, str)
+let coords: (i64, str) = (10, "Alice") -- Type: (i64, str)
 let x = coords.0                       -- Value positional access: 10
 let name = coords.1                    -- Value positional access: "Alice"
-type CoordX = (typeof coords).0        -- Inferred tuple positional projection: int
-type First = (int, str).0              -- Static tuple positional projection: int
--- type OutOfBounds = (int, str).2      -- Error [E0312]: tuple index 2 out of bounds for (int, str)
+type CoordX = (typeof coords).0        -- Inferred tuple positional projection: i64
+type First = (i64, str).0              -- Static tuple positional projection: i64
+-- type OutOfBounds = (i64, str).2      -- Error [E0312]: tuple index 2 out of bounds for (i64, str)
 
 -- Collections are not product types; dot projection on collections is rejected:
--- type BadArrElem = ([]int).elem      -- Error [E0337]: collection type '[]int' has no named fields or member projections; use 'ril/array::{Elem}'
--- type BadMapKey = ([str: int]).key   -- Error [E0337]: collection type '[str: int]' has no named fields or member projections; use 'ril/map::{Key}'
+-- type BadArrElem = ([]i64).elem      -- Error [E0337]: collection type '[]i64' has no named fields or member projections; use 'ril/array::{Elem}'
+-- type BadMapKey = ([str: i64]).key   -- Error [E0337]: collection type '[str: i64]' has no named fields or member projections; use 'ril/map::{Key}'
 ```
 
 Empty array literals without contextual expected types require explicit annotation (`E0344`). `[via]T` preserves that requirement: an unresolved required element access mode is also `E0344`. A concrete `MemberMode` expression used for element access must have a fixed slot component; it cannot silently discard `var` (`E0356`). Invalid index types on an otherwise indexable receiver use `E0301`. An index outside an array's bounds panics at run time.
@@ -1083,17 +1080,24 @@ Map lookups must use safe bracket navigation (`m?[k]`), evaluating to `?V` (`Opt
 
 #### Collection Extents and Index Types
 
-Every array, map, set, `str`, and `bytes` has a nonnegative length representable as `int`, at most $2^{63}-1$. Arrays count elements, maps count entries, sets count members, strings count Unicode scalars, and bytes count bytes. A string's UTF-8 byte count must also fit this bound, so encoding an existing string does not exceed the language's byte-sequence limit. This bounds each collection, not the total reachable graph. Standalone integer ranges retain their separate, potentially larger cardinalities.
-
-Construction, insertion, growth, concatenation, formatting, and conversion must establish their resulting extents using mathematical integer arithmetic before publishing an oversized result or committing that operation's structural change. Exceeding the limit panics; length arithmetic must not wrap, clamp, or truncate. Earlier argument evaluations and completed operations are not rolled back. Replacing an existing map entry or reinserting a present set member does not increase its count. In required static evaluation, the same failure is `E0831`.
-
-Array element indices and sequence slice endpoints require `int` (`E0301` for another already typed value); contextual integer literals may select `int`. Negative or out-of-bounds ordinary array indices panic; safe lookup returns `None`. Maps instead require their declared key type K, even when K is an integer range; maps have no sequence slicing. Strings and bytes expose individual elements through the [text and byte operations](#text-and-byte-operations), not single-element bracket lookup (`E0352`).
+| Position / operation | Rule |
+| :--- | :--- |
+| Collection length | `i64`, from zero through $2^{63}-1$ per collection |
+| Counted units | Array elements; map entries; set members; `str` scalars; `bytes` bytes |
+| String UTF-8 extent | Byte count also fits `i64` |
+| Construction / growth / formatting / conversion | Compute resulting extents as mathematical integers; exceeding the limit panics before publication or structural change (`E0831` in static evaluation) |
+| Existing map key / set member | Replacement / reinsertion preserves the count |
+| Array element index / sequence slice endpoint | `i64`; another typed numeric value is `E0301` |
+| Array bounds failure | Ordinary lookup panics; safe lookup returns `None` |
+| Map lookup | Declared key type K, including range-typed keys |
+| Individual text / byte element | [`String::at` / `Bytes::at`](#text-and-byte-operations); single-element brackets are `E0352` |
+| Standalone integer range | Finite bounds; cardinality may exceed `i64` |
 
 ```ril
 let items = [10, 20]
 let position: u8 = 1u8
 -- let wrong = items[position]         -- Error [E0301]: no implicit widening of an index
-let converted: ?int = Numeric::convert(position)
+let converted: ?i64 = Numeric::convert(position)
 assert(items[converted ?? 0] == 20)
 -- let scalar = "ab"[0]                -- Error [E0352]: use String::at
 ```
@@ -1102,7 +1106,7 @@ assert(items[converted ?? 0] == 20)
 -- Fixture input: full is a writable []u8 with length 9_223_372_036_854_775_807.
 assert(len(ref full) == 9_223_372_036_854_775_807)
 -- full !> Array::push(0u8)            -- Panics: growth exceeds the collection limit
--- let impossible = len(ref full) + 1 -- Panics: ordinary checked int overflow
+-- let impossible = len(ref full) + 1 -- Panics: ordinary checked i64 overflow
 ```
 
 ### Sum Types and GADTs
@@ -1126,34 +1130,34 @@ type Option<T> {
 }
 
 type Expr<T> {
-    LitInt(int) -> Expr<int>,
+    LitInt(i64) -> Expr<i64>,
     LitBool(bool) -> Expr<bool>,
-    Add(Expr<int>, Expr<int>) -> Expr<int>,
+    Add(Expr<i64>, Expr<i64>) -> Expr<i64>,
 }
 
 -- Specialized evaluator: constructor equations prune impossible branches:
-fn eval_int(e: Expr<int>) -> int {
+fn eval_int(e: Expr<i64>) -> i64 {
     match e {
         LitInt(n) -> n,
         Add(a, b) -> eval_int(a) + eval_int(b),
-        -- LitBool(b) -> 0             -- Error [E0304]: unreachable match arm: constructor 'LitBool' binds T = bool, incompatible with Expr<int>
+        -- LitBool(b) -> 0             -- Error [E0304]: unreachable match arm: constructor 'LitBool' binds T = bool, incompatible with Expr<i64>
     }
 }
 
 -- Generic GADT evaluator: constructor equations refine return type T:
 fn eval<T>(e: Expr<T>) -> T {
     match e {
-        LitInt(n) -> n,                -- Refines T ~ int
+        LitInt(n) -> n,                -- Refines T ~ i64
         LitBool(b) -> b,               -- Refines T ~ bool
-        Add(a, b) -> eval(a) + eval(b),-- Refines T ~ int
+        Add(a, b) -> eval(a) + eval(b),-- Refines T ~ i64
     }
 }
 ```
 
 ```ril
 type Box<T> { Item<U>(U) -> Box<U> }
-let boxed: Box<int> = Box::Item(1)
-type Payload = Box<int>.Item           -- int
+let boxed: Box<i64> = Box::Item(1)
+type Payload = Box<i64>.Item           -- i64
 -- type Packed { Item<U>(U) }          -- Error [E0354]: U is not determined by the result
 -- type Wrong<T> { Item(T) -> bool }   -- Error [E0354]: result is not an instance of Wrong
 ```
@@ -1191,7 +1195,7 @@ Ril has no one-element tuples `(T,)`: `(x)` denotes grouping, tuples require at 
 let unit_res: Result<(), str> = Ok()             -- OK: n = 0 constructs () payload directly
 let auto_unit: Result<(), str> = Ok()            -- OK: the zero-argument constructor supplies ()
 assert(auto_unit is Ok())
-let make_ok: fn(int) -> Result<int, str> = Ok     -- OK: first-class constructor function
+let make_ok: fn(i64) -> Result<i64, str> = Ok     -- OK: first-class constructor function
 
 match unit_res {
     Ok() -> println("success"),                  -- OK: n = 0 matches () unit payload
@@ -1199,14 +1203,14 @@ match unit_res {
 }
 
 -- Nullary variant tags vs. Data constructors:
-let opt: Option<int> = None                      -- OK: nullary tag without parentheses
+let opt: Option<i64> = None                      -- OK: nullary tag without parentheses
 -- let bad_none = None()                         -- Error [E0353]: variant 'None' has no payload; remove call parentheses
 
 -- Result construction and matching with tuple payload:
-let res: Result<(int, str), str> = Ok(200, "OK") -- OK: n = 2 constructs (int, str) directly
+let res: Result<(i64, str), str> = Ok(200, "OK") -- OK: n = 2 constructs (i64, str) directly
 let pair = (200, "OK")
-let res_from_pair: Result<(int, str), str> = Ok(pair) -- OK: n = 1 passes existing tuple
-let res_compat: Result<(int, str), str> = Ok((200, "OK")) -- OK: explicit tuple literal
+let res_from_pair: Result<(i64, str), str> = Ok(pair) -- OK: n = 1 passes existing tuple
+let res_compat: Result<(i64, str), str> = Ok((200, "OK")) -- OK: explicit tuple literal
 assert(res_from_pair is Ok(_))
 assert(res_compat is Ok(_))
 
@@ -1218,7 +1222,7 @@ match res {
 
 -- Multi-field variant declaration and tuple equivalence:
 type Geometry {
-    TwoPoints(int, int),                         -- Equivalent to TwoPoints((int, int))
+    TwoPoints(i64, i64),                         -- Equivalent to TwoPoints((i64, i64))
 }
 
 let p1 = TwoPoints(10, 20)                       -- OK: positional elements
@@ -1227,13 +1231,13 @@ let TwoPoints(x, y) = p1                         -- OK: positional destructuring
 let TwoPoints(raw_tuple) = p1                    -- OK: whole-tuple destructuring
 
 -- Functions keep their declared parameter lists; no implicit tuple expansion:
-fn add(a: int, b: int) -> int { a + b }
+fn add(a: i64, b: i64) -> i64 { a + b }
 let sum1 = add(1, 2)                             -- OK: 2 arguments
 -- let sum2 = add(pair)                          -- Error [E0314]: expected 2 arguments, found 1 tuple
 
 -- Nested tuples: non-transitive boundary:
 type Node {
-    Branch((int, int), str),                     -- Payload is 2-tuple: ((int, int), str)
+    Branch((i64, i64), str),                     -- Payload is 2-tuple: ((i64, i64), str)
 }
 let node = Branch((1, 2), "left")                -- OK: n = 2 arguments
 -- let bad_node = Branch(1, 2, "left")           -- Error [E0314]: arity mismatch: expected 2 arguments, found 3
@@ -1264,9 +1268,9 @@ let _ = m                              -- OK: explicit wildcard discard
 -- let Marker = m                      -- Error [E0309]: 'let' pattern must bind at least one variable; nullary constructor 'Marker' introduces zero bindings
 
 -- Value-Wrapped Nominal Types:
-type UserId(int)
-type AccountId(int)
-type Coord(int, int)                   -- Equivalent to Coord((int, int))
+type UserId(i64)
+type AccountId(i64)
+type Coord(i64, i64)                   -- Equivalent to Coord((i64, i64))
 type Point2D({ x: f64, y: f64 })       -- Nominal wrapper over structural record
 
 let uid = UserId(1001)
@@ -1276,20 +1280,20 @@ let c_compat = Coord((10, 20))         -- OK: explicit tuple literal (n = 1)
 let pt = Point2D(.{ x: 10.0, y: 20.0 })
 
 -- uid == aid                          -- Error [E0305]: mismatched nominal types 'UserId' and 'AccountId'
-let raw_id: int = inner(uid)           -- OK: unwrap nominal wrapper via prelude 'inner()' (1001)
-let raw_coord: (int, int) = inner(c)   -- OK: unwrap nominal wrapper to underlying tuple (10, 20)
+let raw_id: i64 = inner(uid)           -- OK: unwrap nominal wrapper via prelude 'inner()' (1001)
+let raw_coord: (i64, i64) = inner(c)   -- OK: unwrap nominal wrapper to underlying tuple (10, 20)
 let raw_pt: { x: f64, y: f64 } = inner(pt) -- OK: unwrap underlying record via 'inner()'
 let UserId(unwrapped_id) = uid         -- OK: pattern-matching unwrap
 let Point2D(.{ x, y }) = pt            -- OK: structural record pattern unwrap
 let Coord(cx, cy) = c                  -- OK: positional tuple pattern unwrap
 let Coord(pair) = c                    -- OK: whole-tuple pattern unwrap
-let make_user_id: fn(int) -> UserId = UserId -- OK: constructor function value
+let make_user_id: fn(i64) -> UserId = UserId -- OK: constructor function value
 ```
 
 ### Deep Immutability
 
 ```ril
-type Cell = { var count: int }
+type Cell = { var count: i64 }
 let mut source = Cell.{ count: 1 }
 let ref observed = source
 let mut independent = clone(ref observed)
@@ -1315,9 +1319,9 @@ Default immutable reception follows the [common mode tables](#binding-modes-and-
 | Function / opaque value | Immutable environment-free functions are copyable; opaque resources require explicit copy rules |
 
 ```ril
-type Cell = { var count: int }
-fn read(cell: Cell) -> int { cell.count }
-fn read_live(ref cell: Cell) -> int { cell.count }
+type Cell = { var count: i64 }
+fn read(cell: Cell) -> i64 { cell.count }
+fn read_live(ref cell: Cell) -> i64 { cell.count }
 fn snapshot(ref cell: Cell) -> Cell {
     let copied = clone(ref cell)
     copied
@@ -1365,7 +1369,7 @@ Member modes participate in structural schemas. Outer immutable reception suppre
 
 ```ril
 fn identity<T>(ref value: T) -> ref(value) T { value }
-type Cell = { var count: int }
+type Cell = { var count: i64 }
 let mut source = Cell.{ count: 0 }
 let ref packet = .{ ref item: identity(ref source) }
 let ref observed = identity(ref packet.item)
@@ -1387,7 +1391,7 @@ assert(observed.count == 1)
 For `hidden`, connect `source`'s writer through the `ref` argument, `ref` member, return, and prohibited immutable reception. For `stolen`, identify the return's `ref` mode.
 
 ```ril
-type Cell = { var count: int }
+type Cell = { var count: i64 }
 fn copy_cell(value: Cell) -> new Cell { clone(value) }
 fn swap(mut a: Cell, mut b: Cell) &mut -> () {
     let saved = a.count
@@ -1429,7 +1433,7 @@ cells[0].count += 1
 The two components returned by `permute` may each originate in either argument, but are disjoint whenever the two actual inputs are disjoint. That common relation survives the branch and return. Distinct parameter names alone establish no such relation. Unrelated run-time selections retain possible overlap unless an applicable rule proves otherwise.
 
 ```ril
-type Cell = { var count: int }
+type Cell = { var count: i64 }
 let mut source = Cell.{ count: 0 }
 source.count += 1
 -- let frozen = source               -- Error [E0535]: source's scope has not ended, even without later use
@@ -1479,14 +1483,14 @@ Template checking may substitute a lexically bound outer `P` for an inner parame
 Data types, slot replacement, source authority, and effect-row openness follow their own declarations and checks. `via` ranges over concrete access modes. `E0412` rejects it in static/meta/type-function parameters, effect-operation signatures, handler parameters, bodyless foreign interfaces, map keys, untyped literal modifiers, reassignable/scoped/module receivers, or local reception without an applicable lexical template. `infer` selects result-mode and provenance inference on ordinary Ril callable definitions and callable types. Other mode-inference placements of either keyword are `E0412`. Mapped comprehensions preserve known modes; bodyless boundaries supply explicit trusted contracts.
 
 ```ril
-type Cell = { var count: int }
+type Cell = { var count: i64 }
 fn make_cell() -> infer Cell { Cell.{ count: 0 } } -- OK: result inference with a concrete input signature
 let via = 1                                      -- OK: ordinary identifier
 let infer = 2                                    -- OK: ordinary identifier
 assert(via + infer == 3)
 
 -- fn bad_result(ref value: Cell) -> via Cell { value } -- Error [E0412]: via is an input/member/receiver modifier
--- fn bad_input(infer value: Cell) -> int { value.count } -- Error [E0412]: infer is a result modifier
+-- fn bad_input(infer value: Cell) -> i64 { value.count } -- Error [E0412]: infer is a result modifier
 -- type BadMember = { infer value: Cell }         -- Error [E0412]
 -- let infer received = make_cell()               -- Error [E0412]
 ```
@@ -1500,7 +1504,7 @@ type Items<T> = [via]T
 type Node<T> { End, Link { via value: T, ref following: Node<T> } }
 type Alias<T> = Fixed<T>
 
-type Fields = { var tag: int, mut items: []int }
+type Fields = { var tag: i64, mut items: []i64 }
 meta let TAG_MODE = modeof Fields.tag       -- MemberMode::Var
 meta let ITEMS_MODE = modeof Fields.items   -- MemberMode::Mut
 ```
@@ -1508,7 +1512,7 @@ meta let ITEMS_MODE = modeof Fields.items   -- MemberMode::Mut
 `MemberMode` pairs slot replacement (replaceable `var` or a fixed slot) with access (default, `ref`, `mut`, `^mut`). `modeof` returns both components. Access modes have distinct source and retention rules; slot replacement is explicit.
 
 ```ril
-type Cell = { var count: int }
+type Cell = { var count: i64 }
 type Holder = { mut item: Cell }
 let mut source = Cell.{ count: 0 }
 let mut holder = Holder.{ item: ^mut source }
@@ -1543,16 +1547,16 @@ Implicit member parameters supplied by a function's input types may be bound sch
 #### Inference Domains and Contract Completion
 
 ```ril
-type Cell = { var count: int }
+type Cell = { var count: i64 }
 fn bump(mut x: Cell) &mut -> () { x.count += 1 }
 
 -- fn redundant(via x: Cell) &mut -> () { bump(x) }
 -- Error [E0550]: exact forwarding fixes the parameter to mut
 
--- type Redundant = { via count: int }
+-- type Redundant = { via count: i64 }
 -- Error [E0550]: a value member has only ordinary immutable access
 
--- fn redundant_array(mut xs: [via]int, n: int) &mut -> () {
+-- fn redundant_array(mut xs: [via]i64, n: i64) &mut -> () {
 --     xs !> Array::push(n)
 -- } -- Error [E0550]: the declaration-owned element mode is fixed too
 
@@ -1580,7 +1584,7 @@ Named definitions spell concrete effects, state/provenance clauses, and known ex
 #### Preserving Reception and Forwarding
 
 ```ril
-type Cell = { var count: int }
+type Cell = { var count: i64 }
 fn preserve<T>(via x: T) -> infer T { x }
 
 let mut source = Cell.{ count: 0 }
@@ -1662,11 +1666,11 @@ Dynamic targets permit calls valid for every target, with common guarantees and 
 
 ```ril
 -- Published compatibility baseline:
-type Cell = { var count: int }
-fn read(via x: Cell) -> int { x.count }
+type Cell = { var count: i64 }
+fn read(via x: Cell) -> i64 { x.count }
 
 -- Replacement checked against that baseline:
--- fn read(via x: Cell) &mut -> int { x.count += 1; x.count }
+-- fn read(via x: Cell) &mut -> i64 { x.count += 1; x.count }
 -- Error [E0552]: the same via spelling no longer preserves the accepted read inputs
 ```
 
@@ -1677,7 +1681,7 @@ Compatibility is checked against the normalized declared/emitted interface basel
 ### Functional Updates via Derive
 
 ```ril
-type Cell = { var count: int }
+type Cell = { var count: i64 }
 type Pair = { left: Cell, right: Cell }
 let shared = Cell.{ count: 1 }
 let base = Pair.{ left: shared, right: shared }
@@ -1698,24 +1702,27 @@ assert(inserted.left.count == 11)
 
 #### Normative Rules for Functional Updates
 
-- **Input (`E0536`)**: `derive` accepts deeply immutable ordinary shared-object roots, including nominal/ordinary opaque representations whose root is such an object. Value roots (`bool`, numbers, `str`, `bytes`, integer ranges, `()`, and wrappers over them) are rejected with `E0536` before checking the recipe's draft parameter. They may occur as members inside an eligible object. Publish a live object's copy with `let snapshot = clone(ref live)` first. The result is immutable data of the same data type; opacity and nested-constituent restrictions remain enforced.
-- **Draft**: The recipe receives `mut draft`, returns `()`, and may temporarily replace or modify data members regardless of declared mode, subject to stored-key protection below. The root handle itself cannot be rebound. This confined privilege ends before immutable publication; declared modes and data types are unchanged.
-- **Identity**: Each source object has one draft counterpart, including newly inserted immutable references. Repeated references and cycles are preserved; all draft aliases see the same changes.
-- **Sharing**: Copy every affected value or shared-object region, including changes needed to preserve graph identity. Unaffected immutable regions may be shared. Neither unique ownership nor a new root for a no-op recipe is guaranteed.
-- **Insertion (`E0535`)**: Accept immutable objects or recipe-local fresh data without outside writers. Inserted immutable objects enter the same draft correspondence before later writes; existing draft aliases retain their identity.
-- **Collection Shape (`E0535`)**: A collection whose type does not encode its shape (`[]T`, `[K: V]`, `Set<T>`) admits element writes and structural change through its storage and structural operators. A changed collection object is replaced by a fresh draft counterpart, while the corresponding base object keeps its original length, order, and entries for every immutable alias. Correspondence follows the source object, not the path.
-- **Stored Keys (`E0535`)**: Graphs retained as map keys or set elements in the draft remain deeply immutable through every draft alias. A recipe cannot write any constituent of such a graph, including through a value/member alias to the same draft counterpart. Entry removal/replacement and insertion of an eligible immutable key remain allowed. A write requires proof that the affected draft region is no longer retained by any draft key or set element; unknown overlap does not grant permission. This restriction preserves structural hashing and the one-counterpart identity rule without silently copying or rehashing an edited key.
-- **Fixed Shape (`E0336`, `E0312`)**: Tuple arity, record field sets, and sum variants belong to the value's type. The recipe may replace any member and change a collection's length; it cannot add, remove, or retag a declared constituent.
-- **Confinement (`E0607`)**: Draft references cannot escape through returns, assignments, containers, or published closures. Non-escaping helper calls are allowed. Publish the immutable result only after normal recipe completion.
-- **Abort**: Forward recipe effects and external-state obligations; discharge draft-local writes. Panic/abort publishes no result and preserves all immutable inputs. Unrelated external writes remain committed.
+| Aspect | Rule |
+| :--- | :--- |
+| Input / result | Deeply immutable ordinary shared-object root, including eligible nominal/opaque representations; immutable result of the same data type |
+| Invalid root (`E0536`) | Value representation or live object; check root eligibility before the draft parameter |
+| Draft | Fixed `mut draft` handle; recipe returns `()`; member writes temporarily override declared modes, subject to stored-key protection |
+| Object correspondence | One draft counterpart per source object, including inserted objects; preserve aliases and cycles |
+| Copying / sharing | Copy affected regions; share unchanged immutable regions, including the root for a no-op recipe |
+| Insertion (`E0535`) | Immutable objects or recipe-local fresh data with confined writers; join the same object correspondence |
+| Collections | Element and structural updates preserve the base snapshot's length, entries, and order |
+| Stored keys (`E0535`) | Key/set-element graphs remain deeply immutable through every draft alias; writes require proven detachment from all draft keys/elements |
+| Declared shape (`E0336`, `E0312`) | Preserve tuple arity, record fields, and sum variants; members may be replaced |
+| Confinement (`E0607`) | Draft references remain within the recipe and its non-escaping helpers; publish after normal completion |
+| Effects / abort | Forward recipe effects and external state; discharge local writes. Abort preserves immutable inputs and prior external writes |
 
 ```ril
-type Board = { title: str, items: []int, tags: [str: int] }
+type Board = { title: str, items: []i64, tags: [str: i64] }
 let base = Board.{ title: "draft", items: [1, 2], tags: ["a": 1] }
 let coords = (10, "Ada")
 
 let revised = base |> derive \mut draft -> {
-    draft.items !> Array::push(3)      -- []int stays []int
+    draft.items !> Array::push(3)      -- []i64 stays []i64
     draft.items[0] = 9                 -- element write
     draft.tags["b"] = 2                -- entry insertion
 }
@@ -1729,7 +1736,7 @@ assert(coords.0 == 10 && moved.0 == 11)                 -- tuple type unchanged
 -- let wider = base |> derive \mut draft -> { draft.owner = "me" }
 -- Error [E0336]: this product has no field 'owner'
 -- let longer = coords |> derive \mut draft -> { draft.2 = true }
--- Error [E0312]: tuple index 2 out of bounds for (int, str)
+-- Error [E0312]: tuple index 2 out of bounds for (i64, str)
 ```
 
 ```ril
@@ -1746,7 +1753,7 @@ assert(snapshot.count == 0 && version.count == 1)
 ```ril
 -- let number = derive(1, \mut draft -> {})       -- Error [E0536]: value root
 -- let text = derive("ab", \mut draft -> {})      -- Error [E0536]: value root
-type UserId(int)
+type UserId(i64)
 -- let id = derive(UserId(1), \mut draft -> {})   -- Error [E0536]: value representation
 let changed = .{ count: 1, text: "ab" } |> derive \mut draft -> {
     draft.count = 2
@@ -1758,7 +1765,7 @@ assert(changed.count == 2 && changed.text == "cd")
 ### Generic Parameters, Defaults, and Value Sorts
 
 ```ril
-fn log_id<T: { id: int, .. }>(item: T) -> int { item.id }
+fn log_id<T: { id: i64, .. }>(item: T) -> i64 { item.id }
 ```
 
 Generics admit type, const-value, member-mode, and [static-key](#static-key-parameters-and-computed-value-projection) parameters. They apply to data, wrapper, sum, and callable declarations. Access-mode inference supplies implicit static access parameters. `MemberMode` denotes both slot and access components; generic member-mode arguments use concrete modes or static mode expressions.
@@ -1787,28 +1794,28 @@ ValueType             ::= TypeExpression
 - **Trailing Defaults Invariant (`E0316`)**: If a generic parameter declares a default argument (`= Default`), all subsequent generic parameters in the same parameter list must declare default arguments.
 - **Left-to-Right Default Scope Invariant (`E0320`)**: A default argument expression $D_i$ may reference generic parameters declared to its left ($X_1, \dots, X_{i-1}$). Forward references and direct/indirect circular dependencies are statically rejected (`E0320`).
 - **Member Mode Sorts (`M: MemberMode`, `E0356`)**: Static parameters may constrain to the ambient `MemberMode` sort. Arguments accept member mode literals (`var`, `mut`, `^mut`, `ref`, etc.) or static expressions yielding `MemberMode`. Incompatible sorts fail with `E0356`.
-- **Generic Closed Type Sets (`TypeSetSort`, `E0301`)**: A generic parameter may constrain its admitted domain to a finite union of types (`T: int | f64`). Unlike value-level untagged unions (`E0318`), a type set constraint does not create an untagged runtime union type; monomorphization specializes $T$ to each concrete member. The compiler performs definition-site polyvariant type checking across all member types $\tau \in \{T_1, \dots, T_n\}$, verifying that the generic body's operations are well-typed for every alternative. Supplying a type outside the set triggers `E0301: TypeMismatchError`.
+- **Generic Closed Type Sets (`TypeSetSort`, `E0301`)**: A generic parameter may constrain its admitted domain to a finite union of types (`T: i64 | f64`). Unlike value-level untagged unions (`E0318`), a type set constraint does not create an untagged runtime union type; monomorphization specializes $T$ to each concrete member. The compiler performs definition-site polyvariant type checking across all member types $\tau \in \{T_1, \dots, T_n\}$, verifying that the generic body's operations are well-typed for every alternative. Supplying a type outside the set triggers `E0301: TypeMismatchError`.
 - **Pipeline Type Constraints (`T |> Guard`, `E0301`, `E0306`)**: A type parameter may pipe into one or more pure type functions (`T |> Numeric`). The guard must be a compile-time pure `type` function of kind `Type -> Type` (`E0306`). An argument type $T_{arg}$ satisfies the guard if and only if:
   $$\text{Valid}(T_{arg}) \iff T_{arg} \not\equiv \text{never} \quad \wedge \quad \text{Guard}\langle T_{arg} \rangle \equiv T_{arg}$$
   The bottom type `never` is statically rejected before guard evaluation, preventing vacuous satisfaction. If $\text{Guard}\langle T_{arg} \rangle$ does not produce definitional identity with $T_{arg}$, the argument is rejected under `E0301`. Multiple guards pipe from left to right: `T |> Guard1 |> Guard2` $\equiv \text{Guard2}\langle \text{Guard1}\langle T \rangle \rangle$.
-- **Orthogonal Constraint Composition**: Structural row polymorphism and pipeline guards compose naturally: `T: { id: int, .. } |> AuditGuard` verifies that $T$ satisfies the open record structure and conforms to `AuditGuard`.
+- **Orthogonal Constraint Composition**: Structural row polymorphism and pipeline guards compose naturally: `T: { id: i64, .. } |> AuditGuard` verifies that $T$ satisfies the open record structure and conforms to `AuditGuard`.
 - **Static Value Sorts**: Const parameters admit scalar values, atomic type tokens, and finite immutable aggregates without resource or callable authority. `token: Type` is a static value parameter, distinct from a type parameter `T: Type`. Admission of static-only token values never permits their run-time materialization.
 - **Const Generic Evaluation & Purity Invariant (`E0814`, `E0323`)**: Const generic arguments evaluate at compile time within the pure static domain (with empty effect and state/provenance rows). Non-constant runtime expressions passed to const parameters trigger `E0814`. Arguments failing sort constraints trigger `E0323`.
-- **No Untagged Literal or Storage Union Types (`E0318`)**: Concrete values (strings, integers, booleans) and untagged value unions (`int | str`) cannot serve as storage, variable, or binding types (`E0318`). Tagged alternatives are declared with sum types (`type HttpMethod { Get, Post }`). Concrete values may be supplied as compile-time arguments to const parameters (`Buffer<u8, 1024>`, `Matrix<f64, 4>`). Finite type sets (`T: int | f64`) are permitted exclusively as static domain constraints on generic parameters (`TypeSetSort`), which are monomorphized to single rigid types.
-- **Function Generic Default Prohibition (`E0317`)**: Function generic parameters cannot declare defaults (`fn f<T = int>` is rejected); function types are inferred bidirectionally at call sites.
+- **No Untagged Literal or Storage Union Types (`E0318`)**: Concrete values (strings, integers, booleans) and untagged value unions (`i64 | str`) cannot serve as storage, variable, or binding types (`E0318`). Tagged alternatives are declared with sum types (`type HttpMethod { Get, Post }`). Concrete values may be supplied as compile-time arguments to const parameters (`Buffer<u8, 1024>`, `Matrix<f64, 4>`). Finite type sets (`T: i64 | f64`) are permitted exclusively as static domain constraints on generic parameters (`TypeSetSort`), which are monomorphized to single rigid types.
+- **Function Generic Default Prohibition (`E0317`)**: Function generic parameters cannot declare defaults (`fn f<T = i64>` is rejected); function types are inferred bidirectionally at call sites.
 
 Generic arguments follow the declaration's parameter category: type syntax for a type parameter, a static token/value expression for a value parameter. Passing a quoted type to a type parameter is `E0306`. `Type<T>` is the exact static metatype for target `T`; type quotes require a type, and const parameters accept values such as `42` in `Buffer<u8, 42>`.
 
 ```ril
 -- Closed Type Set Constraint:
-fn add<T: int | f64>(a: T, b: T) -> T { a + b }
+fn add<T: i64 | f64>(a: T, b: T) -> T { a + b }
 assert(add(1, 2) == 3)
 assert(add(1.5, 2.5) == 4.0)
--- let bad_add = add("a", "b")          -- Error [E0301]: type 'str' does not satisfy constraint 'int | f64'
+-- let bad_add = add("a", "b")          -- Error [E0301]: type 'str' does not satisfy constraint 'i64 | f64'
 
 -- Pipeline Type Function Constraint:
 type Numeric = \T -> match <T> {
-    <int> | <f64> -> <T>,
+    <i64> | <f64> -> <T>,
     _ -> <never>,
 }
 fn multiply<T |> Numeric>(a: T, b: T) -> T { a * b }
@@ -1817,25 +1824,25 @@ assert(multiply(3, 4) == 12)
 
 -- Composed Structural and Pipeline Constraint:
 type NonZero = \T -> match <T> {
-    <{ val: int, .. }> -> <T>,
+    <{ val: i64, .. }> -> <T>,
     _ -> <never>,
 }
-fn get_val<T: { val: int, .. } |> NonZero>(item: T) -> int { item.val }
+fn get_val<T: { val: i64, .. } |> NonZero>(item: T) -> i64 { item.val }
 assert(get_val(.{ val: 42, label: "ok" }) == 42)
 
-type Token<value: f64>(int)
+type Token<value: f64>(i64)
 meta let _ = assert(<Token<0.0>> != <Token<-0.0>>)
 meta let _ = assert(<Token<0.0 / 0.0>> == <Token<0.0 / 0.0>>)
 
-type Choose = \entries: [str: int] ->
-    if Map::keys(entries)[0] == "a" { <int> } else { <str> }
-type FirstOrder = Choose<["a": 1, "b": 2]>  -- int
+type Choose = \entries: [str: i64] ->
+    if Map::keys(entries)[0] == "a" { <i64> } else { <str> }
+type FirstOrder = Choose<["a": 1, "b": 2]>  -- i64
 type OtherOrder = Choose<["b": 2, "a": 1]>  -- str
 
 -- Member Mode Sort Constraint:
 halt type ApplyMode = \T, M: MemberMode -> <{ M [keyof T as K]: T.(K) }>
 type Slots<T> = ApplyMode<T, var>              -- OK: keyword literal lifting to MemberMode::Var
--- type BadMode<T> = ApplyMode<T, int>         -- Error [E0356]: expected MemberMode sort, found 'int'
+-- type BadMode<T> = ApplyMode<T, i64>         -- Error [E0356]: expected MemberMode sort, found 'i64'
 ```
 
 Static argument equivalence determines type and effect instantiation identity. It is distinct from run-time `==`. Arguments must first have the same admitted sort.
@@ -1854,10 +1861,10 @@ Static argument equivalence determines type and effect instantiation identity. I
 Sharing multiplicity and allocation identity do not distinguish static arguments. For eligible finite cyclic graphs, use the greatest relation satisfying the table's constituent rules. Live values, callable authority, and resources remain ineligible. Type equality compares these instantiation identities; it does not substitute ordinary collection or floating-point equality.
 
 ```ril
--- type TooMany = Option<int, str>    -- Error [E0340]: Option has one generic parameter
+-- type TooMany = Option<i64, str>    -- Error [E0340]: Option has one generic parameter
 fn make_empty<T>() -> new []T { [] }
 -- let unknown = make_empty()        -- Error [E0344]: no context determines T
-let known: []int = make_empty()       -- OK: result context determines T
+let known: []i64 = make_empty()       -- OK: result context determines T
 ```
 
 An explicit generic argument list that cannot fit the declared parameter list is `E0340`, distinct from ordinary value-argument arity (`E0314`) and a supplied argument's kind/sort (`E0306`/`E0323`). Defaults and permitted inference apply before diagnosing absent generic arguments. Where a type or static argument must be determined and neither supplied information nor contextual constraints determine it, use `E0344`; this does not invent a default type for an unconstrained parameter. Incompatible determined types still use their specific mismatch diagnostic.
@@ -1871,15 +1878,15 @@ pub type Result<T, E = str> {
     Err(E),
 }
 
-let r1: Result<int> = Ok(42)                    -- OK: resolves to Result<int, str>
-let r2: Result<int, int> = Err(404)             -- OK: explicit override of default E
+let r1: Result<i64> = Ok(42)                    -- OK: resolves to Result<i64, str>
+let r2: Result<i64, i64> = Err(404)             -- OK: explicit override of default E
 assert(r1 is Ok(_))
 assert(r2 is Err(_))
 
 -- Nominal wrapper with default const generic and type parameter:
-pub type Buffer<T = u8, cap: int = 1024>({
+pub type Buffer<T = u8, cap: i64 = 1024>({
     data: []T,
-    len: int,
+    len: i64,
 })
 
 let b1: Buffer = Buffer.{ data: [], len: 0 }    -- OK: resolves to Buffer<u8, 1024>
@@ -1887,7 +1894,7 @@ let b2: Buffer<u8, 2048> = Buffer.{ data: [], len: 0 } -- OK: explicit capacity 
 let b3: Buffer<i32> = Buffer.{ data: [], len: 0 } -- OK: resolves to Buffer<i32, 1024>
 
 -- Dependent default arguments (left-to-right scope):
-pub type Matrix<T, rows: int, cols: int = rows> = {
+pub type Matrix<T, rows: i64, cols: i64 = rows> = {
     data: []T,
 }
 
@@ -1898,18 +1905,18 @@ pub type Pair<First, Second = First> = {
     first: First,
     second: Second,
 }
-let p1: Pair<int> = .{ first: 1, second: 2 }    -- OK: Second defaults to First (int)
+let p1: Pair<i64> = .{ first: 1, second: 2 }    -- OK: Second defaults to First (i64)
 
 -- Rejection: Non-trailing default generic parameter (E0316):
--- type BadOrder<T = int, U> = { a: T, b: U }
+-- type BadOrder<T = i64, U> = { a: T, b: U }
 -- Error [E0316]: generic parameter without default 'U' cannot follow generic parameter with default 'T'
 
 -- Rejection: Forward reference in default argument (E0320):
--- type BadForward<T = U, U = int> = { a: T }
+-- type BadForward<T = U, U = i64> = { a: T }
 -- Error [E0320]: default argument for 'T' contains forward reference to parameter 'U'
 
 -- Rejection: Function generic parameter with default (E0317):
--- fn bad_fn<T = int>(x: T) -> T { x }
+-- fn bad_fn<T = i64>(x: T) -> T { x }
 -- Error [E0317]: function generic parameter 'T' cannot declare default type; functions rely on caller-site bidirectional inference
 
 -- Rejection: Literal types and untagged unions prohibited (E0318):
@@ -1917,14 +1924,14 @@ let p1: Pair<int> = .{ first: 1, second: 2 }    -- OK: Second defaults to First 
 -- Error [E0318]: literal values cannot be used as types; declare a tagged sum type instead
 
 -- Rejection: Runtime expression passed to const generic (E0814):
-fn check_buf(runtime_size: int) -> () {
+fn check_buf(runtime_size: i64) -> () {
     -- let bad_b: Buffer<u8, runtime_size> = Buffer.{ data: [], len: 0 }
     -- Error [E0814]: const generic parameter 'cap' expects compile-time constant, found runtime expression 'runtime_size'
 }
 
 -- Rejection: Const generic sort mismatch (E0323):
 -- let bad_sort: Buffer<u8, "1024"> = Buffer.{ data: [], len: 0 }
--- Error [E0323]: const generic parameter 'cap' of sort 'int' supplied with incompatible argument of sort 'str'
+-- Error [E0323]: const generic parameter 'cap' of sort 'i64' supplied with incompatible argument of sort 'str'
 ```
 
 ### Type Definition Boundaries
@@ -1933,20 +1940,20 @@ fn check_buf(runtime_size: int) -> () {
 use ril/io::{IoError}
 eff Io { read_line() -> str, write_line(str) -> () }
 eff AsyncIo { Io, Fiber }
-type StateNode = { var count: int, tag: str }
+type StateNode = { var count: i64, tag: str }
 type ReaderFn = fn() @Io -> str
 type AsyncWorker<T> = fn(T) @AsyncIo -> ()
 type Mutator<T> = fn(mut target: T) &mut -> ()
 type SharedLogger = fn(str) &up &^mut -> ()
 type SocketHandler =
-    fn(mut buffer: []u8, timeout_ms: int) @Fiber &mut -> Result<int, IoError>
+    fn(mut buffer: []u8, timeout_ms: i64) @Fiber &mut -> Result<i64, IoError>
 
 type TaskStatus {
     Pending,
     Running(fn() @ -> ()),
     Mutating(fn(mut StateNode) &mut -> ()),
-    Suspended({ duration_ms: int }),
-    Completed(int),
+    Suspended({ duration_ms: i64 }),
+    Completed(i64),
 }
 let status: TaskStatus = Running(\-> Fiber::yield())
 assert(status is Running)
@@ -1977,7 +1984,7 @@ assert(ch.stream() == "ready")
 test_valid_binding()
 
 halt type MakeNullable = \T -> <?T>
-type NullableInt = MakeNullable<int>
+type NullableInt = MakeNullable<i64>
 ```
 
 ```ril
@@ -1994,12 +2001,12 @@ fn update_cache() &up(sub){mut app_cache} -> () { app_cache += 1 }
 
 -- type BadVariant { Running @Async } -- Error [E0332]: tag annotation
 -- type BadMutableVariant { Mutating &mut } -- Error [E0332]: state annotation on a tag
--- type BadPayload { Suspended(int) @Fiber } -- Error [E0332]: payload does not permit a suffix
+-- type BadPayload { Suspended(i64) @Fiber } -- Error [E0332]: payload does not permit a suffix
 -- type BadField = { value: str @Io } -- Error [E0333]
 -- type BadMutableField = { buffer: []u8 &mut } -- Error [E0333]: field type is not a callable
--- type BadNamedField = { value: int &up(sub){mut app_cache} } -- Error [E0333]
--- type BadTuple = (str @Io, int)     -- Error [E0333]
--- type BadArray = []int @Async       -- Error [E0613]
+-- type BadNamedField = { value: i64 &up(sub){mut app_cache} } -- Error [E0333]
+-- type BadTuple = (str @Io, i64)     -- Error [E0333]
+-- type BadArray = []i64 @Async       -- Error [E0613]
 
 -- type BadEffectBound<T: @Io> = T    -- Error [E0334]
 -- type BadStateBound<T: &mut> = T    -- Error [E0334]
@@ -2101,7 +2108,7 @@ For an inferred mode family, retain use conditions for every admitted alternativ
 Aliases retain all source restrictions; immutable publication cannot revoke a surviving writer. Creating an explicit shared alias preserves the original binding; each invocation checks the resulting alias facts rather than assuming uniqueness from its `mut` spelling.
 
 ```ril
-type Cell = { var count: int }
+type Cell = { var count: i64 }
 fn maybe_bump(flag: bool, mut cell: Cell) &mut -> () {
     if flag { cell.count += 1 }
 }                                       -- OK: a possible write, not a write on every call
@@ -2113,7 +2120,7 @@ fn choose(flag: bool, ^mut a: Cell, ^mut b: Cell) -> ^mut(a | b) Cell {
     if flag { selected = ^mut b }
     selected                            -- OK: replacement plus writable return; no interior write needed
 }
--- fn read(mut cell: Cell) -> int { cell.count } -- Error [E0527]: no writable use
+-- fn read(mut cell: Cell) -> i64 { cell.count } -- Error [E0527]: no writable use
 -- fn write_only(^mut cell: Cell) &mut -> () { cell.count += 1 } -- Error [E0527]: no retention
 -- fn circular(mut cell: Cell) -> () { circular(mut cell) } -- Error [E0527]: forwarding is ungrounded
 -- let ^mut excess = Cell.{ count: 0 }; excess.count += 1 -- Error [E0527]: no shared reception
@@ -2142,7 +2149,7 @@ assert(observed.title == "Final" && original.title == "Original")
 ### Construction-Qualified Locals and Mode-Preserving Reception
 
 ```ril
-type Cell = { var count: int }
+type Cell = { var count: i64 }
 fn transform(new x: Cell) -> new Cell { x }
 
 fn make(flag: bool) -> new Cell {
@@ -2218,10 +2225,10 @@ SharedMutDecl ::= ( "let" | "var" ) "^mut" ValueName
 Shared reception, parameter retention, and outward state/provenance obligations are distinct [use facts](#reachable-authority-use). Initializing a fresh root and writing it does not by itself justify a shared binding; conversely, a later genuine shared assignment can justify `var ^mut` even when its initializer was unshared.
 
 ```ril
-type Cell = { var count: int }
+type Cell = { var count: i64 }
 fn child(^mut x: Cell) -> ^mut(x) Cell { x }
 fn make() -> new Cell { Cell.{ count: 0 } }
-fn tagged(_tag: int, ^mut x: Cell) -> ^mut(x) Cell { x }
+fn tagged(_tag: i64, ^mut x: Cell) -> ^mut(x) Cell { x }
 
 let mut parent = make()
 let ^mut fixed: Cell = child(^mut parent)
@@ -2251,7 +2258,7 @@ let ref observed = parent
 Mixed patterns use an expression marker:
 
 ```ril
-type Cell = { var count: int }
+type Cell = { var count: i64 }
 let mut packet = .{ count: 7, mut item: Cell.{ count: 0 } }
 let .{ count, mut item } = ^mut packet -- Explicit expression marker for mixed destructuring
 item.count += 1
@@ -2268,7 +2275,7 @@ LetDecl ::= [ "pub" ] "let" Pattern [ ":" TypeExpression ] "=" Expression [ "els
 Plain `let` uses default access in the [common mode tables](#binding-modes-and-storage-matrix). The fixtures distinguish immutable publication from live observation.
 
 ```ril
-type Counter = { var count: int }
+type Counter = { var count: i64 }
 let x = 10
 -- x = 20                              -- Error [E0501]: cannot reassign immutable binding 'x'
 
@@ -2278,8 +2285,8 @@ source.count += 1
 -- let bad = source                    -- Error [E0535]: a surviving writer prevents immutable publication
 -- let bad_ref = observer             -- Error [E0535]: wrapping or aliasing a live ref is not immutable
 
-fn make_items() -> new []int {
-    let mut items: []int = []
+fn make_items() -> new []i64 {
+    let mut items: []i64 = []
     items !> Array::push(1)
     items
 }
@@ -2289,7 +2296,7 @@ let alias = items                     -- OK: multiple references to immutable da
 
 -- Pattern destructuring:
 let (a, b) = (1, 2)
-type Config = { capacity: int, items: []int }
+type Config = { capacity: i64, items: []i64 }
 let cfg = Config.{ capacity: 64, items: [] }
 let .{ var capacity, items: _ } = cfg
 capacity += 1                         -- OK: independent scalar copy
@@ -2307,11 +2314,11 @@ LetMutDecl ::= "let" "mut" Pattern [ ":" TypeExpression ] "=" Expression [ "else
 Use the [common mode tables](#binding-modes-and-storage-matrix) for rebinding, value-type exclusions, and authority use. A pinned handle keeps its initial object as the stable root required by [persistent observation](#normative-rules-for-read-only-references).
 
 ```ril
-type Buffer = { mut items: []int }
+type Buffer = { mut items: []i64 }
 let mut buf = Buffer.{ items: [1, 2] }
 buf.items !> Array::push(3)            -- OK: in-place write to pinned buffer
 -- buf = Buffer.{ items: [] }          -- Error [E0502]: use 'var mut' for both reassignment and interior writes
--- let mut count: int = 0              -- Error [E0402]: value type 'int' has no interior mutability; use 'var'
+-- let mut count: i64 = 0              -- Error [E0402]: value type 'i64' has no interior mutability; use 'var'
 
 -- Pattern-level pinned mutable destructuring:
 type NodePair = { mut left: Buffer, mut right: Buffer }
@@ -2344,7 +2351,7 @@ counter = 10                           -- OK: direct reassignment
 assert(counter == 10)
 
 -- 2. Plain var: reassignable read-only cursor over shared objects
-type Node = { val: int, following: ?Node }
+type Node = { val: i64, following: ?Node }
 let ro_node2 = Node.{ val: 2, following: None }
 let ro_node1 = Node.{ val: 1, following: Some(ro_node2) }
 var cursor = ro_node1                  -- OK: reassignable slot containing immutable data
@@ -2353,7 +2360,7 @@ cursor = ro_node2                      -- OK: another immutable Node
 -- cursor.val = 99                     -- Error [E0520]: cannot mutate field 'val' through read-only handle 'cursor'
 
 -- 3. Reassignable mutable shared-object variable:
-type Buffer = { mut items: []int }
+type Buffer = { mut items: []i64 }
 var mut active_buf = Buffer.{ items: [1] }
 active_buf.items !> Array::push(2)     -- OK: in-place mutation
 active_buf = Buffer.{ items: [10, 20] } -- OK: handle reassignment permitted on 'var mut'
@@ -2418,7 +2425,7 @@ assert(events == ["new"])
 | Children | Finish before cleanup of resources they could access |
 
 ```ril
-type WrongCleanup = { on_close: int }
+type WrongCleanup = { on_close: i64 }
 -- let scoped bad = WrongCleanup.{ on_close: 0 } -- Error [E0541]: on_close is not fn() -> ()
 type Cleanup = { on_close: fn() -> () }
 { let scoped good = Cleanup.{ on_close: \-> () } } -- OK: implicit cleanup uses the binding
@@ -2445,7 +2452,7 @@ VarRefDecl ::= "var" "ref" Pattern [ ":" TypeExpression ] "=" Expression [ "else
 ```
 
 ```ril
-type Cell = { var count: int }
+type Cell = { var count: i64 }
 let fallback = Cell.{ count: 0 }
 let ref fixed = fallback              -- Immutable reference is a valid target
 let immutable_alias = fixed            -- Proven immutable origin survives ref reception
@@ -2484,7 +2491,7 @@ Persistent observation follows the [common mode tables](#binding-modes-and-stora
 These origin rules also apply to `ref` members and shared-object pattern targets. Value-member reads copy their current value. [`ref` parameters](#parameter-modes-caller-obligations-and-defaults) instead use call-time observation rules.
 
 ```ril
-type Cell = { var count: int }
+type Cell = { var count: i64 }
 let mut cell1 = Cell.{ count: 1 }
 let mut cell2 = Cell.{ count: 0 }
 
@@ -2517,7 +2524,7 @@ let ref child = parent.child
 parent.child = Cell.{ count: 9 }
 assert(child.count == 1)                -- Keeps the original child, not a reactive projection
 
-type TaskStatus { Pending(str), Finished(int) }
+type TaskStatus { Pending(str), Finished(i64) }
 let mut tasks: []TaskStatus = [TaskStatus::Pending("waiting")]
 let ref v = tasks[0]                   -- 'v' holds a read-only ref of the Pending object
 tasks[0] = TaskStatus::Finished(42)     -- Slot 0 is updated; 'v' safely keeps the original object
@@ -2543,8 +2550,8 @@ TypeReference    ::= QualifiedName [ GenericArgs ]
 
 ```ril
 -- Transparent Type Declarations:
-pub type AccountId = int              -- Direct type alias, transparent across module boundaries
-type Point = { x: int, y: int }        -- Local record type alias
+pub type AccountId = i64              -- Direct type alias, transparent across module boundaries
+type Point = { x: i64, y: i64 }        -- Local record type alias
 
 -- Cyclic structural type alias rejection (E0313):
 -- type BadCyclicA = { following: BadCyclicB }
@@ -2605,7 +2612,7 @@ fn authenticate_client() -> ?SessionToken {
 
     -- Nominal wrappers in collections:
     let active_tokens: []SessionToken = [token]
-    let token_map: [SessionToken: int] = [token: 42]
+    let token_map: [SessionToken: i64] = [token: 42]
 
     Some(token)
 }
@@ -2659,7 +2666,7 @@ pub let WINDOW: DomWindow
 
 -- Transparent exchange data types:
 pub type QueryOptions = {
-    timeout_ms: int,
+    timeout_ms: i64,
     all_matches: bool,
 }
 
@@ -2673,8 +2680,8 @@ pub fn query_selector(win: DomWindow, sel: str) @Fiber -> Result<DomElement, Dom
 pub fn read_attribute(elem: DomElement, key: str) @Fiber -> Result<?str, DomError>
 
 -- Body prohibition in .d.ril (E0901):
--- pub fn bad_body() -> int { 42 }     -- Error [E0901]: functions in '.d.ril' cannot have an implementation body
--- pub let BAD_CONST: int = 100        -- Error [E0901]: constants in '.d.ril' cannot have an initializer expression
+-- pub fn bad_body() -> i64 { 42 }     -- Error [E0901]: functions in '.d.ril' cannot have an implementation body
+-- pub let BAD_CONST: i64 = 100        -- Error [E0901]: constants in '.d.ril' cannot have an initializer expression
 
 -- Opaque penetration prohibited (E0907):
 -- fn test_penetrate(elem: DomElement) -> () {
@@ -2690,18 +2697,18 @@ The DOM interface above admits read-only `DomWindow`/`DomElement` resource descr
 
 ```ril
 -- In file: platform/text.d.ril; default ordinary exchange and temporary callback rules:
-pub fn get_data() -> []int
+pub fn get_data() -> []i64
 pub fn transform_text(text: str, transform: Transformer) @{} &{} -> str
 where
     type Transformer = fn(str) -> str
 
--- pub fn edit(mut items: []int) @Fiber &mut -> ()
+-- pub fn edit(mut items: []i64) @Fiber &mut -> ()
 -- Error [E0908]: ordinary mutable data cannot cross a foreign boundary
 -- pub fn keep(^mut callback: fn() &up -> ()) &^mut -> ()
 -- Error [E0908]: default callback authority cannot be retained
 -- pub fn hidden_callback() -> { action: fn() -> () }
 -- Error [E0908]: ordinary returned data cannot conceal callable authority
--- pub fn use_writer(callback: fn(mut []int) &mut -> ()) -> ()
+-- pub fn use_writer(callback: fn(mut []i64) &mut -> ()) -> ()
 -- Error [E0908]: a callback cannot receive a foreign ordinary writer under the default exchange rules
 ```
 
@@ -2809,8 +2816,6 @@ let wrap_mul: u8 = 128u8 *% 2u8        -- 0u8 (wrapping multiplication)
 | Safe division/remainder | `None` for a zero divisor; otherwise retain the IEEE result |
 | Remainder | Truncating remainder |
 
-`int` uses the same checked and wrapping rules and overflow boundary as `i64` on every target.
-
 | Floating type | Canonical NaN bits |
 | :--- | :--- |
 | `f32` | `0x7fc00000` |
@@ -2820,7 +2825,7 @@ Arithmetic, unary operations, conversions, and binary decoding/encoding use thes
 
 ### Explicit Numeric Conversions
 
-The language-defined `ril/numeric` module, imported as `Numeric`, supplies the following pure, finite, dual-phase operations. `From` is inferred from the argument when omitted after an explicit `To`; an expected result may determine `To` when no type arguments are written. These operations receive values normally and invoke no user conversion. Numeric domains contain only the intrinsic integer and floating types, with `int` normalized to `i64`. Nominal wrappers require explicit unwrapping; opaque representations participate only where their defining-scope transparency permits it. Unsupported source/target combinations are `E0301`.
+The prelude module `Numeric` provides pure, finite, dual-phase conversions.
 
 | Operation | Admitted types | Result |
 | :--- | :--- | :--- |
@@ -2836,19 +2841,24 @@ The language-defined `ril/numeric` module, imported as `Numeric`, supplies the f
 | Float / integer | `Some` only for a finite, integral value within the target range; fractions, infinities, and NaN yield `None`; either signed zero becomes integer zero |
 | Float / float | Round once to nearest, ties to even; a finite source overflowing to infinity yields `None`; preserve existing infinities and signed zero, canonicalize NaN; underflow to a subnormal or signed zero is allowed |
 
-`trunc` checks the mathematical truncated value, so a fraction is discarded only by that explicitly selected operation. Conversion failure is an ordinary `None`, not a panic. `wrap` and `reinterpret` do not perform checked value conversion; `bigint` has no fixed representation width and cannot be a reinterpretation operand or wrapping target. Reinterpretation acts on an abstract bit word, independent of host byte order, and grants no address or foreign-memory access. The [canonical NaN rules](#arithmetic-and-wrapping-operators) mean reinterpreting a NaN to bits and back need not preserve an input payload.
+| Common rule | Contract |
+| :--- | :--- |
+| Numeric domain | Intrinsic integers/floats; nominal wrappers use explicit unwrapping; opaque representations follow defining-scope transparency |
+| Inference | Infer omitted `From` from the argument; an expected result may determine omitted `To` |
+| Invalid source / target | `E0301` |
+| `trunc` | Range-check the mathematical integer after truncation |
+| Reinterpretation | Abstract N-bit representation; floating inputs/results use [canonical NaN bits](#arithmetic-and-wrapping-operators) |
 
 ```ril
-use ril/numeric as Numeric
-let index: ?int = Numeric::convert(255u8)
+let index: ?i64 = Numeric::convert(255u8)
 assert(index == Some(255))
 assert(Numeric::convert<u8>(256) == None)
-assert(Numeric::convert<int>(3.5) == None)
-assert(Numeric::trunc<int>(-3.5) == Some(-3))
+assert(Numeric::convert<i64>(3.5) == None)
+assert(Numeric::trunc<i64>(-3.5) == Some(-3))
 assert(Numeric::wrap<u8>(-1) == 255u8)
 assert(Numeric::convert<f32>(16_777_217) == Some(16_777_216.0f32))
-assert(Numeric::convert<int>(0.0 / 0.0) == None)
-assert(Numeric::convert<int>(9_223_372_036_854_775_808.0) == None)
+assert(Numeric::convert<i64>(0.0 / 0.0) == None)
+assert(Numeric::convert<i64>(9_223_372_036_854_775_808.0) == None)
 assert(Numeric::convert<bigint>(9_223_372_036_854_775_808.0) == Some(9_223_372_036_854_775_808bigint))
 assert(Numeric::convert<f32>(1.0e300) == None)
 assert(Numeric::reinterpret<u32>(1.0f32) == 0x3f800000u32)
@@ -2890,7 +2900,7 @@ let gt = (20 > 10)                     -- true
 let gte = (20 >= 20)                   -- true
 
 -- Value test via 'is' (bool result, no bindings):
-let opt: ?int = Some(42)
+let opt: ?i64 = Some(42)
 let expected = 40
 let matches = opt is Some(expected + 2) -- true; expected is an existing value
 ```
@@ -2900,22 +2910,22 @@ assert([1, 2] == [1, 2])               -- Structural equality, independent of al
 assert(.{ x: 1, y: 2 } == .{ y: 2, x: 1 })
 let nan = 0.0 / 0.0
 assert(!(nan == nan) && nan != nan)
-let mut ordered: [str: int] = ["b": 1, "a": 2]
+let mut ordered: [str: i64] = ["b": 1, "a": 2]
 ordered !> Map::set("b", 3)
 let snapshot = clone(ref ordered)
 assert(Map::keys(snapshot) == ["b", "a"]) -- Replacing a value preserves its key's position
--- let bad_keys: [f64: int] = [nan: 1] -- Error [E0328]: floating-point keys are not admitted
+-- let bad_keys: [f64: i64] = [nan: 1] -- Error [E0328]: floating-point keys are not admitted
 let graph_key = [.{ id: 1 }: 0]       -- OK: deeply immutable structural key
 assert(graph_key?[.{ id: 1 }] == Some(0))
-let coordinates: [(int, int): str] = [(1, 2): "home"]
+let coordinates: [(i64, i64): str] = [(1, 2): "home"]
 assert(coordinates?[(1, 2)] == Some("home"))
 let shared = [1]
 let by_shape = [(shared, shared): 7]
-assert(by_shape?[([1], [1])] == Some(7)) -- Sharing multiplicity does not affect hashing
+assert(by_shape?[([1], [1])] == Some(7)) -- Structurally equal keys
 let by_map = [["a": 1, "b": 2]: 8]
 assert(by_map?[["b": 2, "a": 1]] == Some(8)) -- Key map insertion order is ignored
 let by_range = [(1..3): 9]
-assert(by_range?[(1..3)] == Some(9))   -- Range key, not sequence slicing
+assert(by_range?[(1..3)] == Some(9))   -- Range-typed key
 -- let nested_float = [.{ value: 1.0 }: 0] -- Error [E0328]: floating constituent
 ```
 
@@ -2944,12 +2954,21 @@ For finite cyclic graphs, equality is the greatest binary relation satisfying th
 | Nominal / ordinary opaque wrappers | Allowed when their representation recursively satisfies this table; opacity remains enforced |
 | Floats, callables, tasks, resources, static-only values, or any nested occurrence of them | `E0328` |
 
-Eligibility is checked on the complete concrete data schema, including map values and all sum alternatives; recursive schemas are admitted when every reached constituent is eligible. Declared writable members do not by themselves exclude a type: immutable reception suppresses their effective modes. Actual key/set-element operands must be deeply immutable at insertion, lookup, membership testing, and removal (`E0535` for a surviving writer or live dependency). A read-only `ref` to a live graph is insufficient. Value keys copy by value; shared-object keys retain their object identity through ordinary immutable reception. No operation implicitly freezes or clones a supplied graph or invokes user equality/order/hash callbacks.
-
-Key equality is ordinary same-type structural equality above, independent of allocation identity, sharing multiplicity, and map/set insertion order. This is an equivalence on admitted key values because floating constituents are excluded. Finite cyclic keys are admitted under the same greatest-relation rule. Hashing and equality must terminate without user code, effects, or overlapping writes; equal keys must have equal hashes, including cyclic graphs with different allocation/sharing shapes. Identity hashes or back-edge numbering that distinguish structurally equal keys are insufficient. Hash collisions must be resolved by structural equality; exact hash numbers and the hashing algorithm are unspecified. Graph hashing/comparison may traverse the reachable graph and promises no constant-time bound.
+| Key rule | Contract |
+| :--- | :--- |
+| Type eligibility | Check the complete recursive schema, including map values and every sum alternative |
+| Reception | Deeply immutable at insertion, lookup, membership testing, and removal; surviving writers/live dependencies are `E0535` |
+| Member modes | Immutable reception suppresses declared write/observation modes |
+| Storage | Copy value keys; retain shared-object identity |
+| Equality | Built-in same-type structural equality; allocation identity, sharing count, and map/set insertion order are irrelevant |
+| Cycles | Finite cyclic graphs use the greatest structural relation above |
+| Hashing | Finite, pure built-in computation; equal keys have equal hashes; resolve collisions by structural equality; work may cover entire reachable graphs |
+| Stored graphs | Deeply immutable through every alias, including [`derive` drafts](#normative-rules-for-functional-updates); returned keys/elements preserve that access |
+| Equal-key update / reinsertion | Keep the first stored key/element object and position |
+| Static arguments | Use their separate [static equivalence rules](#generic-parameters-defaults-and-value-sorts) |
 
 ```ril
-type Ring({ var value: int, var next: ?Ring })
+type Ring({ var value: i64, var next: ?Ring })
 -- Fixture inputs: left and right are deeply immutable Ring graphs.
 -- Every value is zero and every next is Some: left has one self-looping node;
 -- right has two nodes pointing to each other. Their allocation shapes differ.
@@ -2958,10 +2977,8 @@ let cyclic = [left: "found"]
 assert(cyclic?[right] == Some("found")) -- OK: equality-consistent cyclic hashing
 ```
 
-Stored key and set-element graphs remain deeply immutable through every alias, including within a [`derive` draft](#normative-rules-for-functional-updates). Operations that return keys/elements preserve that immutability; a mutable collection root does not grant writes into its key graphs. Replacing a value for an equal key or reinserting an equal set element retains the first stored key/element object and insertion position. These rules do not change [static argument equivalence](#generic-parameters-defaults-and-value-sorts), which still distinguishes map/set insertion order.
-
 ```ril
-type Key = { var id: int }
+type Key = { var id: i64 }
 let key = Key.{ id: 1 }                -- Immutable reception suppresses the member's var
 let base = .{ key: key, table: [key: "old"] }
 assert(base.table?[Key.{ id: 1 }] == Some("old"))
@@ -2985,17 +3002,17 @@ live.id = 3
 #### Value Tests with is
 
 ```ril
-fn expected() -> int { 40 + 2 }
-let answer: Result<int, str> = Ok(42)
+fn expected() -> i64 { 40 + 2 }
+let answer: Result<i64, str> = Ok(42)
 assert(answer is Ok)                  -- Tag only
 assert(answer is Ok(_))               -- Tag only; no payload equality required
 assert(answer is Ok(expected()))      -- Compare payload with the call's result
 let wanted = 42
 assert(answer is Ok(wanted))          -- Read wanted; never bind a new variable
 
-let nested: Result<?int, str> = Ok(Some(42))
+let nested: Result<?i64, str> = Ok(Some(42))
 assert(nested is Ok(Some(wanted + 0))) -- Nested constructor tests
-let array: Result<[]int, str> = Ok([1, 2])
+let array: Result<[]i64, str> = Ok([1, 2])
 assert(array is Ok([1, 1 + 1]))        -- Array expression, then whole-array equality
 assert((1, 2) is (wanted - 41, _))
 assert((.{ id: 1, name: "Ada" }) is .{ id: wanted - 41 })
@@ -3017,15 +3034,15 @@ assert(empty)
 ```
 
 ```ril
-type Pair { Item(int, int) }
-let mut trace: []int = []
+type Pair { Item(i64, i64) }
+let mut trace: []i64 = []
 let mut mark = \n -> { trace !> Array::push(n); n }
 let value = Pair::Item(1, 2)
 assert(value is Item(mark(1), mark(2)))
 assert(trace == [1, 2])
 assert(!(value is Item(mark(0), mark(99))))
 assert(trace == [1, 2, 0])             -- First mismatch skips the remaining test
-let failed: Result<int, str> = Err("failed")
+let failed: Result<i64, str> = Err("failed")
 assert(!(failed is Ok(panic("skipped")))) -- Tag mismatch skips expected-value evaluation
 ```
 
@@ -3061,7 +3078,7 @@ assert(number is 1 + 2)
 assert(number is 1 | 3)               -- Alternatives
 assert(number is (1 | 2))             -- One expected value: bitwise OR
 assert(number is 3 && number > 0)     -- Logical continuation outside the test
-fn check(value: Result<int, str>) -> bool {
+fn check(value: Result<i64, str>) -> bool {
     match value {
         -- Ok(expected()) -> true,   -- Error [E0349]: match retains literal/binding patterns
         Ok(n) if n == expected() -> true,
@@ -3111,7 +3128,7 @@ for 254u8..=255u8 as value {
 assert(visited == 2)                  -- No increment beyond u8's maximum
 
 let arr = [10, 20, 30, 40, 50]
-let slice: []int = arr[1..4]          -- New ordinary array containing [20, 30, 40]
+let slice: []i64 = arr[1..4]          -- New ordinary array containing [20, 30, 40]
 let prefix = arr[..3]                 -- [10, 20, 30]
 let suffix = arr[2..]                 -- [30, 40, 50]
 let empty = arr[len(arr)..len(arr)]   -- OK: empty array at the end
@@ -3132,19 +3149,19 @@ let empty = arr[len(arr)..len(arr)]   -- OK: empty array at the end
 | Iteration | Ascending by one; stop after the last included value without an overflowing extra increment |
 | Other operations | Equality and map-key eligibility as specified above; no ordering, indexing, or `len` |
 
-Ranges are finite even when their integer cardinality exceeds `int`. Their value representation does not allocate one element per member. Range indexing instead uses `int` endpoints (`E0301` for another type) and the bounds below; reversed bounds panic.
+Ranges are finite even when their integer cardinality exceeds `i64`. Their value representation does not allocate one element per member. Range indexing instead uses `i64` endpoints (`E0301` for another type) and the bounds below; reversed bounds panic.
 
 ```ril
 -- 1. Value elements are copied by value:
-let mut source: []int = [1, 2, 3]
-let slice: []int = source[0..2]       -- New ordinary array containing [1, 2]
+let mut source: []i64 = [1, 2, 3]
+let slice: []i64 = source[0..2]       -- New ordinary array containing [1, 2]
 source !> Array::push(4)              -- Modifying source length does not affect slice
 source[0] = 99
 assert(slice[0] == 1)                 -- Independent value copy; slice is unaffected
 assert(len(ref source) == 4 && len(slice) == 2)
 
 -- 2. Shared object elements preserve object identity:
-type Cell = { var count: int }
+type Cell = { var count: i64 }
 let mut first = Cell.{ count: 1 }
 let mut second = Cell.{ count: 2 }
 let mut cells: [^mut]Cell = [^mut first, ^mut second]
@@ -3194,33 +3211,38 @@ assert(Bytes::at(b, 0) == Some(82u8)) -- The original bytes still start with 'R'
 - **Primitive Sub-Sequences**:
   - `str[a..b]` and `str[a..=b]` evaluate to an independent `str` based on Unicode scalar indices. For a string of length $N$, half-open bounds require $0 \le a \le b \le N$; inclusive bounds require $0 \le a \le b < N$. Range indexing and string length share the same Unicode scalar coordinate system; `s[0..len(s)]` safely selects the entire text.
   - `bytes[a..b]` and `bytes[a..=b]` evaluate to an independent `bytes` byte sub-sequence. For a byte sequence of length $N$, half-open bounds require $0 \le a \le b \le N$; inclusive bounds require $0 \le a \le b < N$.
-  - Safe range lookup on either primitive sequence returns `?str` or `?bytes`, with `None` for invalid bounds; it does not enable single-element bracket lookup.
+  - Safe primitive range lookup returns `?str` or `?bytes`, with `None` for invalid bounds.
 - **Array Stability**: Structural mutation is `E0526` during iteration or `E0537` before the last possible use of any derived `ref`/observer environment. Nonoverlapping element writes remain allowed.
 
 ### Text and Byte Operations
 
-The language-defined `ril/string` and `ril/bytes` modules, imported as `String` and `Bytes`, provide these pure, finite, dual-phase operations. Text uses Unicode scalars: integers in `0..=0x10FFFF` excluding `0xD800..=0xDFFF`, represented by ordinary `u32` values at these interfaces. Ril introduces no intrinsic character type. A general `u32` is not itself proof of scalar validity; text construction checks that property. NUL, unassigned code points, and noncharacters are valid scalars.
+The prelude modules `String` and `Bytes` provide pure, finite, dual-phase operations. Scalar interfaces use `u32`.
 
 | Operation | Result / contract | Complexity |
 | :--- | :--- | :--- |
 | `String::scalars(text: str) -> new []u32` | New ordinary array of the text's valid scalars, in order | $O(n)$ work and output space |
-| `String::at(text: str, index: int) -> ?u32` | Scalar at a scalar-coordinate index; `None` outside bounds | $O(n)$ worst case |
+| `String::at(text: str, index: i64) -> ?u32` | Scalar at a scalar-coordinate index; `None` outside bounds | $O(n)$ worst case |
 | `String::from_scalars(via values: []u32) -> ?str` | Exact scalar sequence; `None` if any input is not a scalar | $O(n)$ |
 | `String::encode_utf8(text: str) -> bytes` | Exact UTF-8 bytes of the scalar sequence | $O(n)$ upper bound |
 | `String::decode_utf8(data: bytes) -> ?str` | Exact decoded sequence; `None` for ill-formed UTF-8 | $O(n)$ |
-| `Bytes::at(data: bytes, index: int) -> ?u8` | Byte at a byte-coordinate index; `None` outside bounds | $O(1)$ |
+| `Bytes::at(data: bytes, index: i64) -> ?u8` | Byte at a byte-coordinate index; `None` outside bounds | $O(1)$ |
 | `Bytes::to_array(data: bytes) -> new []u8` | New ordinary array containing the same bytes | $O(n)$ work and output space |
 | `Bytes::from_array(via values: []u8) -> bytes` | Independent byte value with the same byte sequence | $O(n)$ upper bound |
 
-Here n counts input array entries for array conversions, Unicode scalars for `String::scalars`, and input bytes for UTF-8 traversal; each scalar occupies at most four UTF-8 bytes. The `via` input families of `String::from_scalars` and `Bytes::from_array` admit ordinary immutable reception and explicit `ref` observation of the corresponding array type; they grant no writable access. The produced text/byte values retain no live dependency on the input array. String and byte operands themselves are values and reject reference/access-mode modifiers under the ordinary value rules. Output arrays follow construction reception rules and may be received immutable or lawfully writable.
+Here n counts input array entries for array conversions, scalars for `String::scalars`, and bytes for UTF-8 traversal.
 
-`String::decode_utf8` rejects overlong encodings, malformed continuation sequences, truncated sequences, encoded surrogates, and values above `0x10FFFF`; it does not replace invalid data. Encoding and decoding neither add nor strip a BOM. These operations perform no normalization, case folding, or grapheme segmentation, and preserve every valid scalar including a leading U+FEFF. Thus valid-byte decode/encode round trips preserve bytes, and encode/decode round trips preserve the exact scalar sequence. Scalar indices/counts and interpolation widths do not promise user-perceived character counts or display-column widths. These Unicode terms follow [Unicode scalar and UTF-8 definitions](https://www.unicode.org/versions/Unicode17.0.0/core-spec/chapter-3/); user-perceived character boundaries are described by [Unicode text segmentation](https://www.unicode.org/reports/tr29/).
-
-Negative and out-of-bounds `at` indices return `None`, without panicking. Ill-formed data is an ordinary `None` from construction/decoding, distinct from source-literal diagnostics. `from_scalars` checks scalar validity before applying the [collection extent limit](#collection-extents-and-index-types); valid output exceeding that limit panics under the common sizing rules. Value semantics permit sharing immutable implementation storage without exposing shared-object identity or making a text/byte value retain a writable array's storage.
+| Text / byte rule | Contract |
+| :--- | :--- |
+| Unicode scalar | `u32` in `0..=0x10FFFF`, excluding `0xD800..=0xDFFF`; NUL, unassigned code points, and noncharacters are valid |
+| Text identity | Exact scalar sequence, including a leading U+FEFF |
+| UTF-8 | [Unicode encoding](https://www.unicode.org/versions/Unicode17.0.0/core-spec/chapter-3/); encode/decode preserves valid bytes and scalar sequences |
+| Invalid UTF-8 | Malformed/truncated sequences, overlong encodings, surrogates, and values above `0x10FFFF` yield `None` |
+| `at` bounds | Negative or out-of-range index yields `None` |
+| Array reception | `via` admits immutable reception or explicit `ref` observation; resulting text/bytes are independent value snapshots |
+| Array results | Construction reception determines immutable or writable access |
+| Text construction | Validate scalars, then apply the [collection extent limit](#collection-extents-and-index-types) |
 
 ```ril
-use ril/string as String
-use ril/bytes as Bytes
 let text = "é🙂"
 let scalars = String::scalars(text)
 assert(scalars == [0xE9u32, 0x1F642u32])
@@ -3235,7 +3257,7 @@ assert(String::decode_utf8(b"\xC0\xAF") == None) -- Overlong UTF-8
 assert(String::decode_utf8(b"\xED\xA0\x80") == None) -- Encoded surrogate
 assert(String::decode_utf8(b"\xEF\xBB\xBF") == Some("\u{FEFF}"))
 assert(len("é") == 1 && len("e\u{301}") == 2)
-assert("é" != "e\u{301}")             -- Exact scalar equality, no normalization
+assert("é" != "e\u{301}")             -- Exact scalar equality
 assert(text?[1..2] == Some("🙂") && encoded?[0..2] == Some(b"\xC3\xA9"))
 let mut array = Bytes::to_array(b"AB")
 array[0] = 0u8
@@ -3264,20 +3286,20 @@ items !> Array::push(4)                -- In-place mutation: items is now [1, 2,
 ### Error and Fallback Operators
 
 ```ril
-fn find_record(id: int) -> Result<str, str> {
+fn find_record(id: i64) -> Result<str, str> {
     let user = fetch_user(id)?         -- Early return Err if fetch_user fails
     Ok(user.name)
 }
 -- let bad_top_record = find_record(1)? -- Error [E0205]: postfix '?' operator used outside function or closure body; no enclosing activation frame to receive early return
 
-let opt: ?int = None
+let opt: ?i64 = None
 let v1 = opt ?? 100                    -- 100 (Option fallback with default value)
 let v2 = opt ?? compute_default()       -- Evaluates compute_default only when opt is None
-let optional_action: ?(fn() -> int) = None
+let optional_action: ?(fn() -> i64) = None
 let action = optional_action ?? (\-> 7) -- The fallback is a function value, not an invocation
 assert(action() == 7)
 
-let res: Result<int, str> = Err("unavailable")
+let res: Result<i64, str> = Err("unavailable")
 let recovered = res ?? \err -> 0       -- 0: Result fallback must consume the error
 -- let bad = res ?? 0                  -- Error [E0711]: Result fallback requires closure '\err -> ...'
 -- let illegal = opt ?? return 0       -- Error [E0710]: illegal control transfer inside fallback operator '??'
@@ -3285,10 +3307,10 @@ let recovered = res ?? \err -> 0       -- 0: Result fallback must consume the er
 -- Safe navigation operators '?.' and '?[':
 let profile: ?UserProfile = None
 let city = profile?.address?.city      -- Evaluates to None (?str) without panicking
-let table: ?[]int = None
-let first_elem = table?[0]             -- Evaluates to None (?int) without panicking
+let table: ?[]i64 = None
+let first_elem = table?[0]             -- Evaluates to None (?i64) without panicking
 let arr = [10, 20, 30]
-let out_of_bounds = arr?[99]           -- Evaluates to None (?int) (safe array index)
+let out_of_bounds = arr?[99]           -- Evaluates to None (?i64) (safe array index)
 ```
 
 | Operator | Success | Failure / constraint |
@@ -3301,19 +3323,19 @@ let out_of_bounds = arr?[99]           -- Evaluates to None (?int) (safe array i
 `?` outside a function/closure is `E0205`, including module initializers. It performs no Option/Result or error conversion; payload provenance, access modes, and nested inspection duties survive.
 
 ```ril
-fn invalid_operand() -> ?int {
+fn invalid_operand() -> ?i64 {
     -- let number = 42?               -- Error [E0712]: operand is neither Option nor Result
     Some(42)
 }
-fn invalid_target(value: ?int) -> int {
+fn invalid_target(value: ?i64) -> i64 {
     -- let number = value?            -- Error [E0713]: enclosing callable cannot return None
     value ?? 0
 }
-fn incompatible_error(value: Result<int, str>) -> Result<int, int> {
-    -- let number = value?            -- Error [E0713]: str failure cannot become int
+fn incompatible_error(value: Result<i64, str>) -> Result<i64, i64> {
+    -- let number = value?            -- Error [E0713]: str failure cannot become i64
     match value { Ok(number) -> Ok(number), Err(_error) -> Err(0) } -- OK: explicit mapping
 }
--- let fallback = 42 ?? 0             -- Error [E0714]: no fallback operation for int
+-- let fallback = 42 ?? 0             -- Error [E0714]: no fallback operation for i64
 let record = .{ name: "Ada" }
 -- let safe_name = record?.name       -- Error [E0715]: '?.' requires an optional receiver
 let optional_record: ?{ name: str } = Some(record)
@@ -3354,7 +3376,7 @@ let mapping = ["id": 1, "id": 2]     -- OK: duplicate map keys retain the last v
 ```
 
 ```ril
-type Point = { x: int, y: int, z: int }
+type Point = { x: i64, y: i64, z: i64 }
 
 let p1 = Point.{ x: 1, y: 2, z: 3 }
 let p2 = Point.{ z: 10, ..p1 }         -- Record spread update: { x: 1, y: 2, z: 10 }
@@ -3408,7 +3430,7 @@ flags <<= 1                            -- 0b10010
 flags >>= 2                            -- 0b00100
 
 -- Pinned handles (let mut) permit field assignment but reject handle reassignment:
-type Buffer = { var capacity: int }
+type Buffer = { var capacity: i64 }
 let mut pinned_buf = Buffer.{ capacity: 16 }
 pinned_buf.capacity = 32               -- OK: field assignment through pinned handle
 pinned_buf.("capacity") += 1           -- OK: same field access mode
@@ -3460,12 +3482,12 @@ Separator       ::= ";" | Newline
    - Returned value/callable types cannot contain function-local nominal, opaque, or sum identities, including signature-`where` identities. Expand structural aliases first. Signature references to block-`where` types fail scope checking (`E0706`) before this check.
 
 ```ril
-fn read_after_init() -> int {
+fn read_after_init() -> i64 {
     -- read_value()                    -- Error [E0207]: value is not initialized
     let value = 1
     read_value()                       -- OK
 where
-    fn read_value() &up{value} -> int { value }
+    fn read_value() &up{value} -> i64 { value }
 }
 ```
 
@@ -3478,14 +3500,14 @@ let total = {
     let parity = is_even(base)
     base
 where
-    fn compute_base() -> int { 100 }
-    fn is_even(n: int) -> bool { if n <= 0 { true } else { is_odd(n - 1) } }
-    fn is_odd(n: int) -> bool { if n <= 0 { false } else { is_even(n - 1) } }
+    fn compute_base() -> i64 { 100 }
+    fn is_even(n: i64) -> bool { if n <= 0 { true } else { is_odd(n - 1) } }
+    fn is_odd(n: i64) -> bool { if n <= 0 { false } else { is_even(n - 1) } }
 }
 
 -- Local algebraic effect declared in 'where' and fully discharged locally:
-fn search_matrix(grid: [][]int) -> ?int {
-    var found: ?int = None
+fn search_matrix(grid: [][]i64) -> ?i64 {
+    var found: ?i64 = None
     with Search::hit(val) -> {
         found = Some(val)
         return found                   -- Delimited early return; discharges Search
@@ -3494,8 +3516,8 @@ fn search_matrix(grid: [][]int) -> ?int {
     walk_grid(grid)
     found                              -- Pure signature: @Search completely discharged
 where
-    eff Search { hit(int) -> () }
-    fn walk_grid(g: [][]int) @Search -> () {
+    eff Search { hit(i64) -> () }
+    fn walk_grid(g: [][]i64) @Search -> () {
         for g as row {
             for row as item {
                 if item > 0 { Search::hit(item) }
@@ -3507,7 +3529,7 @@ where
 -- Prohibited: Declarations inside sequential statement stream (E0703):
 -- let bad_statement = {
 --     let x = 10
---     type Step = int                 -- Error [E0703]: declarations of 'type' are prohibited in sequential statement stream; place in 'where' clause
+--     type Step = i64                 -- Error [E0703]: declarations of 'type' are prohibited in sequential statement stream; place in 'where' clause
 --     eff Bail { exit() -> never }    -- Error [E0703]: declarations of 'eff' are prohibited in sequential statement stream; place in 'where' clause
 --     x + 1
 -- }
@@ -3520,7 +3542,7 @@ where
 -- }
 
 -- Prohibited: Undischarged local effect escaping block boundary (E0618):
--- fn bad_effect_leak() @LocalStep -> int { -- Error [E0618]: local effect 'LocalStep' cannot escape enclosing block to function signature
+-- fn bad_effect_leak() @LocalStep -> i64 { -- Error [E0618]: local effect 'LocalStep' cannot escape enclosing block to function signature
 --     LocalStep::tick()
 --     1
 -- where
@@ -3530,7 +3552,7 @@ where
 -- Prohibited: Local nominal type escaping function boundary (E0315):
 -- fn bad_nominal_leak() -> Token
 -- where
---     type Token(int)
+--     type Token(i64)
 -- { Token(42) }                       -- Error [E0315]: signature-local nominal identity escapes
 ```
 
@@ -3544,7 +3566,7 @@ IfExpr          ::= "if" ( Expression | "let" Pattern "=" Expression ) Block [ "
 
 ```ril
 -- let value = if 1 { 10 } else { 20 } -- Error [E0350]: condition must be bool
-let value = if true { 10 } else { panic("stopped") } -- OK: never does not conflict with int
+let value = if true { 10 } else { panic("stopped") } -- OK: never does not conflict with i64
 ```
 
 ```ril
@@ -3570,7 +3592,7 @@ let avatar = if let Some(u) = fetch_cached_user(1)? {
 }
 
 -- Incompatible branch types are statically rejected:
--- let bad = if true { 10 } else { "error" } -- Error [E0351]: if-else branches have incompatible types: expected 'int', found 'str'
+-- let bad = if true { 10 } else { "error" } -- Error [E0351]: if-else branches have incompatible types: expected 'i64', found 'str'
 ```
 
 ### Loop Expressions
@@ -3598,7 +3620,7 @@ while i > 0 {
 }
 
 -- 'while let' matching refutable patterns:
-let mut queue: []int = [1, 2, 3]
+let mut queue: []i64 = [1, 2, 3]
 var total = 0
 while let Some(item) = Array::pop(mut queue) {
     total += item                      -- OK: 'item' bound in body
@@ -3681,12 +3703,12 @@ for 1..=6 as n {
 assert(odd_sum == 9)
 
 -- Function early return (bare 'return' or 'return expr'):
-fn log_positive(val: int) @Fiber -> () {
+fn log_positive(val: i64) @Fiber -> () {
     if val <= 0 { return }             -- Bare 'return': early exit from unit function
     println("positive: {val}")
 }
 
-fn search(matrix: [][]int, target: int) -> bool {
+fn search(matrix: [][]i64, target: i64) -> bool {
     for matrix as row {
         for row as cell {
             if cell == target { return true } -- 'return expr': early return with value
@@ -3705,7 +3727,7 @@ fn search(matrix: [][]int, target: int) -> bool {
 `let Pattern = expr else { Block }` continues with the pattern bindings on success and evaluates the `else` block on failure. The failure block cannot complete normally.
 
 ```ril
-fn unwrap_or_zero(value: ?int) -> int {
+fn unwrap_or_zero(value: ?i64) -> i64 {
     -- let Some(x) = value             -- Error [E0345]: refutable binding needs else
     let Some(x) = value else { return 0 }
     x
@@ -3814,8 +3836,8 @@ assert(tail == [2, 3])                 -- Independent slots and length
 ```
 
 ```ril
-type Choice { Left(int), Right(int) }
-fn invalid_alternative(value: Choice) -> int {
+type Choice { Left(i64), Right(i64) }
+fn invalid_alternative(value: Choice) -> i64 {
     -- match value { Left(x) | Right(y) -> 0 } -- Error [E0346]: different binding names
     match value { Left(x) | Right(x) -> x }    -- OK: same binding type and mode
 }
@@ -3829,7 +3851,7 @@ let (head, ..) = tuple_val                     -- OK: head = 10; trailing elemen
 -- let (a, .., b, ..) = tuple_val             -- Error [E0347]: at most one '..' permitted in a tuple pattern
 
 -- Array pattern matching:
-let numbers: []int = [1, 2, 3, 4, 5]
+let numbers: []i64 = [1, 2, 3, 4, 5]
 let [x, y, z] = numbers[0..3]                  -- OK: matching 3-element new array
 let desc = match numbers {
     [] -> "empty",
@@ -3839,14 +3861,14 @@ let desc = match numbers {
 if let [prefix, .., suffix] = numbers {
     assert(prefix == 1 && suffix == 5)         -- OK: front and back extraction with middle discarded
 }
-fn invalid_range(value: int) -> int {
+fn invalid_range(value: i64) -> i64 {
     match value {
         -- 5..=1 -> 1,               -- Error [E0348]: reversed pattern bounds
         -- (1 + 2) -> 1,             -- Error [E0349]: computed expression is not a literal pattern
         _ -> 0,
     }
 }
-fn incompatible_arms(value: bool) -> int {
+fn incompatible_arms(value: bool) -> i64 {
     -- match value { true -> 1, false -> "no" } -- Error [E0351]: arm result types disagree
     match value { true -> 1, false -> 0 }       -- OK
 }
@@ -3900,7 +3922,7 @@ fn get_size(s: Shape) -> f64 {
 }
 
 -- Guards cannot prove exhaustiveness; fallback required:
--- fn bad_guard(n: int) -> str {
+-- fn bad_guard(n: i64) -> str {
 --     match n {
 --         x if x >= 0 -> "positive",
 --         x if x < 0  -> "negative",
@@ -3912,12 +3934,12 @@ let is_origin = s is Shape::Point
 let is_large_circle = s is Shape::Circle && s.0 > 100.0
 
 -- Constructor and tuple pattern destructuring (Constructor-Tuple Equivalence):
-let result_pair: Result<(int, str), str> = Ok(200, "OK")
+let result_pair: Result<(i64, str), str> = Ok(200, "OK")
 match result_pair {
     Ok(code, msg) -> println(msg),       -- OK: positional tuple unpack (n = 2)
     -- Ok(p) -> println(p.1),            -- Error [E0304]: preceding arm covers every Ok
     -- Ok((code, msg)) -> println(msg),  -- Error [E0304]: equivalent pattern is unreachable here
-    -- Ok(a, b, c) -> println(a),        -- Error [E0314]: arity mismatch: variant 'Ok' payload expects 2 elements of type (int, str), found 3
+    -- Ok(a, b, c) -> println(a),        -- Error [E0314]: arity mismatch: variant 'Ok' payload expects 2 elements of type (i64, str), found 3
     Err(err) -> println(err),
 }
 
@@ -3949,7 +3971,7 @@ fn each_read<T>(ref xs: [via]T, via action: fn(via T) @& -> ()) -> () {
 ```
 
 ```ril
-type Cell = { var count: int }
+type Cell = { var count: i64 }
 let mut src: [mut]Cell = [Cell.{ count: 1 }]
 let mut dst: [mut]Cell = []
 let mut pending = Array::pop(mut src)
@@ -3967,7 +3989,7 @@ match pending {                             -- Consume this qualified constructi
 }
 -- match pending { ... }                    -- Error [E0549]
 
-fn inspect(ref pending: ?Cell) -> int {
+fn inspect(ref pending: ?Cell) -> i64 {
     match pending { Some(item) -> item.count, None -> 0 } -- Borrow; no new path
 }
 ```
@@ -4067,13 +4089,13 @@ NarrowingExpr      ::= NarrowingPredicate
     - **Loop Widening**: Unconverged loop variables widen to $T_{\text{root}}$ after $K = 3$ iterations.
 
 ```ril
-type Cell = { var value: ?int }
+type Cell = { var value: ?i64 }
 
 -- E0533: the callback's possible writes are not known to be independent.
 -- An explicitly open state/provenance row preserves actual obligations; a bare fn() -> () is closed and pure.
 fn unknown_writer(mut cell: Cell, action: fn() & -> ()) &mut -> () {
     if cell.value != None {
-        let before = cell.value + 1           -- OK: narrowed to int
+        let before = cell.value + 1           -- OK: narrowed to i64
         action()                              -- Cannot prove that cell.value stays unchanged
         -- let after = cell.value + 1         -- Error [E0533]: unknown overlap with the live origin
     }
@@ -4094,7 +4116,7 @@ fn snapshot_before_callback(mut cell: Cell, action: fn() & -> ()) &mut -> () {
     let snapshot = clone(ref cell)
     if snapshot.value != None {
         action()
-        let after = snapshot.value + 1        -- OK: snapshot.value remains narrowed to int
+        let after = snapshot.value + 1        -- OK: snapshot.value remains narrowed to i64
     }
     cell.value = None
 }
@@ -4102,7 +4124,7 @@ fn snapshot_before_callback(mut cell: Cell, action: fn() & -> ()) &mut -> () {
 
 ```ril
 -- In-place optional unwrapping (?T -> T):
-type User = { id: int, name: str }
+type User = { id: i64, name: str }
 
 fn process_user(u: ?User) -> str {
     if u != None {
@@ -4113,7 +4135,7 @@ fn process_user(u: ?User) -> str {
 }
 
 -- Guard clause with early return:
-fn fetch_id(u: ?User) -> int {
+fn fetch_id(u: ?User) -> i64 {
     if u == None {
         return -1                              -- Type never; contributes no normal successor to the join
     }
@@ -4138,19 +4160,19 @@ fn compute_area(g: Geometry) -> f64 {
 }
 
 -- Short-circuit conjunction with immutable path chaining (depth <= 3):
-type Account = { id: int, details: ?{ balance: int } }
+type Account = { id: i64, details: ?{ balance: i64 } }
 
 fn check_solvent(acc: Account) -> bool {
     (acc.details != None) && (acc.details.balance > 0) -- OK: acc.details narrowed in right operand
 }
 
 -- Loop body narrowing and post-loop refinement:
-fn drain_cursor(initial: ?int) -> int {
+fn drain_cursor(initial: ?i64) -> i64 {
     var cursor = initial
     var total = 0
     while cursor != None {
-        total += cursor                        -- OK: cursor narrowed to int in loop body
-        cursor = None                          -- Invalidation: reset to ?int
+        total += cursor                        -- OK: cursor narrowed to i64 in loop body
+        cursor = None                          -- Invalidation: reset to ?i64
     }
     assert(cursor == None)                     -- OK: post-loop inherits cond == false (None)
     total
@@ -4158,11 +4180,11 @@ fn drain_cursor(initial: ?int) -> int {
 
 -- Reassignment invalidation (E0310):
 fn test_invalidation() -> () {
-    var opt: ?int = Some(42)
+    var opt: ?i64 = Some(42)
     if opt != None {
-        let _ = opt + 1                        -- OK: opt is int
+        let _ = opt + 1                        -- OK: opt is i64
         opt = None                             -- Reassignment: refinement invalidated
-        -- let bad = opt + 2                   -- Error [E0310]: variable 'opt' was narrowed to 'int', but refinement was invalidated by reassignment; current flow type is '?int'
+        -- let bad = opt + 2                   -- Error [E0310]: variable 'opt' was narrowed to 'i64', but refinement was invalidated by reassignment; current flow type is '?i64'
     }
 }
 
@@ -4177,7 +4199,7 @@ fn test_contradiction(g: Geometry) -> () {
 
 -- A ref retains the selected immutable object, not the reassignable slot:
 fn test_aliased_hazard() -> () {
-    var raw: ?int = Some(10)
+    var raw: ?i64 = Some(10)
     let ref selected = raw
     raw = None
     assert(selected is Some(10) && raw is None)
@@ -4193,11 +4215,11 @@ fn test_non_binding_predicate(g: Geometry) -> () {
 
 -- Transitive Latent Havoc via mutating call:
 fn test_latent_havoc() -> () {
-    var count: ?int = Some(10)
+    var count: ?i64 = Some(10)
     if count != None {
         let mut step = \&up{mut count} -> { count = None }
         step()                                 -- Mutating call invalidates 'count'
-        -- let bad_use = count + 1             -- Error [E0310]: variable 'count' was narrowed to 'int', but refinement was invalidated by mutating call 'step()'; current flow type is '?int'
+        -- let bad_use = count + 1             -- Error [E0310]: variable 'count' was narrowed to 'i64', but refinement was invalidated by mutating call 'step()'; current flow type is '?i64'
     }
 }
 
@@ -4210,14 +4232,14 @@ fn test_generic_confinement<T>(x: Geometry) -> () {
 
 -- Dead-path mutation phase ordering:
 fn test_dead_write_phase_ordering() -> () {
-    -- var unused: ?int = Some(10)            -- Error [E0527]: variable 'unused' declared 'var' is never modified along reachable paths
+    -- var unused: ?i64 = Some(10)            -- Error [E0527]: variable 'unused' declared 'var' is never modified along reachable paths
     -- if false {
     --     unused = Some(20)                  -- Write in statically unreachable branch does not satisfy Reachable Authority-Use Requirement
     -- }
 }
 
 -- Path depth bound (depth <= 3 tracked; depth > 3 requires local 'let' anchor):
-fn test_bounded_path_depth(root: { a: ?{ b: ?{ c: ?{ d: int } } } }) -> () {
+fn test_bounded_path_depth(root: { a: ?{ b: ?{ c: ?{ d: i64 } } } }) -> () {
     if (root.a != None) && (root.a.b != None) && (root.a.b.c != None) {
         let c_node = root.a.b.c                -- OK: path depth 3 (root.a.b.c) tracked
         let d_val = c_node.d                   -- OK: access deeper fields through local anchor
@@ -4260,9 +4282,9 @@ ParameterTypeItem ::= [ ParameterMode ] [ ValueName ":" ] TypeExpression
 Leading `mut`/`^mut` arguments require assignable targets (`E0410` for `f(^mut clone(x))`); `ref` observes an expression. A parenthesized sharing expression cannot replace an ordinary argument-mode marker (`E0405`). Dependent lexical template operands elaborate their verified mode. [Fresh storage inputs](#homogeneous-storage-authority) receive construction authority before publication; plain unqualified parameters require immutable data. Constructors follow their product member and payload modes.
 
 ```ril
-type DeferredFactory = fn() -> fn() @Io -> int -- Io belongs to the returned callable
-type EffectfulFactory = fn() @Io -> fn() -> int -- Io belongs to the factory
-type CapturingFactory = fn() &capture -> new (fn() &up -> int)
+type DeferredFactory = fn() -> fn() @Io -> i64 -- Io belongs to the returned callable
+type EffectfulFactory = fn() @Io -> fn() -> i64 -- Io belongs to the factory
+type CapturingFactory = fn() &capture -> new (fn() &up -> i64)
 ```
 
 Arrows associate right. Each effect/state clause belongs to the callable whose parameter list it follows, before its return arrow. Results follow [return access modes and sources](#return-construction-access-modes-and-sources). Executable named definitions require result annotations, including `-> ()`, under [mandatory contract completion](#mandatory-contract-inference-and-completion). Callable types and bodyless effect operations may abbreviate unit results. Anonymous definitions use lambda syntax with optional source annotations and complete inferred contracts.
@@ -4305,10 +4327,10 @@ where
 }
 
 -- Prohibited: Declaring 'fn' or 'eff' in SignatureWhereClause (E0704):
--- fn bad_sig_fn(x: int) -> int
+-- fn bad_sig_fn(x: i64) -> i64
 -- where
---     fn helper(n: int) -> int { n * 2 }    -- Error [E0704]: 'fn' cannot be declared in signature 'where' clause; place in block 'where' clause
---     eff Yield { emit(int) -> () }         -- Error [E0704]: 'eff' cannot be declared in signature 'where' clause; place in block 'where' clause
+--     fn helper(n: i64) -> i64 { n * 2 }    -- Error [E0704]: 'fn' cannot be declared in signature 'where' clause; place in block 'where' clause
+--     eff Yield { emit(i64) -> () }         -- Error [E0704]: 'eff' cannot be declared in signature 'where' clause; place in block 'where' clause
 -- {
 --     helper(x)
 -- }
@@ -4320,7 +4342,7 @@ where
 -- {
 --     Wrapper.{ state: .{ code: 0 } }
 -- where
---     type InternalState = { code: int }
+--     type InternalState = { code: i64 }
 -- }
 
 -- Prohibited: Signature referencing type defined in block where (E0706):
@@ -4338,13 +4360,13 @@ where
 -- {
 --     ()
 -- where
---     type Handler = fn(int) -> ()           -- Error [E0203]: type 'Handler' is already declared in signature 'where' clause
+--     type Handler = fn(i64) -> ()           -- Error [E0203]: type 'Handler' is already declared in signature 'where' clause
 -- }
 ```
 
 ```ril
 -- Hoisted Named Function:
-pub fn calculate_tax(amount: int) -> int {
+pub fn calculate_tax(amount: i64) -> i64 {
     amount * 20 / 100
 }
 let r1 = calculate_tax(100)            -- OK: direct call
@@ -4360,7 +4382,7 @@ let r1 = calculate_tax(100)            -- OK: direct call
 ### Callable Contracts
 
 ```ril
-fn next_value(n: int) -> int {
+fn next_value(n: i64) -> i64 {
     var result = n
     result += 1
     result
@@ -4432,13 +4454,13 @@ Missing required annotations reject a named definition. Explicit and template-el
 `E0344` applies where a construct requires a determined type or static argument. An anonymous function may retain generic or structural constraints in its complete inferred contract; validate them at required instantiations and against explicit constraints.
 
 ```ril
-type Cell = { var count: int }
+type Cell = { var count: i64 }
 
 -- Named-source completion remains mandatory:
 -- fn make() { Cell.{ count: 0 } }      -- Error [E0544]: complete as fn make() -> new Cell
 -- fn id(x) { x }                      -- Error [E0544]: spell the inferred generic parameter and return annotations
 fn make() -> new Cell { Cell.{ count: 0 } }
-fn inspect(cell: Cell) -> int { cell.count }
+fn inspect(cell: Cell) -> i64 { cell.count }
 
 -- Anonymous functions need no complete contextual type or source annotations:
 let identity = \value -> value        -- OK: infer its generic identity contract
@@ -4446,7 +4468,7 @@ let inferred_read = \cell -> cell.count -- OK: retain the inferred structural pa
 let inferred_write = \mut cell: Cell -> { cell.count += 1 } -- OK: infer the actual write and &mut; validate mut against its use
 
 -- Explicit contextual types remain available:
-let read: fn(cell: Cell) -> int = \cell -> cell.count
+let read: fn(cell: Cell) -> i64 = \cell -> cell.count
 
 eff Log { write(str) -> () }
 let logged = \-> Log::write("event") -- OK: infer and preserve Log without a source effect annotation
@@ -4508,7 +4530,7 @@ closed_invoke(plain)                            -- OK
 An explicit `&{}` constrains total state and provenance obligations, including root-return retention, capture, inherited access and contained dependencies. Omitted state/provenance clauses include the return annotation's implicit baseline:
 
 ```ril
-type Cell = { var count: int }
+type Cell = { var count: i64 }
 fn retain(^mut cell: Cell) -> ^mut(cell) Cell { cell }
 type RootRetainer = fn(^mut value: Cell) -> ^mut(value) Cell
 let renamed: RootRetainer = retain              -- OK: source labels are bound by parameter position
@@ -4593,7 +4615,7 @@ Later closed matching of a callable passed through an open type uses its preserv
 Invoking already shared storage does not itself publish another writer. Actual environment mode determines whether invocation needs a writable or observation handle. Termination and finite-budget-coverage conditions remain independent of both rows and survive every ascription. A default-pure callable may still diverge; an open callable is not a finite or budget-covered callable merely because its operations are handled.
 
 ```ril
-fn repeat(n: int, action: Action) -> () {
+fn repeat(n: i64, action: Action) -> () {
     if n > 0 { action(); repeat(n - 1, action) }
 }
 fn repeat_plain() -> () { repeat(2, plain) }
@@ -4610,12 +4632,12 @@ type TemporaryWorker = fn(mut Entry) &up &mut -> ()
 ```ril
 fn apply<T, R>(value: T, f: fn(T) @& -> R) -> R { f(value) }
 eff Logger { log(str) -> () }
-fn logged_square(n: int) @Logger -> int {
+fn logged_square(n: i64) @Logger -> i64 {
     Logger::log("calculating")
     n * n
 }
-fn call_square() @Logger -> int { apply(5, logged_square) }
--- fn hidden_square() -> int { apply(5, logged_square) } -- Error [E0612]
+fn call_square() @Logger -> i64 { apply(5, logged_square) }
+-- fn hidden_square() -> i64 { apply(5, logged_square) } -- Error [E0612]
 
 let mut messages: []str = []
 with Logger::log(message) -> {
@@ -4627,7 +4649,7 @@ assert(messages == ["calculating"])
 ```
 
 ```ril
-fn invoke_mut(mut f: fn() &up -> int) &mut -> int { f() }
+fn invoke_mut(mut f: fn() &up -> i64) &mut -> i64 { f() }
 let mut counter = create_counter(0)
 let first = invoke_mut(mut counter)
 
@@ -4646,7 +4668,7 @@ Forwarding preserves the contract above. Callback-handle authority and callback 
 A value-type result needs only `-> T`. Shared-object results distinguish the root from its contained references; all reception checks use the complete graph.
 
 ```ril
-type Cell = { var count: int }
+type Cell = { var count: i64 }
 fn forward(new cell: Cell) -> new Cell { cell }
 fn choose(flag: bool, new a: Cell, new b: Cell) -> new Cell {
     if flag { a } else { b }            -- Only the selected active path is returned
@@ -4689,13 +4711,13 @@ The construction context applies only to the current callable's return operands.
 Result reception uses the [common prohibited exchanges](#binding-modes-and-storage-matrix), [shared-site markers](#shared-writable-authority), and [context-specific diagnostics](#monotonic-mode-degradation-and-anti-laundering-matrix). A fresh-storage input must independently prove its complete unpublished initial-reception eligibility. Entry-origin relations use actual call-entry graphs, never reachability introduced by later writes or a fabricated allocation inside the call.
 
 ```ril
-type Cell = { var count: int }
+type Cell = { var count: i64 }
 type Box = { mut cell: Cell }
 
 fn make() -> new Cell { Cell.{ count: 0 } }
 fn same(cell: Cell) -> Cell { cell }
-fn value(ref cell: Cell) -> int { cell.count }
-fn take_and_zero(mut cell: Cell) &mut -> int {
+fn value(ref cell: Cell) -> i64 { cell.count }
+fn take_and_zero(mut cell: Cell) &mut -> i64 {
     let count = cell.count
     cell.count = 0
     count
@@ -4862,7 +4884,7 @@ let ref observed = install_observer(mut slot)
 slot.child.count += 1
 assert(observed.item.count == 1)
 
-type Step = fn() &up -> int
+type Step = fn() &up -> i64
 -- fn erase_return(^mut f: Step) &{} -> ^mut(f) Step { f }
 -- Error [E0534]: the closed state/provenance row cannot erase root-return retention
 ```
@@ -4870,13 +4892,13 @@ type Step = fn() &up -> int
 ### Termination and halt Contracts
 
 ```ril
-fn countdown(n: int) -> int {
+fn countdown(n: i64) -> i64 {
     if n <= 0 { 0 } else { countdown(n - 1) }
 }                                               -- Proven finite without halt
-fn spin() -> int { loop {} }                     -- Pure, possibly non-terminating; legal
-fn forward_spin() -> int { spin() }              -- Same termination conclusion; no effect declaration needed
-halt fn checked(n: int) -> int { countdown(n) }   -- Unmarked finite helpers are admissible
--- halt fn unchecked() -> int { spin() }         -- Error [E0820]: no termination proof
+fn spin() -> i64 { loop {} }                     -- Pure, possibly non-terminating; legal
+fn forward_spin() -> i64 { spin() }              -- Same termination conclusion; no effect declaration needed
+halt fn checked(n: i64) -> i64 { countdown(n) }   -- Unmarked finite helpers are admissible
+-- halt fn unchecked() -> i64 { spin() }         -- Error [E0820]: no termination proof
 ```
 
 Every callable retains a termination judgment independently of its effect and state/provenance rows. `Finite` means its current invocation performs finite computation for all admitted inputs; `MayDiverge` means finiteness is unproved, covering both known infinite loops and insufficient evidence. These judgments are inferred checking metadata.
@@ -4890,14 +4912,14 @@ Every callable retains a termination judgment independently of its effect and st
 - **Higher-Order Constraints**: A `halt` definition constrains admitted callable arguments wherever their obligations are inferable. An incompatible actual argument is `E0534`. These constraints and actual termination facts cross module and callable-type boundaries as checked metadata, independently of effect and state/provenance row matching.
 
 ```ril
-halt fn local_sum(values: []int) -> int {
+halt fn local_sum(values: []i64) -> i64 {
     var sum = 0
     for values as value { sum += value }
     sum
 }                                               -- Local writes discharge; overflow may panic
 
-eff ReadValue { get() -> int }
-halt fn local_read() -> int {
+eff ReadValue { get() -> i64 }
+halt fn local_read() -> i64 {
     with ReadValue::get() -> resume 7
     ReadValue::get()
 }                                               -- Internal handling remains pure and finite
@@ -4916,9 +4938,9 @@ invoke(done)                                    -- Finite
 invoke_finite(done)                             -- OK
 -- invoke_finite(forever)                       -- Error [E0534]: admitted callback must be finite
 
-halt fn make_later() -> (fn() -> int) { spin }   -- Returning an existing callable is finite
--- halt fn run_later() -> int { make_later()() } -- Error [E0820]: its later invocation still diverges
--- halt fn bad_default(value: int = spin()) -> int { value } -- Error [E0820]: default may diverge
+halt fn make_later() -> (fn() -> i64) { spin }   -- Returning an existing callable is finite
+-- halt fn run_later() -> i64 { make_later()() } -- Error [E0820]: its later invocation still diverges
+-- halt fn bad_default(value: i64 = spin()) -> i64 { value } -- Error [E0820]: default may diverge
 ```
 
 | Finite-iteration case | Required proof |
@@ -4940,12 +4962,12 @@ halt fn make_later() -> (fn() -> int) { spin }   -- Returning an existing callab
 | `halt type` helpers | All reached meta/type computation must also be finite, whether or not the helpers are marked `halt` |
 
 ```ril
-fn even(n: int) -> bool { if n <= 0 { true } else { odd(n - 1) } }
-fn odd(n: int) -> bool { if n <= 0 { false } else { even(n - 1) } }
-halt fn parity(n: int) -> bool { even(n) }        -- Certified mutual descent
+fn even(n: i64) -> bool { if n <= 0 { true } else { odd(n - 1) } }
+fn odd(n: i64) -> bool { if n <= 0 { false } else { even(n - 1) } }
+halt fn parity(n: i64) -> bool { even(n) }        -- Certified mutual descent
 
-fn stuck(n: int) -> () { if n > 0 { stuck(n) } }       -- MayDiverge: no descent
-fn skipped_progress(n: int) -> () {
+fn stuck(n: i64) -> () { if n > 0 { stuck(n) } }       -- MayDiverge: no descent
+fn skipped_progress(n: i64) -> () {
     var i = 0
     while i < n { if i == 0 { next }; i += 1 }
 }                                               -- MayDiverge: next bypasses progress
@@ -4971,9 +4993,9 @@ Uncertified loops or recursion give `MayDiverge`, not an effect. The special [fi
 ### Parameter Modes, Caller Obligations, and Defaults
 
 ```ril
-type Cell = { var count: int }
-fn inspect(cell: Cell) -> int { cell.count }
-fn observe(ref cell: Cell) -> int { cell.count }
+type Cell = { var count: i64 }
+fn inspect(cell: Cell) -> i64 { cell.count }
+fn observe(ref cell: Cell) -> i64 { cell.count }
 fn bump(mut cell: Cell) &mut -> () { cell.count += 1 }
 fn retain(^mut cell: Cell) -> ^mut(cell) Cell { cell }
 
@@ -5048,7 +5070,7 @@ Mutable modes do not apply to static key arguments.
 A `new value: T` parameter receives unpublished construction authority for ordinary shared-object data through an explicit `new expression` handoff. The mode is available to verified named and anonymous Ril functions, their callable types, and the storage inputs below. Handoffs preserve object identity and consume the qualified source path.
 
 ```ril
-type Cell = { var count: int }
+type Cell = { var count: i64 }
 fn append_cell(mut target: [mut]Cell, new cell: Cell) &mut -> () {
     target !> Array::push(new cell)
     -- target !> Array::push(new cell) -- Error [E0549]: the old construction path has ended
@@ -5105,11 +5127,11 @@ alias.count += 1
 -- append_cell(mut cells, Cell.{ count: 0 }) -- Error [E0405]: missing construction argument marker
 -- append_cell(mut cells, new immutable)    -- Error [E0548]: immutable publication cannot be undone
 -- append_cell(mut cells, new published)    -- Error [E0548]: independent sharing ended qualification
--- fn scalar(new value: int) -> int { value } -- Error [E0411]: new parameters require ordinary shared-object data
+-- fn scalar(new value: i64) -> i64 { value } -- Error [E0411]: new parameters require ordinary shared-object data
 fn forwarding<T>(new value: T) -> new T { value }
 let mut cell = forwarding(new Cell.{ count: 0 })
 cell.count += 1
--- let value = forwarding<int>(new 1)   -- Error [E0411]: ineligible generic instantiation
+-- let value = forwarding<i64>(new 1)   -- Error [E0411]: ineligible generic instantiation
 ```
 
 A `-> new T` result guarantees construction or lawful handoff; its root may have been shared under the required retention annotations. Construction input additionally requires the complete reception proof. Verified summaries distinguish roots allocated in this invocation, received through construction inputs, and detached by checked storage handoff, preserving entry origins, allocation identity, dependencies and mode history. Prove allocation in this invocation, initial eligibility, root privacy and disjointness independently where required.
@@ -5119,7 +5141,7 @@ A `-> new T` result guarantees construction or lawful handoff; its root may have
 Storage containers define homogeneous element authority statically (`[]T`, `[mut]T`, `[^mut]T`, `[ref]T`). `[via]T` requests a family of these homogeneous schemas. Ordinary functions express these dependencies through access-mode inference and verified GC storage primitives with explicit graph and mutation rules:
 
 ```ril
-type Cell = { var count: int }
+type Cell = { var count: i64 }
 fn copy_cell(cell: Cell) -> new Cell { clone(cell) }
 fn build_cell() -> new Cell {
     let mut cell = Cell.{ count: 0 }
@@ -5172,7 +5194,7 @@ view_cells !> Array::push(ref shared)             -- OK: explicit read-only live
 
 ```ril
 -- 3. Observation Subsumption: Read-only observation context statically covers write authorities
-fn inspect_all(ref arr: [ref]Cell) -> int {
+fn inspect_all(ref arr: [ref]Cell) -> i64 {
     var total = 0
     for arr as ref item { total += item.count }
     total
@@ -5198,7 +5220,7 @@ User-defined collections such as `ExclusiveVec<T>` and `SharedRegistry<T>` compo
 #### Verified Storage Handoffs
 
 ```ril
-type Cell = { var count: int }
+type Cell = { var count: i64 }
 let mut cells: [mut]Cell = []
 cells !> Array::push(new Cell.{ count: 0 })
 let mut pending = Array::pop(mut cells)
@@ -5225,7 +5247,7 @@ Prepare arguments before the callee body: `new` ends the caller path before resi
 #### Default Parameters and Named Arguments
 
 ```ril
-fn pair(a: int = 1, b: int = 2) -> (int, int) { (a, b) }
+fn pair(a: i64 = 1, b: i64 = 2) -> (i64, i64) { (a, b) }
 assert(pair(b: 20, 10) == (10, 20))
 assert(pair(a: 10, 20) == (10, 20))
 -- pair(10, a: 20)                     -- Error [E0325]: a is already bound
@@ -5237,16 +5259,16 @@ assert(pair(a: 10, 20) == (10, 20))
 - Function generic defaults are prohibited (`E0317`).
 
 ```ril
-type Reader = fn() &up -> int
-fn choose(value: int, reader: Reader = \-> value) -> Reader { reader }
+type Reader = fn() &up -> i64
+fn choose(value: i64, reader: Reader = \-> value) -> Reader { reader }
 let first = choose(7)
 let second = choose(9)                 -- Default reevaluated for each omitted argument
 assert(first() == 7 && second() == 9)
 
-fn publish(value: int) &capture -> Reader { choose(value) }
--- fn hidden(value: int) -> Reader { choose(value) } -- Error [E0510]: caller publishes the new environment
+fn publish(value: i64) &capture -> Reader { choose(value) }
+-- fn hidden(value: i64) -> Reader { choose(value) } -- Error [E0510]: caller publishes the new environment
 
-let pair = \a: int, b: int = a -> (a, b)
+let pair = \a: i64, b: i64 = a -> (a, b)
 let alias = pair
 assert(alias(b: 4, 3) == (3, 4))       -- Anonymous defaults and labels survive this alias
 ```
@@ -5256,23 +5278,23 @@ Defaults run anew in the caller before callee entry, using declaration scope and
 An unknown parameter label is `E0339`; a non-callable callee is `E0338`. Missing or excess ordinary arguments use `E0314` after accounting for names and defaults. Nullary variant parentheses use `E0353`. Positional and named arguments may be interleaved under the binding rules above.
 
 ```ril
-fn connect(host: str, port: int = 8080) -> str { "{host}:{port}" }
+fn connect(host: str, port: i64 = 8080) -> str { "{host}:{port}" }
 -- connect("localhost", prot: 80)    -- Error [E0339]: unknown parameter label
--- let call = 42()                   -- Error [E0338]: int is not callable
+-- let call = 42()                   -- Error [E0338]: i64 is not callable
 let connected = connect("localhost", port: 80) -- OK
 
--- fn bad_default(first: int = second, second: int = 1) -> int { first + second }
+-- fn bad_default(first: i64 = second, second: i64 = 1) -> i64 { first + second }
 -- Error [E0408]: default refers to a later parameter
-fn good_default(first: int, second: int = first) -> int { first + second } -- OK
-eff DefaultSource { read() -> int }
--- fn impure_default(value: int = DefaultSource::read()) @DefaultSource -> int { value }
+fn good_default(first: i64, second: i64 = first) -> i64 { first + second } -- OK
+eff DefaultSource { read() -> i64 }
+-- fn impure_default(value: i64 = DefaultSource::read()) @DefaultSource -> i64 { value }
 -- Error [E0409]: default has a residual effect even though the function declares it
 ```
 
 References from a parameter default to itself or a later parameter are `E0408`. Other unresolved names retain `E0204`; generic-default forward references retain `E0320`. A parameter default with any residual effect or state obligation is `E0409`, even if the enclosing callable declares that obligation. Pure defaults referring to earlier parameters remain valid.
 
 ```ril
-fn create_server(host: str, port: int = 8080, enable_tls: bool = true) -> str {
+fn create_server(host: str, port: i64 = 8080, enable_tls: bool = true) -> str {
     "{host}:{port} (tls={enable_tls})"
 }
 let address = create_server("localhost", enable_tls: false)
@@ -5280,11 +5302,11 @@ let address = create_server("localhost", enable_tls: false)
 ```
 
 ```ril
-fn identity(value: int = 1) -> int { value }
+fn identity(value: i64 = 1) -> i64 { value }
 let direct_alias = identity
 assert(direct_alias() == 1)
-let renamed: fn(other: int) -> int = identity
-let unnamed: fn(int) -> int = identity
+let renamed: fn(other: i64) -> i64 = identity
+let unnamed: fn(i64) -> i64 = identity
 assert(renamed(other: 2) == 2)
 -- renamed(value: 2)                   -- Error [E0339]: source label is not the call-site label
 -- renamed()                          -- Error [E0314]: callable types carry no default expressions
@@ -5335,11 +5357,11 @@ let sum = [1, 2, 3] |> Array::fold(0, \acc, x -> acc + x)
 -- Trailing Closure Syntax:
 let doubled = [1, 2, 3] |> Array::map \x -> x * 2
 
-fn run_job(f: fn() -> int) -> int { f() }
+fn run_job(f: fn() -> i64) -> i64 { f() }
 let job_res = run_job \-> 42
 
 -- Shorthand Projection Accessors:
-type Employee = { id: int, name: str, salary: int }
+type Employee = { id: i64, name: str, salary: i64 }
 type Department = { name: str, leader: ?Employee }
 type Company = { name: str, dept: ?Department }
 
@@ -5353,12 +5375,12 @@ let names = employees |> Array::map(\.name)                   -- Evaluates to ["
 let salaries = employees |> Array::map(\.salary)               -- Evaluates to [8000, 6000]
 
 -- 3(b). Tuple positional index projection (\.index):
-let pairs: [](int, str) = [(1, "Alice"), (2, "Bob")]
+let pairs: [](i64, str) = [(1, "Alice"), (2, "Bob")]
 let ids = pairs |> Array::map(\.0)                            -- Evaluates to [1, 2]
 let labels = pairs |> Array::map(\.1)                         -- Evaluates to ["Alice", "Bob"]
 
 -- 3(c). Mixed nested projection:
-type Team = { id: int, leader: (str, int) }
+type Team = { id: i64, leader: (str, i64) }
 let teams = [Team.{ id: 10, leader: ("Alice", 30) }]
 let leader_ages = teams |> Array::map(\.leader.1)             -- Evaluates to [30]
 
@@ -5372,7 +5394,7 @@ let opt_depts: []?Department = [Some(Department.{ name: "Sales", leader: None })
 let dept_names = opt_depts |> Array::map(\?.name)                -- Evaluates to [Some("Sales"), None]
 
 -- Rejections:
--- let bad_idx = pairs |> Array::map(\.2)                     -- Error [E0312]: tuple index 2 out of bounds for (int, str)
+-- let bad_idx = pairs |> Array::map(\.2)                     -- Error [E0312]: tuple index 2 out of bounds for (i64, str)
 -- let bad_field = employees |> Array::map(\.age)             -- Error [E0336]: unknown field 'age' on type 'Employee'
 -- let bad_arr = [[1, 2], [3]] |> Array::map(\.0)             -- Error [E0337]: collections do not have named fields or static tuple projections
 ```
@@ -5380,13 +5402,13 @@ let dept_names = opt_depts |> Array::map(\?.name)                -- Evaluates to
 ### Closures, Factory Signatures, and Lexical Environments
 
 ```ril
-type Adder = fn(int) &up -> int
-fn make_adder(base: int) &capture -> new Adder { \x -> base + x }
+type Adder = fn(i64) &up -> i64
+fn make_adder(base: i64) &capture -> new Adder { \x -> base + x }
 let add5 = make_adder(5)                -- Immutable captured value
 assert(add5(10) == 15)
 
-type Step = fn() &up -> int
-fn create_counter(start: int) &capture -> new Step {
+type Step = fn() &up -> i64
+fn create_counter(start: i64) &capture -> new Step {
     var count = start
     \-> { count += 1; count }
 }
@@ -5396,8 +5418,8 @@ assert(counter() == 1)
 ```
 
 ```ril
-type Cell = { var count: int }
-type Step = fn() &up -> int
+type Cell = { var count: i64 }
+type Step = fn() &up -> i64
 fn make_shared_step(^mut cell: Cell) &capture &^mut &return{^mut cell} -> new Step {
     \-> { cell.count += 1; cell.count }
 }
@@ -5427,22 +5449,22 @@ assert(step() == 3)                   -- Both authorities still reach the same c
 Writes to frame-confined local storage can be discharged without outward state/provenance obligations. This does not discharge unrelated effects, capture, or retention. A function is pure only when all outward effect and state/provenance obligations are empty after handling and local discharge:
 
 ```ril
-type Buffer = { mut items: []int }
-fn append_val(mut b: Buffer, v: int) &mut -> () { b.items !> Array::push(v) }
+type Buffer = { mut items: []i64 }
+fn append_val(mut b: Buffer, v: i64) &mut -> () { b.items !> Array::push(v) }
 
 -- Pure function with internal primitive mutation:
-fn compute_sum(n: int) -> int {
+fn compute_sum(n: i64) -> i64 {
     var total = 0
     var i = 1
     while i <= n {
         total += i
         i += 1
     }
-    total                              -- Pure to callers: signature is fn(int) -> int
+    total                              -- Pure to callers: signature is fn(i64) -> i64
 }
 
 -- Local State Discharge with shared object types and &mut callees:
-fn generate_sequence(count: int) -> []int {
+fn generate_sequence(count: i64) -> []i64 {
     let mut local_buf = Buffer.{ items: [] }
     var i = 0
     while i < count {
@@ -5453,10 +5475,10 @@ fn generate_sequence(count: int) -> []int {
 }
 
 -- Local discharge of scalar insertion (no retained mutable reference):
-type NodeHub = { mut nodes: []int }
-fn link(mut hub: NodeHub, node: int) &mut -> () { hub.nodes !> Array::push(node) }
+type NodeHub = { mut nodes: []i64 }
+fn link(mut hub: NodeHub, node: i64) &mut -> () { hub.nodes !> Array::push(node) }
 
-fn test_internal_hub() -> int {
+fn test_internal_hub() -> i64 {
     let mut local_hub = NodeHub.{ nodes: [] }
     let local_node = 42
     link(mut local_hub, local_node)    -- &mut discharged locally: the scalar is copied
@@ -5475,24 +5497,24 @@ fn test_internal_hub() -> int {
 | Named / anonymous definition | Named definitions spell required concrete state and provenance annotations (`E0510` if absent); genuine `via`-mode dependencies and anonymous functions retain their specified inference exemptions |
 
 ```ril
-fn clear_items(mut list: []int) &mut -> () {
+fn clear_items(mut list: []i64) &mut -> () {
     list !> Array::truncate(0)         -- OK: declared &mut
 }
 
 -- Missing state annotation is statically rejected:
--- fn bad_clear(mut list: []int) -> () {     -- Error [E0510]: mutating operation requires caller signature to declare '&mut'
+-- fn bad_clear(mut list: []i64) -> () {     -- Error [E0510]: mutating operation requires caller signature to declare '&mut'
 --     list !> Array::truncate(0)
 -- }
 ```
 
 ```ril
-type Cell = { var count: int }
+type Cell = { var count: i64 }
 fn bump_or_abort(flag: bool, mut cell: Cell) &mut -> () {
     if flag { cell.count += 1; panic("stop") }
 }                                       -- OK: panic does not erase the reachable write
 -- fn dead(mut cell: Cell) -> () { if false { cell.count += 1 } } -- Error [E0527]: excluded write
 -- fn after_panic(mut cell: Cell) -> () { panic("stop"); cell.count += 1 } -- Error [E0527]: unreachable write
--- fn excess(ref cell: Cell) &mut -> int { cell.count } -- Error [E0529]: observation supplies no write obligation
+-- fn excess(ref cell: Cell) &mut -> i64 { cell.count } -- Error [E0529]: observation supplies no write obligation
 ```
 
 ### Retained Mutable Sharing
@@ -5504,7 +5526,7 @@ SharingExpr     ::= "^mut" Expression
 ```
 
 ```ril
-type Entry = { var id: int }
+type Entry = { var id: i64 }
 type Hub = { mut entries: [^mut]Entry }
 let mut global_hub = Hub.{ entries: [] }
 
@@ -5525,7 +5547,7 @@ fn publish_entry(^mut entry: Entry) &^mut &up(sub){mut global_hub} -> () {
 | Environment creation | Separate `&capture` obligation alongside any `&^mut`; both are standalone state/provenance clauses |
 
 ```ril
-type Cell = { var count: int }
+type Cell = { var count: i64 }
 type Holder = { mut child: Cell }
 let mut source = Cell.{ count: 0 }
 let ^mut alias = source
@@ -5587,7 +5609,7 @@ packet.item.count += 1
 Count each newly surviving external path, mutable environment, and separately exposed graph. Receiving a returned writer acknowledges that publication rather than adding another obligation; clone isolation never substitutes for a required internal-alias marker, including at fresh-storage inputs.
 
 ```ril
-type Step = fn() &up -> int
+type Step = fn() &up -> i64
 fn make_private_ticker() &capture -> new Step {
     var count = 0
     \-> { count += 1; count }
@@ -5604,7 +5626,7 @@ fn make_dual_ticker() &capture &^mut -> new (mut Step, mut Cell) {
 
 ```ril
 var active_connections = 0
-type Ticker = fn() &up -> int
+type Ticker = fn() &up -> i64
 fn share_connections() &capture &up(sub){^mut active_connections} &return{^mut active_connections} -> new Ticker {
     \-> { active_connections += 1; active_connections }
 }
@@ -5623,7 +5645,7 @@ fn get_config_name() &up(sub){APP_CONFIG_NAME} -> str {
     APP_CONFIG_NAME                    -- OK: declared &up(sub){APP_CONFIG_NAME}
 }
 
-fn read_transaction_count() &up(sub){transaction_count} -> int {
+fn read_transaction_count() &up(sub){transaction_count} -> i64 {
     transaction_count                 -- Live source; scalar result is an independent value
 }
 
@@ -5704,16 +5726,16 @@ Return-dependency groups describe contained graph origins. Invocation mutation, 
 ```ril
 var global_count = 0
 let GLOBAL_SCALE = 2
-fn tick() &up(sub){mut global_count, GLOBAL_SCALE} -> int {
+fn tick() &up(sub){mut global_count, GLOBAL_SCALE} -> i64 {
     global_count += GLOBAL_SCALE
     global_count
 }
 
-fn outer() -> int {
+fn outer() -> i64 {
     var count = 0
     inner()
 where
-    fn inner() &up{mut count} -> int {
+    fn inner() &up{mut count} -> i64 {
         count += 1
         count
     }
@@ -5728,14 +5750,14 @@ where
 - **Definitions and Types**: Named definitions must spell their inferred concrete groups. Anonymous functions infer and retain these groups without a source-completion obligation. An explicitly written anonymous group is checked. In a callable type, names bind at the type's declaration site; [exact and open matching](#callable-contract-matching) cannot rebind them to similarly named captures in an assigned value.
 
 ```ril
-fn outer_layer() -> int {
+fn outer_layer() -> i64 {
     var count = 0
     middle()
 where
-    fn middle() &up{mut count} -> int {
+    fn middle() &up{mut count} -> i64 {
         inner()
     where
-        fn inner() &up(outer_layer){mut count} -> int {
+        fn inner() &up(outer_layer){mut count} -> i64 {
             count += 1
             count
         }
@@ -5749,7 +5771,7 @@ let run = \-> {
         var y = 0
         leaf()
     where
-        fn leaf() &up{mut x} &up{mut y} -> int {
+        fn leaf() &up{mut x} &up{mut y} -> i64 {
             x += 1
             y += 1
             x + y
@@ -5783,13 +5805,13 @@ fn bump_up() &up(sub){mut up} -> () { up += 1 } -- Group head and storage item h
 var private_count = 0
 pub fn advance() &up(sub){mut private_count} -> () { private_count += 1 }
 fn private_advance() &up(sub){mut private_count} -> () { private_count += 1 }
-pub type Step = fn() &up -> int
+pub type Step = fn() &up -> i64
 pub fn make_step() &capture &up(sub){mut private_count} -> new Step {
     private_count += 1
     var local_count = 0
     \-> { local_count += 1; local_count }
 }
-pub type Cell = { var count: int }
+pub type Cell = { var count: i64 }
 pub fn retain(^mut cell: Cell) &up(sub){mut private_count} -> ^mut(cell) Cell {
     private_count += 1
     cell
@@ -5813,7 +5835,7 @@ fn retain_wrapped(^mut cell: Counter::Cell) &Counter::retain -> ^mut(cell) Count
 -- fn missing_state() -> () { Counter::advance() } -- Error [E0510]
 -- fn missing_creation() &Counter::make_step -> new Counter::Step { Counter::make_step() }
 -- Error [E0510]: the reference does not include the surviving environment's &capture obligation
--- fn read_private() &Counter::advance -> int { Counter::private_count }
+-- fn read_private() &Counter::advance -> i64 { Counter::private_count }
 -- Error [E0201]: a state reference does not export the private binding
 ```
 
@@ -5861,7 +5883,7 @@ use counter
 ```
 
 ```ril
-type Cell = { var count: int }
+type Cell = { var count: i64 }
 fn outer(mut cell: Cell) &mut -> () {
     inner()
 where
@@ -5933,7 +5955,7 @@ Check possible storage origins, not distinct field names or indices. Only confli
 Inactive aliases permit sequential sharing. Access through the formal and its call-local derived paths belongs to that invocation; independent paths remain separate participants.
 
 ```ril
-type Cell = { var count: int }
+type Cell = { var count: i64 }
 fn swap(mut a: Cell, mut b: Cell) &mut -> () {
     let saved = a.count
     a.count = b.count
@@ -5969,7 +5991,7 @@ Apply [provenance propagation](#complete-provenance-and-required-annotations) an
 Spread/destructuring of value-type constituents produces independent copies, including `var` pattern targets. Immutable reception of live origins is `E0535`; `clone` and `derive` use their explicit fresh-data rules.
 
 ```ril
-type Cell = { var count: int }
+type Cell = { var count: i64 }
 let mut box = .{ mut child: Cell.{ count: 0 } }
 -- var hidden = box                  -- Error [E0535]: plain var requires immutable data
 var ref cursor = box
@@ -5987,7 +6009,7 @@ fn project(ref box: { mut child: Cell }) -> ref(box) Cell { box.child }
 [Fresh storage reception](#homogeneous-storage-authority) precedes read-only binding or parameter passage; it cannot recover authority after either boundary.
 
 ```ril
-type Cell = { var count: int }
+type Cell = { var count: i64 }
 let immutable = Cell.{ count: 0 }
 -- let mut upgraded = immutable           -- Error [E0520]: existing immutable reference
 let mut cells: []Cell = []
@@ -6029,7 +6051,7 @@ eff Console {
     read_line() -> str,
 }
 
-eff BufferIo { read_into(mut buf: []u8) &mut -> int }
+eff BufferIo { read_into(mut buf: []u8) &mut -> i64 }
 
 eff State<S> {
     get() -> S,
@@ -6038,32 +6060,32 @@ eff State<S> {
 
 eff Context<T> { ask() -> T }
 
-eff AppEffects { Console, State<int> } -- Combined effect set
+eff AppEffects { Console, State<i64> } -- Combined effect set
 ```
 
 ```ril
 -- Context has the preceding declaration.
-fn read_context() @Context<int> -> int { Context::ask() }
-with Context<int>::ask() -> resume 7
+fn read_context() @Context<i64> -> i64 { Context::ask() }
+with Context<i64>::ask() -> resume 7
 assert(read_context() == 7)            -- Generic instance inferred; no mutable argument is involved
 ```
 
 ```ril
-fn two_states() -> (int, str) {
+fn two_states() -> (i64, str) {
     with {
-        State<int>::get() -> resume 7,
-        State<int>::put(_value) -> resume (),
+        State<i64>::get() -> resume 7,
+        State<i64>::put(_value) -> resume (),
         State<str>::get() -> resume "seven",
         State<str>::put(_value) -> resume (),
     }
-    (State<int>::get(), State<str>::get())
+    (State<i64>::get(), State<str>::get())
 }
 assert(two_states() == (7, "seven"))
 ```
 
 | Generic effect operation | Identity / selection |
 | :--- | :--- |
-| `State<int>::get` | Effect declaration, static arguments under static argument equivalence, and operation declaration |
+| `State<i64>::get` | Effect declaration, static arguments under static argument equivalence, and operation declaration |
 | Distinct instances | Distinct operations, even with the same operation name |
 | Effect-set aliases | Expand to their member instances; aliases do not create new operation identities |
 | Operation selected through a set alias | Exactly one member instance must supply it; unresolved selection is `E0344` |
@@ -6095,7 +6117,7 @@ fn hello() @Console -> () {
 }
 
 -- Effectful computation invoking state-annotating BufferIo:
-fn fill_header(mut target: []u8) @BufferIo &mut -> int {
+fn fill_header(mut target: []u8) @BufferIo &mut -> i64 {
     BufferIo::read_into(mut target)    -- OK: &mut annotation flows through caller to operation
 }
 ```
@@ -6124,22 +6146,22 @@ An operation-arm `with` covers the remaining block. `resume value` supplies the 
 The operand of `resume` must match the handled operation's result type (`E0624`). For block answer A, the resulting `resume value` expression and every arm's final value must have type A (`E0625` for an incompatible arm answer), including abort values and post-resumption tails. An incompatible retained handler selection still uses its boundary-specific `E0614`.
 
 ```ril
-eff ReadNumber { get() -> int }
-fn ordinary() -> int { 1 }
-fn handler_targets() -> int {
+eff ReadNumber { get() -> i64 }
+fn ordinary() -> i64 { 1 }
+fn handler_targets() -> i64 {
     -- with ordinary() -> resume 1   -- Error [E0621]: target is not an effect operation
     -- with { ReadNumber::get() -> resume 1, ReadNumber::get() -> resume 2 }
     -- Error [E0622]: two arms for the same operation in one with
     with ReadNumber::get() -> resume 1
     ReadNumber::get()                 -- OK
 }
-fn resume_type() -> int {
-    -- with ReadNumber::get() -> resume "one" -- Error [E0624]: operation result is int
+fn resume_type() -> i64 {
+    -- with ReadNumber::get() -> resume "one" -- Error [E0624]: operation result is i64
     with ReadNumber::get() -> resume 1
     ReadNumber::get()
 }
-fn answer_type() -> int {
-    -- with ReadNumber::get() -> "aborted" -- Error [E0625]: arm answer is str, block answer is int
+fn answer_type() -> i64 {
+    -- with ReadNumber::get() -> "aborted" -- Error [E0625]: arm answer is str, block answer is i64
     with ReadNumber::get() -> 0       -- OK: abort answer fits the block
     ReadNumber::get()
 }
@@ -6160,8 +6182,8 @@ ResumeExpr    ::= "resume" Expression
 A leading `ref`/`mut`/`^mut` on a handler parameter specifies its operation-parameter mode before pattern interpretation. A `new` binder is `E0411`, and `via` is `E0412`. The remaining pattern must be irrefutable and unmodified: `var` is `E0403`, and nested modes are `E0406`. Modes must match the operation declaration (`E0406`); non-operation handler targets use `E0621`.
 
 ```ril
-eff ReadAt { get(int) -> int }
-fn read_zero() -> int {
+eff ReadAt { get(i64) -> i64 }
+fn read_zero() -> i64 {
     with ReadAt::get(index) -> match index {
         0 -> resume 1,
         _ -> resume 2,
@@ -6170,9 +6192,9 @@ fn read_zero() -> int {
 }
 -- with ReadAt::get(0) -> resume 1      -- Error [E0345]: handler parameter is refutable
 
-type Cell = { var count: int }
+type Cell = { var count: i64 }
 eff Edit { apply(mut Cell) &mut -> () }
-fn edit_once(mut cell: Cell) &mut -> int {
+fn edit_once(mut cell: Cell) &mut -> i64 {
     with Edit::apply(mut target) -> {
         target.count += 1
         let saved = target.count
@@ -6194,7 +6216,7 @@ fn edit_once(mut cell: Cell) &mut -> int {
 | Discharge a declared effect instance | Cover every operation of that instance; built-in resource/system obligations follow their separate rules |
 
 ```ril
-type Cell = { var count: int }
+type Cell = { var count: i64 }
 eff Store { keep(^mut cell: Cell) &^mut -> () }
 let mut cell = Cell.{ count: 0 }
 let mut held: [^mut]Cell = []
@@ -6257,8 +6279,8 @@ fn make_button() -> Button {
 
 
 ```ril
-eff Read { get() -> int }
-type Reader = fn() &up -> int
+eff Read { get() -> i64 }
+type Reader = fn() &up -> i64
 fn make_reader() &capture -> Reader {
     with Read::get() -> resume 7
     \-> Read::get()
@@ -6267,16 +6289,16 @@ let reader = make_reader()
 assert(reader() == 7)                 -- Fresh invocation boundary with compatible handler
 
 -- A captured arm `{ let result = resume 7; "done" }` is not compatible
--- with this callback's int answer. Retaining it as this handler is E0614.
--- An arm that returns a Reader without resume also cannot answer an int callback.
+-- with this callback's i64 answer. Retaining it as this handler is E0614.
+-- An arm that returns a Reader without resume also cannot answer an i64 callback.
 ```
 
 ```ril
-eff Read { get() -> int }
-type Reader = fn() &up -> int
-type Deferred = fn() @Read -> int
-fn ask_read() @Read -> int { Read::get() }
-fn read_without_state(action: fn() @& -> int) &{} -> int { action() }
+eff Read { get() -> i64 }
+type Reader = fn() &up -> i64
+type Deferred = fn() @Read -> i64
+fn ask_read() @Read -> i64 { Read::get() }
+fn read_without_state(action: fn() @& -> i64) &{} -> i64 { action() }
 fn make_indirect_reader() &capture -> Reader {
     with Read::get() -> resume 7
     \-> ask_read()                    -- Captures the handler for the helper's residual Read operation
@@ -6296,14 +6318,14 @@ fn same_block_helper() -> Deferred {
     with Read::get() -> resume 7
     helper
 where
-    fn helper() @Read -> int { Read::get() }
+    fn helper() @Read -> i64 { Read::get() }
 }
 fn nested_block_helper() &capture -> Reader {
     with Read::get() -> resume 7
     {
         helper
     where
-        fn helper() -> int { Read::get() }
+        fn helper() -> i64 { Read::get() }
     }
 }
 let captured = make_indirect_reader()
@@ -6354,19 +6376,19 @@ fn make_label_button(label: str) &capture -> Button {
 ### Parameterized Handler Applications
 
 ```ril
-eff ReadConfig { get() -> int }
-fn supply_config(value: int, action: fn() @& -> int) -> int {
+eff ReadConfig { get() -> i64 }
+fn supply_config(value: i64, action: fn() @& -> i64) -> i64 {
     with ReadConfig::get() -> resume value
     action()
 }
-halt fn configured() -> int {
+halt fn configured() -> i64 {
     with supply_config(7)
     ReadConfig::get() + 1
 }
 assert(configured() == 8)
 
 -- The application form has the same behavior as the explicit call:
-halt fn configured_explicit() -> int {
+halt fn configured_explicit() -> i64 {
     supply_config(7, \-> { ReadConfig::get() + 1 })
 }
 assert(configured_explicit() == 8)
@@ -6389,15 +6411,15 @@ assert(configured_explicit() == 8)
 A helper's internal handler can discharge operations forwarded by the final callable; previously selected handlers retain their dispatch. The final callable follows ordinary declaration partition and `where` scope rules. Applications nest in source order, each including the following applications in its final callable. Supplied arguments must leave the final callable parameter unbound; incompatible targets and duplicate arguments use ordinary call diagnostics.
 
 ```ril
-halt fn existing_selection() -> int {
+halt fn existing_selection() -> i64 {
     with ReadConfig::get() -> resume 3
     with supply_config(7)
     ReadConfig::get()
 }
 assert(existing_selection() == 3)     -- The callable already selected the outer handler
 
-fn pass(action: fn() -> int) -> int { action() }
-halt fn returned_from_action() -> int {
+fn pass(action: fn() -> i64) -> i64 { action() }
+halt fn returned_from_action() -> i64 {
     with pass()
     return 9                         -- Returns from the supplied action; pass then returns 9
 }
@@ -6410,7 +6432,7 @@ assert(returned_from_action() == 9)
 `resume` is affine: repeated use or escape from its arm is rejected. An arm returning without resumption aborts the delimited computation and runs scoped cleanup in reverse order. Prior writes remain committed.
 
 ```ril
-fn outside_handler() -> int {
+fn outside_handler() -> i64 {
     -- resume 1                      -- Error [E0623]: no enclosing operation arm
     1
 }
@@ -6420,8 +6442,8 @@ fn outside_handler() -> int {
 
 ```ril
 -- Affine Resumption Violation: invoking resume more than once
-eff Op { query() -> int }
-fn bad_double_resume() -> int {
+eff Op { query() -> i64 }
+fn bad_double_resume() -> i64 {
     with Op::query() -> {
         let first = resume 1
         -- let second = resume 2        -- Error [E0610]: affine resumption 'resume' invoked more than once
@@ -6431,7 +6453,7 @@ fn bad_double_resume() -> int {
 }
 
 -- Escaping Resumption Violation: resume escaping the handler arm
-fn bad_escaping_resume() &capture -> (fn() -> int) {
+fn bad_escaping_resume() &capture -> (fn() -> i64) {
     with Op::query() -> {
         let esc = \-> { let _ = resume 42; 0 } -- Error [E0611]: resumption captured by an escaping callable
         esc
@@ -6519,12 +6541,12 @@ eff Fiber {
 }
 
 -- Leaf I/O Suspension Principle (@Fiber):
-fn read_socket_chunk(fd: int) @Fiber -> []u8 {
+fn read_socket_chunk(fd: i64) @Fiber -> []u8 {
     Socket::read_chunk(fd)             -- Fixture contract: waits for this socket and returns immutable data, @Fiber
 }
 
 -- Functions declared @Fiber cannot invoke structured concurrency primitives:
-fn bad_leaf_fork(fd: int) @Fiber -> []u8 {
+fn bad_leaf_fork(fd: i64) @Fiber -> []u8 {
     -- scope(\mut s -> {               -- Error [E0612]: function declares '@Fiber' but invokes unhandled '@Concurrent' primitive 'scope'
     --     s.fork(\-> Socket::read_chunk(fd))
     -- })
@@ -6542,7 +6564,7 @@ fn fetch_pipeline(url: str) @Async -> Result<str, TaskFault> {
 }
 
 -- Cooperative Fiber Yielding (@Fiber):
-fn cooperative_worker(count: int) @Fiber -> () {
+fn cooperative_worker(count: i64) @Fiber -> () {
     var c = count
     while c > 0 {
         c -= 1
@@ -6555,7 +6577,7 @@ eff Yield<T> {
     emit(value: T) -> ()
 }
 
-fn range_stream(start: int, max: int) @Yield<int> -> () {
+fn range_stream(start: i64, max: i64) @Yield<i64> -> () {
     var cur = start
     while cur < max {
         Yield::emit(cur)
@@ -6564,8 +6586,8 @@ fn range_stream(start: int, max: int) @Yield<int> -> () {
 }
 
 -- (a) Synchronous Consumer with Delimited Early Abort:
-fn collect_first_evens() -> []int {
-    let mut collected: []int = []
+fn collect_first_evens() -> []i64 {
+    let mut collected: []i64 = []
     with Yield::emit(v) -> {
         if v % 2 == 0 {
             collected !> Array::push(v)
@@ -6581,7 +6603,7 @@ fn collect_first_evens() -> []int {
 }
 
 -- (b) Independent Composition: Suspendable Async Generator:
-fn stream_remote_chunks(fd: int) @Yield<[]u8> + Fiber -> () {
+fn stream_remote_chunks(fd: i64) @Yield<[]u8> + Fiber -> () {
     while true {
         let chunk = read_socket_chunk(fd)
         if len(chunk) == 0 { last }
@@ -6590,17 +6612,17 @@ fn stream_remote_chunks(fd: int) @Yield<[]u8> + Fiber -> () {
 }
 
 -- Termination inference is independent of effect annotations:
-fn collatz(n: int) -> int {
+fn collatz(n: i64) -> i64 {
     if n <= 1 { 1 }
     else if n % 2 == 0 { collatz(n / 2) }
     else { collatz(3 * n + 1) }
 }
 
 -- Pure finite function; ordinary unmarked factorial would receive the same proof:
-halt fn factorial(n: int) -> int {
+halt fn factorial(n: i64) -> i64 {
     if n <= 1 { 1 } else { n * factorial(n - 1) }
 }
--- halt fn bad_total(n: int) -> int {  -- Error [E0820]: 'halt fn' contains uncertified recursion or unbounded loop
+-- halt fn bad_total(n: i64) -> i64 {  -- Error [E0820]: 'halt fn' contains uncertified recursion or unbounded loop
 --     collatz(n)
 -- }
 ```
@@ -6612,17 +6634,17 @@ halt fn factorial(n: int) -> int {
 eff Div { exhausted() -> never }
 
 -- Built-in callable shape; its additional finite-evaluation contract is defined below:
--- Div::budget<T>(limit: int, action: fn() @& -> T) @Div -> T
+-- Div::budget<T>(limit: i64, action: fn() @& -> T) @Div -> T
 
-fn spin() -> int { loop {} }               -- MayDiverge, with no algebraic effects
-halt fn bounded() -> ?int {
+fn spin() -> i64 { loop {} }               -- MayDiverge, with no algebraic effects
+halt fn bounded() -> ?i64 {
     with Div::exhausted() -> None
     with Div::budget(10_000)
     Some(spin())
 }
 assert(bounded() == None)
 
-halt fn bounded_value() -> ?int {
+halt fn bounded_value() -> ?i64 {
     with Div::exhausted() -> None
     with Div::budget(10_000)
     Some(42)
@@ -6630,7 +6652,7 @@ halt fn bounded_value() -> ?int {
 assert(bounded_value() == Some(42))
 
 -- The parameterized with is the ordinary final-callable application form:
-halt fn explicit_budget() -> ?int {
+halt fn explicit_budget() -> ?i64 {
     with Div::exhausted() -> None
     Div::budget(10_000, \-> Some(spin()))
 }
@@ -6642,23 +6664,23 @@ The built-in `Div` namespace contains the operation `exhausted` and the finite-e
 `Div::budget(limit, action)` creates a fresh finite-evaluation boundary and invokes `action` once when its initial allowance permits entry. Normal completion returns the action's value. At exhaustion the protected computation is irrevocably abandoned, its required finite cleanup runs, and the call requests `Div::exhausted()`. The operation has no returning continuation; any `resume` targeting it is `E0822`, before resumption-value type checking. Its answer and delimited scope use ordinary handler rules (`E0625`). The exhausted computation cannot be resumed or refilled.
 
 ```ril
-fn finite_attempt() @Div -> int { Div::budget(10_000, spin) }
--- fn missing_handler() -> int { finite_attempt() } -- Error [E0612]: real residual Div effect
+fn finite_attempt() @Div -> i64 { Div::budget(10_000, spin) }
+-- fn missing_handler() -> i64 { finite_attempt() } -- Error [E0612]: real residual Div effect
 
 -- Merely installing an exhaustion handler does not limit a computation:
-fn handler_only() -> int {
+fn handler_only() -> i64 {
     with Div::exhausted() -> 0
     spin()
 }                                           -- MayDiverge; spin never requests exhausted
--- halt fn still_unbounded() -> int { handler_only() } -- Error [E0820]
+-- halt fn still_unbounded() -> i64 { handler_only() } -- Error [E0820]
 
 -- An exhaustion handler can itself diverge after the protected action ends:
-fn bad_recovery() -> int {
+fn bad_recovery() -> i64 {
     with Div::exhausted() -> spin()
     with Div::budget(0)
     42
 }                                           -- MayDiverge, although its effect row is empty
--- halt fn invalid_recovery() -> int { bad_recovery() } -- Error [E0820]
+-- halt fn invalid_recovery() -> i64 { bad_recovery() } -- Error [E0820]
 -- with Div::exhausted() -> resume ()         -- Error [E0822]: exhaustion is non-resumable
 ```
 
@@ -6675,7 +6697,7 @@ fn bad_recovery() -> int {
 
 #### Allowance and Charging
 
-The limit has type `int`. Evaluate it and the action expression once in ordinary argument order before establishing the new boundary. A negative limit panics before action invocation; zero requests exhaustion without invoking the action. Argument evaluation has its own purity and termination obligations and is covered by any active outer boundaries.
+The limit has type `i64`. Evaluate it and the action expression once in ordinary argument order before establishing the new boundary. A negative limit panics before action invocation; zero requests exhaustion without invoking the action. Argument evaluation has its own purity and termination obligations and is covered by any active outer boundaries.
 
 | Charged event while a boundary is active | Cost |
 | :--- | :--- |
@@ -6700,25 +6722,25 @@ Before a charged event, if any active boundary has no remaining units, do not ex
 | Limit | Counts protected events; excludes total cleanup/recovery work and wall-clock time |
 
 ```ril
-fn one() -> int { 1 }
-halt fn zero_allowance() -> ?int {
+fn one() -> i64 { 1 }
+halt fn zero_allowance() -> ?i64 {
     with Div::exhausted() -> None
     with Div::budget(0)
     Some(1)
 }
-halt fn one_entry() -> ?int {
+halt fn one_entry() -> ?i64 {
     with Div::exhausted() -> None
     Some(Div::budget(1, one))          -- The action entry consumes the one unit
 }
 assert(zero_allowance() == None)
 assert(one_entry() == Some(1))
-halt fn negative_allowance() -> ?int {
+halt fn negative_allowance() -> ?i64 {
     with Div::exhausted() -> None
     Some(Div::budget(-1, one))
 }
 -- negative_allowance()             -- Panics before invoking one; exhaustion handler is not requested
 
-halt fn nested_limits() -> ?int {
+halt fn nested_limits() -> ?i64 {
     with Div::exhausted() -> None
     with Div::budget(2)
     with Div::exhausted() -> Some(99)
@@ -6727,14 +6749,14 @@ halt fn nested_limits() -> ?int {
 }
 assert(nested_limits() == None)       -- Outer exhaustion bypasses the inner arm
 
-halt fn make_later() -> (fn() -> int) {
+halt fn make_later() -> (fn() -> i64) {
     with Div::exhausted() -> one
     with Div::budget(100)
     spin
 }
--- halt fn run_later() -> int { make_later()() } -- Error [E0820]: no escaped budget
+-- halt fn run_later() -> i64 { make_later()() } -- Error [E0820]: no escaped budget
 
--- A separate .d.ril fixture declares: pub fn foreign_work() -> int
+-- A separate .d.ril fixture declares: pub fn foreign_work() -> i64
 -- with Div::exhausted() -> 0
 -- with Div::budget(100)
 -- foreign_work()                    -- Error [E0822]: external computation is not covered
@@ -6742,12 +6764,12 @@ halt fn make_later() -> (fn() -> int) {
 
 ```ril
 -- The limit expression runs before its own budget becomes active:
--- halt fn bad_limit_expression() -> int {
+-- halt fn bad_limit_expression() -> i64 {
 --     with Div::exhausted() -> 0
 --     Div::budget(spin(), one)
 -- }                                 -- Error [E0820]: computing the limit may diverge
 
-fn budgeted_action(action: fn() -> int) -> ?int {
+fn budgeted_action(action: fn() -> i64) -> ?i64 {
     with Div::exhausted() -> None
     with Div::budget(100)
     Some(action())
@@ -6755,7 +6777,7 @@ fn budgeted_action(action: fn() -> int) -> ?int {
 assert(budgeted_action(spin) == None)  -- Eligible divergence is bounded
 -- budgeted_action(foreign_work)     -- Error [E0822]: forwarding cannot conceal uncovered code
 
-halt fn handler_work() -> ?int {
+halt fn handler_work() -> ?i64 {
     with Div::exhausted() -> None
     with Div::budget(100)
     with ReadConfig::get() -> resume spin()
@@ -6763,7 +6785,7 @@ halt fn handler_work() -> ?int {
 }
 assert(handler_work() == None)        -- Executed user-handler computation also consumes the budget
 
-halt fn limited_sum(values: []int) -> ?int {
+halt fn limited_sum(values: []i64) -> ?i64 {
     with Div::exhausted() -> None
     with Div::budget(100)
     var total = 0
@@ -6773,7 +6795,7 @@ halt fn limited_sum(values: []int) -> ?int {
 assert(limited_sum([1, 2, 3]) == Some(6)) -- Confined mutation remains admissible
 
 type Guard = { on_close: fn() -> () }
-halt fn cleanup_before_recovery() -> ?int {
+halt fn cleanup_before_recovery() -> ?i64 {
     with Div::exhausted() -> None
     with Div::budget(100)
     let scoped guard = Guard.{ on_close: \-> panic("cleanup fault") }
@@ -6793,7 +6815,7 @@ halt fn cleanup_before_recovery() -> ?int {
 
 ```ril
 use ril/concurrent::{scope, TaskFault}
-fn isolated_value() @Concurrent -> Result<int, TaskFault> {
+fn isolated_value() @Concurrent -> Result<i64, TaskFault> {
     scope \mut s -> {
         let task = s.fork(\-> 42)
         task.join()
@@ -6854,8 +6876,8 @@ TypeFnParam      ::= StaticKeyParamDecl
 
 | Position | Spelling / meaning |
 | :--- | :--- |
-| Type declaration / data annotation | `type User = { id: int }`, `x: User`; direct type syntax |
-| Static type value | `<User>`, `<int>`, `<{ id: int }>` |
+| Type declaration / data annotation | `type User = { id: i64 }`, `x: User`; direct type syntax |
+| Static type value | `<User>`, `<i64>`, `<{ id: i64 }>` |
 | Tuple / unit token | `<(T, U)>`, `<()>`; reuse ordinary tuple grammar |
 | Generic application | `F<T, U>`; two arguments, not a tuple quote |
 | Type pattern | `<Option<let U>>`; pattern-only binders/rests |
@@ -6866,18 +6888,18 @@ TypeFnParam      ::= StaticKeyParamDecl
 The following local bindings are fragments of static type-function evaluation:
 
 ```ril
-type User = { id: int, name: str }
+type User = { id: i64, name: str }
 let exact = <User>                     -- Type<User>, not Type
-let tuple = <(int, str)>               -- Type<(int, str)>
+let tuple = <(i64, str)>               -- Type<(i64, str)>
 let unit = <()>
-let callable = <fn(int) -> str>
+let callable = <fn(i64) -> str>
 let saved = exact                     -- Already a token; no second quote
-assert(<(int)> == <int> && <int> != <str>)
--- let bad = int                      -- Error [E0319]: use <int> as a value
--- let bad = <int, str>                -- Error [E0120]: quote contains one type
+assert(<(i64)> == <i64> && <i64> != <str>)
+-- let bad = i64                      -- Error [E0319]: use <i64> as a value
+-- let bad = <i64, str>                -- Error [E0120]: quote contains one type
 -- let bad = <>                        -- Error [E0120]: missing type
 -- let bad = <(\T -> <T>)>             -- Error [E0306]: grouped type-function program is not a quoted type
--- let bad: <int> = <int>              -- Error [E0120]: write Type<int> in an annotation
+-- let bad: <i64> = <i64>              -- Error [E0120]: write Type<i64> in an annotation
 ```
 
 | Token typing | Rule |
@@ -6895,20 +6917,20 @@ assert(<(int)> == <int> && <int> != <str>)
 let exact: Type<User> = <User>
 let wide: Type = exact
 assert(wide == exact)
--- let wrong: Type<int> = <never>       -- Error [E0301]: never being a subtype of int does not make targets equal
-var fixed = <int>                      -- Type<int>
-fixed = <int>
+-- let wrong: Type<i64> = <never>       -- Error [E0301]: never being a subtype of i64 does not make targets equal
+var fixed = <i64>                      -- Type<i64>
+fixed = <i64>
 -- fixed = <str>                      -- Error [E0301]: no retroactive widening
 
-meta fn target_size<T>(token: Type<T>) -> int { byte_size(token) }
-meta fn object_size<T>(value: T) -> int { byte_size(<T>) }
+meta fn target_size<T>(token: Type<T>) -> i64 { byte_size(token) }
+meta fn object_size<T>(value: T) -> i64 { byte_size(<T>) }
 meta fn value_type_name<T>(value: T) -> str { type_name(<T>) }
-meta fn field_size<T: { .. }, K: keyof T>(token: Type<T>, key: K) -> int {
+meta fn field_size<T: { .. }, K: keyof T>(token: Type<T>, key: K) -> i64 {
     byte_size(<T.(K)>)
 }
 var selected: Type = <User>
 let first_size = field_size(selected, "id") -- Proved current target: T = User, K = "id"
-selected = <int>
+selected = <i64>
 -- let bad = field_size(selected, "id") -- Error [E0301]: current target fails the record constraint
 assert(first_size >= 0 && byte_size(selected) >= 0)
 -- let bad = object_size(<User>)        -- Error [E0306]: Type<User> has no ordinary run-time layout
@@ -6931,13 +6953,13 @@ type Wrap = \token: Type -> <{ field: Resolve<token> }>
 type Nullable = \T -> <?T>
 type PairOf = \T, U -> <(T, U)>
 
-type IntNullable = Nullable<int>
-type StringIntPair = PairOf<str, int>
-type WrappedInt = Wrap< <int> >        -- Token value argument, not an implicit type argument
+type IntNullable = Nullable<i64>
+type StringIntPair = PairOf<str, i64>
+type WrappedInt = Wrap< <i64> >        -- Token value argument, not an implicit type argument
 
 -- Static fixture:
-var chosen: Type = <int>
-let before = Wrap<chosen>              -- Type<{ field: int }>
+var chosen: Type = <i64>
+let before = Wrap<chosen>              -- Type<{ field: i64 }>
 chosen = <str>
 let after = Wrap<chosen>               -- Type<{ field: str }>; before is unchanged
 ```
@@ -6960,26 +6982,26 @@ Resolve declaration-header/application metadata before committing an expression'
 An empty quote or top-level comma is `E0120`; missing/mismatched committed delimiters use `E0122` / `E0123`. `Type<T, U>` is arity error `E0340`.
 
 ```ril
-fn comparisons(a: int, b: int, c: int, d: int) -> bool { a < b && c > (d) }
-fn choose<flag: bool>(value: int) -> int { if flag { value } else { 0 } }
+fn comparisons(a: i64, b: i64, c: i64, d: i64) -> bool { a < b && c > (d) }
+fn choose<flag: bool>(value: i64) -> i64 { if flag { value } else { 0 } }
 assert(comparisons(1, 2, 4, 3))        -- a is an ordinary value parameter, not a generic declaration
 assert(choose<true && false>(4) == 0) -- Known declaration; const argument need not add parentheses for &&
--- let bad = comparisons<int>(1, 2, 4, 3) -- Error [E0340]: known callable has no generic parameters
+-- let bad = comparisons<i64>(1, 2, 4, 3) -- Error [E0340]: known callable has no generic parameters
 ```
 
 ### Pure Type Functions and Result Restrictions
 
 ```ril
 halt type SafeRecord = \T ->
-    if <T> == <int> { <{ val: int, valid: bool }> }
+    if <T> == <i64> { <{ val: i64, valid: bool }> }
     else { <{ val: T, valid: bool }> }
-type IntRecord = SafeRecord<int>
+type IntRecord = SafeRecord<i64>
 ```
 
 ```ril
 halt type Identity = \T -> <T>              -- OK: type-producing function
-meta fn size_of<T>(t: Type<T>) -> int { byte_size(t) } -- OK: reflection produces an ordinary value
-halt fn checked_increment(n: int) -> int { n + 1 } -- May panic at int's maximum
+meta fn size_of<T>(t: Type<T>) -> i64 { byte_size(t) } -- OK: reflection produces an ordinary value
+halt fn checked_increment(n: i64) -> i64 { n + 1 } -- May panic at i64's maximum
 -- halt fn yield_once() @Fiber -> () { Fiber::yield() } -- Error [E0821]: halt requires outward purity
 -- halt fn forever() -> () { loop {} }                  -- Error [E0820]: uncertified local loop
 -- meta let BAD_SUM = 127i8 + 1i8                 -- Error [E0831]: panic during static evaluation
@@ -6996,21 +7018,21 @@ halt fn checked_increment(n: int) -> int { n + 1 } -- May panic at int's maximum
 Both run with empty effect and state/provenance domains and support local bindings, control flow, pure static helpers and recursion. Generic type metadata is static and erased from run-time values.
 
 ```ril
-meta fn record_bytes() -> int { byte_size(<{ id: int }>) }
+meta fn record_bytes() -> i64 { byte_size(<{ id: i64 }>) }
 meta fn meta_identity<T>(value: T) -> T { value }
 meta let NUMBER = meta_identity(1)
--- meta let BAD_TOKEN = meta_identity(<int>) -- Error [E0812]: instantiated result is Type<int>
+-- meta let BAD_TOKEN = meta_identity(<i64>) -- Error [E0812]: instantiated result is Type<i64>
 -- meta fn leak<T>(token: Type<T>) -> { token: Type<T> } { .{ token: token } }
 -- Error [E0812]: wrapping does not remove the returned token
 
-meta let TOKEN = <int>
+meta let TOKEN = <i64>
 meta let SIZE = byte_size(TOKEN)
-fn runtime_size() &up(sub){SIZE} -> int { SIZE }
-fn runtime_client(value: int) -> int {
-    -- let token = <int>              -- Error [E0816]: ordinary execution cannot materialize a token
+fn runtime_size() &up(sub){SIZE} -> i64 { SIZE }
+fn runtime_client(value: i64) -> i64 {
+    -- let token = <i64>              -- Error [E0816]: ordinary execution cannot materialize a token
     value
 }
--- fn leak_constant() &up(sub){TOKEN} -> Type<int> { TOKEN } -- Error [E0816]: no run-time token values
+-- fn leak_constant() &up(sub){TOKEN} -> Type<i64> { TOKEN } -- Error [E0816]: no run-time token values
 -- fn leak_shape(value: { token: Type }) -> () {} -- Error [E0816]: nested token type in a run-time parameter
 ```
 
@@ -7033,12 +7055,12 @@ Static loops and recursion are admissible subject to the static-evaluation budge
 ```ril
 -- Custom diagnostic in pure type function via static panic:
 type SizedRecord = \T -> match <T> {
-    <{ id: int, .. }> -> <T>,
-    _ -> panic("SizedRecord requires a record containing an 'id: int' field"),
+    <{ id: i64, .. }> -> <T>,
+    _ -> panic("SizedRecord requires a record containing an 'id: i64' field"),
 }
--- type BadRecord = SizedRecord<str> -- Error [E0831]: panic during static evaluation: SizedRecord requires a record containing an 'id: int' field
--- Meta helper: ordinary value computation only (returns int, not a type token)
-meta fn pad_align(size: int, align: int) -> int {
+-- type BadRecord = SizedRecord<str> -- Error [E0831]: panic during static evaluation: SizedRecord requires a record containing an 'id: i64' field
+-- Meta helper: ordinary value computation only (returns i64, not a type token)
+meta fn pad_align(size: i64, align: i64) -> i64 {
     assert(size >= 0 && align > 0 && (align & (align - 1)) == 0)
     (size + align - 1) & ~(align - 1)
 }
@@ -7049,32 +7071,32 @@ meta fn is_compact<T>(t: Type<T>) -> bool {
 }
 
 -- Type functions provide type-producing interfaces; meta helpers return ordinary values.
-halt type PaddedBuffer = \raw_size: int, T -> {
+halt type PaddedBuffer = \raw_size: i64, T -> {
     let actual_size = pad_align(raw_size, 8)   -- OK: consumes meta fn value output
     if is_compact(<T>) {                   -- OK: consumes meta predicate
-        <{ inline_data: []T, len: int }>   -- OK: constructs shape
+        <{ inline_data: []T, len: i64 }>   -- OK: constructs shape
     } else {
-        <{ heap_ptr: int, cap: int }>      -- OK: constructs shape
+        <{ heap_ptr: i64, cap: i64 }>      -- OK: constructs shape
     }
 }
 
-type FastBuf = PaddedBuffer<64, u8>            -- Resolves to { inline_data: []u8, len: int }
+type FastBuf = PaddedBuffer<64, u8>            -- Resolves to { inline_data: []u8, len: i64 }
 
 -- Static Rejection of Violations:
--- meta fn bad_type_gen() -> Type<int> {       -- Error [E0812]: meta fn cannot expose a token result
---     <int>
+-- meta fn bad_type_gen() -> Type<i64> {       -- Error [E0812]: meta fn cannot expose a token result
+--     <i64>
 -- }
 -- halt type BadEffect = \T @Async -> <T>  -- Error [E0335]: type functions cannot declare algebraic effects
--- meta fn bad_eff() @Io -> int { 0 }          -- Error [E0813]: 'meta fn' cannot declare algebraic effects
+-- meta fn bad_eff() @Io -> i64 { 0 }          -- Error [E0813]: 'meta fn' cannot declare algebraic effects
 -- type BadInfinite<T> = BadInfinite<T>        -- Error [E0313]: cyclic alias without nominal or sum indirection
 -- type Spin = \T -> Spin<T>
--- type NeverFinishes = Spin<int>             -- Error [E0811]: recursive type-function evaluation exhausts its budget
+-- type NeverFinishes = Spin<i64>             -- Error [E0811]: recursive type-function evaluation exhausts its budget
 ```
 
 ### Disjoint Call Families, Evaluation Budgets, and Branch Pruning
 
 ```ril
-fn runtime_identity(value: int) -> int { value }
+fn runtime_identity(value: i64) -> i64 { value }
 -- meta let INVALID_CALL = runtime_identity(1) -- Error [E0810]: run-time fn in static evaluation
 ```
 
@@ -7082,11 +7104,11 @@ fn runtime_identity(value: int) -> int { value }
 
 ```ril
 eff Audit { write(str) -> () }
-fn logged_worker(x: int) @Audit -> int { Audit::write("work"); x }
+fn logged_worker(x: i64) @Audit -> i64 { Audit::write("work"); x }
 
 type DispatchMode { Run, Bypass }
 
-fn dispatch_worker<mode: DispatchMode>(f: fn(int) @& -> int, val: int) -> int {
+fn dispatch_worker<mode: DispatchMode>(f: fn(i64) @& -> i64, val: i64) -> i64 {
     match mode {
         DispatchMode::Run    -> f(val),
         DispatchMode::Bypass -> val,
@@ -7097,8 +7119,8 @@ fn test_specialization(runtime_mode: DispatchMode) -> () {
     assert(dispatch_worker<DispatchMode::Bypass>(logged_worker, 10) == 10) -- OK: callback is not invoked
     -- dispatch_worker<runtime_mode>(logged_worker, 10)      -- Error [E0814]: a static value is required
 }
-fn run_logged() @Audit -> int { dispatch_worker<DispatchMode::Run>(logged_worker, 10) }
--- fn hidden_log() -> int { dispatch_worker<DispatchMode::Run>(logged_worker, 10) } -- Error [E0612]
+fn run_logged() @Audit -> i64 { dispatch_worker<DispatchMode::Run>(logged_worker, 10) }
+-- fn hidden_log() -> i64 { dispatch_worker<DispatchMode::Run>(logged_worker, 10) } -- Error [E0612]
 ```
 
 | Call family | Permitted calls |
@@ -7120,7 +7142,7 @@ Static callbacks capture symbolic constants. Mutable resources, handlers, and or
 Retain static/generic and callable-dependent [use conditions](#reachable-authority-use) in summaries until the required instantiation determines them. Reject a definition with a known absent required use, or a selected instantiation with absent mode/marker use (`E0527`) or excess concrete state/provenance annotation (`E0529`). Required use needs established evidence after static pruning.
 
 ```ril
-type Cell = { var count: int }
+type Cell = { var count: i64 }
 fn selected_write<enabled: bool>(mut cell: Cell) &mut -> () {
     if enabled { cell.count += 1 }
 }
@@ -7145,7 +7167,7 @@ ModeExpression     ::= MemberMode | ModeProjectionExpr | PascalCase | "(" Expres
 In expression contexts, `keyof T` statically enumerates the coordinates of a record, sum, or tuple type $T$ as an ordered immutable array:
 - **Records**: Evaluates to an immutable array `[]str` of field names sorted strictly in UTF-8 byte order.
 - **Sum Types**: Evaluates to an immutable array `[]str` of variant constructor names sorted strictly in UTF-8 byte order.
-- **Tuples**: Evaluates to an immutable array `[]int` of positional indices `[0, 1, ..., n-1]` in monotonic ascending order.
+- **Tuples**: Evaluates to an immutable array `[]i64` of positional indices `[0, 1, ..., n-1]` in monotonic ascending order.
 - **Type Identity**: Definitionally equal admitted types produce the same coordinate array ($T_1 \equiv T_2 \implies \text{keyof } T_1 \equiv \text{keyof } T_2$).
 
 
@@ -7155,7 +7177,7 @@ In expression contexts, `keyof T` statically enumerates the coordinates of a rec
 fn get_field<T: { .. }, K: keyof T>(record: T, key: K) -> T.(K) {
     record.(key)
 }
-type User = { id: int, name: str }
+type User = { id: i64, name: str }
 let user = User.{ id: 1, name: "Ada" }
 let name: str = get_field(user, "name")
 -- get_field(user, "missing")          -- Error [E0323]: key is not in keyof User
@@ -7188,10 +7210,10 @@ For a composite type $T$ and coordinate key $K \in \text{keyof } T$, `T.(K)` sta
 
 ```ril
 type Box<T> { Item<U>(U) -> Box<U> }
-type ItemType = Box<int>.Item          -- int: U is recovered from Box<int>
-type Expr<T> { Int(int) -> Expr<int>, Bool(bool) -> Expr<bool> }
-type IntPayload = Expr<int>.Int       -- int
--- type WrongPayload = Expr<int>.Bool -- Error [E0301]: incompatible constructor result equation
+type ItemType = Box<i64>.Item          -- i64: U is recovered from Box<i64>
+type Expr<T> { Int(i64) -> Expr<i64>, Bool(bool) -> Expr<bool> }
+type IntPayload = Expr<i64>.Int       -- i64
+-- type WrongPayload = Expr<i64>.Bool -- Error [E0301]: incompatible constructor result equation
 ```
 
 Sum `keyof` lists declared variant names even when a supplied index excludes a variant. A GADT payload projection must satisfy the selected constructor's result equation under the existing constraints and recover each variant-local parameter. An incompatible or unresolved equation is `E0301`. Projection introduces no new ambient type equality; membership in `keyof` alone does not prove that a variant is possible.
@@ -7199,11 +7221,11 @@ Sum `keyof` lists declared variant names even when a supplied index excludes a v
 #### Universal Member Mode Projection
 
 ```ril
-type State = { id: int, var title: str, mut items: []int }
+type State = { id: i64, var title: str, mut items: []i64 }
 meta let ID_MODE: MemberMode = modeof State.id          -- MemberMode::Let
 meta let TITLE_MODE = modeof State.title                -- MemberMode::Var
 meta let ITEMS_MODE = modeof State.items                -- MemberMode::Mut
-meta let TUPLE_MODE = modeof (var int, mut []int).0     -- MemberMode::Var
+meta let TUPLE_MODE = modeof (var i64, mut []i64).0     -- MemberMode::Var
 -- meta let BAD_TARGET = modeof UiEvent.Click          -- Error [E0358]: modeof requires a product type
 -- meta let UNKNOWN = modeof State.missing             -- Error [E0336]: this product has no field 'missing'
 ```
@@ -7214,8 +7236,8 @@ The result preserves both slot and access components, including well-sorted symb
 
 ```ril
 type Elements<T, M: MemberMode> = [M]T
-type Views = Elements<{ var count: int }, ref>
--- type BadViews = Elements<{ var count: int }, var ref>
+type Views = Elements<{ var count: i64 }, ref>
+-- type BadViews = Elements<{ var count: i64 }, var ref>
 -- Error [E0356]: complete replacement-bearing mode is not an element-access mode
 ```
 
@@ -7232,60 +7254,60 @@ Each source expression is checked in its enclosing scope. The `PascalCase` binde
   }>
   ```
 - **Member Mode Compatibility (`E0402`, `E0357`)**: Value-type members cannot receive `mut`, `^mut`, or `ref`. Mapped comprehensions reject incompatible modes without silently substituting another mode. Distinct modes across field types must be formulated explicitly via type functions.
-- **Mapped Tuples (`( [Expr as I]: TypeExpr )`)**: `Expr` must evaluate to compile-time `[]int`. Supplying `[]str` triggers `E0342: InvalidTupleKeySortError`.
+- **Mapped Tuples (`( [Expr as I]: TypeExpr )`)**: `Expr` must evaluate to compile-time `[]i64`. Supplying `[]str` triggers `E0342: InvalidTupleKeySortError`.
 - **Single-Element Tuple Prohibition (`E0343`)**: A mapped tuple comprehension evaluated over an index array of length 1 is statically rejected at compile time, preserving the invariant that Ril has no 1-tuples.
 
 ```ril
 type Readonly = \T -> <{ [keyof T as K]: T.(K) }>
-type Bag = { mut items: []int }
-type FixedFields = Readonly<Bag>        -- { items: []int }; default member is deeply immutable
-type Box = { var tag: int, mut bag: FixedFields }
+type Bag = { mut items: []i64 }
+type FixedFields = Readonly<Bag>        -- { items: []i64 }; default member is deeply immutable
+type Box = { var tag: i64, mut bag: FixedFields }
 let mut box = Box.{ tag: 0, bag: FixedFields.{ items: [1] } }
 box.tag = 1
 -- box.bag.items !> Array::push(2)    -- Error [E0520]: a default member blocks nested writes
 type Slots = \T -> <{ var [keyof T as K]: T.(K) }>
-type PairSlots = (var [[0, 1] as I]: int) -- (var int, var int)
+type PairSlots = (var [[0, 1] as I]: i64) -- (var i64, var i64)
 
 -- Exact MemberMode preservation via modeof:
 type Pick = \T: { ..never }, included: []str -> {
     let valid_keys = keyof T |> Array::filter(\k -> included |> Array::contains(k))
     <{ modeof T.(K) [valid_keys as K]: T.(K) }>
 }
-type SubState = Pick<State, ["id", "items"]>   -- { id: int, mut items: []int }
--- type BadMut = <{ mut [keyof { x: int } as K]: int }> -- Error [E0402]: value-type member cannot be mut
+type SubState = Pick<State, ["id", "items"]>   -- { id: i64, mut items: []i64 }
+-- type BadMut = <{ mut [keyof { x: i64 } as K]: i64 }> -- Error [E0402]: value-type member cannot be mut
 ```
 
 `Readonly` constructs default-member schemas. Ordinary `let` already removes effective member write/observation modes recursively; neither operation changes callable invocation contracts.
 
 ```ril
 -- Records:
-type User = { id: int, name: str, active: bool }
+type User = { id: i64, name: str, active: bool }
 meta let USER_KEYS: []str = keyof User         -- ["active", "id", "name"] (UTF-8 sorted)
-type UserId = User.id                          -- int
+type UserId = User.id                          -- i64
 type UserName = User.("name")                  -- str
-type PublicUser = Pick<User, ["id", "name"]>   -- { id: int, name: str }
+type PublicUser = Pick<User, ["id", "name"]>   -- { id: i64, name: str }
 
 -- Sum types:
 type UiEvent {
-    Click({ x: int, y: int }),
-    Hover(int, int),
+    Click({ x: i64, y: i64 }),
+    Hover(i64, i64),
     Focus,
 }
 meta let EVENT_KEYS: []str = keyof UiEvent     -- ["Click", "Focus", "Hover"] (UTF-8 sorted)
-type ClickPayload = UiEvent.Click              -- { x: int, y: int }
-type HoverPayload = UiEvent.("Hover")          -- (int, int)
+type ClickPayload = UiEvent.Click              -- { x: i64, y: i64 }
+type HoverPayload = UiEvent.("Hover")          -- (i64, i64)
 type FocusPayload = UiEvent.Focus              -- () (nullary injection domain)
 
 type EventHandlerTable = \T, R -> <{
     [keyof T as K]: fn(T.(K)) -> R
 }>
 type UiHandlerTable = EventHandlerTable<UiEvent, ()>
--- { Click: fn({ x: int, y: int }) -> (), Focus: fn(()) -> (), Hover: fn((int, int)) -> () }
+-- { Click: fn({ x: i64, y: i64 }) -> (), Focus: fn(()) -> (), Hover: fn((i64, i64)) -> () }
 
 -- Tuples:
-type Pair = (int, str)
-meta let PAIR_KEYS: []int = keyof Pair         -- [0, 1]
-type First = Pair.0                            -- int
+type Pair = (i64, str)
+meta let PAIR_KEYS: []i64 = keyof Pair         -- [0, 1]
+type First = Pair.0                            -- i64
 type Second = Pair.(1)                         -- str
 
 -- Canonical Tuple Reversal via array pipeline:
@@ -7295,12 +7317,12 @@ halt type ReverseTuple = \T -> {
         [rev_indices as I]: T.(I)
     )>
 }
-type ReversedPair = ReverseTuple<Pair>         -- (str, int)
+type ReversedPair = ReverseTuple<Pair>         -- (str, i64)
 
 -- Rejection of Invalid Mapped Comprehensions:
--- type BadRecordKeys = { [[0, 1] as K]: int } -- Error [E0341]: mapped record comprehension requires '[]str' keys, found '[]int'
--- type BadTupleKeys = ( [["a", "b"] as I]: int ) -- Error [E0342]: mapped tuple comprehension requires '[]int' keys, found '[]str'
--- type Bad1Tuple = ( [[0] as I]: int )       -- Error [E0343]: mapped tuple comprehension produced single-element tuple (Ril strictly has no 1-tuples)
+-- type BadRecordKeys = { [[0, 1] as K]: i64 } -- Error [E0341]: mapped record comprehension requires '[]str' keys, found '[]i64'
+-- type BadTupleKeys = ( [["a", "b"] as I]: i64 ) -- Error [E0342]: mapped tuple comprehension requires '[]i64' keys, found '[]str'
+-- type Bad1Tuple = ( [[0] as I]: i64 )       -- Error [E0343]: mapped tuple comprehension produced single-element tuple (Ril strictly has no 1-tuples)
 ```
 
 ### Structural Type Pattern Matching
@@ -7341,7 +7363,7 @@ TypeRestPattern ::= ".." [ "let" ( PascalCase | "_" ) ]
 
 ```ril
 -- User and field_size have the preceding declarations.
-meta fn inspect_wide(token: Type) -> int {
+meta fn inspect_wide(token: Type) -> i64 {
     match token {
         <User> -> field_size(token, "id"),
         _ -> 0,
@@ -7352,7 +7374,7 @@ meta let _ = {
     match selected {
         <let U> -> {
             let snapshot = <U>
-            selected = <int>
+            selected = <i64>
             assert(snapshot == <User>)
             -- let stale = field_size(selected, "id") -- Error [E0301]: U does not retarget with selected
         },
@@ -7366,7 +7388,7 @@ halt type RecordOnly = \T -> match <T> {
     _ -> <never>,
 }
 type EmptyRecord = RecordOnly<{}>               -- {}
-type NotRecord = RecordOnly<int>                -- never
+type NotRecord = RecordOnly<i64>                -- never
 
 -- Deep Recursive Unwrapping of Container / Fallible Types:
 type UnwrapAll = \T -> match <T> {
@@ -7396,12 +7418,12 @@ halt type DeconstructMember = \T -> match <T> {
     _                                    -> <never>,
 }
 
-type Nested = Option<Result<int, str>>
-type Unwrapped = UnwrapAll<Nested>             -- int
+type Nested = Option<Result<i64, str>>
+type Unwrapped = UnwrapAll<Nested>             -- i64
 -- UnwrapAll uses the evaluation budget: recursive type graphs need not have a finite wrapper depth.
 type Elem = ElementOf<[]str>                   -- str
 type HeadTail = DeconstructTuple<(u8, i32, f64)>-- { head: u8, tail: (i32, f64) }
-type ExtractedTuple = DeconstructMember<(mut []int, str, bool)> -- { mode: MemberMode::Mut, head: []int, tail: (str, bool) }
+type ExtractedTuple = DeconstructMember<(mut []i64, str, bool)> -- { mode: MemberMode::Mut, head: []i64, tail: (str, bool) }
 
 -- Rejection of Non-Rigid Type Patterns (E0306):
 -- type BadPattern = \T -> match <T> {
@@ -7416,9 +7438,9 @@ Type functions accept the following parameter sorts and constraints:
 
 - **Bare Types (`\T` or `\T: Type`)**: Accepts static type expressions. Unannotated parameters default to sort `Type`.
 - **Const Values (`\param: ValueType`)**: Accepts compile-time known values (literals, `meta let`, statically foldable expressions), including `token: Type` / `token: Type<T>`. Passing runtime variables raises `E0814`. Token arguments are copied at argument evaluation and compared by target identity.
-- **Bounded Structural Types (`\T: { id: int, .. }`) and Static Keys (`\K: keyof T`)**: Structural bounds constrain types; `keyof` bounds constrain static key values. These are distinct sorts even though both use `PascalCase` binders.
+- **Bounded Structural Types (`\T: { id: i64, .. }`) and Static Keys (`\K: keyof T`)**: Structural bounds constrain types; `keyof` bounds constrain static key values. These are distinct sorts even though both use `PascalCase` binders.
 - **Higher-Kinded Constructors (`\M: Type -> Type`)**: Enforces constructor kind arity (`E0306`).
-- **Default Sort Arguments**: Type function parameters support default expressions conforming to their sort: `\T = u8`, `\cap: int = 1024`. Default arguments follow the left-to-right scoping and trailing-default rules ([Generic Parameters, Defaults, and Value Sorts](#generic-parameters-defaults-and-value-sorts)).
+- **Default Sort Arguments**: Type function parameters support default expressions conforming to their sort: `\T = u8`, `\cap: i64 = 1024`. Default arguments follow the left-to-right scoping and trailing-default rules ([Generic Parameters, Defaults, and Value Sorts](#generic-parameters-defaults-and-value-sorts)).
 
 | Parameter | Kind / value category |
 | :--- | :--- |
@@ -7428,10 +7450,10 @@ Type functions accept the following parameter sorts and constraints:
 | `\K: keyof T` | Static key value argument, not a type |
 
 ```ril
-type SchemaV1 = { id: int, name: str }
-type SchemaV2 = { id: int, name: str, email: str }
+type SchemaV1 = { id: i64, name: str }
+type SchemaV2 = { id: i64, name: str, email: str }
 
-type VersionedSchema = \version: int -> match version {
+type VersionedSchema = \version: i64 -> match version {
     1 -> <SchemaV1>,
     2 -> <SchemaV2>,
     _ -> <never>,
@@ -7443,8 +7465,8 @@ type PickField = \T: { .. }, K: keyof T -> <T.(K)>
 type UserName = PickField<SchemaV1, "name">    -- str
 
 type Wrapper = \M: Type -> Type, T -> <M<T>>
-type OptInt = Wrapper<Option, int>             -- Option<int>
--- type BadKind = Wrapper<Resolve, int>         -- Error [E0306]: Resolve receives a token value, not a type argument
+type OptInt = Wrapper<Option, i64>             -- Option<i64>
+-- type BadKind = Wrapper<Resolve, i64>         -- Error [E0306]: Resolve receives a token value, not a type argument
 ```
 
 ### Compile-Time Evaluation and Layout Queries
@@ -7460,22 +7482,22 @@ A run-time value-expression read of a module-level meta constant retains its nam
 
 ```ril
 meta let ANSWER = 42
-fn answer() &up(sub){ANSWER} -> int { ANSWER }
--- fn hidden_answer() -> int { ANSWER } -- Error [E0510]
+fn answer() &up(sub){ANSWER} -> i64 { ANSWER }
+-- fn hidden_answer() -> i64 { ANSWER } -- Error [E0510]
 meta let _ = assert(ANSWER == 42)
 ```
 
 ```ril
-meta fn align_to(offset: int, alignment: int) -> int {
+meta fn align_to(offset: i64, alignment: i64) -> i64 {
     assert(offset >= 0 && alignment > 0)
     assert((alignment & (alignment - 1)) == 0)
     (offset + alignment - 1) & ~(alignment - 1)
 }
-halt type BufferShape = \capacity: int ->
+halt type BufferShape = \capacity: i64 ->
     if capacity <= 64 {
-        <{ inline_data: []u8, len: int }>
+        <{ inline_data: []u8, len: i64 }>
     } else {
-        <{ heap_ptr: int, capacity: int, len: int }>
+        <{ heap_ptr: i64, capacity: i64, len: i64 }>
     }
 meta let CAPACITY = align_to(60, 16)
 type Buffer = BufferShape<CAPACITY>
@@ -7487,7 +7509,7 @@ Shape declarations promise no packed order, offsets, pointer size, or external b
 
 ```ril
 -- Language-defined static declaration exposed by the prelude:
--- meta fn byte_size(value: Type) -> int
+-- meta fn byte_size(value: Type) -> i64
 meta let BYTE_SIZE = byte_size(<u8>)
 meta let _ = assert(BYTE_SIZE == 1)
 -- let runtime_size = byte_size(<u8>) -- Error [E0810]: query requires static evaluation
@@ -7496,7 +7518,7 @@ meta let _ = assert(BYTE_SIZE == 1)
 | `byte_size` contract | Rule |
 | :--- | :--- |
 | Input | A `Type` token; query its represented target, not the token implementation |
-| Result | Nonnegative `int` size of the represented target's value/handle on the selected abstract target; not its reachable graph |
+| Result | Nonnegative `i64` size of the represented target's value/handle on the selected abstract target; not its reachable graph |
 | Layout domain | Static-only metatypes such as `Type` / `Type<User>`, and shapes requiring their materialization, have no ordinary run-time layout (`E0306`) |
 | Phase | Static only; finite; usable by meta/type computations and other required static evaluations |
 | Ordinary execution | `E0810`; a `meta let` result may be used as an ordinary constant |
@@ -7521,7 +7543,7 @@ let PI = 3.141592653589793              -- Private to file sub 'Geometry'
 pub let TAU = 6.283185307179586         -- Public immutable constant
 var call_count = 0                      -- Private mutable state
 -- pub var shared_count = 0             -- Error [E0906]: mutable static state cannot be 'pub'
--- pub let mut shared_buf: []int = []   -- Error [E0906]: mutable static handle cannot be 'pub'
+-- pub let mut shared_buf: []i64 = []   -- Error [E0906]: mutable static handle cannot be 'pub'
 -- use Super::{PI}                      -- Error [E0208]: file root has no enclosing 'Super' scope
 
 fn record_call() &up(sub){mut call_count} -> () { call_count += 1 }
@@ -7556,7 +7578,7 @@ let APP_VERSION = 1
 
 sub Metrics {                           -- OK: private inline sub inside executable root
     var requests = 0
-    pub fn bump() &up(sub){mut requests, Super::APP_VERSION} -> int {
+    pub fn bump() &up(sub){mut requests, Super::APP_VERSION} -> i64 {
         requests += Super::APP_VERSION  -- OK: 'Super::' reads root non-pub constant
         requests
     }
@@ -7626,7 +7648,7 @@ use math/geometry::Transform::{scale_tau as scale}
 pub use ril/math::*                     -- Glob re-export of public items
 
 sub Outer {
-    type Shared = int
+    type Shared = i64
     var count = 0
     pub sub Sibling { pub fn ping() -> Shared { 1 } }
     pub sub Child {
@@ -7650,13 +7672,13 @@ fn calculate() -> () {
 - Postfix `?` outside a callable is `E0205`, including module initializers.
 
 ```ril
-let MAX_CONNECTIONS: int = 100
+let MAX_CONNECTIONS: i64 = 100
 pub let DEFAULT_TITLE: str = "Ril Application"
-var active_workers: int = 0            -- OK: private mutable state with constant initializer
+var active_workers: i64 = 0            -- OK: private mutable state with constant initializer
 fn start_worker() &up(sub){mut active_workers} -> () { active_workers += 1 }
 
 -- Prohibited top-level visibility, side effects, and error propagation:
--- pub var exposed_workers: int = 0     -- Error [E0906]: mutable state cannot be declared 'pub'
+-- pub var exposed_workers: i64 = 0     -- Error [E0906]: mutable state cannot be declared 'pub'
 -- let current_time = Clock::now()      -- Error [E0202]: top-level declaration must be a pure constant expression
 -- let db = Database::connect("db.loc") -- Error [E0202]: top-level declaration cannot invoke runtime I/O or effects
 -- let top_parse = parse_id("10")?      -- Error [E0205]: postfix '?' operator used outside function or closure body
@@ -7695,9 +7717,9 @@ fn main() @Fiber -> Result<(), str> {
 ```ril
 -- Separate executable-root and sub entry violations:
 -- pub fn main() -> () {}                    -- Error [E0904]: entry must not be public
--- fn main(value: int) -> () {}              -- Error [E0904]: entry has a parameter
+-- fn main(value: i64) -> () {}              -- Error [E0904]: entry has a parameter
 -- fn main<T>() -> () {}                     -- Error [E0904]: entry has a generic parameter
--- fn main() -> int { 0 }                    -- Error [E0904]: unsupported entry result
+-- fn main() -> i64 { 0 }                    -- Error [E0904]: unsupported entry result
 -- sub Inner { fn main() -> () {} }          -- Error [E0904]: 'main' cannot be declared inside a 'sub'
 -- pub fn extra() -> () {}                   -- Error [E0905]: top-level 'pub' is prohibited in executable root
 ```
@@ -7723,8 +7745,37 @@ Environment reporting occurs outside main's invocation and adds no effect obliga
 
 ### Prelude Scope
 
+The prelude is an ambient lexical scope enclosing every compilation unit, including inline `sub`s.
+
+| Binding category | Access |
+| :--- | :--- |
+| Built-in functions below | Bare names: `len`, `clone`, `assert`, etc. |
+| Library modules below | Whole public namespace through `Module::member` |
+| Standard types / sorts | `Option<T>`, `Result<T, E>`, `Set<T>`, `MemberMode`; constructors follow ordinary resolution |
+| Language constructs | Primitive types, `Type`, `Type<T>`, `?T`, collection syntax, and system effect identities |
+| Explicit `use` | Ordinary module aliases or selected member bindings in the declaring scope |
+| Shadowing | Inner declarations may shadow prelude bindings; `Type` and `Super` retain their protected-name rules |
+
+| Prelude module | Source |
+| :--- | :--- |
+| `Array` | `ril/array` |
+| `Map` | `ril/map` |
+| `Set` | `ril/set` |
+| `String` | `ril/string` |
+| `Bytes` | `ril/bytes` |
+| `Numeric` | `ril/numeric` |
+| `Reflect` | `ril/reflect` |
+| `Math` | `ril/math` |
+| `Crypto` | `ril/crypto` |
+| `File` | `ril/file` |
+| `Io` | `ril/io` |
+| `Os` | `ril/os` |
+| `Concurrent` | `ril/concurrent` |
+| `Channel` | `ril/concurrent/channel` |
+| `Parallel` | `ril/parallel` |
+
 ```ril
-type UserId(int)
+type UserId(i64)
 assert(inner(UserId(1001)) == 1001)
 let original = [1, 2, 3]
 let mut detached = clone(original)
@@ -7737,11 +7788,10 @@ let revised = .{ theme: "dark" } |> derive \mut draft -> {
 assert(revised.theme == "light" && len(snapshot) == 4)
 let count = len([1, 2, 3])
 println("Count: {count}")
+assert(String::scalars("Ril") == [82u32, 105u32, 108u32])
+assert(Numeric::convert<i64>(255u8) == Some(255))
+-- let missing = scalars("Ril")        -- Error [E0204]: library members use their module name
 ```
-
-The prelude is an ambient lexical scope enclosing every Ril compilation unit. Its declarations are accessible without explicit import statements. Local declarations may shadow ordinary prelude names; the intrinsic type family `Type` cannot be shadowed (`E0203`). Shadowing does not alter built-in syntax, compiler intrinsics, or declaration identities required by language-defined operators.
-
-Primitive type spellings (`int`, `str`, `bool`, etc.), including the intrinsic `int` alias of `i64`, static metatypes (`Type`, `Type<T>`), `?T`, collection type syntax (`[]T`, `[K: V]`), and built-in system effect identities (`Fiber`, `Concurrent`, `Async`, `Div`) are language constructs, not imported prelude declarations. The language-defined numeric and text/byte operation contracts belong to their explicitly imported standard-library modules, not additional ambient prelude names.
 
 #### Built-in Foundational Operations
 
@@ -7769,11 +7819,11 @@ The signatures below summarize overloads; their eligibility and access modes fol
 
 | Operation | Signature | Effects | Phase | Complexity | Contract |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| `len` | `len(value)` / `len(ref value) -> int` | None | Dual-phase | $O(1)$ / $O(n)$ text | Count of elements, entries, bytes, or Unicode scalars |
+| `len` | `len(value)` / `len(ref value) -> i64` | None | Dual-phase | $O(1)$ / $O(n)$ text | Count of elements, entries, bytes, or Unicode scalars |
 | `inner` | `inner(wrapper) -> T` / `inner(ref wrapper) -> ref(wrapper) T` | None | Run-time | $O(1)$ | Preserve immutable/observed payload authority; value payloads use a plain result; unit nominal yields `()` |
 | `clone` | `clone(value)` / `clone(ref value)` | None | Run-time | $O(\text{graph})$ | Ordinary shared-object result `new T`, value-type result `T`; preserves graph aliases, cycles, and schemas. Resource cloning follows its separate contract |
 | `derive` | `derive(base, recipe) -> T` | Forwards recipe | Run-time | $O(\text{visited + copied})$ | Functional update on an immutable shared-object root via confined mutable draft; stored-key graphs remain immutable; collection length may change, declared constituents may not; preserving aliases can require whole-graph traversal |
-| `byte_size` | `meta fn byte_size(value: Type) -> int` | None | Static only | $O(1)$ | Size of the represented target's value/handle; static-only targets have no run-time layout |
+| `byte_size` | `meta fn byte_size(value: Type) -> i64` | None | Static only | $O(1)$ | Size of the represented target's value/handle; static-only targets have no run-time layout |
 | `type_name` | `meta fn type_name(value: Type) -> str` | None | Static only | $O(\text{len})$ | Diagnostic description of the token's target, including static metatypes; spelling does not determine type identity |
 | `panic` | `panic(message: str) -> never` | None | Dual-phase | Finite | Initiates panic unwinding at run time; stops static evaluation with `E0831` |
 | `assert` | `assert(condition: bool, message: str = "assertion failed") -> ()` | None | Dual-phase | $O(1)$ | Panics on false condition; static failure is `E0830` |
@@ -7790,11 +7840,11 @@ The signatures below summarize overloads; their eligibility and access modes fol
   - For arrays (`[]T`), returns the element count in $O(1)$ time.
   - For maps (`[K: V]`), returns the number of key-value pairs in $O(1)$ time.
   - For sets (`Set<T>`), returns the number of unique elements in $O(1)$ time.
-  - All such counts, and a string's UTF-8 byte extent, obey the [collection extent limit](#collection-extents-and-index-types). `len` always returns the exact count; it does not wrap, clamp, or truncate an oversized value.
+  - Counts and string UTF-8 byte extents obey the [collection extent limit](#collection-extents-and-index-types); `len` returns the exact count.
 - **Unwrapping Invariant (`inner`)**:
   - Unwraps nominal type wrappers to their underlying declared representation ([Nominal Type Wrappers](#nominal-type-wrappers)).
   - `inner(ref wrapper)` preserves observed payload provenance; ordinary `inner(wrapper)` receives immutable data.
-  - Single-payload nominal wrapper `type UserId(int)` unwraps to its payload (`int`). Unit nominal wrapper `type Marker` unwraps to `()`.
+  - Single-payload nominal wrapper `type UserId(i64)` unwraps to its payload (`i64`). Unit nominal wrapper `type Marker` unwraps to `()`.
   - The defining scope's opaque representation boundary remains enforced; `inner` does not unwrap opaque types or expose an inaccessible representation.
 - **Graph Isolation Invariants (`clone`)**:
   - `clone` creates an independent, isolated copy of an ordinary reachable graph, severing writable storage from the source while preserving internal aliases, shared references, and cyclic structures ([Deep Immutability](#deep-immutability)).
@@ -7810,7 +7860,7 @@ The signatures below summarize overloads; their eligibility and access modes fol
   - Statically rejects escaping draft references (`E0607`).
   - Forwards recipe algebraic effects and external state obligations; discharges draft-local writes.
 - **Static Layout Query (`byte_size`)**:
-  - `meta fn byte_size(value: Type) -> int` queries the represented target's nonnegative value/handle size ([Compile-Time Evaluation and Layout Queries](#compile-time-evaluation-and-layout-queries)). Static-only metatypes have no ordinary layout (`E0306`); widening does not change the target being queried.
+  - `meta fn byte_size(value: Type) -> i64` queries the represented target's nonnegative value/handle size ([Compile-Time Evaluation and Layout Queries](#compile-time-evaluation-and-layout-queries)). Static-only metatypes have no ordinary layout (`E0306`); widening does not change the target being queried.
   - Static-only: permitted during compile-time static evaluation (`meta let`, type functions); calling `byte_size` in runtime code is `E0810`.
   - Grants no packed layout, field offset, or external ABI alignment guarantees.
 - **Defect Initiation and Assertions (`panic`, `assert`)**:
@@ -7831,11 +7881,11 @@ The signatures below summarize overloads; their eligibility and access modes fol
 ### Mandatory Inspection of Fallible Results
 
 ```ril
-fn save_profile(user_id: int) -> Result<(), str> {
+fn save_profile(user_id: i64) -> Result<(), str> {
     if user_id <= 0 { Err("invalid id") } else { Ok() }
 }
 
-fn process_request(id: int) @Fiber -> Result<(), str> {
+fn process_request(id: i64) @Fiber -> Result<(), str> {
     -- Prohibited: discarding fallible Result without inspection
     -- save_profile(id)                 -- Error [E0720]: unused fallible Result must be handled
 
@@ -7856,7 +7906,7 @@ fn process_request(id: int) @Fiber -> Result<(), str> {
 ```
 
 ```ril
-let result: Result<int, str> = Ok(1)
+let result: Result<i64, str> = Ok(1)
 let alias = result
 assert(alias is Ok(_))                 -- OK: discharges the same result's obligation
 ```
