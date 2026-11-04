@@ -46,43 +46,74 @@ theorem original_member_write_bound (h : authorized evidence = true)
     simp only [originalPolicy, ht, hr, Bool.and_eq_true] at hp
     exact ⟨members, access, parent, replaceable, object, rfl, hp.2⟩
 
-theorem checkAtom_certified (h : checkAtom atom w = .ok next) : certified next = true := by
+structure WorldInvariant (world : World) : Prop where
+  tokenIds : (world.tokens.map Token.id).Nodup
+  tokenBound : ∀ token ∈ world.tokens, token.id < world.nextToken
+  retainedNotTemporary : ∀ token ∈ world.tokens, token.temporary = true → token.retained = false
+  lifetimeDependencies : ∀ token ∈ world.tokens, ∀ id ∈ token.dependencies,
+    id < token.id ∧ (lookupToken world id).isSome = true
+  dependenciesKnown : ∀ permission ∈ world.permissions, ∀ id ∈ permission.dependencies,
+    (lookupToken world id).isSome = true
+  dependenciesClosed : ∀ permission ∈ world.permissions, ∀ id ∈ permission.dependencies,
+    ∀ token, lookupToken world id = some token → ∀ parent ∈ token.dependencies, parent ∈ permission.dependencies
+  loansKnown : ∀ loan ∈ world.loans, (lookupToken world loan.token).isSome = true
+
+theorem ledger_facts (h : ledgerValid w = true) : WorldInvariant w := by
+  simp only [ledgerValid, Bool.and_eq_true, decide_eq_true_eq] at h
+  refine ⟨h.1.1.1, ?_, ?_, ?_, ?_, ?_, List.all_eq_true.mp h.2⟩
+  · intro token ht
+    have checked := List.all_eq_true.mp h.1.1.2 token ht
+    simp only [Bool.and_eq_true, decide_eq_true_eq] at checked
+    exact checked.1.1
+  · intro token ht temporary
+    have flags := List.all_eq_true.mp h.1.1.2 token ht
+    simp only [Bool.and_eq_true] at flags
+    simpa [temporary] using flags.1.2
+  · intro token ht id hi
+    have checked := List.all_eq_true.mp h.1.1.2 token ht
+    simp only [Bool.and_eq_true] at checked
+    simpa only [Bool.and_eq_true, decide_eq_true_eq] using List.all_eq_true.mp checked.2 id hi
+  · intro permission hp id hi
+    have checked := List.all_eq_true.mp (List.all_eq_true.mp h.1.2 permission hp) id hi
+    cases found : lookupToken w id with
+    | none => simp [found] at checked
+    | some token => rfl
+  · intro permission hp id hi token found parent hc
+    have checked := List.all_eq_true.mp (List.all_eq_true.mp h.1.2 permission hp) id hi
+    simp only [found, Option.any_some] at checked
+    exact of_decide_eq_true (List.all_eq_true.mp checked parent hc)
+
+structure StepFacts (before : World) (atom : Atom) (after : World) : Prop where
+  executed : transfer before atom = some after
+  historical : certified after = true
+  erased : rawStep (eraseAtom atom) before.raw = some after.raw
+  grants : after.grants = expectedGrants before atom
+  beforeLedger : WorldInvariant before
+  afterLedger : WorldInvariant after
+
+theorem checked_atom_facts (h : checkAtom atom w = .ok next) : StepFacts w atom next := by
   unfold checkAtom at h
   split at h
   · contradiction
-  · split at h
-    · rename_i hg
+  · rename_i executed
+    split at h
+    · rename_i checked
       cases h
-      have hh : (certified next = true ∧
-          decide (rawStep (eraseAtom atom) w.raw = some next.raw) = true) ∧
-          decide (next.grants = expectedGrants w atom) = true := by
-        simpa only [Bool.and_eq_true] using hg
-      exact hh.1.1
+      have facts : ((certified next = true ∧ rawStep (eraseAtom atom) w.raw = some next.raw) ∧
+          next.grants = expectedGrants w atom) ∧ (ledgerValid w = true ∧ ledgerValid next = true) := by
+        simpa only [Bool.and_eq_true, decide_eq_true_eq] using checked
+      exact ⟨executed, facts.1.1.1, facts.1.1.2, facts.1.2,
+        ledger_facts facts.2.1, ledger_facts facts.2.2⟩
     · contradiction
+
+theorem checkAtom_certified (h : checkAtom atom w = .ok next) : certified next = true :=
+  (checked_atom_facts h).historical
 
 theorem checkAtom_erases (h : checkAtom atom w = .ok next) :
-    rawStep (eraseAtom atom) w.raw = some next.raw := by
-  unfold checkAtom at h
-  split at h
-  · contradiction
-  · split at h
-    · rename_i hg
-      cases h
-      have hh : (certified next = true ∧ rawStep (eraseAtom atom) w.raw = some next.raw) ∧
-          next.grants = expectedGrants w atom := by
-        simpa only [Bool.and_eq_true, decide_eq_true_eq] using hg
-      exact hh.1.2
-    · contradiction
+    rawStep (eraseAtom atom) w.raw = some next.raw := (checked_atom_facts h).erased
 
-theorem checkAtom_transfer (h : checkAtom atom w = .ok next) : transfer w atom = some next := by
-  unfold checkAtom at h
-  split at h
-  · contradiction
-  · rename_i ht
-    split at h
-    · cases h
-      exact ht
-    · contradiction
+theorem checkAtom_transfer (h : checkAtom atom w = .ok next) : transfer w atom = some next :=
+  (checked_atom_facts h).executed
 
 theorem checkMany_each (f : World → Except Error (List World))
     (h : checkMany f inputs = .ok outputs) (hm : input ∈ inputs) :

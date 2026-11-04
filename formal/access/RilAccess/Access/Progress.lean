@@ -153,18 +153,7 @@ theorem every_prefix_authorized (h : check program = .ok analysis)
   exact access_and_provenance h hr hevent
 
 theorem checkAtom_grants (h : checkAtom operation w = .ok next) :
-    next.grants = expectedGrants w operation := by
-  unfold checkAtom at h
-  split at h
-  · contradiction
-  · split at h
-    · rename_i hg
-      cases h
-      have hh : (certified next = true ∧ rawStep (eraseAtom operation) w.raw = some next.raw) ∧
-          next.grants = expectedGrants w operation := by
-        simpa only [Bool.and_eq_true, decide_eq_true_eq] using hg
-      exact hh.2
-    · contradiction
+    next.grants = expectedGrants w operation := (checked_atom_facts h).grants
 
 theorem atomic_grant_origin (h : checkAtom operation w = .ok next) (hg : grant ∈ next.grants) :
     grant ∈ w.grants ∨ (grant.source, grant.declared, grant.schema) ∈ atomDeclarations operation := by

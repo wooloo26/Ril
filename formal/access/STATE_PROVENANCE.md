@@ -11,11 +11,12 @@ about these connections. A finite constraint solver computes grounded provenance
 facts, and a simulation theorem proves source coverage for every finite
 execution prefix of a resolved control-flow language. Separate verified
 interfaces address authority in a finite access/call calculus, cyclic graph
-reachability, frozen call-entry origins, summary substitution, local discharge
-and affine resumption. The central design distinction is between an object's
-origin, the authority of a path to it, and the role of an origin in a summary.
+reachability, frozen call-entry origins, summary substitution, confined functional
+graph updates, local discharge and affine resumption. The central distinction is
+between an object's origin, the authority of a path to it, and the role of an
+origin in a summary.
 Conflating these notions permits false freshness or false locality conclusions.
-The artifact passes 176 positive and adversarial checks and a transitive axiom
+The artifact passes 255 positive and adversarial checks and a transitive axiom
 audit. Its results support conservative source coverage within the stated
 interfaces; they do not establish a complete Ril compiler or universally exact
 source prediction.
@@ -55,8 +56,10 @@ The scope matters. There is no source-language compiler in the artifact. The
 provenance language admits cyclic heaps and unbounded control-flow execution.
 The integrated authority checker instead handles a finite access/call language
 with fixed allocation trees. A graph oracle and boundary kernels establish
-further results under their own interfaces. These results are collected in one
-certificate, but their conjunction is not a soundness theorem for an unrestricted
+further results under their own interfaces. A draft kernel additionally permits
+variable-shape collection updates while preserving immutable input snapshots.
+These results are collected in one certificate, but their conjunction is not a
+soundness theorem for an unrestricted
 language combining all those features.
 
 We begin with a small example that explains why this separation is necessary.
@@ -223,6 +226,28 @@ The theorem is relative to the resolved concrete semantics. If lowering omits
 a cleanup edge or a captured environment operation, it has changed the program
 whose sources are being covered. No property of the solver repairs that omission.
 
+### 3.4. Identity is not an explanation label
+
+A graph can contain two provenance explanations for one object. Traversing it
+by equality of the entire origin tuple would incorrectly disconnect those
+explanations. For example, an edge from object 1 with label A to object 2 must
+also be visible through an argument naming object 1 with label B. Otherwise the
+argument's region could falsely appear separate from object 2.
+
+Physical graph closure therefore uses object IDs. Normalization retains every
+known source label for a reached ID, and verifies agreement of its activation,
+task and scope metadata. Conflicting ownership is diagnosed rather than selected
+arbitrarily. The provenance CFG additionally proves a birth/identity invariant:
+old origins are preserved and each newly allocated ID is above existing IDs.
+Represented argument roots from such a trace can consequently be frozen without
+assuming a consistency flag from the caller.
+
+This is an internal representation result. Mechanism and context labels in the
+CFG are not proofs of actual dynamic activation freshness or a handler/call
+dispatcher. Boundary metadata must still correspond to the real execution.
+Tree-shaped permissions also retain their full region key, allocation plus
+coordinate, rather than flattening every subobject to its root allocation ID.
+
 ## 4. Authority requires more than a source set
 
 Ril separates slot replacement from access through a slot. The
@@ -306,12 +331,14 @@ argument roots, and let $H_0$ be the heap at callee entry, after argument and
 default preparation. The entry relation is
 
 $$
-E_x=\{o\mid \exists r\in R_x,\;\operatorname{Reach}_{H_0}(r,o)\}.
+E_x=\{i\mid \exists r\in R_x,\;\operatorname{PhysicalReach}_{H_0}(r.\mathrm{object},i)\}.
 $$
 
-**Theorem 4 — Exact entry capture.** The computed snapshot contains precisely
-the origins in $E_x$. Every parameter selection accepted by the entry-based
-summary checker is reachable from a saved argument root in $H_0$.
+**Theorem 4 — Exact physical entry capture.** The validated snapshot contains
+precisely the object IDs in $E_x$ and retains every recorded origin explanation
+for them. Every accepted formal selection has a recorded source and a physical
+path from a saved argument root in $H_0$. All formals share one frozen heap and
+preparation boundary; arbitrary inferred source lists are not accepted instead.
 
 Both the producer and the membership check matter. A membership theorem for a
 caller-supplied list alone would not show that the list represents an entry
@@ -362,7 +389,97 @@ Substitution success does not prove that an arbitrary supplied template describe
 a function body. The finite call checker derives body facts by checked inlining;
 general symbolic summary generation remains outside that checker.
 
-## 6. Handling effects without hiding state
+## 6. Functional updates with variable collection shape
+
+A functional update must preserve the immutable input even when its recipe
+changes a collection's length. The specification distinguishes this from a
+change to the data type: array/map/set contents may change shape, whereas tuple
+arity, record fields and a selected variant's declared shape remain fixed.
+The [derive rules](../../doc/SPEC.md#functional-updates-via-derive) also require
+one draft counterpart per source object, including inserted immutable objects.
+
+The generic draft kernel represents an ordinary object by its origin, a storage
+schema and an ordered list of constituent values. A fixed schema records member
+types and modes; a variable schema records the homogeneous entry type and mode.
+A canonical schema registry prevents a type tag from being reused with a
+different declaration. The checker validates normalized immutable reception modes
+and source-graph consistency. Mere absence of a writer does not make a
+`ref` reception immutable.
+
+Inputs are a finite closed catalog of immutable source objects, including
+admitted insertion candidates, an old-object reservation set, schemas, received
+modes and outside authority/environment metadata. Those metadata must describe
+the actual checked boundary. The reference policy makes a complete logical copy
+of the catalog. With $B$ above all reserved old identities, it assigns
+
+$$
+\phi(i)=B+i.
+$$
+
+Every copied reference uses the same injective function. Thus two fields pointing
+to one source array also point to one draft array. Rewriting that array's entries
+changes what both draft aliases observe; the original array retains its complete
+contents, order and length. Inserting another admitted immutable object uses its
+existing counterpart. Recipe-local allocation uses a separate fresh range.
+
+A single typed contents-rewrite operation expresses collection insertion,
+deletion and reordering. It changes a variable-length payload while preserving
+its storage schema. Fixed storage checks the exact number of members, so the same
+operation cannot enlarge a tuple or add a record field. Declared member modes
+remain unchanged: the extra writing privilege belongs to the active private
+draft phase. It does not modify ordinary access attenuation.
+
+**Theorem 6 — Checked functional graph updates.** A finite recipe accepted by
+the draft checker has a matching execution under unchecked graph operations.
+Throughout its checked execution, every input catalog object retains its
+original contents and metadata, and every materialized source counterpart
+retains its identity and declared schema. A normally published result has the
+input root's schema and immutable access. Publication ends the draft phase;
+abort publishes no result and preserves prior external state/effect events.
+
+*Proof idea.* Draft writes and local allocations address only identities above
+the old-object boundary. A memory frame theorem therefore preserves the actual
+old cells, rather than merely retaining a snapshot field. Rewrites keep each
+cell's origin and schema. Type preservation connects newly assigned references
+to existing cells of the declared type. Path transport proves that the initial
+copy preserves finite paths, aliases and cycles; later edge changes are exactly
+the requested rewrites. The counterpart identity is independent of the path or
+current collection index.
+
+Only terminal publication exposes a result handle. Checked transitions cannot
+use any old draft alias after the shared phase closes. External observations carry events, effects and a footprint of roots,
+environments and escaping references. A known footprint must exclude the private
+region, including contained/captured references behind an old wrapper object.
+An unresolved footprint remains an obligation and cannot be treated as empty.
+Under the named completeness/conformance premise, external observations cannot
+expose a draft identity or write, transfer or retain a writer to an input object. Their declared events remain in the log on both normal
+completion and abort. Confined draft writes can be discharged; outside captured
+environments continue to block unjustified discharge.
+
+External instructions record observations of separately checked operations.
+They do not execute or authorize an external body; its access, alias and lifetime
+conditions still belong to the caller and implementation conformance boundary.
+
+Operation-derived finite Horn rules cover the kernel's recorded state events
+at every checked finite prefix. A separate invariant bounds the sources of all
+heap cells and published outputs by the catalog sources and the fresh producer.
+A named world invariant is proved from initialization and local step deltas:
+input cells are framed, types remain valid, the old/private heap cut stays
+sealed, and accepted boundary footprints are known. Every prefix of an accepted
+recipe's independent unchecked execution inherits this invariant and source
+coverage. Agreement only at the final state would be insufficient.
+
+This kernel is a permitted reference policy for resolved ordinary shared-object
+recipes. It copies the whole admitted catalog for changed results and can reuse
+the source root for a no-op. More selective sharing or lazy materialization needs
+a correspondence argument preserving these invariants. Arrays, maps and sets
+instantiate ordered homogeneous entry storage; key uniqueness, hashing,
+iterator validity and specific library operators remain their own contracts.
+The kernel neither derives general symbolic recipes from source nor replaces
+the caller's checks of deep immutability and lifetimes.
+
+
+## 7. Handling effects without hiding state
 
 Algebraic handlers interpret operations and their continuations, as developed
 in [Plotkin and Pretnar's treatment](https://lmcs.episciences.org/705).
@@ -384,14 +501,14 @@ obligations and named reads, respectively. The boundary kernel combines the
 body, handler and cleanup components before applying effect elimination.
 Eliminating an effect changes $\mathcal E$; it preserves every state component.
 
-### 6.1. When local state may be discharged
+### 7.1. When local state may be discharged
 
 Local discharge needs a footprint of authority roots, environments and escapes.
 The footprint must include handler and cleanup environments, even when they
 are absent from the body's own roots. Checking only the body can incorrectly
 classify state as confined.
 
-**Theorem 6 — Sound discharge under coverage.** If an abstract footprint covers
+**Theorem 7 — Sound discharge under coverage.** If an abstract footprint covers
 every root, environment and escape in a concrete footprint, an event removed by
 abstract discharge is also removable under the concrete footprint.
 
@@ -405,18 +522,30 @@ relations cannot establish it. For the finite access calculus, live bindings,
 loans and recorded publications are enumerated from the checked world.
 For other interfaces, footprint coverage must be established separately.
 
-### 6.2. Affine resumption through shared identity
+### 7.2. Affine resumption through shared identity
 
 A copyable `used` flag is insufficient to establish affine resumption.
 Two handles might each retain a copy that still says “unused.”
 The resumption kernel therefore gives aliases one identity and stores
 consumption in a shared ledger.
 
-Successful resumption consumes that identity before continuation execution.
-It removes the operation's temporary authority, preserves independent authority,
-and checks the current arm, callable and task context.
+Successful resumption consumes that identity before continuation execution and
+checks the arm, callable, task and operation scope. Its authority state is the
+actual token/loan ledger used by the access checker. Mutable temporary roots
+are computed from that ledger; readonly observations and retained parameters
+are not revoked simply because they belong to the same scope.
 
-**Theorem 7 — No second resumption through an alias.** After one successful
+Lifetime dependencies are distinct from token origin ancestry. The checker
+validates dependency closure and token identity/freshness. Resumption ends the
+mutable roots and releases loans whose views depend on them. Derived views
+become unusable through their ended dependencies, while independent retained
+rights and outer authority components remain intact. A token's active bit alone
+is not a usable permission. Current access resolves the current ledger; an
+unchanged historical evidence snapshot proves only that the earlier access was
+legal. Actual handoff likewise uses these token transitions, not a separate
+flag-based authority model.
+
+**Theorem 8 — No second resumption through an alias.** After one successful
 resumption, the same identity cannot resume again after any sequence of the
 kernel's resumption and context-switch transitions.
 
@@ -430,7 +559,7 @@ evaluation and cleanup must contribute their own concrete steps and summaries.
 The theorem describes the shared-record kernel; source handlers must be lowered
 in a way that preserves that record and its authority dependencies.
 
-## 7. Why exactness has a different limit
+## 8. Why exactness has a different limit
 
 The reference provenance analysis deliberately merges root histories and ignores
 field coordinates in abstract edges. Consequently, overwriting a root can leave
@@ -461,13 +590,14 @@ encoding of arbitrary machines into surface Ril or its resolved CFG. Thus the
 general impossibility conclusion is conditional on representability; it is not
 an unconditional universality claim about the implemented analyzer.
 
-## 8. Validation and evidence
+## 9. Validation and evidence
 
-The reported results describe artifact revision `3132c64`, using Lean 4.33.0
-and its bundled libraries. At that revision, a clean verification run passed
-176 positive and adversarial fixtures. The audit examined 3,705 model declarations,
-including 1,355 theorems. These counts include generated declarations and are
-not counts of independent scientific results.
+The reported results cover the core and generic draft extension distributed with
+this paper, using Lean 4.33.0 and its bundled libraries. Verification passed
+255 positive and adversarial fixtures, including new identity, lifetime and
+boundary counterexamples. Declaration/theorem counts are diagnostic output,
+not the completion criterion: ownership of compiled modules and the entire
+source import closure determine what is audited.
 
 Representative cases exercise complementary sides of the checks:
 
@@ -479,8 +609,18 @@ Representative cases exercise complementary sides of the checks:
 | Unknown selections that may overlap | Separation rejected |
 | Insertion after call entry | Current reachability retained; entry-origin claim rejected |
 | Captured allocation or parameter origin | Original identity preserved |
+| A collection grows, shrinks or reorders its entries | Accepted; base contents and aliased counterparts preserved |
+| A tuple gains a member, or a schema/type tag is forged | Rejected |
+| An immutable insertion is later edited | Its draft counterpart changes; the source object stays unchanged |
+| A readonly reception without immutable admission | Rejected |
+| Draft capture/retention or an external write to an input | Rejected |
 | Local mutation with an outside handler environment | Discharge blocked |
 | A second resume through an alias | Rejected; independent authority remains usable |
+| One physical parent with two source labels | Child path retained; false separation rejected |
+| Conflicting owner metadata for one ID | Entry validation rejects the contradiction |
+| A dependent observer after resume | Current view fails; old historical evidence remains historical |
+| An old event wrapper with a private captured reference in its footprint | Rejected |
+| Unknown external footprint | Remains unresolved; cannot justify discharge |
 
 The acceptance cases are important: a checker that rejects every program could
 satisfy a safety implication without providing a useful analysis. The fixtures,
@@ -489,17 +629,21 @@ theorem supply distinct evidence against that failure mode. Fixtures supplement
 the universally quantified proofs; they cannot replace them or establish
 unmeasured performance or full-language coverage.
 
-The axiom audit examines every imported declaration in the model's `RilAccess`
-namespace and its transitive axiom dependencies, including generated helpers
-and fixture proofs. The permitted union is exactly `propext`, `Classical.choice`
+The axiom audit examines declarations owned by project modules, including those
+in other namespaces, private/generated helpers, fixture proofs and validation
+entrypoints. It also verifies that every model source module is imported into
+the audit environment. Namespace spelling cannot hide a project declaration. The permitted union is exactly `propext`, `Classical.choice`
 and `Quot.sound`. No custom unproved axiom, unfinished proof or unsafe project
-declaration is accepted. Four negative probes verify rejection of an added
-axiom, `sorryAx`, an unsafe definition and native proof evaluation.
+declaration is accepted. Negative probes exercise added and inherited axioms, `sorryAx`, unsafe code,
+native proofs, cross-namespace declarations, unaudited source modules and
+`implemented_by`/`extern` replacement of logical definitions. Standard-library
+implementations remain outside this project-owned declaration scan; transitive
+axiom dependencies are still checked.
 This follows the distinction between kernel-checked proofs and proofs that
 introduce additional compiler-trust axioms described in the
 [Lean reference](https://lean-lang.org/doc/reference/4.33.0/Axioms/).
 
-## 9. Interpretation and remaining obligations
+## 10. Interpretation and remaining obligations
 
 The results support conservative coverage within the stated models. Applying
 them to Ril requires a correspondence argument, not just a collection of
@@ -520,8 +664,11 @@ identities, and task/resource implementations must obey their stated access and
 lifetime contracts. The artifact does not verify a scheduler, resource library
 or foreign implementation.
 
-Ordinary aggregates, closures, `via`/`infer`, clone/derive and storage APIs
-must be audited as instances of these obligations. This avoids replacing a
+Ordinary aggregates, closures, `via`/`infer`, clone and concrete storage APIs
+must be audited as instances of these obligations. Derive now also has the
+generic checked graph kernel of Section 6; source recipes, optimized copying
+strategies and collection-specific operators still require correspondence to
+its stated invariants and premises. This avoids replacing a
 missing frontend proof with a miniature model that merely carries the same
 feature name. A complete compiler would additionally need verified symbolic
 summary generation and a proof that its combined representations preserve the
@@ -534,7 +681,21 @@ SPEC. The explicit reference roles and shared identity ledger enforce those
 existing distinctions. The resulting SPEC verdict is limited to these audited
 mathematical interfaces.
 
-## 10. Conclusion
+### 10.1. Reading the certificate
+
+| Evidence class | Meaning |
+| --- | --- |
+| Mechanical result | The stated checker/semantics and its validated representation invariants imply the theorem; no proof placeholders or project axioms are used |
+| Contract premise | Actual reserved identities, owner epochs, reception modes, authority roots, summaries and complete external footprints must describe the real boundary; `ExternalConforms` and `OperationConforms` name the relevant obligations |
+| Remaining correspondence | Source lowering, symbolic summary generation, concrete collection algorithms, optimized sharing and external implementations still need their own arguments |
+
+Structural checks establish consistency of supplied metadata, not truthfulness of
+an opaque body. They cannot replace a body-summary proof. Conversely, uncertainty
+cannot become a favorable permission or a missing environment. The mathematical
+interfaces make that distinction explicit rather than hiding it in a large
+aggregate of unrelated helper propositions.
+
+## 11. Conclusion
 
 Complete state-source accounting is feasible as a conservative guarantee over a
 faithfully represented program. The difficult boundaries are historical and
@@ -557,17 +718,22 @@ scope and remaining premises.
 | Theorem 2 | `provenance_coverage`, `program_point_coverage` | [Concrete semantics](RilAccess/Provenance/Semantics.lean) |
 | Theorem 3 | `Calls.every_prefix_authorized`, `Calls.source_progress`; supporting declaration/path lemmas | [Call proofs](RilAccess/Call/Proofs.lean), [access progress](RilAccess/Access/Progress.lean), [access proofs](RilAccess/Access/Proofs.lean) |
 | Graph separation | `CoreEntry.separated_paths_cannot_alias`, `GraphAuthority.analyze_exact` | [Entry graph](RilAccess/Call/Entry.lean), [graph oracle](RilAccess/Graph/Authority.lean) |
-| Theorem 4 | `entry_capture_exact`, `checked_at_entry_parameter_is_reachable` | [Entry capture](RilAccess/Call/Entry.lean), [summary checker](RilAccess/Call/Summary.lean) |
+| Theorem 4 | `Identity.objects_exact`, `CoreEntry.snapshot_objects`, `snapshot_sources_complete`, `checked_at_entry_parameter_is_reachable` | [Entry capture](RilAccess/Call/Entry.lean), [summary checker](RilAccess/Call/Summary.lean) |
 | Theorem 5 | `every_concrete_identity_survives`, `checked_distinct_fresh_objects`, `checked_fresh_origin_excludes_frozen_entry`, `checked_existing_origin_is_not_callee_local` | [Summary substitution](RilAccess/Call/Summary.lean) |
-| Theorem 6 and effect conservation | `static_discharge_safe`, `handled_state_components`, `external_environment_blocks_discharge` | [Contracts](RilAccess/Contracts.lean), [effect boundary](RilAccess/Effects/Boundary.lean) |
-| Theorem 7 | `aliases_cannot_resume_twice`, `operation_authority_ends`, `resume_keeps_committed_state` | [Resumption kernel](RilAccess/Effects/Resumption.lean) |
+| Theorem 6 | `checked_recipe_prefixes`, `trace_invariant`, `old_root_cannot_reach_draft`, `base_snapshot_preserved`, `source_counterpart_persists`, `copy_preserves_paths`, `trace_well_typed`, `published_schema_preserved`, `publication_ends_privilege` | [Draft execution/checking](RilAccess/Draft/Core.lean), [graph/type proofs](RilAccess/Draft/Proofs.lean), [boundary proofs](RilAccess/Draft/Boundary.lean) |
+| Draft admission, source coverage and exits | `admitted_mode_is_immutable`, `admitted_inputs_have_no_writer`, `recipe_source_coverage`, `trace_sources`, `conforming_external_cannot_escape`, `external_state_survives`, `abort_preserves_state` | [Draft proofs](RilAccess/Draft/Proofs.lean), [state/publication](RilAccess/Draft/Boundary.lean), [Draft cases](RilAccess/Examples/Draft.lean) |
+| Theorem 7 and effect conservation | `static_discharge_safe`, `handled_state_components`, `external_environment_blocks_discharge` | [Contracts](RilAccess/Contracts.lean), [effect boundary](RilAccess/Effects/Boundary.lean) |
+| Theorem 8 | `aliases_cannot_resume_twice`, `derived_access_ends`, `dependent_operation_loan`, `retained_authority_survives`, `resume_keeps_committed_state` | [Resumption kernel](RilAccess/Effects/Resumption.lean) |
 | Exactness limit | `source_reachability_iff_halting`, `no_computable_exact_decider` | [Limits](RilAccess/Provenance/Limits.lean) |
 | Source-language transfer | `complete_sources_given_lowering`, with `Lowering` as premise | [Simulation](RilAccess/Provenance/Simulation.lean) |
 
 The aggregate certificate is
 [`CoreVerification.verified`](RilAccess/Verification.lean).
-It packages these kinds of results with their distinct quantifiers and premises;
-it does not compose the interfaces into an unrestricted execution theorem.
+It groups principal solver, provenance, access, entry, effect and draft results.
+Auxiliary consequences remain with their owning modules. Core imports exclude
+examples; the separate example aggregation and executable entrypoints are all
+included in the audit. The grouped certificate preserves distinct quantifiers
+and premises rather than composing them into an unrestricted execution theorem.
 
 ## Appendix B. Reproduction
 
@@ -578,7 +744,7 @@ uv run --locked python check.py
 ~~~
 
 The command builds the library and executables, runs the examples, replays the
-declaration audit, and executes all four rejection probes. Python is selected by
+declaration audit, and executes the audit rejection probes. Python is selected by
 the local [`.python-version`](.python-version); uv creates this project's own
 environment from [pyproject.toml](pyproject.toml) and [uv.lock](uv.lock).
 The Python runner uses only the standard library. Lean and Lake must be installed;

@@ -10,7 +10,16 @@ def sameObject : Origin := { inserted with object := saved.object }
 def heap : List HeapEdge := [⟨saved, 0, child⟩, ⟨child, 0, saved⟩]
 def laterHeap : List HeapEdge := ⟨saved, 1, inserted⟩ :: heap
 def arguments : List (Nat × List Origin) := [(0, [saved])]
-def entries := CoreEntry.capturePrepared heap arguments
+def emptyFrozen : CoreEntry.Frozen := ⟨[], [], by decide⟩
+def freeze (sourceHeap : List HeapEdge) (args : List (Nat × List Origin)) : CoreEntry.Frozen :=
+  (CoreEntry.capturePrepared sourceHeap args).toOption.getD emptyFrozen
+
+def capturedOrigins (sourceHeap : List HeapEdge) (roots : List Origin) : List Origin :=
+  (((freeze sourceHeap [(0, roots)]).snapshots.head?).map CoreEntry.Snapshot.origins).getD []
+
+def entries := freeze heap arguments
+def parentAlias : Origin := { saved with source := ⟨.capture, 98⟩ }
+def conflictingOwner : Origin := { parentAlias with activation := 99 }
 
 def actual : CallInstance :=
   ⟨(fun _ selection => if selection = 0 then saved else if selection = 1 then child else inserted),
@@ -29,14 +38,14 @@ def allFields : Template :=
 
 def fixtures : List (String × Bool) :=
   [("core entry: cyclic graph closure includes exactly both entry objects",
-      decide ((CoreEntry.capture 0 heap [saved]).origins.length = 2 ∧
-        saved ∈ (CoreEntry.capture 0 heap [saved]).origins ∧ child ∈ (CoreEntry.capture 0 heap [saved]).origins)),
+      decide ((capturedOrigins heap [saved]).length = 2 ∧
+        saved ∈ capturedOrigins heap [saved] ∧ child ∈ capturedOrigins heap [saved])),
    ("core summary: projected child names its original formal", (checkAtEntry actual heap arguments projected).isOk),
    ("core summary: later insertion cannot fabricate frozen entry origin", !(check actual entries forged).isOk),
    ("core summary: snapshot at a later call legitimately includes prior insertion",
       (checkAtEntry actual laterHeap arguments forged).isOk),
    ("core entry: argument preparation finishes before graph capture",
-      decide (inserted ∈ (CoreEntry.capture 0 laterHeap [saved]).origins)),
+      decide (inserted ∈ capturedOrigins laterHeap [saved])),
    ("core entry: saved argument remains distinct from a subsequently rebound slot",
       !(checkAtEntry actual heap [(0, [inserted])] projected).isOk),
    ("core summary: allocation-origin and parameter-origin captures are accepted", (check actual entries captured).isOk),
@@ -49,8 +58,8 @@ def fixtures : List (String × Bool) :=
    ("core summary: two templates cannot reuse one allocation serial", !(check actual entries collision).isOk),
    ("core summary: repeated reference preserves an intentional alias", (check actual entries sharedFresh).isOk &&
       decide ((instantiate actual sharedFresh).rootReturn = (instantiate actual sharedFresh).contained)),
-   ("core summary: missing formal entry rejected", !(check actual [] projected).isOk),
-   ("core summary: duplicate formal entries rejected", !(check actual (entries ++ entries) projected).isOk),
+   ("core summary: missing formal entry rejected", !(check actual (freeze heap []) projected).isOk),
+   ("core summary: duplicate formal entries rejected", !(check actual (freeze heap (arguments ++ arguments)) projected).isOk),
    ("core summary: incomplete old-object coverage rejected",
       !(check { actual with existingObjects := [1] } entries projected).isOk),
    ("core summary: concrete capture absent from old-object coverage rejected",
@@ -67,6 +76,16 @@ def fixtures : List (String × Bool) :=
    ("core graph: later insertion changes separation", !CoreEntry.separated laterHeap [saved] [inserted]),
    ("core graph: unknown index includes every possible selection",
       !CoreEntry.separated heap [saved, inserted] [inserted]),
+   ("identity: source labels cannot hide a child alias", !CoreEntry.separated heap [child] [parentAlias]),
+   ("identity: aliased parent traversal retains child", decide (child ∈ capturedOrigins heap [parentAlias])),
+   ("identity: every source explanation survives normalization", decide
+      (saved ∈ capturedOrigins heap [parentAlias] ∧ parentAlias ∈ capturedOrigins heap [parentAlias])),
+   ("identity: aliased formal still has physical entry origins",
+      (checkAtEntry actual heap [(0, [parentAlias])] projected).isOk),
+   ("identity: conflicting ownership fails entry validation",
+      !(CoreEntry.capturePrepared heap [(0, [conflictingOwner])]).isOk),
+   ("identity: conflicting ownership cannot prove separation",
+      !CoreEntry.separated heap [inserted] [conflictingOwner]),
    ("core graph: different provenance descriptions cannot hide object alias",
       !CoreEntry.separated heap [saved] [sameObject])]
 

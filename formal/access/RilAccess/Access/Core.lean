@@ -141,6 +141,7 @@ structure Token where
   retained : Bool
   scope : Nat
   parents : List Nat
+  dependencies : List Nat
   deriving Repr, DecidableEq
 
 structure Permission where
@@ -326,7 +327,8 @@ def endTokens (w : World) (ids : List Nat) : World :=
 def addToken (w : World) (region : Pointer) (temporary qualified retained : Bool)
     (scope : Nat) (parents : List Nat := []) : World :=
   { w with
-    tokens := ⟨w.nextToken, region, true, temporary, qualified, retained, scope, parents⟩ :: w.tokens,
+    tokens := ⟨w.nextToken, region, true, temporary, qualified, retained, scope, parents,
+      if temporary then parents else []⟩ :: w.tokens,
     nextToken := w.nextToken + 1 }
 
 def install (w : World) (register : Nat) (mode : MemberMode) (dependencies : List Nat)
@@ -544,12 +546,22 @@ def expectedGrants (w : World) : Atom → List Grant
     ⟨w.raw.nextObject, ⟨.allocation, destination⟩, mode.access, schema⟩ :: w.grants
   | _ => w.grants
 
+/-- Representation checks only: history snapshots need not remain live. -/
+def ledgerValid (w : World) : Bool :=
+  decide ((w.tokens.map Token.id).Nodup) &&
+  w.tokens.all (fun token =>
+    (decide (token.id < w.nextToken) && !(token.temporary && token.retained)) &&
+    token.dependencies.all (fun id => decide (id < token.id) && (lookupToken w id).isSome)) &&
+  w.permissions.all (fun permission => permission.dependencies.all (fun id =>
+    (lookupToken w id).any (fun token => token.dependencies.all (fun parent => decide (parent ∈ permission.dependencies))))) &&
+  w.loans.all (fun loan => (lookupToken w loan.token).isSome)
+
 def checkAtom (atom : Atom) (w : World) : Except Error World :=
   match transfer w atom with
   | none => .error (.rejected atom)
   | some next =>
     if certified next && decide (rawStep (eraseAtom atom) w.raw = some next.raw) &&
-        decide (next.grants = expectedGrants w atom) then
+        decide (next.grants = expectedGrants w atom) && (ledgerValid w && ledgerValid next) then
       .ok next else .error .invalidCertificate
 
 inductive Code where

@@ -1,88 +1,77 @@
-import RilAccess.Graph.Authority
+import RilAccess.Graph.Identity
 
-/-! Frozen, concrete call-entry sources and checked summary substitution. Entry
-membership is computed from actual roots/edges, not a caller-supplied source tag.
-The external existing-object list remains a separately stated coverage contract. -/
 namespace RilAccess.CoreEntry
 
-def graph (heap : List HeapEdge) (roots : List Origin) : GraphAuthority.Graph Origin :=
-  ⟨roots.map (fun origin => ⟨0, origin, .ref⟩),
-    heap.map (fun edge => ⟨edge.parent, edge.field, edge.child, ⟨false, .ref⟩, .ref⟩)⟩
+inductive Error where
+  | conflictingOwners
+  deriving Repr, DecidableEq
+
+/-- One physical heap and one preparation boundary for every formal. No
+arbitrary list of inferred sources can be supplied in place of this snapshot. -/
+structure Frozen where
+  heap : List HeapEdge
+  arguments : List (Nat × List Origin)
+  consistent : Identity.coherent (Identity.labels heap (arguments.flatMap Prod.snd)) = true
 
 structure Snapshot where
   formal : Nat
+  roots : List Origin
+  objects : List Nat
   origins : List Origin
   deriving Repr, DecidableEq
 
-def capture (formal : Nat) (heap : List HeapEdge) (roots : List Origin) : Snapshot :=
-  ⟨formal, ((GraphAuthority.analyze (graph heap roots)).map GraphAuthority.Fact.object).eraseDups⟩
+def Frozen.snapshots (frozen : Frozen) : List Snapshot :=
+  frozen.arguments.map fun (formal, roots) =>
+    ⟨formal, roots, Identity.objects frozen.heap roots,
+      Identity.origins frozen.heap (frozen.arguments.flatMap Prod.snd) roots⟩
 
-def capturePrepared (heap : List HeapEdge) (arguments : List (Nat × List Origin)) : List Snapshot :=
-  arguments.map (fun (formal, savedRoots) => capture formal heap savedRoots)
+def capturePrepared (heap : List HeapEdge) (arguments : List (Nat × List Origin)) : Except Error Frozen :=
+  if h : Identity.coherent (Identity.labels heap (arguments.flatMap Prod.snd)) then
+    .ok ⟨heap, arguments, h⟩
+  else .error .conflictingOwners
 
-theorem finite_entry_path (h : Reach heap root target) :
-    ∃ fields, GraphAuthority.Path (graph heap roots).edges root .ref fields target .ref := by
-  induction h with
-  | refl => exact ⟨[], .here⟩
-  | @cons edge target he _ ih =>
-    obtain ⟨fields, hp⟩ := ih
-    exact ⟨edge.field :: fields, .next (List.mem_map.mpr ⟨edge, he, rfl⟩) hp⟩
+variable {frozen : Frozen} {entry : Snapshot} {origin : Origin} {object : Nat}
 
-theorem every_entry_origin_captured (hr : root ∈ roots) (hp : Reach heap root target) :
-    target ∈ (capture formal heap roots).origins := by
-  obtain ⟨fields, path⟩ := finite_entry_path (roots := roots) hp
-  have rootPresent : GraphAuthority.Root.mk 0 root .ref ∈ (graph heap roots).roots :=
-    List.mem_map.mpr ⟨root, hr, rfl⟩
-  apply List.mem_eraseDups.mpr
-  exact List.mem_map.mpr ⟨⟨0, target, .ref⟩, GraphAuthority.path_covered rootPresent path, rfl⟩
+theorem captured_boundary (h : capturePrepared heap arguments = .ok frozen) :
+    frozen.heap = heap ∧ frozen.arguments = arguments := by
+  unfold capturePrepared at h
+  split at h
+  · cases h; exact ⟨rfl, rfl⟩
+  · contradiction
 
-theorem captured_origin_has_entry_path (ht : target ∈ (capture formal heap roots).origins) :
-    ∃ root ∈ roots, Reach heap root target := by
-  obtain ⟨fact, hf, heq⟩ := List.mem_map.mp (List.mem_eraseDups.mp ht)
-  have hg := GraphAuthority.analyze_grounded hf
-  have statement : ∀ fact, GraphAuthority.Granted (graph heap roots) fact →
-      ∃ root ∈ roots, Reach heap root fact.object := by
-    intro fact granted
-    induction granted with
-    | @root selected hr =>
-      obtain ⟨origin, ho, he⟩ := List.mem_map.mp hr
-      have hx : origin = selected.object := congrArg GraphAuthority.Root.object he
-      refine ⟨origin, ho, ?_⟩
-      rw [← hx]
-      exact .refl
-    | @edge root edge mode hr hedge _ ih =>
-      obtain ⟨original, ho, he⟩ := List.mem_map.mp hedge
-      cases he
-      obtain ⟨start, hs, hp⟩ := ih
-      have appendEdge : ∀ a b, Reach heap a b → ∀ edge ∈ heap, edge.parent = b → Reach heap a edge.child := by
-        intro a b path
-        induction path with
-        | refl => intro edge hm he; cases he; exact .cons hm .refl
-        | cons hm _ ih => intro edge heq hp; exact .cons hm (ih edge heq hp)
-      exact ⟨start, hs, appendEdge _ _ hp original ho rfl⟩
-  simpa only [heq] using statement fact hg
+theorem snapshot_origins (he : entry ∈ frozen.snapshots) (ho : origin ∈ entry.origins) :
+    origin ∈ Identity.labels frozen.heap (frozen.arguments.flatMap Prod.snd) ∧
+      ∃ root ∈ entry.roots, Identity.Reach frozen.heap root.object origin.object := by
+  obtain ⟨⟨formal, roots⟩, _, rfl⟩ := List.mem_map.mp he
+  exact Identity.origins_exact.mp ho
 
-theorem entry_capture_exact : target ∈ (capture formal heap roots).origins ↔
-    ∃ root ∈ roots, Reach heap root target :=
-  ⟨captured_origin_has_entry_path, fun ⟨_, hr, hp⟩ => every_entry_origin_captured hr hp⟩
+theorem snapshot_objects (he : entry ∈ frozen.snapshots) :
+    object ∈ entry.objects ↔ ∃ root ∈ entry.roots, Identity.Reach frozen.heap root.object object := by
+  obtain ⟨⟨formal, roots⟩, _, rfl⟩ := List.mem_map.mp he
+  exact Identity.objects_exact
 
-/-- Compare complete reachable regions by allocation identity, including when
-two paths describe an object with different provenance metadata. -/
+theorem snapshot_sources_complete (he : entry ∈ frozen.snapshots)
+    (hk : origin ∈ Identity.labels frozen.heap (frozen.arguments.flatMap Prod.snd))
+    (hp : ∃ root ∈ entry.roots, Identity.Reach frozen.heap root.object origin.object) :
+    origin ∈ entry.origins := by
+  obtain ⟨⟨formal, roots⟩, _, rfl⟩ := List.mem_map.mp he
+  exact Identity.origins_exact.mpr ⟨hk, hp⟩
+
+/-- False means separation has not been proved, including invalid ownership
+metadata. Different source labels never disconnect physical edges. -/
 def separated (heap : List HeapEdge) (left right : List Origin) : Bool :=
-  disjointUnknownSelections ((capture 0 heap left).origins.map Origin.object)
-    ((capture 0 heap right).origins.map Origin.object)
+  Identity.coherent (Identity.labels heap (left ++ right)) &&
+    disjointUnknownSelections (Identity.objects heap left) (Identity.objects heap right)
 
-theorem separated_paths_cannot_alias
-    (hs : separated heap left right = true)
-    (hl : leftRoot ∈ left) (pl : Reach heap leftRoot leftTarget)
-    (hr : rightRoot ∈ right) (pr : Reach heap rightRoot rightTarget) :
-    leftTarget.object ≠ rightTarget.object := by
-  have noCommon := disjoint_check_sound hs
-  have lm : leftTarget.object ∈ (capture 0 heap left).origins.map Origin.object :=
-    List.mem_map.mpr ⟨leftTarget, every_entry_origin_captured hl pl, rfl⟩
-  have rm : rightTarget.object ∈ (capture 0 heap right).origins.map Origin.object :=
-    List.mem_map.mpr ⟨rightTarget, every_entry_origin_captured hr pr, rfl⟩
-  intro heq
-  exact noCommon _ lm (heq.symm ▸ rm)
+theorem separated_paths_cannot_alias (hs : separated heap left right = true)
+    (hl : leftRoot ∈ left) (pl : Identity.Reach heap leftRoot.object leftTarget)
+    (hr : rightRoot ∈ right) (pr : Identity.Reach heap rightRoot.object rightTarget) :
+    leftTarget ≠ rightTarget := by
+  have hparts : Identity.coherent (Identity.labels heap (left ++ right)) = true ∧
+      disjointUnknownSelections (Identity.objects heap left) (Identity.objects heap right) = true := by
+    simpa only [separated, Bool.and_eq_true] using hs
+  have noCommon := disjoint_check_sound hparts.2
+  intro equal
+  exact noCommon _ (Identity.path_covered hl pl) (equal.symm ▸ Identity.path_covered hr pr)
 
 end RilAccess.CoreEntry

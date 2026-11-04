@@ -1,7 +1,6 @@
 import RilAccess
+import RilAccess.Examples.All
 import AuditSupport
-
-audit_ril_access
 
 #check RilAccess.CoreVerification.verified
 #print axioms RilAccess.CoreVerification.verified
@@ -9,3 +8,5 @@ audit_ril_access
 
 def main : IO Unit :=
   IO.println "Mathematical core certificate and imported declarations passed the transitive axiom audit."
+
+audit_ril_access
