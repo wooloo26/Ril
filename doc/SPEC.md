@@ -68,6 +68,7 @@ The following distinctions apply throughout the specification; their defining se
     - [Shared Object Types](#shared-object-types)
     - [Record Types and Row Polymorphism](#record-types-and-row-polymorphism)
     - [Array, Map, and Tuple Types](#array-map-and-tuple-types)
+      - [Collection Extents and Index Types](#collection-extents-and-index-types)
     - [Sum Types and GADTs](#sum-types-and-gadts)
       - [Constructor-Tuple Equivalence Invariant](#constructor-tuple-equivalence-invariant)
     - [Nominal Type Wrappers](#nominal-type-wrappers)
@@ -105,11 +106,13 @@ The following distinctions apply throughout the specification; their defining se
     - [Expression Grammar](#expression-grammar)
     - [Operator Precedence and Associativity](#operator-precedence-and-associativity)
     - [Arithmetic and Wrapping Operators](#arithmetic-and-wrapping-operators)
+    - [Explicit Numeric Conversions](#explicit-numeric-conversions)
     - [Bitwise and Shift Operators](#bitwise-and-shift-operators)
     - [Relational and Equality Operators](#relational-and-equality-operators)
       - [Value Tests with is](#value-tests-with-is)
     - [Logical Operators](#logical-operators)
     - [Range and Sequence Indexing Expressions](#range-and-sequence-indexing-expressions)
+    - [Text and Byte Operations](#text-and-byte-operations)
     - [Pipeline Operators](#pipeline-operators)
     - [Error and Fallback Operators](#error-and-fallback-operators)
     - [Record Construction and Spread Update](#record-construction-and-spread-update)
@@ -250,7 +253,7 @@ Diagnostic explanations should identify the violated requirement and the relevan
 
 ### Abstract Machine and Memory Semantics
 
-Ril executes on an abstract machine with tracing garbage collection. Operands and arguments evaluate left-to-right in the order prescribed by each construct; short-circuiting and control transfers can skip later evaluation. Numeric operators on explicitly sized types produce the specified results across targets; the range of pointer-sized `int` remains target-dependent.
+Ril executes on an abstract machine with tracing garbage collection. Operands and arguments evaluate left-to-right in the order prescribed by each construct; short-circuiting and control transfers can skip later evaluation. Numeric operators produce the specified results across targets. The default integer type `int` is a transparent alias of `i64`, independent of target pointer width.
 
 ```ril
 -- Strict left-to-right evaluation order across operands and arguments:
@@ -344,6 +347,7 @@ let ieee = 1.0 / 0.0                  -- OK: positive infinity
 | Fixed-width shift count negative or at least the bit width; negative `bigint` shift count | Invalid-shift panic |
 | Ordinary array element index outside its bounds | Index-bounds panic |
 | Negative, reversed, or out-of-bounds range index | Range bounds panic under the [range indexing rules](#range-and-sequence-indexing-expressions) |
+| Construction or growth beyond the [collection extent limit](#collection-extents-and-index-types) | Collection-size panic before committing the oversized result or structural change |
 | External fault mapped to a defect at the foreign boundary | Panic at that boundary; a domain failure remains a `Result` value |
 
 The table classifies panic conditions. Message spelling is unspecified.
@@ -820,13 +824,22 @@ Value types have copy-by-value semantics, regardless of their implementation rep
 | Category | Types | Description |
 | :--- | :--- | :--- |
 | Boolean | `bool` | Truth value (`true` or `false`) |
-| Signed Integers | `i8`, `i16`, `i32`, `i64`, `int` | Fixed-width signed integers; `int` is target pointer width |
+| Signed Integers | `i8`, `i16`, `i32`, `i64`, `int` | Two's-complement signed integers; `int` is a transparent alias of `i64` |
 | Unsigned Integers | `u8`, `u16`, `u32`, `u64` | Fixed-width unsigned integers |
 | Arbitrary Precision | `bigint` | Arbitrary-precision integer |
 | Floating-Point | `f32`, `f64` | IEEE 754 floating-point numbers |
 | Text & Data | `str`, `bytes` | Immutable UTF-8 text string, immutable raw byte sequence |
 | Integer ranges | `typeof (0..0)` | Immutable integer interval bounds |
 | Unit & Bottom | `()`, `never` | Singleton unit value `()`, empty uninhabited type |
+
+`int` and `i64` have the same definitional type identity, 64-bit arithmetic, literal range, and static layout size of eight bytes on every target. Both spellings remain reserved intrinsic type names. Defaults and the `int` literal suffix select that same type; crossing between the two spellings requires no conversion. Signed width N has range $-2^{N-1}$ through $2^{N-1}-1$; unsigned width N has range zero through $2^N-1$. These widths grant no pointer-conversion or foreign-ABI guarantee.
+
+```ril
+meta let _ = assert(<int> == <i64> && byte_size(<int>) == 8)
+let wide: i64 = 42
+let ordinary: int = wide               -- OK: identical types, not implicit numeric promotion
+assert(ordinary + 1i64 == 43int)
+```
 
 ```ril
 let a: int = 42
@@ -1007,7 +1020,7 @@ assert(rest.role == "root")
 
 ### Array, Map, and Tuple Types
 
-Bracket syntax defines homogeneous arrays (`[]T`, `[mut]T`, `[^mut]T`, `[ref]T`) and maps (`[K: V]`, `[K: mut V]`, `[K: ^mut V]`, `[K: ref V]`); tuples use `(T1, T2)`. Range indexing (`arr[a..b]`) returns a newly allocated array with independent storage. Authority follows the [static mode rules](#binding-modes-and-storage-matrix). Map keys must be deeply immutable to preserve hash and equality stability; mutable key modifiers are rejected (`E0402`). `Set<T>` and collection type extractors are standard-library declarations.
+Bracket syntax defines homogeneous arrays (`[]T`, `[mut]T`, `[^mut]T`, `[ref]T`) and maps (`[K: V]`, `[K: mut V]`, `[K: ^mut V]`, `[K: ref V]`); tuples use `(T1, T2)`. Range indexing (`arr[a..b]`) returns a newly allocated array with independent storage. Authority follows the [static mode rules](#binding-modes-and-storage-matrix). Map keys and set elements use deeply immutable reception and the [structural key rules](#relational-and-equality-operators), including eligible shared-object graphs; mutable key modifiers are rejected (`E0402`). `Set<T>` and collection type extractors are standard-library declarations.
 
 ```ebnf
 ArrayType             ::= "[" [ StorageModeExpression ] "]" TypeExpression
@@ -1067,6 +1080,30 @@ type First = (int, str).0              -- Static tuple positional projection: in
 Empty array literals without contextual expected types require explicit annotation (`E0344`). `[via]T` preserves that requirement: an unresolved required element access mode is also `E0344`. A concrete `MemberMode` expression used for element access must have a fixed slot component; it cannot silently discard `var` (`E0356`). Invalid index types on an otherwise indexable receiver use `E0301`. An index outside an array's bounds panics at run time.
 
 Map lookups must use safe bracket navigation (`m?[k]`), evaluating to `?V` (`Option<V>`). Plain bracket lookup expressions (`m[k]`) and compound assignments (`m[k] += v`) are prohibited (`E0352`). In-place slot assignment `m[k] = v` inserts or replaces an entry for `k` (requiring deeply immutable `k` under `E0535`).
+
+#### Collection Extents and Index Types
+
+Every array, map, set, `str`, and `bytes` has a nonnegative length representable as `int`, at most $2^{63}-1$. Arrays count elements, maps count entries, sets count members, strings count Unicode scalars, and bytes count bytes. A string's UTF-8 byte count must also fit this bound, so encoding an existing string does not exceed the language's byte-sequence limit. This bounds each collection, not the total reachable graph. Standalone integer ranges retain their separate, potentially larger cardinalities.
+
+Construction, insertion, growth, concatenation, formatting, and conversion must establish their resulting extents using mathematical integer arithmetic before publishing an oversized result or committing that operation's structural change. Exceeding the limit panics; length arithmetic must not wrap, clamp, or truncate. Earlier argument evaluations and completed operations are not rolled back. Replacing an existing map entry or reinserting a present set member does not increase its count. In required static evaluation, the same failure is `E0831`.
+
+Array element indices and sequence slice endpoints require `int` (`E0301` for another already typed value); contextual integer literals may select `int`. Negative or out-of-bounds ordinary array indices panic; safe lookup returns `None`. Maps instead require their declared key type K, even when K is an integer range; maps have no sequence slicing. Strings and bytes expose individual elements through the [text and byte operations](#text-and-byte-operations), not single-element bracket lookup (`E0352`).
+
+```ril
+let items = [10, 20]
+let position: u8 = 1u8
+-- let wrong = items[position]         -- Error [E0301]: no implicit widening of an index
+let converted: ?int = Numeric::convert(position)
+assert(items[converted ?? 0] == 20)
+-- let scalar = "ab"[0]                -- Error [E0352]: use String::at
+```
+
+```ril
+-- Fixture input: full is a writable []u8 with length 9_223_372_036_854_775_807.
+assert(len(ref full) == 9_223_372_036_854_775_807)
+-- full !> Array::push(0u8)            -- Panics: growth exceeds the collection limit
+-- let impossible = len(ref full) + 1 -- Panics: ordinary checked int overflow
+```
 
 ### Sum Types and GADTs
 
@@ -1661,12 +1698,13 @@ assert(inserted.left.count == 11)
 
 #### Normative Rules for Functional Updates
 
-- **Input (`E0536`)**: `derive` accepts immutable ordinary data; publish a live source's copy with `let snapshot = clone(ref live)` first. The result is immutable data of the same data type.
-- **Draft**: The recipe receives `mut draft`, returns `()`, and may temporarily replace or modify any data member regardless of its declared mode. This confined privilege ends before immutable publication; declared modes and data types are unchanged.
+- **Input (`E0536`)**: `derive` accepts deeply immutable ordinary shared-object roots, including nominal/ordinary opaque representations whose root is such an object. Value roots (`bool`, numbers, `str`, `bytes`, integer ranges, `()`, and wrappers over them) are rejected with `E0536` before checking the recipe's draft parameter. They may occur as members inside an eligible object. Publish a live object's copy with `let snapshot = clone(ref live)` first. The result is immutable data of the same data type; opacity and nested-constituent restrictions remain enforced.
+- **Draft**: The recipe receives `mut draft`, returns `()`, and may temporarily replace or modify data members regardless of declared mode, subject to stored-key protection below. The root handle itself cannot be rebound. This confined privilege ends before immutable publication; declared modes and data types are unchanged.
 - **Identity**: Each source object has one draft counterpart, including newly inserted immutable references. Repeated references and cycles are preserved; all draft aliases see the same changes.
 - **Sharing**: Copy every affected value or shared-object region, including changes needed to preserve graph identity. Unaffected immutable regions may be shared. Neither unique ownership nor a new root for a no-op recipe is guaranteed.
 - **Insertion (`E0535`)**: Accept immutable objects or recipe-local fresh data without outside writers. Inserted immutable objects enter the same draft correspondence before later writes; existing draft aliases retain their identity.
 - **Collection Shape (`E0535`)**: A collection whose type does not encode its shape (`[]T`, `[K: V]`, `Set<T>`) admits element writes and structural change through its storage and structural operators. A changed collection object is replaced by a fresh draft counterpart, while the corresponding base object keeps its original length, order, and entries for every immutable alias. Correspondence follows the source object, not the path.
+- **Stored Keys (`E0535`)**: Graphs retained as map keys or set elements in the draft remain deeply immutable through every draft alias. A recipe cannot write any constituent of such a graph, including through a value/member alias to the same draft counterpart. Entry removal/replacement and insertion of an eligible immutable key remain allowed. A write requires proof that the affected draft region is no longer retained by any draft key or set element; unknown overlap does not grant permission. This restriction preserves structural hashing and the one-counterpart identity rule without silently copying or rehashing an edited key.
 - **Fixed Shape (`E0336`, `E0312`)**: Tuple arity, record field sets, and sum variants belong to the value's type. The recipe may replace any member and change a collection's length; it cannot add, remove, or retag a declared constituent.
 - **Confinement (`E0607`)**: Draft references cannot escape through returns, assignments, containers, or published closures. Non-escaping helper calls are allowed. Publish the immutable result only after normal recipe completion.
 - **Abort**: Forward recipe effects and external-state obligations; discharge draft-local writes. Panic/abort publishes no result and preserves all immutable inputs. Unrelated external writes remain committed.
@@ -1703,6 +1741,18 @@ let snapshot = clone(ref live)
 let version = snapshot |> derive \mut draft -> { draft.count += 1 }
 current.count += 1
 assert(snapshot.count == 0 && version.count == 1)
+```
+
+```ril
+-- let number = derive(1, \mut draft -> {})       -- Error [E0536]: value root
+-- let text = derive("ab", \mut draft -> {})      -- Error [E0536]: value root
+type UserId(int)
+-- let id = derive(UserId(1), \mut draft -> {})   -- Error [E0536]: value representation
+let changed = .{ count: 1, text: "ab" } |> derive \mut draft -> {
+    draft.count = 2
+    draft.text = "cd"
+}
+assert(changed.count == 2 && changed.text == "cd")
 ```
 
 ### Generic Parameters, Defaults, and Value Sorts
@@ -1758,7 +1808,7 @@ assert(add(1.5, 2.5) == 4.0)
 
 -- Pipeline Type Function Constraint:
 type Numeric = \T -> match <T> {
-    <int> | <i64> | <f64> -> <T>,
+    <int> | <f64> -> <T>,
     _ -> <never>,
 }
 fn multiply<T |> Numeric>(a: T, b: T) -> T { a * b }
@@ -2759,7 +2809,7 @@ let wrap_mul: u8 = 128u8 *% 2u8        -- 0u8 (wrapping multiplication)
 | Safe division/remainder | `None` for a zero divisor; otherwise retain the IEEE result |
 | Remainder | Truncating remainder |
 
-The pointer-sized `int` has target-dependent range; fixed-width guarantees do not fix its overflow boundary.
+`int` uses the same checked and wrapping rules and overflow boundary as `i64` on every target.
 
 | Floating type | Canonical NaN bits |
 | :--- | :--- |
@@ -2767,6 +2817,46 @@ The pointer-sized `int` has target-dependent range; fixed-width guarantees do no
 | `f64` | `0x7ff8000000000000` |
 
 Arithmetic, unary operations, conversions, and binary decoding/encoding use these same positive-sign NaN patterns. NaN sign and payload from an input are not preserved. These bit rules do not change NaN equality or ordering.
+
+### Explicit Numeric Conversions
+
+The language-defined `ril/numeric` module, imported as `Numeric`, supplies the following pure, finite, dual-phase operations. `From` is inferred from the argument when omitted after an explicit `To`; an expected result may determine `To` when no type arguments are written. These operations receive values normally and invoke no user conversion. Numeric domains contain only the intrinsic integer and floating types, with `int` normalized to `i64`. Nominal wrappers require explicit unwrapping; opaque representations participate only where their defining-scope transparency permits it. Unsupported source/target combinations are `E0301`.
+
+| Operation | Admitted types | Result |
+| :--- | :--- | :--- |
+| `Numeric::convert<To, From>(value: From) -> ?To` | Numeric source and target | Checked conversion under the rules below |
+| `Numeric::trunc<To, From>(value: From) -> ?To` | Floating source, integer target | Truncate toward zero, then range-check; nonfinite input yields `None` |
+| `Numeric::wrap<To, From>(value: From) -> To` | Integer source, fixed-width integer target | Reduce the mathematical integer modulo $2^N$; interpret target signedness using two's complement |
+| `Numeric::reinterpret<To, From>(value: From) -> To` | Equal-width fixed integers and/or floats | Transfer the N representation bits; canonicalize a floating NaN input or result |
+
+| `convert` source / target | Rule |
+| :--- | :--- |
+| Integer / integer | Preserve the exact value; `None` outside the target range; `bigint` has no range bound |
+| Integer / float | Round once to nearest, ties to even; `None` if the rounded result is infinite; finite precision loss is allowed |
+| Float / integer | `Some` only for a finite, integral value within the target range; fractions, infinities, and NaN yield `None`; either signed zero becomes integer zero |
+| Float / float | Round once to nearest, ties to even; a finite source overflowing to infinity yields `None`; preserve existing infinities and signed zero, canonicalize NaN; underflow to a subnormal or signed zero is allowed |
+
+`trunc` checks the mathematical truncated value, so a fraction is discarded only by that explicitly selected operation. Conversion failure is an ordinary `None`, not a panic. `wrap` and `reinterpret` do not perform checked value conversion; `bigint` has no fixed representation width and cannot be a reinterpretation operand or wrapping target. Reinterpretation acts on an abstract bit word, independent of host byte order, and grants no address or foreign-memory access. The [canonical NaN rules](#arithmetic-and-wrapping-operators) mean reinterpreting a NaN to bits and back need not preserve an input payload.
+
+```ril
+use ril/numeric as Numeric
+let index: ?int = Numeric::convert(255u8)
+assert(index == Some(255))
+assert(Numeric::convert<u8>(256) == None)
+assert(Numeric::convert<int>(3.5) == None)
+assert(Numeric::trunc<int>(-3.5) == Some(-3))
+assert(Numeric::wrap<u8>(-1) == 255u8)
+assert(Numeric::convert<f32>(16_777_217) == Some(16_777_216.0f32))
+assert(Numeric::convert<int>(0.0 / 0.0) == None)
+assert(Numeric::convert<int>(9_223_372_036_854_775_808.0) == None)
+assert(Numeric::convert<bigint>(9_223_372_036_854_775_808.0) == Some(9_223_372_036_854_775_808bigint))
+assert(Numeric::convert<f32>(1.0e300) == None)
+assert(Numeric::reinterpret<u32>(1.0f32) == 0x3f800000u32)
+let canonical = Numeric::reinterpret<f32>(0x7fa00001u32)
+assert(Numeric::reinterpret<u32>(canonical) == 0x7fc00000u32)
+-- let wrong_width = Numeric::reinterpret<u64>(1.0f32) -- Error [E0301]
+-- let unbounded = Numeric::wrap<bigint>(1)             -- Error [E0301]
+```
 
 ### Bitwise and Shift Operators
 
@@ -2815,7 +2905,18 @@ ordered !> Map::set("b", 3)
 let snapshot = clone(ref ordered)
 assert(Map::keys(snapshot) == ["b", "a"]) -- Replacing a value preserves its key's position
 -- let bad_keys: [f64: int] = [nan: 1] -- Error [E0328]: floating-point keys are not admitted
--- let graph_key = [.{ id: 1 }: 0]    -- Error [E0328]: immutable records are still shared objects
+let graph_key = [.{ id: 1 }: 0]       -- OK: deeply immutable structural key
+assert(graph_key?[.{ id: 1 }] == Some(0))
+let coordinates: [(int, int): str] = [(1, 2): "home"]
+assert(coordinates?[(1, 2)] == Some("home"))
+let shared = [1]
+let by_shape = [(shared, shared): 7]
+assert(by_shape?[([1], [1])] == Some(7)) -- Sharing multiplicity does not affect hashing
+let by_map = [["a": 1, "b": 2]: 8]
+assert(by_map?[["b": 2, "a": 1]] == Some(8)) -- Key map insertion order is ignored
+let by_range = [(1..3): 9]
+assert(by_range?[(1..3)] == Some(9))   -- Range key, not sequence slicing
+-- let nested_float = [.{ value: 1.0 }: 0] -- Error [E0328]: floating constituent
 ```
 
 `!=` negates `==`. Equality requires compatible same-typed values (`E0301` otherwise), except the Option/None tag test below and static type tokens: any two tokens compare their represented types by definitional identity, independent of exact/widened metatypes. Token ordering remains unsupported (`E0327`).
@@ -2838,11 +2939,40 @@ For finite cyclic graphs, equality is the greatest binary relation satisfying th
 
 | Map key / set element type | Eligibility |
 | :--- | :--- |
-| `bool`, integers including `bigint`, `str`, `bytes`, `()` | Allowed |
-| Nominal / ordinary opaque wrappers | Allowed when recursively preserving one of those value representations |
-| Floats, shared-object graphs (including immutable ones), callables, resources | `E0328` |
+| `bool`, integers including `bigint`, `str`, `bytes`, integer ranges, `()` | Allowed |
+| Records, tuples, arrays, sums, maps, sets | Allowed as deeply immutable graphs when every constituent type recursively satisfies this table |
+| Nominal / ordinary opaque wrappers | Allowed when their representation recursively satisfies this table; opacity remains enforced |
+| Floats, callables, tasks, resources, static-only values, or any nested occurrence of them | `E0328` |
 
-Eligibility depends on the concrete type, not equality support alone. Keys are copied by value: source reassignment cannot change them. No freezing, graph cloning, or user equality/order/hash callbacks occur.
+Eligibility is checked on the complete concrete data schema, including map values and all sum alternatives; recursive schemas are admitted when every reached constituent is eligible. Declared writable members do not by themselves exclude a type: immutable reception suppresses their effective modes. Actual key/set-element operands must be deeply immutable at insertion, lookup, membership testing, and removal (`E0535` for a surviving writer or live dependency). A read-only `ref` to a live graph is insufficient. Value keys copy by value; shared-object keys retain their object identity through ordinary immutable reception. No operation implicitly freezes or clones a supplied graph or invokes user equality/order/hash callbacks.
+
+Key equality is ordinary same-type structural equality above, independent of allocation identity, sharing multiplicity, and map/set insertion order. This is an equivalence on admitted key values because floating constituents are excluded. Finite cyclic keys are admitted under the same greatest-relation rule. Hashing and equality must terminate without user code, effects, or overlapping writes; equal keys must have equal hashes, including cyclic graphs with different allocation/sharing shapes. Identity hashes or back-edge numbering that distinguish structurally equal keys are insufficient. Hash collisions must be resolved by structural equality; exact hash numbers and the hashing algorithm are unspecified. Graph hashing/comparison may traverse the reachable graph and promises no constant-time bound.
+
+```ril
+type Ring({ var value: int, var next: ?Ring })
+-- Fixture inputs: left and right are deeply immutable Ring graphs.
+-- Every value is zero and every next is Some: left has one self-looping node;
+-- right has two nodes pointing to each other. Their allocation shapes differ.
+assert(left == right)
+let cyclic = [left: "found"]
+assert(cyclic?[right] == Some("found")) -- OK: equality-consistent cyclic hashing
+```
+
+Stored key and set-element graphs remain deeply immutable through every alias, including within a [`derive` draft](#normative-rules-for-functional-updates). Operations that return keys/elements preserve that immutability; a mutable collection root does not grant writes into its key graphs. Replacing a value for an equal key or reinserting an equal set element retains the first stored key/element object and insertion position. These rules do not change [static argument equivalence](#generic-parameters-defaults-and-value-sorts), which still distinguishes map/set insertion order.
+
+```ril
+type Key = { var id: int }
+let key = Key.{ id: 1 }                -- Immutable reception suppresses the member's var
+let base = .{ key: key, table: [key: "old"] }
+assert(base.table?[Key.{ id: 1 }] == Some("old"))
+-- let invalid = base |> derive \mut draft -> { draft.key.id = 2 }
+-- Error [E0535]: the same draft graph is retained as a map key
+let revised = base |> derive \mut draft -> { draft.table[key] = "new" }
+assert(base.table?[key] == Some("old") && revised.table?[key] == Some("new"))
+let mut live = Key.{ id: 2 }
+live.id = 3
+-- let invalid_key = [live: 0]         -- Error [E0535]: surviving writable origin
+```
 
 | Collection operation | Order |
 | :--- | :--- |
@@ -2850,7 +2980,7 @@ Eligibility depends on the concrete type, not equality support alone. Keys are c
 | Map/set iteration; `Map::keys`/`values` | First insertion |
 | Replace map value / reinsert present set member | Keep position |
 | Remove, then insert | Append |
-| Duplicate map literal key | Last value, first position; operands still evaluate left-to-right |
+| Duplicate map literal key | Last value, first stored key object and position; operands still evaluate left-to-right |
 
 #### Value Tests with is
 
@@ -3000,7 +3130,7 @@ let empty = arr[len(arr)..len(arr)]   -- OK: empty array at the end
 | `lower > upper` | Empty for either spelling |
 | Equal endpoints | Half-open: empty; inclusive: one element |
 | Iteration | Ascending by one; stop after the last included value without an overflowing extra increment |
-| Other operations | Equality as specified above; no ordering, indexing, `len`, or map-key eligibility |
+| Other operations | Equality and map-key eligibility as specified above; no ordering, indexing, or `len` |
 
 Ranges are finite even when their integer cardinality exceeds `int`. Their value representation does not allocate one element per member. Range indexing instead uses `int` endpoints (`E0301` for another type) and the bounds below; reversed bounds panic.
 
@@ -3064,7 +3194,56 @@ assert(Bytes::at(b, 0) == Some(82u8)) -- The original bytes still start with 'R'
 - **Primitive Sub-Sequences**:
   - `str[a..b]` and `str[a..=b]` evaluate to an independent `str` based on Unicode scalar indices. For a string of length $N$, half-open bounds require $0 \le a \le b \le N$; inclusive bounds require $0 \le a \le b < N$. Range indexing and string length share the same Unicode scalar coordinate system; `s[0..len(s)]` safely selects the entire text.
   - `bytes[a..b]` and `bytes[a..=b]` evaluate to an independent `bytes` byte sub-sequence. For a byte sequence of length $N$, half-open bounds require $0 \le a \le b \le N$; inclusive bounds require $0 \le a \le b < N$.
+  - Safe range lookup on either primitive sequence returns `?str` or `?bytes`, with `None` for invalid bounds; it does not enable single-element bracket lookup.
 - **Array Stability**: Structural mutation is `E0526` during iteration or `E0537` before the last possible use of any derived `ref`/observer environment. Nonoverlapping element writes remain allowed.
+
+### Text and Byte Operations
+
+The language-defined `ril/string` and `ril/bytes` modules, imported as `String` and `Bytes`, provide these pure, finite, dual-phase operations. Text uses Unicode scalars: integers in `0..=0x10FFFF` excluding `0xD800..=0xDFFF`, represented by ordinary `u32` values at these interfaces. Ril introduces no intrinsic character type. A general `u32` is not itself proof of scalar validity; text construction checks that property. NUL, unassigned code points, and noncharacters are valid scalars.
+
+| Operation | Result / contract | Complexity |
+| :--- | :--- | :--- |
+| `String::scalars(text: str) -> new []u32` | New ordinary array of the text's valid scalars, in order | $O(n)$ work and output space |
+| `String::at(text: str, index: int) -> ?u32` | Scalar at a scalar-coordinate index; `None` outside bounds | $O(n)$ worst case |
+| `String::from_scalars(via values: []u32) -> ?str` | Exact scalar sequence; `None` if any input is not a scalar | $O(n)$ |
+| `String::encode_utf8(text: str) -> bytes` | Exact UTF-8 bytes of the scalar sequence | $O(n)$ upper bound |
+| `String::decode_utf8(data: bytes) -> ?str` | Exact decoded sequence; `None` for ill-formed UTF-8 | $O(n)$ |
+| `Bytes::at(data: bytes, index: int) -> ?u8` | Byte at a byte-coordinate index; `None` outside bounds | $O(1)$ |
+| `Bytes::to_array(data: bytes) -> new []u8` | New ordinary array containing the same bytes | $O(n)$ work and output space |
+| `Bytes::from_array(via values: []u8) -> bytes` | Independent byte value with the same byte sequence | $O(n)$ upper bound |
+
+Here n counts input array entries for array conversions, Unicode scalars for `String::scalars`, and input bytes for UTF-8 traversal; each scalar occupies at most four UTF-8 bytes. The `via` input families of `String::from_scalars` and `Bytes::from_array` admit ordinary immutable reception and explicit `ref` observation of the corresponding array type; they grant no writable access. The produced text/byte values retain no live dependency on the input array. String and byte operands themselves are values and reject reference/access-mode modifiers under the ordinary value rules. Output arrays follow construction reception rules and may be received immutable or lawfully writable.
+
+`String::decode_utf8` rejects overlong encodings, malformed continuation sequences, truncated sequences, encoded surrogates, and values above `0x10FFFF`; it does not replace invalid data. Encoding and decoding neither add nor strip a BOM. These operations perform no normalization, case folding, or grapheme segmentation, and preserve every valid scalar including a leading U+FEFF. Thus valid-byte decode/encode round trips preserve bytes, and encode/decode round trips preserve the exact scalar sequence. Scalar indices/counts and interpolation widths do not promise user-perceived character counts or display-column widths. These Unicode terms follow [Unicode scalar and UTF-8 definitions](https://www.unicode.org/versions/Unicode17.0.0/core-spec/chapter-3/); user-perceived character boundaries are described by [Unicode text segmentation](https://www.unicode.org/reports/tr29/).
+
+Negative and out-of-bounds `at` indices return `None`, without panicking. Ill-formed data is an ordinary `None` from construction/decoding, distinct from source-literal diagnostics. `from_scalars` checks scalar validity before applying the [collection extent limit](#collection-extents-and-index-types); valid output exceeding that limit panics under the common sizing rules. Value semantics permit sharing immutable implementation storage without exposing shared-object identity or making a text/byte value retain a writable array's storage.
+
+```ril
+use ril/string as String
+use ril/bytes as Bytes
+let text = "é🙂"
+let scalars = String::scalars(text)
+assert(scalars == [0xE9u32, 0x1F642u32])
+assert(String::at(text, 1) == Some(0x1F642u32))
+assert(String::at(text, -1) == None)
+assert(String::from_scalars(scalars) == Some(text))
+assert(String::from_scalars([0xD800u32]) == None)
+let encoded = String::encode_utf8(text)
+assert(encoded == b"\xC3\xA9\xF0\x9F\x99\x82")
+assert(String::decode_utf8(encoded) == Some(text))
+assert(String::decode_utf8(b"\xC0\xAF") == None) -- Overlong UTF-8
+assert(String::decode_utf8(b"\xED\xA0\x80") == None) -- Encoded surrogate
+assert(String::decode_utf8(b"\xEF\xBB\xBF") == Some("\u{FEFF}"))
+assert(len("é") == 1 && len("e\u{301}") == 2)
+assert("é" != "e\u{301}")             -- Exact scalar equality, no normalization
+assert(text?[1..2] == Some("🙂") && encoded?[0..2] == Some(b"\xC3\xA9"))
+let mut array = Bytes::to_array(b"AB")
+array[0] = 0u8
+let copied = Bytes::from_array(ref array)
+array[0] = 1u8
+assert(copied == b"\x00B" && Bytes::at(copied, 2) == None)
+for String::scalars(text) as scalar { assert(scalar <= 0x10FFFFu32) }
+```
 
 ### Pipeline Operators
 
@@ -3148,11 +3327,11 @@ Inside a callable, a postfix `?` operand other than `Option` or `Result` is `E07
 | Safe access | Rule |
 | :--- | :--- |
 | `?.` | Field projection from an optional receiver |
-| `?[` | Array/map element lookup, also through an optional receiver |
+| `?[` | Array/map element lookup or array/str/bytes range lookup, also through an optional receiver |
 | `None` receiver | Return `None`; skip access and index evaluation |
 | Missing key / out-of-bounds element | Return `None` |
 | Selected U / selected `Option<U>` | `Some(value)` / unchanged Option; no further flattening |
-| Range index | Use ordinary range indexing syntax and bounds rules |
+| Range index on a sequence receiver | Use ordinary range indexing syntax and bounds rules; a range-typed map key remains a key |
 
 ### Record Construction and Spread Update
 
@@ -7562,7 +7741,7 @@ println("Count: {count}")
 
 The prelude is an ambient lexical scope enclosing every Ril compilation unit. Its declarations are accessible without explicit import statements. Local declarations may shadow ordinary prelude names; the intrinsic type family `Type` cannot be shadowed (`E0203`). Shadowing does not alter built-in syntax, compiler intrinsics, or declaration identities required by language-defined operators.
 
-Primitive type spellings (`int`, `str`, `bool`, etc.), static metatypes (`Type`, `Type<T>`), `?T`, collection type syntax (`[]T`, `[K: V]`), and built-in system effect identities (`Fiber`, `Concurrent`, `Async`, `Div`) are language constructs, not imported prelude declarations.
+Primitive type spellings (`int`, `str`, `bool`, etc.), including the intrinsic `int` alias of `i64`, static metatypes (`Type`, `Type<T>`), `?T`, collection type syntax (`[]T`, `[K: V]`), and built-in system effect identities (`Fiber`, `Concurrent`, `Async`, `Div`) are language constructs, not imported prelude declarations. The language-defined numeric and text/byte operation contracts belong to their explicitly imported standard-library modules, not additional ambient prelude names.
 
 #### Built-in Foundational Operations
 
@@ -7593,7 +7772,7 @@ The signatures below summarize overloads; their eligibility and access modes fol
 | `len` | `len(value)` / `len(ref value) -> int` | None | Dual-phase | $O(1)$ / $O(n)$ text | Count of elements, entries, bytes, or Unicode scalars |
 | `inner` | `inner(wrapper) -> T` / `inner(ref wrapper) -> ref(wrapper) T` | None | Run-time | $O(1)$ | Preserve immutable/observed payload authority; value payloads use a plain result; unit nominal yields `()` |
 | `clone` | `clone(value)` / `clone(ref value)` | None | Run-time | $O(\text{graph})$ | Ordinary shared-object result `new T`, value-type result `T`; preserves graph aliases, cycles, and schemas. Resource cloning follows its separate contract |
-| `derive` | `derive(base, recipe) -> T` | Forwards recipe | Run-time | $O(\text{visited + copied})$ | Functional update on immutable value via confined mutable draft; collection length may change, declared constituents may not; preserving aliases can require whole-graph traversal |
+| `derive` | `derive(base, recipe) -> T` | Forwards recipe | Run-time | $O(\text{visited + copied})$ | Functional update on an immutable shared-object root via confined mutable draft; stored-key graphs remain immutable; collection length may change, declared constituents may not; preserving aliases can require whole-graph traversal |
 | `byte_size` | `meta fn byte_size(value: Type) -> int` | None | Static only | $O(1)$ | Size of the represented target's value/handle; static-only targets have no run-time layout |
 | `type_name` | `meta fn type_name(value: Type) -> str` | None | Static only | $O(\text{len})$ | Diagnostic description of the token's target, including static metatypes; spelling does not determine type identity |
 | `panic` | `panic(message: str) -> never` | None | Dual-phase | Finite | Initiates panic unwinding at run time; stops static evaluation with `E0831` |
@@ -7611,6 +7790,7 @@ The signatures below summarize overloads; their eligibility and access modes fol
   - For arrays (`[]T`), returns the element count in $O(1)$ time.
   - For maps (`[K: V]`), returns the number of key-value pairs in $O(1)$ time.
   - For sets (`Set<T>`), returns the number of unique elements in $O(1)$ time.
+  - All such counts, and a string's UTF-8 byte extent, obey the [collection extent limit](#collection-extents-and-index-types). `len` always returns the exact count; it does not wrap, clamp, or truncate an oversized value.
 - **Unwrapping Invariant (`inner`)**:
   - Unwraps nominal type wrappers to their underlying declared representation ([Nominal Type Wrappers](#nominal-type-wrappers)).
   - `inner(ref wrapper)` preserves observed payload provenance; ordinary `inner(wrapper)` receives immutable data.
@@ -7626,7 +7806,7 @@ The signatures below summarize overloads; their eligibility and access modes fol
 - **Functional Update Invariant (`derive`)**:
   - Confines mutation to a temporary draft within the recipe closure (`\mut draft -> ...`), returning immutable data of the same data type; unchanged regions, including the root for a no-op recipe, may be shared ([Functional Updates via Derive](#functional-updates-via-derive)).
   - Collection shape is not part of a collection's type: the draft may change an array, map, or set's length and entries, and the base object keeps its snapshot. Tuple arity, record field sets, and sum variants are fixed (`E0336`, `E0312`).
-  - Rejects non-immutable input targets (`E0536`).
+  - Accepts deeply immutable ordinary shared-object roots; rejects value roots and non-immutable input targets (`E0536`) under the [input and stored-key rules](#normative-rules-for-functional-updates).
   - Statically rejects escaping draft references (`E0607`).
   - Forwards recipe algebraic effects and external state obligations; discharges draft-local writes.
 - **Static Layout Query (`byte_size`)**:
@@ -7845,7 +8025,7 @@ This index assigns each code its diagnostic name and points to its defining rule
 | **`E0533`** | [`AliasedNarrowingHazardError`](#flow-sensitive-type-narrowing) |
 | **`E0534`** | [`CallableContractMismatchError`](#callable-contracts); [Closures, Factory Signatures, and Lexical Environments](#closures-factory-signatures-and-lexical-environments) |
 | **`E0535`** | [`NonImmutableBindingError`](#immutable-bindings) |
-| **`E0536`** | [`NonImmutableDeriveInputError`](#functional-updates-via-derive) |
+| **`E0536`** | [`InvalidDeriveInputError`](#functional-updates-via-derive) |
 | **`E0537`** | [`LiveArrayInvalidationError`](#range-and-sequence-indexing-expressions) |
 | **`E0538`** | [`InvalidStateSourceGroupError`](#state-groups-and-captured-layers) |
 | **`E0539`** | [`InvalidStateContractReferenceError`](#named-function-state-contract-references) |
