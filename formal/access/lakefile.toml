@@ -1,0 +1,17 @@
+name = "ril-access"
+version = "0.1.0"
+defaultTargets = ["RilAccess", "access-check", "audit"]
+
+[[lean_lib]]
+name = "RilAccess"
+
+[[lean_lib]]
+name = "AuditSupport"
+
+[[lean_exe]]
+name = "access-check"
+root = "Main"
+
+[[lean_exe]]
+name = "audit"
+root = "Audit"

@@ -2,7 +2,7 @@
 
 Ril is a programming language designed to reduce manual reasoning about data access, state, provenance, effects, and termination through explicit markers and static checking.
 
-The [language specification](doc/SPEC.md) is canonical. The examples below are fragments of one library `.ril` file; later blocks reuse preceding declarations.
+[language specification](doc/SPEC.md) 
 
 ```ril
 -- Access-mode dependencies propagate through generic calls and local reception.

@@ -1634,13 +1634,38 @@ assert(inserted.left.count == 11)
 
 #### Normative Rules for Functional Updates
 
-- **Input (`E0536`)**: `derive` accepts immutable ordinary data; publish a live source's copy with `let snapshot = clone(ref live)` first. The result is immutable data of the same declaration schema.
-- **Draft**: The recipe receives `mut draft`, returns `()`, and may temporarily replace or modify any data member regardless of its declared mode. This confined privilege ends before immutable publication; declaration schemas remain unchanged.
+- **Input (`E0536`)**: `derive` accepts immutable ordinary data; publish a live source's copy with `let snapshot = clone(ref live)` first. The result is immutable data of the same data type.
+- **Draft**: The recipe receives `mut draft`, returns `()`, and may temporarily replace or modify any data member regardless of its declared mode. This confined privilege ends before immutable publication; declared modes and data types are unchanged.
 - **Identity**: Each source object has one draft counterpart, including newly inserted immutable references. Repeated references and cycles are preserved; all draft aliases see the same changes.
 - **Sharing**: Copy every affected value or shared-object region, including changes needed to preserve graph identity. Unaffected immutable regions may be shared. Neither unique ownership nor a new root for a no-op recipe is guaranteed.
 - **Insertion (`E0535`)**: Accept immutable objects or recipe-local fresh data without outside writers. Inserted immutable objects enter the same draft correspondence before later writes; existing draft aliases retain their identity.
+- **Collection Shape (`E0535`)**: A collection whose type does not encode its shape (`[]T`, `[K: V]`, `Set<T>`) admits element writes and structural change through its storage and structural operators. A changed collection object is replaced by a fresh draft counterpart, while the corresponding base object keeps its original length, order, and entries for every immutable alias. Correspondence follows the source object, not the path.
+- **Fixed Shape (`E0336`, `E0312`)**: Tuple arity, record field sets, and sum variants belong to the value's type. The recipe may replace any member and change a collection's length; it cannot add, remove, or retag a declared constituent.
 - **Confinement (`E0607`)**: Draft references cannot escape through returns, assignments, containers, or published closures. Non-escaping helper calls are allowed. Publish the immutable result only after normal recipe completion.
 - **Abort**: Forward recipe effects and external-state obligations; discharge draft-local writes. Panic/abort publishes no result and preserves all immutable inputs. Unrelated external writes remain committed.
+
+```ril
+type Board = { title: str, items: []int, tags: [str: int] }
+let base = Board.{ title: "draft", items: [1, 2], tags: ["a": 1] }
+let coords = (10, "Ada")
+
+let revised = base |> derive \mut draft -> {
+    draft.items !> Array::push(3)      -- []int stays []int
+    draft.items[0] = 9                 -- element write
+    draft.tags["b"] = 2                -- entry insertion
+}
+let moved = coords |> derive \mut draft -> { draft.0 = 11 }
+
+assert(len(base.items) == 2 && base.items[0] == 1)      -- base keeps its snapshot
+assert(len(revised.items) == 3 && revised.items[0] == 9)
+assert(len(base.tags) == 1 && len(revised.tags) == 2)   -- entry inserted
+assert(coords.0 == 10 && moved.0 == 11)                 -- tuple type unchanged
+
+-- let wider = base |> derive \mut draft -> { draft.owner = "me" }
+-- Error [E0336]: this product has no field 'owner'
+-- let longer = coords |> derive \mut draft -> { draft.2 = true }
+-- Error [E0312]: tuple index 2 out of bounds for (int, str)
+```
 
 ```ril
 let mut current = Cell.{ count: 0 }
@@ -7532,7 +7557,7 @@ The signatures below summarize overloads; their eligibility and access modes fol
 | `len` | `len(value)` / `len(ref value) -> int` | None | Dual-phase | $O(1)$ / $O(n)$ text | Count of elements, entries, bytes, or Unicode scalars |
 | `inner` | `inner(wrapper) -> T` / `inner(ref wrapper) -> ref(wrapper) T` | None | Run-time | $O(1)$ | Preserve immutable/observed payload authority; value payloads use a plain result; unit nominal yields `()` |
 | `clone` | `clone(value)` / `clone(ref value)` | None | Run-time | $O(\text{graph})$ | Ordinary shared-object result `new T`, value-type result `T`; preserves graph aliases, cycles, and schemas. Resource cloning follows its separate contract |
-| `derive` | `derive(base, recipe) -> T` | Forwards recipe | Run-time | $O(\text{visited + copied})$ | Functional update on immutable value via confined mutable draft; preserving aliases can require whole-graph traversal |
+| `derive` | `derive(base, recipe) -> T` | Forwards recipe | Run-time | $O(\text{visited + copied})$ | Functional update on immutable value via confined mutable draft; collection length may change, declared constituents may not; preserving aliases can require whole-graph traversal |
 | `byte_size` | `meta fn byte_size(value: Type) -> int` | None | Static only | $O(1)$ | Size of the represented target's value/handle; static-only targets have no run-time layout |
 | `type_name` | `meta fn type_name(value: Type) -> str` | None | Static only | $O(\text{len})$ | Diagnostic description of the token's target, including static metatypes; spelling does not determine type identity |
 | `panic` | `panic(message: str) -> never` | None | Dual-phase | Finite | Initiates panic unwinding at run time; stops static evaluation with `E0831` |
@@ -7563,7 +7588,8 @@ The signatures below summarize overloads; their eligibility and access modes fol
   - Cloning a channel `Sender` obeys the channel endpoint resource contract and requires `@Fiber`.
   - Copying costs $O(\text{graph})$ for the reachable ordinary graph inspected and copied; no storage-sharing guarantee is made for mutable copies.
 - **Functional Update Invariant (`derive`)**:
-  - Confines mutation to a temporary draft within the recipe closure (`\mut draft -> ...`), returning immutable data of the same declaration schema; unchanged regions, including the root for a no-op recipe, may be shared ([Functional Updates via Derive](#functional-updates-via-derive)).
+  - Confines mutation to a temporary draft within the recipe closure (`\mut draft -> ...`), returning immutable data of the same data type; unchanged regions, including the root for a no-op recipe, may be shared ([Functional Updates via Derive](#functional-updates-via-derive)).
+  - Collection shape is not part of a collection's type: the draft may change an array, map, or set's length and entries, and the base object keeps its snapshot. Tuple arity, record field sets, and sum variants are fixed (`E0336`, `E0312`).
   - Rejects non-immutable input targets (`E0536`).
   - Statically rejects escaping draft references (`E0607`).
   - Forwards recipe algebraic effects and external state obligations; discharges draft-local writes.
