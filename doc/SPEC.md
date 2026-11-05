@@ -7736,7 +7736,7 @@ The prelude is an ambient lexical scope enclosing every compilation unit, includ
 | :--- | :--- |
 | Built-in functions below | Bare names: `len`, `clone`, `assert`, etc. |
 | Library modules below | Whole public namespace through `Module::member` |
-| Standard types / sorts | `Option<T>`, `Result<T, E>`, `Set<T>`, `MemberMode`; constructors follow ordinary resolution |
+| Standard types / concepts | `Option<T>`, `Result<T, E>`, `Set<T>`, `MemberMode`, `SharedObject`, `LenTarget`, `Tuple`; constructors follow ordinary resolution |
 | Language constructs | Primitive types, `Type`, `Type<T>`, `?T`, collection syntax, and system effects `Fiber`, `Concurrent`, `Async`, `Div` |
 | Explicit `use` | Ordinary module aliases or selected member bindings in the declaring scope |
 | Shadowing | Inner declarations may shadow prelude bindings; `Type` and `Super` retain their protected-name rules |
@@ -7792,9 +7792,11 @@ Ril defines the following built-in foundational operations directly in the langu
 
 ```ril
 assert(len("Ril") == 3 && len(b"RIFF") == 4)
-let copied = clone(42)
-assert(copied == 42)
+let original = [1, 2, 3]
+let mut copy = clone(original)
+assert(len(copy) == 3)
 -- len(ref "Ril")                    -- Error [E0401]: text is a value type
+-- clone(42)                         -- Error [E0401]: value types copy by value and do not admit 'clone'
 -- clone(ref 42)                     -- Error [E0401]: use ordinary value passage
 ```
 
@@ -7802,29 +7804,34 @@ For inputs supported by the selected operation:
 
 | Input | Ordinary form | Explicit `ref` form |
 | :--- | :--- | :--- |
-| Value type, including `str` / `bytes` | Receive value | `E0401` |
+| Value type, including `str` / `bytes` | Receive value (`len`) / `E0401` (`clone`) | `E0401` |
 | Immutable shared-object data | Receive immutable data | Observe same data |
 | Live shared-object data | `E0535` | Observe without freezing |
 
 Forms preserve data schemas and operation identity; resource operations require their own contracts. Operators, projections, indexing and traversal use primitive observation rules, while ordinary parameters use reception rules.
 
-The signatures below summarize overloads; their eligibility and access modes follow the defining rules. Complexity describes ordinary-data work, excluding argument evaluation, garbage-collection overhead, and user recipe/callback work. Graph work includes regions visited or copied to preserve aliases and cycles.
+Built-in operations share exact signature parity with user-defined Ril functions, declared via access-mode templates (`via`/`infer`) and pipeline guards without ad-hoc overloading (`E0203`). Their eligibility, effects, and lowering follow the normative rules below. Complexity describes ordinary-data work, excluding argument evaluation, garbage-collection overhead, and user recipe/callback work. Graph work includes regions visited or copied to preserve aliases and cycles.
 
-| Operation | Signature | Effects | Phase | Complexity | Contract |
+| Operation | Canonical declaration | Effects | Phase | Complexity | Contract |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| `len` | `len(value)` / `len(ref value) -> i64` | None | Dual-phase | $O(1)$ / $O(n)$ text | Count of elements, entries, bytes, or Unicode scalars |
-| `inner` | `inner(wrapper) -> T` / `inner(ref wrapper) -> ref(wrapper) T` | None | Run-time | $O(1)$ | Preserve immutable/observed payload authority; value payloads use a plain result; unit nominal yields `()` |
-| `clone` | `clone(value)` / `clone(ref value)` | None for ordinary data | Run-time | $O(\text{visited + materialized})$ for ordinary data | Isolated construction `new T` for ordinary shared objects, value copy `T` for value types; resource cloning follows its explicit contract |
-| `derive` | `derive(base, recipe) -> T` | Forwards recipe | Run-time | $O(\text{visited + copied})$ | Path updates on an immutable shared-object root via a confined draft |
-| `byte_size` | `meta fn byte_size(value: Type) -> i64` | None | Static only | $O(1)$ | Size of the represented target's value/handle; static-only targets have no run-time layout |
-| `type_name` | `meta fn type_name(value: Type) -> str` | None | Static only | $O(\text{len})$ | Diagnostic description of the token's target, including static metatypes; spelling does not determine type identity |
-| `panic` | `panic(message: str) -> never` | None | Dual-phase | Finite | Initiates panic unwinding at run time; stops static evaluation with `E0831` |
-| `assert` | `assert(condition: bool, message: str = "assertion failed") -> ()` | None | Dual-phase | $O(1)$ | Panics on false condition; static failure is `E0830` |
-| `print` | `print(text: str) @Fiber -> ()` | `@Fiber` | Run-time | $O(\text{len})$ | Writes UTF-8 text to standard output without trailing newline |
-| `println` | `println(text: str) @Fiber -> ()` | `@Fiber` | Run-time | $O(\text{len})$ | Writes UTF-8 text followed by one LF byte (`\n`) to standard output |
+| `len` | `pub halt fn len<T \|> LenTarget>(via item: T) -> i64` | None | Dual-phase | $O(1)$ / $O(n)$ text | Count of elements, entries, bytes, or Unicode scalars |
+| `inner` | `pub fn inner<W \|> NominalWrapper>(via wrapper: W) -> infer Unwrap<W>` | None | Run-time | $O(1)$ | Preserve immutable/observed payload authority; value payloads use a plain result; unit nominal yields `()` |
+| `clone` | `pub fn clone<T \|> SharedObject>(via value: T) -> new T` | None for ordinary data | Run-time | $O(\text{visited + materialized})$ for ordinary data | Isolated construction `new T` for ordinary shared objects; resource cloning follows its explicit contract |
+| `derive` | `pub fn derive<T \|> SharedObject>(base: T, recipe: fn(mut draft: Draft<T>) @& -> ()) -> T` | Forwards recipe | Run-time | $O(\text{visited + copied})$ | Path updates on an immutable shared-object root via a confined draft |
+| `byte_size` | `pub meta fn byte_size(value: Type) -> i64` | None | Static only | $O(1)$ | Size of the represented target's value/handle; static-only targets have no run-time layout |
+| `type_name` | `pub meta fn type_name(value: Type) -> str` | None | Static only | $O(\text{len})$ | Diagnostic description of the token's target, including static metatypes; spelling does not determine type identity |
+| `panic` | `pub halt fn panic(message: str) -> never` | None | Dual-phase | Finite | Initiates panic unwinding at run time; stops static evaluation with `E0831` |
+| `assert` | `pub halt fn assert(condition: bool, message: str = "assertion failed") -> ()` | None | Dual-phase | $O(1)$ | Panics on false condition; static failure is `E0830` |
+| `print` | `pub fn print(text: str) @Fiber -> ()` | `@Fiber` | Run-time | $O(\text{len})$ | Writes UTF-8 text to standard output without trailing newline |
+| `println` | `pub fn println(text: str) @Fiber -> ()` | `@Fiber` | Run-time | $O(\text{len})$ | Writes UTF-8 text followed by one LF byte (`\n`) to standard output |
 
 #### Normative Rules for Built-in Operations
 
+- **Concept Guards and Signature Parity**:
+  - `SharedObject`: Pure type guard constraining generic type parameters to composite heap products and collections (`<{ .. }>`, `<(let _, ..)>`, `<[]let _>`, `<[let _: let _]>`, `<Set<let _>>`, and sum types). Scalar value types, strings, and raw bytes evaluate to `never`, triggering `E0301`/`E0536`.
+  - `LenTarget`: Pure type guard admitting `str`, `bytes`, `[]T`, `[K: V]`, and `Set<T>`. Non-collection targets evaluate to `never`.
+  - `Tuple`: Pure type guard admitting arbitrary tuple products `<(let _, ..)>`.
+  - `Draft<T>`: Opaque draft projection type representing an in-progress `derive` transaction where constituent member modes are temporarily overridden for path-rebuilding updates under `E0607` confinement.
 - **Length Invariant (`len`)**:
   - `len` is a pure, dual-phase built-in operation admitted in both runtime and static contexts.
   - `len(ref value)` observes shared-object data; `len(value)` receives immutable data.

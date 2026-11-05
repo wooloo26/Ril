@@ -61,6 +61,15 @@ fn update_snapshot() -> () {
 ```
 
 ```ril
+-- Concept guards and row polymorphism compose without ad-hoc overloading or RTTI.
+fn update_title<T: { id: i64, var title: str, ..Rest } |> SharedObject>(item: T, new_title: str) -> T {
+    item |> derive \mut draft -> {
+        draft.title = new_title
+    }
+}
+```
+
+```ril
 -- The budget bounds eligible computation; cleanup and recovery must also be finite.
 fn spin() -> i64 { loop {} }
 halt fn bounded() -> ?i64 {
