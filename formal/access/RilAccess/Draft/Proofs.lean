@@ -26,7 +26,7 @@ theorem input_facts (h : input.valid = true) : InputFacts input := by
 
 theorem prepared (h : prepare input = some world) :
     input.valid = true ∧ world =
-      { input := input, memory := initialHeap input, nextObject := input.bound + input.bound } := by
+      { input := input, memory := initialHeap input, nextObject := input.draftRoot + 1 } := by
   unfold prepare at h
   split at h
   · rename_i hv; cases h; exact ⟨hv, rfl⟩
@@ -41,33 +41,15 @@ theorem lookup_present (h : lookup pool object = some cell) :
   ⟨List.mem_of_find?_eq_some h, of_decide_eq_true
     (List.find?_some (p := fun candidate : Cell => decide (candidate.origin.object = object)) h)⟩
 
-theorem initial_counterpart (h : lookup input.pool object = some cell) :
-    initialHeap input (counterpart input object) = some (copyCell input cell) := by
-  unfold initialHeap
-  rw [if_neg (show ¬counterpart input object < input.bound by unfold counterpart; omega)]
-  simp [counterpart, h]
+theorem initial_draft_root (h : lookup input.pool input.root = some cell) :
+    initialHeap input input.draftRoot = some (copyRoot input cell) := by
+  simp [initialHeap, Input.draftRoot, h]
 
 inductive Path (heap : Heap) : Nat → List Nat → Nat → Prop where
   | here {object : Nat} : Path heap object [] object
   | next {object child target index : Nat} {cell : Cell} {rest : List Nat} :
       heap object = some cell → cell.contents[index]? = some (.reference child) →
       Path heap child rest target → Path heap object (index :: rest) target
-
-theorem copy_preserves_paths (hp : Path (lookup input.pool) object fields target) :
-    Path (initialHeap input) (counterpart input object) fields (counterpart input target) := by
-  induction hp with
-  | here => exact .here
-  | next hm hv _ ih =>
-    apply Path.next (initial_counterpart hm) ?_ ih
-    simp [copyCell, List.getElem?_map, hv, renameValue]
-
-theorem counterpart_fresh (ho : old ∈ input.reserved) : counterpart input object ≠ old := by
-  have hb := below_allocation_bound ho
-  unfold counterpart Input.bound
-  omega
-
-theorem counterpart_injective : Function.Injective (counterpart input) := by
-  intro a b he; unfold counterpart at he; omega
 
 structure ObservationFacts (input : Input) (observation : ExternalObservation) : Prop where
   footprint : ∃ footprint, observation.footprint = .known footprint ∧
@@ -218,6 +200,43 @@ theorem trace_frame (ht : Trace program start finish) :
     obtain ⟨hi, hm⟩ := step_frame hs
     exact ⟨hi.trans ih.1, fun object ho => (hm object (by simpa [ih.1] using ho)).trans (ih.2 object ho)⟩
 
+theorem step_preserves_snapshot (h : step command world = some next)
+    (hc : world.memory object = some cell) (outsideRoot : object ≠ world.input.draftRoot) :
+    next.memory object = some cell := by
+  cases command with
+  | rewrite address values =>
+    obtain ⟨prior, _, _, _, _, _, rfl⟩ := checked_rewrite h
+    have guard := (checked_step h).1
+    simp only [admissible, Bool.and_eq_true] at guard
+    obtain ⟨_, _, checks⟩ := (Option.any_eq_true _ _).mp guard.2
+    simp only [Bool.and_eq_true, decide_eq_true_eq] at checks
+    have different : object ≠ address := by simpa [checks.1.1.1.1] using outsideRoot
+    simpa [rewritten, put, different] using hc
+  | allocate layout values =>
+    obtain ⟨_, missing, _, _, _, rfl⟩ := checked_allocate h
+    have different : object ≠ world.nextObject := by
+      intro same
+      rw [same, missing] at hc
+      contradiction
+    simpa [allocated, put, different] using hc
+  | external observation =>
+    obtain ⟨_, rfl⟩ := checked_external h
+    exact hc
+  | effect id =>
+    cases Option.some.inj (checked_step h).2
+    exact hc
+  | finish reason =>
+    cases Option.some.inj (checked_step h).2
+    exact hc
+
+theorem trace_preserves_snapshot (ht : Trace program start finish)
+    (hc : start.memory object = some cell) (outsideRoot : object ≠ start.input.draftRoot) :
+    finish.memory object = some cell := by
+  induction ht with
+  | refl => exact hc
+  | tail earlier _ hs ih =>
+    exact step_preserves_snapshot hs ih (by simpa [(trace_frame earlier).1] using outsideRoot)
+
 theorem base_snapshot_preserved (hp : prepare input = some start) (ht : Trace program start finish) (hc : cell ∈ input.pool) :
     finish.memory cell.origin.object = lookup input.pool cell.origin.object := by
   obtain ⟨hv, he⟩ := prepared hp
@@ -251,14 +270,13 @@ theorem trace_identity (ht : Trace program start finish) (hc : start.memory obje
     obtain ⟨last, hl, hlo, hlt⟩ := step_identity hs hm
     exact ⟨last, hl, hlo.trans ho, hlt.trans ht⟩
 
-theorem source_counterpart_persists (hp : prepare input = some start) (ht : Trace program start finish)
-    (hc : lookup input.pool object = some cell) :
-    ∃ current, finish.memory (counterpart input object) = some current ∧
-      current.origin = input.context.origin (counterpart input object) ∧ current.storage = cell.storage := by
-  have hm : start.memory (counterpart input object) = some (copyCell input cell) := by
-    rw [(prepared hp).2]; exact initial_counterpart hc
-  obtain ⟨current, hm, ho, hs⟩ := trace_identity ht hm
-  exact ⟨current, hm, by simpa [copyCell, (lookup_present hc).2] using ho, hs⟩
+theorem draft_root_persists (hp : prepare input = some start) (ht : Trace program start finish)
+    (hc : lookup input.pool input.root = some cell) :
+    ∃ current, finish.memory input.draftRoot = some current ∧ current.storage = cell.storage := by
+  have hm : start.memory input.draftRoot = some (copyRoot input cell) := by
+    rw [(prepared hp).2]; exact initial_draft_root hc
+  obtain ⟨current, hm, _, hs⟩ := trace_identity ht hm
+  exact ⟨current, hm, hs⟩
 
 def TypeExtends (before after : Heap) : Prop :=
   ∀ object cell, before object = some cell →
@@ -298,43 +316,19 @@ theorem original_lookup (hv : input.valid = true) (hc : lookup input.pool object
   rw [(lookup_present hc).2] at hb
   simp [initialHeap, Input.bound, hb, hc]
 
-theorem copy_value_fits (hf : valueFits (lookup input.pool) dataType value = true) :
-    valueFits (initialHeap input) dataType (renameValue input value) = true := by
-  cases dataType with
-  | scalar tag => cases value <;> simp_all [valueFits, renameValue]
-  | object tag =>
-    cases value with
-    | scalar _ _ => simp [valueFits] at hf
-    | reference object =>
-      cases hm : lookup input.pool object with
-      | none => simp [valueFits, hm] at hf
-      | some cell =>
-        simpa [valueFits, hm, renameValue, initial_counterpart hm, copyCell] using hf
-
-theorem copy_contents_fit (hf : contentsFit (lookup input.pool) storage values = true) :
-    contentsFit (initialHeap input) storage (values.map (renameValue input)) = true := by
-  cases storage with
-  | fixed tag members =>
-    simp only [contentsFit, Bool.and_eq_true, List.length_map] at hf ⊢
-    refine ⟨hf.1, ?_⟩
-    rw [List.zip_map_right, List.all_map]
-    exact List.all_eq_true.mpr (fun pair hp => copy_value_fits (List.all_eq_true.mp hf.2 pair hp))
-  | «variable» tag element =>
-    rw [contentsFit, List.all_map]
-    exact List.all_eq_true.mpr (fun value hv => copy_value_fits (List.all_eq_true.mp hf value hv))
-
 theorem prepared_well_typed (hp : prepare input = some start) : WellTyped start.memory := by
   obtain ⟨hv, rfl⟩ := prepared hp
+  have grow : TypeExtends (lookup input.pool) (initialHeap input) :=
+    fun _ _ hm => ⟨_, original_lookup hv hm, rfl⟩
   intro object cell hc
   change initialHeap input object = some cell at hc
   unfold initialHeap at hc
   split at hc
-  · have hf := (valid_cell hv (lookup_present hc).1).2
-    have grow : TypeExtends (lookup input.pool) (initialHeap input) :=
-      fun _ _ hm => ⟨_, original_lookup hv hm, rfl⟩
-    exact contents_fit_monotone grow hf
-  · obtain ⟨original, ho, rfl⟩ := Option.map_eq_some_iff.mp hc
-    exact copy_contents_fit (valid_cell hv (lookup_present ho).1).2
+  · exact contents_fit_monotone grow (valid_cell hv (lookup_present hc).1).2
+  · split at hc
+    · obtain ⟨original, ho, rfl⟩ := Option.map_eq_some_iff.mp hc
+      exact contents_fit_monotone grow (valid_cell hv (lookup_present ho).1).2
+    · contradiction
 
 theorem step_well_typed (h : step command world = some next) (hw : WellTyped world.memory) :
     WellTyped next.memory := by
@@ -439,39 +433,27 @@ def LocalsBound (world : World) : Prop :=
   ∀ object ∈ world.locals, world.input.bound ≤ object
 
 theorem private_bounds (hl : LocalsBound world) (ho : object ∈ world.draftObjects) : world.input.bound ≤ object := by
-  rcases List.mem_append.mp ho with source | localRoot
-  · obtain ⟨cell, _, rfl⟩ := List.mem_map.mp source; unfold counterpart; omega
+  rcases List.mem_cons.mp ho with rfl | localRoot
+  · exact Nat.le_refl _
   · exact hl object localRoot
 
 def RegionSealed (world : World) : Prop :=
   ∀ object cell, world.memory object = some cell → ∀ child, Value.reference child ∈ cell.contents →
-    (object < world.input.bound ↔ child < world.input.bound)
+    object < world.input.bound → child < world.input.bound
 
 theorem prepared_sealed (hp : prepare input = some start) : RegionSealed start := by
   obtain ⟨valid, rfl⟩ := prepared hp
-  intro object cell hm child hc
-  change (object < input.bound ↔ child < input.bound)
+  intro object cell hm child hc low
   change initialHeap input object = some cell at hm
-  unfold initialHeap at hm
-  split at hm
-  · rename_i low
-    have typed := (valid_cell valid (lookup_present hm).1).2
-    have known := contents_reference_known typed hc
-    cases found : lookup input.pool child with
-    | none => simp [found] at known
-    | some target =>
-      have hb := below_allocation_bound (valid_cell valid (lookup_present found).1).1
-      rw [(lookup_present found).2] at hb
-      exact ⟨fun _ => hb, fun _ => low⟩
-  · rename_i high
-    obtain ⟨original, lookup, rfl⟩ := Option.map_eq_some_iff.mp hm
-    obtain ⟨value, _, renamed⟩ := List.mem_map.mp hc
-    cases value with
-    | scalar tag payload => simp [renameValue] at renamed
-    | reference source =>
-      have he : counterpart input source = child := by simpa [renameValue] using renamed
-      have hb : input.bound ≤ child := by rw [← he]; unfold counterpart; omega
-      exact ⟨fun low => False.elim (high low), fun low => by omega⟩
+  change object < input.bound at low
+  simp only [initialHeap, if_pos low] at hm
+  have typed := (valid_cell valid (lookup_present hm).1).2
+  have known := contents_reference_known typed hc
+  cases found : lookup input.pool child with
+  | none => simp [found] at known
+  | some target =>
+    have hb := below_allocation_bound (valid_cell valid (lookup_present found).1).1
+    rwa [(lookup_present found).2] at hb
 
 theorem step_locals_bound (h : step command world = some next) (hl : LocalsBound world) : LocalsBound next := by
   have facts := step_facts h
@@ -484,39 +466,12 @@ theorem step_locals_bound (h : step command world = some next) (hl : LocalsBound
     · exact bound
     · exact hl object ho
 
-theorem step_sealed (h : step command world = some next) (sealed : RegionSealed world) (hl : LocalsBound world) :
+theorem step_sealed (h : step command world = some next) (sealed : RegionSealed world) :
     RegionSealed next := by
-  have facts := step_facts h
-  intro object cell hm child hc
-  rw [facts.input]
-  cases facts.heap with
-  | stable memory => exact sealed object cell (memory ▸ hm) child hc
-  | @rewrite address previous values lookup bound _ refs memory =>
-    by_cases selected : object = address
-    · subst object
-      have eq : { previous with contents := values } = cell := by simpa [memory, put] using hm
-      cases eq
-      have inRegion : child ∈ world.draftObjects := by
-        simpa only [confinedValue, decide_eq_true_eq] using List.all_eq_true.mp refs _ hc
-      have high := private_bounds hl inRegion
-      constructor <;> intro impossible <;> omega
-    · exact sealed object cell (by simpa [memory, put, selected] using hm) child hc
-  | @allocate layout values bound _ _ _ refs memory =>
-    by_cases selected : object = world.nextObject
-    · subst object
-      have eq : Cell.mk (world.input.context.origin world.nextObject) layout values = cell := by simpa [memory, put] using hm
-      cases eq
-      have candidateBound : LocalsBound (allocated world layout values) := by
-        intro object ho
-        rcases List.mem_cons.mp ho with rfl | ho
-        · exact bound
-        · exact hl object ho
-      have inRegion : child ∈ (allocated world layout values).draftObjects := by
-        simpa only [confinedValue, decide_eq_true_eq] using List.all_eq_true.mp refs _ hc
-      have high := private_bounds candidateBound inRegion
-      change world.input.bound ≤ child at high
-      constructor <;> intro impossible <;> omega
-    · exact sealed object cell (by simpa [memory, put, selected] using hm) child hc
+  obtain ⟨same, frame⟩ := step_frame h
+  intro object cell hm child hc low
+  rw [same] at low ⊢
+  exact sealed object cell ((frame object low).symm ▸ hm) child hc low
 
 /-- Derived inductively. This invariant is never supplied in a recipe input. -/
 structure WorldInvariant (initialInput : Input) (world : World) : Prop where
@@ -539,7 +494,7 @@ theorem step_invariant (h : step command world = some next) (hw : WorldInvariant
   have facts := step_facts h
   exact ⟨facts.input.trans hw.input,
     fun object ho => ((step_frame h).2 object (by simpa [hw.input] using ho)).trans (hw.frame object ho),
-    step_well_typed h hw.typed, step_locals_bound h hw.locals, step_sealed h hw.sealed hw.locals,
+    step_well_typed h hw.typed, step_locals_bound h hw.locals, step_sealed h hw.sealed,
     facts.knownPreserved hw.boundaries⟩
 
 theorem trace_invariant (hp : prepare input = some start) (ht : Trace program start finish) : WorldInvariant input finish := by
@@ -547,21 +502,21 @@ theorem trace_invariant (hp : prepare input = some start) (ht : Trace program st
   | refl => exact prepare_invariant hp
   | tail _ _ hs ih => exact step_invariant hs ih
 
-theorem path_stays_region (sealed : RegionSealed world) (hp : Path world.memory root fields target) :
-    (root < world.input.bound ↔ target < world.input.bound) := by
+theorem path_stays_in_inputs (sealed : RegionSealed world) (hp : Path world.memory root fields target) :
+    root < world.input.bound → target < world.input.bound := by
   induction hp with
-  | here => rfl
-  | next hm hv _ ih => exact (sealed _ _ hm _ (List.mem_of_getElem? hv)).trans ih
+  | here => exact id
+  | next hm hv _ ih => exact fun low => ih (sealed _ _ hm _ (List.mem_of_getElem? hv) low)
 
 theorem old_root_cannot_reach_draft (hp : prepare input = some start) (ht : Trace program start finish)
     (path : Path finish.memory root fields target) (old : root ∈ input.reserved)
     (privateTarget : target ∈ finish.draftObjects) : False := by
   have invariant := trace_invariant hp ht
   have low := below_allocation_bound old
-  have sameRegion := path_stays_region invariant.sealed path
+  have stays := path_stays_in_inputs invariant.sealed path
   have high := private_bounds invariant.locals privateTarget
-  rw [invariant.input] at sameRegion high
-  have below := sameRegion.mp low
+  rw [invariant.input] at stays high
+  have below := stays low
   omega
 
 end RilAccess.Draft

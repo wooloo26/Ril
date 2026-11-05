@@ -87,11 +87,12 @@ structure EffectGuarantees : Prop where
       Integrated.lookupToken next.authority id = some token
 
 structure DraftGuarantees : Prop where
-  prefixes : ∀ (input : Draft.Input) program analysis,
-    Draft.check input program = some analysis →
-    ∃ start, Draft.prepare input = some start ∧ ∀ middle, Draft.Prefix program start middle →
-      Draft.WorldInvariant input middle ∧ Draft.SourcesCovered middle.memory input.sources ∧
-        ∀ event ∈ middle.events, Fact.event event.kind event.origin.source ∈ analysis.facts
+  prefixes : ∀ (input : Draft.Input) recipe analysis,
+    Draft.checkRecipe input recipe = some analysis →
+    ∃ start commands, Draft.prepare input = some start ∧ Draft.lowerRecipe start recipe = some commands ∧
+      ∀ middle, Draft.Prefix commands start middle →
+        Draft.WorldInvariant input middle ∧ Draft.SourcesCovered middle.memory input.sources ∧
+          ∀ event ∈ middle.events, Fact.event event.kind event.origin.source ∈ analysis.facts
   publication : ∀ (input : Draft.Input) start program finish published,
     Draft.prepare input = some start → Draft.Trace program start finish → finish.output = some published →
     published.access = .immutable ∧ finish.active = false ∧
@@ -126,7 +127,7 @@ theorem verified : Guarantees where
     fun _ _ _ _ _ _ => CoreResumption.derived_access_ends,
     fun _ _ _ _ => CoreResumption.dependent_operation_loan,
     fun _ _ _ _ _ => CoreResumption.retained_authority_survives⟩
-  draft := ⟨fun _ _ _ => Draft.checked_recipe_prefixes,
+  draft := ⟨fun _ _ _ => Draft.checked_path_recipe_prefixes,
     fun _ _ _ _ _ => Draft.publication_ends_privilege,
     fun _ _ _ _ _ _ _ _ _ _ => Draft.conforming_external_cannot_escape⟩
 

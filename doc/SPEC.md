@@ -861,7 +861,7 @@ Value types, including `str`, `bytes`, and integer ranges, have no shared-object
 
 Shared object types have object identity and may be aliased: arrays (`[]T`), maps (`[K: V]`), records, tuples, sets, and sum type instances. Their objects are allocated on the managed garbage-collected heap.
 
-Ordinary reception preserves the selected object's identity; copying operations follow their own rules. This category does not require existing aliases or grant shared write authority. Private construction roots are also shared objects; access modes govern each path.
+Live access preserves the selected object's identity. Default access exposes immutable snapshot contents, independent of storage identity and sharing. Private construction roots are also shared objects; access modes govern each path.
 
 ```ril
 -- Shared object types: shared heap aliasing:
@@ -979,7 +979,7 @@ let repeated = (mut immutable, mut immutable) -- OK: outer let suppresses member
 | :--- | :--- |
 | Outer immutable reception | Apply [deep immutability](#deep-immutability) before reception; preserve the declaration schema |
 | Invalid value-type mode | `E0402` under the [value-type exclusions](#value-types), even under outer immutability |
-| Immutable/writable aliases | Reject with `E0535`; copying must preserve aliases rather than split them |
+| Immutable/writable aliases | A live object cannot supply immutable reception (`E0535`) |
 
 ```ril
 type User = { id: i64, name: str }
@@ -1295,15 +1295,11 @@ let make_user_id: fn(i64) -> UserId = UserId -- OK: constructor function value
 ```ril
 type Cell = { var count: i64 }
 let mut source = Cell.{ count: 1 }
-let ref observed = source
-let mut independent = clone(ref observed)
-let immutable = clone(ref observed)   -- let recursively removes all member write/observation modes
-independent.count = 2
+let snapshot = clone(ref source)
+let mut copy = clone(ref source)
+copy.count = 2
 source.count = 3
-assert(observed.count == 3)
-assert(independent.count == 2)
-assert(immutable.count == 1)
--- let mut bad = immutable                -- Error [E0520]: immutable data cannot acquire write authority
+assert(snapshot.count == 1 && copy.count == 2 && source.count == 3)
 ```
 
 Default immutable reception follows the [common mode tables](#binding-modes-and-storage-matrix), including ordinary parameters and default members. Graph-specific rules are:
@@ -1312,11 +1308,12 @@ Default immutable reception follows the [common mode tables](#binding-modes-and-
 | :--- | :--- |
 | Immutable reception | Recursively suppress effective `var`, `mut`, `^mut`, and `ref` modes, idempotently through cycles; preserve schemas, nominal/opaque identities, and callable contracts |
 | Surviving writer or live origin | Reject with `E0535`; reception cannot copy, freeze, consume, or revoke that authority |
-| Ordinary `clone` | Isolate a new graph, preserving schemas, internal aliases, and cycles; a lawful writable receiver may activate declared writable members, never default members or source authority |
-| Aliases inside a copy | Writable sharing requires explicit acknowledgment; conflicting immutable/writable aliases use `E0535` |
-| Copy execution | Preserve the source; no suspension, user callback, or overlapping write |
+| `clone` | Copy ordinary shared-object data into an isolated construction result `new T`. Preserve the schema. Immutable reception publishes the copied contents as a snapshot, including cyclic contents |
+| Copy execution | Read the source once as a stable snapshot; no suspension, user callback, or overlapping write |
 | Non-clonable constituent | Reject with `E0530`, including retained environments, scoped resources, tasks, and unique receivers hidden in wrappers or `ref` handles |
-| Function / opaque value | Immutable environment-free functions are copyable; opaque resources require explicit copy rules |
+| Function / opaque value | Immutable environment-free functions are copyable; resource operations follow their explicit contracts |
+
+Writable reception of a clone activates declared writable members. Each writable occurrence of an immutable constituent gets separate storage. This materialization must be finite (`E0530`). Copied live objects retain their internal alias and cycle relationships under the ordinary writable reception checks. A `new` return preserves the construction and reception facts.
 
 ```ril
 type Cell = { var count: i64 }
@@ -1409,7 +1406,7 @@ alias.count += 1
 
 - **Local Construction**: A fresh ordinary result may enter `let` when its construction scope or call ends and no relevant outside writer, live dependency, or active environment survives. `new` records construction/handoff and root write authority; complete provenance retains actual allocation history and separately decides publication and initial-reception eligibility. Parameter/external aliases retain their restrictions (`E0528`). Ordinary writable bindings retain their authority until lexical scope ends; last textual use does not revoke it. Reassigning `var mut` replaces its path without revoking other paths.
 
-- **Fresh Evaluation**: Each successful ordinary allocation creates distinct new storage. A newly constructed aggregate may contain references to pre-existing objects; graph disjointness is a separate judgment. Each ordinary deep clone creates writable regions isolated from the source and all pre-existing writable regions, preserving internal aliases. Freshness across function calls follows the function's verified return relation.
+- **Fresh Evaluation**: Each successful ordinary allocation creates distinct new storage. A newly constructed aggregate may contain references to pre-existing objects; graph disjointness is a separate judgment. `clone` isolates its writable regions. Freshness across function calls follows the function's verified return relation.
 
 - **Initial Writable Reception**: [Fresh storage inputs](#homogeneous-storage-authority) and [qualified fixed writable locals](#construction-qualified-locals-and-mode-preserving-reception) may receive unpublished construction authority. Ordinary immutable reception ends that path's eligibility; read-only/borrowed parameters acquire none. Temporary observations retain their source's alias restrictions. Allocation identity or last use cannot restore ended qualification.
 
@@ -1683,21 +1680,20 @@ Compatibility is checked against the normalized declared/emitted interface basel
 ```ril
 type Cell = { var count: i64 }
 type Pair = { left: Cell, right: Cell }
-let shared = Cell.{ count: 1 }
-let base = Pair.{ left: shared, right: shared }
+let cell = Cell.{ count: 1 }
+let base = Pair.{ left: cell, right: cell }
 let updated = base |> derive \mut draft -> {
     draft.left.count += 1
 }
-assert(base.left.count == 1 && shared.count == 1)
-assert(updated.left.count == 2 && updated.right.count == 2)
+assert(base.left.count == 1 && base.right.count == 1)
+assert(updated.left.count == 2 && updated.right.count == 1)
 
 let external = Cell.{ count: 10 }
 let inserted = base |> derive \mut draft -> {
     draft.left = external
     draft.left.count += 1
 }
-assert(external.count == 10)
-assert(inserted.left.count == 11)
+assert(external.count == 10 && inserted.left.count == 11)
 ```
 
 #### Normative Rules for Functional Updates
@@ -1707,11 +1703,12 @@ assert(inserted.left.count == 11)
 | Input / result | Deeply immutable ordinary shared-object root, including eligible nominal/opaque representations; immutable result of the same data type |
 | Invalid root (`E0536`) | Value representation or live object; check root eligibility before the draft parameter |
 | Draft | Fixed `mut draft` handle; recipe returns `()`; member writes temporarily override declared modes, subject to stored-key protection |
-| Object correspondence | One draft counterpart per source object, including inserted objects; preserve aliases and cycles |
-| Copying / sharing | Copy affected regions; share unchanged immutable regions, including the root for a no-op recipe |
-| Insertion (`E0535`) | Immutable objects or recipe-local fresh data with confined writers; join the same object correspondence |
+| Update | Resolve the path in the current draft. Replace the selected value and rebuild its ancestors with their other contents intact. A finite path through a cycle follows the same rule |
+| Draft access | Reads and borrows refer to the selected path. Overlap is checked on draft paths, independently of storage shared by their values |
+| Storage | Implementations may reuse unchanged storage, including the entire root for a no-op recipe |
+| Insertion (`E0535`) | Insert an immutable value or publish recipe-local fresh data with confined writers as a snapshot |
 | Collections | Element and structural updates preserve the base snapshot's length, entries, and order |
-| Stored keys (`E0535`) | Key/set-element graphs remain deeply immutable through every draft alias; writes require proven detachment from all draft keys/elements |
+| Stored keys (`E0535`) | Stored keys and set elements are immutable values. Collection operations replace entries; writes to other paths leave stored keys and elements intact |
 | Declared shape (`E0336`, `E0312`) | Preserve tuple arity, record fields, and sum variants; members may be replaced |
 | Confinement (`E0607`) | Draft references remain within the recipe and its non-escaping helpers; publish after normal completion |
 | Effects / abort | Forward recipe effects and external state; discharge local writes. Abort preserves immutable inputs and prior external writes |
@@ -2056,12 +2053,12 @@ These common mode tables apply to bindings, members, patterns, and callable hand
 | Axis | Meaning |
 | :--- | :--- |
 | `let` / `var` | Fixed / replaceable slot; independent of interior access |
-| Default access | Deeply immutable ordinary data; freely shareable across tasks |
+| Default access | Deeply immutable snapshots; freely passable across tasks |
 | `mut` | Exclusive writable reception; invocation checks current origins and aliases |
 | `^mut` | Shared interior/environment write authority; retention follows the state/provenance and local discharge rules |
 | `ref` | Read-only observation; a writable target remains live |
 
-Every access is bounded by its traced source, enclosing path, and member mode. Value types copy; shared-object reception preserves the selected object's identity. All initialization and `var` replacement requires ordinary typing, complete provenance, lawful scope, and authority use; the table lists prohibited exchanges. Specialized contexts use the [anti-laundering diagnostic](#monotonic-mode-degradation-and-anti-laundering-matrix).
+Every access is bounded by its traced source, enclosing path, and member mode. Each plain `let` or `var` receives a snapshot; reassigning a `var` selects another snapshot for that slot. All initialization and replacement requires ordinary typing, complete provenance, lawful scope, and authority use. Specialized contexts use the [anti-laundering diagnostic](#monotonic-mode-degradation-and-anti-laundering-matrix).
 
 | Source / condition | Prohibited receiver | Diagnostic |
 | :--- | :--- | :--- |
@@ -2071,7 +2068,7 @@ Every access is bounded by its traced source, enclosing path, and member mode. V
 | Existing writable aliases, including internal aliases in a fresh copy, without shared reception | Exclusive `let mut` / `var mut` | `E0510` |
 | Explicit shared initializer `^mut expression` | Exclusive `let mut` / `var mut`; declare `let ^mut` / `var ^mut` instead | `E0406` |
 | Reassignable writable root without a pinned live origin | Persistent `let ref` / `var ref` | `E0531` |
-| Independent allocation / clone or new writable environment, without an established observation origin | Persistent `let ref` / `var ref` | `E0543` |
+| Independent allocation / copy or new writable environment, without an established observation origin | Persistent `let ref` / `var ref` | `E0543` |
 
 | Prohibited operation / omission | Diagnostic / requirement |
 | :--- | :--- |
@@ -2350,14 +2347,11 @@ counter += 1                           -- OK: reassignable scalar
 counter = 10                           -- OK: direct reassignment
 assert(counter == 10)
 
--- 2. Plain var: reassignable read-only cursor over shared objects
-type Node = { val: i64, following: ?Node }
-let ro_node2 = Node.{ val: 2, following: None }
-let ro_node1 = Node.{ val: 1, following: Some(ro_node2) }
-var cursor = ro_node1                  -- OK: reassignable slot containing immutable data
-assert(cursor.val == 1)
-cursor = ro_node2                      -- OK: another immutable Node
--- cursor.val = 99                     -- Error [E0520]: cannot mutate field 'val' through read-only handle 'cursor'
+-- 2. Plain var: replaceable snapshot
+let original = .{ count: 1 }
+var current = original
+current = .{ count: 2 }
+assert(original.count == 1 && current.count == 2)
 
 -- 3. Reassignable mutable shared-object variable:
 type Buffer = { mut items: []i64 }
@@ -2482,7 +2476,7 @@ Persistent observation follows the [common mode tables](#binding-modes-and-stora
 | :--- | :--- |
 | Eligible origin | Proven immutable shared object/environment, or live shared object rooted in pinned `let mut`; trace projections, existing `ref` handles, and verified calls |
 | Branch, cursor replacement, or forwarded result | Preserve and validate every possible origin; immutable targets stay constant, writable targets remain live |
-| Independent allocation / clone / new writable environment | Establish an immutable or lawful writable root before persistent observation (`E0543`) |
+| Independent allocation / copy / new writable environment | Establish an immutable or lawful writable root before persistent observation (`E0543`) |
 | Passive aggregate / observer closure | Combine only established eligible origins and immutable values; wrappers cannot repair origins |
 | Initializer / projection | Evaluate once; keep the selected object alive; later source-slot/member replacement does not retarget it |
 | Observer closure invocation | Read captures at invocation time |
@@ -2959,12 +2953,12 @@ For finite cyclic graphs, equality is the greatest binary relation satisfying th
 | Type eligibility | Check the complete recursive schema, including map values and every sum alternative |
 | Reception | Deeply immutable at insertion, lookup, membership testing, and removal; surviving writers/live dependencies are `E0535` |
 | Member modes | Immutable reception suppresses declared write/observation modes |
-| Storage | Copy value keys; retain shared-object identity |
+| Storage | Store immutable key values |
 | Equality | Built-in same-type structural equality; allocation identity, sharing count, and map/set insertion order are irrelevant |
 | Cycles | Finite cyclic graphs use the greatest structural relation above |
 | Hashing | Finite, pure built-in computation; equal keys have equal hashes; resolve collisions by structural equality; work may cover entire reachable graphs |
-| Stored graphs | Deeply immutable through every alias, including [`derive` drafts](#normative-rules-for-functional-updates); returned keys/elements preserve that access |
-| Equal-key update / reinsertion | Keep the first stored key/element object and position |
+| Stored graphs | Keys and set elements are immutable snapshots, including in [`derive` drafts](#normative-rules-for-functional-updates) |
+| Equal-key update / reinsertion | Keep the first stored key/element and position |
 | Static arguments | Use their separate [static equivalence rules](#generic-parameters-defaults-and-value-sorts) |
 
 ```ril
@@ -2979,13 +2973,10 @@ assert(cyclic?[right] == Some("found")) -- OK: equality-consistent cyclic hashin
 
 ```ril
 type Key = { var id: i64 }
-let key = Key.{ id: 1 }                -- Immutable reception suppresses the member's var
+let key = Key.{ id: 1 }
 let base = .{ key: key, table: [key: "old"] }
-assert(base.table?[Key.{ id: 1 }] == Some("old"))
--- let invalid = base |> derive \mut draft -> { draft.key.id = 2 }
--- Error [E0535]: the same draft graph is retained as a map key
-let revised = base |> derive \mut draft -> { draft.table[key] = "new" }
-assert(base.table?[key] == Some("old") && revised.table?[key] == Some("new"))
+let revised = base |> derive \mut draft -> { draft.key.id = 2 }
+assert(revised.key.id == 2 && revised.table?[key] == Some("old"))
 let mut live = Key.{ id: 2 }
 live.id = 3
 -- let invalid_key = [live: 0]         -- Error [E0535]: surviving writable origin
@@ -2997,7 +2988,7 @@ live.id = 3
 | Map/set iteration; `Map::keys`/`values` | First insertion |
 | Replace map value / reinsert present set member | Keep position |
 | Remove, then insert | Append |
-| Duplicate map literal key | Last value, first stored key object and position; operands still evaluate left-to-right |
+| Duplicate map literal key | Last value, first stored key and position; operands still evaluate left-to-right |
 
 #### Value Tests with is
 
@@ -4703,7 +4694,7 @@ The construction context applies only to the current callable's return operands.
 
 | Independent check | Requirement |
 | :--- | :--- |
-| Construction semantics | A nominal wrapper creates no root; clone retains its verified isolation. Forwarded construction consumes the old formal/local path under the [handoff rules](#fresh-construction-parameters); a declared `-> new T` supplies that return's handoff context |
+| Construction semantics | A nominal wrapper creates no root; `clone` supplies isolated construction. Forwarded construction consumes the old formal/local path under the [handoff rules](#fresh-construction-parameters); a declared `-> new T` supplies that return's handoff context |
 | Complete graph | Independently prove publication or initial-storage eligibility using actual aliases and current source authority, including for locally constructed roots |
 | Retention and state | Root return, actual writes, contained retention, other storage, and environment creation remain separate facts; named definitions spell their required annotations |
 | Boundaries | Preserve observation stability, member modes, scoped/task lifetimes, and exclusivity; annotations extend none of them |
@@ -5564,12 +5555,6 @@ let immutable = Cell.{ count: 0 }
 let ref observed = source
 -- let ^mut bad = immutable           -- Error [E0520]: declaration cannot grant write authority
 -- let ^mut bad_ref = observed        -- Error [E0520]: declaration cannot upgrade a live ref
-
-let repeated = (mut immutable, mut immutable)
-let ^mut copied = clone(repeated)
-copied.0.count += 1
-assert(copied.1.count == 1)             -- Internal aliases survive the isolated copy
--- let mut hidden_copy = clone(repeated) -- Error [E0510]: writable internal sharing must be marked
 ```
 
 | Sharing condition | Required check / rejection |
@@ -5606,7 +5591,7 @@ packet.item.count += 1
 | Concrete definition | Reject excessive state/provenance annotations with `E0529`; actual retention satisfies the common `E0527` requirement for `^mut` |
 | Callable type | Use [exact closed or explicitly open matching](#callable-contract-matching), without changing parameter modes |
 
-Count each newly surviving external path, mutable environment, and separately exposed graph. Receiving a returned writer acknowledges that publication rather than adding another obligation; clone isolation never substitutes for a required internal-alias marker, including at fresh-storage inputs.
+Count each newly surviving external path, mutable environment, and separately exposed graph. Receiving a returned writer acknowledges its publication. Apply writable sharing markers to actual retained aliases, including in results of `clone`.
 
 ```ril
 type Step = fn() &up -> i64
@@ -5965,12 +5950,12 @@ let mut cells: [mut]Cell = [Cell.{ count: 1 }, Cell.{ count: 2 }]
 swap(mut cells[0], mut cells[1])        -- OK: distinct allocations, not merely distinct indices
 -- swap(mut cells[0], mut cells[0])    -- Error [E0523]: same writable origin
 
-let immutable_cell = Cell.{ count: 0 }
-let repeated = (mut immutable_cell, mut immutable_cell)
-let ^mut copied = clone(repeated)
+let cell = Cell.{ count: 0 }
+let mut copied = clone((mut cell, mut cell))
 copied.0.count += 1
-assert(copied.1.count == 1)             -- clone preserves internal aliases
--- swap(mut copied.0, mut copied.1)    -- Error [E0523]: distinct projections reach the same copied object
+assert(cell.count == 0 && copied.1.count == 0)
+swap(mut copied.0, mut copied.1)
+assert(copied.0.count == 0 && copied.1.count == 1)
 ```
 
 An explicit `^mut` publication permits sequential sharing, not overlapping exclusive writes or races. Mutations through any alias invalidate affected live refinements. Immutable references are exempt from such invalidation because no writable origin remains.
@@ -5988,7 +5973,7 @@ Apply [provenance propagation](#complete-provenance-and-required-annotations) an
 | Structurally mutate a collection through any alias during iteration | `E0526` |
 | Gain write authority through a returned immutable/read-only origin | `E0528` |
 
-Spread/destructuring of value-type constituents produces independent copies, including `var` pattern targets. Immutable reception of live origins is `E0535`; `clone` and `derive` use their explicit fresh-data rules.
+Spread/destructuring of value-type constituents produces independent copies, including `var` pattern targets. Immutable reception of live origins is `E0535`; `let snapshot = clone(ref value)` receives an immutable copy.
 
 ```ril
 type Cell = { var count: i64 }
@@ -7829,8 +7814,8 @@ The signatures below summarize overloads; their eligibility and access modes fol
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | `len` | `len(value)` / `len(ref value) -> i64` | None | Dual-phase | $O(1)$ / $O(n)$ text | Count of elements, entries, bytes, or Unicode scalars |
 | `inner` | `inner(wrapper) -> T` / `inner(ref wrapper) -> ref(wrapper) T` | None | Run-time | $O(1)$ | Preserve immutable/observed payload authority; value payloads use a plain result; unit nominal yields `()` |
-| `clone` | `clone(value)` / `clone(ref value)` | None | Run-time | $O(\text{graph})$ | Ordinary shared-object result `new T`, value-type result `T`; preserves graph aliases, cycles, and schemas. Resource cloning follows its separate contract |
-| `derive` | `derive(base, recipe) -> T` | Forwards recipe | Run-time | $O(\text{visited + copied})$ | Functional update on an immutable shared-object root via confined mutable draft; stored-key graphs remain immutable; collection length may change, declared constituents may not; preserving aliases can require whole-graph traversal |
+| `clone` | `clone(value)` / `clone(ref value)` | None for ordinary data | Run-time | $O(\text{visited + materialized})$ for ordinary data | Isolated construction `new T` for ordinary shared objects, value copy `T` for value types; resource cloning follows its explicit contract |
+| `derive` | `derive(base, recipe) -> T` | Forwards recipe | Run-time | $O(\text{visited + copied})$ | Path updates on an immutable shared-object root via a confined draft |
 | `byte_size` | `meta fn byte_size(value: Type) -> i64` | None | Static only | $O(1)$ | Size of the represented target's value/handle; static-only targets have no run-time layout |
 | `type_name` | `meta fn type_name(value: Type) -> str` | None | Static only | $O(\text{len})$ | Diagnostic description of the token's target, including static metatypes; spelling does not determine type identity |
 | `panic` | `panic(message: str) -> never` | None | Dual-phase | Finite | Initiates panic unwinding at run time; stops static evaluation with `E0831` |
@@ -7854,19 +7839,8 @@ The signatures below summarize overloads; their eligibility and access modes fol
   - `inner(ref wrapper)` preserves observed payload provenance; ordinary `inner(wrapper)` receives immutable data.
   - Single-payload nominal wrapper `type UserId(i64)` unwraps to its payload (`i64`). Unit nominal wrapper `type Marker` unwraps to `()`.
   - The defining scope's opaque representation boundary remains enforced; `inner` does not unwrap opaque types or expose an inaccessible representation.
-- **Graph Isolation Invariants (`clone`)**:
-  - `clone` creates an independent, isolated copy of an ordinary reachable graph, severing writable storage from the source while preserving internal aliases, shared references, and cyclic structures ([Deep Immutability](#deep-immutability)).
-  - `clone(ref value)` copies observed shared-object data without freezing it. The receiver and member schema determine the copy's access modes.
-  - Receiving an eligible fresh copy with ordinary `let` publishes immutable data by recursively suppressing member write/observation modes.
-  - Non-clonable entities (retained closure environments, live tasks, unique receivers, and scoped resources) cannot be cloned through `ref` handles or wrappers (`E0530`).
-  - Cloning a channel `Sender` obeys the channel endpoint resource contract and requires `@Fiber`.
-  - Copying costs $O(\text{graph})$ for the reachable ordinary graph inspected and copied; no storage-sharing guarantee is made for mutable copies.
-- **Functional Update Invariant (`derive`)**:
-  - Confines mutation to a temporary draft within the recipe closure (`\mut draft -> ...`), returning immutable data of the same data type; unchanged regions, including the root for a no-op recipe, may be shared ([Functional Updates via Derive](#functional-updates-via-derive)).
-  - Collection shape is not part of a collection's type: the draft may change an array, map, or set's length and entries, and the base object keeps its snapshot. Tuple arity, record field sets, and sum variants are fixed (`E0336`, `E0312`).
-  - Accepts deeply immutable ordinary shared-object roots; rejects value roots and non-immutable input targets (`E0536`) under the [input and stored-key rules](#normative-rules-for-functional-updates).
-  - Statically rejects escaping draft references (`E0607`).
-  - Forwards recipe algebraic effects and external state obligations; discharges draft-local writes.
+- **Copying** follows [deep immutability](#deep-immutability). Cloning a channel `Sender` follows its endpoint contract and requires `@Fiber`.
+- **Functional updates** follow the [draft rules](#normative-rules-for-functional-updates).
 - **Static Layout Query (`byte_size`)**:
   - `meta fn byte_size(value: Type) -> i64` queries the represented target's nonnegative value/handle size ([Compile-Time Evaluation and Layout Queries](#compile-time-evaluation-and-layout-queries)). Static-only metatypes have no ordinary layout (`E0306`); widening does not change the target being queried.
   - Static-only: permitted during compile-time static evaluation (`meta let`, type functions); calling `byte_size` in runtime code is `E0810`.
@@ -7884,7 +7858,6 @@ The signatures below summarize overloads; their eligibility and access modes fol
   - Concurrent writes across tasks may interleave at arbitrary byte boundaries without synchronization.
 - **Prelude Shadowing and Integrity**:
   - Lexical declarations in inner scopes may shadow ordinary prelude names such as `clone`, `len`, and `assert`; protected `Type` is excluded.
-  - A locally defined function named `clone` does not acquire the prelude's freshness and copying guarantees (`E0522`).
 
 ### Mandatory Inspection of Fallible Results
 
@@ -7919,7 +7892,7 @@ let alias = result
 assert(alias is Ok(_))                 -- OK: discharges the same result's obligation
 ```
 
-Every Result must be inspected, propagated, unpacked, or returned with its obligation (`E0720`).
+Every produced Result carries an obligation to inspect, propagate, unpack, or return it (`E0720`). Track obligations by production independently of storage sharing.
 
 | Operation / exit | Inspection duty |
 | :--- | :--- |

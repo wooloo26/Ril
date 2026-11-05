@@ -1,9 +1,7 @@
 import RilAccess.Graph.Identity
 
-/-! A finite reference semantics for confined functional graph updates. Ordinary
-immutable input objects are materialized eagerly, with one counterpart per source
-identity. Collection contents may change shape; declared storage schemas cannot.
-Library key/index protocols and source lowering remain separate obligations. -/
+/-! Finite path updates over immutable snapshots. The draft owns its root and
+copies the selected descendants on each write. -/
 namespace RilAccess.Draft
 
 inductive DataType where
@@ -86,15 +84,10 @@ structure Input where
 
 def Input.bound (input : Input) : Nat := allocationBound input.reserved
 
-def counterpart (input : Input) (sourceObject : Nat) : Nat := input.bound + sourceObject
+def Input.draftRoot (input : Input) : Nat := input.bound
 
-def renameValue (input : Input) : Value → Value
-  | .scalar tag payload => .scalar tag payload
-  | .reference object => .reference (counterpart input object)
-
-def copyCell (input : Input) (cell : Cell) : Cell :=
-  ⟨input.context.origin (counterpart input cell.origin.object), cell.storage,
-    cell.contents.map (renameValue input)⟩
+def copyRoot (input : Input) (cell : Cell) : Cell :=
+  { cell with origin := input.context.origin input.draftRoot }
 
 def inputEdges (input : Input) : List (GraphAuthority.Edge Nat) :=
   input.pool.flatMap fun cell => cell.contents.zipIdx |>.filterMap fun (value, index) =>
@@ -142,7 +135,8 @@ def Input.valid (input : Input) : Bool :=
 
 def initialHeap (input : Input) : Heap :=
   fun object => if object < input.bound then lookup input.pool object
-    else (lookup input.pool (object - input.bound)).map (copyCell input)
+    else if object = input.draftRoot then (lookup input.pool input.root).map (copyRoot input)
+    else none
 
 structure Published where
   object : Nat
@@ -188,15 +182,16 @@ structure World where
   observations : List ExternalObservation := []
 
 def World.draftObjects (world : World) : List Nat :=
-  world.input.pool.map (fun cell => counterpart world.input cell.origin.object) ++ world.locals
+  world.input.draftRoot :: world.locals
 
 def prepare (input : Input) : Option World :=
-  if input.valid then some ⟨input, initialHeap input, [], input.bound + input.bound,
+  if input.valid then some ⟨input, initialHeap input, [], input.draftRoot + 1,
     true, false, [], [], none, []⟩ else none
 
 def confinedValue (world : World) : Value → Bool
   | .scalar _ _ => true
-  | .reference object => decide (object ∈ world.draftObjects)
+  | .reference object => (lookup world.input.pool object).isSome ||
+    decide (object ∈ world.locals)
 
 inductive Exit where
   | normal | abort
@@ -233,7 +228,7 @@ def observed (world : World) (observation : ExternalObservation) : World :=
 def finished (world : World) (reason : Exit) : World :=
   { world with active := false, output := match reason with
       | .abort => none
-      | .normal => some ⟨if world.dirty then counterpart world.input world.input.root else world.input.root, .immutable⟩ }
+      | .normal => some ⟨if world.dirty then world.input.draftRoot else world.input.root, .immutable⟩ }
 
 /-- Independent graph execution ignores authority, type and phase guards. -/
 def execute (command : Command) (world : World) : Option World :=
@@ -271,7 +266,7 @@ def observationAllowed (input : Input) (observation : ExternalObservation) : Boo
 def admissible (command : Command) (world : World) : Bool :=
   world.active && match command with
   | .rewrite object contents => (world.memory object).any fun cell =>
-    decide (object ∈ world.draftObjects ∧ world.input.bound ≤ object) &&
+    decide (object = world.input.draftRoot ∧ world.input.bound ≤ object) &&
     decide (cell.origin = world.input.context.origin object) &&
     contentsFit world.memory cell.storage contents && contents.all (confinedValue world)
   | .allocate storage contents =>
@@ -282,7 +277,7 @@ def admissible (command : Command) (world : World) : Bool :=
   | .external observation => observationAllowed world.input observation
   | .effect _ | .finish .abort => true
   | .finish .normal =>
-    (world.memory (if world.dirty then counterpart world.input world.input.root else world.input.root)).isSome
+    (world.memory (if world.dirty then world.input.draftRoot else world.input.root)).isSome
 
 def step (command : Command) (world : World) : Option World :=
   if admissible command world then execute command world else none
@@ -331,5 +326,47 @@ def check (input : Input) (program : List Command) : Option Analysis := do
   let start ← prepare input
   let result ← runChecked program start
   if result.active then none else some ⟨result, analyze input program⟩
+
+/-- Plan a write against the current draft. Each descendant is rebuilt with a
+fresh address, and the caller installs the resulting contents at the draft root. -/
+def rebuild (heap : Heap) (object : Nat) (contents : List Value) (next : Nat) :
+    List Nat → Option (List Command × List Value)
+  | [] => some ([], contents)
+  | index :: rest => do
+    let parent ← heap object
+    let .reference child ← parent.contents[index]? | none
+    let cell ← heap child
+    let (copies, values) ← rebuild heap child contents next rest
+    let address := next + copies.length
+    return (copies ++ [.allocate cell.storage values],
+      parent.contents.set index (.reference address))
+
+inductive RecipeStep where
+  | rewrite (path : List Nat) (contents : List Value)
+  | allocate (storage : Storage) (contents : List Value)
+  | external (observation : ExternalObservation)
+  | effect (effect : Nat)
+  | finish (reason : Exit)
+
+def RecipeStep.lower (world : World) : RecipeStep → Option (List Command)
+  | .rewrite path contents => do
+    let (copies, values) ← rebuild world.memory world.input.draftRoot contents world.nextObject path
+    return copies ++ [.rewrite world.input.draftRoot values]
+  | .allocate storage contents => some [.allocate storage contents]
+  | .external observation => some [.external observation]
+  | .effect id => some [.effect id]
+  | .finish reason => some [.finish reason]
+
+def lowerRecipe (world : World) : List RecipeStep → Option (List Command)
+  | [] => some []
+  | action :: rest => do
+    let commands ← action.lower world
+    let next ← runUnchecked commands world
+    return commands ++ (← lowerRecipe next rest)
+
+def checkRecipe (input : Input) (recipe : List RecipeStep) : Option Analysis := do
+  let start ← prepare input
+  let commands ← lowerRecipe start recipe
+  check input commands
 
 end RilAccess.Draft

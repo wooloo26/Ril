@@ -43,7 +43,7 @@ structure PublishedFacts (world : World) (published : Published) : Prop where
   immutable : published.access = .immutable
   closed : world.active = false
   present : ∃ cell, world.memory published.object = some cell
-  root : published.object = world.input.root ∨ published.object = counterpart world.input world.input.root
+  root : published.object = world.input.root ∨ published.object = world.input.draftRoot
 
 def OutputSafe (world : World) : Prop := ∀ published, world.output = some published → PublishedFacts world published
 
@@ -82,7 +82,7 @@ theorem step_output_safe (h : step command world = some next) (hw : OutputSafe w
       cases hp
       refine ⟨rfl, rfl, ?_, ?_⟩
       · simp only [admissible, Bool.and_eq_true] at ha
-        cases hm : world.memory (if world.dirty then counterpart world.input world.input.root else world.input.root) with
+        cases hm : world.memory (if world.dirty then world.input.draftRoot else world.input.root) with
         | none => simp [hm] at ha
         | some cell => exact ⟨cell, hm⟩
       · cases world.dirty <;> simp [finished]
@@ -130,7 +130,7 @@ theorem conforming_external_cannot_escape (hp : prepare input = some start)
 
 theorem publication_root (hp : prepare input = some start) (ht : Trace program start finish)
     (ho : finish.output = some published) :
-    published.object = input.root ∨ published.object = counterpart input input.root := by
+    published.object = input.root ∨ published.object = input.draftRoot := by
   have same : finish.input = input := (trace_frame ht).1.trans (congrArg World.input (prepared hp).2)
   simpa only [same] using (trace_output_safe hp ht published ho).root
 
@@ -143,7 +143,7 @@ theorem published_schema_preserved (hp : prepare input = some start)
       rw [(prepared hp).2]; exact original_lookup (prepared hp).1 hr
     obtain ⟨cell, hc, _, schema⟩ := trace_identity ht hm
     exact ⟨cell, original.symm ▸ hc, schema⟩
-  · obtain ⟨cell, hc, _, schema⟩ := source_counterpart_persists hp ht hr
+  · obtain ⟨cell, hc, schema⟩ := draft_root_persists hp ht hr
     exact ⟨cell, copied.symm ▸ hc, schema⟩
 
 def SourcesCovered (heap : Heap) (sources : List Source) : Prop :=
@@ -154,7 +154,9 @@ theorem initial_sources : SourcesCovered (initialHeap input) input.sources := by
   unfold initialHeap at hc
   split at hc
   · exact List.mem_cons_of_mem _ (List.mem_map.mpr ⟨cell, (lookup_present hc).1, rfl⟩)
-  · obtain ⟨_, _, rfl⟩ := Option.map_eq_some_iff.mp hc; exact List.mem_cons_self
+  · split at hc
+    · obtain ⟨_, _, rfl⟩ := Option.map_eq_some_iff.mp hc; exact List.mem_cons_self
+    · contradiction
 
 theorem step_sources (h : step command world = some next)
     (hp : world.input.context.source ∈ sources) (hw : SourcesCovered world.memory sources) :
@@ -298,5 +300,23 @@ theorem checked_recipe_prefixes (h : check input program = some analysis) :
   refine ⟨start, hp, fun middle prefixTrace => ?_⟩
   have ht := checked_prefix_trace completed prefixTrace (fun _ hc => hc)
   exact ⟨trace_invariant hp ht, trace_sources hp ht, fun event he => hf ▸ recipe_source_coverage hp ht he⟩
+
+theorem checked_path_recipe_prefixes (h : checkRecipe input recipe = some analysis) :
+    ∃ start commands, prepare input = some start ∧ lowerRecipe start recipe = some commands ∧
+      ∀ middle, Prefix commands start middle →
+        WorldInvariant input middle ∧ SourcesCovered middle.memory input.sources ∧
+          ∀ event ∈ middle.events, Fact.event event.kind event.origin.source ∈ analysis.facts := by
+  unfold checkRecipe at h
+  cases hp : prepare input with
+  | none => simp [hp] at h
+  | some start =>
+    cases hl : lowerRecipe start recipe with
+    | none => simp [hp, hl] at h
+    | some commands =>
+      have checked : check input commands = some analysis := by simpa [hp, hl] using h
+      obtain ⟨initial, prepared, prefixes⟩ := checked_recipe_prefixes checked
+      have same := Option.some.inj (hp.symm.trans prepared)
+      subst initial
+      exact ⟨start, commands, rfl, hl, prefixes⟩
 
 end RilAccess.Draft

@@ -27,16 +27,16 @@ def input : Input :=
     admissions := [0, 1, 2, 3, 5].map (fun object => (object, .immutable)),
     externalSources := [outsideOrigin.source] }
 
-def done : Command := .finish .normal
-def aborted : Command := .finish .abort
-def grow : Command := .rewrite 11 [.reference 10, .reference 13, .reference 13]
-def mutateInserted : Command := .rewrite 13 [.scalar 0 8]
+def done : RecipeStep := .finish .normal
+def aborted : RecipeStep := .finish .abort
+def grow : RecipeStep := .rewrite [0] [.reference 0, .reference 3, .reference 3]
+def mutateInserted : RecipeStep := .rewrite [0, 1] [.scalar 0 8]
 def outsideWrite : Event := ⟨.write, outsideOrigin, .cleanup⟩
 def outsideCapture : Event := ⟨.capture, outsideOrigin, .closure⟩
 
 /-- These external fixtures concern one scalar slot, with no hidden payload.
 This helper is fixture data, not inference of a complete contract from an event. -/
-def external (event : Event) : Command :=
+def external (event : Event) : RecipeStep :=
   .external ⟨[event], [], .known ⟨[event.origin], [], []⟩⟩
 
 def hiddenWrapper : ExternalObservation :=
@@ -45,28 +45,48 @@ def unknownBoundary : ExternalObservation :=
   ⟨[outsideWrite], [], .unresolved [17]⟩
 
 
-def accepted (program : List Command) (source : Input := input) : Bool := (check source program).isSome
+def accepted (recipe : List RecipeStep) (source : Input := input) : Bool := (checkRecipe source recipe).isSome
 
-def contents (program : List Command) (object : Nat) (source : Input := input) : Option (List Value) := do
-  let analysis ← check source program
+def contents (recipe : List RecipeStep) (object : Nat) (source : Input := input) : Option (List Value) := do
+  let analysis ← checkRecipe source recipe
   return (← analysis.result.memory object).contents
 
-def result (program : List Command) (source : Input := input) : Option Published := do
-  let analysis ← check source program
+def result (recipe : List RecipeStep) (source : Input := input) : Option Published := do
+  let analysis ← checkRecipe source recipe
   analysis.result.output
 
-def state (program : List Command) (source : Input := input) : Option (List Event) :=
-  (check source program).map (fun analysis => analysis.result.outward)
+def state (recipe : List RecipeStep) (source : Input := input) : Option (List Event) :=
+  (checkRecipe source recipe).map (fun analysis => analysis.result.outward)
 
-def tupleUpdate : List Command :=
-  [.allocate arrayStorage [], .rewrite 12 [.reference 20, .reference 11], done]
+def valuesAt (heap : Heap) (object : Nat) : List Nat → Option (List Value)
+  | [] => (heap object).map Cell.contents
+  | index :: rest => do
+    let cell ← heap object
+    let .reference child ← cell.contents[index]? | none
+    valuesAt heap child rest
+
+def publishedContents (recipe : List RecipeStep) (path : List Nat) (source : Input := input) :
+    Option (List Value) := do
+  let analysis ← checkRecipe source recipe
+  let output ← analysis.result.output
+  valuesAt analysis.result.memory output.object path
+
+def tupleUpdate : List RecipeStep :=
+  [.allocate arrayStorage [], .rewrite [] [.reference 11, .reference 1], done]
+
+def splitInput : Input :=
+  { input with
+    pool := [⟨oldOrigin 2, tupleStorage, [.reference 1, .reference 6]⟩,
+      ⟨oldOrigin 6, arrayStorage, [.reference 0, .reference 3]⟩] ++
+      input.pool.filter (fun cell => decide (cell.origin.object ≠ 2)),
+    reserved := 6 :: input.reserved, admissions := (6, .immutable) :: input.admissions }
 
 def liveInput : Input := { input with outside := ⟨[⟨0, 3, .shared⟩], []⟩ }
 def forgedStorage : Storage := .variable 100 scalarSlot
-def cycleStorage : Storage := .fixed 400 [⟨.object 400, fixedMode⟩]
+def cycleStorage : Storage := .fixed 400 [⟨.object 400, fixedMode⟩, scalarSlot]
 def cyclic : Input :=
   { input with
-    pool := [⟨oldOrigin 4, cycleStorage, [.reference 4]⟩],
+    pool := [⟨oldOrigin 4, cycleStorage, [.reference 4, .scalar 0 1]⟩],
     root := 4, reserved := [4, 9], schemas := [cycleStorage], admissions := [(4, .immutable)] }
 
 def entryStorage : Storage := .fixed 500 [scalarSlot, scalarSlot]
@@ -77,9 +97,9 @@ def mapInput : Input :=
       ⟨oldOrigin 7, mapStorage, [.reference 6]⟩],
     root := 7, reserved := [6, 7, 9], schemas := [entryStorage, mapStorage],
     admissions := [(6, .immutable), (7, .immutable)] }
-def mapInsert : List Command :=
+def mapInsert : List RecipeStep :=
   [.allocate entryStorage [.scalar 0 2, .scalar 0 20],
-    .rewrite 17 [.reference 16, .reference 20], done]
+    .rewrite [] [.reference 6, .reference 11], done]
 def setStorage : Storage := .variable 700 scalarSlot
 def setInput : Input :=
   { input with
@@ -89,42 +109,46 @@ def setInput : Input :=
 def fixtures : List (String × Bool) :=
   [("derive: tuple member replacement accepted", accepted tupleUpdate),
    ("derive: tuple declaration modes survive the draft",
-      ((check input tupleUpdate).bind (fun a => (a.result.memory 12).map Cell.storage)) == some tupleStorage),
+       ((checkRecipe input tupleUpdate).bind (fun a => (a.result.memory 10).map Cell.storage)) == some tupleStorage),
    ("derive: tuple base snapshot preserved", contents tupleUpdate 2 == some [.reference 1, .reference 1]),
-   ("derive: changed root is fresh and immutable", result tupleUpdate == some ⟨12, .immutable⟩),
+    ("derive: changed root is fresh and immutable", result tupleUpdate == some ⟨10, .immutable⟩),
    ("derive: array length can grow", accepted [grow, done] &&
-      contents [grow, done] 11 == some [.reference 10, .reference 13, .reference 13]),
-   ("derive: array length can shrink", contents [.rewrite 11 [.reference 13], done] 11 == some [.reference 13]),
-   ("derive: array order can change", contents [.rewrite 11 [.reference 13, .reference 10], done] 11 ==
-      some [.reference 13, .reference 10]),
-   ("derive: saved element identity survives index movement",
-      contents [.rewrite 11 [.reference 13, .reference 10], .rewrite 10 [.scalar 0 2], done] 10 ==
-        some [.scalar 0 2] &&
-      contents [.rewrite 11 [.reference 13, .reference 10], .rewrite 10 [.scalar 0 2], done] 13 ==
-        some [.scalar 0 7]),
+       publishedContents [grow, done] [0] == some [.reference 0, .reference 3, .reference 3]),
+    ("derive: array length can shrink",
+       publishedContents [.rewrite [0] [.reference 3], done] [0] == some [.reference 3]),
+    ("derive: array order can change",
+       publishedContents [.rewrite [0] [.reference 3, .reference 0], done] [0] ==
+         some [.reference 3, .reference 0]),
+    ("derive: a path selects the current entry after reordering",
+       publishedContents [.rewrite [0] [.reference 3, .reference 0],
+         .rewrite [0, 1] [.scalar 0 2], done] [0, 1] == some [.scalar 0 2]),
    ("derive: homogeneous map-entry representation permits insertion",
-      contents mapInsert 17 mapInput == some [.reference 16, .reference 20] &&
+       publishedContents mapInsert [] mapInput == some [.reference 6, .reference 11] &&
       contents mapInsert 7 mapInput == some [.reference 6]),
    ("derive: homogeneous set-member representation permits growth",
-      contents [.rewrite 18 [.scalar 0 1, .scalar 0 2, .scalar 0 3], done] 18 setInput ==
+       publishedContents [.rewrite [] [.scalar 0 1, .scalar 0 2, .scalar 0 3], done] [] setInput ==
         some [.scalar 0 1, .scalar 0 2, .scalar 0 3]),
    ("derive: base keeps original order and length", contents [grow, done] 1 == some [.reference 0, .reference 3]),
-   ("derive: aliases through distinct parent fields keep one collection counterpart",
-      contents [grow, done] 12 == some [.reference 11, .reference 11]),
-   ("derive: inserted immutable object reuses its existing counterpart",
-      contents [grow, mutateInserted, done] 11 == some [.reference 10, .reference 13, .reference 13] &&
-      contents [grow, mutateInserted, done] 13 == some [.scalar 0 8]),
+    ("derive: shared and separately stored fields have the same path update",
+       [input, splitInput].all fun source =>
+         publishedContents [grow, done] [0] source == some [.reference 0, .reference 3, .reference 3] &&
+         publishedContents [grow, done] [1] source == some [.reference 0, .reference 3]),
+    ("derive: updates one occurrence of an inserted value",
+       publishedContents [grow, mutateInserted, done] [0, 1] == some [.scalar 0 8] &&
+       publishedContents [grow, mutateInserted, done] [0, 2] == some [.scalar 0 7]),
    ("derive: inserted immutable source remains unchanged",
       contents [grow, mutateInserted, done] 3 == some [.scalar 0 7]),
    ("derive: immutable insertion from outside the original root graph",
-      contents [.rewrite 11 [.reference 10, .reference 15], .rewrite 15 [.scalar 0 11], done] 15 ==
-        some [.scalar 0 11] &&
-      contents [.rewrite 11 [.reference 10, .reference 15], .rewrite 15 [.scalar 0 11], done] 5 ==
-        some [.scalar 0 10]),
-   ("derive: source cycles survive copying",
-      contents [.rewrite 14 [.reference 14], done] 14 cyclic == some [.reference 14]),
+       publishedContents [.rewrite [0] [.reference 0, .reference 5],
+         .rewrite [0, 1] [.scalar 0 11], done] [0, 1] == some [.scalar 0 11]),
+    ("derive: finite path update through a cycle keeps its old suffix",
+       publishedContents [.rewrite [0] [.reference 4, .scalar 0 2], done] [0] cyclic ==
+         some [.reference 4, .scalar 0 2] &&
+       publishedContents [.rewrite [0] [.reference 4, .scalar 0 2], done] [0, 0] cyclic ==
+         some [.reference 4, .scalar 0 1]),
    ("derive: no-op can preserve original root", result [done] == some ⟨2, .immutable⟩),
-   ("derive: no-op infers no state events", decide (analyze input [done] = [])),
+    ("derive: no-op infers no state events",
+       (checkRecipe input [done]).any (fun analysis => analysis.facts.isEmpty)),
    ("derive: ordinary local draft writes discharge", state [grow, done] == some []),
    ("derive: external cleanup writes survive abort",
       state [grow, external outsideWrite, aborted] == some [outsideWrite]),
@@ -139,15 +163,15 @@ def fixtures : List (String × Bool) :=
    ("derive: abort preserves every base entry", contents [grow, mutateInserted, aborted] 1 ==
       some [.reference 0, .reference 3] && contents [grow, mutateInserted, aborted] 3 == some [.scalar 0 7]),
    ("derive: recipe effects remain on abort",
-      ((check input [.effect 5, grow, aborted]).map (fun a => a.result.effects)) == some [5]),
+       ((checkRecipe input [.effect 5, grow, aborted]).map (fun a => a.result.effects)) == some [5]),
    ("derive: outside environment blocks local discharge",
       (state [grow, done] { input with environments := [outsideOrigin] }).any (fun events => !events.isEmpty)),
-   ("derive: source object cannot be written", !accepted [.rewrite 1 [], done]),
-   ("derive: fixed tuple arity cannot shrink", !accepted [.rewrite 12 [.reference 11], done]),
-   ("derive: fixed tuple arity cannot grow", !accepted [.rewrite 12 [.reference 11, .reference 11, .reference 11], done]),
-   ("derive: homogeneous element type enforced", !accepted [.rewrite 11 [.reference 11], done]),
-   ("derive: scalar type enforced", !accepted [.rewrite 10 [.scalar 1 2], done]),
-   ("derive: source reference cannot bypass correspondence", !accepted [.rewrite 11 [.reference 3], done]),
+    ("derive: source object cannot be written", !(check input [.rewrite 1 [], .finish .normal]).isSome),
+    ("derive: fixed tuple arity cannot shrink", !accepted [.rewrite [] [.reference 1], done]),
+    ("derive: fixed tuple arity cannot grow", !accepted [.rewrite [] [.reference 1, .reference 1, .reference 1], done]),
+    ("derive: homogeneous element type enforced", !accepted [.rewrite [0] [.reference 1], done]),
+    ("derive: scalar type enforced", !accepted [.rewrite [0, 0] [.scalar 1 2], done]),
+    ("derive: invalid path rejected", !accepted [.rewrite [0, 2] [.scalar 0 2], done]),
    ("derive: live source writer rejects input", !accepted [done] liveInput),
    ("derive: readonly reception is not immutable reception", !accepted [done]
       { input with admissions := input.admissions.map (fun (object, _) => (object, .ref)) }),
@@ -175,11 +199,12 @@ def fixtures : List (String × Bool) :=
       !accepted [.external hiddenWrapper, done]),
    ("derive: unknown footprint remains an obligation", !accepted [.external unknownBoundary, done]),
    ("derive: known external effects propagate",
-      ((check input [.external ⟨[outsideWrite], [8], .known ⟨[outsideOrigin], [], []⟩⟩, done]).map
+       ((checkRecipe input [.external ⟨[outsideWrite], [8], .known ⟨[outsideOrigin], [], []⟩⟩, done]).map
         (fun analysis => analysis.result.effects)) == some [8]),
    ("derive: source analysis includes actual local and external writes",
-      decide (Fact.event .write context.source ∈ analyze input [grow, external outsideWrite, aborted] ∧
-        Fact.event .write outsideOrigin.source ∈ analyze input [grow, external outsideWrite, aborted]))]
+       (checkRecipe input [grow, external outsideWrite, aborted]).any fun analysis =>
+         decide (Fact.event .write context.source ∈ analysis.facts ∧
+           Fact.event .write outsideOrigin.source ∈ analysis.facts))]
 
 theorem fixtures_all_pass : fixtures.all Prod.snd = true := by decide +kernel
 

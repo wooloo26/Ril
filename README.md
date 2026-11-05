@@ -47,13 +47,16 @@ fn visit() &record_visit -> () { record_visit() } -- Inherit verified named stat
 ```
 
 ```ril
--- Functional updates preserve graph aliases while confining draft mutation.
-type Pair = { left: Cell, right: Cell }
-fn update_graph() -> () {
-    let cell = Cell.{ value: 1 }
-    let base = Pair.{ left: cell, right: cell }
-    let updated = base |> derive \mut draft -> { draft.left.value += 1 }
-    assert(base.right.value == 1 && updated.right.value == 2)
+fn update_snapshot() -> () {
+    let mut live = Cell.{ value: 1 }
+    let snapshot = clone(ref live)
+    live.value = 3
+
+    let base = .{ left: snapshot, right: snapshot }
+    var current = base
+    current = current |> derive \mut draft -> { draft.left.value += 1 }
+    assert(base.left.value == 1 && live.value == 3)
+    assert(current.left.value == 2 && current.right.value == 1)
 }
 ```
 
