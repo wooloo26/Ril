@@ -1,7 +1,7 @@
 [project]
-name = "ril-doccheck"
+name = "ril-scripts"
 version = "0.1.0"
-description = "Markdown structure and Ril specification grammar checks"
+description = "Development and verification scripts for Ril"
 requires-python = ">=3.13"
 dependencies = [
     "lark>=1.3.1",
@@ -23,6 +23,9 @@ dev = [
     "ruff>=0.17.3",
 ]
 
+[tool.uv.build-backend]
+module-name = "ril_doccheck"
+
 [tool.ruff]
 target-version = "py313"
 line-length = 100
@@ -33,7 +36,7 @@ select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
 [tool.mypy]
 python_version = "3.13"
 strict = true
-files = ["src", "tests"]
+files = ["check_formal.py", "src", "tests"]
 warn_unreachable = true
 
 [tool.pytest.ini_options]

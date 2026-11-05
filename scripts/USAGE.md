@@ -1,15 +1,16 @@
-# Documentation checks
+# Development scripts
 
-This independent uv project keeps Python tooling, dependencies, configuration,
-tests and caches under `tools/doccheck/`. The repository root remains available
-for the Ril implementation. Python 3.13 is selected in `.python-version` and
-managed by uv; dependencies are pinned in `uv.lock`.
+`scripts/` is the shared uv project for repository utilities that are easier to
+write as scripts. Python 3.13 is selected in `.python-version` and dependencies
+are pinned in `uv.lock`.
+
+## Script quality checks
 
 Run from the repository root:
 
 ```sh
-uv sync --directory tools/doccheck --locked
-uv run --directory tools/doccheck --locked quality
+uv sync --directory scripts --locked
+uv run --directory scripts --locked quality
 ```
 
 The quality command runs Ruff formatting checks, Ruff lint, strict mypy, pytest,
@@ -19,24 +20,36 @@ directory, so its caches stay here. It reports all failed checks and exits nonze
 Run individual checks from the repository root:
 
 ```sh
-uv run --directory tools/doccheck --locked ril-doccheck
-uv run --directory tools/doccheck --locked ruff check .
-uv run --directory tools/doccheck --locked ruff format --check .
-uv run --directory tools/doccheck --locked mypy
-uv run --directory tools/doccheck --locked pytest
+uv run --directory scripts --locked ril-doccheck
+uv run --directory scripts --locked ruff check .
+uv run --directory scripts --locked ruff format --check .
+uv run --directory scripts --locked mypy
+uv run --directory scripts --locked pytest
 ```
 
-To format Python files, run `uv run --directory tools/doccheck ruff format .`.
-To update locked dependencies, run `uv lock --directory tools/doccheck --upgrade`.
+To format Python files, run `uv run --directory scripts ruff format .`.
+To update locked dependencies, run `uv lock --directory scripts --upgrade`.
+
+## Formal verification
+
+With `lake` on `PATH`, run this command from the repository root.
+
+```sh
+uv run --directory scripts --locked python check_formal.py
+```
+
+The runner builds the Lean project in [`formal/`](../formal/lakefile.toml), checks
+its examples, and audits project declarations. Lake keeps its build products
+under `formal/.lake/`. The runner also works with `python3 scripts/check_formal.py`.
 
 ## Documentation validation
 
 The default scope is all Markdown in the repository, excluding hidden and common
 generated directories. Explicit input paths are relative to the working directory
-(`tools/doccheck/` with the commands above). For example:
+(`scripts/` with the commands above). For example:
 
 ```sh
-uv run --directory tools/doccheck --locked ril-doccheck ../../doc/SPEC.md
+uv run --directory scripts --locked ril-doccheck ../doc/SPEC.md
 ```
 
 Markdown is parsed structurally, including tables and strikethrough. Checks cover

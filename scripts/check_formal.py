@@ -6,17 +6,17 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-PROJECT = Path(__file__).resolve().parent
+FORMAL = Path(__file__).resolve().parents[1] / "formal"
 
 
 def run(*command: str) -> None:
-    subprocess.run(command, cwd=PROJECT, check=True)
+    subprocess.run(command, cwd=FORMAL, check=True)
 
 
 def audit_output(path: Path) -> str:
     result = subprocess.run(
         ["lake", "env", "lean", str(path)],
-        cwd=PROJECT,
+        cwd=FORMAL,
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
@@ -26,7 +26,7 @@ def audit_output(path: Path) -> str:
     return result.stdout
 
 
-def verify_imports(output: str, root: Path = PROJECT) -> None:
+def verify_imports(output: str, root: Path = FORMAL) -> None:
     actual = set(re.findall(r"Audit module: (RilAccess(?:\.\w+)*)", output))
     expected = {
         ".".join(path.relative_to(root).with_suffix("").parts)
@@ -39,7 +39,7 @@ def verify_imports(output: str, root: Path = PROJECT) -> None:
 
 def audit_rejection(body: str, expected: str, namespace: str = "RilAccess") -> None:
     # Generated probes and their cleanup stay inside this ignored build directory.
-    with tempfile.TemporaryDirectory(prefix="audit-test-", dir=PROJECT / ".lake") as directory:
+    with tempfile.TemporaryDirectory(prefix="audit-test-", dir=FORMAL / ".lake") as directory:
         probe = Path(directory) / "Probe.lean"
         probe.write_text(
             "import RilAccess\nimport AuditSupport\n"
@@ -48,7 +48,7 @@ def audit_rejection(body: str, expected: str, namespace: str = "RilAccess") -> N
         )
         result = subprocess.run(
             ["lake", "env", "lean", str(probe)],
-            cwd=PROJECT,
+            cwd=FORMAL,
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
@@ -61,7 +61,7 @@ def audit_rejection(body: str, expected: str, namespace: str = "RilAccess") -> N
 
 def audit_entrypoint(module: str) -> str:
     # Main and Audit both define main; inspect their completed modules separately.
-    with tempfile.TemporaryDirectory(prefix="entry-audit-", dir=PROJECT / ".lake") as directory:
+    with tempfile.TemporaryDirectory(prefix="entry-audit-", dir=FORMAL / ".lake") as directory:
         probe = Path(directory) / "Entry.lean"
         probe.write_text(
             f"import {module}\nimport AuditSupport\naudit_ril_access\n", encoding="utf-8"
@@ -77,7 +77,7 @@ def trailing_declaration_rejection() -> None:
     # A source-local audit sees only earlier declarations. Import the compiled
     # module to expose even a declaration after its apparent successful audit.
     # Keep the generated module in Lake's actual RilAccess import tree.
-    library = PROJECT / ".lake" / "build" / "lib" / "lean"
+    library = FORMAL / ".lake" / "build" / "lib" / "lean"
     with tempfile.TemporaryDirectory(
         prefix="AuditTailProbe", dir=library / "RilAccess"
     ) as directory:
@@ -98,7 +98,7 @@ def trailing_declaration_rejection() -> None:
                 str(source.with_suffix(".olean")),
                 str(source),
             ],
-            cwd=PROJECT,
+            cwd=FORMAL,
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
@@ -119,7 +119,7 @@ def trailing_declaration_rejection() -> None:
 
 
 def orphan_rejection(output: str) -> None:
-    with tempfile.TemporaryDirectory(prefix="orphan-test-", dir=PROJECT / ".lake") as directory:
+    with tempfile.TemporaryDirectory(prefix="orphan-test-", dir=FORMAL / ".lake") as directory:
         root = Path(directory)
         (root / "RilAccess").mkdir()
         (root / "RilAccess" / "OrphanProbe.lean").write_text(
