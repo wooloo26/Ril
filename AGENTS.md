@@ -11,7 +11,7 @@ use other branches unless the user explicitly requests them.
 
 ## Ril distinctions
 
-[SPEC](doc/SPEC.md) is canonical. Keep this guide focused on distinctions that affect interpretation or implementation. The table summarizes language rules and introduces no additional conformance requirements.
+[SPEC](doc/SPEC.md) is canonical. Keep this guide focused on distinctions that are easily confused and affect interpretation or implementation. The table summarizes language rules and introduces no additional conformance requirements.
 
 | Distinction | Ril meaning |
 | --- | --- |
@@ -30,7 +30,7 @@ use other branches unless the user explicitly requests them.
 | [Fixtures / complete source](doc/SPEC.md#document-conventions) | SPEC fixtures may display compiler-completed named signatures; complete source spells the required annotations. |
 | [Purity / termination](doc/SPEC.md#termination-and-halt-contracts) | Purity requires empty outward effect and state/provenance obligations after handling and local discharge; confined mutation remains allowed. `halt` additionally requires finite computation. `Finite` / `MayDiverge` classify proved / unproved finiteness; `never` describes absence of normal continuation. Finite computation may panic. |
 | [`Div` / finiteness](doc/SPEC.md#finite-evaluation-with-div) | `Div` denotes budget exhaustion. `Div::budget` bounds eligible protected computation by charging abstract evaluation events, without promising a wall-clock bound. Whole-expression finiteness also requires finite cleanup and recovery. |
-| [`clone` / `derive`](doc/SPEC.md#functional-updates-via-derive) | Ordinary `clone` isolates a copied graph; resource cloning follows explicit resource contracts. `derive` may share unaffected immutable regions, including the original root for a no-op recipe. Both preserve internal aliases/cycles; copying does not imply unique ownership. |
+| [`clone` / `derive`](doc/SPEC.md#functional-updates-via-derive) | Ordinary `clone` isolates a copied graph; resource cloning follows explicit resource contracts. `derive` updates deeply immutable shared-object roots, keeps stored-key graphs immutable, and may share unaffected regions, including a no-op root. Both preserve internal aliases/cycles; copying grants no uniqueness. |
 | [Static types / ordinary data](doc/SPEC.md#static-type-values-and-type-quotation) | `Type<T>` is an exact static metatype; `<T>` is a static type token. `typeof e` checks without evaluating `e`. Eligible token-free meta results may become ordinary constants. |
 | [Data type / member mode](doc/SPEC.md#universal-member-mode-projection) | `T.(K)` projects the constituent data type; `modeof T.(K)` queries the declared pair of slot replacement and access. |
 | [`where` / generic constraints](doc/SPEC.md#dual-tier-where-invariants) | `where` declares helpers; generic predicates use signature constraints and pipeline guards. Signature helpers are types; block helpers may also be functions or effects. |
