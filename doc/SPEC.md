@@ -1308,10 +1308,11 @@ Default immutable reception follows the [common mode tables](#binding-modes-and-
 | :--- | :--- |
 | Immutable reception | Recursively suppress effective `var`, `mut`, `^mut`, and `ref` modes, idempotently through cycles; preserve schemas, nominal/opaque identities, and callable contracts |
 | Surviving writer or live origin | Reject with `E0535`; reception cannot copy, freeze, consume, or revoke that authority |
-| `clone` | Copy ordinary shared-object data into an isolated construction result `new T`. Preserve the schema. Immutable reception publishes the copied contents as a snapshot, including cyclic contents |
+| `clone` | Copy data admitted by [`SharedObject`](#normative-rules-for-built-in-operations) into an isolated construction result `new T`. Preserve the schema and nominal or opaque identity. Immutable reception publishes the copied contents as a snapshot, including cyclic contents |
 | Copy execution | Read the source once as a stable snapshot; no suspension, user callback, or overlapping write |
-| Non-clonable constituent | Reject with `E0530`, including retained environments, scoped resources, tasks, and unique receivers hidden in wrappers or `ref` handles |
-| Function / opaque value | Immutable environment-free functions are copyable; resource operations follow their explicit contracts |
+| Non-clonable authority | Reject with `E0530` at the root or in a constituent, including retained environments, scoped resources, tasks, and unique receivers hidden in wrappers or `ref` handles |
+| Value types | Copy by ordinary value passage. `clone(value)` fails the type guard (`E0301`). A value-type `ref` argument is `E0401` |
+| Function / resource value | Immutable environment-free functions support ordinary copying. Endpoint duplication follows the [channel resource contract](#structured-concurrency-channels) |
 
 Writable reception of a clone activates declared writable members. Each writable occurrence of an immutable constituent gets separate storage. This materialization must be finite (`E0530`). Copied live objects retain their internal alias and cycle relationships under the ordinary writable reception checks. A `new` return preserves the construction and reception facts.
 
@@ -1700,9 +1701,10 @@ assert(external.count == 10 && inserted.left.count == 11)
 
 | Aspect | Rule |
 | :--- | :--- |
-| Input / result | Deeply immutable ordinary shared-object root, including eligible nominal/opaque representations; immutable result of the same data type |
-| Invalid root (`E0536`) | Value representation or live object; check root eligibility before the draft parameter |
-| Draft | Fixed `mut draft` handle; recipe returns `()`; member writes temporarily override declared modes, subject to stored-key protection |
+| Input / result | Receive a deeply immutable root admitted by [`SharedObject`](#normative-rules-for-built-in-operations), including eligible nominal and opaque representations. Return an immutable result of the same data type and declared member modes |
+| Invalid root (`E0536`) | Ineligible type, contained authority, or live origin. Check root eligibility before the draft parameter |
+| Draft | `Draft<T>` is the scoped projection of the current draft of `T`. The recipe receives a fixed `mut` handle and returns `()` |
+| Projection | Resolve paths and member data types using `T` and its verified constraints, including generic record rows. At each otherwise accessible path, draft updates may replace fixed members and traverse immutable members subject to the stored-key and shape rules below. Nominal and opaque boundaries follow their ordinary visibility rules |
 | Update | Resolve the path in the current draft. Replace the selected value and rebuild its ancestors with their other contents intact. A finite path through a cycle follows the same rule |
 | Draft access | Reads and borrows refer to the selected path. Overlap is checked on draft paths, independently of storage shared by their values |
 | Storage | Implementations may reuse unchanged storage, including the entire root for a no-op recipe |
@@ -1710,8 +1712,18 @@ assert(external.count == 10 && inserted.left.count == 11)
 | Collections | Element and structural updates preserve the base snapshot's length, entries, and order |
 | Stored keys (`E0535`) | Stored keys and set elements are immutable values. Collection operations replace entries; writes to other paths leave stored keys and elements intact |
 | Declared shape (`E0336`, `E0312`) | Preserve tuple arity, record fields, and sum variants; members may be replaced |
-| Confinement (`E0607`) | Draft references remain within the recipe and its non-escaping helpers; publish after normal completion |
-| Effects / abort | Forward recipe effects and external state; discharge local writes. Abort preserves immutable inputs and prior external writes |
+| Confinement (`E0607`) | `derive` creates the draft handle. `Draft<T>` may be named in recipe and helper parameter types. Draft paths, references, and captures remain within the recipe and its non-escaping helpers. Publish after normal completion |
+| Effects / abort | Forward the actual recipe's effects and external state/provenance obligations, including surviving captures. Discharge draft writes locally. Abort preserves immutable inputs and prior external writes |
+| Finiteness | Preserve the actual recipe's [termination and budget obligations](#termination-and-halt-contracts), including its cleanup and any recovery required for finite completion |
+
+```ril
+fn update_title<T: { title: str, .. }>(item: T, new_title: str) -> T {
+    item |> derive \mut draft -> { draft.title = new_title }
+}
+let item = .{ title: "old", published: true }
+let revised = update_title(item, "new")
+assert(item.title == "old" && revised.title == "new" && revised.published)
+```
 
 ```ril
 type Board = { title: str, items: []i64, tags: [str: i64] }
@@ -1795,7 +1807,7 @@ ValueType             ::= TypeExpression
 - **Pipeline Type Constraints (`T |> Guard`, `E0301`, `E0306`)**: A type parameter may pipe into one or more pure type functions (`T |> Numeric`). The guard must be a compile-time pure `type` function of kind `Type -> Type` (`E0306`). An argument type $T_{arg}$ satisfies the guard if and only if:
   $$\text{Valid}(T_{arg}) \iff T_{arg} \not\equiv \text{never} \quad \wedge \quad \text{Guard}\langle T_{arg} \rangle \equiv T_{arg}$$
   The bottom type `never` is statically rejected before guard evaluation, preventing vacuous satisfaction. If $\text{Guard}\langle T_{arg} \rangle$ does not produce definitional identity with $T_{arg}$, the argument is rejected under `E0301`. Multiple guards pipe from left to right: `T |> Guard1 |> Guard2` $\equiv \text{Guard2}\langle \text{Guard1}\langle T \rangle \rangle$.
-- **Orthogonal Constraint Composition**: Structural row polymorphism and pipeline guards compose naturally: `T: { id: i64, .. } |> AuditGuard` verifies that $T$ satisfies the open record structure and conforms to `AuditGuard`.
+- **Constraint Composition**. A structural row constraint and a pipeline guard both apply to the argument type. The `AuditGuard` example below requires an audit field in addition to the value field used by the function.
 - **Static Value Sorts**: Const parameters admit scalar values, atomic type tokens, and finite immutable aggregates without resource or callable authority. `token: Type` is a static value parameter, distinct from a type parameter `T: Type`. Admission of static-only token values never permits their run-time materialization.
 - **Const Generic Evaluation & Purity Invariant (`E0814`, `E0323`)**: Const generic arguments evaluate at compile time within the pure static domain (with empty effect and state/provenance rows). Non-constant runtime expressions passed to const parameters trigger `E0814`. Arguments failing sort constraints trigger `E0323`.
 - **No Untagged Literal or Storage Union Types (`E0318`)**: Concrete values (strings, integers, booleans) and untagged value unions (`i64 | str`) cannot serve as storage, variable, or binding types (`E0318`). Tagged alternatives are declared with sum types (`type HttpMethod { Get, Post }`). Concrete values may be supplied as compile-time arguments to const parameters (`Buffer<u8, 1024>`, `Matrix<f64, 4>`). Finite type sets (`T: i64 | f64`) are permitted exclusively as static domain constraints on generic parameters (`TypeSetSort`), which are monomorphized to single rigid types.
@@ -1820,12 +1832,13 @@ assert(multiply(3, 4) == 12)
 -- let bad_mul = multiply("x", "y")     -- Error [E0301]: type 'str' does not satisfy constraint 'Numeric'
 
 -- Composed Structural and Pipeline Constraint:
-type NonZero = \T -> match <T> {
-    <{ val: i64, .. }> -> <T>,
+type AuditGuard = \T -> match <T> {
+    <{ audit_id: i64, .. }> -> <T>,
     _ -> <never>,
 }
-fn get_val<T: { val: i64, .. } |> NonZero>(item: T) -> i64 { item.val }
-assert(get_val(.{ val: 42, label: "ok" }) == 42)
+fn get_val<T: { val: i64, .. } |> AuditGuard>(item: T) -> i64 { item.val }
+assert(get_val(.{ val: 42, audit_id: 1 }) == 42)
+-- get_val(.{ val: 42 })             -- Error [E0301]: missing audit_id required by AuditGuard
 
 type Token<value: f64>(i64)
 meta let _ = assert(<Token<0.0>> != <Token<-0.0>>)
@@ -6840,7 +6853,7 @@ let ticket = Channel::detach(mut rx)
 
 Channel payloads admit immutable ordinary data or explicitly detached resource descriptors (`E0602`), not implicit transfer of a `mut`/`^mut` authority. Endpoint/ticket use respects its one-task and transfer authority (`E0603`); scope escape is `E0606`. Clone and derive eligibility inspect nested constituents (`E0530`, `E0536`). Result inspection obligations follow actual payloads and aliases; inspecting transport success does not inspect a nested Result (`E0720`).
 
-A resource contract must state endpoint creation, cloning, transfer, closure, and cancellation rules. Endpoint-specific authority does not authorize copying or transferring ordinary writable graphs or unrelated opaque resources.
+A resource contract must state endpoint creation, cloning, transfer, closure, and cancellation rules. Where the endpoint contract permits sender duplication, `Channel::clone_sender` obtains another sender for the same channel and requires `@Fiber`. Reception, lifetime, and closure authority follow that endpoint contract. The prelude `clone` operates on ordinary shared-object data. Endpoint-specific authority applies only to the resources named by the contract.
 
 
 
@@ -7083,6 +7096,10 @@ type FastBuf = PaddedBuffer<64, u8>            -- Resolves to { inline_data: []u
 ```ril
 fn runtime_identity(value: i64) -> i64 { value }
 -- meta let INVALID_CALL = runtime_identity(1) -- Error [E0810]: run-time fn in static evaluation
+halt fn twice(value: i64) -> i64 { value * 2 }
+-- meta let INVALID_HALT_CALL = twice(3) -- Error [E0810]: halt leaves the call family unchanged
+meta let COUNT = len("Ril")              -- OK: ordinary static value reception
+-- meta let FAIL = panic("invalid type") -- Error [E0831]: static panic
 ```
 
 `E0810` diagnoses a forbidden call across the specified evaluation families. `E0814` diagnoses a run-time value where a static value is required, including const arguments and static-key arguments. Wrong sorts retain `E0323`; a known negative static value is `E0815`. Direct record access with a dynamic computed key retains `E0324`, rather than the argument-oriented static-key diagnostic.
@@ -7110,10 +7127,12 @@ fn run_logged() @Audit -> i64 { dispatch_worker<DispatchMode::Run>(logged_worker
 
 | Call family | Permitted calls |
 | :--- | :--- |
-| Type function | Other type functions and `meta fn`; no run-time `fn` (`E0810`) |
+| Type function | Other type functions, `meta fn`, and listed dual-phase operations. An ordinary run-time `fn` is `E0810` |
 | Meta value evaluation | `meta fn`, static reflection, and listed dual-phase operations; no ordinary run-time `fn` or direct type-function value call (`E0810`) |
 | Run-time value evaluation | No type-function or meta-function value invocation (`E0810`) |
-| Both phases | Pure arithmetic/comparison, `len`, `assert`, and library operations explicitly declared dual-phase |
+| Both phases | Pure arithmetic/comparison, `len`, `panic`, `assert`, and library operations explicitly declared dual-phase |
+
+Dual-phase admission follows the resolved operation's contract. `halt` certifies purity and finiteness within the declaration's existing call family. Static evaluation of `len` uses the ordinary immutable-value instance for a `LenTarget`. Its run-time `via` template also admits explicit `ref` observation of eligible collections. The [restriction on `via` parameters](#access-mode-inference-with-via-and-infer) applies to static declarations.
 
 Type elaboration in declarations, annotations, quoted type syntax and generic type metadata is static, including inside an ordinary `fn`. Meta code permits local type quotations and read-only reflection while its result follows the [meta-result restrictions](#pure-type-functions-and-result-restrictions).
 
@@ -7736,7 +7755,9 @@ The prelude is an ambient lexical scope enclosing every compilation unit, includ
 | :--- | :--- |
 | Built-in functions below | Bare names: `len`, `clone`, `assert`, etc. |
 | Library modules below | Whole public namespace through `Module::member` |
-| Standard types / concepts | `Option<T>`, `Result<T, E>`, `Set<T>`, `MemberMode`, `SharedObject`, `LenTarget`, `Tuple`; constructors follow ordinary resolution |
+| Standard types / sorts | `Option<T>`, `Result<T, E>`, `Set<T>`, `MemberMode`. Constructors follow ordinary resolution |
+| Static type operations | `SharedObject`, `LenTarget`, `Tuple`, `NominalWrapper`, `Unwrap` |
+| Scoped draft type | `Draft<T>` in [recipe and helper contracts](#normative-rules-for-functional-updates) |
 | Language constructs | Primitive types, `Type`, `Type<T>`, `?T`, collection syntax, and system effects `Fiber`, `Concurrent`, `Async`, `Div` |
 | Explicit `use` | Ordinary module aliases or selected member bindings in the declaring scope |
 | Shadowing | Inner declarations may shadow prelude bindings; `Type` and `Super` retain their protected-name rules |
@@ -7794,29 +7815,30 @@ Ril defines the following built-in foundational operations directly in the langu
 assert(len("Ril") == 3 && len(b"RIFF") == 4)
 let original = [1, 2, 3]
 let mut copy = clone(original)
-assert(len(copy) == 3)
+copy[0] = 9
+assert(len(ref copy) == 3 && copy[0] == 9 && original[0] == 1)
 -- len(ref "Ril")                    -- Error [E0401]: text is a value type
--- clone(42)                         -- Error [E0401]: value types copy by value and do not admit 'clone'
+-- clone(42)                         -- Error [E0301]: i64 does not satisfy SharedObject
 -- clone(ref 42)                     -- Error [E0401]: use ordinary value passage
 ```
 
-For inputs supported by the selected operation:
+The `via` inputs of `len`, `inner`, and `clone` admit ordinary reception and explicit `ref` observation as shown below. Each operation also checks its type guard and primitive eligibility.
 
 | Input | Ordinary form | Explicit `ref` form |
 | :--- | :--- | :--- |
-| Value type, including `str` / `bytes` | Receive value (`len`) / `E0401` (`clone`) | `E0401` |
+| Value type, including `str` / `bytes` | Receive value | `E0401` |
 | Immutable shared-object data | Receive immutable data | Observe same data |
 | Live shared-object data | `E0535` | Observe without freezing |
 
 Forms preserve data schemas and operation identity; resource operations require their own contracts. Operators, projections, indexing and traversal use primitive observation rules, while ordinary parameters use reception rules.
 
-Built-in operations share exact signature parity with user-defined Ril functions, declared via access-mode templates (`via`/`infer`) and pipeline guards without ad-hoc overloading (`E0203`). Their eligibility, effects, and lowering follow the normative rules below. Complexity describes ordinary-data work, excluding argument evaluation, garbage-collection overhead, and user recipe/callback work. Graph work includes regions visited or copied to preserve aliases and cycles.
+Built-in operations use the same surface signature forms as user-defined Ril functions, including access-mode templates (`via`/`infer`) and pipeline guards. Each operation has one prelude declaration. Same-scope duplicates follow `E0203`. Checking resolves the guards, access alternatives, and inferred contracts statically. Execution uses the selected operation without run-time type tests for those choices. Primitive eligibility, phase, and execution rules below complete the displayed signatures. Complexity describes ordinary-data work, excluding argument evaluation, garbage-collection overhead, and user recipe/callback work. Graph work includes regions visited or copied to preserve aliases and cycles.
 
 | Operation | Canonical declaration | Effects | Phase | Complexity | Contract |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | `len` | `pub halt fn len<T \|> LenTarget>(via item: T) -> i64` | None | Dual-phase | $O(1)$ / $O(n)$ text | Count of elements, entries, bytes, or Unicode scalars |
 | `inner` | `pub fn inner<W \|> NominalWrapper>(via wrapper: W) -> infer Unwrap<W>` | None | Run-time | $O(1)$ | Preserve immutable/observed payload authority; value payloads use a plain result; unit nominal yields `()` |
-| `clone` | `pub fn clone<T \|> SharedObject>(via value: T) -> new T` | None for ordinary data | Run-time | $O(\text{visited + materialized})$ for ordinary data | Isolated construction `new T` for ordinary shared objects; resource cloning follows its explicit contract |
+| `clone` | `pub fn clone<T \|> SharedObject>(via value: T) -> new T` | None | Run-time | $O(\text{visited + materialized})$ | Isolated construction `new T` for ordinary shared-object data |
 | `derive` | `pub fn derive<T \|> SharedObject>(base: T, recipe: fn(mut draft: Draft<T>) @& -> ()) -> T` | Forwards recipe | Run-time | $O(\text{visited + copied})$ | Path updates on an immutable shared-object root via a confined draft |
 | `byte_size` | `pub meta fn byte_size(value: Type) -> i64` | None | Static only | $O(1)$ | Size of the represented target's value/handle; static-only targets have no run-time layout |
 | `type_name` | `pub meta fn type_name(value: Type) -> str` | None | Static only | $O(\text{len})$ | Diagnostic description of the token's target, including static metatypes; spelling does not determine type identity |
@@ -7827,11 +7849,38 @@ Built-in operations share exact signature parity with user-defined Ril functions
 
 #### Normative Rules for Built-in Operations
 
-- **Concept Guards and Signature Parity**:
-  - `SharedObject`: Pure type guard constraining generic type parameters to composite heap products and collections (`<{ .. }>`, `<(let _, ..)>`, `<[]let _>`, `<[let _: let _]>`, `<Set<let _>>`, and sum types). Scalar value types, strings, and raw bytes evaluate to `never`, triggering `E0301`/`E0536`.
-  - `LenTarget`: Pure type guard admitting `str`, `bytes`, `[]T`, `[K: V]`, and `Set<T>`. Non-collection targets evaluate to `never`.
-  - `Tuple`: Pure type guard admitting arbitrary tuple products `<(let _, ..)>`.
-  - `Draft<T>`: Opaque draft projection type representing an in-progress `derive` transaction where constituent member modes are temporarily overridden for path-rebuilding updates under `E0607` confinement.
+`SharedObject`, `LenTarget`, `Tuple`, and `NominalWrapper` are pure type guards of kind `Type -> Type`. Each produces `<T>` on an admitted input `T` and `<never>` otherwise. Transparent aliases follow the ordinary type identity rules. The guards inspect types during checking and preserve the admitted input's identity and member modes.
+
+| Guard | Admitted input |
+| :--- | :--- |
+| `SharedObject` | Ordinary record, tuple, array, map, set, or sum roots with any legal member or storage modes, including nominal or opaque types with an ordinary shared-object representation. Value, callable, resource, and scoped-authority roots are excluded. Across an opaque boundary the guard uses the checked representation category and preserves the sealed identity. Graph eligibility and actual access are separate checks |
+| `LenTarget` | `str`, `bytes`, arrays, maps, and sets with any legal storage modes. A nominal wrapper requires explicit unwrapping. An opaque representation is available only in its exact defining scope |
+| `Tuple` | Visible tuple products of arity two or greater, with any legal member modes. Unit is a value type |
+| `NominalWrapper` | Visible nominal wrapper declarations, including unit nominal declarations. Sum and opaque declarations introduce no such wrapper |
+
+The following definition gives the `Tuple` guard's behavior under the [structural type-pattern rules](#structural-type-pattern-matching). The exact two-member arm covers the case where a one-member rest could not form a tuple.
+
+```ril
+halt type Tuple = \T -> match <T> {
+    <(let M let _, let N let _)> -> <T>,
+    <(let M let _, ..)>          -> <T>,
+    _                           -> <never>,
+}
+meta let _ = assert(<Tuple<(var i64, str)>> == <(var i64, str)>)
+meta let _ = assert(<Tuple<(i64, str, bool)>> == <(i64, str, bool)>)
+meta let _ = assert(<Tuple<()>> == <never>)
+```
+
+```ril
+type Cell = { var count: i64 }
+meta let _ = assert(<SharedObject<[mut]Cell>> == <[mut]Cell>)
+meta let _ = assert(<LenTarget<[str: ref Cell]>> == <[str: ref Cell]>)
+```
+
+`Unwrap<W>` is a static type operation on `W |> NominalWrapper`. It produces the wrapper's immediate payload type with its declared member modes, or `()` for a unit nominal. `inner` uses this type and derives the result access and provenance separately. `Draft<T>` follows the [scoped draft rules](#normative-rules-for-functional-updates).
+
+An ineligible type argument normally fails its guard with `E0301`. At the built-in call boundary, apply the specific diagnostics for value-type argument modes (`E0401`), opaque unwrapping (`E0308`), non-clonable authority (`E0530`), and invalid `derive` inputs (`E0536`) under their defining rules.
+
 - **Length Invariant (`len`)**:
   - `len` is a pure, dual-phase built-in operation admitted in both runtime and static contexts.
   - `len(ref value)` observes shared-object data; `len(value)` receives immutable data.
@@ -7846,7 +7895,7 @@ Built-in operations share exact signature parity with user-defined Ril functions
   - `inner(ref wrapper)` preserves observed payload provenance; ordinary `inner(wrapper)` receives immutable data.
   - Single-payload nominal wrapper `type UserId(i64)` unwraps to its payload (`i64`). Unit nominal wrapper `type Marker` unwraps to `()`.
   - The defining scope's opaque representation boundary remains enforced; `inner` does not unwrap opaque types or expose an inaccessible representation.
-- **Copying** follows [deep immutability](#deep-immutability). Cloning a channel `Sender` follows its endpoint contract and requires `@Fiber`.
+- **Copying** follows [deep immutability](#deep-immutability). Sender duplication uses the [channel operation](#structured-concurrency-channels).
 - **Functional updates** follow the [draft rules](#normative-rules-for-functional-updates).
 - **Static Layout Query (`byte_size`)**:
   - `meta fn byte_size(value: Type) -> i64` queries the represented target's nonnegative value/handle size ([Compile-Time Evaluation and Layout Queries](#compile-time-evaluation-and-layout-queries)). Static-only metatypes have no ordinary layout (`E0306`); widening does not change the target being queried.
@@ -7865,6 +7914,14 @@ Built-in operations share exact signature parity with user-defined Ril functions
   - Concurrent writes across tasks may interleave at arbitrary byte boundaries without synchronization.
 - **Prelude Shadowing and Integrity**:
   - Lexical declarations in inner scopes may shadow ordinary prelude names such as `clone`, `len`, and `assert`; protected `Type` is excluded.
+
+```ril
+type UserId(i64)
+type Marker
+let id: i64 = inner(UserId(7))       -- OK: immediate value payload
+let unit: () = inner(Marker)        -- OK: unit nominal
+-- inner(7)                         -- Error [E0301]: i64 does not satisfy NominalWrapper
+```
 
 ### Mandatory Inspection of Fallible Results
 
@@ -7963,7 +8020,7 @@ This index assigns each code its diagnostic name and points to its defining rule
 
 | Code | Diagnostic and defining rule |
 | :---: | :--- |
-| **`E0301`** | [`TypeMismatchError`](#diagnostic-classification) |
+| **`E0301`** | [`TypeMismatchError`](#diagnostic-classification), including [pipeline type constraints](#generic-parameters-defaults-and-value-sorts) |
 | **`E0302`** | [`UnexpectedFieldError`](#record-types-and-row-polymorphism) |
 | **`E0303`** | [`NonExhaustiveMatchError`](#pattern-matching) |
 | **`E0304`** | [`UnreachableMatchArmError`](#pattern-matching); [Sum Types and GADTs](#sum-types-and-gadts) |

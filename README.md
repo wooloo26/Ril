@@ -61,11 +61,14 @@ fn update_snapshot() -> () {
 ```
 
 ```ril
--- Concept guards and row polymorphism compose without ad-hoc overloading or RTTI.
-fn update_title<T: { id: i64, var title: str, ..Rest } |> SharedObject>(item: T, new_title: str) -> T {
-    item |> derive \mut draft -> {
-        draft.title = new_title
-    }
+fn update_title<T: { title: str, .. }>(item: T, new_title: str) -> T {
+    item |> derive \mut draft -> { draft.title = new_title }
+}
+
+fn revise_article() -> () {
+    let article = .{ title: "old", published: true }
+    let revised = update_title(article, "new")
+    assert(article.title == "old" && revised.title == "new" && revised.published)
 }
 ```
 
