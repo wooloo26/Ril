@@ -1,4 +1,4 @@
-import RilAccess.Draft.Boundary
+import RilAccess.Draft.Lowering
 
 set_option maxRecDepth 8192
 set_option maxHeartbeats 8000000
@@ -105,6 +105,56 @@ def setInput : Input :=
   { input with
     pool := [⟨oldOrigin 8, setStorage, [.scalar 0 1, .scalar 0 2]⟩],
     root := 8, reserved := [8, 9], schemas := [setStorage], admissions := [(8, .immutable)] }
+
+def withExtraObject (cell : Cell) : Input :=
+  let object := cell.origin.object
+  { input with
+    pool := cell :: input.pool,
+    reserved := object :: input.reserved, schemas := cell.storage :: input.schemas,
+    admissions := (object, .immutable) :: input.admissions }
+
+def emptyRecordInput : Input := withExtraObject ⟨oldOrigin 4, .fixed 800 [], []⟩
+
+def rejectsRoot (shape : RootShape) (value : Value) (source : Input) : Bool :=
+  match prepareRoot shape value source with
+  | .error .invalidDeriveInput => true
+  | .ok _ => false
+
+def loweringFixtures : List (String × Bool) :=
+  let unit := unitValue 4
+  let someShort := lowerUnitVariant 4 (oldOrigin 4) (.payload 801) .emptyCall
+  let someExplicit := lowerUnitVariant 4 (oldOrigin 4) (.payload 801) .unitArgument
+  let noneTag := lowerUnitVariant 4 (oldOrigin 5) (.tag 802) .bare
+  [("lowering: unit is a tuple with no shared-object tag",
+      RootShape.unit.isTuple && RootShape.unit.objectTag.isNone),
+    ("lowering: Some() and Some(()) lower to the same unit payload",
+      someShort.toOption == someExplicit.toOption &&
+        someShort.toOption.map Cell.contents == some [unit]),
+    ("lowering: None has no payload and None() is rejected",
+      noneTag.toOption.map Cell.contents == some [] &&
+        (match lowerUnitVariant 4 (oldOrigin 5) (.tag 802) .emptyCall with
+         | .error .nullaryVariantCall => true
+         | _ => false)),
+    ("derive: unit is rejected even with a matching heap number",
+      rejectsRoot .unit unit emptyRecordInput &&
+        rejectsRoot .unit (.reference 4) emptyRecordInput &&
+        rejectsRoot (.record 800) unit emptyRecordInput),
+    ("derive: empty record is prepared from the operand, not the supplied root",
+      match prepareRoot (.record 800) (.reference 4) emptyRecordInput with
+      | .ok world => world.input.root == 4 && result [done] world.input == some ⟨4, .immutable⟩
+      | .error _ => false),
+    ("derive: Some() has a sum object root",
+      match someShort with
+      | .ok cell =>
+        match prepareRoot (.sum 801) (.reference 4) (withExtraObject cell) with
+        | .ok world => result [done] world.input == some ⟨4, .immutable⟩
+        | .error _ => false
+      | .error _ => false),
+    ("derive: root schema and immutable reception are both checked",
+      let live := { emptyRecordInput with outside := ⟨[⟨0, 4, .shared⟩], []⟩ }
+      rejectsRoot (.record 801) (.reference 4) emptyRecordInput &&
+        rejectsRoot (.record 800) (.reference 9) emptyRecordInput &&
+        rejectsRoot (.record 800) (.reference 4) live)]
 
 def fixtures : List (String × Bool) :=
   [("derive: tuple member replacement accepted", accepted tupleUpdate),

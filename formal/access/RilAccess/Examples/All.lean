@@ -14,6 +14,6 @@ def allFixtures : List (String × Bool) :=
   fixtures ++ Integrated.Examples.fixtures ++ Calls.Examples.fixtures ++
     GraphAuthority.Examples.fixtures ++ CoreBoundary.Examples.fixtures ++
     CoreSummary.Examples.fixtures ++ CoreResumption.Examples.fixtures ++ Draft.Examples.fixtures ++
-    Integrated.HandoffExamples.fixtures
+    Integrated.HandoffExamples.fixtures ++ Draft.Examples.loweringFixtures
 
 end RilAccess.Examples

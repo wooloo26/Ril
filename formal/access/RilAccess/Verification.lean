@@ -4,7 +4,7 @@ import RilAccess.Provenance.Identity
 import RilAccess.Effects.Boundary
 import RilAccess.Effects.Resumption
 import RilAccess.Access.Handoff
-import RilAccess.Draft.Boundary
+import RilAccess.Draft.Lowering
 import RilAccess.Provenance.Limits
 
 /-! Principal interface results, grouped by semantics. This bundle is not a
@@ -87,6 +87,11 @@ structure EffectGuarantees : Prop where
       Integrated.lookupToken next.authority id = some token
 
 structure DraftGuarantees : Prop where
+  preparedRoot : ∀ (shape : Draft.RootShape) value input start,
+    Draft.prepareRoot shape value input = .ok start →
+    ∃ tag root cell, shape.objectTag = some tag ∧ value = .reference root ∧
+      Draft.lookup input.pool root = some cell ∧ cell.storage.tag = tag ∧
+      Draft.prepare { input with root } = some start
   prefixes : ∀ (input : Draft.Input) recipe analysis,
     Draft.checkRecipe input recipe = some analysis →
     ∃ start commands, Draft.prepare input = some start ∧ Draft.lowerRecipe start recipe = some commands ∧
@@ -127,7 +132,7 @@ theorem verified : Guarantees where
     fun _ _ _ _ _ _ => CoreResumption.derived_access_ends,
     fun _ _ _ _ => CoreResumption.dependent_operation_loan,
     fun _ _ _ _ _ => CoreResumption.retained_authority_survives⟩
-  draft := ⟨fun _ _ _ => Draft.checked_path_recipe_prefixes,
+  draft := ⟨fun _ _ _ _ => Draft.prepared_root_sound, fun _ _ _ => Draft.checked_path_recipe_prefixes,
     fun _ _ _ _ _ => Draft.publication_ends_privilege,
     fun _ _ _ _ _ _ _ _ _ _ => Draft.conforming_external_cannot_escape⟩
 
