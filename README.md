@@ -6,7 +6,7 @@ Ril is a programming language designed to make data permissions flow explicitly 
 
 ```ril
 -- Access-mode dependencies propagate through generic calls and local reception.
-type Cell = { var value: int }
+type Cell = { var value: i64 }
 
 fn relay<T>(via value: T) -> infer T {
     let via item = value
@@ -27,7 +27,7 @@ fn transfer() -> () {
 
 ```ril
 -- Function signatures record environment creation, sharing, and contained origins.
-type Step = fn() &up -> int
+type Step = fn() &up -> i64
 fn make_shared_step(^mut cell: Cell)
     &capture &^mut &return{^mut cell} -> new Step {
     \-> { cell.value += 1; cell.value }
@@ -59,8 +59,8 @@ fn update_graph() -> () {
 
 ```ril
 -- The budget bounds eligible computation; cleanup and recovery must also be finite.
-fn spin() -> int { loop {} }
-halt fn bounded() -> ?int {
+fn spin() -> i64 { loop {} }
+halt fn bounded() -> ?i64 {
     with Div::exhausted() -> None
     with Div::budget(1_000)
     Some(spin())
@@ -73,6 +73,6 @@ type Select = \T: { ..R }, keys: []str -> {
     let selected = keyof T |> Array::filter(\key -> keys |> Array::contains(key))
     <{ modeof T.(K) [selected as K]: T.(K) }>
 }
-type Model = { id: int, var title: str, mut rows: []int }
-type Editable = Select<Model, ["title", "rows"]> -- { var title: str, mut rows: []int }
+type Model = { id: i64, var title: str, mut rows: []i64 }
+type Editable = Select<Model, ["title", "rows"]> -- { var title: str, mut rows: []i64 }
 ```

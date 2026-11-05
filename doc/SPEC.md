@@ -7752,7 +7752,7 @@ The prelude is an ambient lexical scope enclosing every compilation unit, includ
 | Built-in functions below | Bare names: `len`, `clone`, `assert`, etc. |
 | Library modules below | Whole public namespace through `Module::member` |
 | Standard types / sorts | `Option<T>`, `Result<T, E>`, `Set<T>`, `MemberMode`; constructors follow ordinary resolution |
-| Language constructs | Primitive types, `Type`, `Type<T>`, `?T`, collection syntax, and system effect identities |
+| Language constructs | Primitive types, `Type`, `Type<T>`, `?T`, collection syntax, and system effects `Fiber`, `Concurrent`, `Async`, `Div` |
 | Explicit `use` | Ordinary module aliases or selected member bindings in the declaring scope |
 | Shadowing | Inner declarations may shadow prelude bindings; `Type` and `Super` retain their protected-name rules |
 
@@ -7765,14 +7765,15 @@ The prelude is an ambient lexical scope enclosing every compilation unit, includ
 | `Bytes` | `ril/bytes` |
 | `Numeric` | `ril/numeric` |
 | `Reflect` | `ril/reflect` |
-| `Math` | `ril/math` |
-| `Crypto` | `ril/crypto` |
-| `File` | `ril/file` |
-| `Io` | `ril/io` |
-| `Os` | `ril/os` |
 | `Concurrent` | `ril/concurrent` |
-| `Channel` | `ril/concurrent/channel` |
-| `Parallel` | `ril/parallel` |
+
+| Explicit library modules | Sources | Role |
+| :--- | :--- | :--- |
+| `Math`, `Crypto` | `ril/math`, `ril/crypto` | Specialized computation |
+| `File`, `Io`, `Os` | `ril/file`, `ril/io`, `ril/os` | Target-runtime I/O and environment |
+| `Channel`, `Parallel` | `ril/concurrent/channel`, `ril/parallel` | Target-runtime task and execution strategies |
+
+Other standard-library modules use explicit imports with their specified effect, resource, and execution contracts.
 
 ```ril
 type UserId(i64)
@@ -7791,6 +7792,13 @@ println("Count: {count}")
 assert(String::scalars("Ril") == [82u32, 105u32, 108u32])
 assert(Numeric::convert<i64>(255u8) == Some(255))
 -- let missing = scalars("Ril")        -- Error [E0204]: library members use their module name
+```
+
+```ril
+use ril/parallel
+halt fn squares(values: []i64) -> []i64 {
+    values |> Parallel::map(\value -> value * value)
+}
 ```
 
 #### Built-in Foundational Operations
