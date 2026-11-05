@@ -830,7 +830,8 @@ Value types have copy-by-value semantics, regardless of their implementation rep
 | Floating-Point | `f32`, `f64` | IEEE 754 floating-point numbers |
 | Text & Data | `str`, `bytes` | Immutable UTF-8 text string, immutable raw byte sequence |
 | Integer ranges | `typeof (0..0)` | Immutable integer interval bounds |
-| Unit & Bottom | `()`, `never` | Singleton unit value `()`, empty uninhabited type |
+| Unit | `()` | Zero-element tuple with the single value `()` |
+| Bottom | `never` | Empty uninhabited type |
 
 | Integer property | Rule |
 | :--- | :--- |
@@ -859,7 +860,7 @@ Value types, including `str`, `bytes`, and integer ranges, have no shared-object
 
 ### Shared Object Types
 
-Shared object types have object identity and may be aliased: arrays (`[]T`), maps (`[K: V]`), records, tuples, sets, and sum type instances. Their objects are allocated on the managed garbage-collected heap.
+Arrays (`[]T`), maps (`[K: V]`), records, nonempty tuples, sets, and sum type instances have shared-object identity and may be aliased. Their objects are allocated on the managed garbage-collected heap.
 
 Live access preserves the selected object's identity. Default access exposes immutable snapshot contents, independent of storage identity and sharing. Private construction roots are also shared objects; access modes govern each path.
 
@@ -1017,7 +1018,9 @@ assert(rest.role == "root")
 
 ### Array, Map, and Tuple Types
 
-Bracket syntax defines homogeneous arrays (`[]T`, `[mut]T`, `[^mut]T`, `[ref]T`) and maps (`[K: V]`, `[K: mut V]`, `[K: ^mut V]`, `[K: ref V]`); tuples use `(T1, T2)`. Range indexing (`arr[a..b]`) returns a newly allocated array with independent storage. Authority follows the [static mode rules](#binding-modes-and-storage-matrix). Map keys and set elements use deeply immutable reception and the [structural key rules](#relational-and-equality-operators), including eligible shared-object graphs; mutable key modifiers are rejected (`E0402`). `Set<T>` and collection type extractors are standard-library declarations.
+Bracket syntax defines homogeneous arrays (`[]T`, `[mut]T`, `[^mut]T`, `[ref]T`) and maps (`[K: V]`, `[K: mut V]`, `[K: ^mut V]`, `[K: ref V]`). Range indexing (`arr[a..b]`) returns a newly allocated array with independent storage. Authority follows the [static mode rules](#binding-modes-and-storage-matrix). Map keys and set elements use deeply immutable reception and the [structural key rules](#relational-and-equality-operators), including eligible shared-object graphs; mutable key modifiers are rejected (`E0402`). `Set<T>` and collection type extractors are standard-library declarations.
+
+Tuple arity is zero or at least two. The zero-element tuple `()` uses the unit type and literal syntax and has [copy-by-value semantics](#value-types). The tuple productions below cover the nonempty shared-object forms such as `(i64, str)`. Parenthesizing one type or expression groups it. The spellings `(T,)` and `(e,)` for a one-element tuple are invalid. The same arities let [data constructors](#constructor-tuple-equivalence-invariant) omit the outer tuple grouping of positional payloads.
 
 ```ebnf
 ArrayType             ::= "[" [ StorageModeExpression ] "]" TypeExpression
@@ -1175,36 +1178,40 @@ Substitution must satisfy every occurrence of a recovered parameter and its decl
 
 #### Constructor-Tuple Equivalence Invariant
 
-For data constructors (sum type variants and nominal type wrappers), a comma-separated multi-field declaration and a single tuple-payload declaration have the same payload schema:
-$$\text{Variant}(T_1, T_2, \dots, T_n) \equiv \text{Variant}((T_1, T_2, \dots, T_n)) \quad (n \ge 0)$$
+A positional data constructor can omit one layer of tuple parentheses in its payload declaration, direct call, or pattern. Tuple arities make the three forms unambiguous.
 
-For multiple payload members this equivalence preserves every member mode. A single unnamed payload forwards its value's checked access modes and provenance; it does not add a default immutable member around that payload. Named and tuple payload members retain their own declared modes.
+| Positional items | Payload schema | Equivalent forms |
+| :--- | :--- | :--- |
+| Zero | Unit `()` | `Ready()` and `Ready(())` declare the same unit payload. A direct `C()` supplies or matches `()` like `C(())` |
+| One | The single payload | `C(x)` supplies or matches one value, including a whole tuple |
+| Two or more | A tuple of the positional members | `Pair(A, B)` and `Pair((A, B))` declare the same tuple payload. `C(x, y)` and `C((x, y))` supply or match that same tuple |
 
-Ril has no one-element tuples `(T,)`: `(x)` denotes grouping, tuples require at least two elements, and `()` denotes unit. Constructor application and pattern arity follow these rules:
-- **Constructor Boundary**: The equivalence applies only to data constructors. Ordinary functions and closures have separate parameter lists (`E0314` for an arity mismatch).
-- **Positional Tuple Expansion & Literal Compatibility ($n \ge 2$)**: In expression construction and pattern matching, $C(e_1, \dots, e_n)$ and explicit tuple literals $C((e_1, \dots, e_n))$ construct or match the same tuple payload; the explicit tuple grouping is optional at that boundary.
-- **Whole-Tuple Binding or Single Argument ($n = 1$)**: $C(val)$ constructs or matches a single-value payload or a whole-tuple object.
-- **Unit Payload Constructor ($n = 0$)**: When a variant's payload type is `()`, $C()$ constructs or matches the unit payload directly ($C() \equiv C(())$). Bare payload-bearing constructor identifiers without parentheses (e.g. bare `Ok`) denote first-class constructor functions (`fn(T) -> Result<T, E>`), and can be bound or passed as function values. Constructing a payload-bearing result still requires a call.
-- **Nullary Variant Tag Invariant**: Variants declared without a payload (e.g. `None` in `type Option<T> { Some(T), None }`) are payload-free tags: they must be written without parentheses (`None`). Supplying argument parentheses to a nullary variant (`None()`) is statically rejected (`E0353`).
-- **Single-Layer Equivalence**: The equivalence applies only at the outermost constructor argument boundary. Nested tuples (e.g. `Variant((A, B), C)`) require explicit grouping and do not flatten recursively (`Variant(a, b, c)` is rejected with `E0314`).
-- **Rigid Type Variable Invariant**: Deconstructing $C(p_1, \dots, p_n)$ ($n \ge 2$) against an unconstrained generic type parameter $T$ is statically rejected with `E0301`.
-- **First-Class Constructor Canonical Type**: A constructor $C$ carrying a tuple payload $(T_1, \dots, T_n)$ has the canonical unary first-class callable type $\text{fn}((T_1, \dots, T_n)) \to S$. When a context expects a multi-parameter callable $\text{fn}(T_1, \dots, T_n) \to S$, context-directed $\eta$-expansion ($\backslash x_1, \dots, x_n \to C(x_1, \dots, x_n)$) applies.
+Resolve the constructor before applying the shorthand. In a direct call, the supplied payload participates in ordinary type inference and reception, so `Some()` infers `Option<()>` just like `Some(())`. Either spelling preserves evaluation order, member modes, and provenance. A single unnamed payload forwards its checked modes and provenance directly. Expansion applies at the outermost constructor boundary. Nested tuples keep their grouping, and an unconstrained generic payload cannot be decomposed into positional members (`E0301`).
+
+A variant declared without a payload clause, such as `None`, is a payload-free tag. `None()` is `E0353`. A bare payload-bearing constructor denotes a first-class callable with one payload parameter in its declared reception mode. For a unit payload the callable type is `fn(()) -> S`. Ordinary calls to callable values follow their declared parameter lists (`E0314`). A constructor with a nonempty tuple payload can adapt to a multi-parameter callable via context-directed $\eta$-expansion ($\backslash x_1, \dots, x_n \to C(x_1, \dots, x_n)$).
 
 ```ril
--- Result construction and matching with unit payload (n = 0):
-let unit_res: Result<(), str> = Ok()             -- OK: n = 0 constructs () payload directly
-let auto_unit: Result<(), str> = Ok()            -- OK: the zero-argument constructor supplies ()
-assert(auto_unit is Ok())
-let make_ok: fn(i64) -> Result<i64, str> = Ok     -- OK: first-class constructor function
+type Status { Ready(), Idle }                    -- Ready() declares the same payload as Ready(())
+assert(Status::Ready() == Status::Ready(()))
+
+let present = Some()                            -- Option<()>
+assert(present == Some(()))
+assert(present is Some() && present is Some(()))
+let absent: Option<()> = None
+assert(present != absent)
+-- let bad_none = None()                         -- Error [E0353]: None is a payload-free tag
+
+let unit_res: Result<(), str> = Ok()
+let explicit_unit: Result<(), str> = Ok(())
+assert(unit_res == explicit_unit)
+let make_some: fn(()) -> Option<()> = Some
+assert(make_some(()) == present)
+-- make_some()                                  -- Error [E0314]: callable value expects one argument
 
 match unit_res {
     Ok() -> println("success"),                  -- OK: n = 0 matches () unit payload
     Err(e) -> println(e),
 }
-
--- Nullary variant tags vs. Data constructors:
-let opt: Option<i64> = None                      -- OK: nullary tag without parentheses
--- let bad_none = None()                         -- Error [E0353]: variant 'None' has no payload; remove call parentheses
 
 -- Result construction and matching with tuple payload:
 let res: Result<(i64, str), str> = Ok(200, "OK") -- OK: n = 2 constructs (i64, str) directly
@@ -1251,7 +1258,7 @@ A nominal wrapper introduces a distinct type identity while retaining the underl
 NominalDecl      ::= [ "pub" ] "type" PascalCase [ GenericParams ] [ "(" [ TypeList ] ")" ] [ WhereClause ]
 ```
 
-When `(TypeExpression)` is omitted, `NominalDecl` defines a **Unit Nominal Type** (e.g. `type Marker`).
+With no parenthesized payload clause, `NominalDecl` defines a **Unit Nominal Type** (e.g. `type Marker`).
 - **Value Construction**: The bare identifier `Marker` denotes its canonical singleton value (`let m = Marker`).
 - **Pattern Matching**: `Marker` acts as a nullary constructor pattern in `match` expressions (`match event { Marker -> ... }`). In `let` statements, patterns introducing zero variable bindings (such as `let Marker = m`) are prohibited under the **Non-Vacuous Binding Invariant (`E0309: VacuousBindingError`)**.
 - **Prelude Unwrapping**: Unwrapping via `inner(Marker)` evaluates to `()`.
@@ -3208,7 +3215,7 @@ byte_array[0] = 0u8
 assert(Bytes::at(b, 0) == Some(82u8)) -- The original bytes still start with 'R'
 ```
 
-- **Array Result**: Allocate an ordinary array with independent slots and length. Copy value elements; preserve shared-object identities, aliases, and effective access modes. Immutable elements use `[]T`, duplicated writable references use `[^mut]T`, and live read-only observations use `[ref]T`. Tuples and other heap products are shared objects. Root freshness does not isolate shared-object elements.
+- **Array Result**. Allocate an ordinary array with independent slots and length. Copy value elements and preserve shared-object identities, aliases, and effective access modes. Immutable elements use `[]T`, duplicated writable references use `[^mut]T`, and live read-only observations use `[ref]T`. Root freshness alone gives no proof of element isolation.
 - **Writable Sharing (`E0510`)**: Mark reception of duplicated writable reference paths with `^mut`.
 - **`ref` Target (`E0543`)**: A fresh range result cannot bind directly to a persistent `ref`. Publish it immutable through `let` or an ordinary parameter, or receive it with a lawful `let mut` binding; a later `ref` observes that established origin. Forwarding preserves whether publication actually occurred.
 - **Bounds**: For length N, a half-open range requires `0 <= lower <= upper <= N`; equal bounds produce an empty array, including at N. Omitted lower bounds mean zero; an omitted upper bound denotes the exclusive end N. A written inclusive upper bound h requires `0 <= lower <= h < N` and selects through h. Negative, reversed, or out-of-range bounds panic; bounds are never clamped. Safe range lookup (`arr?[a..b]`) returns an Option of the corresponding array result (`None` when out of bounds).
@@ -4070,8 +4077,9 @@ NarrowingExpr      ::= NarrowingPredicate
 - **Non-Binding Predicates**: `x is Variant(expected)` reads an existing expected value; an unresolved name is `E0204`. Use `match` or guarded bindings to introduce payload variables. `is` has no trailing guard.
 - **Value-Test Refinement**: A successful constructor test refines the tested stable path to that variant. Failure excludes the variant only when the payload test covers every payload (for example, a bare tag or all wildcards); a failed value comparison alone excludes no variant. Alternatives join their proven facts. Expected-expression writes invalidate affected facts (`E0310`, or `E0533` for unproved independence); completing the test does not restore them.
 - **Payload Projection ($S|_V$)**: Testing `x is V` refines sum type $S$ to variant $S|_V$ ([Sum Types and GADTs](#sum-types-and-gadts)):
-   - $n = 0$: No payload; value projection raises `E0337`.
-   - $n = 1$: Projected via `.0` (`p.0`). `?T != None` directly unboxes to `T`.
+   - Payload-free tag. Value projection raises `E0337`.
+   - Zero-element positional payload. Unit `()` has no positional components.
+   - Single declared payload member. Project via `.0` (`p.0`). `?T != None` directly unboxes to `T`.
    - $n \ge 2$: Projected via positional tuple indices `.0`, `.1`, ..., `.(n-1)`.
    - Record: Projected via declared field names (`x.field`).
 - **Stability & Invalidation**:
@@ -6876,7 +6884,7 @@ TypeFnParam      ::= StaticKeyParamDecl
 | :--- | :--- |
 | Type declaration / data annotation | `type User = { id: i64 }`, `x: User`; direct type syntax |
 | Static type value | `<User>`, `<i64>`, `<{ id: i64 }>` |
-| Tuple / unit token | `<(T, U)>`, `<()>`; reuse ordinary tuple grammar |
+| Tuple token | `<()>` quotes the zero-element tuple. `<(T, U)>` quotes a two-element tuple |
 | Generic application | `F<T, U>`; two arguments, not a tuple quote |
 | Type pattern | `<Option<let U>>`; pattern-only binders/rests |
 | Token type | `Type` hides the target; `Type<T>` guarantees exactly T |
@@ -7171,7 +7179,7 @@ ModeExpression     ::= MemberMode | ModeProjectionExpr | PascalCase | "(" Expres
 In expression contexts, `keyof T` statically enumerates the coordinates of a record, sum, or tuple type $T$ as an ordered immutable array:
 - **Records**: Evaluates to an immutable array `[]str` of field names sorted strictly in UTF-8 byte order.
 - **Sum Types**: Evaluates to an immutable array `[]str` of variant constructor names sorted strictly in UTF-8 byte order.
-- **Tuples**: Evaluates to an immutable array `[]i64` of positional indices `[0, 1, ..., n-1]` in monotonic ascending order.
+- **Tuples**. Produces an immutable `[]i64` of positional indices in ascending order. `keyof ()` produces the empty array.
 - **Type Identity**: Definitionally equal admitted types produce the same coordinate array ($T_1 \equiv T_2 \implies \text{keyof } T_1 \equiv \text{keyof } T_2$).
 
 
@@ -7208,7 +7216,7 @@ For a composite type $T$ and coordinate key $K \in \text{keyof } T$, `T.(K)` sta
 - **Sum Types**: `UiEvent.Click` or `UiEvent.("Click")` resolves to the variant payload type under Constructor-Tuple Equivalence:
   - Multi-field variants ($n \ge 2$): Resolves to anonymous product tuple `(T1, ..., Tn)`.
   - Single-field variants ($n = 1$): Resolves to payload type $T_1$ without a tuple wrapper.
-  - Unit constructors ($n = 0$, declared `Variant()`): Resolves to unit `()`.
+  - Unit payload constructors (`Variant()` or `Variant(())`). Resolve to `()`.
   - Nullary tags (declared `Variant`): Resolves to unit `()` as its injection domain.
 - **Tuples**: `Pair.0` or `Pair.(0)` resolves to the component type at positional index $K$.
 
@@ -7258,7 +7266,7 @@ Each source expression is checked in its enclosing scope. The `PascalCase` binde
   }>
   ```
 - **Member Mode Compatibility (`E0402`, `E0357`)**: Value-type members cannot receive `mut`, `^mut`, or `ref`. Mapped comprehensions reject incompatible modes without silently substituting another mode. Distinct modes across field types must be formulated explicitly via type functions.
-- **Mapped Tuples (`( [Expr as I]: TypeExpr )`)**: `Expr` must evaluate to compile-time `[]i64`. Supplying `[]str` triggers `E0342: InvalidTupleKeySortError`.
+- **Mapped Tuples (`( [Expr as I]: TypeExpr )`)**. `Expr` must evaluate to compile-time `[]i64`. An empty index array produces `()`. Supplying `[]str` triggers `E0342` (`InvalidTupleKeySortError`).
 - **Single-Element Tuple Prohibition (`E0343`)**: A mapped tuple comprehension evaluated over an index array of length 1 is statically rejected at compile time, preserving the invariant that Ril has no 1-tuples.
 
 ```ril
@@ -7322,6 +7330,7 @@ halt type ReverseTuple = \T -> {
     )>
 }
 type ReversedPair = ReverseTuple<Pair>         -- (str, i64)
+type ReversedUnit = ReverseTuple<()>           -- ()
 
 -- Rejection of Invalid Mapped Comprehensions:
 -- type BadRecordKeys = { [[0, 1] as K]: i64 } -- Error [E0341]: mapped record comprehension requires '[]str' keys, found '[]i64'
@@ -7354,7 +7363,7 @@ TypeRestPattern ::= ".." [ "let" ( PascalCase | "_" ) ]
 - **Member Modes and Mode Pattern Binders (`let M`)**: Structural type patterns match declared member modes exactly; omission means the default mode. A member mode may be explicitly matched against concrete modes (`var`, `mut`, etc.) or captured via a scoped mode variable `let M` (e.g. `<(let M let Head, ..let Tail)>` or `<{ let M field: let U, ..let Rest }>`), where `M` is bound to the matched coordinate's `MemberMode`. Row/tuple rests preserve remaining member modes. The `let U` type-variable binder remains explicit.
 - **Anonymous Rest**: `..` (equivalently `..let _`) matches the remaining row/tuple without binding a name. `<{ .. }>` matches any record, including `{}`; `<{}>` matches only the empty record. A named type-pattern rest uses `..let Rest`, not `..Rest`.
 - **Unique Pattern Binders**: Each pattern branch may bind an identifier at most once; repeating it is statically rejected (`E0347: DuplicatePatternBindingError`). Multi-position equality is asserted via explicit guards (`if <A> == <B>`).
-- **Tuple Rest**: A type-pattern rest is a tuple type of the remaining components; an empty rest is unit. A one-component rest cannot form a tuple and fails that pattern, allowing the next arm to match. It is not silently coerced to its component type.
+- **Tuple Rest**. A type-pattern rest is a tuple of the remaining components. An empty rest is `()`. A one-component rest fails the pattern, allowing the next arm to match.
 - **Rigid Application Head (`E0306`)**: Require a known rigid type constructor; no head binding or inverse type-function matching. Transparent aliases may expand. Primitive/structural patterns and whole-type `_`/`let U` remain legal.
 
 | Match evidence | Scope / invalidation |
@@ -7853,22 +7862,24 @@ Built-in operations use the same surface signature forms as user-defined Ril fun
 
 | Guard | Admitted input |
 | :--- | :--- |
-| `SharedObject` | Ordinary record, tuple, array, map, set, or sum roots with any legal member or storage modes, including nominal or opaque types with an ordinary shared-object representation. Value, callable, resource, and scoped-authority roots are excluded. Across an opaque boundary the guard uses the checked representation category and preserves the sealed identity. Graph eligibility and actual access are separate checks |
+| `SharedObject` | Ordinary record, nonempty tuple, array, map, set, or sum roots with any legal member or storage modes, including nominal or opaque types with an ordinary shared-object representation. Value, callable, resource, and scoped-authority roots are excluded. Across an opaque boundary the guard uses the checked representation category and preserves the sealed identity. Graph eligibility and actual access are separate checks |
 | `LenTarget` | `str`, `bytes`, arrays, maps, and sets with any legal storage modes. A nominal wrapper requires explicit unwrapping. An opaque representation is available only in its exact defining scope |
-| `Tuple` | Visible tuple products of arity two or greater, with any legal member modes. Unit is a value type |
+| `Tuple` | Visible tuple types of arity zero or at least two, with any legal member modes |
 | `NominalWrapper` | Visible nominal wrapper declarations, including unit nominal declarations. Sum and opaque declarations introduce no such wrapper |
 
 The following definition gives the `Tuple` guard's behavior under the [structural type-pattern rules](#structural-type-pattern-matching). The exact two-member arm covers the case where a one-member rest could not form a tuple.
 
 ```ril
 halt type Tuple = \T -> match <T> {
+    <()>                        -> <T>,
     <(let M let _, let N let _)> -> <T>,
     <(let M let _, ..)>          -> <T>,
     _                           -> <never>,
 }
 meta let _ = assert(<Tuple<(var i64, str)>> == <(var i64, str)>)
 meta let _ = assert(<Tuple<(i64, str, bool)>> == <(i64, str, bool)>)
-meta let _ = assert(<Tuple<()>> == <never>)
+meta let _ = assert(<Tuple<()>> == <()>)
+meta let _ = assert(<SharedObject<()>> == <never>)
 ```
 
 ```ril
