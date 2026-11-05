@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from ril_doccheck.markdown import check_links, parse_document
+from doc_check.markdown import check_links, parse_document
 
 
 def test_headings_use_visible_text_and_unique_unicode_anchors(tmp_path: Path) -> None:

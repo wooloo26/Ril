@@ -9,7 +9,7 @@ from urllib.parse import unquote, urlsplit
 from markdown_it import MarkdownIt
 from markdown_it.token import Token
 
-from ril_doccheck.diagnostics import Diagnostic
+from doc_check.diagnostics import Diagnostic
 
 
 @dataclass(frozen=True)

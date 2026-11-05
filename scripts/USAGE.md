@@ -20,7 +20,7 @@ directory, so its caches stay here. It reports all failed checks and exits nonze
 Run individual checks from the repository root:
 
 ```sh
-uv run --directory scripts --locked ril-doccheck
+uv run --directory scripts --locked doc_check
 uv run --directory scripts --locked ruff check .
 uv run --directory scripts --locked ruff format --check .
 uv run --directory scripts --locked mypy
@@ -35,12 +35,12 @@ To update locked dependencies, run `uv lock --directory scripts --upgrade`.
 With `lake` on `PATH`, run this command from the repository root.
 
 ```sh
-uv run --directory scripts --locked python check_formal.py
+uv run --directory scripts --locked formal_check
 ```
 
 The runner builds the Lean project in [`formal/`](../formal/lakefile.toml), checks
 its examples, and audits project declarations. Lake keeps its build products
-under `formal/.lake/`. The runner also works with `python3 scripts/check_formal.py`.
+under `formal/.lake/`.
 
 ## Documentation validation
 
@@ -49,7 +49,7 @@ generated directories. Explicit input paths are relative to the working director
 (`scripts/` with the commands above). For example:
 
 ```sh
-uv run --directory scripts --locked ril-doccheck ../doc/SPEC.md
+uv run --directory scripts --locked doc_check ../doc/SPEC.md
 ```
 
 Markdown is parsed structurally, including tables and strikethrough. Checks cover
@@ -69,7 +69,7 @@ escapes are recognized; `[Name]` and `[ Name ]` remain optional references.
 The `Grammar Notation` section is syntax-checked as explanatory notation without
 exporting its schematic productions or resolving its metavariables. The small,
 documented list of prose-defined lexical names and the notation-section setting
-live in `[tool.ril-doccheck]` in `pyproject.toml`; unknown names are never silently
+live in `[tool.doc_check]` in `pyproject.toml`; unknown names are never silently
 accepted. Selecting only part of the grammar can report references defined in
 unselected files.
 

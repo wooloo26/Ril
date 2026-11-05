@@ -2,8 +2,8 @@ from pathlib import Path
 
 import pytest
 
-from ril_doccheck.grammar import check_grammar
-from ril_doccheck.markdown import CodeBlock
+from doc_check.grammar import check_grammar
+from doc_check.markdown import CodeBlock
 
 
 def block(content: str, *, section: str = "Grammar", line: int = 10) -> CodeBlock:

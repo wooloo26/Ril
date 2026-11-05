@@ -3,7 +3,7 @@
 import subprocess
 import sys
 
-from ril_doccheck.cli import PROJECT, find_root
+from doc_check.cli import PROJECT, find_root
 
 
 def main() -> int:
@@ -12,7 +12,7 @@ def main() -> int:
         ("lint", ["ruff", "check", "."]),
         ("types", ["mypy"]),
         ("tests", ["pytest"]),
-        ("documents", ["ril_doccheck", "--root", str(find_root(PROJECT))]),
+        ("documents", ["doc_check", "--root", str(find_root(PROJECT))]),
     ]
     failed: list[str] = []
     for name, command in commands:

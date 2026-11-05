@@ -6,9 +6,9 @@ import tomllib
 from collections.abc import Sequence
 from pathlib import Path
 
-from ril_doccheck.diagnostics import Diagnostic
-from ril_doccheck.grammar import check_grammar
-from ril_doccheck.markdown import Document, check_links, read_document
+from doc_check.diagnostics import Diagnostic
+from doc_check.grammar import check_grammar
+from doc_check.markdown import Document, check_links, read_document
 
 PROJECT = Path(__file__).resolve().parents[2]
 _EXCLUDED = {"node_modules", "target", "dist", "build", "__pycache__"}
@@ -56,14 +56,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     paths = args.paths or [root]
     try:
         config = tomllib.loads((PROJECT / "pyproject.toml").read_text(encoding="utf-8"))["tool"][
-            "ril-doccheck"
+            "doc_check"
         ]
         selected = markdown_files(paths)
     except (OSError, ValueError) as error:
-        print(f"ril-doccheck: {error}", file=sys.stderr)
+        print(f"doc_check: {error}", file=sys.stderr)
         return 2
     if not selected:
-        print("ril-doccheck: no Markdown files selected", file=sys.stderr)
+        print("doc_check: no Markdown files selected", file=sys.stderr)
         return 2
     documents: dict[Path, Document] = {}
     diagnostics: list[Diagnostic] = []

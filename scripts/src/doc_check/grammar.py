@@ -8,8 +8,8 @@ from importlib.resources import files
 
 from lark import Lark, Token, UnexpectedInput, UnexpectedToken
 
-from ril_doccheck.diagnostics import Diagnostic
-from ril_doccheck.markdown import CodeBlock
+from doc_check.diagnostics import Diagnostic
+from doc_check.markdown import CodeBlock
 
 _PRODUCTION = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)[ \t]*::=", re.MULTILINE)
 
@@ -31,7 +31,7 @@ class Production:
 
 @cache
 def _parser() -> Lark:
-    grammar = files("ril_doccheck").joinpath("ebnf.lark").read_text(encoding="utf-8")
+    grammar = files("doc_check").joinpath("ebnf.lark").read_text(encoding="utf-8")
     return Lark(grammar, parser="lalr", propagate_positions=True)
 
 

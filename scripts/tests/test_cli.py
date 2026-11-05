@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from ril_doccheck.cli import main, markdown_files
+from doc_check.cli import main, markdown_files
 
 
 def test_cli_success(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:

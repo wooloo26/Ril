@@ -6,7 +6,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-FORMAL = Path(__file__).resolve().parents[1] / "formal"
+FORMAL = Path(__file__).resolve().parents[3] / "formal"
 
 
 def run(*command: str) -> None:

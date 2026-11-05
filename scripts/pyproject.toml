@@ -9,8 +9,9 @@ dependencies = [
 ]
 
 [project.scripts]
-ril-doccheck = "ril_doccheck.cli:main"
-quality = "ril_doccheck.quality:main"
+doc_check = "doc_check.cli:main"
+formal_check = "formal_check.__main__:main"
+quality = "doc_check.quality:main"
 
 [build-system]
 requires = ["uv_build>=0.12.5,<0.13.0"]
@@ -24,7 +25,7 @@ dev = [
 ]
 
 [tool.uv.build-backend]
-module-name = "ril_doccheck"
+module-name = ["doc_check", "formal_check"]
 
 [tool.ruff]
 target-version = "py313"
@@ -36,19 +37,19 @@ select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
 [tool.mypy]
 python_version = "3.13"
 strict = true
-files = ["check_formal.py", "src", "tests"]
+files = ["src", "tests"]
 warn_unreachable = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = ["--strict-config", "--strict-markers", "-ra"]
 
-[tool.ril-doccheck]
+[tool.doc_check]
 # Parse this explanatory block, but do not export its schematic productions
 # or resolve metavariables such as A and B against the language grammar.
 notation-sections = ["Grammar Notation"]
 
-[tool.ril-doccheck.externals]
+[tool.doc_check.externals]
 SourceChar = "Source character category: SPEC Character Set and Encoding / Comments"
 Newline = "Line ending: SPEC Grammar Notation / Whitespace and Layout Rules"
 EOF = "End of source: SPEC Grammar Notation"
