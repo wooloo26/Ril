@@ -101,3 +101,32 @@ fn angle_rescanning_preserves_operator_bytes() {
         .filter_map(rowan::NodeOrToken::into_token);
     assert_eq!(tokens.filter(|token| token.text() == "==").count(), 1);
 }
+
+#[test]
+fn assignment_keeps_rhs_precedence_and_block_tail() {
+    let input = "fn update() -> () {\n    var total = 0\n    total += 1 + 2\n}\n";
+    let result = compile(input);
+    assert!(result.is_ok(), "{:?}", result.diagnostics);
+    let StmtKind::Function(function) = &result.files[&FileId(0)].program.statements[0].kind else {
+        panic!("expected a function");
+    };
+    let body = function.body.as_ref().unwrap();
+    let StmtKind::Expr {
+        expression,
+        terminated: false,
+    } = &body.statements[1].kind
+    else {
+        panic!("expected a tail expression");
+    };
+    let ExprKind::Assignment {
+        target,
+        operator,
+        value,
+    } = &expression.kind
+    else {
+        panic!("expected an assignment");
+    };
+    assert_eq!(operator, "+=");
+    assert!(matches!(&target.kind, ExprKind::Name(name) if name == "total"));
+    assert!(matches!(&value.kind, ExprKind::Binary { operator, .. } if operator == "+"));
+}

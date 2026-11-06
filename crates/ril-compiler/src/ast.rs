@@ -22,15 +22,7 @@ pub enum StmtKind {
     Sub(SubDeclaration),
     Handler(Vec<HandlerArm>),
     HandlerApplication(Expr),
-    Assignment {
-        target: Box<Expr>,
-        operator: String,
-        value: Box<Expr>,
-    },
-    Expr {
-        expression: Expr,
-        terminated: bool,
-    },
+    Expr { expression: Expr, terminated: bool },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -372,6 +364,11 @@ pub enum ExprKind {
         operator: String,
         left: Box<Expr>,
         right: Box<Expr>,
+    },
+    Assignment {
+        target: Box<Expr>,
+        operator: String,
+        value: Box<Expr>,
     },
     Call {
         callee: Box<Expr>,

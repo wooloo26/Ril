@@ -479,10 +479,6 @@ impl Index {
             | StmtKind::Expr {
                 expression: expr, ..
             } => self.expr(scope, expr),
-            StmtKind::Assignment { target, value, .. } => {
-                self.expr(scope, target);
-                self.expr(scope, value);
-            }
         }
     }
 
@@ -855,7 +851,12 @@ impl Index {
                     self.expr(scope, &argument.value);
                 }
             }
-            ExprKind::Binary { left, right, .. } => {
+            ExprKind::Binary { left, right, .. }
+            | ExprKind::Assignment {
+                target: left,
+                value: right,
+                ..
+            } => {
                 self.expr(scope, left);
                 self.expr(scope, right);
             }

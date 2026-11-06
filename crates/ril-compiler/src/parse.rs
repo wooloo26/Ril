@@ -12,6 +12,10 @@ use rowan::{GreenNode, GreenNodeBuilder, Language};
 use std::collections::BTreeSet;
 
 type SignatureLookup<'a> = dyn Fn(&[String], u32) -> Option<Vec<ArgumentSort>> + Sync + 'a;
+
+const ASSIGNMENT_PRECEDENCE: u8 = 0;
+const COMPARISON_PRECEDENCE: u8 = 5;
+const RANGE_PRECEDENCE: u8 = 6;
 thread_local! {static PARSE_WORKER:std::cell::Cell<bool>=const {std::cell::Cell::new(false)};}
 fn on_parser_stack<T: Send>(work: impl FnOnce() -> T + Send, fallback: impl FnOnce() -> T) -> T {
     if PARSE_WORKER.with(std::cell::Cell::get) {
@@ -468,23 +472,9 @@ impl<'a> Parser<'a> {
                     self.error("E0120", "declaration modifier has no matching declaration");
                 }
                 let expression = self.expression(0, false);
-                if assignment_operator(self.current()) {
-                    let operator = self.bump();
-                    let value = self.expression(0, false);
-                    if assignment_operator(self.current()) {
-                        self.error("E0701", "chained assignment is prohibited");
-                    }
-                    StmtKind::Assignment {
-                        target: Box::new(expression),
-                        operator,
-                        value: Box::new(value),
-                    }
-                } else {
-                    let terminated = self.at(";");
-                    StmtKind::Expr {
-                        expression,
-                        terminated,
-                    }
+                StmtKind::Expr {
+                    expression,
+                    terminated: self.at(";"),
                 }
             }
         };
@@ -1946,6 +1936,13 @@ impl<'a> Parser<'a> {
             };
         }
         let mut left = self.prefix(multiline);
+        // A prefix range also occupies the range precedence level. A group
+        // starts a separate expression, so its operators do not count here.
+        let mut previous_infix = (matches!(left.kind, ExprKind::Range { .. })
+            && !self
+                .grouped_values
+                .contains(&(left.span.start, left.span.end)))
+        .then_some(RANGE_PRECEDENCE);
         let mut extensions = 0;
         loop {
             if self.eof() || self.closes_angle() {
@@ -2131,15 +2128,32 @@ impl<'a> Parser<'a> {
                 };
                 continue;
             }
-            let Some((binding, right_binding)) = precedence(self.current()) else {
+            let (binding, right_binding) = if assignment_operator(self.current()) {
+                (ASSIGNMENT_PRECEDENCE, ASSIGNMENT_PRECEDENCE + 1)
+            } else if let Some(precedence) = precedence(self.current()) {
+                precedence
+            } else {
                 break;
             };
             if binding < min {
                 break;
             }
+            if previous_infix == Some(binding) {
+                match binding {
+                    ASSIGNMENT_PRECEDENCE => {
+                        self.error("E0701", "chained assignment is prohibited")
+                    }
+                    COMPARISON_PRECEDENCE | RANGE_PRECEDENCE => self.error(
+                        "E0120",
+                        "parenthesize non-associative operators at the same precedence",
+                    ),
+                    _ => {}
+                }
+            }
+            previous_infix = Some(binding);
             let operator = self.bump();
             if operator == "is" {
-                let value = self.expression(6, multiline);
+                let value = self.expression(right_binding, multiline);
                 if has_test_binding_mode(&value, &self.grouped_values) {
                     self.error(
                         "E0120",
@@ -2176,12 +2190,21 @@ impl<'a> Parser<'a> {
                 continue;
             }
             let right = self.expression(right_binding, multiline);
-            left = Expr {
-                kind: ExprKind::Binary {
+            let kind = if binding == ASSIGNMENT_PRECEDENCE {
+                ExprKind::Assignment {
+                    target: Box::new(left),
+                    operator,
+                    value: Box::new(right),
+                }
+            } else {
+                ExprKind::Binary {
                     operator,
                     left: Box::new(left),
                     right: Box::new(right),
-                },
+                }
+            };
+            left = Expr {
+                kind,
                 span: self.span(start),
             };
         }
@@ -2211,7 +2234,7 @@ impl<'a> Parser<'a> {
                 let end = if matches!(self.current(), "]" | ")" | "," | "}") || self.eof() {
                     None
                 } else {
-                    Some(Box::new(self.expression(7, multiline)))
+                    Some(Box::new(self.expression(RANGE_PRECEDENCE + 1, multiline)))
                 };
                 ExprKind::Range {
                     start: None,
@@ -2760,7 +2783,7 @@ impl<'a> Parser<'a> {
         }
         if matches!(self.current(), ".." | "..=") {
             let inclusive = self.bump() == "..=";
-            let end = self.expression(7, true);
+            let end = self.expression(RANGE_PRECEDENCE + 1, true);
             let begin = pattern_value(&pattern);
             pattern = Pattern {
                 kind: PatternKind::Value(Box::new(Expr {
@@ -3064,8 +3087,10 @@ fn precedence(operator: &str) -> Option<(u8, u8)> {
         "??" => (2, 2),
         "||" => (3, 4),
         "&&" => (4, 5),
-        "==" | "!=" | "<" | "<=" | ">" | ">=" | "is" => (5, 6),
-        ".." | "..=" => (6, 7),
+        "==" | "!=" | "<" | "<=" | ">" | ">=" | "is" => {
+            (COMPARISON_PRECEDENCE, COMPARISON_PRECEDENCE + 1)
+        }
+        ".." | "..=" => (RANGE_PRECEDENCE, RANGE_PRECEDENCE + 1),
         "|" => (7, 8),
         "^" => (8, 9),
         "&" => (9, 10),

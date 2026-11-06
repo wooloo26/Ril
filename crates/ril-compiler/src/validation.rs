@@ -243,10 +243,6 @@ impl Validator {
                         }
                     }
                 }
-                StmtKind::Assignment { target, value, .. } => {
-                    self.expr(target);
-                    self.expr(value);
-                }
                 StmtKind::Expr { expression, .. } | StmtKind::HandlerApplication(expression) => {
                     self.expr(expression)
                 }
@@ -581,7 +577,12 @@ impl Validator {
             ExprKind::Unary { operand, .. } | ExprKind::TupleMember { value: operand, .. } => {
                 self.expr(operand)
             }
-            ExprKind::Binary { left, right, .. } => {
+            ExprKind::Binary { left, right, .. }
+            | ExprKind::Assignment {
+                target: left,
+                value: right,
+                ..
+            } => {
                 self.expr(left);
                 self.expr(right);
             }
