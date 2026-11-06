@@ -7,6 +7,7 @@ mod lexer;
 mod parse;
 pub mod source;
 mod syntax_kind;
+pub mod text;
 mod validation;
 
 pub use parse::Parse;

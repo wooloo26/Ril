@@ -2,7 +2,9 @@ use crate::SyntaxKind;
 use crate::{
     diagnostic::{Diagnostic, Label, Severity},
     source::{FileId, Span},
+    text::FormatSpec,
 };
+use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Token {
@@ -94,6 +96,7 @@ pub(crate) fn primitive(text: &str) -> bool {
 
 pub(crate) struct Lexed {
     pub tokens: Vec<Token>,
+    pub interpolations: BTreeMap<usize, Vec<StringRegion>>,
     pub diagnostics: Vec<Diagnostic>,
     pub incomplete: bool,
 }
@@ -105,147 +108,22 @@ pub(crate) fn lex(text: &str, file: FileId, base: usize) -> Lexed {
         base,
         pos: 0,
         diagnostics: vec![],
-        regions: vec![],
+        interpolations: BTreeMap::new(),
         depth: 0,
         incomplete: false,
     };
     let mut tokens = vec![];
+    let mut after_dot = false;
     while lexer.pos < text.len() {
-        let start = lexer.pos;
-        let c = lexer.character();
-        let kind = if c == '\n' || c == '\r' {
-            lexer.advance();
-            if c == '\r' && lexer.character() == '\n' {
-                lexer.advance();
-            }
-            SyntaxKind::Newline
-        } else if c == ' ' || c == '\t' {
-            while matches!(lexer.character(), ' ' | '\t') {
-                lexer.advance();
-            }
-            SyntaxKind::Whitespace
-        } else if lexer.starts("--") {
-            while lexer.pos < text.len() && !matches!(lexer.character(), '\n' | '\r') {
-                lexer.advance();
-            }
-            SyntaxKind::Comment
-        } else if lexer.starts("{-") {
-            lexer.comment();
-            SyntaxKind::Comment
-        } else if lexer.starts("b\"") {
-            lexer.pos += 1;
-            lexer.string(true);
-            SyntaxKind::Bytes
-        } else if c == '"' {
-            lexer.string(false);
-            SyntaxKind::String
-        } else if c == '`' {
-            lexer.raw();
-            SyntaxKind::RawString
-        } else if c.is_ascii_digit()
-            && tokens
-                .iter()
-                .rev()
-                .find(|token: &&Token| {
-                    !matches!(
-                        token.kind,
-                        SyntaxKind::Whitespace | SyntaxKind::Newline | SyntaxKind::Comment
-                    )
-                })
-                .is_some_and(|token| &text[token.start..token.end] == ".")
-        {
-            while lexer.character().is_ascii_digit() {
-                lexer.advance();
-            }
-            SyntaxKind::Integer
-        } else if c.is_ascii_digit() {
-            let mut float = false;
-            lexer.advance();
-            while lexer.pos < text.len() {
-                let current = lexer.character();
-                if current.is_ascii_alphanumeric() || current == '_' {
-                    lexer.advance();
-                } else if current == '.'
-                    && lexer
-                        .text
-                        .as_bytes()
-                        .get(lexer.pos + 1)
-                        .is_some_and(u8::is_ascii_digit)
-                {
-                    float = true;
-                    lexer.advance();
-                } else if float
-                    && matches!(current, '+' | '-')
-                    && lexer
-                        .text
-                        .as_bytes()
-                        .get(lexer.pos.wrapping_sub(1))
-                        .is_some_and(|c| matches!(*c, b'e' | b'E'))
-                {
-                    lexer.advance();
-                } else {
-                    break;
-                }
-            }
-            if !valid_number(&text[start..lexer.pos], float) {
-                lexer.error(start, "E0111", "malformed numeric literal");
-            }
-            if float {
-                SyntaxKind::Float
-            } else {
-                SyntaxKind::Integer
-            }
-        } else if c.is_ascii_alphabetic() || c == '_' {
-            lexer.advance();
-            while lexer.character().is_ascii_alphanumeric() || lexer.character() == '_' {
-                lexer.advance();
-            }
-            let word = &text[start..lexer.pos];
-            if !valid_identifier(word) {
-                lexer.error(start, "E0102", "malformed identifier spelling");
-            }
-            if keyword(word) {
-                SyntaxKind::Keyword
-            } else {
-                SyntaxKind::Identifier
-            }
-        } else {
-            let operators = [
-                "+%=", "-%=", "*%=", "<<=", ">>=", "..=", "^mut", "::", "->", "?.", "?[", "??",
-                "|>", "!>", "/?", "%?", "+%", "-%", "*%", "<<", ">>", "<=", ">=", "==", "!=", "&&",
-                "||", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "..",
-            ];
-            if let Some(operator) = operators.iter().find(|op| {
-                lexer.starts(op)
-                    && (**op != "^mut"
-                        || !text
-                            .as_bytes()
-                            .get(lexer.pos + 4)
-                            .is_some_and(|byte| byte.is_ascii_alphanumeric() || *byte == b'_'))
-            }) {
-                lexer.pos += operator.len();
-                SyntaxKind::Punctuation
-            } else if "(){}[],:;.=+-*/%&^|!~?<>@\\".contains(c) {
-                lexer.advance();
-                SyntaxKind::Punctuation
-            } else {
-                lexer.advance();
-                lexer.error(
-                    start,
-                    "E0105",
-                    "character is not admitted by a source token",
-                );
-                SyntaxKind::Invalid
-            }
-        };
-        tokens.push(Token {
-            kind,
-            start,
-            end: lexer.pos,
-        });
+        let token = lexer.token(after_dot);
+        if !token.is_trivia() {
+            after_dot = matches!(&text[token.start..token.end], "." | "?.");
+        }
+        tokens.push(token);
     }
     Lexed {
         tokens,
+        interpolations: lexer.interpolations,
         diagnostics: lexer.diagnostics,
         incomplete: lexer.incomplete,
     }
@@ -318,40 +196,156 @@ struct Lexer<'a> {
     base: usize,
     pos: usize,
     diagnostics: Vec<Diagnostic>,
-    regions: Vec<StringRegion>,
+    interpolations: BTreeMap<usize, Vec<StringRegion>>,
     depth: usize,
     incomplete: bool,
 }
 
+/// The raw region lives in the enclosing source. Tokens cover the embedded
+/// expression and any suffix that the lexer could not separate on its own.
 pub(crate) struct StringRegion {
-    pub owner: usize,
     pub start: usize,
-    pub expression_end: usize,
-    pub format: Option<usize>,
     pub end: usize,
+    pub format: Option<usize>,
+    pub tokens: Vec<Token>,
+    pub diagnostics: Vec<Diagnostic>,
 }
-pub(crate) fn string_regions(text: &str) -> Vec<StringRegion> {
-    let mut lexer = Lexer {
-        text,
-        file: FileId(0),
-        base: 0,
-        pos: 0,
-        diagnostics: vec![],
-        regions: vec![],
-        depth: 0,
-        incomplete: false,
-    };
-    lexer.string(false);
-    let mut regions: Vec<_> = lexer
-        .regions
-        .into_iter()
-        .filter(|region| region.owner == 0)
-        .collect();
-    regions.sort_by_key(|region| region.start);
-    regions
+
+impl Token {
+    pub(crate) fn is_trivia(self) -> bool {
+        matches!(
+            self.kind,
+            SyntaxKind::Whitespace | SyntaxKind::Newline | SyntaxKind::Comment
+        )
+    }
 }
 
 impl Lexer<'_> {
+    fn token(&mut self, after_dot: bool) -> Token {
+        let start = self.pos;
+        let c = self.character();
+        let kind = if c == '\n' || c == '\r' {
+            self.advance();
+            if c == '\r' && self.character() == '\n' {
+                self.advance();
+            }
+            SyntaxKind::Newline
+        } else if c == ' ' || c == '\t' {
+            while matches!(self.character(), ' ' | '\t') {
+                self.advance();
+            }
+            SyntaxKind::Whitespace
+        } else if self.starts("--") {
+            while self.pos < self.text.len() && !matches!(self.character(), '\n' | '\r') {
+                self.advance();
+            }
+            SyntaxKind::Comment
+        } else if self.starts("{-") {
+            self.comment();
+            SyntaxKind::Comment
+        } else if self.starts("b\"") {
+            self.pos += 1;
+            self.string(true);
+            SyntaxKind::Bytes
+        } else if c == '"' {
+            self.string(false);
+            SyntaxKind::String
+        } else if c == '`' {
+            self.raw();
+            SyntaxKind::RawString
+        } else if c.is_ascii_digit() && after_dot {
+            while self.character().is_ascii_digit() {
+                self.advance();
+            }
+            SyntaxKind::Integer
+        } else if c.is_ascii_digit() {
+            let mut float = false;
+            self.advance();
+            while self.pos < self.text.len() {
+                let current = self.character();
+                if current.is_ascii_alphanumeric() || current == '_' {
+                    self.advance();
+                } else if current == '.'
+                    && self
+                        .text
+                        .as_bytes()
+                        .get(self.pos + 1)
+                        .is_some_and(u8::is_ascii_digit)
+                {
+                    float = true;
+                    self.advance();
+                } else if float
+                    && matches!(current, '+' | '-')
+                    && self
+                        .text
+                        .as_bytes()
+                        .get(self.pos.wrapping_sub(1))
+                        .is_some_and(|c| matches!(*c, b'e' | b'E'))
+                {
+                    self.advance();
+                } else {
+                    break;
+                }
+            }
+            if !valid_number(&self.text[start..self.pos], float) {
+                self.error(start, "E0111", "malformed numeric literal");
+            }
+            if float {
+                SyntaxKind::Float
+            } else {
+                SyntaxKind::Integer
+            }
+        } else if c.is_ascii_alphabetic() || c == '_' {
+            self.advance();
+            while self.character().is_ascii_alphanumeric() || self.character() == '_' {
+                self.advance();
+            }
+            let word = &self.text[start..self.pos];
+            if !valid_identifier(word) {
+                self.error(start, "E0102", "malformed identifier spelling");
+            }
+            if keyword(word) {
+                SyntaxKind::Keyword
+            } else {
+                SyntaxKind::Identifier
+            }
+        } else {
+            let operators = [
+                "+%=", "-%=", "*%=", "<<=", ">>=", "..=", "^mut", "::", "->", "?.", "?[", "??",
+                "|>", "!>", "/?", "%?", "+%", "-%", "*%", "<<", ">>", "<=", ">=", "==", "!=", "&&",
+                "||", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "..",
+            ];
+            if let Some(operator) = operators.iter().find(|op| {
+                self.starts(op)
+                    && (**op != "^mut"
+                        || !self
+                            .text
+                            .as_bytes()
+                            .get(self.pos + 4)
+                            .is_some_and(|byte| byte.is_ascii_alphanumeric() || *byte == b'_'))
+            }) {
+                self.pos += operator.len();
+                SyntaxKind::Punctuation
+            } else if "(){}[],:;.=+-*/%&^|!~?<>@\\".contains(c) {
+                self.advance();
+                SyntaxKind::Punctuation
+            } else {
+                self.advance();
+                self.error(
+                    start,
+                    "E0105",
+                    "character is not admitted by a source token",
+                );
+                SyntaxKind::Invalid
+            }
+        };
+        Token {
+            kind,
+            start,
+            end: self.pos,
+        }
+    }
+
     fn character(&self) -> char {
         self.text[self.pos..].chars().next().unwrap_or('\0')
     }
@@ -483,7 +477,9 @@ impl Lexer<'_> {
                     if self.starts("{{") {
                         self.pos += 2;
                     } else {
-                        self.interpolation(start);
+                        if !self.interpolation(start) && self.pos == self.text.len() {
+                            return;
+                        }
                     }
                 }
                 '}' if !bytes => {
@@ -505,122 +501,106 @@ impl Lexer<'_> {
         }
         self.error(start, "E0107", "unterminated string literal");
     }
-    fn interpolation(&mut self, owner: usize) {
+    fn interpolation(&mut self, owner: usize) -> bool {
         let start = self.pos;
         self.advance();
-        let content = self.pos;
-        let mut braces = 1;
+        let diagnostics_start = self.diagnostics.len();
+        let mut tokens = vec![];
+        let mut braces = 0usize;
         let mut parens = 0usize;
         let mut brackets = 0usize;
+        let mut has_lambda = false;
+        let mut after_dot = false;
+        let mut after_value = false;
         let mut format = None;
         while self.pos < self.text.len() {
-            if self.starts("{-") {
-                self.comment();
-                continue;
+            if braces == 0 && self.starts("}") {
+                let end = self.pos;
+                let diagnostics = self.diagnostics.split_off(diagnostics_start);
+                self.interpolations
+                    .entry(owner)
+                    .or_default()
+                    .push(StringRegion {
+                        start,
+                        end,
+                        format,
+                        tokens,
+                        diagnostics,
+                    });
+                self.advance();
+                return true;
             }
-            if self.starts("--") {
-                while self.pos < self.text.len() && !matches!(self.character(), '\n' | '\r') {
-                    self.advance();
-                }
-                continue;
+            let outermost = braces == 0 && parens == 0 && brackets == 0;
+            if outermost && self.starts("\"") && after_value {
+                break;
             }
-            match self.character() {
-                '"' => self.string(false),
-                '`' => self.raw(),
-                '{' => {
-                    braces += 1;
-                    self.advance();
+            if outermost
+                && self.starts(":")
+                && let Some(end) = self.format_candidate(has_lambda)
+            {
+                format = Some(self.pos);
+                self.pos = end;
+                if self.starts("}") {
+                    continue;
                 }
-                '}' => {
-                    braces -= 1;
-                    if braces == 0 {
-                        let end = format.unwrap_or(self.pos);
-                        if self.text[content..end].trim().is_empty() {
-                            self.error(start, "E0112", "interpolation requires an expression");
-                        }
-                        if let Some(colon) = format
-                            && !valid_format(&self.text[colon + 1..self.pos])
-                        {
-                            self.error(start, "E0112", "malformed interpolation format");
-                        }
-                        self.regions.push(StringRegion {
-                            owner,
-                            start,
-                            expression_end: end,
-                            format,
-                            end: self.pos,
-                        });
-                        self.advance();
-                        return;
-                    }
-                    self.advance();
-                }
-                '(' => {
-                    parens += 1;
-                    self.advance();
-                }
-                ')' => {
-                    parens = parens.saturating_sub(1);
-                    self.advance();
-                }
-                '[' => {
-                    brackets += 1;
-                    self.advance();
-                }
-                ']' => {
-                    brackets = brackets.saturating_sub(1);
-                    self.advance();
-                }
-                ':' if braces == 1 && parens == 0 && brackets == 0 && !self.starts("::") => {
-                    format = Some(self.pos);
-                    self.advance();
-                }
-                ':' if self.starts("::") => {
-                    self.pos += 2;
-                }
-                _ => self.advance(),
+                break;
             }
+
+            let token = self.token(after_dot);
+            let text = &self.text[token.start..token.end];
+            match text {
+                "{" => braces += 1,
+                "}" => braces -= 1,
+                "(" => parens += 1,
+                ")" => parens = parens.saturating_sub(1),
+                "[" | "?[" => brackets += 1,
+                "]" => brackets = brackets.saturating_sub(1),
+                "\\" if outermost => has_lambda = true,
+                _ => {}
+            }
+            if !token.is_trivia() {
+                after_dot = matches!(text, "." | "?.");
+                after_value = matches!(
+                    token.kind,
+                    SyntaxKind::Identifier
+                        | SyntaxKind::Integer
+                        | SyntaxKind::Float
+                        | SyntaxKind::String
+                        | SyntaxKind::RawString
+                        | SyntaxKind::Bytes
+                ) || matches!(
+                    text,
+                    ")" | "]" | "}" | "?" | "true" | "false" | "last" | "next" | "return"
+                );
+            }
+            tokens.push(token);
         }
         self.error(start, "E0112", "interpolation lacks its closing brace");
+        false
     }
-}
 
-fn valid_format(text: &str) -> bool {
-    let mut chars = text.chars().peekable();
-    let mut prefix = chars.clone();
-    if let Some(first) = prefix.next() {
-        if prefix.peek().is_some_and(|c| matches!(c, '<' | '>' | '^')) {
-            if matches!(first, '{' | '}' | '\r' | '\n') {
-                return false;
-            }
-            prefix.next();
-            chars = prefix;
-        } else if matches!(first, '<' | '>' | '^') {
-            chars = prefix;
+    fn format_candidate(&self, has_lambda: bool) -> Option<usize> {
+        let start = self.pos + 1;
+        let suffix = &self.text[start..];
+        let explicit_fill = suffix
+            .as_bytes()
+            .get(1)
+            .is_some_and(|byte| matches!(byte, b'<' | b'^' | b'>'));
+        let qualified = suffix.starts_with(':');
+        if qualified && !explicit_fill {
+            return None;
         }
+        let quote_fill = suffix.starts_with('"') && explicit_fill;
+        let search = start + usize::from(quote_fill);
+        let end = self.text[search..]
+            .find(['}', '"'])
+            .map_or(self.text.len(), |offset| search + offset);
+        // A single colon outside delimiters can be an anonymous parameter
+        // annotation. Leave ambiguous suffixes in that case to the parser.
+        (qualified
+            || !has_lambda
+            || self.text[end..].starts_with('}')
+                && FormatSpec::parse(&self.text[start..end]).is_some())
+        .then_some(end)
     }
-    fn digits(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) -> (bool, bool) {
-        let mut seen = false;
-        let mut value = 0i64;
-        while let Some(digit) = chars.next_if(char::is_ascii_digit) {
-            seen = true;
-            let Some(next) = value
-                .checked_mul(10)
-                .and_then(|n| n.checked_add(digit as i64 - '0' as i64))
-            else {
-                return (seen, false);
-            };
-            value = next;
-        }
-        (seen, true)
-    }
-    if !digits(&mut chars).1
-        || chars.next_if_eq(&'.').is_some() && digits(&mut chars) != (true, true)
-    {
-        return false;
-    }
-    matches!(
-        chars.next(),
-        None | Some('x' | 'X' | 'b' | 'o' | 'e' | 'f' | 's')
-    ) && chars.next().is_none()
 }

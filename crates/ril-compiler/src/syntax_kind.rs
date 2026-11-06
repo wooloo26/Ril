@@ -25,6 +25,9 @@ pub enum SyntaxKind {
     Pattern,
     Recovery,
     ValueTest,
+    InterpolatedString,
+    Interpolation,
+    FormatText,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum RilLanguage {}
@@ -54,6 +57,9 @@ impl Language for RilLanguage {
             19 => SyntaxKind::Pattern,
             20 => SyntaxKind::Recovery,
             21 => SyntaxKind::ValueTest,
+            22 => SyntaxKind::InterpolatedString,
+            23 => SyntaxKind::Interpolation,
+            24 => SyntaxKind::FormatText,
             _ => panic!("invalid Ril syntax kind"),
         }
     }

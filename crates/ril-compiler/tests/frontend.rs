@@ -1,9 +1,10 @@
 use ril_compiler::{
     SyntaxKind,
-    ast::{ArgumentSort, ControlOperation, ExprKind, StmtKind, ValueTestKind},
+    ast::{ArgumentSort, ControlOperation, ExprKind, StmtKind, StringPart, ValueTestKind},
     frontend::{Frontend, UnitKind, frontend},
     hir::{DefinitionKind, ScopeKind},
     source::FileId,
+    text::{Alignment, Conversion},
 };
 use std::{io, path::Path};
 
@@ -460,4 +461,110 @@ fn check(value: ?i64) -> bool { value is SAVED | empty }
         .find(|reference| reference.path == ["empty"])
         .unwrap();
     assert_eq!(hir.definitions[empty.constructor.unwrap().0].name, "None");
+}
+
+#[test]
+fn interpolation_reuses_declaration_lookup_and_preserves_cst_and_format_spans() {
+    let input = r#"
+fn choose<flag: bool>(value: i64) -> i64 { if flag { value } else { 0 } }
+fn render(value: i64) -> str {
+    let alias = choose
+    "前{{缀}} {alias<true && false>(value):🙂^08x} 后"
+}
+"#;
+    let result = compile(input);
+    assert!(result.is_ok(), "{:?}", result.diagnostics);
+    let parse = &result.files[&FileId(0)];
+    let syntax = parse.syntax();
+    assert_eq!(syntax.to_string(), input);
+    let node = syntax
+        .descendants()
+        .find(|node| node.kind() == SyntaxKind::Interpolation)
+        .unwrap();
+    assert_eq!(node.to_string(), "{alias<true && false>(value):🙂^08x}");
+    let StmtKind::Function(render) = &parse.program.statements[1].kind else {
+        panic!("expected render function");
+    };
+    let StmtKind::Expr { expression, .. } = &render.body.as_ref().unwrap().statements[1].kind
+    else {
+        panic!("expected string expression");
+    };
+    let ExprKind::Interpolated(parts) = &expression.kind else {
+        panic!("expected interpolated string");
+    };
+    let [
+        StringPart::Text(prefix),
+        StringPart::Interpolation {
+            format: Some(format),
+            span,
+            ..
+        },
+        StringPart::Text(suffix),
+    ] = parts.as_slice()
+    else {
+        panic!("expected text around a formatted expression");
+    };
+    assert_eq!(prefix, "前{缀} ");
+    assert_eq!(suffix, " 后");
+    assert_eq!(
+        result.sources.slice(*span).unwrap(),
+        node.to_string().as_bytes()
+    );
+    assert_eq!(
+        result.sources.slice(format.span).unwrap(),
+        "🙂^08x".as_bytes()
+    );
+    assert_eq!(format.spec.fill, Some('🙂'));
+    assert_eq!(format.spec.alignment, Some(Alignment::Center));
+    assert_eq!(format.spec.width, Some(8));
+    assert!(format.spec.leading_zero);
+    assert_eq!(format.spec.conversion, Some(Conversion::LowerHex));
+
+    let hir = result.hir.unwrap();
+    let applied = hir
+        .references
+        .iter()
+        .find(|reference| reference.path == ["alias"])
+        .unwrap();
+    let signature = applied.application.as_ref().unwrap();
+    assert_eq!(signature.parameters, [ArgumentSort::Value]);
+    assert_eq!(hir.definitions[signature.item.0].name, "choose");
+}
+
+#[test]
+fn invalid_embedded_byte_escape_is_reported_once() {
+    let input = r#"let BAD = "é {len(b"\xG0")}""#;
+    let result = compile(input);
+    let [diagnostic] = &result.diagnostics[..] else {
+        panic!(
+            "expected one lexical diagnostic, got {:?}",
+            result.diagnostics
+        );
+    };
+    assert_eq!(diagnostic.code, "E0110");
+    assert_eq!(
+        result.sources.slice(diagnostic.labels[0].span).unwrap(),
+        b"\\x"
+    );
+    assert_eq!(result.files[&FileId(0)].syntax().to_string(), input);
+}
+
+#[test]
+fn interpolation_brace_recovery_preserves_next_declaration() {
+    let input = "let BAD = \"é{1\"\nlet GOOD = \"正常\"\n";
+    let result = compile(input);
+    let [diagnostic] = &result.diagnostics[..] else {
+        panic!(
+            "expected one lexical diagnostic, got {:?}",
+            result.diagnostics
+        );
+    };
+    assert_eq!(diagnostic.code, "E0112");
+    assert_eq!(
+        result.sources.slice(diagnostic.labels[0].span).unwrap(),
+        b"{1"
+    );
+    let parse = &result.files[&FileId(0)];
+    assert_eq!(parse.syntax().to_string(), input);
+    assert_eq!(parse.program.statements.len(), 2);
 }

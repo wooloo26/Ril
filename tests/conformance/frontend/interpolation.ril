@@ -1,0 +1,50 @@
+-- [case: formatter-fill-may-be-token-punctuation, front-pass]
+-- spec: SPEC#text-and-byte-literals
+let QUOTE = "{42:">8}"
+let COLON = "{42::>8}"
+let BACKTICK = "{42:`<8}"
+let SYMBOL = "{42:$^8}"
+
+-- [case: byte-string-inside-interpolation-keeps-byte-lexing, front-pass]
+-- spec: SPEC#text-and-byte-literals
+let TEXT = "{len(b"\xFF{")}"
+
+-- [case: lambda-annotation-is-not-an-interpolation-format, front-pass]
+-- spec: SPEC#text-and-byte-literals
+fn invoke(action: fn(i64) -> i64) -> i64 { action(2) }
+let TEXT = "{invoke \value: i64 -> value + 1}"
+
+-- [case: lambda-annotation-and-format-suffix, front-pass]
+-- spec: SPEC#text-and-byte-literals
+fn invoke(action: fn(i64) -> i64) -> i64 { action(2) }
+let TEXT = "{invoke \value: i64 -> value + 1:04x}"
+
+-- [case: malformed-format-after-lambda-is-not-a-numeric-lexical-error, front-fail]
+-- spec: SPEC#text-and-byte-literals
+-- Error [E0112]
+fn invoke(action: fn(i64) -> i64) -> i64 { action(2) }
+let BAD = "{invoke \value: i64 -> value + 1:04q}"
+
+-- [case: nested-interpolation-keeps-own-format, front-pass]
+-- spec: SPEC#text-and-byte-literals
+let TEXT = "{len("inner {42:x}")}"
+
+-- [case: trivia-only-interpolation-has-no-expression, front-fail]
+-- spec: SPEC#text-and-byte-literals
+-- Error [E0112]
+let BAD = "{ {- outer {- inner -} -} }"
+
+-- [case: missing-interpolation-brace-recovers-at-string-close, front-fail]
+-- spec: SPEC#text-and-byte-literals
+-- Error [E0112]
+let BAD = "{1"
+let GOOD = "next declaration"
+
+-- [case: format-width-has-i64-bound, front-pass]
+-- spec: SPEC#text-and-byte-literals
+fn formatted() -> str { "{1:9223372036854775807}" }
+
+-- [case: overflowing-width-in-colon-fill-format, front-fail]
+-- spec: SPEC#text-and-byte-literals
+-- Error [E0112]
+let BAD = "{42::>9223372036854775808}"

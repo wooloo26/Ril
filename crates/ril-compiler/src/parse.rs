@@ -3,14 +3,18 @@ use crate::{
     RilLanguage, SyntaxKind, SyntaxNode,
     ast::*,
     hir::DeclarationHead,
-    lexer::{Token, diagnostic, lex},
+    lexer::{StringRegion, Token, diagnostic, lex},
 };
 use crate::{
     diagnostic::Diagnostic,
     source::{FileId, Span},
+    text::FormatSpec,
 };
 use rowan::{GreenNode, GreenNodeBuilder, Language};
-use std::collections::BTreeSet;
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    rc::Rc,
+};
 
 type HeadLookup<'a> = dyn Fn(&[String], u32) -> Option<DeclarationHead> + Sync + 'a;
 
@@ -57,35 +61,6 @@ impl Parse {
     }
 }
 
-#[derive(Debug, Clone)]
-struct ExpressionParse {
-    pub expression: Expr,
-    pub diagnostics: Vec<Diagnostic>,
-    pub incomplete: bool,
-}
-fn parse_expression_inner(
-    text: &str,
-    file: FileId,
-    offset: usize,
-    lookup: Option<&HeadLookup<'_>>,
-) -> ExpressionParse {
-    let mut parser = Parser::new(text, file, offset, lookup);
-    parser.start(SyntaxKind::Root);
-    let expression = parser.expression(0, true);
-    if !parser.eof() {
-        parser.error("E0120", "unexpected token after expression");
-    }
-    while !parser.eof() {
-        parser.bump();
-    }
-    parser.trivia();
-    parser.finish();
-    ExpressionParse {
-        expression,
-        diagnostics: parser.diagnostics,
-        incomplete: parser.incomplete,
-    }
-}
 pub(crate) fn parse_with_heads(text: &str, file: FileId, lookup: &HeadLookup<'_>) -> Parse {
     on_parser_stack(
         || parse_file_inner(text, file, Some(lookup)),
@@ -142,6 +117,8 @@ struct Parser<'a> {
     file: FileId,
     base: usize,
     tokens: Vec<Token>,
+    interpolations: Rc<BTreeMap<usize, Vec<StringRegion>>>,
+    limit: usize,
     pos: usize,
     last_end: usize,
     builder: GreenNodeBuilder<'static>,
@@ -167,18 +144,42 @@ impl<'a> Parser<'a> {
     }
     fn new(text: &'a str, file: FileId, base: usize, lookup: Option<&'a HeadLookup<'a>>) -> Self {
         let lexed = lex(text, file, base);
+        let mut parser = Self::with_tokens(
+            text,
+            file,
+            base,
+            lookup,
+            lexed.tokens,
+            Rc::new(lexed.interpolations),
+        );
+        parser.diagnostics = lexed.diagnostics;
+        parser.incomplete = lexed.incomplete;
+        parser.budget_exhausted = lexed.incomplete;
+        parser
+    }
+
+    fn with_tokens(
+        text: &'a str,
+        file: FileId,
+        base: usize,
+        lookup: Option<&'a HeadLookup<'a>>,
+        tokens: Vec<Token>,
+        interpolations: Rc<BTreeMap<usize, Vec<StringRegion>>>,
+    ) -> Self {
         Self {
             text,
             file,
             base,
-            tokens: lexed.tokens,
+            tokens,
+            interpolations,
+            limit: text.len(),
             pos: 0,
             last_end: 0,
             builder: GreenNodeBuilder::new(),
-            diagnostics: lexed.diagnostics,
-            incomplete: lexed.incomplete,
+            diagnostics: vec![],
+            incomplete: false,
             depth: 0,
-            budget_exhausted: lexed.incomplete,
+            budget_exhausted: false,
             grouped_values: BTreeSet::new(),
             lookup,
             delimiters: Vec::new(),
@@ -187,11 +188,16 @@ impl<'a> Parser<'a> {
             probing_test_group: false,
         }
     }
+
     fn span(&self, start: usize) -> Span {
+        self.span_range(start, self.last_end.max(start))
+    }
+
+    fn span_range(&self, start: usize, end: usize) -> Span {
         Span {
             file: self.file,
             start: (self.base + start) as u32,
-            end: (self.base + self.last_end.max(start)) as u32,
+            end: (self.base + end) as u32,
         }
     }
     fn start(&mut self, kind: SyntaxKind) {
@@ -249,7 +255,7 @@ impl<'a> Parser<'a> {
     fn offset(&self) -> usize {
         self.tokens
             .get(self.significant())
-            .map_or(self.text.len(), |t| t.start)
+            .map_or(self.limit, |t| t.start)
     }
     fn newline(&self) -> bool {
         self.tokens[self.pos..self.significant()]
@@ -2600,10 +2606,7 @@ impl<'a> Parser<'a> {
             _ => match self.kind() {
                 Some(SyntaxKind::Integer) => ExprKind::Literal(Literal::Integer(self.bump())),
                 Some(SyntaxKind::Float) => ExprKind::Literal(Literal::Float(self.bump())),
-                Some(SyntaxKind::String) => {
-                    let text = self.bump();
-                    self.string_kind(&text, start)
-                }
+                Some(SyntaxKind::String) => self.string_literal(),
                 Some(SyntaxKind::RawString) => ExprKind::Literal(Literal::RawString(self.bump())),
                 Some(SyntaxKind::Bytes) => ExprKind::Literal(Literal::Bytes(self.bump())),
                 Some(SyntaxKind::Identifier) => ExprKind::Name(self.bump()),
@@ -2627,49 +2630,121 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn string_kind(&mut self, text: &str, start: usize) -> ExprKind {
-        if self.budget_exhausted {
-            return ExprKind::Error;
-        }
-        let regions = crate::lexer::string_regions(text);
-        if regions.is_empty() {
-            return ExprKind::Literal(Literal::String(text.into()));
-        }
+    fn string_literal(&mut self) -> ExprKind {
+        let token = self.tokens[self.significant()];
+        let interpolations = Rc::clone(&self.interpolations);
+        let Some(regions) = interpolations.get(&token.start) else {
+            return ExprKind::Literal(Literal::String(self.bump()));
+        };
+        self.trivia();
+        self.start(SyntaxKind::InterpolatedString);
+        let mut previous = token.start;
         let mut parts = vec![];
-        let mut previous = 1;
         for region in regions {
-            if previous < region.start
-                && let Some(decoded) = decode_string_text(&text[previous..region.start])
+            self.emit_slice(SyntaxKind::String, previous, region.start);
+            if let Some(decoded) =
+                decode_string_text(&self.text[previous.max(token.start + 1)..region.start])
+                && !decoded.is_empty()
             {
                 parts.push(StringPart::Text(decoded));
             }
-            let parsed = parse_expression_inner(
-                &text[region.start + 1..region.expression_end],
-                self.file,
-                self.base + start + region.start + 1,
-                self.lookup,
-            );
-            self.diagnostics.extend(parsed.diagnostics);
-            self.incomplete |= parsed.incomplete;
-            parts.push(StringPart::Interpolation {
-                expression: Box::new(parsed.expression),
-                format: region
-                    .format
-                    .map(|colon| text[colon + 1..region.end].to_owned()),
-                span: Span {
-                    file: self.file,
-                    start: (self.base + start + region.start) as u32,
-                    end: (self.base + start + region.end + 1) as u32,
-                },
-            });
+            parts.push(self.parse_interpolation(region));
             previous = region.end + 1;
         }
-        if previous < text.len().saturating_sub(1)
-            && let Some(decoded) = decode_string_text(&text[previous..text.len() - 1])
+        self.emit_slice(SyntaxKind::String, previous, token.end);
+        let closed = self.text.as_bytes()[token.end - 1] == b'"';
+        let content_end = token.end - usize::from(closed);
+        if previous < content_end
+            && let Some(decoded) = decode_string_text(&self.text[previous..content_end])
         {
             parts.push(StringPart::Text(decoded));
         }
+        self.finish();
+        self.pos += 1;
+        self.last_end = token.end;
         ExprKind::Interpolated(parts)
+    }
+
+    fn emit_slice(&mut self, kind: SyntaxKind, start: usize, end: usize) {
+        if start < end {
+            self.builder
+                .token(RilLanguage::kind_to_raw(kind), &self.text[start..end]);
+        }
+    }
+
+    fn parse_interpolation(&mut self, region: &StringRegion) -> StringPart {
+        self.start(SyntaxKind::Interpolation);
+        self.emit_slice(SyntaxKind::Punctuation, region.start, region.start + 1);
+        let span = self.span_range(region.start, region.end + 1);
+        let mut child = Self::with_tokens(
+            self.text,
+            self.file,
+            self.base,
+            self.lookup,
+            region.tokens.clone(),
+            Rc::clone(&self.interpolations),
+        );
+        child.limit = region.format.unwrap_or(region.end);
+        child.last_end = region.start + 1;
+        child.depth = self.depth;
+        std::mem::swap(&mut self.builder, &mut child.builder);
+
+        let expression = if child.eof() {
+            child.error_at(span, "E0112", "interpolation requires an expression");
+            Expr {
+                kind: ExprKind::Error,
+                span,
+            }
+        } else {
+            child.expression(0, true)
+        };
+        let format_start = if child.at(":") {
+            Some(child.offset())
+        } else {
+            if !child.eof() {
+                child.error("E0120", "unexpected token after interpolation expression");
+                while !child.eof() {
+                    child.recovery(true);
+                }
+            }
+            region.format
+        };
+        child.trivia();
+        std::mem::swap(&mut self.builder, &mut child.builder);
+        let expression_end = (self.base + format_start.unwrap_or(region.end)) as u32;
+        self.diagnostics.extend(
+            region
+                .diagnostics
+                .iter()
+                .filter(|diagnostic| {
+                    diagnostic
+                        .labels
+                        .first()
+                        .is_none_or(|label| label.span.start < expression_end)
+                })
+                .cloned(),
+        );
+        self.diagnostics.extend(child.diagnostics);
+        self.incomplete |= child.incomplete;
+
+        let format = format_start.and_then(|colon| {
+            self.emit_slice(SyntaxKind::Punctuation, colon, colon + 1);
+            self.emit_slice(SyntaxKind::FormatText, colon + 1, region.end);
+            let span = self.span_range(colon + 1, region.end);
+            if let Some(spec) = FormatSpec::parse(&self.text[colon + 1..region.end]) {
+                Some(InterpolationFormat { spec, span })
+            } else {
+                self.error_at(span, "E0112", "malformed interpolation format");
+                None
+            }
+        });
+        self.emit_slice(SyntaxKind::Punctuation, region.end, region.end + 1);
+        self.finish();
+        StringPart::Interpolation {
+            expression: Box::new(expression),
+            format,
+            span,
+        }
     }
 
     fn generic_call_ahead(&self) -> bool {
@@ -3360,7 +3435,17 @@ impl<'a> Parser<'a> {
             _ => match self.kind() {
                 Some(SyntaxKind::Integer) => PatternKind::Literal(Literal::Integer(self.bump())),
                 Some(SyntaxKind::Float) => PatternKind::Literal(Literal::Float(self.bump())),
-                Some(SyntaxKind::String) => PatternKind::Literal(Literal::String(self.bump())),
+                Some(SyntaxKind::String) => match self.string_literal() {
+                    ExprKind::Literal(literal) => PatternKind::Literal(literal),
+                    _ => {
+                        self.error_at(
+                            self.span(start),
+                            "E0349",
+                            "an interpolated string is not a literal pattern",
+                        );
+                        PatternKind::Error
+                    }
+                },
                 Some(SyntaxKind::RawString) => {
                     PatternKind::Literal(Literal::RawString(self.bump()))
                 }

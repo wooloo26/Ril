@@ -1,5 +1,5 @@
 //! Owned source syntax. Names are unresolved and every node retains byte spans.
-use crate::source::Span;
+use crate::{source::Span, text::FormatSpec};
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Program {
@@ -533,9 +533,15 @@ pub enum StringPart {
     Text(String),
     Interpolation {
         expression: Box<Expr>,
-        format: Option<String>,
+        format: Option<InterpolationFormat>,
         span: Span,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InterpolationFormat {
+    pub spec: FormatSpec,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
