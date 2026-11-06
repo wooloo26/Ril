@@ -687,7 +687,7 @@ impl<'a> Parser<'a> {
                         span,
                     })
                 } else {
-                    Some(self.type_sort())
+                    Some(self.type_sort(&name))
                 }
             } else {
                 None
@@ -1385,7 +1385,29 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn type_sort(&mut self) -> TypeExpr {
+    fn type_sort(&mut self, parameter: &str) -> TypeExpr {
+        if parameter
+            .as_bytes()
+            .first()
+            .is_some_and(u8::is_ascii_uppercase)
+            && self.at("ril")
+            && self.look(1) == "/"
+            && self.look(2) == "reflect"
+            && self.look(3) == "::"
+            && self.look(4) == "MemberMode"
+        {
+            let start = self.offset();
+            self.start(SyntaxKind::TypeExpression);
+            for _ in 0..5 {
+                self.bump();
+            }
+            self.finish();
+            return TypeExpr {
+                kind: TypeKind::QualifiedMemberMode,
+                text: self.text[start..self.last_end].to_owned(),
+                span: self.span(start),
+            };
+        }
         let first = self.type_expr();
         if !self.at("|") {
             return first;
@@ -1462,33 +1484,7 @@ impl<'a> Parser<'a> {
         } else if self.at("[") && self.static_array_ahead() {
             TypeKind::Computation(Box::new(self.expression(11, true)))
         } else if self.eat("[") {
-            let access = self.storage_mode();
-            if self.eat("]") {
-                TypeKind::Array {
-                    length: None,
-                    access,
-                    element: Box::new(self.type_expr()),
-                }
-            } else if self.type_map_ahead() {
-                let key = self.type_expr();
-                self.expect(":");
-                let access = self.storage_mode();
-                let value = self.type_expr();
-                self.expect("]");
-                TypeKind::Map {
-                    key: Box::new(key),
-                    access,
-                    value: Box::new(value),
-                }
-            } else {
-                let length = self.expression(0, true);
-                self.expect("]");
-                TypeKind::Array {
-                    length: Some(Box::new(length)),
-                    access: None,
-                    element: Box::new(self.type_expr()),
-                }
-            }
+            self.collection_type()
         } else if self.at("(") && self.mapped_ahead() {
             self.bump();
             let kind = self.mapped_type(true);
@@ -1564,24 +1560,12 @@ impl<'a> Parser<'a> {
             while !self.at("}") && !self.eof() {
                 let before = self.pos;
                 let field_start = self.offset();
+                if row.is_some() {
+                    self.error("E0120", "a record permits one final row tail");
+                }
                 if self.eat("..") {
-                    let start = self.offset();
-                    row = Some(Box::new(if self.type_pattern_depth > 0 {
-                        let name = self.eat("let").then(|| self.name());
-                        TypeExpr {
-                            text: self.text[start..self.last_end.max(start)].to_owned(),
-                            kind: TypeKind::PatternRest(name),
-                            span: self.span(start),
-                        }
-                    } else if self.at("}") || self.at(",") {
-                        TypeExpr {
-                            text: String::new(),
-                            kind: TypeKind::OpenRow,
-                            span: self.span(start),
-                        }
-                    } else {
-                        self.type_expr()
-                    }));
+                    let tail = self.record_tail(field_start);
+                    row.get_or_insert_with(|| Box::new(tail));
                 } else {
                     let capture = if self.type_pattern_depth > 0 && self.eat("let") {
                         Some(self.name())
@@ -1639,7 +1623,7 @@ impl<'a> Parser<'a> {
                 let start = self.offset();
                 let name = self.name();
                 let bound = if self.eat(":") {
-                    Some(self.type_sort())
+                    Some(self.type_sort(&name))
                 } else {
                     None
                 };
@@ -1782,11 +1766,101 @@ impl<'a> Parser<'a> {
         (var || access).then(|| self.text[start..self.last_end].to_owned())
     }
 
-    fn storage_mode(&mut self) -> Option<String> {
-        let word = self.current();
-        let mode = matches!(word, "mut" | "^mut" | "ref" | "via")
-            || self.look(1) == "]" && word.as_bytes().first().is_some_and(u8::is_ascii_uppercase);
-        mode.then(|| self.bump())
+    fn record_tail(&mut self, dots: usize) -> TypeExpr {
+        let (start, kind) = if self.type_pattern_depth > 0 {
+            let name = self.eat("let").then(|| self.name());
+            (dots, TypeKind::PatternRest(name))
+        } else if matches!(self.current(), "}" | ",") || self.eof() {
+            (dots, TypeKind::OpenRow)
+        } else {
+            let start = self.offset();
+            let name = if self.at("never") {
+                self.bump()
+            } else {
+                self.name()
+            };
+            (
+                start,
+                TypeKind::Name {
+                    path: vec![name],
+                    arguments: vec![],
+                },
+            )
+        };
+        TypeExpr {
+            text: self.text[start..self.last_end.max(start)].to_owned(),
+            kind,
+            span: self.span(start),
+        }
+    }
+
+    fn collection_type(&mut self) -> TypeKind {
+        if self.type_pattern_depth > 0 && !self.type_pattern_map_ahead() {
+            let length = if self.at("]") {
+                None
+            } else {
+                Some(Box::new(self.expression(0, true)))
+            };
+            self.expect("]");
+            return TypeKind::ArrayPattern {
+                length,
+                element: Box::new(self.type_expr()),
+            };
+        }
+        let access = if self.type_pattern_depth == 0 {
+            self.storage_mode(self.look(1) == "]")
+        } else {
+            None
+        };
+        if access.is_some() || self.at("]") {
+            self.expect("]");
+            return TypeKind::Array {
+                access,
+                element: Box::new(self.type_expr()),
+            };
+        }
+        let key = self.type_expr();
+        if matches!(self.current(), ")" | "}") || self.eof() {
+            self.expect("]");
+            return TypeKind::Error;
+        }
+        if !self.eat(":") {
+            self.expect(":");
+            if self.eat("]") {
+                return TypeKind::Error;
+            }
+        }
+        let access = if self.type_pattern_depth == 0 {
+            self.storage_mode(starts_type(self.look(1)))
+        } else {
+            None
+        };
+        let value = self.type_expr();
+        self.expect("]");
+        TypeKind::Map {
+            key: Box::new(key),
+            access,
+            value: Box::new(value),
+        }
+    }
+
+    fn storage_mode(&mut self, named: bool) -> Option<StorageMode> {
+        let start = self.offset();
+        let kind = match self.current() {
+            "mut" => StorageModeKind::Mut,
+            "^mut" => StorageModeKind::SharedMut,
+            "ref" => StorageModeKind::Ref,
+            "via" => StorageModeKind::Via,
+            name if named && name.as_bytes().first().is_some_and(u8::is_ascii_uppercase) => {
+                StorageModeKind::Parameter(name.to_owned())
+            }
+            _ => return None,
+        };
+        self.bump();
+        Some(StorageMode {
+            kind,
+            span: self.span(start),
+        })
     }
 
     fn mapped_ahead(&self) -> bool {
@@ -1846,13 +1920,13 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn type_map_ahead(&self) -> bool {
-        let mut depth = 0;
+    fn type_pattern_map_ahead(&self) -> bool {
+        let mut depth = 0usize;
         for t in &self.tokens[self.significant()..] {
             let text = &self.text[t.start..t.end];
             match text {
-                "[" | "(" | "{" => depth += 1,
-                "]" if depth == 0 => return false,
+                "[" | "?[" | "(" | "{" => depth += 1,
+                "]" | ")" | "}" if depth == 0 => return false,
                 "]" | ")" | "}" => depth -= 1,
                 ":" if depth == 0 => return true,
                 _ => {}
@@ -1949,8 +2023,13 @@ impl<'a> Parser<'a> {
     }
 
     fn generic_argument(&mut self, sort: Option<ArgumentSort>) -> TypeExpr {
+        // Rigid type patterns have their own argument grammar, including
+        // wildcards and binders in the nested pattern positions.
+        if self.type_pattern_depth > 0 {
+            return self.type_expr();
+        }
         let start = self.offset();
-        if sort == Some(ArgumentSort::Mode)
+        if matches!(sort, None | Some(ArgumentSort::Mode))
             && let Some(mode) = self.member_mode(false)
         {
             return TypeExpr {
@@ -1960,7 +2039,8 @@ impl<'a> Parser<'a> {
             };
         }
         if sort == Some(ArgumentSort::Value)
-            || sort == Some(ArgumentSort::Mode) && self.at("modeof")
+            || sort == Some(ArgumentSort::Mode) && !crate::lexer::primitive(self.current())
+            || sort.is_none() && matches!(self.current(), "if" | "match" | "modeof")
             || self.at("<")
         {
             let expression = self.expression(0, true);
@@ -3110,6 +3190,12 @@ impl<'a> Parser<'a> {
             span: self.span(start),
         }
     }
+}
+
+fn starts_type(token: &str) -> bool {
+    matches!(token, "?" | "?[" | "[" | "(" | "{" | "fn" | "typeof" | "\\")
+        || crate::lexer::primitive(token)
+        || token.as_bytes().first().is_some_and(u8::is_ascii_uppercase)
 }
 
 fn assignment_operator(operator: &str) -> bool {

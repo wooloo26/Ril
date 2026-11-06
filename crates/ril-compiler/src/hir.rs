@@ -28,6 +28,7 @@ pub enum DefinitionKind {
     Binding,
     Parameter,
     GenericParameter,
+    RowParameter,
     Builtin,
 }
 
@@ -151,10 +152,18 @@ struct Import {
 }
 
 #[derive(Debug)]
+struct ImplicitRow {
+    scope: ScopeId,
+    span: Span,
+    name: Option<String>,
+}
+
+#[derive(Debug)]
 pub(crate) struct Index {
     hir: Hir,
     imports: Vec<Import>,
     uses: Vec<UseSite>,
+    rows: Vec<ImplicitRow>,
     roots: BTreeMap<FileId, ScopeId>,
     files: BTreeMap<PathBuf, DefId>,
     pub diagnostics: Vec<Diagnostic>,
@@ -172,6 +181,7 @@ impl Index {
             },
             imports: vec![],
             uses: vec![],
+            rows: vec![],
             roots: BTreeMap::new(),
             files: BTreeMap::new(),
             diagnostics: vec![],
@@ -196,7 +206,6 @@ impl Index {
             ("NominalWrapper", 1),
             ("Unwrap", 1),
             ("Tuple", 1),
-            ("MemberMode", 0),
             ("Concurrent", 0),
             ("Async", 0),
         ] {
@@ -217,6 +226,16 @@ impl Index {
                 &[("Ok", Constructor, 2), ("Err", Constructor, 2)][..],
             ),
             ("Fiber", Effect, 0, &[("yield", EffectOperation, 0)][..]),
+            (
+                "MemberMode",
+                Type,
+                0,
+                &[
+                    ("Let", Constructor, 0),
+                    ("Var", Constructor, 0),
+                    ("Mut", Constructor, 0),
+                ][..],
+            ),
             (
                 "Div",
                 Effect,
@@ -522,7 +541,7 @@ impl Index {
                 for arm in arms {
                     self.expr(scope, &arm.operation);
                     let inner = self.region(scope, arm.span, ScopeKind::HandlerArm);
-                    self.parameters(inner, &arm.parameters);
+                    self.parameters(inner, &arm.parameters, false);
                     self.expr(inner, &arm.body);
                 }
             }
@@ -598,7 +617,7 @@ impl Index {
         let inner = self.scope(Some(scope), Some(function.span), None);
         let head_start = self.uses.len();
         self.generics(inner, &function.generics);
-        self.parameters(inner, &function.parameters);
+        self.parameters(inner, &function.parameters, function.body.is_some());
         let helpers_start = self.uses.len();
         self.statements(inner, &function.signature_where);
         let helpers_end = self.uses.len();
@@ -671,6 +690,7 @@ impl Index {
     fn generics(&mut self, scope: ScopeId, generics: &[GenericParameter]) {
         for parameter in generics {
             if let Some(bound) = &parameter.bound {
+                self.implicit_row(scope, bound, true);
                 self.ty(scope, bound);
             }
             for guard in &parameter.guards {
@@ -688,7 +708,7 @@ impl Index {
                     span: Some(parameter.span),
                     public: false,
                     mutable: false,
-                    signature: None,
+                    signature: kind_signature(parameter.bound.as_ref()),
                     members: None,
                     alias: None,
                 },
@@ -697,9 +717,12 @@ impl Index {
         }
     }
 
-    fn parameters(&mut self, scope: ScopeId, parameters: &[Parameter]) {
+    fn parameters(&mut self, scope: ScopeId, parameters: &[Parameter], definition_inputs: bool) {
         for parameter in parameters {
             if let Some(ty) = &parameter.ty {
+                if definition_inputs {
+                    self.implicit_row(scope, ty, false);
+                }
                 self.ty(scope, ty);
             }
             if let Some(default) = &parameter.default {
@@ -708,6 +731,54 @@ impl Index {
             }
             self.pattern(scope, &parameter.pattern);
             self.bind_pattern(scope, &parameter.pattern, parameter.span.end);
+        }
+    }
+
+    fn implicit_row(&mut self, scope: ScopeId, ty: &TypeExpr, constraint: bool) {
+        let TypeKind::Record { row: Some(row), .. } = &ty.kind else {
+            return;
+        };
+        let name = match &row.kind {
+            TypeKind::OpenRow => None,
+            TypeKind::Name { path, .. } if constraint && path.len() == 1 && path[0] != "never" => {
+                Some(path[0].clone())
+            }
+            _ => return,
+        };
+        self.rows.push(ImplicitRow {
+            scope,
+            span: row.span,
+            name,
+        });
+    }
+
+    fn bind_implicit_rows(&mut self) {
+        // A named row in a constraint introduces a binder only if lookup
+        // still fails once imports and the enclosing declarations are known.
+        for ImplicitRow { scope, span, name } in std::mem::take(&mut self.rows) {
+            if let Some(name) = &name
+                && self.lexical(scope, name, span.start, false) != Err(LookupError::Unknown)
+            {
+                continue;
+            }
+            let anonymous = name.is_none();
+            let definition = Definition {
+                name: name.unwrap_or_else(|| "..".into()),
+                kind: DefinitionKind::RowParameter,
+                scope,
+                span: Some(span),
+                public: false,
+                mutable: false,
+                signature: None,
+                members: None,
+                alias: None,
+            };
+            if anonymous {
+                // Each input occurrence gets an identity without a lexical name.
+                self.allocate(definition);
+            } else {
+                self.declare(definition, 0);
+            }
         }
     }
 
@@ -801,16 +872,22 @@ impl Index {
             | TypeKind::KeyOf(ty)
             | TypeKind::Rest(ty)
             | TypeKind::Member { ty, .. } => self.ty(scope, ty),
-            TypeKind::Array {
-                length, element, ..
-            } => {
+            TypeKind::Array { access, element } => {
+                self.storage_mode(scope, access.as_ref());
+                self.ty(scope, element);
+            }
+            TypeKind::ArrayPattern { length, element } => {
                 if let Some(length) = length {
                     self.expr(scope, length);
                 }
                 self.ty(scope, element);
             }
-            TypeKind::Map { key, value, .. }
-            | TypeKind::KindArrow {
+            TypeKind::Map { key, access, value } => {
+                self.ty(scope, key);
+                self.storage_mode(scope, access.as_ref());
+                self.ty(scope, value);
+            }
+            TypeKind::KindArrow {
                 parameter: key,
                 result: value,
             } => {
@@ -842,7 +919,7 @@ impl Index {
                 annotations,
             } => {
                 let inner = self.scope(Some(scope), Some(ty.span), None);
-                self.parameters(inner, parameters);
+                self.parameters(inner, parameters, false);
                 self.annotations(inner, annotations);
                 self.return_sources(inner, return_mode);
                 if let Some(result) = result {
@@ -888,11 +965,27 @@ impl Index {
                 self.ty(inner, value);
             }
             TypeKind::PatternMode { ty, .. } => self.ty(scope, ty),
+            TypeKind::QualifiedMemberMode => self.site(
+                scope,
+                ty.span,
+                vec!["ril/reflect".into(), "MemberMode".into()],
+                UseKind::Type { applied: false },
+            ),
             TypeKind::TypeBinder(_)
             | TypeKind::PatternRest(_)
             | TypeKind::OpenRow
             | TypeKind::ModeLiteral
             | TypeKind::Error => {}
+        }
+    }
+
+    fn storage_mode(&mut self, scope: ScopeId, mode: Option<&StorageMode>) {
+        if let Some(StorageMode {
+            kind: StorageModeKind::Parameter(name),
+            span,
+        }) = mode
+        {
+            self.site(scope, *span, vec![name.clone()], UseKind::Ordinary);
         }
     }
 
@@ -1025,7 +1118,7 @@ impl Index {
                 annotations,
             } => {
                 let inner = self.scope(Some(scope), Some(expr.span), None);
-                self.parameters(inner, parameters);
+                self.parameters(inner, parameters, true);
                 self.annotations(inner, annotations);
                 if let Some(ty) = return_type {
                     self.ty(inner, ty);
@@ -1182,6 +1275,16 @@ fn signature(parameters: &[GenericParameter]) -> Vec<ArgumentSort> {
         .iter()
         .map(|parameter| GenericParameter::sort_for(&parameter.name, parameter.bound.as_ref()))
         .collect()
+}
+
+fn kind_signature(bound: Option<&TypeExpr>) -> Option<Vec<ArgumentSort>> {
+    let mut kind = bound?;
+    let mut parameters = vec![];
+    while let TypeKind::KindArrow { result, .. } = &kind.kind {
+        parameters.push(ArgumentSort::Type);
+        kind = result;
+    }
+    (!parameters.is_empty()).then_some(parameters)
 }
 
 fn expression_path(expr: &Expr) -> Option<Vec<String>> {
@@ -1353,6 +1456,9 @@ impl Index {
         at: u32,
         constructors: bool,
     ) -> Result<DefId, LookupError> {
+        if path == ["ril/reflect", "MemberMode"] {
+            return self.lexical(ScopeId(0), "MemberMode", at, false);
+        }
         let (first, rest) = path.split_first().ok_or(LookupError::Unknown)?;
         let (head, rest) = if first == "Super" {
             let mut upward = self.parent_module(scope)?;
@@ -1543,6 +1649,7 @@ impl Index {
             }
             break;
         }
+        self.bind_implicit_rows();
     }
 
     pub fn finish(mut self) -> (Hir, Vec<Diagnostic>) {

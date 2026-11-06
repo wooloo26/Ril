@@ -1,0 +1,78 @@
+-- [case: structural-constraint-introduces-shared-row-name, front-pass]
+-- spec: SPEC#record-types-and-row-polymorphism
+fn add_id<T: { ..Rest }>(item: T) -> { id: i64, ..Rest } {
+    .{ id: 1, ..item }
+}
+fn relate<T: { ..Rest }, U: { ..Rest }>(first: T, second: U) -> { ..Rest } {
+    .{ ..first }
+}
+
+-- [case: named-row-outside-constraint-must-resolve, front-fail]
+-- spec: SPEC#record-types-and-row-polymorphism
+-- Error [E0204]
+fn inspect(item: { ..Missing }) -> () {}
+
+-- [case: nonfinal-record-row-tail, front-fail]
+-- spec: SPEC#record-types-and-row-polymorphism
+-- Error [E0120]
+type Invalid<Fields> = { ..Fields, id: i64 }
+
+-- [case: duplicate-record-row-tail, front-fail]
+-- spec: SPEC#record-types-and-row-polymorphism
+-- Error [E0120]
+type Invalid<Fields> = { ..Fields, .. }
+
+-- [case: member-mode-parameter-in-array-and-map, front-pass]
+-- spec: SPEC#array-map-and-tuple-types
+type Cell = { var value: i64 }
+type Storage<T, M: MemberMode> = ([M]T, [str: M T])
+type Views = Storage<Cell, ref>
+type Dictionary<T> = [str: T]
+
+-- [case: qualified-member-mode-sort-and-static-mode-expression, front-pass]
+-- spec: SPEC#generic-parameters-defaults-and-value-sorts
+type MemberMode = i64
+type Cell = { var value: i64 }
+type Select<T, M: ril/reflect::MemberMode = mut> = [M]T
+type Source = { mut items: []i64, title: str }
+type Selected = Select<Cell, if true { modeof Source.items } else { modeof Source.title }>
+
+-- [case: bare-member-mode-constructor-as-static-argument, front-pass]
+-- spec: SPEC#universal-member-mode-projection
+type Cell = { var value: i64 }
+type Select<T, M: MemberMode> = [M]T
+type Selected = Select<Cell, Mut>
+
+-- [case: constructor-argument-pattern-wildcard, front-pass]
+-- spec: SPEC#structural-type-pattern-matching
+type Indexed<index: i64>(i64)
+type UnwrapIndex = \T -> match <T> {
+    <Indexed<_>> -> <i64>,
+    _ -> <never>,
+}
+
+-- [case: structural-array-and-map-type-patterns, front-pass]
+-- spec: SPEC#structural-type-pattern-matching
+type Element = \T -> match <T> {
+    <[]let Item> -> <Item>,
+    <[let _: let Item]> -> <Item>,
+    _ -> <never>,
+}
+
+-- [case: higher-kind-parameter-supplies-application-signature, front-pass]
+-- spec: SPEC#static-parameter-sorts-and-adaptation-rules
+type Identity = \T -> <T>
+type Apply = \M: Type -> Type, T -> M<T>
+type Applied = Apply<Identity, i64>
+
+-- [case: unknown-storage-mode-is-a-name-error, front-fail]
+-- spec: SPEC#universal-member-mode-projection
+-- Error [E0204]
+type Cell = { var value: i64 }
+type Storage = [Missing]Cell
+
+-- [case: malformed-bracket-type-is-a-syntax-error, front-fail]
+-- spec: SPEC#syntactic-diagnostic-conditions
+-- Error [E0123]
+type Broken = [str)
+type Recovered = i64

@@ -189,13 +189,16 @@ pub enum TypeKind {
     },
     Optional(Box<TypeExpr>),
     Array {
+        access: Option<StorageMode>,
+        element: Box<TypeExpr>,
+    },
+    ArrayPattern {
         length: Option<Box<Expr>>,
-        access: Option<String>,
         element: Box<TypeExpr>,
     },
     Map {
         key: Box<TypeExpr>,
-        access: Option<String>,
+        access: Option<StorageMode>,
         value: Box<TypeExpr>,
     },
     Tuple(Vec<TypeExpr>),
@@ -245,11 +248,27 @@ pub enum TypeKind {
     },
     TypeBinder(String),
     ModeLiteral,
+    QualifiedMemberMode,
     KindArrow {
         parameter: Box<TypeExpr>,
         result: Box<TypeExpr>,
     },
     Error,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StorageMode {
+    pub kind: StorageModeKind,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StorageModeKind {
+    Mut,
+    SharedMut,
+    Ref,
+    Via,
+    Parameter(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -606,6 +625,7 @@ impl TypeExpr {
                 value.pattern_binding_names(names);
             }
             TypeKind::Array { element: ty, .. }
+            | TypeKind::ArrayPattern { element: ty, .. }
             | TypeKind::Member { ty, .. }
             | TypeKind::Optional(ty) => ty.pattern_binding_names(names),
             _ => {}
@@ -663,6 +683,7 @@ impl GenericParameter {
     pub(crate) fn sort_for(name: &str, bound: Option<&TypeExpr>) -> ArgumentSort {
         match bound.map(|ty| &ty.kind) {
             Some(TypeKind::KeyOf(_)) => ArgumentSort::Value,
+            Some(TypeKind::QualifiedMemberMode) => ArgumentSort::Mode,
             Some(TypeKind::Name { path, .. })
                 if path.last().is_some_and(|name| name == "MemberMode") =>
             {

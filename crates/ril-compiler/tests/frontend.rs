@@ -246,3 +246,98 @@ halt fn sample() -> i64 {
     assert_eq!(transfer.operation, ControlOperation::Resume);
     assert_eq!(hir.scopes[transfer.target.0].kind, ScopeKind::HandlerArm);
 }
+
+#[test]
+fn row_constraints_share_named_binders_and_keep_anonymous_inputs_independent() {
+    let input = r#"
+fn project<T: { ..Rest }, U: { ..Rest }>(
+    first: T, second: U, left: { .. }, right: { .. },
+) -> { ..Rest } { .{ ..first } }
+"#;
+    let result = compile(input);
+    assert!(result.is_ok(), "{:?}", result.diagnostics);
+    let hir = result.hir.unwrap();
+    let row_definitions: Vec<_> = hir
+        .definitions
+        .iter()
+        .enumerate()
+        .filter(|(_, definition)| definition.kind == DefinitionKind::RowParameter)
+        .collect();
+    let [(named, rest), (_, left), (_, right)] = row_definitions.as_slice() else {
+        panic!("expected one named row and two anonymous rows");
+    };
+    assert_eq!(rest.name, "Rest");
+    for definition in [left, right] {
+        assert_eq!(
+            result.sources.slice(definition.span.unwrap()).unwrap(),
+            b".."
+        );
+    }
+    assert_ne!(left.span, right.span);
+    let rest_uses: Vec<_> = hir
+        .references
+        .iter()
+        .filter(|reference| reference.path == ["Rest"])
+        .map(|reference| reference.definition.0)
+        .collect();
+    assert_eq!(rest_uses, [*named; 3]);
+}
+
+#[test]
+fn imported_row_type_is_resolved_before_introducing_an_implicit_binder() {
+    let result = frontend(Path::new("root.ril"), UnitKind::Library, |path| {
+        let source = match path.to_str() {
+            Some("root.ril") => {
+                "use schema::{Fields}\nfn retain<T: { ..Fields }>(value: T) -> T { value }"
+            }
+            Some("schema.d.ril") => "pub type Fields = { name: str }",
+            _ => return Err(io::Error::from(io::ErrorKind::NotFound)),
+        };
+        Ok(source.as_bytes().to_vec())
+    })
+    .unwrap();
+    assert!(result.is_ok(), "{:?}", result.diagnostics);
+    let hir = result.hir.unwrap();
+    let row = hir
+        .references
+        .iter()
+        .find(|reference| reference.path == ["Fields"])
+        .unwrap();
+    let definition = &hir.definitions[row.definition.0];
+    assert_eq!(definition.kind, DefinitionKind::Type);
+    assert_ne!(definition.span.unwrap().file, FileId(0));
+    assert!(
+        !hir.definitions
+            .iter()
+            .any(|definition| definition.kind == DefinitionKind::RowParameter)
+    );
+}
+
+#[test]
+fn storage_modes_share_parameter_identity_and_preserve_qualified_sort() {
+    let input =
+        "type MemberMode = i64\ntype Storage<T, M: ril/reflect::MemberMode> = ([M]T, [str: M T])\n";
+    let result = compile(input);
+    assert!(result.is_ok(), "{:?}", result.diagnostics);
+    let hir = result.hir.unwrap();
+    let qualified = hir
+        .references
+        .iter()
+        .find(|reference| reference.path == ["ril/reflect", "MemberMode"])
+        .unwrap();
+    assert!(hir.definitions[qualified.definition.0].span.is_none());
+    let uses: Vec<_> = hir
+        .references
+        .iter()
+        .filter(|reference| reference.path == ["M"])
+        .collect();
+    let [array, map] = uses.as_slice() else {
+        panic!("expected two storage mode uses");
+    };
+    assert_eq!(array.definition, map.definition);
+    assert_eq!(
+        hir.definitions[array.definition.0].kind,
+        DefinitionKind::GenericParameter
+    );
+    assert_eq!(result.sources.slice(map.span).unwrap(), b"M");
+}

@@ -404,16 +404,19 @@ impl Validator {
             TypeKind::Optional(inner) | TypeKind::KeyOf(inner) | TypeKind::Rest(inner) => {
                 self.ty(inner)
             }
-            TypeKind::Array {
-                length, element, ..
-            } => {
+            TypeKind::Array { access, element } => {
+                self.storage_mode(access.as_ref());
+                self.ty(element);
+            }
+            TypeKind::ArrayPattern { length, element } => {
                 if let Some(length) = length {
                     self.expr(length);
                 }
                 self.ty(element);
             }
-            TypeKind::Map { key, value, .. } => {
+            TypeKind::Map { key, access, value } => {
                 self.ty(key);
+                self.storage_mode(access.as_ref());
                 self.ty(value);
             }
             TypeKind::Tuple(items) | TypeKind::Alternatives(items) => {
@@ -439,6 +442,12 @@ impl Validator {
                     self.ty(&field.ty);
                 }
                 if let Some(row) = row {
+                    if let TypeKind::Name { path, .. } = &row.kind
+                        && path.len() == 1
+                        && path[0] != "never"
+                    {
+                        self.pascal(&path[0], row.span);
+                    }
                     self.ty(row);
                 }
             }
@@ -497,10 +506,21 @@ impl Validator {
             TypeKind::TypeBinder(_)
             | TypeKind::PatternRest(_)
             | TypeKind::ModeLiteral
+            | TypeKind::QualifiedMemberMode
             | TypeKind::OpenRow
             | TypeKind::Error => {}
         }
     }
+    fn storage_mode(&mut self, mode: Option<&StorageMode>) {
+        if let Some(StorageMode {
+            kind: StorageModeKind::Parameter(name),
+            span,
+        }) = mode
+        {
+            self.pascal(name, *span);
+        }
+    }
+
     fn expr(&mut self, expr: &Expr) {
         if matches!(&expr.kind,ExprKind::Literal(Literal::Integer(text)|Literal::Float(text))if text.contains('\0'))
         {
