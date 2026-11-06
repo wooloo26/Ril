@@ -877,3 +877,118 @@ fn example() -> i64 {
     let identities: std::collections::BTreeSet<_> = hir.primitives.values().collect();
     assert_eq!(identities.len(), hir.primitives.len());
 }
+
+#[test]
+fn resolved_constant_arguments_load_nested_imports_once() {
+    let root = r#"
+fn choose<enabled: bool>(value: i64) -> i64 { if enabled { value } else { 0 } }
+fn sample() -> i64 { choose<{ (0); use flags::{ENABLED}; ENABLED }>(7) }
+"#;
+    let reads = std::cell::RefCell::new(std::collections::BTreeMap::new());
+    let result = frontend(Path::new("root.ril"), UnitKind::Library, |path| {
+        *reads.borrow_mut().entry(path.to_owned()).or_insert(0) += 1;
+        let source = match path.to_str() {
+            Some("root.ril") => root,
+            Some("flags.ril") => "pub use settings::{ON as ENABLED}",
+            Some("settings.ril") => "pub let ON = true",
+            _ => return Err(io::Error::from(io::ErrorKind::NotFound)),
+        };
+        Ok(source.as_bytes().to_vec())
+    })
+    .unwrap();
+    assert!(result.is_ok(), "{:?}", result.diagnostics);
+    let reads = reads.into_inner();
+    assert_eq!(reads.len(), 3);
+    assert!(reads.values().all(|count| *count == 1));
+    let hir = result.hir.unwrap();
+    let enabled = hir
+        .references
+        .iter()
+        .find(|reference| reference.path == ["ENABLED"])
+        .unwrap();
+    let source = hir.definitions[enabled.definition.0].span.unwrap();
+    assert_eq!(
+        result.sources.get(source.file).unwrap().path(),
+        Path::new("settings.ril")
+    );
+}
+
+#[test]
+fn mapped_modes_and_members_see_binder_but_coordinate_expression_sees_outer_head() {
+    let input = r#"
+type Schema = { var id: i64 }
+type Keys = \token: Type -> token
+meta fn fields(_token: Type) -> []str { ["id"] }
+type Project = { modeof Schema.(Keys) [fields(Keys< <Schema> >) as Keys]: Schema.(Keys) }
+"#;
+    let result = compile(input);
+    assert!(result.is_ok(), "{:?}", result.diagnostics);
+    let hir = result.hir.unwrap();
+    let keys: Vec<_> = hir
+        .references
+        .iter()
+        .filter(|reference| reference.path == ["Keys"])
+        .collect();
+    let [source, mode, member] = keys.as_slice() else {
+        panic!("expected the coordinate source, mode, and member references");
+    };
+    assert_eq!(
+        source.application.as_ref().unwrap().parameters,
+        [ArgumentSort::Value]
+    );
+    assert_eq!(
+        hir.definitions[source.definition.0].kind,
+        DefinitionKind::Type
+    );
+    assert_eq!(mode.definition, member.definition);
+    assert_eq!(
+        hir.definitions[mode.definition.0].kind,
+        DefinitionKind::Parameter
+    );
+}
+
+#[test]
+fn malformed_type_quote_preserves_the_following_declaration() {
+    for (input, found) in [
+        ("meta let BAD = <>\nmeta let GOOD = <i64>\n", b">"),
+        ("meta let BAD = <i64, str>\nmeta let GOOD = <i64>\n", b","),
+    ] {
+        let result = compile(input);
+        let [diagnostic] = result.diagnostics.as_slice() else {
+            panic!(
+                "expected one quote diagnostic, got {:?}",
+                result.diagnostics
+            );
+        };
+        assert_eq!(diagnostic.code, "E0120");
+        assert_eq!(
+            result.sources.slice(diagnostic.labels[0].span).unwrap(),
+            found
+        );
+        let parse = &result.files[&FileId(0)];
+        assert_eq!(parse.syntax().to_string(), input);
+        assert_eq!(parse.program.statements.len(), 2);
+    }
+}
+
+#[test]
+fn unavailable_authoritative_import_is_a_source_io_error() {
+    let root = r#"
+fn choose<enabled: bool>(value: i64) -> i64 { if enabled { value } else { 0 } }
+fn sample() -> i64 { choose<{ use flags::{ENABLED}; ENABLED }>(7) }
+"#;
+    let result = frontend(Path::new("root.ril"), UnitKind::Library, |path| {
+        if path == Path::new("root.ril") {
+            Ok(root.as_bytes().to_vec())
+        } else if path == Path::new("flags.ril") {
+            Err(io::Error::from(io::ErrorKind::PermissionDenied))
+        } else {
+            Err(io::Error::from(io::ErrorKind::NotFound))
+        }
+    });
+    let Err(error) = result else {
+        panic!("expected failure to read the imported file");
+    };
+    assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+    assert!(error.to_string().contains("flags.ril"));
+}

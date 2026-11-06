@@ -90,3 +90,49 @@ fn choose<T: i64 | f64>(value: T) -> T { value }
 -- spec: SPEC#array-map-and-tuple-types
 -- Error [E0120]
 type Single = (i64,)
+
+-- [case: declaration-aware-constant-argument-discovers-imports, front-pass]
+-- spec: SPEC#generic-parameters-defaults-and-value-sorts
+-- file: root.ril
+fn choose<enabled: bool>(value: i64) -> i64 {
+    if enabled { value } else { 0 }
+}
+fn example() -> i64 {
+    choose<{ use flags::{ENABLED}; ENABLED }>(7)
+}
+-- file: flags.ril
+pub let ENABLED = true
+
+-- [case: constructor-alias-in-constant-argument, front-pass]
+-- spec: SPEC#static-type-values-and-type-quotation
+fn choose<enabled: bool>() -> bool { enabled }
+fn example() -> bool {
+    choose<{
+        use Option::{Some as present}
+        Some(1) is present(_)
+    }>()
+}
+
+-- [case: mapped-key-source-does-not-see-its-binder, front-pass]
+-- spec: SPEC#mapped-record-and-tuple-types
+type Keys = \token: Type -> token
+meta fn fields(_token: Type) -> []str { ["id"] }
+type Project = { [fields(Keys< <i64> >) as Keys]: i64 }
+
+-- [case: empty-quote-keeps-following-declaration, front-fail]
+-- spec: SPEC#static-type-values-and-type-quotation
+-- Error [E0120]
+meta let BAD = <>
+meta let GOOD = <i64>
+
+-- [case: grouped-name-does-not-commit-a-generic-application, front-pass]
+-- spec: SPEC#static-type-values-and-type-quotation
+fn named() -> i64 { 1 }
+fn compare() -> bool { (named) < 2 }
+-- Operand type compatibility is checked after HIR.
+
+-- [case: type-quote-top-level-comma-keeps-following-declaration, front-fail]
+-- spec: SPEC#static-type-values-and-type-quotation
+-- Error [E0120]
+meta let BAD = <i64, str>
+meta let GOOD = <i64>

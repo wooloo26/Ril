@@ -2,7 +2,7 @@
 use crate::{
     RilLanguage, SyntaxKind, SyntaxNode,
     ast::*,
-    hir::DeclarationHead,
+    hir::{DeclarationHead, HeadKind},
     lexer::{StringRegion, Token, diagnostic, lex},
 };
 use crate::{
@@ -22,7 +22,7 @@ enum ParameterSyntax {
     Types,
 }
 
-type HeadLookup<'a> = dyn Fn(&[String], u32) -> Option<DeclarationHead> + Sync + 'a;
+type HeadLookup<'a> = dyn Fn(&[String], u32, HeadKind) -> Option<DeclarationHead> + Sync + 'a;
 
 const ASSIGNMENT_PRECEDENCE: u8 = 0;
 const COMPARISON_PRECEDENCE: u8 = 5;
@@ -346,11 +346,17 @@ impl<'a> Parser<'a> {
     }
 
     fn declaration_head(&self, path: &[String], span: Span) -> Option<DeclarationHead> {
-        self.lookup.and_then(|lookup| lookup(path, span.start))
+        self.lookup
+            .and_then(|lookup| lookup(path, span.start, HeadKind::Value))
     }
 
-    fn application_signature(&self, path: &[String], start: usize) -> Option<Vec<ArgumentSort>> {
-        self.declaration_head(path, self.span(start))?.application
+    fn application_signature(
+        &self,
+        path: &[String],
+        start: usize,
+        kind: HeadKind,
+    ) -> Option<Vec<ArgumentSort>> {
+        self.lookup?(path, self.span(start).start, kind)?.application
     }
 
     fn closes_angle(&self) -> bool {
@@ -1443,7 +1449,7 @@ impl<'a> Parser<'a> {
 
     fn handler_target(&mut self, start: usize) -> Expr {
         let mut path = self.qualified_name();
-        let signature = self.application_signature(&path, start);
+        let signature = self.application_signature(&path, start, HeadKind::Value);
         let kind = if path.len() == 1 {
             ExprKind::Name(path.remove(0))
         } else {
@@ -1582,7 +1588,7 @@ impl<'a> Parser<'a> {
     fn named_type(&mut self) -> TypeExpr {
         let start = self.offset();
         let path = self.qualified_name();
-        let signature = self.application_signature(&path, start);
+        let signature = self.application_signature(&path, start, HeadKind::Type);
         let arguments = self.type_arguments(signature.as_deref());
         TypeExpr {
             kind: TypeKind::Name { path, arguments },
@@ -1891,7 +1897,7 @@ impl<'a> Parser<'a> {
             while self.eat("::") {
                 path.push(self.name());
             }
-            let signature = self.application_signature(&path, start);
+            let signature = self.application_signature(&path, start, HeadKind::Type);
             let arguments = self.type_arguments(signature.as_deref());
             TypeKind::Name { path, arguments }
         } else {
@@ -2400,13 +2406,18 @@ impl<'a> Parser<'a> {
                 };
                 continue;
             }
-            if self.at("<") {
+            if self.at("<")
+                && !self
+                    .grouped_values
+                    .contains(&(left.span.start, left.span.end))
+            {
                 let path = match &left.kind {
                     ExprKind::Name(name) => Some(std::slice::from_ref(name)),
                     ExprKind::Path(path) => Some(path.as_slice()),
                     _ => None,
                 };
-                let signature = path.and_then(|path| self.application_signature(path, start));
+                let signature =
+                    path.and_then(|path| self.application_signature(path, start, HeadKind::Value));
                 // The skeleton pass is only used to find declarations and scopes.
                 // Its guessed expressions are discarded before constructing HIR.
                 if signature.is_some()
@@ -2748,17 +2759,7 @@ impl<'a> Parser<'a> {
                     value,
                 }
             }
-            "<" => {
-                self.bump();
-                self.angles.push(self.delimiters.len());
-                let ty = self.type_expr();
-                if self.at(",") {
-                    self.error("E0120", "a type quote contains one type");
-                }
-                self.expect_type_close();
-                self.angles.pop();
-                ExprKind::TypeValue(ty)
-            }
+            "<" => ExprKind::TypeValue(self.quoted_type(false)),
             "keyof" => {
                 self.bump();
                 ExprKind::KeyOf(self.type_expr())
@@ -3549,16 +3550,7 @@ impl<'a> Parser<'a> {
                     pattern: Box::new(self.pattern_atom()),
                 }
             }
-            "<" => {
-                self.bump();
-                self.angles.push(self.delimiters.len());
-                self.type_pattern_depth += 1;
-                let ty = self.type_expr();
-                self.type_pattern_depth -= 1;
-                self.expect_type_close();
-                self.angles.pop();
-                PatternKind::Type(ty)
-            }
+            "<" => PatternKind::Type(self.quoted_type(true)),
             "(" => {
                 self.bump();
                 PatternKind::Tuple(self.sequence_patterns(")", false))
@@ -3616,7 +3608,7 @@ impl<'a> Parser<'a> {
                 Some(SyntaxKind::Bytes) => PatternKind::Literal(Literal::Bytes(self.bump())),
                 Some(SyntaxKind::Identifier) => {
                     let mut path = self.qualified_name();
-                    let signature = self.application_signature(&path, start);
+                    let signature = self.application_signature(&path, start, HeadKind::Type);
                     let applied = self.at("<");
                     let type_arguments = self.type_arguments(signature.as_deref());
                     if self.at(".") && self.look(1) == "{" {
@@ -3791,6 +3783,45 @@ impl<'a> Parser<'a> {
         };
         self.bump();
         Some(mode)
+    }
+
+    fn quoted_type(&mut self, pattern: bool) -> TypeExpr {
+        self.expect("<");
+        self.angles.push(self.delimiters.len());
+        self.type_pattern_depth += usize::from(pattern);
+        let start = self.offset();
+        let ty = if self.at_type_close() || self.eof() || matches!(self.current(), ")" | "]" | "}")
+        {
+            if self.at_type_close() {
+                self.error("E0120", "a type quote requires one type");
+            }
+            TypeExpr {
+                kind: TypeKind::Error,
+                text: String::new(),
+                span: self.span(start),
+            }
+        } else {
+            self.type_expr()
+        };
+        if self.at(",") {
+            self.error("E0120", "a type quote contains one type");
+            while self.eat(",")
+                && !self.at_type_close()
+                && !self.eof()
+                && !matches!(self.current(), ")" | "]" | "}")
+                && !self.declaration_on_new_line()
+            {
+                let before = self.pos;
+                self.type_expr();
+                if self.pos == before {
+                    break;
+                }
+            }
+        }
+        self.expect_type_close();
+        self.type_pattern_depth -= usize::from(pattern);
+        self.angles.pop();
+        ty
     }
 }
 

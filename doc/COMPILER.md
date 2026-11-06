@@ -21,6 +21,11 @@ heads to decide whether an expression name takes generic arguments. HIR
 retains the selected application signature and defining scopes. The parsed
 files retain parameter labels and defaults alongside HIR.
 
+Declaration discovery starts with a recovery-oriented skeleton. The frontend
+then follows imports from declaration-aware parses and revisits syntax when
+reachable files or resolved heads change. Diagnostics from a committed angle
+list stay attached to that list during recovery.
+
 The frontend loads bundled foundational signatures and the `Numeric`,
 `String`, and `Bytes` declarations from the compiler's Ril sources. Ambient
 module access and explicit `use ril/...` imports share declaration identities.

@@ -82,9 +82,16 @@ pub struct ApplicationSignature {
     pub parameters: Vec<ArgumentSort>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct DeclarationHead {
     pub application: Option<Vec<ArgumentSort>>,
     pub constructor: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum HeadKind {
+    Value,
+    Type,
 }
 
 #[derive(Debug)]
@@ -156,6 +163,7 @@ pub struct Scope {
     pub kind: ScopeKind,
     pub callable_layer: Option<CallableLayer>,
     enclosing_module: Option<ScopeId>,
+    lookup_exclusion: Option<Span>,
     default_kind: Option<DefaultKind>,
     bindings: BTreeMap<String, Entry>,
 }
@@ -371,6 +379,7 @@ impl Index {
             kind: ScopeKind::Lexical,
             callable_layer: None,
             enclosing_module,
+            lookup_exclusion: None,
             default_kind: None,
             bindings: BTreeMap::new(),
         });
@@ -541,10 +550,15 @@ impl Index {
         }
     }
 
-    pub fn paths(&self) -> impl Iterator<Item = PathBuf> + '_ {
+    pub fn paths(&self, file: FileId) -> impl Iterator<Item = PathBuf> + '_ {
         self.imports
             .iter()
+            .filter(move |import| import.item.span.file == file)
             .filter_map(|import| file_path(&import.item))
+    }
+
+    pub fn has_file(&self, file: FileId) -> bool {
+        self.roots.contains_key(&file)
     }
 
     fn statements(&mut self, scope: ScopeId, items: &[Stmt]) {
@@ -1215,6 +1229,7 @@ impl Index {
                     ..value.span
                 };
                 let inner = self.scope(Some(scope), Some(scope_span), None);
+                self.hir.scopes[inner.0].lookup_exclusion = Some(keys.span);
                 self.item(
                     inner,
                     binder,
@@ -1823,7 +1838,13 @@ impl Index {
         self.hir.definitions[item.0].constructor_form.is_some()
     }
 
-    pub fn head(&self, file: FileId, path: &[String], offset: u32) -> Option<DeclarationHead> {
+    pub fn head(
+        &self,
+        file: FileId,
+        path: &[String],
+        offset: u32,
+        kind: HeadKind,
+    ) -> Option<DeclarationHead> {
         let scope = self
             .hir
             .scopes
@@ -1832,12 +1853,19 @@ impl Index {
             .rev()
             .filter_map(|(id, scope)| {
                 let span = scope.span?;
-                (span.file == file && span.start <= offset && offset < span.end)
-                    .then_some(ScopeId(id))
+                (span.file == file
+                    && span.start <= offset
+                    && offset < span.end
+                    && !scope
+                        .lookup_exclusion
+                        .is_some_and(|excluded| excluded.start <= offset && offset < excluded.end))
+                .then_some(ScopeId(id))
             })
             .next()
             .or_else(|| self.roots.get(&file).copied())?;
-        let id = self.resolve(scope, path, offset, true).ok()?;
+        let id = self
+            .resolve(scope, path, offset, kind == HeadKind::Value)
+            .ok()?;
         let signature = self.signature_of(id);
         Some(DeclarationHead {
             constructor: signature
