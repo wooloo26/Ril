@@ -847,8 +847,9 @@ impl<'a> Parser<'a> {
                 ReturnMode::New
             }
             "infer" if !matches!(self.look(1), "::" | "." | "<" | "{" | "") => {
+                let start = self.offset();
                 self.bump();
-                ReturnMode::Infer
+                ReturnMode::Infer(self.span(start))
             }
             "ref" | "^mut" => {
                 let shared = self.bump() == "^mut";

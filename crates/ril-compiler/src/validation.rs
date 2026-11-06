@@ -260,6 +260,17 @@ impl Validator {
     }
     fn function(&mut self, function: &Function) {
         self.snake(&function.name, function.span);
+        if let ReturnMode::Infer(span) = function.return_mode {
+            if function.is_meta || function.body.is_none() {
+                self.error(
+                    "E0412",
+                    span,
+                    "infer requires an ordinary Ril function definition or callable type",
+                );
+            } else {
+                self.infer_inputs(span, &function.parameters);
+            }
+        }
         self.annotations(&function.annotations);
         for generic in &function.generics {
             self.generic(generic);
@@ -273,6 +284,12 @@ impl Validator {
         self.signature_where(&function.signature_where);
         if let Some(body) = &function.body {
             self.block(body);
+        }
+    }
+
+    fn infer_inputs(&mut self, span: Span, parameters: &[Parameter]) {
+        if !inputs_use_via(parameters) {
+            self.error("E0412", span, "infer requires via in the callable's inputs");
         }
     }
 
@@ -524,8 +541,11 @@ impl Validator {
                 parameters,
                 result,
                 annotations,
-                ..
+                return_mode,
             } => {
+                if let ReturnMode::Infer(span) = return_mode {
+                    self.infer_inputs(*span, parameters);
+                }
                 self.annotations(annotations);
                 for parameter in parameters {
                     self.parameter(parameter);
@@ -821,6 +841,44 @@ impl Validator {
         }
     }
 }
+
+fn inputs_use_via(parameters: &[Parameter]) -> bool {
+    parameters.iter().any(|parameter| {
+        parameter.mode == ParameterMode::Via || parameter.ty.as_ref().is_some_and(type_uses_via)
+    })
+}
+
+fn type_uses_via(ty: &TypeExpr) -> bool {
+    match &ty.kind {
+        TypeKind::Name { arguments, .. }
+        | TypeKind::Tuple(arguments)
+        | TypeKind::Alternatives(arguments) => arguments.iter().any(type_uses_via),
+        TypeKind::Optional(inner) => type_uses_via(inner),
+        TypeKind::Array { access, element }
+        | TypeKind::Map {
+            access,
+            value: element,
+            ..
+        } => {
+            access
+                .as_ref()
+                .is_some_and(|mode| mode.kind == StorageModeKind::Via)
+                || type_uses_via(element)
+        }
+        TypeKind::Record { fields, .. } => fields.iter().any(|field| {
+            field
+                .mode
+                .as_ref()
+                .is_some_and(|mode| mode.ends_with("via"))
+                || type_uses_via(&field.ty)
+        }),
+        TypeKind::Member { mode, ty } => mode.ends_with("via") || type_uses_via(ty),
+        // A callback contributes its input mode pattern, independent of its result.
+        TypeKind::Callable { parameters, .. } => inputs_use_via(parameters),
+        _ => false,
+    }
+}
+
 fn declaration_names(statement: &Stmt) -> Vec<String> {
     let mut names = vec![];
     if let Some(name) = statement.item_name() {

@@ -599,7 +599,7 @@ Contextual keywords are identifiers outside the forms below. Recognize each form
 | `opaque` | `opaque type`, after optional visibility | [Hidden type representation](#type-declarations-and-opaque-types) |
 | `scoped` | Binding modifier in `let scoped [mut] Pattern` | [Scope-exit resource cleanup](#scoped-resource-bindings) |
 | `via` | Declared member/access mode, parameter mode, or `let via name` receiver | [Static mode parameters and dependent reception](#access-mode-inference-with-via-and-infer) |
-| `infer` | Return modifier in `-> infer T` | [Inferred result access modes, sources and dependencies](#return-construction-access-modes-and-sources) |
+| `infer` | Return modifier in `-> infer T` on a signature with explicit `via` inputs | [Inferred result access modes, sources and dependencies](#return-construction-access-modes-and-sources) |
 | `capture` | `&capture` | [Surviving environment creation](#closures-factory-signatures-and-lexical-environments) |
 | `up` | `&up`, `&up{...}`, or `&up(owner){...}` | [Callable environment abstraction or named-source access](#state-groups-and-captured-layers) |
 
@@ -1479,21 +1479,25 @@ fn relay<T>(via value: T) -> infer Packet<T> {
 | Input `via x: T` / `[via]T` / `[K: via V]` | Bind this function's access-mode parameters |
 | Declared `via item: T` / `var via item: T` | Bind the type template's access-mode parameters; never infer `var` |
 | `let via x = expression` | Receive access modes and provenance dependent on bound modes or input callable mode patterns |
-| `-> infer T` | Infer result access modes, sources, and dependencies; does not by itself introduce a forwarding scope |
+| `-> infer T` | Infer result access modes, sources, and dependencies for a signature with explicit `via` inputs |
 | `fn(via T) -> R` | Open that callable's mode pattern, not an unrelated enclosing function |
-| Input callable with `-> infer R` | Retain its actual result relations as finite input-bound dependencies |
+| Input callable `fn(via T) -> infer R` | Retain its actual result relations as finite input-bound dependencies |
 
 Template checking may substitute a lexically bound outer `P` for an inner parameter `Q`. Before a closed invocation executes, its selected signature, local receptions, result, and member schemas must be concrete. A closure specializes with its enclosing instance; an explicitly quantified finite callable family may retain its bound parameters. Unresolved mode instances in concrete objects, storage, or single-instance entries are `E0344`.
 
-Data types, slot replacement, source authority, and effect-row openness follow their own declarations and checks. `via` ranges over concrete access modes. `E0412` rejects it in static/meta/type-function parameters, effect-operation signatures, handler parameters, bodyless foreign interfaces, map keys, untyped literal modifiers, reassignable/scoped/module receivers, or local reception without an applicable lexical template. `infer` selects result-mode and provenance inference on ordinary Ril callable definitions and callable types. Other mode-inference placements of either keyword are `E0412`. Mapped comprehensions preserve known modes; bodyless boundaries supply explicit trusted contracts.
+Data types, slot replacement, source authority, and effect-row openness follow their own declarations and checks. `via` ranges over concrete access modes. `E0412` rejects it in static/meta/type-function parameters, effect-operation signatures, handler parameters, bodyless foreign interfaces, map keys, untyped literal modifiers, reassignable/scoped/module receivers, or local reception without an applicable lexical template. Mapped comprehensions preserve known modes. Bodyless boundaries supply explicit trusted contracts.
+
+`-> infer T` requires an ordinary Ril function definition or callable type with at least one explicit `via` in its parameter list (`E0412`). The `via` may modify a parameter directly, declare a member, array element, or map value mode in its type, or appear in an input callable's own parameter list. Check each callable signature independently. A `via` found only through a referenced type declaration, in an enclosing signature, in a result, or in a body cannot qualify the signature. This restriction governs the written modifier. Mandatory contract inference and anonymous annotation omission follow their usual rules.
 
 ```ril
 type Cell = { var count: i64 }
-fn make_cell() -> infer Cell { Cell.{ count: 0 } } -- OK: result inference with a concrete input signature
+fn make_cell() -> new Cell { Cell.{ count: 0 } }
 let via = 1                                      -- OK: ordinary identifier
 let infer = 2                                    -- OK: ordinary identifier
 assert(via + infer == 3)
 
+-- fn bad_factory() -> infer Cell { Cell.{ count: 0 } } -- Error [E0412]: no via input
+-- type BadReader = fn(ref Cell) -> infer Cell          -- Error [E0412]: no via input
 -- fn bad_result(ref value: Cell) -> via Cell { value } -- Error [E0412]: via is an input/member/receiver modifier
 -- fn bad_input(infer value: Cell) -> i64 { value.count } -- Error [E0412]: infer is a result modifier
 -- type BadMember = { infer value: Cell }         -- Error [E0412]
@@ -1564,10 +1568,6 @@ fn bump(mut x: Cell) &mut -> () { x.count += 1 }
 -- fn redundant_array(mut xs: [via]i64, n: i64) &mut -> () {
 --     xs !> Array::push(n)
 -- } -- Error [E0550]: the declaration-owned element mode is fixed too
-
--- fn mixed(flag: bool, ref x: Cell) -> infer Cell {
---     if flag { Cell.{ count: 0 } } else { x }
--- } -- Error [E0545]: no fresh/live bare-root union
 ```
 
 Infer the admitted finite domain from the body, schemas, verified dependencies, and explicit semantic constraints; then normalize the whole family; finally validate named annotations. Missing annotations never prune alternatives. A proper inferred subdomain is allowed, but explicitly promised instances cannot be removed. Check every admitted alternative's type, authority use, provenance, escape, exclusivity, resources, effects, termination, and budget obligations; unknown facts remain obligations.
@@ -1584,7 +1584,7 @@ fn store(mut xs: [^mut]Cell, ^mut value: Cell) &^mut -> () {
 
 Named definitions spell concrete effects, state/provenance clauses, and known external/captured source groups, including known effect instances parameterized by ordinary type arguments. Only genuine mode/callback dependencies remain symbolic; selecting an instance makes its concrete obligations the caller's responsibility after lawful handling/discharge. A variable solved to a constant supplies no exemption. Explicit `&{}` closes the full total.
 
-`-> infer T` infers result access modes, sources, and dependencies while requiring the result data type. Preserve complete metadata and check written constraints and every root/contained guarantee. Results requiring a fresh/live root combination use an explicit aggregate or variant under the [return rules](#return-construction-access-modes-and-sources).
+For signatures with explicit `via` inputs, `-> infer T` infers result access modes, sources, and dependencies while requiring the result data type. Preserve complete metadata and check written constraints and every root/contained guarantee. Results requiring a fresh/live root combination use an explicit aggregate or variant under the [return rules](#return-construction-access-modes-and-sources).
 
 #### Preserving Reception and Forwarding
 
@@ -1636,12 +1636,14 @@ Every transfer evaluates once and ends its old construction path during operand 
 #### Lexical Mode Templates and Closures
 
 ```ril
+type Pair<T> = { via first: T, via second: T }
 fn make<T>(via x: T) &capture
-    -> infer (fn() @& -> infer Packet<T>) {
-    \-> packet(x)
+    -> infer (fn(via T) @& -> infer Pair<T>) {
+    \via y: T -> Pair.{ first: x, second: y }
 }
 let build = make(3)
-assert(build().item == 3)                   -- Zero-parameter closure, concrete capture
+let pair = build(4)
+assert(pair.first == 3 && pair.second == 4)
 ```
 
 A closure may reference the enclosing template's bound type/mode parameters and input-callable dependencies. Capture schemas, call operands, and result modes and provenance specialize with the outer instance to a concrete escaping environment. Nested callables retain lexical relationships; separately supplied callbacks use their own checking environments.
@@ -1657,7 +1659,7 @@ fn apply<T, R>(via value: T, action: fn(via T) @& -> infer R) -> infer R {
     action(value)
 }
 
-fn through<T, R>(ref x: T, action: fn(ref T) @& -> infer R) -> infer Packet<R> {
+fn through<T, R>(ref x: T, action: fn(via T) @& -> infer R) -> infer Packet<R> {
     let via intermediate = action(ref x)   -- Bound to this selected callback result
     packet(intermediate)
 }
@@ -4697,7 +4699,7 @@ ReturnMode       ::= "infer" | "new" | ( "ref" | "^mut" ) "(" ReturnSources ")"
 ReturnSources    ::= ValueName { "|" ValueName }
 ```
 
-Root source names denote formal parameters; field/index paths are retained in metadata. `|` lists possible entry sources. A `new expression` hands off construction authority at the [permitted receiving positions](#fresh-construction-parameters), preserving object identity and ending the old path. A lexical mode template may elaborate the handoff under [access-mode inference](#preserving-reception-and-forwarding). `-> infer T` retains the entire inferred result access modes, origins, and payload modes under the result rules below.
+Root source names denote formal parameters. Metadata retains field and index paths. `|` lists possible entry sources. A `new expression` hands off construction authority at the [permitted receiving positions](#fresh-construction-parameters), preserving object identity and ending the old path. A lexical mode template may elaborate the handoff under [access-mode inference](#preserving-reception-and-forwarding). `-> infer T` requires [explicit `via` inputs](#access-mode-inference-with-via-and-infer) and retains the entire inferred result access modes, origins, and payload modes under the result rules below.
 
 A declared `-> new T` supplies the return expression's construction context: a bare qualified source needs no repeated `new` marker. Check every normal result path, including tail blocks and result-producing `if`/`match` arms. Evaluate the selected operand once; after reception succeeds, prepare the return value and end each transferred active source and its derived accesses before cleanup. Failure never revives them (`E0549`). Locally created roots keep their construction-return rules, including any separately required retention and sharing annotations.
 
@@ -4794,7 +4796,7 @@ fn with_cell<R>(
 -- with_cell(mut slot, create, \mut cell -> { cell.count += 1; cell })
 -- Rejected: ordinary R cannot export the live input or freeze its surviving writer
 
--- fn mixed(flag: bool, ^mut old: Cell) -> infer Cell {
+-- fn mixed(flag: bool, ref old: Cell) -> ref(old) Cell {
 --     if flag { old } else { Cell.{ count: 0 } }
 -- } -- Error [E0545]: mixed constructed/entry-live bare roots
 ```
@@ -5225,7 +5227,7 @@ assert(inspect_all(ref test_cells) == 5)          -- OK: write authority statica
 | **`[^mut]T`** | `^mut item: T` | `^mut xs` | Retained writer with entry origin xs; contained-retention obligation |
 | **`[ref]T`** | `ref item: T` | `mut xs` | Observation with entry origin xs and all original lifetime/pinning facts |
 
-Push changes the container through `mut`; retained input adds its required state/provenance annotation. Pop changes structure; a shared payload requires `^mut` receiver authorization and `&^mut`. Its newly constructed Option root and variant-guarded payload relation can be written `-> infer ?T`; the single unnamed payload rule preserves the payload's access modes and provenance. Element access follows the declared storage schema, true source authority and exclusivity checks.
+Push changes the container through `mut`. Retained input adds its required state/provenance annotation. Pop changes structure, and a shared payload requires `^mut` receiver authorization and `&^mut`. A concrete pop signature declares the newly constructed Option root with `-> new ?T` and spells the required contained-source annotations. A pop template with a `[via]T` receiver type can use `-> infer ?T`. In both forms, the single unnamed payload rule preserves variant-guarded payload modes and provenance. Element access follows the declared storage schema, true source authority and exclusivity checks.
 
 User-defined collections such as `ExclusiveVec<T>` and `SharedRegistry<T>` compose the same verified storage primitives and mode templates.
 

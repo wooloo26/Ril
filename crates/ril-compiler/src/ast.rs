@@ -133,7 +133,7 @@ pub struct Parameter {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReturnMode {
     Plain,
-    Infer,
+    Infer(Span),
     New,
     Ref(Vec<ReturnSource>),
     SharedMut(Vec<ReturnSource>),

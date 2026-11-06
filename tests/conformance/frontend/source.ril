@@ -64,6 +64,28 @@ fn relay<T>(via value: T) -> infer T {
 }
 fn observe(ref cell: Cell) -> ref(cell) Cell { cell }
 
+-- [case: infer-with-via-inputs, front-pass]
+-- spec: SPEC#access-mode-inference-with-via-and-infer
+type Forward<T> = fn(via T) -> infer T
+type ReadField<T> = fn({ var via item: T }) -> infer T
+type ReadMap<T> = fn([str: via T]) -> infer T
+fn inspect<T>(ref values: [via]T) -> infer i64 { len(ref values) }
+fn relay<T>(ref value: T, forward: fn(via T) -> infer T) -> infer T {
+    forward(ref value)
+}
+
+-- [case: infer-requires-via-inputs, front-fail]
+-- spec: SPEC#access-mode-inference-with-via-and-infer
+type Cell = { var value: i64 }
+type Packet<T> = { via item: T }
+fn create() -> infer Cell { Cell.{ value: 0 } } --~ ERROR [E0412]
+fn echo(via: Cell) -> infer Cell { via } --~ ERROR [E0412]
+fn read<T>(packet: Packet<T>) -> infer i64 { 0 } --~ ERROR [E0412]
+fn outer<T>(via value: T, inner: fn(ref T) -> infer T) -> T { value } --~ ERROR [E0412]
+fn body_only<T>(value: T) -> infer T { let local = \via x: T -> x; local(value) } --~ ERROR [E0412]
+type Factory<T> = fn() -> infer fn(via T) -> T --~ ERROR [E0412]
+eff Read<T> { read(via value: T) -> infer T } --~ ERROR [E0412]
+
 -- [case: block-binders, front-pass]
 -- spec: SPEC#control-flow-and-pattern-matching
 fn steps(items: []i64, maybe: ?i64) -> i64 {
