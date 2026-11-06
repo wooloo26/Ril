@@ -3,6 +3,7 @@ use crate::{
     ast::*,
     diagnostic::Diagnostic,
     lexer::{diagnostic, primitive},
+    library::{Placement, PrimitiveId, PrimitiveSource, REFLECT_PATH},
     source::{FileId, Span},
 };
 use std::{
@@ -24,6 +25,7 @@ pub struct ScopeId(pub usize);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DefinitionKind {
     Function,
+    Primitive,
     MetaFunction,
     ForeignFunction,
     Type,
@@ -95,6 +97,7 @@ pub struct Hir {
     pub state_source_groups: Vec<ResolvedStateGroup>,
     pub effect_aliases: BTreeMap<DefId, Vec<EffectAliasMember>>,
     pub effect_members: BTreeMap<DefId, EffectMember>,
+    pub primitives: BTreeMap<DefId, PrimitiveId>,
 }
 
 #[derive(Debug)]
@@ -264,6 +267,7 @@ impl Index {
                 state_source_groups: vec![],
                 effect_aliases: BTreeMap::new(),
                 effect_members: BTreeMap::new(),
+                primitives: BTreeMap::new(),
             },
             imports: vec![],
             uses: vec![],
@@ -275,16 +279,6 @@ impl Index {
         };
         let prelude = this.scope(None, None, None);
         for (name, arity) in [
-            ("len", 1),
-            ("clone", 1),
-            ("inner", 1),
-            ("derive", 1),
-            ("assert", 0),
-            ("panic", 0),
-            ("print", 0),
-            ("println", 0),
-            ("byte_size", 0),
-            ("type_name", 0),
             ("Type", 1),
             ("Set", 1),
             ("Draft", 1),
@@ -292,31 +286,12 @@ impl Index {
             ("LenTarget", 1),
             ("NominalWrapper", 1),
             ("Unwrap", 1),
-            ("Tuple", 1),
         ] {
             this.builtin(prelude, name, DefinitionKind::Builtin, arity);
         }
-        use ConstructorForm::{Callable, Nullary};
-        use DefinitionKind::{Builtin, Constructor, Effect, EffectOperation, Type};
+        use ConstructorForm::Nullary;
+        use DefinitionKind::{Constructor, Effect, EffectOperation, Type};
         for (family, kind, arity, members) in [
-            (
-                "Option",
-                Type,
-                1,
-                &[
-                    ("Some", Constructor, 1, Some(Callable)),
-                    ("None", Constructor, 1, Some(Nullary)),
-                ][..],
-            ),
-            (
-                "Result",
-                Type,
-                2,
-                &[
-                    ("Ok", Constructor, 2, Some(Callable)),
-                    ("Err", Constructor, 2, Some(Callable)),
-                ][..],
-            ),
             (
                 "Fiber",
                 Effect,
@@ -338,10 +313,7 @@ impl Index {
                 "Div",
                 Effect,
                 0,
-                &[
-                    ("exhausted", EffectOperation, 0, None),
-                    ("budget", Builtin, 1, None),
-                ][..],
+                &[("exhausted", EffectOperation, 0, None)][..],
             ),
         ] {
             let owner = this.builtin(prelude, family, kind, arity);
@@ -357,6 +329,7 @@ impl Index {
                 }
             }
         }
+        this.install_reflect(prelude);
         this.install_async_alias(prelude);
         this
     }
@@ -468,24 +441,104 @@ impl Index {
         let scope = self.scope(Some(ScopeId(0)), Some(span), None);
         self.roots.insert(file, scope);
         if let Some(path) = path {
-            let name = path
-                .file_name()
-                .map_or_else(String::new, |stem| module_name(&stem.to_string_lossy()));
-            let id = self.allocate(Definition {
-                name,
-                kind: DefinitionKind::Module,
-                scope,
-                span: Some(span),
-                public: true,
-                mutable: false,
-                signature: None,
-                constructor_form: None,
-                members: Some(scope),
-                alias: None,
-            });
-            self.files.insert(path, id);
+            self.module_definition(path, scope, Some(span));
         }
         self.statements(scope, &program.statements);
+    }
+
+    fn module_definition(&mut self, path: PathBuf, scope: ScopeId, span: Option<Span>) -> DefId {
+        let name = path
+            .file_name()
+            .map_or_else(String::new, |stem| module_name(&stem.to_string_lossy()));
+        let id = self.allocate(Definition {
+            name,
+            kind: DefinitionKind::Module,
+            scope,
+            span,
+            public: true,
+            mutable: false,
+            signature: None,
+            constructor_form: None,
+            members: Some(scope),
+            alias: None,
+        });
+        self.files.insert(path, id);
+        id
+    }
+
+    fn expose_ambient_module(&mut self, module: DefId) {
+        let name = self.hir.definitions[module.0].name.clone();
+        self.hir.scopes[0].bindings.insert(
+            name,
+            Entry {
+                definition: module,
+                visible_at: 0,
+                public: true,
+            },
+        );
+    }
+
+    fn install_reflect(&mut self, prelude: ScopeId) {
+        let scope = self.scope(Some(prelude), None, None);
+        let member_mode = self.hir.scopes[prelude.0].bindings["MemberMode"];
+        self.hir.scopes[scope.0]
+            .bindings
+            .insert("MemberMode".into(), member_mode);
+        let module = self.module_definition(REFLECT_PATH.into(), scope, None);
+        self.expose_ambient_module(module);
+    }
+
+    pub fn primitive_unit(
+        &mut self,
+        file: FileId,
+        text_len: u32,
+        source: &PrimitiveSource,
+        program: &Program,
+    ) {
+        let span = Span {
+            file,
+            start: 0,
+            end: text_len,
+        };
+        let prelude = ScopeId(0);
+        let scope = match source.placement {
+            Placement::Prelude => {
+                self.hir.scopes[prelude.0].span = Some(span);
+                prelude
+            }
+            Placement::AmbientModule(path) => {
+                let scope = self.scope(Some(prelude), Some(span), None);
+                let module = self.module_definition(path.into(), scope, Some(span));
+                self.expose_ambient_module(module);
+                scope
+            }
+            Placement::ExistingNamespace(name) => {
+                let definition = self.hir.scopes[prelude.0].bindings[name].definition;
+                let scope = self.member_scope(definition).expect("built-in namespace");
+                self.hir.scopes[scope.0].parent = Some(prelude);
+                self.hir.scopes[scope.0].span = Some(span);
+                scope
+            }
+        };
+        self.roots.insert(file, scope);
+        for statement in &program.statements {
+            if let StmtKind::Function(function) = &statement.kind
+                && let Some(primitive) = source.primitive(&function.name)
+            {
+                let id = self.item(
+                    scope,
+                    &function.name,
+                    function.visibility,
+                    DefinitionKind::Primitive,
+                    statement.span,
+                    Some(signature(&function.generics)),
+                );
+                self.hir.primitives.insert(id, primitive);
+                self.function(scope, function, id);
+            } else {
+                self.statement(scope, statement);
+            }
+        }
     }
 
     pub fn paths(&self) -> impl Iterator<Item = PathBuf> + '_ {
@@ -1702,8 +1755,12 @@ impl Index {
         at: u32,
         constructors: bool,
     ) -> Result<DefId, LookupError> {
-        if path == ["ril/reflect", "MemberMode"] {
-            return self.lexical(ScopeId(0), "MemberMode", at, false);
+        if path == [REFLECT_PATH, "MemberMode"] {
+            let module = self
+                .files
+                .get(std::path::Path::new(REFLECT_PATH))
+                .ok_or(LookupError::NoModule)?;
+            return self.member(self.member_scope(*module)?, "MemberMode", false);
         }
         let (first, rest) = path.split_first().ok_or(LookupError::Unknown)?;
         let (head, rest) = if first == "Super" {

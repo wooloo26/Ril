@@ -5,6 +5,7 @@ use crate::{
     diagnostic::Diagnostic,
     hir::{Hir, Index},
     lexer::diagnostic,
+    library::{PrimitiveSource, SOURCES, bundled_module},
     parse::{parse_skeleton, parse_with_heads},
     source::{FileId, SourceMap, Span},
 };
@@ -36,8 +37,28 @@ impl Frontend {
 
 struct Unit {
     file: FileId,
-    module_path: Option<PathBuf>,
-    kind: UnitKind,
+    origin: UnitOrigin,
+}
+
+enum UnitOrigin {
+    User {
+        module_path: Option<PathBuf>,
+        kind: UnitKind,
+    },
+    Primitive(&'static PrimitiveSource),
+}
+
+impl Unit {
+    fn index(&self, index: &mut Index, text_len: u32, program: &Program) {
+        match &self.origin {
+            UnitOrigin::User { module_path, .. } => {
+                index.file(self.file, module_path.clone(), text_len, program);
+            }
+            UnitOrigin::Primitive(source) => {
+                index.primitive_unit(self.file, text_len, source, program);
+            }
+        }
+    }
 }
 
 pub fn frontend(
@@ -50,7 +71,7 @@ pub fn frontend(
     let mut units = vec![];
     let mut heads = Index::new();
     let mut seen = BTreeSet::new();
-    let module_path = unit_module_path(root);
+    let module_path = unit_module_path(root).filter(|path| !bundled_module(path));
     seen.extend(module_path.clone());
     let mut pending = vec![(
         root.to_owned(),
@@ -68,12 +89,12 @@ pub fn frontend(
         match source.text() {
             Ok(text) => {
                 let program = parse_skeleton(text, file);
-                heads.file(file, module_path.clone(), text.len() as u32, &program);
-                units.push(Unit {
+                let unit = Unit {
                     file,
-                    module_path,
-                    kind,
-                });
+                    origin: UnitOrigin::User { module_path, kind },
+                };
+                unit.index(&mut heads, text.len() as u32, &program);
+                units.push(unit);
             }
             Err(error) => {
                 let start = error.valid_up_to();
@@ -90,7 +111,7 @@ pub fn frontend(
         }
         let imports = heads.paths().collect::<Vec<_>>();
         for import in imports {
-            if !seen.insert(import.clone()) {
+            if bundled_module(&import) || !seen.insert(import.clone()) {
                 continue;
             }
             for (extension, kind) in [("ril", UnitKind::Library), ("d.ril", UnitKind::External)] {
@@ -105,6 +126,18 @@ pub fn frontend(
                 }
             }
         }
+    }
+    for source in SOURCES {
+        let file = sources
+            .add(source.display_path.into(), source.source.as_bytes())
+            .map_err(|error| io::Error::other(error.to_string()))?;
+        let unit = Unit {
+            file,
+            origin: UnitOrigin::Primitive(source),
+        };
+        let program = parse_skeleton(source.source, file);
+        unit.index(&mut heads, source.source.len() as u32, &program);
+        units.push(unit);
     }
     heads.link_imports();
 
@@ -124,14 +157,26 @@ pub fn frontend(
             )));
         }
         if parse.is_ok() {
-            diagnostics.extend(crate::validation::validate(&parse.program));
-            unit_rules(&parse.program, unit.kind, unit.file, &mut diagnostics);
-            resolved.file(
-                unit.file,
-                unit.module_path,
-                text.len() as u32,
+            let primitive_source = match unit.origin {
+                UnitOrigin::User { kind, .. } => {
+                    unit_rules(&parse.program, kind, unit.file, &mut diagnostics);
+                    None
+                }
+                UnitOrigin::Primitive(source) => {
+                    if !source.matches_manifest(&parse.program) {
+                        return Err(io::Error::other(format!(
+                            "bundled declarations in {} do not match the primitive inventory",
+                            source.display_path,
+                        )));
+                    }
+                    Some(source)
+                }
+            };
+            diagnostics.extend(crate::validation::validate(
                 &parse.program,
-            );
+                primitive_source,
+            ));
+            unit.index(&mut resolved, text.len() as u32, &parse.program);
         }
         files.insert(unit.file, parse);
     }

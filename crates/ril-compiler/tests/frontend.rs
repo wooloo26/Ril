@@ -2,11 +2,12 @@ use ril_compiler::{
     SyntaxKind,
     ast::{
         Annotation, AnnotationKind, ArgumentSort, ControlOperation, EffectRow, ExprKind,
-        ReturnDependencyMode, StateClause, StateMode, StateOwner, StmtKind, StringPart, TypeKind,
-        ValueTestKind,
+        ParameterMode, ReturnDependencyMode, ReturnMode, StateClause, StateMode, StateOwner,
+        StmtKind, StringPart, TypeKind, ValueTestKind,
     },
     frontend::{Frontend, UnitKind, frontend},
     hir::{CallableLayer, DefinitionKind, EffectMember, ScopeKind},
+    library::PrimitiveId,
     source::FileId,
     text::{Alignment, Conversion},
 };
@@ -765,4 +766,114 @@ fn demo() -> (i64, str) {
             .any(|transfer| transfer.operation == ControlOperation::Resume
                 && transfer.target == second_arm.arm)
     );
+}
+
+#[test]
+fn bundled_numeric_lookup_uses_one_declaration_for_ambient_and_explicit_paths() {
+    let input = r#"
+use ril/numeric as Conversion
+use ril/numeric::{convert as coerce}
+fn read(value: u8) -> (?i64, ?i64, ?i64) {
+    (Numeric::convert<i64>(value), Conversion::convert<i64>(value), coerce<i64>(value))
+}
+"#;
+    let result = frontend(Path::new("root.ril"), UnitKind::Library, |path| {
+        assert_eq!(
+            path,
+            Path::new("root.ril"),
+            "bundled imports must not read project files"
+        );
+        Ok(input.as_bytes().to_vec())
+    })
+    .unwrap();
+    assert!(result.is_ok(), "{:?}", result.diagnostics);
+    let hir = result.hir.unwrap();
+    let conversions: Vec<_> = hir
+        .references
+        .iter()
+        .filter(|reference| {
+            hir.primitives.get(&reference.definition) == Some(&PrimitiveId::NumericConvert)
+        })
+        .collect();
+    let [ambient, namespace_alias, selective] = conversions.as_slice() else {
+        panic!("expected three uses of the canonical conversion");
+    };
+    assert_eq!(ambient.definition, namespace_alias.definition);
+    assert_eq!(ambient.definition, selective.definition);
+    let definition = &hir.definitions[ambient.definition.0];
+    assert_eq!(definition.kind, DefinitionKind::Primitive);
+    let span = definition.span.unwrap();
+    assert_eq!(
+        result.sources.get(span.file).unwrap().path(),
+        Path::new("ril/numeric.ril")
+    );
+    assert_eq!(
+        result.sources.slice(span).unwrap(),
+        b"pub halt fn convert<To, From>(value: From) -> ?To"
+    );
+}
+
+#[test]
+fn canonical_prelude_signatures_retain_modes_and_defaults_under_shadowing() {
+    let input = r#"
+fn len(value: i64) -> i64 { value }
+fn example() -> i64 {
+    assert(true)
+    len(1)
+}
+"#;
+    let result = compile(input);
+    assert!(result.is_ok(), "{:?}", result.diagnostics);
+    let hir = result.hir.unwrap();
+    let local_len = hir
+        .references
+        .iter()
+        .find(|reference| reference.path == ["len"])
+        .unwrap();
+    assert_eq!(
+        hir.definitions[local_len.definition.0].kind,
+        DefinitionKind::Function
+    );
+    assert!(!hir.primitives.contains_key(&local_len.definition));
+
+    let declaration = |primitive| {
+        let definition = hir
+            .primitives
+            .iter()
+            .find_map(|(definition, id)| (*id == primitive).then_some(*definition))
+            .unwrap();
+        let span = hir.definitions[definition.0].span.unwrap();
+        let statement = result.files[&span.file]
+            .program
+            .statements
+            .iter()
+            .find(|statement| statement.span == span)
+            .unwrap();
+        let StmtKind::Function(function) = &statement.kind else {
+            panic!("expected a primitive function declaration");
+        };
+        function
+    };
+    let inner = declaration(PrimitiveId::Inner);
+    assert!(matches!(inner.return_mode, ReturnMode::Infer(_)));
+    assert_eq!(inner.parameters[0].mode, ParameterMode::Via);
+    let assertion = declaration(PrimitiveId::Assert);
+    let default = assertion.parameters[1].default.as_ref().unwrap();
+    assert_eq!(
+        result.sources.slice(default.span).unwrap(),
+        b"\"assertion failed\""
+    );
+    let budget = declaration(PrimitiveId::DivBudget);
+    let Some(callback) = &budget.parameters[1].ty else {
+        panic!("expected a typed budget callback");
+    };
+    assert!(
+        matches!(&callback.kind, TypeKind::Callable { annotations, .. }
+        if matches!(annotations.as_slice(), [
+            Annotation { kind: AnnotationKind::Effects(EffectRow::Open), .. },
+            Annotation { kind: AnnotationKind::State(StateClause::Open), .. }
+        ]))
+    );
+    let identities: std::collections::BTreeSet<_> = hir.primitives.values().collect();
+    assert_eq!(identities.len(), hir.primitives.len());
 }

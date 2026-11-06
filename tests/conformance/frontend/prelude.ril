@@ -1,0 +1,73 @@
+-- [case: numeric-namespace-is-ambient-and-explicitly-importable, front-pass]
+-- spec: SPEC#explicit-numeric-conversions
+use ril/numeric as Conversion
+use ril/numeric::{convert as coerce}
+fn convert_values() -> (?i64, ?i64, ?i64, u8, f32) {
+    (
+        Numeric::convert<i64>(255u8),
+        Conversion::trunc<i64>(3.5),
+        coerce<i64>(1u8),
+        Numeric::wrap<u8>(257),
+        Numeric::reinterpret<f32>(1u32),
+    )
+}
+
+-- [case: a-project-file-cannot-replace-the-bundled-numeric-namespace, front-fail]
+-- spec: SPEC#prelude-scope
+-- Error [E0209]
+-- file: root.ril
+use ril/numeric as Conversion
+fn invalid() -> i64 { Conversion::spoof() }
+-- file: ril/numeric.ril
+pub fn spoof() -> i64 { 1 }
+
+-- [case: local-namespace-can-shadow-the-ambient-numeric-namespace, front-pass]
+-- spec: SPEC#prelude-scope
+use ril/numeric as BuiltinNumeric
+sub Numeric {
+    pub fn from_local() -> i64 { 4 }
+}
+fn observe() -> (i64, ?i64) { (Numeric::from_local(), BuiltinNumeric::convert<i64>(4u8)) }
+
+-- [case: reflection-import-and-qualified-mode-sort-share-member-mode, front-pass]
+-- spec: SPEC#universal-member-mode-projection
+use ril/reflect::{MemberMode as Mode}
+type Field<T, M: ril/reflect::MemberMode> = [M]T
+meta let MODE: Mode = Reflect::MemberMode::Mut
+
+-- [case: numeric-members-are-not-bare-prelude-functions, front-fail]
+-- spec: SPEC#prelude-scope
+-- Error [E0204]
+fn invalid(value: u8) -> ?i64 { convert(value) }
+
+-- [case: text-and-byte-modules-use-canonical-member-labels, front-pass]
+-- spec: SPEC#text-and-byte-operations
+use ril/string::{scalars as codepoints}
+use ril/bytes as ByteOps
+fn describe(text: str) -> (?u32, ?str, ?str, ?u8, bytes) {
+    let scalars = codepoints(text: text)
+    let data = String::encode_utf8(text: text)
+    let array = ByteOps::to_array(data: data)
+    (
+        String::at(text: text, index: 0),
+        String::from_scalars(values: scalars),
+        String::decode_utf8(data: data),
+        Bytes::at(data: data, index: 0),
+        Bytes::from_array(values: array),
+    )
+}
+
+-- [case: inline-sub-gets-the-ambient-library-scope, front-pass]
+-- spec: SPEC#prelude-scope
+sub Catalog {
+    pub fn count(text: str) -> i64 { len(String::scalars(text)) }
+}
+fn example() -> i64 { Catalog::count("Ril") }
+
+-- [case: primitive-spelling-in-foreign-source-does-not-confer-authority, front-fail]
+-- spec: SPEC#access-mode-inference-with-via-and-infer
+-- Error [E0412]
+-- file: root.ril
+use application
+-- file: application.d.ril
+pub fn len<T>(via item: T) -> i64

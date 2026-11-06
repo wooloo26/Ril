@@ -1311,9 +1311,9 @@ impl<'a> Parser<'a> {
     fn use_declaration(&mut self, visibility: Visibility) -> UseDeclaration {
         let start = self.offset();
         self.expect("use");
-        let mut path = vec![self.name()];
+        let mut path = vec![self.import_segment()];
         while self.eat("/") {
-            path.push(self.name());
+            path.push(self.import_segment());
         }
         let mut namespaces = vec![];
         while self.at("::") && self.look(2) == "::" {
@@ -1372,6 +1372,16 @@ impl<'a> Parser<'a> {
             members,
             glob,
             span: self.span(start),
+        }
+    }
+
+    fn import_segment(&mut self) -> String {
+        // File path segments are filesystem names. A primitive spelling
+        // such as the bytes in ril/bytes is not a declaration identifier.
+        if self.kind() == Some(SyntaxKind::Identifier) {
+            self.bump()
+        } else {
+            self.name()
         }
     }
 

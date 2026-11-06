@@ -21,6 +21,12 @@ heads to decide whether an expression name takes generic arguments. HIR
 retains the selected application signature and defining scopes. The parsed
 files retain parameter labels and defaults alongside HIR.
 
+The frontend loads bundled foundational signatures and the `Numeric`,
+`String`, and `Bytes` declarations from the compiler's Ril sources. Ambient
+module access and explicit `use ril/...` imports share declaration identities.
+The `Reflect::MemberMode` export uses the same declaration as the ambient
+`MemberMode` sort.
+
 The workspace also defines abstract and native target identities. Static
 checking, compile-time evaluation, runtime IR, interpretation, the release
 library, and Cranelift code generation are subsequent work. The

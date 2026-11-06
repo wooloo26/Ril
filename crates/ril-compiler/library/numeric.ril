@@ -1,0 +1,5 @@
+-- Pure, finite numeric conversions with the SPEC primitive domains.
+pub halt fn convert<To, From>(value: From) -> ?To
+pub halt fn trunc<To, From>(value: From) -> ?To
+pub halt fn wrap<To, From>(value: From) -> To
+pub halt fn reinterpret<To, From>(value: From) -> To

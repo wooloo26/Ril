@@ -4,6 +4,7 @@ pub mod diagnostic;
 pub mod frontend;
 pub mod hir;
 mod lexer;
+pub mod library;
 mod parse;
 pub mod source;
 mod syntax_kind;

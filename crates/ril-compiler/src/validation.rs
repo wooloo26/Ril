@@ -1,11 +1,15 @@
 //! Source roles are checked before module resolution can introduce internal names.
-use crate::{ast::*, lexer::diagnostic};
+use crate::{ast::*, lexer::diagnostic, library::PrimitiveSource};
 use crate::{diagnostic::Diagnostic, source::Span};
 use std::collections::BTreeSet;
 
-pub(crate) fn validate(program: &Program) -> Vec<Diagnostic> {
+pub(crate) fn validate(
+    program: &Program,
+    primitive_source: Option<&PrimitiveSource>,
+) -> Vec<Diagnostic> {
     let mut validator = Validator {
         diagnostics: vec![],
+        primitive_source,
     };
     validator.statements(&program.statements, true, false);
     validator.diagnostics
@@ -18,10 +22,11 @@ enum AnnotationPlace {
     CallableType,
 }
 
-struct Validator {
+struct Validator<'a> {
     diagnostics: Vec<Diagnostic>,
+    primitive_source: Option<&'a PrimitiveSource>,
 }
-impl Validator {
+impl Validator<'_> {
     fn spelling(&mut self, name: &str, span: Span) {
         if !crate::lexer::valid_identifier(name) {
             self.error("E0102", span, "malformed identifier spelling");
@@ -371,8 +376,12 @@ impl Validator {
     }
     fn function(&mut self, function: &Function, operation: bool) {
         self.snake(&function.name, function.span);
+        let primitive = !operation
+            && self
+                .primitive_source
+                .is_some_and(|source| source.primitive(&function.name).is_some());
         if let ReturnMode::Infer(span) = function.return_mode {
-            if function.is_meta || function.body.is_none() {
+            if function.is_meta || function.body.is_none() && !primitive {
                 self.error(
                     "E0412",
                     span,
@@ -397,7 +406,7 @@ impl Validator {
             if operation {
                 self.operation_parameter_mode(parameter);
             } else if parameter.mode == ParameterMode::Via
-                && (function.is_meta || function.body.is_none())
+                && (function.is_meta || function.body.is_none() && !primitive)
             {
                 self.error(
                     "E0412",
