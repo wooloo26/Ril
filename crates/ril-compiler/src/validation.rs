@@ -4,29 +4,14 @@ use crate::{diagnostic::Diagnostic, source::Span};
 use std::collections::BTreeSet;
 
 pub(crate) fn validate(program: &Program) -> Vec<Diagnostic> {
-    let mut nullary = BTreeSet::from(["None".to_owned()]);
-    for statement in &program.statements {
-        if let StmtKind::Type(declaration) = &statement.kind {
-            if declaration.nominal && declaration.value.is_none() {
-                nullary.insert(declaration.name.clone());
-            }
-            for variant in &declaration.variants {
-                if variant.payload.is_none() {
-                    nullary.insert(variant.name.clone());
-                }
-            }
-        }
-    }
     let mut validator = Validator {
         diagnostics: vec![],
-        nullary,
     };
     validator.statements(&program.statements, true, false);
     validator.diagnostics
 }
 struct Validator {
     diagnostics: Vec<Diagnostic>,
-    nullary: BTreeSet<String>,
 }
 impl Validator {
     fn spelling(&mut self, name: &str, span: Span) {
@@ -139,11 +124,20 @@ impl Validator {
             }
             match &statement.kind {
                 StmtKind::Binding(binding) => {
-                    self.binding_pattern(
+                    let names = self.binding_pattern(
                         &binding.pattern,
                         (top && binding.mode == BindingMode::Let) || binding.is_meta,
                         false,
                     );
+                    let discard = binding.fallback.is_none()
+                        && matches!(binding.pattern.kind, PatternKind::Wildcard);
+                    if !binding.mode.is_reassignable() && names.is_empty() && !discard {
+                        self.error(
+                            "E0309",
+                            binding.pattern.span,
+                            "a let pattern must bind a variable",
+                        );
+                    }
                     if let Some(ty) = &binding.ty {
                         self.ty(ty);
                     }
@@ -323,8 +317,13 @@ impl Validator {
         self.statements(&block.statements, false, false);
         self.statements(&block.where_items, false, true);
     }
-    fn binding_pattern(&mut self, pattern: &Pattern, constant: bool, nested: bool) {
-        if matches!(&pattern.kind,PatternKind::Literal(Literal::Integer(text)|Literal::Float(text))if text.contains('\0'))
+    fn binding_pattern(
+        &mut self,
+        pattern: &Pattern,
+        constant: bool,
+        nested: bool,
+    ) -> BTreeSet<String> {
+        if matches!(&pattern.kind, PatternKind::Literal(Literal::Integer(text) | Literal::Float(text)) if text.contains('\0'))
         {
             self.error(
                 "E0111",
@@ -334,35 +333,56 @@ impl Validator {
         }
         match &pattern.kind {
             PatternKind::Name(name) | PatternKind::Rest(Some(name)) => {
-                if matches!(&pattern.kind, PatternKind::Name(_)) && self.nullary.contains(name) {
-                    self.error(
-                        "E0309",
-                        pattern.span,
-                        "a nullary constructor pattern binds no variables",
-                    );
-                } else if constant {
-                    self.constant(name, pattern.span);
-                } else if nested && name.chars().next().is_some_and(char::is_uppercase) {
-                    self.error(
-                        "E0103",
-                        pattern.span,
-                        "pattern bindings cannot use uppercase identifiers",
-                    );
+                self.binding_name(name, pattern.span, constant, nested);
+                if name == "_" {
+                    BTreeSet::new()
                 } else {
-                    self.snake(name, pattern.span);
+                    BTreeSet::from([name.clone()])
                 }
             }
-            PatternKind::Tuple(items)
-            | PatternKind::Array(items)
-            | PatternKind::Alternative(items) => {
-                for item in items {
-                    self.binding_pattern(item, constant, true);
-                }
+            PatternKind::Tuple(items) | PatternKind::Array(items) => {
+                self.binding_group(items, constant)
             }
-            PatternKind::Record { fields, .. } => {
+            PatternKind::Alternative(items) => {
+                let Some((first, alternatives)) = items.split_first() else {
+                    return BTreeSet::new();
+                };
+                let names = self.binding_pattern(first, constant, nested);
+                for alternative in alternatives {
+                    let other_names = self.binding_pattern(alternative, constant, nested);
+                    if names != other_names {
+                        self.error(
+                            "E0346",
+                            alternative.span,
+                            "every alternative must bind the same names",
+                        );
+                    }
+                }
+                names
+            }
+            PatternKind::Record {
+                ty,
+                fields,
+                rest_binding,
+                ..
+            } => {
+                if let Some(ty) = ty {
+                    self.ty(ty);
+                }
+                let mut labels = BTreeSet::new();
                 for field in fields {
-                    self.binding_pattern(&field.pattern, constant, true);
+                    self.spelling(&field.name, field.span);
+                    if !labels.insert(&field.name) {
+                        self.error("E0210", field.span, "duplicate field in a record pattern");
+                    }
                 }
+                let mut names =
+                    self.binding_group(fields.iter().map(|field| &field.pattern), constant);
+                if let Some(name) = rest_binding {
+                    self.binding_name(name, pattern.span, constant, true);
+                    self.merge_binding_names(&mut names, [name.clone()], pattern.span);
+                }
+                names
             }
             PatternKind::Constructor {
                 path, arguments, ..
@@ -374,16 +394,65 @@ impl Validator {
                         "pattern binding casing collides with a constructor",
                     );
                 }
-                for argument in arguments {
-                    self.binding_pattern(argument, constant, true);
-                }
+                self.binding_group(arguments, constant)
             }
             PatternKind::Mode { pattern, .. } => self.binding_pattern(pattern, constant, nested),
-            PatternKind::Type(ty) => self.ty(ty),
-            PatternKind::Value(value) => self.expr(value),
-            _ => {}
+            PatternKind::Type(ty) => {
+                self.ty(ty);
+                let mut bound = vec![];
+                pattern.binding_names(&mut bound);
+                let mut names = BTreeSet::new();
+                self.merge_binding_names(&mut names, bound, pattern.span);
+                names
+            }
+            _ => BTreeSet::new(),
         }
     }
+
+    fn binding_name(&mut self, name: &str, span: Span, constant: bool, nested: bool) {
+        if constant {
+            self.constant(name, span);
+        } else if nested && name.as_bytes().first().is_some_and(u8::is_ascii_uppercase) {
+            self.error(
+                "E0103",
+                span,
+                "pattern bindings cannot use uppercase identifiers",
+            );
+        } else {
+            self.snake(name, span);
+        }
+    }
+
+    fn binding_group<'p>(
+        &mut self,
+        patterns: impl IntoIterator<Item = &'p Pattern>,
+        constant: bool,
+    ) -> BTreeSet<String> {
+        let mut names = BTreeSet::new();
+        for pattern in patterns {
+            let bound = self.binding_pattern(pattern, constant, true);
+            self.merge_binding_names(&mut names, bound, pattern.span);
+        }
+        names
+    }
+
+    fn merge_binding_names(
+        &mut self,
+        names: &mut BTreeSet<String>,
+        bound: impl IntoIterator<Item = String>,
+        span: Span,
+    ) {
+        for name in bound {
+            if !names.insert(name.clone()) {
+                self.error(
+                    "E0347",
+                    span,
+                    &format!("pattern binds '{name}' more than once"),
+                );
+            }
+        }
+    }
+
     fn ty(&mut self, ty: &TypeExpr) {
         match &ty.kind {
             TypeKind::Name { path, arguments } => {
@@ -674,9 +743,9 @@ impl Validator {
                     self.expr(&arm.body);
                 }
             }
-            ExprKind::Is { value, pattern } => {
+            ExprKind::Is { value, test } => {
                 self.expr(value);
-                self.binding_pattern(pattern, false, false);
+                self.value_test(test);
             }
             ExprKind::While { condition, body } => {
                 self.expr(condition);
@@ -713,6 +782,42 @@ impl Validator {
                 }
             }
             _ => {}
+        }
+    }
+
+    fn value_test(&mut self, test: &ValueTest) {
+        match &test.kind {
+            ValueTestKind::Value(value) => self.expr(value),
+            ValueTestKind::Range { start, end, .. } => {
+                self.expr(start);
+                self.expr(end);
+            }
+            ValueTestKind::Constructor { arguments, .. } => {
+                if let Some(arguments) = arguments {
+                    for argument in arguments {
+                        self.value_test(argument);
+                    }
+                }
+            }
+            ValueTestKind::Tuple(tests) | ValueTestKind::Alternative(tests) => {
+                for test in tests {
+                    self.value_test(test);
+                }
+            }
+            ValueTestKind::Record { ty, fields } => {
+                if let Some(ty) = ty {
+                    self.ty(ty);
+                }
+                let mut labels = BTreeSet::new();
+                for field in fields {
+                    self.spelling(&field.name, field.span);
+                    if !labels.insert(&field.name) {
+                        self.error("E0210", field.span, "duplicate field in a record test");
+                    }
+                    self.value_test(&field.test);
+                }
+            }
+            ValueTestKind::Wildcard | ValueTestKind::Error => {}
         }
     }
 }

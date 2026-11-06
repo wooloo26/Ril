@@ -448,7 +448,7 @@ pub enum ExprKind {
     },
     Is {
         value: Box<Expr>,
-        pattern: Pattern,
+        test: ValueTest,
     },
     Loop(Block),
     While {
@@ -480,6 +480,42 @@ pub enum ExprKind {
     },
     Ambient,
     Error,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ValueTest {
+    pub kind: ValueTestKind,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ValueTestKind {
+    Wildcard,
+    Value(Box<Expr>),
+    Range {
+        start: Box<Expr>,
+        end: Box<Expr>,
+        inclusive: bool,
+    },
+    Constructor {
+        path: Vec<String>,
+        head: Span,
+        arguments: Option<Vec<ValueTest>>,
+    },
+    Tuple(Vec<ValueTest>),
+    Record {
+        ty: Option<TypeExpr>,
+        fields: Vec<ValueTestField>,
+    },
+    Alternative(Vec<ValueTest>),
+    Error,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ValueTestField {
+    pub name: String,
+    pub test: ValueTest,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -638,6 +674,11 @@ pub enum PatternKind {
     Name(String),
     Wildcard,
     Literal(Literal),
+    Range {
+        start: Literal,
+        end: Literal,
+        inclusive: bool,
+    },
     Tuple(Vec<Pattern>),
     Array(Vec<Pattern>),
     /// Only a directly enclosing tuple or array may introduce a rest. Tuples
@@ -661,7 +702,6 @@ pub enum PatternKind {
         pattern: Box<Pattern>,
     },
     Type(TypeExpr),
-    Value(Box<Expr>),
     Error,
 }
 

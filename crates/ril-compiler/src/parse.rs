@@ -2,6 +2,7 @@
 use crate::{
     RilLanguage, SyntaxKind, SyntaxNode,
     ast::*,
+    hir::DeclarationHead,
     lexer::{Token, diagnostic, lex},
 };
 use crate::{
@@ -11,7 +12,7 @@ use crate::{
 use rowan::{GreenNode, GreenNodeBuilder, Language};
 use std::collections::BTreeSet;
 
-type SignatureLookup<'a> = dyn Fn(&[String], u32) -> Option<Vec<ArgumentSort>> + Sync + 'a;
+type HeadLookup<'a> = dyn Fn(&[String], u32) -> Option<DeclarationHead> + Sync + 'a;
 
 const ASSIGNMENT_PRECEDENCE: u8 = 0;
 const COMPARISON_PRECEDENCE: u8 = 5;
@@ -66,7 +67,7 @@ fn parse_expression_inner(
     text: &str,
     file: FileId,
     offset: usize,
-    lookup: Option<&SignatureLookup<'_>>,
+    lookup: Option<&HeadLookup<'_>>,
 ) -> ExpressionParse {
     let mut parser = Parser::new(text, file, offset, lookup);
     parser.start(SyntaxKind::Root);
@@ -85,7 +86,7 @@ fn parse_expression_inner(
         incomplete: parser.incomplete,
     }
 }
-pub(crate) fn parse_with_heads(text: &str, file: FileId, lookup: &SignatureLookup<'_>) -> Parse {
+pub(crate) fn parse_with_heads(text: &str, file: FileId, lookup: &HeadLookup<'_>) -> Parse {
     on_parser_stack(
         || parse_file_inner(text, file, Some(lookup)),
         || exhausted_parse(text),
@@ -112,14 +113,14 @@ fn exhausted_parse(text: &str) -> Parse {
     }
 }
 
-fn parse_file_inner(text: &str, file: FileId, lookup: Option<&SignatureLookup<'_>>) -> Parse {
+fn parse_file_inner(text: &str, file: FileId, lookup: Option<&HeadLookup<'_>>) -> Parse {
     let mut parser = Parser::new(text, file, 0, lookup);
     parser.start(SyntaxKind::Root);
     let mut statements = vec![];
     parser.separators();
     while !parser.eof() {
         let before = parser.pos;
-        statements.push(parser.statement());
+        statements.push(parser.statement(true));
         if parser.pos == before {
             parser.error("E0120", "parser could not identify this statement");
             parser.recovery(true);
@@ -149,10 +150,11 @@ struct Parser<'a> {
     depth: usize,
     budget_exhausted: bool,
     grouped_values: BTreeSet<(u32, u32)>,
-    lookup: Option<&'a SignatureLookup<'a>>,
+    lookup: Option<&'a HeadLookup<'a>>,
     delimiters: Vec<&'static str>,
     angles: Vec<usize>,
     type_pattern_depth: usize,
+    probing_test_group: bool,
 }
 
 impl<'a> Parser<'a> {
@@ -163,12 +165,7 @@ impl<'a> Parser<'a> {
             self.bump();
         }
     }
-    fn new(
-        text: &'a str,
-        file: FileId,
-        base: usize,
-        lookup: Option<&'a SignatureLookup<'a>>,
-    ) -> Self {
+    fn new(text: &'a str, file: FileId, base: usize, lookup: Option<&'a HeadLookup<'a>>) -> Self {
         let lexed = lex(text, file, base);
         Self {
             text,
@@ -187,6 +184,7 @@ impl<'a> Parser<'a> {
             delimiters: Vec::new(),
             angles: Vec::new(),
             type_pattern_depth: 0,
+            probing_test_group: false,
         }
     }
     fn span(&self, start: usize) -> Span {
@@ -224,6 +222,14 @@ impl<'a> Parser<'a> {
         self.tokens.get(self.significant()).map(|t| t.kind)
     }
     fn look(&self, n: usize) -> &str {
+        self.look_index(n)
+            .map_or("", |index| self.token_text(index))
+    }
+    fn token_text(&self, index: usize) -> &str {
+        let token = self.tokens[index];
+        &self.text[token.start..token.end]
+    }
+    fn look_index(&self, n: usize) -> Option<usize> {
         let mut i = self.significant();
         let mut seen = 0;
         while i < self.tokens.len() {
@@ -232,13 +238,13 @@ impl<'a> Parser<'a> {
                 SyntaxKind::Whitespace | SyntaxKind::Comment | SyntaxKind::Newline
             ) {
                 if seen == n {
-                    return &self.text[self.tokens[i].start..self.tokens[i].end];
+                    return Some(i);
                 }
                 seen += 1;
             }
             i += 1;
         }
-        ""
+        None
     }
     fn offset(&self) -> usize {
         self.tokens
@@ -327,9 +333,12 @@ impl<'a> Parser<'a> {
         self.expect(">");
     }
 
+    fn declaration_head(&self, path: &[String], span: Span) -> Option<DeclarationHead> {
+        self.lookup.and_then(|lookup| lookup(path, span.start))
+    }
+
     fn application_signature(&self, path: &[String], start: usize) -> Option<Vec<ArgumentSort>> {
-        self.lookup
-            .and_then(|lookup| lookup(path, (self.base + start) as u32))
+        self.declaration_head(path, self.span(start))?.application
     }
 
     fn closes_angle(&self) -> bool {
@@ -346,14 +355,27 @@ impl<'a> Parser<'a> {
         } else {
             code
         };
+        self.error_at(
+            Span {
+                file: self.file,
+                start: (self.base + start) as u32,
+                end: (self.base + end) as u32,
+            },
+            code,
+            message,
+        );
+    }
+
+    fn error_at(&mut self, span: Span, code: &str, message: &str) {
         self.diagnostics.push(diagnostic(
-            self.file,
-            self.base + start,
-            self.base + end,
+            span.file,
+            span.start as usize,
+            span.end as usize,
             code,
             message,
         ));
     }
+
     fn expect(&mut self, text: &str) {
         if !self.eat(text) {
             let code = if self.eof() {
@@ -430,7 +452,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn statement(&mut self) -> Stmt {
+    fn statement(&mut self, module: bool) -> Stmt {
         self.start(SyntaxKind::Statement);
         let start = self.offset();
         let visibility = if self.eat("pub") {
@@ -448,7 +470,7 @@ impl<'a> Parser<'a> {
             "sub" => {
                 self.bump();
                 let name = self.name();
-                let block = self.block();
+                let block = self.block_items(true);
                 if let Some(item) = block.where_items.first() {
                     self.diagnostics.push(diagnostic(
                         item.span.file,
@@ -465,7 +487,7 @@ impl<'a> Parser<'a> {
                 })
             }
             "use" => StmtKind::Use(self.use_declaration(visibility)),
-            "let" | "var" => StmtKind::Binding(Box::new(self.binding(visibility, is_meta))),
+            "let" | "var" => StmtKind::Binding(Box::new(self.binding(visibility, is_meta, module))),
             "with" => self.handler(),
             _ => {
                 if visibility == Visibility::Public || is_meta || is_halt || opaque {
@@ -483,7 +505,7 @@ impl<'a> Parser<'a> {
         Stmt { kind, span }
     }
 
-    fn binding(&mut self, visibility: Visibility, is_meta: bool) -> Binding {
+    fn binding(&mut self, visibility: Visibility, is_meta: bool, module: bool) -> Binding {
         let variable = self.eat("var");
         if !variable {
             self.expect("let");
@@ -562,6 +584,11 @@ impl<'a> Parser<'a> {
             } = &pattern.kind
             && path.len() == 1
             && arguments.is_empty()
+            && (is_meta
+                || module && mode == BindingMode::Let && screaming_name(&path[0])
+                || !self
+                    .declaration_head(path, pattern.span)
+                    .is_some_and(|head| head.constructor))
         {
             pattern.kind = PatternKind::Name(path[0].clone());
         }
@@ -590,7 +617,16 @@ impl<'a> Parser<'a> {
             "completed passive values have no effect annotation",
         );
         let fallback = if self.eat("else") {
-            Some(self.expression(0, false))
+            if self.at("{") {
+                let block = self.block();
+                Some(Expr {
+                    span: block.span,
+                    kind: ExprKind::Block(block),
+                })
+            } else {
+                self.error("E0124", "a guarded binding requires an else block");
+                Some(self.expression(0, false))
+            }
         } else {
             None
         };
@@ -648,7 +684,7 @@ impl<'a> Parser<'a> {
                 "type" | "halt" | "fn" | "eff" | "opaque" | "pub" | "meta" | "sub"
             ) {
                 let before = self.pos;
-                items.push(self.statement());
+                items.push(self.statement(false));
                 if self.pos == before || matches!(self.current(), "{" | "=") {
                     break;
                 }
@@ -1295,34 +1331,37 @@ impl<'a> Parser<'a> {
     /// ordinary callable application before either list is parsed. Nested
     /// constructor/tuple parentheses and arrows inside them do not select it.
     fn handler_parameters_ahead(&self) -> bool {
+        self.matching_parenthesis().is_some_and(|close| {
+            self.tokens[close + 1..]
+                .iter()
+                .find(|token| {
+                    !matches!(
+                        token.kind,
+                        SyntaxKind::Whitespace | SyntaxKind::Comment | SyntaxKind::Newline
+                    )
+                })
+                .is_some_and(|token| &self.text[token.start..token.end] == "->")
+        })
+    }
+
+    fn matching_parenthesis(&self) -> Option<usize> {
         let mut depth = 0usize;
-        let mut tokens = self.tokens[self.significant()..].iter().filter(|token| {
-            !matches!(
-                token.kind,
-                SyntaxKind::Whitespace | SyntaxKind::Comment | SyntaxKind::Newline
-            )
-        });
-        while let Some(token) = tokens.next() {
-            match &self.text[token.start..token.end] {
+        for index in self.significant()..self.tokens.len() {
+            match self.token_text(index) {
                 "(" => depth += 1,
-                ")" => {
-                    let Some(inner) = depth.checked_sub(1) else {
-                        return false;
-                    };
-                    depth = inner;
-                    if depth == 0 {
-                        return tokens
-                            .next()
-                            .is_some_and(|token| &self.text[token.start..token.end] == "->");
-                    }
-                }
+                ")" if depth == 1 => return Some(index),
+                ")" => depth = depth.checked_sub(1)?,
                 _ => {}
             }
         }
-        false
+        None
     }
 
     fn block(&mut self) -> Block {
+        self.block_items(false)
+    }
+
+    fn block_items(&mut self, module: bool) -> Block {
         self.start(SyntaxKind::Block);
         let start = self.offset();
         let mut statements = vec![];
@@ -1348,7 +1387,7 @@ impl<'a> Parser<'a> {
                 self.separators();
                 while !self.at("}") && !self.eof() {
                     let before = self.pos;
-                    where_items.push(self.statement());
+                    where_items.push(self.statement(false));
                     if self.pos == before {
                         self.bump();
                     }
@@ -1356,7 +1395,7 @@ impl<'a> Parser<'a> {
                 }
                 break;
             }
-            statements.push(self.statement());
+            statements.push(self.statement(module));
             if self.pos == before {
                 self.bump();
             }
@@ -2054,6 +2093,15 @@ impl<'a> Parser<'a> {
     }
 
     fn expression(&mut self, min: u8, multiline: bool) -> Expr {
+        self.expression_with_bar_boundary(min, multiline, false)
+    }
+
+    fn expression_with_bar_boundary(
+        &mut self,
+        min: u8,
+        multiline: bool,
+        stop_at_bar: bool,
+    ) -> Expr {
         self.start(SyntaxKind::Expression);
         let start = self.offset();
         self.depth += 1;
@@ -2067,7 +2115,7 @@ impl<'a> Parser<'a> {
                 span: self.span(start),
             };
         }
-        let mut left = self.prefix(multiline);
+        let mut left = self.prefix(multiline, stop_at_bar);
         // A prefix range also occupies the range precedence level. A group
         // starts a separate expression, so its operators do not count here.
         let mut previous_infix = (matches!(left.kind, ExprKind::Range { .. })
@@ -2077,7 +2125,7 @@ impl<'a> Parser<'a> {
         .then_some(RANGE_PRECEDENCE);
         let mut extensions = 0;
         loop {
-            if self.eof() || self.closes_angle() {
+            if self.eof() || self.closes_angle() || stop_at_bar && self.at("|") {
                 break;
             }
             extensions += 1;
@@ -2276,18 +2324,11 @@ impl<'a> Parser<'a> {
             previous_infix = Some(binding);
             let operator = self.bump();
             if operator == "is" {
-                let value = self.expression(right_binding, multiline);
-                if has_test_binding_mode(&value, &self.grouped_values) {
-                    self.error(
-                        "E0120",
-                        "is tests do not introduce mutable pattern bindings",
-                    );
-                }
-                let pattern = expr_test_pattern(value, &self.grouped_values);
+                let test = self.value_test(right_binding, multiline);
                 left = Expr {
                     kind: ExprKind::Is {
                         value: Box::new(left),
-                        pattern,
+                        test,
                     },
                     span: self.span(start),
                 };
@@ -2300,7 +2341,11 @@ impl<'a> Parser<'a> {
                 {
                     None
                 } else {
-                    Some(Box::new(self.expression(right_binding, multiline)))
+                    Some(Box::new(self.expression_with_bar_boundary(
+                        right_binding,
+                        multiline,
+                        stop_at_bar,
+                    )))
                 };
                 left = Expr {
                     kind: ExprKind::Range {
@@ -2312,7 +2357,7 @@ impl<'a> Parser<'a> {
                 };
                 continue;
             }
-            let right = self.expression(right_binding, multiline);
+            let right = self.expression_with_bar_boundary(right_binding, multiline, stop_at_bar);
             let kind = if binding == ASSIGNMENT_PRECEDENCE {
                 ExprKind::Assignment {
                     target: Box::new(left),
@@ -2336,7 +2381,7 @@ impl<'a> Parser<'a> {
         left
     }
 
-    fn prefix(&mut self, multiline: bool) -> Expr {
+    fn prefix(&mut self, multiline: bool, stop_at_bar: bool) -> Expr {
         let start = self.offset();
         let kind = match self.current() {
             "true" => {
@@ -2357,7 +2402,11 @@ impl<'a> Parser<'a> {
                 let end = if matches!(self.current(), "]" | ")" | "," | "}") || self.eof() {
                     None
                 } else {
-                    Some(Box::new(self.expression(RANGE_PRECEDENCE + 1, multiline)))
+                    Some(Box::new(self.expression_with_bar_boundary(
+                        RANGE_PRECEDENCE + 1,
+                        multiline,
+                        stop_at_bar,
+                    )))
                 };
                 ExprKind::Range {
                     start: None,
@@ -2884,10 +2933,320 @@ impl<'a> Parser<'a> {
         }
     }
 
+    fn value_test(&mut self, min: u8, multiline: bool) -> ValueTest {
+        self.start(SyntaxKind::ValueTest);
+        let start = self.offset();
+        self.depth += 1;
+        let mut test = if self.depth > 128 {
+            self.exhaust_nesting();
+            ValueTest {
+                kind: ValueTestKind::Error,
+                span: self.span(start),
+            }
+        } else {
+            self.value_test_alternative(min, multiline)
+        };
+        if self.at("|") && (multiline || !self.newline()) {
+            let mut alternatives = vec![test];
+            while self.at("|") && (multiline || !self.newline()) {
+                self.bump();
+                alternatives.push(self.value_test_alternative(min, multiline));
+            }
+            test = ValueTest {
+                kind: ValueTestKind::Alternative(alternatives),
+                span: self.span(start),
+            };
+        }
+        if self.at("if") && (multiline || !self.newline()) {
+            self.error("E0120", "is tests do not admit a trailing guard");
+            self.bump();
+            self.expression(min, multiline);
+        }
+        self.depth -= 1;
+        self.finish();
+        test
+    }
+
+    fn value_test_alternative(&mut self, min: u8, multiline: bool) -> ValueTest {
+        let start = self.offset();
+        if self.eat("_") {
+            return ValueTest {
+                kind: ValueTestKind::Wildcard,
+                span: self.span(start),
+            };
+        }
+        if self.at("(") && self.test_group_is_tuple() {
+            self.bump();
+            let tests = self.test_list(")");
+            if tests.len() == 1 {
+                self.error_at(
+                    self.span(start),
+                    "E0120",
+                    "a tuple test requires at least two elements",
+                );
+            }
+            return ValueTest {
+                kind: ValueTestKind::Tuple(tests),
+                span: self.span(start),
+            };
+        }
+        if self.at(".") && self.look(1) == "{" {
+            self.bump();
+            return self.record_value_test(None, start);
+        }
+        if self.kind() == Some(SyntaxKind::Identifier) {
+            let mut path = vec![self.current().to_owned()];
+            let mut after = 1;
+            while self.look(after) == "::" {
+                path.push(self.look(after + 1).to_owned());
+                after += 2;
+            }
+            let record = if self.look(after) == "<" {
+                self.look_index(after)
+                    .and_then(|open| self.after_angle_list(open))
+                    .is_some_and(|after| {
+                        let mut suffix = self.tokens[after..].iter().filter(|token| !matches!(
+                            token.kind, SyntaxKind::Whitespace | SyntaxKind::Comment | SyntaxKind::Newline
+                        ));
+                        matches!(suffix.next(), Some(token) if &self.text[token.start..token.end] == ".")
+                            && matches!(suffix.next(), Some(token) if &self.text[token.start..token.end] == "{")
+                    })
+            } else {
+                self.look(after) == "." && self.look(after + 1) == "{"
+            };
+            if record {
+                let ty = self.named_type();
+                self.expect(".");
+                return self.record_value_test(Some(ty), start);
+            }
+            if self.look(after) != "<"
+                && self
+                    .declaration_head(&path, self.span(start))
+                    .is_some_and(|head| head.constructor)
+            {
+                self.qualified_name();
+                let head = self.span(start);
+                let arguments = if (multiline || !self.newline()) && self.eat("(") {
+                    Some(self.test_list(")"))
+                } else {
+                    None
+                };
+                return ValueTest {
+                    kind: ValueTestKind::Constructor {
+                        path,
+                        head,
+                        arguments,
+                    },
+                    span: self.span(start),
+                };
+            }
+        }
+        let expression = self.expression_with_bar_boundary(min, multiline, true);
+        self.test_from_expression(expression)
+    }
+
+    fn test_group_is_tuple(&self) -> bool {
+        if self.look(1) == ")" {
+            return true;
+        }
+        if self.probing_test_group {
+            return false;
+        }
+        let Some(close) = self.matching_parenthesis() else {
+            return false;
+        };
+        let open = self.significant();
+        let mut nested = 0usize;
+        let possible_tuple = (open + 1..close).any(|index| {
+            match self.token_text(index) {
+                "(" | "[" | "?[" | "{" => nested += 1,
+                ")" | "]" | "}" => nested = nested.saturating_sub(1),
+                "," if nested == 0 => return true,
+                _ => {}
+            }
+            false
+        });
+        if !possible_tuple {
+            return false;
+        }
+        // The ordinary parenthesis grammar distinguishes a separator from
+        // a comma in a generic application or anonymous callable head.
+        let start = self.tokens[open].start;
+        let end = self.tokens[close].end;
+        let mut probe = Parser::new(
+            &self.text[start..end],
+            self.file,
+            self.base + start,
+            self.lookup,
+        );
+        probe.probing_test_group = true;
+        probe.start(SyntaxKind::Root);
+        let expression = probe.prefix(true, false);
+        probe.finish();
+        matches!(expression.kind, ExprKind::Tuple(_))
+            && !probe
+                .grouped_values
+                .contains(&(expression.span.start, expression.span.end))
+    }
+
+    /// Find the suffix after an angle list followed by a structural form.
+    /// An operator fragment attached to the final close is part of the suffix.
+    fn after_angle_list(&self, open: usize) -> Option<usize> {
+        let mut angles = 1usize;
+        let mut delimiters = 0usize;
+        for index in open + 1..self.tokens.len() {
+            let token = self.token_text(index);
+            match token {
+                "(" | "[" | "?[" | "{" => delimiters += 1,
+                ")" | "]" | "}" => delimiters = delimiters.checked_sub(1)?,
+                _ if delimiters != 0 => {}
+                "<" => angles += 1,
+                ";" => return None,
+                _ => {
+                    let closes = token.bytes().take_while(|byte| *byte == b'>').count();
+                    if closes >= angles {
+                        return (closes == angles && closes == token.len()).then_some(index + 1);
+                    }
+                    angles -= closes;
+                }
+            }
+        }
+        None
+    }
+
+    fn test_list(&mut self, closing: &str) -> Vec<ValueTest> {
+        let mut tests = vec![];
+        while !self.at(closing) && !self.eof() {
+            let before = self.pos;
+            tests.push(self.value_test(0, true));
+            if self.pos == before || !self.list_separator(closing) {
+                break;
+            }
+        }
+        self.expect(closing);
+        tests
+    }
+
+    fn record_value_test(&mut self, ty: Option<TypeExpr>, start: usize) -> ValueTest {
+        self.expect("{");
+        let mut fields = vec![];
+        while !self.at("}") && !self.eof() {
+            let before = self.pos;
+            let start = self.offset();
+            if self.at("..") {
+                self.error("E0120", "a record test lists fields rather than spreads");
+                self.bump();
+                self.expression(0, true);
+            } else {
+                if self.member_mode(false).is_some() {
+                    self.error_at(
+                        self.span(start),
+                        "E0120",
+                        "is tests do not admit binding modifiers",
+                    );
+                }
+                let name = self.name();
+                let test = if self.eat(":") {
+                    self.value_test(0, true)
+                } else {
+                    let span = self.span(start);
+                    ValueTest {
+                        kind: ValueTestKind::Value(Box::new(Expr {
+                            kind: ExprKind::Name(name.clone()),
+                            span,
+                        })),
+                        span,
+                    }
+                };
+                fields.push(ValueTestField {
+                    name,
+                    test,
+                    span: self.span(start),
+                });
+            }
+            if self.pos == before || !self.list_separator("}") {
+                break;
+            }
+        }
+        self.expect("}");
+        ValueTest {
+            kind: ValueTestKind::Record { ty, fields },
+            span: self.span(start),
+        }
+    }
+
+    fn test_from_expression(&mut self, expression: Expr) -> ValueTest {
+        let span = expression.span;
+        let kind = if self.grouped_values.contains(&(span.start, span.end)) {
+            ValueTestKind::Value(Box::new(expression))
+        } else {
+            match expression.kind {
+                ExprKind::Range {
+                    start: Some(start),
+                    end: Some(end),
+                    inclusive,
+                } if self.numeric_test_bound(&start) && self.numeric_test_bound(&end) => {
+                    ValueTestKind::Range {
+                        start,
+                        end,
+                        inclusive,
+                    }
+                }
+                ExprKind::Unary { ref operator, .. } if operator == "^mut" => {
+                    self.error_at(span, "E0120", "is tests do not admit binding modifiers");
+                    ValueTestKind::Error
+                }
+                _ => ValueTestKind::Value(Box::new(expression)),
+            }
+        };
+        ValueTest { kind, span }
+    }
+
+    fn numeric_test_bound(&self, expression: &Expr) -> bool {
+        let span = expression.span;
+        if self.grouped_values.contains(&(span.start, span.end)) {
+            return false;
+        }
+        match &expression.kind {
+            ExprKind::Literal(literal) => numeric_literal(literal),
+            ExprKind::Unary { operator, operand } if operator == "-" => {
+                let span = operand.span;
+                !self.grouped_values.contains(&(span.start, span.end))
+                    && matches!(&operand.kind, ExprKind::Literal(literal) if numeric_literal(literal))
+            }
+            _ => false,
+        }
+    }
+
     fn pattern(&mut self, alternatives: bool) -> Pattern {
         self.start(SyntaxKind::Pattern);
         let start = self.offset();
         let mut pattern = self.pattern_atom();
+        if matches!(self.current(), ".." | "..=") {
+            let inclusive = self.bump() == "..=";
+            let end = self.pattern_atom();
+            let span = self.span(start);
+            let kind = match (pattern.kind, end.kind) {
+                (PatternKind::Literal(start), PatternKind::Literal(end))
+                    if numeric_literal(&start) && numeric_literal(&end) =>
+                {
+                    PatternKind::Range {
+                        start,
+                        end,
+                        inclusive,
+                    }
+                }
+                _ => {
+                    self.error_at(
+                        span,
+                        "E0349",
+                        "a range pattern requires numeric literal endpoints",
+                    );
+                    PatternKind::Error
+                }
+            };
+            pattern = Pattern { kind, span };
+        }
         if !matches!(self.current(), "|" | ".." | "..=")
             && let Some((_, right_binding)) = precedence(self.current())
         {
@@ -2895,34 +3254,10 @@ impl<'a> Parser<'a> {
                 "E0349",
                 "match and binding patterns cannot evaluate a computed expression",
             );
-            let operator = self.bump();
-            let right = self.expression(right_binding, true);
-            let left = pattern_value(&pattern);
+            self.bump();
+            self.expression(right_binding, true);
             pattern = Pattern {
-                kind: PatternKind::Value(Box::new(Expr {
-                    kind: ExprKind::Binary {
-                        operator,
-                        left: Box::new(left),
-                        right: Box::new(right),
-                    },
-                    span: self.span(start),
-                })),
-                span: self.span(start),
-            };
-        }
-        if matches!(self.current(), ".." | "..=") {
-            let inclusive = self.bump() == "..=";
-            let end = self.expression(RANGE_PRECEDENCE + 1, true);
-            let begin = pattern_value(&pattern);
-            pattern = Pattern {
-                kind: PatternKind::Value(Box::new(Expr {
-                    kind: ExprKind::Range {
-                        start: Some(Box::new(begin)),
-                        end: Some(Box::new(end)),
-                        inclusive,
-                    },
-                    span: self.span(start),
-                })),
+                kind: PatternKind::Error,
                 span: self.span(start),
             };
         }
@@ -2968,34 +3303,7 @@ impl<'a> Parser<'a> {
                 PatternKind::Wildcard
             }
             "var" | "mut" | "^mut" | "ref" => {
-                let var = self.eat("var");
-                let mode = match (var, self.current()) {
-                    (true, "mut") => {
-                        self.bump();
-                        BindingMode::VarMut
-                    }
-                    (true, "^mut") => {
-                        self.bump();
-                        BindingMode::VarSharedMut
-                    }
-                    (true, "ref") => {
-                        self.bump();
-                        BindingMode::VarRef
-                    }
-                    (true, _) => BindingMode::Var,
-                    (false, "^mut") => {
-                        self.bump();
-                        BindingMode::LetSharedMut
-                    }
-                    (false, "ref") => {
-                        self.bump();
-                        BindingMode::Ref
-                    }
-                    (false, _) => {
-                        self.bump();
-                        BindingMode::LetMut
-                    }
-                };
+                let mode = self.pattern_mode().expect("matched binding modifier");
                 PatternKind::Mode {
                     mode,
                     pattern: Box::new(self.pattern_atom()),
@@ -3023,7 +3331,30 @@ impl<'a> Parser<'a> {
                 self.bump();
                 return self.record_pattern(None, start);
             }
-            "{" => return self.record_pattern(None, start),
+            "{" => {
+                self.error("E0120", "a record pattern starts with '.{'");
+                return self.record_pattern(None, start);
+            }
+            "-" => {
+                self.bump();
+                match self.kind() {
+                    Some(SyntaxKind::Integer) => {
+                        PatternKind::Literal(Literal::Integer(format!("-{}", self.bump())))
+                    }
+                    Some(SyntaxKind::Float) => {
+                        PatternKind::Literal(Literal::Float(format!("-{}", self.bump())))
+                    }
+                    _ => {
+                        self.error_at(
+                            self.span(start),
+                            "E0349",
+                            "a negative pattern requires a numeric literal",
+                        );
+                        self.expression(14, true);
+                        PatternKind::Error
+                    }
+                }
+            }
             "true" | "false" => PatternKind::Literal(Literal::Bool(self.bump() == "true")),
             _ => match self.kind() {
                 Some(SyntaxKind::Integer) => PatternKind::Literal(Literal::Integer(self.bump())),
@@ -3034,9 +3365,28 @@ impl<'a> Parser<'a> {
                 }
                 Some(SyntaxKind::Bytes) => PatternKind::Literal(Literal::Bytes(self.bump())),
                 Some(SyntaxKind::Identifier) => {
-                    let mut path = vec![self.name()];
-                    while self.eat("::") {
-                        path.push(self.name());
+                    let mut path = self.qualified_name();
+                    let signature = self.application_signature(&path, start);
+                    let applied = self.at("<");
+                    let type_arguments = self.type_arguments(signature.as_deref());
+                    if self.at(".") && self.look(1) == "{" {
+                        let ty = TypeExpr {
+                            text: self.text[start..self.last_end].to_owned(),
+                            kind: TypeKind::Name {
+                                path,
+                                arguments: type_arguments,
+                            },
+                            span: self.span(start),
+                        };
+                        self.bump();
+                        return self.record_pattern(Some(ty), start);
+                    }
+                    if applied {
+                        self.error_at(
+                            self.span(start),
+                            "E0349",
+                            "only typed record patterns use a type application",
+                        );
                     }
                     if self.eat("(") {
                         let mut arguments = vec![];
@@ -3053,17 +3403,6 @@ impl<'a> Parser<'a> {
                             arguments,
                             parenthesized: true,
                         }
-                    } else if self.at(".") && self.look(1) == "{" {
-                        self.bump();
-                        let ty = TypeExpr {
-                            text: path.join("::"),
-                            kind: TypeKind::Name {
-                                path,
-                                arguments: vec![],
-                            },
-                            span: self.span(start),
-                        };
-                        return self.record_pattern(Some(ty), start);
                     } else if path.len() > 1
                         || path[0].chars().next().is_some_and(char::is_uppercase)
                     {
@@ -3077,8 +3416,11 @@ impl<'a> Parser<'a> {
                     }
                 }
                 _ => {
-                    let value = self.expression(10, true);
-                    PatternKind::Value(Box::new(value))
+                    self.error("E0120", "expected a binding pattern");
+                    if !self.eof() && !matches!(self.current(), ")" | "]" | "}" | "," | "->") {
+                        self.recovery(true);
+                    }
+                    PatternKind::Error
                 }
             },
         };
@@ -3144,13 +3486,7 @@ impl<'a> Parser<'a> {
                     rest_binding = Some(self.name());
                 }
             } else {
-                let mode = if self.eat("mut") {
-                    Some(BindingMode::LetMut)
-                } else if self.eat("var") {
-                    Some(BindingMode::Var)
-                } else {
-                    None
-                };
+                let mode = self.pattern_mode();
                 let name = self.name();
                 let mut pattern = if self.eat(":") {
                     self.pattern(true)
@@ -3190,6 +3526,29 @@ impl<'a> Parser<'a> {
             span: self.span(start),
         }
     }
+
+    fn pattern_mode(&mut self) -> Option<BindingMode> {
+        let var = self.eat("var");
+        let mode = match (var, self.current()) {
+            (true, "mut") => BindingMode::VarMut,
+            (true, "^mut") => BindingMode::VarSharedMut,
+            (true, "ref") => BindingMode::VarRef,
+            (true, _) => return Some(BindingMode::Var),
+            (false, "mut") => BindingMode::LetMut,
+            (false, "^mut") => BindingMode::LetSharedMut,
+            (false, "ref") => BindingMode::Ref,
+            (false, _) => return None,
+        };
+        self.bump();
+        Some(mode)
+    }
+}
+
+fn screaming_name(name: &str) -> bool {
+    name.as_bytes().first().is_some_and(u8::is_ascii_uppercase)
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit() || byte == b'_')
 }
 
 fn starts_type(token: &str) -> bool {
@@ -3255,146 +3614,8 @@ fn expr_type(expr: &Expr) -> TypeExpr {
         span: expr.span,
     }
 }
-fn expr_test_pattern(expr: Expr, groups: &BTreeSet<(u32, u32)>) -> Pattern {
-    let span = expr.span;
-    if groups.contains(&(span.start, span.end)) {
-        return Pattern {
-            kind: PatternKind::Value(Box::new(expr)),
-            span,
-        };
-    }
-    let kind = match expr.kind {
-        ExprKind::Binary {
-            operator,
-            left,
-            right,
-        } if operator == "|" => {
-            let left = expr_test_pattern(*left, groups);
-            let right = expr_test_pattern(*right, groups);
-            let mut alternatives = if let PatternKind::Alternative(alternatives) = left.kind {
-                alternatives
-            } else {
-                vec![left]
-            };
-            if let PatternKind::Alternative(parts) = right.kind {
-                alternatives.extend(parts);
-            } else {
-                alternatives.push(right);
-            }
-            PatternKind::Alternative(alternatives)
-        }
-        ExprKind::Name(name) if name == "_" => PatternKind::Wildcard,
-        ExprKind::Name(name) if name.chars().next().is_some_and(char::is_uppercase) => {
-            PatternKind::Constructor {
-                path: vec![name],
-                arguments: vec![],
-                parenthesized: false,
-            }
-        }
-        ExprKind::Path(path)
-            if path
-                .last()
-                .is_some_and(|name| name.chars().next().is_some_and(char::is_uppercase)) =>
-        {
-            PatternKind::Constructor {
-                path,
-                arguments: vec![],
-                parenthesized: false,
-            }
-        }
-        ExprKind::Literal(literal) => PatternKind::Literal(literal),
-        ExprKind::Tuple(parts) => PatternKind::Tuple(
-            parts
-                .into_iter()
-                .map(|part| expr_test_pattern(part, groups))
-                .collect(),
-        ),
-        ExprKind::Call { callee, arguments }
-            if matches!(&callee.kind,ExprKind::Name(name) if name.chars().next().is_some_and(char::is_uppercase))
-                || matches!(&callee.kind, ExprKind::Path(path) if path.last().is_some_and(|name| name.chars().next().is_some_and(char::is_uppercase))) =>
-        {
-            let path = match callee.kind {
-                ExprKind::Name(name) => vec![name],
-                ExprKind::Path(path) => path,
-                _ => unreachable!(),
-            };
-            PatternKind::Constructor {
-                path,
-                parenthesized: true,
-                arguments: arguments
-                    .into_iter()
-                    .map(|arg| expr_test_pattern(arg.value, groups))
-                    .collect(),
-            }
-        }
-        ExprKind::Record { members, ty, .. }
-            if members
-                .iter()
-                .all(|member| matches!(member, RecordMember::Field(_))) =>
-        {
-            PatternKind::Record {
-                ty,
-                fields: members
-                    .into_iter()
-                    .filter_map(|member| match member {
-                        RecordMember::Field(field) => Some(field),
-                        RecordMember::Spread(_) => None,
-                    })
-                    .map(|field| PatternField {
-                        name: field.name,
-                        pattern: expr_test_pattern(field.value, groups),
-                        span: field.span,
-                    })
-                    .collect(),
-                rest: false,
-                rest_binding: None,
-            }
-        }
-        _ => PatternKind::Value(Box::new(expr)),
-    };
-    Pattern { kind, span }
-}
-fn pattern_value(pattern: &Pattern) -> Expr {
-    Expr {
-        kind: match &pattern.kind {
-            PatternKind::Literal(literal) => ExprKind::Literal(literal.clone()),
-            PatternKind::Name(name) => ExprKind::Name(name.clone()),
-            PatternKind::Value(value) => return *value.clone(),
-            _ => ExprKind::Error,
-        },
-        span: pattern.span,
-    }
-}
-fn has_test_binding_mode(expr: &Expr, groups: &BTreeSet<(u32, u32)>) -> bool {
-    if groups.contains(&(expr.span.start, expr.span.end)) {
-        return false;
-    }
-    match &expr.kind {
-        ExprKind::Binary {
-            operator,
-            left,
-            right,
-        } if operator == "|" => {
-            has_test_binding_mode(left, groups) || has_test_binding_mode(right, groups)
-        }
-        ExprKind::Call { callee, arguments }
-            if matches!(&callee.kind, ExprKind::Name(name) if name.chars().next().is_some_and(char::is_uppercase))
-                || matches!(&callee.kind, ExprKind::Path(path) if path.last().is_some_and(|name| name.chars().next().is_some_and(char::is_uppercase))) =>
-        {
-            arguments.iter().any(|arg| {
-                arg.mode != ParameterMode::Read || has_test_binding_mode(&arg.value, groups)
-            })
-        }
-        ExprKind::TupleMember { .. } => true,
-        ExprKind::Tuple(items) | ExprKind::Array(items) => {
-            items.iter().any(|item| has_test_binding_mode(item, groups))
-        }
-        ExprKind::Record { members, .. } => members.iter().any(|member| match member {
-            RecordMember::Field(field) => has_test_binding_mode(&field.value, groups),
-            RecordMember::Spread(value) => has_test_binding_mode(value, groups),
-        }),
-        _ => false,
-    }
+fn numeric_literal(literal: &Literal) -> bool {
+    matches!(literal, Literal::Integer(_) | Literal::Float(_))
 }
 
 fn decode_string_text(text: &str) -> Option<String> {

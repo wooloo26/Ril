@@ -114,7 +114,7 @@ pub fn frontend(
         let source = sources.get(unit.file).expect("indexed source");
         let text = source.text().expect("decoded source");
         let parse = parse_with_heads(text, unit.file, &|path, offset| {
-            heads.application(unit.file, path, offset)
+            heads.head(unit.file, path, offset)
         });
         diagnostics.extend(parse.diagnostics.iter().cloned());
         if parse.incomplete {

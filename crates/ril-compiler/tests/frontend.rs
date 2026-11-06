@@ -1,6 +1,6 @@
 use ril_compiler::{
     SyntaxKind,
-    ast::{ArgumentSort, ControlOperation, ExprKind, StmtKind},
+    ast::{ArgumentSort, ControlOperation, ExprKind, StmtKind, ValueTestKind},
     frontend::{Frontend, UnitKind, frontend},
     hir::{DefinitionKind, ScopeKind},
     source::FileId,
@@ -340,4 +340,124 @@ fn storage_modes_share_parameter_identity_and_preserve_qualified_sort() {
         DefinitionKind::GenericParameter
     );
     assert_eq!(result.sources.slice(map.span).unwrap(), b"M");
+}
+
+#[test]
+fn constructor_test_alias_keeps_tag_identity_without_converting_value_leaves() {
+    let input = r#"
+use Option::{Some as present}
+let WANTED = 42
+fn expected(value: i64) -> i64 { value }
+fn check(value: ?i64) -> bool {
+    value is present(WANTED | expected(value: 0))
+}
+"#;
+    let result = compile(input);
+    assert!(result.is_ok(), "{:?}", result.diagnostics);
+    let parse = &result.files[&FileId(0)];
+    assert_eq!(parse.syntax().to_string(), input);
+    let StmtKind::Function(check) = &parse.program.statements.last().unwrap().kind else {
+        panic!("expected check function");
+    };
+    let StmtKind::Expr { expression, .. } = &check.body.as_ref().unwrap().statements[0].kind else {
+        panic!("expected tail expression");
+    };
+    let ExprKind::Is { test, .. } = &expression.kind else {
+        panic!("expected is test");
+    };
+    let ValueTestKind::Constructor {
+        arguments: Some(arguments),
+        ..
+    } = &test.kind
+    else {
+        panic!("expected resolved constructor payload test");
+    };
+    let ValueTestKind::Alternative(alternatives) = &arguments[0].kind else {
+        panic!("expected payload alternatives");
+    };
+    let [constant, call] = alternatives.as_slice() else {
+        panic!("expected two alternatives");
+    };
+    assert!(matches!(&constant.kind, ValueTestKind::Value(value)
+        if matches!(&value.kind, ExprKind::Name(name) if name == "WANTED")));
+    assert!(matches!(&call.kind, ValueTestKind::Value(value)
+        if matches!(&value.kind, ExprKind::Call { arguments, .. }
+            if arguments[0].label.as_deref() == Some("value"))));
+    let hir = result.hir.unwrap();
+    let alias = hir
+        .references
+        .iter()
+        .find(|reference| reference.path == ["present"])
+        .unwrap();
+    assert_eq!(result.sources.slice(alias.span).unwrap(), b"present");
+    assert_eq!(hir.definitions[alias.constructor.unwrap().0].name, "Some");
+    let value = hir
+        .references
+        .iter()
+        .find(|reference| reference.path == ["WANTED"])
+        .unwrap();
+    assert!(value.constructor.is_none());
+}
+
+#[test]
+fn parenthesis_shape_respects_generic_commas_and_tuple_test_alternatives() {
+    let input = r#"
+fn select<T, U>(value: T, _other: U) -> T { value }
+fn grouped(value: i64) -> bool { value is (select<i64, str>(1, "") | 2) }
+fn structured(value: (i64, i64)) -> bool { value is (-3..=-1 | 1..=3, _) }
+"#;
+    let result = compile(input);
+    assert!(result.is_ok(), "{:?}", result.diagnostics);
+    let parse = &result.files[&FileId(0)];
+    let test = |index: usize| {
+        let StmtKind::Function(function) = &parse.program.statements[index].kind else {
+            panic!("expected a function");
+        };
+        let StmtKind::Expr { expression, .. } = &function.body.as_ref().unwrap().statements[0].kind
+        else {
+            panic!("expected tail expression");
+        };
+        let ExprKind::Is { test, .. } = &expression.kind else {
+            panic!("expected is test");
+        };
+        &test.kind
+    };
+    assert!(matches!(test(1), ValueTestKind::Value(expression)
+        if matches!(&expression.kind, ExprKind::Binary { operator, .. } if operator == "|")));
+    let ValueTestKind::Tuple(elements) = test(2) else {
+        panic!("expected a tuple test");
+    };
+    assert!(
+        matches!(&elements[0].kind, ValueTestKind::Alternative(alternatives)
+        if alternatives.iter().all(|test| matches!(test.kind, ValueTestKind::Range { .. })))
+    );
+    assert!(matches!(elements[1].kind, ValueTestKind::Wildcard));
+}
+
+#[test]
+fn nullary_constructor_import_and_stored_value_have_different_test_roles() {
+    let input = r#"
+use Option::{None as empty}
+let SAVED: ?i64 = None
+fn check(value: ?i64) -> bool { value is SAVED | empty }
+"#;
+    let result = compile(input);
+    assert!(result.is_ok(), "{:?}", result.diagnostics);
+    let hir = result.hir.unwrap();
+    let saved = hir
+        .references
+        .iter()
+        .find(|reference| reference.path == ["SAVED"])
+        .unwrap();
+    assert_eq!(
+        hir.definitions[saved.definition.0].kind,
+        DefinitionKind::Binding
+    );
+    assert!(saved.constructor.is_none());
+    let empty = hir
+        .references
+        .iter()
+        .find(|reference| reference.path == ["empty"])
+        .unwrap();
+    assert_eq!(hir.definitions[empty.constructor.unwrap().0].name, "None");
 }

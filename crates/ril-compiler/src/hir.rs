@@ -21,6 +21,7 @@ pub struct ScopeId(pub usize);
 pub enum DefinitionKind {
     Function,
     Type,
+    NominalType,
     Constructor,
     Effect,
     EffectOperation,
@@ -32,6 +33,12 @@ pub enum DefinitionKind {
     Builtin,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConstructorForm {
+    Nullary,
+    Callable,
+}
+
 #[derive(Debug)]
 pub struct Definition {
     pub name: String,
@@ -39,6 +46,7 @@ pub struct Definition {
     pub scope: ScopeId,
     pub span: Option<Span>,
     pub public: bool,
+    pub constructor_form: Option<ConstructorForm>,
     mutable: bool,
     signature: Option<Vec<ArgumentSort>>,
     members: Option<ScopeId>,
@@ -53,12 +61,19 @@ pub struct Reference {
     pub definition: DefId,
     /// The explicit generic application's original item and parameter sorts.
     pub application: Option<ApplicationSignature>,
+    /// The constructor chosen for a binding pattern or nonbinding test.
+    pub constructor: Option<DefId>,
 }
 
 #[derive(Debug)]
 pub struct ApplicationSignature {
     pub item: DefId,
     pub parameters: Vec<ArgumentSort>,
+}
+
+pub(crate) struct DeclarationHead {
+    pub application: Option<Vec<ArgumentSort>>,
+    pub constructor: bool,
 }
 
 #[derive(Debug)]
@@ -143,6 +158,8 @@ enum UseKind {
     Ordinary,
     Type { applied: bool },
     Application,
+    ConstructorPattern,
+    ConstructorTest,
 }
 
 #[derive(Debug)]
@@ -211,43 +228,59 @@ impl Index {
         ] {
             this.builtin(prelude, name, DefinitionKind::Builtin, arity);
         }
+        use ConstructorForm::{Callable, Nullary};
         use DefinitionKind::{Builtin, Constructor, Effect, EffectOperation, Type};
         for (family, kind, arity, members) in [
             (
                 "Option",
                 Type,
                 1,
-                &[("Some", Constructor, 1), ("None", Constructor, 1)][..],
+                &[
+                    ("Some", Constructor, 1, Some(Callable)),
+                    ("None", Constructor, 1, Some(Nullary)),
+                ][..],
             ),
             (
                 "Result",
                 Type,
                 2,
-                &[("Ok", Constructor, 2), ("Err", Constructor, 2)][..],
+                &[
+                    ("Ok", Constructor, 2, Some(Callable)),
+                    ("Err", Constructor, 2, Some(Callable)),
+                ][..],
             ),
-            ("Fiber", Effect, 0, &[("yield", EffectOperation, 0)][..]),
+            (
+                "Fiber",
+                Effect,
+                0,
+                &[("yield", EffectOperation, 0, None)][..],
+            ),
             (
                 "MemberMode",
                 Type,
                 0,
                 &[
-                    ("Let", Constructor, 0),
-                    ("Var", Constructor, 0),
-                    ("Mut", Constructor, 0),
+                    ("Let", Constructor, 0, Some(Nullary)),
+                    ("Var", Constructor, 0, Some(Nullary)),
+                    ("Mut", Constructor, 0, Some(Nullary)),
                 ][..],
             ),
             (
                 "Div",
                 Effect,
                 0,
-                &[("exhausted", EffectOperation, 0), ("budget", Builtin, 1)][..],
+                &[
+                    ("exhausted", EffectOperation, 0, None),
+                    ("budget", Builtin, 1, None),
+                ][..],
             ),
         ] {
             let owner = this.builtin(prelude, family, kind, arity);
             let scope = this.scope(None, None, None);
             this.hir.definitions[owner.0].members = Some(scope);
-            for &(member, kind, arity) in members {
-                this.builtin(scope, member, kind, arity);
+            for &(member, kind, arity, constructor_form) in members {
+                let id = this.builtin(scope, member, kind, arity);
+                this.hir.definitions[id.0].constructor_form = constructor_form;
             }
         }
         this
@@ -262,6 +295,7 @@ impl Index {
             public: true,
             mutable: false,
             signature: Some(vec![ArgumentSort::Type; arity]),
+            constructor_form: None,
             members: None,
             alias: None,
         });
@@ -365,6 +399,7 @@ impl Index {
                 public: true,
                 mutable: false,
                 signature: None,
+                constructor_form: None,
                 members: Some(scope),
                 alias: None,
             });
@@ -399,6 +434,7 @@ impl Index {
                         public: sub.visibility == Visibility::Public,
                         mutable: false,
                         signature: None,
+                        constructor_form: None,
                         members: Some(inner),
                         alias: None,
                     },
@@ -439,11 +475,22 @@ impl Index {
                     scope,
                     &ty.name,
                     ty.visibility,
-                    DefinitionKind::Type,
+                    if ty.nominal {
+                        DefinitionKind::NominalType
+                    } else {
+                        DefinitionKind::Type
+                    },
                     span,
                     Some(application),
                 );
                 self.hir.definitions[id.0].members = variants;
+                if ty.nominal {
+                    self.hir.definitions[id.0].constructor_form = Some(if ty.value.is_some() {
+                        ConstructorForm::Callable
+                    } else {
+                        ConstructorForm::Nullary
+                    });
+                }
                 let inner = self.scope(Some(scope), Some(span), None);
                 self.generics(inner, &ty.generics);
                 self.statements(inner, &ty.signature_where);
@@ -454,7 +501,7 @@ impl Index {
                     for variant in &ty.variants {
                         let mut application = signature(&ty.generics);
                         application.extend(signature(&variant.generics));
-                        self.item(
+                        let id = self.item(
                             variants,
                             &variant.name,
                             Visibility::Public,
@@ -462,6 +509,12 @@ impl Index {
                             variant.span,
                             Some(application),
                         );
+                        self.hir.definitions[id.0].constructor_form =
+                            Some(if variant.payload.is_some() {
+                                ConstructorForm::Callable
+                            } else {
+                                ConstructorForm::Nullary
+                            });
                         let variant_scope = self.scope(Some(inner), Some(variant.span), None);
                         self.generics(variant_scope, &variant.generics);
                         if let Some(payload) = &variant.payload {
@@ -522,6 +575,7 @@ impl Index {
                             public: binding.visibility == Visibility::Public,
                             mutable,
                             signature: None,
+                            constructor_form: None,
                             members: None,
                             alias,
                         },
@@ -570,6 +624,7 @@ impl Index {
                 public: visibility == Visibility::Public,
                 mutable: false,
                 signature,
+                constructor_form: None,
                 members: None,
                 alias: None,
             },
@@ -709,6 +764,7 @@ impl Index {
                     public: false,
                     mutable: false,
                     signature: kind_signature(parameter.bound.as_ref()),
+                    constructor_form: None,
                     members: None,
                     alias: None,
                 },
@@ -770,6 +826,7 @@ impl Index {
                 public: false,
                 mutable: false,
                 signature: None,
+                constructor_form: None,
                 members: None,
                 alias: None,
             };
@@ -797,6 +854,7 @@ impl Index {
                     public: false,
                     mutable: false,
                     signature: None,
+                    constructor_form: None,
                     members: None,
                     alias: None,
                 },
@@ -994,7 +1052,12 @@ impl Index {
             PatternKind::Constructor {
                 path, arguments, ..
             } => {
-                self.site(scope, pattern.span, path.clone(), UseKind::Ordinary);
+                self.site(
+                    scope,
+                    pattern.span,
+                    path.clone(),
+                    UseKind::ConstructorPattern,
+                );
                 for pattern in arguments {
                     self.pattern(scope, pattern);
                 }
@@ -1016,7 +1079,6 @@ impl Index {
             }
             PatternKind::Mode { pattern, .. } => self.pattern(scope, pattern),
             PatternKind::Type(ty) => self.ty(scope, ty),
-            PatternKind::Value(value) => self.expr(scope, value),
             _ => {}
         }
     }
@@ -1182,9 +1244,9 @@ impl Index {
                     self.expr(inner, &arm.body);
                 }
             }
-            ExprKind::Is { value, pattern } => {
+            ExprKind::Is { value, test } => {
                 self.expr(scope, value);
-                self.pattern(scope, pattern);
+                self.value_test(scope, test);
             }
             ExprKind::Control {
                 operation,
@@ -1208,6 +1270,42 @@ impl Index {
                 }
             }
             _ => {}
+        }
+    }
+
+    fn value_test(&mut self, scope: ScopeId, test: &ValueTest) {
+        match &test.kind {
+            ValueTestKind::Value(value) => self.expr(scope, value),
+            ValueTestKind::Range { start, end, .. } => {
+                self.expr(scope, start);
+                self.expr(scope, end);
+            }
+            ValueTestKind::Constructor {
+                path,
+                head,
+                arguments,
+            } => {
+                self.site(scope, *head, path.clone(), UseKind::ConstructorTest);
+                if let Some(arguments) = arguments {
+                    for argument in arguments {
+                        self.value_test(scope, argument);
+                    }
+                }
+            }
+            ValueTestKind::Tuple(tests) | ValueTestKind::Alternative(tests) => {
+                for test in tests {
+                    self.value_test(scope, test);
+                }
+            }
+            ValueTestKind::Record { ty, fields } => {
+                if let Some(ty) = ty {
+                    self.ty(scope, ty);
+                }
+                for field in fields {
+                    self.value_test(scope, &field.test);
+                }
+            }
+            ValueTestKind::Wildcard | ValueTestKind::Error => {}
         }
     }
 
@@ -1507,16 +1605,20 @@ impl Index {
             }
             let (path, span) = def.alias.as_ref()?;
             id = self.resolve(def.scope, path, span.start, true).ok()?;
+            // A let initializer that names a nullary tag receives its value.
+            // Selective imports, by contrast, keep the declaration itself.
+            if self.hir.definitions[id.0].constructor_form == Some(ConstructorForm::Nullary) {
+                return None;
+            }
         }
         None
     }
 
-    pub fn application(
-        &self,
-        file: FileId,
-        path: &[String],
-        offset: u32,
-    ) -> Option<Vec<ArgumentSort>> {
+    fn is_constructor(&self, item: DefId) -> bool {
+        self.hir.definitions[item.0].constructor_form.is_some()
+    }
+
+    pub fn head(&self, file: FileId, path: &[String], offset: u32) -> Option<DeclarationHead> {
         let scope = self
             .hir
             .scopes
@@ -1531,7 +1633,13 @@ impl Index {
             .next()
             .or_else(|| self.roots.get(&file).copied())?;
         let id = self.resolve(scope, path, offset, true).ok()?;
-        self.signature_of(id).map(|signature| signature.parameters)
+        let signature = self.signature_of(id);
+        Some(DeclarationHead {
+            constructor: signature
+                .as_ref()
+                .is_some_and(|signature| self.is_constructor(signature.item)),
+            application: signature.map(|signature| signature.parameters),
+        })
     }
 
     fn import_entries(&self, index: usize) -> Result<Vec<(String, DefId, Span)>, LookupError> {
@@ -1676,12 +1784,32 @@ impl Index {
                     } else {
                         None
                     };
+                    let constructor = if matches!(
+                        use_kind,
+                        UseKind::ConstructorPattern | UseKind::ConstructorTest
+                    ) {
+                        let selected = self
+                            .signature_of(definition)
+                            .map(|signature| signature.item)
+                            .filter(|item| self.is_constructor(*item));
+                        if selected.is_none() {
+                            self.error(
+                                span,
+                                "E0349",
+                                "a constructor pattern or test must name a constructor",
+                            );
+                        }
+                        selected
+                    } else {
+                        None
+                    };
                     self.hir.references.push(Reference {
                         path,
                         span,
                         scope,
                         definition,
                         application,
+                        constructor,
                     });
                 }
                 Err(mut error) => {

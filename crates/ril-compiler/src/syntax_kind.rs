@@ -24,6 +24,7 @@ pub enum SyntaxKind {
     TypeExpression,
     Pattern,
     Recovery,
+    ValueTest,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum RilLanguage {}
@@ -52,6 +53,7 @@ impl Language for RilLanguage {
             18 => SyntaxKind::TypeExpression,
             19 => SyntaxKind::Pattern,
             20 => SyntaxKind::Recovery,
+            21 => SyntaxKind::ValueTest,
             _ => panic!("invalid Ril syntax kind"),
         }
     }
