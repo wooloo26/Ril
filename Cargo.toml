@@ -1,0 +1,24 @@
+[workspace]
+resolver = "3"
+members = ["crates/ril-compiler", "crates/ril-driver", "crates/ril-ir", "crates/ril-test"]
+default-members = ["crates/ril-driver"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99"
+publish = false
+
+[workspace.dependencies]
+ril-compiler = { path = "crates/ril-compiler" }
+rowan = "=0.17.0"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+warnings = "deny"
+
+[workspace.lints.clippy]
+dbg_macro = "deny"
+todo = "deny"
+unimplemented = "deny"
