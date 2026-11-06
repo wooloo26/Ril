@@ -6,7 +6,7 @@ use ril_compiler::{
         ValueTestKind,
     },
     frontend::{Frontend, UnitKind, frontend},
-    hir::{CallableLayer, DefinitionKind, ScopeKind},
+    hir::{CallableLayer, DefinitionKind, EffectMember, ScopeKind},
     source::FileId,
     text::{Alignment, Conversion},
 };
@@ -676,4 +676,93 @@ where
         panic!("expected a written owner");
     };
     assert_eq!(result.sources.slice(span).unwrap(), b"outer");
+}
+
+#[test]
+fn effect_projection_keeps_alias_edges_and_handler_instance_syntax() {
+    let input = r#"
+eff Read<T> { get() -> T }
+eff Inner<T> { Read<T> }
+eff Both { Inner<i64>, Inner<str> }
+fn demo() -> (i64, str) {
+    with {
+        Inner<i64>::get() -> resume 7,
+        Read<str>::get() -> resume "text",
+    }
+    let number: i64 = Both::get()
+    let text: str = Both::get()
+    (number, text)
+}
+"#;
+    let result = compile(input);
+    assert!(result.is_ok(), "{:?}", result.diagnostics);
+    let hir = result.hir.unwrap();
+    let projected = hir
+        .references
+        .iter()
+        .find(|reference| reference.path == ["Both", "get"])
+        .unwrap();
+    assert_eq!(
+        hir.definitions[projected.definition.0].kind,
+        DefinitionKind::EffectProjection
+    );
+    let EffectMember::Projection { alias, operations } = &hir.effect_members[&projected.definition]
+    else {
+        panic!("expected an effect-set projection");
+    };
+    let [operation] = operations.as_slice() else {
+        panic!("expected one operation declaration");
+    };
+    let EffectMember::Operation { family: read } = hir.effect_members[operation] else {
+        panic!("expected a real effect operation declaration");
+    };
+    let [integer, text] = hir.effect_aliases[alias].as_slice() else {
+        panic!("expected two instance edges");
+    };
+    assert_eq!(integer.effect, text.effect);
+    assert_eq!(hir.definitions[integer.effect.0].name, "Inner");
+    assert_eq!(integer.arguments[0].text, "i64");
+    assert_eq!(text.arguments[0].text, "str");
+    let [inner] = hir.effect_aliases[&integer.effect].as_slice() else {
+        panic!("expected the nested effect alias");
+    };
+    assert_eq!(inner.effect, read);
+    let symbolic = hir
+        .references
+        .iter()
+        .find(|reference| reference.span == inner.arguments[0].span)
+        .unwrap();
+    assert_eq!(
+        hir.definitions[symbolic.definition.0].kind,
+        DefinitionKind::GenericParameter
+    );
+
+    let handled: Vec<_> = hir
+        .references
+        .iter()
+        .filter_map(|reference| {
+            let instance = reference.effect_instance.as_ref()?;
+            Some((instance, instance.handler?))
+        })
+        .collect();
+    let [(first, first_arm), (second, second_arm)] = handled.as_slice() else {
+        panic!("expected two resolved handler targets");
+    };
+    assert_eq!(first_arm.group, second_arm.group);
+    assert_ne!(first_arm.arm, second_arm.arm);
+    assert_eq!(first.arguments.as_ref().unwrap()[0].text, "i64");
+    assert_eq!(second.arguments.as_ref().unwrap()[0].text, "str");
+    assert_eq!(second.operation, *operation);
+    assert!(
+        hir.control_transfers
+            .iter()
+            .any(|transfer| transfer.operation == ControlOperation::Resume
+                && transfer.target == first_arm.arm)
+    );
+    assert!(
+        hir.control_transfers
+            .iter()
+            .any(|transfer| transfer.operation == ControlOperation::Resume
+                && transfer.target == second_arm.arm)
+    );
 }

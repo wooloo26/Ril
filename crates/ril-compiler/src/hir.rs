@@ -11,6 +11,10 @@ use std::{
     path::PathBuf,
 };
 
+mod effects;
+use effects::EffectAliasSite;
+pub use effects::{EffectAliasMember, EffectInstanceUse, EffectMember, HandlerTarget};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct DefId(pub usize);
 
@@ -26,7 +30,9 @@ pub enum DefinitionKind {
     NominalType,
     Constructor,
     Effect,
+    EffectAlias,
     EffectOperation,
+    EffectProjection,
     Module,
     Binding,
     Parameter,
@@ -65,6 +71,7 @@ pub struct Reference {
     pub application: Option<ApplicationSignature>,
     /// The constructor chosen for a binding pattern or nonbinding test.
     pub constructor: Option<DefId>,
+    pub effect_instance: Option<EffectInstanceUse>,
 }
 
 #[derive(Debug)]
@@ -86,6 +93,8 @@ pub struct Hir {
     pub handler_applications: Vec<HandlerApplication>,
     pub control_transfers: Vec<ControlTransfer>,
     pub state_source_groups: Vec<ResolvedStateGroup>,
+    pub effect_aliases: BTreeMap<DefId, Vec<EffectAliasMember>>,
+    pub effect_members: BTreeMap<DefId, EffectMember>,
 }
 
 #[derive(Debug)]
@@ -182,12 +191,27 @@ struct UseSite {
 #[derive(Debug)]
 enum UseKind {
     Ordinary,
-    Type { applied: bool },
+    Type {
+        applied: bool,
+    },
     Application,
     ConstructorPattern,
     ConstructorTest,
-    StateProvider { allowed: bool },
-    StateSource { group: usize, mode: StateMode },
+    StateProvider {
+        allowed: bool,
+    },
+    StateSource {
+        group: usize,
+        mode: StateMode,
+    },
+    EffectName {
+        applied: bool,
+    },
+    Operation {
+        arguments: Option<Vec<TypeExpr>>,
+        handler: Option<HandlerTarget>,
+        applied: bool,
+    },
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -203,6 +227,12 @@ struct Import {
     item: UseDeclaration,
 }
 
+struct ImportEntry {
+    name: String,
+    definition: Result<DefId, LookupError>,
+    span: Span,
+}
+
 #[derive(Debug)]
 struct ImplicitRow {
     scope: ScopeId,
@@ -215,6 +245,7 @@ pub(crate) struct Index {
     hir: Hir,
     imports: Vec<Import>,
     uses: Vec<UseSite>,
+    pending_effect_members: Vec<EffectAliasSite>,
     rows: Vec<ImplicitRow>,
     roots: BTreeMap<FileId, ScopeId>,
     files: BTreeMap<PathBuf, DefId>,
@@ -231,9 +262,12 @@ impl Index {
                 handler_applications: vec![],
                 control_transfers: vec![],
                 state_source_groups: vec![],
+                effect_aliases: BTreeMap::new(),
+                effect_members: BTreeMap::new(),
             },
             imports: vec![],
             uses: vec![],
+            pending_effect_members: vec![],
             rows: vec![],
             roots: BTreeMap::new(),
             files: BTreeMap::new(),
@@ -259,8 +293,6 @@ impl Index {
             ("NominalWrapper", 1),
             ("Unwrap", 1),
             ("Tuple", 1),
-            ("Concurrent", 0),
-            ("Async", 0),
         ] {
             this.builtin(prelude, name, DefinitionKind::Builtin, arity);
         }
@@ -291,6 +323,7 @@ impl Index {
                 0,
                 &[("yield", EffectOperation, 0, None)][..],
             ),
+            ("Concurrent", Effect, 0, &[][..]),
             (
                 "MemberMode",
                 Type,
@@ -317,8 +350,14 @@ impl Index {
             for &(member, kind, arity, constructor_form) in members {
                 let id = this.builtin(scope, member, kind, arity);
                 this.hir.definitions[id.0].constructor_form = constructor_form;
+                if kind == EffectOperation {
+                    this.hir
+                        .effect_members
+                        .insert(id, EffectMember::Operation { family: owner });
+                }
             }
         }
+        this.install_async_alias(prelude);
         this
     }
 
@@ -580,7 +619,11 @@ impl Index {
                     scope,
                     &effect.name,
                     effect.visibility,
-                    DefinitionKind::Effect,
+                    if effect.members.is_empty() {
+                        DefinitionKind::Effect
+                    } else {
+                        DefinitionKind::EffectAlias
+                    },
                     span,
                     Some(signature(&effect.generics)),
                 );
@@ -588,7 +631,7 @@ impl Index {
                 let inner = self.scope(Some(scope), Some(span), None);
                 self.generics(inner, &effect.generics);
                 for operation in &effect.operations {
-                    let id = self.item(
+                    let operation_id = self.item(
                         operations,
                         &operation.name,
                         Visibility::Public,
@@ -596,10 +639,13 @@ impl Index {
                         operation.span,
                         Some(vec![]),
                     );
-                    self.function(inner, operation, id);
+                    self.hir
+                        .effect_members
+                        .insert(operation_id, EffectMember::Operation { family: id });
+                    self.function(inner, operation, operation_id);
                 }
-                for member in &effect.members {
-                    self.ty(inner, member);
+                if !effect.members.is_empty() {
+                    self.index_effect_alias(id, inner, &effect.members);
                 }
             }
             StmtKind::Binding(binding) => {
@@ -641,8 +687,15 @@ impl Index {
             }
             StmtKind::Handler(arms) => {
                 for arm in arms {
-                    self.expr(scope, &arm.operation);
                     let inner = self.region(scope, arm.span, ScopeKind::HandlerArm);
+                    self.handler_operation(
+                        scope,
+                        &arm.operation,
+                        HandlerTarget {
+                            group: span,
+                            arm: inner,
+                        },
+                    );
                     self.parameters(inner, &arm.parameters, false);
                     self.expr(inner, &arm.body);
                 }
@@ -698,7 +751,7 @@ impl Index {
             match &annotation.kind {
                 AnnotationKind::Effects(EffectRow::Closed(effects)) => {
                     for effect in effects {
-                        self.ty(signature, effect);
+                        self.effect_name(signature, effect);
                     }
                 }
                 AnnotationKind::State(StateClause::Sources { owner, items }) => {
@@ -1229,13 +1282,7 @@ impl Index {
                 }
             }
             ExprKind::EffectOperation { effect, name } => {
-                self.expr(scope, effect);
-                if let ExprKind::Generic { base, .. } = &effect.kind
-                    && let Some(mut path) = expression_path(base)
-                {
-                    path.push(name.clone());
-                    self.site(scope, expr.span, path, UseKind::Ordinary);
-                }
+                self.qualified_effect_operation(scope, expr.span, effect, name, None);
             }
             ExprKind::Call { callee, arguments } => {
                 self.expr(scope, callee);
@@ -1743,7 +1790,7 @@ impl Index {
         })
     }
 
-    fn import_entries(&self, index: usize) -> Result<Vec<(String, DefId, Span)>, LookupError> {
+    fn import_entries(&self, index: usize) -> Result<Vec<ImportEntry>, LookupError> {
         let Import { scope, item } = &self.imports[index];
         let mut upward = false;
         let mut path = item.namespaces.as_slice();
@@ -1754,7 +1801,11 @@ impl Index {
                     .alias
                     .as_ref()
                     .unwrap_or(&self.hir.definitions[id.0].name);
-                return Ok(vec![(name.clone(), id, item.span)]);
+                return Ok(vec![ImportEntry {
+                    name: name.clone(),
+                    definition: Ok(id),
+                    span: item.span,
+                }]);
             }
             self.member_scope(id)?
         } else if item.path.first().is_some_and(|name| name == "Super") {
@@ -1792,22 +1843,24 @@ impl Index {
                     } else {
                         entry.public
                     };
-                    accessible.then(|| (name.clone(), entry.definition, item.span))
+                    accessible.then(|| ImportEntry {
+                        name: name.clone(),
+                        definition: Ok(entry.definition),
+                        span: item.span,
+                    })
                 })
                 .collect();
             return Ok(entries);
         }
-        item.members
+        Ok(item
+            .members
             .iter()
-            .map(|member| {
-                let id = self.member(module, &member.name, upward)?;
-                Ok((
-                    member.alias.as_ref().unwrap_or(&member.name).clone(),
-                    id,
-                    member.span,
-                ))
+            .map(|member| ImportEntry {
+                name: member.alias.as_ref().unwrap_or(&member.name).clone(),
+                definition: self.member(module, &member.name, upward),
+                span: member.span,
             })
-            .collect()
+            .collect())
     }
 
     pub fn link_imports(&mut self) {
@@ -1824,25 +1877,36 @@ impl Index {
                 let span = import.item.span;
                 match self.import_entries(index) {
                     Ok(entries) => {
-                        for (name, definition, span) in entries {
-                            if linked.insert((index, name.clone())) {
-                                self.insert(
-                                    scope,
-                                    &name,
-                                    Entry {
-                                        definition,
-                                        public,
-                                        visible_at: 0,
-                                    },
-                                    span,
-                                );
+                        for ImportEntry {
+                            name,
+                            definition,
+                            span,
+                        } in entries
+                        {
+                            match definition {
+                                Ok(definition) if linked.insert((index, name.clone())) => {
+                                    self.insert(
+                                        scope,
+                                        &name,
+                                        Entry {
+                                            definition,
+                                            public,
+                                            visible_at: 0,
+                                        },
+                                        span,
+                                    );
+                                }
+                                Err(error) => unresolved.push((index, error, span)),
+                                Ok(_) => {}
                             }
                         }
                     }
                     Err(error) => unresolved.push((index, error, span)),
                 }
             }
-            if linked.len() != count {
+            // A declaration import can shadow an enclosing effect. Finish
+            // linking available imports before freezing alias member names.
+            if linked.len() != count || self.link_effect_aliases() {
                 continue;
             }
             for (index, error, span) in unresolved {
@@ -1951,6 +2015,7 @@ impl Index {
     }
 
     pub fn finish(mut self) -> (Hir, Vec<Diagnostic>) {
+        let mut monomorphic_arms = BTreeSet::new();
         for UseSite {
             scope,
             span,
@@ -1963,7 +2028,7 @@ impl Index {
                 scope,
                 &path,
                 span.start,
-                !matches!(use_kind, UseKind::Type { .. }),
+                !matches!(use_kind, UseKind::Type { .. } | UseKind::EffectName { .. }),
             ) {
                 Ok(definition) => {
                     match use_kind {
@@ -1977,11 +2042,21 @@ impl Index {
                         UseKind::StateSource { group, mode } => {
                             self.resolve_state_source(group, definition, mode, span);
                         }
+                        UseKind::EffectName { .. } if !self.is_effect(definition) => {
+                            self.error(
+                                span,
+                                "E0301",
+                                "an effect name must resolve to an effect declaration",
+                            );
+                        }
                         _ => {}
                     }
                     let application = if matches!(
                         use_kind,
-                        UseKind::Application | UseKind::Type { applied: true }
+                        UseKind::Application
+                            | UseKind::Type { applied: true }
+                            | UseKind::EffectName { applied: true }
+                            | UseKind::Operation { applied: true, .. }
                     ) {
                         self.signature_of(definition)
                     } else {
@@ -2006,6 +2081,23 @@ impl Index {
                     } else {
                         None
                     };
+                    let effect_instance = self.resolve_effect_use(definition, span, use_kind);
+                    if let Some(instance) = &effect_instance
+                        && let Some(handler) = instance.handler
+                        && instance.arguments.is_none()
+                        && let Some(operation) = self.monomorphic_operation(instance.operation)
+                        && !monomorphic_arms.insert((
+                            handler.group.file,
+                            handler.group.start,
+                            operation,
+                        ))
+                    {
+                        self.error(
+                            span,
+                            "E0622",
+                            "one handler cannot repeat the same effect operation instance",
+                        );
+                    }
                     self.hir.references.push(Reference {
                         path,
                         span,
@@ -2013,6 +2105,7 @@ impl Index {
                         definition,
                         application,
                         constructor,
+                        effect_instance,
                     });
                 }
                 Err(mut error) => {

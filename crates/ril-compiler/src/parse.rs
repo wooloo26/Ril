@@ -1248,10 +1248,22 @@ impl<'a> Parser<'a> {
         self.expect("{");
         let mut operations = vec![];
         let mut members = vec![];
+        if self.at("}") {
+            self.error(
+                "E0120",
+                "an effect declaration requires an operation or effect member",
+            );
+        }
         while !self.at("}") && !self.eof() {
             let before = self.pos;
             let start = self.offset();
             if self.look(1) == "(" {
+                if !members.is_empty() {
+                    self.error(
+                        "E0120",
+                        "an effect cannot mix operations and effect members",
+                    );
+                }
                 let name = self.name();
                 self.expect("(");
                 let parameters = self.parameters(")", ParameterSyntax::Types);
@@ -1273,7 +1285,13 @@ impl<'a> Parser<'a> {
                     span: self.span(start),
                 });
             } else {
-                members.push(self.type_expr());
+                if !operations.is_empty() {
+                    self.error(
+                        "E0120",
+                        "an effect cannot mix operations and effect members",
+                    );
+                }
+                members.push(self.named_type());
             }
             if self.pos == before || !self.list_separator("}") {
                 break;

@@ -1,0 +1,152 @@
+-- [case: operation-through-combined-effect, front-pass]
+-- spec: SPEC#effect-declarations-and-operation-signatures
+eff Read<T> { get() -> T }
+eff Log { write(str) -> () }
+eff Both<T> { Read<T>, Log }
+fn read() @Both<i64> -> i64 { Both<i64>::get() }
+
+-- [case: same-operation-declaration-in-distinct-instances, front-pass]
+-- spec: SPEC#effect-declarations-and-operation-signatures
+eff Read<T> { get() -> T }
+eff Choices { Read<i64>, Read<str> }
+fn read() @Choices -> (i64, str) {
+    let number: i64 = Choices::get()
+    let text: str = Choices::get()
+    (number, text)
+}
+
+-- [case: import-a-projected-operation-after-importing-effect-members, front-pass]
+-- spec: SPEC#effect-declarations-and-operation-signatures
+-- file: root.ril
+use components::{Reads}
+use Reads::{get as read}
+fn read_value() @Reads<i64> -> i64 { read() }
+-- file: components.ril
+use operations::{Read}
+pub eff Reads<T> { Read<T> }
+-- file: operations.ril
+pub eff Read<T> { get() -> T }
+
+-- [case: delayed-operation-import-does-not-hide-an-available-effect, front-pass]
+-- spec: SPEC#module-imports-and-visibility
+-- file: root.ril
+use relay::{Fiber, yield_now}
+eff Readable { Fiber }
+fn read() @Readable -> i64 { Readable::get() }
+-- file: relay.ril
+pub use operations::{Fiber}
+use projection::{Scheduling}
+pub use Scheduling::{yield as yield_now}
+-- file: operations.ril
+pub eff Fiber { get() -> i64 }
+-- file: projection.ril
+pub eff Scheduling { Fiber }
+
+-- [case: system-alias-projects-fiber-yield, front-pass]
+-- spec: SPEC#built-in-system-effects
+fn example() -> () {
+    with Async::yield() -> resume ()
+    Fiber::yield()
+}
+
+-- [case: alias-does-not-export-ordinary-namespace-callables, front-fail]
+-- spec: SPEC#finite-evaluation-with-div
+-- Error [E0209]
+eff BudgetEffect { Div }
+fn invalid() -> i64 { BudgetEffect::budget(10, \-> 0) }
+
+-- [case: mixed-effect-members-are-invalid, front-fail]
+-- spec: SPEC#effect-declarations-and-operation-signatures
+-- Error [E0120]
+eff First { get() -> i64 }
+eff Bad { First, second() -> i64 }
+
+-- [case: empty-effect-member-list-is-invalid, front-fail]
+-- spec: SPEC#effect-declarations-and-operation-signatures
+-- Error [E0120]
+eff Empty {}
+
+-- [case: effect-member-must-resolve-to-effect, front-fail]
+-- spec: SPEC#effect-declarations-and-operation-signatures
+-- Error [E0301]
+type Data = i64
+eff Bad { Data }
+
+-- [case: operation-arm-cannot-target-an-ordinary-callable, front-fail]
+-- spec: SPEC#effect-handlers
+-- Error [E0621]
+fn call() -> i64 { 1 }
+fn invalid() -> i64 {
+    with call() -> resume 1
+    call()
+}
+
+-- [case: unresolved-handler-target-retains-name-diagnostic, front-fail]
+-- spec: SPEC#effect-handlers
+-- Error [E0204]
+fn invalid() -> i64 {
+    with missing() -> resume 1
+    0
+}
+
+-- [case: duplicate-monomorphic-arms-through-projection, front-fail]
+-- spec: SPEC#effect-handlers
+-- Error [E0622]
+eff Read { get() -> i64 }
+eff Alias { Read }
+fn invalid() -> i64 {
+    with {
+        Read::get() -> resume 1,
+        Alias::get() -> resume 2,
+    }
+    Read::get()
+}
+
+-- [case: nested-monomorphic-arms-may-handle-the-same-operation, front-pass]
+-- spec: SPEC#effect-handlers
+eff Read { get() -> i64 }
+eff Alias { Read }
+fn example() -> i64 {
+    with Alias::get() -> resume 1
+    {
+        with Read::get() -> resume 2
+        Read::get()
+    }
+}
+
+-- [case: generic-arms-keep-written-instances-separate, front-pass]
+-- spec: SPEC#effect-declarations-and-operation-signatures
+eff Read<T> { get() -> T }
+eff Alias<T> { Read<T> }
+fn example() -> (i64, str) {
+    with {
+        Alias<i64>::get() -> resume 1,
+        Read<str>::get() -> resume "two",
+    }
+    (Read<i64>::get(), Read<str>::get())
+}
+
+-- [case: budget-is-not-an-effect-operation-arm-target, front-fail]
+-- spec: SPEC#finite-evaluation-with-div
+-- Error [E0621]
+fn invalid() -> i64 {
+    with Div::budget(limit, action) -> resume 1
+    0
+}
+
+-- [case: constant-argument-is-retained-on-effect-alias-edge, front-pass]
+-- spec: SPEC#effect-declarations-and-operation-signatures
+eff Read<key: i64> { get() -> i64 }
+eff Selected { Read<1 + 2> }
+fn example() @Selected -> i64 { Selected::get() }
+
+-- [case: duplicate-monomorphic-arms-through-system-alias, front-fail]
+-- spec: SPEC#effect-handlers
+-- Error [E0622]
+fn invalid() -> () {
+    with {
+        Fiber::yield() -> resume (),
+        Async::yield() -> resume (),
+    }
+    Fiber::yield()
+}
