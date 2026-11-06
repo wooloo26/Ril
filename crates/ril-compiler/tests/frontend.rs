@@ -1,7 +1,8 @@
 use ril_compiler::{
     SyntaxKind,
-    ast::{ArgumentSort, ExprKind, StmtKind},
+    ast::{ArgumentSort, ControlOperation, ExprKind, StmtKind},
     frontend::{Frontend, UnitKind, frontend},
+    hir::{DefinitionKind, ScopeKind},
     source::FileId,
 };
 use std::{io, path::Path};
@@ -141,6 +142,7 @@ fn sample(argument: Local) -> () {
 where
     type Local = bool
 }
+
 "#;
     let result = compile(input);
     assert!(result.is_ok(), "{:?}", result.diagnostics);
@@ -158,4 +160,89 @@ where
             input.find("type Local = bool").unwrap(),
         ]
     );
+}
+
+#[test]
+fn with_header_stops_before_the_remainder_and_return_targets_its_callable() {
+    let input = r#"
+fn pass<T>(config: i64, action: fn() @& -> T) -> T { action() }
+fn sample() -> i64 {
+    let value = 1
+    with pass(value)
+    (value)
+    let value = value + 1
+    with pass(value)
+    return value
+}
+"#;
+    let result = compile(input);
+    assert!(result.is_ok(), "{:?}", result.diagnostics);
+    let parse = &result.files[&FileId(0)];
+    assert_eq!(parse.syntax().to_string(), input);
+    let StmtKind::Function(function) = &parse.program.statements[1].kind else {
+        panic!("expected the sample function");
+    };
+    let body = function.body.as_ref().unwrap();
+    let StmtKind::HandlerApplication(call) = &body.statements[1].kind else {
+        panic!("expected a with application");
+    };
+    assert!(matches!(&call.kind, ExprKind::Call { callee, arguments }
+        if matches!(&callee.kind, ExprKind::Name(name) if name == "pass") && arguments.len() == 1));
+    assert!(
+        matches!(&body.statements[2].kind, StmtKind::Expr { expression, .. }
+        if matches!(&expression.kind, ExprKind::Name(name) if name == "value"))
+    );
+    let hir = result.hir.unwrap();
+    let [first, second] = &hir.handler_applications[..] else {
+        panic!("expected two application sites");
+    };
+    assert_eq!(first.remainder_scope, second.calling_scope);
+    let [transfer] = &hir.control_transfers[..] else {
+        panic!("expected one explicit transfer");
+    };
+    assert_eq!(transfer.operation, ControlOperation::Return);
+    assert_eq!(transfer.target, second.remainder_scope);
+    assert_eq!(
+        hir.scopes[transfer.target.0].kind,
+        ScopeKind::HandlerRemainder
+    );
+    assert_eq!(result.sources.slice(transfer.span).unwrap(), b"return");
+}
+
+#[test]
+fn system_operations_and_budget_keep_distinct_declaration_roles() {
+    let input = r#"
+halt fn sample() -> i64 {
+    with Fiber::yield() -> resume ()
+    with Div::exhausted() -> 0
+    with Div::budget<i64>(10)
+    42
+}
+"#;
+    let result = compile(input);
+    assert!(result.is_ok(), "{:?}", result.diagnostics);
+    let hir = result.hir.unwrap();
+    let yield_operation = hir
+        .references
+        .iter()
+        .find(|reference| reference.path == ["Fiber", "yield"])
+        .unwrap();
+    assert_eq!(
+        hir.definitions[yield_operation.definition.0].kind,
+        DefinitionKind::EffectOperation
+    );
+    let budget = hir
+        .references
+        .iter()
+        .find(|reference| reference.path == ["Div", "budget"])
+        .unwrap();
+    assert_eq!(
+        budget.application.as_ref().unwrap().parameters,
+        [ArgumentSort::Type]
+    );
+    let [transfer] = &hir.control_transfers[..] else {
+        panic!("expected a resume operation");
+    };
+    assert_eq!(transfer.operation, ControlOperation::Resume);
+    assert_eq!(hir.scopes[transfer.target.0].kind, ScopeKind::HandlerArm);
 }

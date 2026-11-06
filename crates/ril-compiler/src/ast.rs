@@ -448,6 +448,7 @@ pub enum ExprKind {
     },
     Control {
         operation: ControlOperation,
+        operator_span: Span,
         value: Option<Box<Expr>>,
     },
     TypeValue(TypeExpr),
@@ -488,6 +489,7 @@ pub enum ControlOperation {
     Last,
     Next,
     Resume,
+    Propagate,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

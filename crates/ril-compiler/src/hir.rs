@@ -23,6 +23,7 @@ pub enum DefinitionKind {
     Type,
     Constructor,
     Effect,
+    EffectOperation,
     Module,
     Binding,
     Parameter,
@@ -64,12 +65,42 @@ pub struct Hir {
     pub definitions: Vec<Definition>,
     pub references: Vec<Reference>,
     pub scopes: Vec<Scope>,
+    pub handler_applications: Vec<HandlerApplication>,
+    pub control_transfers: Vec<ControlTransfer>,
+}
+
+/// The source header is evaluated in `calling_scope`. Its final argument is
+/// the anonymous callable whose body occupies `remainder_scope`.
+#[derive(Debug)]
+pub struct HandlerApplication {
+    pub header: Span,
+    pub calling_scope: ScopeId,
+    pub remainder_scope: ScopeId,
+}
+
+#[derive(Debug)]
+pub struct ControlTransfer {
+    pub operation: ControlOperation,
+    pub span: Span,
+    pub scope: ScopeId,
+    pub target: ScopeId,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScopeKind {
+    Lexical,
+    Callable,
+    Loop,
+    HandlerArm,
+    HandlerRemainder,
+    Fallback,
 }
 
 #[derive(Debug)]
 pub struct Scope {
     pub parent: Option<ScopeId>,
     pub span: Option<Span>,
+    pub kind: ScopeKind,
     enclosing_module: Option<ScopeId>,
     default_kind: Option<DefaultKind>,
     bindings: BTreeMap<String, Entry>,
@@ -136,6 +167,8 @@ impl Index {
                 definitions: vec![],
                 references: vec![],
                 scopes: vec![],
+                handler_applications: vec![],
+                control_transfers: vec![],
             },
             imports: vec![],
             uses: vec![],
@@ -156,8 +189,6 @@ impl Index {
             ("byte_size", 0),
             ("type_name", 0),
             ("Type", 1),
-            ("Option", 1),
-            ("Result", 2),
             ("Set", 1),
             ("Draft", 1),
             ("SharedObject", 1),
@@ -166,39 +197,47 @@ impl Index {
             ("Unwrap", 1),
             ("Tuple", 1),
             ("MemberMode", 0),
-            ("Fiber", 0),
             ("Concurrent", 0),
             ("Async", 0),
-            ("Div", 0),
         ] {
-            this.builtin(prelude, name, arity);
+            this.builtin(prelude, name, DefinitionKind::Builtin, arity);
         }
-        for (family, arity, members) in [
-            ("Option", 1, &["Some", "None"][..]),
-            ("Result", 2, &["Ok", "Err"][..]),
-            ("Div", 0, &["exhausted", "budget"][..]),
+        use DefinitionKind::{Builtin, Constructor, Effect, EffectOperation, Type};
+        for (family, kind, arity, members) in [
+            (
+                "Option",
+                Type,
+                1,
+                &[("Some", Constructor, 1), ("None", Constructor, 1)][..],
+            ),
+            (
+                "Result",
+                Type,
+                2,
+                &[("Ok", Constructor, 2), ("Err", Constructor, 2)][..],
+            ),
+            ("Fiber", Effect, 0, &[("yield", EffectOperation, 0)][..]),
+            (
+                "Div",
+                Effect,
+                0,
+                &[("exhausted", EffectOperation, 0), ("budget", Builtin, 1)][..],
+            ),
         ] {
-            let owner = this.hir.scopes[0].bindings[family].definition;
+            let owner = this.builtin(prelude, family, kind, arity);
             let scope = this.scope(None, None, None);
             this.hir.definitions[owner.0].members = Some(scope);
-            let is_sum = family != "Div";
-            if is_sum {
-                this.hir.definitions[owner.0].kind = DefinitionKind::Type;
-            }
-            for member in members {
-                let id = this.builtin(scope, member, arity);
-                if is_sum {
-                    this.hir.definitions[id.0].kind = DefinitionKind::Constructor;
-                }
+            for &(member, kind, arity) in members {
+                this.builtin(scope, member, kind, arity);
             }
         }
         this
     }
 
-    fn builtin(&mut self, scope: ScopeId, name: &str, arity: usize) -> DefId {
+    fn builtin(&mut self, scope: ScopeId, name: &str, kind: DefinitionKind, arity: usize) -> DefId {
         let id = self.allocate(Definition {
             name: name.into(),
-            kind: DefinitionKind::Builtin,
+            kind,
             scope,
             span: None,
             public: true,
@@ -228,11 +267,18 @@ impl Index {
         self.hir.scopes.push(Scope {
             parent,
             span,
+            kind: ScopeKind::Lexical,
             enclosing_module,
             default_kind: None,
             bindings: BTreeMap::new(),
         });
         id
+    }
+
+    fn region(&mut self, parent: ScopeId, span: Span, kind: ScopeKind) -> ScopeId {
+        let scope = self.scope(Some(parent), Some(span), None);
+        self.hir.scopes[scope.0].kind = kind;
+        scope
     }
 
     fn allocate(&mut self, def: Definition) -> DefId {
@@ -426,7 +472,7 @@ impl Index {
                         operations,
                         &operation.name,
                         Visibility::Public,
-                        DefinitionKind::Function,
+                        DefinitionKind::EffectOperation,
                         operation.span,
                         Some(vec![]),
                     );
@@ -475,7 +521,7 @@ impl Index {
             StmtKind::Handler(arms) => {
                 for arm in arms {
                     self.expr(scope, &arm.operation);
-                    let inner = self.scope(Some(scope), Some(arm.span), None);
+                    let inner = self.region(scope, arm.span, ScopeKind::HandlerArm);
                     self.parameters(inner, &arm.parameters);
                     self.expr(inner, &arm.body);
                 }
@@ -568,7 +614,7 @@ impl Index {
                 head_start..self.uses.len(),
                 helpers_start..helpers_end,
             );
-            self.block(inner, body, None);
+            self.block(inner, body, None, ScopeKind::Callable);
         }
     }
 
@@ -688,13 +734,39 @@ impl Index {
         }
     }
 
-    fn block(&mut self, scope: ScopeId, block: &Block, pattern: Option<&Pattern>) {
-        let inner = self.scope(Some(scope), Some(block.span), None);
+    fn block(&mut self, scope: ScopeId, block: &Block, pattern: Option<&Pattern>, kind: ScopeKind) {
+        let mut inner = self.region(scope, block.span, kind);
         if let Some(pattern) = pattern {
             self.bind_pattern(inner, pattern, block.span.start);
         }
+        // These helpers are created at entry to the written block. Each
+        // application then opens a new callable for the remaining statements.
         self.statements(inner, &block.where_items);
-        self.statements(inner, &block.statements);
+        let end = block
+            .statements
+            .last()
+            .map_or(block.span.end, |item| item.span.end);
+        for (index, item) in block.statements.iter().enumerate() {
+            self.statement(inner, item);
+            if matches!(item.kind, StmtKind::HandlerApplication(_)) {
+                let start = block
+                    .statements
+                    .get(index + 1)
+                    .map_or(item.span.end, |next| next.span.start);
+                let span = Span {
+                    file: item.span.file,
+                    start,
+                    end,
+                };
+                let remainder = self.region(inner, span, ScopeKind::HandlerRemainder);
+                self.hir.handler_applications.push(HandlerApplication {
+                    header: item.span,
+                    calling_scope: inner,
+                    remainder_scope: remainder,
+                });
+                inner = remainder;
+            }
+        }
     }
 
     fn site(&mut self, scope: ScopeId, span: Span, path: Vec<String>, use_kind: UseKind) {
@@ -780,7 +852,8 @@ impl Index {
             TypeKind::TypeFunction { parameters, body } => {
                 let inner = self.scope(Some(scope), Some(ty.span), None);
                 self.generics(inner, parameters);
-                self.expr(inner, body);
+                let body_scope = self.region(inner, body.span, ScopeKind::Callable);
+                self.expr(body_scope, body);
             }
             TypeKind::Projection { base, .. } => self.ty(scope, base),
             TypeKind::ComputedProjection { base, key } => {
@@ -915,14 +988,23 @@ impl Index {
                     self.expr(scope, &argument.value);
                 }
             }
-            ExprKind::Binary { left, right, .. }
+            ExprKind::Binary {
+                left,
+                right,
+                operator,
+            }
             | ExprKind::Assignment {
                 target: left,
                 value: right,
-                ..
+                operator,
             } => {
                 self.expr(scope, left);
-                self.expr(scope, right);
+                let rhs_scope = if operator == "??" {
+                    self.region(scope, right.span, ScopeKind::Fallback)
+                } else {
+                    scope
+                };
+                self.expr(rhs_scope, right);
             }
             ExprKind::Unary { operand, .. }
             | ExprKind::TupleMember { value: operand, .. }
@@ -934,7 +1016,8 @@ impl Index {
                 self.expr(scope, base);
                 self.expr(scope, key);
             }
-            ExprKind::Block(block) | ExprKind::Loop(block) => self.block(scope, block, None),
+            ExprKind::Block(block) => self.block(scope, block, None, ScopeKind::Lexical),
+            ExprKind::Loop(block) => self.block(scope, block, None, ScopeKind::Loop),
             ExprKind::Lambda {
                 parameters,
                 return_type,
@@ -947,7 +1030,8 @@ impl Index {
                 if let Some(ty) = return_type {
                     self.ty(inner, ty);
                 }
-                self.expr(inner, body);
+                let body_scope = self.region(inner, body.span, ScopeKind::Callable);
+                self.expr(body_scope, body);
             }
             ExprKind::If {
                 condition,
@@ -969,7 +1053,7 @@ impl Index {
                 self.expr(scope, value);
                 self.pattern(scope, pattern);
                 if let ExprKind::Block(block) = &then_branch.kind {
-                    self.block(scope, block, Some(pattern));
+                    self.block(scope, block, Some(pattern), ScopeKind::Lexical);
                 }
                 if let Some(branch) = else_branch {
                     self.expr(scope, branch);
@@ -987,11 +1071,11 @@ impl Index {
             } => {
                 self.expr(scope, value);
                 self.pattern(scope, pattern);
-                self.block(scope, body, Some(pattern));
+                self.block(scope, body, Some(pattern), ScopeKind::Loop);
             }
             ExprKind::While { condition, body } => {
                 self.expr(scope, condition);
-                self.block(scope, body, None);
+                self.block(scope, body, None, ScopeKind::Loop);
             }
             ExprKind::Match { value, arms, .. } => {
                 self.expr(scope, value);
@@ -1010,8 +1094,15 @@ impl Index {
                 self.pattern(scope, pattern);
             }
             ExprKind::Control {
-                value: Some(value), ..
-            } => self.expr(scope, value),
+                operation,
+                operator_span,
+                value,
+            } => {
+                if let Some(value) = value {
+                    self.expr(scope, value);
+                }
+                self.control_transfer(scope, *operator_span, *operation);
+            }
             ExprKind::TypeValue(ty) | ExprKind::KeyOf(ty) | ExprKind::ModeOf(ty) => {
                 self.ty(scope, ty)
             }
@@ -1025,6 +1116,64 @@ impl Index {
             }
             _ => {}
         }
+    }
+
+    fn control_transfer(&mut self, scope: ScopeId, span: Span, operation: ControlOperation) {
+        let mut target = scope;
+        let mut crosses_fallback = false;
+        loop {
+            let region = &self.hir.scopes[target.0];
+            let is_callable = matches!(
+                region.kind,
+                ScopeKind::Callable | ScopeKind::HandlerRemainder
+            );
+            let is_target = match operation {
+                ControlOperation::Return | ControlOperation::Propagate => is_callable,
+                ControlOperation::Last | ControlOperation::Next => region.kind == ScopeKind::Loop,
+                ControlOperation::Resume => region.kind == ScopeKind::HandlerArm,
+            };
+            if is_target {
+                if crosses_fallback
+                    && matches!(
+                        operation,
+                        ControlOperation::Return | ControlOperation::Last | ControlOperation::Next
+                    )
+                {
+                    self.error(
+                        span,
+                        "E0710",
+                        "control cannot transfer out of a fallback operand",
+                    );
+                } else {
+                    self.hir.control_transfers.push(ControlTransfer {
+                        operation,
+                        span,
+                        scope,
+                        target,
+                    });
+                }
+                return;
+            }
+            // A resume records its lexical arm even across a callable. The
+            // checker will determine whether that resumption capture is lawful.
+            if operation != ControlOperation::Resume
+                && (is_callable || region.default_kind.is_some())
+            {
+                break;
+            }
+            crosses_fallback |= region.kind == ScopeKind::Fallback;
+            let Some(parent) = region.parent else { break };
+            target = parent;
+        }
+        let (code, message) = match operation {
+            ControlOperation::Return => ("E0707", "return requires an enclosing callable"),
+            ControlOperation::Last | ControlOperation::Next => {
+                ("E0707", "loop transfer requires a loop in this callable")
+            }
+            ControlOperation::Resume => ("E0623", "resume requires an enclosing handler arm"),
+            ControlOperation::Propagate => ("E0205", "postfix ? requires an enclosing callable"),
+        };
+        self.error(span, code, message);
     }
 }
 

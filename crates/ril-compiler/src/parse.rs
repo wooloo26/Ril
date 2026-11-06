@@ -1186,13 +1186,21 @@ impl<'a> Parser<'a> {
         self.expect("with");
         let grouped = self.eat("{");
         let mut arms = vec![];
+        if grouped && self.at("}") {
+            self.error("E0120", "a handler group requires an operation arm");
+            self.bump();
+            return StmtKind::Handler(arms);
+        }
         loop {
-            let before = self.pos;
             let start = self.offset();
-            let operation = self.expression_with_handler_boundary(100, true, Some(grouped));
-            if !grouped && !self.at("->") && (!self.at("(") || !self.handler_parameters_ahead()) {
-                return StmtKind::HandlerApplication(operation);
+            self.start(SyntaxKind::Expression);
+            let operation = self.handler_target(start);
+            if !grouped && !(self.at("(") && self.handler_parameters_ahead()) {
+                let call = self.call(operation, start);
+                self.finish();
+                return StmtKind::HandlerApplication(call);
             }
+            self.finish();
             self.expect("(");
             let mut parameters = vec![];
             while !self.at(")") && !self.eof() {
@@ -1220,7 +1228,7 @@ impl<'a> Parser<'a> {
                 body,
                 span: self.span(start),
             });
-            if !grouped || self.pos == before || !self.list_separator("}") {
+            if !grouped || !self.list_separator("}") || self.at("}") || self.eof() {
                 break;
             }
         }
@@ -1228,6 +1236,59 @@ impl<'a> Parser<'a> {
             self.expect("}");
         }
         StmtKind::Handler(arms)
+    }
+
+    fn handler_target(&mut self, start: usize) -> Expr {
+        let mut path = self.qualified_name();
+        let signature = self.application_signature(&path, start);
+        let kind = if path.len() == 1 {
+            ExprKind::Name(path.remove(0))
+        } else {
+            ExprKind::Path(path)
+        };
+        let mut target = Expr {
+            kind,
+            span: self.span(start),
+        };
+        if self.at("<") {
+            let arguments = self.type_arguments(signature.as_deref());
+            target = Expr {
+                kind: ExprKind::Generic {
+                    base: Box::new(target),
+                    arguments,
+                },
+                span: self.span(start),
+            };
+            if self.eat("::") {
+                let name = self.name();
+                target = Expr {
+                    kind: ExprKind::EffectOperation {
+                        effect: Box::new(target),
+                        name,
+                    },
+                    span: self.span(start),
+                };
+            }
+        }
+        target
+    }
+
+    fn call(&mut self, callee: Expr, start: usize) -> Expr {
+        let arguments = if self.eat("(") {
+            let arguments = self.arguments();
+            self.expect(")");
+            arguments
+        } else {
+            self.expect("(");
+            vec![]
+        };
+        Expr {
+            kind: ExprKind::Call {
+                callee: Box::new(callee),
+                arguments,
+            },
+            span: self.span(start),
+        }
     }
 
     /// The closing parenthesis distinguishes a handler's pattern list from an
@@ -1913,15 +1974,6 @@ impl<'a> Parser<'a> {
     }
 
     fn expression(&mut self, min: u8, multiline: bool) -> Expr {
-        self.expression_with_handler_boundary(min, multiline, None)
-    }
-
-    fn expression_with_handler_boundary(
-        &mut self,
-        min: u8,
-        multiline: bool,
-        handler: Option<bool>,
-    ) -> Expr {
         self.start(SyntaxKind::Expression);
         let start = self.offset();
         self.depth += 1;
@@ -1961,19 +2013,7 @@ impl<'a> Parser<'a> {
                 break;
             }
             if self.at("(") {
-                if handler.is_some_and(|grouped| grouped || self.handler_parameters_ahead()) {
-                    break;
-                }
-                self.bump();
-                let arguments = self.arguments();
-                self.expect(")");
-                left = Expr {
-                    kind: ExprKind::Call {
-                        callee: Box::new(left),
-                        arguments,
-                    },
-                    span: self.span(start),
-                };
+                left = self.call(left, start);
                 continue;
             }
             if self.at("[") || self.at("?[") {
@@ -2084,11 +2124,14 @@ impl<'a> Parser<'a> {
                     continue;
                 }
             }
-            if self.eat("?") {
+            if self.at("?") {
+                let operator_start = self.offset();
+                self.bump();
                 left = Expr {
-                    kind: ExprKind::Unary {
-                        operator: "?".into(),
-                        operand: Box::new(left),
+                    kind: ExprKind::Control {
+                        operation: ControlOperation::Propagate,
+                        operator_span: self.span(operator_start),
+                        value: Some(Box::new(left)),
                     },
                     span: self.span(start),
                 };
@@ -2387,17 +2430,23 @@ impl<'a> Parser<'a> {
                     "next" => ControlOperation::Next,
                     _ => ControlOperation::Resume,
                 };
+                let operator_span = self.span(start);
                 let value = if operation == ControlOperation::Resume
                     || operation != ControlOperation::Next
                         && !self.eof()
-                        && !self.newline()
-                        && !matches!(self.current(), ";" | "}" | "," | ")" | "]")
+                        && !self.closes_angle()
+                        && (multiline || !self.newline())
+                        && !matches!(self.current(), ";" | "}" | "," | ")" | "]" | "where")
                 {
                     Some(Box::new(self.expression(0, multiline)))
                 } else {
                     None
                 };
-                ExprKind::Control { operation, value }
+                ExprKind::Control {
+                    operation,
+                    operator_span,
+                    value,
+                }
             }
             "<" => {
                 self.bump();
