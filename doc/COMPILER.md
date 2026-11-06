@@ -27,6 +27,17 @@ library, and Cranelift code generation are subsequent work. The
 [language specification](SPEC.md) defines their behavior and the remaining
 frontend conformance scope.
 
+## Git commit messages
+
+Activate the repository hook after cloning.
+
+```sh
+git config --local core.hooksPath .githooks
+```
+
+Start commit messages with an uppercase ASCII letter and omit `:` throughout
+the subject and body. For example, use `Fix generic argument parsing`.
+
 ## Verification
 
 ```sh
