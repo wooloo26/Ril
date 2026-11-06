@@ -10,6 +10,14 @@ pub(crate) fn validate(program: &Program) -> Vec<Diagnostic> {
     validator.statements(&program.statements, true, false);
     validator.diagnostics
 }
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AnnotationPlace {
+    Definition,
+    Meta,
+    Operation,
+    CallableType,
+}
+
 struct Validator {
     diagnostics: Vec<Diagnostic>,
 }
@@ -19,10 +27,113 @@ impl Validator {
             self.error("E0102", span, "malformed identifier spelling");
         }
     }
-    fn annotations(&mut self, annotations: &[Annotation]) {
+    fn annotations(&mut self, annotations: &[Annotation], place: AnnotationPlace) {
+        let mut effects_seen = false;
+        let mut state_seen = false;
+        let mut open_effect_end = None;
+        let mut open_state = false;
+        let mut leading_open_state = false;
+        let mut empty_state = false;
+
         for annotation in annotations {
-            for reference in &annotation.references {
-                self.ty(&reference.name);
+            match &annotation.kind {
+                AnnotationKind::Effects(row) => {
+                    if effects_seen || state_seen {
+                        self.error(
+                            "E0120",
+                            annotation.span,
+                            "one effect row may precede the state clauses",
+                        );
+                    }
+                    effects_seen = true;
+                    match row {
+                        EffectRow::Open => {
+                            open_effect_end = Some(annotation.span.end);
+                            if place != AnnotationPlace::CallableType {
+                                self.error(
+                                    "E0547",
+                                    annotation.span,
+                                    "open effect rows belong to callable types",
+                                );
+                            }
+                        }
+                        EffectRow::Closed(effects) => {
+                            if place == AnnotationPlace::Meta {
+                                self.error(
+                                    "E0813",
+                                    annotation.span,
+                                    "meta functions cannot declare effects",
+                                );
+                            } else if place == AnnotationPlace::Operation {
+                                self.error(
+                                    "E0120",
+                                    annotation.span,
+                                    "effect operations cannot declare an effect row",
+                                );
+                            }
+                            for effect in effects {
+                                self.ty(effect);
+                            }
+                        }
+                    }
+                }
+                AnnotationKind::State(clause) => {
+                    let combined = !state_seen && open_effect_end == Some(annotation.span.start);
+                    state_seen = true;
+                    match clause {
+                        StateClause::Open => {
+                            if place != AnnotationPlace::CallableType || open_state || empty_state {
+                                self.error("E0547", annotation.span, "invalid open state row");
+                            }
+                            open_state = true;
+                            leading_open_state = combined;
+                        }
+                        _ => {
+                            if place == AnnotationPlace::Meta {
+                                self.error(
+                                    "E0813",
+                                    annotation.span,
+                                    "meta functions cannot declare state",
+                                );
+                            } else if open_state && !leading_open_state {
+                                self.error(
+                                    "E0547",
+                                    annotation.span,
+                                    "a standalone open state marker follows the state clauses",
+                                );
+                            }
+                            match clause {
+                                StateClause::Empty => {
+                                    if open_state {
+                                        self.error(
+                                            "E0547",
+                                            annotation.span,
+                                            "an open state row cannot require an empty state row",
+                                        );
+                                    }
+                                    empty_state = true;
+                                }
+                                StateClause::Environment
+                                    if place != AnnotationPlace::CallableType
+                                        && place != AnnotationPlace::Meta =>
+                                {
+                                    self.error(
+                                        "E0534",
+                                        annotation.span,
+                                        "a definition requires concrete captured sources",
+                                    );
+                                }
+                                StateClause::Sources {
+                                    owner: StateOwner::Named { name, span },
+                                    ..
+                                } => {
+                                    self.snake(name, *span);
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                }
             }
         }
     }
@@ -146,7 +257,7 @@ impl Validator {
                         self.expr(fallback);
                     }
                 }
-                StmtKind::Function(function) => self.function(function),
+                StmtKind::Function(function) => self.function(function, false),
                 StmtKind::Type(declaration) => {
                     self.pascal(&declaration.name, declaration.span);
                     for generic in &declaration.generics {
@@ -157,7 +268,6 @@ impl Validator {
                         self.ty(value);
                     }
                     for variant in &declaration.variants {
-                        self.annotations(&variant.annotations);
                         self.pascal(&variant.name, variant.span);
                         for generic in &variant.generics {
                             self.generic(generic);
@@ -176,7 +286,7 @@ impl Validator {
                         self.generic(generic);
                     }
                     for operation in &declaration.operations {
-                        self.function(operation);
+                        self.function(operation, true);
                     }
                     for member in &declaration.members {
                         self.ty(member);
@@ -244,6 +354,7 @@ impl Validator {
                     for arm in arms {
                         self.expr(&arm.operation);
                         for parameter in &arm.parameters {
+                            self.operation_parameter_mode(parameter);
                             self.parameter(parameter);
                         }
                         self.expr(&arm.body);
@@ -258,7 +369,7 @@ impl Validator {
             }
         }
     }
-    fn function(&mut self, function: &Function) {
+    fn function(&mut self, function: &Function, operation: bool) {
         self.snake(&function.name, function.span);
         if let ReturnMode::Infer(span) = function.return_mode {
             if function.is_meta || function.body.is_none() {
@@ -271,11 +382,29 @@ impl Validator {
                 self.infer_inputs(span, &function.parameters);
             }
         }
-        self.annotations(&function.annotations);
+        let place = if operation {
+            AnnotationPlace::Operation
+        } else if function.is_meta {
+            AnnotationPlace::Meta
+        } else {
+            AnnotationPlace::Definition
+        };
+        self.annotations(&function.annotations, place);
         for generic in &function.generics {
             self.generic(generic);
         }
         for parameter in &function.parameters {
+            if operation {
+                self.operation_parameter_mode(parameter);
+            } else if parameter.mode == ParameterMode::Via
+                && (function.is_meta || function.body.is_none())
+            {
+                self.error(
+                    "E0412",
+                    parameter.span,
+                    "via requires an ordinary Ril callable definition",
+                );
+            }
             self.parameter(parameter);
         }
         if let Some(result) = &function.return_type {
@@ -311,7 +440,36 @@ impl Validator {
             self.ty(ty);
         }
         if let Some(default) = &parameter.default {
+            if matches!(
+                parameter.mode,
+                ParameterMode::Mut
+                    | ParameterMode::SharedMut
+                    | ParameterMode::New
+                    | ParameterMode::Via
+            ) {
+                self.error(
+                    "E0404",
+                    default.span,
+                    "this parameter mode does not admit a default",
+                );
+            }
             self.expr(default);
+        }
+    }
+
+    fn operation_parameter_mode(&mut self, parameter: &Parameter) {
+        match parameter.mode {
+            ParameterMode::New => self.error(
+                "E0411",
+                parameter.span,
+                "effect operations and handler arms cannot receive construction authority",
+            ),
+            ParameterMode::Via => self.error(
+                "E0412",
+                parameter.span,
+                "effect operations and handler arms require a concrete parameter mode",
+            ),
+            _ => {}
         }
     }
     fn generic(&mut self, generic: &GenericParameter) {
@@ -546,7 +704,7 @@ impl Validator {
                 if let ReturnMode::Infer(span) = return_mode {
                     self.infer_inputs(*span, parameters);
                 }
-                self.annotations(annotations);
+                self.annotations(annotations, AnnotationPlace::CallableType);
                 for parameter in parameters {
                     self.parameter(parameter);
                 }
@@ -719,7 +877,7 @@ impl Validator {
                 annotations,
                 ..
             } => {
-                self.annotations(annotations);
+                self.annotations(annotations, AnnotationPlace::Definition);
                 for parameter in parameters {
                     self.parameter(parameter);
                 }

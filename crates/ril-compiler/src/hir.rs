@@ -20,6 +20,8 @@ pub struct ScopeId(pub usize);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DefinitionKind {
     Function,
+    MetaFunction,
+    ForeignFunction,
     Type,
     NominalType,
     Constructor,
@@ -83,6 +85,23 @@ pub struct Hir {
     pub scopes: Vec<Scope>,
     pub handler_applications: Vec<HandlerApplication>,
     pub control_transfers: Vec<ControlTransfer>,
+    pub state_source_groups: Vec<ResolvedStateGroup>,
+}
+
+#[derive(Debug)]
+pub struct ResolvedStateGroup {
+    pub span: Span,
+    pub owner: StateOwner,
+    pub enclosing_scope: ScopeId,
+    pub source_layer: Option<ScopeId>,
+    pub items: Vec<ResolvedStateSource>,
+}
+
+#[derive(Debug)]
+pub struct ResolvedStateSource {
+    pub definition: DefId,
+    pub mode: StateMode,
+    pub span: Span,
 }
 
 /// The source header is evaluated in `calling_scope`. Its final argument is
@@ -112,11 +131,18 @@ pub enum ScopeKind {
     Fallback,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CallableLayer {
+    Named(DefId),
+    Anonymous,
+}
+
 #[derive(Debug)]
 pub struct Scope {
     pub parent: Option<ScopeId>,
     pub span: Option<Span>,
     pub kind: ScopeKind,
+    pub callable_layer: Option<CallableLayer>,
     enclosing_module: Option<ScopeId>,
     default_kind: Option<DefaultKind>,
     bindings: BTreeMap<String, Entry>,
@@ -160,6 +186,15 @@ enum UseKind {
     Application,
     ConstructorPattern,
     ConstructorTest,
+    StateProvider { allowed: bool },
+    StateSource { group: usize, mode: StateMode },
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AnnotationSite {
+    OrdinaryFunction,
+    OtherDefinition,
+    CallableType,
 }
 
 #[derive(Debug)]
@@ -195,6 +230,7 @@ impl Index {
                 scopes: vec![],
                 handler_applications: vec![],
                 control_transfers: vec![],
+                state_source_groups: vec![],
             },
             imports: vec![],
             uses: vec![],
@@ -321,6 +357,7 @@ impl Index {
             parent,
             span,
             kind: ScopeKind::Lexical,
+            callable_layer: None,
             enclosing_module,
             default_kind: None,
             bindings: BTreeMap::new(),
@@ -330,7 +367,11 @@ impl Index {
 
     fn region(&mut self, parent: ScopeId, span: Span, kind: ScopeKind) -> ScopeId {
         let scope = self.scope(Some(parent), Some(span), None);
-        self.hir.scopes[scope.0].kind = kind;
+        let region = &mut self.hir.scopes[scope.0];
+        region.kind = kind;
+        if kind == ScopeKind::HandlerRemainder {
+            region.callable_layer = Some(CallableLayer::Anonymous);
+        }
         scope
     }
 
@@ -447,15 +488,22 @@ impl Index {
                 item: item.clone(),
             }),
             StmtKind::Function(function) => {
-                self.item(
+                let kind = if function.is_meta {
+                    DefinitionKind::MetaFunction
+                } else if function.body.is_none() {
+                    DefinitionKind::ForeignFunction
+                } else {
+                    DefinitionKind::Function
+                };
+                let id = self.item(
                     scope,
                     &function.name,
                     function.visibility,
-                    DefinitionKind::Function,
+                    kind,
                     span,
                     Some(signature(&function.generics)),
                 );
-                self.function(scope, function);
+                self.function(scope, function, id);
             }
             StmtKind::Type(ty) => {
                 let variants = if ty.variants.is_empty() {
@@ -540,7 +588,7 @@ impl Index {
                 let inner = self.scope(Some(scope), Some(span), None);
                 self.generics(inner, &effect.generics);
                 for operation in &effect.operations {
-                    self.item(
+                    let id = self.item(
                         operations,
                         &operation.name,
                         Visibility::Public,
@@ -548,7 +596,7 @@ impl Index {
                         operation.span,
                         Some(vec![]),
                     );
-                    self.function(inner, operation);
+                    self.function(inner, operation, id);
                 }
                 for member in &effect.members {
                     self.ty(inner, member);
@@ -632,27 +680,71 @@ impl Index {
         )
     }
 
-    fn annotations(&mut self, scope: ScopeId, annotations: &[Annotation]) {
+    fn annotations(
+        &mut self,
+        signature: ScopeId,
+        enclosing: ScopeId,
+        annotations: &[Annotation],
+        site: AnnotationSite,
+    ) {
+        // A callable type has formal labels for its return relations, but
+        // captured and provider names belong to its declaration environment.
+        let lexical = if site == AnnotationSite::CallableType {
+            enclosing
+        } else {
+            signature
+        };
         for annotation in annotations {
-            for reference in &annotation.references {
-                let target = match reference.scope {
-                    AnnotationScope::Lexical => scope,
-                    AnnotationScope::Enclosing => self.hir.scopes[scope.0].parent.unwrap_or(scope),
-                    AnnotationScope::Module => self.module_scope(scope),
-                };
-                self.ty(target, &reference.name);
+            match &annotation.kind {
+                AnnotationKind::Effects(EffectRow::Closed(effects)) => {
+                    for effect in effects {
+                        self.ty(signature, effect);
+                    }
+                }
+                AnnotationKind::State(StateClause::Sources { owner, items }) => {
+                    let group = self.hir.state_source_groups.len();
+                    self.hir.state_source_groups.push(ResolvedStateGroup {
+                        span: annotation.span,
+                        owner: owner.clone(),
+                        enclosing_scope: enclosing,
+                        source_layer: None,
+                        items: vec![],
+                    });
+                    for item in items {
+                        self.site(
+                            lexical,
+                            item.name.span,
+                            item.name.path.clone(),
+                            UseKind::StateSource {
+                                group,
+                                mode: item.mode,
+                            },
+                        );
+                    }
+                }
+                AnnotationKind::State(StateClause::Return(dependencies)) => {
+                    for dependency in dependencies {
+                        self.site(
+                            signature,
+                            dependency.name.span,
+                            dependency.name.path.clone(),
+                            UseKind::Ordinary,
+                        );
+                    }
+                }
+                AnnotationKind::State(StateClause::Provider(name)) => {
+                    self.site(
+                        lexical,
+                        name.span,
+                        name.path.clone(),
+                        UseKind::StateProvider {
+                            allowed: site != AnnotationSite::OtherDefinition,
+                        },
+                    );
+                }
+                _ => {}
             }
         }
-    }
-
-    fn module_scope(&self, mut scope: ScopeId) -> ScopeId {
-        while let Some(parent) = self.hir.scopes[scope.0].parent {
-            if parent == ScopeId(0) {
-                break;
-            }
-            scope = parent;
-        }
-        scope
     }
 
     fn return_sources(&mut self, scope: ScopeId, mode: &ReturnMode) {
@@ -668,15 +760,23 @@ impl Index {
         }
     }
 
-    fn function(&mut self, scope: ScopeId, function: &Function) {
+    fn function(&mut self, scope: ScopeId, function: &Function, definition: DefId) {
         let inner = self.scope(Some(scope), Some(function.span), None);
+        if function.body.is_some() {
+            self.hir.scopes[inner.0].callable_layer = Some(CallableLayer::Named(definition));
+        }
         let head_start = self.uses.len();
         self.generics(inner, &function.generics);
         self.parameters(inner, &function.parameters, function.body.is_some());
         let helpers_start = self.uses.len();
         self.statements(inner, &function.signature_where);
         let helpers_end = self.uses.len();
-        self.annotations(inner, &function.annotations);
+        let site = if self.hir.definitions[definition.0].kind == DefinitionKind::Function {
+            AnnotationSite::OrdinaryFunction
+        } else {
+            AnnotationSite::OtherDefinition
+        };
+        self.annotations(inner, scope, &function.annotations, site);
         self.return_sources(inner, &function.return_mode);
         if let Some(ty) = &function.return_type {
             self.ty(inner, ty);
@@ -978,7 +1078,7 @@ impl Index {
             } => {
                 let inner = self.scope(Some(scope), Some(ty.span), None);
                 self.parameters(inner, parameters, false);
-                self.annotations(inner, annotations);
+                self.annotations(inner, scope, annotations, AnnotationSite::CallableType);
                 self.return_sources(inner, return_mode);
                 if let Some(result) = result {
                     self.ty(inner, result);
@@ -1180,8 +1280,9 @@ impl Index {
                 annotations,
             } => {
                 let inner = self.scope(Some(scope), Some(expr.span), None);
+                self.hir.scopes[inner.0].callable_layer = Some(CallableLayer::Anonymous);
                 self.parameters(inner, parameters, true);
-                self.annotations(inner, annotations);
+                self.annotations(inner, scope, annotations, AnnotationSite::OtherDefinition);
                 if let Some(ty) = return_type {
                     self.ty(inner, ty);
                 }
@@ -1760,6 +1861,95 @@ impl Index {
         self.bind_implicit_rows();
     }
 
+    fn enclosing_layers(
+        &self,
+        scope: ScopeId,
+    ) -> impl Iterator<Item = (ScopeId, CallableLayer)> + '_ {
+        std::iter::successors(Some(scope), |scope| self.hir.scopes[scope.0].parent).filter_map(
+            |scope| {
+                self.hir.scopes[scope.0]
+                    .callable_layer
+                    .map(|layer| (scope, layer))
+            },
+        )
+    }
+
+    fn state_source_layer(
+        &self,
+        group: &ResolvedStateGroup,
+        source: &Definition,
+    ) -> Result<Option<ScopeId>, &'static str> {
+        if group.owner == StateOwner::Module {
+            return if source.kind == DefinitionKind::Binding
+                && self.hir.scopes[source.scope.0].parent == Some(ScopeId(0))
+            {
+                Ok(None)
+            } else {
+                Err("module state source must be a module binding")
+            };
+        }
+        if !matches!(
+            source.kind,
+            DefinitionKind::Binding | DefinitionKind::Parameter
+        ) {
+            return Err("captured state source must be a binding");
+        }
+        let Some((source_scope, source_layer)) = self.enclosing_layers(source.scope).next() else {
+            return Err("captured state source must belong to a callable layer");
+        };
+        let mut enclosing = self.enclosing_layers(group.enclosing_scope).peekable();
+        let immediate = enclosing.peek().map(|(scope, _)| *scope);
+        let selected = match &group.owner {
+            StateOwner::Named { name, .. } => enclosing
+                .find(|(_, layer)| {
+                    matches!(layer, CallableLayer::Named(definition)
+                    if self.hir.definitions[definition.0].name == *name)
+                })
+                .map(|(scope, _)| scope),
+            StateOwner::Implicit => enclosing
+                .find(|(scope, _)| *scope == source_scope)
+                .filter(|(scope, _)| {
+                    Some(*scope) == immediate || source_layer == CallableLayer::Anonymous
+                })
+                .map(|(scope, _)| scope),
+            StateOwner::Module => unreachable!("module groups were handled separately"),
+        };
+        if selected != Some(source_scope) {
+            return Err("captured state source does not belong to the selected enclosing layer");
+        }
+        if group
+            .source_layer
+            .is_some_and(|layer| layer != source_scope)
+        {
+            return Err("a captured state group must use one callable layer");
+        }
+        Ok(Some(source_scope))
+    }
+
+    fn resolve_state_source(
+        &mut self,
+        group: usize,
+        definition: DefId,
+        mode: StateMode,
+        span: Span,
+    ) {
+        match self.state_source_layer(
+            &self.hir.state_source_groups[group],
+            &self.hir.definitions[definition.0],
+        ) {
+            Ok(layer) => {
+                let group = &mut self.hir.state_source_groups[group];
+                group.source_layer = layer;
+                group.items.push(ResolvedStateSource {
+                    definition,
+                    mode,
+                    span,
+                });
+            }
+            Err(message) => self.error(span, "E0538", message),
+        }
+    }
+
     pub fn finish(mut self) -> (Hir, Vec<Diagnostic>) {
         for UseSite {
             scope,
@@ -1776,6 +1966,19 @@ impl Index {
                 !matches!(use_kind, UseKind::Type { .. }),
             ) {
                 Ok(definition) => {
+                    match use_kind {
+                        UseKind::StateProvider { allowed }
+                            if !allowed
+                                || self.hir.definitions[definition.0].kind
+                                    != DefinitionKind::Function =>
+                        {
+                            self.error(span, "E0539", "a state provider requires an ordinary named Ril definition and an allowed annotation position");
+                        }
+                        UseKind::StateSource { group, mode } => {
+                            self.resolve_state_source(group, definition, mode, span);
+                        }
+                        _ => {}
+                    }
                     let application = if matches!(
                         use_kind,
                         UseKind::Application | UseKind::Type { applied: true }

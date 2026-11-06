@@ -1,8 +1,12 @@
 use ril_compiler::{
     SyntaxKind,
-    ast::{ArgumentSort, ControlOperation, ExprKind, StmtKind, StringPart, ValueTestKind},
+    ast::{
+        Annotation, AnnotationKind, ArgumentSort, ControlOperation, EffectRow, ExprKind,
+        ReturnDependencyMode, StateClause, StateMode, StateOwner, StmtKind, StringPart, TypeKind,
+        ValueTestKind,
+    },
     frontend::{Frontend, UnitKind, frontend},
-    hir::{DefinitionKind, ScopeKind},
+    hir::{CallableLayer, DefinitionKind, ScopeKind},
     source::FileId,
     text::{Alignment, Conversion},
 };
@@ -567,4 +571,109 @@ fn interpolation_brace_recovery_preserves_next_declaration() {
     let parse = &result.files[&FileId(0)];
     assert_eq!(parse.syntax().to_string(), input);
     assert_eq!(parse.program.statements.len(), 2);
+}
+
+#[test]
+fn callable_type_retains_independent_row_markers_and_return_dependency_mode() {
+    let input = r#"
+type Cell = { var count: i64 }
+type View = fn(ref item: Cell) @ &return{ref item} & -> new { ref value: Cell }
+"#;
+    let result = compile(input);
+    assert!(result.is_ok(), "{:?}", result.diagnostics);
+    let parse = &result.files[&FileId(0)];
+    assert_eq!(parse.syntax().to_string(), input);
+    let StmtKind::Type(view) = &parse.program.statements[1].kind else {
+        panic!("expected callable type declaration");
+    };
+    let TypeKind::Callable { annotations, .. } = &view.value.as_ref().unwrap().kind else {
+        panic!("expected a callable type");
+    };
+    let [
+        Annotation {
+            kind: AnnotationKind::Effects(EffectRow::Open),
+            span: effects,
+        },
+        Annotation {
+            kind: AnnotationKind::State(StateClause::Return(dependencies)),
+            ..
+        },
+        Annotation {
+            kind: AnnotationKind::State(StateClause::Open),
+            span: state,
+        },
+    ] = annotations.as_slice()
+    else {
+        panic!("expected distinct open markers and contained return sources");
+    };
+    let [dependency] = dependencies.as_slice() else {
+        panic!("expected one return dependency");
+    };
+    assert_eq!(dependency.mode, ReturnDependencyMode::Ref);
+    assert_eq!(result.sources.slice(*effects).unwrap(), b"@");
+    assert_eq!(result.sources.slice(*state).unwrap(), b"&");
+    assert_eq!(result.sources.slice(dependency.name.span).unwrap(), b"item");
+    let hir = result.hir.unwrap();
+    let reference = hir
+        .references
+        .iter()
+        .find(|reference| reference.span == dependency.name.span)
+        .unwrap();
+    assert_eq!(
+        hir.definitions[reference.definition.0].kind,
+        DefinitionKind::Parameter
+    );
+}
+
+#[test]
+fn state_groups_keep_source_modes_and_the_actual_lexical_owner() {
+    let input = r#"
+var visits = 0
+let LIMIT = 3
+fn tick() &up(sub){mut visits, LIMIT} -> () { visits += LIMIT }
+fn outer() -> i64 {
+    var count = 0
+    middle()
+where
+    fn middle() &up{mut count} -> i64 {
+        inner()
+    where
+        fn inner() &up(outer){mut count} -> i64 {
+            count += 1
+            count
+        }
+    }
+}
+"#;
+    let result = compile(input);
+    assert!(result.is_ok(), "{:?}", result.diagnostics);
+    let hir = result.hir.unwrap();
+    let [module, direct, farther] = hir.state_source_groups.as_slice() else {
+        panic!("expected module, direct capture, and farther capture groups");
+    };
+    assert_eq!(module.owner, StateOwner::Module);
+    assert!(module.source_layer.is_none());
+    assert_eq!(
+        module
+            .items
+            .iter()
+            .map(|item| item.mode)
+            .collect::<Vec<_>>(),
+        [StateMode::Mut, StateMode::Read]
+    );
+    assert_eq!(
+        result.sources.slice(module.items[0].span).unwrap(),
+        b"visits"
+    );
+    let layer = farther.source_layer.unwrap();
+    assert_eq!(direct.source_layer, Some(layer));
+    assert_eq!(direct.items[0].definition, farther.items[0].definition);
+    let Some(CallableLayer::Named(outer)) = hir.scopes[layer.0].callable_layer else {
+        panic!("expected a named callable layer");
+    };
+    assert_eq!(hir.definitions[outer.0].name, "outer");
+    let StateOwner::Named { span, .. } = farther.owner else {
+        panic!("expected a written owner");
+    };
+    assert_eq!(result.sources.slice(span).unwrap(), b"outer");
 }

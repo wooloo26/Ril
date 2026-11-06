@@ -16,6 +16,12 @@ use std::{
     rc::Rc,
 };
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ParameterSyntax {
+    Named,
+    Types,
+}
+
 type HeadLookup<'a> = dyn Fn(&[String], u32) -> Option<DeclarationHead> + Sync + 'a;
 
 const ASSIGNMENT_PRECEDENCE: u8 = 0;
@@ -654,9 +660,9 @@ impl<'a> Parser<'a> {
         let name = self.name();
         let generics = self.generics();
         self.expect("(");
-        let parameters = self.parameters(")", true);
+        let parameters = self.parameters(")", ParameterSyntax::Named);
         self.expect(")");
-        let annotations = self.annotations(false);
+        let annotations = self.annotations();
         let (return_mode, return_type) = self.return_annotation();
         let signature_where = self.signature_where();
         let body = if self.at("{") {
@@ -760,7 +766,7 @@ impl<'a> Parser<'a> {
         result
     }
 
-    fn parameters(&mut self, closing: &str, typed: bool) -> Vec<Parameter> {
+    fn parameters(&mut self, closing: &str, syntax: ParameterSyntax) -> Vec<Parameter> {
         let mut parameters = vec![];
         while !self.at(closing)
             && !self.eof()
@@ -768,8 +774,22 @@ impl<'a> Parser<'a> {
         {
             let before = self.pos;
             let start = self.offset();
+            if self.at("var") {
+                self.error("E0403", "parameters cannot use the var binding mode");
+                self.bump();
+            }
+            if self.at("infer")
+                && self
+                    .look(1)
+                    .as_bytes()
+                    .first()
+                    .is_some_and(u8::is_ascii_alphabetic)
+            {
+                self.error("E0412", "infer is a result modifier");
+                self.bump();
+            }
             let mode = self.parameter_mode();
-            let (pattern, ty) = if typed && self.look(1) != ":" && self.type_only_parameter() {
+            let (pattern, ty) = if syntax == ParameterSyntax::Types && self.look(1) != ":" {
                 let ty = self.type_expr();
                 (
                     Pattern {
@@ -779,7 +799,24 @@ impl<'a> Parser<'a> {
                     Some(ty),
                 )
             } else {
-                let pattern = self.pattern(false);
+                let start = self.offset();
+                let pattern = if matches!(self.current(), "(" | "[" | "{" | "." | "<") {
+                    self.error("E0120", "a callable parameter requires a name");
+                    self.pattern(false)
+                } else {
+                    let name = self.name();
+                    if name == "_" {
+                        self.error_at(
+                            self.span(start),
+                            "E0120",
+                            "a callable parameter requires a name",
+                        );
+                    }
+                    Pattern {
+                        kind: PatternKind::Name(name),
+                        span: self.span(start),
+                    }
+                };
                 let ty = if self.eat(":") {
                     Some(self.type_expr())
                 } else {
@@ -787,7 +824,11 @@ impl<'a> Parser<'a> {
                 };
                 (pattern, ty)
             };
-            let default = if self.eat("=") {
+            let default = if self.at("=") {
+                if syntax == ParameterSyntax::Types {
+                    self.error("E0120", "a parameter type cannot declare a default");
+                }
+                self.bump();
                 Some(self.expression(0, true))
             } else {
                 None
@@ -808,15 +849,7 @@ impl<'a> Parser<'a> {
         }
         parameters
     }
-    fn type_only_parameter(&self) -> bool {
-        matches!(self.current(), "[" | "{" | "?" | "?[" | "fn" | "(")
-            || crate::lexer::primitive(self.current())
-            || self
-                .current()
-                .as_bytes()
-                .first()
-                .is_some_and(u8::is_ascii_uppercase)
-    }
+
     fn parameter_mode(&mut self) -> ParameterMode {
         match self.current() {
             "mut" => {
@@ -892,100 +925,199 @@ impl<'a> Parser<'a> {
         path
     }
 
-    fn annotations(&mut self, open_rows: bool) -> Vec<Annotation> {
+    fn annotations(&mut self) -> Vec<Annotation> {
         let mut result = vec![];
         while self.at("@") || self.at("&") {
             let start = self.offset();
-            let mut references = Vec::new();
             let kind = if self.eat("@") {
-                if self.eat("{") {
-                    self.expect("}");
-                } else if !open_rows || self.kind() == Some(SyntaxKind::Identifier) {
-                    loop {
-                        references.push(AnnotationReference {
-                            scope: AnnotationScope::Lexical,
-                            name: self.named_type(),
-                        });
-                        if !self.eat("+") {
-                            break;
-                        }
-                    }
-                }
-                AnnotationKind::Effect
+                AnnotationKind::Effects(self.effect_row())
             } else {
                 self.bump();
-                if self.eat("{") {
-                    self.expect("}");
-                } else if self.at("up") || self.at("return") {
-                    let returning = self.bump() == "return";
-                    let mut scope = if returning {
-                        AnnotationScope::Lexical
-                    } else {
-                        AnnotationScope::Enclosing
-                    };
-                    let owner = !returning && self.eat("(");
-                    if owner {
-                        if self.eat("sub") {
-                            scope = AnnotationScope::Module;
-                        } else {
-                            self.name();
-                        }
-                        self.expect(")");
-                    }
-                    if returning || owner || self.at("{") {
-                        self.expect("{");
-                        while !self.at("}") && !self.eof() {
-                            let before = self.pos;
-                            if returning {
-                                if !self.eat("ref") && !self.eat("^mut") {
-                                    self.error("E0124", "return dependency requires ref or ^mut");
-                                }
-                            } else if !self.eat("mut") {
-                                self.eat("^mut");
-                            }
-                            let name_start = self.offset();
-                            let path = self.qualified_name();
-                            references.push(AnnotationReference {
-                                scope,
-                                name: TypeExpr {
-                                    text: self.text[name_start..self.last_end.max(name_start)]
-                                        .to_owned(),
-                                    kind: TypeKind::Name {
-                                        path,
-                                        arguments: vec![],
-                                    },
-                                    span: self.span(name_start),
-                                },
-                            });
-                            if self.pos == before || !self.list_separator("}") {
-                                break;
-                            }
-                        }
-                        self.expect("}");
-                    }
-                } else if !self.eat("mut")
-                    && !self.eat("^mut")
-                    && !self.eat("capture")
-                    && (!open_rows || self.kind() == Some(SyntaxKind::Identifier))
-                {
-                    references.push(AnnotationReference {
-                        scope: AnnotationScope::Lexical,
-                        name: self.named_type(),
-                    });
-                }
-                AnnotationKind::State
+                AnnotationKind::State(self.state_clause(start))
             };
             result.push(Annotation {
                 kind,
-                references,
-                text: self.text[start..self.last_end].to_owned(),
                 span: self.span(start),
             });
         }
         result
     }
+
+    fn effect_row(&mut self) -> EffectRow {
+        if self.eat("{") {
+            self.expect("}");
+            return EffectRow::Closed(vec![]);
+        }
+        if self.kind() != Some(SyntaxKind::Identifier) {
+            return EffectRow::Open;
+        }
+        let mut effects = vec![self.named_type()];
+        while self.eat("+") {
+            effects.push(self.named_type());
+        }
+        EffectRow::Closed(effects)
+    }
+
+    fn state_clause(&mut self, start: usize) -> StateClause {
+        match self.current() {
+            "{" => {
+                self.bump();
+                self.expect("}");
+                StateClause::Empty
+            }
+            "mut" => {
+                self.bump();
+                StateClause::Mut
+            }
+            "^mut" => {
+                self.bump();
+                StateClause::SharedMut
+            }
+            "capture" if self.look(1) != "::" => {
+                self.bump();
+                StateClause::Capture
+            }
+            "up" if self.look(1) != "::" => {
+                self.bump();
+                if matches!(self.current(), "(" | "{") {
+                    self.state_source_group(start)
+                } else {
+                    StateClause::Environment
+                }
+            }
+            "return" => {
+                self.bump();
+                StateClause::Return(self.return_dependencies(start))
+            }
+            _ if self.kind() == Some(SyntaxKind::Identifier) => {
+                StateClause::Provider(self.name_ref())
+            }
+            _ => StateClause::Open,
+        }
+    }
+
+    fn state_source_group(&mut self, start: usize) -> StateClause {
+        let owner = if self.eat("(") {
+            let owner = if self.eat("sub") {
+                StateOwner::Module
+            } else if self.at(")") {
+                self.error("E0538", "a state source selector requires an owner");
+                StateOwner::Implicit
+            } else {
+                let start = self.offset();
+                let name = self.name();
+                StateOwner::Named {
+                    name,
+                    span: self.span(start),
+                }
+            };
+            self.expect(")");
+            owner
+        } else {
+            StateOwner::Implicit
+        };
+        while self.eat("(") {
+            self.error_at(
+                self.span(start),
+                "E0538",
+                "a state source group has only one selector",
+            );
+            if !self.at(")") && !self.eat("sub") {
+                self.name();
+            }
+            self.expect(")");
+        }
+        let mut items = vec![];
+        if !self.eat("{") {
+            self.error_at(
+                self.span(start),
+                "E0538",
+                "a state source group requires a braced item list",
+            );
+        } else {
+            while !self.at("}") && !self.eof() {
+                let before = self.pos;
+                let mode = if self.eat("mut") {
+                    StateMode::Mut
+                } else if self.eat("^mut") {
+                    StateMode::SharedMut
+                } else {
+                    if self.at("ref") || self.at("var") {
+                        self.error("E0538", "a state source accepts only mut or ^mut");
+                        self.bump();
+                    }
+                    StateMode::Read
+                };
+                items.push(StateSource {
+                    mode,
+                    name: self.name_ref(),
+                });
+                if self.pos == before || !self.list_separator("}") {
+                    break;
+                }
+            }
+            self.expect("}");
+            if items.is_empty() {
+                self.error_at(
+                    self.span(start),
+                    "E0538",
+                    "a state source group requires at least one item",
+                );
+            }
+        }
+        StateClause::Sources { owner, items }
+    }
+
+    fn return_dependencies(&mut self, start: usize) -> Vec<ReturnDependency> {
+        let mut dependencies = vec![];
+        if !self.eat("{") {
+            self.error_at(
+                self.span(start),
+                "E0545",
+                "return dependencies require a braced item list",
+            );
+            return dependencies;
+        }
+        while !self.at("}") && !self.eof() {
+            let before = self.pos;
+            let mode = if self.eat("^mut") {
+                ReturnDependencyMode::SharedMut
+            } else {
+                if !self.eat("ref") {
+                    self.error("E0545", "a return dependency requires ref or ^mut");
+                }
+                ReturnDependencyMode::Ref
+            };
+            dependencies.push(ReturnDependency {
+                mode,
+                name: self.name_ref(),
+            });
+            if self.pos == before || !self.list_separator("}") {
+                break;
+            }
+        }
+        self.expect("}");
+        if dependencies.is_empty() {
+            self.error_at(
+                self.span(start),
+                "E0545",
+                "a return dependency group requires at least one item",
+            );
+        }
+        dependencies
+    }
+
+    fn name_ref(&mut self) -> NameRef {
+        let start = self.offset();
+        let path = self.qualified_name();
+        NameRef {
+            path,
+            span: self.span(start),
+        }
+    }
+
     fn rejected_annotations(&mut self, code: &str, message: &str) {
-        for annotation in self.annotations(false) {
+        for annotation in self.annotations() {
             self.diagnostics.push(diagnostic(
                 annotation.span.file,
                 annotation.span.start as usize,
@@ -1031,7 +1163,7 @@ impl<'a> Parser<'a> {
                 } else {
                     None
                 };
-                let annotations = self.annotations(false);
+                let annotations = self.annotations();
                 for annotation in &annotations {
                     self.diagnostics.push(diagnostic(
                         annotation.span.file,
@@ -1122,9 +1254,9 @@ impl<'a> Parser<'a> {
             if self.look(1) == "(" {
                 let name = self.name();
                 self.expect("(");
-                let parameters = self.parameters(")", true);
+                let parameters = self.parameters(")", ParameterSyntax::Types);
                 self.expect(")");
-                let annotations = self.annotations(false);
+                let annotations = self.annotations();
                 let (return_mode, return_type) = self.return_annotation();
                 operations.push(Function {
                     visibility: Visibility::Public,
@@ -1651,9 +1783,9 @@ impl<'a> Parser<'a> {
             TypeKind::Record { fields, row }
         } else if self.eat("fn") {
             self.expect("(");
-            let parameters = self.parameters(")", true);
+            let parameters = self.parameters(")", ParameterSyntax::Types);
             self.expect(")");
-            let annotations = self.annotations(true);
+            let annotations = self.annotations();
             let (return_mode, result) = self.return_annotation();
             let result = result.map(Box::new);
             TypeKind::Callable {
@@ -1665,7 +1797,7 @@ impl<'a> Parser<'a> {
         } else if self.at("\\") {
             self.bump();
             let mut parameters = vec![];
-            while !self.at("->") && !self.eof() {
+            while !matches!(self.current(), "->" | "@" | "&") && !self.eof() {
                 let start = self.offset();
                 let name = self.name();
                 let bound = if self.eat(":") {
@@ -1690,10 +1822,14 @@ impl<'a> Parser<'a> {
                     default,
                     span: self.span(start),
                 });
-                if !self.list_separator("->") {
+                if matches!(self.current(), "@" | "&") || !self.list_separator("->") {
                     break;
                 }
             }
+            self.rejected_annotations(
+                "E0335",
+                "type functions cannot carry effects or capabilities",
+            );
             self.expect("->");
             let kind = TypeKind::TypeFunction {
                 parameters,
@@ -2960,8 +3096,8 @@ impl<'a> Parser<'a> {
                 span: self.span(start),
             };
         }
-        let parameters = self.parameters("->", false);
-        let annotations = self.annotations(false);
+        let parameters = self.parameters("->", ParameterSyntax::Named);
+        let annotations = self.annotations();
         self.expect("->");
         let body = Box::new(self.expression(0, false));
         Expr {

@@ -145,32 +145,75 @@ pub struct ReturnSource {
     pub span: Span,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AnnotationKind {
-    Effect,
-    State,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AnnotationScope {
-    Lexical,
-    Module,
-    Enclosing,
+    Effects(EffectRow),
+    State(StateClause),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AnnotationReference {
-    pub scope: AnnotationScope,
-    pub name: TypeExpr,
+pub enum EffectRow {
+    Open,
+    Closed(Vec<TypeExpr>),
 }
 
-/// Exact annotation spelling including @ or &; semantic resolution interprets
-/// storage names, closure layers, provider references and effect rows.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StateClause {
+    Open,
+    Empty,
+    Mut,
+    SharedMut,
+    Capture,
+    Environment,
+    Sources {
+        owner: StateOwner,
+        items: Vec<StateSource>,
+    },
+    Return(Vec<ReturnDependency>),
+    Provider(NameRef),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StateOwner {
+    Module,
+    Implicit,
+    Named { name: String, span: Span },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StateSource {
+    pub mode: StateMode,
+    pub name: NameRef,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StateMode {
+    Read,
+    Mut,
+    SharedMut,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReturnDependency {
+    pub mode: ReturnDependencyMode,
+    pub name: NameRef,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReturnDependencyMode {
+    Ref,
+    SharedMut,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NameRef {
+    pub path: Vec<String>,
+    pub span: Span,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Annotation {
     pub kind: AnnotationKind,
-    pub references: Vec<AnnotationReference>,
-    pub text: String,
     pub span: Span,
 }
 

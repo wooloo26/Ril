@@ -1,0 +1,220 @@
+-- [case: callable-type-rows-are-independent, front-pass]
+-- spec: SPEC#closed-and-open-callable-rows
+eff Log { write(str) -> () }
+type Cell = { var count: i64 }
+type ExplicitPure = fn() @{} &{} -> ()
+type OpenEffects = fn(mut Cell) @ &mut -> ()
+type OpenState = fn(mut Cell) @Log &mut & -> ()
+type OpenBoth = fn(mut Cell) @& &mut -> ()
+type Nested = fn() -> fn() @& -> ()
+
+-- [case: open-markers-on-definitions, front-fail]
+-- spec: SPEC#closed-and-open-callable-rows
+-- Error [E0547]
+fn open() @& -> () {}
+fn local() -> () { let _ = \ @ -> () }
+
+-- [case: open-state-conflicts-with-explicit-empty-state, front-fail]
+-- spec: SPEC#closed-and-open-callable-rows
+-- Error [E0547]
+type Bad = fn() @& &{} -> ()
+
+-- [case: nested-open-row-in-foreign-signature, front-pass]
+-- spec: SPEC#closed-and-open-callable-rows
+-- file: root.ril
+use platform/driver
+-- file: platform/driver.d.ril
+pub fn apply(action: fn() @& -> i64) -> i64
+
+-- [case: direct-open-row-in-foreign-signature, front-fail]
+-- spec: SPEC#closed-and-open-callable-rows
+-- Error [E0547]
+-- file: root.ril
+use platform/driver
+-- file: platform/driver.d.ril
+pub fn read() & -> i64
+
+-- [case: state-groups-preserve-named-and-module-sources, front-pass]
+-- spec: SPEC#state-groups-and-captured-layers
+var visits = 0
+fn tick() &up(sub){mut visits} -> () { visits += 1 }
+fn outer_layer() -> i64 {
+    var count = 0
+    middle()
+where
+    fn middle() &up{mut count} -> i64 {
+        inner()
+    where
+        fn inner() &up(outer_layer){mut count} -> i64 {
+            count += 1
+            count
+        }
+    }
+}
+
+-- [case: source-group-heads-require-a-nonempty-list, front-fail]
+-- spec: SPEC#state-groups-and-captured-layers
+-- Error [E0538]
+fn empty() &up{} -> () {}
+fn missing() &up(sub) -> () {}
+fn owner() &up(){count} -> () {}
+
+-- [case: module-group-resolves-shadowing-before-classification, front-fail]
+-- spec: SPEC#state-groups-and-captured-layers
+-- Error [E0538]
+var count = 0
+fn wrong(count: i64) &up(sub){mut count} -> () {}
+
+-- [case: captured-group-cannot-name-module-storage, front-fail]
+-- spec: SPEC#state-groups-and-captured-layers
+-- Error [E0538]
+var count = 0
+fn wrong() &up{mut count} -> () { count += 1 }
+
+-- [case: named-owner-does-not-select-a-hidden-binding, front-fail]
+-- spec: SPEC#state-groups-and-captured-layers
+-- Error [E0538]
+fn outer() -> i64 {
+    var count = 0
+    middle()
+where
+    fn middle() -> i64 {
+        var count = 0
+        inner()
+    where
+        fn inner() &up(outer){mut count} -> i64 {
+            count += 1
+            count
+        }
+    }
+}
+
+-- [case: value-alias-is-not-a-state-provider, front-fail]
+-- spec: SPEC#named-function-state-contract-references
+-- Error [E0539]
+var visits = 0
+fn advance() &up(sub){mut visits} -> () { visits += 1 }
+let ADVANCE = advance
+fn invalid() &ADVANCE -> () { ADVANCE() }
+
+-- [case: provider-position-is-checked-in-anonymous-definition, front-fail]
+-- spec: SPEC#named-function-state-contract-references
+-- Error [E0539]
+fn advance() -> () {}
+let INVALID = \ &advance -> ()
+
+-- [case: provider-name-resolves-before-kind-check, front-fail]
+-- spec: SPEC#named-function-state-contract-references
+-- Error [E0204]
+fn invalid() &missing -> () {}
+
+-- [case: callable-type-accepts-unlabeled-typeof-parameter, front-pass]
+-- spec: SPEC#named-function-declarations-and-contrast-matrix
+let SAMPLE = 1
+type Reader = fn(typeof SAMPLE) -> i64
+
+-- [case: named-definition-does-not-accept-destructuring-parameter, front-fail]
+-- spec: SPEC#named-function-declarations-and-contrast-matrix
+-- Error [E0120]
+fn invalid((left, right): (i64, i64)) -> i64 { left + right }
+
+-- [case: var-is-not-a-parameter-mode, front-fail]
+-- spec: SPEC#parameter-modes-caller-obligations-and-defaults
+-- Error [E0403]
+fn invalid(var value: i64) -> i64 { value }
+
+-- [case: imported-provider-keeps-declaration-identity, front-pass]
+-- spec: SPEC#named-function-state-contract-references
+-- file: root.ril
+use counters::{advance as step}
+fn invoke() &step -> () { step() }
+-- file: counters.ril
+var count = 0
+pub fn advance() &up(sub){mut count} -> () { count += 1 }
+
+-- [case: qualified-provider-named-up, front-pass]
+-- spec: SPEC#named-function-state-contract-references
+sub Helpers {
+    var up = 0
+    pub fn up_value() &up(sub){mut up} -> () { up += 1 }
+}
+sub Providers {
+    pub fn up() &Super::Helpers::up_value -> () { Super::Helpers::up_value() }
+}
+fn invoke() &Providers::up -> () { Providers::up() }
+
+-- [case: further-anonymous-capture-has-a-separate-ownerless-group, front-pass]
+-- spec: SPEC#state-groups-and-captured-layers
+let RUN = \-> {
+    var outer = 0
+    let mut nested = \-> {
+        var inner = 0
+        leaf()
+    where
+        fn leaf() &up{mut outer} &up{mut inner} -> i64 {
+            outer += 1
+            inner += 1
+            outer + inner
+        }
+    }
+    nested()
+}
+
+-- [case: a-captured-group-cannot-mix-callable-layers, front-fail]
+-- spec: SPEC#state-groups-and-captured-layers
+-- Error [E0538]
+let RUN = \-> {
+    var outer = 0
+    let mut nested = \-> {
+        var inner = 0
+        leaf()
+    where
+        fn leaf() &up{mut outer, mut inner} -> i64 {
+            outer += 1
+            inner += 1
+            outer + inner
+        }
+    }
+    nested()
+}
+
+-- [case: state-group-rejects-repeated-selector, front-fail]
+-- spec: SPEC#state-groups-and-captured-layers
+-- Error [E0538]
+var count = 0
+fn invalid() &up(sub)(outer){mut count} -> () { count += 1 }
+
+-- [case: type-functions-have-no-written-effect-row, front-fail]
+-- spec: SPEC#pure-type-functions-and-result-restrictions
+-- Error [E0335]
+eff Log { print(str) -> () }
+type Bad = \T @Log -> <T>
+
+-- [case: meta-functions-have-no-written-effect-row, front-fail]
+-- spec: SPEC#pure-type-functions-and-result-restrictions
+-- Error [E0813]
+eff Log { print(str) -> () }
+meta fn invalid() @Log -> i64 { 0 }
+
+-- [case: writable-parameter-cannot-have-default, front-fail]
+-- spec: SPEC#default-parameters-and-named-arguments
+-- Error [E0404]
+type Cell = { var count: i64 }
+fn invalid(mut value: Cell = Cell.{ count: 0 }) -> () { value.count += 1 }
+
+-- [case: operation-and-handler-parameters-require-concrete-modes, front-fail]
+-- spec: SPEC#effect-handlers
+-- Error [E0411]
+-- Error [E0412]
+type Cell = { var count: i64 }
+eff Read<T> { read(via value: T) -> i64 }
+eff Edit { edit(mut value: Cell) &mut -> () }
+fn invalid() -> () {
+    with Edit::edit(new value) -> resume ()
+}
+
+-- [case: return-dependencies-require-an-explicit-source-mode, front-fail]
+-- spec: SPEC#state-groups-and-captured-layers
+-- Error [E0545]
+type Cell = { var count: i64 }
+type Invalid = fn(ref value: Cell) &return{value} -> { ref value: Cell }
