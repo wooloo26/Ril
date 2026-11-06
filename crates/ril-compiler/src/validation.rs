@@ -697,47 +697,11 @@ impl Validator {
     }
 }
 fn declaration_names(statement: &Stmt) -> Vec<String> {
-    match &statement.kind {
-        StmtKind::Function(f) => vec![f.name.clone()],
-        StmtKind::Type(t) => vec![t.name.clone()],
-        StmtKind::Effect(e) => vec![e.name.clone()],
-        StmtKind::Sub(s) => vec![s.name.clone()],
-        StmtKind::Binding(b) => {
-            let mut result = vec![];
-            names(&b.pattern, &mut result);
-            result
-        }
-        _ => vec![],
+    let mut names = vec![];
+    if let Some(name) = statement.item_name() {
+        names.push(name.to_owned());
+    } else if let StmtKind::Binding(binding) = &statement.kind {
+        binding.pattern.binding_names(&mut names);
     }
-}
-pub(crate) fn names(pattern: &Pattern, result: &mut Vec<String>) {
-    match &pattern.kind {
-        PatternKind::Name(name) | PatternKind::Rest(Some(name)) if name != "_" => {
-            result.push(name.clone())
-        }
-        PatternKind::Tuple(items) | PatternKind::Array(items) | PatternKind::Alternative(items) => {
-            for item in items {
-                names(item, result);
-            }
-        }
-        PatternKind::Record {
-            fields,
-            rest_binding,
-            ..
-        } => {
-            for field in fields {
-                names(&field.pattern, result);
-            }
-            if let Some(name) = rest_binding {
-                result.push(name.clone());
-            }
-        }
-        PatternKind::Constructor { arguments, .. } => {
-            for argument in arguments {
-                names(argument, result);
-            }
-        }
-        PatternKind::Mode { pattern, .. } => names(pattern, result),
-        _ => {}
-    }
+    names
 }

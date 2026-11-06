@@ -1,0 +1,154 @@
+-- [case: inner-sum-shadows-outer-constructor-family, front-pass]
+-- spec: SPEC#identifiers-and-casing-invariants
+type Event { Ready }
+fn sample() -> () {
+    let _ = Ready(1)
+where
+    type Event { Ready(i64) }
+}
+
+-- [case: shadowed-prelude-sum, front-pass]
+-- spec: SPEC#identifiers-and-casing-invariants
+type Option { Some(i64), None }
+fn sample() -> Option { Some(1) }
+
+-- [case: visible-constructor-selects-application-sort, front-pass]
+-- spec: SPEC#static-type-values-and-type-quotation
+type Event<T> { Ready(T) }
+fn sample() -> () {
+    let _ = Ready<true && false>(1)
+where
+    type Event<flag: bool> { Ready(i64) }
+}
+
+-- [case: aliased-constructor-candidates-share-identity, front-pass]
+-- spec: SPEC#identifiers-and-casing-invariants
+-- file: root.ril
+use events::{Event as Primary, Event as Secondary}
+fn sample() -> Primary { Ready(1) }
+-- file: events.ril
+pub type Event { Ready(i64) }
+
+-- [case: namespace-alone-does-not-expose-constructors, front-fail]
+-- spec: SPEC#identifiers-and-casing-invariants
+-- Error [E0204]
+-- file: root.ril
+use events
+fn sample() -> Events::Event { Ready(1) }
+-- file: events.ril
+pub type Event { Ready(i64) }
+
+-- [case: unavailable-qualified-namespace, front-fail]
+-- spec: SPEC#normative-module-import-rules
+-- Error [E0208]
+fn sample() -> i64 { Missing::value() }
+
+-- [case: unavailable-member-in-known-namespace, front-fail]
+-- spec: SPEC#normative-module-import-rules
+-- Error [E0209]
+sub Known {}
+fn sample() -> i64 { Known::value() }
+
+-- [case: unavailable-intermediate-namespace, front-fail]
+-- spec: SPEC#normative-module-import-rules
+-- Error [E0208]
+sub Known {}
+fn sample() -> i64 { Known::Missing::value() }
+
+-- [case: nested-static-pattern-binder, front-pass]
+-- spec: SPEC#structural-type-pattern-matching
+type Choose = \T -> match (<T>, true) {
+    (<let U>, true) | (<let U>, false) if <U> == <T> -> <U>,
+    _ -> <never>,
+}
+
+-- [case: default-resolves-earlier-parameter, front-pass]
+-- spec: SPEC#default-parameters-and-named-arguments
+fn sample(first: i64, second: i64 = first) -> i64 { second }
+
+-- [case: nested-default-binds-own-parameter, front-pass]
+-- spec: SPEC#default-parameters-and-named-arguments
+fn sample(read: fn(i64) -> i64 = \later -> later, later: i64 = 0) -> i64 {
+    read(later)
+}
+
+-- [case: runtime-default-forward-reference, front-fail]
+-- spec: SPEC#default-parameters-and-named-arguments
+-- Error [E0408]
+fn sample(first: i64 = second, second: i64 = 1) -> i64 { first }
+
+-- [case: default-closure-cannot-capture-later-parameter, front-fail]
+-- spec: SPEC#default-parameters-and-named-arguments
+-- Error [E0408]
+fn sample(read: fn() &up -> i64 = \-> later, later: i64 = 0) -> () {}
+
+-- [case: runtime-default-self-reference, front-fail]
+-- spec: SPEC#default-parameters-and-named-arguments
+-- Error [E0408]
+fn sample(value: i64 = value) -> i64 { value }
+
+-- [case: generic-default-forward-reference, front-fail]
+-- spec: SPEC#generic-parameters-defaults-and-value-sorts
+-- Error [E0320]
+type Sample<T = U, U = i64> = T
+
+-- [case: generic-default-resolves-earlier-parameter, front-pass]
+-- spec: SPEC#generic-parameters-defaults-and-value-sorts
+type Sample<T, U = T> = (T, U)
+
+-- [case: generic-constant-default-resolves-earlier-parameter, front-pass]
+-- spec: SPEC#generic-parameters-defaults-and-value-sorts
+type Sample<base: i64, selected: i64 = base + 1> = i64
+
+-- [case: independent-signature-and-block-where, front-pass]
+-- spec: SPEC#dual-tier-where-invariants
+fn sample(value: Signature) -> BlockValue
+where
+    type Signature = i64
+    type BlockValue = Signature
+{
+    let checked: Local = value
+    checked
+where
+    type Local = BlockValue
+}
+
+-- [case: signature-cannot-see-block-type, front-fail]
+-- spec: SPEC#dual-tier-where-invariants
+-- Error [E0706]
+fn sample(value: Local) -> ()
+{
+where
+    type Local = i64
+}
+
+-- [case: signature-helper-cannot-see-block-type, front-fail]
+-- spec: SPEC#dual-tier-where-invariants
+-- Error [E0705]
+fn sample(value: Signature) -> ()
+where
+    type Signature = Local
+{
+where
+    type Local = i64
+}
+
+-- [case: duplicate-name-across-where-tiers, front-fail]
+-- spec: SPEC#dual-tier-where-invariants
+-- Error [E0203]
+fn sample(value: Shape) -> ()
+where
+    type Shape = i64
+{
+where
+    type Shape = str
+}
+
+-- [case: static-pattern-binder-does-not-escape-arm, front-fail]
+-- spec: SPEC#structural-type-pattern-matching
+-- Error [E0204]
+type Choose = \T -> match (<T>, true) {
+    (<let U>, true) -> <U>,
+    _ -> <U>,
+    --~ ERROR [E0204]
+}

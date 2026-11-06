@@ -130,3 +130,32 @@ fn assignment_keeps_rhs_precedence_and_block_tail() {
     assert!(matches!(&target.kind, ExprKind::Name(name) if name == "total"));
     assert!(matches!(&value.kind, ExprKind::Binary { operator, .. } if operator == "+"));
 }
+
+#[test]
+fn block_where_shadowing_does_not_change_the_signature_type() {
+    let input = r#"
+type Local = i64
+fn sample(argument: Local) -> () {
+    let flag: Local = true
+    let _ = flag
+where
+    type Local = bool
+}
+"#;
+    let result = compile(input);
+    assert!(result.is_ok(), "{:?}", result.diagnostics);
+    let hir = result.hir.unwrap();
+    let selected_types: Vec<_> = hir
+        .references
+        .iter()
+        .filter(|reference| reference.path == ["Local"])
+        .map(|reference| hir.definitions[reference.definition.0].span.unwrap().start as usize)
+        .collect();
+    assert_eq!(
+        selected_types,
+        [
+            input.find("type Local = i64").unwrap(),
+            input.find("type Local = bool").unwrap(),
+        ]
+    );
+}

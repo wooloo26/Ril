@@ -4,14 +4,14 @@ use crate::{
     diagnostic::Diagnostic,
     lexer::{diagnostic, primitive},
     source::{FileId, Span},
-    validation::names,
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
+    ops::Range,
     path::PathBuf,
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct DefId(pub usize);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -26,6 +26,7 @@ pub enum DefinitionKind {
     Module,
     Binding,
     Parameter,
+    GenericParameter,
     Builtin,
 }
 
@@ -70,8 +71,23 @@ pub struct Scope {
     pub parent: Option<ScopeId>,
     pub span: Option<Span>,
     enclosing_module: Option<ScopeId>,
+    default_kind: Option<DefaultKind>,
     bindings: BTreeMap<String, Entry>,
-    constructors: BTreeMap<String, Vec<DefId>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DefaultKind {
+    Parameter,
+    Generic,
+}
+
+impl DefaultKind {
+    fn parameter_kind(self) -> DefinitionKind {
+        match self {
+            Self::Parameter => DefinitionKind::Parameter,
+            Self::Generic => DefinitionKind::GenericParameter,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -87,6 +103,7 @@ struct UseSite {
     span: Span,
     path: Vec<String>,
     use_kind: UseKind,
+    downward_error: Option<LookupError>,
 }
 
 #[derive(Debug)]
@@ -156,29 +173,22 @@ impl Index {
         ] {
             this.builtin(prelude, name, arity);
         }
-        for (family, members) in [
-            ("Option", &["Some", "None"][..]),
-            ("Result", &["Ok", "Err"][..]),
-            ("Div", &["exhausted", "budget"][..]),
+        for (family, arity, members) in [
+            ("Option", 1, &["Some", "None"][..]),
+            ("Result", 2, &["Ok", "Err"][..]),
+            ("Div", 0, &["exhausted", "budget"][..]),
         ] {
             let owner = this.hir.scopes[0].bindings[family].definition;
             let scope = this.scope(None, None, None);
             this.hir.definitions[owner.0].members = Some(scope);
+            let is_sum = family != "Div";
+            if is_sum {
+                this.hir.definitions[owner.0].kind = DefinitionKind::Type;
+            }
             for member in members {
-                let arity = if family == "Option" {
-                    1
-                } else if family == "Result" {
-                    2
-                } else {
-                    0
-                };
                 let id = this.builtin(scope, member, arity);
-                if family != "Div" {
-                    this.hir.scopes[0]
-                        .constructors
-                        .entry((*member).into())
-                        .or_default()
-                        .push(id);
+                if is_sum {
+                    this.hir.definitions[id.0].kind = DefinitionKind::Constructor;
                 }
             }
         }
@@ -219,8 +229,8 @@ impl Index {
             parent,
             span,
             enclosing_module,
+            default_kind: None,
             bindings: BTreeMap::new(),
-            constructors: BTreeMap::new(),
         });
         id
     }
@@ -379,7 +389,7 @@ impl Index {
                     for variant in &ty.variants {
                         let mut application = signature(&ty.generics);
                         application.extend(signature(&variant.generics));
-                        let id = self.item(
+                        self.item(
                             variants,
                             &variant.name,
                             Visibility::Public,
@@ -387,11 +397,6 @@ impl Index {
                             variant.span,
                             Some(application),
                         );
-                        self.hir.scopes[scope.0]
-                            .constructors
-                            .entry(variant.name.clone())
-                            .or_default()
-                            .push(id);
                         let variant_scope = self.scope(Some(inner), Some(variant.span), None);
                         self.generics(variant_scope, &variant.generics);
                         if let Some(payload) = &variant.payload {
@@ -433,7 +438,7 @@ impl Index {
             }
             StmtKind::Binding(binding) => {
                 let mut bound = vec![];
-                names(&binding.pattern, &mut bound);
+                binding.pattern.binding_names(&mut bound);
                 bound.sort();
                 bound.dedup();
                 let mutable = binding.mode.is_mutable() || binding.mode.is_reassignable();
@@ -545,17 +550,76 @@ impl Index {
 
     fn function(&mut self, scope: ScopeId, function: &Function) {
         let inner = self.scope(Some(scope), Some(function.span), None);
+        let head_start = self.uses.len();
         self.generics(inner, &function.generics);
         self.parameters(inner, &function.parameters);
+        let helpers_start = self.uses.len();
         self.statements(inner, &function.signature_where);
+        let helpers_end = self.uses.len();
         self.annotations(inner, &function.annotations);
         self.return_sources(inner, &function.return_mode);
         if let Some(ty) = &function.return_type {
             self.ty(inner, ty);
         }
         if let Some(body) = &function.body {
+            self.check_where_tiers(
+                &function.signature_where,
+                &body.where_items,
+                head_start..self.uses.len(),
+                helpers_start..helpers_end,
+            );
             self.block(inner, body, None);
         }
+    }
+
+    fn check_where_tiers(
+        &mut self,
+        signature_items: &[Stmt],
+        block_items: &[Stmt],
+        head_uses: Range<usize>,
+        helper_uses: Range<usize>,
+    ) {
+        if block_items.is_empty() {
+            return;
+        }
+        let block_items: BTreeMap<_, _> = block_items
+            .iter()
+            .filter_map(|item| item.item_name().map(|name| (name, item)))
+            .collect();
+        for item in signature_items {
+            if let Some(name) = item.item_name()
+                && let Some(local) = block_items.get(name)
+            {
+                self.error(
+                    local.span,
+                    "E0203",
+                    &format!("'{name}' is already declared in signature where"),
+                );
+            }
+        }
+        // Keep lexical resolution unchanged. These errors apply only when
+        // lookup fails to find a visible head outside the block's where tier.
+        for index in head_uses {
+            let site = &mut self.uses[index];
+            let Some(item) = block_items.get(site.path[0].as_str()) else {
+                continue;
+            };
+            if helper_uses.contains(&index) {
+                site.downward_error
+                    .get_or_insert(LookupError::DownwardReference);
+            } else if matches!(site.use_kind, UseKind::Type { .. })
+                && matches!(item.kind, StmtKind::Type(_))
+            {
+                site.downward_error
+                    .get_or_insert(LookupError::SignatureType);
+            }
+        }
+    }
+
+    fn default_scope(&mut self, parent: ScopeId, span: Span, kind: DefaultKind) -> ScopeId {
+        let scope = self.scope(Some(parent), Some(span), None);
+        self.hir.scopes[scope.0].default_kind = Some(kind);
+        scope
     }
 
     fn generics(&mut self, scope: ScopeId, generics: &[GenericParameter]) {
@@ -567,12 +631,13 @@ impl Index {
                 self.ty(scope, guard);
             }
             if let Some(default) = &parameter.default {
-                self.ty(scope, default);
+                let inner = self.default_scope(scope, default.span, DefaultKind::Generic);
+                self.ty(inner, default);
             }
             self.declare(
                 Definition {
                     name: parameter.name.clone(),
-                    kind: DefinitionKind::Parameter,
+                    kind: DefinitionKind::GenericParameter,
                     scope,
                     span: Some(parameter.span),
                     public: false,
@@ -592,7 +657,8 @@ impl Index {
                 self.ty(scope, ty);
             }
             if let Some(default) = &parameter.default {
-                self.expr(scope, default);
+                let inner = self.default_scope(scope, default.span, DefaultKind::Parameter);
+                self.expr(inner, default);
             }
             self.pattern(scope, &parameter.pattern);
             self.bind_pattern(scope, &parameter.pattern, parameter.span.end);
@@ -601,10 +667,7 @@ impl Index {
 
     fn bind_pattern(&mut self, scope: ScopeId, pattern: &Pattern, visible_at: u32) {
         let mut bound = vec![];
-        names(pattern, &mut bound);
-        if let PatternKind::Type(ty) = &pattern.kind {
-            type_binders(ty, &mut bound);
-        }
+        pattern.binding_names(&mut bound);
         bound.sort();
         bound.dedup();
         for name in bound {
@@ -643,6 +706,7 @@ impl Index {
             span,
             path,
             use_kind,
+            downward_error: None,
         });
     }
 
@@ -964,39 +1028,6 @@ impl Index {
     }
 }
 
-fn type_binders(ty: &TypeExpr, output: &mut Vec<String>) {
-    match &ty.kind {
-        TypeKind::TypeBinder(name) | TypeKind::PatternRest(Some(name)) if name != "_" => {
-            output.push(name.clone())
-        }
-        TypeKind::PatternMode { binder, ty } => {
-            output.push(binder.clone());
-            type_binders(ty, output);
-        }
-        TypeKind::Name { arguments, .. } | TypeKind::Tuple(arguments) => {
-            for arg in arguments {
-                type_binders(arg, output);
-            }
-        }
-        TypeKind::Record { fields, row } => {
-            for field in fields {
-                type_binders(&field.ty, output);
-            }
-            if let Some(row) = row {
-                type_binders(row, output);
-            }
-        }
-        TypeKind::Map { key, value, .. } => {
-            type_binders(key, output);
-            type_binders(value, output);
-        }
-        TypeKind::Array { element: ty, .. } | TypeKind::Member { ty, .. } => {
-            type_binders(ty, output)
-        }
-        _ => {}
-    }
-}
-
 fn signature(parameters: &[GenericParameter]) -> Vec<ArgumentSort> {
     parameters
         .iter()
@@ -1035,9 +1066,19 @@ enum LookupError {
     NoModule,
     NoMember,
     Ambiguous,
+    ForwardDefault(DefaultKind),
+    DownwardReference,
+    SignatureType,
 }
 
 impl LookupError {
+    fn in_namespace_prefix(self) -> Self {
+        match self {
+            Self::Unknown | Self::NoMember => Self::NoModule,
+            other => other,
+        }
+    }
+
     fn diagnostic(self) -> (&'static str, &'static str) {
         match self {
             Self::Unknown => ("E0204", "unresolved name"),
@@ -1048,6 +1089,22 @@ impl LookupError {
             Self::Ambiguous => (
                 "E0206",
                 "constructor abbreviation has multiple declarations",
+            ),
+            Self::ForwardDefault(DefaultKind::Generic) => (
+                "E0320",
+                "generic default refers to its own or a later parameter",
+            ),
+            Self::ForwardDefault(DefaultKind::Parameter) => (
+                "E0408",
+                "parameter default refers to its own or a later parameter",
+            ),
+            Self::DownwardReference => (
+                "E0705",
+                "signature where cannot refer to a declaration in block where",
+            ),
+            Self::SignatureType => (
+                "E0706",
+                "function signature cannot refer to a type declared in block where",
             ),
         }
     }
@@ -1062,39 +1119,50 @@ impl Index {
         constructors: bool,
     ) -> Result<DefId, LookupError> {
         let mut late = false;
-        let mut candidates = vec![];
+        let mut default_kind: Option<DefaultKind> = None;
+        let constructors =
+            constructors && name.as_bytes().first().is_some_and(u8::is_ascii_uppercase);
+        let mut visible_names = BTreeSet::new();
+        let mut candidates = BTreeSet::new();
         loop {
             let current = &self.hir.scopes[scope.0];
             if let Some(entry) = current.bindings.get(name) {
                 if entry.visible_at <= at {
                     return Ok(entry.definition);
                 }
+                if let Some(kind) = default_kind
+                    && self.hir.definitions[entry.definition.0].kind == kind.parameter_kind()
+                {
+                    return Err(LookupError::ForwardDefault(kind));
+                }
                 late = true;
             }
             if constructors {
-                if let Some(variants) = current.constructors.get(name) {
-                    candidates.extend(variants);
-                }
-                for entry in current.bindings.values() {
+                // An outer sum with a shadowed name is not directly visible.
+                // Different names may still import the same sum declaration.
+                for (spelling, entry) in &current.bindings {
+                    if entry.visible_at > at || !visible_names.insert(spelling) {
+                        continue;
+                    }
                     let def = &self.hir.definitions[entry.definition.0];
                     if def.kind == DefinitionKind::Type
                         && let Some(members) = def.members
                         && let Some(variant) = self.hir.scopes[members.0].bindings.get(name)
                     {
-                        candidates.push(variant.definition);
+                        candidates.insert(variant.definition);
                     }
                 }
             }
             let Some(parent) = current.parent else { break };
+            default_kind = current.default_kind;
             scope = parent;
         }
-        candidates.sort_by_key(|id| id.0);
-        candidates.dedup();
-        match candidates.as_slice() {
-            [id] => Ok(*id),
-            [] if late => Err(LookupError::Uninitialized),
-            [] => Err(LookupError::Unknown),
-            _ => Err(LookupError::Ambiguous),
+        let mut candidates = candidates.into_iter();
+        match (candidates.next(), candidates.next()) {
+            (Some(id), None) => Ok(id),
+            (Some(_), Some(_)) => Err(LookupError::Ambiguous),
+            _ if late => Err(LookupError::Uninitialized),
+            _ => Err(LookupError::Unknown),
         }
     }
 
@@ -1137,7 +1205,7 @@ impl Index {
         constructors: bool,
     ) -> Result<DefId, LookupError> {
         let (first, rest) = path.split_first().ok_or(LookupError::Unknown)?;
-        let (mut found, rest) = if first == "Super" {
+        let (head, rest) = if first == "Super" {
             let mut upward = self.parent_module(scope)?;
             let mut rest = rest;
             while let Some((head, tail)) = rest.split_first() {
@@ -1148,15 +1216,25 @@ impl Index {
                 rest = tail;
             }
             let (name, rest) = rest.split_first().ok_or(LookupError::NoModule)?;
-            (self.member(upward, name, true)?, rest)
+            (self.member(upward, name, true), rest)
         } else {
             (
-                self.lexical(scope, first, at, constructors && rest.is_empty())?,
+                self.lexical(scope, first, at, constructors && rest.is_empty()),
                 rest,
             )
         };
-        for name in rest {
-            found = self.member(self.member_scope(found)?, name, false)?;
+        let mut found = if rest.is_empty() {
+            head?
+        } else {
+            head.map_err(LookupError::in_namespace_prefix)?
+        };
+        if let Some((last, prefixes)) = rest.split_last() {
+            for name in prefixes {
+                found = self
+                    .member(self.member_scope(found)?, name, false)
+                    .map_err(LookupError::in_namespace_prefix)?;
+            }
+            found = self.member(self.member_scope(found)?, last, false)?;
         }
         Ok(found)
     }
@@ -1234,7 +1312,10 @@ impl Index {
             self.member_scope(id)?
         };
         for name in path {
-            module = self.member_scope(self.member(module, name, upward)?)?;
+            let member = self
+                .member(module, name, upward)
+                .map_err(LookupError::in_namespace_prefix)?;
+            module = self.member_scope(member)?;
             upward = false;
         }
         if item.glob {
@@ -1321,6 +1402,7 @@ impl Index {
             span,
             path,
             use_kind,
+            downward_error,
         } in std::mem::take(&mut self.uses)
         {
             match self.resolve(
@@ -1346,7 +1428,15 @@ impl Index {
                         application,
                     });
                 }
-                Err(error) => {
+                Err(mut error) => {
+                    if let Some(downward_error) = downward_error
+                        && (error == LookupError::Unknown
+                            || error == LookupError::NoModule
+                                && self.lexical(scope, &path[0], span.start, false)
+                                    == Err(LookupError::Unknown))
+                    {
+                        error = downward_error;
+                    }
                     let (code, message) = error.diagnostic();
                     self.error(span, code, &format!("{message} '{}'", path.join("::")));
                 }

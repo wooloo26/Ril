@@ -12,6 +12,18 @@ pub struct Stmt {
     pub span: Span,
 }
 
+impl Stmt {
+    pub(crate) fn item_name(&self) -> Option<&str> {
+        match &self.kind {
+            StmtKind::Function(item) => Some(&item.name),
+            StmtKind::Type(item) => Some(&item.name),
+            StmtKind::Effect(item) => Some(&item.name),
+            StmtKind::Sub(item) => Some(&item.name),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StmtKind {
     Binding(Box<Binding>),
@@ -527,6 +539,76 @@ pub struct HandlerArm {
 pub struct Pattern {
     pub kind: PatternKind,
     pub span: Span,
+}
+
+impl Pattern {
+    pub(crate) fn binding_names(&self, names: &mut Vec<String>) {
+        match &self.kind {
+            PatternKind::Name(name) | PatternKind::Rest(Some(name)) if name != "_" => {
+                names.push(name.clone());
+            }
+            PatternKind::Tuple(items)
+            | PatternKind::Array(items)
+            | PatternKind::Alternative(items)
+            | PatternKind::Constructor {
+                arguments: items, ..
+            } => {
+                for item in items {
+                    item.binding_names(names);
+                }
+            }
+            PatternKind::Record {
+                fields,
+                rest_binding,
+                ..
+            } => {
+                for field in fields {
+                    field.pattern.binding_names(names);
+                }
+                if let Some(name) = rest_binding {
+                    names.push(name.clone());
+                }
+            }
+            PatternKind::Mode { pattern, .. } => pattern.binding_names(names),
+            PatternKind::Type(ty) => ty.pattern_binding_names(names),
+            _ => {}
+        }
+    }
+}
+
+impl TypeExpr {
+    fn pattern_binding_names(&self, names: &mut Vec<String>) {
+        match &self.kind {
+            TypeKind::TypeBinder(name) | TypeKind::PatternRest(Some(name)) if name != "_" => {
+                names.push(name.clone());
+            }
+            TypeKind::PatternMode { binder, ty } => {
+                names.push(binder.clone());
+                ty.pattern_binding_names(names);
+            }
+            TypeKind::Name { arguments, .. } | TypeKind::Tuple(arguments) => {
+                for arg in arguments {
+                    arg.pattern_binding_names(names);
+                }
+            }
+            TypeKind::Record { fields, row } => {
+                for field in fields {
+                    field.ty.pattern_binding_names(names);
+                }
+                if let Some(row) = row {
+                    row.pattern_binding_names(names);
+                }
+            }
+            TypeKind::Map { key, value, .. } => {
+                key.pattern_binding_names(names);
+                value.pattern_binding_names(names);
+            }
+            TypeKind::Array { element: ty, .. }
+            | TypeKind::Member { ty, .. }
+            | TypeKind::Optional(ty) => ty.pattern_binding_names(names),
+            _ => {}
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
