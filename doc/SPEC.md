@@ -6651,7 +6651,17 @@ halt fn bounded() -> Result<i64, BudgetError> {
     div_budget(10_000, spin)
 }
 assert(bounded() is Err(BudgetError::Exhausted))
+
+-- The ordinary with application supplies the remaining computation as the action:
+halt fn bounded_with() -> Result<i64, BudgetError> {
+    with div_budget(10_000)
+    spin()
+}
+-- Equivalent to div_budget(10_000, \-> spin()).
+assert(bounded_with() is Err(BudgetError::Exhausted))
 ```
+
+`with div_budget(limit)` follows [ordinary parameterized application](#parameterized-handler-applications). The remaining computation produces T; the application produces `Result<T, BudgetError>`, which must be inspected, propagated, or returned. `return` in that remaining computation returns from the supplied action.
 
 The prelude supplies Div, `div_budget`, and `BudgetError` directly. The budget primitive and its result data have these declaration shapes:
 
@@ -7801,9 +7811,10 @@ The prelude is an ambient lexical scope enclosing every compilation unit, includ
 | Built-in functions below | Bare names: `len`, `clone`, `div_budget`, `assert`, etc. |
 | Library modules below | Whole public namespace through `Module::member` |
 | Standard types / sorts | `Option<T>`, `Result<T, E>`, `Set<T>`, `BudgetError`, `MemberMode`. Constructors follow ordinary resolution |
+| Effect labels / sets | Bare names: `Div`, `Fiber`, `Concurrent`, `Async`; Div is compiler-owned and has no operations |
 | Static type operations | `SharedObject`, `LenTarget`, `Tuple`, `NominalWrapper`, `Unwrap` |
 | Scoped draft type | `Draft<T>` in [recipe and helper contracts](#normative-rules-for-functional-updates) |
-| Language constructs | Primitive types, `Type`, `Type<T>`, `?T`, collection syntax, and system effects `Fiber`, `Concurrent`, `Async`, `Div` |
+| Language constructs | Primitive types, `Type`, `Type<T>`, `?T`, and collection syntax |
 | Explicit `use` | Ordinary module aliases or selected member bindings in the declaring scope |
 | Shadowing | Inner declarations may shadow prelude bindings; `Type` and `Super` retain their protected-name rules |
 
