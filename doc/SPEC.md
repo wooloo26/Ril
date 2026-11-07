@@ -172,6 +172,7 @@ The following distinctions apply throughout the specification; their defining se
   - [Compile-Time Computation and Finiteness](#compile-time-computation-and-finiteness)
     - [Static Type Values and Type Quotation](#static-type-values-and-type-quotation)
     - [Pure Type Functions and Result Restrictions](#pure-type-functions-and-result-restrictions)
+      - [Type-Evaluation Exhaustion Diagnostics](#type-evaluation-exhaustion-diagnostics)
     - [Disjoint Call Families, Evaluation Budgets, and Branch Pruning](#disjoint-call-families-evaluation-budgets-and-branch-pruning)
     - [Static Introspection](#static-introspection)
       - [Coordinate Enumeration with keyof](#coordinate-enumeration-with-keyof)
@@ -7100,6 +7101,44 @@ type FastBuf = PaddedBuffer<64, u8>            -- Resolves to { inline_data: []u
 -- type BadInfinite<T> = BadInfinite<T>        -- Error [E0313]: cyclic alias without nominal or sum indirection
 -- type Spin = \T -> Spin<T>
 -- type NeverFinishes = Spin<i64>             -- Error [E0811]: recursive type-function evaluation exhausts its budget
+```
+
+#### Type-Evaluation Exhaustion Diagnostics
+
+An explanation of compile-time budget exhaustion should identify the exhausted compiler evaluation or source budget, the source location where evaluation stopped, and the active instantiation when available. It may include a partial result preview or an evaluation trace. Availability, depth, formatting, and truncation limits are implementation-defined; a result preview is not required when no result structure has been established. The diagnostic code follows the actual failure: compiler-budget exhaustion is `E0811`, while a source budget returns `Err(BudgetError::Exhausted)` and a later explicit panic remains `E0831`.
+
+| Preview / trace | Requirement |
+| :--- | :--- |
+| Confirmed result structure | Display only structure established to belong to any successful result of this computation; intermediate types may appear separately in a trace, clearly identified as intermediate |
+| Unfinished computation | Explicitly mark unresolved portions; do not guess a branch, shape, or member type |
+| Presentation truncation | Distinguish completed content omitted for display from computation that has not completed |
+| Inspection | Bound inspection and rendering of existing state; do not resume user computation or force further type expansion to fill the preview |
+| Language status | Diagnostic data only; placeholders have no type meaning, do not participate in checking, and are not returned by budget or added to BudgetError |
+
+When an outer result structure is established, an illustrative preview is:
+
+```text
+Type evaluation budget exhausted at schema.ril:24
+While evaluating: Expand<Node>
+Partial result (diagnostic only):
+{
+    id: i64,
+    children: []⟪pending Expand<Node>⟫,
+    ... (completed fields omitted)
+}
+```
+
+If no result structure is established, the current computation and location suffice. Successful handling of source-budget exhaustion must not itself reject compilation. No exhaustion diagnostic is required in that case; tooling may expose its preview or trace on request. The selected fallback must still be a complete valid type:
+
+```ril
+use ril/eval
+halt type OrFallback = \T -> {
+    match Eval::budget(0, \-> <T>) {
+        Ok(token) -> token,
+        Err(_) -> <i64>,
+    }
+}
+type Selected = OrFallback<str>               -- OK: i64; source-budget exhaustion is handled
 ```
 
 ### Disjoint Call Families, Evaluation Budgets, and Branch Pruning
