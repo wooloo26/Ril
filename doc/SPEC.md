@@ -24,7 +24,7 @@ The following distinctions apply throughout the specification; their defining se
 | Read-only / deeply immutable | A read-only path grants no writes through that path; a live origin may still be writable through another path. Deep immutability excludes surviving writers and live dependencies |
 | Shared object / shared writable authority | A shared object has identity and can be aliased; this alone grants no shared write authority |
 | Construction / isolation | Construction qualification tracks eligible initial reception and handoff. Root privacy and separation of writable graph regions require independent proofs |
-| Purity / finiteness / normal completion | Purity concerns outward effects and state/provenance obligations. Finiteness concerns computation. A `never` expression has no normal continuation; it can transfer control, panic, or execute forever |
+| Purity / finiteness / normal completion | Purity excludes outward operational effects and state/provenance obligations, while implicit Div may remain. Optional `halt` additionally excludes Div. A `never` expression has no normal continuation; it can transfer control, panic, or execute forever |
 
 - **Normative Rules and Invariants**: Conforming implementations must enforce all specified grammar, static-checking, and execution rules, including rules not presented as titled invariants.
 - **Grammar Productions**: Syntactic grammar is formally specified in Extended Backus-Naur Form (EBNF).
@@ -35,7 +35,7 @@ The following distinctions apply throughout the specification; their defining se
 - **Diagnostic Text**: Error codes and their triggering conditions are normative. Example message text, source highlighting, notes, and suggested repairs are illustrative.
 - **Examples**: Blocks are independent fixtures unless marked as complete source files.
   - Local statements run in an enclosing callable; displayed declarations belong to its enclosing declaration scope. Free names are typed fixture inputs or supplied declarations.
-  - Fixtures handle their local expressions' effects. Except for examples testing missing named-function annotations, abbreviated named callable declarations in independent fixtures denote their compiler-completed signatures under [mandatory contract completion](#mandatory-contract-inference-and-completion). `-- OK` checks that completed form; complete source files spell the prescribed named annotations, with the specified `via`/`infer` exemptions. Anonymous functions retain full inferred contracts with optional source annotations.
+  - Fixtures handle their local expressions' operational effects; implicit Div may remain. Except for examples testing missing named-function annotations, abbreviated named callable declarations in independent fixtures denote their compiler-completed signatures under [mandatory contract completion](#mandatory-contract-inference-and-completion). `-- OK` checks that completed form; complete source files spell the prescribed named annotations, with the specified `via`/`infer` exemptions and automatic Div inference. Anonymous functions retain full inferred contracts with optional source annotations.
   - Negative statements are checked individually with valid setup. Blocks containing `...` are schematic.
   - Static-evaluation fixtures use the selected abstract target and a sufficient evaluation budget unless a budget-exhaustion case is explicitly specified.
 - **Semantic Cross-References**: Internal specifications and rule cross-references link directly to their defining sections via Markdown anchors.
@@ -342,7 +342,6 @@ let ieee = 1.0 / 0.0                  -- OK: positive infinity
 | `panic(message)` | Begin panic unwinding with the supplied message |
 | False `assert` condition | Assertion panic |
 | Integer `/` or `%` with zero divisor | Division-by-zero panic |
-| Negative `Div::budget` limit | Panic before invoking the protected action |
 | Unrepresentable checked fixed-width integer result, including negation and `MIN / -1` | Integer-overflow panic; `MIN % -1` remains zero |
 | Fixed-width shift count negative or at least the bit width; negative `bigint` shift count | Invalid-shift panic |
 | Ordinary array element index outside its bounds | Index-bounds panic |
@@ -1388,7 +1387,7 @@ assert(observed.count == 1)
 - **Propagation**: Preserve these facts through aggregates, projections, branches, recursion, returns, calls, opaque boundaries, handlers, cleanup, and modules. Every handle, member mode, and stored constituent limits the resulting authority. A default member imposes deep immutability; `mut` permits interior writes without slot replacement. Independent value copies carry no shared-object authority; capturing a mutable binding retains its origin.
 - **Contract Metadata**: Every function retains its complete inferred contract across source annotation omissions and callable-type abbreviations. Named source completion follows the `via`/`infer` exemptions under [access mode inference](#access-mode-inference-with-via-and-infer); anonymous source annotations are optional. Private dependencies and alias relations are checked metadata. Plain `-> T` establishes immutability; `-> infer T` requests inferred result authority.
 - **Conservative Alternatives**: Retain the union of possible origins, accesses, retention, and escape obligations, and only access modes common to all alternatives. Preserve input/output and output-component relations established in every retained alternative. Prune only branches excluded by the specified static computations and typing rules. Treat unknown overlap as possible overlap; mutable access, immutable publication, task crossing, uniqueness, and non-escape require established proofs.
-- **Recursive Dependencies**: Loop and recursive call dependencies retain possible origins and unresolved relationships, including termination conditions and finite-budget coverage. Freshness, disjointness, non-escape, termination, empty callable rows, and [authority use](#reachable-authority-use) require facts grounded in actual operations or verified contracts. Unresolved dependencies remain obligations at every affected use; an absent proof uses that operation's diagnostic.
+- **Recursive Dependencies**: Loop and recursive call dependencies retain possible origins and unresolved relationships, including inferred Div and finite-budget coverage. Freshness, disjointness, non-escape, absence of Div, empty callable rows, and [authority use](#reachable-authority-use) require facts grounded in actual operations or verified contracts. A cycle cannot justify its own guarantees. Unresolved dependencies remain obligations at every affected use; an absent proof uses that operation's diagnostic.
 - **Authority and Discharge**: Prove each access mode and authority use from a declaration, a traced source, a fresh-data rule, or an explicit resource rule. Local discharge requires confinement of all relevant authority roots and environments. Calculate minimal concrete state and provenance annotations (`E0529`) under these conservative rules.
 - **Source Annotations**: Infer and check modes, argument/reception markers, result construction/sources, effects, captures, and state/provenance clauses. Named definitions complete concrete required annotations; `via` retains mode-dependent clauses and `infer` retains result details in metadata. Anonymous functions may omit source annotations. Written/contextual constraints are checked, and ordinary markers retain their authority semantics. Lexical templates elaborate only their verified dependent transfers; inference supplies no absent authority, hidden copy, changed evaluation order, allocation identity, or resource ownership.
 - **Diagnostic Provenance**: Semantic diagnostics must make derived access, sharing, escape, and effect obligations and their source explanations available, including facts omitted from source. Identify the relevant origin or declaration, propagation steps, use or boundary, and accepting or rejecting rule. Report possible origins and unproved disjointness explicitly. Explanations are also available for accepted programs and inferred obligations; presentation is optional and validity is independent of it.
@@ -1599,7 +1598,7 @@ fn bump(mut x: Cell) &mut -> () { x.count += 1 }
 -- } -- Error [E0550]: the declaration-owned element mode is fixed too
 ```
 
-Infer the admitted finite domain from the body, schemas, verified dependencies, and explicit semantic constraints; then normalize the whole family; finally validate named annotations. Missing annotations never prune alternatives. A proper inferred subdomain is allowed, but explicitly promised instances cannot be removed. Check every admitted alternative's type, authority use, provenance, escape, exclusivity, resources, effects, termination, and budget obligations; unknown facts remain obligations.
+Infer the admitted finite domain from the body, schemas, verified dependencies, and explicit semantic constraints; then normalize the whole family; finally validate named annotations. Missing annotations never prune alternatives. A proper inferred subdomain is allowed, but explicitly promised instances cannot be removed. Check every admitted alternative's type, authority use, provenance, escape, exclusivity, resources, full effects including Div, and budget obligations; unknown facts remain obligations.
 
 `E0550` rejects a declaration-owned `via` parameter/schema whose mode is invariant over all admitted type/static arguments and dependencies, including nested array/map occurrences. A template-local `let via` requires access modes or provenance dependent on lexically bound mode parameters or selected-call relations from an input callable's open mode pattern, including contained schemas and consumption/source relations. Check this dependency at template level. Open callable patterns and `-> infer` are exempt from this redundancy check. Invalid/empty families use their underlying diagnostic; `E0527` checks each mutable/shared alternative's actual use.
 
@@ -1611,7 +1610,7 @@ fn store(mut xs: [^mut]Cell, ^mut value: Cell) &^mut -> () {
 -- Replacing value's fixed mode with via also gives E0550, not a state-annotation exemption.
 ```
 
-Named definitions spell concrete effects, state/provenance clauses, and known external/captured source groups, including known effect instances parameterized by ordinary type arguments. Only genuine mode/callback dependencies remain symbolic; selecting an instance makes its concrete obligations the caller's responsibility after lawful handling/discharge. A variable solved to a constant supplies no exemption. Explicit `&{}` closes the full total.
+Named definitions spell concrete effects other than the automatically retained [Div label](#termination-and-halt-contracts), state/provenance clauses, and known external/captured source groups, including known effect instances parameterized by ordinary type arguments. Only genuine mode/callback dependencies remain symbolic; selecting an instance makes its concrete obligations the caller's responsibility after lawful handling/discharge. A variable solved to a constant supplies no exemption. Explicit `&{}` closes the full total.
 
 For signatures with explicit `via` inputs, `-> infer T` infers result access modes, sources, and dependencies while requiring the result data type. Preserve complete metadata and check written constraints and every root/contained guarantee. Results requiring a fresh/live root combination use an explicit aggregate or variant under the [return rules](#return-construction-access-modes-and-sources).
 
@@ -1710,7 +1709,7 @@ fn read(via x: Cell) -> i64 { x.count }
 -- Error [E0552]: the same via spelling no longer preserves the accepted read inputs
 ```
 
-Every emitted interface must retain normalized domains, schemas, result/payload correlations, origins/history, store/return relations, consumption, graph preconditions, callback/environment dependencies, and termination/budget conditions. Hidden opaque names retain their checking facts in metadata. Tools expose concise summaries and full expansions.
+Every emitted interface must retain normalized domains, schemas, result/payload correlations, origins/history, store/return relations, consumption, graph preconditions, callback/environment dependencies, complete effect rows including Div, and budget-coverage conditions. Hidden opaque names retain their checking facts in metadata. Tools expose concise summaries and full expansions.
 
 Compatibility is checked against the normalized declared/emitted interface baseline. `E0552` rejects narrower inputs, stronger requirements, weaker results, or incompatible schemas. An explicitly new interface version may establish a new baseline; otherwise invalidate and recheck dependents. Local/private changes recheck ordinary dependents.
 
@@ -1752,7 +1751,7 @@ assert(external.count == 10 && inserted.left.count == 11)
 | Declared shape (`E0336`, `E0312`) | Preserve tuple arity, record fields, and sum variants; members may be replaced |
 | Confinement (`E0607`) | `derive` creates the draft handle. `Draft<T>` may be named in recipe and helper parameter types. Draft paths, references, and captures remain within the recipe and its non-escaping helpers. Publish after normal completion |
 | Effects / abort | Forward the actual recipe's effects and external state/provenance obligations, including surviving captures. Discharge draft writes locally. Abort preserves immutable inputs and prior external writes |
-| Finiteness | Preserve the actual recipe's [termination and budget obligations](#termination-and-halt-contracts), including its cleanup and any recovery required for finite completion |
+| Finiteness | Propagate the actual recipe's [Div effect](#termination-and-halt-contracts) and budget-coverage requirements, including cleanup and recovery; derive does not itself remove Div |
 
 ```ril
 fn update_title<T: { title: str, .. }>(item: T, new_title: str) -> T {
@@ -1847,7 +1846,7 @@ ValueType             ::= TypeExpression
   The bottom type `never` is statically rejected before guard evaluation, preventing vacuous satisfaction. If $\text{Guard}\langle T_{arg} \rangle$ does not produce definitional identity with $T_{arg}$, the argument is rejected under `E0301`. Multiple guards pipe from left to right: `T |> Guard1 |> Guard2` $\equiv \text{Guard2}\langle \text{Guard1}\langle T \rangle \rangle$.
 - **Constraint Composition**. A structural row constraint and a pipeline guard both apply to the argument type. The `AuditGuard` example below requires an audit field in addition to the value field used by the function.
 - **Static Value Sorts**: Const parameters admit scalar values, atomic type tokens, and finite immutable aggregates without resource or callable authority. `token: Type` is a static value parameter, distinct from a type parameter `T: Type`. Admission of static-only token values never permits their run-time materialization.
-- **Const Generic Evaluation & Purity Invariant (`E0814`, `E0323`)**: Const generic arguments evaluate at compile time within the pure static domain (with empty effect and state/provenance rows). Non-constant runtime expressions passed to const parameters trigger `E0814`. Arguments failing sort constraints trigger `E0323`.
+- **Const Generic Evaluation & Purity Invariant (`E0814`, `E0323`)**: Const generic arguments evaluate at compile time within the pure static domain (no outward effects except implicit Div and no outward state/provenance obligations). `halt` is optional; evaluation remains subject to the compiler budget. Non-constant runtime expressions passed to const parameters trigger `E0814`. Arguments failing sort constraints trigger `E0323`.
 - **No Untagged Literal or Storage Union Types (`E0318`)**: Concrete values (strings, integers, booleans) and untagged value unions (`i64 | str`) cannot serve as storage, variable, or binding types (`E0318`). Tagged alternatives are declared with sum types (`type HttpMethod { Get, Post }`). Concrete values may be supplied as compile-time arguments to const parameters (`Buffer<u8, 1024>`, `Matrix<f64, 4>`). Finite type sets (`T: i64 | f64`) are permitted exclusively as static domain constraints on generic parameters (`TypeSetSort`), which are monomorphized to single rigid types.
 - **Function Generic Default Prohibition (`E0317`)**: Function generic parameters cannot declare defaults (`fn f<T = i64>` is rejected); function types are inferred bidirectionally at call sites.
 
@@ -2093,7 +2092,7 @@ NominalRef       ::= QualifiedName [ GenericArgs ]
 | Effect or state/provenance annotation on a type function | `E0335` |
 | Effect annotation on a value binding or non-callable array expression | `E0613` |
 
-Binding and origin access modes govern access. Effects govern evaluation and handler dispatch; completed passive values have no direct effect annotation. Stored callables retain invocation obligations. Termination and finite-budget coverage remain separate invocation judgments, not types, state/provenance clauses, or effect labels.
+Binding and origin access modes govern access. Effects govern evaluation and handler dispatch; the non-operational Div label tracks possible infinite computation. Completed passive values have no direct effect annotation. Stored callables retain full invocation rows, including latent Div. Finite-budget coverage remains a primitive eligibility condition, separate from authority and effect-row matching.
 
 ## Declarations and Bindings
 
@@ -2462,7 +2461,7 @@ assert(events == ["new"])
 | Registration | After successful initialization; per binding and per loop activation; failed initialization registers nothing |
 | Exit | Invoke once in reverse registration order, including cancellation/abort; double-fault exception below |
 | Callback selection | Read the current `on_close` at exit; retain no earlier snapshot. Opaque resources use their specified action |
-| Initialization/replacement | Preserve cleanup eligibility and access modes; no residual effects (`E0616`), and prove finite cleanup (`E0617`) |
+| Initialization/replacement | Preserve cleanup eligibility and access modes; no residual operational effects (`E0616`) or Div (`E0617`) |
 | Mutable cleanup environment | Requires `let scoped mut` and `mut`/`var mut on_close`; replacement also needs `var`; cleanup invocation satisfies `E0527` |
 | Other binding modes | Plain `let scoped` requires immutable data; rebinding: `E0502`; `var`/`var mut`: `E0532` |
 | Invocation | Internal handlers and permitted writes allowed; check exclusivity then, not as continuous registration access |
@@ -2476,7 +2475,7 @@ type Cleanup = { on_close: fn() -> () }
 { let scoped good = Cleanup.{ on_close: \-> () } } -- OK: implicit cleanup uses the binding
 ```
 
-Missing, inaccessible, or shape-incompatible scoped cleanup operations are `E0541`. For a shape-compatible cleanup, residual effects use `E0616`, unproved finiteness uses `E0617`, and insufficient authority uses the applicable mode/authority diagnostic. Opaque resources require explicit cleanup support and preserve representation opacity.
+Missing, inaccessible, or shape-incompatible scoped cleanup operations are `E0541`. For a shape-compatible cleanup, residual operational effects use `E0616`, residual or unresolved Div uses `E0617`, and insufficient authority uses the applicable mode/authority diagnostic. Opaque resources require explicit cleanup support and preserve representation opacity. The cleanup need not be marked `halt`; its state/provenance obligations remain subject to the ordinary cleanup rules.
 
 | Cleanup panic occurs during | Outcome |
 | :--- | :--- |
@@ -2697,7 +2696,7 @@ DeclLet          ::= "let" ScreamingSnakeCase ":" TypeExpression
 - **Temporary Callbacks**: Invoke only during the current foreign call, on the current task. Preserve actual effects, origins, environment modes, and exclusivity; mutable invocation requires `mut` on parameter and argument. No environment inspection, retention, return, or cross-task transfer is permitted. Arguments/results must satisfy ordinary exchange or explicit resource rules; mutable data and nested callables gain no exemption.
 - **Explicit Resource Contracts (`E0908`)**: Only an explicit resource contract may extend ordinary exchange. Opaque declarations and `@Fiber`/`mut`/`^mut` alone grant no resource mutation, callback retention, copying, closing, or transfer. Reject unsupported requests. Ordinary opaque data retains its actual provenance.
 - **Trusted Boundary**: An external entity's conformance to its declared contract is a trusted premise. Static checking verifies the Ril program against that contract. Diagnostic explanations identify the foreign contract as the origin of trusted facts; other authority requires proof.
-- **Termination Boundary**: A bodyless external function is possibly non-terminating, even when its omitted effect and state/provenance rows are closed by default. Its declaration cannot assert termination or budget coverage; `halt` is not admitted on a bodyless function declaration. A reachable external call prevents ordinary termination certification and is inadmissible within `Div::budget` (`E0822`). Language-defined built-ins follow their specified termination rules; verified ordinary Ril definitions retain their termination facts across module boundaries.
+- **Termination Boundary**: A bodyless external function automatically has Div, including when its source omits effects; other omitted effect/state rows remain closed. Its declaration cannot assert absence of Div or budget coverage, and cannot be marked `halt`. A reachable external call propagates Div and is inadmissible within `Eval::budget` (`E0822`). Language-defined built-ins follow their specified finite/coverage contracts; verified ordinary Ril definitions retain their full effect rows across module boundaries.
 
 ```ril
 -- In file: platform/dom.d.ril
@@ -4440,7 +4439,7 @@ fn logged() @Log -> () { Log::write("event") }
 -- fn hidden_effect() -> () { logged() }    -- Error [E0612]: concrete residual effects require declaration
 ```
 
-- **Definitions**: Infer complete contracts after handling and local discharge under [mandatory contract completion](#mandatory-contract-inference-and-completion). Named definitions spell concrete state and residual effects, including obligations inherited from calls (`E0510` / `E0612` when missing). Anonymous source annotations are optional.
+- **Definitions**: Infer complete contracts after handling and local discharge under [mandatory contract completion](#mandatory-contract-inference-and-completion). Named definitions spell concrete state and residual operational effects, including obligations inherited from calls (`E0510` / `E0612` when missing). Inferred Div is automatically retained without a source annotation or handler requirement. Anonymous source annotations are optional.
 - **Local Purity**: Mutation of confined local storage, immutable publication of eligible construction results, and call-local environments do not by themselves create outward state obligations. Creating a surviving environment or an additional surviving writer retains the applicable `&capture`, `&^mut`, or named-source obligation. Named definitions spell those obligations; anonymous functions may retain them entirely in their inferred contracts.
 - **Callback Dependence**: Infer and forward symbolically the obligations dependent on callable parameter values, including constituents reached through fields, elements, projections or preserved aliases. The dependency is tied to the actual parameter value. Once a caller supplies a known callable, directly or inside an aggregate, its resulting concrete obligations join the caller's contract after handling and local discharge. Named definitions spell concrete obligations.
 - **Anonymous Definitions**: Infer the complete contract, including captures and concrete lexical sources. Type, result, effect, state, capture and returned-source annotations are optional; written annotations and contextual callable types constrain inference. Body operations belong to later invocation.
@@ -4479,20 +4478,20 @@ The compiler must infer the full checked contract of every public, private, loca
 | :--- | :--- |
 | Inference scope | The same complete analysis for public, private, local, anonymous, and test functions |
 | Facts | Types, access modes/history, root and contained origins, aliases, writes, retention, captures, effects, escape/ownership, and callback dependencies |
-| Required named source | Data types, concrete parameter/result modes and dependencies, and concrete effect/state/capture annotations; `via` modes and dependent clauses, and `infer` results, use their specified metadata-only completion |
+| Required named source | Data types, concrete parameter/result modes and dependencies, and concrete operational-effect/state/capture annotations; inferred Div needs no source annotation; `via` modes and dependent clauses, and `infer` results, use their specified metadata-only completion |
 | Anonymous source | Type, result, effect, state, capture, and returned-source annotations are optional; absence alone is never `E0544`, `E0510`, or `E0612` |
 | Anonymous constraints | Written annotations and contextual callable types constrain the inferred contract; incompatible constraints are rejected by the applicable typing, access-mode, or callable-matching diagnostic |
 | Authority syntax | Concrete modes, ordinary argument/sharing markers, and resource operations remain required; lexical templates elaborate only verified dependent receptions and transfers |
 | Shared-reception completion | Follow the [shared-site spelling](#shared-writable-authority); inference cannot substitute an exclusive declaration for shared authority |
 | Root-return normalization | `^mut(x)` covers only root-return retention; actual writes and extra escape paths remain distinct obligations |
 | Context and generality | Use body and contextual constraints to infer complete callable contracts, including generic/structural constraints and symbolic callback dependencies; lack of a unique monomorphic signature is not by itself a missing-annotation error |
-| Missing-annotation diagnostics | Named parameter or return annotation: `E0544`; named state or an independently required reception marker: `E0510`; named effect declaration or an actually unhandled effect boundary: `E0612`; argument marker: `E0405` |
+| Missing-annotation diagnostics | Named parameter or return annotation: `E0544`; named state or an independently required reception marker: `E0510`; named operational-effect declaration or an actually unhandled operation boundary: `E0612`; inferred Div is exempt; argument marker: `E0405` |
 | Inconsistent-annotation diagnostics | Absent required authority use or redundant executable sharing marker: `E0527`; excess concrete state/provenance annotation: `E0529`; incompatible callable contract: `E0534` (parameter modes: `E0407`); unresolved required type/static instantiation: `E0344`; invalid return sources: `E0545` |
 | Explanations | Expose complete inferred classifications and origin/propagation chains, including possible sharing, actual anonymous captures, and unproved overlap |
 | Interfaces | Preserve fine paths, mode history, store/return relations, and output correlations in semantic summaries; changes invalidate dependent proofs |
 | Proof limits | Unknown facts never prove access authority, immutability, freshness, separation, or escape. Bodyless foreign declarations remain trusted explicit contracts |
 
-Missing required annotations reject a named definition. Explicit and template-elaborated transfers consume construction paths at their defined point. Inference follows [complete provenance](#complete-provenance-and-required-annotations); symbolic mode/callback/termination facts remain in metadata where source spelling is optional.
+Missing required annotations reject a named definition. Explicit and template-elaborated transfers consume construction paths at their defined point. Inference follows [complete provenance](#complete-provenance-and-required-annotations); symbolic mode/callback facts, full effect rows including implicitly inferred Div, and budget-coverage requirements remain in interfaces where source spelling is optional.
 
 `E0344` applies where a construct requires a determined type or static argument. An anonymous function may retain generic or structural constraints in its complete inferred contract; validate them at required instantiations and against explicit constraints.
 
@@ -4520,7 +4519,7 @@ let logged = \-> Log::write("event") -- OK: infer and preserve Log without a sou
 
 #### Closed and Open Callable Rows
 
-Callable types are closed by default at every arrow, independently of whether that arrow receives or returns another callable. A bare `fn() -> ()` therefore admits no residual effects, ambient or captured access, surviving environment creation, or retained writable publication. It is pure in the effect and state/provenance sense; it does not establish termination or finite-budget coverage.
+Callable types are closed by default at every arrow, independently of whether that arrow receives or returns another callable. A bare `fn() -> ()` therefore admits no residual effects, including Div, ambient or captured access, surviving environment creation, or retained writable publication. It requires purity and absence of Div, without requiring a `halt` marker. It does not by itself establish finite-budget coverage. Omission on a callable type closes its row; omission on a named definition still permits automatically inferred Div.
 
 The annotations belong to the callable whose parameter list immediately precedes them, before that callable's result arrow:
 
@@ -4619,7 +4618,7 @@ The `&up` callable-type abstraction admits an environment-free callable or the c
 | Named definitions | Complete concrete source annotations; symbolic parameter-dependent obligations remain in the full verified contract |
 | Anonymous definitions | Full inference; no requirement to spell inferred annotations in source |
 | Incompatible callable value | `E0534`; parameter-mode mismatches retain `E0407` and other dedicated conditions retain their codes |
-| Bodyless foreign declarations | Trusted explicit invocation rows; omitted rows are closed and no termination/coverage guarantee follows |
+| Bodyless foreign declarations | Trusted explicit operational-effect/state rows plus automatic Div; no absence-of-Div or coverage guarantee follows |
 
 Verified semantic summaries retain fine paths, mode history, input/output relations and output correlations. Every actual observed/retained constituent of a returned graph, including one admitted by an open state/provenance row, is checked before immutable publication, task crossing, further retention or exclusivity-sensitive access.
 
@@ -4655,7 +4654,7 @@ fn call_tick() &tick -> () { invoke(tick) }
 
 Later closed matching of a callable passed through an open type uses its preserved actual contract. Named-function state references resolve to the provider's verified named projection with its original source identities; other contract components are matched separately.
 
-Invoking already shared storage does not itself publish another writer. Actual environment mode determines whether invocation needs a writable or observation handle. Termination and finite-budget-coverage conditions remain independent of both rows and survive every ascription. A default-pure callable may still diverge; an open callable is not a finite or budget-covered callable merely because its operations are handled.
+Invoking already shared storage does not itself publish another writer. Actual environment mode determines whether invocation needs a writable or observation handle. Div survives every ascription as part of the complete effect row. A closed empty row excludes it; an open row preserves it. Budget coverage remains independently checked, including when ordinary operations have been handled.
 
 ```ril
 fn repeat(n: i64, action: Action) -> () {
@@ -4937,22 +4936,34 @@ type Step = fn() &up -> i64
 ```ril
 fn countdown(n: i64) -> i64 {
     if n <= 0 { 0 } else { countdown(n - 1) }
-}                                               -- Proven finite without halt
-fn spin() -> i64 { loop {} }                     -- Pure, possibly non-terminating; legal
-fn forward_spin() -> i64 { spin() }              -- Same termination conclusion; no effect declaration needed
-halt fn checked(n: i64) -> i64 { countdown(n) }   -- Unmarked finite helpers are admissible
--- halt fn unchecked() -> i64 { spin() }         -- Error [E0820]: no termination proof
+}                                               -- Inferred @Div, including decreasing recursion
+fn spin() -> i64 { loop {} }                     -- Pure, inferred @Div; legal
+fn forward_spin() -> i64 { spin() }              -- Inferred @Div propagates without source annotation
+fn done() -> i64 { 7 }                           -- No Div; halt is optional
+halt fn checked() -> i64 { done() }              -- Unmarked helpers are admissible
+-- halt fn unchecked() -> i64 { countdown(5) }   -- Error [E0820]: residual Div
 ```
 
-Every callable retains a termination judgment independently of its effect and state/provenance rows. `Finite` means its current invocation performs finite computation for all admitted inputs; `MayDiverge` means finiteness is unproved, covering both known infinite loops and insufficient evidence. These judgments are inferred checking metadata.
+`Div` is a prelude-provided, compiler-owned effect label for possible infinite computation, including cases where finiteness is unknown. It has no operations and requires no import, source handler, or ordinary named-source annotation. It participates in effect rows and interfaces; there is no separate `Finite` / `MayDiverge` callable judgment. Budget exhaustion is ordinary result data, not `Div`.
 
-- **Mandatory Inference**: Apply the same finite-computation rules to ordinary named functions, anonymous functions and `halt` definitions. Ordinary functions may be `MayDiverge` without an annotation. Purity and termination are checked independently; `@Div` declares budget exhaustion.
-- **Finite Outcomes**: Normal return, early return, panic, and a terminating delimited abort count as finite outcomes. `never` describes absence of normal continuation, not infinite execution: a panic may be finite while `loop {}` is not. Finite local computation alone promises no wall-clock bound or external scheduling progress.
-- **Invocation Dependencies**: Preserve termination conditions through calls, evaluated parameter defaults, callable arguments and constituents, aliases, branches, handlers, resumption, cleanup, and required child completion. Unknown callable or handler behavior remains a symbolic condition; a concrete invocation is `Finite` only when its required conditions hold. Unknown conditions cannot establish termination. Built-in waits have their stated external-progress premises; arbitrary external functions have no such termination premise.
-- **Cycles**: Every possible execution cycle, including those in indirect calls, handler re-entry and loop bodies, requires finite-descent evidence or a covering finite-evaluation boundary.
-- **Current vs. Latent Computation**: Creation, capture and publication contribute to the current invocation's obligations. A callable body and its termination conditions belong to its later invocation.
-- **`halt fn`**: Require `Finite` and empty effective outward effect and state/provenance rows after lawful handling and local discharge, including all admitted parameter-default evaluations. Local mutation, temporary local callable environments, and completely handled local effects are allowed. A called helper need not itself be marked `halt`. A fixed failure of termination is `E0820`; residual effects or outward state/provenance obligations violate `halt` purity (`E0821`). Nonempty outward annotations cannot exempt a `halt` definition from purity. Evaluation of explicit caller-supplied arguments retains its separate caller obligations.
-- **Higher-Order Constraints**: A `halt` definition constrains admitted callable arguments wherever their obligations are inferable. An incompatible actual argument is `E0534`. These constraints and actual termination facts cross module and callable-type boundaries as checked metadata, independently of effect and state/provenance row matching.
+| Construct / contract | Div rule |
+| :--- | :--- |
+| General recursion, including mutual and indirect invocation cycles | Introduce Div on potentially repeating invocations and propagate it, subject only to a covering budget boundary; decreasing arguments alone do not exempt recursion |
+| `while` / `loop` | Introduce Div; counter progression, a finite-looking condition, or checked overflow supplies no exemption |
+| `for`, finite mapped comprehensions, sequential finite collection combinators | No intrinsic Div; propagate iterator, body, and callback obligations |
+| Calls, defaults, branches, handlers, resumption, cleanup, required child completion | Propagate the obligations of the computation actually required, under the existing static branch-pruning rules |
+| Unknown callback through an open row | Preserve its symbolic effect dependency, including possible Div; absence must be established before satisfying a closed row |
+| Callable creation or return | Check current capture/publication separately; the body's Div remains latent until invocation |
+| Finite language primitive | Omit Div only under its specified finite contract and callback dependencies |
+| `Eval::budget` | The only primitive that removes Div from a covered invocation; see [finite evaluation](#finite-evaluation-with-div) |
+
+Invocation-cycle analysis includes callable-valued members, recursive types, mutable/live storage, captured environments, and handler re-entry. A cycle cannot establish its own absence of Div from its written signatures. Use verified contracts and established acyclic invocation dependencies; unresolved potentially cyclic dependencies introduce Div. Reading inert cyclic data alone introduces none. A verified budget can discharge a cyclic invocation within its protected action; the containing function need not retain that Div. Analyze definitions and their dependencies conservatively; neither evaluation on sample inputs nor arithmetic/structural descent removes an inferred Div. An unreachable static branch contributes no obligation.
+
+Purity requires absence of outward operational effects and state/provenance obligations after lawful handling and local discharge; the non-operational Div label may remain. Thus a pure function may diverge. `halt` additionally requires absence of Div: its complete effective effect and state/provenance rows must be empty for every admitted invocation, including all admitted parameter-default evaluations. Residual Div is `E0820`; other residual effects or state/provenance obligations are `E0821`. Local mutation, temporary environments, and completely handled finite local effects remain allowed. Explicit caller-supplied arguments retain their separate caller obligations.
+
+`halt` is an optional developer assertion on `fn`, `meta fn`, or type functions; callers and helpers need not carry the marker. Ordinary functions, type functions, and compile-time roots may retain Div. Static evaluation still has its [compiler budget](#pure-type-functions-and-result-restrictions). The marker neither installs a budget nor changes the declaration's call family, and cannot silently narrow explicitly promised inputs. Higher-order requirements use ordinary effect/state row constraints; no additional hidden termination contract is introduced.
+
+Finite completion includes normal/early return, panic, and terminating delimited abort. It guarantees neither a successful result nor a wall-clock bound or external scheduling progress. `never` means no normal continuation: panic can be finite while `loop {}` carries Div.
 
 ```ril
 halt fn local_sum(values: []i64) -> i64 {
@@ -4974,64 +4985,29 @@ var outside_count = 0
 
 fn invoke(action: fn() -> ()) -> () { action() }
 halt fn invoke_finite(action: fn() -> ()) -> () { action() }
+fn invoke_open(action: fn() @ -> ()) -> () { action() }
 fn done() -> () {}
 fn forever() -> () { loop {} }
-invoke(done)                                    -- Finite
--- invoke(forever)                              -- Legal, MayDiverge; not executed in this fixture
+invoke(done)                                    -- No Div, without requiring halt
+-- invoke(forever)                              -- Error [E0534]: closed empty effect row rejects Div
+-- invoke_open(forever)                         -- Legal, propagates Div; not executed in this fixture
 invoke_finite(done)                             -- OK
--- invoke_finite(forever)                       -- Error [E0534]: admitted callback must be finite
+-- invoke_finite(forever)                       -- Error [E0534]: actual callback has Div
 
-halt fn make_later() -> (fn() -> i64) { spin }   -- Returning an existing callable is finite
+halt fn make_later() -> (fn() @Div -> i64) { spin } -- Only the later invocation has Div
 -- halt fn run_later() -> i64 { make_later()() } -- Error [E0820]: its later invocation still diverges
 -- halt fn bad_default(value: i64 = spin()) -> i64 { value } -- Error [E0820]: default may diverge
 ```
 
-| Finite-iteration case | Required proof |
-| :--- | :--- |
-| `for` | Finite collection/range and finite per-element computation |
-| `while`/`loop` | Each continuing path makes the next condition false, or advances a counter toward a stable finite bound |
-| Counter progression | Nonzero step in a fixed direction; continuation stays on the corresponding side of the bound |
-| Equality exit | Initial value and step are known to reach the exit |
-| `next` | The same progress obligation as every other continuing path |
-| Aliases, callbacks, handlers, other writes | Must not invalidate the counter, bound, or descent facts |
-| Arithmetic | Checked overflow is a finite panic; wrapping arithmetic alone proves no descent |
-
-| Recursive case | Required proof |
-| :--- | :--- |
-| Ordinary or `halt` recursion | Each cycle strictly decreases a nonnegative integer under a lower-bound guard, or takes a proper subpart of a known finite acyclic structure |
-| Mutual/indirect recursion | Preserve the same descent relation around every cycle; not every edge must strictly decrease, but no cycle may lack strict decrease |
-| Recursive type unfolding or potentially cyclic data | Not structural descent by itself |
-| Other calls and handler computation | Retain and discharge their own termination conditions |
-| `halt type` helpers | All reached meta/type computation must also be finite, whether or not the helpers are marked `halt` |
-
 ```ril
-fn even(n: i64) -> bool { if n <= 0 { true } else { odd(n - 1) } }
-fn odd(n: i64) -> bool { if n <= 0 { false } else { even(n - 1) } }
-halt fn parity(n: i64) -> bool { even(n) }        -- Certified mutual descent
-
-fn stuck(n: i64) -> () { if n > 0 { stuck(n) } }       -- MayDiverge: no descent
-fn skipped_progress(n: i64) -> () {
-    var i = 0
-    while i < n { if i == 0 { next }; i += 1 }
-}                                               -- MayDiverge: next bypasses progress
--- halt fn bad_loop() -> () { skipped_progress(1) }    -- Error [E0820]
-
-type Link = { var mut following: ?Link }
-fn follow(node: Link) -> () {
-    match node.following { Some(child) -> follow(child), None -> () }
-}                                               -- MayDiverge: Link need not be acyclic
--- halt fn bad_follow(node: Link) -> () { follow(node) } -- Error [E0820]
-
-fn closed_but_infinite(action: fn() -> ()) @{} &{} -> () { action(); loop {} }
--- Closed higher-order rows still permit divergence.
-fn inferred_alias() -> () {
-    let action: fn() -> () = forever
-    action()
-}                                               -- Ascription preserves MayDiverge
--- halt fn invalid_alias() -> () { inferred_alias() }  -- Error [E0820]
+fn spin() -> i64 { loop {} }
+let actual = spin                              -- Inferred fn() @Div -> i64
+-- let erased: fn() -> i64 = actual            -- Error [E0534]: Div cannot be erased by ascription
+-- fn closed() @{} -> i64 { spin() }           -- Error [E0534]: explicitly closed empty row
+-- with Div() -> 0                            -- Error [E0621]: Div has no operation to handle
 ```
 
-Uncertified loops or recursion give `MayDiverge`, not an effect. The special [finite-evaluation boundary](#finite-evaluation-with-div) can certify a bounded invocation without certifying its unbounded action. Merely handling `Div::exhausted`, counting selected user operations, or imposing a static-evaluation budget supplies no such proof for an arbitrary run-time call.
+Named definitions automatically retain inferred Div even when their source effect annotation lists only other effects. An explicit `@{}` closes the entire effect row, including Div. Callable types always match their full normalized rows: omitted effects exclude Div, explicit `@Div` admits that exact row, and an open `@` preserves the actual effects. Ordinary handler installation, source annotations, ascription, and compiler resource limits cannot remove Div.
 
 ### Parameter Modes, Caller Obligations, and Defaults
 
@@ -5296,7 +5272,7 @@ assert(pair(a: 10, 20) == (10, 20))
 -- pair(10, a: 20)                     -- Error [E0325]: a is already bound
 ```
 
-- Named and anonymous parameters share the same default rules. Defaults have no residual effects or state obligations; `mut`/`^mut`/`new`/`via` defaults are forbidden (`E0404`). A `ref` default is received in its declared mode without a caller token; explicit supplied arguments still require `ref`. Earlier `ref` parameters do not exempt a later ordinary default from immutable reception.
+- Named and anonymous parameters share the same default rules. Defaults have no residual operational effects or state obligations; implicit Div is allowed and propagates when a default is evaluated. A `halt` definition must also exclude Div in every admitted default. `mut`/`^mut`/`new`/`via` defaults are forbidden (`E0404`). A `ref` default is received in its declared mode without a caller token; explicit supplied arguments still require `ref`. Earlier `ref` parameters do not exempt a later ordinary default from immutable reception.
 - Explicit arguments evaluate in written left-to-right order; omitted defaults follow in parameter order. A default may use earlier parameters, not itself or later parameters.
 - Bind arguments in written order: a positional argument selects the first unbound parameter in declaration order; a named argument selects its named parameter. Selecting an already bound parameter is `E0325`. Binding selection does not reorder evaluation.
 - Function generic defaults are prohibited (`E0317`).
@@ -5334,7 +5310,7 @@ eff DefaultSource { read() -> i64 }
 -- Error [E0409]: default has a residual effect even though the function declares it
 ```
 
-References from a parameter default to itself or a later parameter are `E0408`. Other unresolved names retain `E0204`; generic-default forward references retain `E0320`. A parameter default with any residual effect or state obligation is `E0409`, even if the enclosing callable declares that obligation. Pure defaults referring to earlier parameters remain valid.
+References from a parameter default to itself or a later parameter are `E0408`. Other unresolved names retain `E0204`; generic-default forward references retain `E0320`. A parameter default with a residual operational effect or state obligation is `E0409`, even if the enclosing callable declares that obligation. Div alone is not an impurity error. Pure defaults referring to earlier parameters remain valid.
 
 ```ril
 fn create_server(host: str, port: i64 = 8080, enable_tls: bool = true) -> str {
@@ -5489,7 +5465,7 @@ assert(step() == 3)                   -- Both authorities still reach the same c
 
 ### Local Mutation Purity and Local State Discharge
 
-Writes to frame-confined local storage can be discharged without outward state/provenance obligations. This does not discharge unrelated effects, capture, or retention. A function is pure only when all outward effect and state/provenance obligations are empty after handling and local discharge:
+Writes to frame-confined local storage can be discharged without outward state/provenance obligations. This does not discharge unrelated effects, capture, or retention. A function is pure only when all outward operational-effect and state/provenance obligations are empty after handling and local discharge; implicit Div may remain. Only a covering budget can remove that Div:
 
 ```ril
 type Buffer = { mut items: []i64 }
@@ -5503,7 +5479,7 @@ fn compute_sum(n: i64) -> i64 {
         total += i
         i += 1
     }
-    total                              -- Pure to callers: signature is fn(i64) -> i64
+    total                              -- Pure to callers; inferred signature is fn(i64) @Div -> i64
 }
 
 -- Local State Discharge with shared object types and &mut callees:
@@ -6142,7 +6118,7 @@ EffectIdentifier ::= QualifiedName [ GenericArgs ]
 EffectOperationRef ::= EffectIdentifier "::" ValueName
 ```
 
-Effect identifiers resolve to PascalCase effect declarations. Operation signatures use ordinary parameter-mode and state/provenance rules for read-only, temporary writable or retained writable access. A `new` operation parameter is `E0411`; a `via` parameter or `infer` result is `E0412`. Operation declarations require concrete signatures.
+Effect identifiers resolve to PascalCase effect declarations or the built-in Div identity. Effect-set aliases may include Div, but it supplies no operation and cannot be a source-handler target. Normalization preserves that identity through aliases. Operation signatures use ordinary parameter-mode and state/provenance rules for read-only, temporary writable or retained writable access. A `new` operation parameter is `E0411`; a `via` parameter or `infer` result is `E0412`. Operation declarations require concrete signatures.
 
 ```ril
 -- Console and BufferIo have the declarations above.
@@ -6533,16 +6509,18 @@ fn test_early_abort() -> () {
 
 ### Built-in System Effects
 
-Ril provides the system operation families Fiber, Concurrent, and Div, and the alias Async:
+Ril provides the system operation families Fiber and Concurrent, the alias Async, and the non-operational label Div:
 
 - **`@Fiber` (Cooperative Fiber Control)**: Cooperative yielding and leaf I/O suspension. Each leaf operation's contract determines the event completing its wait.
 - **`@Concurrent` (Structured Concurrency)**: Structured scope, child-task forking, and joining, with the rules below.
 - **`@Async` (Suspendable I/O)**: The effect alias `{Fiber, Concurrent}` for suspension and structured concurrent computation.
-- **`@Div` (Budget Exhaustion)**: Declares the abortive `Div::exhausted()` operation used by finite evaluation. It is an ordinary residual effect that can be handled. Possible non-termination is tracked separately and never automatically adds `@Div`.
+- **`@Div` (Possible Infinite Computation)**: Automatically inferred and propagated under [termination checking](#termination-and-halt-contracts). It has no operations or source handler and requires no import or named-source annotation. Only the budget primitive removes it from a covered invocation.
 
-The built-in effect sets have the following inclusion relationships; `Async` is an alias for the union of `Fiber` and `Concurrent`, and `Div` is a separate effect:
+The built-in system effect sets have the following inclusion relationships; `Async` is an alias for the union of `Fiber` and `Concurrent`:
 
-$$\emptyset \subset \lbrace\text{Fiber}\rbrace \subset \lbrace\text{Fiber}, \text{Concurrent}\rbrace \equiv \text{Async}, \quad \text{disjoint from } \lbrace\text{Div}\rbrace$$
+$$\emptyset \subset \lbrace\text{Fiber}\rbrace \subset \lbrace\text{Fiber}, \text{Concurrent}\rbrace \equiv \text{Async}$$
+
+Div is separate from Fiber, Concurrent, and their Async alias. [Budget execution and its result type](#finite-evaluation-with-div) require an explicit `ril/eval` import; Div itself does not.
 
 #### Normative Rules for Built-in System Effects
 - **Leaf I/O (`@Fiber`)**: Leaf I/O operations that require suspension but perform no structured concurrency declare `@Fiber` for those operations. Forking requires `@Concurrent`. Both remain subject to the ordinary task-boundary, provenance, and exclusivity rules.
@@ -6567,9 +6545,9 @@ fn read_name(path: str) @Fiber -> Result<str, str> {
 | `Fiber::yield` | A matching operation arm discharges this yield request |
 | Leaf I/O / environmental or endpoint operation | Retains its `Fiber` obligation unless its public contract explicitly provides a handler for its result and external behavior |
 | Scope / fork / join | Retains its `Concurrent` obligation; these callables are not operation-arm targets |
-| `Div::exhausted` | Handled by an ordinary abortive operation arm; resumption remains forbidden |
+| Div | No operation or source-handler discharge; `Eval::budget` removes it only from a covered invocation |
 
-The current resource I/O and structured-concurrency contracts provide no source-level handler that replaces their external behavior. Handling yield alone never covers these obligations. A user-defined effect may expose a mockable interface before any resource operation is invoked. Handling a request does not make an excluded operation eligible for `Div::budget` or remove its access, cleanup, or task-boundary restrictions.
+The current resource I/O and structured-concurrency contracts provide no source-level handler that replaces their external behavior. Handling yield alone never covers these obligations. A user-defined effect may expose a mockable interface before any resource operation is invoked. Handling a request does not make an excluded operation eligible for `Eval::budget` or remove its access, cleanup, or task-boundary restrictions.
 
 ```ril
 -- Signature of the built-in yielding operation, not a redeclaration in user code:
@@ -6648,18 +6626,18 @@ fn stream_remote_chunks(fd: i64) @Yield<[]u8> + Fiber -> () {
     }
 }
 
--- Termination inference is independent of effect annotations:
+-- Possible infinite computation automatically adds Div to the effect row:
 fn collatz(n: i64) -> i64 {
     if n <= 1 { 1 }
     else if n % 2 == 0 { collatz(n / 2) }
     else { collatz(3 * n + 1) }
 }
 
--- Pure finite function; ordinary unmarked factorial would receive the same proof:
-halt fn factorial(n: i64) -> i64 {
+-- Pure recursion retains Div even with decreasing arguments:
+fn factorial(n: i64) -> i64 {
     if n <= 1 { 1 } else { n * factorial(n - 1) }
 }
--- halt fn bad_total(n: i64) -> i64 {  -- Error [E0820]: 'halt fn' contains uncertified recursion or unbounded loop
+-- halt fn bad_total(n: i64) -> i64 {  -- Error [E0820]: residual Div
 --     collatz(n)
 -- }
 ```
@@ -6667,186 +6645,149 @@ halt fn factorial(n: i64) -> i64 {
 ### Finite Evaluation with Div
 
 ```ril
--- Built-in operation signature, not a user redeclaration:
-eff Div { exhausted() -> never }
+use ril/eval
 
--- Built-in callable shape; its additional finite-evaluation contract is defined below:
--- Div::budget<T>(limit: i64, action: fn() @& -> T) @Div -> T
-
-fn spin() -> i64 { loop {} }               -- MayDiverge, with no algebraic effects
-halt fn bounded() -> ?i64 {
-    with Div::exhausted() -> None
-    with Div::budget(10_000)
-    Some(spin())
+fn spin() -> i64 { loop {} }
+halt fn bounded() -> Result<i64, Eval::BudgetError> {
+    Eval::budget(10_000, spin)
 }
-assert(bounded() == None)
-
-halt fn bounded_value() -> ?i64 {
-    with Div::exhausted() -> None
-    with Div::budget(10_000)
-    Some(42)
-}
-assert(bounded_value() == Some(42))
-
--- The parameterized with is the ordinary final-callable application form:
-halt fn explicit_budget() -> ?i64 {
-    with Div::exhausted() -> None
-    Div::budget(10_000, \-> Some(spin()))
-}
-assert(explicit_budget() == None)
+assert(bounded() is Err(Eval::BudgetError::Exhausted))
 ```
 
-The built-in `Div` namespace contains the operation `exhausted` and the finite-evaluation callable `budget`. Invoke `Div::budget` as an ordinary call or parameterized handler application with its limit argument; using it as an operation-arm target is `E0621`.
-
-`Div::budget(limit, action)` creates a fresh finite-evaluation boundary and invokes `action` once when its initial allowance permits entry. Normal completion returns the action's value. At exhaustion the protected computation is irrevocably abandoned, its required finite cleanup runs, and the call requests `Div::exhausted()`. The operation has no returning continuation; any `resume` targeting it is `E0822`, before resumption-value type checking. Its answer and delimited scope use ordinary handler rules (`E0625`). The exhausted computation cannot be resumed or refilled.
+`ril/eval` requires an explicit import. It supplies these declaration shapes and the primitive contract below; Div itself is already in the prelude:
 
 ```ril
-fn finite_attempt() @Div -> i64 { Div::budget(10_000, spin) }
--- fn missing_handler() -> i64 { finite_attempt() } -- Error [E0612]: real residual Div effect
-
--- Merely installing an exhaustion handler does not limit a computation:
-fn handler_only() -> i64 {
-    with Div::exhausted() -> 0
-    spin()
-}                                           -- MayDiverge; spin never requests exhausted
--- halt fn still_unbounded() -> i64 { handler_only() } -- Error [E0820]
-
--- An exhaustion handler can itself diverge after the protected action ends:
-fn bad_recovery() -> i64 {
-    with Div::exhausted() -> spin()
-    with Div::budget(0)
-    42
-}                                           -- MayDiverge, although its effect row is empty
--- halt fn invalid_recovery() -> i64 { bad_recovery() } -- Error [E0820]
--- with Div::exhausted() -> resume ()         -- Error [E0822]: exhaustion is non-resumable
+-- Declarations supplied by ril/eval, not user redeclarations:
+pub type BudgetError { Exhausted }
+pub fn budget<T>(limit: u64, action: fn() @& -> T) -> Result<T, BudgetError>
 ```
+
+For a covered action with effect row E, the invocation of `Eval::budget` has effects E minus Div. Other effects and all outward state/provenance obligations, including result publication, propagate normally; parameter modes and callable-handle authority remain unchanged. The primitive also accepts an action without Div. It introduces no exhaustion effect: normal action completion produces `Ok(value)`, and exhaustion produces `Err(BudgetError::Exhausted)` after required cleanup. Mandatory Result inspection applies (`E0720`). A panic retains ordinary run-time unwinding or static diagnostic behavior and is not converted to `Err`.
+
+```ril
+use ril/eval::{budget, BudgetError}             -- Optional short names
+eff Ask { get() -> i64 }
+fn ask() @Ask -> i64 { Ask::get() }
+fn attempt() @Ask -> Result<i64, BudgetError> {
+    budget(100, ask)                           -- Ask remains; selected handlers must be covered
+}
+-- budget(100, \-> 42)                         -- Error [E0720]: unused Result
+```
+
+Only the built-in declaration identity receives these rules; import aliases and re-exports preserve it. Same-named user declarations have no privilege. Using `Eval::budget` as an operation-arm target is `E0621`. The primitive is dual-phase: it invokes a same-phase action in type, meta-value, or run-time evaluation. A static intermediate `Result` may contain a type token; ordinary phase/result restrictions still prevent token materialization or a meta function returning type-producing authority. The primitive gives no cross-family exception to user callables (`E0810`).
 
 #### Coverage and Finite Outcomes
 
-- **Covered Computation (`E0822`)**: The protected invocation must be ordinary run-time Ril computation with no residual effects or outward state/provenance obligations after its internal handling and lawful local discharge. Confined mutation and temporary local environments are allowed. Termination of the action itself is not required. Actual calls, callback constituents, selected handlers, and cleanup all participate in this check; purity alone does not establish coverage.
-- **Local State**: Local mutation inside the action is permitted under the origin, callback-handle and local-discharge rules. Check actual outside-state access, sharing and escape; prior writes remain committed.
-- **Excluded Computation**: Reachable bodyless foreign calls, Fiber/I/O operations, structured concurrency, resource endpoint operations, and parallel combinators are inadmissible even if an enclosing handler removes their residual effect label. Ordinary finite language primitives and sequential collection computations follow their normative finite contracts. A primitive without a finite contract must expose its repeated computation to the charging rules or is inadmissible.
-- **Callable Dependencies**: Budget eligibility follows actual callable values through aliases, fields, returns and modules. Symbolic callable parameters retain coverage constraints; incompatible or unresolved actual coverage at a required use is `E0822`.
-- **Handler Boundary**: The budget callable's own `Div` obligation is outside its protected action. It uses the exhaustion handler selected for that invocation by ordinary handler-selection rules. Installing another exhaustion handler inside the action cannot intercept the enclosing boundary's exhaustion. Other effects, state/provenance obligations, and termination conditions introduced by recovery remain caller obligations.
-- **Termination Conclusion**: After finite evaluation of the explicit arguments, a valid budget boundary performs finite protected computation. The whole handled expression is `Finite` only if its required cleanup and recovery computation are finite too. An unhandled `Div` operation retains both its ordinary effect obligation and the chosen handler's termination condition. A `halt` caller must discharge all of them.
-- **Latent Computation**: A budget's allowance belongs to its dynamic invocation. Later callable execution requires its own coverage proof or a new `Div::budget` boundary.
-- **Static Domain**: `Div::budget` belongs to the run-time call family (`E0810` for forbidden cross-family calls). Static evaluation uses its own budget and `E0811`.
+The action may have Div, but all required computation must be covered by charging or a specified finite primitive contract (`E0822`). Check actual calls, callbacks, selected handlers, resumptions, cleanup, origins, sharing, and escape. A budget or Div-free assertion cannot certify its own coverage through a dependency cycle; every potentially infinite execution path must consume unboundedly many units from at least one finite allowance without replenishing it. Symbolic coverage requirements follow actual callable values through aliases, fields, returns, and modules. Preserve unresolved requirements in generic interfaces; an incompatible or unresolved actual requirement at a required concrete use is `E0822`. An empty effect row alone does not prove coverage.
+
+```ril
+halt fn limited_sum(values: []i64) -> Result<i64, Eval::BudgetError> {
+    Eval::budget(100, \-> {
+        var total = 0
+        for values as value { total += value }
+        total
+    })
+}
+assert(limited_sum([1, 2, 3]) is Ok(6))         -- Confined mutation is covered; Result is inspected
+
+var outside_count = 0
+fn write_once() &up(sub){mut outside_count} -> i64 { outside_count += 1; 7 }
+fn bounded_write() &up(sub){mut outside_count} -> Result<i64, Eval::BudgetError> {
+    Eval::budget(100, write_once)               -- State remains; this wrapper is not pure
+}
+-- halt fn impure() &up(sub){mut outside_count} -> Result<i64, Eval::BudgetError> {
+--     bounded_write()                         -- Error [E0821]: budget does not discharge external writes
+-- }
+
+-- Removing an effect label does not make excluded computation covered:
+-- with Fiber::yield() -> resume ()
+-- Eval::budget(100, \-> Fiber::yield())        -- Error [E0822]
+```
+
+Reachable bodyless foreign calls, Fiber/I/O, structured concurrency, resource endpoint operations, and parallel combinators remain excluded even when their effect labels are handled. Ordinary algebraic effects may propagate with their selected handlers' coverage requirements; the budget never erases their labels. Finite ordinary-data primitives and sequential collection computations follow their contracts; repeated computation must be charged or have a finite contract. Coverage does not grant state, access, lifetime, or resource authority.
+
+Exhaustion is a private control transfer to the particular budget invocation whose allowance expired. It irrevocably abandons that protected computation, runs its required Div-free cleanup, then returns `Err` from that invocation. It is neither an algebraic operation nor a catchable panic. Inner source handlers, Result fallbacks, and budgets cannot intercept or resume an outer exhaustion; no refill is possible. Prior writes remain committed.
+
+```ril
+fn bad_recovery() -> i64 {
+    match Eval::budget(0, \-> 42) {
+        Ok(value) -> value,
+        Err(_) -> spin(),                      -- Recovery is outside this budget; propagates Div
+    }
+}
+-- halt fn invalid() -> i64 { bad_recovery() }  -- Error [E0820]
+```
+
+Only the protected invocation's Div is removed. Evaluating the limit/action expressions and inspecting or recovering from the Result retain their own effects, Div, and state/provenance obligations. Whole-expression `halt` checking includes them. Returned callables retain their complete latent rows and receive no continuing allowance:
+
+```ril
+halt fn make_later() -> Result<fn() @Div -> i64, Eval::BudgetError> {
+    Eval::budget(100, \-> spin)                -- Returning spin does not execute it
+}
+fn run_later() -> i64 {
+    match make_later() {
+        Ok(action) -> action(),               -- Div remains on this later invocation
+        Err(_) -> 0,
+    }
+}
+-- halt fn invalid_later() -> i64 { run_later() } -- Error [E0820]
+```
+
+The compiler's root evaluation limit remains active throughout static budgeting, cleanup, and recovery; exhausting that limit is `E0811`, not a catchable `BudgetError` and not a Div discharge.
 
 #### Allowance and Charging
 
-The limit has type `i64`. Evaluate it and the action expression once in ordinary argument order before establishing the new boundary. A negative limit panics before action invocation; zero requests exhaustion without invoking the action. Argument evaluation has its own purity and termination obligations and is covered by any active outer boundaries.
-
-| Charged event while a boundary is active | Cost |
-| :--- | :--- |
-| Ordinary function or anonymous-callable entry, including the protected action | One unit before entering its body |
-| Each loop iteration | One unit before evaluating its condition/next-element test and possible body; `next` cannot skip this event |
-| Each effect-handler entry and each `resume` | One unit before executing the arm or continuing the computation |
-| Entry to an inner `Div::budget` | One unit to existing outer boundaries, before creating the inner allowance |
-| Finite primitive operation | No additional charge beyond its specified callable entry, if any |
-| Other finite expression steps | No additional charge |
-
-These are abstract language events, including source-level calls eliminated by an equivalent evaluation strategy. Every possible infinite execution path within eligible computation must encounter unboundedly many charged events; no uncharged primitive can conceal such a path. Sequential built-in combinators charge each callback entry and iteration under their specified sequential behavior. Installing a handler alone executes no operation; handler code runs only when its operation is requested.
-
-Before a charged event, if any active boundary has no remaining units, do not execute the event; exhaust the outermost such boundary. Otherwise subtract one unit from every active boundary and execute the event. Consuming the last unit does not itself interrupt the event; a later charged event triggers exhaustion. Inner boundaries never replenish, hide, or suspend outer allowances during ordinary computation. An inner handler cannot intercept exhaustion owned by an outer boundary.
-
-| Cleanup and allowance | Rule |
-| :--- | :--- |
-| Eligibility | Cleanup independently finite (`E0617`) |
-| Entry | Suspend allowances already active; exhaustion cannot skip or repeatedly interrupt cleanup |
-| Budget created inside cleanup | Its own allowance remains active |
-| Exit | Restore surviving outer allowances, including for recovery handlers |
-| Unwinding | LIFO, EffectAborted, and double-fault rules remain in force; no rollback |
-| Limit | Counts protected events; excludes total cleanup/recovery work and wall-clock time |
+Evaluate `limit: u64` and `action` once in ordinary argument order before establishing the boundary. Zero returns `Err(BudgetError::Exhausted)` without invoking the action; a positive allowance permits entry. Argument evaluation remains covered by active outer boundaries and retains its own obligations.
 
 ```ril
 fn one() -> i64 { 1 }
-halt fn zero_allowance() -> ?i64 {
-    with Div::exhausted() -> None
-    with Div::budget(0)
-    Some(1)
+halt fn zero() -> Result<i64, Eval::BudgetError> {
+    Eval::budget(0, one)
 }
-halt fn one_entry() -> ?i64 {
-    with Div::exhausted() -> None
-    Some(Div::budget(1, one))          -- The action entry consumes the one unit
+halt fn one_entry() -> Result<i64, Eval::BudgetError> {
+    Eval::budget(1, one)                        -- One action entry, then normal return
 }
-assert(zero_allowance() == None)
-assert(one_entry() == Some(1))
-halt fn negative_allowance() -> ?i64 {
-    with Div::exhausted() -> None
-    Some(Div::budget(-1, one))
-}
--- negative_allowance()             -- Panics before invoking one; exhaustion handler is not requested
-
-halt fn nested_limits() -> ?i64 {
-    with Div::exhausted() -> None
-    with Div::budget(2)
-    with Div::exhausted() -> Some(99)
-    with Div::budget(100)
-    Some(spin())
-}
-assert(nested_limits() == None)       -- Outer exhaustion bypasses the inner arm
-
-halt fn make_later() -> (fn() -> i64) {
-    with Div::exhausted() -> one
-    with Div::budget(100)
-    spin
-}
--- halt fn run_later() -> i64 { make_later()() } -- Error [E0820]: no escaped budget
-
--- A separate .d.ril fixture declares: pub fn foreign_work() -> i64
--- with Div::exhausted() -> 0
--- with Div::budget(100)
--- foreign_work()                    -- Error [E0822]: external computation is not covered
+assert((zero() is Err(Eval::BudgetError::Exhausted)) && (one_entry() is Ok(1)))
+fn spin_limit() -> u64 { loop {} }
+-- halt fn bad_limit() -> Result<i64, Eval::BudgetError> {
+--     Eval::budget(spin_limit(), one)          -- Error [E0820]: limit evaluation is outside this boundary
+-- }
 ```
+
+| Charged event | Cost before the event |
+| :--- | :--- |
+| Ordinary/meta/type function or anonymous-callable entry, including the action | One unit |
+| Each loop condition/next-element test and possible body; `next` cannot bypass it | One unit |
+| Each effect-handler entry and each `resume` | One unit |
+| Entry to an inner `Eval::budget` | One unit to existing outer boundaries, before creating its allowance |
+| Finite primitive or other finite expression step | No additional cost beyond its specified callable entry, if any |
+
+These source-semantic events survive equivalent optimization in either phase. Sequential combinators retain iteration and callback-entry charges. Every infinite path in covered computation must encounter unboundedly many charged events, including indirect invocation and handler/resumption cycles; no uncharged primitive may hide one. Installing a handler alone executes no operation.
+
+Before each event, exhaust the outermost active boundary with no remaining units and do not execute the event. Otherwise subtract one from every active allowance together and execute it. Spending the last unit permits that event; a later charged event triggers exhaustion. Inner boundaries do not replenish, hide, or suspend outer allowances during ordinary computation, and inner handlers cannot intercept outer exhaustion.
 
 ```ril
--- The limit expression runs before its own budget becomes active:
--- halt fn bad_limit_expression() -> i64 {
---     with Div::exhausted() -> 0
---     Div::budget(spin(), one)
--- }                                 -- Error [E0820]: computing the limit may diverge
-
-fn budgeted_action(action: fn() -> i64) -> ?i64 {
-    with Div::exhausted() -> None
-    with Div::budget(100)
-    Some(action())
+halt fn nested_limits() -> Result<i64, Eval::BudgetError> {
+    Eval::budget(2, \-> {
+        match Eval::budget(100, spin) {
+            Ok(value) -> value,
+            Err(_) -> 99,
+        }
+    })
 }
-assert(budgeted_action(spin) == None)  -- Eligible divergence is bounded
--- budgeted_action(foreign_work)     -- Error [E0822]: forwarding cannot conceal uncovered code
-
-halt fn handler_work() -> ?i64 {
-    with Div::exhausted() -> None
-    with Div::budget(100)
-    with ReadConfig::get() -> resume spin()
-    Some(ReadConfig::get())
-}
-assert(handler_work() == None)        -- Executed user-handler computation also consumes the budget
-
-halt fn limited_sum(values: []i64) -> ?i64 {
-    with Div::exhausted() -> None
-    with Div::budget(100)
-    var total = 0
-    for values as value { total += value }
-    Some(total)
-}
-assert(limited_sum([1, 2, 3]) == Some(6)) -- Confined mutation remains admissible
-
-type Guard = { on_close: fn() -> () }
-halt fn cleanup_before_recovery() -> ?i64 {
-    with Div::exhausted() -> None
-    with Div::budget(100)
-    let scoped guard = Guard.{ on_close: \-> panic("cleanup fault") }
-    loop {}
-}
--- cleanup_before_recovery()         -- Finite DoubleFaultFatal: cleanup panics during budget abort; no None recovery
--- A budget cannot legalize divergent cleanup:
--- let scoped bad = Guard.{ on_close: \-> { loop {} } } -- Error [E0617]
-
--- with Div::exhausted() -> ()
--- with Fiber::yield() -> resume ()
--- with Div::budget(100)
--- Fiber::yield()                     -- Error [E0822]: excluded operation, even with an outer handler
+assert(nested_limits() is Err(Eval::BudgetError::Exhausted)) -- Outer exhaustion bypasses the inner match
 ```
+
+| Cleanup / allowance | Rule |
+| :--- | :--- |
+| Cleanup eligibility | Independently Div-free (`E0617`); no other residual effects (`E0616`) |
+| Cleanup entry | Suspend all previously active allowances, including depleted ones |
+| Budget created inside cleanup | Its new allowance remains active |
+| Cleanup exit | Restore surviving outer allowances before recovery |
+| Unwinding | Ordinary LIFO abort and double-fault rules; no rollback |
+| Bound | Protected evaluation events; cleanup is independently Div-free, caller recovery retains its own Div, and there is no wall-clock bound |
+
+Cleanup's absence of Div must be established independently of the allowances suspended on entry. Invocation cycles through cleanup cannot use those allowances, or allowances repeatedly recreated on that cycle, as a finiteness justification (`E0617`; uncovered budget computation is `E0822`). Creating a budget inside independently Div-free cleanup is otherwise permitted. This prevents an exhaustion/cleanup/re-entry cycle from repeatedly discarding its limiting allowance.
 
 ### Structured Concurrency and Panic Containment
 
@@ -6860,7 +6801,7 @@ fn isolated_value() @Concurrent -> Result<i64, TaskFault> {
 }
 ```
 
-Task boundaries enforce the language's ordinary access-mode, provenance, effect, and termination judgments. In particular, outside mutable/live ordinary data and indirect outside access cannot cross a task boundary (`E0601`); an immutable function descriptor does not erase its callable obligations. Residual user effects and Div exhaustion require child-local handlers (`E0615`). Scope/task authority cannot escape its owner or be concealed in aggregates (`E0606`). Result inspection duties survive task packaging and joining (`E0720`).
+Task boundaries enforce the language's ordinary access-mode, provenance, and complete effect judgments. In particular, outside mutable/live ordinary data and indirect outside access cannot cross a task boundary (`E0601`); an immutable function descriptor does not erase its callable obligations. Residual user operations require child-local handlers (`E0615`); Div needs no handler and propagates through required child completion. A budget outcome is ordinary Result data. Scope/task authority cannot escape its owner or be concealed in aggregates (`E0606`). Result inspection duties survive task packaging and joining (`E0720`).
 
 A child panic may become a Result at its owning structured boundary. Synchronous frames cannot catch panics. Child barriers constrain lifetimes without proving that arbitrary child computation terminates.
 
@@ -6874,7 +6815,7 @@ halt fn square_all(numbers: []f64) -> []f64 {
 -- @Parallel is not an effect annotation (E0620).
 ```
 
-Parallel invocation requires no residual effects and independently established finite computation; empty effect rows alone are insufficient (`E0820`). Outside mutable/live/resource dependencies, including those hidden in handlers or cleanup, are rejected (`E0605`), except the explicitly lent disjoint regions admitted by a concrete library operation. Overlapping or unproved-disjoint write/read or write/write regions are `E0619`. Checks are transitive; a distinct name, index, or copied graph path is not evidence of independence. Handling Div exhaustion alone does not establish finiteness. No live authority may escape the invocation.
+Parallel invocation requires absence of Div (`E0820`) and no residual operational effects; no `halt` marker is required. Outside mutable/live/resource dependencies, including those hidden in handlers or cleanup, are rejected (`E0605`), except the explicitly lent disjoint regions admitted by a concrete library operation. Overlapping or unproved-disjoint write/read or write/write regions are `E0619`. Checks are transitive; a distinct name, index, or copied graph path is not evidence of independence. A valid sequential budget wrapper can supply a Div-free callback, but cannot cover a parallel combinator itself. No live authority may escape the invocation.
 
 The ordinary `numbers: []f64` parameter already requires deeply immutable data. Existing live data must be copied before this call; `ref` observation alone does not satisfy a pure parallel input.
 
@@ -7038,9 +6979,10 @@ type IntRecord = SafeRecord<i64>
 ```ril
 halt type Identity = \T -> <T>              -- OK: type-producing function
 meta fn size_of<T>(t: Type<T>) -> i64 { byte_size(t) } -- OK: reflection produces an ordinary value
+halt meta fn checked_size<T>(t: Type<T>) -> i64 { byte_size(t) } -- Optional pure, Div-free assertion
 halt fn checked_increment(n: i64) -> i64 { n + 1 } -- May panic at i64's maximum
 -- halt fn yield_once() @Fiber -> () { Fiber::yield() } -- Error [E0821]: halt requires outward purity
--- halt fn forever() -> () { loop {} }                  -- Error [E0820]: uncertified local loop
+-- halt fn forever() -> () { loop {} }                  -- Error [E0820]: residual Div
 -- meta let BAD_SUM = 127i8 + 1i8                 -- Error [E0831]: panic during static evaluation
 ```
 
@@ -7052,7 +6994,7 @@ halt fn checked_increment(n: i64) -> i64 { n + 1 } -- May panic at i64's maximum
 | `meta let` | May hold static tokens; only recursively token-free ordinary results can become run-time constants |
 | Run-time materialization | Reject tokens and static-only metatypes in materialized value parameters/results, storage, and captures (`E0816`), including through aliases, generics, and opaque wrappers; static generic metadata is excluded |
 
-Both run with empty effect and state/provenance domains and support local bindings, control flow, pure static helpers and recursion. Generic type metadata is static and erased from run-time values.
+Both run in the pure static domain: no outward operational effects or state/provenance obligations, with implicit Div allowed. They support local bindings, control flow, pure static helpers and recursion. Effect/state source annotations remain forbidden, including explicit `@Div`; inference retains Div in their checking interfaces. Generic type metadata is static and erased from run-time values.
 
 ```ril
 meta fn record_bytes() -> i64 { byte_size(<{ id: i64 }>) }
@@ -7075,14 +7017,44 @@ fn runtime_client(value: i64) -> i64 {
 
 Phase checks inspect the entire instantiated result/value graph, opaque summaries, captured environments and latent type-producing callable contracts. Results reduced to ordinary constants free of tokens and type-producing authority may cross as ordinary data. A bare `<T>` value expression at run time is `E0816`; forbidden calls use `E0810`.
 
-Symbolic computation follows [Termination and halt Contracts](#termination-and-halt-contracts). Meta/type functions retain `Finite` or `MayDiverge` judgments independently of their empty effect and state/provenance domains. `halt type` requires finite symbolic computation, including every reached helper; invalid input or static defects may fail. Uncertified `halt` computation is `E0820`; prohibited type/meta annotations use `E0335`/`E0813`.
+Symbolic computation follows [Termination and halt Contracts](#termination-and-halt-contracts). `halt type` and `halt meta fn` optionally require pure, Div-free computation for every admitted invocation, including reached helpers and defaults; the helpers need not carry `halt`. Residual Div is `E0820`; prohibited type/meta annotations remain `E0335`/`E0813`. Panic or a static defect can still fail with its ordinary diagnostic.
 
-Static loops and recursion are admissible subject to the static-evaluation budget, including certified finite computations. Exhaustion rejects the evaluation with `E0811`. Definition-level termination certification is a separate judgment; static-evaluation diagnostics use the compiler's diagnostic mechanism.
+Ordinary type/meta declarations and compile-time roots do not require `halt` or absence of Div. Loops and recursion are admissible subject to the compiler's root evaluation budget; every root, including a `halt` call, uses that budget. Exhaustion rejects the evaluation with `E0811` and cannot be caught or converted by a source budget. This compiler limit neither removes Div from a callable contract nor satisfies a `halt` assertion. An explicit `Eval::budget` runs within that limit, returns an ordinary Result, and can remove Div from its covered static action.
+
+```ril
+use ril/eval
+
+meta fn factorial(n: i64) -> i64 {              -- Implicit Div; no source effect annotation
+    if n <= 1 { 1 } else { n * factorial(n - 1) }
+}
+meta let DIRECT = factorial(5)                 -- OK: halt and a source budget are optional
+
+halt meta fn checked_factorial(n: i64) -> i64 {
+    match Eval::budget(1_000, \-> factorial(n)) {
+        Ok(value) -> value,
+        Err(_) -> panic("factorial exceeded evaluation budget"),
+    }
+}
+meta let CHECKED = checked_factorial(5)         -- 120
+
+type Peel = \T -> match <T> {                  -- Recursive type function has implicit Div
+    <[]let U> -> Peel<U>,
+    _ -> <T>,
+}
+halt type Leaf = \T -> {
+    match Eval::budget(1_000, \-> Peel<T>) {
+        Ok(token) -> token,
+        Err(_) -> panic("type expansion exceeded evaluation budget"),
+    }
+}
+type DirectLeaf = Peel<[][]i64>                -- i64; ordinary root evaluation is allowed
+type CheckedLeaf = Leaf<[][]i64>               -- i64; optional Div-free wrapper
+```
 
 | Static evaluation | Budget / failure |
 | :--- | :--- |
 | Each root evaluation | Configured positive budget, including certified computations |
-| Meta/type function entry, static callback entry, loop iteration | Consume one unit each |
+| Meta/type function entry, static callback entry, loop iteration | Consume one unit each; explicit source budgets add their own charging without resetting this limit |
 | Next charged step with no budget | `E0811` |
 | Alias cycle | Separate `E0313` check |
 | Failed `assert` / other panic | Static `E0830` / `E0831` |
@@ -7169,9 +7141,9 @@ fn run_logged() @Audit -> i64 { dispatch_worker<DispatchMode::Run>(logged_worker
 | Type function | Other type functions, `meta fn`, and listed dual-phase operations. An ordinary run-time `fn` is `E0810` |
 | Meta value evaluation | `meta fn`, static reflection, and listed dual-phase operations; no ordinary run-time `fn` or direct type-function value call (`E0810`) |
 | Run-time value evaluation | No type-function or meta-function value invocation (`E0810`) |
-| Both phases | Pure arithmetic/comparison, `len`, `panic`, `assert`, and library operations explicitly declared dual-phase |
+| Both phases | Pure arithmetic/comparison, `len`, `panic`, `assert`, `Eval::budget` with a same-phase action, and other library operations explicitly declared dual-phase |
 
-Dual-phase admission follows the resolved operation's contract. `halt` certifies purity and finiteness within the declaration's existing call family. Static evaluation of `len` uses the ordinary immutable-value instance for a `LenTarget`. Its run-time `via` template also admits explicit `ref` observation of eligible collections. The [restriction on `via` parameters](#access-mode-inference-with-via-and-infer) applies to static declarations.
+Dual-phase admission follows the resolved operation's contract. Optional `halt` requires purity and absence of Div within the declaration's existing call family; it does not make an ordinary function callable at compile time. Static evaluation of `len` uses the ordinary immutable-value instance for a `LenTarget`. Its run-time `via` template also admits explicit `ref` observation of eligible collections. The [restriction on `via` parameters](#access-mode-inference-with-via-and-infer) applies to static declarations.
 
 Type elaboration in declarations, annotations, quoted type syntax and generic type metadata is static, including inside an ordinary `fn`. Meta code permits local type quotations and read-only reflection while its result follows the [meta-result restrictions](#pure-type-functions-and-result-restrictions).
 
@@ -7517,10 +7489,10 @@ type OptInt = Wrapper<Option, i64>             -- Option<i64>
 
 ```ebnf
 MetaLetDecl      ::= [ "pub" ] "meta" "let" ( ScreamingSnakeCase | "_" ) [ ":" TypeExpression ] "=" Expression
-MetaFnDecl       ::= [ "pub" ] "meta" "fn" ValueName [ GenericParams ] "(" [ ParameterList ] ")" ReturnType Block
+MetaFnDecl       ::= [ "pub" ] [ "halt" ] "meta" "fn" ValueName [ GenericParams ] "(" [ ParameterList ] ")" ReturnType Block
 ```
 
-`meta let` and `meta fn` evaluate in the pure static domain. Only ordinary results recursively free of tokens, static-only metatypes, and type-producing authority may become immutable run-time constants. Token-valued `meta let` bindings remain static. Type functions may consume static values to select shapes; arithmetic on sizes follows ordinary integer rules.
+`meta let` and `meta fn` evaluate in the pure static domain, which permits implicit Div under the compiler's root budget. `halt meta fn` is an optional additional assertion of absence of Div; neither declarations nor roots must use it. Only ordinary results recursively free of tokens, static-only metatypes, and type-producing authority may become immutable run-time constants. Token-valued `meta let` bindings remain static. Type functions may consume static values to select shapes; arithmetic on sizes follows ordinary integer rules.
 
 A run-time value-expression read of a module-level meta constant retains its named source obligation under [External State Tracking](#external-state-tracking). Static/type-domain reads have no such run-time obligation.
 
@@ -7773,7 +7745,7 @@ fn main() @Fiber -> Result<(), str> {
 | Declaration | Non-public ordinary named Ril function at executable root top-level; `halt` is allowed subject to its usual checks |
 | Value / generic parameters | None, including defaulted parameters |
 | Result | `()` or the language's `Result<(), str>`, after transparent alias expansion |
-| Effects / state | Ordinary declaration and provenance rules; undeclared residual effects remain `E0612` |
+| Effects / state | Ordinary declaration and provenance rules; undeclared residual operational effects remain `E0612`; implicit Div is allowed without an annotation or handler |
 | Residual user-defined effect | No program-environment handler; `E0612` even if listed on main |
 
 | Completed program outcome | Environment behavior |
@@ -7783,7 +7755,7 @@ fn main() @Fiber -> Result<(), str> {
 | Reporting the error fails | Exit status 1; no successful outcome or further output guarantee |
 | Uncontained panic / double fault / cancellation | Exit status 1; explanatory diagnostics are not fixed text |
 | Declared `Fiber` / `Concurrent`, including `Async` | Supply their specified system operations |
-| Declared `Div` exhaustion without a source handler | Begin panic unwinding; never resume the exhausted action |
+| Implicit Div | No operation to service; ordinary main may diverge and need not be marked halt |
 
 Environment reporting occurs outside main's invocation and adds no effect obligation to main. A normal main result produced by an outward abortive source handler follows the outcome table after cleanup. Child-local effect confinement and termination follow their defining rules.
 
@@ -7815,6 +7787,7 @@ The prelude is an ambient lexical scope enclosing every compilation unit, includ
 
 | Explicit library modules | Sources | Role |
 | :--- | :--- | :--- |
+| `Eval` | `ril/eval` | Dual-phase budget primitive and ordinary `BudgetError` result data |
 | `Math`, `Crypto` | `ril/math`, `ril/crypto` | Specialized computation |
 | `File`, `Io`, `Os` | `ril/file`, `ril/io`, `ril/os` | Target-runtime I/O and environment |
 | `Channel`, `Parallel` | `ril/concurrent/channel`, `ril/parallel` | Target-runtime task and execution strategies |
