@@ -6,7 +6,10 @@ use ril_compiler::{
         StateMode, StateOwner, StmtKind, StringPart, TypeKind, ValueTestKind,
     },
     frontend::{Frontend, UnitKind, frontend},
-    hir::{CallableLayer, CompilationUnitOrigin, DefinitionKind, EffectMember, ScopeKind},
+    hir::{
+        CallableLayer, CompilationUnitOrigin, DefinitionKind, EffectMember, ModeCoordinate,
+        ModeOwner, ScopeKind,
+    },
     library::PrimitiveId,
     source::FileId,
     text::{Alignment, Conversion},
@@ -1185,4 +1188,115 @@ fn direct_library_and_external_units_check_their_module_file_names() {
         assert_eq!(diagnostic.code, code);
         assert_eq!(diagnostic.labels[0].span.file, FileId(0));
     }
+}
+
+#[test]
+fn implicit_modes_keep_finite_declaration_coordinates_and_nested_callable_owners() {
+    let input = r#"
+type Node<T> {
+    End,
+    Link { var via value: T, ref following: Node<T>, nested: [via]{ via item: T } }
+}
+type Alias<T> = Node<T>
+type Other<T> = { via value: T }
+type Signature<T> = fn(via T) -> infer T
+fn forward<T>(via value: T, xs: [via]T, callback: fn(via T) -> infer T) -> infer T {
+    callback(value)
+}
+fn create<T>(via value: T) -> infer T {
+    let identity = \via item: T -> item
+    identity(value)
+}
+"#;
+    let result = compile(input);
+    assert!(result.is_ok(), "{:?}", result.diagnostics);
+    let hir = result.hir.as_ref().unwrap();
+    let definition = |name| {
+        hir.definitions
+            .iter()
+            .enumerate()
+            .find(|(_, item)| item.name == name && item.span.is_some_and(|s| s.file == FileId(0)))
+            .map(|(index, _)| ril_compiler::hir::DefId(index))
+            .unwrap()
+    };
+    let modes: Vec<_> = hir
+        .mode_parameters
+        .iter()
+        .filter(|mode| mode.span.file == FileId(0))
+        .collect();
+    assert_eq!(modes.len(), 10);
+    let node_modes: Vec<_> = modes
+        .iter()
+        .filter(|mode| mode.owner == ModeOwner::Definition(definition("Node")))
+        .collect();
+    assert_eq!(node_modes.len(), 3);
+    assert_eq!(
+        &node_modes[0].coordinate[1..],
+        &[ModeCoordinate::Field("value".into())]
+    );
+    assert!(node_modes[0].replaceable);
+    assert_eq!(
+        result.sources.slice(node_modes[0].span).unwrap(),
+        b"var via"
+    );
+    assert_eq!(
+        &node_modes[1].coordinate[1..],
+        &[
+            ModeCoordinate::Field("nested".into()),
+            ModeCoordinate::Element,
+        ]
+    );
+    assert_eq!(
+        &node_modes[2].coordinate[1..],
+        &[
+            ModeCoordinate::Field("nested".into()),
+            ModeCoordinate::Element,
+            ModeCoordinate::Field("item".into()),
+        ]
+    );
+    assert!(
+        modes
+            .iter()
+            .all(|mode| !mode.replaceable || mode.span == node_modes[0].span)
+    );
+    assert!(
+        !modes
+            .iter()
+            .any(|mode| mode.owner == ModeOwner::Definition(definition("Alias")))
+    );
+    assert!(hir.references.iter().any(|reference| {
+        reference.path == ["Node"] && reference.definition == definition("Node")
+    }));
+
+    let forward_modes: Vec<_> = modes
+        .iter()
+        .filter(|mode| mode.owner == ModeOwner::Definition(definition("forward")))
+        .collect();
+    assert_eq!(forward_modes.len(), 2);
+    assert_eq!(forward_modes[0].coordinate, [ModeCoordinate::Input(0)]);
+    assert_eq!(result.sources.slice(forward_modes[0].span).unwrap(), b"via");
+    assert_eq!(
+        forward_modes[1].coordinate.last(),
+        Some(&ModeCoordinate::Element)
+    );
+
+    let callable_modes: Vec<_> = modes
+        .iter()
+        .filter_map(|mode| match mode.owner {
+            ModeOwner::CallableType(scope) => Some((mode, scope)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(callable_modes.len(), 2);
+    assert_ne!(callable_modes[0].1, callable_modes[1].1);
+    for (mode, scope) in callable_modes {
+        assert_eq!(mode.coordinate, [ModeCoordinate::Input(0)]);
+        assert_eq!(hir.scopes[scope.0].mode_owner, Some(mode.owner));
+    }
+    let closure_mode = modes
+        .iter()
+        .find(|mode| matches!(mode.owner, ModeOwner::Closure(_)))
+        .unwrap();
+    assert_eq!(closure_mode.coordinate, [ModeCoordinate::Input(0)]);
+    assert_eq!(result.sources.slice(closure_mode.span).unwrap(), b"via");
 }

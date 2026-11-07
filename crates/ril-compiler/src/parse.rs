@@ -851,7 +851,9 @@ impl<'a> Parser<'a> {
                 self.error("E0412", "infer is a result modifier");
                 self.bump();
             }
+            let mode_start = self.offset();
             let mode = self.parameter_mode();
+            let mode_span = (mode != ParameterMode::Read).then(|| self.span(mode_start));
             let (pattern, ty) = if syntax == ParameterSyntax::Types && self.look(1) != ":" {
                 let ty = self.type_expr();
                 (
@@ -899,6 +901,7 @@ impl<'a> Parser<'a> {
             parameters.push(Parameter {
                 pattern,
                 mode,
+                mode_span,
                 ty,
                 default,
                 span: self.span(start),
@@ -1473,10 +1476,12 @@ impl<'a> Parser<'a> {
                 let before = self.pos;
                 let start = self.offset();
                 let mode = self.parameter_mode();
+                let mode_span = (mode != ParameterMode::Read).then(|| self.span(start));
                 let pattern = self.pattern(true);
                 parameters.push(Parameter {
                     pattern,
                     mode,
+                    mode_span,
                     ty: None,
                     default: None,
                     span: self.span(start),
@@ -1775,6 +1780,12 @@ impl<'a> Parser<'a> {
                     None
                 };
                 let mode = self.member_mode(true);
+                if capture.is_some() && mode.is_some() {
+                    self.error(
+                        "E0120",
+                        "a captured member mode cannot also specify a concrete mode",
+                    );
+                }
                 let ty = self.type_expr();
                 items.push(if let Some(binder) = capture {
                     TypeExpr {
@@ -1842,6 +1853,12 @@ impl<'a> Parser<'a> {
                         None
                     };
                     let mode = self.member_mode(true);
+                    if capture.is_some() && mode.is_some() {
+                        self.error(
+                            "E0120",
+                            "a captured member mode cannot also specify a concrete mode",
+                        );
+                    }
                     let name = self.name();
                     self.expect(":");
                     let mut ty = self.type_expr();
@@ -2040,6 +2057,13 @@ impl<'a> Parser<'a> {
         };
         if access != MemberAccess::Default {
             self.bump();
+        }
+        if access == MemberAccess::Via && self.type_pattern_depth > 0 {
+            self.error_at(
+                self.span(start),
+                "E0412",
+                "a type pattern matches or captures a member mode; it cannot infer one",
+            );
         }
         (replaceable || access != MemberAccess::Default).then(|| MemberMode {
             replaceable,

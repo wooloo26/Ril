@@ -7,14 +7,16 @@ use crate::{
     source::{FileId, Span, UnitKind},
 };
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, HashSet},
     ops::Range,
     path::PathBuf,
 };
 
 mod effects;
+mod modes;
 use effects::EffectAliasSite;
 pub use effects::{EffectAliasMember, EffectInstanceUse, EffectMember, HandlerTarget};
+pub use modes::{ModeCoordinate, ModeOwner, ModeParameter, ModeParameterId};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct DefId(pub usize);
@@ -110,6 +112,7 @@ pub struct Hir {
     pub effect_aliases: BTreeMap<DefId, Vec<EffectAliasMember>>,
     pub effect_members: BTreeMap<DefId, EffectMember>,
     pub primitives: BTreeMap<DefId, PrimitiveId>,
+    pub mode_parameters: Vec<ModeParameter>,
 }
 
 #[derive(Debug)]
@@ -180,6 +183,7 @@ pub struct Scope {
     pub span: Option<Span>,
     pub kind: ScopeKind,
     pub callable_layer: Option<CallableLayer>,
+    pub mode_owner: Option<ModeOwner>,
     enclosing_module: Option<ScopeId>,
     lookup_exclusion: Option<Span>,
     default_kind: Option<DefaultKind>,
@@ -277,6 +281,7 @@ pub(crate) struct Index {
     uses: Vec<UseSite>,
     pending_effect_members: Vec<EffectAliasSite>,
     rows: Vec<ImplicitRow>,
+    indexed_schema_sites: HashSet<Span>,
     files: BTreeMap<PathBuf, DefId>,
     pub diagnostics: Vec<Diagnostic>,
 }
@@ -296,11 +301,13 @@ impl Index {
                 effect_aliases: BTreeMap::new(),
                 effect_members: BTreeMap::new(),
                 primitives: BTreeMap::new(),
+                mode_parameters: vec![],
             },
             imports: vec![],
             uses: vec![],
             pending_effect_members: vec![],
             rows: vec![],
+            indexed_schema_sites: HashSet::new(),
             files: BTreeMap::new(),
             diagnostics: vec![],
         };
@@ -397,6 +404,7 @@ impl Index {
             span,
             kind: ScopeKind::Lexical,
             callable_layer: None,
+            mode_owner: None,
             enclosing_module,
             lookup_exclusion: None,
             default_kind: None,
@@ -474,6 +482,7 @@ impl Index {
             end: text_len,
         };
         let scope = self.scope(Some(ScopeId(0)), Some(span), None);
+        self.hir.scopes[scope.0].mode_owner = Some(ModeOwner::Module(scope));
         let namespace = path.map(|path| self.module_definition(path, scope, Some(span)));
         self.hir.units.insert(
             file,
@@ -577,6 +586,7 @@ impl Index {
                 namespace,
             },
         );
+        self.hir.scopes[scope.0].mode_owner = Some(ModeOwner::Module(scope));
         for statement in &program.statements {
             if let StmtKind::Function(function) = &statement.kind
                 && let Some(primitive) = source.primitive(&function.name)
@@ -621,6 +631,7 @@ impl Index {
         match &item.kind {
             StmtKind::Sub(sub) => {
                 let inner = self.scope(Some(ScopeId(0)), Some(span), Some(scope));
+                self.hir.scopes[inner.0].mode_owner = Some(ModeOwner::Module(inner));
                 self.declare(
                     Definition {
                         name: sub.name.clone(),
@@ -700,6 +711,7 @@ impl Index {
                     });
                 }
                 let inner = self.scope(Some(scope), Some(span), None);
+                self.hir.scopes[inner.0].mode_owner = Some(ModeOwner::Definition(id));
                 self.generics(inner, &ty.generics);
                 self.statements(inner, &ty.signature_where);
                 if let Some(value) = &ty.value {
@@ -946,6 +958,7 @@ impl Index {
 
     fn function(&mut self, scope: ScopeId, function: &Function, definition: DefId) {
         let inner = self.scope(Some(scope), Some(function.span), None);
+        self.hir.scopes[inner.0].mode_owner = Some(ModeOwner::Definition(definition));
         if function.body.is_some() {
             self.hir.scopes[inner.0].callable_layer = Some(CallableLayer::Named(definition));
         }
@@ -1058,7 +1071,8 @@ impl Index {
     }
 
     fn parameters(&mut self, scope: ScopeId, parameters: &[Parameter], definition_inputs: bool) {
-        for parameter in parameters {
+        for (index, parameter) in parameters.iter().enumerate() {
+            self.parameter_mode_binder(scope, index, parameter);
             if let Some(ty) = &parameter.ty {
                 if definition_inputs {
                     self.implicit_row(scope, ty, false);
@@ -1221,6 +1235,7 @@ impl Index {
     }
 
     fn ty(&mut self, scope: ScopeId, ty: &TypeExpr) {
+        self.schema_mode_binders(scope, ty);
         match &ty.kind {
             TypeKind::Name { .. } => self.type_name_use(scope, ty, false),
             TypeKind::Optional(ty)
@@ -1274,6 +1289,7 @@ impl Index {
                 annotations,
             } => {
                 let inner = self.scope(Some(scope), Some(ty.span), None);
+                self.hir.scopes[inner.0].mode_owner = Some(ModeOwner::CallableType(inner));
                 self.parameters(inner, parameters, false);
                 self.annotations(inner, scope, annotations, AnnotationSite::CallableType);
                 self.return_sources(inner, return_mode);
@@ -1477,6 +1493,7 @@ impl Index {
             } => {
                 let inner = self.scope(Some(scope), Some(expr.span), None);
                 self.hir.scopes[inner.0].callable_layer = Some(CallableLayer::Anonymous);
+                self.hir.scopes[inner.0].mode_owner = Some(ModeOwner::Closure(inner));
                 self.parameters(inner, parameters, true);
                 self.annotations(inner, scope, annotations, AnnotationSite::OtherDefinition);
                 if let Some(ty) = return_type {

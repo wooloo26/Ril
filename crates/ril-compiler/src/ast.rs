@@ -125,6 +125,7 @@ pub enum ParameterMode {
 pub struct Parameter {
     pub pattern: Pattern,
     pub mode: ParameterMode,
+    pub mode_span: Option<Span>,
     pub ty: Option<TypeExpr>,
     pub default: Option<Expr>,
     pub span: Span,

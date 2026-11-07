@@ -21,6 +21,14 @@ heads to decide whether an expression name takes generic arguments. HIR
 retains the selected application signature and defining scopes. The parsed
 files retain parameter labels and defaults alongside HIR.
 
+HIR records compilation-unit origins, the executable entry definition, and
+foreign declaration kinds. It also assigns finite identities to written `via`
+inputs and schema coordinates. Nested callable patterns have separate owners;
+named references retain their declaration identity without expanding recursive
+schemas. Member modes retain independent slot and access components and their
+source spans. Concrete reception and storage-instance constraints belong to
+the checking stage.
+
 Declaration discovery starts with a recovery-oriented skeleton. The frontend
 then follows imports from declaration-aware parses and revisits syntax when
 reachable files or resolved heads change. Diagnostics from a committed angle

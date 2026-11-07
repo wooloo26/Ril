@@ -1070,16 +1070,18 @@ fn type_uses_via(ty: &TypeExpr) -> bool {
         | TypeKind::Tuple(arguments)
         | TypeKind::Alternatives(arguments) => arguments.iter().any(type_uses_via),
         TypeKind::Optional(inner) => type_uses_via(inner),
-        TypeKind::Array { access, element }
-        | TypeKind::Map {
-            access,
-            value: element,
-            ..
-        } => {
+        TypeKind::Array { access, element } => {
             access
                 .as_ref()
                 .is_some_and(|mode| mode.kind == StorageModeKind::Via)
                 || type_uses_via(element)
+        }
+        TypeKind::Map { key, access, value } => {
+            access
+                .as_ref()
+                .is_some_and(|mode| mode.kind == StorageModeKind::Via)
+                || type_uses_via(key)
+                || type_uses_via(value)
         }
         TypeKind::Record { fields, .. } => fields.iter().any(|field| {
             field
