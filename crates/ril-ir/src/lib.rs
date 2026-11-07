@@ -1,5 +1,8 @@
 //! Target contracts shared by static layout queries and runtime lowering.
 
+pub mod float;
+pub mod layout;
+
 /// An abstract evaluation target or a native target supported by the architecture.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TargetSpec {
@@ -39,6 +42,13 @@ impl TargetSpec {
         match self {
             Self::Pointer32 => 4,
             _ => 8,
+        }
+    }
+
+    pub const fn max_object_bytes(self) -> u64 {
+        match self {
+            Self::Pointer32 => u32::MAX as u64,
+            Self::Pointer64 | Self::LinuxX86_64 | Self::WindowsX86_64 => i64::MAX as u64,
         }
     }
 

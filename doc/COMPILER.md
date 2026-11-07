@@ -35,8 +35,9 @@ reachable files or resolved heads change. Diagnostics from a committed angle
 list stay attached to that list during recovery.
 
 The frontend loads bundled foundational signatures and the `Array`, `Map`,
-`Set`, `Numeric`, `String`, and `Bytes` declarations from the compiler's Ril sources. Ambient
-module access and explicit `use ril/...` imports share declaration identities.
+`Set`, `Numeric`, `String`, and `Bytes` declarations from the compiler's Ril
+sources. Ambient module access and explicit `use ril/...` imports share
+declaration identities.
 The `Reflect::MemberMode` export uses the same declaration as the ambient
 `MemberMode` sort.
 
@@ -47,8 +48,11 @@ records their phase admission by resolved identity. A source-bodied dual-phase
 operation still executes its source calls and loops. See the current
 [collection contracts](LIBRARY.md); execution validation awaits later stages.
 
-The workspace also defines abstract and native target identities. Static
-checking, compile-time evaluation, runtime IR, interpretation, the release
+The workspace also defines abstract and native target identities and a
+versioned [value and GC-storage layout](LAYOUT.md). Shared scalar helpers
+canonicalize IEEE floating values while distinguishing ordinary comparison
+from static argument identity. Static checking, compile-time evaluation,
+runtime IR, interpretation, the release
 library, and Cranelift code generation are subsequent work. The
 [language specification](SPEC.md) defines their behavior and the remaining
 frontend conformance scope.
