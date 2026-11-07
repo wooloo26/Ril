@@ -1243,6 +1243,9 @@ impl<'a> Parser<'a> {
         let value = if alias || self.at("(") {
             Some(self.type_expr())
         } else if self.eat("{") {
+            if self.at("}") {
+                self.error("E0120", "a sum declaration requires a variant");
+            }
             while !self.at("}") && !self.eof() {
                 let before = self.pos;
                 let start = self.offset();
@@ -1292,14 +1295,14 @@ impl<'a> Parser<'a> {
         } else {
             signature_where
         };
-        if is_halt && (nominal || !variants.is_empty()) {
+        if is_halt && !alias {
             self.error_at(
                 self.span(start),
                 "E0120",
                 "halt type requires an equals definition",
             );
         }
-        if opaque && (nominal || !variants.is_empty()) {
+        if opaque && !alias {
             self.error_at(
                 self.span(start),
                 "E0124",

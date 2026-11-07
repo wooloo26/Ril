@@ -52,3 +52,8 @@ halt type Invalid(i64)
 -- spec: SPEC#type-declarations-and-opaque-types
 -- Error [E0124]
 opaque type Invalid(i64)
+
+-- [case: sum-declaration-needs-a-variant, front-fail]
+-- spec: SPEC#sum-types-and-gadts
+-- Error [E0120]
+type Invalid {}
