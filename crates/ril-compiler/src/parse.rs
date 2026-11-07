@@ -2360,7 +2360,12 @@ impl<'a> Parser<'a> {
     }
 
     fn expression(&mut self, min: u8, multiline: bool) -> Expr {
-        self.expression_with_bar_boundary(min, multiline, false)
+        // Embedded expressions, such as an array-pattern length, use ordinary
+        // expression grammar. A nested match can explicitly enter a new pattern.
+        let pattern_depth = std::mem::replace(&mut self.type_pattern_depth, 0);
+        let expression = self.expression_with_bar_boundary(min, multiline, false);
+        self.type_pattern_depth = pattern_depth;
+        expression
     }
 
     fn expression_with_bar_boundary(

@@ -38,6 +38,13 @@ enum AnnotationPlace {
     CallableType,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TypePatternPosition {
+    Type,
+    Argument,
+    Member,
+}
+
 struct Validator<'a> {
     diagnostics: Vec<Diagnostic>,
     unit_kind: Option<UnitKind>,
@@ -632,6 +639,7 @@ impl Validator<'_> {
             PatternKind::Mode { pattern, .. } => self.binding_pattern(pattern, constant, nested),
             PatternKind::Type(ty) => {
                 self.ty(ty);
+                self.type_pattern(ty, TypePatternPosition::Type);
                 let mut bound = vec![];
                 pattern.binding_names(&mut bound);
                 let mut names = BTreeSet::new();
@@ -683,6 +691,52 @@ impl Validator<'_> {
                     &format!("pattern binds '{name}' more than once"),
                 );
             }
+        }
+    }
+
+    fn type_pattern(&mut self, ty: &TypeExpr, position: TypePatternPosition) {
+        use TypePatternPosition::{Argument, Member, Type};
+        match &ty.kind {
+            TypeKind::Name { arguments, .. } => {
+                for argument in arguments {
+                    self.type_pattern(argument, Argument);
+                }
+            }
+            TypeKind::TypeBinder(_) | TypeKind::Error => {}
+            TypeKind::Tuple(items) => {
+                for (index, item) in items.iter().enumerate() {
+                    if matches!(item.kind, TypeKind::PatternRest(_)) && index + 1 == items.len() {
+                        continue;
+                    }
+                    self.type_pattern(item, Member);
+                }
+            }
+            TypeKind::Record { fields, row } => {
+                for field in fields {
+                    self.type_pattern(&field.ty, Member);
+                }
+                if let Some(row) = row
+                    && !matches!(row.kind, TypeKind::PatternRest(_))
+                {
+                    self.type_pattern(row, Type);
+                }
+            }
+            TypeKind::Map { key, value, .. } => {
+                self.type_pattern(key, Type);
+                self.type_pattern(value, Type);
+            }
+            TypeKind::ArrayPattern { element, .. } => self.type_pattern(element, Type),
+            TypeKind::PatternMode { ty, .. } | TypeKind::Member { ty, .. }
+                if position == Member =>
+            {
+                self.type_pattern(ty, Type);
+            }
+            TypeKind::Computation(value) if position == Argument && literal_pattern(value) => {}
+            _ => self.error(
+                "E0120",
+                ty.span,
+                "expected a type pattern; literals belong to const arguments and rests must be final",
+            ),
         }
     }
 
@@ -1055,6 +1109,19 @@ impl Validator<'_> {
             }
             ValueTestKind::Wildcard | ValueTestKind::Error => {}
         }
+    }
+}
+
+fn literal_pattern(expression: &Expr) -> bool {
+    match &expression.kind {
+        ExprKind::Literal(_) => true,
+        ExprKind::Unary { operator, operand } if operator == "-" => {
+            matches!(
+                operand.kind,
+                ExprKind::Literal(Literal::Integer(_) | Literal::Float(_))
+            )
+        }
+        _ => false,
     }
 }
 

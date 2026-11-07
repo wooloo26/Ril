@@ -1,0 +1,71 @@
+-- [case: type-pattern-const-literals-and-mode-captures, front-pass]
+-- spec: SPEC#structural-type-pattern-matching
+type Sized<T, count: i64>(T)
+type Select = \T -> match <T> {
+    <Sized<i64, -2>> -> <i64>,
+    <{ let M item: let U, ..let Rest }> -> <(U, Rest)>,
+    <(var ref let U, ..let Tail)> -> <(U, Tail)>,
+    _ -> <never>,
+}
+
+-- [case: type-pattern-array-length-uses-ordinary-expression-grammar, front-pass]
+-- spec: SPEC#structural-type-pattern-matching
+type Select = \T -> match <T> {
+    <[if byte_size(<[]i64>) > 0 { 2 } else { 1 }]let U> -> <U>,
+    _ -> <never>,
+}
+
+-- [case: array-pattern-length-can-contain-a-separate-static-match, front-pass]
+-- spec: SPEC#structural-type-pattern-matching
+type Select = \T -> match <T> {
+    <[match <i64> { <let U> -> byte_size(<U>), _ -> 0 }]let Element> -> <Element>,
+    _ -> <never>,
+}
+
+-- [case: type-pattern-root-is-not-a-const-literal, front-fail]
+-- spec: SPEC#structural-type-pattern-matching
+-- Error [E0120]
+type Select = \T -> match <T> { <2> -> <i64>, _ -> <never> }
+
+-- [case: type-pattern-const-argument-is-not-a-computed-expression, front-fail]
+-- spec: SPEC#structural-type-pattern-matching
+-- Error [E0120]
+type Sized<T, count: i64>(T)
+type Select = \T -> match <T> { <Sized<i64, 1 + 2>> -> <i64>, _ -> <never> }
+
+-- [case: type-pattern-callable-is-not-a-structural-pattern, front-fail]
+-- spec: SPEC#structural-type-pattern-matching
+-- Error [E0120]
+type Select = \T -> match <T> { <fn(i64) -> str> -> <i64>, _ -> <never> }
+
+-- [case: type-pattern-mapped-comprehension-is-not-a-pattern, front-fail]
+-- spec: SPEC#structural-type-pattern-matching
+-- Error [E0120]
+type Select = \T -> match <T> { <{ [["item"] as K]: i64 }> -> <i64>, _ -> <never> }
+
+-- [case: type-pattern-projection-is-not-a-rigid-head, front-fail]
+-- spec: SPEC#structural-type-pattern-matching
+-- Error [E0120]
+type Fields = { item: i64 }
+type Select = \T -> match <T> { <Fields.item> -> <i64>, _ -> <never> }
+
+-- [case: type-pattern-tuple-rest-must-be-final, front-fail]
+-- spec: SPEC#structural-type-pattern-matching
+-- Error [E0120]
+type Select = \T -> match <T> { <(..let Tail, i64)> -> <Tail>, _ -> <never> }
+
+-- [case: type-pattern-rest-needs-a-row-or-tuple, front-fail]
+-- spec: SPEC#structural-type-pattern-matching
+-- Error [E0120]
+type Select = \T -> match <T> { <..let Tail> -> <Tail>, _ -> <never> }
+
+-- [case: type-pattern-field-is-not-a-const-argument-position, front-fail]
+-- spec: SPEC#structural-type-pattern-matching
+-- Error [E0120]
+type Select = \T -> match <T> { <{ item: 2 }> -> <i64>, _ -> <never> }
+
+-- [case: type-pattern-interpolation-is-not-a-literal, front-fail]
+-- spec: SPEC#structural-type-pattern-matching
+-- Error [E0120]
+type TextTag<text: str>
+type Select = \T -> match <T> { <TextTag<"{1}">> -> <i64>, _ -> <never> }
