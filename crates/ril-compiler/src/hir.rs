@@ -3,7 +3,9 @@ use crate::{
     ast::*,
     diagnostic::Diagnostic,
     lexer::{diagnostic, primitive},
-    library::{Placement, PrimitiveId, PrimitiveSource, REFLECT_PATH},
+    library::{
+        LibraryBodyId, LibraryTypeId, Placement, PrimitiveId, PrimitiveSource, REFLECT_PATH,
+    },
     source::{FileId, Span, UnitKind},
 };
 use std::{
@@ -112,6 +114,8 @@ pub struct Hir {
     pub effect_aliases: BTreeMap<DefId, Vec<EffectAliasMember>>,
     pub effect_members: BTreeMap<DefId, EffectMember>,
     pub primitives: BTreeMap<DefId, PrimitiveId>,
+    pub library_bodies: BTreeMap<DefId, LibraryBodyId>,
+    pub library_types: BTreeMap<DefId, LibraryTypeId>,
     pub mode_parameters: Vec<ModeParameter>,
 }
 
@@ -301,6 +305,8 @@ impl Index {
                 effect_aliases: BTreeMap::new(),
                 effect_members: BTreeMap::new(),
                 primitives: BTreeMap::new(),
+                library_bodies: BTreeMap::new(),
+                library_types: BTreeMap::new(),
                 mode_parameters: vec![],
             },
             imports: vec![],
@@ -314,7 +320,6 @@ impl Index {
         let prelude = this.scope(None, None, None);
         for (name, arity) in [
             ("Type", 1),
-            ("Set", 1),
             ("Draft", 1),
             ("SharedObject", 1),
             ("LenTarget", 1),
@@ -570,11 +575,18 @@ impl Index {
                 self.expose_ambient_module(module);
                 (scope, Some(module))
             }
-            Placement::ExistingNamespace(name) => {
+            Placement::ExistingNamespace { name, module } => {
                 let definition = self.hir.scopes[prelude.0].bindings[name].definition;
-                let scope = self.member_scope(definition).expect("built-in namespace");
+                let scope = self.member_scope(definition).unwrap_or_else(|_| {
+                    let scope = self.scope(Some(prelude), Some(span), None);
+                    self.hir.definitions[definition.0].members = Some(scope);
+                    scope
+                });
                 self.hir.scopes[scope.0].parent = Some(prelude);
                 self.hir.scopes[scope.0].span = Some(span);
+                if let Some(path) = module {
+                    self.files.insert(path.into(), definition);
+                }
                 (scope, Some(definition))
             }
         };
@@ -603,6 +615,18 @@ impl Index {
                 self.function(scope, function, id);
             } else {
                 self.statement(scope, statement);
+                if let StmtKind::Function(function) = &statement.kind
+                    && let Some(body) = source.body(&function.name)
+                {
+                    let definition = self.hir.scopes[scope.0].bindings[&function.name].definition;
+                    self.hir.library_bodies.insert(definition, body);
+                }
+                if let StmtKind::Type(ty) = &statement.kind
+                    && let Some(type_id) = source.type_id(&ty.name)
+                {
+                    let definition = self.hir.scopes[scope.0].bindings[&ty.name].definition;
+                    self.hir.library_types.insert(definition, type_id);
+                }
             }
         }
     }

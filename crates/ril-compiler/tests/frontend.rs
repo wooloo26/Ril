@@ -293,7 +293,12 @@ fn sample() -> i64 {
         panic!("expected two application sites");
     };
     assert_eq!(first.remainder_scope, second.calling_scope);
-    let [transfer] = &hir.control_transfers[..] else {
+    let transfers: Vec<_> = hir
+        .control_transfers
+        .iter()
+        .filter(|item| item.span.file == FileId(0))
+        .collect();
+    let [transfer] = &transfers[..] else {
         panic!("expected one explicit transfer");
     };
     assert_eq!(transfer.operation, ControlOperation::Return);
@@ -336,7 +341,12 @@ halt fn sample() -> i64 {
         budget.application.as_ref().unwrap().parameters,
         [ArgumentSort::Type]
     );
-    let [transfer] = &hir.control_transfers[..] else {
+    let transfers: Vec<_> = hir
+        .control_transfers
+        .iter()
+        .filter(|item| item.span.file == FileId(0))
+        .collect();
+    let [transfer] = &transfers[..] else {
         panic!("expected a resume operation");
     };
     assert_eq!(transfer.operation, ControlOperation::Resume);

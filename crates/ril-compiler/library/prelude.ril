@@ -13,6 +13,7 @@ pub fn println(text: str) @Fiber -> ()
 
 pub type Option<T> { Some(T), None }
 pub type Result<T, E> { Ok(T), Err(E) }
+pub opaque type Set<T> = [T: ()]
 
 pub halt type Tuple = \T -> match <T> {
     <()> -> <T>,

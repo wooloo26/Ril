@@ -1,0 +1,65 @@
+-- [case: collection-algorithms-are-ambient-library-members, front-pass]
+-- spec: SPEC#prelude-scope
+fn transform(values: []i64) -> []i64 {
+    values |> Array::filter(\value -> value > 0) |> Array::map(\value -> value * 2)
+}
+fn summarize(values: []i64) -> (i64, bool, ?i64, []i64) {
+    (values |> Array::fold(0, \sum, value -> sum + value), Array::contains(values, 1), Array::first(values), Array::reverse(values))
+}
+
+-- [case: collection-storage-operations-have-source-heads, front-pass]
+-- spec: SPEC#homogeneous-storage-authority
+type Cell = { var count: i64 }
+fn example() -> () {
+    let mut values: [mut]Cell = []
+    values !> Array::push(new Cell.{ count: 0 })
+    values !> Array::insert(0, new Cell.{ count: 1 })
+    let mut result = Array::pop(mut values)
+    values !> Array::truncate(0)
+}
+
+-- [case: collection-extractors-are-source-type-functions, front-pass]
+-- spec: SPEC#array-map-and-tuple-types
+use ril/array::{Elem as ArrayElement}
+use ril/map::{Key, Value}
+use ril/set::{Elem as SetElement}
+type ArrayItem = ArrayElement<[]i64>
+type MapKey = Key<[str: i64]>
+type MapValue = Value<[str: i64]>
+type SetItem = SetElement<Set<i64>>
+
+-- [case: predefined-set-keeps-type-and-module-roles-under-import, front-pass]
+-- spec: SPEC#identifiers-and-casing-invariants
+use ril/set as Unique
+use ril/set::{from as make_unique}
+fn collect(values: []i64) -> Set<i64> { make_unique(values) }
+fn describe(values: Unique<i64>) -> (bool, []i64) {
+    (Unique::contains(values, 1), Set::to_array(values))
+}
+
+-- [case: map-library-bodies-use-bracket-storage-and-insertion-order, front-pass]
+-- spec: SPEC#array-map-and-tuple-types
+use ril/map as Dictionary
+fn update() -> (?[i64: i64], []str) {
+    let mut values: [str: i64] = ["first": 1]
+    values !> Dictionary::set("second", 2)
+    let _ = Map::get(ref values, "first")
+    let _ = Map::values(ref values)
+    (None, Map::keys(ref values))
+}
+
+-- [case: user-source-cannot-replace-the-standard-array-module, front-fail]
+-- spec: SPEC#prelude-scope
+-- Error [E0209]
+-- file: root.ril
+use ril/array
+fn invalid() -> i64 { Array::spoof() }
+-- file: ril/array.ril
+pub fn spoof() -> i64 { 1 }
+
+-- [case: explicit-set-import-retains-the-standard-type-under-shadowing, front-pass]
+-- spec: SPEC#prelude-scope
+use ril/set as Unique
+type Set<T> = { item: T }
+fn local() -> Set<i64> { Set.{ item: 1 } }
+fn standard() -> Unique<i64> { Unique::from([1, 2, 1]) }

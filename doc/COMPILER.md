@@ -34,11 +34,18 @@ then follows imports from declaration-aware parses and revisits syntax when
 reachable files or resolved heads change. Diagnostics from a committed angle
 list stay attached to that list during recovery.
 
-The frontend loads bundled foundational signatures and the `Numeric`,
-`String`, and `Bytes` declarations from the compiler's Ril sources. Ambient
+The frontend loads bundled foundational signatures and the `Array`, `Map`,
+`Set`, `Numeric`, `String`, and `Bytes` declarations from the compiler's Ril sources. Ambient
 module access and explicit `use ril/...` imports share declaration identities.
 The `Reflect::MemberMode` export uses the same declaration as the ambient
 `MemberMode` sort.
+
+Collection algorithms and type extractors have Ril bodies. `Set<T>` has one
+source-defined opaque identity whose namespace also exports `Set::from`.
+The library inventory distinguishes native primitives from source bodies and
+records their phase admission by resolved identity. A source-bodied dual-phase
+operation still executes its source calls and loops. See the current
+[collection contracts](LIBRARY.md); execution validation awaits later stages.
 
 The workspace also defines abstract and native target identities. Static
 checking, compile-time evaluation, runtime IR, interpretation, the release
