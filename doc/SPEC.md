@@ -2697,7 +2697,7 @@ DeclLet          ::= "let" ScreamingSnakeCase ":" TypeExpression
 - **Temporary Callbacks**: Invoke only during the current foreign call, on the current task. Preserve actual effects, origins, environment modes, and exclusivity; mutable invocation requires `mut` on parameter and argument. No environment inspection, retention, return, or cross-task transfer is permitted. Arguments/results must satisfy ordinary exchange or explicit resource rules; mutable data and nested callables gain no exemption.
 - **Explicit Resource Contracts (`E0908`)**: Only an explicit resource contract may extend ordinary exchange. Opaque declarations and `@Fiber`/`mut`/`^mut` alone grant no resource mutation, callback retention, copying, closing, or transfer. Reject unsupported requests. Ordinary opaque data retains its actual provenance.
 - **Trusted Boundary**: An external entity's conformance to its declared contract is a trusted premise. Static checking verifies the Ril program against that contract. Diagnostic explanations identify the foreign contract as the origin of trusted facts; other authority requires proof.
-- **Termination Boundary**: A bodyless external function automatically has Div, including when its source omits effects; other omitted effect/state rows remain closed. Its declaration cannot assert absence of Div or budget coverage, and cannot be marked `halt`. A reachable external call propagates Div and is inadmissible within `Eval::budget` (`E0822`). Language-defined built-ins follow their specified finite/coverage contracts; verified ordinary Ril definitions retain their full effect rows across module boundaries.
+- **Termination Boundary**: A bodyless external function automatically has Div, including when its source omits effects; other omitted effect/state rows remain closed. Its declaration cannot assert absence of Div or budget coverage, and cannot be marked `halt`. A reachable external call propagates Div and is inadmissible within `div_budget` (`E0822`). Language-defined built-ins follow their specified finite/coverage contracts; verified ordinary Ril definitions retain their full effect rows across module boundaries.
 
 ```ril
 -- In file: platform/dom.d.ril
@@ -4956,7 +4956,7 @@ halt fn checked() -> i64 { done() }              -- Unmarked helpers are admissi
 | Unknown callback through an open row | Preserve its symbolic effect dependency, including possible Div; absence must be established before satisfying a closed row |
 | Callable creation or return | Check current capture/publication separately; the body's Div remains latent until invocation |
 | Finite language primitive | Omit Div only under its specified finite contract and callback dependencies |
-| `Eval::budget` | The only primitive that removes Div from a covered invocation; see [finite evaluation](#finite-evaluation-with-div) |
+| `div_budget` | The only primitive that removes Div from a covered invocation; see [finite evaluation](#finite-evaluation-with-div) |
 
 Invocation-cycle analysis includes callable-valued members, recursive types, mutable/live storage, captured environments, and handler re-entry. A cycle cannot establish its own absence of Div from its written signatures. Use verified contracts and established acyclic invocation dependencies; unresolved potentially cyclic dependencies introduce Div. Reading inert cyclic data alone introduces none. A verified budget can discharge a cyclic invocation within its protected action; the containing function need not retain that Div. Analyze definitions and their dependencies conservatively; neither evaluation on sample inputs nor arithmetic/structural descent removes an inferred Div. An unreachable static branch contributes no obligation.
 
@@ -6521,7 +6521,7 @@ The built-in system effect sets have the following inclusion relationships; `Asy
 
 $$\emptyset \subset \lbrace\text{Fiber}\rbrace \subset \lbrace\text{Fiber}, \text{Concurrent}\rbrace \equiv \text{Async}$$
 
-Div is separate from Fiber, Concurrent, and their Async alias. [Budget execution and its result type](#finite-evaluation-with-div) require an explicit `ril/eval` import; Div itself does not.
+Div is separate from Fiber, Concurrent, and their Async alias. The prelude also supplies [div_budget and BudgetError](#finite-evaluation-with-div); no import is required.
 
 #### Normative Rules for Built-in System Effects
 - **Leaf I/O (`@Fiber`)**: Leaf I/O operations that require suspension but perform no structured concurrency declare `@Fiber` for those operations. Forking requires `@Concurrent`. Both remain subject to the ordinary task-boundary, provenance, and exclusivity rules.
@@ -6546,9 +6546,9 @@ fn read_name(path: str) @Fiber -> Result<str, str> {
 | `Fiber::yield` | A matching operation arm discharges this yield request |
 | Leaf I/O / environmental or endpoint operation | Retains its `Fiber` obligation unless its public contract explicitly provides a handler for its result and external behavior |
 | Scope / fork / join | Retains its `Concurrent` obligation; these callables are not operation-arm targets |
-| Div | No operation or source-handler discharge; `Eval::budget` removes it only from a covered invocation |
+| Div | No operation or source-handler discharge; `div_budget` removes it only from a covered invocation |
 
-The current resource I/O and structured-concurrency contracts provide no source-level handler that replaces their external behavior. Handling yield alone never covers these obligations. A user-defined effect may expose a mockable interface before any resource operation is invoked. Handling a request does not make an excluded operation eligible for `Eval::budget` or remove its access, cleanup, or task-boundary restrictions.
+The current resource I/O and structured-concurrency contracts provide no source-level handler that replaces their external behavior. Handling yield alone never covers these obligations. A user-defined effect may expose a mockable interface before any resource operation is invoked. Handling a request does not make an excluded operation eligible for `div_budget` or remove its access, cleanup, or task-boundary restrictions.
 
 ```ril
 -- Signature of the built-in yielding operation, not a redeclaration in user code:
@@ -6646,44 +6646,41 @@ fn factorial(n: i64) -> i64 {
 ### Finite Evaluation with Div
 
 ```ril
-use ril/eval
-
 fn spin() -> i64 { loop {} }
-halt fn bounded() -> Result<i64, Eval::BudgetError> {
-    Eval::budget(10_000, spin)
+halt fn bounded() -> Result<i64, BudgetError> {
+    div_budget(10_000, spin)
 }
-assert(bounded() is Err(Eval::BudgetError::Exhausted))
+assert(bounded() is Err(BudgetError::Exhausted))
 ```
 
-`ril/eval` requires an explicit import. It supplies these declaration shapes and the primitive contract below; Div itself is already in the prelude:
+The prelude supplies Div, `div_budget`, and `BudgetError` directly. The budget primitive and its result data have these declaration shapes:
 
 ```ril
--- Declarations supplied by ril/eval, not user redeclarations:
+-- Declarations supplied by the prelude, not user redeclarations:
 pub type BudgetError { Exhausted }
-pub fn budget<T>(limit: u64, action: fn() @& -> T) -> Result<T, BudgetError>
+pub fn div_budget<T>(limit: u64, action: fn() @& -> T) -> Result<T, BudgetError>
 ```
 
-For a covered action with effect row E, the invocation of `Eval::budget` has effects E minus Div. Other effects and all outward state/provenance obligations, including result publication, propagate normally; parameter modes and callable-handle authority remain unchanged. The primitive also accepts an action without Div. It introduces no exhaustion effect: normal action completion produces `Ok(value)`, and exhaustion produces `Err(BudgetError::Exhausted)` after required cleanup. Mandatory Result inspection applies (`E0720`). A panic retains ordinary run-time unwinding or static diagnostic behavior and is not converted to `Err`.
+For a covered action with effect row E, the invocation of `div_budget` has effects E minus Div. Other effects and all outward state/provenance obligations, including result publication, propagate normally; parameter modes and callable-handle authority remain unchanged. The primitive also accepts an action without Div. It introduces no exhaustion effect: normal action completion produces `Ok(value)`, and exhaustion produces `Err(BudgetError::Exhausted)` after required cleanup. Mandatory Result inspection applies (`E0720`). A panic retains ordinary run-time unwinding or static diagnostic behavior and is not converted to `Err`.
 
 ```ril
-use ril/eval::{budget, BudgetError}             -- Optional short names
 eff Ask { get() -> i64 }
 fn ask() @Ask -> i64 { Ask::get() }
 fn attempt() @Ask -> Result<i64, BudgetError> {
-    budget(100, ask)                           -- Ask remains; selected handlers must be covered
+    div_budget(100, ask)                           -- Ask remains; selected handlers must be covered
 }
--- budget(100, \-> 42)                         -- Error [E0720]: unused Result
+-- div_budget(100, \-> 42)                         -- Error [E0720]: unused Result
 ```
 
-Only the built-in declaration identity receives these rules; import aliases and re-exports preserve it. Same-named user declarations have no privilege. Using `Eval::budget` as an operation-arm target is `E0621`. The primitive is dual-phase: it invokes a same-phase action in type, meta-value, or run-time evaluation. A static intermediate `Result` may contain a type token; ordinary phase/result restrictions still prevent token materialization or a meta function returning type-producing authority. The primitive gives no cross-family exception to user callables (`E0810`).
+Only the built-in declaration identity receives these rules; callable aliases and re-exports preserve it. Ordinary lexical shadowing applies, and a same-named user function has no privilege. Using `div_budget` as an operation-arm target is `E0621`. The primitive is dual-phase: it invokes a same-phase action in type, meta-value, or run-time evaluation. A static intermediate `Result` may contain a type token; ordinary phase/result restrictions still prevent token materialization or a meta function returning type-producing authority. The primitive gives no cross-family exception to user callables (`E0810`).
 
 #### Coverage and Finite Outcomes
 
 The action may have Div, but all required computation must be covered by charging or a specified finite primitive contract (`E0822`). Check actual calls, callbacks, selected handlers, resumptions, cleanup, origins, sharing, and escape. A budget or Div-free assertion cannot certify its own coverage through a dependency cycle; every potentially infinite execution path must consume unboundedly many units from at least one finite allowance without replenishing it. Symbolic coverage requirements follow actual callable values through aliases, fields, returns, and modules. Preserve unresolved requirements in generic interfaces; an incompatible or unresolved actual requirement at a required concrete use is `E0822`. An empty effect row alone does not prove coverage.
 
 ```ril
-halt fn limited_sum(values: []i64) -> Result<i64, Eval::BudgetError> {
-    Eval::budget(100, \-> {
+halt fn limited_sum(values: []i64) -> Result<i64, BudgetError> {
+    div_budget(100, \-> {
         var total = 0
         for values as value { total += value }
         total
@@ -6693,16 +6690,16 @@ assert(limited_sum([1, 2, 3]) is Ok(6))         -- Confined mutation is covered;
 
 var outside_count = 0
 fn write_once() &up(sub){mut outside_count} -> i64 { outside_count += 1; 7 }
-fn bounded_write() &up(sub){mut outside_count} -> Result<i64, Eval::BudgetError> {
-    Eval::budget(100, write_once)               -- State remains; this wrapper is not pure
+fn bounded_write() &up(sub){mut outside_count} -> Result<i64, BudgetError> {
+    div_budget(100, write_once)               -- State remains; this wrapper is not pure
 }
--- halt fn impure() &up(sub){mut outside_count} -> Result<i64, Eval::BudgetError> {
+-- halt fn impure() &up(sub){mut outside_count} -> Result<i64, BudgetError> {
 --     bounded_write()                         -- Error [E0821]: budget does not discharge external writes
 -- }
 
 -- Removing an effect label does not make excluded computation covered:
 -- with Fiber::yield() -> resume ()
--- Eval::budget(100, \-> Fiber::yield())        -- Error [E0822]
+-- div_budget(100, \-> Fiber::yield())        -- Error [E0822]
 ```
 
 Reachable bodyless foreign calls, Fiber/I/O, structured concurrency, resource endpoint operations, and parallel combinators remain excluded even when their effect labels are handled. Ordinary algebraic effects may propagate with their selected handlers' coverage requirements; the budget never erases their labels. Finite ordinary-data primitives and sequential collection computations follow their contracts; repeated computation must be charged or have a finite contract. Coverage does not grant state, access, lifetime, or resource authority.
@@ -6711,7 +6708,7 @@ Exhaustion is a private control transfer to the particular budget invocation who
 
 ```ril
 fn bad_recovery() -> i64 {
-    match Eval::budget(0, \-> 42) {
+    match div_budget(0, \-> 42) {
         Ok(value) -> value,
         Err(_) -> spin(),                      -- Recovery is outside this budget; propagates Div
     }
@@ -6722,8 +6719,8 @@ fn bad_recovery() -> i64 {
 Only the protected invocation's Div is removed. Evaluating the limit/action expressions and inspecting or recovering from the Result retain their own effects, Div, and state/provenance obligations. Whole-expression `halt` checking includes them. Returned callables retain their complete latent rows and receive no continuing allowance:
 
 ```ril
-halt fn make_later() -> Result<fn() @Div -> i64, Eval::BudgetError> {
-    Eval::budget(100, \-> spin)                -- Returning spin does not execute it
+halt fn make_later() -> Result<fn() @Div -> i64, BudgetError> {
+    div_budget(100, \-> spin)                -- Returning spin does not execute it
 }
 fn run_later() -> i64 {
     match make_later() {
@@ -6742,16 +6739,16 @@ Evaluate `limit: u64` and `action` once in ordinary argument order before establ
 
 ```ril
 fn one() -> i64 { 1 }
-halt fn zero() -> Result<i64, Eval::BudgetError> {
-    Eval::budget(0, one)
+halt fn zero() -> Result<i64, BudgetError> {
+    div_budget(0, one)
 }
-halt fn one_entry() -> Result<i64, Eval::BudgetError> {
-    Eval::budget(1, one)                        -- One action entry, then normal return
+halt fn one_entry() -> Result<i64, BudgetError> {
+    div_budget(1, one)                        -- One action entry, then normal return
 }
-assert((zero() is Err(Eval::BudgetError::Exhausted)) && (one_entry() is Ok(1)))
+assert((zero() is Err(BudgetError::Exhausted)) && (one_entry() is Ok(1)))
 fn spin_limit() -> u64 { loop {} }
--- halt fn bad_limit() -> Result<i64, Eval::BudgetError> {
---     Eval::budget(spin_limit(), one)          -- Error [E0820]: limit evaluation is outside this boundary
+-- halt fn bad_limit() -> Result<i64, BudgetError> {
+--     div_budget(spin_limit(), one)          -- Error [E0820]: limit evaluation is outside this boundary
 -- }
 ```
 
@@ -6760,7 +6757,7 @@ fn spin_limit() -> u64 { loop {} }
 | Ordinary/meta/type function or anonymous-callable entry, including the action | One unit |
 | Each loop condition/next-element test and possible body; `next` cannot bypass it | One unit |
 | Each effect-handler entry and each `resume` | One unit |
-| Entry to an inner `Eval::budget` | One unit to existing outer boundaries, before creating its allowance |
+| Entry to an inner `div_budget` | One unit to existing outer boundaries, before creating its allowance |
 | Finite primitive or other finite expression step | No additional cost beyond its specified callable entry, if any |
 
 These source-semantic events survive equivalent optimization in either phase. Sequential combinators retain iteration and callback-entry charges. Every infinite path in covered computation must encounter unboundedly many charged events, including indirect invocation and handler/resumption cycles; no uncharged primitive may hide one. Installing a handler alone executes no operation.
@@ -6768,15 +6765,15 @@ These source-semantic events survive equivalent optimization in either phase. Se
 Before each event, exhaust the outermost active boundary with no remaining units and do not execute the event. Otherwise subtract one from every active allowance together and execute it. Spending the last unit permits that event; a later charged event triggers exhaustion. Inner boundaries do not replenish, hide, or suspend outer allowances during ordinary computation, and inner handlers cannot intercept outer exhaustion.
 
 ```ril
-halt fn nested_limits() -> Result<i64, Eval::BudgetError> {
-    Eval::budget(2, \-> {
-        match Eval::budget(100, spin) {
+halt fn nested_limits() -> Result<i64, BudgetError> {
+    div_budget(2, \-> {
+        match div_budget(100, spin) {
             Ok(value) -> value,
             Err(_) -> 99,
         }
     })
 }
-assert(nested_limits() is Err(Eval::BudgetError::Exhausted)) -- Outer exhaustion bypasses the inner match
+assert(nested_limits() is Err(BudgetError::Exhausted)) -- Outer exhaustion bypasses the inner match
 ```
 
 | Cleanup / allowance | Rule |
@@ -7020,18 +7017,16 @@ Phase checks inspect the entire instantiated result/value graph, opaque summarie
 
 Symbolic computation follows [Termination and halt Contracts](#termination-and-halt-contracts). `halt type` and `halt meta fn` optionally require pure, Div-free computation for every admitted invocation, including reached helpers and defaults; the helpers need not carry `halt`. Residual Div is `E0820`; prohibited type/meta annotations remain `E0335`/`E0813`. Panic or a static defect can still fail with its ordinary diagnostic.
 
-Ordinary type/meta declarations and compile-time roots do not require `halt` or absence of Div. Loops and recursion are admissible subject to the compiler's root evaluation budget; every root, including a `halt` call, uses that budget. Exhaustion rejects the evaluation with `E0811` and cannot be caught or converted by a source budget. This compiler limit neither removes Div from a callable contract nor satisfies a `halt` assertion. An explicit `Eval::budget` runs within that limit, returns an ordinary Result, and can remove Div from its covered static action.
+Ordinary type/meta declarations and compile-time roots do not require `halt` or absence of Div. Loops and recursion are admissible subject to the compiler's root evaluation budget; every root, including a `halt` call, uses that budget. Exhaustion rejects the evaluation with `E0811` and cannot be caught or converted by a source budget. This compiler limit neither removes Div from a callable contract nor satisfies a `halt` assertion. An explicit `div_budget` runs within that limit, returns an ordinary Result, and can remove Div from its covered static action.
 
 ```ril
-use ril/eval
-
 meta fn factorial(n: i64) -> i64 {              -- Implicit Div; no source effect annotation
     if n <= 1 { 1 } else { n * factorial(n - 1) }
 }
 meta let DIRECT = factorial(5)                 -- OK: halt and a source budget are optional
 
 halt meta fn checked_factorial(n: i64) -> i64 {
-    match Eval::budget(1_000, \-> factorial(n)) {
+    match div_budget(1_000, \-> factorial(n)) {
         Ok(value) -> value,
         Err(_) -> panic("factorial exceeded evaluation budget"),
     }
@@ -7043,7 +7038,7 @@ type Peel = \T -> match <T> {                  -- Recursive type function has im
     _ -> <T>,
 }
 halt type Leaf = \T -> {
-    match Eval::budget(1_000, \-> Peel<T>) {
+    match div_budget(1_000, \-> Peel<T>) {
         Ok(token) -> token,
         Err(_) -> panic("type expansion exceeded evaluation budget"),
     }
@@ -7113,7 +7108,7 @@ An explanation of compile-time budget exhaustion should identify the exhausted c
 | Unfinished computation | Explicitly mark unresolved portions; do not guess a branch, shape, or member type |
 | Presentation truncation | Distinguish completed content omitted for display from computation that has not completed |
 | Inspection | Bound inspection and rendering of existing state; do not resume user computation or force further type expansion to fill the preview |
-| Language status | Diagnostic data only; placeholders have no type meaning, do not participate in checking, and are not returned by budget or added to BudgetError |
+| Language status | Diagnostic data only; placeholders have no type meaning, do not participate in checking, and are not returned by div_budget or added to BudgetError |
 
 When an outer result structure is established, an illustrative preview is:
 
@@ -7131,9 +7126,8 @@ Partial result (diagnostic only):
 If no result structure is established, the current computation and location suffice. Successful handling of source-budget exhaustion must not itself reject compilation. No exhaustion diagnostic is required in that case; tooling may expose its preview or trace on request. The selected fallback must still be a complete valid type:
 
 ```ril
-use ril/eval
 halt type OrFallback = \T -> {
-    match Eval::budget(0, \-> <T>) {
+    match div_budget(0, \-> <T>) {
         Ok(token) -> token,
         Err(_) -> <i64>,
     }
@@ -7180,7 +7174,7 @@ fn run_logged() @Audit -> i64 { dispatch_worker<DispatchMode::Run>(logged_worker
 | Type function | Other type functions, `meta fn`, and listed dual-phase operations. An ordinary run-time `fn` is `E0810` |
 | Meta value evaluation | `meta fn`, static reflection, and listed dual-phase operations; no ordinary run-time `fn` or direct type-function value call (`E0810`) |
 | Run-time value evaluation | No type-function or meta-function value invocation (`E0810`) |
-| Both phases | Pure arithmetic/comparison, `len`, `panic`, `assert`, `Eval::budget` with a same-phase action, and other library operations explicitly declared dual-phase |
+| Both phases | Pure arithmetic/comparison, `len`, `panic`, `assert`, `div_budget` with a same-phase action, and other library operations explicitly declared dual-phase |
 
 Dual-phase admission follows the resolved operation's contract. Optional `halt` requires purity and absence of Div within the declaration's existing call family; it does not make an ordinary function callable at compile time. Static evaluation of `len` uses the ordinary immutable-value instance for a `LenTarget`. Its run-time `via` template also admits explicit `ref` observation of eligible collections. The [restriction on `via` parameters](#access-mode-inference-with-via-and-infer) applies to static declarations.
 
@@ -7804,9 +7798,9 @@ The prelude is an ambient lexical scope enclosing every compilation unit, includ
 
 | Binding category | Access |
 | :--- | :--- |
-| Built-in functions below | Bare names: `len`, `clone`, `assert`, etc. |
+| Built-in functions below | Bare names: `len`, `clone`, `div_budget`, `assert`, etc. |
 | Library modules below | Whole public namespace through `Module::member` |
-| Standard types / sorts | `Option<T>`, `Result<T, E>`, `Set<T>`, `MemberMode`. Constructors follow ordinary resolution |
+| Standard types / sorts | `Option<T>`, `Result<T, E>`, `Set<T>`, `BudgetError`, `MemberMode`. Constructors follow ordinary resolution |
 | Static type operations | `SharedObject`, `LenTarget`, `Tuple`, `NominalWrapper`, `Unwrap` |
 | Scoped draft type | `Draft<T>` in [recipe and helper contracts](#normative-rules-for-functional-updates) |
 | Language constructs | Primitive types, `Type`, `Type<T>`, `?T`, collection syntax, and system effects `Fiber`, `Concurrent`, `Async`, `Div` |
@@ -7826,7 +7820,6 @@ The prelude is an ambient lexical scope enclosing every compilation unit, includ
 
 | Explicit library modules | Sources | Role |
 | :--- | :--- | :--- |
-| `Eval` | `ril/eval` | Dual-phase budget primitive and ordinary `BudgetError` result data |
 | `Math`, `Crypto` | `ril/math`, `ril/crypto` | Specialized computation |
 | `File`, `Io`, `Os` | `ril/file`, `ril/io`, `ril/os` | Target-runtime I/O and environment |
 | `Channel`, `Parallel` | `ril/concurrent/channel`, `ril/parallel` | Target-runtime task and execution strategies |
@@ -7892,6 +7885,7 @@ Built-in operations use the same surface signature forms as user-defined Ril fun
 | `inner` | `pub fn inner<W \|> NominalWrapper>(via wrapper: W) -> infer Unwrap<W>` | None | Run-time | $O(1)$ | Preserve immutable/observed payload authority; value payloads use a plain result; unit nominal yields `()` |
 | `clone` | `pub fn clone<T \|> SharedObject>(via value: T) -> new T` | None | Run-time | $O(\text{visited + materialized})$ | Isolated construction `new T` for ordinary shared-object data |
 | `derive` | `pub fn derive<T \|> SharedObject>(base: T, recipe: fn(mut draft: Draft<T>) @& -> ()) -> T` | Forwards recipe | Run-time | $O(\text{visited + copied})$ | Path updates on an immutable shared-object root via a confined draft |
+| `div_budget` | `pub fn div_budget<T>(limit: u64, action: fn() @& -> T) -> Result<T, BudgetError>` | Forwards action minus Div | Dual-phase | See [charging rules](#allowance-and-charging) | Covered finite evaluation; preserves other effects and state/provenance obligations |
 | `byte_size` | `pub meta fn byte_size(value: Type) -> i64` | None | Static only | $O(1)$ | Size of the represented target's value/handle; static-only targets have no run-time layout |
 | `type_name` | `pub meta fn type_name(value: Type) -> str` | None | Static only | $O(\text{len})$ | Diagnostic description of the token's target, including static metatypes; spelling does not determine type identity |
 | `panic` | `pub halt fn panic(message: str) -> never` | None | Dual-phase | Finite | Initiates panic unwinding at run time; stops static evaluation with `E0831` |
