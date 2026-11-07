@@ -88,6 +88,7 @@ impl Index {
     }
 
     pub(super) fn effect_name(&mut self, scope: ScopeId, syntax: &TypeExpr) {
+        self.record_type_scope(scope, syntax);
         if let TypeKind::Name { path, arguments } = &syntax.kind {
             self.site(
                 scope,
@@ -229,11 +230,13 @@ impl Index {
         expr: &Expr,
         handler: HandlerTarget,
     ) {
+        self.record_expression_scope(scope, expr);
         match &expr.kind {
             ExprKind::EffectOperation { effect, name } => {
                 self.qualified_effect_operation(scope, expr.span, effect, name, Some(handler));
             }
             ExprKind::Generic { base, arguments } => {
+                self.record_expression_scope(scope, base);
                 if let Some(path) = expression_path(base) {
                     self.site(
                         scope,

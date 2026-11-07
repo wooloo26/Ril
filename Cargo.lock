@@ -33,6 +33,7 @@ dependencies = [
 name = "ril-compiler"
 version = "0.1.0"
 dependencies = [
+ "ril-ir",
  "rowan",
 ]
 

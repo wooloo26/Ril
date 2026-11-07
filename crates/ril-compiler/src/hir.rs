@@ -23,7 +23,7 @@ pub use modes::{ModeCoordinate, ModeOwner, ModeParameter, ModeParameterId};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct DefId(pub usize);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ScopeId(pub usize);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -108,6 +108,10 @@ pub struct Hir {
     pub definitions: Vec<Definition>,
     pub references: Vec<Reference>,
     pub scopes: Vec<Scope>,
+    pub definition_scopes: BTreeMap<DefId, ScopeId>,
+    pub type_scopes: BTreeMap<Span, ScopeId>,
+    pub type_binding_scopes: BTreeMap<Span, ScopeId>,
+    pub expression_scopes: BTreeMap<Span, ScopeId>,
     pub handler_applications: Vec<HandlerApplication>,
     pub control_transfers: Vec<ControlTransfer>,
     pub state_source_groups: Vec<ResolvedStateGroup>,
@@ -299,6 +303,10 @@ impl Index {
                 definitions: vec![],
                 references: vec![],
                 scopes: vec![],
+                definition_scopes: BTreeMap::new(),
+                type_scopes: BTreeMap::new(),
+                type_binding_scopes: BTreeMap::new(),
+                expression_scopes: BTreeMap::new(),
                 handler_applications: vec![],
                 control_transfers: vec![],
                 state_source_groups: vec![],
@@ -526,6 +534,7 @@ impl Index {
             alias: None,
         });
         self.files.insert(path, id);
+        self.hir.definition_scopes.insert(id, scope);
         id
     }
 
@@ -656,7 +665,7 @@ impl Index {
             StmtKind::Sub(sub) => {
                 let inner = self.scope(Some(ScopeId(0)), Some(span), Some(scope));
                 self.hir.scopes[inner.0].mode_owner = Some(ModeOwner::Module(inner));
-                self.declare(
+                let definition = self.declare(
                     Definition {
                         name: sub.name.clone(),
                         kind: DefinitionKind::Module,
@@ -671,6 +680,7 @@ impl Index {
                     },
                     0,
                 );
+                self.hir.definition_scopes.insert(definition, inner);
                 self.statements(inner, &sub.items);
             }
             StmtKind::Use(item) => self.imports.push(Import {
@@ -736,6 +746,7 @@ impl Index {
                 }
                 let inner = self.scope(Some(scope), Some(span), None);
                 self.hir.scopes[inner.0].mode_owner = Some(ModeOwner::Definition(id));
+                self.hir.definition_scopes.insert(id, inner);
                 self.generics(inner, &ty.generics);
                 self.statements(inner, &ty.signature_where);
                 if let Some(value) = &ty.value {
@@ -760,6 +771,7 @@ impl Index {
                                 ConstructorForm::Nullary
                             });
                         let variant_scope = self.scope(Some(inner), Some(variant.span), None);
+                        self.hir.definition_scopes.insert(id, variant_scope);
                         self.generics(variant_scope, &variant.generics);
                         if let Some(payload) = &variant.payload {
                             self.ty(variant_scope, payload);
@@ -786,6 +798,7 @@ impl Index {
                 );
                 self.hir.definitions[id.0].members = Some(operations);
                 let inner = self.scope(Some(scope), Some(span), None);
+                self.hir.definition_scopes.insert(id, inner);
                 self.generics(inner, &effect.generics);
                 for operation in &effect.operations {
                     let operation_id = self.item(
@@ -983,6 +996,7 @@ impl Index {
     fn function(&mut self, scope: ScopeId, function: &Function, definition: DefId) {
         let inner = self.scope(Some(scope), Some(function.span), None);
         self.hir.scopes[inner.0].mode_owner = Some(ModeOwner::Definition(definition));
+        self.hir.definition_scopes.insert(definition, inner);
         if function.body.is_some() {
             self.hir.scopes[inner.0].callable_layer = Some(CallableLayer::Named(definition));
         }
@@ -1234,6 +1248,7 @@ impl Index {
     }
 
     fn type_name_use(&mut self, scope: ScopeId, ty: &TypeExpr, representation: bool) {
+        self.record_type_scope(scope, ty);
         if let TypeKind::Name { path, arguments } = &ty.kind {
             self.site(
                 scope,
@@ -1259,6 +1274,7 @@ impl Index {
     }
 
     fn ty(&mut self, scope: ScopeId, ty: &TypeExpr) {
+        self.record_type_scope(scope, ty);
         self.schema_mode_binders(scope, ty);
         match &ty.kind {
             TypeKind::Name { .. } => self.type_name_use(scope, ty, false),
@@ -1314,6 +1330,7 @@ impl Index {
             } => {
                 let inner = self.scope(Some(scope), Some(ty.span), None);
                 self.hir.scopes[inner.0].mode_owner = Some(ModeOwner::CallableType(inner));
+                self.hir.type_binding_scopes.insert(ty.span, inner);
                 self.parameters(inner, parameters, false);
                 self.annotations(inner, scope, annotations, AnnotationSite::CallableType);
                 self.return_sources(inner, return_mode);
@@ -1323,6 +1340,7 @@ impl Index {
             }
             TypeKind::TypeFunction { parameters, body } => {
                 let inner = self.scope(Some(scope), Some(ty.span), None);
+                self.hir.type_binding_scopes.insert(ty.span, inner);
                 self.generics(inner, parameters);
                 let body_scope = self.region(inner, body.span, ScopeKind::Callable);
                 self.expr(body_scope, body);
@@ -1346,6 +1364,7 @@ impl Index {
                     ..value.span
                 };
                 let inner = self.scope(Some(scope), Some(scope_span), None);
+                self.hir.type_binding_scopes.insert(ty.span, inner);
                 self.hir.scopes[inner.0].lookup_exclusion = Some(keys.span);
                 self.item(
                     inner,
@@ -1424,7 +1443,18 @@ impl Index {
         }
     }
 
+    fn record_type_scope(&mut self, scope: ScopeId, ty: &TypeExpr) {
+        let previous = self.hir.type_scopes.insert(ty.span, scope);
+        debug_assert!(previous.is_none_or(|previous| previous == scope));
+    }
+
+    fn record_expression_scope(&mut self, scope: ScopeId, expression: &Expr) {
+        let previous = self.hir.expression_scopes.insert(expression.span, scope);
+        debug_assert!(previous.is_none_or(|previous| previous == scope));
+    }
+
     fn expr(&mut self, scope: ScopeId, expr: &Expr) {
+        self.record_expression_scope(scope, expr);
         match &expr.kind {
             ExprKind::Name(name) => {
                 self.site(scope, expr.span, vec![name.clone()], UseKind::Ordinary)
@@ -1432,6 +1462,7 @@ impl Index {
             ExprKind::Path(path) => self.site(scope, expr.span, path.clone(), UseKind::Ordinary),
             ExprKind::Generic { base, arguments } => {
                 if let Some(path) = expression_path(base) {
+                    self.record_expression_scope(scope, base);
                     self.site(scope, base.span, path, UseKind::Application);
                 } else {
                     self.expr(scope, base);
@@ -1546,6 +1577,7 @@ impl Index {
                 self.expr(scope, value);
                 self.pattern(scope, pattern);
                 if let ExprKind::Block(block) = &then_branch.kind {
+                    self.record_expression_scope(scope, then_branch);
                     self.block(scope, block, Some(pattern), ScopeKind::Lexical);
                 }
                 if let Some(branch) = else_branch {

@@ -29,6 +29,15 @@ schemas. Member modes retain independent slot and access components and their
 source spans. Concrete reception and storage-instance constraints belong to
 the checking stage.
 
+`SourceIndex` borrows all source definitions and syntax nodes without cloning
+subtrees. Independent node IDs preserve distinct syntax layers that share a
+span. HIR records their declaration, type-binding, default, and expression
+scopes. `TypeTemplates` lowers primitive identities, named heads, formal and
+mode binders, generic constraints, and callable contracts to references into
+these tables. Computations remain explicit requests for static evaluation.
+The [checking contract](CHECKING.md) fixes the required roots and recursive
+instance proof policy before constraint solving is implemented.
+
 Declaration discovery starts with a recovery-oriented skeleton. The frontend
 then follows imports from declaration-aware parses and revisits syntax when
 reachable files or resolved heads change. Diagnostics from a committed angle
@@ -80,6 +89,8 @@ cargo run --locked -p ril-test -- tests/regressions/frontend/angles.ril#close-su
 
 The corpus runner extracts each case into its own virtual source tree and
 checks `front-pass` and `front-fail` against the same frontend as the driver.
+Successful frontend cases also construct source inputs and resolved type
+templates, checking that their syntax, scope, and identity links are complete.
 Use `-- Error [EXXXX]` for an expected diagnostic code and
 `--~ ERROR [EXXXX]` for a diagnostic at a specific suite line. A
 `-- file: PATH hex` block supplies exact bytes.

@@ -9,4 +9,5 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+ril-ir.workspace = true
 rowan.workspace = true

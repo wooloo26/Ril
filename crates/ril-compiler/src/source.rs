@@ -15,7 +15,7 @@ pub enum UnitKind {
 pub struct FileId(pub u32);
 
 /// Half-open byte offsets, including for sources that are not valid UTF-8.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Span {
     pub file: FileId,
     pub start: u32,

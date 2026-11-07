@@ -11,6 +11,7 @@ publish = false
 
 [workspace.dependencies]
 ril-compiler = { path = "crates/ril-compiler" }
+ril-ir = { path = "crates/ril-ir" }
 rowan = "=0.17.0"
 
 [workspace.lints.rust]

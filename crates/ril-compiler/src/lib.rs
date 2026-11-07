@@ -3,12 +3,14 @@ pub mod ast;
 pub mod diagnostic;
 pub mod frontend;
 pub mod hir;
+pub mod input;
 mod lexer;
 pub mod library;
 mod parse;
 pub mod source;
 mod syntax_kind;
 pub mod text;
+pub mod types;
 mod validation;
 
 pub use parse::Parse;

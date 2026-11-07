@@ -1,6 +1,8 @@
 //! Owned source syntax. Names are unresolved and every node retains byte spans.
 use crate::{source::Span, text::FormatSpec};
 
+pub mod walk;
+
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Program {
     pub statements: Vec<Stmt>,

@@ -1,6 +1,6 @@
 mod suite;
 
-use ril_compiler::frontend::frontend;
+use ril_compiler::{frontend::frontend, input::SourceIndex, types::TypeTemplates};
 use std::{
     env, fs, io,
     path::{Path, PathBuf},
@@ -127,6 +127,13 @@ fn run_case(case: &Case) -> Result<(), String> {
     };
     match case.mode {
         Mode::FrontPass if !result.is_ok() => Err(format!("expected HIR\n  {}", describe())),
+        Mode::FrontPass => {
+            let input = SourceIndex::new(&result)
+                .map_err(|error| format!("incomplete checking inputs: {error}"))?;
+            TypeTemplates::lower(&input)
+                .map(|_| ())
+                .map_err(|error| error.to_string())
+        }
         Mode::FrontFail => {
             if result.is_ok() {
                 return Err("expected frontend rejection".into());
