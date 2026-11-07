@@ -2028,15 +2028,24 @@ impl<'a> Parser<'a> {
         self.finish();
         result
     }
-    fn member_mode(&mut self, declared: bool) -> Option<String> {
+    fn member_mode(&mut self, declared: bool) -> Option<MemberMode> {
         let start = self.offset();
-        let var = self.eat("var");
-        let access = matches!(self.current(), "mut" | "^mut" | "ref")
-            || declared && self.at("via") && self.look(1) != ":";
-        if access {
+        let replaceable = self.eat("var");
+        let access = match self.current() {
+            "mut" => MemberAccess::Mut,
+            "^mut" => MemberAccess::SharedMut,
+            "ref" => MemberAccess::Ref,
+            "via" if declared && self.look(1) != ":" => MemberAccess::Via,
+            _ => MemberAccess::Default,
+        };
+        if access != MemberAccess::Default {
             self.bump();
         }
-        (var || access).then(|| self.text[start..self.last_end].to_owned())
+        (replaceable || access != MemberAccess::Default).then(|| MemberMode {
+            replaceable,
+            access,
+            span: self.span(start),
+        })
     }
 
     fn record_tail(&mut self, dots: usize) -> TypeExpr {
@@ -2306,8 +2315,8 @@ impl<'a> Parser<'a> {
             && let Some(mode) = self.member_mode(false)
         {
             return TypeExpr {
-                text: mode,
-                kind: TypeKind::ModeLiteral,
+                text: self.text[start..self.last_end].to_owned(),
+                kind: TypeKind::ModeLiteral(mode),
                 span: self.span(start),
             };
         }
@@ -2636,6 +2645,12 @@ impl<'a> Parser<'a> {
                 let operand = Box::new(self.expression(14, multiline));
                 ExprKind::Unary { operator, operand }
             }
+            "ref" => {
+                self.bump();
+                let marker = self.span(start);
+                let operand = Box::new(self.expression(14, multiline));
+                ExprKind::Observe { marker, operand }
+            }
             ".." | "..=" => {
                 let inclusive = self.bump() == "..=";
                 let end = if matches!(self.current(), "]" | ")" | "," | "}") || self.eof() {
@@ -2679,13 +2694,28 @@ impl<'a> Parser<'a> {
                     } else {
                         self.expect(")");
                         let first = match first.kind {
-                            ExprKind::TupleMember { mode, value } if mode == "^mut" => Expr {
-                                span: first.span,
-                                kind: ExprKind::Unary {
-                                    operator: mode,
-                                    operand: value,
-                                },
-                            },
+                            ExprKind::TupleMember { mode, value }
+                                if !mode.replaceable && mode.access == MemberAccess::SharedMut =>
+                            {
+                                Expr {
+                                    span: first.span,
+                                    kind: ExprKind::Unary {
+                                        operator: "^mut".into(),
+                                        operand: value,
+                                    },
+                                }
+                            }
+                            ExprKind::TupleMember { mode, value }
+                                if !mode.replaceable && mode.access == MemberAccess::Ref =>
+                            {
+                                Expr {
+                                    span: first.span,
+                                    kind: ExprKind::Observe {
+                                        marker: mode.span,
+                                        operand: value,
+                                    },
+                                }
+                            }
                             ExprKind::TupleMember { .. } => {
                                 self.error("E0120", "tuple member mode requires a tuple");
                                 Expr {

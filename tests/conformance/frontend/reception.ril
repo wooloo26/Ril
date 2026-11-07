@@ -1,0 +1,35 @@
+-- [case: independent-via-instances-and-ref-member-replacement, front-pass]
+-- spec: SPEC#member-modes-and-implicit-schema-parameters
+type Cell = { var count: i64 }
+type Slot<T> = { var via item: T }
+
+fn example() -> () {
+    let mut source = Cell.{ count: 0 }
+    let mut other = Cell.{ count: 10 }
+    let mut slot = Slot.{ item: ref source }
+    slot.item = ref other
+    source.count += 1
+    other.count += 1
+    assert(slot.item.count == 11)
+
+    let frozen = Cell.{ count: 1 }
+    let mut snapshot = Slot.{ item: frozen }
+    snapshot.item = Cell.{ count: 2 }
+    assert(snapshot.item.count == 2)
+}
+
+-- [case: parenthesized-observation-keeps-its-expression-role, front-pass]
+-- spec: SPEC#member-modes-and-implicit-schema-parameters
+type Cell = { var count: i64 }
+fn example(ref cell: Cell) -> () {
+    let _ = (ref cell)
+    let _ = .{ ref cell, selected: ref cell }
+    let _ = (ref cell, cell)
+}
+
+-- [case: via-is-still-a-contextual-field-label, front-pass]
+-- spec: SPEC#member-modes-and-implicit-schema-parameters
+type Fields = { var via: i64, via item: { var count: i64 } }
+fn example() -> () {
+    let _ = Fields.{ var via: 1, item: .{ var count: 2 } }
+}

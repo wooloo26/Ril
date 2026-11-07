@@ -280,7 +280,7 @@ pub enum TypeKind {
     },
     Rest(Box<TypeExpr>),
     Member {
-        mode: String,
+        mode: MemberMode,
         ty: Box<TypeExpr>,
     },
     OpenRow,
@@ -290,7 +290,7 @@ pub enum TypeKind {
         ty: Box<TypeExpr>,
     },
     TypeBinder(String),
-    ModeLiteral,
+    ModeLiteral(MemberMode),
     QualifiedMemberMode,
     KindArrow {
         parameter: Box<TypeExpr>,
@@ -314,16 +314,33 @@ pub enum StorageModeKind {
     Parameter(String),
 }
 
+/// The declared slot and access components remain independent of effective access.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MemberMode {
+    pub replaceable: bool,
+    pub access: MemberAccess,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MemberAccess {
+    Default,
+    Mut,
+    SharedMut,
+    Ref,
+    Via,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ModeExpression {
-    Concrete(String),
+    Concrete(MemberMode),
     Static(Box<Expr>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TypeField {
     pub name: String,
-    pub mode: Option<String>,
+    pub mode: Option<MemberMode>,
     pub ty: TypeExpr,
     pub span: Span,
 }
@@ -346,7 +363,7 @@ pub struct TypeDeclaration {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VariantField {
     pub label: Option<String>,
-    pub mode: Option<String>,
+    pub mode: Option<MemberMode>,
     pub ty: TypeExpr,
 }
 
@@ -420,7 +437,7 @@ pub enum ExprKind {
     },
     Tuple(Vec<Expr>),
     TupleMember {
-        mode: String,
+        mode: MemberMode,
         value: Box<Expr>,
     },
     Array(Vec<Expr>),
@@ -432,6 +449,10 @@ pub enum ExprKind {
     },
     Unary {
         operator: String,
+        operand: Box<Expr>,
+    },
+    Observe {
+        marker: Span,
         operand: Box<Expr>,
     },
     Binary {
@@ -597,7 +618,7 @@ pub enum ControlOperation {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RecordField {
-    pub mode: Option<String>,
+    pub mode: Option<MemberMode>,
     pub name: String,
     pub value: Expr,
     pub span: Span,

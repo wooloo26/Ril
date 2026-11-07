@@ -2,8 +2,8 @@ use ril_compiler::{
     SyntaxKind,
     ast::{
         Annotation, AnnotationKind, ArgumentSort, ControlOperation, EffectRow, ExprKind,
-        ParameterMode, ReturnDependencyMode, ReturnMode, StateClause, StateMode, StateOwner,
-        StmtKind, StringPart, TypeKind, ValueTestKind,
+        MemberAccess, ParameterMode, RecordMember, ReturnDependencyMode, ReturnMode, StateClause,
+        StateMode, StateOwner, StmtKind, StringPart, TypeKind, ValueTestKind,
     },
     frontend::{Frontend, UnitKind, frontend},
     hir::{CallableLayer, CompilationUnitOrigin, DefinitionKind, EffectMember, ScopeKind},
@@ -22,6 +22,93 @@ fn compile(input: &str) -> Frontend {
         }
     })
     .unwrap()
+}
+
+#[test]
+fn reception_keeps_declared_member_modes_and_explicit_observation_spans() {
+    let input = r#"
+type Cell = { var count: i64 }
+type Slot<T> = { var via item: T, ref observed: T, ^mut shared: T, mut owned: T }
+fn example(ref source: Cell) -> () {
+    let mut slot = Slot.{ item: ref source }
+    slot.item = ref source.count
+    let _ = (ref source)
+    let _ = (var ref source, source)
+}
+"#;
+    let result = compile(input);
+    assert!(result.is_ok(), "{:?}", result.diagnostics);
+    let statements = &result.files[&FileId(0)].program.statements;
+    let StmtKind::Type(slot) = &statements[1].kind else {
+        panic!("expected Slot declaration");
+    };
+    let TypeKind::Record { fields, .. } = &slot.value.as_ref().unwrap().kind else {
+        panic!("expected record schema");
+    };
+    for (field, replaceable, access, text) in [
+        (&fields[0], true, MemberAccess::Via, "var via"),
+        (&fields[1], false, MemberAccess::Ref, "ref"),
+        (&fields[2], false, MemberAccess::SharedMut, "^mut"),
+        (&fields[3], false, MemberAccess::Mut, "mut"),
+    ] {
+        let mode = field.mode.unwrap();
+        assert_eq!((mode.replaceable, mode.access), (replaceable, access));
+        assert_eq!(result.sources.slice(mode.span).unwrap(), text.as_bytes());
+    }
+
+    let StmtKind::Function(function) = &statements[2].kind else {
+        panic!("expected example function");
+    };
+    let body = &function.body.as_ref().unwrap().statements;
+    let StmtKind::Binding(binding) = &body[0].kind else {
+        panic!("expected slot initialization");
+    };
+    let ExprKind::Record { members, .. } = &binding.initializer.as_ref().unwrap().kind else {
+        panic!("expected record initializer");
+    };
+    let RecordMember::Field(field) = &members[0] else {
+        panic!("expected item field");
+    };
+    let ExprKind::Observe { marker, operand } = &field.value.kind else {
+        panic!("expected explicit observation expression");
+    };
+    assert!(field.mode.is_none());
+    assert_eq!(result.sources.slice(*marker).unwrap(), b"ref");
+    assert!(matches!(&operand.kind, ExprKind::Name(name) if name == "source"));
+    assert!(
+        result
+            .hir
+            .as_ref()
+            .unwrap()
+            .references
+            .iter()
+            .any(|reference| { reference.span == operand.span && reference.path == ["source"] })
+    );
+
+    let StmtKind::Expr { expression, .. } = &body[1].kind else {
+        panic!("expected assignment");
+    };
+    let ExprKind::Assignment { value, .. } = &expression.kind else {
+        panic!("expected assignment expression");
+    };
+    assert!(matches!(&value.kind, ExprKind::Observe { operand, .. }
+        if matches!(&operand.kind, ExprKind::Field { field, .. } if field == "count")));
+
+    let StmtKind::Binding(binding) = &body[2].kind else {
+        panic!("expected grouped observation");
+    };
+    assert!(matches!(
+        &binding.initializer.as_ref().unwrap().kind,
+        ExprKind::Observe { .. }
+    ));
+    let StmtKind::Binding(binding) = &body[3].kind else {
+        panic!("expected tuple binding");
+    };
+    let ExprKind::Tuple(items) = &binding.initializer.as_ref().unwrap().kind else {
+        panic!("expected tuple");
+    };
+    assert!(matches!(&items[0].kind, ExprKind::TupleMember { mode, .. }
+        if mode.replaceable && mode.access == MemberAccess::Ref));
 }
 
 #[test]

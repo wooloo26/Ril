@@ -810,7 +810,7 @@ impl Validator<'_> {
             }
             TypeKind::TypeBinder(_)
             | TypeKind::PatternRest(_)
-            | TypeKind::ModeLiteral
+            | TypeKind::ModeLiteral(_)
             | TypeKind::QualifiedMemberMode
             | TypeKind::OpenRow
             | TypeKind::Error => {}
@@ -899,9 +899,9 @@ impl Validator<'_> {
                     }
                 }
             }
-            ExprKind::Unary { operand, .. } | ExprKind::TupleMember { value: operand, .. } => {
-                self.expr(operand)
-            }
+            ExprKind::Unary { operand, .. }
+            | ExprKind::Observe { operand, .. }
+            | ExprKind::TupleMember { value: operand, .. } => self.expr(operand),
             ExprKind::Binary { left, right, .. }
             | ExprKind::Assignment {
                 target: left,
@@ -1085,10 +1085,10 @@ fn type_uses_via(ty: &TypeExpr) -> bool {
             field
                 .mode
                 .as_ref()
-                .is_some_and(|mode| mode.ends_with("via"))
+                .is_some_and(|mode| mode.access == MemberAccess::Via)
                 || type_uses_via(&field.ty)
         }),
-        TypeKind::Member { mode, ty } => mode.ends_with("via") || type_uses_via(ty),
+        TypeKind::Member { mode, ty } => mode.access == MemberAccess::Via || type_uses_via(ty),
         // A callback contributes its input mode pattern, independent of its result.
         TypeKind::Callable { parameters, .. } => inputs_use_via(parameters),
         _ => false,

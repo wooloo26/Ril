@@ -1333,7 +1333,7 @@ impl Index {
             TypeKind::TypeBinder(_)
             | TypeKind::PatternRest(_)
             | TypeKind::OpenRow
-            | TypeKind::ModeLiteral
+            | TypeKind::ModeLiteral(_)
             | TypeKind::Error => {}
         }
     }
@@ -1457,6 +1457,7 @@ impl Index {
                 self.expr(rhs_scope, right);
             }
             ExprKind::Unary { operand, .. }
+            | ExprKind::Observe { operand, .. }
             | ExprKind::TupleMember { value: operand, .. }
             | ExprKind::Field { base: operand, .. } => self.expr(scope, operand),
             ExprKind::ComputedField { base, key }
