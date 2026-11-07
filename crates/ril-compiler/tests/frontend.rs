@@ -6,7 +6,7 @@ use ril_compiler::{
         StmtKind, StringPart, TypeKind, ValueTestKind,
     },
     frontend::{Frontend, UnitKind, frontend},
-    hir::{CallableLayer, DefinitionKind, EffectMember, ScopeKind},
+    hir::{CallableLayer, CompilationUnitOrigin, DefinitionKind, EffectMember, ScopeKind},
     library::PrimitiveId,
     source::FileId,
     text::{Alignment, Conversion},
@@ -991,4 +991,111 @@ fn sample() -> i64 { choose<{ use flags::{ENABLED}; ENABLED }>(7) }
     };
     assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
     assert!(error.to_string().contains("flags.ril"));
+}
+
+#[test]
+fn hir_keeps_entry_identity_and_foreign_declaration_origins() {
+    let root = r#"
+use platform/device::{Handle}
+use platform/device::Io::{fetch as load, CURRENT}
+type Exit = Result<(), str>
+fn keep(handle: Handle) -> Handle { handle }
+fn main() &up(sub){CURRENT} -> Exit {
+    let _ = load(CURRENT)
+    Ok()
+}
+"#;
+    let contract = r#"
+pub type Handle
+pub sub Io {
+    use Super::{Handle}
+    pub fn fetch(handle: Handle) -> str
+    pub let CURRENT: Handle
+}
+"#;
+    let result = frontend(Path::new("root.ril"), UnitKind::Executable, |path| {
+        let source = match path.to_str() {
+            Some("root.ril") => root,
+            Some("platform/device.d.ril") => contract,
+            _ => return Err(io::Error::from(io::ErrorKind::NotFound)),
+        };
+        Ok(source.as_bytes().to_vec())
+    })
+    .unwrap();
+    assert!(result.is_ok(), "{:?}", result.diagnostics);
+    let hir = result.hir.unwrap();
+    let root_unit = &hir.units[&FileId(0)];
+    assert_eq!(
+        root_unit.origin,
+        CompilationUnitOrigin::User(UnitKind::Executable)
+    );
+    assert!(root_unit.namespace.is_none());
+    let entry = &hir.definitions[hir.entry_point.unwrap().0];
+    assert_eq!(entry.name, "main");
+    assert_eq!(entry.scope, root_unit.scope);
+
+    let external = hir
+        .references
+        .iter()
+        .find(|reference| reference.path == ["load"])
+        .unwrap();
+    let definition = &hir.definitions[external.definition.0];
+    assert_eq!(definition.kind, DefinitionKind::ForeignFunction);
+    let file = definition.span.unwrap().file;
+    let unit = &hir.units[&file];
+    assert_eq!(unit.origin, CompilationUnitOrigin::User(UnitKind::External));
+    assert_eq!(hir.definitions[unit.namespace.unwrap().0].name, "Device");
+    let handle = hir
+        .references
+        .iter()
+        .find(|reference| reference.path == ["Handle"])
+        .unwrap();
+    let handle = &hir.definitions[handle.definition.0];
+    assert_eq!(handle.kind, DefinitionKind::ForeignType);
+    assert!(handle.constructor_form.is_none());
+    let current = &hir.state_source_groups[0].items[0];
+    let current = &hir.definitions[current.definition.0];
+    assert_eq!(current.kind, DefinitionKind::ForeignConstant);
+    assert_eq!(current.span.unwrap().file, file);
+
+    let budget = hir
+        .primitives
+        .iter()
+        .find_map(|(definition, id)| (*id == PrimitiveId::DivBudget).then_some(*definition))
+        .unwrap();
+    let budget_unit = &hir.units[&hir.definitions[budget.0].span.unwrap().file];
+    assert_eq!(budget_unit.origin, CompilationUnitOrigin::Bundled);
+    assert_eq!(
+        hir.definitions[budget_unit.namespace.unwrap().0].name,
+        "Div"
+    );
+}
+
+#[test]
+fn direct_library_and_external_units_check_their_module_file_names() {
+    for (path, kind, source, code) in [
+        (
+            "super.d.ril",
+            UnitKind::External,
+            "pub type Handle",
+            "E0203",
+        ),
+        (
+            "a_b.ril",
+            UnitKind::Library,
+            "pub fn read() -> i64 { 0 }",
+            "E0102",
+        ),
+    ] {
+        let result = frontend(Path::new(path), kind, |_| Ok(source.as_bytes().to_vec())).unwrap();
+        assert!(!result.is_ok());
+        let [diagnostic] = result.diagnostics.as_slice() else {
+            panic!(
+                "expected a module name diagnostic, got {:?}",
+                result.diagnostics
+            );
+        };
+        assert_eq!(diagnostic.code, code);
+        assert_eq!(diagnostic.labels[0].span.file, FileId(0));
+    }
 }

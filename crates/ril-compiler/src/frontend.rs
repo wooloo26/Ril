@@ -1,7 +1,7 @@
 //! Source loading and the declaration-aware CST-to-HIR pipeline.
 use crate::{
     Parse,
-    ast::{BindingMode, ExprKind, Program, Stmt, StmtKind, Visibility},
+    ast::{BindingMode, PatternKind, Program, Stmt, StmtKind, Visibility},
     diagnostic::Diagnostic,
     hir::{DeclarationHead, HeadKind, Hir, Index},
     lexer::diagnostic,
@@ -16,12 +16,7 @@ use std::{
     sync::Mutex,
 };
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum UnitKind {
-    Executable,
-    Library,
-    External,
-}
+pub use crate::source::UnitKind;
 
 pub struct Frontend {
     pub sources: SourceMap,
@@ -50,10 +45,20 @@ enum UnitOrigin {
 }
 
 impl Unit {
+    fn declarations_only(&self) -> bool {
+        matches!(
+            self.origin,
+            UnitOrigin::User {
+                kind: UnitKind::External,
+                ..
+            } | UnitOrigin::Primitive(_)
+        )
+    }
+
     fn index(&self, index: &mut Index, text_len: u32, program: &Program) {
         match &self.origin {
-            UnitOrigin::User { module_path, .. } => {
-                index.file(self.file, module_path.clone(), text_len, program);
+            UnitOrigin::User { module_path, kind } => {
+                index.file(self.file, module_path.clone(), *kind, text_len, program);
             }
             UnitOrigin::Primitive(source) => {
                 index.primitive_unit(self.file, text_len, source, program);
@@ -228,14 +233,19 @@ impl Project {
             let available_heads = heads.filter(|index| index.has_file(file));
             if let Some(heads) = available_heads {
                 let observations = Mutex::new(BTreeMap::new());
-                let parse = parse_with_heads(text, file, &|path, offset, kind| {
-                    let head = heads.head(file, path, offset, kind);
-                    observations
-                        .lock()
-                        .expect("head observations")
-                        .insert((offset, kind, path.to_vec()), head.clone());
-                    head
-                });
+                let parse = parse_with_heads(
+                    text,
+                    file,
+                    unit.declarations_only(),
+                    &|path, offset, kind| {
+                        let head = heads.head(file, path, offset, kind);
+                        observations
+                            .lock()
+                            .expect("head observations")
+                            .insert((offset, kind, path.to_vec()), head.clone());
+                        head
+                    },
+                );
                 if parse.incomplete {
                     return Err(io::Error::other(format!(
                         "frontend resource limit exceeded in {}",
@@ -258,7 +268,7 @@ impl Project {
                 unit.index(&mut pass.index, text.len() as u32, &parse.program);
                 pass.files.insert(file, parse);
             } else {
-                let program = parse_skeleton(text, file);
+                let program = parse_skeleton(text, file, unit.declarations_only());
                 unit.index(&mut pass.index, text.len() as u32, &program);
                 pass.discovered_source |= heads.is_some();
             }
@@ -288,10 +298,25 @@ impl Project {
             if !parse.is_ok() {
                 continue;
             }
-            let primitive_source = match self.units[file.0 as usize].origin {
+            let (unit_kind, primitive_source) = match self.units[file.0 as usize].origin {
                 UnitOrigin::User { kind, .. } => {
                     unit_rules(&parse.program, kind, file, &mut pass.diagnostics);
-                    None
+                    if kind != UnitKind::Executable
+                        && let Some(source) = self.sources.get(file)
+                        && let Some(path) = unit_module_path(source.path())
+                        && let Some(stem) = path.file_name().and_then(|stem| stem.to_str())
+                    {
+                        pass.diagnostics
+                            .extend(crate::validation::validate_module_stem(
+                                stem,
+                                Span {
+                                    file,
+                                    start: 0,
+                                    end: 0,
+                                },
+                            ));
+                    }
+                    (Some(kind), None)
                 }
                 UnitOrigin::Primitive(source) => {
                     if !source.matches_manifest(&parse.program) {
@@ -300,11 +325,12 @@ impl Project {
                             source.display_path,
                         )));
                     }
-                    Some(source)
+                    (None, Some(source))
                 }
             };
             pass.diagnostics.extend(crate::validation::validate(
                 &parse.program,
+                unit_kind,
                 primitive_source,
             ));
         }
@@ -393,7 +419,8 @@ fn item_rules(
             if kind == UnitKind::External
                 && (binding.mode != BindingMode::Let
                     || binding.is_meta
-                    || !matches!(binding.value.kind, ExprKind::Ambient))
+                    || !matches!(binding.pattern.kind, PatternKind::Name(_))
+                    || binding.initializer.is_some())
             {
                 report(
                     stmt.span,
@@ -401,8 +428,24 @@ fn item_rules(
                     "foreign constants require an immutable declaration without an initializer",
                 );
             }
-            if kind != UnitKind::External && matches!(binding.value.kind, ExprKind::Ambient) {
-                report(stmt.span, "E0124", "binding requires an initializer");
+            if kind != UnitKind::External {
+                if binding.initializer.is_none() {
+                    report(stmt.span, "E0124", "binding requires an initializer");
+                }
+                if matches!(binding.mode, BindingMode::Scoped | BindingMode::ScopedMut) {
+                    report(
+                        stmt.span,
+                        "E0120",
+                        "a scoped binding requires an executable block",
+                    );
+                }
+                if binding.mode == BindingMode::Via {
+                    report(
+                        stmt.span,
+                        "E0412",
+                        "via reception requires a local template binding",
+                    );
+                }
             }
             if binding.visibility == Visibility::Public
                 && (binding.mode.is_mutable() || binding.mode.is_reassignable())
@@ -412,17 +455,6 @@ fn item_rules(
             binding.visibility
         }
         StmtKind::Function(function) => {
-            if kind == UnitKind::External
-                && (function.body.is_some() || function.is_meta || function.is_halt)
-            {
-                report(
-                    stmt.span,
-                    "E0901",
-                    "foreign functions require an ordinary bodyless declaration",
-                );
-            } else if kind != UnitKind::External && function.body.is_none() {
-                report(stmt.span, "E0902", "function body required in a .ril file");
-            }
             if function.name == "main" {
                 if !root
                     || kind != UnitKind::Executable
@@ -441,7 +473,16 @@ fn item_rules(
             }
             function.visibility
         }
-        StmtKind::Type(ty) => ty.visibility,
+        StmtKind::Type(ty) => {
+            if kind == UnitKind::External && ty.opaque {
+                report(
+                    stmt.span,
+                    "E0901",
+                    "a foreign abstract type has no written representation",
+                );
+            }
+            ty.visibility
+        }
         StmtKind::Use(import) => import.visibility,
         StmtKind::Sub(sub) => {
             for item in &sub.items {

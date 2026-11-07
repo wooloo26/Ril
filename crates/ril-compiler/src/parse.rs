@@ -67,16 +67,21 @@ impl Parse {
     }
 }
 
-pub(crate) fn parse_with_heads(text: &str, file: FileId, lookup: &HeadLookup<'_>) -> Parse {
+pub(crate) fn parse_with_heads(
+    text: &str,
+    file: FileId,
+    declarations_only: bool,
+    lookup: &HeadLookup<'_>,
+) -> Parse {
     on_parser_stack(
-        || parse_file_inner(text, file, Some(lookup)),
+        || parse_file_inner(text, file, declarations_only, Some(lookup)),
         || exhausted_parse(text),
     )
 }
 
-pub(crate) fn parse_skeleton(text: &str, file: FileId) -> Program {
+pub(crate) fn parse_skeleton(text: &str, file: FileId, declarations_only: bool) -> Program {
     on_parser_stack(
-        || parse_file_inner(text, file, None).program,
+        || parse_file_inner(text, file, declarations_only, None).program,
         Program::default,
     )
 }
@@ -94,8 +99,14 @@ fn exhausted_parse(text: &str) -> Parse {
     }
 }
 
-fn parse_file_inner(text: &str, file: FileId, lookup: Option<&HeadLookup<'_>>) -> Parse {
+fn parse_file_inner(
+    text: &str,
+    file: FileId,
+    declarations_only: bool,
+    lookup: Option<&HeadLookup<'_>>,
+) -> Parse {
     let mut parser = Parser::new(text, file, 0, lookup);
+    parser.declarations_only = declarations_only;
     parser.start(SyntaxKind::Root);
     let mut statements = vec![];
     parser.separators();
@@ -138,6 +149,7 @@ struct Parser<'a> {
     angles: Vec<usize>,
     type_pattern_depth: usize,
     probing_test_group: bool,
+    declarations_only: bool,
 }
 
 impl<'a> Parser<'a> {
@@ -192,6 +204,7 @@ impl<'a> Parser<'a> {
             angles: Vec::new(),
             type_pattern_depth: 0,
             probing_test_group: false,
+            declarations_only: false,
         }
     }
 
@@ -482,7 +495,12 @@ impl<'a> Parser<'a> {
         let is_halt = self.eat("halt");
         let opaque = self.at("opaque") && self.look(1) == "type" && self.eat("opaque");
         let kind = match self.current() {
-            "fn" => StmtKind::Function(self.function(visibility, is_meta, is_halt)),
+            "fn" => StmtKind::Function(self.function(
+                visibility,
+                is_meta,
+                is_halt,
+                module && self.declarations_only,
+            )),
             "type" => StmtKind::Type(self.type_declaration(visibility, is_halt, opaque)),
             "eff" => StmtKind::Effect(self.effect(visibility)),
             "sub" => {
@@ -524,6 +542,7 @@ impl<'a> Parser<'a> {
     }
 
     fn binding(&mut self, visibility: Visibility, is_meta: bool, module: bool) -> Binding {
+        let start = self.offset();
         let variable = self.eat("var");
         if !variable {
             self.expect("let");
@@ -619,22 +638,33 @@ impl<'a> Parser<'a> {
             "E0613",
             "a binding type cannot carry an invocation annotation",
         );
-        let value = if self.eat("=") {
-            self.expression(0, false)
-        } else if ty.is_some() && (self.eof() || self.newline() || self.at(";")) {
-            Expr {
-                kind: ExprKind::Ambient,
-                span: self.span(self.offset()),
+        let initializer = if self.eat("=") {
+            Some(self.expression(0, false))
+        } else if self.eof() || self.newline() || matches!(self.current(), ";" | "}") {
+            if !module || ty.is_none() {
+                self.error_at(
+                    self.span(start),
+                    "E0124",
+                    "a binding requires an initializer",
+                );
             }
+            None
         } else {
             self.expect("=");
-            self.expression(0, false)
+            Some(self.expression(0, false))
         };
         self.rejected_annotations(
             "E0613",
             "completed passive values have no effect annotation",
         );
         let fallback = if self.eat("else") {
+            if initializer.is_none() {
+                self.error_at(
+                    self.span(start),
+                    "E0124",
+                    "a guarded binding requires an initializer",
+                );
+            }
             if self.at("{") {
                 let block = self.block();
                 Some(Expr {
@@ -654,12 +684,18 @@ impl<'a> Parser<'a> {
             mode,
             pattern,
             ty,
-            value,
+            initializer,
             fallback,
         }
     }
 
-    fn function(&mut self, visibility: Visibility, is_meta: bool, is_halt: bool) -> Function {
+    fn function(
+        &mut self,
+        visibility: Visibility,
+        is_meta: bool,
+        is_halt: bool,
+        declaration: bool,
+    ) -> Function {
         self.start(SyntaxKind::Declaration);
         let start = self.offset();
         self.expect("fn");
@@ -670,7 +706,7 @@ impl<'a> Parser<'a> {
         self.expect(")");
         let annotations = self.annotations();
         let (return_mode, return_type) = self.return_annotation();
-        let signature_where = self.signature_where();
+        let signature_where = self.signature_where(declaration);
         let body = if self.at("{") {
             Some(self.block())
         } else {
@@ -694,17 +730,23 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn signature_where(&mut self) -> Vec<Stmt> {
+    fn signature_where(&mut self, declaration: bool) -> Vec<Stmt> {
         let mut items = vec![];
         if self.eat("where") {
-            while matches!(
-                self.current(),
-                "type" | "halt" | "fn" | "eff" | "opaque" | "pub" | "meta" | "sub"
-            ) {
+            while self.signature_helper_ahead(declaration, 0) {
                 let before = self.pos;
                 items.push(self.statement(false));
                 if self.pos == before || matches!(self.current(), "{" | "=") {
                     break;
+                }
+                if declaration {
+                    let mut next = 0;
+                    while self.look(next) == ";" {
+                        next += 1;
+                    }
+                    if !self.signature_helper_ahead(true, next) {
+                        break;
+                    }
                 }
                 self.statement_separator();
             }
@@ -713,6 +755,21 @@ impl<'a> Parser<'a> {
             }
         }
         items
+    }
+
+    fn signature_helper_ahead(&self, declaration: bool, offset: usize) -> bool {
+        let token = self.look(offset);
+        if declaration {
+            // A bodyless signature has no body brace to end its helper
+            // list. A module item that cannot be a private type helper
+            // starts the next declaration.
+            token == "type" || matches!(token, "halt" | "opaque") && self.look(offset + 1) == "type"
+        } else {
+            matches!(
+                token,
+                "type" | "halt" | "fn" | "eff" | "opaque" | "pub" | "meta" | "sub"
+            )
+        }
     }
 
     fn generics(&mut self) -> Vec<GenericParameter> {
@@ -1146,7 +1203,7 @@ impl<'a> Parser<'a> {
         let name = self.name();
         let generics = self.generics();
         let mut variants = vec![];
-        let signature_where = self.signature_where();
+        let signature_where = self.signature_where(false);
         let alias = self.eat("=");
         let nominal = !alias && !self.at("{");
         let value = if alias || self.at("(") {
@@ -1197,7 +1254,7 @@ impl<'a> Parser<'a> {
             None
         };
         let signature_where = if nominal && signature_where.is_empty() {
-            self.signature_where()
+            self.signature_where(false)
         } else {
             signature_where
         };

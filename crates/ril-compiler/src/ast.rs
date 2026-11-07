@@ -81,7 +81,7 @@ pub struct Binding {
     pub mode: BindingMode,
     pub pattern: Pattern,
     pub ty: Option<TypeExpr>,
-    pub value: Expr,
+    pub initializer: Option<Expr>,
     pub fallback: Option<Expr>,
 }
 
@@ -521,7 +521,6 @@ pub enum ExprKind {
         end: Option<Box<Expr>>,
         inclusive: bool,
     },
-    Ambient,
     Error,
 }
 

@@ -1,0 +1,122 @@
+-- [case: final-foreign-constant-before-sub-close, front-pass]
+-- spec: SPEC#external-interface-declarations
+-- file: root.ril
+use platform/device::Device::{Handle, CURRENT}
+fn current() &up(sub){CURRENT} -> Handle { CURRENT }
+-- file: platform/device.d.ril
+pub sub Device { pub type Handle; pub let CURRENT: Handle }
+
+-- [case: foreign-constant-must-have-one-name, front-fail]
+-- spec: SPEC#external-interface-declarations
+-- Error [E0901]
+-- file: root.ril
+use platform/device
+-- file: platform/device.d.ril
+pub let _: i64
+
+-- [case: foreign-nominal-type-is-not-a-singleton-value, front-fail]
+-- spec: SPEC#normative-rules-for-external-interface-modules
+-- Error [E0907]
+-- file: root.ril
+use platform/device
+fn invalid() -> Device::Handle { Device::Handle }
+-- file: platform/device.d.ril
+pub type Handle
+
+-- [case: foreign-type-does-not-admit-record-construction, front-fail]
+-- spec: SPEC#normative-rules-for-external-interface-modules
+-- Error [E0907]
+-- file: root.ril
+use platform/device
+fn invalid() -> Device::Handle { Device::Handle.{} }
+-- file: platform/device.d.ril
+pub type Handle
+
+-- [case: foreign-type-does-not-expose-a-schema-projection, front-fail]
+-- spec: SPEC#normative-rules-for-external-interface-modules
+-- Error [E0907]
+-- file: root.ril
+use platform/device
+type Invalid = Device::Handle.id
+-- file: platform/device.d.ril
+pub type Handle
+
+-- [case: foreign-signature-cannot-take-a-construction-input, front-fail]
+-- spec: SPEC#fresh-construction-parameters
+-- Error [E0908]
+-- file: root.ril
+use platform/device
+-- file: platform/device.d.ril
+pub type Handle
+pub fn consume(new handle: Handle) -> ()
+
+-- [case: bodyless-block-where-helper-is-not-a-foreign-function, front-fail]
+-- spec: SPEC#external-interface-declarations
+-- Error [E0902]
+fn example() -> i64 {
+    missing()
+where
+    fn missing() -> i64
+}
+
+-- [case: local-binding-needs-an-initializer, front-fail]
+-- spec: SPEC#immutable-bindings
+-- Error [E0124]
+fn example() -> () {
+    let value: i64
+    let _ = 0
+}
+
+-- [case: executable-source-cannot-import-itself, front-fail]
+-- spec: SPEC#modules-and-compilation-units
+-- unit: executable
+-- Error [E0208]
+use root
+fn main() -> () {}
+
+-- [case: foreign-signature-where-ends-before-next-public-item, front-pass]
+-- spec: SPEC#external-interface-declarations
+-- file: root.ril
+use platform/text::{transform, EMPTY}
+fn example() &up(sub){EMPTY} -> str { transform(EMPTY, \text -> text) }
+-- file: platform/text.d.ril
+pub fn transform(text: str, callback: Transformer) -> str
+where
+    type Transformer = fn(str) -> str
+pub fn read() -> str
+pub let EMPTY: str
+
+-- [case: foreign-signature-where-ends-before-next-public-type, front-pass]
+-- spec: SPEC#external-interface-declarations
+-- file: root.ril
+use platform/text::{transform, Output}
+fn example() -> Output { transform("", \text -> text) }
+-- file: platform/text.d.ril
+pub fn transform(text: str, callback: Transformer) -> Output
+where
+    type Transformer = fn(str) -> str
+pub type Output = str
+
+-- [case: foreign-type-name-cannot-be-a-tag-pattern, front-fail]
+-- spec: SPEC#normative-rules-for-external-interface-modules
+-- Error [E0907]
+-- file: root.ril
+use platform/device
+fn invalid(value: Device::Handle) -> () {
+    match value { Device::Handle -> () }
+}
+-- file: platform/device.d.ril
+pub type Handle
+
+-- [case: ordinary-unit-nominal-remains-a-singleton-value, front-pass]
+-- spec: SPEC#nominal-type-wrappers
+type Marker
+fn make_marker() -> Marker { Marker }
+
+-- [case: foreign-opaque-declaration-cannot-supply-a-representation, front-fail]
+-- spec: SPEC#external-interface-declarations
+-- Error [E0901]
+-- file: root.ril
+use platform/device
+-- file: platform/device.d.ril
+pub opaque type Handle = i64

@@ -1,19 +1,35 @@
 //! Source roles are checked before module resolution can introduce internal names.
 use crate::{ast::*, lexer::diagnostic, library::PrimitiveSource};
-use crate::{diagnostic::Diagnostic, source::Span};
+use crate::{
+    diagnostic::Diagnostic,
+    source::{Span, UnitKind},
+};
 use std::collections::BTreeSet;
 
 pub(crate) fn validate(
     program: &Program,
+    unit_kind: Option<UnitKind>,
     primitive_source: Option<&PrimitiveSource>,
 ) -> Vec<Diagnostic> {
     let mut validator = Validator {
         diagnostics: vec![],
+        unit_kind,
         primitive_source,
     };
     validator.statements(&program.statements, true, false);
     validator.diagnostics
 }
+pub(crate) fn validate_module_stem(stem: &str, span: Span) -> Vec<Diagnostic> {
+    let mut validator = Validator {
+        diagnostics: vec![],
+        unit_kind: None,
+        primitive_source: None,
+    };
+    validator.module_segment(stem, span);
+    validator.derived_module_name(stem, span);
+    validator.diagnostics
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum AnnotationPlace {
     Definition,
@@ -24,6 +40,7 @@ enum AnnotationPlace {
 
 struct Validator<'a> {
     diagnostics: Vec<Diagnostic>,
+    unit_kind: Option<UnitKind>,
     primitive_source: Option<&'a PrimitiveSource>,
 }
 impl Validator<'_> {
@@ -194,6 +211,30 @@ impl Validator<'_> {
             );
         }
     }
+    fn module_segment(&mut self, name: &str, span: Span) -> bool {
+        self.snake(name, span);
+        let malformed = name.as_bytes().first().is_some_and(u8::is_ascii_lowercase)
+            && name
+                .split('_')
+                .any(|word| !word.as_bytes().first().is_some_and(u8::is_ascii_lowercase));
+        if malformed {
+            self.error(
+                "E0102",
+                span,
+                "every module path word must start with a lowercase letter",
+            );
+        }
+        !malformed
+    }
+
+    fn derived_module_name(&mut self, stem: &str, span: Span) {
+        let module = crate::hir::module_name(stem);
+        self.pascal(&module, span);
+        if matches!(module.as_str(), "Super" | "Type") {
+            self.error("E0203", span, "module file name maps to a protected name");
+        }
+    }
+
     fn statements(&mut self, statements: &[Stmt], top: bool, where_scope: bool) {
         let mut declared = BTreeSet::new();
         for statement in statements {
@@ -257,7 +298,9 @@ impl Validator<'_> {
                     if let Some(ty) = &binding.ty {
                         self.ty(ty);
                     }
-                    self.expr(&binding.value);
+                    if let Some(initializer) = &binding.initializer {
+                        self.expr(initializer);
+                    }
                     if let Some(fallback) = &binding.fallback {
                         self.expr(fallback);
                     }
@@ -309,33 +352,12 @@ impl Validator<'_> {
                         || !import.glob && import.members.is_empty();
                     if file_path {
                         for component in &import.path {
-                            self.snake(component, import.span);
-                            if component
-                                .as_bytes()
-                                .first()
-                                .is_some_and(u8::is_ascii_lowercase)
-                                && component.split('_').any(|word| {
-                                    !word.as_bytes().first().is_some_and(u8::is_ascii_lowercase)
-                                })
-                            {
-                                self.error(
-                                    "E0102",
-                                    import.span,
-                                    "every module path word must start with a lowercase letter",
-                                );
+                            if !self.module_segment(component, import.span) {
                                 break;
                             }
                         }
                         if let Some(stem) = import.path.last() {
-                            let module = crate::hir::module_name(stem);
-                            self.pascal(&module, import.span);
-                            if matches!(module.as_str(), "Super" | "Type") {
-                                self.error(
-                                    "E0203",
-                                    import.span,
-                                    "module file name maps to a protected name",
-                                );
-                            }
+                            self.derived_module_name(stem, import.span);
                         }
                     } else if let Some(module) = import.path.first() {
                         self.pascal(module, import.span);
@@ -380,8 +402,25 @@ impl Validator<'_> {
             && self
                 .primitive_source
                 .is_some_and(|source| source.primitive(&function.name).is_some());
+        let foreign = !operation && self.unit_kind == Some(UnitKind::External);
+        if foreign && (function.body.is_some() || function.is_meta || function.is_halt) {
+            self.error(
+                "E0901",
+                function.span,
+                "foreign functions require an ordinary bodyless declaration",
+            );
+            return;
+        }
+        if !foreign && !operation && !primitive && function.body.is_none() {
+            self.error(
+                "E0902",
+                function.span,
+                "function body required in a .ril file",
+            );
+            return;
+        }
         if let ReturnMode::Infer(span) = function.return_mode {
-            if function.is_meta || function.body.is_none() && !primitive {
+            if function.is_meta || foreign || operation {
                 self.error(
                     "E0412",
                     span,
@@ -405,9 +444,19 @@ impl Validator<'_> {
         for parameter in &function.parameters {
             if operation {
                 self.operation_parameter_mode(parameter);
-            } else if parameter.mode == ParameterMode::Via
-                && (function.is_meta || function.body.is_none() && !primitive)
-            {
+            } else if foreign && parameter.mode == ParameterMode::New {
+                self.error(
+                    "E0908",
+                    parameter.span,
+                    "foreign functions cannot receive construction inputs",
+                );
+            } else if function.is_meta && parameter.mode == ParameterMode::New {
+                self.error(
+                    "E0411",
+                    parameter.span,
+                    "static functions cannot receive construction inputs",
+                );
+            } else if parameter.mode == ParameterMode::Via && (function.is_meta || foreign) {
                 self.error(
                     "E0412",
                     parameter.span,

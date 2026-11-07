@@ -4,7 +4,7 @@ use crate::{
     diagnostic::Diagnostic,
     lexer::{diagnostic, primitive},
     library::{Placement, PrimitiveId, PrimitiveSource, REFLECT_PATH},
-    source::{FileId, Span},
+    source::{FileId, Span, UnitKind},
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -30,6 +30,8 @@ pub enum DefinitionKind {
     ForeignFunction,
     Type,
     NominalType,
+    OpaqueType,
+    ForeignType,
     Constructor,
     Effect,
     EffectAlias,
@@ -37,6 +39,7 @@ pub enum DefinitionKind {
     EffectProjection,
     Module,
     Binding,
+    ForeignConstant,
     Parameter,
     GenericParameter,
     RowParameter,
@@ -96,6 +99,8 @@ pub(crate) enum HeadKind {
 
 #[derive(Debug)]
 pub struct Hir {
+    pub units: BTreeMap<FileId, CompilationUnit>,
+    pub entry_point: Option<DefId>,
     pub definitions: Vec<Definition>,
     pub references: Vec<Reference>,
     pub scopes: Vec<Scope>,
@@ -105,6 +110,19 @@ pub struct Hir {
     pub effect_aliases: BTreeMap<DefId, Vec<EffectAliasMember>>,
     pub effect_members: BTreeMap<DefId, EffectMember>,
     pub primitives: BTreeMap<DefId, PrimitiveId>,
+}
+
+#[derive(Debug)]
+pub struct CompilationUnit {
+    pub origin: CompilationUnitOrigin,
+    pub scope: ScopeId,
+    pub namespace: Option<DefId>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompilationUnitOrigin {
+    User(UnitKind),
+    Bundled,
 }
 
 #[derive(Debug)]
@@ -204,6 +222,7 @@ enum UseKind {
     Ordinary,
     Type {
         applied: bool,
+        representation: bool,
     },
     Application,
     ConstructorPattern,
@@ -258,7 +277,6 @@ pub(crate) struct Index {
     uses: Vec<UseSite>,
     pending_effect_members: Vec<EffectAliasSite>,
     rows: Vec<ImplicitRow>,
-    roots: BTreeMap<FileId, ScopeId>,
     files: BTreeMap<PathBuf, DefId>,
     pub diagnostics: Vec<Diagnostic>,
 }
@@ -267,6 +285,8 @@ impl Index {
     pub fn new() -> Self {
         let mut this = Self {
             hir: Hir {
+                units: BTreeMap::new(),
+                entry_point: None,
                 definitions: vec![],
                 references: vec![],
                 scopes: vec![],
@@ -281,7 +301,6 @@ impl Index {
             uses: vec![],
             pending_effect_members: vec![],
             rows: vec![],
-            roots: BTreeMap::new(),
             files: BTreeMap::new(),
             diagnostics: vec![],
         };
@@ -441,18 +460,39 @@ impl Index {
         id
     }
 
-    pub fn file(&mut self, file: FileId, path: Option<PathBuf>, text_len: u32, program: &Program) {
+    pub fn file(
+        &mut self,
+        file: FileId,
+        path: Option<PathBuf>,
+        kind: UnitKind,
+        text_len: u32,
+        program: &Program,
+    ) {
         let span = Span {
             file,
             start: 0,
             end: text_len,
         };
         let scope = self.scope(Some(ScopeId(0)), Some(span), None);
-        self.roots.insert(file, scope);
-        if let Some(path) = path {
-            self.module_definition(path, scope, Some(span));
-        }
+        let namespace = path.map(|path| self.module_definition(path, scope, Some(span)));
+        self.hir.units.insert(
+            file,
+            CompilationUnit {
+                origin: CompilationUnitOrigin::User(kind),
+                scope,
+                namespace,
+            },
+        );
         self.statements(scope, &program.statements);
+        if kind == UnitKind::Executable {
+            self.hir.entry_point = self.hir.scopes[scope.0]
+                .bindings
+                .get("main")
+                .map(|entry| entry.definition)
+                .filter(|definition| {
+                    self.hir.definitions[definition.0].kind == DefinitionKind::Function
+                });
+        }
     }
 
     fn module_definition(&mut self, path: PathBuf, scope: ScopeId, span: Option<Span>) -> DefId {
@@ -510,26 +550,33 @@ impl Index {
             end: text_len,
         };
         let prelude = ScopeId(0);
-        let scope = match source.placement {
+        let (scope, namespace) = match source.placement {
             Placement::Prelude => {
                 self.hir.scopes[prelude.0].span = Some(span);
-                prelude
+                (prelude, None)
             }
             Placement::AmbientModule(path) => {
                 let scope = self.scope(Some(prelude), Some(span), None);
                 let module = self.module_definition(path.into(), scope, Some(span));
                 self.expose_ambient_module(module);
-                scope
+                (scope, Some(module))
             }
             Placement::ExistingNamespace(name) => {
                 let definition = self.hir.scopes[prelude.0].bindings[name].definition;
                 let scope = self.member_scope(definition).expect("built-in namespace");
                 self.hir.scopes[scope.0].parent = Some(prelude);
                 self.hir.scopes[scope.0].span = Some(span);
-                scope
+                (scope, Some(definition))
             }
         };
-        self.roots.insert(file, scope);
+        self.hir.units.insert(
+            file,
+            CompilationUnit {
+                origin: CompilationUnitOrigin::Bundled,
+                scope,
+                namespace,
+            },
+        );
         for statement in &program.statements {
             if let StmtKind::Function(function) = &statement.kind
                 && let Some(primitive) = source.primitive(&function.name)
@@ -558,7 +605,7 @@ impl Index {
     }
 
     pub fn has_file(&self, file: FileId) -> bool {
-        self.roots.contains_key(&file)
+        self.hir.units.contains_key(&file)
     }
 
     fn statements(&mut self, scope: ScopeId, items: &[Stmt]) {
@@ -569,6 +616,8 @@ impl Index {
 
     fn statement(&mut self, scope: ScopeId, item: &Stmt) {
         let span = item.span;
+        let foreign =
+            self.hir.units[&span.file].origin == CompilationUnitOrigin::User(UnitKind::External);
         match &item.kind {
             StmtKind::Sub(sub) => {
                 let inner = self.scope(Some(ScopeId(0)), Some(span), Some(scope));
@@ -596,7 +645,7 @@ impl Index {
             StmtKind::Function(function) => {
                 let kind = if function.is_meta {
                     DefinitionKind::MetaFunction
-                } else if function.body.is_none() {
+                } else if foreign && function.body.is_none() {
                     DefinitionKind::ForeignFunction
                 } else {
                     DefinitionKind::Function
@@ -625,20 +674,25 @@ impl Index {
                         _ => None,
                     })
                     .unwrap_or_else(|| signature(&ty.generics));
+                let kind = if ty.opaque {
+                    DefinitionKind::OpaqueType
+                } else if foreign && ty.nominal && ty.value.is_none() {
+                    DefinitionKind::ForeignType
+                } else if ty.nominal {
+                    DefinitionKind::NominalType
+                } else {
+                    DefinitionKind::Type
+                };
                 let id = self.item(
                     scope,
                     &ty.name,
                     ty.visibility,
-                    if ty.nominal {
-                        DefinitionKind::NominalType
-                    } else {
-                        DefinitionKind::Type
-                    },
+                    kind,
                     span,
                     Some(application),
                 );
                 self.hir.definitions[id.0].members = variants;
-                if ty.nominal {
+                if kind == DefinitionKind::NominalType {
                     self.hir.definitions[id.0].constructor_form = Some(if ty.value.is_some() {
                         ConstructorForm::Callable
                     } else {
@@ -722,15 +776,23 @@ impl Index {
                 bound.dedup();
                 let mutable = binding.mode.is_mutable() || binding.mode.is_reassignable();
                 for name in bound {
-                    let alias = (!mutable
-                        && binding.mode == BindingMode::Let
-                        && matches!(binding.pattern.kind, PatternKind::Name(_)))
-                    .then(|| expression_path(&binding.value).map(|path| (path, binding.value.span)))
-                    .flatten();
+                    let alias = binding
+                        .initializer
+                        .as_ref()
+                        .filter(|_| {
+                            !mutable
+                                && binding.mode == BindingMode::Let
+                                && matches!(binding.pattern.kind, PatternKind::Name(_))
+                        })
+                        .and_then(|value| expression_path(value).map(|path| (path, value.span)));
                     self.declare(
                         Definition {
                             name,
-                            kind: DefinitionKind::Binding,
+                            kind: if foreign && binding.initializer.is_none() {
+                                DefinitionKind::ForeignConstant
+                            } else {
+                                DefinitionKind::Binding
+                            },
                             scope,
                             span: Some(binding.pattern.span),
                             public: binding.visibility == Visibility::Public,
@@ -747,7 +809,9 @@ impl Index {
                     self.ty(scope, ty);
                 }
                 self.pattern(scope, &binding.pattern);
-                self.expr(scope, &binding.value);
+                if let Some(initializer) = &binding.initializer {
+                    self.expr(scope, initializer);
+                }
                 if let Some(fallback) = &binding.fallback {
                     self.expr(scope, fallback);
                 }
@@ -1131,21 +1195,34 @@ impl Index {
         });
     }
 
+    fn type_name_use(&mut self, scope: ScopeId, ty: &TypeExpr, representation: bool) {
+        if let TypeKind::Name { path, arguments } = &ty.kind {
+            self.site(
+                scope,
+                ty.span,
+                path.clone(),
+                UseKind::Type {
+                    applied: !arguments.is_empty(),
+                    representation,
+                },
+            );
+            for argument in arguments {
+                self.ty(scope, argument);
+            }
+        }
+    }
+
+    fn type_representation(&mut self, scope: ScopeId, ty: &TypeExpr) {
+        if matches!(ty.kind, TypeKind::Name { .. }) {
+            self.type_name_use(scope, ty, true);
+        } else {
+            self.ty(scope, ty);
+        }
+    }
+
     fn ty(&mut self, scope: ScopeId, ty: &TypeExpr) {
         match &ty.kind {
-            TypeKind::Name { path, arguments } => {
-                self.site(
-                    scope,
-                    ty.span,
-                    path.clone(),
-                    UseKind::Type {
-                        applied: !arguments.is_empty(),
-                    },
-                );
-                for argument in arguments {
-                    self.ty(scope, argument);
-                }
-            }
+            TypeKind::Name { .. } => self.type_name_use(scope, ty, false),
             TypeKind::Optional(ty)
             | TypeKind::KeyOf(ty)
             | TypeKind::Rest(ty)
@@ -1210,9 +1287,9 @@ impl Index {
                 let body_scope = self.region(inner, body.span, ScopeKind::Callable);
                 self.expr(body_scope, body);
             }
-            TypeKind::Projection { base, .. } => self.ty(scope, base),
+            TypeKind::Projection { base, .. } => self.type_representation(scope, base),
             TypeKind::ComputedProjection { base, key } => {
-                self.ty(scope, base);
+                self.type_representation(scope, base);
                 self.expr(scope, key);
             }
             TypeKind::Computation(value) => self.expr(scope, value),
@@ -1248,7 +1325,10 @@ impl Index {
                 scope,
                 ty.span,
                 vec!["ril/reflect".into(), "MemberMode".into()],
-                UseKind::Type { applied: false },
+                UseKind::Type {
+                    applied: false,
+                    representation: false,
+                },
             ),
             TypeKind::TypeBinder(_)
             | TypeKind::PatternRest(_)
@@ -1292,7 +1372,7 @@ impl Index {
             }
             PatternKind::Record { ty, fields, .. } => {
                 if let Some(ty) = ty {
-                    self.ty(scope, ty);
+                    self.type_representation(scope, ty);
                 }
                 for field in fields {
                     self.pattern(scope, &field.pattern);
@@ -1340,7 +1420,7 @@ impl Index {
             }
             ExprKind::Record { ty, members } => {
                 if let Some(ty) = ty {
-                    self.ty(scope, ty);
+                    self.type_representation(scope, ty);
                 }
                 for member in members {
                     match member {
@@ -1515,7 +1595,7 @@ impl Index {
             }
             ValueTestKind::Record { ty, fields } => {
                 if let Some(ty) = ty {
-                    self.ty(scope, ty);
+                    self.type_representation(scope, ty);
                 }
                 for field in fields {
                     self.value_test(scope, &field.test);
@@ -1862,7 +1942,7 @@ impl Index {
                 .then_some(ScopeId(id))
             })
             .next()
-            .or_else(|| self.roots.get(&file).copied())?;
+            .or_else(|| self.hir.units.get(&file).map(|unit| unit.scope))?;
         let id = self
             .resolve(scope, path, offset, kind == HeadKind::Value)
             .ok()?;
@@ -2029,8 +2109,10 @@ impl Index {
         source: &Definition,
     ) -> Result<Option<ScopeId>, &'static str> {
         if group.owner == StateOwner::Module {
-            return if source.kind == DefinitionKind::Binding
-                && self.hir.scopes[source.scope.0].parent == Some(ScopeId(0))
+            return if matches!(
+                source.kind,
+                DefinitionKind::Binding | DefinitionKind::ForeignConstant
+            ) && self.hir.scopes[source.scope.0].parent == Some(ScopeId(0))
             {
                 Ok(None)
             } else {
@@ -2116,6 +2198,23 @@ impl Index {
                 !matches!(use_kind, UseKind::Type { .. } | UseKind::EffectName { .. }),
             ) {
                 Ok(definition) => {
+                    let foreign_type =
+                        self.hir.definitions[definition.0].kind == DefinitionKind::ForeignType;
+                    if foreign_type
+                        && matches!(
+                            use_kind,
+                            UseKind::Ordinary
+                                | UseKind::Application
+                                | UseKind::ConstructorPattern
+                                | UseKind::ConstructorTest
+                                | UseKind::Type {
+                                    representation: true,
+                                    ..
+                                }
+                        )
+                    {
+                        self.error(span, "E0907", "an abstract foreign type does not expose a value constructor or representation");
+                    }
                     match use_kind {
                         UseKind::StateProvider { allowed }
                             if !allowed
@@ -2139,7 +2238,7 @@ impl Index {
                     let application = if matches!(
                         use_kind,
                         UseKind::Application
-                            | UseKind::Type { applied: true }
+                            | UseKind::Type { applied: true, .. }
                             | UseKind::EffectName { applied: true }
                             | UseKind::Operation { applied: true, .. }
                     ) {
@@ -2155,7 +2254,7 @@ impl Index {
                             .signature_of(definition)
                             .map(|signature| signature.item)
                             .filter(|item| self.is_constructor(*item));
-                        if selected.is_none() {
+                        if selected.is_none() && !foreign_type {
                             self.error(
                                 span,
                                 "E0349",
