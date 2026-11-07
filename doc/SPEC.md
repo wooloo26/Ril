@@ -1547,9 +1547,38 @@ Temporary `mut` cannot become persistent writable storage. `via` cannot invent o
 | :--- | :--- |
 | Binding | Each declaration-owned member/element/value `via` binds access by declaration identity and coordinate path; function-owned occurrences belong to that function |
 | Instantiation | Freshen the finite whole signature at independent outside uses; one concrete instance has a fixed schema |
+| Initial reception | Context and checked value flow may constrain admitted mode instances; justify authority from the actual source under concrete reception rules, never from the receiver's requested mode |
+| Later replacement | Check the incoming value against the destination's instantiated declared schema; assignment does not freshen or re-infer that concrete storage instance's mode parameters. `var via` members permit slot replacement, not mode replacement |
 | Recursion | Forward the current signature through self references; mutually recursive declarations use finite group equations, with no fresh binders on cycles |
 | Other declarations | Add only finite syntactic-site parameters; transparent aliases forward identity/signature, nominal/opaque types retain identity and checking facts |
 | Checking | Preserve schema identity, invariance, dependencies, and homogeneous elements; symbolic reflection is allowed, required concrete resolution is `E0344` |
+| Operand elaboration | Only verified lexical mode/callback dependencies permit implicit markers; each selected concrete operation must satisfy source, alias, sharing, lifetime, retention, exclusivity, and consumption checks |
+| Alternatives | Retain every possible origin and obligation and only common guarantees, preserving verified correlations under [provenance propagation](#complete-provenance-and-required-annotations). Construction paths remain affine under the [handoff rules](#fresh-construction-parameters) |
+
+Template checking may collect constraints from initialization and later assignments before selecting concrete instances; these rules do not prescribe a solver order or require every mode to be admitted. Fixed declared schemas still permit the specified reductions of effective access through observation and immutable reception.
+
+```ril
+type Cell = { var count: i64 }
+type Slot<T> = { var via item: T }
+
+let mut source = Cell.{ count: 0 }
+let mut other = Cell.{ count: 10 }
+let mut slot = Slot.{ item: ref source }     -- OK: this instance has a ref member
+slot.item = ref other                      -- OK: replace the observed object, keeping ref
+source.count += 1
+other.count += 1
+assert(slot.item.count == 11)
+
+-- slot.item.count += 1                    -- Error [E0520]: the ref member grants no writes
+-- slot.item = ^mut source                 -- Error [E0527]: read-only reception does not use shared-write acknowledgment
+-- slot.item = clone(ref source)           -- Error [E0543]: an independent copy has no established observation origin
+
+let frozen = Cell.{ count: 1 }
+let mut snapshot = Slot.{ item: frozen }    -- OK: an independent instance with a default member
+snapshot.item = Cell.{ count: 2 }           -- OK: replace the immutable member value
+assert(snapshot.item.count == 2)
+-- snapshot.item = source                  -- Error [E0535]: the fixed immutable member cannot receive a surviving writer
+```
 
 Implicit member parameters supplied by a function's input types may be bound schema parameters in its lexical checking environment, even without an explicit `via` parameter modifier. Dependent projections may use template elaboration under that schema and the parent's effective access. This does not parameterize a fixed `ref`/`mut` root or grant an unrelated concrete operand a missing marker. A nested callable's own binders remain scoped to it; a verified selected call may nevertheless expose a finite result dependency bound to that input callable.
 
