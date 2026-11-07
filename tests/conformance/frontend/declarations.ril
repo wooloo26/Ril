@@ -1,0 +1,54 @@
+-- [case: halt-cannot-be-discarded-on-a-binding, front-fail]
+-- spec: SPEC#named-function-declarations-and-contrast-matrix
+-- Error [E0120]
+halt let VALUE = 1
+
+-- [case: meta-cannot-be-discarded-on-a-type, front-fail]
+-- spec: SPEC#compile-time-evaluation-and-layout-queries
+-- Error [E0120]
+meta type Invalid = i64
+
+-- [case: meta-and-halt-are-not-combined-function-modifiers, front-fail]
+-- spec: SPEC#compile-time-evaluation-and-layout-queries
+-- Error [E0120]
+meta halt fn invalid() -> i64 { 0 }
+
+-- [case: halt-cannot-be-discarded-on-an-effect, front-fail]
+-- spec: SPEC#effect-declarations-and-operation-signatures
+-- Error [E0120]
+halt eff Invalid { run() -> () }
+
+-- [case: meta-cannot-be-discarded-on-an-import, front-fail]
+-- spec: SPEC#compile-time-evaluation-and-layout-queries
+-- Error [E0120]
+meta use ril/numeric
+
+-- [case: meta-let-has-no-mutable-receiver, front-fail]
+-- spec: SPEC#compile-time-evaluation-and-layout-queries
+-- Error [E0120]
+meta let mut VALUE = []
+
+-- [case: meta-let-has-no-destructuring-pattern, front-fail]
+-- spec: SPEC#compile-time-evaluation-and-layout-queries
+-- Error [E0120]
+meta let (FIRST, SECOND) = (1, 2)
+
+-- [case: meta-let-has-no-guarded-else, front-fail]
+-- spec: SPEC#compile-time-evaluation-and-layout-queries
+-- Error [E0120]
+meta let VALUE = 1 else { panic("invalid") }
+
+-- [case: meta-fn-needs-a-written-result-type, front-fail]
+-- spec: SPEC#compile-time-evaluation-and-layout-queries
+-- Error [E0124]
+meta fn invalid() { 1 }
+
+-- [case: halt-type-is-not-a-nominal-modifier, front-fail]
+-- spec: SPEC#termination-and-halt-contracts
+-- Error [E0120]
+halt type Invalid(i64)
+
+-- [case: opaque-type-needs-an-equals-representation, front-fail]
+-- spec: SPEC#type-declarations-and-opaque-types
+-- Error [E0124]
+opaque type Invalid(i64)

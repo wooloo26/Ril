@@ -437,6 +437,13 @@ impl Validator<'_> {
                 self.infer_inputs(span, &function.parameters);
             }
         }
+        if function.is_meta && function.return_type.is_none() {
+            self.error(
+                "E0124",
+                function.span,
+                "meta fn requires an explicit return type",
+            );
+        }
         let place = if operation {
             AnnotationPlace::Operation
         } else if function.is_meta {

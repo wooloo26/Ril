@@ -494,6 +494,16 @@ impl<'a> Parser<'a> {
         let is_meta = self.eat("meta");
         let is_halt = self.eat("halt");
         let opaque = self.at("opaque") && self.look(1) == "type" && self.eat("opaque");
+        if is_meta && (is_halt || !matches!(self.current(), "fn" | "let")) {
+            self.error_at(self.span(start), "E0120", "meta modifies only let or fn");
+        }
+        if is_halt && (opaque || !matches!(self.current(), "fn" | "type")) {
+            self.error_at(
+                self.span(start),
+                "E0120",
+                "halt modifies only fn or a type definition",
+            );
+        }
         let kind = match self.current() {
             "fn" => StmtKind::Function(self.function(
                 visibility,
@@ -593,6 +603,13 @@ impl<'a> Parser<'a> {
                 _ => BindingMode::Let,
             }
         };
+        if is_meta && mode != BindingMode::Let {
+            self.error_at(
+                self.span(start),
+                "E0120",
+                "meta let requires a plain immutable binding",
+            );
+        }
         self.rejected_annotations(
             "E0613",
             "passive bindings cannot carry effect or capability annotations",
@@ -628,6 +645,13 @@ impl<'a> Parser<'a> {
                     .is_some_and(|head| head.constructor))
         {
             pattern.kind = PatternKind::Name(path[0].clone());
+        }
+        if is_meta && !matches!(pattern.kind, PatternKind::Name(_) | PatternKind::Wildcard) {
+            self.error_at(
+                pattern.span,
+                "E0120",
+                "meta let requires one constant name or wildcard",
+            );
         }
         let ty = if self.eat(":") {
             Some(self.type_expr())
@@ -678,6 +702,13 @@ impl<'a> Parser<'a> {
         } else {
             None
         };
+        if is_meta && fallback.is_some() {
+            self.error_at(
+                self.span(start),
+                "E0120",
+                "meta let cannot have an else block",
+            );
+        }
         Binding {
             visibility,
             is_meta,
@@ -1261,6 +1292,20 @@ impl<'a> Parser<'a> {
         } else {
             signature_where
         };
+        if is_halt && (nominal || !variants.is_empty()) {
+            self.error_at(
+                self.span(start),
+                "E0120",
+                "halt type requires an equals definition",
+            );
+        }
+        if opaque && (nominal || !variants.is_empty()) {
+            self.error_at(
+                self.span(start),
+                "E0124",
+                "opaque type requires an equals representation",
+            );
+        }
         let span = self.span(start);
         self.finish();
         TypeDeclaration {
