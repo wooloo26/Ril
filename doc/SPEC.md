@@ -1839,7 +1839,7 @@ ValueType             ::= TypeExpression
 - **Trailing Defaults Invariant (`E0316`)**: If a generic parameter declares a default argument (`= Default`), all subsequent generic parameters in the same parameter list must declare default arguments.
 - **Left-to-Right Default Scope Invariant (`E0320`)**: A default argument expression $D_i$ may reference generic parameters declared to its left ($X_1, \dots, X_{i-1}$). Forward references and direct/indirect circular dependencies are statically rejected (`E0320`).
 - **Member Mode Sorts (`M: MemberMode`, `E0356`)**: Static parameters may constrain to the ambient `MemberMode` sort. Arguments accept member mode literals (`var`, `mut`, `^mut`, `ref`, etc.) or static expressions yielding `MemberMode`. Incompatible sorts fail with `E0356`.
-- **Generic Closed Type Sets (`TypeSetSort`, `E0301`)**: A generic parameter may constrain its admitted domain to a finite union of types (`T: i64 | f64`). Unlike value-level untagged unions (`E0318`), a type set constraint does not create an untagged runtime union type; monomorphization specializes $T$ to each concrete member. The compiler performs definition-site polyvariant type checking across all member types $\tau \in \{T_1, \dots, T_n\}$, verifying that the generic body's operations are well-typed for every alternative. Supplying a type outside the set triggers `E0301: TypeMismatchError`.
+- **Generic Closed Type Sets (`TypeSetSort`, `E0301`)**: A generic parameter may constrain its admitted domain to a finite union of types (`T: i64 | f64`), monomorphizing $T$ to each concrete member. Definition-site polyvariant checking verifies body operations and signature type functions across all $\tau \in \{T_1, \dots, T_n\}$ (`E0301`). At call sites, $T$ resolves to a rigid member before signature type functions evaluate. Result types must normalize to a single rigid type per member (`E0318`).
 - **Pipeline Type Constraints (`T |> Guard`, `E0301`, `E0306`)**: A type parameter may pipe into one or more pure type functions (`T |> Numeric`). The guard must be a compile-time pure `type` function of kind `Type -> Type` (`E0306`). An argument type $T_{arg}$ satisfies the guard if and only if:
   $$\text{Valid}(T_{arg}) \iff T_{arg} \not\equiv \text{never} \quad \wedge \quad \text{Guard}\langle T_{arg} \rangle \equiv T_{arg}$$
   The bottom type `never` is statically rejected before guard evaluation, preventing vacuous satisfaction. If $\text{Guard}\langle T_{arg} \rangle$ does not produce definitional identity with $T_{arg}$, the argument is rejected under `E0301`. Multiple guards pipe from left to right: `T |> Guard1 |> Guard2` $\equiv \text{Guard2}\langle \text{Guard1}\langle T \rangle \rangle$.
@@ -1867,6 +1867,26 @@ type Numeric = \T -> match <T> {
 fn multiply<T |> Numeric>(a: T, b: T) -> T { a * b }
 assert(multiply(3, 4) == 12)
 -- let bad_mul = multiply("x", "y")     -- Error [E0301]: type 'str' does not satisfy constraint 'Numeric'
+
+-- Monomorphized Type Function on Closed Type Set:
+type TargetType = \T -> match <T> {
+    <i64> -> <f64>,
+    <f64> -> <i64>,
+    _     -> <never>,
+}
+fn swap_num<T: i64 | f64>(x: T) -> TargetType<T> {
+    match <T> {
+        <i64> -> 0.0,
+        <f64> -> 0,
+        _     -> panic("unreachable"),
+    }
+}
+assert(swap_num(10) == 0.0)
+assert(swap_num(2.5) == 0)
+
+-- Rejections: Unspecialized type set application (E0306) and untagged union return (E0318):
+-- type BadApp = TargetType<i64 | f64>  -- Error [E0306]: type parameter 'T' requires a rigid type, not a type set
+-- type BadRet = \T -> <i64 | f64>      -- Error [E0318]: untagged unions cannot be quoted or returned as storage types
 
 -- Composed Structural and Pipeline Constraint:
 type AuditGuard = \T -> match <T> {
@@ -2698,7 +2718,7 @@ DeclLet          ::= "let" ScreamingSnakeCase ":" TypeExpression
 
 #### Normative Rules for External Interface Modules
 - **Body Prohibition Invariant (`E0901`)**: Functions declared in `.d.ril` must not contain implementation bodies (`{ ... }`). Top-level constants must not declare initialization expressions (`= expr`). Supplying an implementation body or initializer in a `.d.ril` file is statically rejected under `E0901: BodyInDeclModuleError`.
-- **Missing Body Invariant (`E0902`)**: Omitting an implementation body from a function in a standard `.ril` module is statically rejected under `E0902: MissingBodyInStandardModuleError`. External signatures must reside in `.d.ril` modules.
+- **Missing Body Invariant (`E0902`, `E0909`)**: Functions declared in `.ril` modules require an implementation body unless they match a registered built-in primitive identity. Unregistered bodyless functions trigger `E0902: MissingBodyInStandardModuleError`; signature mismatches against registered primitive contracts trigger `E0909: BuiltinSignatureMismatchError`. External host signatures reside in `.d.ril` modules.
 - **Uninterpreted Foreign Types**: A type declaration in `.d.ril` without a definition body (`pub type DomWindow`) defines an uninterpreted foreign nominal type. Direct field access (`x.field`), bracket indexing (`x[0]`), nominal unwrapping (`inner(x)`), pattern deconstruction, and direct value instantiation are statically rejected under `E0907: ForeignStructuralFieldPenetrationError`.
 - **Exchange Data Types**: Transparent type aliases, records, and tagged sum types may provide full shape definitions in `.d.ril` for foreign data exchange.
 - **Top-Level Immutability**: Top-level variables in `.d.ril` are restricted to immutable handles (`let`). Declaring `var` or `let mut` is statically rejected under `E0901`.
@@ -4314,7 +4334,7 @@ Named functions are declared at module scope or in a block's `where` clause. The
 ```ebnf
 FunctionDecl         ::= [ "pub" ] [ "halt" ] "fn" ValueName [ GenericParams ]
                          "(" [ ParameterList ] ")" [ EffectAnnot ] [ StateAnnot ] [ ReturnType ]
-                         [ SignatureWhereClause ] Block
+                         [ SignatureWhereClause ] [ Block ]
 SignatureWhereClause ::= "where" SignatureWhereItem { Separator SignatureWhereItem } [ Separator ]
 SignatureWhereItem   ::= LocalTypeDecl
 ParameterList        ::= Parameter { "," Parameter } [ "," ]
@@ -4423,12 +4443,23 @@ where
 ```
 
 ```ril
+-- Implementation Bodies and Built-in Declarations:
+pub halt fn len<T |> LenTarget>(via item: T) -> i64 -- Registered built-in declaration (bodyless)
+fn sys_alloc(size: i64) -> []u8                    -- Private registered built-in declaration (bodyless)
+pub fn double(x: i64) -> i64 { x * 2 }             -- Standard Ril function with implementation body
+
+-- Rejections:
+-- fn custom_bodyless() -> ()           -- Error [E0902]: unregistered bodyless function requires an implementation
+-- halt fn len(item: i64) -> str        -- Error [E0909]: signature does not match registered built-in contract
+
 -- Hoisted Named Function:
 pub fn calculate_tax(amount: i64) -> i64 {
     amount * 20 / 100
 }
 let r1 = calculate_tax(100)            -- OK: direct call
 ```
+
+- **Implementation Bodies and Built-in Declarations (`E0902`, `E0909`)**: A function with a body `{ ... }` uses its Ril implementation; a bodyless `fn` in `.ril` declares a built-in primitive bound by its registered declaration identity (module path and identifier). Unregistered declarations or signature mismatches trigger `E0902` / `E0909`; identical names in other scopes do not acquire built-in identity. `pub` independently controls visibility; both public and private built-ins may omit bodies. Effects, modes, phase, and termination follow the primitive contract. External `.d.ril` rules remain unchanged.
 
 | Aspect | Named Function (`fn`) | Environment-Free Anonymous Function (`\x -> ...`) | Capturing Anonymous Function (`\x -> ...`) |
 | :--- | :--- | :--- | :--- |
@@ -7026,9 +7057,14 @@ halt fn checked_increment(n: i64) -> i64 { n + 1 } -- May panic at i64's maximum
 | `meta let` | May hold static tokens; only recursively token-free ordinary results can become run-time constants |
 | Run-time materialization | Reject tokens and static-only metatypes in materialized value parameters/results, storage, and captures (`E0816`), including through aliases, generics, and opaque wrappers; static generic metadata is excluded |
 
-Both run in the pure static domain: no outward operational effects or state/provenance obligations, with implicit Div allowed. They support local bindings, control flow, pure static helpers and recursion. Effect/state source annotations remain forbidden, including explicit `@Div`; inference retains Div in their checking interfaces. Generic type metadata is static and erased from run-time values.
+Both run in the pure static domain: no outward operational effects or state/provenance obligations, with implicit Div allowed. They support local bindings, control flow, pure static helpers and recursion. Effect/state source annotations remain forbidden, including explicit `@Div`; inference retains Div in their checking interfaces. Generic type metadata is static and erased from run-time values. Type functions do not distribute over type sets (`E0306`); evaluated results must be a single rigid type token (`E0318`). In type patterns, `<i64> | <f64>` is an or-pattern matching atomic tokens.
 
 ```ril
+type Wrap = \T -> <[T]>
+type IntList = Wrap<i64>                        -- [i64]
+-- type BadSet = Wrap<i64 | f64>                -- Error [E0306]: type parameter 'T' requires a rigid type, not a type set
+-- type BadUnion = \T -> <i64 | f64>            -- Error [E0318]: untagged unions cannot be quoted or returned as types
+
 meta fn record_bytes() -> i64 { byte_size(<.{ id: i64 }>) }
 meta fn meta_identity<T>(value: T) -> T { value }
 meta let NUMBER = meta_identity(1)
@@ -7510,6 +7546,7 @@ Type functions accept the following parameter sorts and constraints:
 - **Bounded Structural Types (`\T: .{ id: i64, .. }`)**: Structural bounds constrain types.
 - **Higher-Kinded Constructors (`\M: Type -> Type`)**: Enforces constructor kind arity (`E0306`).
 - **Default Arguments**: Follow trailing-default (`E0316`) and left-to-right scoping (`E0320`) rules.
+- **No Union Distribution (`E0306`, `E0318`)**: Type parameter `\T` accepts rigid types only (`E0306` on type set); type functions do not distribute over unions. Result must normalize to a single rigid token (`E0318`).
 
 | Parameter | Kind / value category |
 | :--- | :--- |
@@ -7540,6 +7577,8 @@ type OptInt = Wrapper<Option, i64>             -- Option<i64>
 type IntType = typeof 1024                     -- i64
 -- type BadValueArg = VersionedSchema<u8>      -- Error [E0323]: a type cannot supply const parameter 'version'
 -- type BadTypeArg = Wrapper<1024, i64>        -- Error [E0306]: a value cannot supply type parameter 'M'
+-- type BadSetArg = Wrapper<Option, i64 | f64> -- Error [E0306]: unspecialized type set cannot supply type parameter 'T'
+-- type BadUnionRet = \T -> <i64 | f64>        -- Error [E0318]: untagged unions cannot be quoted or returned as types
 ```
 
 ### Compile-Time Evaluation and Layout Queries
@@ -8283,10 +8322,11 @@ This index assigns each code its diagnostic name and points to its defining rule
 | Code | Diagnostic and defining rule |
 | :---: | :--- |
 | **`E0901`** | [`BodyInDeclModuleError`](#external-interface-declarations) |
-| **`E0902`** | [`MissingBodyInStandardModuleError`](#external-interface-declarations) |
+| **`E0902`** | [`MissingBodyInStandardModuleError`](#external-interface-declarations); [Built-in Declarations](#named-function-declarations-and-contrast-matrix) |
 | **`E0903`** | [`MissingEntryPointError`](#program-entry-point) |
 | **`E0904`** | [`InvalidEntryPointError`](#program-entry-point) |
 | **`E0905`** | [`RootUnitExportProhibitedError`](#modules-and-compilation-units) |
 | **`E0906`** | [`PublicMutableStateProhibitedError`](#modules-and-compilation-units); [Top-Level Initialization and Purity](#top-level-initialization-and-purity) |
 | **`E0907`** | [`ForeignStructuralFieldPenetrationError`](#external-interface-declarations) |
 | **`E0908`** | [`UnsupportedExternalAuthorityContractError`](#external-interface-declarations) |
+| **`E0909`** | [`BuiltinSignatureMismatchError`](#named-function-declarations-and-contrast-matrix) |
