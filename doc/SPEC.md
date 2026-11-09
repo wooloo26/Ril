@@ -24,6 +24,8 @@ The following distinctions apply throughout the specification; their defining se
 | Read-only / deeply immutable | A read-only path grants no writes through that path; a live origin may still be writable through another path. Deep immutability excludes surviving writers and live dependencies |
 | Shared object / shared writable authority | A shared object has identity and can be aliased; this alone grants no shared write authority |
 | Construction / isolation | Construction qualification tracks eligible initial reception and handoff. Root privacy and separation of writable graph regions require independent proofs |
+| Record type / record value | Both use `.{...}`; a `TypeReference` may prefix a runtime expression, pattern, or test (`User.{...}`). Sum and effect declaration bodies keep `{...}` |
+| Value argument / type argument | A value argument goes only to a declared value-sorted parameter; a value is never converted to a type. `typeof e` is the explicit form |
 | Purity / finiteness / normal completion | Purity excludes outward operational effects and state/provenance obligations, while implicit Div may remain. Optional `halt` additionally excludes Div. A `never` expression has no normal continuation; it can transfer control, panic, or execute forever |
 
 - **Normative Rules and Invariants**: Conforming implementations must enforce all specified grammar, static-checking, and execution rules, including rules not presented as titled invariants.
@@ -175,10 +177,10 @@ The following distinctions apply throughout the specification; their defining se
       - [Type-Evaluation Exhaustion Diagnostics](#type-evaluation-exhaustion-diagnostics)
     - [Disjoint Call Families, Evaluation Budgets, and Branch Pruning](#disjoint-call-families-evaluation-budgets-and-branch-pruning)
     - [Static Introspection](#static-introspection)
-      - [Coordinate Enumeration with keyof](#coordinate-enumeration-with-keyof)
-      - [Static Key Parameters and Computed Value Projection](#static-key-parameters-and-computed-value-projection)
+      - [Coordinate and Variant Introspection (coords, variants)](#coordinate-and-variant-introspection-coords-variants)
+      - [Static Coordinate Parameters and Computed Value Projection](#static-coordinate-parameters-and-computed-value-projection)
       - [Universal Constituent Projection](#universal-constituent-projection)
-      - [Universal Member Mode Projection](#universal-member-mode-projection)
+      - [Member Mode Introspection and Retention](#member-mode-introspection-and-retention)
       - [Mapped Record and Tuple Types](#mapped-record-and-tuple-types)
     - [Structural Type Pattern Matching](#structural-type-pattern-matching)
     - [Static Parameter Sorts and Adaptation Rules](#static-parameter-sorts-and-adaptation-rules)
@@ -489,7 +491,7 @@ Identifier grammatical roles obey the **Closed Casing Invariant**:
    - **Acronym Title-Casing Rule**: Acronyms within `PascalCase` must be title-cased as regular words (`HttpServer`, `UserId`, `JsonParser`, not `HTTPServer`, `UserID`, `JSONParser`) (`E0102`).
 - **`snake_case`**: Used for run-time variables (local bindings, function parameters, reassignable variables `var`, and pinned mutable handles `let mut`), const generic parameters (`cap: i64`), named functions (`fn`, `meta fn`), record fields, and module file path segments (`ril/array`, `math/geometry`).
 - **`SCREAMING_SNAKE_CASE`**: Reserved for compile-time constants (`meta let`) and top-level immutable constants (`let`). Top-level mutable variables (`var`, `let mut`, `let ^mut`, and `var ^mut`) must use `snake_case`.
-- **Static Keys and Field Labels**: Static key binders (`K: keyof T`) and mapped-key binders (`[... as K]`) use `PascalCase`. Ordinary field labels use `snake_case`, optionally with one leading underscore. A mapped record may expose valid `PascalCase` constructor labels; construction and projection against that mapped schema use those generated labels verbatim. This does not permit uppercase run-time variable bindings.
+- **Static Keys and Field Labels**: Static coordinate parameters (`meta key |> Key<T>` or `meta key: str |> Key<T>`), const generic keys, and mapped comprehension patterns (`[coords(<T>) as (m, k)]`) use `snake_case`. Ordinary record field labels use `snake_case`, optionally with one leading underscore. A mapped record generated from sum variants exposes `PascalCase` variant labels verbatim.
 - **Wildcard and Leading Underscores**: A single underscore `_` is the wildcard discard pattern, not an identifier (`E0322`). An identifier with a leading underscore, such as `_snake_case`, follows the same binding and mutable-authority use requirements as other identifiers (`E0527`).
 
 ```ril
@@ -514,10 +516,10 @@ Declarations and imports share one namespace. Same-scope duplicates are `E0203`;
 
 ```ril
 -- PascalCase: Types, Constructors, Effects, and Generic Parameters
-type UserAccount = { id: i64 }         -- OK: type identifier
+type UserAccount = .{ id: i64 }         -- OK: type identifier
 type Result<T, E = str> { Ok(T), Err(E) } -- OK: generic parameters and constructors
 eff FileIo { read() -> str }           -- OK: effect identifier
-type HttpServerConfig = { port: i64 }  -- OK: title-cased acronym
+type HttpServerConfig = .{ port: i64 }  -- OK: title-cased acronym
 
 -- snake_case: Variables (local, param, top-level var / let mut), Functions, and Fields
 let user_count = 10                    -- OK: local variable identifier
@@ -537,12 +539,12 @@ let _ = user_count                     -- OK: wildcard discard
 fn on_event(ev: Event, _ctx: Context) -> () { handle(ev) } -- OK: '_ctx' is a parameter identifier
 
 -- Static Lexical Violations:
--- type user_doc = { id: i64 }         -- Error [E0101]: type identifier must be PascalCase, found 'user_doc'
+-- type user_doc = .{ id: i64 }         -- Error [E0101]: type identifier must be PascalCase, found 'user_doc'
 -- fn Calculate() -> () {}             -- Error [E0101]: function identifier must be snake_case, found 'Calculate'
 -- let UserCount = 10                  -- Error [E0101]: variable identifier must be snake_case, found 'UserCount'
 -- meta let max_size = 100             -- Error [E0101]: compile-time constant must be SCREAMING_SNAKE_CASE, found 'max_size'
 -- var ACTIVE_FLAG = true              -- Error [E0101]: top-level mutable variable must be snake_case, found 'ACTIVE_FLAG'
--- type HTTPServer = { port: i64 }     -- Error [E0102]: acronym in PascalCase must be title-cased, expected 'HttpServer', found 'HTTPServer'
+-- type HTTPServer = .{ port: i64 }     -- Error [E0102]: acronym in PascalCase must be title-cased, expected 'HttpServer', found 'HTTPServer'
 -- let user__name = "Alice"            -- Error [E0102]: consecutive underscores are prohibited, found 'user__name'
 -- let Some(USER_ID) = opt             -- Error [E0103]: pattern binding position cannot use uppercase identifier 'USER_ID'
 -- let _ = 10; println(_)              -- Error [E0322]: wildcard '_' cannot be evaluated as an expression
@@ -550,22 +552,21 @@ fn on_event(ev: Event, _ctx: Context) -> () { handle(ev) } -- OK: '_ctx' is a pa
 
 ### Keywords
 
-The following 32 keywords are reserved in all ordinary identifier and field-label positions:
+The following 30 keywords are reserved in all ordinary identifier and field-label positions:
 
 ```text
 as       eff      else     false    fn
-for      halt     if       is       keyof
-last     let      loop     match    meta
-modeof   mut      new      next     pub
-ref      resume   return   sub      true
-type     typeof   use      var      where
-while    with
+for      halt     if       is       last
+let      loop     match    meta     mut
+new      next     pub      ref      resume
+return   sub      true     type     typeof
+use      var      where    while    with
 ```
 
 ```ril
 -- let while = 1                     -- Error [E0113]: reserved keyword in a binding position
 -- let new = 1                       -- Error [E0113]: new is reserved for construction annotations/handoffs
--- type Record = { if: i64 }         -- Error [E0113]: reserved keyword as a field label
+-- type Record = .{ if: i64 }         -- Error [E0113]: reserved keyword as a field label
 let while_count = 1                   -- OK
 let capture = 1                       -- OK: capture is an ordinary identifier
 let closure = 1                       -- OK: closure is an ordinary identifier
@@ -580,10 +581,10 @@ let in = 1                            -- OK: ordinary identifier
 -- let never = 6                      -- Error [E0113]: intrinsic primitive type name
 -- let i64 = 0                        -- Error [E0113]: intrinsic primitive type name
 -- fn invalid(bool: i64) -> () {}     -- Error [E0113]: intrinsic primitive type name
--- type InvalidField = { str: bool }  -- Error [E0113]: intrinsic primitive type name
+-- type InvalidField = .{ str: bool }  -- Error [E0113]: intrinsic primitive type name
 assert(scoped + opaque + in == 6)
 type Bottom = never                   -- Intrinsic bottom type in type syntax
-type Config = {
+type Config = .{
     capture: bool, up: bool,
     scoped: bool, opaque: bool, in: bool,
     via: bool, infer: bool,
@@ -866,7 +867,7 @@ Live access preserves the selected object's identity. Default access exposes imm
 
 ```ril
 -- Shared object types: shared heap aliasing:
-type Node = { var val: i64 }
+type Node = .{ var val: i64 }
 let mut n1 = Node.{ val: 10 }
 let ref n2 = n1                       -- 'n2' aliases the exact same heap record as a live ref
 let copied = n2.val                    -- Independent value copied through a ref
@@ -881,28 +882,28 @@ assert(n2.val == 99 && copied == 10)
 
 - Record fields and tuple components use the [common binding and access mode axes](#binding-modes-and-storage-matrix). Omitted mode means default immutable access; an explicit `let` member modifier is not admitted.
 
-Records have structural named fields. `{}` is the closed empty record; closed records reject width subtyping. A final `..` permits extra fields in a structural constraint or direct record parameter of a Ril function/lambda definition. `..Fields` names or expands the remaining row; `Fields` is a user-chosen `PascalCase` name.
+Records have structural named fields. `.{}` is the closed empty record; closed records reject width subtyping. All record forms use the same `.{}` spelling: record types, record expressions, record patterns, record tests, mapped record types, record type patterns, and sum variant record payloads. A `TypeReference` may prefix a runtime record expression, pattern, or test (`User.{...}`) to select the declaration. Sum and effect declaration bodies keep their outer `{...}`. A final `..` permits extra fields in a structural constraint or direct record parameter of a Ril function/lambda definition. `..Fields` names or expands the remaining row; `Fields` is a user-chosen `PascalCase` name.
 
 ```ril
-type User = { id: i64, name: str }
+type User = .{ id: i64, name: str }
 let user = User.{ id: 1, name: "Ada" }
 -- let missing: User = .{ id: 1 }     -- Error [E0307]: required field 'name' is absent
 -- let unknown = user.age            -- Error [E0336]: this product has no field 'age'
--- type Repeated = { id: i64, id: i64 } -- Error [E0210]: field label declared twice
-type WithId<Fields> = { id: i64, ..Fields }
--- type Overlap = WithId<{ id: i64 }> -- Error [E0212]: row tail overlaps explicit 'id'
-type Extended = WithId<{ name: str }> -- OK: disjoint row labels
-type Extra = { name: str }
-type Combined = { id: i64, ..Extra }  -- Same closed type as Extended; no generics
+-- type Repeated = .{ id: i64, id: i64 } -- Error [E0210]: field label declared twice
+type WithId<Fields> = .{ id: i64, ..Fields }
+-- type Overlap = WithId<.{ id: i64 }> -- Error [E0212]: row tail overlaps explicit 'id'
+type Extended = WithId<.{ name: str }> -- OK: disjoint row labels
+type Extra = .{ name: str }
+type Combined = .{ id: i64, ..Extra }  -- Same closed type as Extended; no generics
 -- type BadTail = WithId<i64>        -- Error [E0306]: a row tail must be a record type
 ```
 
 ```ril
-fn get_id(item: { id: i64, .. }) -> i64 { item.id } -- Implicit anonymous row parameter
-fn sum_ids(a: { id: i64, .. }, b: { id: i64, .. }) -> i64 { a.id + b.id }
-fn keep<T: { id: i64, .. }>(item: T) -> T { item }  -- T preserves the entire record
-fn keep_record<T: { .. }>(item: T) -> T { item }    -- Any record, including {}
-fn add_id<T: { ..Rest }>(item: T) -> { id: i64, ..Rest } { .{ id: 1, ..item } }
+fn get_id(item: .{ id: i64, .. }) -> i64 { item.id } -- Implicit anonymous row parameter
+fn sum_ids(a: .{ id: i64, .. }, b: .{ id: i64, .. }) -> i64 { a.id + b.id }
+fn keep<T: .{ id: i64, .. }>(item: T) -> T { item }  -- T preserves the entire record
+fn keep_record<T: .{ .. }>(item: T) -> T { item }    -- Any record, including .{}
+fn add_id<T: .{ ..Rest }>(item: T) -> .{ id: i64, ..Rest } { .{ id: 1, ..item } }
 
 assert(get_id(.{ id: 1, name: "Ada" }) == 1)
 assert(sum_ids(.{ id: 1, name: "Ada" }, .{ id: 2, active: true }) == 3)
@@ -912,11 +913,11 @@ assert(add_id(.{ name: "Ada" }).name == "Ada") -- Constraint binds Rest for the 
 let empty = keep_record(.{})
 -- keep_record(1)                    -- Error [E0301]: i64 is not a record
 
--- fn unbound(item: { ..Missing }) -> () {} -- Error [E0204]: no binding for Missing
--- type Anything = { .. }            -- Error [E0306]: anonymous row outside an admitted position
--- let erased: { .. } = .{ id: 1 }   -- Error [E0306]: storage needs a determined type
--- fn erased() -> { .. } { .{} }     -- Error [E0306]: an anonymous result row has no binder
--- type Both<Fields> = { ..Fields, .. } -- Error [E0120]: at most one final row tail
+-- fn unbound(item: .{ ..Missing }) -> () {} -- Error [E0204]: no binding for Missing
+-- type Anything = .{ .. }            -- Error [E0306]: anonymous row outside an admitted position
+-- let erased: .{ .. } = .{ id: 1 }   -- Error [E0306]: storage needs a determined type
+-- fn erased() -> .{ .. } { .{} }     -- Error [E0306]: an anonymous result row has no binder
+-- type Both<Fields> = .{ ..Fields, .. } -- Error [E0120]: at most one final row tail
 ```
 
 Each anonymous input tail binds an independent implicit universally quantified row parameter, inferred at calls; it occupies no explicit generic-argument position. A structural constraint introduces an otherwise unbound tail name for its enclosing generic declaration; elsewhere named tails must already resolve (`E0204`). Reusing a bound name relates the same remaining fields and member modes. A tail must denote a record type; anonymous tails outside constraints, definition input records and type patterns are `E0306`. Checking preserves the complete actual schema, provenance and access obligations; anonymous tails introduce no erased open-record storage type.
@@ -928,7 +929,7 @@ Use `r.field` or a statically known `r.(key)`. Types use the corresponding `T.fi
 Named tails preserve row relationships across inputs and results. Pattern destructuring with `..rest` extracts a concrete, statically typed sub-record containing the remaining known fields; bare `..` ignores them.
 
 ```ebnf
-RecordType       ::= "{" [ RecordFieldList ] "}"
+RecordType       ::= ".{" [ RecordFieldList ] "}"
 MemberMode       ::= [ "var" ] [ "mut" | "^mut" | "ref" ]
 DeclaredMemberMode ::= MemberMode | [ "var" ] "via"
 RecordField      ::= [ DeclaredMemberMode ] FieldLabel ":" TypeExpression
@@ -940,8 +941,8 @@ FieldLabel       ::= ValueName | PascalCase
 ```
 
 ```ril
-type Cell = { var count: i64 }
-type State = {
+type Cell = .{ var count: i64 }
+type State = .{
     id: i64,                         -- Implicit let: fixed, deeply immutable
     var title: str,                  -- Replaceable immutable value
     mut items: []i64,                -- Fixed writable array holding immutable scalar elements
@@ -969,11 +970,11 @@ assert(state.source.count == 1 && state.cursor.count == 2)
 ```
 
 ```ril
-type Counter = { var count: i64 }
+type Counter = .{ var count: i64 }
 let immutable = Counter.{ count: 0 }
 let repeated = (mut immutable, mut immutable) -- OK: outer let suppresses member access modes
 -- let mut bad = repeated.0                  -- Error [E0520]: no writer was created
--- type Bad = { ref count: i64 }           -- Error [E0402]: invalid even under outer let
+-- type Bad = .{ ref count: i64 }           -- Error [E0402]: invalid even under outer let
 ```
 
 | Member-specific rule | Requirement |
@@ -983,7 +984,7 @@ let repeated = (mut immutable, mut immutable) -- OK: outer let suppresses member
 | Immutable/writable aliases | A live object cannot supply immutable reception (`E0535`) |
 
 ```ril
-type User = { id: i64, name: str }
+type User = .{ id: i64, name: str }
 let u: User = .{ id: 1, name: "Alice" } -- OK: exact closed record match
 
 -- Closed record rejects unexpected fields (E0302):
@@ -999,18 +1000,18 @@ type IdType = User.id                  -- OK: direct static field type extractio
 -- type BadIndex = User["id"]          -- Error [E0324]: record types do not support bracket indexing, use User.id
 
 -- Named row tail polymorphism (generic type preservation):
-fn with_timestamp<Fields>(r: { ..Fields }) -> { timestamp: i64, ..Fields } {
+fn with_timestamp<Fields>(r: .{ ..Fields }) -> .{ timestamp: i64, ..Fields } {
     .{ timestamp: 1600000000, ..r }
 }
 let stamped = with_timestamp(.{ id: 1, tag: "audit" })
 assert(stamped.tag == "audit" && stamped.timestamp == 1600000000)
 
 -- Type-precise rest destructuring:
-type Account = { id: i64, username: str, email: str, role: str }
+type Account = .{ id: i64, username: str, email: str, role: str }
 let acc: Account = .{ id: 42, username: "admin", email: "adm@ril.org", role: "root" }
 
 let .{ id, ..rest } = acc
--- 'rest' has static inferred type: { username: str, email: str, role: str }
+-- 'rest' has static inferred type: .{ username: str, email: str, role: str }
 assert(rest.username == "admin")
 assert(rest.email == "adm@ril.org")
 assert(rest.role == "root")
@@ -1114,14 +1115,14 @@ assert(len(ref full) == 9_223_372_036_854_775_807)
 
 ### Sum Types and GADTs
 
-Sum types represent tagged disjoint unions. Constructor equations allow generalized algebraic data types (GADTs).
+Sum types represent tagged disjoint unions. Constructor equations allow generalized algebraic data types (GADTs). A present variant payload is always parenthesized; a record payload is the single unnamed payload `(.{...})`. The sum declaration's own `{...}` delimits its variant list.
 
 ```ebnf
 SumTypeDecl     ::= [ "pub" ] "type" PascalCase [ GenericParams ] [ WhereClause ]
                     "{" VariantDeclList "}"
 VariantDeclList ::= VariantDecl { "," VariantDecl } [ "," ]
 VariantDecl     ::= PascalCase [ GenericParams ] [ VariantPayload ] [ "->" TypeExpression ]
-VariantPayload  ::= "(" [ VariantFields ] ")" | "{" [ RecordFieldList ] "}"
+VariantPayload  ::= "(" [ VariantFields ] ")"
 VariantFields   ::= VariantField { "," VariantField } [ "," ]
 VariantField    ::= [ DeclaredMemberMode ] [ FieldLabel ":" ] TypeExpression
 ```
@@ -1278,7 +1279,7 @@ let _ = m                              -- OK: explicit wildcard discard
 type UserId(i64)
 type AccountId(i64)
 type Coord(i64, i64)                   -- Equivalent to Coord((i64, i64))
-type Point2D({ x: f64, y: f64 })       -- Nominal wrapper over structural record
+type Point2D(.{ x: f64, y: f64 })       -- Nominal wrapper over structural record
 
 let uid = UserId(1001)
 let aid = AccountId(1001)
@@ -1289,7 +1290,7 @@ let pt = Point2D(.{ x: 10.0, y: 20.0 })
 -- uid == aid                          -- Error [E0305]: mismatched nominal types 'UserId' and 'AccountId'
 let raw_id: i64 = inner(uid)           -- OK: unwrap nominal wrapper via prelude 'inner()' (1001)
 let raw_coord: (i64, i64) = inner(c)   -- OK: unwrap nominal wrapper to underlying tuple (10, 20)
-let raw_pt: { x: f64, y: f64 } = inner(pt) -- OK: unwrap underlying record via 'inner()'
+let raw_pt: .{ x: f64, y: f64 } = inner(pt) -- OK: unwrap underlying record via 'inner()'
 let UserId(unwrapped_id) = uid         -- OK: pattern-matching unwrap
 let Point2D(.{ x, y }) = pt            -- OK: structural record pattern unwrap
 let Coord(cx, cy) = c                  -- OK: positional tuple pattern unwrap
@@ -1300,7 +1301,7 @@ let make_user_id: fn(i64) -> UserId = UserId -- OK: constructor function value
 ### Deep Immutability
 
 ```ril
-type Cell = { var count: i64 }
+type Cell = .{ var count: i64 }
 let mut source = Cell.{ count: 1 }
 let snapshot = clone(ref source)
 let mut copy = clone(ref source)
@@ -1324,7 +1325,7 @@ Default immutable reception follows the [common mode tables](#binding-modes-and-
 Writable reception of a clone activates declared writable members. Each writable occurrence of an immutable constituent gets separate storage. This materialization must be finite (`E0530`). Copied live objects retain their internal alias and cycle relationships under the ordinary writable reception checks. A `new` return preserves the construction and reception facts.
 
 ```ril
-type Cell = { var count: i64 }
+type Cell = .{ var count: i64 }
 fn read(cell: Cell) -> i64 { cell.count }
 fn read_live(ref cell: Cell) -> i64 { cell.count }
 fn snapshot(ref cell: Cell) -> Cell {
@@ -1348,8 +1349,8 @@ Ascription grants no authority and cannot turn resources into ordinary data. Roo
 ### Type Identity and Subtyping
 
 ```ril
-type Animal = { name: str }
-type Dog = { name: str, breed: str }
+type Animal = .{ name: str }
+type Dog = .{ name: str, breed: str }
 type Getter<T> = fn() -> T
 fn make_dog() -> Dog { .{ name: "Fido", breed: "Collie" } }
 let get_dog: Getter<Dog> = make_dog       -- OK
@@ -1374,7 +1375,7 @@ Member modes participate in structural schemas. Outer immutable reception suppre
 
 ```ril
 fn identity<T>(ref value: T) -> ref(value) T { value }
-type Cell = { var count: i64 }
+type Cell = .{ var count: i64 }
 let mut source = Cell.{ count: 0 }
 let ref packet = .{ ref item: identity(ref source) }
 let ref observed = identity(ref packet.item)
@@ -1396,7 +1397,7 @@ assert(observed.count == 1)
 For `hidden`, connect `source`'s writer through the `ref` argument, `ref` member, return, and prohibited immutable reception. For `stolen`, identify the return's `ref` mode.
 
 ```ril
-type Cell = { var count: i64 }
+type Cell = .{ var count: i64 }
 fn copy_cell(value: Cell) -> new Cell { clone(value) }
 fn swap(mut a: Cell, mut b: Cell) &mut -> () {
     let saved = a.count
@@ -1438,7 +1439,7 @@ cells[0].count += 1
 The two components returned by `permute` may each originate in either argument, but are disjoint whenever the two actual inputs are disjoint. That common relation survives the branch and return. Distinct parameter names alone establish no such relation. Unrelated run-time selections retain possible overlap unless an applicable rule proves otherwise.
 
 ```ril
-type Cell = { var count: i64 }
+type Cell = .{ var count: i64 }
 let mut source = Cell.{ count: 0 }
 source.count += 1
 -- let frozen = source               -- Error [E0535]: source's scope has not ended, even without later use
@@ -1462,7 +1463,7 @@ fn append<T>(mut xs: [via]T, via value: T) &mut -> () {
 }
 fn preserve<T>(via value: T) -> infer T { value }
 
-type Packet<T> = { via item: T }
+type Packet<T> = .{ via item: T }
 fn packet<T>(via value: T) -> infer Packet<T> {
     Packet.{ item: value }
 }
@@ -1490,7 +1491,7 @@ Data types, slot replacement, source authority, and effect-row openness follow t
 `-> infer T` requires an ordinary Ril function definition or callable type with at least one explicit `via` in its parameter list (`E0412`). The `via` may modify a parameter directly, declare a member, array element, or map value mode in its type, or appear in an input callable's own parameter list. Check each callable signature independently. A `via` found only through a referenced type declaration, in an enclosing signature, in a result, or in a body cannot qualify the signature. This restriction governs the written modifier. Mandatory contract inference and anonymous annotation omission follow their usual rules.
 
 ```ril
-type Cell = { var count: i64 }
+type Cell = .{ var count: i64 }
 fn make_cell() -> new Cell { Cell.{ count: 0 } }
 let via = 1                                      -- OK: ordinary identifier
 let infer = 2                                    -- OK: ordinary identifier
@@ -1500,29 +1501,28 @@ assert(via + infer == 3)
 -- type BadReader = fn(ref Cell) -> infer Cell          -- Error [E0412]: no via input
 -- fn bad_result(ref value: Cell) -> via Cell { value } -- Error [E0412]: via is an input/member/receiver modifier
 -- fn bad_input(infer value: Cell) -> i64 { value.count } -- Error [E0412]: infer is a result modifier
--- type BadMember = { infer value: Cell }         -- Error [E0412]
+-- type BadMember = .{ infer value: Cell }         -- Error [E0412]
 -- let infer received = make_cell()               -- Error [E0412]
 ```
 
 #### Member Modes and Implicit Schema Parameters
 
 ```ril
-type Fixed<T> = { via item: T }       -- Fixed slot; infer access
-type Slot<T> = { var via item: T }    -- Replaceable slot; infer access
+type Fixed<T> = .{ via item: T }       -- Fixed slot; infer access
+type Slot<T> = .{ var via item: T }    -- Replaceable slot; infer access
 type Items<T> = [via]T
-type Node<T> { End, Link { via value: T, ref following: Node<T> } }
+type Node<T> { End, Link(.{ via value: T, ref following: Node<T> }) }
 type Alias<T> = Fixed<T>
 
-type Fields = { var tag: i64, mut items: []i64 }
-meta let TAG_MODE = modeof Fields.tag       -- MemberMode::Var
-meta let ITEMS_MODE = modeof Fields.items   -- MemberMode::Mut
+type Fields = .{ var tag: i64, mut items: []i64 }
+meta let FIELD_COORDS = coords(<Fields>)   -- [(MemberMode::Var, "tag"), (MemberMode::Mut, "items")]
 ```
 
-`MemberMode` pairs slot replacement (replaceable `var` or a fixed slot) with access (default, `ref`, `mut`, `^mut`). `modeof` returns both components. Access modes have distinct source and retention rules; slot replacement is explicit.
+`MemberMode` pairs slot replacement (replaceable `var` or a fixed slot) with access (default, `ref`, `mut`, `^mut`). Introspection via `coords(<T>)` yields both components alongside member coordinate keys. Access modes have distinct source and retention rules; slot replacement is explicit.
 
 ```ril
-type Cell = { var count: i64 }
-type Holder = { mut item: Cell }
+type Cell = .{ var count: i64 }
+type Holder = .{ mut item: Cell }
 let mut source = Cell.{ count: 0 }
 let mut holder = Holder.{ item: ^mut source }
 holder.item.count += 1                         -- OK: acknowledged shared constituent
@@ -1558,8 +1558,8 @@ Temporary `mut` cannot become persistent writable storage. `via` cannot invent o
 Template checking may collect constraints from initialization and later assignments before selecting concrete instances; these rules do not prescribe a solver order or require every mode to be admitted. Fixed declared schemas still permit the specified reductions of effective access through observation and immutable reception.
 
 ```ril
-type Cell = { var count: i64 }
-type Slot<T> = { var via item: T }
+type Cell = .{ var count: i64 }
+type Slot<T> = .{ var via item: T }
 
 let mut source = Cell.{ count: 0 }
 let mut other = Cell.{ count: 10 }
@@ -1585,13 +1585,13 @@ Implicit member parameters supplied by a function's input types may be bound sch
 #### Inference Domains and Contract Completion
 
 ```ril
-type Cell = { var count: i64 }
+type Cell = .{ var count: i64 }
 fn bump(mut x: Cell) &mut -> () { x.count += 1 }
 
 -- fn redundant(via x: Cell) &mut -> () { bump(x) }
 -- Error [E0550]: exact forwarding fixes the parameter to mut
 
--- type Redundant = { via count: i64 }
+-- type Redundant = .{ via count: i64 }
 -- Error [E0550]: a value member has only ordinary immutable access
 
 -- fn redundant_array(mut xs: [via]i64, n: i64) &mut -> () {
@@ -1618,7 +1618,7 @@ For signatures with explicit `via` inputs, `-> infer T` infers result access mod
 #### Preserving Reception and Forwarding
 
 ```ril
-type Cell = { var count: i64 }
+type Cell = .{ var count: i64 }
 fn preserve<T>(via x: T) -> infer T { x }
 
 let mut source = Cell.{ count: 0 }
@@ -1665,7 +1665,7 @@ Every transfer evaluates once and ends its old construction path during operand 
 #### Lexical Mode Templates and Closures
 
 ```ril
-type Pair<T> = { via first: T, via second: T }
+type Pair<T> = .{ via first: T, via second: T }
 fn make<T>(via x: T) &capture
     -> infer (fn(via T) @& -> infer Pair<T>) {
     \via y: T -> Pair.{ first: x, second: y }
@@ -1702,7 +1702,7 @@ Dynamic targets permit calls valid for every target, with common guarantees and 
 
 ```ril
 -- Published compatibility baseline:
-type Cell = { var count: i64 }
+type Cell = .{ var count: i64 }
 fn read(via x: Cell) -> i64 { x.count }
 
 -- Replacement checked against that baseline:
@@ -1717,8 +1717,8 @@ Compatibility is checked against the normalized declared/emitted interface basel
 ### Functional Updates via Derive
 
 ```ril
-type Cell = { var count: i64 }
-type Pair = { left: Cell, right: Cell }
+type Cell = .{ var count: i64 }
+type Pair = .{ left: Cell, right: Cell }
 let cell = Cell.{ count: 1 }
 let base = Pair.{ left: cell, right: cell }
 let updated = base |> derive \mut draft -> {
@@ -1755,7 +1755,7 @@ assert(external.count == 10 && inserted.left.count == 11)
 | Finiteness | Propagate the actual recipe's [Div effect](#termination-and-halt-contracts) and budget-coverage requirements, including cleanup and recovery; derive does not itself remove Div |
 
 ```ril
-fn update_title<T: { title: str, .. }>(item: T, new_title: str) -> T {
+fn update_title<T: .{ title: str, .. }>(item: T, new_title: str) -> T {
     item |> derive \mut draft -> { draft.title = new_title }
 }
 let item = .{ title: "old", published: true }
@@ -1764,7 +1764,7 @@ assert(item.title == "old" && revised.title == "new" && revised.published)
 ```
 
 ```ril
-type Board = { title: str, items: []i64, tags: [str: i64] }
+type Board = .{ title: str, items: []i64, tags: [str: i64] }
 let base = Board.{ title: "draft", items: [1, 2], tags: ["a": 1] }
 let coords = (10, "Ada")
 
@@ -1812,27 +1812,25 @@ assert(changed.count == 2 && changed.text == "cd")
 ### Generic Parameters, Defaults, and Value Sorts
 
 ```ril
-fn log_id<T: { id: i64, .. }>(item: T) -> i64 { item.id }
+fn log_id<T: .{ id: i64, .. }>(item: T) -> i64 { item.id }
 ```
 
-Generics admit type, const-value, member-mode, and [static-key](#static-key-parameters-and-computed-value-projection) parameters. They apply to data, wrapper, sum, and callable declarations. Access-mode inference supplies implicit static access parameters. `MemberMode` denotes both slot and access components; generic member-mode arguments use concrete modes or static mode expressions.
+Generics admit type, const-value, and member-mode parameters. Const generic parameters support pipeline constraints (e.g. `key: str |> Key<T>`). They apply to data, wrapper, sum, and callable declarations. Access-mode inference supplies implicit static access parameters. `MemberMode` denotes both slot and access components; generic member-mode arguments use concrete modes or static mode expressions.
 
 ```ebnf
 GenericParams         ::= "<" GenericParamDecl { "," GenericParamDecl } [ "," ] ">"
-GenericParamDecl      ::= TypeParamDecl | ConstParamDecl | StaticKeyParamDecl | ModeParamDecl
+GenericParamDecl      ::= TypeParamDecl | ConstParamDecl | ModeParamDecl
 TypeParamDecl         ::= PascalCase [ TypeConstraint ] [ "=" TypeExpression ]
 TypeConstraint        ::= [ ":" TypeSort ] { "|>" PipelineConstraint }
 TypeSort              ::= TypeSetSort | "Type" | KindSignature | RecordConstraint
 TypeSetSort           ::= TypeReference "|" TypeReference { "|" TypeReference }
 PipelineConstraint    ::= QualifiedName [ GenericArgs ]
-ConstParamDecl        ::= ValueName ":" ValueType [ "=" Expression ]
+ConstParamDecl        ::= ValueName ":" ValueType { "|>" PipelineConstraint } [ "=" Expression ]
 KindSignature         ::= "Type" "->" ( "Type" | KindSignature )
-RecordConstraint      ::= "{" [ RecordConstraintField { "," RecordConstraintField } "," ] RecordTail "}"
+RecordConstraint      ::= ".{" [ RecordConstraintField { "," RecordConstraintField } "," ] RecordTail "}"
 RecordConstraintField ::= [ MemberMode ] FieldLabel ":" TypeExpression
-KeyofConstraint       ::= "keyof" TypeExpression
 GenericArgs           ::= "<" GenericArg { "," GenericArg } [ "," ] ">"
 GenericArg            ::= TypeExpression | Expression
-StaticKeyParamDecl    ::= PascalCase ":" KeyofConstraint [ "=" Expression ]
 ModeParamDecl         ::= PascalCase ":" ModeSortReference [ "=" ( MemberMode | QualifiedName ) ]
 ModeSortReference     ::= [ "ril/reflect::" ] "MemberMode"
 ValueType             ::= TypeExpression
@@ -1846,12 +1844,13 @@ ValueType             ::= TypeExpression
   $$\text{Valid}(T_{arg}) \iff T_{arg} \not\equiv \text{never} \quad \wedge \quad \text{Guard}\langle T_{arg} \rangle \equiv T_{arg}$$
   The bottom type `never` is statically rejected before guard evaluation, preventing vacuous satisfaction. If $\text{Guard}\langle T_{arg} \rangle$ does not produce definitional identity with $T_{arg}$, the argument is rejected under `E0301`. Multiple guards pipe from left to right: `T |> Guard1 |> Guard2` $\equiv \text{Guard2}\langle \text{Guard1}\langle T \rangle \rangle$.
 - **Constraint Composition**. A structural row constraint and a pipeline guard both apply to the argument type. The `AuditGuard` example below requires an audit field in addition to the value field used by the function.
-- **Static Value Sorts**: Const parameters admit scalar values, atomic type tokens, and finite immutable aggregates without resource or callable authority. `token: Type` is a static value parameter, distinct from a type parameter `T: Type`. Admission of static-only token values never permits their run-time materialization.
-- **Const Generic Evaluation & Purity Invariant (`E0814`, `E0323`)**: Const generic arguments evaluate at compile time within the pure static domain (no outward effects except implicit Div and no outward state/provenance obligations). `halt` is optional; evaluation remains subject to the compiler budget. Non-constant runtime expressions passed to const parameters trigger `E0814`. Arguments failing sort constraints trigger `E0323`.
-- **No Untagged Literal or Storage Union Types (`E0318`)**: Concrete values (strings, integers, booleans) and untagged value unions (`i64 | str`) cannot serve as storage, variable, or binding types (`E0318`). Tagged alternatives are declared with sum types (`type HttpMethod { Get, Post }`). Concrete values may be supplied as compile-time arguments to const parameters (`Buffer<u8, 1024>`, `Matrix<f64, 4>`). Finite type sets (`T: i64 | f64`) are permitted exclusively as static domain constraints on generic parameters (`TypeSetSort`), which are monomorphized to single rigid types.
+- **Static Value Sorts**: Const parameters admit scalar values, atomic type tokens, and finite immutable aggregates without resource or callable authority. `tok: Type<T>` is a static value parameter, distinct from a type parameter `T: Type`. A value argument is admitted only for a parameter declared with one of these value sorts. Admission of static-only token values never permits their run-time materialization.
+- **Const Generic Evaluation & Purity Invariant (`E0814`, `E0323`)**: Const generic arguments evaluate at compile time within the pure static domain (no outward effects except implicit Div and no outward state/provenance obligations). `halt` is optional; evaluation remains subject to the compiler budget. Non-constant runtime expressions passed to const parameters trigger `E0814`. Arguments failing sort constraints or pipeline constraints (e.g. `key: str |> Key<T>`) trigger `E0323`.
+- **Strict Generic Argument Sorts (`E0306`, `E0323`, `E0814`)**: Every generic argument is checked against the formal parameter's declared sort. A type parameter admits a type expression; a value parameter admits a static value of its declared sort. A value is never converted to its type; write `typeof e` to supply the type of a value. A value supplied to a type parameter is `E0306`; a value of the wrong sort supplied to a declared value parameter is `E0323`; a non-static value is `E0814`. Adaptation is one-way: a type expression may supply a `Type<T>`-sorted value parameter as a token.
+- **No Untagged Literal or Storage Union Types (`E0318`)**: Concrete values (strings, integers, booleans) and untagged value unions (`i64 | str`) cannot serve as storage, variable, or binding types (`E0318`). Tagged alternatives are declared with sum types (`type HttpMethod { Get, Post }`). Concrete values may be supplied as compile-time arguments only to parameters declared with a const/value sort (`Buffer<u8, 1024>`, `Matrix<f64, 4>`). Finite type sets (`T: i64 | f64`) are permitted exclusively as static domain constraints on generic parameters (`TypeSetSort`), which are monomorphized to single rigid types.
 - **Function Generic Default Prohibition (`E0317`)**: Function generic parameters cannot declare defaults (`fn f<T = i64>` is rejected); function types are inferred bidirectionally at call sites.
 
-Generic arguments follow the declaration's parameter category: type syntax for a type parameter, a static token/value expression for a value parameter. Passing a quoted type to a type parameter is `E0306`. `Type<T>` is the exact static metatype for target `T`; type quotes require a type, and const parameters accept values such as `42` in `Buffer<u8, 42>`.
+Generic arguments follow the declaration's parameter category: type syntax for a type parameter, a static token/value expression for a value parameter. Passing a quoted type or an ordinary value to a type parameter is `E0306`; write `typeof e` when the type of a value is intended. `Type<T>` is the exact static metatype for target `T`; type quotes require a type, and declared value parameters accept values such as `42` in `Buffer<u8, 42>`.
 
 ```ril
 -- Closed Type Set Constraint:
@@ -1871,10 +1870,10 @@ assert(multiply(3, 4) == 12)
 
 -- Composed Structural and Pipeline Constraint:
 type AuditGuard = \T -> match <T> {
-    <{ audit_id: i64, .. }> -> <T>,
+    <.{ audit_id: i64, .. }> -> <T>,
     _ -> <never>,
 }
-fn get_val<T: { val: i64, .. } |> AuditGuard>(item: T) -> i64 { item.val }
+fn get_val<T: .{ val: i64, .. } |> AuditGuard>(item: T) -> i64 { item.val }
 assert(get_val(.{ val: 42, audit_id: 1 }) == 42)
 -- get_val(.{ val: 42 })             -- Error [E0301]: missing audit_id required by AuditGuard
 
@@ -1888,9 +1887,15 @@ type FirstOrder = Choose<["a": 1, "b": 2]>  -- i64
 type OtherOrder = Choose<["b": 2, "a": 1]>  -- str
 
 -- Member Mode Sort Constraint:
-halt type ApplyMode = \T, M: MemberMode -> <{ M [keyof T as K]: T.(K) }>
+halt type ApplyMode = \T, M: MemberMode -> <.{ M [coords(<T>) as (_, k)]: T.(k) }>
 type Slots<T> = ApplyMode<T, var>              -- OK: keyword literal lifting to MemberMode::Var
 -- type BadMode<T> = ApplyMode<T, i64>         -- Error [E0356]: expected MemberMode sort, found 'i64'
+
+-- Strict value/type argument separation:
+type Id = \T -> <T>
+type IntType = Id<typeof 1024>        -- i64: explicit value-to-type conversion
+type ByteType = Id<typeof 255u8>      -- u8
+-- type BadTypeArg = Id<1024>         -- Error [E0306]: a value cannot supply a type parameter
 ```
 
 Static argument equivalence determines type and effect instantiation identity. It is distinct from run-time `==`. Arguments must first have the same admitted sort.
@@ -1899,7 +1904,7 @@ Static argument equivalence determines type and effect instantiation identity. I
 | :--- | :--- |
 | Booleans, integers, strings, bytes, unit | Exact value; strings are exact scalar sequences |
 | Floating values | Canonical IEEE bit representation; signed zeros differ, canonical NaNs agree |
-| Type tokens, after adaptation to the formal value sort | Represented target types are definitionally equal, preserving nominal/opaque identity and full schemas; not token address, variable name, or display spelling |
+| Type tokens, after adaptation to the formal value sort | Represented target types are definitionally equal, preserving nominal/opaque identity and full schemas; not token address, variable name, or display spelling. Adaptation is one-way: a type expression may supply a `Type`-sorted value parameter |
 | Records | Same labels and recursively equivalent fields; written field order is irrelevant |
 | Arrays / tuples | Same length and recursively equivalent positional values |
 | Maps / sets | Same insertion-ordered entries/members, recursively equivalent |
@@ -1932,7 +1937,7 @@ assert(r1 is Ok(_))
 assert(r2 is Err(_))
 
 -- Nominal wrapper with default const generic and type parameter:
-pub type Buffer<T = u8, cap: i64 = 1024>({
+pub type Buffer<T = u8, cap: i64 = 1024>(.{
     data: []T,
     len: i64,
 })
@@ -1940,27 +1945,29 @@ pub type Buffer<T = u8, cap: i64 = 1024>({
 let b1: Buffer = Buffer.{ data: [], len: 0 }    -- OK: resolves to Buffer<u8, 1024>
 let b2: Buffer<u8, 2048> = Buffer.{ data: [], len: 0 } -- OK: explicit capacity override
 let b3: Buffer<i32> = Buffer.{ data: [], len: 0 } -- OK: resolves to Buffer<i32, 1024>
+-- type BadTypeArg = Buffer<u8, u8>   -- Error [E0323]: a type cannot supply const parameter 'cap'
+-- type BadTypeParam = Buffer<1024>   -- Error [E0306]: a value cannot supply type parameter 'T'
 
 -- Dependent default arguments (left-to-right scope):
-pub type Matrix<T, rows: i64, cols: i64 = rows> = {
+pub type Matrix<T, rows: i64, cols: i64 = rows> = .{
     data: []T,
 }
 
 let m_sq: Matrix<f64, 4> = .{ data: [] }        -- OK: square matrix, cols defaults to rows (4)
 let m_rect: Matrix<f64, 4, 2> = .{ data: [] }   -- OK: explicit rectangular override
 
-pub type Pair<First, Second = First> = {
+pub type Pair<First, Second = First> = .{
     first: First,
     second: Second,
 }
 let p1: Pair<i64> = .{ first: 1, second: 2 }    -- OK: Second defaults to First (i64)
 
 -- Rejection: Non-trailing default generic parameter (E0316):
--- type BadOrder<T = i64, U> = { a: T, b: U }
+-- type BadOrder<T = i64, U> = .{ a: T, b: U }
 -- Error [E0316]: generic parameter without default 'U' cannot follow generic parameter with default 'T'
 
 -- Rejection: Forward reference in default argument (E0320):
--- type BadForward<T = U, U = i64> = { a: T }
+-- type BadForward<T = U, U = i64> = .{ a: T }
 -- Error [E0320]: default argument for 'T' contains forward reference to parameter 'U'
 
 -- Rejection: Function generic parameter with default (E0317):
@@ -1987,8 +1994,8 @@ fn check_buf(runtime_size: i64) -> () {
 ```ril
 use ril/io::{IoError}
 eff Io { read_line() -> str, write_line(str) -> () }
-eff AsyncIo { Io, Fiber }
-type StateNode = { var count: i64, tag: str }
+eff AsyncIo { ..Io, ..Fiber }
+type StateNode = .{ var count: i64, tag: str }
 type ReaderFn = fn() @Io -> str
 type AsyncWorker<T> = fn(T) @AsyncIo -> ()
 type Mutator<T> = fn(mut target: T) &mut -> ()
@@ -2000,13 +2007,13 @@ type TaskStatus {
     Pending,
     Running(fn() @ -> ()),
     Mutating(fn(mut StateNode) &mut -> ()),
-    Suspended({ duration_ms: i64 }),
+    Suspended(.{ duration_ms: i64 }),
     Completed(i64),
 }
 let status: TaskStatus = Running(\-> Fiber::yield())
 assert(status is Running)
 
-type ValidChannel = {
+type ValidChannel = .{
     mut buffer: []u8,
     stream: fn() @& -> str,
     writer: fn(mut []u8) &mut -> (),
@@ -2050,9 +2057,9 @@ fn update_cache() &up(sub){mut app_cache} -> () { app_cache += 1 }
 -- type BadVariant { Running @Async } -- Error [E0332]: tag annotation
 -- type BadMutableVariant { Mutating &mut } -- Error [E0332]: state annotation on a tag
 -- type BadPayload { Suspended(i64) @Fiber } -- Error [E0332]: payload does not permit a suffix
--- type BadField = { value: str @Io } -- Error [E0333]
--- type BadMutableField = { buffer: []u8 &mut } -- Error [E0333]: field type is not a callable
--- type BadNamedField = { value: i64 &up(sub){mut app_cache} } -- Error [E0333]
+-- type BadField = .{ value: str @Io } -- Error [E0333]
+-- type BadMutableField = .{ buffer: []u8 &mut } -- Error [E0333]: field type is not a callable
+-- type BadNamedField = .{ value: i64 &up(sub){mut app_cache} } -- Error [E0333]
 -- type BadTuple = (str @Io, i64)     -- Error [E0333]
 -- type BadArray = []i64 @Async       -- Error [E0613]
 
@@ -2077,7 +2084,11 @@ TypeExpression   ::= PrimaryType
                    | "?" TypeExpression
                    | "typeof" Expression
                    | MappedRecordType | MappedTupleType
-PrimaryType      ::= PrimitiveType | TokenType | NominalRef | "(" TypeExpression ")"
+PrimaryType      ::= PrimitiveType
+                   | NominalRef
+                   | TokenType
+                   | "(" TypeExpression ")"
+                   | "<" Expression ">"
 NominalRef       ::= QualifiedName [ GenericArgs ]
 ```
 
@@ -2089,7 +2100,7 @@ NominalRef       ::= QualifiedName [ GenericArgs ]
 | Bare `@Eff` / `&State`, or open markers `@` / `&` / `@&`, as a data type | `E0330` / `E0331`; effects use `eff` declarations, state/provenance clauses and callable-row markers are not standalone values or data types |
 | Direct effect or state/provenance suffix on a variant | `E0332`, with or without a payload |
 | Direct effect or state/provenance suffix on a record field or tuple component | `E0333`; a callable constituent may carry its own suffix |
-| Effect or state/provenance constraint on a generic parameter | `E0334`; shape, kind, const, and static-key constraints remain allowed |
+| Effect or state/provenance constraint on a generic parameter | `E0334`; shape, kind, const, and const-generic pipeline constraints remain allowed |
 | Effect or state/provenance annotation on a type function | `E0335` |
 | Effect annotation on a value binding or non-callable array expression | `E0613` |
 
@@ -2156,7 +2167,7 @@ For an inferred mode family, retain use conditions for every admitted alternativ
 Aliases retain all source restrictions; immutable publication cannot revoke a surviving writer. Creating an explicit shared alias preserves the original binding; each invocation checks the resulting alias facts rather than assuming uniqueness from its `mut` spelling.
 
 ```ril
-type Cell = { var count: i64 }
+type Cell = .{ var count: i64 }
 fn maybe_bump(flag: bool, mut cell: Cell) &mut -> () {
     if flag { cell.count += 1 }
 }                                       -- OK: a possible write, not a write on every call
@@ -2180,7 +2191,7 @@ assert(seen.count == 1)
 ```
 
 ```ril
-type Document = { var title: str }
+type Document = .{ var title: str }
 let original = Document.{ title: "Original" }
 let mut draft = clone(original)
 let ^mut alias = draft                 -- Explicit writable sharing; no copy
@@ -2197,7 +2208,7 @@ assert(observed.title == "Final" && original.title == "Original")
 ### Construction-Qualified Locals and Mode-Preserving Reception
 
 ```ril
-type Cell = { var count: i64 }
+type Cell = .{ var count: i64 }
 fn transform(new x: Cell) -> new Cell { x }
 
 fn make(flag: bool) -> new Cell {
@@ -2273,7 +2284,7 @@ SharedMutDecl ::= ( "let" | "var" ) "^mut" ValueName
 Shared reception, parameter retention, and outward state/provenance obligations are distinct [use facts](#reachable-authority-use). Initializing a fresh root and writing it does not by itself justify a shared binding; conversely, a later genuine shared assignment can justify `var ^mut` even when its initializer was unshared.
 
 ```ril
-type Cell = { var count: i64 }
+type Cell = .{ var count: i64 }
 fn child(^mut x: Cell) -> ^mut(x) Cell { x }
 fn make() -> new Cell { Cell.{ count: 0 } }
 fn tagged(_tag: i64, ^mut x: Cell) -> ^mut(x) Cell { x }
@@ -2306,7 +2317,7 @@ let ref observed = parent
 Mixed patterns use an expression marker:
 
 ```ril
-type Cell = { var count: i64 }
+type Cell = .{ var count: i64 }
 let mut packet = .{ count: 7, mut item: Cell.{ count: 0 } }
 let .{ count, mut item } = ^mut packet -- Explicit expression marker for mixed destructuring
 item.count += 1
@@ -2323,7 +2334,7 @@ LetDecl ::= [ "pub" ] "let" Pattern [ ":" TypeExpression ] "=" Expression [ "els
 Plain `let` uses default access in the [common mode tables](#binding-modes-and-storage-matrix). The fixtures distinguish immutable publication from live observation.
 
 ```ril
-type Counter = { var count: i64 }
+type Counter = .{ var count: i64 }
 let x = 10
 -- x = 20                              -- Error [E0501]: cannot reassign immutable binding 'x'
 
@@ -2344,7 +2355,7 @@ let alias = items                     -- OK: multiple references to immutable da
 
 -- Pattern destructuring:
 let (a, b) = (1, 2)
-type Config = { capacity: i64, items: []i64 }
+type Config = .{ capacity: i64, items: []i64 }
 let cfg = Config.{ capacity: 64, items: [] }
 let .{ var capacity, items: _ } = cfg
 capacity += 1                         -- OK: independent scalar copy
@@ -2362,14 +2373,14 @@ LetMutDecl ::= "let" "mut" Pattern [ ":" TypeExpression ] "=" Expression [ "else
 Use the [common mode tables](#binding-modes-and-storage-matrix) for rebinding, value-type exclusions, and authority use. A pinned handle keeps its initial object as the stable root required by [persistent observation](#normative-rules-for-read-only-references).
 
 ```ril
-type Buffer = { mut items: []i64 }
+type Buffer = .{ mut items: []i64 }
 let mut buf = Buffer.{ items: [1, 2] }
 buf.items !> Array::push(3)            -- OK: in-place write to pinned buffer
 -- buf = Buffer.{ items: [] }          -- Error [E0502]: use 'var mut' for both reassignment and interior writes
 -- let mut count: i64 = 0              -- Error [E0402]: value type 'i64' has no interior mutability; use 'var'
 
 -- Pattern-level pinned mutable destructuring:
-type NodePair = { mut left: Buffer, mut right: Buffer }
+type NodePair = .{ mut left: Buffer, mut right: Buffer }
 let mut pair = NodePair.{ left: Buffer.{ items: [] }, right: Buffer.{ items: [] } }
 let .{ mut left, mut right } = ^mut pair
 left.items !> Array::push(10)          -- OK: pinned mutable handle
@@ -2405,7 +2416,7 @@ current = .{ count: 2 }
 assert(original.count == 1 && current.count == 2)
 
 -- 3. Reassignable mutable shared-object variable:
-type Buffer = { mut items: []i64 }
+type Buffer = .{ mut items: []i64 }
 var mut active_buf = Buffer.{ items: [1] }
 active_buf.items !> Array::push(2)     -- OK: in-place mutation
 active_buf = Buffer.{ items: [10, 20] } -- OK: handle reassignment permitted on 'var mut'
@@ -2426,7 +2437,7 @@ start_idx += 1; end_idx -= 1           -- OK: both variables reassignable
 ### Scoped Resource Bindings
 
 ```ril
-type Resource = { var name: str, var mut on_close: fn() & -> () }
+type Resource = .{ var name: str, var mut on_close: fn() & -> () }
 let mut events: []str = []
 {
     let scoped mut first = Resource.{
@@ -2470,9 +2481,9 @@ assert(events == ["new"])
 | Children | Finish before cleanup of resources they could access |
 
 ```ril
-type WrongCleanup = { on_close: i64 }
+type WrongCleanup = .{ on_close: i64 }
 -- let scoped bad = WrongCleanup.{ on_close: 0 } -- Error [E0541]: on_close is not fn() -> ()
-type Cleanup = { on_close: fn() -> () }
+type Cleanup = .{ on_close: fn() -> () }
 { let scoped good = Cleanup.{ on_close: \-> () } } -- OK: implicit cleanup uses the binding
 ```
 
@@ -2497,7 +2508,7 @@ VarRefDecl ::= "var" "ref" Pattern [ ":" TypeExpression ] "=" Expression [ "else
 ```
 
 ```ril
-type Cell = { var count: i64 }
+type Cell = .{ var count: i64 }
 let fallback = Cell.{ count: 0 }
 let ref fixed = fallback              -- Immutable reference is a valid target
 let immutable_alias = fixed            -- Proven immutable origin survives ref reception
@@ -2536,7 +2547,7 @@ Persistent observation follows the [common mode tables](#binding-modes-and-stora
 These origin rules also apply to `ref` members and shared-object pattern targets. Value-member reads copy their current value. [`ref` parameters](#parameter-modes-caller-obligations-and-defaults) instead use call-time observation rules.
 
 ```ril
-type Cell = { var count: i64 }
+type Cell = .{ var count: i64 }
 let mut cell1 = Cell.{ count: 1 }
 let mut cell2 = Cell.{ count: 0 }
 
@@ -2563,7 +2574,7 @@ assert(cursor.count == 2)
 -- cursor = clone(ref cell2)         -- Error [E0543]: independent new data
 
 -- Single evaluation and GC root preservation:
-type Parent = { var mut child: Cell }
+type Parent = .{ var mut child: Cell }
 let mut parent = Parent.{ child: Cell.{ count: 1 } }
 let ref child = parent.child
 parent.child = Cell.{ count: 9 }
@@ -2575,7 +2586,7 @@ let ref v = tasks[0]                   -- 'v' holds a read-only ref of the Pendi
 tasks[0] = TaskStatus::Finished(42)     -- Slot 0 is updated; 'v' safely keeps the original object
 
 -- Pattern-level ref destructuring:
-type NodePair = { mut left: Cell, mut right: Cell }
+type NodePair = .{ mut left: Cell, mut right: Cell }
 let mut pair = NodePair.{ left: Cell.{ count: 10 }, right: Cell.{ count: 20 } }
 pair.left.count += 1
 let ref .{ left: v_left, right: v_right } = pair
@@ -2596,11 +2607,11 @@ TypeReference    ::= QualifiedName [ GenericArgs ]
 ```ril
 -- Transparent Type Declarations:
 pub type AccountId = i64              -- Direct type alias, transparent across module boundaries
-type Point = { x: i64, y: i64 }        -- Local record type alias
+type Point = .{ x: i64, y: i64 }        -- Local record type alias
 
 -- Cyclic structural type alias rejection (E0313):
--- type BadCyclicA = { following: BadCyclicB }
--- type BadCyclicB = { prev: BadCyclicA } -- Error [E0313]: structural type aliases 'BadCyclicA' and 'BadCyclicB' form a cyclic dependency without nominal or sum indirection
+-- type BadCyclicA = .{ following: BadCyclicB }
+-- type BadCyclicB = .{ prev: BadCyclicA } -- Error [E0313]: structural type aliases 'BadCyclicA' and 'BadCyclicB' form a cyclic dependency without nominal or sum indirection
 
 -- Opaque Type Declarations:
 -- In file: auth/session.ril
@@ -2710,7 +2721,7 @@ pub type DomElement
 pub let WINDOW: DomWindow
 
 -- Transparent exchange data types:
-pub type QueryOptions = {
+pub type QueryOptions = .{
     timeout_ms: i64,
     all_matches: bool,
 }
@@ -2751,7 +2762,7 @@ where
 -- Error [E0908]: ordinary mutable data cannot cross a foreign boundary
 -- pub fn keep(^mut callback: fn() &up -> ()) &^mut -> ()
 -- Error [E0908]: default callback authority cannot be retained
--- pub fn hidden_callback() -> { action: fn() -> () }
+-- pub fn hidden_callback() -> .{ action: fn() -> () }
 -- Error [E0908]: ordinary returned data cannot conceal callable authority
 -- pub fn use_writer(callback: fn(mut []i64) &mut -> ()) -> ()
 -- Error [E0908]: a callback cannot receive a foreign ordinary writer under the default exchange rules
@@ -2783,9 +2794,9 @@ Expression      ::= Literal | QualifiedName [ GenericArgs ] | EffectOperationRef
                   | IfExpr | LoopExpr | WhileExpr | ForExpr | ControlTransfer
                   | ResumeExpr | AssignmentExpr | UnaryExpr | BinaryExpr | SharingExpr | ConstructionTransferExpr
                   | MemberExpr | IndexExpr | RangeExpr | IsExpr
-                  | Expression "?" | TypeQuoteExpr | "keyof" TypeExpression | ModeProjectionExpr
-ModeProjectionExpr ::= "modeof" TypeProjection
-UnaryExpr       ::= ( "-" | "!" | "~" ) Expression
+                  | Expression "?" | TypeQuoteExpr
+UnaryExpr       ::= ( "-" | "!" | "~" | "typeof" | "^mut" ) Expression
+TypeQuoteExpr   ::= "<" TypeExpression ">"
 ConstructionTransferExpr ::= "new" Expression
 BinaryExpr      ::= Expression BinaryOperator Expression
 BinaryOperator  ::= "*" | "/" | "%" | "/?" | "%?" | "*%" | "+" | "-" | "+%" | "-%"
@@ -2801,7 +2812,7 @@ IndexExpr       ::= Expression ( "[" | "?[" ) Expression "]"
 | Level | Operators | Associativity | Description |
 | :---: | :--- | :---: | :--- |
 | **1** | `.` `?.` `?[` `[]` `()` `::` postfix `?` | Left | Member access, safe navigation, indexing, invocation, postfix `?`; a type quote is a primary operand |
-| **2** | `-` `!` `~` `typeof` `keyof` `modeof` `^mut` | Unary Prefix | Arithmetic negation, logical NOT, bitwise NOT, static introspection (`typeof`, `keyof`, `modeof`), explicit local writable sharing |
+| **2** | `-` `!` `~` `typeof` `^mut` | Unary Prefix | Arithmetic negation, logical NOT, bitwise NOT, static introspection (`typeof`), explicit local writable sharing |
 | **3** | `*` `/` `%` `/?` `%?` `*%` | Left | Multiplication, division, remainder, safe division/remainder, wrapping mul |
 | **4** | `+` `-` `+%` `-%` | Left | Addition, subtraction, wrapping add/sub |
 | **5** | `<<` `>>` | Left | Bitwise shift left, bitwise shift right |
@@ -3013,7 +3024,7 @@ For finite cyclic graphs, equality is the greatest binary relation satisfying th
 | Static arguments | Use their separate [static equivalence rules](#generic-parameters-defaults-and-value-sorts) |
 
 ```ril
-type Ring({ var value: i64, var next: ?Ring })
+type Ring(.{ var value: i64, var next: ?Ring })
 -- Fixture inputs: left and right are deeply immutable Ring graphs.
 -- Every value is zero and every next is Some: left has one self-looping node;
 -- right has two nodes pointing to each other. Their allocation shapes differ.
@@ -3023,7 +3034,7 @@ assert(cyclic?[right] == Some("found")) -- OK: equality-consistent cyclic hashin
 ```
 
 ```ril
-type Key = { var id: i64 }
+type Key = .{ var id: i64 }
 let key = Key.{ id: 1 }
 let base = .{ key: key, table: [key: "old"] }
 let revised = base |> derive \mut draft -> { draft.key.id = 2 }
@@ -3203,7 +3214,7 @@ assert(slice[0] == 1)                 -- Independent value copy; slice is unaffe
 assert(len(ref source) == 4 && len(slice) == 2)
 
 -- 2. Shared object elements preserve object identity:
-type Cell = { var count: i64 }
+type Cell = .{ var count: i64 }
 let mut first = Cell.{ count: 1 }
 let mut second = Cell.{ count: 2 }
 let mut cells: [^mut]Cell = [^mut first, ^mut second]
@@ -3380,7 +3391,7 @@ fn incompatible_error(value: Result<i64, str>) -> Result<i64, i64> {
 -- let fallback = 42 ?? 0             -- Error [E0714]: no fallback operation for i64
 let record = .{ name: "Ada" }
 -- let safe_name = record?.name       -- Error [E0715]: '?.' requires an optional receiver
-let optional_record: ?{ name: str } = Some(record)
+let optional_record: ?.{ name: str } = Some(record)
 let safe_name = optional_record?.name -- OK
 ```
 
@@ -3404,6 +3415,8 @@ RecordExpr      ::= [ TypeReference ] ".{" [ RecordValueField { "," RecordValueF
 RecordValueField ::= [ MemberMode ] FieldLabel [ ":" Expression ] | ".." Expression
 ```
 
+An optional preceding `TypeReference` selects the constructed declaration (`Point.{...}`).
+
 Explicit fields override equally named fields from a value spread, independent of written position. Multiple explicit definitions are `E0210`; conflicting spreads without an override are `E0211`. Spreads preserve member schemas, references, and actual access modes. A typed constructor inherits omitted modes; an untyped explicit field defaults to immutable. Neither spreading nor a written mode upgrades a stored source.
 
 A declared `via` member resolves through the typed receiver's context and canonical reception rules. Untyped fields use their concrete declared modes. An explicit construction operand or its dependent template elaboration may initialize a compatible typed slot after its complete receiving proof, consuming the old path. A `new expression` outside a supported receiving position is `E0548`.
@@ -3418,10 +3431,10 @@ let mapping = ["id": 1, "id": 2]     -- OK: duplicate map keys retain the last v
 ```
 
 ```ril
-type Point = { x: i64, y: i64, z: i64 }
+type Point = .{ x: i64, y: i64, z: i64 }
 
 let p1 = Point.{ x: 1, y: 2, z: 3 }
-let p2 = Point.{ z: 10, ..p1 }         -- Record spread update: { x: 1, y: 2, z: 10 }
+let p2 = Point.{ z: 10, ..p1 }         -- Record spread update: .{ x: 1, y: 2, z: 10 }
 ```
 
 ### Assignments and Compound Assignments
@@ -3472,7 +3485,7 @@ flags <<= 1                            -- 0b10010
 flags >>= 2                            -- 0b00100
 
 -- Pinned handles (let mut) permit field assignment but reject handle reassignment:
-type Buffer = { var capacity: i64 }
+type Buffer = .{ var capacity: i64 }
 let mut pinned_buf = Buffer.{ capacity: 16 }
 pinned_buf.capacity = 32               -- OK: field assignment through pinned handle
 pinned_buf.("capacity") += 1           -- OK: same field access mode
@@ -4013,7 +4026,7 @@ fn each_read<T>(ref xs: [via]T, via action: fn(via T) @& -> ()) -> () {
 ```
 
 ```ril
-type Cell = { var count: i64 }
+type Cell = .{ var count: i64 }
 let mut src: [mut]Cell = [Cell.{ count: 1 }]
 let mut dst: [mut]Cell = []
 let mut pending = Array::pop(mut src)
@@ -4132,7 +4145,7 @@ NarrowingExpr      ::= NarrowingPredicate
     - **Loop Widening**: Unconverged loop variables widen to $T_{\text{root}}$ after $K = 3$ iterations.
 
 ```ril
-type Cell = { var value: ?i64 }
+type Cell = .{ var value: ?i64 }
 
 -- E0533: the callback's possible writes are not known to be independent.
 -- An explicitly open state/provenance row preserves actual obligations; a bare fn() -> () is closed and pure.
@@ -4167,7 +4180,7 @@ fn snapshot_before_callback(mut cell: Cell, action: fn() & -> ()) &mut -> () {
 
 ```ril
 -- In-place optional unwrapping (?T -> T):
-type User = { id: i64, name: str }
+type User = .{ id: i64, name: str }
 
 fn process_user(u: ?User) -> str {
     if u != None {
@@ -4203,7 +4216,7 @@ fn compute_area(g: Geometry) -> f64 {
 }
 
 -- Short-circuit conjunction with immutable path chaining (depth <= 3):
-type Account = { id: i64, details: ?{ balance: i64 } }
+type Account = .{ id: i64, details: ?.{ balance: i64 } }
 
 fn check_solvent(acc: Account) -> bool {
     (acc.details != None) && (acc.details.balance > 0) -- OK: acc.details narrowed in right operand
@@ -4282,7 +4295,7 @@ fn test_dead_write_phase_ordering() -> () {
 }
 
 -- Path depth bound (depth <= 3 tracked; depth > 3 requires local 'let' anchor):
-fn test_bounded_path_depth(root: { a: ?{ b: ?{ c: ?{ d: i64 } } } }) -> () {
+fn test_bounded_path_depth(root: .{ a: ?.{ b: ?.{ c: ?.{ d: i64 } } } }) -> () {
     if (root.a != None) && (root.a.b != None) && (root.a.b.c != None) {
         let c_node = root.a.b.c                -- OK: path depth 3 (root.a.b.c) tracked
         let d_val = c_node.d                   -- OK: access deeper fields through local anchor
@@ -4305,7 +4318,9 @@ FunctionDecl         ::= [ "pub" ] [ "halt" ] "fn" ValueName [ GenericParams ]
 SignatureWhereClause ::= "where" SignatureWhereItem { Separator SignatureWhereItem } [ Separator ]
 SignatureWhereItem   ::= LocalTypeDecl
 ParameterList        ::= Parameter { "," Parameter } [ "," ]
-Parameter            ::= [ ParameterMode ] ValueName [ ":" TypeExpression ] [ "=" Expression ]
+Parameter            ::= RegularParam | MetaParam
+RegularParam         ::= [ ParameterMode ] ValueName [ ":" TypeExpression ] [ "=" Expression ]
+MetaParam            ::= "meta" ValueName [ ":" ValueType ] { "|>" PipelineConstraint } [ "=" Expression ]
 
 Argument             ::= [ ValueName ":" ] ( MutableArgumentMode AssignTarget | "ref" Expression | "new" Expression | Expression )
 MutableArgumentMode  ::= "mut" | "^mut"
@@ -4322,7 +4337,7 @@ ParameterTypeList ::= ParameterTypeItem { "," ParameterTypeItem } [ "," ]
 ParameterTypeItem ::= [ ParameterMode ] [ ValueName ":" ] TypeExpression
 ```
 
-Leading `mut`/`^mut` arguments require assignable targets (`E0410` for `f(^mut clone(x))`); `ref` observes an expression. A parenthesized sharing expression cannot replace an ordinary argument-mode marker (`E0405`). Dependent lexical template operands elaborate their verified mode. [Fresh storage inputs](#homogeneous-storage-authority) receive construction authority before publication; plain unqualified parameters require immutable data. Constructors follow their product member and payload modes.
+Leading `mut`/`^mut` arguments require assignable targets (`E0410` for `f(^mut clone(x))`); `ref` observes an expression. A parenthesized sharing expression cannot replace an ordinary argument-mode marker (`E0405`). Dependent lexical template operands elaborate their verified mode. [Fresh storage inputs](#homogeneous-storage-authority) receive construction authority before publication; plain unqualified parameters require immutable data. Constructors follow their product member and payload modes. A `meta` parameter receives a compile-time static argument (`E0814`); parameter modes do not apply (`E0403`). Unspecialized `meta` callables are rejected as runtime `CallableType` values (`E0816`).
 
 ```ril
 type DeferredFactory = fn() -> fn() @Io -> i64 -- Io belongs to the returned callable
@@ -4381,11 +4396,11 @@ where
 -- Prohibited: Downward reference from signature to block where (E0705):
 -- fn bad_downward<T>(item: T) -> Wrapper
 -- where
---     type Wrapper = { state: InternalState } -- Error [E0705]: signature 'where' clause cannot reference 'InternalState' declared in inner block 'where' clause
+--     type Wrapper = .{ state: InternalState } -- Error [E0705]: signature 'where' clause cannot reference 'InternalState' declared in inner block 'where' clause
 -- {
 --     Wrapper.{ state: .{ code: 0 } }
 -- where
---     type InternalState = { code: i64 }
+--     type InternalState = .{ code: i64 }
 -- }
 
 -- Prohibited: Signature referencing type defined in block where (E0706):
@@ -4459,7 +4474,7 @@ invoke_pure(nothing)                  -- OK
 -- invoke_pure(tick)                 -- Error [E0534]: total state is not empty
 -- invoke_pure(logged)               -- Error [E0534]: total effect row is not empty
 
-type Actions = { run: fn() @& -> () }
+type Actions = .{ run: fn() @& -> () }
 fn invoke_field(actions: Actions) -> () { actions.run() }
 fn declared_field() &up(sub){mut global_count} -> () { invoke_field(.{ run: tick }) }
 -- fn hidden_field() -> () { invoke_field(.{ run: tick }) } -- Error [E0510]: wrapping the known callback does not erase state
@@ -4497,7 +4512,7 @@ Missing required annotations reject a named definition. Explicit and template-el
 `E0344` applies where a construct requires a determined type or static argument. An anonymous function may retain generic or structural constraints in its complete inferred contract; validate them at required instantiations and against explicit constraints.
 
 ```ril
-type Cell = { var count: i64 }
+type Cell = .{ var count: i64 }
 
 -- Named-source completion remains mandatory:
 -- fn make() { Cell.{ count: 0 } }      -- Error [E0544]: complete as fn make() -> new Cell
@@ -4573,7 +4588,7 @@ closed_invoke(plain)                            -- OK
 An explicit `&{}` constrains total state and provenance obligations, including root-return retention, capture, inherited access and contained dependencies. Omitted state/provenance clauses include the return annotation's implicit baseline:
 
 ```ril
-type Cell = { var count: i64 }
+type Cell = .{ var count: i64 }
 fn retain(^mut cell: Cell) -> ^mut(cell) Cell { cell }
 type RootRetainer = fn(^mut value: Cell) -> ^mut(value) Cell
 let renamed: RootRetainer = retain              -- OK: source labels are bound by parameter position
@@ -4711,7 +4726,7 @@ Forwarding preserves the contract above. Callback-handle authority and callback 
 A value-type result needs only `-> T`. Shared-object results distinguish the root from its contained references; all reception checks use the complete graph.
 
 ```ril
-type Cell = { var count: i64 }
+type Cell = .{ var count: i64 }
 fn forward(new cell: Cell) -> new Cell { cell }
 fn choose(flag: bool, new a: Cell, new b: Cell) -> new Cell {
     if flag { a } else { b }            -- Only the selected active path is returned
@@ -4754,8 +4769,8 @@ The construction context applies only to the current callable's return operands.
 Result reception uses the [common prohibited exchanges](#binding-modes-and-storage-matrix), [shared-site markers](#shared-writable-authority), and [context-specific diagnostics](#monotonic-mode-degradation-and-anti-laundering-matrix). A fresh-storage input must independently prove its complete unpublished initial-reception eligibility. Entry-origin relations use actual call-entry graphs, never reachability introduced by later writes or a fabricated allocation inside the call.
 
 ```ril
-type Cell = { var count: i64 }
-type Box = { mut cell: Cell }
+type Cell = .{ var count: i64 }
+type Box = .{ mut cell: Cell }
 
 fn make() -> new Cell { Cell.{ count: 0 } }
 fn same(cell: Cell) -> Cell { cell }
@@ -4810,7 +4825,7 @@ A reception marker acknowledges the returned authority. Compare callable state/p
 
 ```ril
 fn with_cell<R>(
-    mut slot: { var mut cell: Cell }, create: bool,
+    mut slot: .{ var mut cell: Cell }, create: bool,
     via action: fn(mut Cell) @& -> R,
 ) &mut -> R {
     if create { slot.cell = Cell.{ count: 0 } }
@@ -4845,7 +4860,7 @@ A generic signature must hold for every admitted instantiation. Use a uniformly 
 
 ```ril
 -- Cell and Box have the preceding declarations.
-fn wrap(ref box: Box) &return{ref box} -> new { ref item: Cell } {
+fn wrap(ref box: Box) &return{ref box} -> new .{ ref item: Cell } {
     .{ ref item: box.cell }
 }
 let mut source = Box.{ cell: Cell.{ count: 0 } }
@@ -4870,8 +4885,8 @@ assert(packet.item.count == 1)
 
 ```ril
 -- Cell has the preceding schema.
-type Holder = { mut item: Cell }
-type Slot = { var mut child: Cell }
+type Holder = .{ mut item: Cell }
+type Slot = .{ var mut child: Cell }
 
 fn pack(^mut x: Cell) &^mut &return{^mut x} -> new Holder {
     Holder.{ item: ^mut x }
@@ -4917,7 +4932,7 @@ fn frozen() -> Cell { let cell = Cell.{ count: 0 }; cell }
 
 ```ril
 -- Cell and Slot have the preceding schemas.
-fn install_observer(mut dst: Slot) &^mut -> new { ref item: Cell } {
+fn install_observer(mut dst: Slot) &^mut -> new .{ ref item: Cell } {
     let mut child = Cell.{ count: 0 }
     dst.child = ^mut child
     .{ ref item: child }               -- Explicit observer wrapper, not a bare read-only new root
@@ -5013,7 +5028,7 @@ Named definitions automatically retain inferred Div even when their source effec
 ### Parameter Modes, Caller Obligations, and Defaults
 
 ```ril
-type Cell = { var count: i64 }
+type Cell = .{ var count: i64 }
 fn inspect(cell: Cell) -> i64 { cell.count }
 fn observe(ref cell: Cell) -> i64 { cell.count }
 fn bump(mut cell: Cell) &mut -> () { cell.count += 1 }
@@ -5090,7 +5105,7 @@ Mutable modes do not apply to static key arguments.
 A `new value: T` parameter receives unpublished construction authority for ordinary shared-object data through an explicit `new expression` handoff. The mode is available to verified named and anonymous Ril functions, their callable types, and the storage inputs below. Handoffs preserve object identity and consume the qualified source path.
 
 ```ril
-type Cell = { var count: i64 }
+type Cell = .{ var count: i64 }
 fn append_cell(mut target: [mut]Cell, new cell: Cell) &mut -> () {
     target !> Array::push(new cell)
     -- target !> Array::push(new cell) -- Error [E0549]: the old construction path has ended
@@ -5161,7 +5176,7 @@ A `-> new T` result guarantees construction or lawful handoff; its root may have
 Storage containers define homogeneous element authority statically (`[]T`, `[mut]T`, `[^mut]T`, `[ref]T`). `[via]T` requests a family of these homogeneous schemas. Ordinary functions express these dependencies through access-mode inference and verified GC storage primitives with explicit graph and mutation rules:
 
 ```ril
-type Cell = { var count: i64 }
+type Cell = .{ var count: i64 }
 fn copy_cell(cell: Cell) -> new Cell { clone(cell) }
 fn build_cell() -> new Cell {
     let mut cell = Cell.{ count: 0 }
@@ -5240,7 +5255,7 @@ User-defined collections such as `ExclusiveVec<T>` and `SharedRegistry<T>` compo
 #### Verified Storage Handoffs
 
 ```ril
-type Cell = { var count: i64 }
+type Cell = .{ var count: i64 }
 let mut cells: [mut]Cell = []
 cells !> Array::push(new Cell.{ count: 0 })
 let mut pending = Array::pop(mut cells)
@@ -5362,7 +5377,7 @@ AccessorField ::= FieldLabel | TupleIndex
    - `\.field?.subfield` desugars to `\x -> x.field?.subfield`
    - `\?.field` desugars to `\x -> x?.field`
 - **Product Projection**:
-   - `FieldLabel` statically projects named fields from records (`{...}`), nominal wrappers, or refined named variants. Unknown fields trigger `E0336`.
+   - `FieldLabel` statically projects named fields from records (`.{...}`), nominal wrappers, or refined named variants. Unknown fields trigger `E0336`.
    - `TupleIndex` statically projects 0-indexed positional components from tuples (`(T0, T1, ...)`) or refined positional variant payloads ($S|_V$). Positional indices are statically checked at compile time against tuple arity $n$ ($0 \le i < n$). Out-of-bounds indices trigger `E0312`.
 - **Safe Navigation Propagation**:
    - If any navigation segment uses safe navigation `?.`, evaluation short-circuits to `None` when the intermediate receiver is `None`. The resulting accessor closure return type is automatically lifted into `?T`.
@@ -5381,9 +5396,9 @@ fn run_job(f: fn() -> i64) -> i64 { f() }
 let job_res = run_job \-> 42
 
 -- Shorthand Projection Accessors:
-type Employee = { id: i64, name: str, salary: i64 }
-type Department = { name: str, leader: ?Employee }
-type Company = { name: str, dept: ?Department }
+type Employee = .{ id: i64, name: str, salary: i64 }
+type Department = .{ name: str, leader: ?Employee }
+type Company = .{ name: str, dept: ?Department }
 
 let employees = [
     Employee.{ id: 1, name: "Alice", salary: 8000 },
@@ -5400,7 +5415,7 @@ let ids = pairs |> Array::map(\.0)                            -- Evaluates to [1
 let labels = pairs |> Array::map(\.1)                         -- Evaluates to ["Alice", "Bob"]
 
 -- 3(c). Mixed nested projection:
-type Team = { id: i64, leader: (str, i64) }
+type Team = .{ id: i64, leader: (str, i64) }
 let teams = [Team.{ id: 10, leader: ("Alice", 30) }]
 let leader_ages = teams |> Array::map(\.leader.1)             -- Evaluates to [30]
 
@@ -5438,7 +5453,7 @@ assert(counter() == 1)
 ```
 
 ```ril
-type Cell = { var count: i64 }
+type Cell = .{ var count: i64 }
 type Step = fn() &up -> i64
 fn make_shared_step(^mut cell: Cell) &capture &^mut &return{^mut cell} -> new Step {
     \-> { cell.count += 1; cell.count }
@@ -5469,7 +5484,7 @@ assert(step() == 3)                   -- Both authorities still reach the same c
 Writes to frame-confined local storage can be discharged without outward state/provenance obligations. This does not discharge unrelated effects, capture, or retention. A function is pure only when all outward operational-effect and state/provenance obligations are empty after handling and local discharge; implicit Div may remain. Only a covering budget can remove that Div:
 
 ```ril
-type Buffer = { mut items: []i64 }
+type Buffer = .{ mut items: []i64 }
 fn append_val(mut b: Buffer, v: i64) &mut -> () { b.items !> Array::push(v) }
 
 -- Pure function with internal primitive mutation:
@@ -5495,7 +5510,7 @@ fn generate_sequence(count: i64) -> []i64 {
 }
 
 -- Local discharge of scalar insertion (no retained mutable reference):
-type NodeHub = { mut nodes: []i64 }
+type NodeHub = .{ mut nodes: []i64 }
 fn link(mut hub: NodeHub, node: i64) &mut -> () { hub.nodes !> Array::push(node) }
 
 fn test_internal_hub() -> i64 {
@@ -5528,7 +5543,7 @@ fn clear_items(mut list: []i64) &mut -> () {
 ```
 
 ```ril
-type Cell = { var count: i64 }
+type Cell = .{ var count: i64 }
 fn bump_or_abort(flag: bool, mut cell: Cell) &mut -> () {
     if flag { cell.count += 1; panic("stop") }
 }                                       -- OK: panic does not erase the reachable write
@@ -5546,8 +5561,8 @@ SharingExpr     ::= "^mut" Expression
 ```
 
 ```ril
-type Entry = { var id: i64 }
-type Hub = { mut entries: [^mut]Entry }
+type Entry = .{ var id: i64 }
+type Hub = .{ mut entries: [^mut]Entry }
 let mut global_hub = Hub.{ entries: [] }
 
 fn register_entry(mut hub: Hub, ^mut entry: Entry) &^mut -> () {
@@ -5567,8 +5582,8 @@ fn publish_entry(^mut entry: Entry) &^mut &up(sub){mut global_hub} -> () {
 | Environment creation | Separate `&capture` obligation alongside any `&^mut`; both are standalone state/provenance clauses |
 
 ```ril
-type Cell = { var count: i64 }
-type Holder = { mut child: Cell }
+type Cell = .{ var count: i64 }
+type Holder = .{ mut child: Cell }
 let mut source = Cell.{ count: 0 }
 let ^mut alias = source
 let mut holder = Holder.{ child: ^mut source }
@@ -5601,7 +5616,7 @@ let mut original = Cell.{ count: 0 }
 let ^mut returned = retain(^mut original) -- Explicit reception of the returned writer
 returned.count += 1
 original.count += 1
-type Packet = { mut item: Cell }
+type Packet = .{ mut item: Cell }
 let mut packet = Packet.{ item: ^mut retain(^mut original) }
 packet.item.count += 1
 -- let mut hidden_packet = Packet.{ item: retain(^mut original) } -- Error [E0510]: wrapping does not hide shared reception
@@ -5825,7 +5840,7 @@ pub fn make_step() &capture &up(sub){mut private_count} -> new Step {
     var local_count = 0
     \-> { local_count += 1; local_count }
 }
-pub type Cell = { var count: i64 }
+pub type Cell = .{ var count: i64 }
 pub fn retain(^mut cell: Cell) &up(sub){mut private_count} -> ^mut(cell) Cell {
     private_count += 1
     cell
@@ -5897,7 +5912,7 @@ use counter
 ```
 
 ```ril
-type Cell = { var count: i64 }
+type Cell = .{ var count: i64 }
 fn outer(mut cell: Cell) &mut -> () {
     inner()
 where
@@ -5969,7 +5984,7 @@ Check possible storage origins, not distinct field names or indices. Only confli
 Inactive aliases permit sequential sharing. Access through the formal and its call-local derived paths belongs to that invocation; independent paths remain separate participants.
 
 ```ril
-type Cell = { var count: i64 }
+type Cell = .{ var count: i64 }
 fn swap(mut a: Cell, mut b: Cell) &mut -> () {
     let saved = a.count
     a.count = b.count
@@ -6005,7 +6020,7 @@ Apply [provenance propagation](#complete-provenance-and-required-annotations) an
 Spread/destructuring of value-type constituents produces independent copies, including `var` pattern targets. Immutable reception of live origins is `E0535`; `let snapshot = clone(ref value)` receives an immutable copy.
 
 ```ril
-type Cell = { var count: i64 }
+type Cell = .{ var count: i64 }
 let mut box = .{ mut child: Cell.{ count: 0 } }
 -- var hidden = box                  -- Error [E0535]: plain var requires immutable data
 var ref cursor = box
@@ -6016,14 +6031,14 @@ let mut replacement = .{ mut child: Cell.{ count: 9 } }
 replacement.child.count += 1
 cursor = replacement
 
-fn project(ref box: { mut child: Cell }) -> ref(box) Cell { box.child }
+fn project(ref box: .{ mut child: Cell }) -> ref(box) Cell { box.child }
 -- let mut stolen = project(ref box) -- Error [E0528]: the observation return has no write authority
 ```
 
 [Fresh storage reception](#homogeneous-storage-authority) precedes read-only binding or parameter passage; it cannot recover authority after either boundary.
 
 ```ril
-type Cell = { var count: i64 }
+type Cell = .{ var count: i64 }
 let immutable = Cell.{ count: 0 }
 -- let mut upgraded = immutable           -- Error [E0520]: existing immutable reference
 let mut cells: []Cell = []
@@ -6074,7 +6089,8 @@ eff State<S> {
 
 eff Context<T> { ask() -> T }
 
-eff AppEffects { Console, State<i64> } -- Combined effect set
+eff AppEffects { ..Console, ..State<i64> } -- Combined effect set; every member is expanded with '..'
+-- eff Bad { ..Console, extra() -> () }  -- Error [E0120]: cannot mix operation declarations with '..' effect members
 ```
 
 ```ril
@@ -6101,7 +6117,7 @@ assert(two_states() == (7, "seven"))
 | :--- | :--- |
 | `State<i64>::get` | Effect declaration, static arguments under static argument equivalence, and operation declaration |
 | Distinct instances | Distinct operations, even with the same operation name |
-| Effect-set aliases | Expand to their member instances; aliases do not create new operation identities |
+| Effect-set aliases | Each `..Member` expands that instance; aliases do not create new operation identities |
 | Operation selected through a set alias | Exactly one member instance must supply it; unresolved selection is `E0344` |
 | Omitted effect arguments | Infer from ordinary argument/result, arm, and protected-computation constraints only when one instance is determined (`E0344` otherwise) |
 | Generic arguments in source | Appear on the effect name; operations declare no independent generic parameter list |
@@ -6111,7 +6127,9 @@ Repeated arms for the same instantiated operation are `E0622`, including through
 
 ```ebnf
 EffectDecl       ::= [ "pub" ] "eff" PascalCase [ GenericParams ] "{" EffectMemberList "}"
-EffectMemberList ::= EffectOpDecl { "," EffectOpDecl } [ "," ] | EffectIdentifier { "," EffectIdentifier } [ "," ]
+EffectMemberList ::= EffectOpDecl { "," EffectOpDecl } [ "," ]
+                   | EffectSpread { "," EffectSpread } [ "," ]
+EffectSpread     ::= ".." EffectIdentifier
 EffectOpDecl     ::= ValueName "(" [ ParameterTypeList ] ")" [ StateAnnot ] [ ReturnType ]
 EffectAnnot      ::= "@" ( EffectRow | "{" "}" )
 EffectRow        ::= EffectIdentifier { "+" EffectIdentifier }
@@ -6119,7 +6137,7 @@ EffectIdentifier ::= QualifiedName [ GenericArgs ]
 EffectOperationRef ::= EffectIdentifier "::" ValueName
 ```
 
-Effect identifiers resolve to PascalCase effect declarations or the built-in Div identity. Effect-set aliases may include Div, but it supplies no operation and cannot be a source-handler target. Normalization preserves that identity through aliases. Operation signatures use ordinary parameter-mode and state/provenance rules for read-only, temporary writable or retained writable access. A `new` operation parameter is `E0411`; a `via` parameter or `infer` result is `E0412`. Operation declarations require concrete signatures.
+An effect-set alias writes every included instance with the record-spread marker `..`: `eff AsyncIo { ..Io, ..Fiber }`. Each `..EffectIdentifier` expands that instance's operation identities; the alias creates no new identity. An effect declaration body is either an operation list or a `..` member list, never a mixture (`E0120`). Effect identifiers resolve to PascalCase effect declarations or the built-in Div identity. Effect-set aliases may include `..Div`, but it supplies no operation and cannot be a source-handler target. Normalization preserves that identity through aliases. Operation signatures use ordinary parameter-mode and state/provenance rules for read-only, temporary writable or retained writable access. A `new` operation parameter is `E0411`; a `via` parameter or `infer` result is `E0412`. Operation declarations require concrete signatures.
 
 ```ril
 -- Console and BufferIo have the declarations above.
@@ -6206,7 +6224,7 @@ fn read_zero() -> i64 {
 }
 -- with ReadAt::get(0) -> resume 1      -- Error [E0345]: handler parameter is refutable
 
-type Cell = { var count: i64 }
+type Cell = .{ var count: i64 }
 eff Edit { apply(mut Cell) &mut -> () }
 fn edit_once(mut cell: Cell) &mut -> i64 {
     with Edit::apply(mut target) -> {
@@ -6230,7 +6248,7 @@ fn edit_once(mut cell: Cell) &mut -> i64 {
 | Discharge a declared effect instance | Cover every operation of that instance; built-in resource/system obligations follow their separate rules |
 
 ```ril
-type Cell = { var count: i64 }
+type Cell = .{ var count: i64 }
 eff Store { keep(^mut cell: Cell) &^mut -> () }
 let mut cell = Cell.{ count: 0 }
 let mut held: [^mut]Cell = []
@@ -6278,7 +6296,7 @@ Outer function/callback activations stay active. Independent captures and ambien
 Escape alone is valid. Retention preserves dispatch, required outer definitions, and access/sharing/escape facts for provenance diagnostics, without extra capture syntax. Effect discharge never removes state, capture, live `ref`, or mutable-environment obligations.
 
 ```ril
-type Button = { label: str, on_click: fn() &up -> () }
+type Button = .{ label: str, on_click: fn() &up -> () }
 fn make_button() -> Button {
     Button.{
         label: "Save",
@@ -6481,7 +6499,7 @@ eff Auth {
     authenticate() -> bool,
 }
 
-type AuditLog = { mut entries: []str }
+type AuditLog = .{ mut entries: []str }
 
 fn guarded_workflow(mut audit: AuditLog) @Auth &mut -> str {
     audit.entries !> Array::push("STEP_1")                               -- Write takes effect before the operation request
@@ -6514,7 +6532,7 @@ Ril provides the system operation families Fiber and Concurrent, the alias Async
 
 - **`@Fiber` (Cooperative Fiber Control)**: Cooperative yielding and leaf I/O suspension. Each leaf operation's contract determines the event completing its wait.
 - **`@Concurrent` (Structured Concurrency)**: Structured scope, child-task forking, and joining, with the rules below.
-- **`@Async` (Suspendable I/O)**: The effect alias `{Fiber, Concurrent}` for suspension and structured concurrent computation.
+- **`@Async` (Suspendable I/O)**: The effect alias `eff Async { ..Fiber, ..Concurrent }` for suspension and structured concurrent computation.
 - **`@Div` (Possible Infinite Computation)**: Automatically inferred and propagated under [termination checking](#termination-and-halt-contracts). It has no operations or source handler and requires no import or named-source annotation. Only the budget primitive removes it from a covered invocation.
 
 The built-in system effect sets have the following inclusion relationships; `Async` is an alias for the union of `Fiber` and `Concurrent`:
@@ -6569,7 +6587,7 @@ fn bad_leaf_fork(fd: i64) @Fiber -> []u8 {
     read_socket_chunk(fd)
 }
 
--- Compound Asynchronous Workflow (@Async = {Fiber, Concurrent}):
+-- Compound Asynchronous Workflow (@Async = { ..Fiber, ..Concurrent }):
 fn fetch_pipeline(url: str) @Async -> Result<str, TaskFault> {
     let raw = read_socket_chunk(80)    -- Inherits @Fiber
     scope(\mut s -> {                  -- Requires @Concurrent (present in @Async)
@@ -6851,31 +6869,32 @@ A resource contract must state endpoint creation, cloning, transfer, closure, an
 
 ```ebnf
 TypeQuoteExpr    ::= "<" TypeExpression ">"
-TokenType        ::= "Type" [ "<" TypeExpression ">" ]
+TokenType        ::= "Type" "<" TypeExpression ">"
 TypeFunctionExpr ::= "\" TypeFnParam { "," TypeFnParam } "->" Expression
-TypeFnParam      ::= StaticKeyParamDecl
-                  | PascalCase [ ":" TypeSort ] [ "=" TypeExpression ]
-                  | ValueName ":" TypeExpression [ "=" Expression ]
+TypeFnParam      ::= PascalCase [ TypeConstraint ] [ "=" TypeExpression ]
+                   | ValueName ":" ValueType { "|>" PipelineConstraint } [ "=" Expression ]
 ```
 
 `TokenType` is the protected intrinsic family resolved through `NominalRef`. A quote is a static value expression whose root must denote one type after removing grouping parentheses (`E0306` otherwise). Const, `typeof` and mapped-type expression slots follow their defining rules.
 
 | Position | Spelling / meaning |
 | :--- | :--- |
-| Type declaration / data annotation | `type User = { id: i64 }`, `x: User`; direct type syntax |
-| Static type value | `<User>`, `<i64>`, `<{ id: i64 }>` |
+| Type declaration / data annotation | `type User = .{ id: i64 }`, `x: User`; direct type syntax |
+| Static type value | `<User>`, `<i64>`, `<.{ id: i64 }>` |
+| Explicit value-to-type | `typeof e`; the only conversion from a value to its type in a type position |
+| Record shape | `.{...}` in type, value, pattern, and test positions; a `TypeReference` may select a runtime construction (`User.{...}`) |
 | Tuple token | `<()>` quotes the zero-element tuple. `<(T, U)>` quotes a two-element tuple |
 | Generic application | `F<T, U>`; two arguments, not a tuple quote |
 | Type pattern | `<Option<let U>>`; pattern-only binders/rests |
-| Token type | `Type` hides the target; `Type<T>` guarantees exactly T |
-| Type-parameter sort | `T: Type`; distinct from a value parameter `token: Type` |
+| Token type | `Type<T>` denotes the exact static metatype for target `T`; bare `Type` is prohibited |
+| Type-parameter sort | `T: Type`; distinct from a const parameter `tok: Type<T>` |
 | Value names | `Marker` is a singleton and `UserId` a constructor; their types use `<Marker>` / `<UserId>` |
 
 The following local bindings are fragments of static type-function evaluation:
 
 ```ril
-type User = { id: i64, name: str }
-let exact = <User>                     -- Type<User>, not Type
+type User = .{ id: i64, name: str }
+let exact = <User>                     -- Type<User>
 let tuple = <(i64, str)>               -- Type<(i64, str)>
 let unit = <()>
 let callable = <fn(i64) -> str>
@@ -6886,78 +6905,83 @@ assert(<(i64)> == <i64> && <i64> != <str>)
 -- let bad = <>                        -- Error [E0120]: missing type
 -- let bad = <(\T -> <T>)>             -- Error [E0306]: grouped type-function program is not a quoted type
 -- let bad: <i64> = <i64>              -- Error [E0120]: write Type<i64> in an annotation
+
+-- Explicit value-to-type conversion:
+type IntFromLiteral = typeof 1024      -- i64
+-- type BadLiteralType = 1024          -- Error [E0318]: literal values cannot be used as types
 ```
 
 | Token typing | Rule |
 | :--- | :--- |
-| Default binding | `let` and `var` preserve `Type<T>`; completion must not silently widen to `Type` |
-| Exact target | `Type<A>` matches `Type<B>` only when `A` and `B` are definitionally equal; target subtyping is insufficient |
-| Widening | `Type<T>` may enter an explicitly general `Type` context without changing the represented target |
-| Immutability | Tokens are atomic immutable static values; `var` changes the selected token, not its target type |
-| Described schema | Preserve nominal/opaque identity, member modes, and callable contracts; immutable token reception suppresses none of them and grants no object authority |
-| Equality | Any two tokens support `==` / `!=` by target definitional identity, including different exact metatypes; no ordering (`E0327`) |
-| Kind | Static generics may admit meta-value types; materializing them at run time remains prohibited |
+| Exact metatype | Every token is strictly `Type<T>` with an exact target `T`; `let` and `var` preserve `Type<T>` |
+| Definitional target | `Type<A>` matches `Type<B>` only when `A` and `B` are definitionally equal; target subtyping is insufficient |
+| Immutability | Tokens are atomic immutable static values; `var` binds a fixed `Type<T>` slot (`E0301` on mismatch) |
+| Described schema | Preserve nominal/opaque identity, member modes, and callable contracts |
+| Equality | Any two tokens support `==` / `!=` by target definitional identity; no ordering (`E0327`) |
+| Kind | Static generics may admit meta-value types; materializing them at run time is `E0816` |
 
 ```ril
 -- Static fixture; User has the preceding schema.
 let exact: Type<User> = <User>
-let wide: Type = exact
-assert(wide == exact)
 -- let wrong: Type<i64> = <never>       -- Error [E0301]: never being a subtype of i64 does not make targets equal
 var fixed = <i64>                      -- Type<i64>
 fixed = <i64>
--- fixed = <str>                      -- Error [E0301]: no retroactive widening
+-- fixed = <str>                      -- Error [E0301]: expected Type<i64>, found Type<str>
 
 meta fn target_size<T>(token: Type<T>) -> i64 { byte_size(token) }
 meta fn object_size<T>(value: T) -> i64 { byte_size(<T>) }
 meta fn value_type_name<T>(value: T) -> str { type_name(<T>) }
-meta fn field_size<T: { .. }, K: keyof T>(token: Type<T>, key: K) -> i64 {
-    byte_size(<T.(K)>)
+meta fn field_size<T: .{ .. }>(token: Type<T>, meta key: str |> Key<T>) -> i64 {
+    byte_size(<T.(key)>)
 }
-var selected: Type = <User>
-let first_size = field_size(selected, "id") -- Proved current target: T = User, K = "id"
-selected = <i64>
--- let bad = field_size(selected, "id") -- Error [E0301]: current target fails the record constraint
-assert(first_size >= 0 && byte_size(selected) >= 0)
+var user_tok = <User>                  -- Type<User>
+let first_size = field_size(user_tok, "id")
+-- user_tok = <i64>                   -- Error [E0301]: expected Type<User>, found Type<i64>
+assert(first_size >= 0 && byte_size(user_tok) >= 0)
 -- let bad = object_size(<User>)        -- Error [E0306]: Type<User> has no ordinary run-time layout
 ```
 
 | Inference at a use | Required evidence |
 | :--- | :--- |
-| `value: T` | Infer the argument's own checked value type: a token yields `Type<User>` or `Type`, never `User` |
-| `token: Type<T>` | Bind `T` from exact token typing or a proved current static target; then validate structural/kind constraints |
-| `key: K`, `K: keyof T` | Bind the static key value, then check membership against the determined target `T` |
-| General `Type` | It alone proves no target; do not invent `T` from desired fields or a key. A current static value, pattern, or explicit type-function evaluation can supply evidence |
-| Assignment / join | Invalidate stale slot/path proofs; preserve only guarantees common to retained alternatives until static evaluation selects one |
+| `value: T` | Infer the argument's own checked value type: a token yields `Type<User>`, never `User` |
+| `token: Type<T>` | Bind `T` from exact token typing; then validate structural/kind constraints |
+| `meta key: str \|> Key<T>` | Bind the static key value, then check coordinate membership against target `T` using the `Key<T>` guard |
 | Unresolved proof | Defer dependent checks until the required static evaluation; unproved target information is `E0344`, a non-static argument is `E0814`, and a proved incompatible target keeps `E0301` |
 
-Target evidence checks a token against `Type<T>`; it never converts the token into an ordinary `T` value. `typeof e` checks names, types, and access modes without evaluating `e` or producing effects, writes, or environments.
+Target evidence checks a token against `Type<T>`; it never converts the token into an ordinary `T` value. `typeof e` is the explicit value-to-type conversion: it checks names, types, and access modes without evaluating `e` or producing effects, writes, or environments.
 
 ```ril
-type Resolve = \token: Type -> token
-type Wrap = \token: Type -> <{ field: Resolve<token> }>
+type Wrap = \T -> <.{ field: T }>
 type Nullable = \T -> <?T>
 type PairOf = \T, U -> <(T, U)>
 
 type IntNullable = Nullable<i64>
 type StringIntPair = PairOf<str, i64>
-type WrappedInt = Wrap< <i64> >        -- Token value argument, not an implicit type argument
+type WrappedInt = Wrap<i64>
 
--- Static fixture:
-var chosen: Type = <i64>
-let before = Wrap<chosen>              -- Type<{ field: i64 }>
-chosen = <str>
-let after = Wrap<chosen>               -- Type<{ field: str }>; before is unchanged
+type PaddedBuf = \cap: i64, T -> <.{ len: i64, data: Buffer<T, cap> }>
+
+-- Symmetric unpacking (<token>):
+type TokenUnpack = \T -> {
+    let tok = <T>
+    <.{ inner: <tok> }>                -- <tok> unquotes static token into type
+}
+
+-- meta fn reflection requires explicit tokens:
+pub meta fn meta_byte_size<T>(token: Type<T>) -> i64 { byte_size(token) }
+let s = meta_byte_size(<User>)
+-- let bad = meta_byte_size(User)      -- Error [E0319]: bare type in expression context
 ```
 
-Type functions use anonymous-function syntax with a contextual type-producing result. `Resolve` receives a static token by value; instance keys use target identity at argument evaluation. Token variables and permitted type-function call results are value expressions. To compose their represented types, pass them to a type function under the [call-family rules](#disjoint-call-families-evaluation-budgets-and-branch-pruning).
+Type functions use anonymous-function syntax with a type-producing body. Parameter casing distinguishes categories: `PascalCase` (`\T, \U`) denotes type parameters; `snake_case` (`\cap: i64`, `\key: str`) denotes const value parameters. Calling a type function passes type arguments in single angle brackets (`Wrap<i64>`). Inside type expressions, `<token>` symmetrically unquotes a static token value into its represented type.
 
 | Angle context | Deterministic parsing |
 | :--- | :--- |
-| Prefix `<T>` | Primary type quote; no top-level comma list. `<(T, U,)>` uses existing tuple rules; `<(T,)>` remains invalid |
+| Prefix `<T>` | Primary type quote in expression context; no top-level comma list. `<(T, U,)>` uses existing tuple rules; `<(T,)>` remains invalid |
+| Primary type `<token>` | Symmetric unpacking in type context; splices a static token value into a type |
 | Expression `QName<...>` | Commit to generic application only when the resolved declaration or preserved item/constructor alias supplies an application signature; otherwise `<` is infix comparison |
 | `F<T, U>` / `fn f<T, U>` | Generic argument / parameter lists; the declared parameter category controls checking |
-| `F< <T> >` | Explicit token value argument; keep `<<` as shift, so adjacent opening angles need separation |
+| Value at a type parameter | Not admitted; write `typeof e`; `F<1024>` is `E0306` |
 | Expected angle closure | Consume one original `>` character, then rescan the remainder: `<Box<T>>`, `<Type<T>>`, `<T>==<U>`, `type A<T>=T` |
 | Ordinary operators | `>=`, `>>`, and `>>=` retain their normal meanings outside an expected closure |
 | Const / `typeof` angle operations | Parenthesize: `Flag<(n > 0)>`, `Buffer<u8, (1 << n)>`, `<typeof (a > b)>` |
@@ -6979,8 +7003,8 @@ assert(choose<true && false>(4) == 0) -- Known declaration; const argument need 
 
 ```ril
 halt type SafeRecord = \T ->
-    if <T> == <i64> { <{ val: i64, valid: bool }> }
-    else { <{ val: T, valid: bool }> }
+    if <T> == <i64> { <.{ val: i64, valid: bool }> }
+    else { <.{ val: T, valid: bool }> }
 type IntRecord = SafeRecord<i64>
 ```
 
@@ -7005,11 +7029,11 @@ halt fn checked_increment(n: i64) -> i64 { n + 1 } -- May panic at i64's maximum
 Both run in the pure static domain: no outward operational effects or state/provenance obligations, with implicit Div allowed. They support local bindings, control flow, pure static helpers and recursion. Effect/state source annotations remain forbidden, including explicit `@Div`; inference retains Div in their checking interfaces. Generic type metadata is static and erased from run-time values.
 
 ```ril
-meta fn record_bytes() -> i64 { byte_size(<{ id: i64 }>) }
+meta fn record_bytes() -> i64 { byte_size(<.{ id: i64 }>) }
 meta fn meta_identity<T>(value: T) -> T { value }
 meta let NUMBER = meta_identity(1)
 -- meta let BAD_TOKEN = meta_identity(<i64>) -- Error [E0812]: instantiated result is Type<i64>
--- meta fn leak<T>(token: Type<T>) -> { token: Type<T> } { .{ token: token } }
+-- meta fn leak<T>(token: Type<T>) -> .{ token: Type<T> } { .{ token: token } }
 -- Error [E0812]: wrapping does not remove the returned token
 
 meta let TOKEN = <i64>
@@ -7020,7 +7044,7 @@ fn runtime_client(value: i64) -> i64 {
     value
 }
 -- fn leak_constant() &up(sub){TOKEN} -> Type<i64> { TOKEN } -- Error [E0816]: no run-time token values
--- fn leak_shape(value: { token: Type }) -> () {} -- Error [E0816]: nested token type in a run-time parameter
+-- fn leak_shape(value: .{ token: Type<i64> }) -> () {} -- Error [E0816]: nested token type in a run-time parameter
 ```
 
 Phase checks inspect the entire instantiated result/value graph, opaque summaries, captured environments and latent type-producing callable contracts. Results reduced to ordinary constants free of tokens and type-producing authority may cross as ordinary data. A bare `<T>` value expression at run time is `E0816`; forbidden calls use `E0810`.
@@ -7070,7 +7094,7 @@ type CheckedLeaf = Leaf<[][]i64>               -- i64; optional Div-free wrapper
 ```ril
 -- Custom diagnostic in pure type function via static panic:
 type SizedRecord = \T -> match <T> {
-    <{ id: i64, .. }> -> <T>,
+    <.{ id: i64, .. }> -> <T>,
     _ -> panic("SizedRecord requires a record containing an 'id: i64' field"),
 }
 -- type BadRecord = SizedRecord<str> -- Error [E0831]: panic during static evaluation: SizedRecord requires a record containing an 'id: i64' field
@@ -7089,13 +7113,13 @@ meta fn is_compact<T>(t: Type<T>) -> bool {
 halt type PaddedBuffer = \raw_size: i64, T -> {
     let actual_size = pad_align(raw_size, 8)   -- OK: consumes meta fn value output
     if is_compact(<T>) {                   -- OK: consumes meta predicate
-        <{ inline_data: []T, len: i64 }>   -- OK: constructs shape
+        <.{ inline_data: []T, len: i64 }>   -- OK: constructs shape
     } else {
-        <{ heap_ptr: i64, cap: i64 }>      -- OK: constructs shape
+        <.{ heap_ptr: i64, cap: i64 }>      -- OK: constructs shape
     }
 }
 
-type FastBuf = PaddedBuffer<64, u8>            -- Resolves to { inline_data: []u8, len: i64 }
+type FastBuf = PaddedBuffer<64, u8>            -- Resolves to .{ inline_data: []u8, len: i64 }; 64 supplies the declared const 'raw_size'
 
 -- Static Rejection of Violations:
 -- meta fn bad_type_gen() -> Type<i64> {       -- Error [E0812]: meta fn cannot expose a token result
@@ -7126,7 +7150,7 @@ When an outer result structure is established, an illustrative preview is:
 Type evaluation budget exhausted at schema.ril:24
 While evaluating: Expand<Node>
 Partial result (diagnostic only):
-{
+.{
     id: i64,
     children: []⟪pending Expand<Node>⟫,
     ... (completed fields omitted)
@@ -7156,7 +7180,7 @@ meta let COUNT = len("Ril")              -- OK: ordinary static value reception
 -- meta let FAIL = panic("invalid type") -- Error [E0831]: static panic
 ```
 
-`E0810` diagnoses a forbidden call across the specified evaluation families. `E0814` diagnoses a run-time value where a static value is required, including const arguments and static-key arguments. Wrong sorts retain `E0323`; a known negative static value is `E0815`. Direct record access with a dynamic computed key retains `E0324`, rather than the argument-oriented static-key diagnostic.
+`E0810` diagnoses a forbidden call across the specified evaluation families. `E0814` diagnoses a run-time value where a static value is required, including const arguments and const generic keys. Wrong sorts retain `E0323`; a known negative static value is `E0815`. Direct record access with a dynamic computed key retains `E0324`.
 
 ```ril
 eff Audit { write(str) -> () }
@@ -7200,7 +7224,7 @@ Static callbacks capture symbolic constants. Mutable resources, handlers, and or
 Retain static/generic and callable-dependent [use conditions](#reachable-authority-use) in summaries until the required instantiation determines them. Reject a definition with a known absent required use, or a selected instantiation with absent mode/marker use (`E0527`) or excess concrete state/provenance annotation (`E0529`). Required use needs established evidence after static pruning.
 
 ```ril
-type Cell = { var count: i64 }
+type Cell = .{ var count: i64 }
 fn selected_write<enabled: bool>(mut cell: Cell) &mut -> () {
     if enabled { cell.count += 1 }
 }
@@ -7213,58 +7237,75 @@ selected_write<true>(mut cell)           -- OK: selected instance has a write
 Both branches require valid syntax, name resolution and ordinary type compatibility. Type-token reflection describes types; actual callable-value effects and provenance are retained in callable contracts.
 ### Static Introspection
 
-Static introspection provides coordinate enumeration `keyof T` and constituent data-type projection `T.(K)` for records, sums, and tuples. Member-mode projection `modeof T.(K)` applies to record fields and tuple components. Collections use their library type extractors.
+<a id="coordinate-enumeration-with-keyof"></a>
+<a id="static-key-parameters-and-computed-value-projection"></a>
+<a id="universal-member-mode-projection"></a>
+
+Static introspection provides coordinate enumeration `coords(<T>)` for product types, variant enumeration `variants(<T>)` for sum types, and constituent projection `T.(k)`.
 
 ```ebnf
-MappedRecordType   ::= "{" [ ModeExpression ] "[" Expression "as" PascalCase "]" ":" TypeExpression "}"
-MappedTupleType    ::= "(" [ ModeExpression ] "[" Expression "as" PascalCase "]" ":" TypeExpression ")"
-ModeExpression     ::= MemberMode | ModeProjectionExpr | PascalCase | "(" Expression ")"
+MappedRecordType          ::= ".{" [ ModeModifier ] MappedComprehensionClause ":" TypeExpression "}"
+MappedTupleType           ::= "(" [ ModeModifier ] MappedComprehensionClause ":" TypeExpression ")"
+MappedComprehensionClause ::= "[" Expression "as" Pattern "]"
+ModeModifier              ::= MemberMode | Identifier
 ```
 
-#### Coordinate Enumeration with keyof
-In expression contexts, `keyof T` statically enumerates the coordinates of a record, sum, or tuple type $T$ as an ordered immutable array:
-- **Records**: Evaluates to an immutable array `[]str` of field names sorted strictly in UTF-8 byte order.
-- **Sum Types**: Evaluates to an immutable array `[]str` of variant constructor names sorted strictly in UTF-8 byte order.
-- **Tuples**. Produces an immutable `[]i64` of positional indices in ascending order. `keyof ()` produces the empty array.
-- **Type Identity**: Definitionally equal admitted types produce the same coordinate array ($T_1 \equiv T_2 \implies \text{keyof } T_1 \equiv \text{keyof } T_2$).
-
-
-#### Static Key Parameters and Computed Value Projection
+#### Coordinate and Variant Introspection (coords, variants)
 
 ```ril
-fn get_field<T: { .. }, K: keyof T>(record: T, key: K) -> T.(K) {
+type State = .{ id: i64, var title: str, mut items: []i64 }
+meta let STATE_COORDS = coords(<State>)
+-- [(MemberMode::Let, "id"), (MemberMode::Var, "title"), (MemberMode::Mut, "items")]
+meta let TUPLE_COORDS = coords(<(var i64, mut []i64)>)
+-- [(MemberMode::Var, 0), (MemberMode::Mut, 1)]
+-- meta let BAD_COORDS = coords(<UiEvent>)  -- Error [E0358]: coords requires a product type
+
+type UiEvent { Click(.{ x: i64, y: i64 }), Hover(i64, i64), Focus }
+meta let EVENT_VARIANTS = variants(<UiEvent>) -- ["Click", "Focus", "Hover"]
+```
+
+- **Product Types (`coords(<T>)`)**: For records and tuples, `coords(<T>)` evaluates to `[](MemberMode, CoordKey<T>)` pairing each coordinate's `MemberMode` with its coordinate key (`str` field names in UTF-8 byte order for records; ascending `i64` indices for tuples; `[]` for `()`). Non-product targets trigger `E0358`.
+- **Sum Types (`variants(<T>)`)**: For sum types, `variants(<T>)` evaluates to `[]str` of variant constructor names in UTF-8 byte order (`E0301` on non-sum).
+
+#### Static Coordinate Parameters and Computed Value Projection
+
+```ril
+fn get_coord<via P, T: .{ .. } | Tuple>(via P obj: T, meta key |> Key<T>) -> infer T.(key) {
+    obj.(key)
+}
+fn get_field<via P, T: .{ .. }>(via P record: T, meta key: str |> Key<T>) -> infer T.(key) {
     record.(key)
 }
-type User = { id: i64, name: str }
+
+type User = .{ id: i64, name: str }
 let user = User.{ id: 1, name: "Ada" }
-let name: str = get_field(user, "name")
--- get_field(user, "missing")          -- Error [E0323]: key is not in keyof User
+let pair = (42, "status")
+
+let name: str = get_coord(user, "name")
+let first: i64 = get_coord(pair, 0)
+let r: ref(user.name) str = get_coord(ref user, "name")
+
+-- get_coord(user, "missing")          -- Error [E0323]: "missing" fails constraint Key<User>
+-- get_coord(pair, 2)                  -- Error [E0323]: index 2 out of bounds for Tuple
 fn dynamic_key(user: User, key: str) -> () {
-    -- get_field(user, key)             -- Error [E0814]: actual key is not statically known
+    -- get_coord(user, key)            -- Error [E0814]: argument to 'meta' parameter 'key' must be statically known
 }
 ```
 
-- `K: keyof T` binds a static string key for records/sums, or an integer tuple position.
-- `key: K` requires an argument statically equal to `K` and permits inferring `K` from it. Both names denote that key in the body.
-- `K` is not an ordinary data type: `[]K` is `E0301`. Check membership after inference (`E0323`); unknown run-time keys are `E0814`.
+A `meta` parameter receives a compile-time static argument in ordinary call position `(...)`. `key |> Key<T>` desugars to `Key<key, T>`, inferring `CoordKey<T>` as the parameter sort when omitted, producing `<()>` when valid and `<never>` otherwise (`E0323`). Monomorphization specializes the call to concrete member access (`record.name` or `tuple.0`) and erases the `meta` parameter. `-> infer T.(key)` infers result access modes and specializes return provenance to `&return{record.(key)}`.
 
 | Value projection | Requirement |
 | :--- | :--- |
 | `record.(key)` / `record.("name")` | Static key; preserve reference modes/origins; bracket indexing is `E0324` |
-| Tuple | Static positional index; excluded by the example's record constraint |
-| Sum payload | `match` or variant narrowing; membership in `keyof S` alone supplies no value-level product projection (`E0337`) |
-
-An immutable run-time string is not a static key. Sum type keys describe possible payload shapes, not fields present in every value.
+| Tuple `tuple.(idx)` / `tuple.(0)` | Static positional index; excluded by record constraints |
+| Sum payload | `match` or variant narrowing; coordinate membership alone supplies no value-level product projection (`E0337`) |
 
 #### Universal Constituent Projection
-For a composite type $T$ and coordinate key $K \in \text{keyof } T$, `T.(K)` statically projects the corresponding constituent shape, subject to the GADT equation check below:
-- **Records**: `User.id` or `User.("id")` resolves to the declared field type.
-- **Sum Types**: `UiEvent.Click` or `UiEvent.("Click")` resolves to the variant payload type under Constructor-Tuple Equivalence:
-  - Multi-field variants ($n \ge 2$): Resolves to anonymous product tuple `(T1, ..., Tn)`.
-  - Single-field variants ($n = 1$): Resolves to payload type $T_1$ without a tuple wrapper.
-  - Unit payload constructors (`Variant()` or `Variant(())`). Resolve to `()`.
-  - Nullary tags (declared `Variant`): Resolves to unit `()` as its injection domain.
-- **Tuples**: `Pair.0` or `Pair.(0)` resolves to the component type at positional index $K$.
+
+For a composite type $T$ and coordinate key $k$, `T.(k)` statically projects the constituent shape:
+- **Records**: `User.id` or `User.("id")` resolves to the field type.
+- **Sum Types**: `UiEvent.Click` or `UiEvent.("Click")` resolves to the variant payload type under Constructor-Tuple Equivalence (multi-field variants resolve to `(T1, ..., Tn)`; single-field to $T_1$; unit / nullary to `()`).
+- **Tuples**: `Pair.0` or `Pair.(0)` resolves to the positional component type.
 
 ```ril
 type Box<T> { Item<U>(U) -> Box<U> }
@@ -7274,114 +7315,72 @@ type IntPayload = Expr<i64>.Int       -- i64
 -- type WrongPayload = Expr<i64>.Bool -- Error [E0301]: incompatible constructor result equation
 ```
 
-Sum `keyof` lists declared variant names even when a supplied index excludes a variant. A GADT payload projection must satisfy the selected constructor's result equation under the existing constraints and recover each variant-local parameter. An incompatible or unresolved equation is `E0301`. Projection introduces no new ambient type equality; membership in `keyof` alone does not prove that a variant is possible.
-
-#### Universal Member Mode Projection
-
-```ril
-type State = { id: i64, var title: str, mut items: []i64 }
-meta let ID_MODE: MemberMode = modeof State.id          -- MemberMode::Let
-meta let TITLE_MODE = modeof State.title                -- MemberMode::Var
-meta let ITEMS_MODE = modeof State.items                -- MemberMode::Mut
-meta let TUPLE_MODE = modeof (var i64, mut []i64).0     -- MemberMode::Var
--- meta let BAD_TARGET = modeof UiEvent.Click          -- Error [E0358]: modeof requires a product type
--- meta let UNKNOWN = modeof State.missing             -- Error [E0336]: this product has no field 'missing'
-```
-
-`modeof T.(K)` statically queries the declared `MemberMode` of a record field or tuple position. A sum type variant or other non-product target triggers `E0358`; an unknown product field retains `E0336`. In mapped comprehensions, `modeof T.(K)` appears directly before the coordinate bracket without grouping parentheses.
-
-The result preserves both slot and access components, including well-sorted symbolic member parameters in generic contexts. An instantiated `via` schema exposes its actual resolved mode. A required unresolved instance is `E0344`; mode reflection is static.
+#### Member Mode Introspection and Retention
 
 ```ril
 type Elements<T, M: MemberMode> = [M]T
-type Views = Elements<{ var count: i64 }, ref>
--- type BadViews = Elements<{ var count: i64 }, var ref>
+type Views = Elements<.{ var count: i64 }, ref>
+-- type BadViews = Elements<.{ var count: i64 }, var ref>
 -- Error [E0356]: complete replacement-bearing mode is not an element-access mode
 ```
 
+Mode introspection preserves slot and access components in generic contexts. Unresolved instances trigger `E0344`.
+
 #### Mapped Record and Tuple Types
 
-Each source expression is checked in its enclosing scope. The `PascalCase` binder names each selected key/index within the generated member's mode and type.
+Mapped types evaluate a comprehension clause `[Expression as Pattern]` over compile-time coordinate collections:
 
-- **Mapped Records**: `{ [Expr as K]: TypeExpr }` requires static `[]str`; integer keys are `E0341`. Duplicate/invalid labels are `E0210`/`E0102`; sum type tables may use `PascalCase` constructor labels.
-- Mapped members default to immutable; an explicit `ModeExpression` (`MemberMode` literal, `modeof` projection, or static mode parameter) applies to generated members. `T.(K)` projects the member's data type, not its binding mode. Records and sums use the same mapping form:
-  ```ril
-  -- Generic visitor / handler table valid for BOTH records and sum types:
-  type SchemaTable = \T -> <{
-      [keyof T as K]: T.(K)
-  }>
-  ```
-- **Member Mode Compatibility (`E0402`, `E0357`)**: Value-type members cannot receive `mut`, `^mut`, or `ref`. Mapped comprehensions reject incompatible modes without silently substituting another mode. Distinct modes across field types must be formulated explicitly via type functions.
-- **Mapped Tuples (`( [Expr as I]: TypeExpr )`)**. `Expr` must evaluate to compile-time `[]i64`. An empty index array produces `()`. Supplying `[]str` triggers `E0342` (`InvalidTupleKeySortError`).
-- **Single-Element Tuple Prohibition (`E0343`)**: A mapped tuple comprehension evaluated over an index array of length 1 is statically rejected at compile time, preserving the invariant that Ril has no 1-tuples.
+- Mapped records require string keys (`E0341`).
+- Mapped tuples require `i64` indices (`E0342`). An empty index array produces `()`; an index array of length 1 triggers `E0343` (no 1-tuples).
+- `ModeModifier` defaults to immutable (`let`); a bound mode variable (e.g. `m` from `as (m, k)`) or a literal mode (`var`, `mut`, `ref`, `^mut`) applies to generated members. Incompatible value-type modes trigger `E0402`.
 
 ```ril
-type Readonly = \T -> <{ [keyof T as K]: T.(K) }>
-type Bag = { mut items: []i64 }
-type FixedFields = Readonly<Bag>        -- { items: []i64 }; default member is deeply immutable
-type Box = { var tag: i64, mut bag: FixedFields }
+-- 1. Preserve MemberMode via coords:
+type Clone = \T -> <.{ m [coords(<T>) as (m, k)]: T.(k) }>
+
+-- 2. Default immutable record (Readonly):
+type Readonly = \T -> <.{ [coords(<T>) as (_, k)]: T.(k) }>
+
+type Bag = .{ mut items: []i64 }
+type FixedFields = Readonly<Bag>        -- .{ items: []i64 }
+type Box = .{ var tag: i64, mut bag: FixedFields }
 let mut box = Box.{ tag: 0, bag: FixedFields.{ items: [1] } }
 box.tag = 1
 -- box.bag.items !> Array::push(2)    -- Error [E0520]: a default member blocks nested writes
-type Slots = \T -> <{ var [keyof T as K]: T.(K) }>
-type PairSlots = (var [[0, 1] as I]: i64) -- (var i64, var i64)
 
--- Exact MemberMode preservation via modeof:
-type Pick = \T: { ..never }, included: []str -> {
-    let valid_keys = keyof T |> Array::filter(\k -> included |> Array::contains(k))
-    <{ modeof T.(K) [valid_keys as K]: T.(K) }>
+-- 3. Replaceable fields:
+type Slots = \T -> <.{ var [coords(<T>) as (_, k)]: T.(k) }>
+type PairSlots = (var [[0, 1] as (_, i)]: i64) -- (var i64, var i64)
+
+-- 4. Pipeline filtering (Pick):
+type Pick = \T: .{ ..never }, included: []str -> {
+    let filtered = coords(<T>) |> Array::filter(\(m, k) -> included |> Array::contains(k))
+    <.{ m [filtered as (m, k)]: T.(k) }>
 }
-type SubState = Pick<State, ["id", "items"]>   -- { id: i64, mut items: []i64 }
--- type BadMut = <{ mut [keyof { x: i64 } as K]: i64 }> -- Error [E0402]: value-type member cannot be mut
-```
+type SubState = Pick<State, ["id", "items"]>   -- .{ id: i64, mut items: []i64 }
 
-`Readonly` constructs default-member schemas. Ordinary `let` already removes effective member write/observation modes recursively; neither operation changes callable invocation contracts.
-
-```ril
--- Records:
-type User = { id: i64, name: str, active: bool }
-meta let USER_KEYS: []str = keyof User         -- ["active", "id", "name"] (UTF-8 sorted)
-type UserId = User.id                          -- i64
-type UserName = User.("name")                  -- str
-type PublicUser = Pick<User, ["id", "name"]>   -- { id: i64, name: str }
-
--- Sum types:
-type UiEvent {
-    Click({ x: i64, y: i64 }),
-    Hover(i64, i64),
-    Focus,
-}
-meta let EVENT_KEYS: []str = keyof UiEvent     -- ["Click", "Focus", "Hover"] (UTF-8 sorted)
-type ClickPayload = UiEvent.Click              -- { x: i64, y: i64 }
-type HoverPayload = UiEvent.("Hover")          -- (i64, i64)
-type FocusPayload = UiEvent.Focus              -- () (nullary injection domain)
-
-type EventHandlerTable = \T, R -> <{
-    [keyof T as K]: fn(T.(K)) -> R
+-- 5. Sum type dispatch tables:
+type EventHandlerTable = \T, R -> <.{
+    [variants(<T>) as k]: fn(T.(k)) -> R
 }>
 type UiHandlerTable = EventHandlerTable<UiEvent, ()>
--- { Click: fn({ x: i64, y: i64 }) -> (), Focus: fn(()) -> (), Hover: fn((i64, i64)) -> () }
+-- .{ Click: fn(.{ x: i64, y: i64 }) -> (), Focus: fn(()) -> (), Hover: fn((i64, i64)) -> () }
 
--- Tuples:
+-- 6. Canonical Tuple Reversal:
 type Pair = (i64, str)
-meta let PAIR_KEYS: []i64 = keyof Pair         -- [0, 1]
-type First = Pair.0                            -- i64
-type Second = Pair.(1)                         -- str
-
--- Canonical Tuple Reversal via array pipeline:
 halt type ReverseTuple = \T -> {
-    let rev_indices = keyof T |> Array::reverse
+    let rev_indices = coords(<T>) |> Array::map(\(m, k) -> k) |> Array::reverse
     <(
-        [rev_indices as I]: T.(I)
+        [rev_indices as (_, i)]: T.(i)
     )>
 }
 type ReversedPair = ReverseTuple<Pair>         -- (str, i64)
 type ReversedUnit = ReverseTuple<()>           -- ()
 
--- Rejection of Invalid Mapped Comprehensions:
--- type BadRecordKeys = { [[0, 1] as K]: i64 } -- Error [E0341]: mapped record comprehension requires '[]str' keys, found '[]i64'
--- type BadTupleKeys = ( [["a", "b"] as I]: i64 ) -- Error [E0342]: mapped tuple comprehension requires '[]i64' keys, found '[]str'
--- type Bad1Tuple = ( [[0] as I]: i64 )       -- Error [E0343]: mapped tuple comprehension produced single-element tuple (Ril strictly has no 1-tuples)
+-- Diagnostic rejection:
+-- type BadRecordKeys = .{ [[0, 1] as (_, k)]: i64 } -- Error [E0341]: mapped record requires '[]str' keys
+-- type BadTupleKeys = ( [["a", "b"] as (_, i)]: i64 ) -- Error [E0342]: mapped tuple requires '[]i64' keys
+-- type Bad1Tuple = ( [[0] as (_, i)]: i64 )          -- Error [E0343]: single-element tuple prohibited
 ```
 
 ### Structural Type Pattern Matching
@@ -7389,28 +7388,41 @@ type ReversedUnit = ReverseTuple<()>           -- ()
 Static tokens use ordinary `MatchExpr` with any token-valued subject expression. Type patterns match the represented type. Bare literals within a type pattern are limited to const-argument positions.
 
 ```ebnf
-TypePattern      ::= "<" TypePatternInner ">"
-TypePatternInner ::= RigidNominalPattern | TypeTuplePattern | TypeRecordPattern
-                   | TypeArrayPattern | TypeMapPattern | PrimitivePattern | LiteralPattern | "_" | "let" ( PascalCase | "_" )
-RigidNominalPattern ::= QualifiedName [ "<" TypePatternInner { "," TypePatternInner } [ "," ] ">" ]
-PrimitivePattern ::= PrimitiveType
-TypeArrayPattern ::= "[" [ Expression ] "]" TypePatternInner
-TypeMapPattern  ::= "[" TypePatternInner ":" TypePatternInner "]"
-TypeRecordPattern ::= "{" [ ( TypeRestPattern | TypePatternField { "," TypePatternField }
-                      [ "," TypeRestPattern ] ) [ "," ] ] "}"
-TypePatternField ::= [ ModePattern ] FieldLabel ":" TypePatternInner
-TypePatternMember ::= [ ModePattern ] TypePatternInner
-ModePattern      ::= MemberMode | "let" PascalCase
-TypeTuplePattern ::= "(" ")" | "(" TypePatternMember "," ( TypeRestPattern | TypePatternMember { "," TypePatternMember } [ "," TypeRestPattern ] [ "," ] ) ")"
-TypeRestPattern ::= ".." [ "let" ( PascalCase | "_" ) ]
+TypePattern          ::= "<" TypePatternInner ">"
+TypePatternInner     ::= "_"
+                       | "let" PascalCase
+                       | TypeTuplePattern
+                       | TypeRecordPattern
+                       | TypeArrayPattern
+                       | TypeMapPattern
+                       | RigidNominalPattern
+                       | PrimitivePattern
+                       | LiteralPattern
+
+TypeTuplePattern     ::= "(" ")"
+                       | "(" TypePatternMember "," TypePatternTupleTail ")"
+TypePatternTupleTail ::= TypeRestPattern [ "," ]
+                       | TypePatternMember { "," TypePatternMember } [ "," TypeRestPattern ] [ "," ]
+
+TypePatternMember    ::= "_"
+                       | [ MemberMode ] TypePatternInner
+                       | "let" PascalCase TypePatternInner
+
+TypeRecordPattern    ::= ".{" [ TypeRecordPatternList ] "}"
+TypeRecordPatternList::= TypeRestPattern [ "," ]
+                       | TypePatternField { "," TypePatternField } [ "," TypeRestPattern ] [ "," ]
+
+TypePatternField     ::= [ MemberMode ] FieldLabel ":" ( TypePatternInner | "_" )
+                       | "let" PascalCase FieldLabel ":" ( TypePatternInner | "_" )
+
+TypeRestPattern      ::= ".." [ PascalCase ]
 ```
 
-- **Scoped Pattern Variables (`let U`)**: A `let U` binder inside `<P>` introduces an immutable target-type variable scoped strictly to the arm's guard and RHS. `U` must be `PascalCase` (`E0101`); it alone proves no record structure or fields.
-- **Member Modes and Mode Pattern Binders (`let M`)**: Structural type patterns match declared member modes exactly; omission means the default mode. A member mode may be explicitly matched against concrete modes (`var`, `mut`, etc.) or captured via a scoped mode variable `let M` (e.g. `<(let M let Head, ..let Tail)>` or `<{ let M field: let U, ..let Rest }>`), where `M` is bound to the matched coordinate's `MemberMode`. Row/tuple rests preserve remaining member modes. The `let U` type-variable binder remains explicit.
-- **Anonymous Rest**: `..` (equivalently `..let _`) matches the remaining row/tuple without binding a name. `<{ .. }>` matches any record, including `{}`; `<{}>` matches only the empty record. A named type-pattern rest uses `..let Rest`, not `..Rest`.
-- **Unique Pattern Binders**: Each pattern branch may bind an identifier at most once; repeating it is statically rejected (`E0347: DuplicatePatternBindingError`). Multi-position equality is asserted via explicit guards (`if <A> == <B>`).
-- **Tuple Rest**. A type-pattern rest is a tuple of the remaining components. An empty rest is `()`. A one-component rest fails the pattern, allowing the next arm to match.
-- **Rigid Application Head (`E0306`)**: Require a known rigid type constructor; no head binding or inverse type-function matching. Transparent aliases may expand. Primitive/structural patterns and whole-type `_`/`let U` remain legal.
+- **Scoped Pattern Variables (`let U`, `let M`)**: `let U` introduces a target-type variable; `let M` binds `MemberMode`. Bare `PascalCase` identifiers denote rigid nominal type matching.
+- **Wildcards and Slices**: `_` matches any `MemberMode` or `Type`. Anonymous rest `..` matches trailing elements without binding. Named rests use `..Tail` or `..Rest`.
+- **Tuple Slices and No 1-Tuple Invariant**: Ril has no 1-tuples (`()` is unit; `(T)` is scalar grouping). Anonymous `<(_, ..)>` matches tuples of arity $\ge 2$. Named `..Tail` fails if remaining components number 1.
+- **Unique Pattern Binders (`E0347`)**: Each pattern branch binds an identifier at most once; multi-position equality is asserted via explicit guards (`if <A> == <B>`).
+- **Rigid Application Head (`E0306`)**: Requires a known rigid type constructor; transparent aliases may expand. Primitive/structural patterns and whole-type `_`/`let U` remain legal.
 
 | Match evidence | Scope / invalidation |
 | :--- | :--- |
@@ -7422,20 +7434,18 @@ TypeRestPattern ::= ".." [ "let" ( PascalCase | "_" ) ]
 
 ```ril
 -- User and field_size have the preceding declarations.
-meta fn inspect_wide(token: Type) -> i64 {
+meta fn inspect_token<T>(token: Type<T>) -> i64 {
     match token {
-        <User> -> field_size(token, "id"),
-        _ -> 0,
+        <User> -> field_size<User, "id">(token),
+        _      -> 0,
     }
 }
 meta let _ = {
-    var selected: Type = <User>
-    match selected {
+    let tok: Type<User> = <User>
+    match tok {
         <let U> -> {
             let snapshot = <U>
-            selected = <i64>
             assert(snapshot == <User>)
-            -- let stale = field_size(selected, "id") -- Error [E0301]: U does not retarget with selected
         },
     }
 }
@@ -7443,46 +7453,46 @@ meta let _ = {
 
 ```ril
 halt type RecordOnly = \T -> match <T> {
-    <{ .. }> -> <T>,
+    <.{ .. }> -> <T>,
     _ -> <never>,
 }
-type EmptyRecord = RecordOnly<{}>               -- {}
+type EmptyRecord = RecordOnly<.{}>               -- .{}
 type NotRecord = RecordOnly<i64>                -- never
 
 -- Deep Recursive Unwrapping of Container / Fallible Types:
 type UnwrapAll = \T -> match <T> {
-    <Result<let OkVal, let _>> -> UnwrapAll<OkVal>,
-    <Option<let SomeVal>>      -> UnwrapAll<SomeVal>,
-    _                              -> <T>,
+    <Result<let OkVal, _>> -> UnwrapAll<OkVal>,
+    <Option<let SomeVal>>  -> UnwrapAll<SomeVal>,
+    _                      -> <T>,
 }
 
 -- Element Extraction from Collections:
 halt type ElementOf = \T -> match <T> {
     <[]let E>        -> <E>,
     <Set<let E>>     -> <E>,
-    <[let _: let V]> -> <V>,
-    _                    -> <never>,
+    <[_: let V]>     -> <V>,
+    _                -> <never>,
 }
 
 -- Tuple Destructuring:
 halt type DeconstructTuple = \T -> match <T> {
-    <(let Head, ..let Tail)> -> <{ head: Head, tail: Tail }>,
-    _                            -> <never>,
+    <(let Head, ..Tail)> -> <.{ head: Head, tail: Tail }>,
+    _                    -> <never>,
 }
 
 -- Member Mode Pattern Destructuring:
 halt type DeconstructMember = \T -> match <T> {
-    <(let M let Head, ..let Tail)>       -> <{ mode: M, head: Head, tail: Tail }>,
-    <{ let M field: let U, ..let Rest }> -> <{ mode: M, field: U, rest: Rest }>,
-    _                                    -> <never>,
+    <(let M let Head, ..Tail)>         -> <.{ mode: M, head: Head, tail: Tail }>,
+    <.{ let M field: let U, ..Rest }>   -> <.{ mode: M, field: U, rest: Rest }>,
+    _                                  -> <never>,
 }
 
 type Nested = Option<Result<i64, str>>
 type Unwrapped = UnwrapAll<Nested>             -- i64
 -- UnwrapAll uses the evaluation budget: recursive type graphs need not have a finite wrapper depth.
 type Elem = ElementOf<[]str>                   -- str
-type HeadTail = DeconstructTuple<(u8, i32, f64)>-- { head: u8, tail: (i32, f64) }
-type ExtractedTuple = DeconstructMember<(mut []i64, str, bool)> -- { mode: MemberMode::Mut, head: []i64, tail: (str, bool) }
+type HeadTail = DeconstructTuple<(u8, i32, f64)>-- .{ head: u8, tail: (i32, f64) }
+type ExtractedTuple = DeconstructMember<(mut []i64, str, bool)> -- .{ mode: MemberMode::Mut, head: []i64, tail: (str, bool) }
 
 -- Rejection of Non-Rigid Type Patterns (E0306):
 -- type BadPattern = \T -> match <T> {
@@ -7495,22 +7505,22 @@ type ExtractedTuple = DeconstructMember<(mut []i64, str, bool)> -- { mode: Membe
 
 Type functions accept the following parameter sorts and constraints:
 
-- **Bare Types (`\T` or `\T: Type`)**: Accepts static type expressions. Unannotated parameters default to sort `Type`.
-- **Const Values (`\param: ValueType`)**: Accepts compile-time known values (literals, `meta let`, statically foldable expressions), including `token: Type` / `token: Type<T>`. Passing runtime variables raises `E0814`. Token arguments are copied at argument evaluation and compared by target identity.
-- **Bounded Structural Types (`\T: { id: i64, .. }`) and Static Keys (`\K: keyof T`)**: Structural bounds constrain types; `keyof` bounds constrain static key values. These are distinct sorts even though both use `PascalCase` binders.
+- **Bare Types (`\T` or `\T: Type`)**: Accepts static type expressions (`E0306` on value).
+- **Const Values (`\param: ValueType`)**: Accepts compile-time values (`E0814` on runtime value, `E0323` on sort mismatch), with optional pipeline constraints (`\key |> Key<T>` or `\key: str |> Key<T>`).
+- **Bounded Structural Types (`\T: .{ id: i64, .. }`)**: Structural bounds constrain types.
 - **Higher-Kinded Constructors (`\M: Type -> Type`)**: Enforces constructor kind arity (`E0306`).
-- **Default Sort Arguments**: Type function parameters support default expressions conforming to their sort: `\T = u8`, `\cap: i64 = 1024`. Default arguments follow the left-to-right scoping and trailing-default rules ([Generic Parameters, Defaults, and Value Sorts](#generic-parameters-defaults-and-value-sorts)).
+- **Default Arguments**: Follow trailing-default (`E0316`) and left-to-right scoping (`E0320`) rules.
 
 | Parameter | Kind / value category |
 | :--- | :--- |
-| `\T: Type` | Type argument |
+| `\T` / `\T: Type` | Type argument; a value expression is not admitted (`E0306`) |
+| `\cap: i64` | Static value argument of sort `i64` |
+| `\key \|> Key<T>` | Static key value argument constrained by `Key<T>` guard |
 | `\M: Type -> Type` | Constructor receiving a type argument and producing a type |
-| `\token: Type` | Static token value argument, not a constructor of kind `Type -> Type` |
-| `\K: keyof T` | Static key value argument, not a type |
 
 ```ril
-type SchemaV1 = { id: i64, name: str }
-type SchemaV2 = { id: i64, name: str, email: str }
+type SchemaV1 = .{ id: i64, name: str }
+type SchemaV2 = .{ id: i64, name: str, email: str }
 
 type VersionedSchema = \version: i64 -> match version {
     1 -> <SchemaV1>,
@@ -7518,14 +7528,18 @@ type VersionedSchema = \version: i64 -> match version {
     _ -> <never>,
 }
 
-type ActivePayload = VersionedSchema<2>        -- SchemaV2
+type ActivePayload = VersionedSchema<2>        -- SchemaV2; 2 supplies the declared const 'version'
 
-type PickField = \T: { .. }, K: keyof T -> <T.(K)>
+type PickField = \T: .{ .. }, key: str |> Key<T> -> <T.(key)>
 type UserName = PickField<SchemaV1, "name">    -- str
 
 type Wrapper = \M: Type -> Type, T -> <M<T>>
 type OptInt = Wrapper<Option, i64>             -- Option<i64>
--- type BadKind = Wrapper<Resolve, i64>         -- Error [E0306]: Resolve receives a token value, not a type argument
+
+-- Value/type argument separation:
+type IntType = typeof 1024                     -- i64
+-- type BadValueArg = VersionedSchema<u8>      -- Error [E0323]: a type cannot supply const parameter 'version'
+-- type BadTypeArg = Wrapper<1024, i64>        -- Error [E0306]: a value cannot supply type parameter 'M'
 ```
 
 ### Compile-Time Evaluation and Layout Queries
@@ -7554,9 +7568,9 @@ meta fn align_to(offset: i64, alignment: i64) -> i64 {
 }
 halt type BufferShape = \capacity: i64 ->
     if capacity <= 64 {
-        <{ inline_data: []u8, len: i64 }>
+        <.{ inline_data: []u8, len: i64 }>
     } else {
-        <{ heap_ptr: i64, capacity: i64, len: i64 }>
+        <.{ heap_ptr: i64, capacity: i64, len: i64 }>
     }
 meta let CAPACITY = align_to(60, 16)
 type Buffer = BufferShape<CAPACITY>
@@ -7568,17 +7582,18 @@ Shape declarations promise no packed order, offsets, pointer size, or external b
 
 ```ril
 -- Language-defined static declaration exposed by the prelude:
--- meta fn byte_size(value: Type) -> i64
+-- pub meta fn byte_size<T>(token: Type<T>) -> i64
 meta let BYTE_SIZE = byte_size(<u8>)
 meta let _ = assert(BYTE_SIZE == 1)
 -- let runtime_size = byte_size(<u8>) -- Error [E0810]: query requires static evaluation
+-- let bad_bare = byte_size(u8)       -- Error [E0319]: bare type in expression context
 ```
 
 | `byte_size` contract | Rule |
 | :--- | :--- |
-| Input | A `Type` token; query its represented target, not the token implementation |
+| Input | A `Type<T>` token; query its represented target, not the token implementation. Bare type names must not be passed (`E0319`) |
 | Result | Nonnegative `i64` size of the represented target's value/handle on the selected abstract target; not its reachable graph |
-| Layout domain | Static-only metatypes such as `Type` / `Type<User>`, and shapes requiring their materialization, have no ordinary run-time layout (`E0306`) |
+| Layout domain | Static-only metatypes such as `Type<User>`, and shapes requiring their materialization, have no ordinary run-time layout (`E0306`) |
 | Phase | Static only; finite; usable by meta/type computations and other required static evaluations |
 | Ordinary execution | `E0810`; a `meta let` result may be used as an ordinary constant |
 | Visibility | Prelude declaration with ordinary lexical shadowing; not reserved syntax |
@@ -7897,8 +7912,11 @@ Built-in operations use the same surface signature forms as user-defined Ril fun
 | `clone` | `pub fn clone<T \|> SharedObject>(via value: T) -> new T` | None | Run-time | $O(\text{visited + materialized})$ | Isolated construction `new T` for ordinary shared-object data |
 | `derive` | `pub fn derive<T \|> SharedObject>(base: T, recipe: fn(mut draft: Draft<T>) @& -> ()) -> T` | Forwards recipe | Run-time | $O(\text{visited + copied})$ | Path updates on an immutable shared-object root via a confined draft |
 | `div_budget` | `pub fn div_budget<T>(limit: u64, action: fn() @& -> T) -> Result<T, BudgetError>` | Forwards action minus Div | Dual-phase | See [charging rules](#allowance-and-charging) | Covered finite evaluation; preserves other effects and state/provenance obligations |
-| `byte_size` | `pub meta fn byte_size(value: Type) -> i64` | None | Static only | $O(1)$ | Size of the represented target's value/handle; static-only targets have no run-time layout |
-| `type_name` | `pub meta fn type_name(value: Type) -> str` | None | Static only | $O(\text{len})$ | Diagnostic description of the token's target, including static metatypes; spelling does not determine type identity |
+| `byte_size` | `pub meta fn byte_size<T>(token: Type<T>) -> i64` | None | Static only | $O(1)$ | Size of the represented target's value/handle; static-only targets have no run-time layout |
+| `type_name` | `pub meta fn type_name<T>(token: Type<T>) -> str` | None | Static only | $O(\text{len})$ | Diagnostic description of the token's target, including static metatypes; spelling does not determine type identity |
+| `coords` | `pub meta fn coords<T>(token: Type<T>) -> [](MemberMode, CoordKey<T>)` | None | Static only | $O(\text{members})$ | Enumerate member modes and coordinates for record or tuple product types; non-product targets trigger `E0358` |
+| `variants` | `pub meta fn variants<T>(token: Type<T>) -> []str` | None | Static only | $O(\text{variants})$ | Enumerate variant constructor names for sum types; non-sum targets trigger `E0301` |
+| `Key` | `pub halt type Key = \key: CoordKey<T>, T -> match <T> { <.{ .. }> -> if coords(<T>) \|> Array::any(\(m, k) -> k == key) { <()> } else { <never> }, <()> \| <(_, ..)> -> if coords(<T>) \|> Array::any(\(m, k) -> k == key) { <()> } else { <never> }, _ -> <never> }` | None | Static only | $O(\text{members})$ | Pipeline constraint guard verifying coordinate `key` belongs to product target `T`; invalid key yields `<never>`, intercepted by `E0323` |
 | `panic` | `pub halt fn panic(message: str) -> never` | None | Dual-phase | Finite | Initiates panic unwinding at run time; stops static evaluation with `E0831` |
 | `assert` | `pub halt fn assert(condition: bool, message: str = "assertion failed") -> ()` | None | Dual-phase | $O(1)$ | Panics on false condition; static failure is `E0830` |
 | `print` | `pub fn print(text: str) @Fiber -> ()` | `@Fiber` | Run-time | $O(\text{len})$ | Writes UTF-8 text to standard output without trailing newline |
@@ -7915,28 +7933,28 @@ Built-in operations use the same surface signature forms as user-defined Ril fun
 | `Tuple` | Visible tuple types of arity zero or at least two, with any legal member modes |
 | `NominalWrapper` | Visible nominal wrapper declarations, including unit nominal declarations. Sum and opaque declarations introduce no such wrapper |
 
-The following definition gives the `Tuple` guard's behavior under the [structural type-pattern rules](#structural-type-pattern-matching). The exact two-member arm covers the case where a one-member rest could not form a tuple.
+The following definition gives the `Tuple` guard's behavior under the [structural type-pattern rules](#structural-type-pattern-matching). The `<(_, ..)>` pattern covers all tuples with arity $\ge 2$, while `<()>` matches the empty unit tuple:
 
 ```ril
 halt type Tuple = \T -> match <T> {
-    <()>                        -> <T>,
-    <(let M let _, let N let _)> -> <T>,
-    <(let M let _, ..)>          -> <T>,
-    _                           -> <never>,
+    <()>      -> <T>,
+    <(_, ..)> -> <T>,
+    _         -> <never>,
 }
 meta let _ = assert(<Tuple<(var i64, str)>> == <(var i64, str)>)
 meta let _ = assert(<Tuple<(i64, str, bool)>> == <(i64, str, bool)>)
+meta let _ = assert(<Tuple<(i64)>> == <never>)
 meta let _ = assert(<Tuple<()>> == <()>)
 meta let _ = assert(<SharedObject<()>> == <never>)
 ```
 
 ```ril
-type Cell = { var count: i64 }
+type Cell = .{ var count: i64 }
 meta let _ = assert(<SharedObject<[mut]Cell>> == <[mut]Cell>)
 meta let _ = assert(<LenTarget<[str: ref Cell]>> == <[str: ref Cell]>)
 ```
 
-`Unwrap<W>` is a static type operation on `W |> NominalWrapper`. It produces the wrapper's immediate payload type with its declared member modes, or `()` for a unit nominal. `inner` uses this type and derives the result access and provenance separately. `Draft<T>` follows the [scoped draft rules](#normative-rules-for-functional-updates).
+`Unwrap<W>` is a static type operation on `W |> NominalWrapper`. It produces the wrapper's immediate payload type with its declared member modes, or `()` for a unit nominal. `inner` uses this type and derives the result access and provenance separately. `Draft<T>` follows the [scoped draft rules](#normative-rules-for-functional-updates). `CoordKey<T>` is the associated coordinate key sort: `str` for record product types and `i64` for tuple product types.
 
 An ineligible type argument normally fails its guard with `E0301`. At the built-in call boundary, apply the specific diagnostics for value-type argument modes (`E0401`), opaque unwrapping (`E0308`), non-clonable authority (`E0530`), and invalid `derive` inputs (`E0536`) under their defining rules.
 
@@ -7957,8 +7975,8 @@ An ineligible type argument normally fails its guard with `E0301`. At the built-
 - **Copying** follows [deep immutability](#deep-immutability). Sender duplication uses the [channel operation](#structured-concurrency-channels).
 - **Functional updates** follow the [draft rules](#normative-rules-for-functional-updates).
 - **Static Layout Query (`byte_size`)**:
-  - `meta fn byte_size(value: Type) -> i64` queries the represented target's nonnegative value/handle size ([Compile-Time Evaluation and Layout Queries](#compile-time-evaluation-and-layout-queries)). Static-only metatypes have no ordinary layout (`E0306`); widening does not change the target being queried.
-  - Static-only: permitted during compile-time static evaluation (`meta let`, type functions); calling `byte_size` in runtime code is `E0810`.
+  - `pub meta fn byte_size<T>(token: Type<T>) -> i64` queries the represented target's nonnegative value/handle size ([Compile-Time Evaluation and Layout Queries](#compile-time-evaluation-and-layout-queries)). Static-only metatypes have no ordinary layout (`E0306`).
+  - Static-only: permitted during compile-time static evaluation (`meta let`, type functions); calling `byte_size` in runtime code is `E0810`. Bare type names cannot be passed directly (`E0319`); pass `<T>`.
   - Grants no packed layout, field offset, or external ABI alignment guarantees.
 - **Defect Initiation and Assertions (`panic`, `assert`)**:
   - `panic(message: str) -> never` is a dual-phase defect primitive:
@@ -8084,7 +8102,7 @@ This index assigns each code its diagnostic name and points to its defining rule
 | **`E0303`** | [`NonExhaustiveMatchError`](#pattern-matching) |
 | **`E0304`** | [`UnreachableMatchArmError`](#pattern-matching); [Sum Types and GADTs](#sum-types-and-gadts) |
 | **`E0305`** | [`NominalTypeMismatchError`](#nominal-type-wrappers) |
-| **`E0306`** | [`KindMismatchError`](#structural-type-pattern-matching); [Record Rows](#record-types-and-row-polymorphism); [Static Layout](#compile-time-evaluation-and-layout-queries) |
+| **`E0306`** | [`KindMismatchError`](#structural-type-pattern-matching); [Generic Parameters](#generic-parameters-defaults-and-value-sorts); [Static Parameter Sorts](#static-parameter-sorts-and-adaptation-rules); [Record Rows](#record-types-and-row-polymorphism); [Static Layout](#compile-time-evaluation-and-layout-queries) |
 | **`E0307`** | [`MissingFieldError`](#record-types-and-row-polymorphism) |
 | **`E0308`** | [`OpaqueBoundaryViolationError`](#type-declarations-and-opaque-types) |
 | **`E0309`** | [`VacuousBindingError`](#guarded-bindings-and-non-vacuous-invariant) |
@@ -8096,12 +8114,12 @@ This index assigns each code its diagnostic name and points to its defining rule
 | **`E0315`** | [`EscapingLocalNominalTypeError`](#block-expressions-tail-values-and-hoisted-declarations) |
 | **`E0316`** | [`NonTrailingDefaultGenericParamError`](#generic-parameters-defaults-and-value-sorts) |
 | **`E0317`** | [`FunctionDefaultGenericProhibitedError`](#generic-parameters-defaults-and-value-sorts) |
-| **`E0318`** | [`LiteralTypeProhibitedError`](#generic-parameters-defaults-and-value-sorts) |
+| **`E0318`** | [`LiteralTypeProhibitedError`](#generic-parameters-defaults-and-value-sorts); [Static Type Values](#static-type-values-and-type-quotation) |
 | **`E0319`** | [`BareTypeInExpressionContextError`](#static-type-values-and-type-quotation) |
 | **`E0320`** | [`ForwardTypeDefaultReferenceError`](#generic-parameters-defaults-and-value-sorts) |
 | **`E0321`** | [`NormallyCompletingElseError`](#guarded-bindings-and-non-vacuous-invariant) |
 | **`E0322`** | [`WildcardExpressionError`](#identifiers-and-casing-invariants) |
-| **`E0323`** | [`ConstGenericSortMismatchError`](#generic-parameters-defaults-and-value-sorts) |
+| **`E0323`** | [`ConstGenericSortMismatchError`](#generic-parameters-defaults-and-value-sorts); [Static Parameter Sorts](#static-parameter-sorts-and-adaptation-rules) |
 | **`E0324`** | [`DynamicRecordIndexProhibitedError`](#record-types-and-row-polymorphism) |
 | **`E0325`** | [`DuplicateArgumentError`](#default-parameters-and-named-arguments) |
 | **`E0326`** | [`LiteralOutOfRangeError`](#numeric-literals) |
@@ -8134,9 +8152,9 @@ This index assigns each code its diagnostic name and points to its defining rule
 | **`E0353`** | [`NullaryVariantCallError`](#constructor-tuple-equivalence-invariant) |
 | **`E0354`** | [`InvalidVariantContractError`](#sum-types-and-gadts) |
 | **`E0355`** | [`NonIterableValueError`](#loop-expressions) |
-| **`E0356`** | [`InvalidModeSortError`](#generic-parameters-defaults-and-value-sorts) |
+| **`E0356`** | [`InvalidModeSortError`](#generic-parameters-defaults-and-value-sorts); [Mapped Record and Tuple Types](#mapped-record-and-tuple-types) |
 | **`E0357`** | [`IncompatibleMemberModeError`](#mapped-record-and-tuple-types); [Record Types and Row Polymorphism](#record-types-and-row-polymorphism) |
-| **`E0358`** | [`InvalidModeProjectionTargetError`](#universal-member-mode-projection) |
+| **`E0358`** | [`InvalidModeProjectionTargetError`](#coordinate-and-variant-introspection-coords-variants); [Member Mode Introspection and Retention](#member-mode-introspection-and-retention) |
 
 ### Parameters, Argument Modes, and Defaults
 
