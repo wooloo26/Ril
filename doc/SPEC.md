@@ -1089,7 +1089,7 @@ Map lookups must use safe bracket navigation (`m?[k]`), evaluating to `?V` (`Opt
 | Collection length | `i64`, from zero through $2^{63}-1$ per collection |
 | Counted units | Array elements; map entries; set members; `str` scalars; `bytes` bytes |
 | String UTF-8 extent | Byte count also fits `i64` |
-| Construction / growth / formatting / conversion | Compute resulting extents as mathematical integers; exceeding the limit panics before publication or structural change (`E0831` in static evaluation) |
+| Construction / growth / formatting / conversion | Tracing GC manages allocation; exceeding collection extent or memory exhaustion panics on allocation (`E0831` in static evaluation) |
 | Existing map key / set member | Replacement / reinsertion preserves the count |
 | Array element index / sequence slice endpoint | `i64`; another typed numeric value is `E0301` |
 | Array bounds failure | Ordinary lookup panics; safe lookup returns `None` |
@@ -1107,10 +1107,10 @@ assert(items[converted ?? 0] == 20)
 ```
 
 ```ril
--- Fixture input: full is a writable []u8 with length 9_223_372_036_854_775_807.
-assert(len(ref full) == 9_223_372_036_854_775_807)
--- full !> Array::push(0u8)            -- Panics: growth exceeds the collection limit
--- let impossible = len(ref full) + 1 -- Panics: ordinary checked i64 overflow
+let full: [mut]u8 = [0u8]
+assert(len(ref full) == 1)
+-- Bounds violations panic at runtime:
+-- let out_of_bounds = full[5]         -- Panics: index 5 is outside length 1
 ```
 
 ### Sum Types and GADTs
@@ -1839,7 +1839,7 @@ ValueType             ::= TypeExpression
 - **Trailing Defaults Invariant (`E0316`)**: If a generic parameter declares a default argument (`= Default`), all subsequent generic parameters in the same parameter list must declare default arguments.
 - **Left-to-Right Default Scope Invariant (`E0320`)**: A default argument expression $D_i$ may reference generic parameters declared to its left ($X_1, \dots, X_{i-1}$). Forward references and direct/indirect circular dependencies are statically rejected (`E0320`).
 - **Member Mode Sorts (`M: MemberMode`, `E0356`)**: Static parameters may constrain to the ambient `MemberMode` sort. Arguments accept member mode literals (`var`, `mut`, `^mut`, `ref`, etc.) or static expressions yielding `MemberMode`. Incompatible sorts fail with `E0356`.
-- **Generic Closed Type Sets (`TypeSetSort`, `E0301`)**: A generic parameter may constrain its admitted domain to a finite union of types (`T: i64 | f64`), monomorphizing $T$ to each concrete member. Definition-site polyvariant checking verifies body operations and signature type functions across all $\tau \in \{T_1, \dots, T_n\}$ (`E0301`). At call sites, $T$ resolves to a rigid member before signature type functions evaluate. Result types must normalize to a single rigid type per member (`E0318`).
+- **Generic Closed Type Sets (`TypeSetSort`, `E0301`, `E0304`)**: A generic parameter or type function parameter may constrain its admitted domain to a finite union of types (`T: i64 | f64` or `\T: i64 | f64`), monomorphizing $T$ to each concrete member. Definition-site polyvariant checking verifies body operations and signature type functions across all $\tau \in \{T_1, \dots, T_n\}$ (`E0301`). At call sites, $T$ resolves to a rigid member before signature type functions evaluate. Static `match <T>` arms covering all members of the closed set are exhaustive; adding a redundant `_` arm is rejected (`E0304`). Result types must normalize to a single rigid type per member (`E0318`).
 - **Pipeline Type Constraints (`T |> Guard`, `E0301`, `E0306`)**: A type parameter may pipe into one or more pure type functions (`T |> Numeric`). The guard must be a compile-time pure `type` function of kind `Type -> Type` (`E0306`). An argument type $T_{arg}$ satisfies the guard if and only if:
   $$\text{Valid}(T_{arg}) \iff T_{arg} \not\equiv \text{never} \quad \wedge \quad \text{Guard}\langle T_{arg} \rangle \equiv T_{arg}$$
   The bottom type `never` is statically rejected before guard evaluation, preventing vacuous satisfaction. If $\text{Guard}\langle T_{arg} \rangle$ does not produce definitional identity with $T_{arg}$, the argument is rejected under `E0301`. Multiple guards pipe from left to right: `T |> Guard1 |> Guard2` $\equiv \text{Guard2}\langle \text{Guard1}\langle T \rangle \rangle$.
@@ -1869,20 +1869,23 @@ assert(multiply(3, 4) == 12)
 -- let bad_mul = multiply("x", "y")     -- Error [E0301]: type 'str' does not satisfy constraint 'Numeric'
 
 -- Monomorphized Type Function on Closed Type Set:
-type TargetType = \T -> match <T> {
+type TargetType = \T: i64 | f64 -> match <T> {
     <i64> -> <f64>,
     <f64> -> <i64>,
-    _     -> <never>,
 }
 fn swap_num<T: i64 | f64>(x: T) -> TargetType<T> {
     match <T> {
         <i64> -> 0.0,
         <f64> -> 0,
-        _     -> panic("unreachable"),
     }
 }
 assert(swap_num(10) == 0.0)
 assert(swap_num(2.5) == 0)
+-- type BadRedundant = \T: i64 | f64 -> match <T> {
+--     <i64> -> <f64>,
+--     <f64> -> <i64>,
+--     _     -> <never>,               -- Error [E0304]: unreachable pattern arm
+-- }
 
 -- Rejections: Unspecialized type set application (E0306) and untagged union return (E0318):
 -- type BadApp = TargetType<i64 | f64>  -- Error [E0306]: type parameter 'T' requires a rigid type, not a type set
@@ -3074,6 +3077,8 @@ live.id = 3
 
 #### Value Tests with is
 
+`is` evaluates non-binding pattern conformity: testing tags, shapes, ranges, or structural record subsets. While `==` enforces symmetric same-type structural equality ($T \times T \to \text{bool}$), `is` performs asymmetric pattern testing with structural short-circuiting, driving flow-sensitive type narrowing.
+
 ```ril
 fn expected() -> i64 { 40 + 2 }
 let answer: Result<i64, str> = Ok(42)
@@ -4121,7 +4126,7 @@ Flow-sensitive type narrowing refines the static type of existing bindings in-pl
 
 ```ebnf
 NarrowingTarget    ::= Identifier | NarrowingFieldPath
-NarrowingFieldPath ::= Identifier "." FieldLabel [ "." FieldLabel [ "." FieldLabel ] ]
+NarrowingFieldPath ::= Identifier { "." FieldLabel }
 NarrowingOp        ::= "is" | "==" | "!="
 NarrowingPredicate ::= NarrowingTarget "is" IsTest
                      | NarrowingTarget "!=" "None"
@@ -4160,9 +4165,9 @@ NarrowingExpr      ::= NarrowingPredicate
    - A `never` branch contributes no normal-successor environment ($\Gamma \sqcup \bot = \Gamma$); effects, state access, and authority uses already executed before its termination remain in the invocation summary.
    - A narrowing predicate contradictory to an already active refinement is `E0311`. An ordinary constant-false condition is instead an inactive branch; it does not by itself produce this diagnostic.
    - Static dead-path pruning precedes [reachable authority-use analysis](#reachable-authority-use) (`E0527`); excluded operations and statements after an unconditional transfer do not count. Reaching panic or abort does not erase an earlier operation.
-- **Bounded Analysis**:
-    - **Path Bound**: Field paths are tracked through at most three projections after the root (`a.b.c.d`); deeper paths default to $T_{\text{root}}$.
-    - **Loop Widening**: Unconverged loop variables widen to $T_{\text{root}}$ after $K = 3$ iterations.
+- **Path Sensitivity and Stability**:
+    - **Stable Paths**: Field paths originating from immutable `let` bindings and immutable record fields are tracked across conditional dominance regions without depth limits. Overlapping slot assignment or mutable write invalidates affected facts (`E0310`).
+    - **Loop Convergence**: Variant elimination and optional unwrapping form a finite-height lattice; loop flow analysis converges in finite steps.
 
 ```ril
 type Cell = .{ var value: ?i64 }
@@ -4314,11 +4319,10 @@ fn test_dead_write_phase_ordering() -> () {
     -- }
 }
 
--- Path depth bound (depth <= 3 tracked; depth > 3 requires local 'let' anchor):
-fn test_bounded_path_depth(root: .{ a: ?.{ b: ?.{ c: ?.{ d: i64 } } } }) -> () {
+-- Stable path narrowing across deep field paths:
+fn test_deep_path_narrowing(root: .{ a: ?.{ b: ?.{ c: ?.{ d: i64 } } } }) -> () {
     if (root.a != None) && (root.a.b != None) && (root.a.b.c != None) {
-        let c_node = root.a.b.c                -- OK: path depth 3 (root.a.b.c) tracked
-        let d_val = c_node.d                   -- OK: access deeper fields through local anchor
+        let d_val: i64 = root.a.b.c.d          -- OK: deep stable path tracked directly
     }
 }
 ```
@@ -7546,6 +7550,7 @@ Type functions accept the following parameter sorts and constraints:
 - **Bounded Structural Types (`\T: .{ id: i64, .. }`)**: Structural bounds constrain types.
 - **Higher-Kinded Constructors (`\M: Type -> Type`)**: Enforces constructor kind arity (`E0306`).
 - **Default Arguments**: Follow trailing-default (`E0316`) and left-to-right scoping (`E0320`) rules.
+- **Closed Type Sets (`\T: TypeSetSort`, `E0301`, `E0304`)**: Restricts the admitted domain to rigid types in the declared set (`\T: i64 | f64`). Incompatible rigid types trigger `E0301`. Passing an unspecialized type set triggers `E0306`. Static pattern matching covering all declared members is exhaustive; redundant `_` arms trigger `E0304`.
 - **No Union Distribution (`E0306`, `E0318`)**: Type parameter `\T` accepts rigid types only (`E0306` on type set); type functions do not distribute over unions. Result must normalize to a single rigid token (`E0318`).
 
 | Parameter | Kind / value category |
