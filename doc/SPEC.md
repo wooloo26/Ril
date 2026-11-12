@@ -87,6 +87,21 @@ The following distinctions apply throughout the specification; their defining se
       - [Normative Rules for Functional Updates](#normative-rules-for-functional-updates)
     - [Generic Parameters, Defaults, and Value Sorts](#generic-parameters-defaults-and-value-sorts)
     - [Type Definition Boundaries](#type-definition-boundaries)
+  - [Static Semantics and Type Kernel](#static-semantics-and-type-kernel)
+    - [Static Contexts and Judgment Forms](#static-contexts-and-judgment-forms)
+    - [Type Formation and Binding](#type-formation-and-binding)
+    - [Definitional Equality and Recursive Types](#definitional-equality-and-recursive-types)
+    - [Subtyping, Reception, and Contract Compatibility](#subtyping-reception-and-contract-compatibility)
+    - [Bidirectional Expression Checking](#bidirectional-expression-checking)
+    - [Structural Joins and Normal Continuations](#structural-joins-and-normal-continuations)
+    - [Generic Evidence and Definition Checking](#generic-evidence-and-definition-checking)
+    - [Pattern Evidence and GADT Branches](#pattern-evidence-and-gadt-branches)
+    - [Anonymous Generalization and Fixed Storage](#anonymous-generalization-and-fixed-storage)
+    - [Authority, Calls, and Contract Operations](#authority-calls-and-contract-operations)
+    - [Recursive Summaries and Grounded Inference](#recursive-summaries-and-grounded-inference)
+    - [Phase Checking and Static Evaluation](#phase-checking-and-static-evaluation)
+    - [Semantic Interfaces and Diagnostic Boundaries](#semantic-interfaces-and-diagnostic-boundaries)
+    - [Core Rule Coverage](#core-rule-coverage)
   - [Declarations and Bindings](#declarations-and-bindings)
     - [Binding Modes and Storage Matrix](#binding-modes-and-storage-matrix)
       - [Reachable Authority Use](#reachable-authority-use)
@@ -1830,8 +1845,9 @@ KindSignature         ::= "Type" "->" ( "Type" | KindSignature )
 RecordConstraint      ::= ".{" [ RecordConstraintField { "," RecordConstraintField } "," ] RecordTail "}"
 RecordConstraintField ::= [ MemberMode ] FieldLabel ":" TypeExpression
 GenericArgs           ::= "<" GenericArg { "," GenericArg } [ "," ] ">"
-GenericArg            ::= TypeExpression | Expression
-ModeParamDecl         ::= PascalCase ":" ModeSortReference [ "=" ( MemberMode | QualifiedName ) ]
+GenericArg            ::= TypeExpression | Expression | MemberModeLiteral
+ModeParamDecl         ::= PascalCase ":" ModeSortReference [ "=" ( MemberModeLiteral | QualifiedName ) ]
+MemberModeLiteral     ::= "var" [ "mut" | "^mut" | "ref" ] | "mut" | "^mut" | "ref"
 ModeSortReference     ::= [ "ril/reflect::" ] "MemberMode"
 ValueType             ::= TypeExpression
 ```
@@ -1848,6 +1864,7 @@ ValueType             ::= TypeExpression
 - **Const Generic Evaluation & Purity Invariant (`E0814`, `E0323`)**: Const generic arguments evaluate at compile time within the pure static domain (no outward effects except implicit Div and no outward state/provenance obligations). `halt` is optional; evaluation remains subject to the compiler budget. Non-constant runtime expressions passed to const parameters trigger `E0814`. Arguments failing sort constraints or pipeline constraints (e.g. `key: str |> Key<T>`) trigger `E0323`.
 - **Strict Generic Argument Sorts (`E0306`, `E0323`, `E0814`)**: Every generic argument is checked against the formal parameter's declared sort. A type parameter admits a type expression; a value parameter admits a static value of its declared sort. A value is never converted to its type; write `typeof e` to supply the type of a value. A value supplied to a type parameter is `E0306`; a value of the wrong sort supplied to a declared value parameter is `E0323`; a non-static value is `E0814`. Adaptation is one-way: a type expression may supply a `Type<T>`-sorted value parameter as a token.
 - **No Untagged Literal or Storage Union Types (`E0318`)**: Concrete values (strings, integers, booleans) and untagged value unions (`i64 | str`) cannot serve as storage, variable, or binding types (`E0318`). Tagged alternatives are declared with sum types (`type HttpMethod { Get, Post }`). Concrete values may be supplied as compile-time arguments only to parameters declared with a const/value sort (`Buffer<u8, 1024>`, `Matrix<f64, 4>`). Finite type sets (`T: i64 | f64`) are permitted exclusively as static domain constraints on generic parameters (`TypeSetSort`), which are monomorphized to single rigid types.
+- **Definition-Site Evidence**: Check ordinary generic operations under [K-GEN](#generic-evidence-and-definition-checking). A guard's admission predicate does not by itself establish an arbitrary operation capability; finite token-match evidence and explicit constraints supply their prescribed facts.
 - **Function Generic Default Prohibition (`E0317`)**: Function generic parameters cannot declare defaults (`fn f<T = i64>` is rejected); function types are inferred bidirectionally at call sites.
 
 Generic arguments follow the declaration's parameter category: type syntax for a type parameter, a static token/value expression for a value parameter. Passing a quoted type or an ordinary value to a type parameter is `E0306`; write `typeof e` when the type of a value is intended. `Type<T>` is the exact static metatype for target `T`; type quotes require a type, and declared value parameters accept values such as `42` in `Buffer<u8, 42>`.
@@ -2128,6 +2145,728 @@ NominalRef       ::= QualifiedName [ GenericArgs ]
 | Effect annotation on a value binding or non-callable array expression | `E0613` |
 
 Binding and origin access modes govern access. Effects govern evaluation and handler dispatch; the non-operational Div label tracks possible infinite computation. Completed passive values have no direct effect annotation. Stored callables retain full invocation rows, including latent Div. Finite-budget coverage remains a primitive eligibility condition, separate from authority and effect-row matching.
+
+## Static Semantics and Type Kernel
+
+This chapter supplies the common static judgments connecting data types, authority, provenance, contracts, control flow and phase checking. Its rules are normative together with the detailed language rules linked below. It adds no source syntax. A judgment succeeds only when all applicable premises hold; a type-shape proof alone never establishes an authority or effect judgment.
+
+Rule-family labels identify shared obligations, not implementation passes. Implementations may interleave inference and constraint propagation while preserving the specified semantic dependencies and acceptance conditions. The non-normative [Type System Implementation Guide](TYPE_SYSTEM_GUIDE.md) gives a compiler development mainline and a verification coverage map.
+
+### Static Contexts and Judgment Forms
+
+This kernel gives the common premises used by the language's detailed rules. The judgments below are specification notation, not additional source syntax. A successful data-type judgment alone supplies neither an access permission nor a complete callable contract.
+
+**K-CTX.** Checking uses a context `C = (D; Delta; Gamma; Phi; F; q)`:
+
+| Component | Checked information |
+| :--- | :--- |
+| `D` | Current resolution scope, resolved declaration identities, exact defining scopes, parameter sorts, schemas, primitive contracts, and verified interfaces |
+| `Delta` | Lexically bound rigid type/constructor parameters, static value parameters, member-mode parameters, and related row binders with their declared sorts |
+| `Gamma` | Value bindings with their declared data types, slot modes, access modes, callable identities/contracts, and lexical scopes |
+| `Phi` | Stated or formation-derived constraints and established local equalities (`EqEvidence`), including GADT constructor equations |
+| `F` | Current refinement, origin, lifetime, construction-state, consumption, alias, and separation facts |
+| `q` | Current evaluation family: type computation, meta-value evaluation, or ordinary run-time evaluation |
+
+The following judgments keep distinct questions separate:
+
+```text
+C |- A : Type                         A is a well-formed data type
+C |- F : Type -> ... -> Type          F has the stated constructor kind
+C |- a : Static(S)                    a is an admitted static argument of sort S
+C |- A ==type B                       A and B have definitional type identity
+C |- A <: B                           A is a subtype of B
+C |- Receive(actual, receiver)        this particular reception is permitted
+C |- MatchCallable(actual, expected)  the full callable contract matches
+C |- e => T ; J                       synthesize the expression's data type
+C |- e <= T ; J                       check against an expected data type
+C |- e <= TypeResult ; J              check a type-producing result context
+```
+
+`==type` is written `equiv` in the rules below; it is not a source operator. A quoted-token comparison uses this identity judgment. `J` retains the expression's access, provenance, effects, state/capture/retention, callable dependencies, consumption, escape, budget conditions, and normal-successor flow information. If no normal successor exists, earlier executed obligations remain in `J`. The governing rules supply these components; a data-type result cannot replace them.
+
+- **K-CTX-BIND.** A new binder extends only its lexical region, with its declared sort and constraints. Distinct binders have distinct identities even when they have the same spelling. Renaming a bound parameter also renames its dependent occurrences, including result sources and callable dependencies; it changes no judgment.
+- **K-CTX-RIGID.** A definition's bound type parameter is rigid. Checking must not solve it as if it were an omitted call-site argument. Within a GADT arm, established `EqEvidence` may justify uses of that parameter throughout that arm; it does not change the outer binder's identity or constrain other instantiations.
+- **K-CTX-META.** An omitted argument may introduce an internal inference metavariable of one specified sort and scope. A solution must have that sort, satisfy its accumulated constraints, and contain no out-of-scope binder or cycle through that metavariable. A recursive declaration reference is not an inference-variable solution.
+- **K-CTX-EVIDENCE.** Equality, formation, subtyping, reception, and callable matching may use only established premises. Unproved equality, separation, immutability, freshness, or escape facts remain obligations. A circular dependency cannot establish its own premise.
+- **K-CTX-CLOSE.** A required concrete use must determine its type and static arguments; an unresolved required argument is `E0344`. This does not prohibit the explicitly admitted symbolic contracts of generics, anonymous functions, `via` templates, or input-callable dependencies.
+
+The ordinary and static argument categories remain separate. `Type` is a parameter/kind sort; `Type<A>` is an exact static metatype. A type parameter, a static value parameter, and a `MemberMode` parameter cannot be substituted for one another merely because their source spellings appear in the same generic argument list.
+
+```ril
+type Keep = \T -> <T>
+type Kept = Keep<i64>                  -- OK: a type argument
+-- type Wrong = Keep<42>              -- Error [E0306]: an ordinary value is not a type
+type TokenKey<token: Type<i64>>(i64)
+type Keyed = TokenKey<i64>             -- OK: the declared value sort admits token adaptation
+-- type WrongKey = TokenKey<42>       -- Error [E0323]: i64 value, not Type<i64>
+```
+
+### Type Formation and Binding
+
+**K-TYPE.** A type is well formed only after its declaration resolves, its binders and arguments have the required sorts, and every constituent satisfies its own formation rules. Well-formedness does not assert that the type is inhabited, clonable, usable as a key, or permitted in run-time storage.
+
+| Rule | Premises | Conclusion |
+| :--- | :--- | :--- |
+| K-TYPE-PRIM | `P` is a primitive data type | `P : Type`, including `never` and `()` |
+| K-TYPE-VAR | `Delta` binds rigid `T : Type` | `T : Type`, with precisely its available constraints |
+| K-TYPE-APP | The resolved constructor's arguments have its declared sorts and satisfy its constraints | Its fully applied result has the declared kind |
+| K-TYPE-PRODUCT | Field labels are distinct; each constituent has kind `Type`; all member modes are legal for those constituents | The closed record or admitted tuple has kind `Type` |
+| K-TYPE-STORAGE | Element/key/value types are well formed; storage modes and key eligibility satisfy the collection rules | The array or map has kind `Type` |
+| K-TYPE-CALLABLE | Parameters, result, modes, rows, sources, and bound dependencies are well formed | The callable has kind `Type` and retains the full checked contract |
+| K-TYPE-TOKEN | `A : Type` | `Type<A> : Type` in the static domain, without run-time materialization permission |
+| K-TYPE-COMPUTE | The required static inputs are determined; the permitted static computation returns one valid token for `A` | The computed type denotes `A` |
+
+A constructor-kind parameter such as `M: Type -> Type` admits a constructor with that kind; a fully applied data type is not such a constructor (`E0306`). Applying a constructor checks its declared parameter list, rather than guessing a kind from the resulting expression. Type, const-value, and mode parameters retain their sorts inside dependent defaults and constraints. Defaults are substituted left to right under the [generic default rules](#generic-parameters-defaults-and-value-sorts).
+
+**K-TYPE-SUBST.** A well-sorted simultaneous substitution replaces only the binders it maps, avoids capture, and traverses types and every dependent checking component: member modes, rows, static arguments, result sources, callable contracts, and constraints. It must preserve declaration identities and cannot replace a private or arm-local identity with an escaping name. If `C |- A : Type` and the substitution satisfies the premises of `C`, the substituted type is checked under the substituted context; existing obligations are substituted rather than discarded.
+
+The constructor's declared argument positions determine static argument identity. Static arguments use [static equivalence](#generic-parameters-defaults-and-value-sorts); ordinary value equality is insufficient. Transparent aliases and computed types are checked according to the identity rules below. A type function is evaluated forward when its required arguments are determined; its result does not authorize inverse evaluation to recover an unspecified argument.
+
+**K-TYPE-SYMBOLIC.** A lexically bound rigid type parameter is an available symbolic type, not an unsolved inference metavariable. A type function may consume its token symbolically. Forward reduction includes capture-avoiding substitution of admitted arguments into a transparent function body, quote/unquote of checked types, formation of types from known constructors and symbolic constituents, and selection of a branch proved by current evidence. A computation needing an unknown shape or static value remains dependent; it cannot guess a branch or invert its result to solve an input. This permits a generic body to check against a structurally computed signature without enumerating its concrete calls. Unresolved metavariables remain subject to K-CTX-CLOSE.
+
+```ril
+halt type WrapField = \T -> <.{ field: T }>
+fn wrap_field<T>(value: T) -> WrapField<T> { .{ field: value } } -- OK: forward substitution
+let wrapped: .{ field: i64 } = wrap_field(1)
+fn make_empty<T>() -> new []T { [] }
+-- let unknown = make_empty()          -- Error [E0344]: no argument or result context determines T
+```
+
+**K-TYPE-ROW.** An internal row constraint records known labels and modes, its related remainder, and required absent labels. These are checking facts; they introduce no additional source sort or erased open-record storage type.
+
+```text
+R : RecordRow       labels(R) intersect L = empty
+------------------------------------------------  K-TYPE-ROW-EXTEND
+.{ fields with distinct labels L, ..R } : Type
+```
+
+Each field type and mode must also be well formed. The `RecordRow` premise means that the substituted remainder denotes a record schema. An anonymous input remainder is independently quantified according to the [row-polymorphism rules](#record-types-and-row-polymorphism); reusing a named remainder preserves the same row relationship.
+
+When a signature or type body uses `.{ id: i64, ..Fields }`, formation contributes both `Fields : RecordRow` and `id` absent from `Fields`. Preserve those obligations through generic substitution and check them when an actual row is determined. This is the existing restriction of the row-forming position, not permission to infer arbitrary operation capabilities for an explicitly unconstrained type parameter.
+
+A concrete non-record remainder is `E0306`; overlap with an explicit type field is `E0212`. Value-level spread overrides obey their separate expression rule and cannot discharge an overlapping type-row premise.
+
+<a id="kernel-fixture-rows"></a>
+
+```ril
+type WithId<Fields> = .{ id: i64, ..Fields }
+type GoodRow = WithId<.{ name: str }>  -- OK
+-- type WrongRow = WithId<i64>        -- Error [E0306]
+-- type Overlap = WithId<.{ id: i64 }> -- Error [E0212]
+fn add_id<T: .{ ..Rest }>(item: T) -> .{ id: i64, ..Rest } {
+    .{ id: 1, ..item }
+}
+assert(add_id(.{ name: "Ada" }).id == 1) -- OK: Rest lacks id
+-- add_id(.{ id: 2 })                 -- Error [E0212]: result type's remainder overlaps id
+```
+
+Tuple arity is zero or at least two. Record fields and tuple components retain both slot and access components of `MemberMode`; outer immutable access cannot repair an invalid declaration such as `ref count: i64` (`E0402`). Array/map element access modes cannot contain a replacement component (`E0356`). Sum result equations, recovered variant parameters, opaque visibility, and local-identity confinement remain formation premises, not consequences inferred from a desired result.
+
+```ril
+type Apply = \M: Type -> Type, T -> <M<T>>
+type Present = Apply<Option, i64>      -- OK: Option has the admitted constructor kind
+-- type WrongKind = Apply<i64, i64>   -- Error [E0306]
+-- type WrongField = .{ ref count: i64 } -- Error [E0402], including under immutable reception
+
+type ModeBox<M: MemberMode>
+halt type TagMode = \M: MemberMode -> <ModeBox<M>>
+type MutableTag = TagMode<mut>         -- OK: static mode parameter, nonempty literal
+-- type WrongModeSort = Option<mut>  -- Error [E0306]: mode argument in a type position
+-- type EmptyArguments = ModeBox<>   -- Error [E0120]: no generic argument
+-- type EmptyMode<M: MemberMode = >  -- Error [E0120]: no default value
+```
+
+### Definitional Equality and Recursive Types
+
+**K-EQ.** Definitional equality compares checked type identity, not assignability, run-time representation equality, or the effective permissions of a particular value. Equality is reflexive, symmetric, and transitive, respects capture-avoiding binder renaming, and is a congruence only over the components whose identities the corresponding type constructor retains.
+
+| Rule | Required comparison |
+| :--- | :--- |
+| K-EQ-PRIM | The same primitive type; grouping parentheses do not distinguish types |
+| K-EQ-ALIAS | Resolve a transparent alias and its checked arguments to its denoted type; the alias introduces no new identity |
+| K-EQ-RECORD | The same complete label set, independently of written order, with equal constituent types and the same declared member modes |
+| K-EQ-TUPLE | The same arity, equal corresponding constituent types, and the same declared member modes |
+| K-EQ-COLLECTION | The same collection constructor and storage mode; equal type arguments and equivalent static arguments |
+| K-EQ-DECL | The same nominal, sum, opaque, or foreign declaration identity, with equal/equivalent arguments at every declared position |
+| K-EQ-CALLABLE | Alpha-equivalent bound inputs and dependencies, equal data schemas and concrete modes, and equal normalized complete contracts |
+| K-EQ-TOKEN | `Type<A> equiv Type<B>` exactly when `A equiv B` |
+| K-EQ-COMPUTE | Forward static evaluation yields tokens denoting equal types |
+
+For callable identity, source parameter labels are call-site metadata, not extra identity constraints. Bound references to a parameter's origins are compared after consistent positional renaming. Contract normalization preserves the distinctions between root returns, contained returns, actual writes, retained sharing, environment creation, and concrete captured/module sources. An effect/state-open callable retains its declared open binders and the actual dependencies required by its contract; openness is not erasure.
+
+An opaque declaration retains its identity in tokens and interfaces. Its exact defining scope may use its representation equivalence for permitted data operations and reception; an inner `sub` is outside that scope. Such scoped representation access does not make distinct exported opaque declarations identical or expose their representation to other scopes. Nominal wrapper construction and `inner` remain explicit operations under their own rules.
+
+**K-EQ-RECURSION.** Check transparent alias dependencies independently of evaluating a type-function body. A structural alias dependency cycle without nominal or sum indirection is `E0313`. A resolved nominal or sum reference is a declaration boundary: checking its representation may refer back to the same declaration without requiring the representation to be completely expanded.
+
+Equality compares the required type heads and arguments on demand. Returning to an already compared recursive obligation does not add a new declaration identity; it closes only that same guarded comparison after its intervening rigid constructors, arguments, and schemas have matched. It cannot prove equality between different rigid heads, unequal static arguments, or mismatched member modes. This rule supplies neither a fresh metavariable solution nor a proof of an unrelated contract obligation.
+
+<a id="kernel-fixture-equality"></a>
+
+```ril
+type Link = Option<Link>               -- OK: the sum reference is an indirection boundary
+type Node(.{ var next: ?Node })        -- OK: a recursive nominal representation
+-- type Direct = Direct               -- Error [E0313]: no nominal or sum indirection
+-- type Bad = .{ next: Bad }           -- Error [E0313]: structural alias cycle
+type FirstNode(.{ next: ?FirstNode })
+type SecondNode(.{ next: ?SecondNode })
+meta let _ = assert(<FirstNode> != <SecondNode>) -- Different nominal declarations
+```
+
+These rules add no positivity or regularity restriction. Recursive references are not a request to enumerate all reachable type instances before checking an operation. Conversely, a recursive type-function call is a computation: it remains subject to the compiler evaluation budget and may fail with `E0811`, rather than becoming an accepted type by a cyclic equality assumption. A failed or partial evaluation is never a type.
+
+Equality of arbitrary type-function programs is not established by their source text being similar, by running sample arguments, or by an assumed extensional equivalence. At a required application, evaluate the admitted inputs and compare the resulting types. No equality rule inverts an arbitrary type function.
+
+```ril
+type Left = .{ first: i64, second: str }
+type Right = .{ second: str, first: i64 }
+type Wrapped(i64)
+meta let _ = assert(<Left> == <Right>)  -- OK: record field order does not distinguish types
+meta let _ = assert(<Wrapped> != <i64>) -- OK: representation does not erase nominal identity
+meta let _ = assert(<.{ var count: i64 }> != <.{ count: i64 }>)
+```
+
+### Subtyping, Reception, and Contract Compatibility
+
+**K-SUB.** Subtyping is distinct from definitional identity. It is reflexive and transitive; equality permits subtyping in both directions. `never <: A` for every well-formed expected data type `A`: this concerns a computation with no normal value, not a conversion between instantiated type constructors.
+
+```text
+C |- A : Type
+-------------------- K-SUB-BOTTOM
+C |- never <: A
+```
+
+The following rules exhaust the structural variance described here; no numeric promotion, untagged union, record-width coercion, or additional collection variance follows from them.
+
+| Type position | K-SUB premises |
+| :--- | :--- |
+| Closed records | Identical label sets. Corresponding immutable members may be covariant; writable, live-observation, or replaceable schemas require matching modes and invariant constituent data |
+| Arrays and maps | The same storage mode and definitionally equal element/key/value types |
+| Tuples | The same arity, matching member schemas, and invariant constituent types |
+| Sums and nominal/opaque instances | The same declaration and invariant generic arguments |
+| `Type<A>` | Exact target identity; `A <: B` alone never proves `Type<A> <: Type<B>` |
+| Callable | The full `MatchCallable` judgment succeeds, including its data-shape variance and independent contract checks |
+
+For callables with the same concrete parameter modes and compatible parameter lists, expected input data types must be subtypes of the actual accepted input types, and actual result data shapes must be subtypes of the expected result shapes. Check result construction/source guarantees and the normalized effect and state/provenance rows independently. Closed rows match exactly, including Div; open rows preserve the actual obligations. `via` selects only instances justified by its verified family. These conditions apply to each admitted callable alternative and never authorize changing concrete parameter modes.
+
+An open input record abbreviates the quantified row relationship described above; it is not a closed-record supertype into which an arbitrary wider object can be erased. In particular, widening a result context cannot drop extra fields from a closed record.
+
+**K-RECV.** `Receive(actual, receiver)` uses the actual expression's data type, root/contained origins, effective path access, construction history, and the receiver's fixed schema and mode. Its premises include appropriate data compatibility and all required authority, lifetime, publication, sharing, and handoff checks. Matching a data shape is necessary but not sufficient.
+
+| Reception rule | Required premises and result |
+| :--- | :--- |
+| K-RECV-VALUE | Matching value-type data; copy by value. No shared-object access/construction qualifier is admitted |
+| K-RECV-IMM | Prove lawful immutable reception; compare immutable data views, recursively suppressing effective member write/observation modes without changing declaration schemas or identities |
+| K-RECV-LIVE | The actual origins and every enclosing path permit the requested observation/writes; match the concrete receiver schema and enforce lifetime, exclusivity, and retained-sharing requirements |
+| K-RECV-NEW | The actual path has eligible construction qualification and satisfies the complete receiving proof; perform the specified handoff, ending source/derived paths at its defined point |
+| K-RECV-CALLABLE | In addition to the applicable environment-handle reception, prove `MatchCallable(actual, expected)` with all retained metadata |
+
+An immutable data view is a checking view, not a rewritten declared type. It does not remove nominal/opaque identity, change invariant container arguments, erase callable contracts, revoke a surviving writer, or freeze a live origin. Corresponding immutable product data is compared under the record/tuple rules after mode suppression; this supplies no new variance for array, map, tuple, or sum arguments. Invalid declared value-type modes remain errors even under such a view.
+
+```ril
+type Counter = .{ var count: i64 }
+let frozen = Counter.{ count: 1 }
+let read_shape: .{ count: i64 } = frozen -- OK: immutable reception compares suppressed data modes
+meta let _ = assert(<Counter> != <.{ count: i64 }>) -- Declaration schemas remain different
+let mut live = Counter.{ count: 1 }
+live.count += 1
+-- let bad_snapshot = live             -- Error [E0535]: reception cannot freeze a surviving writer
+-- let mut bad_upgrade = frozen        -- Error [E0520]: ascription supplies no writer
+-- let ref bad_value = frozen.count    -- Error [E0402]: the selected member is a value type
+```
+
+```ril
+type Small = .{ id: i64 }
+type Wide = .{ id: i64, name: str }
+let wide = Wide.{ id: 1, name: "Ada" }
+-- let erased: Small = wide            -- Error [E0301]: no closed-record width subtyping
+let byte: u8 = 1u8
+-- let widened: i64 = byte             -- Error [E0301]: no implicit numeric conversion
+-- meta let BAD_TARGET: Type<i64> = <never> -- Error [E0301]: target subtyping is not target identity
+```
+
+Successful reception retains the checked schema and contract in the new binding. Later slot replacement checks that same instance; it cannot freshen or re-infer its type/mode parameters. Subsequent uses remain bounded by their actual origins, enclosing access paths, and any consumed or expired construction authority.
+
+### Bidirectional Expression Checking
+
+**K-EXPR**. Synthesis `C |- e => T ; J` determines a data type from the expression and its constraints. Checking `C |- e <= T ; J` checks against an available expected type. Both produce the complete checking result described under [judgment forms](#static-contexts-and-judgment-forms); the arrow is a static judgment, not source syntax. The following rules generate constraints and justified facts, rather than granting authority from an expected annotation.
+
+```text
+K-CHECK     C |- e => S ; J     C |- S <: T     compatible result/latent contracts
+            -------------------------------------------------------------------
+            C |- e <= T ; J with expected data type T and preserved actual metadata
+
+K-RECEIVE   C |- e => S ; J     Receive(C, S, J, receiver with data type T) succeeds
+            ----------------------------------------------------------------------
+            C |- e <= T ; checked reception result, preserving the actual dependencies
+
+K-TAIL      C |- statements => C' ; Jprefix     C' |- tail <= T ; Jtail
+            ---------------------------------------------------------
+            C |- { statements; tail } <= T ; sequence(Jprefix, Jtail)
+```
+
+`K-CHECK` does not change the expression's actual origins, operation footprint or fixed schemas. A receiving position uses K-RECEIVE and the data compatibility determined by `Receive`, including its specified immutable view; it need not first prove unsuppressed schema subtyping. Callable positions additionally apply `MatchCallable`. In particular, checking a live value against an ordinary type cannot freeze it. Constraint propagation may revisit a literal, constructor or anonymous callable before a required instantiation; a failed heuristic or an incomplete intermediate state is not a rejection rule.
+
+| Core form | Premises and result |
+| :--- | :--- |
+| Literal / existing name | Literals follow their declared category and numeric context/default rules. A resolved name uses its declaration identity and current checked binding/schema; freshen only its legally quantified variables. Reading a value type copies; reading a shared-object path retains its origin and effective access |
+| Numeric, text, byte and range operations | Check operands using the operation's specified domain and result contract. Already typed numeric operands do not promote. Unsuffixed numeric literals use compatible context before defaulting. Check index, range and format requirements separately from possible run-time failure |
+| Unary / binary operators | Resolve the specified operation, check operand types and access, sequence evaluated operands, then apply its contract. Short-circuit operators analyze their actual alternatives; `typeof` follows K-PHASE. Unsupported domains use the operation-specific diagnostic |
+| Product / collection construction | An expected schema propagates member types and declared modes; an untyped product derives its schema. Check every initializer by its receiving rule, then form a fresh shared-object root with those contained origins. Unit/value cases copy under K-RECV-VALUE. Homogeneous collections require one fixed element/value schema. Map keys and set elements require their specified immutable key contract |
+| Constructor / wrapper application | Resolve a declaration, instantiate its parameters, check arity and constructor equations, then check payload reception. Constructor-tuple equivalence changes grouping only. No implicit unwrap or opaque representation access is supplied |
+| Product / collection projection | Check the receiver and key/index domain, then select the declared constituent. Data shape projection and effective path access are separate: value constituents copy; object constituents inherit bounded authority and provenance. Sum payload projection requires variant evidence |
+| Assignment / compound assignment | Resolve the assignable path, prove slot/interior authority, check the incoming value against the already fixed schema, and invalidate overlapping flow facts. Compound forms use the specified evaluation-once and operator rules; assignment never freshens destination mode/type parameters |
+| Call / callable creation | Calls use K-CALL. Creating a named-function value, anonymous function or accessor checks its latent body contract and environment; it does not execute latent operations. Captures and surviving environment creation belong to the creation judgment |
+| Block / declaration / binding | Check in lexical sequence with the specified hoisted declaration scopes. Use `Receive` for each binding and pattern reception for decomposition. A missing tail contributes `()` on normal completion. Apply result inspection, scope cleanup and local-identity confinement at the boundary |
+| Conditional / match | Check the condition or scrutinee once, derive valid branch contexts, check arms using an available expected result, and apply K-JOIN. Pattern guards require `bool` and do not prove exhaustiveness |
+| Loop / transfer | Check bodies with explicit return/loop targets. `loop` joins reachable `last` operands; without such operands it is `never`. `while` and `for` normally produce `()`; their `last` values are unit. A transfer has no normal successor and contributes its value to its target, without erasing earlier obligations |
+| Handler / scoped operation | Check operation arguments, handler parameters, answer types, affine resumption, environment lifetime and cleanup under their boundary rules. A parameterized `with` checks the remaining computation as the supplied action under its specified control-target boundary |
+
+These rules apply equally in a static body where admitted by K-PHASE, with the dedicated type-producing result context below. They do not admit an operation in another call family. Every core form also propagates the observations, consumption, retention and writes required by K-CALL and the detailed feature rules. The [coverage index](#core-rule-coverage) supplies the defining rules for surface forms and primitive boundaries.
+
+### Structural Joins and Normal Continuations
+
+**K-JOIN** distinguishes data-result compatibility from the join of flow, origins and obligations. A type-producing `TypeResult` context follows its separate rule below; it does not ask for a common ordinary token-storage type. Let `normal(J)` indicate a possible normal successor. Each reachable alternative is checked in its own context. With an expected type, every normally returning alternative is checked against that same type, including its result/latent contract; a `never` alternative supplies no returned-value constraint. Without an expected type, use the following structural rules after propagating available constraints:
+
+| Data alternatives | Synthesized common result |
+| :--- | :--- |
+| No normal alternatives | `never` |
+| One normal alternative, other alternatives `never` | That alternative's result type |
+| Definitionally equal result types | The same type; retain all actual callable alternatives and checking facts |
+| Same closed record labels and matching schemas | Join immutable covariant member data recursively; invariant data/modes must match. Immutable reception may use only its specified mode suppression |
+| Compatible callable shapes | Retain the determined common data shape with every actual contract alternative, subject to the result/source and handle conditions below; an explicit expected contract still checks every alternative |
+| Arrays, maps, tuples, sum/nominal instances or other invariant positions | Required invariant arguments/components agree definitionally; do not join their contents covariantly |
+| Otherwise | `E0351` for incompatible determined branch types; `E0344` when a required type/static instantiation remains undetermined |
+
+For callable synthesis without context, identical determined parameter data shapes and compatible concrete modes admit a family with the structurally joined result data shape and every actual complete contract alternative. Preserve only common result/source guarantees, and require a valid common reception and environment-handle mode; the existing mixed-root and lifetime prohibitions still apply. This family is checking metadata, not a source union, an invented closed row or an implicit open-row ascription. Calls must be admitted by every target and retain all possible invocation obligations. Other data-shape variance may use an already determined operand shape that admits every alternative under K-SUB; synthesis does not invent a callable intersection or a new generic scheme. An explicit expected callable type always applies `MatchCallable` to every actual alternative; closed rows are never widened. Structural joining is not a demand to compute a semantic least upper bound for arbitrary type programs. Contextual checking may succeed where unconstrained synthesis cannot determine a result.
+
+**K-TYPE-RESULT.** `TypeResult` is a checking sort for the result context of a type-producing computation, not a data type or a source annotation. Check each normally returning branch/tail in that context as producing one token `Type<A>` for a well-formed `A`; different statically selected branches may produce different `A`. Propagate the context through their blocks and conditional/match tails, to the type-producing callable's `return` target, and to the `last` target of a `loop` checked in this context. Each normally transferring operand must supply one token; `while`/`for` still have unit results and unit `last` operands. An admitted static budget action/result follows the primitive's type-producing result rules as well. At a required closed evaluation exactly one completed token must be selected and returned. This rule creates neither a bare `Type` storage type nor a union of metatypes. Ordinary token bindings, assignments and value-return contexts still have a fixed exact `Type<A>` and use ordinary data compatibility.
+
+For normal-successor flow, retain only facts and guarantees established on every normal alternative. For the invocation summary, retain the union of possible evaluated operations, state, escapes and transfers, including those on terminating alternatives. Preserve input/output and output-component relationships common to every alternative; independently unioning component origin sets is insufficient for the `permute` disjointness example. Static exclusions use only the specified pruning rules. An unselected static branch still satisfies the syntax, name resolution and ordinary typing requirements of its declaration.
+
+<a id="kernel-fixture-joins"></a>
+
+```ril
+let stopped: i64 = if flag { 1 } else { panic("stop") } -- OK
+let absent: ?i64 = if flag { Some(1) } else { None }    -- OK: context reaches both constructors
+let empty: []i64 = if flag { [] } else { [1] }         -- OK: expected element type
+-- let bad = if flag { 1 } else { "one" }             -- Error [E0351]
+-- let unknown = []                                   -- Error [E0344]: no element context
+fn no_value() -> never { if flag { panic("a") } else { panic("b") } }
+```
+
+If an alternative prints before panicking, that print remains in the function's inferred obligations even though the alternative has no normal successor. `last`, `return`, `resume` and error propagation retain the analogous distinction between their transfer destination and ordinary tail values.
+
+### Generic Evidence and Definition Checking
+
+**K-GEN**. A named generic definition is checked under rigid generic binders and the constraints established by its signature. Every ordinary typing obligation must follow for every admitted instance before accepting the definition. A particular successful call does not establish this universal requirement. Free operations in a body cannot silently narrow an explicitly declared type domain. The constraints already generated by row formation, parameter eligibility, declared modes and admitted `via` families remain part of that domain.
+
+Definition checking uses these evidence rules:
+
+1. A declared closed type set introduces one checking alternative per rigid member. Structural bounds provide their named field/schema facts; kind, value and mode bounds provide only their own facts. Primitive guards provide exactly their registered eligibility facts.
+2. Type equality and constructor decomposition use K-EQ and the GADT recovery rules. An equation involving an arbitrary type function is not an inverse-evaluation rule or proof that a numeric operation exists.
+3. A transparent guard may supply **finite match evidence** when its body, after transparent aliases and grouping, is a finite `match <T>` decision tree. Internal decisions are type patterns; leaves return `<T>` or `<never>`. All decision arms are unguarded type patterns; an ordinary match-arm `if` guard is outside this evidence rule. No recursive call, unevaluated helper, run-time decision or arbitrary computation is treated as a decision tree. Check pattern coverage and reachability by the existing type-pattern rules. On each reachable admission leaf `<T>`, require the pipeline's `T` not definitionally `never` premise and accumulate that path's positive evidence and the exclusions proved by earlier patterns; a `<never>` leaf admits nothing. An or-pattern contributes separate alternatives. The declaration's ordinary body must check under every admission path. This forward rule establishes the existing `Numeric`, `Product` and structural-guard examples without solving a type function's inverse image.
+4. Other guards still use ordinary static evaluation to decide admission for a determined argument. At a definition site their fixed-point predicate grants no additional operation capability. A body independent of that extra capability may check normally; otherwise use explicit structural/closed-domain constraints or explicit static type branches. An unproved ordinary typing requirement is `E0301`, not a missing-annotation or budget-exhaustion error.
+5. A type function applied to symbolic inputs may remain a symbolic type expression. Congruent expressions can compare without evaluation; a required reduction waits for determined arguments or a specified symbolic rule. Required closed calls must determine all generic/static arguments before concrete signature type-function evaluation. No inferred default or `never` fills an unknown.
+
+The finite-match criterion is a normative evidence rule, not an optional optimizer. It imposes no restriction on which otherwise valid pure type programs may be used as guards. Additional implementation techniques cannot accept an ordinary generic operation without evidence derivable under these rules or the other specified typing rules.
+
+Definition checking proves ordinary parameter/result typing and operation capabilities under the declared domain. The separately specified static introspection/layout/key eligibility and phase/result restrictions retain their prescribed target dependence: a symbolic `byte_size` target records its ordinary-layout requirement (`E0306`), a meta result records token/type-producing-authority exclusion (`E0812`), and a run-time materialization records phase eligibility (`E0816`). Coordinate membership and static-key availability keep their own `E0323`/`E0814` checks. Verify these conditions once the required target or value graph is determined; they supply no arithmetic or structural operation capability for an otherwise unconstrained `T`. This exception applies to the listed static/phase boundaries, not arbitrary primitive input domains.
+
+Keep ordinary type correctness separate from conditional call obligations explicitly permitted elsewhere: actual callback contracts, inferred mode families, selected authority use, source annotations and budget coverage can retain their prescribed dependencies. They are checked at their required instantiations. A declaration cannot defer an unsupported ordinary operation on a rigid `T` under this exception. Likewise, an anonymous callable may infer and retain a constraint family under K-ANON, but a named definition with explicit unconstrained `T` cannot acquire a hidden numeric bound from `x + 1`.
+
+<a id="kernel-fixture-generics"></a>
+
+```ril
+halt type Numbers = \T -> match <T> { <i64> | <f64> -> <T>, _ -> <never> }
+fn square<T |> Numbers>(x: T) -> T { x * x } -- OK: both admission paths checked
+halt type AnyType = \T -> <T>
+-- fn bad<T |> AnyType>(x: T) -> T { x * x } -- Error [E0301]: no numeric evidence
+fn identity<T |> AnyType>(x: T) -> T { x }  -- OK: identity needs no numeric evidence
+fn explicit<T: i64 | f64>(x: T) -> T { x * x } -- OK
+assert(square(3) == 9)
+-- square("three")                          -- Error [E0301]: failed guard admission
+```
+
+For a general guard whose implementation requires recursion to recognize numeric types, the fixed-point equation alone does not validate `x * x`; an explicit `T: i64 | f64` bound supplies that evidence. Failure to finish an actual required guard evaluation remains `E0811`, not a false guard result. The `selected_write<false>` fixture continues to reject a selected missing use under `E0527` even though its ordinary data typing was checked at definition time.
+
+### Pattern Evidence and GADT Branches
+
+**K-PAT**. Pattern checking consumes a checked subject type/schema and reception mode and yields binder types/modes, subject-path refinements, branch-local equality evidence and a coverage description. A pattern grants no authority absent from its subject. Refutability requirements, duplicate binders, or-pattern binding compatibility and guards follow [pattern matching](#pattern-matching).
+
+For a GADT constructor, first require the constructor to belong to the scrutinee's sum declaration (`E0301` for a different owner), then instantiate its recoverable local parameters with fresh scoped variables, equate its result with the scrutinee instance, and decompose only rigid constructors under the declared recovery rules. A contradiction makes that constructor impossible; its arm is `E0304`. No inverse evaluation of a type function or inaccessible opaque representation establishes recovery. An admissible constructor contributes equations to `Phi` for that arm.
+
+```text
+K-GADT-ARM  subject : S<A>     constructor result S<B>     recover and solve A ~ B
+            Phi' = Phi plus the proved equations          C[Phi'] |- arm <= R ; J
+            --------------------------------------------------------------------
+            arm checks against R with its local evidence
+```
+
+The same rigid parameter may be used throughout this arm: evidence `T ~ i64` checks a payload `n: i64` against expected `T`, and checks another `y: T` as `i64`. The parameter declaration and the types of other instantiations are unchanged. A nested closure checked under that evidence may implement a lawful `fn() -> T` result; that does not export the equation as an assumption available to its caller. Leaving an arm discards its local assumptions; or-pattern alternatives and control-flow joins retain only common evidence. A declared storage schema is never freshened because an arm establishes an equality.
+
+Ordinary tag/path narrowing and its write invalidation remain separate. Nonbinding `is` introduces no payload names. Its successful stable constructor test may supply the corresponding local constructor evidence in the dominated branch, subject to the existing stability rules; a failed payload comparison alone does not exclude a constructor. Static token patterns likewise refine their checked snapshot, without mutating its represented type.
+
+<a id="kernel-fixture-gadt"></a>
+
+```ril
+type Evidence<T> { Int(i64) -> Evidence<i64>, Bool(bool) -> Evidence<bool> }
+fn use_evidence<T>(e: Evidence<T>, y: T) -> T {
+    match e {
+        Int(n) -> { let next: T = y + n; next }, -- OK: T ~ i64 in this arm
+        Bool(b) -> { let next: T = y && b; next }, -- OK: T ~ bool in this arm
+    }
+}
+fn evidence_scope<T>(e: Evidence<T>, y: T) -> T {
+    let chosen: T = match e { Int(n) -> n, Bool(b) -> b }
+    -- let invalid = y + 1                      -- Error [E0301]: no equation outside the match
+    chosen
+}
+-- fn impossible(e: Evidence<i64>) -> i64 {
+--     match e { Int(n) -> n, Bool(_) -> 0 }     -- Error [E0304]
+-- }
+```
+
+### Anonymous Generalization and Fixed Storage
+
+**K-ANON**. Infer an anonymous callable's parameter/result constraints and complete latent contract from its body and context. A callable can retain a universally checked generic or structural family rather than a unique monomorphic signature. Generalize only local inference variables independent of the lexical environment, fixed storage schemas, captured variables, outer rigid parameters and explicit contextual constraints. Quantified constraints must be satisfiable at required instantiations, and the body must check for the inferred admitted family.
+
+Instantiation freshens the callable's bound type/row/mode variables, not the types or identities of its existing environment. In particular, a `var` slot or shared collection cannot be given a different element type on each use of the same closure. Mutable capture does not categorically prohibit an independent generic parameter: a closure may update an `i64` counter and independently return its generic argument. It retains the same counter origin and outward obligations on every invocation. A callable taking an argument to append to captured `[]i64` storage constrains that argument to `i64`.
+
+Do not generalize an unresolved concrete object/storage schema to postpone its required `E0344`. Do not infer rank-polymorphic storage, polymorphic recursion or a new source quantifier from ordinary `let`. Named generic signatures remain subject to K-GEN; recursive checking uses the current declared/verified binder family instead of inventing fresh binders on each cycle.
+
+<a id="kernel-fixture-generalization"></a>
+
+```ril
+let identity = \x -> x                 -- OK: generic anonymous identity
+assert(identity(1) == 1)
+assert(identity("one") == "one")
+let read_id = \record -> record.id     -- OK: inferred structural constraint
+assert(read_id(.{ id: 1, name: "a" }) == 1)
+
+let mut numbers: []i64 = []
+let mut add = \value -> { numbers !> Array::push(value) }
+add(1)                                -- OK: retained environment writes numbers
+-- add("one")                         -- Error [E0301]: the captured schema remains []i64
+-- let mut unknown = []               -- Error [E0344]: no generalization of concrete storage
+```
+
+### Authority, Calls, and Contract Operations
+
+**K-CALL (authority and call contracts).** The operations below consume context
+`C = (D; Delta; Gamma; Phi; F; q)`, checked data types, and expression summaries `J`.
+Their outputs include updated flow/affine state and current obligations, with
+result access, provenance, and latent contracts when applicable. They must not
+derive authority from a requested receiver, a source annotation, an open row, or
+an unproved recursive dependency. These names denote judgments, not compiler APIs.
+
+| Operation | Inputs | Required output |
+| :--- | :--- | :--- |
+| `Receive` (`K-RECV`) | `C`, destination schema/boundary, actual type and `J` | Checked reception, resulting access/provenance, updated `F`, and current obligations |
+| `InstantiateCall` | `C`, target alternatives, solved static arguments, prepared actual `J`s/entry graph, verified summaries | Result type and `J`, including current obligations, latent contracts, and post-call state |
+| `NormalizeContract` | `C`, complete inferred obligations, identities/aliases, return baseline, retained alternatives | Canonical comparable contracts preserving actual conditions and private checking facts |
+| `Discharge` | `C`, `J`, selected handlers, cleanup, and confinement/escape facts | Residual current obligations and updated boundary state; executed use evidence remains |
+| `MatchCallable` | `C`, actual complete alternatives and destination callable constraints | Satisfaction of every input, row, result, environment, and lifetime condition |
+
+For an ordinary call, resolve and check the target and prepare explicit operands
+once, left to right, in the specified source order. Prepare defaults in their
+specified order and only when omitted; their obligations are not action-body
+obligations. A terminating operand contributes no successor on which later
+operands or the invocation execute. Its already incurred obligations remain.
+
+A successful construction reception transfers to the prepared argument and ends
+the old construction path and derived accesses before the next operand/default.
+A later failure, panic, abort, or discarded invocation does not restore them.
+Concrete markers remain required except for verified lexical template elaboration.
+No constraint-solving schedule may move this source-semantic consumption point.
+
+The call-entry graph is the graph of the prepared actuals when invocation begins,
+after operand/default evaluation and before the callee's body operations. Freeze
+its origin relations for checking entry-source returns. This is a static snapshot
+of object identity/reachability, not a run-time graph copy or a physical address.
+Callee writes do not retrospectively add objects to that graph.
+
+`InstantiateCall` must substitute formal positions, selected constituent paths,
+static/mode parameters, callback dependencies, and environment/provider identities.
+Preserve repeated occurrences of one actual origin and actual input separation;
+formal names alone do not prove separation. Fresh allocations in distinct
+invocations are distinct, while a handoff preserves the transferred identity.
+A summary's fresh root does not imply that all its contained origins are fresh.
+
+Check root and contained return relations separately. A root `ref(x)` or `^mut(x)`
+selects an origin from formal `x`'s frozen entry graph. `new T` requires verified
+construction/handoff; plain shared-object `T` requires immutable publication.
+Contained observations, writers, captures, and inherited graph dependencies
+continue to restrict reception even when the root was allocated by this call.
+Root-return retention, independent retained sharing, and actual writes remain
+distinct normalization inputs. Value-type copies introduce no reference origin.
+
+For every possible dynamic target, the call must be admitted with the actual
+modes and preconditions. Join obligations conservatively and retain only common
+result guarantees, preserving verified input/output and output-component relations.
+A union of possible component origins must not replace a proven joint relation.
+Check each resulting reception against the destination's fixed instantiated schema;
+later assignment does not freshen or re-infer that storage instance's `via` modes.
+
+`NormalizeContract` expands transparent/effect aliases, resolves static argument
+identity and provider/source identities, alpha-renames bound formal sources by
+position, and includes the return annotation's baseline. It combines duplicate
+spellings and the specified write/retention implications. It does not identify
+separate capture activations or erase conditions, mode history, entry relations,
+operation footprints, or alternatives merely because their displayed rows agree.
+
+`MatchCallable` checks concrete parameter modes, data-shape variance, construction
+and root-source guarantees, contained dependencies, environment access, and
+scope/resource restrictions independently of row openness. Closed effect and
+state/provenance dimensions require exact normalized equality; an opened dimension
+admits additional actual obligations while retaining them. Every actual alternative
+must satisfy a closed equality or an explicitly required open entry. Taking the
+union of alternatives cannot supply an entry absent from one alternative.
+
+Operational effect analysis retains the instantiated operation identities that
+may be requested, including conditional callback requests. A direct operation
+contributes that operation; a known callable contributes its verified footprint.
+Its effect-instance row is the projection of those residual operation obligations,
+plus the compiler-owned Div label. Div has no operation and no source handler.
+
+A genuinely abstract callable contract containing `@Effect` permits every operation
+of that instance unless verified actual metadata or constraints establish a smaller
+footprint. Handling only one operation cannot discharge unknown remaining requests.
+Known footprints survive aliases, ascriptions, storage, returns, and modules;
+writing an effect label does not erase this metadata. Generic callback requests
+remain symbolic until their actual callable or required constraint is determined.
+No operation-level source-row syntax is introduced by this checking distinction.
+
+Handler discharge removes only requests intercepted by the selected arms. Arm
+operations use the outer handler context; resumed continuation operations use the
+reinstalled handler. Include the actual arm, retained handler environment, and
+cleanup obligations. Handling operations never itself removes state/provenance.
+The operation result checked at `resume` and the containing block's answer type
+are separate constraints; every retained arm answer must fit its selected boundary.
+
+Resumption is affine. Branch/loop joins must not make a possibly used resumption
+unused, and a prohibited callable capture cannot export it. Starting resumption
+ends the operation's temporary `mut` authority and all dependent accesses; returning
+from `resume` does not restore them. Lawful retained authority remains subject to
+its original lifetime and exclusivity conditions.
+
+`Discharge` removes only outward state events justified by actual confinement of
+all relevant roots/environments and absence of escape. It must preserve actual
+reachable-use evidence and independent retention/capture/named-source obligations.
+Cleanup must independently exclude residual operations and Div under its defining
+rules. A source budget removes only covered invocation Div; operand evaluation,
+recovery, latent returned callables, and state obligations retain their own checks.
+Coverage follows actual calls/handlers/cleanup and cannot be established by a cycle
+of budget or Div-free assertions. Compiler-budget exhaustion is never a discharge.
+
+<a id="kernel-fixture-calls"></a>
+
+```ril
+type Cell = .{ var count: i64 }
+fn forward(new cell: Cell, count: i64) -> new Cell { cell }
+let mut cell = Cell.{ count: 0 }
+type Inspected = typeof forward(new cell, 0) -- OK: the query does not consume cell
+-- type Invalid = typeof forward(new cell, cell.count) -- Error [E0549]: invalid internal sequencing
+-- forward(new cell, cell.count)      -- Error [E0549]: the second operand uses the ended path
+let saved = cell.count
+let mut forwarded = forward(new cell, saved) -- OK: the scalar was copied before the handoff
+forwarded.count += 1
+```
+
+```ril
+eff Pair { first() -> i64, second() -> i64 }
+fn first_only() @Pair -> i64 { Pair::first() }
+fn handled_first() -> i64 {
+    with Pair::first() -> resume 1
+    first_only()                      -- OK: the known footprint contains only first
+}
+-- An abstract @Pair input may also request second; this handler alone cannot
+-- establish its absence of residual Pair without a verified actual constraint.
+```
+
+```ril
+eff Trace { mark() -> () }
+fn plain() -> () {}
+fn traced() @Trace -> () { Trace::mark() }
+let selected: fn() @& -> () = if choose_trace { traced } else { plain }
+let inferred = if choose_trace { traced } else { plain } -- OK: retain actual alternatives
+-- let wrong: fn() @Trace -> () = inferred -- Error [E0534]: plain still lacks Trace
+-- let exact: fn() @Trace -> () = selected -- Error [E0534]: the plain alternative lacks Trace
+```
+
+### Recursive Summaries and Grounded Inference
+
+**K-FIX (recursive summary closure).** Recursive dependencies include ordinary
+calls, callbacks and callable-valued storage, captures, handlers, cleanup, and
+schema/type dependencies. A recursive group has stable declaration-owned binders;
+traversing a cycle never creates another independent `via` or type unknown.
+
+Use an explicitly finite symbolic fact/constraint representation for each checked
+recursive group, parameterized by its declared static domains and callback/mode
+conditions. Concrete executions may allocate unboundedly many objects; the static
+representation must distinguish declaration/allocation sites from invocation
+identity and must not enumerate concrete executions to infer a summary.
+
+Actual primitive operations, verified external contracts, and non-circular checked
+dependencies ground use/obligation propagation. Required reachable-use facts are
+the least closure of those grounded facts under the applicable transfer rules.
+An assumption that a recursive callee uses a writer cannot justify that writer
+when the entire cycle contains no operation or verified contract supplying a use.
+Local discharge removes an outward obligation, not its grounding operation.
+
+Unknown recursive relationships remain obligations. A cycle cannot establish
+freshness, separation, immutable publication, non-escape, empty rows, absence of
+Div, or budget coverage by referring to its own claimed result. Potential invocation
+cycles introduce Div under the termination rules. A fresh-construction base rule
+may ground allocation facts, but does not by itself prove graph separation.
+
+Infer `via`'s admitted finite family from the body, schemas, verified dependencies,
+and explicit semantic constraints; normalize that family before validating named
+source annotations. Missing annotations cannot eliminate troublesome instances.
+Explicitly promised instances cannot be silently removed. Check source-use and
+mode-redundancy conditions at their defined family/selected-instance boundaries.
+
+These are semantic dependencies, not a mandatory worklist order. A checker may
+collect constraints from later assignments and revisit earlier inference, while
+preserving each concrete storage schema and the expression's execution/consumption
+order. The representation and propagation must terminate; unknown facts cannot
+be replaced with invented proofs. Static type-function evaluation retains its
+separate compiler-budget failure and must not return an unfinished type as success.
+
+```ril
+type Cell = .{ var count: i64 }
+fn grounded(mut cell: Cell, remaining: i64) &mut -> () {
+    if remaining > 0 { cell.count += 1; grounded(mut cell, remaining - 1) }
+}                                     -- OK: the write grounds use; recursion still contributes Div
+-- fn circular(mut cell: Cell) -> () { circular(mut cell) }
+-- Error [E0527]: forwarding around the cycle supplies no grounded writable use
+```
+
+
+### Phase Checking and Static Evaluation
+
+**K-PHASE**. Check every expression and instantiated declaration under its evaluation family `q`. Type elaboration and generic type metadata are static even inside ordinary function declarations; this does not execute a type token at run time. A value computation uses only calls admitted by its family and the registered dual-phase contracts. `halt` changes neither call family nor argument evaluation.
+
+```text
+K-STATIC-APP   arguments determined and well-sorted     call permitted in q
+               evaluate under the current compiler root budget => complete value v
+               v satisfies the required result/token restrictions
+               ---------------------------------------------------------------
+               the required static application succeeds with v
+```
+
+A required computation whose arguments are not yet determined waits on those constraints; it is not repeatedly executed with guessed types. A symbolic type expression or conditional checking obligation may remain in an admitted generic interface. At a required closed instantiation, any remaining required argument uses `E0344`. A started evaluation that exhausts the compiler root budget uses `E0811`; a blocked inference dependency and exhausted evaluation are different conditions.
+
+For a materialized run-time parameter/result, storage member, constant or capture, recursively check the instantiated value graph and latent authority using the [phase/result restrictions](#pure-type-functions-and-result-restrictions). Type tokens and static-only metatypes are not run-time materializable, including through generics, aggregates or opaque wrappers (`E0816`). A `meta fn` result additionally contains no tokens or type-producing authority (`E0812`). A `meta let` may hold a static token without publishing it as a run-time constant. Token-free eligible ordinary results can cross as ordinary constants. Nominal/opaque identity is retained when applying these checks; lack of source representation access does not hide ineligible contents from checking metadata.
+
+`typeof e` performs the specified checking of `e` and returns its checked type in a type position without evaluating `e` or charging its run-time operations. Check the operand in an unevaluated context: its call shape, argument types/modes and available authority must be valid, but its potential invocation is not an executed cross-family call, authority use, consumption or outward effect of the query. Use an isolated checking state to validate the operand's internal evaluation order, alias/exclusivity checks and affine path invalidation, then discard its outgoing execution state and use contributions. Thus `typeof forward(new cell, cell.count)` still fails for the operand's ended path, while a valid query does not consume the surrounding `cell`. For example, `typeof runtime_call()` may describe an ordinary function result during type elaboration; executing that same ordinary call in `meta let` remains `E0810`. Its operand must still be well typed; it is not a recovery operation for an erroneous expression. Type quotation checks one type and forms its exact static token. Static introspection and mapped-type computation operate only on the admitted determined shapes and static coordinates, preserving the described member schemas and identities.
+
+| Static outcome | Judgment consequence |
+| :--- | :--- |
+| Complete type token | Use the represented well-formed type; do not distribute it over an unspecialized type set |
+| Eligible ordinary value | Use the value at its declared static sort; materialize only where token-free/result eligibility holds |
+| Source `div_budget` exhausted | Ordinary `Err(BudgetError::Exhausted)` data after required cleanup; the surrounding computation still checks its Result handling and phase |
+| Compiler root budget exhausted | Reject with uncatchable `E0811`; no guard-false, type-inequality or partial-success result |
+| Static panic / failed assertion | `E0831` / `E0830`, independently of source budget exhaustion |
+| Unguarded structural alias cycle | `E0313`; it is not solved by adding an evaluation allowance |
+
+A budget removes only invocation Div whose coverage is independently established. Defaults, explicit arguments, recovery paths, cleanup and any returned latent callable have their own obligations. The compiler's evaluation limit bounds every static root, including `halt` calls and source budgets; its existence neither removes Div nor proves source coverage. Error recovery holes and diagnostic partial-type previews cannot enter valid types, type tokens, budget-result payloads or exported semantic interfaces.
+
+<a id="kernel-fixture-phase"></a>
+
+```ril
+meta fn size<T>(token: Type<T>) -> i64 { byte_size(token) }
+meta let WIDTH = size(<i64>)                    -- OK: ordinary static result
+-- meta let BAD_LAYOUT = size(<Type<i64>>)      -- Error [E0306]: no ordinary layout
+fn runtime_call() -> i64 { 1 }
+type RuntimeResult = typeof runtime_call()     -- OK: checks without invoking
+-- meta let BAD_CALL = runtime_call()          -- Error [E0810]
+halt type Chosen = \flag: bool -> if flag { <i64> } else { <str> }
+type IntegerChoice = Chosen<true>              -- OK: i64, not a union of token types
+type StringChoice = Chosen<false>              -- OK: str
+type ChooseLoop = \flag: bool -> loop {
+    if flag { last <i64> }
+    last <str>
+}
+type LoopChoice = ChooseLoop<true>             -- OK: type-producing last; loop still has Div
+meta let _ = { var fixed = <i64>; fixed = <i64> } -- OK: ordinary slot remains exact
+-- meta let _ = { var fixed = <i64>; fixed = <str> } -- Error [E0301]
+meta let TOKEN = <i64>                         -- OK: static token remains static
+-- meta fn leak<T>(token: Type<T>) -> Type<T> { token } -- Error [E0812]
+fn runtime(value: i64) -> i64 {
+    -- let token = <i64>                       -- Error [E0816]
+    value
+}
+halt fn increment(value: i64) -> i64 { value + 1 }
+-- meta let BAD_FAMILY = increment(1)          -- Error [E0810]: halt does not change family
+```
+
+The [type-evaluation exhaustion fixtures](#type-evaluation-exhaustion-diagnostics) distinguish an `E0811` preview from a valid type, and [finite evaluation](#finite-evaluation-with-div) supplies source-exhaustion cases returning inspected Result data.
+
+
+### Semantic Interfaces and Diagnostic Boundaries
+
+**K-IFACE (semantic interfaces).** A checked interface must preserve the facts
+needed to re-establish the expression, reception, call, and contract judgments at
+its uses. A displayed signature is only the source projection of that interface.
+
+| Interface component | Required semantic information |
+| :--- | :--- |
+| Data and instantiation | Resolved declaration identities, sorts/constraints, complete member schemas, rigid/static arguments, and bound callable/mode families |
+| Authority and flow | Actual/effective modes, construction qualification/history, affine consumption, initialization, and scope/task/resource conditions |
+| Origins and graphs | Root versus contained origins, entry-source paths, alias/store/return relations, freshness premises, and output correlations |
+| Invocation | Admitted inputs, use conditions, current effects/state, operation footprints and alternatives, and conditional callback/handler dependencies |
+| Environments and results | Capture/provider identities, invocation-handle requirements, latent callable contracts, result publication, and escape dependencies |
+| Finiteness and static eligibility | Full effect rows including Div, default/cleanup obligations, independently checked budget coverage, and prescribed dependent phase/layout/key/result conditions |
+
+Transparent aliases forward these facts. Opaque boundaries preserve private
+checking facts without exposing representation access. Callable ascription,
+aggregate packaging, and module export cannot erase actual obligations. Interface
+compatibility checks the preserved accepted domain, requirements, result guarantees,
+and schemas; relevant changes invalidate and recheck dependent judgments.
+
+The specification does not prescribe a serialized wire format, hash scheme,
+in-memory compiler structure, or unique constraint-solving schedule. Implementations
+may compress equivalent facts only when every required judgment and diagnostic
+explanation remains available with the same authority and dependency distinctions.
+
+An isolated violation uses its defining diagnostic: type incompatibility is E0301
+only absent a more specific condition; unresolved required concrete instances use
+E0344. Contract matching, missing source annotations, insufficient authority,
+ended paths, handler answers, and budget failures retain their dedicated codes.
+Uncertainty is not permission to substitute a successful type, access, or contract.
+Semantic explanations retain the source, propagation, boundary, and failed rule,
+including metadata omitted from source. The separate models under `formal/` prove
+their stated interfaces and premises; this kernel does not assert an existing
+whole-language preservation/progress theorem or verified surface lowering.
+
+### Core Rule Coverage
+
+The following index assigns every surface area to core judgments and its detailed formation/execution rules. Surface notation may elaborate to these operations or be checked directly by the linked rule. Elaboration must preserve evaluation order, copies, allocation identity, control targets, consumption points and all checking metadata; it grants no additional authority. The mathematical judgments above are not additions to the source EBNF.
+
+| Surface area | Core checking obligation | Defining rules |
+| :--- | :--- | :--- |
+| Names, scope, imports, `sub`, visibility, entry point, initialization | K-CTX identities; K-TYPE; declaration and boundary checks | [Modules](#modules-and-compilation-units), [initialization](#top-level-initialization-and-purity), [entry](#program-entry-point) |
+| Type declarations, aliases, nominal/opaque forms, recursive types | K-TYPE; K-EQ; scope and representation boundaries | [Type declarations](#type-declarations-and-opaque-types), [nominal wrappers](#nominal-type-wrappers) |
+| Generic applications, defaults, constraints, implicit rows/modes | K-TYPE-SUBST; K-GEN; K-FIX | [Generics](#generic-parameters-defaults-and-value-sorts), [rows](#record-types-and-row-polymorphism), [mode inference](#access-mode-inference-with-via-and-infer) |
+| Primitive literals, strings/interpolation and bytes | K-EXPR contextual literals and primitive domains | [Literals](#numeric-literals), [text literals](#text-and-byte-literals), [text operations](#text-and-byte-operations) |
+| Unary, arithmetic, bitwise, equality, ordering, explicit conversions, ranges | K-EXPR operand/result contracts; K-SUB | [Operators](#expressions-and-operators), [equality/key rules](#relational-and-equality-operators) |
+| Record/tuple/array/map literals, sums and wrapper constructors | K-TYPE; K-EXPR construction; K-RECV; constructor equations | [Collections](#array-map-and-tuple-types), [sums](#sum-types-and-gadts), [record spread](#record-construction-and-spread-update) |
+| Member/computed projection, indexing, safe navigation and slicing | K-EXPR projection; K-PAT evidence; actual path authority | [Indexing](#range-and-sequence-indexing-expressions), [static coordinates](#static-coordinate-parameters-and-computed-value-projection), [narrowing](#flow-sensitive-type-narrowing) |
+| `let`/`var`, `mut`/`ref`/`^mut`, pinning, assignment, decomposition | K-RECV; K-EXPR sequencing/fixed schemas; K-PAT | [Bindings](#binding-modes-and-storage-matrix), [assignments](#assignments-and-compound-assignments), [pattern reception](#pattern-reception-and-decomposition) |
+| `new`, verified storage handoff, clone, derive, resources and cleanup | K-RECV-NEW; K-CALL confinement/lifetimes; K-PHASE coverage | [Construction locals](#construction-qualified-locals-and-mode-preserving-reception), [handoffs](#verified-storage-handoffs), [derive](#functional-updates-via-derive), [scoped bindings](#scoped-resource-bindings) |
+| Calls, named arguments, defaults, pipelines, projection accessors | K-CALL; K-EXPR sequencing and argument mapping | [Defaults](#default-parameters-and-named-arguments), [pipelines](#pipeline-operators), [accessors](#anonymous-functions-trailing-closures-and-projection-accessors) |
+| Named/anonymous callables, closures, captures, higher-order calls | K-GEN; K-ANON; K-CALL; K-IFACE | [Callable contracts](#callable-contracts), [closures](#closures-factory-signatures-and-lexical-environments), [higher-order calls](#higher-order-calls) |
+| Blocks, tails, `where`, statement results and fallible inspection | K-EXPR sequencing; K-JOIN; scope checks | [Blocks](#block-expressions-tail-values-and-hoisted-declarations), [where](#dual-tier-where-invariants), [Result inspection](#mandatory-inspection-of-fallible-results) |
+| `if`, `match`, guarded bindings, `is`, GADT and or-patterns | K-PAT; K-JOIN; stable evidence and invalidation | [Conditionals](#conditional-expressions), [patterns](#pattern-matching), [value tests](#value-tests-with-is), [narrowing](#flow-sensitive-type-narrowing) |
+| `loop`/`while`/`for`, `return`/`last`/`next`, short circuit, `?`/`??` | K-EXPR transfer targets; K-JOIN; K-FIX | [Loops](#loop-expressions), [transfers](#control-transfers), [logical operations](#logical-operators), [fallback](#error-and-fallback-operators) |
+| Effect declarations/aliases, operation calls, handlers, `resume`, parameterized `with` | K-TYPE concrete operation signatures; K-CALL discharge/answer/affine checks | [Effects](#effect-declarations-and-operation-signatures), [handlers](#effect-handlers), [resumption](#affine-resumption-and-delimited-early-abort) |
+| State groups, provenance, callable-handle modes, task crossing | K-CALL actual identities/footprints; K-IFACE | [State](#state-and-provenance-tracking), [exclusivity](#law-of-exclusivity-and-cross-argument-disjointness), [concurrency](#structured-concurrency-and-panic-containment), [channels](#structured-concurrency-channels) |
+| `halt`, Div, `div_budget`, deterministic parallel primitives | K-CALL; K-PHASE coverage, residual obligations and cleanup | [Halt](#termination-and-halt-contracts), [budgets](#finite-evaluation-with-div), [data parallelism](#deterministic-data-parallelism-and-divide-and-conquer-primitives) |
+| Type quotation, type/meta functions, `meta let`, `typeof` | K-TYPE-COMPUTE; K-GEN; K-PHASE | [Static types](#static-type-values-and-type-quotation), [type computation](#pure-type-functions-and-result-restrictions), [call families](#disjoint-call-families-evaluation-budgets-and-branch-pruning) |
+| Type patterns, introspection, mapped types, layout queries | K-PAT; K-EQ; K-PHASE | [Introspection](#static-introspection), [type patterns](#structural-type-pattern-matching), [layout](#compile-time-evaluation-and-layout-queries) |
+| Built-ins, prelude, foreign interfaces, exported metadata | K-TYPE; K-CALL registered/trusted contract; K-IFACE | [Built-ins](#built-in-foundational-operations), [foreign declarations](#external-interface-declarations), [contract completion](#mandatory-contract-inference-and-completion) |
+
+Primitive eligibility, phase, resource and execution premises come only from the resolved registered contract. Bodyless Ril declarations must match that registration; foreign `.d.ril` declarations form their separately specified trusted boundary. Neither a familiar name nor a missing implementation proves a typing or safety premise. The non-normative [implementation guide](TYPE_SYSTEM_GUIDE.md) maps this kernel to a development mainline and records the exact scope of existing formal models.
 
 ## Declarations and Bindings
 
@@ -4159,7 +4898,7 @@ NarrowingExpr      ::= NarrowingPredicate
 - **Anti-Aliasing (`E0533`)**: Preserving a live-origin refinement across a call requires proof that the call's possible writes are independent of that origin. Unknown overlap uses `E0533`; a known write invalidating an established refinement uses `E0310`. A `ref` does not supply independence. The examples below contrast both failures with an immutable snapshot.
 - **Generic Confinement**:
    - Testing bare type parameters (`x is T`) is rejected (`E0301`).
-   - GADT equations on $x$ are local to $x$ and do not rebind $T$ elsewhere in scope.
+   - GADT matching introduces [arm-local equality evidence](#pattern-evidence-and-gadt-branches). That evidence may check any value or expected type involving the same rigid parameter within the current arm; it does not rebind the parameter declaration or become an assumption outside that arm. Path/tag narrowing still applies only to the tested path.
    - Mutable fields preserve container invariance ([Type Identity and Subtyping](#type-identity-and-subtyping)).
 - **Dead Paths & Phase Ordering**:
    - A `never` branch contributes no normal-successor environment ($\Gamma \sqcup \bot = \Gamma$); effects, state access, and authority uses already executed before its termination remain in the invocation summary.
@@ -4648,7 +5387,7 @@ fn give_logged() -> EffectOpenAction { logged }
 
 Match a callable's complete normalized contract at every assignment, argument, aggregate member, return and module/type boundary. Closed effect and state/provenance rows require exact equality. Open rows admit additional actual entries only in their selected dimension; every explicitly written entry must be satisfied.
 
-Normalization expands effect-set and transparent aliases, compares effect instances using static-argument identity, canonicalizes source and provider identities, combines equivalent access entries, and includes access modes implied by a return annotation. Duplicate spellings do not create different contracts. Formal parameter labels and their bound return-source references are alpha-renamed by parameter position before comparison; external and captured sources retain their resolved declaration and activation identities.
+Normalization expands effect-set and transparent aliases, compares effect instances using static-argument identity, canonicalizes source and provider identities, combines equivalent access entries, and includes access modes implied by a return annotation. Duplicate spellings do not create different contracts. Preserve [verified operation footprints, conditions and callable alternatives](#authority-calls-and-contract-operations); a displayed effect row does not erase them. Formal parameter labels and their bound return-source references are alpha-renamed by parameter position before comparison; external and captured sources retain their resolved declaration and activation identities.
 
 Parameter data shapes are contravariant and result data shapes covariant. Concrete parameter modes match; explicit `via` mode patterns check the actual family and its acceptance conditions. Root and contained guarantees, source authority, construction qualification and resource/scoped lifetimes are independent checks. For a family, every retained alternative must satisfy closed-row matching.
 
@@ -4891,7 +5630,7 @@ Run-time business choices operate under statically proved access modes and origi
 
 Verified interfaces retain root modes/history, contained origins, store/return relations and output correlations for checking and dependency invalidation. Higher-order/dynamic joins preserve only common guarantees; separation requires a verified relation. Opaque interfaces retain hidden-source facts in metadata. Return-mode/source erasure is `E0534`; parameter-label renaming also renames bound source names by position.
 
-A generic signature must hold for every admitted instantiation. Use a uniformly valid plain result, sufficient constraints, or a qualified construction or `via` family. Forwarding construction requires eligible ordinary shared-object instantiations and a lawful handoff through a declared construction return context, explicit construction operand or checked template dependency. `-> infer T` infers and retains the result qualifications; handoff context follows those separate rules. Foreign exchange and resource authority follow their declared contracts.
+A generic signature must hold for every admitted instantiation under [definition checking](#generic-evidence-and-definition-checking); unresolved ordinary typing obligations cannot be deferred to a first successful call. Use a uniformly valid plain result, sufficient constraints, or a qualified construction or `via` family. Forwarding construction requires eligible ordinary shared-object instantiations and a lawful handoff through a declared construction return context, explicit construction operand or checked template dependency. `-> infer T` infers and retains the result qualifications; handoff context follows those separate rules. Foreign exchange and resource authority follow their declared contracts.
 
 ```ril
 -- Cell and Box have the preceding declarations.
@@ -6280,7 +7019,8 @@ fn edit_once(mut cell: Cell) &mut -> i64 {
 | Parameters | Irrefutable patterns (`E0345`); explicit modes match the operation declaration (`E0406`) |
 | Request-value branches | Ordinary `if`/`match` inside the arm |
 | Unlisted operation | Forward outward; retain unhandled effects (`E0612`) |
-| Discharge a declared effect instance | Cover every operation of that instance; built-in resource/system obligations follow their separate rules |
+| Direct operation / verified footprint | Remove the matching handled operation obligation; other possible operations remain |
+| Discharge an abstract effect instance | Cover every operation that its available contract permits; an unknown `@Effect` boundary permits the whole instance. Preserve any verified operation footprint; built-in resource/system obligations follow their separate rules |
 
 ```ril
 type Cell = .{ var count: i64 }
@@ -6317,7 +7057,7 @@ Outer function/callback activations stay active. Independent captures and ambien
 
 | Retained handler context | Rule |
 | :--- | :--- |
-| New callable | Select creation-scope lexical handlers for transitive residual operations, including callees |
+| New callable | Select creation-scope lexical handlers for transitive residual operations, including callees; use verified operation footprints and conservatively include the full instance at an unrefined abstract effect boundary |
 | Handler inside callable body | Establish on invocation |
 | Hoisted block-local function | Context at defining-block entry, before its sequential `with`; nested blocks inherit their enclosing context |
 | Existing callable / first reference | Never rebind or select a new handler context |
@@ -6903,11 +7643,11 @@ A resource contract must state endpoint creation, cloning, transfer, closure, an
 ### Static Type Values and Type Quotation
 
 ```ebnf
-TypeQuoteExpr    ::= "<" TypeExpression ">"
 TokenType        ::= "Type" "<" TypeExpression ">"
 TypeFunctionExpr ::= "\" TypeFnParam { "," TypeFnParam } "->" Expression
 TypeFnParam      ::= PascalCase [ TypeConstraint ] [ "=" TypeExpression ]
                    | ValueName ":" ValueType { "|>" PipelineConstraint } [ "=" Expression ]
+                   | ModeParamDecl
 ```
 
 `TokenType` is the protected intrinsic family resolved through `NominalRef`. A quote is a static value expression whose root must denote one type after removing grouping parentheses (`E0306` otherwise). Const, `typeof` and mapped-type expression slots follow their defining rules.
@@ -7064,8 +7804,8 @@ halt fn checked_increment(n: i64) -> i64 { n + 1 } -- May panic at i64's maximum
 Both run in the pure static domain: no outward operational effects or state/provenance obligations, with implicit Div allowed. They support local bindings, control flow, pure static helpers and recursion. Effect/state source annotations remain forbidden, including explicit `@Div`; inference retains Div in their checking interfaces. Generic type metadata is static and erased from run-time values. Type functions do not distribute over type sets (`E0306`); evaluated results must be a single rigid type token (`E0318`). In type patterns, `<i64> | <f64>` is an or-pattern matching atomic tokens.
 
 ```ril
-type Wrap = \T -> <[T]>
-type IntList = Wrap<i64>                        -- [i64]
+type Wrap = \T -> <[]T>
+type IntList = Wrap<i64>                        -- []i64
 -- type BadSet = Wrap<i64 | f64>                -- Error [E0306]: type parameter 'T' requires a rigid type, not a type set
 -- type BadUnion = \T -> <i64 | f64>            -- Error [E0318]: untagged unions cannot be quoted or returned as types
 
@@ -7274,7 +8014,7 @@ selected_write<true>(mut cell)           -- OK: selected instance has a write
 -- Its fixed &mut annotation also has no inferred outward write (E0529).
 ```
 
-Both branches require valid syntax, name resolution and ordinary type compatibility. Type-token reflection describes types; actual callable-value effects and provenance are retained in callable contracts.
+Both branches require valid syntax, name resolution and ordinary type compatibility under their established [generic](#generic-evidence-and-definition-checking) and [arm-local evidence](#pattern-evidence-and-gadt-branches); unselected branches do not grant arbitrary ill-typed operations. Type-token reflection describes types; actual callable-value effects and provenance are retained in callable contracts.
 ### Static Introspection
 
 <a id="coordinate-enumeration-with-keyof"></a>
@@ -7310,10 +8050,14 @@ meta let EVENT_VARIANTS = variants(<UiEvent>) -- ["Click", "Focus", "Hover"]
 #### Static Coordinate Parameters and Computed Value Projection
 
 ```ril
-fn get_coord<via P, T: .{ .. } | Tuple>(via P obj: T, meta key |> Key<T>) -> infer T.(key) {
+halt type Product = \T -> match <T> {
+    <.{ .. }> | <()> | <(_, ..)> -> <T>,
+    _ -> <never>,
+}
+fn get_coord<T |> Product>(via obj: T, meta key |> Key<T>) -> infer T.(key) {
     obj.(key)
 }
-fn get_field<via P, T: .{ .. }>(via P record: T, meta key: str |> Key<T>) -> infer T.(key) {
+fn get_field<T: .{ .. }>(via record: T, meta key: str |> Key<T>) -> infer T.(key) {
     record.(key)
 }
 
@@ -7323,7 +8067,13 @@ let pair = (42, "status")
 
 let name: str = get_coord(user, "name")
 let first: i64 = get_coord(pair, 0)
-let r: ref(user.name) str = get_coord(ref user, "name")
+let copied_name: str = get_coord(ref user, "name") -- Value-type result copies
+
+type Cell = .{ var count: i64 }
+let mut holder = .{ mut cell: Cell.{ count: 0 } }
+let ref observed = get_coord(ref holder, "cell")
+holder.cell.count += 1
+assert(observed.count == 1)                   -- Shared-object result preserves observation
 
 -- get_coord(user, "missing")          -- Error [E0323]: "missing" fails constraint Key<User>
 -- get_coord(pair, 2)                  -- Error [E0323]: index 2 out of bounds for Tuple
@@ -7332,7 +8082,7 @@ fn dynamic_key(user: User, key: str) -> () {
 }
 ```
 
-A `meta` parameter receives a compile-time static argument in ordinary call position `(...)`. `key |> Key<T>` desugars to `Key<key, T>`, inferring `CoordKey<T>` as the parameter sort when omitted, producing `<()>` when valid and `<never>` otherwise (`E0323`). Monomorphization specializes the call to concrete member access (`record.name` or `tuple.0`) and erases the `meta` parameter. `-> infer T.(key)` infers result access modes and specializes return provenance to `&return{record.(key)}`.
+A `meta` parameter receives a compile-time static argument in ordinary call position `(...)`. `key |> Key<T>` desugars to `Key<key, T>`, inferring `CoordKey<T>` as the parameter sort when omitted, producing `<()>` when valid and `<never>` otherwise (`E0323`). Monomorphization specializes the call to concrete member access (`record.name` or `tuple.0`) and erases the `meta` parameter. `-> infer T.(key)` derives reception from the selected constituent. Value-type constituents copy without a live source dependency; shared-object constituents preserve the effective access and actual selected origins. Root sources are expressed relative to the formal's call-entry graph, while contained origins use the separate return-provenance relation; selecting a member does not turn every result into a contained reference.
 
 | Value projection | Requirement |
 | :--- | :--- |
@@ -7393,7 +8143,7 @@ type Slots = \T -> <.{ var [coords(<T>) as (_, k)]: T.(k) }>
 type PairSlots = (var [[0, 1] as (_, i)]: i64) -- (var i64, var i64)
 
 -- 4. Pipeline filtering (Pick):
-type Pick = \T: .{ ..never }, included: []str -> {
+type Pick = \T: .{ .. }, included: []str -> {
     let filtered = coords(<T>) |> Array::filter(\(m, k) -> included |> Array::contains(k))
     <.{ m [filtered as (m, k)]: T.(k) }>
 }
@@ -7456,6 +8206,11 @@ TypePatternField     ::= [ MemberMode ] FieldLabel ":" ( TypePatternInner | "_" 
                        | "let" PascalCase FieldLabel ":" ( TypePatternInner | "_" )
 
 TypeRestPattern      ::= ".." [ PascalCase ]
+TypeArrayPattern     ::= "[" [ ElementAccessMode ] "]" TypePatternInner
+TypeMapPattern       ::= "[" TypePatternInner ":" [ ElementAccessMode ] TypePatternInner "]"
+RigidNominalPattern  ::= QualifiedName [ "<" TypePatternArg { "," TypePatternArg } [ "," ] ">" ]
+TypePatternArg       ::= TypePatternInner | MemberModeLiteral
+PrimitivePattern     ::= PrimitiveType
 ```
 
 - **Scoped Pattern Variables (`let U`, `let M`)**: `let U` introduces a target-type variable; `let M` binds `MemberMode`. Bare `PascalCase` identifiers denote rigid nominal type matching.
@@ -7463,6 +8218,7 @@ TypeRestPattern      ::= ".." [ PascalCase ]
 - **Tuple Slices and No 1-Tuple Invariant**: Ril has no 1-tuples (`()` is unit; `(T)` is scalar grouping). Anonymous `<(_, ..)>` matches tuples of arity $\ge 2$. Named `..Tail` fails if remaining components number 1.
 - **Unique Pattern Binders (`E0347`)**: Each pattern branch binds an identifier at most once; multi-position equality is asserted via explicit guards (`if <A> == <B>`).
 - **Rigid Application Head (`E0306`)**: Requires a known rigid type constructor; transparent aliases may expand. Primitive/structural patterns and whole-type `_`/`let U` remain legal.
+- **Sorted Arguments**: A member-mode literal in a type pattern is admitted only in the corresponding constructor's member-mode argument position. It is not a whole-type pattern or an ordinary expression. Const literals retain their value-sorted argument restriction.
 
 | Match evidence | Scope / invalidation |
 | :--- | :--- |
@@ -7521,9 +8277,11 @@ halt type DeconstructTuple = \T -> match <T> {
 }
 
 -- Member Mode Pattern Destructuring:
+-- A mode is a static value argument, not a field type or a literal type.
+type ModeTag<M: MemberMode>
 halt type DeconstructMember = \T -> match <T> {
-    <(let M let Head, ..Tail)>         -> <.{ mode: M, head: Head, tail: Tail }>,
-    <.{ let M field: let U, ..Rest }>   -> <.{ mode: M, field: U, rest: Rest }>,
+    <(let M let Head, ..Tail)>         -> <.{ mode: ModeTag<M>, head: Head, tail: Tail }>,
+    <.{ let M field: let U, ..Rest }>   -> <.{ mode: ModeTag<M>, field: U, rest: Rest }>,
     _                                  -> <never>,
 }
 
@@ -7532,7 +8290,7 @@ type Unwrapped = UnwrapAll<Nested>             -- i64
 -- UnwrapAll uses the evaluation budget: recursive type graphs need not have a finite wrapper depth.
 type Elem = ElementOf<[]str>                   -- str
 type HeadTail = DeconstructTuple<(u8, i32, f64)>-- .{ head: u8, tail: (i32, f64) }
-type ExtractedTuple = DeconstructMember<(mut []i64, str, bool)> -- .{ mode: MemberMode::Mut, head: []i64, tail: (str, bool) }
+type ExtractedTuple = DeconstructMember<(mut []i64, str, bool)> -- .{ mode: ModeTag<mut>, head: []i64, tail: (str, bool) }
 
 -- Rejection of Non-Rigid Type Patterns (E0306):
 -- type BadPattern = \T -> match <T> {
@@ -8141,7 +8899,7 @@ This index assigns each code its diagnostic name and points to its defining rule
 
 | Code | Diagnostic and defining rule |
 | :---: | :--- |
-| **`E0301`** | [`TypeMismatchError`](#diagnostic-classification), including [pipeline type constraints](#generic-parameters-defaults-and-value-sorts) |
+| **`E0301`** | [`TypeMismatchError`](#diagnostic-classification), including [pipeline type constraints](#generic-parameters-defaults-and-value-sorts) and [unproved generic typing](#generic-evidence-and-definition-checking) |
 | **`E0302`** | [`UnexpectedFieldError`](#record-types-and-row-polymorphism) |
 | **`E0303`** | [`NonExhaustiveMatchError`](#pattern-matching) |
 | **`E0304`** | [`UnreachableMatchArmError`](#pattern-matching); [Sum Types and GADTs](#sum-types-and-gadts) |
@@ -8153,7 +8911,7 @@ This index assigns each code its diagnostic name and points to its defining rule
 | **`E0310`** | [`InvalidatedNarrowingAccessError`](#flow-sensitive-type-narrowing) |
 | **`E0311`** | [`ContradictoryNarrowingError`](#flow-sensitive-type-narrowing) |
 | **`E0312`** | [`TupleIndexOutOfBoundsError`](#array-map-and-tuple-types) |
-| **`E0313`** | [`CyclicTypeAliasError`](#type-declarations-and-opaque-types) |
+| **`E0313`** | [`CyclicTypeAliasError`](#definitional-equality-and-recursive-types); [type declarations](#type-declarations-and-opaque-types) |
 | **`E0314`** | [`ArityMismatchError`](#pattern-matching); [Default Parameters and Named Arguments](#default-parameters-and-named-arguments) |
 | **`E0315`** | [`EscapingLocalNominalTypeError`](#block-expressions-tail-values-and-hoisted-declarations) |
 | **`E0316`** | [`NonTrailingDefaultGenericParamError`](#generic-parameters-defaults-and-value-sorts) |
@@ -8191,7 +8949,7 @@ This index assigns each code its diagnostic name and points to its defining rule
 | **`E0348`** | [`InvalidRangePatternError`](#pattern-matching) |
 | **`E0349`** | [`InvalidPatternExpressionError`](#pattern-matching) |
 | **`E0350`** | [`NonBooleanConditionError`](#conditional-expressions); [Logical Operators](#logical-operators) |
-| **`E0351`** | [`IncompatibleBranchTypesError`](#conditional-expressions); [Pattern Matching](#pattern-matching) |
+| **`E0351`** | [`IncompatibleBranchTypesError`](#structural-joins-and-normal-continuations); [conditionals](#conditional-expressions); [pattern matching](#pattern-matching) |
 | **`E0352`** | [`InvalidIndexTargetError`](#array-map-and-tuple-types) |
 | **`E0353`** | [`NullaryVariantCallError`](#constructor-tuple-equivalence-invariant) |
 | **`E0354`** | [`InvalidVariantContractError`](#sum-types-and-gadts) |
