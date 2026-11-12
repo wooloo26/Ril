@@ -1,2 +1,0 @@
--- The callable member of the language-defined Div effect namespace.
-pub fn budget<T>(limit: i64, action: fn() @& -> T) @Div -> T

@@ -1,4 +1,0 @@
--- Byte-coordinate and array conversion operations.
-pub halt fn at(data: bytes, index: i64) -> ?u8
-pub halt fn to_array(data: bytes) -> new []u8
-pub halt fn from_array(via values: []u8) -> bytes

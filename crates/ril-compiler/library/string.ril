@@ -1,6 +1,0 @@
--- Scalar-coordinate and UTF-8 operations.
-pub halt fn scalars(text: str) -> new []u32
-pub halt fn at(text: str, index: i64) -> ?u32
-pub halt fn from_scalars(via values: []u32) -> ?str
-pub halt fn encode_utf8(text: str) -> bytes
-pub halt fn decode_utf8(data: bytes) -> ?str
