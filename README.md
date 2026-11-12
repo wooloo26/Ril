@@ -6,7 +6,7 @@ Ril is a programming language designed to make data permissions flow explicitly 
 
 ```ril
 -- Access-mode dependencies propagate through generic calls and local reception.
-type Cell = { var value: i64 }
+type Cell = .{ var value: i64 }
 
 fn relay<T>(via value: T) -> infer T {
     let via item = value
@@ -61,7 +61,7 @@ fn update_snapshot() -> () {
 ```
 
 ```ril
-fn update_title<T: { title: str, .. }>(item: T, new_title: str) -> T {
+fn update_title<T: .{ title: str, .. }>(item: T, new_title: str) -> T {
     item |> derive \mut draft -> { draft.title = new_title }
 }
 
@@ -75,19 +75,18 @@ fn revise_article() -> () {
 ```ril
 -- The budget bounds eligible computation; cleanup and recovery must also be finite.
 fn spin() -> i64 { loop {} }
-halt fn bounded() -> ?i64 {
-    with Div::exhausted() -> None
-    with Div::budget(1_000)
-    Some(spin())
+halt fn bounded() -> Result<i64, BudgetError> {
+    with div_budget(1_000)
+    spin()
 }
 ```
 
 ```ril
 -- Schema transformations preserve both slot replacement and access modes.
-type Select = \T: { ..R }, keys: []str -> {
-    let selected = keyof T |> Array::filter(\key -> keys |> Array::contains(key))
-    <{ modeof T.(K) [selected as K]: T.(K) }>
+type Select = \T: .{ ..R }, keys: []str -> {
+    let selected = coords(<T>) |> Array::filter(\(_, key) -> keys |> Array::contains(key))
+    <.{ m [selected as (m, k)]: T.(k) }>
 }
-type Model = { id: i64, var title: str, mut rows: []i64 }
-type Editable = Select<Model, ["title", "rows"]> -- { var title: str, mut rows: []i64 }
+type Model = .{ id: i64, var title: str, mut rows: []i64 }
+type Editable = Select<Model, ["title", "rows"]> -- .{ var title: str, mut rows: []i64 }
 ```
