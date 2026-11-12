@@ -1875,6 +1875,7 @@ ValueType             ::= TypeExpression
 - **Pipeline Type Constraints (`T |> Guard`, `E0301`, `E0306`)**: A type parameter may pipe into one or more pure type functions (`T |> Numeric`). The guard must be a compile-time pure `type` function of kind `Type -> Type` (`E0306`). An argument type $T_{arg}$ satisfies the guard if and only if:
   $$\text{Valid}(T_{arg}) \iff T_{arg} \not\equiv \text{never} \quad \wedge \quad \text{Guard}\langle T_{arg} \rangle \equiv T_{arg}$$
   The bottom type `never` is statically rejected before guard evaluation, preventing vacuous satisfaction. If $\text{Guard}\langle T_{arg} \rangle$ does not produce definitional identity with $T_{arg}$, the argument is rejected under `E0301`. Multiple guards pipe from left to right: `T |> Guard1 |> Guard2` $\equiv \text{Guard2}\langle \text{Guard1}\langle T \rangle \rangle$.
+- **Pipeline Constraint Input Sorts**: A constraint passes its type or static value as the guard's first argument, followed by written arguments; each argument must match its declared sort. Value-parameter constraints require explicit `meta` in ordinary function parameter lists; const generic and type-function value parameters are already static.
 - **Constraint Composition**. A structural row constraint and a pipeline guard both apply to the argument type. The `AuditGuard` example below requires an audit field in addition to the value field used by the function.
 - **Static Value Sorts**: Const parameters admit scalar values, atomic type tokens, and finite immutable aggregates without resource or callable authority. `tok: Type<T>` is a static value parameter, distinct from a type parameter `T: Type`. A value argument is admitted only for a parameter declared with one of these value sorts. Admission of static-only token values never permits their run-time materialization.
 - **Const Generic Evaluation & Purity Invariant (`E0814`, `E0323`)**: Const generic arguments evaluate at compile time within the pure static domain (no outward effects except implicit Div and no outward state/provenance obligations). `halt` is optional; evaluation remains subject to the compiler budget. Non-constant runtime expressions passed to const parameters trigger `E0814`. Arguments failing sort constraints or pipeline constraints (e.g. `key: str |> Key<T>`) trigger `E0323`.
@@ -1900,6 +1901,18 @@ type Numeric = \T -> match <T> {
 fn multiply<T |> Numeric>(a: T, b: T) -> T { a * b }
 assert(multiply(3, 4) == 12)
 -- let bad_mul = multiply("x", "y")     -- Error [E0301]: type 'str' does not satisfy constraint 'Numeric'
+
+-- Value-parameter pipeline constraint:
+type NonNegative = \value: i64 ->
+    if value >= 0 { <()> } else { <never> }
+fn checked_count(meta count: i64 |> NonNegative) -> i64 { count } -- NonNegative<count>
+assert(checked_count(3) == 3)
+-- checked_count(-1)                  -- Error [E0323]: fails NonNegative
+fn scale_count(count: i64) -> i64 {
+    -- checked_count(count)            -- Error [E0814]: requires a static value
+    multiply(count, 2)                 -- OK: Numeric<i64>; count may be a run-time value
+}
+-- fn missing_meta(count: i64 |> NonNegative) -> i64 { count } -- Error [E0120]: requires 'meta'
 
 -- Type Function Specialized to One Member of a Closed Type Set:
 type TargetType = \T: i64 | f64 -> match <T> {
