@@ -8793,7 +8793,7 @@ PrimitivePattern     ::= PrimitiveType
 -- User and field_size have the preceding declarations.
 meta fn inspect_token<T>(token: Type<T>) -> int {
     match token {
-        <User> -> field_size<User, "id">(token),
+        <User> -> field_size<User>(token, "id"),
         _      -> 0,
     }
 }
