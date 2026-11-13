@@ -269,8 +269,9 @@ let value: str = 1                    -- Error [E0301]: incompatible expression 
 let unused_value = 1                  -- OK: valid unused read-only binding
 -- let bad_zero = 1 / 0               -- Error [E0361]: constant zero divisor
 fn ratio(d: int) -> int { 1 / d }
--- let quotient = ratio(0)            -- Panics: integer division by zero
--- meta let QUOTIENT = ratio(0)       -- Error [E0831]: panic during static evaluation
+meta fn static_ratio(d: int) -> int { 1 / d }
+-- let quotient = ratio(0)            -- Panics at run time: integer division by zero
+-- meta let QUOTIENT = static_ratio(0) -- Error [E0831]: panic during static evaluation
 ```
 
 An `E` diagnostic rejects a program under a specified syntactic or semantic rule. `Panic` and `Fatal` are implicit non-operational execution effects rather than user algebraic operations; recoverable errors use ordinary `Result` and `Option` data.
@@ -1158,7 +1159,7 @@ Map lookups must use safe bracket navigation (`m?[k]`), evaluating to `?V` (`Opt
 let items = [10, 20]
 let position: u8 = 1u8
 -- let wrong = items[position]         -- Error [E0301]: no implicit widening of an index
-assert(items[Numeric::int(position)] == 20)
+assert(items[Numeric::to_int(position)] == 20)
 -- let scalar = "ab"[0]                -- Error [E0352]: use String::at
 ```
 
@@ -3282,7 +3283,7 @@ start_idx += 1; end_idx -= 1           -- OK: both variables reassignable
 ### Scoped Resource Bindings
 
 ```ril
-type Resource = .{ var name: str, var mut on_close: halt fn() & -> () }
+type Resource = .{ var name: str, var mut on_close: fn() & -> () }
 let mut events: []str = []
 {
     let scoped mut first = Resource.{
@@ -3313,7 +3314,7 @@ assert(events == ["new"])
 
 | Concern | Rule |
 | :--- | :--- |
-| Ordinary resource | Accessible zero-argument unit-result cleanup callable required (`E0541`); `on_close: halt fn() & -> ()` preserves actual state and provenance obligations while enforcing finiteness on the field, and `let scoped` checks operational cleanup effects (`E0616`), finiteness (`E0617`), and invocation authority |
+| Ordinary resource | Accessible zero-argument unit-result cleanup callable required (`E0541`); `on_close: fn() & -> ()` preserves actual state and provenance obligations, while operational cleanup effects (`E0616`), finiteness (`E0617`), and invocation authority retain their separate checks |
 | Opaque resource | Requires an explicit scoped-cleanup operation; opacity alone supplies none (`E0541`) |
 | Registration | After successful initialization; per binding and per loop activation; failed initialization registers nothing |
 | Exit | Invoke once in reverse registration order, including cancellation/abort; double-fault exception below |
@@ -3327,8 +3328,8 @@ assert(events == ["new"])
 
 ```ril
 type WrongCleanup = .{ on_close: int }
--- let scoped bad = WrongCleanup.{ on_close: 0 } -- Error [E0541]: on_close is not halt fn() -> ()
-type Cleanup = .{ on_close: halt fn() -> () }
+-- let scoped bad = WrongCleanup.{ on_close: 0 } -- Error [E0541]: on_close is not fn() -> ()
+type Cleanup = .{ on_close: fn() -> () }
 { let scoped good = Cleanup.{ on_close: \-> () } } -- OK: finite cleanup lambda
 ```
 
@@ -3745,11 +3746,11 @@ fn fill(mut buf: Buf, n: int) &mut -> Result<int, str> {
 | **7** | `^` | Left | Bitwise XOR |
 | **8** | `\|` | Left | Bitwise OR |
 | **9** | `..` `..=` | Non-associative | Half-open range, closed range |
-| **10** | `==` `!=` `<` `<=` `>` `>=` `is` | Non-associative | Relational, equality, value test `is` |
-| **11** | `&&` | Left | Logical AND (short-circuiting) |
-| **12** | `\|\|` | Left | Logical OR (short-circuiting) |
-| **13** | `??` | Right | Fallback coalescing operator |
-| **14** | `\|>` `\|> ref` `\|> mut` `\|> ^mut` `\|> new` | Left | Pipeline `\|>` with optional first-argument mode |
+| **10** | `\|>` `\|> ref` `\|> mut` `\|> ^mut` `\|> new` | Left | Pipeline `\|>` with optional first-argument mode |
+| **11** | `==` `!=` `<` `<=` `>` `>=` `is` | Non-associative | Relational, equality, value test `is` |
+| **12** | `&&` | Left | Logical AND (short-circuiting) |
+| **13** | `\|\|` | Left | Logical OR (short-circuiting) |
+| **14** | `??` | Right | Fallback coalescing operator |
 | **15** | `let ... else` | Non-associative | Guarded destructuring binding |
 | **16** | `=` `+=` `-=` `*=` `/=` `%=` `&=` `\|=` `^=` `<<=` `>>=` | Non-associative | Assignment and compound assignment |
 | **17** | `where` | Non-associative | Block-level trailing hoisted declaration clause |
@@ -3814,8 +3815,7 @@ The prelude module `Numeric` provides pure, finite, dual-phase conversions.
 
 | Operation | Admitted types | Result |
 | :--- | :--- | :--- |
-| `Numeric::int<From>(value: From) -> int` | Any integer source (`int`, `i8..i64`, `u8..u64`) | Exact lossless conversion to `int` |
-| `Numeric::widen<To, From>(value: From) -> To` | Lossless numeric widening pairs (`u8 -> u16/u32/u64/i16/i32/i64/int`, `i8 -> i16/i32/i64/int`, ..., any integer $\rightarrow$ `int`, `f32 -> f64`) | Exact value without `Option` (`E0301` unless every value of `From` fits `To`) |
+| `Numeric::to_int<From>(value: From) -> int` | Any integer source (`int`, `i8..i64`, `u8..u64`) | Exact lossless conversion to `int` (`E0301` on non-integer) |
 | `Numeric::convert<To, From>(value: From) -> ?To` | Numeric source and target | Checked conversion under the rules below |
 | `Numeric::saturate<To, From>(value: From) -> To` | Integer source, fixed-width integer target | Clamp mathematical integer to `[To::MIN, To::MAX]` |
 | `Numeric::trunc<To, From>(value: From) -> ?To` | Floating source, integer target | Truncate toward zero, then range-check; nonfinite input yields `None` |
@@ -3838,17 +3838,16 @@ The prelude module `Numeric` provides pure, finite, dual-phase conversions.
 | Reinterpretation | Abstract $N$-bit representation; floating inputs/results use [canonical NaN bits](#arithmetic-operators) |
 
 ```ril
--- Overflow-free multi-step fixed-width formulas via Numeric::int:
+-- Overflow-free multi-step fixed-width formulas via Numeric::to_int:
 fn checked_offset(x: i32, y: i32, stride: i32) -> ?i32 {
-    Numeric::convert(Numeric::int(y) * Numeric::int(stride) + Numeric::int(x))
+    Numeric::convert(Numeric::to_int(y) * Numeric::to_int(stride) + Numeric::to_int(x))
 }
 fn clamped_gain(sample: u16, factor: u16) -> u16 {
-    Numeric::saturate(Numeric::int(sample) * Numeric::int(factor) / 100)
+    Numeric::saturate(Numeric::to_int(sample) * Numeric::to_int(factor) / 100)
 }
 
-let widened: i64 = Numeric::widen(255u8)
-assert(widened == 255i64)
--- let bad_widen: u8 = Numeric::widen(1i8)             -- Error [E0301]: negative i8 values do not fit u8
+assert(Numeric::to_int(255u8) == 255)
+-- let bad_float = Numeric::to_int(1.5)                 -- Error [E0301]: float requires trunc or convert
 assert(Numeric::convert<u8>(256) == None)
 assert(Numeric::saturate<u8>(300) == 255u8)
 assert(Numeric::saturate<i8>(-200) == -128i8)
@@ -4295,17 +4294,27 @@ for String::scalars(text) as scalar { assert(scalar <= 0x10FFFFu32) }
 ```ril
 let doubled = [1, 2, 3]
     |> Array::map(\x -> x * 2)
-    |> Array::filter(\x -> x > 2)      -- Evaluates to [4, 6]
+    |> Array::filter(\x -> x > 2)      -- [4, 6]
 
 let mut raw = Bytes::to_array(bytes"AB")
-raw |> mut Array::push(67u8)           -- Desugars to Array::push(mut raw, 67u8)
+raw |> mut Array::push(67u8)           -- Array::push(mut raw, 67u8)
+assert(raw |> ref Bytes::from_array == bytes"ABC")
+
 let decoded = raw
-    |> ref Bytes::from_array           -- Desugars to Bytes::from_array(ref raw)
-    |> String::decode_utf8             -- Evaluates to Some("ABC")
+    |> ref Bytes::from_array           -- Bytes::from_array(ref raw)
+    |> String::decode_utf8             -- Some("ABC")
+assert(decoded is Some(str["AB", ..]) && raw |> mut Array::pop == Some(67u8))
+
 let last_byte = raw
-    |> mut Array::pop                  -- Mutates AssignTarget at head, then pipes ?u8
-    ?? 0u8
-assert(last_byte == 67u8)
+    |> mut Array::pop
+    ?? 0u8                             -- '|>' (Level 10) binds before '??' (Level 14)
+assert(last_byte == 66u8)
+
+fn decode_header(ref buf: []u8) -> ?str {
+    let text = (buf |> ref Bytes::from_array |> String::decode_utf8)? -- Level-1 '?' wraps pipeline
+    Some(text)
+}
+assert(decode_header(ref raw) == Some("A"))
 
 type Cell = .{ var count: int }
 fn step_cell(new c: Cell, delta: int) &mut -> new Cell {
@@ -4315,7 +4324,7 @@ fn step_cell(new c: Cell, delta: int) &mut -> new Cell {
 fn retain_cell(^mut c: Cell) -> ^mut(c) Cell { c }
 
 let mut built = Cell.{ count: 1 }
-    |> new step_cell(2)                -- Desugars to step_cell(new Cell.{ count: 1 }, 2)
+    |> new step_cell(2)                -- step_cell(new Cell.{ count: 1 }, 2)
     |> new step_cell(3)                -- Chained construction handoff; built.count == 6
 let ^mut shared = built |> ^mut retain_cell
 shared.count += 1
@@ -4336,7 +4345,12 @@ assert(built.count == 7)
 | `x \|> ^mut f` / `x \|> ^mut f(a)` | `f(^mut x)` / `f(^mut x, a)` | `AssignTarget` (`E0410` otherwise): retained shared write |
 | `x \|> new f` / `x \|> new f(a)` | `f(new x)` / `f(new x, a)` | `Expression`: unpublished construction handoff |
 
-- **Mode Binding, Evaluation, and Propagation**: `ref`, `mut`, `^mut`, or `new` immediately following `|>` always binds as the pipeline `ArgumentMode`. Evaluate the left operand, the right callee expression, and any written right arguments once in left-to-right source order; an abrupt exit skips remaining expressions and the call. In `x |> new f(a)`, preparing `x` transfers construction authority and ends `x` (and derived reference paths) before evaluating `f` or `a` (`E0549` if referenced again). Trailing closures supply the final argument (`x |> ref f(a) \y -> e` means `f(ref x, a) \y -> e`). Postfix `?` retains Level-1 precedence: write `(x |> mut fallible(a))?` to propagate the pipeline result.
+| Rule | Semantics |
+| :--- | :--- |
+| Precedence | Level 10 (left-associative): tighter than `==`/`<`/`is` (Level 11), `&&`/`\|\|` (Levels 12–13), and `??` (Level 14); looser than arithmetic, bitwise, ranges (Levels 3–9), and postfix `.`/`[]`/`?` (Level 1) |
+| Mode token | `ref`, `mut`, `^mut`, or `new` immediately following `\|>` always binds as the pipeline `ArgumentMode` |
+| Evaluation order | Left operand, right callee, then written right arguments once left-to-right; abrupt exit skips remaining expressions and the call. In `x \|> new f(a)`, preparing `x` ends `x` and derived paths before evaluating `f` or `a` (`E0549` if reused) |
+| Trailing closure | Supplies the final argument (`x \|> ref f(a) \y -> e` means `f(ref x, a) \y -> e`) |
 
 ### Error and Fallback Operators
 
@@ -4469,7 +4483,7 @@ let kept = Id<ServerConfig>.{ host: "0.0.0.0" } -- OK: nominal identity retains 
 | Placement | Admitted only on plain (`let`) or `var` fields of the root record in a `.ril` `TypeDecl`, `OpaqueTypeDecl`, or `NominalDecl` (`E0404` on `mut`/`^mut`/`ref`/`via`; `E0359` on nested/anonymous records; `E0901` in `.d.ril`) |
 | Evaluation & scope | Evaluated left-to-right in field declaration order after explicit and spread fields when omitted at `TypeRef.{...}`; may reference earlier fields of the same record (`E0408` on self/later fields) |
 | Purity & state | No outward operational effects or mutable/live state (`E0409`); read-only deeply immutable `.ril` `&up(sub)` / `&up` dependencies propagate to callers that omit the field |
-| Type identity | `<RawConfig> == <.{ timeout_ms: int, retries: int }>`; transparent alias references preserve defaults, while computed type functions return pure structural shapes; `NominalDecl` and `OpaqueTypeDecl` retain defaults through their declaration identity |
+| Type identity | `<RawConfig> == <.{ timeout_ms: int, retries: int }>`; direct lexical alias references in `TypeRef.{...}` preserve defaults, while type tokens (`Type<T>`) and computed type functions carry pure structural shapes without transparent-alias defaults; `NominalDecl` and `OpaqueTypeDecl` retain defaults through their declaration identity |
 
 ### Assignments and Compound Assignments
 
@@ -4773,7 +4787,11 @@ for evens_up_to(8) as n {
 assert(total == 12)                        -- 0 + 2 + 4 + 6
 ```
 
-When the `for` source has type `()` or `never` and a unique concrete residual `@Yield<T>` effect, `for` installs an implicit inner delimited `Yield<T>::emit` handler: each `emit(v)` binds `v` to `Pattern`, executes the loop body, and closes body-local `scoped` resources before `resume ()`. Exiting via `last`, `return`, or `?` drops the suspended continuation without resumption and unwinds active producer `scoped` bindings; outer handler `resume` across the loop boundary is `E0623`. Each yielded item charges 2 `diverge_budget` units (handler entry plus resumption).
+| Generator `for` rule | Behavior |
+| :--- | :--- |
+| Activation | Source of type `()` or `never` with a unique concrete residual `@Yield<T>` installs an implicit inner delimited `Yield<T>::emit` handler |
+| Iteration & early exit | Each `emit(v)` binds `Pattern`, runs the body, and closes body-local `scoped` bindings before `resume ()`; `last`, `return`, or `?` drops the continuation without resuming and unwinds active producer `scoped` bindings (`E0623` on outer `resume` across the loop) |
+| `diverge_budget` charge | `1` unit on implicit `Yield::emit` entry + `1` unit on `resume ()` (normal step completion or `next`); early exit or unwinding skips `resume` and its charge |
 
 ### Control Transfers
 
@@ -5419,7 +5437,7 @@ MutableArgumentMode  ::= "mut" | "^mut"
 ArgumentList         ::= Argument { "," Argument } [ "," ]
 CallExpr             ::= Expression "(" [ ArgumentList ] ")" [ TrailingClosure ] | Expression TrailingClosure
 TrailingClosure      ::= AnonFnExpr
-CallableType     ::= [ "halt" ] "fn" "(" [ ParameterTypeList ] ")" [ CallableAnnot ] [ ReturnType ]
+CallableType     ::= "fn" "(" [ ParameterTypeList ] ")" [ CallableAnnot ] [ ReturnType ]
 CallableAnnot    ::= "@&" [ StateAnnot ]
                    | CallableEffectAnnot [ CallableStateAnnot ]
                    | CallableStateAnnot
@@ -5720,13 +5738,12 @@ let logged = \-> Log::write("event") -- OK: infer and preserve Log without a sou
 
 #### Closed and Open Callable Rows
 
-Callable types are closed by default at every arrow for operational effects and state/provenance, independently of whether that arrow receives or returns another callable. `@` annotations on `CallableType` and `FunctionDecl` govern operational effects only; `Diverge`, `Panic`, and `Fatal` are never written in `@` clauses (`E0620`). Plain `fn(...)` permits implicit `Diverge`, `Panic`, and `Fatal`; `halt fn(...)` excludes `Diverge` on that arrow while `@` and `&` still govern its operational effects and state/provenance (so bare `halt fn() -> ()` is pure and `Diverge`-free, and `halt fn(...)` satisfies a matching `fn(...)` arrow). Neither spelling by itself establishes `diverge_budget` coverage.
+Callable types are closed by default at every arrow for operational effects and state/provenance, independently of whether that arrow receives or returns another callable. `@` annotations on `CallableType` and `FunctionDecl` govern operational effects only; `Diverge`, `Panic`, and `Fatal` are never written in `@` clauses (`E0620`) and are tracked automatically in semantic metadata.
 
 The annotations belong to the callable whose parameter list immediately precedes them, before that callable's result arrow:
 
 ```ril
 type PureAction = fn() -> ()
-type FinitePureAction = halt fn() -> ()
 type ExplicitPureAction = fn() @{} &{} -> ()
 type EffectOpenAction = fn() @ -> ()
 type StateOpenAction = fn() & -> ()
@@ -5739,10 +5756,9 @@ type MutatorWithOpenState = fn(mut Cell) &mut & -> ()
 
 | Row form on a callable type | Matching requirement |
 | :--- | :--- |
-| Omitted effects / `@{}` | Closed empty operational effect row (`fn` permits `Diverge`; `halt fn` excludes `Diverge`) |
+| Omitted effects / `@{}` | Closed empty operational effect row (implicit `Diverge`, `Panic`, and `Fatal` remain permitted) |
 | Explicit nonempty effects | Closed exact normalized operational effect row |
 | Standalone `@` | Open operational effect dimension; preserve all actual residual effects |
-| `halt fn(...)` | Excludes `Diverge` on that arrow; `@` and `&` independently govern operational effects and state/provenance |
 | Omitted state/provenance clauses | Closed normalized state and provenance obligations supplied by the written clauses and the return annotation's implicit baseline |
 | Explicit `&{}` | Closed empty total state/provenance row, including the return annotation's baseline; incompatible return retention cannot be hidden |
 | Explicit nonempty state/provenance clauses | Closed exact normalized total state/provenance row, including the return baseline |
@@ -5811,7 +5827,7 @@ The `&up` callable-type abstraction admits an environment-free callable or the c
 | Callable contract component | Rule |
 | :--- | :--- |
 | Closed operational effect row | Exact normalized actual operational effects |
-| `halt fn` contract | Excludes `Diverge` on that arrow; assignable to a matching `fn` arrow |
+| Implicit execution effects | `Diverge`, `Panic`, and `Fatal` are tracked in verified semantic summaries across aliases and ascriptions |
 | Closed state/provenance row | Exact normalized actual obligations after the written environment abstraction and implicit return baseline |
 | Open effects / state-provenance | Preserve the actual complete row; permit additional entries only in the opened dimension |
 | Parameter/handle access modes | Unchanged by openness, aliases, or ascription |
@@ -5858,7 +5874,7 @@ fn call_tick() &tick -> () { invoke(tick) }
 
 Later closed matching of a callable passed through an open type uses its preserved actual contract. Named-function state references resolve to the provider's verified named projection with its original source identities; other contract components are matched separately.
 
-Invoking already shared storage does not itself publish another writer. Actual environment mode determines whether invocation needs a writable or observation handle. Implicit `Diverge`, `Panic`, and `Fatal` survive every ascription in semantic metadata; `halt fn` excludes `Diverge`. Budget coverage and panic-boundary unwind safety remain independently checked, including when operational requests have been handled.
+Invoking already shared storage does not itself publish another writer. Actual environment mode determines whether invocation needs a writable or observation handle. Implicit `Diverge`, `Panic`, and `Fatal` survive every ascription in semantic metadata. Budget coverage and panic-boundary unwind safety remain independently checked, including when operational requests have been handled.
 
 ```ril
 fn repeat(n: int, action: Action) -> () {
@@ -6156,7 +6172,7 @@ halt fn checked() -> int { done() }              -- Unmarked helpers are admissi
 | `while` / `loop` | Introduce `Diverge`; counter progression, a finite-looking condition, or modular wrap supplies no exemption |
 | `for`, finite mapped comprehensions, sequential finite collection combinators | No intrinsic `Diverge`; propagate iterator, body, and callback obligations |
 | Calls, defaults, branches, handlers, resumption, cleanup, required child completion | Propagate the obligations of the computation actually required, under the existing static branch-pruning rules |
-| Unknown callback through an open row or plain `fn(...)` | Preserve its symbolic effect dependency, including possible `Diverge`; absence must be established before satisfying a `halt` definition or `halt fn(...)` arrow |
+| Unknown callback through `fn(...)` | Preserve its symbolic effect dependency, including possible `Diverge`; satisfying a `halt` declaration requires concrete `Diverge`-free instantiation or a covering `diverge_budget` |
 | Callable creation or return | Check current capture/publication separately; the body's `Diverge` remains latent until invocation |
 | Finite language primitive | Omit `Diverge` only under its specified finite contract and callback dependencies |
 | `diverge_budget` | The only primitive that removes `Diverge` from a covered invocation; see [finite evaluation](#finite-evaluation-with-diverge) |
@@ -6195,14 +6211,17 @@ var outside_count = 0
 -- Error [E0821]: outward state/provenance obligation
 
 fn invoke(action: fn() -> ()) -> () { action() }
-halt fn invoke_finite(action: halt fn() -> ()) -> () { action() }
-fn invoke_open(action: fn() @ -> ()) -> () { action() }
 fn done() -> () {}
 fn forever() -> () { loop {} }
-invoke(done)                                    -- OK
-invoke(forever)                                 -- OK: plain fn() -> () permits Diverge
-invoke_finite(done)                             -- OK: done has no inferred Diverge
--- invoke_finite(forever)                       -- Error [E0534]: actual callback has Diverge
+invoke(done)                                    -- Symbolic callback instantiated with finite 'done'
+invoke(forever)                                 -- OK: fn() -> () permits Diverge
+halt fn call_known() -> () { invoke(done) }     -- OK: compiler summary resolves 'done' as Diverge-free
+-- halt fn call_spin() -> () { invoke(forever) } -- Error [E0820]: instantiated callback has Diverge
+-- halt fn call_unknown(cb: fn() -> ()) -> () { cb() } -- Error [E0820]: arbitrary fn() -> () may diverge
+halt fn call_bounded(cb: fn() -> ()) -> Result<(), BudgetError> {
+    with diverge_budget(1_000)
+    cb()                                        -- OK: explicit budget discharges callback Diverge
+}
 
 halt fn make_later() -> (fn() -> int) { spin }  -- Only the later invocation has Diverge
 -- halt fn run_later() -> int { make_later()() } -- Error [E0820]: its later invocation still diverges
@@ -6211,13 +6230,14 @@ halt fn make_later() -> (fn() -> int) { spin }  -- Only the later invocation has
 
 ```ril
 fn spin() -> int { loop {} }
-let actual = spin                              -- Inferred semantic contract includes Diverge
--- let erased: halt fn() -> int = actual       -- Error [E0534]: Diverge violates halt fn() -> int
+let actual: fn() -> int = spin                  -- fn(...) permits Diverge; semantic summary retains it
+-- halt fn bad_alias() -> int { let f: fn() -> int = spin; f() } -- Error [E0820]: semantic summary retains Diverge
+-- type BadHaltArrow = halt fn() -> ()          -- Error [E0120]: 'halt' is a declaration modifier, not a type
 -- fn explicit_div() @Diverge -> int { spin() } -- Error [E0620]: Diverge cannot be written in source
--- with Diverge() -> 0                         -- Error [E0621]: Diverge has no operation to handle
+-- with Diverge() -> 0                          -- Error [E0621]: Diverge has no operation to handle
 ```
 
-Named definitions and plain `fn(...)` callable types automatically retain or permit inferred `Diverge` while `@` governs operational effects (`@{}` closes operational effects only). `halt` on a definition or `halt fn(...)` callable type requires purity and absence of `Diverge`. Ordinary handler installation, source annotations, ascription, and compiler resource limits cannot remove `Diverge`.
+Declaration `halt` (`halt fn`, `halt meta fn`, `halt type`) requires outward purity (`E0821`) and absence of `Diverge` (`E0820`). Named definitions and `fn(...)` callable types retain or permit inferred `Diverge` in semantic metadata while `@` governs operational effects (`@{}` closes operational effects only). Ordinary handler installation, source annotations, ascription, and compiler resource limits cannot remove `Diverge`.
 
 ### Parameter Modes, Caller Obligations, and Defaults
 
@@ -8722,17 +8742,20 @@ meta let SEARCH_DOC = Reflect::doc(<SearchArgs>)
 meta let SEARCH_TOOLS = Reflect::attrs<SearchArgs, Tool>(<SearchArgs>)
 -- [Tool("search_docs")]
 meta let SEARCH_SCHEMA = describe_fields(<SearchArgs>)
+
+type RawAlias = .{ x: int = 1 }
+meta let _ = assert(!Reflect::has_default(<RawAlias>, "x")) -- <RawAlias> == <.{ x: int }> (structural; no declaration identity)
 ```
 
 | `Reflect` operation (`ril/reflect`) | Canonical declaration | Behavior |
 | :--- | :--- | :--- |
 | `Reflect::attrs` | `pub halt meta fn attrs<T, A>(target: Type<T>) -> []A` | Attributes of exact type `A` on nominal, opaque, or sum `T` in source order (`[]` for structural types) |
-| `Reflect::field_attrs` | `pub halt meta fn field_attrs<T, A>(target: Type<T>, meta key: str \|> Key<UnwrapOrSelf<T>>) -> []A` | Attributes of exact type `A` on root record field `key` of `T` |
+| `Reflect::field_attrs` | `pub halt meta fn field_attrs<T, A>(target: Type<T>, meta key: str \|> Key<UnwrapOrSelf<T>>) -> []A` | Attributes of exact type `A` on root record field `key` of nominal or visible opaque `T` (`[]` for structural types) |
 | `Reflect::variant_attrs` | `pub halt meta fn variant_attrs<T, A>(target: Type<T>, meta variant: str) -> []A` | Attributes of exact type `A` on variant `variant` of sum `T` (`E0301` / `E0323` if invalid) |
-| `Reflect::doc` | `pub halt meta fn doc<T>(target: Type<T>) -> ?str` | Attached `--\|` outer doc text on `T` (`None` if absent or structural) |
-| `Reflect::field_doc` | `pub halt meta fn field_doc<T>(target: Type<T>, meta key: str \|> Key<UnwrapOrSelf<T>>) -> ?str` | Attached `--\|` doc text on root record field `key` |
+| `Reflect::doc` | `pub halt meta fn doc<T>(target: Type<T>) -> ?str` | Attached `--\|` outer doc text on nominal, opaque, or sum `T` (`None` if absent or structural) |
+| `Reflect::field_doc` | `pub halt meta fn field_doc<T>(target: Type<T>, meta key: str \|> Key<UnwrapOrSelf<T>>) -> ?str` | Attached `--\|` doc text on root record field `key` of nominal or visible opaque `T` (`None` if absent or structural) |
 | `Reflect::variant_doc` | `pub halt meta fn variant_doc<T>(target: Type<T>, meta variant: str) -> ?str` | Attached `--\|` doc text on sum variant `variant` |
-| `Reflect::has_default` | `pub halt meta fn has_default<T>(target: Type<T>, meta key: str \|> Key<UnwrapOrSelf<T>>) -> bool` | `true` iff root record field `key` of `T` declares a field default `= expr` |
+| `Reflect::has_default` | `pub halt meta fn has_default<T>(target: Type<T>, meta key: str \|> Key<UnwrapOrSelf<T>>) -> bool` | `true` iff `T` is a nominal or visible opaque record declaration whose root field `key` declares `= expr` (`false` for structural types, including transparent `type` aliases) |
 
 ### Structural Type Pattern Matching
 
