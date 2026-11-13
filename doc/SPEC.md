@@ -1252,6 +1252,8 @@ A positional data constructor can omit one layer of tuple parentheses in its pay
 
 Resolve the constructor before applying the shorthand. In a direct call, the supplied payload participates in ordinary type inference and reception, so `Some()` infers `Option<()>` just like `Some(())`. Either spelling preserves evaluation order, member modes, and provenance. A single unnamed payload forwards its checked modes and provenance directly. Expansion applies at the outermost constructor boundary. Nested tuples keep their grouping, and an unconstrained generic payload cannot be decomposed into positional members (`E0301`).
 
+Normalize the payload schema before assigning member-mode binders and coordinate paths.
+
 A variant declared without a payload clause, such as `None`, is a payload-free tag. `None()` is `E0353`. A bare payload-bearing constructor denotes a first-class callable with one payload parameter in its declared reception mode. For a unit payload the callable type is `fn(()) -> S`. Ordinary calls to callable values follow their declared parameter lists (`E0314`). A constructor with a nonempty tuple payload can adapt to a multi-parameter callable via context-directed $\eta$-expansion ($\backslash x_1, \dots, x_n \to C(x_1, \dots, x_n)$).
 
 ```ril
@@ -1300,6 +1302,25 @@ let p1 = TwoPoints(10, 20)                       -- OK: positional elements
 let p2 = TwoPoints((10, 20))                         -- OK: explicit tuple payload
 let TwoPoints(x, y) = p1                         -- OK: positional destructuring
 let TwoPoints(raw_tuple) = p1                    -- OK: whole-tuple destructuring
+
+-- Independent member modes; Items((via T, via T)) declares the same payload:
+type Cell = .{ var count: int }
+type ModePair<T> { Items(via T, via T) }
+let frozen = Cell.{ count: 0 }
+let mut mixed = ModePair::Items(frozen, new Cell.{ count: 1 })
+let ModePair::Items(readonly, mut writable) = mixed
+writable.count += 1
+assert(readonly.count == 0 && writable.count == 2)
+-- readonly.count += 1                           -- Error [E0520]: immutable member
+
+let mut grouped = ModePair::Items((new Cell.{ count: 3 }, new Cell.{ count: 4 }))
+let ModePair::Items((mut a, mut b)) = grouped
+a.count += 1
+b.count += 1
+
+let make_points = Geometry::TwoPoints
+let aliased_points = make_points((1, 2))
+-- make_points(1, 2)                             -- Error [E0314]: ordinary alias takes one tuple payload
 
 -- Functions keep their declared parameter lists; no implicit tuple expansion:
 fn add(a: int, b: int) -> int { a + b }
@@ -8346,7 +8367,7 @@ fn cancel_worker() @Async -> Result<?int, TaskFault> {
 | Lifecycle aspect | Rule |
 | :--- | :--- |
 | Cancellation triggers | Triggered immediately by: (1) any unhandled child `@Panic` (recorded in arrival order; consuming one via `join`/`cancel` removes only that child's record without revoking sibling cancellation), (2) parent `body` exit while children remain unfinished, or (3) `cancel` / `cancel_scope()` |
-| `@Fiber` points | Observed at `Fiber::yield()`, `check_cancelled()`, suspending `Channel` and `@Fiber` I/O operations, and `scope`/`scope_with`/`join`/`cancel` barriers (`is_cancelled()` polls without unwinding). Cancelled channel waiters detach without consuming buffered or in-flight items |
+| `@Fiber` points | Observed at `Fiber::yield()`, `check_cancelled()`, suspending `Channel` and `@Fiber` I/O operations, and `scope`/`scope_with`/`join`/`cancel` barriers (`is_cancelled()` polls without unwinding). Cancellation before a channel operation's commit detaches its waiter without consuming a queued item or committing its pending send; cancellation does not undo a committed transfer or restore an ended source path |
 | Unwinding & barrier | Uncatchable by handlers or `absorb_panic`; runs frame `let scoped` cleanups LIFO, closes unreturned local channel endpoints, and suspends enclosing `diverge_budget` allowances (cleanup panic $\rightarrow$ `@Fatal`). Every spawned child terminates and finishes cleanup before `scope` / `scope_with` returns or runs outer parent cleanups |
 | Exit precedence | **`@Fatal`** $>$ **parent `@Panic`** $>$ **earliest unconsumed child `@Panic`** (`Err(TaskFault::Panicked(msg))`) $>$ **parent `body` return** (`Ok`/`Err`, unaffected by siblings cancelled only on parent exit) $>$ **`Err(TaskFault::Cancelled)`**. Concurrent unconsumed child panics choose the first recorded message nondeterministically within `Panicked` |
 
@@ -8639,7 +8660,7 @@ pub type Select3<A, B, C> {
 }
 pub type SelectSendRecv<S, R> {
     Sent(Result<(), SendError<S>>),
-    Received(via S, Result<R, RecvError>),
+    Received(via S, via Result<R, RecvError>),
 }
 
 -- Creation & producer duplication:
@@ -8686,8 +8707,9 @@ pub fn select_send_recv<S, R, MS: MemberMode, MR: MemberMode>(
 ```
 
 ```ril
-use ril/concurrent::{scope, fork_with, join, TaskFault}
+use ril/concurrent::{scope, fork_with, join, cancel, Movable, TaskFault}
 use ril/concurrent/channel
+use ril/concurrent/channel::{Sender, Receiver, SelectSendRecv}
 
 type Packet = .{ mut bytes: []u8 }
 type CloseGuard = .{ mut on_close: fn() & -> () }
@@ -8719,6 +8741,79 @@ fn sum_fallible(new rx: Channel::Receiver<Result<int, str>>) @Fiber -> int {
     sum
 }
 
+fn select_received<T |> Movable>(
+    mut tx: Sender<int>, mut rx: Receiver<T, mut>,
+) @Fiber &mut -> new Result<T, str> {
+    let mut selected = Channel::select_send_recv(mut tx, 0, mut rx)
+    match selected {
+        SelectSendRecv::Sent(sent) -> { let _ = sent ?? \_ -> (); Err("send selected") },
+        SelectSendRecv::Received(_, Ok(value)) -> Ok(new value),
+        SelectSendRecv::Received(_, Err(_)) -> Err("receive closed"),
+    }
+}
+
+-- Pinned writable inputs in the owning nursery: tx: Sender<int>, packets: Receiver<Packet, mut>,
+-- endpoints: Receiver<Sender<int>, mut>, frozen_rx: Receiver<Packet>.
+let Ok(mut packet) = select_received(mut tx, mut packets) else { panic("receive failed") }
+packet.bytes |> mut Array::push(9u8)
+let Ok(mut endpoint) = select_received(mut tx, mut endpoints) else { panic("receive failed") }
+let task = endpoint |> new fork_with \new tx -> Channel::close(mut tx)
+let _ = join(task) ?? \_ -> ()
+
+let frozen_result = Channel::select_send_recv(mut tx, 0, mut frozen_rx)
+match frozen_result {
+    SelectSendRecv::Sent(sent) -> { let _ = sent ?? \_ -> () },
+    SelectSendRecv::Received(_, Ok(packet)) -> {
+        assert(len(packet.bytes) >= 0)
+        -- packet.bytes |> mut Array::push(9u8)          -- Error [E0520]: immutable payload
+    },
+    SelectSendRecv::Received(_, Err(_)) -> (),
+}
+
+let (mut tx0, mut rx0) = Channel::bounded<int, MemberMode::Let>(0)
+assert(Channel::try_send(mut tx0, 1) is Err(Channel::TrySendError::Full(1)))
+assert(Channel::close_and_drain(new rx0) == [])
+assert(Channel::try_send(mut tx0, 1) is Err(Channel::TrySendError::Closed(1)))
+
+fn drain_race() @Async -> Result<(), TaskFault> {
+    with scope()
+    let (mut tx, mut rx) = Channel::bounded<Packet, mut>(1)
+    let sender = tx |> new fork_with \new tx -> {
+        Channel::send(mut tx, new Packet.{ bytes: [1u8] })
+    }
+    let mut batch = rx |> new Channel::close_and_drain
+    let mut sent = join(sender)?
+    match sent {
+        Ok() -> {                                       -- Send committed before close
+            assert(len(ref batch) == 1)
+            batch[0].bytes |> mut Array::push(2u8)
+        },
+        Err(Channel::SendError::Closed(packet)) -> {     -- Close committed before send
+            assert(len(ref batch) == 0)
+            packet.bytes |> mut Array::push(2u8)
+        },
+    }
+    Ok()
+}
+
+fn cancel_draining() @Async -> Result<(), TaskFault> {
+    with scope()
+    let (mut tx, mut rx) = Channel::bounded<Result<int, str>, MemberMode::Let>(1)
+    assert(Channel::try_send(mut tx, Err("unread")) is Ok())
+    let task = rx |> new fork_with \new r -> r |> new Channel::drain
+    assert(cancel(task) is Ok(None))                     -- Unwinding releases queued/collected Results
+    -- Channel::recv(mut rx)                             -- Error [E0549]: handoff ended rx
+    Channel::close(mut tx)
+    Ok()
+}
+
+fn collect_ints(new rx: Channel::Receiver<int>) @Fiber -> new []int {
+    rx |> new Channel::drain
+}
+fn collect_packets(new rx: Channel::Receiver<Packet, mut>) @Fiber -> new [mut]Packet {
+    rx |> new Channel::close_and_drain
+}
+
 -- Static rejections:
 -- let (mut tx, mut rx) = Channel::bounded(4)
 -- let _ = Channel::send(mut tx, 1)
@@ -8731,6 +8826,9 @@ fn sum_fallible(new rx: Channel::Receiver<Result<int, str>>) @Fiber -> int {
 -- let _ = Channel::select_recv2(mut rx, mut rx)          -- Error [E0523]: aliased mutable endpoints
 -- let (mut ftx, mut frx): (mut Channel::Sender<Result<int, str>>, mut Channel::Receiver<Result<int, str>>) = Channel::bounded(2)
 -- Channel::close_recv(mut frx)                           -- Error [E0720]: fallible payload must be drained
+-- fn collect_endpoints(new rx: Channel::Receiver<Channel::Sender<int>, mut>) @Fiber -> () {
+--     let mut batch = rx |> new Channel::drain           -- Error [E0411]: [mut]Sender<int> is not a legal array
+-- }
 ```
 
 | Channel aspect | Rule |
@@ -8738,9 +8836,15 @@ fn sum_fallible(new rx: Channel::Receiver<Result<int, str>>) @Fiber -> int {
 | Creation | `bounded` (`capacity < 0` panics; `capacity == 0` is synchronous rendezvous) and `unbounded` require `@Fiber`, omit `Diverge`, and return proven disjoint `(mut tx, mut rx)` endpoints |
 | Ownership & transfer (`E0603`, `E0549`, `E0606`) | `Sender<T, M>` and `Receiver<T, M>` satisfy `Movable` (`<SharedObject<...>> == <never>`; `clone` `E0530`, `derive` `E0536`, `[mut]E` `E0411`). Same-task calls borrow via `mut` / `ref`; cross-task handoff uses `new` (`E0549` after transfer). `^mut`, plain `let`, and `var` / `var mut` on endpoints or endpoint-bearing fields fail `E0603`; escaping an owning `scope` / `scope_with` fails `E0606`. `clone_sender` (`@Fiber`, no `Diverge`) duplicates producers |
 | Payload eligibility (`E0602`) | `M` defaults to `MemberMode::Let` (deeply immutable or value `T`) and admits `mut` (`MemberMode::Mut`) for isolated `new T` handoff where `T \|> Movable` (`drain` and `close_and_drain` return element-isolated `new [mut]T` when `M` is `mut` and `T \|> SharedObject`). `ref`, `^mut`, `var`, `Task<T, M>`, `let scoped`, or uncontracted `.d.ril` payloads fail `E0602` / `E0356` |
-| Closure & `let scoped mut` | Endpoints close deterministically on `close` / `close_recv` / `drain`, `let scoped mut` exit, unreturned child exit, or owning `scope` / `scope_with` completion; once the last active sender closes, receivers drain buffered items then return `Closed`. Built-in `scoped` cleanup closes `Sender<T, M>` (`close`) and `Result`-free `Receiver<T, M>` (`close_recv`) |
+| Closure & `let scoped mut` | Endpoints close deterministically on `close` / `close_recv` / `drain` / `close_and_drain`, `let scoped mut` exit, unreturned child exit, or owning `scope` / `scope_with` completion; once the last active sender closes, receivers drain buffered items then return `Closed`. Built-in `scoped` cleanup closes `Sender<T, M>` (`close`) and `Result`-free `Receiver<T, M>` (`close_recv`) |
 | Non-blocking vs `@Fiber` calls | `try_send`, `try_recv`, `close`, `close_recv` (idempotent), `is_closed`, `len`, and `capacity` (`None` if unbounded) have empty operational effects and no `Diverge` (eligible in `scoped` cleanups). `send`, `recv`, `drain`, `close_and_drain`, and `select_*` carry `@Fiber` + `Diverge` and check cancellation; `select_*` polls ready branches fairly, commits at most one branch, and rejects aliased endpoints (`E0523`) |
-| Fallible payload conservation (`E0720`) | `SendError::Closed`, `TrySendError::Full`/`Closed`, and `SelectSendRecv::Received(item, ...)` return undelivered items with `new` and `Result` obligations intact. When `T` contains a `Result`, `Receiver<T, M>` forbids `close_recv`, `let scoped mut`, and dropping an undrained receiver (`E0720`); consume to `Closed` or call `drain` / `close_and_drain` and inspect the returned slice |
+| Select reception | Independent static member modes, fixed per call: unsent `S` retains its authority; received `R` follows `MR` (`Let`: immutable/copied; `mut`: isolated `new R`) |
+| Batch eligibility (`E0411`) | `[M]T` must be well formed; `M = mut` requires `T \|> SharedObject` |
+| `drain` | Consume `rx`; collect in receive order until all senders close and the queue empties |
+| `close_and_drain` | Consume `rx`; atomically close reception and take the remaining queue in receive order, including any queue on an already closed receiver |
+| Commits | Channel operations and closure share an atomic commit order. Buffered sends commit on enqueue; zero-capacity sends commit on rendezvous. A committed send succeeds even if it returns after closure; an uncommitted send observing closure returns `Closed(item)`, unless cancelled first |
+| Cancellation & faults | `drain` checks cancellation while waiting. `close_and_drain` checks before its atomic commit and returns without further suspension. Abnormal unwinding releases the partial batch and receiver; committed transfers remain final |
+| Fallible payloads (`E0720`) | Undelivered items and nested `Result` values retain their inspection obligations. A `Result`-bearing receiver forbids `close_recv` / `let scoped mut` and must be drained on normal exit; abnormal unwinding follows ordinary cleanup rules |
 
 
 
