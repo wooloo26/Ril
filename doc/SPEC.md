@@ -160,6 +160,7 @@ The following distinctions apply throughout the specification; their defining se
       - [Callable Contract Matching](#callable-contract-matching)
       - [Higher-Order Calls](#higher-order-calls)
     - [Return Construction, Access Modes, and Sources](#return-construction-access-modes-and-sources)
+      - [Initial Reception of Construction Arrays](#initial-reception-of-construction-arrays)
     - [Termination and halt Contracts](#termination-and-halt-contracts)
     - [Parameter Modes, Caller Obligations, and Defaults](#parameter-modes-caller-obligations-and-defaults)
       - [Fresh Construction Parameters](#fresh-construction-parameters)
@@ -1112,7 +1113,7 @@ let frozen = clone(ref pair)
 assert(frozen.0 == 1 && frozen.1 == [1, 2])
 ```
 
-Typed product constructors inherit declared member modes; untyped literals default omitted modes to `let`. Explicit literal modes must match the expected schema (`E0301`). Array and map elements follow their storage rules.
+Typed product constructors inherit declared member modes; untyped literals default omitted modes to `let`. Explicit literal modes must match the expected schema (`E0301`). Array and map elements follow their storage rules; construction-array return expressions use [initial reception](#initial-reception-of-construction-arrays).
 
 ```ril
 -- Array ([]T):
@@ -1250,7 +1251,7 @@ A positional data constructor can omit one layer of tuple parentheses in its pay
 | One | The single payload | `C(x)` supplies or matches one value, including a whole tuple |
 | Two or more | A tuple of the positional members | `Pair(A, B)` and `Pair((A, B))` declare the same tuple payload. `C(x, y)` and `C((x, y))` supply or match that same tuple |
 
-Resolve the constructor before applying the shorthand. In a direct call, the supplied payload participates in ordinary type inference and reception, so `Some()` infers `Option<()>` just like `Some(())`. Either spelling preserves evaluation order, member modes, and provenance. A single unnamed payload forwards its checked modes and provenance directly. Expansion applies at the outermost constructor boundary. Nested tuples keep their grouping, and an unconstrained generic payload cannot be decomposed into positional members (`E0301`).
+Resolve the constructor before applying the shorthand. In a direct call, the supplied payload participates in ordinary type inference and reception, so `Some()` infers `Option<()>` just like `Some(())`. Either spelling preserves evaluation order, member modes, and provenance. A single unnamed payload forwards its checked modes, provenance and pending construction-array reception family directly. Expansion applies at the outermost constructor boundary. Nested tuples keep their grouping, and an unconstrained generic payload cannot be decomposed into positional members (`E0301`).
 
 Normalize the payload schema before assigning member-mode binders and coordinate paths.
 
@@ -1400,13 +1401,13 @@ Default immutable reception follows the [common mode tables](#binding-modes-and-
 | :--- | :--- |
 | Immutable reception | Recursively suppress effective `var`, `mut`, `^mut`, and `ref` modes, idempotently through cycles; preserve schemas, nominal/opaque identities, and callable contracts |
 | Surviving writer or live origin | Reject with `E0535`; reception cannot copy, freeze, consume, or revoke that authority |
-| `clone` | Copy data admitted by [`SharedObject`](#normative-rules-for-built-in-operations) into an isolated construction result `new T`. Preserve the schema and nominal or opaque identity. Immutable reception publishes the copied contents as a snapshot, including cyclic contents |
+| `clone` | Copy data admitted by [`SharedObject`](#normative-rules-for-built-in-operations) into an isolated construction result `new T`. Preserve the baseline schema and nominal or opaque identity; anonymous array copies use [initial reception](#initial-reception-of-construction-arrays). Immutable reception publishes the copied contents as a snapshot, including cyclic contents |
 | Copy execution | Read the source once as a stable snapshot; no suspension, user callback, or overlapping write |
 | Non-clonable authority | Reject with `E0530` at the root or in a constituent, including retained environments, scoped resources, tasks, and channel endpoints hidden in wrappers or `ref` handles |
 | Value types | Copy by ordinary value passage. `clone(value)` fails the type guard (`E0301`). A value-type `ref` argument is `E0401` |
 | Function / resource value | Immutable environment-free functions support ordinary copying. Sender duplication (`Channel::clone_sender`) follows the [channel resource contract](#structured-concurrency-channels) |
 
-Writable reception of a clone activates declared writable members. Each writable occurrence of an immutable constituent gets separate storage. This materialization must be finite (`E0530`). Copied live objects retain their internal alias and cycle relationships under the ordinary writable reception checks. A `new` return preserves the construction and reception facts.
+Writable reception of a clone activates declared writable members and the selected construction-array storage mode. Each writable occurrence of an immutable constituent gets separate storage. This materialization must be finite (`E0530`). Copied live objects retain their internal alias and cycle relationships under the ordinary writable reception checks. A `new` return preserves the construction and reception facts.
 
 ```ril
 type Cell = .{ var count: int }
@@ -1571,6 +1572,8 @@ fn relay<T>(via value: T) -> infer Packet<T> {
 | Input callable `fn(via T) -> infer R` / `via cb: fn(...) -> infer R` | Retain its actual result relations as finite input-bound dependencies |
 
 Template checking may substitute a lexically bound outer `P` for an inner parameter `Q`. Before a closed invocation executes, its selected signature, local receptions, result, and member schemas must be concrete. A closure specializes with its enclosing instance; an explicitly quantified finite callable family may retain its bound parameters. Unresolved mode instances in concrete objects, storage, or single-instance entries are `E0344`.
+
+Construction-array reception families carry verified choices over a concrete baseline.
 
 Data types, slot replacement, source authority, and effect-row openness follow their own declarations and checks. `via` ranges over concrete access modes. `E0412` rejects it in static/meta/type-function parameters, effect-operation signatures, handler parameters, bodyless foreign interfaces, map keys, untyped literal modifiers, reassignable/scoped/module receivers, or local reception without an applicable lexical template. Mapped comprehensions preserve known modes. Bodyless boundaries supply explicit trusted contracts.
 
@@ -2444,20 +2447,20 @@ Closed records have no width subtyping. An open input row denotes its quantified
 row relationship. Callable result/source guarantees and effect/state rows are
 checked independently of data variance; apply them to every retained alternative.
 
-**K-RECV.** Reception uses the actual `T, J` and the receiver's fixed schema:
+**K-RECV.** Reception uses the actual `T, J` and the receiver's declared or initially selected schema:
 
 | Rule | Reception |
 | :--- | :--- |
 | K-RECV-VALUE | Copy matching value-type data |
 | K-RECV-IMM | Prove immutable publication; compare recursively mode-suppressed immutable data views |
 | K-RECV-LIVE | Prove actual path authority, matching schema, lifetime, exclusivity and retained-sharing conditions |
-| K-RECV-NEW | Prove eligible construction/handoff; end source and derived paths at the transfer point |
+| K-RECV-NEW | Prove eligible construction/handoff and any requested [construction-array reception](#initial-reception-of-construction-arrays); fix the receiver schema and end transferred source paths |
 | K-RECV-CALLABLE | Check environment-handle reception and `MatchCallable` |
 
-Mode suppression changes the reception view, while declaration/token identity,
-invariant container arguments and callable contracts remain fixed. A surviving
-writer blocks immutable publication. Later assignment checks the same instantiated
-storage schema.
+Ordinary container arguments, declaration/token identities and stored schemas are
+invariant. Construction-array reception selects only a verified initial schema.
+A surviving writer blocks immutable publication. Later assignment checks the
+same instantiated storage schema.
 
 ```ril
 type Counter = .{ var count: int }
@@ -2507,7 +2510,7 @@ Receiving positions use `Receive`'s data view; callable positions also use
 | :--- | :--- |
 | Literal / name | Contextual literal type/defaults; resolve binding and instantiate only its quantified variables |
 | Operator / range / interpolation | Check the registered domain/result and sequence operands; short-circuit forms analyze their alternatives |
-| Product / collection | Propagate expected member schemas; check each reception; allocate shared-object roots, copy unit/value cases; enforce homogeneous storage and immutable keys |
+| Product / collection | Propagate expected member schemas; check each reception; allocate shared-object roots, copy unit/value cases; enforce homogeneous storage and immutable keys. Construction-array return operands are checked under their admitted initial schemas |
 | Constructor / wrapper | Instantiate declaration, arity and result equations; check payload reception |
 | Projection / indexing | Check key/index, select constituent; copy values or preserve bounded object access/origins; payload access requires variant evidence |
 | Assignment | Prove slot/interior authority, check fixed schema, invalidate overlapping facts; compound forms evaluate once |
@@ -2749,7 +2752,7 @@ preserves identity. Check every result reception against the fixed receiver sche
 | Result | Root proof; contained dependencies remain separately checked |
 | :--- | :--- |
 | `ref(x)` / `^mut(x)` | Select from `x`'s entry graph |
-| `new T` | Verified construction/handoff |
+| `new T` | Verified construction/handoff; preserve pending array reception families |
 | Plain shared-object `T` | Immutable publication |
 | Value type | Copy without reference origin |
 
@@ -2938,7 +2941,7 @@ return ordinary inspected Result data.
 | Declarations | Scopes, binder sorts/constraints, static arguments, complete schemas |
 | Authority | Actual/effective modes, construction history, affine/scope/task/resource conditions |
 | Provenance | Root/contained origins, entry paths, aliases, store/return and output correlations |
-| Invocation | Admitted families, use conditions, operation footprints, alternatives, callbacks |
+| Invocation | Admitted families, including construction-array receptions, use conditions, operation footprints, alternatives, callbacks |
 | Environments | Environment/provider identities, latent contracts, result publication and escape |
 | Obligations | Full rows including `Diverge`/`Panic`/`Fatal`, defaults/cleanup, coverage and dependent static conditions |
 | Diagnostics | Source-completion requirements and diagnostic dependency chains |
@@ -5727,7 +5730,7 @@ The compiler must infer the full checked contract of every public, private, loca
 | :--- | :--- |
 | Inference scope | The same complete analysis for public, private, local, anonymous, and test functions |
 | Facts | Types, access modes/history, root and contained origins, aliases, writes, retention, captures, effects, escape/ownership, and callback dependencies |
-| Required named source | Data types, concrete parameter/result modes and dependencies, and concrete operational-effect/state/capture annotations; inferred `Diverge`, `Panic`, and `Fatal` use no source annotation (`E0620`); `via` modes and dependent clauses, and `infer` results, use their specified metadata-only completion |
+| Required named source | Data types, concrete parameter/result modes and dependencies, and concrete operational-effect/state/capture annotations; inferred `Diverge`, `Panic`, and `Fatal` use no source annotation (`E0620`); construction-array reception families are inferred metadata; `via` modes and dependent clauses, and `infer` results, use their specified metadata-only completion |
 | Anonymous source | Type, result, effect, state, capture, and returned-source annotations are optional; absence alone is never `E0544`, `E0510`, or `E0612` |
 | Anonymous constraints | Written annotations and contextual callable types constrain the inferred contract; incompatible constraints are rejected by the applicable typing, access-mode, or callable-matching diagnostic |
 | Authority syntax | Concrete modes, ordinary argument/sharing markers, and resource operations remain required; lexical templates elaborate only verified dependent receptions and transfers |
@@ -5848,7 +5851,7 @@ Match a callable's complete normalized contract at every assignment, argument, a
 
 Normalization expands effect-set and transparent aliases, compares effect instances using static-argument identity, canonicalizes source and provider identities, combines equivalent access entries, and includes access modes implied by a return annotation. Duplicate spellings do not create different contracts. Preserve [verified operation footprints, conditions and callable alternatives](#authority-calls-and-contract-operations); a displayed effect row does not erase them. Formal parameter labels and their bound return-source references are alpha-renamed by parameter position before comparison; external and captured sources retain their resolved declaration and activation identities.
 
-Parameter data shapes are contravariant and result data shapes covariant. Concrete parameter modes match; explicit `via` mode patterns check the actual family and its acceptance conditions. Root and contained guarantees, source authority, construction qualification and resource/scoped lifetimes are independent checks. For a family, every retained alternative must satisfy closed-row matching.
+Parameter data shapes are contravariant and result data shapes covariant. Construction-array result arrows first select the promised schema from each actual reception family. Concrete parameter modes match; explicit `via` mode patterns check the actual family and its acceptance conditions. Root and contained guarantees, source authority, construction qualification and resource/scoped lifetimes are independent checks. For a family, every retained alternative must satisfy closed-row matching.
 
 Named definition annotations validate the required concrete projection plus preserved symbolic dependencies. Later closed callable-type ascriptions check the full inferred contract, including metadata-only mode-dependent clauses.
 
@@ -5862,6 +5865,7 @@ The `&up` callable-type abstraction admits an environment-free callable or the c
 | Open effects / state-provenance | Preserve the actual complete row; permit additional entries only in the opened dimension |
 | Parameter/handle access modes | Unchanged by openness, aliases, or ascription |
 | Root returns | Construction, access mode, and source guarantees remain independently checked |
+| Construction-array results | Promise the written baseline schema; preserve additional verified initial receptions. Every target must supply the requested guarantee (`E0534`) |
 | Contained return dependencies | Explicit dependencies must match; open `&` may admit additional actual `&return` facts, all of which continue to propagate |
 | Symbolic callback dependencies | Preserve their complete conditions and instantiate them at calls; closure of a destination row checks those conditions rather than erasing them |
 | Alternatives | Preserve every possible obligation and only common guarantees under [provenance](#complete-provenance-and-required-annotations). Every retained callable-contract alternative must satisfy a closed equality or an open required entry; a union cannot invent a required entry missing from one alternative |
@@ -5987,7 +5991,7 @@ The construction context applies only to the current callable's return operands.
 | :--- | :--- |
 | Value type `T` | Copy the value; no return-reference dependency. Actual writes/effects retain their obligations and required named annotations |
 | Plain shared object `T` | Deeply immutable graph; immutable storage may be shared or eligible private construction published. Surviving writers fail with `E0535` |
-| `new T` | Root constructed in this invocation, including verified factories, or lawfully handed onward from an active construction formal/local or verified storage extraction; preserve root write authority, actual allocation identity/history, and graph qualifications (`E0546`) |
+| `new T` | Root constructed in this invocation, including verified factories, or lawfully handed onward from an active construction formal/local or verified storage extraction; preserve root write authority, actual allocation identity/history, graph qualifications and pending array reception families (`E0546`) |
 | `ref(x) T` | Read-only root from formal `x`'s graph at call entry; a projected child still names only `x` (`E0545`) |
 | `^mut(x) T` | Same entry-origin relation, with writable retention; require `^mut` parameter/argument (`E0528` for escaping ordinary `mut`). Root retention needs no duplicate `&^mut`; actual writes still require `&mut` |
 | `ref(a \| b) T` / `^mut(a \| b) T` | Each root has one of the listed entry origins; contained dependencies and disjointness are checked separately |
@@ -6180,6 +6184,91 @@ type Step = fn() &up -> int
 -- fn erase_return(^mut f: Step) &{} -> ^mut(f) Step { f }
 -- Error [E0534]: the closed state/provenance row cannot erase root-return retention
 ```
+
+#### Initial Reception of Construction Arrays
+
+The written array type in a `new` result is its baseline, supported by every normal return. The compiler infers additional initial storage modes from checked source and storage proofs; the receiving context selects one before ordinary storage is established.
+
+```ril
+type Packet = .{ mut bytes: []u8 }
+fn fresh() -> new []Packet { [Packet.{ bytes: [1u8] }] }
+
+let frozen = fresh()                              -- []Packet
+let mut slots = fresh()                           -- []Packet; writable array slots
+slots |> mut Array::push(Packet.{ bytes: [] })
+-- slots[0].bytes |> mut Array::push(2u8)          -- Error [E0520]: immutable element
+let mut packets: [mut]Packet = fresh()
+packets[0].bytes |> mut Array::push(2u8)
+let mut copied: [mut]Packet = clone(frozen)
+copied[0].bytes |> mut Array::push(3u8)
+
+type Default = typeof fresh()                     -- []Packet; query does not execute fresh
+meta let _ = assert(<Default> == <[]Packet>)
+meta let _ = assert(<typeof packets> == <[mut]Packet>)
+```
+
+Return operands are checked under each admitted construction reception. Ordinary array bindings, concrete member/element slots, and schema-specific storage mutations fix their schema; construction parameters, returns, consuming-match paths, single unnamed payloads, and contracted move transport preserve pending families.
+
+```ril
+fn from_frozen(packet: Packet) -> new []Packet { [packet] }
+fn builder() -> new []Packet {
+    let mut xs: []Packet = []
+    xs |> mut Array::push(Packet.{ bytes: [] })
+    xs
+}
+let seed = Packet.{ bytes: [] }
+-- let mut a: [mut]Packet = from_frozen(seed)          -- Error [E0520]: immutable source
+-- let mut b: [mut]Packet = builder()                 -- Error [E0520]: fixed element schema
+
+fn forward<T>(new value: T) -> new T { value }
+let mut forwarded: [mut]Packet = forward<[]Packet>(new fresh())
+forwarded[0].bytes |> mut Array::push(4u8)
+-- let mut reopened: [mut]Packet = forward(new slots) -- Error [E0520]: slots already selected []Packet
+-- fn assume_input(new xs: []Packet) -> new [mut]Packet { xs }
+-- Error [E0534]: the parameter does not promise writable elements
+
+type Store = .{ mut items: []Packet }
+fn stored() -> new Store { Store.{ items: [Packet.{ bytes: [] }] } }
+let mut box = stored()
+box.items |> mut Array::push(Packet.{ bytes: [] })
+-- box.items[0].bytes |> mut Array::push(1u8)         -- Error [E0520]: declared member schema
+
+fn wrapped() -> new Result<[]Packet, str> { Ok(new fresh()) }
+let mut response = wrapped()
+match response {
+    Ok(items) -> {
+        let mut selected: [mut]Packet = new items
+        selected[0].bytes |> mut Array::push(6u8)
+    },
+    Err(_) -> (),
+}
+```
+
+`T` remains the rigid baseline in generic bodies. Apply the reception relation after substitution and transparent-alias expansion; declared record, tuple, nominal and opaque member schemas remain fixed.
+
+```ril
+type Factory<T> = fn() -> new T
+type Packets = []Packet
+let make: Factory<Packets> = fresh                  -- Same baseline as fn() -> new []Packet
+let mut via_alias: [mut]Packet = make()             -- Known actual family is retained
+via_alias[0].bytes |> mut Array::push(5u8)
+
+fn writable() -> new [mut]Packet { [Packet.{ bytes: [] }] }
+fn require_writable(make: Factory<[mut]Packet>) -> new [mut]Packet { make() }
+-- fn assume_writable(make: Factory<[]Packet>) -> new [mut]Packet { make() }
+-- Error [E0534]: the abstract factory promises only []Packet
+
+fn fresh_using(seed: Packet) -> new []Packet { fresh() }
+let factory = if choose_fresh { fresh_using } else { from_frozen }
+-- let mut uncertain: [mut]Packet = factory(seed)    -- Error [E0534]: not every target supports mut
+```
+
+| Reception fact | Rule |
+| :--- | :--- |
+| Default | Use the written baseline; `let mut` changes root access, not element mode. `typeof` without an expected receiver uses that baseline |
+| Requested mode | Require legal storage for `T`, actual source authority, and the usual alias/lifetime/reception proofs. Immutable-source upgrades use `E0520`; missing contract guarantees use `E0534` |
+| Isolation | Preserve whole-graph and pairwise element relations separately; parallel access checks actual overlap (`E0619`) |
+| Interfaces | Retain admitted families and conditions across aliases, factories, generic forwarding and exports; dynamic targets offer their common receptions. Bodies rely on declared input guarantees and may forward additional actual families symbolically. Removing an admitted reception invalidates dependent interfaces |
 
 ### Termination and halt Contracts
 
@@ -8323,7 +8412,7 @@ fn first_ok() @Concurrent -> Result<Result<int, []str>, TaskFault> {
 | Construct | Rule |
 | :--- | :--- |
 | `Movable` (`E0411`) | Pure guard (`Type -> Type`) returning `<T>` for `SharedObject` types, channel endpoints (`Sender<T, M>`, `Receiver<T, M>`), and nonempty tuples, records, nominal wrappers, opaque representations, or sums of value/`Movable` constituents with fixed `mut` on endpoint-bearing slots; returns `<never>` for value types, `Task<T, M>`, callables, `let scoped` (`E0548`/`E0604`), and uncontracted `.d.ril` handles (`E0411`/`E0601`/`E0908`) |
-| `Task<T, M>` | Affine handle (`<SharedObject<Task<T, M>>> == <never>`; `clone` `E0530`, `derive` `E0536`, `new` `E0411`). `M` defaults to `MemberMode::Let` (immutable/copied `T`) and admits `mut` (`MemberMode::Mut`) for isolated `new T` returns where `T \|> Movable` (`ref`/`^mut`/`var` fail `E0601`/`E0356`). When `M` is `mut`, `let mut v = join(task)?` restores active `new` qualification on `v` |
+| `Task<T, M>` | Affine handle (`<SharedObject<Task<T, M>>> == <never>`; `clone` `E0530`, `derive` `E0536`, `new` `E0411`). `M` defaults to `MemberMode::Let` (immutable/copied `T`) and admits `mut` (`MemberMode::Mut`) for isolated `new T` returns where `T \|> Movable` (`ref`/`^mut`/`var` fail `E0601`/`E0356`). When `M` is `mut`, `join` preserves construction qualification and pending array reception families until the caller selects storage |
 | Confinement & consumption (`E0606`, `E0609`) | Placing a handle in any aggregate/collection, capturing in an escaping closure or child task, sending on a channel, returning from `scope` / `scope_with`, or consuming in another scope reports `E0606` first. Consuming a handle twice or after branch-uncertain consumption reports `E0609` |
 | `join`, `cancel`, `Result` duty (`E0720`) | `cancel` awaits child termination and returns `Ok(Some(v))` (completed), `Err(TaskFault::Panicked(msg))` (panicked), or `Ok(None)` (cancelled). `join` returns `Err(TaskFault::Cancelled)` only after prior cancellation. Dropping an unconsumed `Task<R, M>` whose `R` contains a `Result` on normal exit or `?` is `E0720` |
 | Declarative combinators | `zip` and `map` preserve `new` child results (`zip` yields disjoint `(mut A, mut B)` when branches return `new`; `map` yields element-isolated `new Result<[mut]U, TaskFault>` when `work` returns `new U` for `U \|> SharedObject`). `race` and `race_all` (`race_all([]) == Ok(None)`) forbid `Result` in `T` (`E0720`). `try_*` and `race_ok` (`race_ok([]) == Ok(Err([]))`) cancel siblings on the first `Err` (`try_*`) or `Ok` (`race_ok`) and forbid nested `Result` payloads (`E0720`) |
@@ -8686,8 +8775,8 @@ pub fn close_recv<T, M: MemberMode>(mut rx: Receiver<T, M>) &mut -> ()
 pub fn is_closed<T, M: MemberMode>(ref rx: Receiver<T, M>) -> bool
 pub fn len<T, M: MemberMode>(ref rx: Receiver<T, M>) -> int
 pub fn capacity<T, M: MemberMode>(ref rx: Receiver<T, M>) -> ?int
-pub fn drain<T, M: MemberMode>(new rx: Receiver<T, M>) @Fiber -> new [M]T
-pub fn close_and_drain<T, M: MemberMode>(new rx: Receiver<T, M>) @Fiber -> new [M]T
+pub fn drain<T, M: MemberMode>(new rx: Receiver<T, M>) @Fiber -> new []T
+pub fn close_and_drain<T, M: MemberMode>(new rx: Receiver<T, M>) @Fiber -> new []T
 
 -- Multi-way waiting:
 pub fn select_recv2<A, B, MA: MemberMode, MB: MemberMode>(
@@ -8729,7 +8818,7 @@ fn run_pipeline(items: []u8) @Async -> new Result<[mut]Packet, TaskFault> {
         c_rx |> new Channel::drain
     }
     join(producer)?
-    let mut collected = join(consumer)?
+    let mut collected: [mut]Packet = join(consumer)?
     Ok(new collected)
 }
 
@@ -8781,7 +8870,7 @@ fn drain_race() @Async -> Result<(), TaskFault> {
     let sender = tx |> new fork_with \new tx -> {
         Channel::send(mut tx, new Packet.{ bytes: [1u8] })
     }
-    let mut batch = rx |> new Channel::close_and_drain
+    let mut batch: [mut]Packet = rx |> new Channel::close_and_drain
     let mut sent = join(sender)?
     match sent {
         Ok() -> {                                       -- Send committed before close
@@ -8810,7 +8899,7 @@ fn cancel_draining() @Async -> Result<(), TaskFault> {
 fn collect_ints(new rx: Channel::Receiver<int>) @Fiber -> new []int {
     rx |> new Channel::drain
 }
-fn collect_packets(new rx: Channel::Receiver<Packet, mut>) @Fiber -> new [mut]Packet {
+fn collect_packets(new rx: Channel::Receiver<Packet, mut>) @Fiber -> new []Packet {
     rx |> new Channel::close_and_drain
 }
 
@@ -8835,11 +8924,11 @@ fn collect_packets(new rx: Channel::Receiver<Packet, mut>) @Fiber -> new [mut]Pa
 | :--- | :--- |
 | Creation | `bounded` (`capacity < 0` panics; `capacity == 0` is synchronous rendezvous) and `unbounded` require `@Fiber`, omit `Diverge`, and return proven disjoint `(mut tx, mut rx)` endpoints |
 | Ownership & transfer (`E0603`, `E0549`, `E0606`) | `Sender<T, M>` and `Receiver<T, M>` satisfy `Movable` (`<SharedObject<...>> == <never>`; `clone` `E0530`, `derive` `E0536`, `[mut]E` `E0411`). Same-task calls borrow via `mut` / `ref`; cross-task handoff uses `new` (`E0549` after transfer). `^mut`, plain `let`, and `var` / `var mut` on endpoints or endpoint-bearing fields fail `E0603`; escaping an owning `scope` / `scope_with` fails `E0606`. `clone_sender` (`@Fiber`, no `Diverge`) duplicates producers |
-| Payload eligibility (`E0602`) | `M` defaults to `MemberMode::Let` (deeply immutable or value `T`) and admits `mut` (`MemberMode::Mut`) for isolated `new T` handoff where `T \|> Movable` (`drain` and `close_and_drain` return element-isolated `new [mut]T` when `M` is `mut` and `T \|> SharedObject`). `ref`, `^mut`, `var`, `Task<T, M>`, `let scoped`, or uncontracted `.d.ril` payloads fail `E0602` / `E0356` |
+| Payload eligibility (`E0602`) | `M` defaults to `MemberMode::Let` (deeply immutable or value `T`) and admits `mut` (`MemberMode::Mut`) for isolated `new T` handoff where `T \|> Movable`. `ref`, `^mut`, `var`, `Task<T, M>`, `let scoped`, or uncontracted `.d.ril` payloads fail `E0602` / `E0356` |
 | Closure & `let scoped mut` | Endpoints close deterministically on `close` / `close_recv` / `drain` / `close_and_drain`, `let scoped mut` exit, unreturned child exit, or owning `scope` / `scope_with` completion; once the last active sender closes, receivers drain buffered items then return `Closed`. Built-in `scoped` cleanup closes `Sender<T, M>` (`close`) and `Result`-free `Receiver<T, M>` (`close_recv`) |
 | Non-blocking vs `@Fiber` calls | `try_send`, `try_recv`, `close`, `close_recv` (idempotent), `is_closed`, `len`, and `capacity` (`None` if unbounded) have empty operational effects and no `Diverge` (eligible in `scoped` cleanups). `send`, `recv`, `drain`, `close_and_drain`, and `select_*` carry `@Fiber` + `Diverge` and check cancellation; `select_*` polls ready branches fairly, commits at most one branch, and rejects aliased endpoints (`E0523`) |
 | Select reception | Independent static member modes, fixed per call: unsent `S` retains its authority; received `R` follows `MR` (`Let`: immutable/copied; `mut`: isolated `new R`) |
-| Batch eligibility (`E0411`) | `[M]T` must be well formed; `M = mut` requires `T \|> SharedObject` |
+| Batch eligibility (`E0411`) | `[M]T` must be well formed; `M = mut` requires `T \|> SharedObject`. `M = Let` supplies immutable elements; `M = mut` supplies both `[]T` publication and element-isolated `[mut]T` initial reception |
 | `drain` | Consume `rx`; collect in receive order until all senders close and the queue empties |
 | `close_and_drain` | Consume `rx`; atomically close reception and take the remaining queue in receive order, including any queue on an already closed receiver |
 | Commits | Channel operations and closure share an atomic commit order. Buffered sends commit on enqueue; zero-capacity sends commit on rendezvous. A committed send succeeds even if it returns after closure; an uncommitted send observing closure returns `Closed(item)`, unless cancelled first |
