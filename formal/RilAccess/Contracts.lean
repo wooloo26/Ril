@@ -184,6 +184,90 @@ theorem disjoint_check_sound (h : disjointUnknownSelections left right = true) :
   intro x hx
   exact of_decide_eq_true (List.all_eq_true.mp h x hx)
 
+inductive CrossingMode where
+  | immutableData
+  | isolatedConstruction
+  | movableEndpoint
+  deriving Repr, DecidableEq
+
+structure GraphCrossing where
+  mode : CrossingMode
+  dataAccess : List Access
+  latentSources : List Origin
+  graphOrigins : List Origin
+  transferredObjects : List Nat
+  writableObjects : List Nat
+  callerLiveObjects : List Nat
+  callerWritableObjects : List Nat
+  hasExternalAlias : Bool
+  scopedAuthority : Bool
+  sourceConsumed : Bool
+  targetScope : Nat
+  explicitResourceContract : Bool
+  deriving Repr, DecidableEq
+
+def originLegalAcrossTask (explicitContract : Bool) (targetScope : Nat) (o : Origin) : Bool :=
+  (decide (o.source.kind ≠ SourceKind.foreign) || explicitContract) &&
+    decide (o.scope ≤ targetScope)
+
+def graphCrossingCommon (c : GraphCrossing) : Bool :=
+  !c.scopedAuthority &&
+  c.latentSources.isEmpty &&
+  !c.hasExternalAlias &&
+  c.graphOrigins.all (originLegalAcrossTask c.explicitResourceContract c.targetScope) &&
+  disjointUnknownSelections c.transferredObjects c.callerWritableObjects &&
+  disjointUnknownSelections c.writableObjects c.callerLiveObjects
+
+def graphCrossingModeValid (c : GraphCrossing) : Bool :=
+  match c.mode with
+  | .immutableData =>
+      c.writableObjects.isEmpty &&
+      c.dataAccess.all (fun m => decide (m = Access.immutable))
+  | .isolatedConstruction =>
+      c.sourceConsumed &&
+      c.dataAccess.all (fun m => decide (m ≠ Access.ref))
+  | .movableEndpoint =>
+      c.sourceConsumed &&
+      c.explicitResourceContract &&
+      c.dataAccess.all (fun m => decide (m ≠ Access.ref ∧ m ≠ Access.shared))
+
+def taskGraphCrossing (c : GraphCrossing) : Bool :=
+  graphCrossingCommon c && graphCrossingModeValid c
+
+theorem taskGraphCrossing_no_live_ref {c : GraphCrossing} {m : Access}
+    (h : taskGraphCrossing c = true) (hm : m ∈ c.dataAccess) :
+    m ≠ Access.ref := by
+  simp only [taskGraphCrossing, Bool.and_eq_true] at h
+  have hmode := h.2
+  unfold graphCrossingModeValid at hmode
+  cases hc : c.mode <;> simp only [hc, Bool.and_eq_true] at hmode
+  · have himm : m = Access.immutable := of_decide_eq_true (List.all_eq_true.mp hmode.2 m hm)
+    rw [himm]
+    decide
+  · exact of_decide_eq_true (List.all_eq_true.mp hmode.2 m hm)
+  · exact (of_decide_eq_true (List.all_eq_true.mp hmode.2 m hm)).1
+
+theorem taskGraphCrossing_writable_disjoint_caller_live {c : GraphCrossing}
+    (h : taskGraphCrossing c = true) :
+    Separated c.writableObjects c.callerLiveObjects := by
+  simp only [taskGraphCrossing, graphCrossingCommon, Bool.and_eq_true] at h
+  exact disjoint_check_sound h.1.2
+
+theorem taskGraphCrossing_transferred_disjoint_caller_writable {c : GraphCrossing}
+    (h : taskGraphCrossing c = true) :
+    Separated c.transferredObjects c.callerWritableObjects := by
+  simp only [taskGraphCrossing, graphCrossingCommon, Bool.and_eq_true] at h
+  exact disjoint_check_sound h.1.1.2
+
+theorem taskGraphCrossing_origin_sound {c : GraphCrossing} {o : Origin}
+    (h : taskGraphCrossing c = true) (ho : o ∈ c.graphOrigins) :
+    (o.source.kind ≠ SourceKind.foreign ∨ c.explicitResourceContract = true) ∧
+      o.scope ≤ c.targetScope := by
+  simp only [taskGraphCrossing, graphCrossingCommon, Bool.and_eq_true] at h
+  have horig := List.all_eq_true.mp h.1.1.1.2 o ho
+  simp only [originLegalAcrossTask, Bool.and_eq_true, Bool.or_eq_true, decide_eq_true_eq] at horig
+  exact horig
+
 structure ForeignContract where
   sources : List Source
   deriving Repr, DecidableEq

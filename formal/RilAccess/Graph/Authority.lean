@@ -335,4 +335,74 @@ theorem entry_object_covered (hr : root ∈ graph.roots)
   apply List.mem_map.mpr
   exact ⟨⟨root.view, object, mode⟩, List.mem_filter.mpr ⟨path_covered hr hp, by simp⟩, rfl⟩
 
+def viewFacts (graph : Graph Nat) (view : Nat) : List (Fact Nat) :=
+  (analyze graph).filter fun f => decide (f.view = view)
+
+def survivingFacts (graph : Graph Nat) (survivingViews : List Nat) : List (Fact Nat) :=
+  (analyze graph).filter fun f => decide (f.view ∈ survivingViews)
+
+def buildGraphCrossing (graph : Graph Nat) (crossingView : Nat) (survivingViews : List Nat)
+    (mode : CrossingMode) (latentSources graphOrigins : List Origin)
+    (hasExternalAlias scopedAuth sourceConsumed : Bool)
+    (targetScope : Nat) (explicitResourceContract : Bool) : GraphCrossing :=
+  let cf := viewFacts graph crossingView
+  let sf := survivingFacts graph survivingViews
+  ⟨mode, cf.map Fact.access, latentSources, graphOrigins,
+    cf.map Fact.object,
+    (cf.filter fun f => f.access.writes).map Fact.object,
+    (sf.filter fun f => decide (f.access ≠ Access.immutable)).map Fact.object,
+    (sf.filter fun f => f.access.writes).map Fact.object,
+    hasExternalAlias, scopedAuth, sourceConsumed, targetScope, explicitResourceContract⟩
+
+theorem graph_crossing_no_child_write_parent_live_race
+    {graph : Graph Nat} {crossingView : Nat} {survivingViews : List Nat}
+    {mode : CrossingMode} {latent origins : List Origin}
+    {extAlias scopedAuth consumed : Bool} {targetScope : Nat} {contract : Bool}
+    {rChild rParent : Root Nat} {fChild fParent : List Nat} {obj : Nat} {mChild mParent : Access}
+    (h : taskGraphCrossing (buildGraphCrossing graph crossingView survivingViews mode latent origins
+      extAlias scopedAuth consumed targetScope contract) = true)
+    (hrChild : rChild ∈ graph.roots) (hvChild : rChild.view = crossingView)
+    (hpChild : Path graph.edges rChild.object rChild.access fChild obj mChild)
+    (hwChild : mChild.writes = true)
+    (hrParent : rParent ∈ graph.roots) (hvParent : rParent.view ∈ survivingViews)
+    (hpParent : Path graph.edges rParent.object rParent.access fParent obj mParent)
+    (hliveParent : mParent ≠ Access.immutable) : False := by
+  have hsep := taskGraphCrossing_writable_disjoint_caller_live h
+  have hfChild : Fact.mk rChild.view obj mChild ∈ viewFacts graph crossingView :=
+    List.mem_filter.mpr ⟨path_covered hrChild hpChild, decide_eq_true hvChild⟩
+  have hInW : obj ∈ (buildGraphCrossing graph crossingView survivingViews mode latent origins
+      extAlias scopedAuth consumed targetScope contract).writableObjects :=
+    List.mem_map.mpr ⟨_, List.mem_filter.mpr ⟨hfChild, hwChild⟩, rfl⟩
+  have hfParent : Fact.mk rParent.view obj mParent ∈ survivingFacts graph survivingViews :=
+    List.mem_filter.mpr ⟨path_covered hrParent hpParent, decide_eq_true hvParent⟩
+  have hInL : obj ∈ (buildGraphCrossing graph crossingView survivingViews mode latent origins
+      extAlias scopedAuth consumed targetScope contract).callerLiveObjects :=
+    List.mem_map.mpr ⟨_, List.mem_filter.mpr ⟨hfParent, decide_eq_true hliveParent⟩, rfl⟩
+  exact hsep obj hInW hInL
+
+theorem graph_crossing_no_parent_write_child_any_race
+    {graph : Graph Nat} {crossingView : Nat} {survivingViews : List Nat}
+    {mode : CrossingMode} {latent origins : List Origin}
+    {extAlias scopedAuth consumed : Bool} {targetScope : Nat} {contract : Bool}
+    {rChild rParent : Root Nat} {fChild fParent : List Nat} {obj : Nat} {mChild mParent : Access}
+    (h : taskGraphCrossing (buildGraphCrossing graph crossingView survivingViews mode latent origins
+      extAlias scopedAuth consumed targetScope contract) = true)
+    (hrChild : rChild ∈ graph.roots) (hvChild : rChild.view = crossingView)
+    (hpChild : Path graph.edges rChild.object rChild.access fChild obj mChild)
+    (hrParent : rParent ∈ graph.roots) (hvParent : rParent.view ∈ survivingViews)
+    (hpParent : Path graph.edges rParent.object rParent.access fParent obj mParent)
+    (hwParent : mParent.writes = true) : False := by
+  have hsep := taskGraphCrossing_transferred_disjoint_caller_writable h
+  have hfChild : Fact.mk rChild.view obj mChild ∈ viewFacts graph crossingView :=
+    List.mem_filter.mpr ⟨path_covered hrChild hpChild, decide_eq_true hvChild⟩
+  have hInT : obj ∈ (buildGraphCrossing graph crossingView survivingViews mode latent origins
+      extAlias scopedAuth consumed targetScope contract).transferredObjects :=
+    List.mem_map.mpr ⟨_, hfChild, rfl⟩
+  have hfParent : Fact.mk rParent.view obj mParent ∈ survivingFacts graph survivingViews :=
+    List.mem_filter.mpr ⟨path_covered hrParent hpParent, decide_eq_true hvParent⟩
+  have hInCW : obj ∈ (buildGraphCrossing graph crossingView survivingViews mode latent origins
+      extAlias scopedAuth consumed targetScope contract).callerWritableObjects :=
+    List.mem_map.mpr ⟨_, List.mem_filter.mpr ⟨hfParent, hwParent⟩, rfl⟩
+  exact hsep obj hInT hInCW
+
 end RilAccess.GraphAuthority

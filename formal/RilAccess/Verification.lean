@@ -109,6 +109,34 @@ structure DraftGuarantees : Prop where
     origin ∈ footprint.roots ++ footprint.environments ++ footprint.escaping →
       origin.object ∉ finish.draftObjects
 
+structure CrossingGuarantees : Prop where
+  noLiveRef : ∀ (c : GraphCrossing) m,
+    taskGraphCrossing c = true → m ∈ c.dataAccess → m ≠ .ref
+  originSound : ∀ (c : GraphCrossing) o,
+    taskGraphCrossing c = true → o ∈ c.graphOrigins →
+      (o.source.kind ≠ .foreign ∨ c.explicitResourceContract = true) ∧ o.scope ≤ c.targetScope
+  noChildWriteParentLiveRace : ∀ (graph : GraphAuthority.Graph Nat) crossingView survivingViews
+      mode latent origins extAlias scopedAuth consumed targetScope contract
+      (rChild rParent : GraphAuthority.Root Nat) fChild fParent obj mChild mParent,
+    taskGraphCrossing (GraphAuthority.buildGraphCrossing graph crossingView survivingViews
+      mode latent origins extAlias scopedAuth consumed targetScope contract) = true →
+    rChild ∈ graph.roots → rChild.view = crossingView →
+    GraphAuthority.Path graph.edges rChild.object rChild.access fChild obj mChild →
+    mChild.writes = true →
+    rParent ∈ graph.roots → rParent.view ∈ survivingViews →
+    GraphAuthority.Path graph.edges rParent.object rParent.access fParent obj mParent →
+    mParent ≠ .immutable → False
+  noParentWriteChildAnyRace : ∀ (graph : GraphAuthority.Graph Nat) crossingView survivingViews
+      mode latent origins extAlias scopedAuth consumed targetScope contract
+      (rChild rParent : GraphAuthority.Root Nat) fChild fParent obj mChild mParent,
+    taskGraphCrossing (GraphAuthority.buildGraphCrossing graph crossingView survivingViews
+      mode latent origins extAlias scopedAuth consumed targetScope contract) = true →
+    rChild ∈ graph.roots → rChild.view = crossingView →
+    GraphAuthority.Path graph.edges rChild.object rChild.access fChild obj mChild →
+    rParent ∈ graph.roots → rParent.view ∈ survivingViews →
+    GraphAuthority.Path graph.edges rParent.object rParent.access fParent obj mParent →
+    mParent.writes = true → False
+
 structure Guarantees : Prop where
   solver : SolverGuarantees
   provenance : ProvenanceGuarantees
@@ -116,6 +144,7 @@ structure Guarantees : Prop where
   entry : EntryGuarantees
   effects : EffectGuarantees
   draft : DraftGuarantees
+  crossing : CrossingGuarantees
 
 theorem verified : Guarantees where
   solver := ⟨fun _ => ⟨solve_closed, solve_grounded, solve_nodup, fun _ => solve_least⟩⟩
@@ -135,5 +164,8 @@ theorem verified : Guarantees where
   draft := ⟨fun _ _ _ _ => Draft.prepared_root_sound, fun _ _ _ => Draft.checked_path_recipe_prefixes,
     fun _ _ _ _ _ => Draft.publication_ends_privilege,
     fun _ _ _ _ _ _ _ _ _ _ => Draft.conforming_external_cannot_escape⟩
+  crossing := ⟨@taskGraphCrossing_no_live_ref, @taskGraphCrossing_origin_sound,
+    @GraphAuthority.graph_crossing_no_child_write_parent_live_race,
+    @GraphAuthority.graph_crossing_no_parent_write_child_any_race⟩
 
 end RilAccess.CoreVerification

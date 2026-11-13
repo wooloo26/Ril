@@ -190,7 +190,12 @@ The following distinctions apply throughout the specification; their defining se
       - [Allowance and Charging](#allowance-and-charging)
     - [Panic Absorption with absorb\_panic](#panic-absorption-with-absorb_panic)
     - [Structured Concurrency and Panic Containment](#structured-concurrency-and-panic-containment)
+      - [Task Handles, Movable Guard, and Combinators](#task-handles-movable-guard-and-combinators)
+      - [Structured Cancellation and Fault Precedence](#structured-cancellation-and-fault-precedence)
     - [Deterministic Data Parallelism and Divide-and-Conquer Primitives](#deterministic-data-parallelism-and-divide-and-conquer-primitives)
+      - [Zero-Copy Read-Only Parallel Inputs](#zero-copy-read-only-parallel-inputs)
+      - [In-Place Mutable Parallelism](#in-place-mutable-parallelism)
+      - [Parallel Faults, Fatal Visibility, and Budgets](#parallel-faults-fatal-visibility-and-budgets)
     - [Structured Concurrency Channels](#structured-concurrency-channels)
   - [Compile-Time Computation and Finiteness](#compile-time-computation-and-finiteness)
     - [Static Type Values and Type Quotation](#static-type-values-and-type-quotation)
@@ -346,11 +351,12 @@ fn verify_magic(ok: bool) -> () {
 ```
 
 ```ril
-use ril/concurrent::{scope, TaskFault}
-let scope_outcome: Result<int, TaskFault> = scope(\mut s -> {
-    s.fork(\-> panic("worker failure"))
+use ril/concurrent::{scope, fork, TaskFault}
+let scope_outcome: Result<int, TaskFault> = {
+    with scope()
+    let _ = fork \-> panic("worker failure")
     Ok(42)
-})
+}
 assert(scope_outcome is Err(TaskFault::Panicked(_))) -- Child panic becomes TaskFault
 ```
 
@@ -358,7 +364,7 @@ assert(scope_outcome is Err(TaskFault::Panicked(_))) -- Child panic becomes Task
 | :--- | :--- | :--- |
 | Recoverable domain error | `Result<T, E>`, `?T` (`Option<T>`) | `?`, `??`, `match`, `is`; unused `Result` is `E0720` |
 | Bounded divergence | Implicit `@Diverge` | [`diverge_budget`](#finite-evaluation-with-diverge) $\rightarrow$ `Result<T, BudgetError>` |
-| Unwinding defect | Implicit `@Panic` | Synchronous [`absorb_panic`](#panic-absorption-with-absorb_panic) (`E0608`) $\rightarrow$ `Result<T, PanicError>`; child [`s.fork`](#structured-concurrency-and-panic-containment) $\rightarrow$ `Result<T, TaskFault>` |
+| Unwinding defect | Implicit `@Panic` | Synchronous [`absorb_panic`](#panic-absorption-with-absorb_panic) (`E0608`) $\rightarrow$ `Result<T, PanicError>`; child [`fork`](#structured-concurrency-and-panic-containment) $\rightarrow$ `Result<T, TaskFault>` |
 | Process termination | Implicit `@Fatal` | None; penetrates `absorb_panic`, `diverge_budget`, handlers, and `scope`, terminating the process immediately |
 
 ### Run-Time Failure Conditions
@@ -394,11 +400,11 @@ In required static evaluation (`meta let`, `meta fn`, `type` functions), a false
 | Abnormal control or cleanup condition | Consequence |
 | :--- | :--- |
 | Effect arm completes without resumption | Delimited abort; prior writes remain committed and scoped cleanup runs |
-| Structured cancellation | Non-resumable exit under the scope/channel rules |
+| Structured cancellation | Non-resumable unwinding at `@Fiber` cancellation points under the [scope](#structured-cancellation-and-fault-precedence) and [channel](#structured-concurrency-channels) rules |
 | Cleanup panics during normal exit | Begin panic unwinding through the remaining resources |
 | Cleanup panics during panic, cancellation, or effect abort | `DoubleFaultFatal`: immediate `@Fatal` process termination |
 
-Scoped cleanup is LIFO within each unwound frame. A task boundary contains child `@Panic` faults, not a panic from its own parent frame and never `@Fatal`. Parallel evaluation exposes only faults visible in its specified reference order; a skipped branch cannot fail a successful result.
+Scoped cleanup is LIFO within each unwound frame. A task boundary contains child `@Panic` faults, not a panic from its own parent frame and never `@Fatal`. Parallel evaluation exposes only faults visible in its specified reference order; a skipped branch cannot fail a successful result, and direct `fatal` is rejected in [parallel callbacks](#parallel-faults-fatal-visibility-and-budgets).
 
 ## Source Text and Lexical Elements
 
@@ -554,7 +560,7 @@ Declarations and imports share one namespace. Same-scope duplicates are `E0203`;
 
 | Name | Resolution |
 | :--- | :--- |
-| Nominal type/constructor; predefined `Set<T>`/`Set::from`; `Concurrent` effect/`Concurrent::scope` | Roles of one declaration; separate user declarations cannot merge |
+| Nominal type/constructor; predefined `Set<T>`/`Set::from`; `Concurrent` effect/`ril/concurrent` | Roles of one declaration; separate user declarations cannot merge |
 | `S::V` | Variant member of S; no second enclosing-scope declaration |
 | Unqualified constructor name | Ordinary lexical binding first; otherwise require one variant candidate (`E0206` if ambiguous) |
 | Candidate set | Directly visible sum types; a module import alone does not expose its internal sums |
@@ -1375,9 +1381,9 @@ Default immutable reception follows the [common mode tables](#binding-modes-and-
 | Surviving writer or live origin | Reject with `E0535`; reception cannot copy, freeze, consume, or revoke that authority |
 | `clone` | Copy data admitted by [`SharedObject`](#normative-rules-for-built-in-operations) into an isolated construction result `new T`. Preserve the schema and nominal or opaque identity. Immutable reception publishes the copied contents as a snapshot, including cyclic contents |
 | Copy execution | Read the source once as a stable snapshot; no suspension, user callback, or overlapping write |
-| Non-clonable authority | Reject with `E0530` at the root or in a constituent, including retained environments, scoped resources, tasks, and unique receivers hidden in wrappers or `ref` handles |
+| Non-clonable authority | Reject with `E0530` at the root or in a constituent, including retained environments, scoped resources, tasks, and channel endpoints hidden in wrappers or `ref` handles |
 | Value types | Copy by ordinary value passage. `clone(value)` fails the type guard (`E0301`). A value-type `ref` argument is `E0401` |
-| Function / resource value | Immutable environment-free functions support ordinary copying. Endpoint duplication follows the [channel resource contract](#structured-concurrency-channels) |
+| Function / resource value | Immutable environment-free functions support ordinary copying. Sender duplication (`Channel::clone_sender`) follows the [channel resource contract](#structured-concurrency-channels) |
 
 Writable reception of a clone activates declared writable members. Each writable occurrence of an immutable constituent gets separate storage. This materialization must be finite (`E0530`). Copied live objects retain their internal alias and cycle relationships under the ordinary writable reception checks. A `new` return preserves the construction and reception facts.
 
@@ -1541,23 +1547,26 @@ fn relay<T>(via value: T) -> infer Packet<T> {
 | `let via x = expression` | Receive access modes and provenance dependent on bound modes or input callable mode patterns |
 | `-> infer T` | Infer result access modes, sources, and dependencies for a signature with explicit `via` inputs |
 | `fn(via T) -> R` | Open that callable's mode pattern, not an unrelated enclosing function |
-| Input callable `fn(via T) -> infer R` | Retain its actual result relations as finite input-bound dependencies |
+| Input callable `fn(via T) -> infer R` / `via cb: fn(...) -> infer R` | Retain its actual result relations as finite input-bound dependencies |
 
 Template checking may substitute a lexically bound outer `P` for an inner parameter `Q`. Before a closed invocation executes, its selected signature, local receptions, result, and member schemas must be concrete. A closure specializes with its enclosing instance; an explicitly quantified finite callable family may retain its bound parameters. Unresolved mode instances in concrete objects, storage, or single-instance entries are `E0344`.
 
 Data types, slot replacement, source authority, and effect-row openness follow their own declarations and checks. `via` ranges over concrete access modes. `E0412` rejects it in static/meta/type-function parameters, effect-operation signatures, handler parameters, bodyless foreign interfaces, map keys, untyped literal modifiers, reassignable/scoped/module receivers, or local reception without an applicable lexical template. Mapped comprehensions preserve known modes. Bodyless boundaries supply explicit trusted contracts.
 
-`-> infer T` requires an ordinary Ril function definition or callable type with at least one explicit `via` in its parameter list (`E0412`). The `via` may modify a parameter directly, declare a member, array element, or map value mode in its type, or appear in an input callable's own parameter list. Check each callable signature independently. A `via` found only through a referenced type declaration, in an enclosing signature, in a result, or in a body cannot qualify the signature. This restriction governs the written modifier. Mandatory contract inference and anonymous annotation omission follow their usual rules.
+`-> infer T` requires an ordinary Ril function definition or callable type with at least one explicit `via` in its parameter list, or a parameter callable type whose own parameter binding is directly modified by `via` (`via cb: fn(...) -> infer T`) (`E0412`). In a parameter list, `via` may modify a parameter directly, declare a member, array element, or map value mode in its type, or appear in an input callable's own parameter list. Check other callable signatures independently: a `via` found only through a referenced type declaration, on an unrelated parameter of an enclosing signature, in a result, or in a body cannot qualify the signature. This restriction governs the written modifier. Mandatory contract inference and anonymous annotation omission follow their usual rules.
 
 ```ril
 type Cell = .{ var count: int }
 fn make_cell() -> new Cell { Cell.{ count: 0 } }
+fn run_thunk<T>(via cb: fn() @& -> infer T) -> infer T { cb() } -- OK: parameter cb is modified by via
 let via = 1                                      -- OK: ordinary identifier
 let infer = 2                                    -- OK: ordinary identifier
 assert(via + infer == 3)
 
 -- fn bad_factory() -> infer Cell { Cell.{ count: 0 } } -- Error [E0412]: no via input
+-- type BadThunk = fn() -> infer Cell                   -- Error [E0412]: standalone callable has no via input
 -- type BadReader = fn(ref Cell) -> infer Cell          -- Error [E0412]: no via input
+-- fn bad_outer(via x: Cell, cb: fn() -> infer Cell) -> int { x.count } -- Error [E0412]: enclosing via on x does not qualify cb
 -- fn bad_result(ref value: Cell) -> via Cell { value } -- Error [E0412]: via is an input/member/receiver modifier
 -- fn bad_input(infer value: Cell) -> int { value.count } -- Error [E0412]: infer is a result modifier
 -- type BadMember = .{ infer value: Cell }         -- Error [E0412]
@@ -3096,7 +3105,7 @@ fn borrowed(mut x: Cell, mut cells: [mut]Cell) &mut -> () {
 | Current root privacy | No independently usable surviving alias to the root |
 | Initial graph eligibility | Strong complete-graph qualification, checked again for `new` input / exclusive storage |
 
-Construction paths require eligible ordinary shared-object data (`E0411` otherwise); callable, environment, and resource results follow their reception rules. A fixed `let mut`, or a `let ^mut` justified by its constituent/alias rules, can retain a private construction root. Check root privacy and complete-graph isolation separately, including obligations from shared constituents.
+Construction paths require eligible ordinary shared-object data or movable endpoint carriers admitted by [`Movable`](#task-handles-movable-guard-and-combinators) (`E0411` otherwise); callable, environment, and non-movable resource results follow their reception rules. A fixed `let mut`, or a `let ^mut` justified by its constituent/alias rules, can retain a private construction root. Check root privacy and complete-graph isolation separately, including obligations from shared constituents.
 
 Immutable publication, independent escape/sharing of the qualifying path, or escaping capture ends the affected qualification permanently. Ordinary parameters, module bindings, reassignable/scoped roots, and bare alias initializers are ineligible for initial qualification. Temporary observation/`mut` borrowing may preserve qualification under non-escape and lifetime checks.
 
@@ -3315,7 +3324,7 @@ assert(events == ["new"])
 | Concern | Rule |
 | :--- | :--- |
 | Ordinary resource | Accessible zero-argument unit-result cleanup callable required (`E0541`); `on_close: fn() & -> ()` preserves actual state and provenance obligations, while operational cleanup effects (`E0616`), finiteness (`E0617`), and invocation authority retain their separate checks |
-| Opaque resource | Requires an explicit scoped-cleanup operation; opacity alone supplies none (`E0541`) |
+| Opaque resource | Requires an explicit scoped-cleanup operation, such as [channel endpoint cleanup](#structured-concurrency-channels); opacity alone supplies none (`E0541`) |
 | Registration | After successful initialization; per binding and per loop activation; failed initialization registers nothing |
 | Exit | Invoke once in reverse registration order, including cancellation/abort; double-fault exception below |
 | Callback selection | Read the current `on_close` at exit; retain no earlier snapshot. Opaque resources use their specified action |
@@ -3340,7 +3349,7 @@ Missing, inaccessible, or shape-incompatible scoped cleanup operations are `E054
 | Normal exit | Begin `@Panic` unwinding of remaining resources |
 | Panic, cancellation, or abort | `DoubleFaultFatal`: abandon remaining cleanup and terminate the OS process immediately (`@Fatal`) |
 
-Abandoned computations cannot resume. A pure parallel branch exposes a double fault only when that branch is visible in reference evaluation.
+Abandoned computations cannot resume. A pure parallel branch exposes a double fault only when that branch is visible in reference evaluation; see [parallel faults](#parallel-faults-fatal-visibility-and-budgets).
 
 ```ebnf
 ScopedDecl ::= "let" "scoped" [ "mut" ] Pattern [ ":" TypeExpression ] "=" Expression [ "else" Block ]
@@ -5153,7 +5162,7 @@ Choose the subject decomposition mode statically from current access and establi
 
 | Input | Subject decomposition |
 | :--- | :--- |
-| Active qualified construction temporary/formal/local | Consume after arm selection; prove root privacy and ordinary shared-object graph eligibility |
+| Active qualified construction temporary/formal/local | Consume after arm selection; prove root privacy and [`Movable`](#task-handles-movable-guard-and-combinators) graph eligibility |
 | Immutable shared object / value type | Share immutable data / copy values |
 | Borrowed `ref`/`mut` / retained writer | Bounded observation/temporary write/shared access; no new construction path |
 
@@ -5827,7 +5836,7 @@ The `&up` callable-type abstraction admits an environment-free callable or the c
 | Callable contract component | Rule |
 | :--- | :--- |
 | Closed operational effect row | Exact normalized actual operational effects |
-| Implicit execution effects | `Diverge`, `Panic`, and `Fatal` are tracked in verified semantic summaries across aliases and ascriptions |
+| Implicit execution effects | `Diverge`, `Panic`, and `Fatal` are tracked in verified semantic summaries across aliases and ascriptions, distinguishing direct `fatal` from cleanup double faults for [parallel callbacks](#parallel-faults-fatal-visibility-and-budgets) |
 | Closed state/provenance row | Exact normalized actual obligations after the written environment abstraction and implicit return baseline |
 | Open effects / state-provenance | Preserve the actual complete row; permit additional entries only in the opened dimension |
 | Parameter/handle access modes | Unchanged by openness, aliases, or ascription |
@@ -6316,7 +6325,7 @@ Mutable modes do not apply to static key arguments.
 
 #### Fresh Construction Parameters
 
-A `new value: T` parameter receives unpublished construction authority for ordinary shared-object data through an explicit `new expression` handoff. The mode is available to verified named and anonymous Ril functions, their callable types, and the storage inputs below. Handoffs preserve object identity and consume the qualified source path.
+A `new value: T` parameter receives unpublished construction authority for ordinary shared-object data or movable endpoint carriers admitted by [`Movable`](#task-handles-movable-guard-and-combinators) through an explicit `new expression` handoff. The mode is available to verified named and anonymous Ril functions, their callable types, and the storage inputs below. Handoffs preserve object identity and consume the qualified source path.
 
 ```ril
 type Cell = .{ var count: int }
@@ -6342,7 +6351,7 @@ cells[0].count += 1
 
 | Construction parameter concern | Normative rule |
 | :--- | :--- |
-| Eligible type (`E0411`) | Ordinary shared-object data only. Value types, resource/task/scope authority, callable roots, and any graph containing retained callable environments or non-ordinary authority are excluded; wrapping, opacity, or an outer fresh root cannot hide them |
+| Eligible type (`E0411`) | Types admitted by [`Movable`](#task-handles-movable-guard-and-combinators): ordinary shared-object data, single-owner channel endpoints, and fixed-`mut` endpoint carriers. Value types, task/scope authority, non-movable resources, callable roots, and any graph containing retained callable environments or non-movable authority are excluded; wrapping, opacity, or an outer fresh root cannot hide them |
 | Eligible expression (`E0548`) | Prove complete initial-reception eligibility: eligible constructed writable regions are isolated from pre-existing writable regions and have no surviving outside writer, observer, or active environment. Preserve immutable constituent sharing, aliases, cycles, and member schemas |
 | Existing bindings (`E0548`) | Handoff requires a fixed writable local with active qualification from [checked initial reception](#construction-qualified-locals-and-mode-preserving-reception). Immutable/observed, borrowed, published, reassignable or otherwise unqualified bindings are ineligible |
 | Forwarding source | An active construction formal/local, verified eligible construction expression, or checked storage handoff may be handed onward. Projection does not split construction authority; only a verified consuming decomposition establishes separately eligible payload paths |
@@ -6362,7 +6371,7 @@ A `new expression` handoff requires a matching construction argument, compatible
 
 In a caller with an active construction formal `cell`, `f(new cell, cell.count)` and `f(new cell, new cell)` both use an ended path in their second argument (`E0549`). Preparing all arguments before invoking `f` does not duplicate construction authority or defer its consumption.
 
-For a generic `new value: T`, admitted instantiations are restricted to eligible ordinary shared-object data. An ineligible concrete parameter type or generic instantiation is `E0411`. Structural bounds may establish ordinary shared-object shape. Check the definition for every admitted instantiation and full graph eligibility at each handoff.
+For a generic `new value: T`, admitted instantiations must satisfy [`Movable`](#task-handles-movable-guard-and-combinators); `[mut]T` and `[^mut]T` storage remain restricted to `SharedObject`. An ineligible concrete parameter type or generic instantiation is `E0411`. Structural bounds may establish ordinary shared-object or movable shape. Check the definition for every admitted instantiation and full graph eligibility at each handoff.
 
 ```ril
 -- Cell, append_cell, and forward_cell have the preceding declarations.
@@ -7521,7 +7530,7 @@ Outer function/callback activations stay active. Independent captures and ambien
 | Persistent definition (`E0614`) | Lawful environment and fresh boundary/resumptions per invocation; no old continuations, scoped resources, or return/loop targets |
 | Answer (`E0614`) | Every retained arm tail fits the new answer type; outer dependencies have stable handlers or residual rows |
 | Creation | Does not execute latent body operations; counts actual environment creation, sharing, and escape |
-| Child task (`E0615`) | No ancestor active handler or live/mutable environment; immutable data may establish a child-local handler |
+| Child task (`E0615`) | No ancestor active handler, unhandled `@Scope` / `@Yield<T>` / user effect, or live/mutable environment; immutable data may establish a child-local handler or nested `scope` |
 
 Escape alone is valid. Retention preserves dispatch, required outer definitions, and access/sharing/escape facts for provenance diagnostics, without extra capture syntax. Effect discharge never removes state, capture, live `ref`, or mutable-environment obligations.
 
@@ -7760,12 +7769,13 @@ fn test_early_abort() -> () {
 
 | Built-in `@` label | Category | Source `@` annotation | Discharge / containment |
 | :--- | :--- | :--- | :--- |
-| `@Fiber` | Operational | Required on named callers (`E0612`) | `Fiber::yield` via `with`; leaf I/O stays `@Fiber` |
+| `@Fiber` | Operational | Required on named callers (`E0612`) | `Fiber::yield` via `with`; leaf I/O and cancellation queries stay `@Fiber` |
+| `@Scope` | Operational (`ril/concurrent`) | Required on named nursery helpers (`E0612`) | `Concurrent::scope` / `scope_with` discharges `@Scope` into `@Concurrent`; no `main` handler (`E0612`), not an operation-arm target (`E0621`), cannot cross `fork` / `fork_with` unhandled (`E0615`) |
 | `@Concurrent` | Operational | Required on named callers (`E0612`) | Propagates to `@Concurrent` / `@Async` callers |
-| `@Async` | Operational alias (`{ ..Fiber, ..Concurrent }`) | Allowed | Expands to `Fiber + Concurrent` |
+| `@Async` | Operational alias (`{ ..Fiber, ..Concurrent }`) | Allowed | Expands to `Fiber + Concurrent` (excludes `@Scope`) |
 | `@Yield<T>` | Operational (`emit(T) -> ()`) | Required on named callers (`E0612`) | `for` loops or `with Yield::emit(v) -> ...` |
 | `@Diverge` | Implicit non-operational | Forbidden (`E0620`) | [`diverge_budget`](#finite-evaluation-with-diverge) $\rightarrow$ `Result<T, BudgetError>`; excluded by `halt` (`E0820`) |
-| `@Panic` | Implicit non-operational | Forbidden (`E0620`) | [`absorb_panic`](#panic-absorption-with-absorb_panic) (`E0608`) $\rightarrow$ `Result<T, PanicError>`; child [`s.fork`](#structured-concurrency-and-panic-containment) $\rightarrow$ `Result<T, TaskFault>` |
+| `@Panic` | Implicit non-operational | Forbidden (`E0620`) | [`absorb_panic`](#panic-absorption-with-absorb_panic) (`E0608`) $\rightarrow$ `Result<T, PanicError>`; child [`fork`](#structured-concurrency-and-panic-containment) $\rightarrow$ `Result<T, TaskFault>` |
 | `@Fatal` | Implicit non-operational | Forbidden (`E0620`) | None; terminates the OS process immediately |
 
 ```ril
@@ -7779,14 +7789,16 @@ fn abort_now() -> never { fatal("corrupted") } -- Semantic contract: @Fatal
 -- with Panic() -> 0                           -- Error [E0621]: non-operational built-in effect
 ```
 
-The operational system effect sets satisfy:
+The root operational system effect sets satisfy:
 
 $$\emptyset \subset \lbrace\text{Fiber}\rbrace \subset \lbrace\text{Fiber}, \text{Concurrent}\rbrace \equiv \text{Async}$$
+
+`Scope` (exported by `ril/concurrent`) is an orthogonal nursery-local operational effect outside `Async`: imperative task primitives (`fork`, `fork_with`, `join`, `cancel`, `cancel_scope`) require `@Scope`, and `Concurrent::scope` / `scope_with` discharges `@Scope` into `@Concurrent` ($(E \setminus \lbrace\text{Scope}\rbrace) \cup \lbrace\text{Concurrent}\rbrace$).
 
 `Diverge`, `Panic`, and `Fatal` are inferred automatically and exposed in semantic interfaces and tooling (`@[OpEffects] + Diverge + Panic + Fatal`). The prelude supplies [`diverge_budget` / `BudgetError`](#finite-evaluation-with-diverge), [`absorb_panic` / `PanicError`](#panic-absorption-with-absorb_panic), and `fatal` without import.
 
 #### Normative Rules for Built-in System Effects
-- **Leaf I/O (`@Fiber`)**: Leaf I/O operations that require suspension but perform no structured concurrency declare `@Fiber` for those operations. Forking requires `@Concurrent`. Both remain subject to the ordinary task-boundary, provenance, and exclusivity rules.
+- **Leaf I/O (`@Fiber`)**: Leaf I/O operations and cooperative cancellation queries (`Concurrent::is_cancelled`, `Concurrent::check_cancelled`) declare `@Fiber` without `@Concurrent`. Spawning or joining child tasks requires `@Scope` inside a `Concurrent::scope` / `scope_with` boundary (`@Concurrent`). Both remain subject to the ordinary task-boundary, provenance, and exclusivity rules.
 - **Compound Asynchronous Workflows (`@Async`)**: Functions that both suspend on I/O and manage concurrent child tasks declare `@Async`.
 - **Scheduling and Value Generators**: `Fiber::yield() -> ()` yields cooperatively without emitting a user value. Value-emitting streams use the prelude `Yield<T>` effect (`pub eff Yield<T> { emit(value: T) -> () }`, directly supported by [`for` loops](#loop-expressions)) or user-defined streaming effects, with affine resumption. A resumption cannot escape its handler arm to become a pull iterator (`E0611`).
 
@@ -7806,10 +7818,11 @@ fn read_name(path: str) @Fiber -> Result<str, str> {
 | System request / label | Discharge rule |
 | :--- | :--- |
 | `Fiber::yield` | A matching operation arm discharges this yield request |
-| Leaf I/O / environmental or endpoint operation | Retains its `Fiber` obligation unless its public contract explicitly provides a handler |
-| Scope / fork / join | Retains its `Concurrent` obligation; not operation-arm targets (`E0621`) |
+| Leaf I/O / environmental cancellation or endpoint operation | Retains its `Fiber` obligation unless its public contract explicitly provides a handler |
+| `Scope` (`fork`, `fork_with`, `join`, `cancel`, `cancel_scope`) | Discharged into `Concurrent` by `Concurrent::scope` / `scope_with`; not operation-arm targets (`E0621`) |
+| `Concurrent` (`scope`, `scope_with`, concurrent combinators) | Retains its `Concurrent` obligation; not operation-arm targets (`E0621`) |
 | `Diverge` | Removed only from a covered invocation by `diverge_budget` |
-| `Panic` | Removed synchronously by `absorb_panic` (`E0608`) or across a child task by `s.fork` |
+| `Panic` | Removed synchronously by `absorb_panic` (`E0608`) or across a child task by `fork` / `fork_with` / concurrent combinators |
 | `Fatal` | Undischargeable; penetrates all handlers, budgets, `absorb_panic`, and task boundaries |
 
 The current resource I/O and structured-concurrency contracts provide no source-level handler that replaces their external behavior. Handling yield alone never covers these obligations. A user-defined effect may expose a mockable interface before any resource operation is invoked. Handling a request does not make an excluded operation eligible for `diverge_budget` or remove its access, cleanup, or task-boundary restrictions.
@@ -7820,6 +7833,8 @@ eff Fiber {
     yield() -> (),                     -- Relinquishes quantum to runtime scheduler
 }
 
+use ril/concurrent
+
 -- Leaf I/O Suspension Principle (@Fiber):
 fn read_socket_chunk(fd: int) @Fiber -> []u8 {
     Socket::read_chunk(fd)             -- Fixture contract: waits for this socket and returns immutable data, @Fiber
@@ -7827,20 +7842,20 @@ fn read_socket_chunk(fd: int) @Fiber -> []u8 {
 
 -- Functions declared @Fiber cannot invoke structured concurrency primitives:
 fn bad_leaf_fork(fd: int) @Fiber -> []u8 {
-    -- scope(\mut s -> {               -- Error [E0612]: function declares '@Fiber' but invokes unhandled '@Concurrent' primitive 'scope'
-    --     s.fork(\-> Socket::read_chunk(fd))
+    -- let _ = Concurrent::scope(\-> { -- Error [E0612]: function declares '@Fiber' but invokes unhandled '@Concurrent' primitive 'scope'
+    --     let _ = Concurrent::fork(\-> Socket::read_chunk(fd))
+    --     Ok(())
     -- })
     read_socket_chunk(fd)
 }
 
 -- Compound Asynchronous Workflow (@Async = { ..Fiber, ..Concurrent }):
-fn fetch_pipeline(url: str) @Async -> Result<str, TaskFault> {
+fn fetch_pipeline(url: str) @Async -> Result<str, Concurrent::TaskFault> {
     let raw = read_socket_chunk(80)    -- Inherits @Fiber
-    scope(\mut s -> {                  -- Requires @Concurrent (present in @Async)
-        let worker = s.fork(\-> parse(raw))
-        let parsed = worker.join()?
-        Ok(parsed)
-    })
+    with Concurrent::scope()           -- Discharges @Scope -> @Concurrent (present in @Async)
+    let worker = Concurrent::fork(\-> parse(raw))
+    let parsed = (worker |> Concurrent::join)?
+    Ok(parsed)
 }
 
 -- Cooperative Fiber Yielding (@Fiber):
@@ -7974,7 +7989,7 @@ fn bounded_write() &up(sub){mut outside_count} -> Result<int, BudgetError> {
 -- diverge_budget(100, \-> Fiber::yield())        -- Error [E0822]
 ```
 
-Reachable bodyless foreign calls, Fiber/I/O, structured concurrency, resource endpoint operations, and parallel combinators remain excluded even when their effect labels are handled. Ordinary algebraic effects may propagate with their selected handlers' coverage requirements; the budget never erases their labels. Finite ordinary-data primitives and sequential collection computations follow their contracts; repeated computation must be charged or have a finite contract. Coverage does not grant state, access, lifetime, or resource authority.
+Reachable bodyless foreign calls, Fiber/I/O and cancellation queries (`Concurrent::is_cancelled`, `Concurrent::check_cancelled`), `@Scope` operations (`fork`, `fork_with`, `join`, `cancel`, `cancel_scope`), structured-concurrency scopes and combinators, resource endpoint operations, and parallel combinators remain excluded (`E0822`) even when their effect labels are handled. Ordinary algebraic effects may propagate with their selected handlers' coverage requirements; the budget never erases their labels. Finite ordinary-data primitives and sequential collection computations follow their contracts; repeated computation must be charged or have a finite contract. Coverage does not grant state, access, lifetime, or resource authority.
 
 Exhaustion is a private control transfer to the particular budget invocation whose allowance expired. It irrevocably abandons that protected computation, runs its required Diverge-free cleanup, then returns `Err` from that invocation. It is neither an algebraic operation nor a catchable panic. Inner source handlers, Result fallbacks, and budgets cannot intercept or resume an outer exhaustion; no refill is possible. Prior writes remain committed.
 
@@ -8105,48 +8120,627 @@ var global_state = 0
 ### Structured Concurrency and Panic Containment
 
 ```ril
-use ril/concurrent::{scope, TaskFault}
-fn isolated_value() @Concurrent -> Result<int, TaskFault> {
-    scope \mut s -> {
-        let task = s.fork(\-> 42)
-        task.join()
+-- Canonical declarations in ril/concurrent (explicit module Concurrent):
+-- Built-in effect, handle, and guard:
+--   Scope, Task<T, M: MemberMode = MemberMode::Let>, Movable (kind: Type -> Type)
+
+pub type TaskFault {
+    Panicked(str),
+    Cancelled,
+}
+
+-- Nursery boundaries (@Scope -> @Concurrent):
+pub fn scope<T>(via body: fn() @& -> infer Result<T, TaskFault>) @Concurrent -> infer Result<T, TaskFault>
+pub fn scope_with<P, T>(
+    via ctx: P,
+    via body: fn(via P) @& -> infer Result<T, TaskFault>,
+) @Concurrent -> infer Result<T, TaskFault>
+
+-- Nursery operations (@Scope):
+pub fn fork<T, M: MemberMode>(via work: fn() @& -> infer T) @Scope -> Task<T, M>
+pub fn fork_with<P, T, M: MemberMode>(
+    via payload: P,
+    via work: fn(via P) @& -> infer T,
+) @Scope -> Task<T, M>
+pub fn join<T, M: MemberMode>(task: Task<T, M>) @Scope -> new Result<T, TaskFault>
+pub fn cancel<T, M: MemberMode>(task: Task<T, M>) @Scope -> new Result<?T, TaskFault>
+pub fn cancel_scope() @Scope -> ()
+
+-- Cooperative cancellation (@Fiber):
+pub fn is_cancelled() @Fiber -> bool
+pub fn check_cancelled() @Fiber -> ()
+
+-- Declarative combinators (@Concurrent):
+pub fn zip<A, B>(
+    via left: fn() @& -> infer A,
+    via right: fn() @& -> infer B,
+) @Concurrent -> infer Result<(via A, via B), TaskFault>
+pub fn try_zip<A, B, E>(
+    left: fn() @& -> Result<A, E>,
+    right: fn() @& -> Result<B, E>,
+) @Concurrent -> Result<Result<(A, B), E>, TaskFault>
+
+pub fn all<T>(tasks: []fn() @& -> T) @Concurrent -> Result<[]T, TaskFault>
+pub fn try_all<T, E>(
+    tasks: []fn() @& -> Result<T, E>,
+) @Concurrent -> Result<Result<[]T, E>, TaskFault>
+
+pub fn map<T, U>(
+    via items: [via]T,
+    via work: fn(via T) @& -> infer U,
+) @Concurrent -> infer Result<[via]U, TaskFault>
+pub fn try_map<T, U, E>(
+    items: []T,
+    work: fn(T) @& -> Result<U, E>,
+) @Concurrent -> Result<Result<[]U, E>, TaskFault>
+
+pub fn for_each<T>(items: []T, work: fn(T) @& -> ()) @Concurrent -> Result<(), TaskFault>
+pub fn try_for_each<T, E>(
+    items: []T,
+    work: fn(T) @& -> Result<(), E>,
+) @Concurrent -> Result<Result<(), E>, TaskFault>
+
+pub fn race<T>(left: fn() @& -> T, right: fn() @& -> T) @Concurrent -> Result<T, TaskFault>
+pub fn race_all<T>(tasks: []fn() @& -> T) @Concurrent -> Result<?T, TaskFault>
+pub fn race_ok<T, E>(
+    tasks: []fn() @& -> Result<T, E>,
+) @Concurrent -> Result<Result<T, []E>, TaskFault>
+```
+
+```ril
+use ril/concurrent::{Scope, scope, scope_with, fork, fork_with, join, Task, TaskFault}
+
+fn spawn_step(x: int) @Scope -> Task<int> {
+    fork \-> x + 1                             -- Nursery helper composable inside any @Scope
+}
+
+fn sum_steps(mut log: []int) @Concurrent &mut -> Result<int, TaskFault> {
+    log |> mut scope_with \mut out -> {
+        let a = spawn_step(10)
+        let b = spawn_step(30)
+        let total = join(a)? + join(b)?
+        out |> mut Array::push(total)
+        Ok(total)
     }
+}
+
+type Packet = .{ mut bytes: []u8 }
+
+fn enrich_packet(new pkt: Packet, tag: u8) @Concurrent &mut -> new Result<Packet, TaskFault> {
+    pkt |> new scope_with \new p0 -> {
+        let task = p0 |> new fork_with \new p -> {
+            p.bytes |> mut Array::push(tag)
+            new p
+        }
+        -- p0.bytes                            -- Error [E0549]: 'p0' ended at handoff
+        let mut out = join(task)?
+        out.bytes |> mut Array::push(0u8)
+        Ok(new out)
+    }
+}
+
+-- Static rejections:
+-- fn bare_fork() @Concurrent -> () { let _ = fork(\-> 1) }         -- Error [E0612]: unhandled @Scope
+-- fn leak_scope() @Concurrent -> Result<int, TaskFault> {
+--     with scope()
+--     join(fork \-> { let _ = fork(\-> 1); 2 })                    -- Error [E0615]: child cannot use parent @Scope
+-- }
+-- fn nested_join() @Concurrent -> Result<int, TaskFault> {
+--     with scope()
+--     let t = fork \-> 1
+--     scope \-> join(t)                                            -- Error [E0606]: wrong owning scope
+-- }
+-- fn pack_task() @Scope -> () { let _ = [fork(\-> 1)] }            -- Error [E0606]: Task cannot enter aggregates
+-- fn double_join() @Scope -> Result<int, TaskFault> {
+--     let t = fork \-> 1
+--     let _ = join(t)?
+--     join(t)                                                      -- Error [E0609]: duplicate Task consumption
+-- }
+-- fn capture_mut() @Concurrent -> Result<int, TaskFault> {
+--     var n = 0
+--     with scope()
+--     join(fork \-> { n += 1; n })                                 -- Error [E0601]: live capture across task
+-- }
+```
+
+| Nursery aspect | Rule |
+| :--- | :--- |
+| `@Scope` discharge (`E0612`, `E0621`) | `fork`, `fork_with`, `join`, `cancel`, and `cancel_scope` require `@Scope` (`cancel_scope`, `is_cancelled`, and `check_cancelled` omit `Diverge`). `scope` and `scope_with` discharge `@Scope` into `@Concurrent` and forward `body`'s remaining effects and state; `@Scope` is outside `@Async`, has no `main` handler (`E0612`), and is not a `with ... ->` arm target (`E0621`) |
+| Child effect isolation (`E0615`) | Child callbacks admit residual operational effects only in $\lbrace\text{Fiber}, \text{Concurrent}\rbrace$; unhandled `@Scope`, `@Yield<T>`, or user effects fail `E0615`. Children may open local handlers or nested `scope` / `scope_with`; implicit `Diverge` propagates |
+| Owning scope (`E0606`) | Each `scope` / `scope_with` activation creates a distinct nursery identity. `join` and `cancel` require a handle created in the innermost active scope (`E0606` in an inner or outer scope) |
+| Parent context (`scope_with`, `E0405`) | `with scope()` follows [parameterized handler applications](#parameterized-handler-applications); `scope_with` passes `ref` / `mut` parent bindings or `new` inputs explicitly (`E0405` if omitted) |
+| Cross-task inputs (`E0601`, `E0549`) | Capturing mutable, `^mut`, `ref`, `let scoped`, or uncontracted `.d.ril` bindings across `fork` / `fork_with` or combinators is `E0601`; immutable `.ril` bindings propagate `&up` / `&up(sub)` provenance (retaining latent callable obligations). `fork_with` and `map` admit only immutable or `new` inputs (`E0601` for `ref`/`mut`/`^mut`), ending `new` caller paths immediately (`E0549`) and invoking each child callback at most once |
+| Target lowering (`E0208`, `E0612`) | Explicit target-runtime capability (`use ril/concurrent`). Multi-core targets schedule tasks on M:N fibers; single-threaded event-loop GC targets may map cooperative `@Fiber` suspension points to event-loop tasks; purely synchronous or restricted client targets omit `ril/concurrent*` (`E0208`) and reject `@Fiber` / `@Concurrent` on `main` (`E0612`) |
+
+#### Task Handles, Movable Guard, and Combinators
+
+```ril
+use ril/concurrent
+use ril/concurrent::{scope, fork, Movable, Task, TaskFault}
+use ril/concurrent/channel::{Sender}
+
+type Packet = .{ mut bytes: []u8 }
+type Pipe = .{ mut tx: Sender<int>, tag: str }
+type RebindPipe = .{ var mut tx: Sender<int> }
+
+meta let _ = assert(<Movable<Packet>> == <Packet>)
+meta let _ = assert(<Movable<Sender<int>>> == <Sender<int>>)
+meta let _ = assert(<Movable<Sender<Packet, mut>>> == <Sender<Packet, mut>>)
+meta let _ = assert(<Movable<Pipe>> == <Pipe>)
+meta let _ = assert(<Movable<RebindPipe>> == <never>)      -- var slot on endpoint
+meta let _ = assert(<Movable<int>> == <never>)             -- Value type
+meta let _ = assert(<Movable<Task<int>>> == <never>)       -- Nursery handle
+
+fn fan_out() @Concurrent -> Result<(Packet, Packet), TaskFault> {
+    let (mut a, mut b) = Concurrent::zip(
+        \-> Packet.{ bytes: [1u8] },
+        \-> Packet.{ bytes: [2u8] },
+    )?                                                     -- Disjoint new elements via mode inference
+    a.bytes |> mut Array::push(9u8)
+    b.bytes |> mut Array::push(9u8)
+    Ok((a, b))
+}
+
+fn validate_all(xs: []int) @Concurrent -> Result<Result<[]int, str>, TaskFault> {
+    xs |> Concurrent::try_map \x -> if x < 0 { Err("neg") } else { Ok(x * 2) }
+}
+
+fn first_ok() @Concurrent -> Result<Result<int, []str>, TaskFault> {
+    Concurrent::race_ok([\-> Err("e1"), \-> Ok(7)])        -- Ok(7) cancels remaining branches
+}
+
+-- Fallible Result rejections (E0720):
+-- fn check(x: int) -> Result<int, str> { Ok(x) }
+-- let _ = Concurrent::race(\-> check(1), \-> check(2))    -- Error [E0720]: race forbids Result payload
+-- fn drop_fallible() @Concurrent -> Result<(), TaskFault> {
+--     with scope()
+--     let _t = fork \-> check(1)
+--     Ok()                                                -- Error [E0720]: unconsumed Task<Result<...>>
+-- }
+```
+
+| Construct | Rule |
+| :--- | :--- |
+| `Movable` (`E0411`) | Pure guard (`Type -> Type`) returning `<T>` for `SharedObject` types, channel endpoints (`Sender<T, M>`, `Receiver<T, M>`), and nonempty tuples, records, nominal wrappers, opaque representations, or sums of value/`Movable` constituents with fixed `mut` on endpoint-bearing slots; returns `<never>` for value types, `Task<T, M>`, callables, `let scoped` (`E0548`/`E0604`), and uncontracted `.d.ril` handles (`E0411`/`E0601`/`E0908`) |
+| `Task<T, M>` | Affine handle (`<SharedObject<Task<T, M>>> == <never>`; `clone` `E0530`, `derive` `E0536`, `new` `E0411`). `M` defaults to `MemberMode::Let` (immutable/copied `T`) and admits `mut` (`MemberMode::Mut`) for isolated `new T` returns where `T \|> Movable` (`ref`/`^mut`/`var` fail `E0601`/`E0356`). When `M` is `mut`, `let mut v = join(task)?` restores active `new` qualification on `v` |
+| Confinement & consumption (`E0606`, `E0609`) | Placing a handle in any aggregate/collection, capturing in an escaping closure or child task, sending on a channel, returning from `scope` / `scope_with`, or consuming in another scope reports `E0606` first. Consuming a handle twice or after branch-uncertain consumption reports `E0609` |
+| `join`, `cancel`, `Result` duty (`E0720`) | `cancel` awaits child termination and returns `Ok(Some(v))` (completed), `Err(TaskFault::Panicked(msg))` (panicked), or `Ok(None)` (cancelled). `join` returns `Err(TaskFault::Cancelled)` only after prior cancellation. Dropping an unconsumed `Task<R, M>` whose `R` contains a `Result` on normal exit or `?` is `E0720` |
+| Declarative combinators | `zip` and `map` preserve `new` child results (`zip` yields disjoint `(mut A, mut B)` when branches return `new`; `map` yields element-isolated `new Result<[mut]U, TaskFault>` when `work` returns `new U` for `U \|> SharedObject`). `race` and `race_all` (`race_all([]) == Ok(None)`) forbid `Result` in `T` (`E0720`). `try_*` and `race_ok` (`race_ok([]) == Ok(Err([]))`) cancel siblings on the first `Err` (`try_*`) or `Ok` (`race_ok`) and forbid nested `Result` payloads (`E0720`) |
+| Phase, budgets, `absorb_panic` | Run-time only (`E0810`), excluded from `diverge_budget` (`E0822`), and rejected unhandled across `absorb_panic` (`E0608`); pure slices inside a child body may still use budgets or `absorb_panic` |
+
+#### Structured Cancellation and Fault Precedence
+
+```ril
+use ril/concurrent::{scope, fork, join, cancel, check_cancelled, TaskFault}
+
+fn consumed_panic_recovers() @Concurrent -> Result<int, TaskFault> {
+    with scope()
+    let a = fork \-> { panic("boom"); 1 }
+    match join(a) {
+        Ok(v)                         -> Ok(v),
+        Err(TaskFault::Panicked(_))   -> Ok(0), -- Consumes a's panic; scope returns Ok(0)
+        Err(TaskFault::Cancelled)     -> Err(TaskFault::Cancelled),
+    }
+}
+
+fn unconsumed_sibling_wins() @Concurrent -> Result<int, TaskFault> {
+    with scope()
+    let a = fork \-> { panic("a"); 1 }
+    let _b = fork \-> { panic("b"); 2 }
+    let _ = join(a) ?? \_ -> 0                 -- Consumes a only; unjoined _b still fails scope
+    Ok(99)                                     -- Returns Err(TaskFault::Panicked("b"))
+}
+
+fn cancel_worker() @Async -> Result<?int, TaskFault> {
+    with scope()
+    let worker = fork \-> {
+        loop {
+            check_cancelled()                  -- Unwinds here once cancelled
+            Fiber::yield()
+        }
+    }
+    cancel(worker)                             -- Ok(None)
 }
 ```
 
-Task boundaries enforce the language's ordinary access-mode, provenance, and complete effect judgments. In particular, outside mutable, live, or `.d.ril` external-handle data and indirect outside mutable/live access cannot cross a task boundary (`E0601`); read-only deeply immutable `.ril` bindings (`meta let`, immutable `.ril` module `let`, and immutable enclosing `let` / plain parameters) are permitted and propagate their state annotations, while an immutable function descriptor never erases mutable or live callable obligations. Residual user operations require child-local handlers (`E0615`); `Diverge` needs no handler and propagates through required child completion. A budget outcome is ordinary Result data. Scope/task authority cannot escape its owner or be concealed in aggregates (`E0606`). Result inspection duties survive task packaging and joining (`E0720`).
-
-A child `@Panic` becomes `Err(TaskFault::Panicked(...))` at its owning structured task boundary; synchronous `@Panic` containment uses `absorb_panic` (`E0608`). Neither boundary intercepts `@Fatal`. Child barriers constrain lifetimes without proving that arbitrary child computation terminates.
+| Lifecycle aspect | Rule |
+| :--- | :--- |
+| Cancellation triggers | Triggered immediately by: (1) any unhandled child `@Panic` (recorded in arrival order; consuming one via `join`/`cancel` removes only that child's record without revoking sibling cancellation), (2) parent `body` exit while children remain unfinished, or (3) `cancel` / `cancel_scope()` |
+| `@Fiber` points | Observed at `Fiber::yield()`, `check_cancelled()`, suspending `Channel` and `@Fiber` I/O operations, and `scope`/`scope_with`/`join`/`cancel` barriers (`is_cancelled()` polls without unwinding). Cancelled channel waiters detach without consuming buffered or in-flight items |
+| Unwinding & barrier | Uncatchable by handlers or `absorb_panic`; runs frame `let scoped` cleanups LIFO, closes unreturned local channel endpoints, and suspends enclosing `diverge_budget` allowances (cleanup panic $\rightarrow$ `@Fatal`). Every spawned child terminates and finishes cleanup before `scope` / `scope_with` returns or runs outer parent cleanups |
+| Exit precedence | **`@Fatal`** $>$ **parent `@Panic`** $>$ **earliest unconsumed child `@Panic`** (`Err(TaskFault::Panicked(msg))`) $>$ **parent `body` return** (`Ok`/`Err`, unaffected by siblings cancelled only on parent exit) $>$ **`Err(TaskFault::Cancelled)`**. Concurrent unconsumed child panics choose the first recorded message nondeterministically within `Panicked` |
 
 ### Deterministic Data Parallelism and Divide-and-Conquer Primitives
 
 ```ril
-use ril/parallel
-halt fn square_all(numbers: []f64) -> []f64 {
-    numbers |> Parallel::map(\x -> x * x)
+-- Canonical declarations in ril/parallel (explicit module Parallel):
+-- Built-in view type: Slice<T, M: MemberMode = MemberMode::Let> (satisfies LenTarget)
+
+pub type Step<P, R> {
+    Done(R),
+    Split(via P, via P),
 }
--- @Parallel is not an effect annotation (E0620).
+
+-- Divide-and-conquer:
+pub fn join<L, R>(via left: fn() & -> infer L, via right: fn() & -> infer R) -> infer (via L, via R)
+pub fn join_with<A, B, L, R>(
+    via a: A,
+    via b: B,
+    via left: fn(via A) & -> infer L,
+    via right: fn(via B) & -> infer R,
+) -> infer (via L, via R)
+pub fn divide_and_conquer<P, R>(
+    via problem: P,
+    max_depth: u8,
+    via step: fn(via P) & -> infer Step<P, R>,
+    via base: fn(via P) & -> R,
+    via combine: fn(R, R) & -> R,
+) -> R
+
+-- Functional collection combinators:
+pub fn map<T, R>(via xs: [via]T, via f: fn(via T) & -> infer R) -> infer [via]R
+pub fn map_indexed<T, R>(via xs: [via]T, via f: fn(int, via T) & -> infer R) -> infer [via]R
+pub fn try_map<T, R, E>(via xs: [via]T, via f: fn(via T) & -> Result<R, E>) -> Result<[]R, E>
+pub fn filter<T>(via xs: [via]T, via pred: fn(via T) & -> bool) -> infer [via]T
+pub fn filter_map<T, R>(via xs: [via]T, via f: fn(via T) & -> infer ?R) -> infer [via]R
+pub fn reduce<T>(via xs: []T, via op: fn(T, T) & -> T) -> ?T
+pub fn fold<T, Acc>(
+    via xs: [via]T,
+    init: Acc,
+    via leaf: fn(via T) & -> Acc,
+    via combine: fn(Acc, Acc) & -> Acc,
+) -> Acc
+pub fn find<T>(via xs: [via]T, via pred: fn(via T) & -> bool) -> infer ?T
+pub fn find_index<T>(via xs: [via]T, via pred: fn(via T) & -> bool) -> ?int
+pub fn find_map<T, R>(via xs: [via]T, via f: fn(via T) & -> ?R) -> ?R
+pub fn any<T>(via xs: [via]T, via pred: fn(via T) & -> bool) -> bool
+pub fn all<T>(via xs: [via]T, via pred: fn(via T) & -> bool) -> bool
+
+-- In-place collection combinators:
+pub fn map_in_place<T>(mut xs: []T, via f: fn(T) & -> T) &mut -> ()
+pub fn map_indexed_in_place<T>(mut xs: []T, via f: fn(int, T) & -> T) &mut -> ()
+pub fn for_each<T |> SharedObject>(mut xs: [mut]T, via f: fn(mut T) &mut & -> ()) &mut -> ()
+pub fn for_each_indexed<T |> SharedObject>(
+    mut xs: [mut]T,
+    via f: fn(int, mut T) &mut & -> (),
+) &mut -> ()
+
+-- Slice views (read-only, var-slot replacement, and mut-element mutation):
+pub fn as_slice<T, M: MemberMode>(via xs: [via]T) -> infer Slice<T, M>
+pub fn subslice<T, M: MemberMode>(via xs: [via]T, lo: int, hi: int) -> infer Slice<T, M>
+pub fn slice_range<T, M: MemberMode>(via s: Slice<T, M>, lo: int, hi: int) -> infer Slice<T, M>
+pub fn split_at<T, M: MemberMode>(
+    via s: Slice<T, M>,
+    mid: int,
+) -> infer (via Slice<T, M>, via Slice<T, M>)
+pub fn slice_at<T, M: MemberMode>(via s: Slice<T, M>, index: int) -> infer T
+pub fn slice_get<T, M: MemberMode>(via s: Slice<T, M>, index: int) -> infer ?T
+pub fn with_slice<T, M: MemberMode, R>(
+    mut xs: [via]T,
+    via body: fn(mut Slice<T, M>) &mut & -> R,
+) &mut -> R
+pub fn split<T, M: MemberMode, R>(
+    mut s: Slice<T, M>,
+    mid: int,
+    via body: fn(mut Slice<T, M>, mut Slice<T, M>) &mut & -> R,
+) &mut -> R
+pub fn split_join<T, M: MemberMode, L, R>(
+    mut s: Slice<T, M>,
+    mid: int,
+    via left: fn(mut Slice<T, M>) &mut & -> L,
+    via right: fn(mut Slice<T, M>) &mut & -> R,
+) &mut -> (L, R)
+pub fn divide<T, M: MemberMode, R>(
+    via s: Slice<T, M>,
+    threshold: int,
+    via leaf: fn(via Slice<T, M>) & -> R,
+    via combine: fn(R, R) & -> R,
+) -> R
+pub fn slot_set<T>(mut s: Slice<T, var>, index: int, value: T) &mut -> ()
+pub fn with_elem<T, R>(mut s: Slice<T, mut>, index: int, via f: fn(mut T) &mut & -> R) &mut -> R
 ```
 
-Parallel invocation requires absence of Diverge (`E0820`) and no residual operational effects; no `halt` marker is required. Outside mutable/live/resource dependencies, including those hidden in handlers or cleanup, are rejected (`E0605`), except the explicitly lent disjoint regions admitted by a concrete library operation. Overlapping or unproved-disjoint write/read or write/write regions are `E0619`. Checks are transitive; a distinct name, index, or copied graph path is not evidence of independence. A valid sequential budget wrapper can supply a Diverge-free callback, but cannot cover a parallel combinator itself. No live authority may escape the invocation.
+```ril
+use ril/parallel
 
-The ordinary `numbers: []f64` parameter already requires deeply immutable data. Existing live data must be copied before this call; `ref` observation alone does not satisfy a pure parallel input.
+halt fn square_sum(xs: []f64) -> f64 {
+    let squares = xs |> Parallel::map(\x -> x * x)
+    (squares |> Parallel::reduce(\a, b -> a + b)) ?? 0.0   -- Midpoint tree: deterministic f64 sum
+}
 
-Parallel reference evaluation determines result order and observable faults. Double faults in branch-local cleanup use the same visibility rule. Permitted writes remain confined to their explicitly lent regions.
+type Pair = .{ var x: int }
+
+halt fn independent_halves() -> (Pair, Pair) {
+    let (mut a, mut b) = Parallel::join(\-> Pair.{ x: 1 }, \-> Pair.{ x: 2 })
+    a.x += 10
+    b.x += 20
+    (a, b)
+}
+
+-- Static rejections:
+-- fn bad_eff(xs: []int) @Parallel -> []int { xs }                        -- Error [E0620]: not an effect
+-- fn bad_io(xs: []int) @Fiber -> []int {
+--     xs |> Parallel::map \x -> { Fiber::yield(); x }                    -- Error [E0534]: callback row is closed
+-- }
+-- var counter = 0
+-- fn bad_state(xs: []int) &up(sub){mut counter} -> []int {
+--     xs |> Parallel::map \x -> { counter += 1; x }                      -- Error [E0605]: outside write
+-- }
+```
+
+| Parallel aspect | Rule |
+| :--- | :--- |
+| Deterministic evaluation & lowering (`E0620`, `E0621`, `E0810`) | Run-time evaluation strategy (`E0810` in static evaluation) observably equivalent to sequential reference order regardless of core count or scheduling; multi-core targets execute branches in parallel while single-threaded or client GC targets may lower `Parallel` primitives directly to sequential evaluation. `@Parallel` is `E0620`; `Parallel` is not a handler target (`E0621`) |
+| Callbacks & finiteness (`E0534`, `E0820`, `E0604`, `E0605`) | Closed empty operational row (`E0534` on `@Fiber`/`@Scope`/`@Concurrent`/user effects) and Diverge-free (`E0820`), adding no `Diverge` to `halt` callers. Admits immutable `.ril` reads and lent observations; rejects `let scoped` capture (`E0604`), outside writes/retention, `.d.ril` state, direct `fatal`, and view escape (`E0605`) |
+| Divide-and-conquer | `join` and `join_with` evaluate `left` then `right` in reference order (returning proven disjoint `(mut L, mut R)` when branches return `new`). `divide_and_conquer` recurses up to `max_depth` ($\le 255$; `0u8` calls `base`); `divide` splits `s` at `n / 2` while `n > max(1, threshold)` |
+| Reductions & short-circuiting (`E0720`) | `map`, `map_indexed`, `filter`, and `filter_map` preserve input order (yielding element-isolated `new [mut]R` when callbacks construct `new` elements, or `new [ref]R` for observed `ref` elements). `reduce` (`[] -> None`, `[x] -> Some(x)`) and `fold` (`[] -> init`, else `combine(init, tree)`) split `[lo, hi)` at `lo + (hi - lo) / 2`. `try_map`, `find*`, `any`, and `all` stop at the smallest deciding or faulting index `k` and discard indices $> k$; `try_map` and `find_map` forbid nested `Result` payloads (`E0720`) |
+| `Slice<T, M>` views | Satisfies `LenTarget` (`len(s)` / `len(ref s)`); excluded from `SharedObject` and `Movable` (`clone` `E0530`, `derive` `E0536`, `new` `E0411`, `==` `E0327`, `s[i]` `E0352`), panicking on out-of-bounds access or split. `M` specializes to `MemberMode::Let` (read-only `T`), `ref` (observed `ref T`), `var` (replaceable slots via `with_slice` on `mut []T`), or `mut` (isolated elements via `with_slice` on `mut [mut]T`); `^mut` and `var mut` fail `E0406`. Mutable slices cannot escape `with_slice` (`E0605`), and `split` / `split_join` / `divide` suspend the parent slice during their callbacks |
+
+#### Zero-Copy Read-Only Parallel Inputs
+
+```ril
+use ril/parallel
+type Cell = .{ var count: int }
+
+fn zero_copy_reads() -> () {
+    let mut prices: []int = [10, 20, 30]
+    let doubled = prices |> ref Parallel::map(\p -> p * 2)
+    let total = (prices |> ref Parallel::reduce(\a, b -> a + b)) ?? 0
+    prices[0] = 99
+    assert(doubled == [20, 40, 60] && total == 60)
+
+    let mut cells: [mut]Cell = [Cell.{ count: 2 }, Cell.{ count: 15 }]
+    let scaled = cells |> ref Parallel::map(\ref c -> c.count * 3)
+    let ref big = cells |> ref Parallel::filter(\ref c -> c.count > 10)
+    let ref hit = cells |> ref Parallel::find(\ref c -> c.count > 10)
+    assert(scaled == [6, 45] && len(ref big) == 1 && hit is Some(_))
+    cells[0].count += 1
+    -- let _ = prices |> mut Parallel::map(\p -> p)        -- Error [E0406]: read-only input
+}
+
+fn parallel_sum(ref xs: []int) -> int {
+    let ref view = Parallel::as_slice(ref xs)
+    Parallel::divide(ref view, 1024, \ref leaf -> {
+        var sum = 0
+        for 0..len(ref leaf) as i { sum += Parallel::slice_at(ref leaf, i) }
+        sum
+    }, \a, b -> a + b)
+}
+```
+
+| Read-only rule | Requirement |
+| :--- | :--- |
+| Input modes (`E0401`, `E0406`) | Read-only combinator and `as_slice`/`subslice` `via` inputs specialize to ordinary or `ref` only (`mut`/`^mut`/`new` is `E0406`; `ref` on a value type is `E0401`). Under `ref xs`, value elements pass by value and shared-object elements of `[mut]T`, `[^mut]T`, or `[ref]T` arrive as `ref T` |
+| Branch separation (`E0619`) | Shared read-only observations are race-free; any writable region lent to a branch must be proven disjoint from every sibling read and write (`E0619`) |
+| Returned observations (`E0535`, `E0537`) | `find`, `filter`, `filter_map`, `map`, `join_with`, `slice_at`, `slice_get`, and `Slice<T, M>` anchor live results to `&return{ref xs}` or `ref(s)`, subject to `ref` reception (`E0535`, `E0531`) and array invalidation (`E0537`) |
+
+#### In-Place Mutable Parallelism
+
+```ril
+use ril/parallel
+type Counter = .{ var value: int }
+type Leaf = .{ var count: int }
+type Holder = .{ var ^mut item: Leaf }
+
+halt fn update_arrays(seeds: []int) -> ([]int, []Counter) {
+    let mut nums = clone(seeds)
+    nums |> mut Parallel::map_in_place(\x -> x + 1)        -- []T slot replacement: valid for any T
+    let _ = nums |> mut Parallel::with_slice \mut slots -> {
+        slots |> mut Parallel::divide(64, \mut leaf -> {
+            for 0..len(ref leaf) as i {
+                Parallel::slot_set(mut leaf, i, Parallel::slice_at(ref leaf, i) * 10)
+            }
+        }, \_, _ -> ())
+    }
+
+    let mut counters: [mut]Counter = seeds |> Parallel::map(\s -> Counter.{ value: s })
+    counters |> mut Parallel::for_each_indexed \idx, mut c -> { c.value = c.value * 2 + idx }
+    let _ = counters |> mut Parallel::with_slice \mut slice -> {
+        slice |> mut Parallel::divide(64, \mut leaf -> {
+            for 0..len(ref leaf) as i {
+                Parallel::with_elem(mut leaf, i, \mut item -> { item.value += 1 })
+            }
+        }, \_, _ -> ())
+    }
+    (nums, counters |> ref Parallel::map(\ref c -> Counter.{ value: c.value }))
+}
+
+fn isolated_vs_aliased() -> () {
+    let mut ok: [mut]Holder = [
+        { let mut a = Leaf.{ count: 1 }; Holder.{ item: ^mut a } },
+        { let mut b = Leaf.{ count: 2 }; Holder.{ item: ^mut b } },
+    ]
+    ok |> mut Parallel::with_slice \mut slice -> {
+        Parallel::split(mut slice, 1, \mut left, mut right -> {
+            Parallel::with_elem(mut left, 0, \mut h0 -> { h0.item.count += 1 })
+            Parallel::with_elem(mut right, 0, \mut h1 -> { h1.item.count += 1 })
+            -- Parallel::with_elem(mut left, 0, \mut h0 -> {
+            --     Parallel::with_elem(mut right, 0, \mut h1 -> { h1.item = ^mut h0.item })
+            -- })                                          -- Error [E0619]: cross-slice ^mut write
+        })
+    }
+    ok[1].item = ^mut ok[0].item                           -- Sequential alias across slots
+    -- ok |> mut Parallel::for_each(\mut h -> { h.item.count += 1 }) -- Error [E0619]: non-disjoint slots
+}
+```
+
+| In-place rule | Requirement |
+| :--- | :--- |
+| `mut xs: []T` (`map_in_place*`, `Slice<T, var>`) | Admits every element type `T`; slots hold values or immutable snapshots and update by whole-slot replacement (`slot_set`) while length is fixed |
+| `mut xs: [mut]T` entry (`E0406`, `E0619`) | Rejects `[^mut]T` and `[ref]T` (`E0406`) and requires pairwise disjoint element live graphs at entry (`E0619` otherwise), proved either by flat mutable shape or by element-isolation provenance |
+| Flat mutable shape | Rigid concrete type (or closed type set whose members all qualify; unconstrained generics and out-of-scope opaques fail) whose expanded fields and payloads contain only values or immutable constituents—no `mut`, `^mut`, or `ref` members or collections (`[mut/^mut/ref]U`, `[K: mut/^mut/ref V]`) and no live-environment callables |
+| Element-isolation provenance | Established by `[]`, `Parallel::map` / `map_indexed` / `filter_map`, `Concurrent::map`, `Channel::drain` / `close_and_drain` with `new` elements, fresh isolated literals, and `clone` of immutable data (`clone(ref live)` inherits `live`'s isolation); preserved by `push`/`insert` of `new` elements and normal in-place return; invalidated by writes linking a slot to another slot or outside live origin, or by unsummarized parameters |
+| Callback writes & unwind (`E0619`, `E0605`) | Element callbacks may mutate the element's own graph, store values/immutable snapshots, or install non-escaping local allocations; storing an outside `^mut` or `ref` origin is `E0619` (`with_elem`) or `E0605` (`for_each*`). Overlapping an enclosing `let scoped` cleanup footprint with `xs` is `E0619`; no `Result`-returning in-place primitive exists |
+
+#### Parallel Faults, Fatal Visibility, and Budgets
+
+```ril
+use ril/parallel
+
+fn collatz_steps(start: int) -> int {
+    var n = start
+    var steps = 0
+    while n > 1 {
+        n = if n % 2 == 0 { n / 2 } else { 3 * n + 1 }
+        steps += 1
+    }
+    steps
+}                                                          -- Inferred Diverge
+
+halt fn parallel_collatz(inputs: []int, limit: u64) -> Result<[]int, BudgetError> {
+    inputs |> Parallel::try_map \x -> {
+        with diverge_budget(limit)                         -- Branch-local sequential allowance
+        collatz_steps(x)
+    }
+}
+
+-- Reference-order fault visibility: index 0 short-circuits, discarding index 1's panic
+let r: Result<[]int, str> = [0, 1] |> Parallel::try_map \i -> {
+    if i == 0 { Err("stop") } else { Ok(10 / (i - 1)) }
+}
+assert(r == Err("stop"))
+
+-- Static rejections:
+-- fn loud(x: int) -> int { if x < 0 { fatal("neg") } else { x } }
+-- halt fn bad_fatal(xs: []int) -> []int { xs |> Parallel::map(\x -> loud(x)) } -- Error [E0605]: direct fatal
+-- halt fn bad_budget(xs: []int) -> Result<[]int, BudgetError> {
+--     diverge_budget(100, \-> xs |> Parallel::map(\x -> x))                    -- Error [E0822]: outer budget
+-- }
+```
+
+| Fault / budget aspect | Rule |
+| :--- | :--- |
+| Budgets (`E0822`) | `diverge_budget` cannot wrap a parallel call (`E0822`); branch-local budgets inside callbacks charge sequentially and independently per branch |
+| Direct `fatal` (`E0605`) | Callbacks reaching `fatal(message)` or bodyless foreign calls carrying `@Fatal` are rejected (`E0605`) |
+| `@Panic` & cleanup double fault | Branch panics run branch LIFO cleanups; panics and cleanup double faults at indices discarded by an earlier short-circuit or fault are ignored, while the first visible `@Panic` unwinds the caller and a visible cleanup double fault terminates the process (`@Fatal`) |
+| Host exhaustion | Host memory or stack exhaustion terminates the process immediately outside reference order |
 
 ### Structured Concurrency Channels
 
 ```ril
-use ril/concurrent/channel
--- Invocation fixture in the owning scope with exclusive receiver authority:
-let ticket = Channel::detach(mut rx)
--- rx |> mut Channel::recv()           -- Error [E0603]: authority was transferred
--- clone(ticket)                      -- Error [E0530]: detached authority cannot be duplicated
+-- Canonical declarations in ril/concurrent/channel (explicit module Channel):
+-- Built-in endpoint types:
+--   Sender<T, M: MemberMode = MemberMode::Let>
+--   Receiver<T, M: MemberMode = MemberMode::Let>
+
+pub type SendError<T> { Closed(T) }
+pub type TrySendError<T> { Full(T), Closed(T) }
+pub type RecvError { Closed }
+pub type TryRecvError { Empty, Closed }
+
+pub type Select2<A, B> {
+    First(Result<A, RecvError>),
+    Second(Result<B, RecvError>),
+}
+pub type Select3<A, B, C> {
+    First(Result<A, RecvError>),
+    Second(Result<B, RecvError>),
+    Third(Result<C, RecvError>),
+}
+pub type SelectSendRecv<S, R> {
+    Sent(Result<(), SendError<S>>),
+    Received(via S, Result<R, RecvError>),
+}
+
+-- Creation & producer duplication:
+pub fn bounded<T, M: MemberMode>(capacity: int) @Fiber -> new (mut Sender<T, M>, mut Receiver<T, M>)
+pub fn unbounded<T, M: MemberMode>() @Fiber -> new (mut Sender<T, M>, mut Receiver<T, M>)
+pub fn clone_sender<T, M: MemberMode>(ref tx: Sender<T, M>) @Fiber -> new Sender<T, M>
+
+-- Send & receive:
+pub fn send<T, M: MemberMode>(
+    mut tx: Sender<T, M>,
+    via item: T,
+) @Fiber &mut -> infer Result<(), SendError<T>>
+pub fn try_send<T, M: MemberMode>(
+    mut tx: Sender<T, M>,
+    via item: T,
+) &mut -> infer Result<(), TrySendError<T>>
+pub fn recv<T, M: MemberMode>(mut rx: Receiver<T, M>) @Fiber &mut -> new Result<T, RecvError>
+pub fn try_recv<T, M: MemberMode>(mut rx: Receiver<T, M>) &mut -> new Result<T, TryRecvError>
+
+-- Close, inspection & drain:
+pub fn close<T, M: MemberMode>(mut tx: Sender<T, M>) &mut -> ()
+pub fn close_recv<T, M: MemberMode>(mut rx: Receiver<T, M>) &mut -> ()
+pub fn is_closed<T, M: MemberMode>(ref rx: Receiver<T, M>) -> bool
+pub fn len<T, M: MemberMode>(ref rx: Receiver<T, M>) -> int
+pub fn capacity<T, M: MemberMode>(ref rx: Receiver<T, M>) -> ?int
+pub fn drain<T, M: MemberMode>(new rx: Receiver<T, M>) @Fiber -> new [M]T
+pub fn close_and_drain<T, M: MemberMode>(new rx: Receiver<T, M>) @Fiber -> new [M]T
+
+-- Multi-way waiting:
+pub fn select_recv2<A, B, MA: MemberMode, MB: MemberMode>(
+    mut rx1: Receiver<A, MA>,
+    mut rx2: Receiver<B, MB>,
+) @Fiber &mut -> new Select2<A, B>
+pub fn select_recv3<A, B, C, MA: MemberMode, MB: MemberMode, MC: MemberMode>(
+    mut rx1: Receiver<A, MA>,
+    mut rx2: Receiver<B, MB>,
+    mut rx3: Receiver<C, MC>,
+) @Fiber &mut -> new Select3<A, B, C>
+pub fn select_send_recv<S, R, MS: MemberMode, MR: MemberMode>(
+    mut tx: Sender<S, MS>,
+    via item: S,
+    mut rx: Receiver<R, MR>,
+) @Fiber &mut -> infer SelectSendRecv<S, R>
 ```
 
-Channel payloads admit immutable ordinary data or explicitly detached resource descriptors (`E0602`), not implicit transfer of a `mut`/`^mut` authority. Endpoint/ticket use respects its one-task and transfer authority (`E0603`); scope escape is `E0606`. Clone and derive eligibility inspect nested constituents (`E0530`, `E0536`). Result inspection obligations follow actual payloads and aliases; inspecting transport success does not inspect a nested Result (`E0720`).
+```ril
+use ril/concurrent::{scope, fork_with, join, TaskFault}
+use ril/concurrent/channel
 
-A resource contract must state endpoint creation, cloning, transfer, closure, and cancellation rules. Where the endpoint contract permits sender duplication, `Channel::clone_sender` obtains another sender for the same channel and requires `@Fiber`. Reception, lifetime, and closure authority follow that endpoint contract. The prelude `clone` operates on ordinary shared-object data. Endpoint-specific authority applies only to the resources named by the contract.
+type Packet = .{ mut bytes: []u8 }
+type CloseGuard = .{ mut on_close: fn() & -> () }
+
+fn run_pipeline(items: []u8) @Async -> new Result<[mut]Packet, TaskFault> {
+    with scope()
+    let (mut tx, mut rx) = Channel::bounded<Packet, mut>(8)
+    let producer = tx |> new fork_with \new p_tx -> {
+        let scoped mut _close = CloseGuard.{ on_close: \-> Channel::close(mut p_tx) }
+        let scoped mut extra_tx = Channel::clone_sender(ref p_tx) -- Built-in Sender scoped close
+        let _ = (extra_tx |> mut Channel::send(new Packet.{ bytes: [0u8] })) ?? \_ -> ()
+        for items as b {
+            let _ = (p_tx |> mut Channel::send(new Packet.{ bytes: [b] })) ?? \_ -> ()
+        }
+    }
+    let consumer = rx |> new fork_with \new c_rx -> {
+        c_rx |> new Channel::drain
+    }
+    join(producer)?
+    let mut collected = join(consumer)?
+    Ok(new collected)
+}
+
+fn sum_fallible(new rx: Channel::Receiver<Result<int, str>>) @Fiber -> int {
+    var sum = 0
+    for (rx |> new Channel::close_and_drain) as item {     -- Required drain for Result payloads
+        sum += item ?? \_ -> 0
+    }
+    sum
+}
+
+-- Static rejections:
+-- let (mut tx, mut rx) = Channel::bounded(4)
+-- let _ = Channel::send(mut tx, 1)
+-- let _ = rx |> new fork_with \new r -> Channel::recv(mut r) ?? \_ -> 0
+-- let _ = Channel::recv(mut rx)                          -- Error [E0549]: 'rx' ended at handoff
+-- let ^mut shared_rx = rx                                -- Error [E0603]: ^mut forbidden on endpoints
+-- let frozen_tx = tx                                     -- Error [E0603]: plain let forbidden on endpoints
+-- var mut slot_tx = tx                                   -- Error [E0603]: var slot forbidden on endpoints
+-- let _ = clone(ref tx)                                  -- Error [E0530]: use Channel::clone_sender
+-- let _ = Channel::select_recv2(mut rx, mut rx)          -- Error [E0523]: aliased mutable endpoints
+-- let (mut ftx, mut frx): (mut Channel::Sender<Result<int, str>>, mut Channel::Receiver<Result<int, str>>) = Channel::bounded(2)
+-- Channel::close_recv(mut frx)                           -- Error [E0720]: fallible payload must be drained
+```
+
+| Channel aspect | Rule |
+| :--- | :--- |
+| Creation | `bounded` (`capacity < 0` panics; `capacity == 0` is synchronous rendezvous) and `unbounded` require `@Fiber`, omit `Diverge`, and return proven disjoint `(mut tx, mut rx)` endpoints |
+| Ownership & transfer (`E0603`, `E0549`, `E0606`) | `Sender<T, M>` and `Receiver<T, M>` satisfy `Movable` (`<SharedObject<...>> == <never>`; `clone` `E0530`, `derive` `E0536`, `[mut]E` `E0411`). Same-task calls borrow via `mut` / `ref`; cross-task handoff uses `new` (`E0549` after transfer). `^mut`, plain `let`, and `var` / `var mut` on endpoints or endpoint-bearing fields fail `E0603`; escaping an owning `scope` / `scope_with` fails `E0606`. `clone_sender` (`@Fiber`, no `Diverge`) duplicates producers |
+| Payload eligibility (`E0602`) | `M` defaults to `MemberMode::Let` (deeply immutable or value `T`) and admits `mut` (`MemberMode::Mut`) for isolated `new T` handoff where `T \|> Movable` (`drain` and `close_and_drain` return element-isolated `new [mut]T` when `M` is `mut` and `T \|> SharedObject`). `ref`, `^mut`, `var`, `Task<T, M>`, `let scoped`, or uncontracted `.d.ril` payloads fail `E0602` / `E0356` |
+| Closure & `let scoped mut` | Endpoints close deterministically on `close` / `close_recv` / `drain`, `let scoped mut` exit, unreturned child exit, or owning `scope` / `scope_with` completion; once the last active sender closes, receivers drain buffered items then return `Closed`. Built-in `scoped` cleanup closes `Sender<T, M>` (`close`) and `Result`-free `Receiver<T, M>` (`close_recv`) |
+| Non-blocking vs `@Fiber` calls | `try_send`, `try_recv`, `close`, `close_recv` (idempotent), `is_closed`, `len`, and `capacity` (`None` if unbounded) have empty operational effects and no `Diverge` (eligible in `scoped` cleanups). `send`, `recv`, `drain`, `close_and_drain`, and `select_*` carry `@Fiber` + `Diverge` and check cancellation; `select_*` polls ready branches fairly, commits at most one branch, and rejects aliased endpoints (`E0523`) |
+| Fallible payload conservation (`E0720`) | `SendError::Closed`, `TrySendError::Full`/`Closed`, and `SelectSendRecv::Received(item, ...)` return undelivered items with `new` and `Result` obligations intact. When `T` contains a `Result`, `Receiver<T, M>` forbids `close_recv`, `let scoped mut`, and dropping an undrained receiver (`E0720`); consume to `Closed` or call `drain` / `close_and_drain` and inspect the returned slice |
 
 
 
@@ -9191,7 +9785,7 @@ fn main() @Fiber -> Result<(), str> {
 | Value / generic parameters | None, including defaulted parameters |
 | Result | `()` or the language's `Result<(), str>`, after transparent alias expansion |
 | Effects / state | Ordinary declaration and provenance rules; undeclared residual operational effects remain `E0612`; implicit Diverge is allowed without an annotation or handler |
-| Residual user-defined effect | No program-environment handler; `E0612` even if listed on main |
+| Residual user-defined effect or `@Scope` | No program-environment handler; `E0612` even if listed on main |
 
 | Completed program outcome | Environment behavior |
 | :--- | :--- |
@@ -9199,7 +9793,7 @@ fn main() @Fiber -> Result<(), str> {
 | `Err(message)` | Inspect the result; write the message and one LF to standard error, then exit status 1 |
 | Reporting the error fails | Exit status 1; no successful outcome or further output guarantee |
 | Uncontained panic / fatal / double fault / cancellation | Non-zero exit status (exit status 1 for panic/cancellation; immediate termination for `@Fatal`); explanatory diagnostics are not fixed text |
-| Declared `Fiber` / `Concurrent`, including `Async` | Supply their specified system operations |
+| Declared `Fiber` / `Concurrent`, including `Async` | Supply their specified system operations on targets providing those runtime capabilities; unsupported target profiles reject them on `main` (`E0612`) |
 | Implicit `Diverge` / `Panic` / `Fatal` | No operation to service; ordinary `main` need not be marked `halt` |
 
 Environment reporting occurs outside main's invocation and adds no effect obligation to main. A normal main result produced by an outward abortive source handler follows the outcome table after cleanup. Child-local effect confinement and termination follow their defining rules.
@@ -9229,13 +9823,13 @@ The prelude is an ambient lexical scope enclosing every compilation unit, includ
 | `Bytes` | `ril/bytes` |
 | `Numeric` | `ril/numeric` |
 | `Reflect` | `ril/reflect` |
-| `Concurrent` | `ril/concurrent` |
 
 | Explicit library modules | Sources | Role |
 | :--- | :--- | :--- |
 | `Math`, `Crypto` | `ril/math`, `ril/crypto` | Specialized computation |
 | `File`, `Io`, `Os` | `ril/file`, `ril/io`, `ril/os` | Target-runtime I/O and environment |
-| `Channel`, `Parallel` | `ril/concurrent/channel`, `ril/parallel` | Target-runtime task and execution strategies |
+| `Concurrent`, `Channel` | `ril/concurrent`, `ril/concurrent/channel` | Target-runtime structured concurrency and channels |
+| `Parallel` | `ril/parallel` | Deterministic data parallelism (multi-core or sequential target lowering) |
 | `Platform` | `ril/platform` | Compile-time target platform constants (`OS`, `ARCH`, `ENDIAN`, `POINTER_BITS`) |
 
 Other standard-library modules use explicit imports with their specified effect, resource, and execution contracts.
@@ -9282,6 +9876,9 @@ assert(Numeric::convert<int>(255u8) == Some(255))
 use ril/parallel
 halt fn squares(values: []int) -> []int {
     values |> Parallel::map(\value -> value * value)
+}
+fn live_squares(ref values: []int) -> []int {
+    values |> ref Parallel::map(\value -> value * value)  -- Zero-copy observation; no halt
 }
 ```
 
@@ -9338,7 +9935,7 @@ Built-in operations use the same surface signature forms as user-defined Ril fun
 | Guard | Admitted input |
 | :--- | :--- |
 | `SharedObject` | Ordinary record, nonempty tuple, array, map, set, or sum roots with any legal member or storage modes, including nominal or opaque types with an ordinary shared-object representation. Value, callable, resource, and scoped-authority roots are excluded. Across an opaque boundary the guard uses the checked representation category and preserves the sealed identity. Graph eligibility and actual access are separate checks |
-| `LenTarget` | `str`, `bytes`, arrays, maps, and sets with any legal storage modes. A nominal wrapper requires explicit unwrapping. An opaque representation is available only in its exact defining scope |
+| `LenTarget` | `str`, `bytes`, arrays, maps, sets, and `Parallel::Slice` views with any legal storage or member modes. A nominal wrapper requires explicit unwrapping. An opaque representation is available only in its exact defining scope |
 | `Tuple` | Visible tuple types of arity zero or at least two, with any legal member modes |
 | `NominalWrapper` | Visible nominal wrapper declarations, including unit nominal declarations. Sum and opaque declarations introduce no such wrapper |
 
@@ -9375,13 +9972,14 @@ An ineligible type argument normally fails its guard with `E0301`. At the built-
   - For arrays (`[]T`), returns the element count in $O(1)$ time.
   - For maps (`[K: V]`), returns the number of key-value pairs in $O(1)$ time.
   - For sets (`Set<T>`), returns the number of unique elements in $O(1)$ time.
+  - For parallel views (`Parallel::Slice<T, M>`), returns the slice length in $O(1)$ time at run time.
   - Counts and string UTF-8 byte extents obey the [collection extent limit](#collection-extents-and-index-types); `len` returns the exact count.
 - **Unwrapping Invariant (`inner`)**:
   - Unwraps nominal type wrappers to their underlying declared representation ([Nominal Type Wrappers](#nominal-type-wrappers)).
   - `inner(ref wrapper)` preserves observed payload provenance; ordinary `inner(wrapper)` receives immutable data.
   - Single-payload nominal wrapper `type UserId(int)` unwraps to its payload (`int`). Unit nominal wrapper `type Marker` unwraps to `()`.
   - The defining scope's opaque representation boundary remains enforced; `inner` does not unwrap opaque types or expose an inaccessible representation.
-- **Copying** follows [deep immutability](#deep-immutability). Sender duplication uses the [channel operation](#structured-concurrency-channels).
+- **Copying** follows [deep immutability](#deep-immutability). Channel sender duplication uses [`Channel::clone_sender`](#structured-concurrency-channels).
 - **Functional updates** follow the [draft rules](#normative-rules-for-functional-updates).
 - **Static Layout Query (`byte_size`)**:
   - `pub meta fn byte_size<T>(token: Type<T>) -> int` queries the represented target's nonnegative value/handle size ([Compile-Time Evaluation and Layout Queries](#compile-time-evaluation-and-layout-queries)). Static-only metatypes have no ordinary layout (`E0306`).
@@ -9447,13 +10045,13 @@ Every produced Result carries an obligation to inspect, propagate, unpack, or re
 | :--- | :--- |
 | Actual success/error tag test | Inspected; any alias discharges the same produced Result |
 | `is` wildcard / expected-value equality | No Result inspection by itself; only reached constructor/tag tests discharge their Results |
-| Binding, alias, wrapping, aggregate, Task | Preserve one obligation, not one per name |
+| Binding, alias, wrapping, aggregate, Task / Channel | Preserve one obligation, not one per name ([task handles](#task-handles-movable-guard-and-combinators), [channels](#structured-concurrency-channels)) |
 | Deep copy | Preserve copied Results' obligations; copying is not inspection |
 | `_`, overwrite, removal, lost last path | Do not discharge |
 | Outer tag test | Does not inspect an inner Result |
 | `?` | Propagates failure to the enclosing callable |
 | Normal completion, including `Err` return | Cannot abandon other outstanding Results |
-| Abnormal unwinding | May discard; structured cancellation keeps its specified rules |
+| Abnormal unwinding | May discard; [structured cancellation](#structured-cancellation-and-fault-precedence) keeps its specified rules |
 
 ---
 
@@ -9634,12 +10232,13 @@ This index assigns each code its diagnostic name and points to its defining rule
 | **`E0603`** | [`ChannelEndpointAliasingConflictError`](#structured-concurrency-channels) |
 | **`E0604`** | [`ScopedResourceEscapeError`](#scoped-resource-bindings) |
 | **`E0605`** | [`InvalidParallelDependencyError`](#deterministic-data-parallelism-and-divide-and-conquer-primitives) |
-| **`E0606`** | [`ScopedTaskEscapeError`](#structured-concurrency-and-panic-containment) |
+| **`E0606`** | [`ScopedTaskEscapeError`](#structured-concurrency-and-panic-containment); [Task Handles](#task-handles-movable-guard-and-combinators); [Structured Concurrency Channels](#structured-concurrency-channels) |
 | **`E0607`** | [`DeriveDraftEscapeError`](#functional-updates-via-derive) |
 | **`E0608`** | [`UnwindUnsafePanicBoundaryError`](#panic-absorption-with-absorb_panic) |
+| **`E0609`** | [`DuplicateTaskConsumptionError`](#task-handles-movable-guard-and-combinators) |
 | **`E0610`** | [`DuplicateResumeInvocationError`](#affine-resumption-and-delimited-early-abort) |
 | **`E0611`** | [`EscapingResumeError`](#affine-resumption-and-delimited-early-abort) |
-| **`E0612`** | [`UnhandledEffectError`](#callable-contracts); [Built-in System Effects](#built-in-system-effects) |
+| **`E0612`** | [`UnhandledEffectError`](#callable-contracts); [Built-in System Effects](#built-in-system-effects); [Structured Concurrency](#structured-concurrency-and-panic-containment) |
 | **`E0613`** | [`ValueEffectAnnotationError`](#type-definition-boundaries) |
 | **`E0614`** | [`UnstableHandlerCaptureError`](#effect-handlers) |
 | **`E0615`** | [`CrossTaskUnhandledEffectError`](#structured-concurrency-and-panic-containment); [Effect Handlers](#effect-handlers) |
@@ -9672,7 +10271,7 @@ This index assigns each code its diagnostic name and points to its defining rule
 | **`E0713`** | [`IncompatiblePropagationTargetError`](#error-and-fallback-operators); [Signature Value Contracts](#signature-value-contracts) |
 | **`E0714`** | [`InvalidFallbackOperandError`](#error-and-fallback-operators) |
 | **`E0715`** | [`InvalidSafeAccessReceiverError`](#error-and-fallback-operators) |
-| **`E0720`** | [`UnusedFallibleResultError`](#mandatory-inspection-of-fallible-results) |
+| **`E0720`** | [`UnusedFallibleResultError`](#mandatory-inspection-of-fallible-results); [Task Handles](#task-handles-movable-guard-and-combinators); [Structured Concurrency Channels](#structured-concurrency-channels) |
 
 ### Static Computation and Finiteness
 

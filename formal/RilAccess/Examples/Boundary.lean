@@ -30,6 +30,55 @@ def outerHandler : Boundary := { privateBoundary with body := handled handlerEff
 
 def callInstance : CoreSummary.CallInstance := ⟨(fun _ _ => localOrigin), [1, 3, 9], 12, 2, 14⟩
 
+def outerHeapOrigin : Origin := ⟨⟨.allocation, 21⟩, 7, 3, 0, 2⟩
+def endpointOrigin : Origin := ⟨⟨.foreign, 31⟩, 7, 3, 0, 2⟩
+
+def isolatedWithSharedImmutable : GraphAuthority.Graph Nat :=
+  ⟨[⟨0, 10, .mut⟩, ⟨1, 20, .immutable⟩],
+   [⟨10, 0, 20, ⟨false, .immutable⟩, .immutable⟩,
+    ⟨10, 1, 11, ⟨true, .mut⟩, .mut⟩]⟩
+
+def isolatedHandoffCrossing : GraphCrossing :=
+  GraphAuthority.buildGraphCrossing isolatedWithSharedImmutable 0 [1] .isolatedConstruction
+    [] [outerHeapOrigin] false false true 2 false
+
+def refBearingGraph : GraphAuthority.Graph Nat :=
+  ⟨[⟨0, 10, .mut⟩], [⟨10, 0, 12, ⟨false, .ref⟩, .ref⟩]⟩
+
+def refBearingCrossing : GraphCrossing :=
+  GraphAuthority.buildGraphCrossing refBearingGraph 0 [] .isolatedConstruction
+    [] [outerHeapOrigin] false false true 2 false
+
+def childWriteParentRefGraph : GraphAuthority.Graph Nat :=
+  ⟨[⟨0, 10, .mut⟩, ⟨1, 11, .ref⟩],
+   [⟨10, 0, 11, ⟨false, .mut⟩, .mut⟩]⟩
+
+def childWriteParentRefCrossing : GraphCrossing :=
+  GraphAuthority.buildGraphCrossing childWriteParentRefGraph 0 [1] .isolatedConstruction
+    [] [outerHeapOrigin] false false true 2 false
+
+def parentWriteChildReadGraph : GraphAuthority.Graph Nat :=
+  ⟨[⟨0, 10, .mut⟩, ⟨1, 20, .shared⟩],
+   [⟨10, 0, 20, ⟨false, .immutable⟩, .immutable⟩]⟩
+
+def parentWriteChildReadCrossing : GraphCrossing :=
+  GraphAuthority.buildGraphCrossing parentWriteChildReadGraph 0 [1] .isolatedConstruction
+    [] [outerHeapOrigin] false false true 2 false
+
+def endpointGraph : GraphAuthority.Graph Nat :=
+  ⟨[⟨0, 30, .mut⟩], []⟩
+
+def validEndpointCrossing : GraphCrossing :=
+  GraphAuthority.buildGraphCrossing endpointGraph 0 [1] .movableEndpoint
+    [] [endpointOrigin] false false true 2 true
+
+def sharedEndpointGraph : GraphAuthority.Graph Nat :=
+  ⟨[⟨0, 30, .shared⟩], []⟩
+
+def sharedEndpointCrossing : GraphCrossing :=
+  GraphAuthority.buildGraphCrossing sharedEndpointGraph 0 [] .movableEndpoint
+    [] [endpointOrigin] false false true 2 true
+
 def fixtures : List (String × Bool) :=
   [("core boundary: closed local state can discharge", (outward privateBoundary 7 0 9).isEmpty),
    ("core boundary: hidden handler environment blocks discharge", !(outward handlerEnvironment 7 0 9).isEmpty),
@@ -51,7 +100,18 @@ def fixtures : List (String × Bool) :=
    ("core boundary: local allocation keeps its producer source", decide ((CoreSummary.resolve callInstance (.fresh localOrigin.source localOrigin.object)).source = localOrigin.source)),
    ("core boundary: immutable task data without latent authority accepted", taskCrossing ⟨[.immutable], [], false, false, false⟩),
    ("core boundary: live task data rejected", !taskCrossing ⟨[.ref], [], false, false, false⟩),
-   ("core boundary: immutable data does not hide latent cross-task state", !taskCrossing ⟨[.immutable], [external], false, false, false⟩)]
+   ("core boundary: immutable data does not hide latent cross-task state", !taskCrossing ⟨[.immutable], [external], false, false, false⟩),
+   ("core boundary: isolated construction handoff with shared immutable subgraph accepted", taskGraphCrossing isolatedHandoffCrossing),
+   ("core boundary: isolated construction handoff requires consuming source path", !taskGraphCrossing { isolatedHandoffCrossing with sourceConsumed := false }),
+   ("core boundary: isolated construction rejects wrapped live ref", !taskGraphCrossing refBearingCrossing),
+   ("core boundary: child writable object vs surviving parent ref observer rejected", !taskGraphCrossing childWriteParentRefCrossing),
+   ("core boundary: surviving parent writer vs transferred child object rejected", !taskGraphCrossing parentWriteChildReadCrossing),
+   ("core boundary: movable single-owner endpoint handoff accepted", taskGraphCrossing validEndpointCrossing),
+   ("core boundary: uncontracted foreign origin rejected across task", !taskGraphCrossing { validEndpointCrossing with explicitResourceContract := false }),
+   ("core boundary: shared writable authority rejected on movable endpoint", !taskGraphCrossing sharedEndpointCrossing),
+   ("core boundary: inner scope origin cannot escape to outer task scope", !taskGraphCrossing { isolatedHandoffCrossing with graphOrigins := [localOrigin] }),
+   ("core boundary: lexical scoped cleanup authority cannot cross task", !taskGraphCrossing { isolatedHandoffCrossing with scopedAuthority := true }),
+   ("core boundary: captured latent authority cannot hide inside isolated handoff", !taskGraphCrossing { isolatedHandoffCrossing with latentSources := [captured] })]
 
 theorem fixtures_all_pass : fixtures.all Prod.snd = true := by decide +kernel
 
