@@ -75,6 +75,7 @@ The following distinctions apply throughout the specification; their defining se
       - [Collection Extents and Index Types](#collection-extents-and-index-types)
     - [Sum Types and GADTs](#sum-types-and-gadts)
       - [Constructor-Tuple Equivalence Invariant](#constructor-tuple-equivalence-invariant)
+      - [Sum Variant Spreading and Subset Inclusion](#sum-variant-spreading-and-subset-inclusion)
     - [Nominal Type Wrappers](#nominal-type-wrappers)
     - [Deep Immutability](#deep-immutability)
     - [Type Identity and Subtyping](#type-identity-and-subtyping)
@@ -341,7 +342,8 @@ fn safe_first(xs: []int) -> Result<int, PanicError> {
     with absorb_panic()                -- Discharges @Panic when unwind-safe (E0608)
     read_first(xs)
 }
-assert(safe_first([]) is Err(PanicError::Panicked(_)))
+let Err(PanicError::Panicked(info)) = safe_first([]) else { panic("expected panic") }
+assert(panic_cause(info) == PanicCause::IndexOutOfBounds(.{ index: 0, len: 0 }))
 
 -- 4. Unrecoverable process termination (@Fatal):
 fn verify_magic(ok: bool) -> () {
@@ -358,7 +360,8 @@ let scope_outcome: Result<int, TaskFault> = {
     let _ = fork \-> panic("worker failure")
     Ok(42)
 }
-assert(scope_outcome is Err(TaskFault::Panicked(_))) -- Child panic becomes TaskFault
+let Err(TaskFault::Panicked(info)) = scope_outcome else { panic("expected fault") }
+assert(panic_message(info) == "worker failure") -- Child panic becomes TaskFault
 ```
 
 | Tier | Representation / implicit effect | Handling / containment |
@@ -385,13 +388,14 @@ let ieee = 1.0 / 0.0                   -- OK: positive infinity
 
 | Condition when evaluated | Implicit effect | Outcome |
 | :--- | :--- | :--- |
-| `panic(message)` | `@Panic` | Begin LIFO panic unwinding with `message` |
-| False `assert` condition | `@Panic` | Assertion panic unwinding |
-| Dynamic integer `/` or `%` with zero divisor | `@Panic` | Division-by-zero panic (statically proven nonzero divisors add no `@Panic`; constant zero is `E0361`) |
-| Ordinary array element index `arr[i]` outside bounds | `@Panic` | Index-bounds panic |
-| Negative, reversed, or out-of-bounds sequence range `s[a..b]` | `@Panic` | Range-bounds panic under [range indexing](#range-and-sequence-indexing-expressions) |
-| Allocation or growth beyond [collection extent](#collection-extents-and-index-types) | `@Panic` | Collection-size panic before committing the change |
-| Foreign defect mapped at `.d.ril` boundary | `@Panic` | Panic at that boundary |
+| `panic(message)` | `@Panic` | Begin LIFO panic unwinding with `PanicCause::Explicit(message)` |
+| False `assert(condition, message)` | `@Panic` | Assertion panic unwinding with `PanicCause::AssertionFailed(message)` |
+| Dynamic integer `/` or `%` with zero divisor | `@Panic` | Division-by-zero panic with `PanicCause::DivisionByZero` (statically proven nonzero divisors add no `@Panic`; constant zero is `E0361`) |
+| Ordinary array element index `arr[i]` or `Parallel::Slice` element access outside `[0, len)` | `@Panic` | Index-bounds panic with `PanicCause::IndexOutOfBounds(.{ index, len })` |
+| Negative, reversed, or out-of-bounds sequence range `s[a..b]` / `s[a..=h]` or `Parallel::Slice` range/split | `@Panic` | Range-bounds panic under [range indexing](#range-and-sequence-indexing-expressions) with `PanicCause::RangeOutOfBounds(.{ start, end, len })` (omitted bounds $\rightarrow$ `0` / `len`; `a..=h` $\rightarrow$ `end = h + 1` if `a <= h` else `h`; slice `split*` at `mid` $\rightarrow$ `start = end = mid`) |
+| Allocation, growth, formatting, or conversion beyond [collection extent](#collection-extents-and-index-types) | `@Panic` | Collection-size panic before committing the change with `PanicCause::CollectionExtentExceeded(.{ requested })` |
+| Unrecoverable host standard-output failure in `print` / `println` | `@Panic` | Host I/O panic with `PanicCause::HostIoFailure(detail)` |
+| Foreign defect mapped at `.d.ril` boundary | `@Panic` | Panic at that boundary with `PanicCause::ForeignDefect(detail)` |
 | `fatal(message)` | `@Fatal` | Write diagnostic to stderr and terminate the OS process immediately without unwinding or cleanup |
 | Secondary panic inside cleanup during active panic, cancellation, or abort | `@Fatal` | `DoubleFaultFatal`; abandon remaining cleanup and terminate the OS process immediately |
 | Unrecoverable host memory or stack exhaustion | None added to signatures | Immediate process termination |
@@ -1184,11 +1188,14 @@ Sum types represent tagged disjoint unions. Constructor equations allow generali
 ```ebnf
 SumTypeDecl     ::= { MetaAttr } [ "pub" ] "type" PascalCase [ GenericParams ] [ WhereClause ]
                     "{" VariantDeclList "}"
-VariantDeclList ::= VariantDecl { "," VariantDecl } [ "," ]
+VariantDeclList ::= VariantDeclItem { "," VariantDeclItem } [ "," ]
+VariantDeclItem ::= VariantDecl | VariantSpread
+VariantSpread   ::= ".." TypeReference
 VariantDecl     ::= { MetaAttr } PascalCase [ GenericParams ] [ VariantPayload ] [ "->" TypeExpression ]
 VariantPayload  ::= "(" [ VariantFields ] ")"
 VariantFields   ::= VariantField { "," VariantField } [ "," ]
 VariantField    ::= [ DeclaredMemberMode ] [ FieldLabel ":" ] TypeExpression
+SumInjectExpr   ::= TypeReference "(" ".." Expression [ "," ] ")"
 ```
 
 ```ril
@@ -1335,6 +1342,61 @@ type Node {
 let node = Branch((1, 2), "left")                -- OK: n = 2 arguments
 -- let bad_node = Branch(1, 2, "left")           -- Error [E0314]: arity mismatch: expected 2 arguments, found 3
 ```
+
+#### Sum Variant Spreading and Subset Inclusion
+
+```ril
+type IoErr {
+    NotFound(str),
+    --| Underlying I/O operation exceeded its deadline.
+    meta("retryable")
+    Timeout(int),
+}
+type ParseErr {
+    BadSyntax(.{ line: int, msg: str }),
+    meta("parse-stage")
+    Timeout(int),
+}
+type AppErr {
+    ..IoErr,
+    ..ParseErr,                                -- Timeout(int) merges idempotently
+    Unauthorized,
+}
+meta let _ = assert(Reflect::variant_attrs<AppErr, str>(<AppErr>, "Timeout") == ["retryable", "parse-stage"])
+meta let _ = assert(Reflect::variant_doc(<AppErr>, "Timeout") == Some("Underlying I/O operation exceeded its deadline."))
+
+let io_err = IoErr::NotFound("config.toml")
+let widened = AppErr(..io_err)                 -- Fresh AppErr::NotFound("config.toml")
+assert(widened == AppErr::NotFound("config.toml"))
+let flag = true
+-- let implicit: AppErr = io_err               -- Error [E0301]: nominal sum mismatch
+-- let bad_join = if flag { io_err } else { widened } -- Error [E0351]: incompatible branch types
+
+type BadTimeout { Timeout(str) }
+type UnitTimeout { Timeout() }
+-- type ConflictErr { ..IoErr, ..BadTimeout }  -- Error [E0213]: conflicting 'Timeout' payload
+-- type TagMismatch { Timeout, ..UnitTimeout } -- Error [E0213]: tag vs unit payload '()'
+-- type NonSumSpread { ..int }                 -- Error [E0306]: spread target must be a sum
+
+type Cell = .{ var count: int }
+type LiveSub { MutBuf(mut Cell) }
+type LiveSup { ..LiveSub, Empty }
+let mut sub_live = LiveSub::MutBuf(new Cell.{ count: 1 })
+-- let bad_freeze = LiveSup(..sub_live)        -- Error [E0535]: surviving writer requires '..new'
+let mut sup_live = LiveSup(..new sub_live)     -- Transfers authority into fresh LiveSup
+if sup_live is LiveSup::MutBuf {
+    sup_live.0.count += 1
+}
+-- let dead = sub_live                         -- Error [E0549]: source ended by '..new'
+```
+
+| Aspect | Rule |
+| :--- | :--- |
+| Spread target (`E0306`, `E0308`, `E0313`, `E0907`) | `..TypeReference` must resolve to a visible concrete sum instance (`E0306` non-sum or unspecialized generic; `E0308` opaque; `E0907` `.d.ril`); direct spread cycles fail `E0313` |
+| Idempotent absorption (`E0213`, `E0203`) | Duplicate explicit variants fail `E0203`. Spread/explicit duplicates merge iff standard ADT variants share tag/parentheses category, `K-EQ` normalized payloads, and member modes (`E0213: ConflictingVariantSpreadError` otherwise) |
+| Ownership & metadata (`E0206`) | Spliced variants belong to `Sup` (bare `V` is `E0206` when both sums are visible). `variants(<Sup>)` deduplicates; `variant_attrs` concatenates in source order; `variant_doc` prefers local doc |
+| Subset relation ($Sub \preceq_{\text{sum}} Sup$) | Reflexive, transitive relation on visible concrete sums: every `Sub` variant has a merge-compatible counterpart in `Sup` (`E0308` across opaque boundaries) |
+| Injection `Sup(..expr)` | Requires `expr : Sub` with $Sub \preceq_{\text{sum}} Sup$ (`E0301`/`E0306`/`E0308`). Allocates a fresh `Sup` value and receives payload constituents under `K-RECV` (`Sup(..new expr)` ends `expr`, `E0549`) |
 
 ### Nominal Type Wrappers
 
@@ -2511,7 +2573,7 @@ Receiving positions use `Receive`'s data view; callable positions also use
 | Literal / name | Contextual literal type/defaults; resolve binding and instantiate only its quantified variables |
 | Operator / range / interpolation | Check the registered domain/result and sequence operands; short-circuit forms analyze their alternatives |
 | Product / collection | Propagate expected member schemas; check each reception; allocate shared-object roots, copy unit/value cases; enforce homogeneous storage and immutable keys. Construction-array return operands are checked under their admitted initial schemas |
-| Constructor / wrapper | Instantiate declaration, arity and result equations; check payload reception |
+| Constructor / wrapper / sum injection | Instantiate declaration, arity and result equations, or check $Sub \preceq_{\text{sum}} Sup$ for `Sup(..e)`; check payload reception |
 | Projection / indexing | Check key/index, select constituent; copy values or preserve bounded object access/origins; payload access requires variant evidence |
 | Assignment | Prove slot/interior authority, check fixed schema, invalidate overlapping facts; compound forms evaluate once |
 | Call / callable | K-CALL; creation checks latent body/environment and records actual captures |
@@ -2663,7 +2725,7 @@ applies throughout the arm to the same rigid parameter, including legal return
 or closure transport. The outer binder identity and declared storage schema stay
 fixed; arm exit and or-pattern joins retain only common evidence.
 
-`is` introduces no binders. Stable constructor tests supply local evidence under
+`is` and `..Sub` introduce no binders. Stable constructor and `..Sub` tests supply local variant evidence under
 [narrowing and invalidation](#flow-sensitive-type-narrowing); a failed payload
 comparison alone excludes no constructor. Token patterns refine their snapshot.
 
@@ -2703,7 +2765,7 @@ check = body valid for the inferred family; constraints hold at required uses
 An independent argument may remain generic in a mutable capturing closure.
 Writing an argument into captured `[]int` fixes that argument to `int`.
 Concrete storage still requires a determined schema (`E0344`); recursive checking
-uses the current declared/verified family.
+uses the current declared/verified family. Without an expected `Result` return type, propagated errors synthesize a common error sum iff one propagated error type dominates all others under $\preceq_{\text{sum}}$ (`E0344` otherwise).
 
 <a id="kernel-fixture-generalization"></a>
 
@@ -2965,15 +3027,15 @@ consumption points.
 | Generic applications, defaults, constraints, implicit rows/modes | K-TYPE-SUBST; K-GEN; K-FIX | [Generics](#generic-parameters-defaults-and-value-sorts), [rows](#record-types-and-row-polymorphism), [mode inference](#access-mode-inference-with-via-and-infer) |
 | Primitive literals, strings/interpolation and bytes | K-EXPR contextual literals and primitive domains | [Literals](#numeric-literals), [text literals](#text-and-byte-literals), [text operations](#text-and-byte-operations) |
 | Unary, arithmetic, bitwise, equality, ordering, explicit conversions, ranges, holes | K-EXPR operand/result contracts; K-SUB; `E0360` completeness | [Operators](#expressions-and-operators), [equality/key rules](#relational-and-equality-operators) |
-| Record/tuple/array/map literals, sums and wrapper constructors | K-TYPE; K-EXPR construction; K-RECV; constructor equations | [Collections](#array-map-and-tuple-types), [sums](#sum-types-and-gadts), [record spread](#record-construction-and-spread-update) |
+| Record/tuple/array/map literals, sums, sum spreads/injections and wrapper constructors | K-TYPE; K-EXPR construction; K-RECV; constructor equations | [Collections](#array-map-and-tuple-types), [sums](#sum-types-and-gadts), [record spread](#record-construction-and-spread-update) |
 | Member/computed projection, indexing, safe navigation and slicing | K-EXPR projection; K-PAT evidence; actual path authority | [Indexing](#range-and-sequence-indexing-expressions), [static coordinates](#static-coordinate-parameters-and-computed-value-projection), [narrowing](#flow-sensitive-type-narrowing) |
 | `let`/`var`, `mut`/`ref`/`^mut`, pinning, assignment, decomposition | K-RECV; K-EXPR sequencing/fixed schemas; K-PAT | [Bindings](#binding-modes-and-storage-matrix), [assignments](#assignments-and-compound-assignments), [pattern reception](#pattern-reception-and-decomposition) |
 | `new`, verified storage handoff, clone, derive, resources and cleanup | K-RECV-NEW; K-CALL confinement/lifetimes; K-PHASE coverage | [Construction locals](#construction-qualified-locals-and-mode-preserving-reception), [handoffs](#verified-storage-handoffs), [derive](#functional-updates-via-derive), [scoped bindings](#scoped-resource-bindings) |
 | Calls, named arguments, defaults, pipelines, projection accessors | K-CALL; K-EXPR sequencing and argument mapping | [Defaults](#default-parameters-and-named-arguments), [pipelines](#pipeline-operators), [accessors](#anonymous-functions-trailing-closures-and-projection-accessors) |
 | Named/anonymous callables, closures, captures, higher-order calls | K-GEN; K-ANON; K-CALL; K-IFACE | [Callable contracts](#callable-contracts), [closures](#closures-factory-signatures-and-lexical-environments), [higher-order calls](#higher-order-calls) |
 | Blocks, tails, `where`, statement results and fallible inspection | K-EXPR sequencing; K-JOIN; scope checks | [Blocks](#block-expressions-tail-values-and-hoisted-declarations), [where](#dual-tier-where-invariants), [Result inspection](#mandatory-inspection-of-fallible-results) |
-| `if`, `match`, guarded bindings, `is`, GADT and or-patterns | K-PAT; K-JOIN; stable evidence and invalidation | [Conditionals](#conditional-expressions), [patterns](#pattern-matching), [value tests](#value-tests-with-is), [narrowing](#flow-sensitive-type-narrowing) |
-| `loop`/`while`/`for`, `return`/`last`/`next`, short circuit, `?`/`??` | K-EXPR transfer targets; K-JOIN; K-FIX | [Loops](#loop-expressions), [transfers](#control-transfers), [logical operations](#logical-operators), [fallback](#error-and-fallback-operators) |
+| `if`, `match`, guarded bindings, `is`, `..Sub`, GADT and or-patterns | K-PAT; K-JOIN; stable evidence and invalidation | [Conditionals](#conditional-expressions), [patterns](#pattern-matching), [value tests](#value-tests-with-is), [narrowing](#flow-sensitive-type-narrowing) |
+| `loop`/`while`/`for`, `return`/`last`/`next`, short circuit, `?`/`??` | K-EXPR transfer targets and `Result` `?` widening; K-JOIN; K-FIX | [Loops](#loop-expressions), [transfers](#control-transfers), [logical operations](#logical-operators), [fallback](#error-and-fallback-operators) |
 | Effect declarations/aliases, operation calls, handlers, `resume`, parameterized `with` | K-TYPE concrete operation signatures; K-CALL discharge/answer/affine checks | [Effects](#effect-declarations-and-operation-signatures), [handlers](#effect-handlers), [resumption](#affine-resumption-and-delimited-early-abort) |
 | State groups, provenance, callable-handle modes, task crossing | K-CALL actual identities/footprints; K-IFACE | [State](#state-and-provenance-tracking), [exclusivity](#law-of-exclusivity-and-cross-argument-disjointness), [concurrency](#structured-concurrency-and-panic-containment), [channels](#structured-concurrency-channels) |
 | `halt`, `Diverge`/`Panic`/`Fatal`, `diverge_budget`, `absorb_panic`, deterministic parallel primitives | K-CALL; K-PHASE coverage, unwind safety, residual obligations and cleanup | [Halt](#termination-and-halt-contracts), [budgets](#finite-evaluation-with-diverge), [panic absorption](#panic-absorption-with-absorb_panic), [data parallelism](#deterministic-data-parallelism-and-divide-and-conquer-primitives) |
@@ -3725,7 +3787,7 @@ Literal         ::= IntLiteral | FloatLiteral | StringLiteral | RawStringLiteral
                   | ByteStringLiteral | "true" | "false" | "(" ")"
 Expression      ::= Literal | HoleExpr | QualifiedName [ GenericArgs ] | EffectOperationRef | "(" Expression ")"
                   | TupleExpr | RecordExpr | ArrayExpr | MapExpr | Block
-                  | CallExpr | AnonFnExpr | AccessorExpr | MatchExpr
+                  | CallExpr | SumInjectExpr | AnonFnExpr | AccessorExpr | MatchExpr
                   | IfExpr | LoopExpr | WhileExpr | ForExpr | ControlTransfer
                   | ResumeExpr | AssignmentExpr | UnaryExpr | BinaryExpr | PipelineExpr | SharingExpr | ConstructionTransferExpr
                   | MemberExpr | IndexExpr | RangeExpr | IsExpr
@@ -4088,7 +4150,8 @@ assert(!(failed is Ok(panic("skipped")))) -- Tag mismatch skips expected-value e
 ```ebnf
 IsExpr          ::= Expression "is" IsTest
 IsTest          ::= IsAlternative { "|" IsAlternative }
-IsAlternative   ::= "_" | IsConstructor | IsTuple | IsRecord | IsBytes | IsStr | RangePattern | IsValueExpr
+IsAlternative   ::= "_" | IsConstructor | IsSumSubset | IsTuple | IsRecord | IsBytes | IsStr | RangePattern | IsValueExpr
+IsSumSubset     ::= ".." TypeReference
 IsConstructor   ::= QualifiedName [ "(" [ IsTestList ] ")" ]
 IsTestList      ::= IsTest { "," IsTest } [ "," ]
 IsTuple         ::= "(" ")" | "(" IsTest "," IsTest { "," IsTest } [ "," ] ")"
@@ -4104,6 +4167,7 @@ IsValueExpr     ::= Expression
 | Form / boundary | Meaning |
 | :--- | :--- |
 | Resolved constructor head | Structural test; tag first, then payload. Ordinary callable heads are value expressions. Constructor arity, tuple equivalence and opacity rules apply |
+| Sum subset (`..Sub`) | Tag-subset test on visible sums with $Sub \preceq_{\text{sum}} Sup$ (`E0301` non-sum subject or $Sub \npreceq_{\text{sum}} Sup$; `E0306` non-sum `Sub`; `E0308` opaque); succeeds when the tag belongs to `Sub` |
 | Existing name / other expression | Evaluate and compare with `==`; `E0301`/`E0305` for incompatible types, `E0327` for unsupported equality. No binders or binding modifiers |
 | Tuple / record test | Test components / listed known fields in written order; omitted record fields are unconstrained. Shorthand `.{ field }` means `.{ field: field }`, reading the outer name |
 | `bytes[...]` (`IsBytes`) | Subject must be `bytes` (`E0301` otherwise); items test `u8` values/ranges/`_` or `bytes`-typed chunk expressions in order, with at most one `..` matching zero or more middle bytes (`E0347` if repeated) |
@@ -4115,7 +4179,7 @@ IsValueExpr     ::= Expression
 | Execution | Evaluate subject once. At each reached leaf, obtain that constituent, evaluate the expected expression once, then compare. Shape/tag mismatch or an earlier failed component skips later tests; no snapshot or rollback |
 | Static checks | Check every test's names, types, modes and ordinary effects/state, including potentially skipped expressions. Expressions inherit ordinary phase, provenance and exclusivity rules |
 | Syntax restrictions | A trailing `if` or a binding modifier in a test is `E0120`. Binding patterns and guards use `match` |
-| Flow / Results | Preserve only refinements still valid after expected-expression evaluation. Constructor tests inspect the reached Result tags; wildcard and value-equality tests alone do not discharge an outstanding Result |
+| Flow / Results | Preserve only refinements still valid after expected-expression evaluation. Reached constructor and `..Sub` tests inspect the reached Result tags; wildcard and value-equality tests alone do not discharge an outstanding Result |
 
 ```ril
 let number = 3
@@ -4418,11 +4482,11 @@ let out_of_bounds = arr?[99]           -- Evaluates to None (?int) (safe array i
 | Operator | Success | Failure / constraint |
 | :--- | :--- | :--- |
 | `Option<T>?` | Unwrap T | Return `None`; enclosing callable must return `Option<U>` (`E0713`) |
-| `Result<T, E>?` | Unwrap T | Return `Err(e)`; enclosing result must accept E (`E0713`) |
+| `Result<T, E>?` | Unwrap T | Return `Err(e)`, or `Err(E_out(..e))` when $E \preceq_{\text{sum}} E_{\text{out}}$; enclosing result must accept `E` (`E0713`) |
 | `Option<T> ?? rhs` | Unwrap T; skip rhs | Evaluate rhs as T; never implicitly invoke a supplier |
 | `Result<T, E> ?? handler` | Unwrap T; skip handler | Evaluate and invoke `fn(E) @& -> T` once, preserving actual obligations and handle modes; raw T is `E0711` |
 
-`?` outside a function/closure is `E0205`, including module initializers. It performs no Option/Result or error conversion; payload provenance, access modes, and nested inspection duties survive.
+`?` outside a function/closure is `E0205`, including module initializers, and performs no `Option`/`Result` conversion. Propagating `Result<T, E_sub>?` into `Result<U, E_sup>` requires `K-EQ` or [$E_{\text{sub}} \preceq_{\text{sum}} E_{\text{sup}}$](#sum-variant-spreading-and-subset-inclusion) (`E0713` otherwise; `E0308` opaque), widening `Err` via `E_sup(..err)` (or `E_sup(..new err)` for a `new` return) and preserving provenance, access modes, and nested `Result` duties.
 
 ```ril
 fn invalid_operand() -> ?int {
@@ -4436,6 +4500,28 @@ fn invalid_target(value: ?int) -> int {
 fn incompatible_error(value: Result<int, str>) -> Result<int, int> {
     -- let number = value?            -- Error [E0713]: str failure cannot become int
     match value { Ok(number) -> Ok(number), Err(_error) -> Err(0) } -- OK: explicit mapping
+}
+type SubIoErr { Disconnected, Timeout(int) }
+type SubParseErr { BadHeader, Timeout(int) }
+type ServiceErr { ..SubIoErr, ..SubParseErr, Internal }
+fn read_step() -> Result<int, SubIoErr> { Err(SubIoErr::Timeout(50)) }
+fn parse_step(n: int) -> Result<int, SubParseErr> { Ok(n + 1) }
+fn run_service() -> Result<int, ServiceErr> {
+    let raw = read_step()?             -- SubIoErr widens to ServiceErr
+    Ok(parse_step(raw)?)               -- SubParseErr widens to ServiceErr
+}
+let max_closure = \-> {                -- Infers fn() -> Result<int, ServiceErr>
+    let a = read_step()?
+    Ok(a + run_service()?)             -- ServiceErr dominates {SubIoErr, ServiceErr}
+}
+assert(max_closure() is Err(ServiceErr::Timeout(50)))
+-- let ambig_closure = \-> {
+--     let a = read_step()?
+--     Ok(parse_step(a)?)
+-- }                                   -- Error [E0344]: no greatest error type in {SubIoErr, SubParseErr}
+let typed_closure: fn() -> Result<int, ServiceErr> = \-> {
+    let a = read_step()?
+    Ok(parse_step(a)?)                 -- Expected ServiceErr anchors both '?' sites
 }
 -- let fallback = 42 ?? 0             -- Error [E0714]: no fallback operation for int
 let record = .{ name: "Ada" }
@@ -4957,9 +5043,10 @@ MatchExpr     ::= "match" Expression "{" [ MatchArm { "," MatchArm } [ "," ] ] "
 MatchArm      ::= Pattern [ "if" Expression ] "->" Expression
 Pattern       ::= OrPattern
 OrPattern     ::= SinglePattern { "|" SinglePattern }
-SinglePattern      ::= LiteralPattern | VariablePattern | WildcardPattern
+SinglePattern      ::= LiteralPattern | VariablePattern | WildcardPattern | "(" Pattern ")"
                      | TuplePattern | ArrayPattern | BytesPattern | StrPattern
-                     | RecordPattern | ConstructorPattern | RangePattern | TypePattern
+                     | RecordPattern | ConstructorPattern | SumSubsetPattern | RangePattern | TypePattern
+SumSubsetPattern   ::= ".." TypeReference
 BindingModifier    ::= MemberMode
 VariablePattern    ::= [ BindingModifier ] Identifier
 ConstructorPattern ::= QualifiedName [ "(" [ PatternList ] ")" ]
@@ -4987,6 +5074,8 @@ These binding patterns govern `match`, bindings, `if let` / `while let`, iterati
 `TypePattern` is admitted only in static `match` arms against token subjects/constituents (`E0306` for another pattern context). Run-time token subjects are `E0816`.
 
 A tuple or array pattern without a rest requires exactly its written number of elements. With a rest, its subject must contain at least the number of non-rest elements; prefix and suffix patterns select from their corresponding ends, and the rest may be empty. Tuple rests are anonymous. Named array rests use the range-indexing copy rules and ordinary array extent, access-mode, publication, and sharing checks.
+
+`SumSubsetPattern` (`..Sub`) matches variants belonging to `Sub` without bindings on a visible sum subject `Sup` with $Sub \preceq_{\text{sum}} Sup$ (`E0301`/`E0306`/`E0308` otherwise; `E0309` in vacuous `let ..Sub = e`), subtracting `Sub`'s variants from remaining coverage (`E0304` if none remain). Direct unparenthesized `..` items in array, `bytes`, `str`, and record patterns parse as container rests (`E0103`), whereas tuple `(..Sub)`, parenthesized `[(..Sub)]`, and field `.{ f: ..Sub }` parse as `SumSubsetPattern`.
 
 | Sequence pattern | Rule |
 | :--- | :--- |
@@ -5121,6 +5210,31 @@ fn get_size(s: Shape) -> f64 {
 let is_origin = s is Shape::Point
 let is_large_circle = s is Shape::Circle && s.0 > 100.0
 
+-- Sum-subset tests and patterns ('..Sub'):
+type NetErr { Disconnected, Timeout(int) }
+type DbErr { Deadlock, Timeout(int) }
+type InfraErr { ..NetErr, ..DbErr, FatalConfig }
+fn classify_infra(ref err: InfraErr) -> str {
+    if err is ..NetErr {
+        -- let _ = err.0                       -- Error [E0337]: multiple active variants
+        match err {                            -- Active variants: {Disconnected, Timeout}
+            InfraErr::Disconnected -> "retry-net",
+            InfraErr::Timeout(_) -> "backoff",
+            -- InfraErr::Deadlock -> "dead",   -- Error [E0304]: excluded by 'err is ..NetErr'
+        }
+    } else {
+        -- if err is ..NetErr { }              -- Error [E0311]: contradictory narrowing
+        match err {                            -- Active variants: {Deadlock, FatalConfig}
+            ..DbErr -> "retry-db",
+            InfraErr::FatalConfig -> "halt",
+            -- ..NetErr -> "dead",             -- Error [E0304]: covered by true branch
+        }
+    }
+}
+let sample = InfraErr::Timeout(10)
+assert(match [sample] { [(..NetErr)] -> true, _ -> false }) -- Parenthesize '(..Sub)' inside '[...]'
+-- let ..NetErr = sample                       -- Error [E0309]: '..NetErr' binds no variables
+
 -- Constructor and tuple pattern destructuring (Constructor-Tuple Equivalence):
 let result_pair: Result<(int, str), str> = Ok(200, "OK")
 match result_pair {
@@ -5252,8 +5366,8 @@ NarrowingExpr      ::= NarrowingPredicate
 - **Environment Splitting**: Predicate $P$ splits context $\Gamma$ into true/false environments: $\Gamma \vdash P \rightsquigarrow (\Gamma_t, \Gamma_f)$.
 - **Zero-Binding Refinement**: Narrowing refines existing bindings in-place across conditional branches.
 - **Non-Binding Predicates**: `x is Variant(expected)` reads an existing expected value; an unresolved name is `E0204`. Use `match` or guarded bindings to introduce payload variables. `is` has no trailing guard.
-- **Value-Test Refinement**: A successful constructor test refines the tested stable path to that variant. Failure excludes the variant only when the payload test covers every payload (for example, a bare tag or all wildcards); a failed value comparison alone excludes no variant. Alternatives join their proven facts. Expected-expression writes invalidate affected facts (`E0310`, or `E0533` for unproved independence); completing the test does not restore them.
-- **Payload Projection ($S|_V$)**: Testing `x is V` refines sum type $S$ to variant $S|_V$ ([Sum Types and GADTs](#sum-types-and-gadts)):
+- **Value-Test Refinement**: A successful constructor test refines the tested stable path to that variant; `x is ..Sub` narrows active variants to `Sub`'s subset on success and excludes `Sub`'s subset on failure (`E0311` when disjoint from remaining active variants). Constructor-test failure excludes the variant only when the payload test covers every payload (for example, a bare tag or all wildcards); a failed value comparison alone excludes no variant. Alternatives join their proven facts. Expected-expression writes invalidate affected facts (`E0310`, or `E0533` for unproved independence); completing the test does not restore them.
+- **Payload Projection ($S|_V$)**: Narrowing to a single active variant $V$ (via `x is V` or exhausting all other variants) refines sum type $S$ to $S|_V$ ([Sum Types and GADTs](#sum-types-and-gadts)); when multiple variants remain active, direct payload projection raises `E0337`:
    - Payload-free tag. Value projection raises `E0337`.
    - Zero-element positional payload. Unit `()` has no positional components.
    - Single declared payload member. Project via `.0` (`p.0`). `?T != None` directly unboxes to `T`.
@@ -7905,7 +8019,7 @@ $$\emptyset \subset \lbrace\text{Fiber}\rbrace \subset \lbrace\text{Fiber}, \tex
 
 `Scope` (exported by `ril/concurrent`) is an orthogonal nursery-local operational effect outside `Async`: imperative task primitives (`fork`, `fork_with`, `join`, `cancel`, `cancel_scope`) require `@Scope`, and `Concurrent::scope` / `scope_with` discharges `@Scope` into `@Concurrent` ($(E \setminus \lbrace\text{Scope}\rbrace) \cup \lbrace\text{Concurrent}\rbrace$).
 
-`Diverge`, `Panic`, and `Fatal` are inferred automatically and exposed in semantic interfaces and tooling (`@[OpEffects] + Diverge + Panic + Fatal`). The prelude supplies [`diverge_budget` / `BudgetError`](#finite-evaluation-with-diverge), [`absorb_panic` / `PanicError`](#panic-absorption-with-absorb_panic), and `fatal` without import.
+`Diverge`, `Panic`, and `Fatal` are inferred automatically and exposed in semantic interfaces and tooling (`@[OpEffects] + Diverge + Panic + Fatal`). The prelude supplies [`diverge_budget` / `BudgetError`](#finite-evaluation-with-diverge), [`absorb_panic` / `PanicError` / `PanicInfo` / `PanicCause`](#panic-absorption-with-absorb_panic), and `fatal` without import.
 
 #### Normative Rules for Built-in System Effects
 - **Leaf I/O (`@Fiber`)**: Leaf I/O operations and cooperative cancellation queries (`Concurrent::is_cancelled`, `Concurrent::check_cancelled`) declare `@Fiber` without `@Concurrent`. Spawning or joining child tasks requires `@Scope` inside a `Concurrent::scope` / `scope_with` boundary (`@Concurrent`). Both remain subject to the ordinary task-boundary, provenance, and exclusivity rules.
@@ -8188,7 +8302,21 @@ Cleanup's absence of Diverge must be established independently of the allowances
 
 ```ril
 -- Prelude declarations (not user redeclarations):
-pub type PanicError { Panicked(str) }
+pub type PanicCause {
+    Explicit(str),
+    AssertionFailed(str),
+    DivisionByZero,
+    IndexOutOfBounds(.{ index: int, len: int }),
+    RangeOutOfBounds(.{ start: int, end: int, len: int }),
+    CollectionExtentExceeded(.{ requested: int }),
+    HostIoFailure(str),
+    ForeignDefect(str),
+}
+pub opaque type PanicInfo = .{ cause: PanicCause }
+pub type PanicError { Panicked(PanicInfo) }
+
+pub halt fn panic_cause(info: PanicInfo) -> PanicCause
+pub halt fn panic_message(info: PanicInfo) -> str
 pub fn absorb_panic<T>(action: fn() @& -> T) -> Result<T, PanicError>
 pub halt fn fatal(message: str) -> never
 ```
@@ -8205,7 +8333,15 @@ fn safe_ratio_with(a: int, d: int) -> Result<int, PanicError> {
     ratio(a, d)
 }
 assert(safe_ratio(10, 2) == Ok(5))
-assert(safe_ratio(10, 0) is Err(PanicError::Panicked(_)))
+let Err(PanicError::Panicked(info)) = safe_ratio(10, 0) else { panic("expected panic") }
+assert(panic_cause(info) == PanicCause::DivisionByZero)
+assert(panic_message(info) == "division by zero")
+let Err(PanicError::Panicked(oob)) = absorb_panic(\-> [10, 20][5]) else { panic("expected oob") }
+assert(panic_cause(oob) == PanicCause::IndexOutOfBounds(.{ index: 5, len: 2 }))
+assert(panic_message(oob) == "index out of bounds: index 5, len 2")
+-- let forged: PanicInfo = .{ cause: PanicCause::DivisionByZero } -- Error [E0301]: opaque representation is sealed
+-- let raw = inner(info)                                          -- Error [E0308]: inner() cannot penetrate opaque PanicInfo
+-- let _ = info.cause                                             -- Error [E0308]: opaque field access
 
 -- Orthogonal composition with diverge_budget:
 halt fn sandbox(work: fn() -> int) -> Result<Result<int, BudgetError>, PanicError> {
@@ -8223,7 +8359,9 @@ var global_state = 0
 | :--- | :--- |
 | Effect discharge | Removes `@Panic` from `action`'s invocation; preserves `@Diverge`, `@Fatal`, and read-only deeply immutable `.ril` `&up(...)` / `&up{...}` state; mandatory `Result` inspection (`E0720`) |
 | Unwind safety (`E0608`) | `action` must have no external mutable/live (`mut`, `^mut`, `ref`) reads or writes, no `.d.ril` foreign handle/call access, no escaping mutable or scoped state (`&mut`, `&^mut`, mutable/scoped `&capture`), and no unhandled outward operational effects |
-| Confined locals | Fresh local `var` / `let mut` / `let scoped` resources and locally handled algebraic effects inside `action` are permitted; LIFO cleanups run during unwinding before returning `Err(PanicError::Panicked(msg))` |
+| Confined locals | Fresh local `var` / `let mut` / `let scoped` resources and locally handled algebraic effects inside `action` are permitted; LIFO cleanups run during unwinding before returning `Err(PanicError::Panicked(info))` |
+| `PanicInfo` (`E0301`, `E0308`) | Built-in prelude opaque type; direct construction fails `E0301`, and field, `inner()`, or pattern penetration fails `E0308` |
+| `panic_cause` & `panic_message` | Run-time-only (`E0810` in static evaluation): `panic_cause` returns `PanicCause`; `panic_message` formats `"division by zero"`, `"index out of bounds: index {index}, len {len}"`, `"range out of bounds: {start}..{end} for len {len}"`, `"collection extent exceeded: requested {requested}"`, or the inner `str` payload |
 | Phase & handler arms | Run-time only (`E0810` in static evaluation); using `absorb_panic`, `fatal`, `Panic`, or `Fatal` as a `with ... ->` operation-arm target is `E0621` |
 | `@Fatal` penetration | `fatal(message)` and cleanup double-fault (`DoubleFaultFatal`) carry `@Fatal`, bypass `absorb_panic`, and terminate the OS process immediately |
 
@@ -8235,7 +8373,7 @@ var global_state = 0
 --   Scope, Task<T, M: MemberMode = MemberMode::Let>, Movable (kind: Type -> Type)
 
 pub type TaskFault {
-    Panicked(str),
+    Panicked(PanicInfo),
     Cancelled,
 }
 
@@ -8414,7 +8552,7 @@ fn first_ok() @Concurrent -> Result<Result<int, []str>, TaskFault> {
 | `Movable` (`E0411`) | Pure guard (`Type -> Type`) returning `<T>` for `SharedObject` types, channel endpoints (`Sender<T, M>`, `Receiver<T, M>`), and nonempty tuples, records, nominal wrappers, opaque representations, or sums of value/`Movable` constituents with fixed `mut` on endpoint-bearing slots; returns `<never>` for value types, `Task<T, M>`, callables, `let scoped` (`E0548`/`E0604`), and uncontracted `.d.ril` handles (`E0411`/`E0601`/`E0908`) |
 | `Task<T, M>` | Affine handle (`<SharedObject<Task<T, M>>> == <never>`; `clone` `E0530`, `derive` `E0536`, `new` `E0411`). `M` defaults to `MemberMode::Let` (immutable/copied `T`) and admits `mut` (`MemberMode::Mut`) for isolated `new T` returns where `T \|> Movable` (`ref`/`^mut`/`var` fail `E0601`/`E0356`). When `M` is `mut`, `join` preserves construction qualification and pending array reception families until the caller selects storage |
 | Confinement & consumption (`E0606`, `E0609`) | Placing a handle in any aggregate/collection, capturing in an escaping closure or child task, sending on a channel, returning from `scope` / `scope_with`, or consuming in another scope reports `E0606` first. Consuming a handle twice or after branch-uncertain consumption reports `E0609` |
-| `join`, `cancel`, `Result` duty (`E0720`) | `cancel` awaits child termination and returns `Ok(Some(v))` (completed), `Err(TaskFault::Panicked(msg))` (panicked), or `Ok(None)` (cancelled). `join` returns `Err(TaskFault::Cancelled)` only after prior cancellation. Dropping an unconsumed `Task<R, M>` whose `R` contains a `Result` on normal exit or `?` is `E0720` |
+| `join`, `cancel`, `Result` duty (`E0720`) | `cancel` awaits child termination and returns `Ok(Some(v))` (completed), `Err(TaskFault::Panicked(info))` (panicked), or `Ok(None)` (cancelled). `join` returns `Err(TaskFault::Cancelled)` only after prior cancellation. Dropping an unconsumed `Task<R, M>` whose `R` contains a `Result` on normal exit or `?` is `E0720` |
 | Declarative combinators | `zip` and `map` preserve `new` child results (`zip` yields disjoint `(mut A, mut B)` when branches return `new`; `map` yields element-isolated `new Result<[mut]U, TaskFault>` when `work` returns `new U` for `U \|> SharedObject`). `race` and `race_all` (`race_all([]) == Ok(None)`) forbid `Result` in `T` (`E0720`). `try_*` and `race_ok` (`race_ok([]) == Ok(Err([]))`) cancel siblings on the first `Err` (`try_*`) or `Ok` (`race_ok`) and forbid nested `Result` payloads (`E0720`) |
 | Phase, budgets, `absorb_panic` | Run-time only (`E0810`), excluded from `diverge_budget` (`E0822`), and rejected unhandled across `absorb_panic` (`E0608`); pure slices inside a child body may still use budgets or `absorb_panic` |
 
@@ -8438,7 +8576,7 @@ fn unconsumed_sibling_wins() @Concurrent -> Result<int, TaskFault> {
     let a = fork \-> { panic("a"); 1 }
     let _b = fork \-> { panic("b"); 2 }
     let _ = join(a) ?? \_ -> 0                 -- Consumes a only; unjoined _b still fails scope
-    Ok(99)                                     -- Returns Err(TaskFault::Panicked("b"))
+    Ok(99)                                     -- Returns Err(TaskFault::Panicked(info)) with panic_message(info) == "b"
 }
 
 fn cancel_worker() @Async -> Result<?int, TaskFault> {
@@ -8458,7 +8596,7 @@ fn cancel_worker() @Async -> Result<?int, TaskFault> {
 | Cancellation triggers | Triggered immediately by: (1) any unhandled child `@Panic` (recorded in arrival order; consuming one via `join`/`cancel` removes only that child's record without revoking sibling cancellation), (2) parent `body` exit while children remain unfinished, or (3) `cancel` / `cancel_scope()` |
 | `@Fiber` points | Observed at `Fiber::yield()`, `check_cancelled()`, suspending `Channel` and `@Fiber` I/O operations, and `scope`/`scope_with`/`join`/`cancel` barriers (`is_cancelled()` polls without unwinding). Cancellation before a channel operation's commit detaches its waiter without consuming a queued item or committing its pending send; cancellation does not undo a committed transfer or restore an ended source path |
 | Unwinding & barrier | Uncatchable by handlers or `absorb_panic`; runs frame `let scoped` cleanups LIFO, closes unreturned local channel endpoints, and suspends enclosing `diverge_budget` allowances (cleanup panic $\rightarrow$ `@Fatal`). Every spawned child terminates and finishes cleanup before `scope` / `scope_with` returns or runs outer parent cleanups |
-| Exit precedence | **`@Fatal`** $>$ **parent `@Panic`** $>$ **earliest unconsumed child `@Panic`** (`Err(TaskFault::Panicked(msg))`) $>$ **parent `body` return** (`Ok`/`Err`, unaffected by siblings cancelled only on parent exit) $>$ **`Err(TaskFault::Cancelled)`**. Concurrent unconsumed child panics choose the first recorded message nondeterministically within `Panicked` |
+| Exit precedence | **`@Fatal`** $>$ **parent `@Panic`** $>$ **earliest unconsumed child `@Panic`** (`Err(TaskFault::Panicked(info))`) $>$ **parent `body` return** (`Ok`/`Err`, unaffected by siblings cancelled only on parent exit) $>$ **`Err(TaskFault::Cancelled)`**. Concurrent unconsumed child panics choose the first recorded `PanicInfo` nondeterministically within `Panicked` |
 
 ### Deterministic Data Parallelism and Divide-and-Conquer Primitives
 
@@ -9359,7 +9497,7 @@ meta let EVENT_VARIANTS = variants(<UiEvent>) -- ["Click", "Focus", "Hover"]
 ```
 
 - **Product Types (`coords(<T>)`)**: For records and tuples, `coords(<T>)` evaluates to `[](MemberMode, CoordKey<T>)` pairing each coordinate's `MemberMode` with its coordinate key (`str` field names in UTF-8 byte order for records; ascending `int` indices for tuples; `[]` for `()`). Non-product targets trigger `E0358`.
-- **Sum Types (`variants(<T>)`)**: For sum types, `variants(<T>)` evaluates to `[]str` of variant constructor names in UTF-8 byte order (`E0301` on non-sum).
+- **Sum Types (`variants(<T>)`)**: For sum types, `variants(<T>)` evaluates to `[]str` of deduplicated variant constructor names (including [spliced `..Sub` variants](#sum-variant-spreading-and-subset-inclusion)) in UTF-8 byte order (`E0301` on non-sum).
 
 #### Static Coordinate Parameters and Computed Value Projection
 
@@ -9538,10 +9676,10 @@ meta let _ = assert(!Reflect::has_default(<RawAlias>, "x")) -- <RawAlias> == <.{
 | :--- | :--- | :--- |
 | `Reflect::attrs` | `pub halt meta fn attrs<T, A>(target: Type<T>) -> []A` | Attributes of exact type `A` on nominal, opaque, or sum `T` in source order (`[]` for structural types) |
 | `Reflect::field_attrs` | `pub halt meta fn field_attrs<T, A>(target: Type<T>, meta key: str \|> Key<UnwrapOrSelf<T>>) -> []A` | Attributes of exact type `A` on root record field `key` of nominal or visible opaque `T` (`[]` for structural types) |
-| `Reflect::variant_attrs` | `pub halt meta fn variant_attrs<T, A>(target: Type<T>, meta variant: str) -> []A` | Attributes of exact type `A` on variant `variant` of sum `T` (`E0301` / `E0323` if invalid) |
+| `Reflect::variant_attrs` | `pub halt meta fn variant_attrs<T, A>(target: Type<T>, meta variant: str) -> []A` | Attributes of exact type `A` on variant `variant` of sum `T`, concatenating `..Sub` and explicit attributes in source order (`E0301` / `E0323` if invalid) |
 | `Reflect::doc` | `pub halt meta fn doc<T>(target: Type<T>) -> ?str` | Attached `--\|` outer doc text on nominal, opaque, or sum `T` (`None` if absent or structural) |
 | `Reflect::field_doc` | `pub halt meta fn field_doc<T>(target: Type<T>, meta key: str \|> Key<UnwrapOrSelf<T>>) -> ?str` | Attached `--\|` doc text on root record field `key` of nominal or visible opaque `T` (`None` if absent or structural) |
-| `Reflect::variant_doc` | `pub halt meta fn variant_doc<T>(target: Type<T>, meta variant: str) -> ?str` | Attached `--\|` doc text on sum variant `variant` |
+| `Reflect::variant_doc` | `pub halt meta fn variant_doc<T>(target: Type<T>, meta variant: str) -> ?str` | Attached `--\|` doc text on sum variant `variant` (local doc on `T` if present, else first non-`None` spread doc) |
 | `Reflect::has_default` | `pub halt meta fn has_default<T>(target: Type<T>, meta key: str \|> Key<UnwrapOrSelf<T>>) -> bool` | `true` iff `T` is a nominal or visible opaque record declaration whose root field `key` declares `= expr` (`false` for structural types, including transparent `type` aliases) |
 
 ### Structural Type Pattern Matching
@@ -9997,9 +10135,9 @@ The prelude is an ambient lexical scope enclosing every compilation unit, includ
 
 | Binding category | Access |
 | :--- | :--- |
-| Built-in functions below | Bare names: `len`, `clone`, `derive`, `diverge_budget`, `absorb_panic`, `panic`, `fatal`, `assert`, etc. |
+| Built-in functions below | Bare names: `len`, `clone`, `derive`, `diverge_budget`, `absorb_panic`, `panic_cause`, `panic_message`, `panic`, `fatal`, `assert`, etc. |
 | Library modules below | Whole public namespace through `Module::member` |
-| Standard types / sorts | `Option<T>`, `Result<T, E>`, `Set<T>`, `BudgetError`, `PanicError`, `MemberMode`. Constructors follow ordinary resolution |
+| Standard types / sorts | `Option<T>`, `Result<T, E>`, `Set<T>`, `BudgetError`, `PanicCause`, `PanicInfo`, `PanicError`, `MemberMode`. Constructors follow ordinary resolution |
 | Effect labels / sets | Operational: `Fiber`, `Concurrent`, `Async`, `Yield<T>`; implicit non-operational (semantic interfaces only): `Diverge`, `Panic`, `Fatal` |
 | Static type operations | `SharedObject`, `LenTarget`, `Tuple`, `NominalWrapper`, `Unwrap` |
 | Scoped draft type | `Draft<T>` in [recipe and helper contracts](#normative-rules-for-functional-updates) |
@@ -10110,6 +10248,8 @@ Built-in operations use the same surface signature forms as user-defined Ril fun
 | `derive` | `pub fn derive<T \|> SharedObject>(base: T, recipe: fn(mut draft: Draft<T>) @& -> ()) -> T` | Forwards recipe | Run-time | No uniform complexity guarantee | Path updates on an immutable shared-object root via a confined draft |
 | `diverge_budget` | `pub fn diverge_budget<T>(limit: u64, action: fn() @& -> T) -> Result<T, BudgetError>` | Forwards action minus `Diverge` | Dual-phase | See [charging rules](#allowance-and-charging) | Covered finite evaluation; preserves other effects and state/provenance obligations |
 | `absorb_panic` | `pub fn absorb_panic<T>(action: fn() @& -> T) -> Result<T, PanicError>` | Forwards action minus `Panic` | Run-time | $O(1)$ boundary + action | Unwind-safe synchronous `@Panic` containment (`E0608`); does not intercept `@Fatal` |
+| `panic_cause` | `pub halt fn panic_cause(info: PanicInfo) -> PanicCause` | None | Run-time | $O(1)$ | Extract `PanicCause` from `PanicInfo` (`E0810` in static evaluation) |
+| `panic_message` | `pub halt fn panic_message(info: PanicInfo) -> str` | None | Run-time | $O(1)$ / $O(\text{digits})$ | Format human-readable message for `panic_cause(info)` (`E0810` in static evaluation) |
 | `byte_size` | `pub meta fn byte_size<T>(token: Type<T>) -> int` | None | Static only | $O(1)$ | Size of the represented target's value/handle; static-only targets have no run-time layout |
 | `type_name` | `pub meta fn type_name<T>(token: Type<T>) -> str` | None | Static only | $O(\text{len})$ | Diagnostic description of the token's target, including static metatypes; spelling does not determine type identity |
 | `coords` | `pub meta fn coords<T>(token: Type<T>) -> [](MemberMode, CoordKey<T>)` | None | Static only | $O(\text{members})$ | Enumerate member modes and coordinates for record or tuple product types; non-product targets trigger `E0358` |
@@ -10178,15 +10318,16 @@ An ineligible type argument normally fails its guard with `E0301`. At the built-
   - `pub meta fn byte_size<T>(token: Type<T>) -> int` queries the represented target's nonnegative value/handle size ([Compile-Time Evaluation and Layout Queries](#compile-time-evaluation-and-layout-queries)). Static-only metatypes have no ordinary layout (`E0306`).
   - Static-only: permitted during compile-time static evaluation (`meta let`, type functions); calling `byte_size` in runtime code is `E0810`. Bare type names cannot be passed directly (`E0319`); pass `<T>`.
   - Grants no packed layout, field offset, or external ABI alignment guarantees.
-- **Defect Initiation, Panic Absorption, and Process Termination (`panic`, `assert`, `absorb_panic`, `fatal`)**:
-  - `panic(message: str) -> never` introduces implicit `@Panic`: at run time it initiates LIFO stack unwinding; in static evaluation it aborts with `E0831: StaticEvaluationPanicError`.
-  - `assert(condition: bool, message: str = "assertion failed") -> ()` evaluates its arguments eagerly before the call; if `condition` is false, it panics (`E0830` in static evaluation).
-  - `absorb_panic<T>(action: fn() @& -> T) -> Result<T, PanicError>` is run-time only (`E0810` in static evaluation) and requires an unwind-safe `action` (`E0608`); it converts `@Panic` unwinding inside `action` into `Err(PanicError::Panicked(message))` after `action`'s local LIFO cleanups ([Panic Absorption with absorb_panic](#panic-absorption-with-absorb_panic)).
+- **Defect Initiation, Panic Absorption, Inspection, and Process Termination (`panic`, `assert`, `absorb_panic`, `panic_cause`, `panic_message`, `fatal`)**:
+  - `panic(message: str) -> never` introduces implicit `@Panic`: at run time it initiates LIFO stack unwinding with `PanicCause::Explicit(message)`; in static evaluation it aborts with `E0831: StaticEvaluationPanicError`.
+  - `assert(condition: bool, message: str = "assertion failed") -> ()` evaluates its arguments eagerly before the call; if `condition` is false, it panics with `PanicCause::AssertionFailed(message)` (`E0830` in static evaluation).
+  - `absorb_panic<T>(action: fn() @& -> T) -> Result<T, PanicError>` is run-time only (`E0810` in static evaluation) and requires an unwind-safe `action` (`E0608`); it converts `@Panic` unwinding inside `action` into `Err(PanicError::Panicked(info))` after `action`'s local LIFO cleanups ([Panic Absorption with absorb_panic](#panic-absorption-with-absorb_panic)).
+  - `panic_cause(info: PanicInfo) -> PanicCause` and `panic_message(info: PanicInfo) -> str` are run-time-only accessors (`E0810` in static evaluation) ([Panic Absorption with absorb_panic](#panic-absorption-with-absorb_panic)).
   - `fatal(message: str) -> never` introduces implicit `@Fatal`: at run time it writes `message` to standard error and terminates the OS process immediately without unwinding or cleanup, bypassing `absorb_panic`, `diverge_budget`, handlers, and `scope`; in static evaluation it aborts with `E0831`.
 - **Standard Output Invariants (`print`, `println`)**:
   - `print` and `println` write UTF-8 encoded text to host standard output under the `@Fiber` system effect.
   - `println` appends exactly one LF byte (`0x0A`, `\n`) without host-specific newline conversions (e.g. no CRLF translation).
-  - Both convenience operations panic on unrecoverable host I/O failure; fallible streaming I/O is provided separately by `ril/io`.
+  - Both convenience operations panic with `PanicCause::HostIoFailure` on unrecoverable host I/O failure; fallible streaming I/O is provided separately by `ril/io`.
   - Concurrent writes across tasks may interleave at arbitrary byte boundaries without synchronization.
 - **Prelude Shadowing and Integrity**:
   - Lexical declarations in inner scopes may shadow ordinary prelude names such as `clone`, `len`, and `assert`; protected `Type` is excluded.
@@ -10291,6 +10432,7 @@ This index assigns each code its diagnostic name and points to its defining rule
 | **`E0210`** | [`DuplicateFieldError`](#record-construction-and-spread-update); [Record Types and Row Polymorphism](#record-types-and-row-polymorphism) |
 | **`E0211`** | [`ConflictingSpreadFieldsError`](#record-construction-and-spread-update) |
 | **`E0212`** | [`OverlappingRowFieldError`](#record-types-and-row-polymorphism) |
+| **`E0213`** | [`ConflictingVariantSpreadError`](#sum-variant-spreading-and-subset-inclusion) |
 
 ### Types, Expressions, Generics, and Patterns
 
@@ -10301,14 +10443,14 @@ This index assigns each code its diagnostic name and points to its defining rule
 | **`E0303`** | [`NonExhaustiveMatchError`](#pattern-matching) |
 | **`E0304`** | [`UnreachableMatchArmError`](#pattern-matching); [Sum Types and GADTs](#sum-types-and-gadts) |
 | **`E0305`** | [`NominalTypeMismatchError`](#nominal-type-wrappers) |
-| **`E0306`** | [`KindMismatchError`](#structural-type-pattern-matching); [Generic Parameters](#generic-parameters-defaults-and-value-sorts); [Static Parameter Sorts](#static-parameter-sorts-and-adaptation-rules); [Record Rows](#record-types-and-row-polymorphism); [Static Layout](#compile-time-evaluation-and-layout-queries) |
+| **`E0306`** | [`KindMismatchError`](#structural-type-pattern-matching); [Generic Parameters](#generic-parameters-defaults-and-value-sorts); [Static Parameter Sorts](#static-parameter-sorts-and-adaptation-rules); [Record Rows](#record-types-and-row-polymorphism); [Static Layout](#compile-time-evaluation-and-layout-queries); [Sum Variant Spreading](#sum-variant-spreading-and-subset-inclusion) |
 | **`E0307`** | [`MissingFieldError`](#record-types-and-row-polymorphism) |
-| **`E0308`** | [`OpaqueBoundaryViolationError`](#type-declarations-and-opaque-types) |
+| **`E0308`** | [`OpaqueBoundaryViolationError`](#type-declarations-and-opaque-types); [Sum Variant Spreading](#sum-variant-spreading-and-subset-inclusion) |
 | **`E0309`** | [`VacuousBindingError`](#guarded-bindings-and-non-vacuous-invariant) |
 | **`E0310`** | [`InvalidatedNarrowingAccessError`](#flow-sensitive-type-narrowing) |
 | **`E0311`** | [`ContradictoryNarrowingError`](#flow-sensitive-type-narrowing) |
 | **`E0312`** | [`TupleIndexOutOfBoundsError`](#array-map-and-tuple-types) |
-| **`E0313`** | [`CyclicTypeAliasError`](#definitional-equality-and-recursive-types); [type declarations](#type-declarations-and-opaque-types) |
+| **`E0313`** | [`CyclicTypeAliasError`](#definitional-equality-and-recursive-types); [type declarations](#type-declarations-and-opaque-types); [Sum Variant Spreading](#sum-variant-spreading-and-subset-inclusion) |
 | **`E0314`** | [`ArityMismatchError`](#pattern-matching); [Default Parameters and Named Arguments](#default-parameters-and-named-arguments) |
 | **`E0315`** | [`EscapingLocalNominalTypeError`](#block-expressions-tail-values-and-hoisted-declarations) |
 | **`E0316`** | [`NonTrailingDefaultGenericParamError`](#generic-parameters-defaults-and-value-sorts) |
@@ -10339,7 +10481,7 @@ This index assigns each code its diagnostic name and points to its defining rule
 | **`E0341`** | [`InvalidRecordKeySortError`](#mapped-record-and-tuple-types) |
 | **`E0342`** | [`InvalidTupleKeySortError`](#mapped-record-and-tuple-types) |
 | **`E0343`** | [`SingleElementTupleProhibitedError`](#mapped-record-and-tuple-types) |
-| **`E0344`** | [`InsufficientTypeInformationError`](#generic-parameters-defaults-and-value-sorts); [Array, Map, and Tuple Types](#array-map-and-tuple-types) |
+| **`E0344`** | [`InsufficientTypeInformationError`](#generic-parameters-defaults-and-value-sorts); [Array, Map, and Tuple Types](#array-map-and-tuple-types); [Anonymous Generalization](#anonymous-generalization-and-fixed-storage) |
 | **`E0345`** | [`RefutablePatternError`](#pattern-matching) |
 | **`E0346`** | [`OrPatternBindingMismatchError`](#pattern-matching) |
 | **`E0347`** | [`DuplicatePatternBindingError`](#pattern-matching) |
