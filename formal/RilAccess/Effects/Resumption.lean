@@ -169,4 +169,71 @@ theorem conforming_operation_revokes (h : resume state ticket = some next)
     lifetimeEnabled next.authority dependencies = false :=
   operation_dependency_ends h ((conforms id).mp hi) hd
 
+/-- E0721 effect suspension guard: an unhandled operation cannot suspend across a
+handler delimiter while an active linear value resides inside the delimited scopes. -/
+def canSuspendEffect (delimiterScope : Nat) (authority : World) : Bool :=
+  !authority.tokens.any fun token =>
+    token.linear && token.active && decide (delimiterScope < token.scope)
+
+def abortDelimiter (delimiterScope : Nat) (authority : World) : Option World :=
+  if canSuspendEffect delimiterScope authority && ledgerValid authority then
+    some { authority with
+      scope := delimiterScope,
+      frames := authority.frames.filter (fun frame => decide (frame.parentScope < delimiterScope)),
+      permissions := authority.permissions.map (fun p =>
+        if p.scope > delimiterScope then { p with alive := false } else p),
+      tokens := authority.tokens.map (fun token =>
+        if token.scope > delimiterScope && !token.retained then
+          { token with active := false, qualified := false } else token),
+      loans := authority.loans.filter (fun loan =>
+        match lookupToken authority loan.token with
+        | some token => decide (token.scope ≤ delimiterScope)
+        | none => true) }
+  else none
+
+theorem active_inner_linear_blocks_suspension {delimiterScope : Nat} {authority : World} {token : Token}
+    (hm : token ∈ authority.tokens) (hlin : token.linear = true) (hact : token.active = true)
+    (hinner : delimiterScope < token.scope) :
+    canSuspendEffect delimiterScope authority = false ∧
+      abortDelimiter delimiterScope authority = none := by
+  have hany : (authority.tokens.any fun candidate =>
+      candidate.linear && candidate.active && decide (delimiterScope < candidate.scope)) = true :=
+    List.any_eq_true.mpr ⟨token, hm, by simp [hlin, hact, hinner]⟩
+  have hcan : canSuspendEffect delimiterScope authority = false := by
+    simp [canSuspendEffect, hany]
+  exact ⟨hcan, by simp [abortDelimiter, hcan]⟩
+
+theorem abortDelimiter_preserves_active_linear {delimiterScope : Nat} {authority after : World}
+    {id : Nat} {token : Token}
+    (h : abortDelimiter delimiterScope authority = some after)
+    (hlook : lookupToken authority id = some token)
+    (hlin : token.linear = true) (hact : token.active = true) :
+    token.scope ≤ delimiterScope ∧ lookupToken after id = some token := by
+  unfold abortDelimiter at h
+  split at h
+  · rename_i hguard
+    cases h
+    have hpair : canSuspendEffect delimiterScope authority = true ∧ ledgerValid authority = true := by
+      simpa only [Bool.and_eq_true] using hguard
+    have hm := (lookup_token hlook).1
+    have hscope : token.scope ≤ delimiterScope := by
+      by_cases hgt : delimiterScope < token.scope
+      · have ⟨hfalse, _⟩ := active_inner_linear_blocks_suspension hm hlin hact hgt
+        simp [hfalse] at hpair
+      · omega
+    refine ⟨hscope, ?_⟩
+    unfold lookupToken
+    change (authority.tokens.map _).find? _ = some token
+    rw [List.find?_map]
+    have keepId : ∀ candidate : Token,
+        (if candidate.scope > delimiterScope && !candidate.retained then
+          { candidate with active := false, qualified := false } else candidate).id = candidate.id := by
+      intro candidate; split <;> rfl
+    simp only [Function.comp_def, keepId]
+    have found : authority.tokens.find? (fun candidate => decide (candidate.id = id)) = some token := hlook
+    rw [found]
+    have hnotgt : ¬(token.scope > delimiterScope) := Nat.not_lt.mpr hscope
+    simp [hnotgt]
+  · contradiction
+
 end RilAccess.CoreResumption

@@ -104,8 +104,10 @@ theorem checked_core (h : check program = .ok analysis) :
     · contradiction
     · split at h
       · contradiction
-      · cases h
-        exact ⟨infer_agrees hi, rfl⟩
+      · split at h
+        · contradiction
+        · cases h
+          exact ⟨infer_agrees hi, rfl⟩
 
 theorem access_and_provenance (h : check program = .ok analysis)
     (hr : state ∈ execute program initialWorld.raw)

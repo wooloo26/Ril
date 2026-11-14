@@ -8,7 +8,7 @@ variable {world next : World} {source destination id : Nat} {resolved derived : 
 theorem move_facts (h : checkAtom (.move source destination) world = .ok next) :
     ∃ resolved, resolve world ⟨source, []⟩ = some resolved ∧ eligibleMove world resolved = true ∧
       next.tokens =
-        ⟨world.nextToken, resolved.pointer, true, false, true, false, world.scope, resolved.permission.dependencies, []⟩ ::
+        ⟨world.nextToken, resolved.pointer, true, false, true, false, world.scope, resolved.permission.dependencies, [], resolved.grant.linear⟩ ::
           (endTokens world resolved.permission.dependencies).tokens ∧
       rawLookup next.raw destination = some resolved.pointer := by
   have executed := (checked_atom_facts h).executed

@@ -120,6 +120,7 @@ The following distinctions apply throughout the specification; their defining se
     - [Read-Only Reference Bindings](#read-only-reference-bindings)
       - [Normative Rules for Read-Only References](#normative-rules-for-read-only-references)
     - [Type Declarations and Opaque Types](#type-declarations-and-opaque-types)
+      - [Mandatory-Consumption Linear Types](#mandatory-consumption-linear-types)
       - [Declaration Metadata Attributes](#declaration-metadata-attributes)
     - [External Interface Declarations](#external-interface-declarations)
       - [Normative Rules for External Interface Modules](#normative-rules-for-external-interface-modules)
@@ -633,6 +634,9 @@ let up = 1                            -- OK: up is an ordinary identifier
 -- let halt = 1                       -- Error [E0113]: reserved keyword
 let scoped = 2                        -- OK: ordinary identifier
 let opaque = 3                        -- OK: ordinary identifier
+let pkg = 4                           -- OK: ordinary identifier
+let linear = 5                        -- OK: ordinary identifier
+let movable = 6                       -- OK: ordinary identifier
 -- let meta = 4                       -- Error [E0113]: reserved keyword
 -- let pub = 5                        -- Error [E0113]: reserved keyword
 let in = 1                            -- OK: ordinary identifier
@@ -641,12 +645,13 @@ let in = 1                            -- OK: ordinary identifier
 -- let i64 = 0                        -- Error [E0113]: intrinsic primitive type name
 -- fn invalid(bool: int) -> () {}     -- Error [E0113]: intrinsic primitive type name
 -- type InvalidField = .{ str: bool }  -- Error [E0113]: intrinsic primitive type name
-assert(scoped + opaque + in == 6)
+assert(scoped + opaque + pkg + linear + movable + in == 21)
 type Bottom = never                   -- Intrinsic bottom type in type syntax
 type Config = .{
     capture: bool, up: bool,
     scoped: bool, opaque: bool, in: bool,
     via: bool, infer: bool,
+    pkg: bool, linear: bool, movable: bool,
 }                                     -- OK: ordinary field labels
 ```
 
@@ -656,20 +661,24 @@ Contextual keywords are identifiers outside the forms below. Recognize each form
 
 | Word | Contextual form | Meaning |
 | :--- | :--- | :--- |
-| `opaque` | `opaque type`, after optional visibility | [Hidden type representation](#type-declarations-and-opaque-types) |
+| `pkg` | `pub(pkg)` or `opaque(pkg)` | [Package-scoped visibility or opacity](#modules-and-compilation-units) |
+| `opaque` | `opaque [ (pkg) ] type`, after optional visibility | [Hidden type representation](#type-declarations-and-opaque-types) |
+| `linear` | `type(linear)` modifier or `<T: linear>` bound | [Mandatory-consumption linear types](#mandatory-consumption-linear-types) |
+| `movable` | `type(linear, movable)` in `.d.ril` | [Cross-task foreign linear handle](#external-interface-declarations) |
 | `scoped` | Binding modifier in `let scoped [mut] Pattern` | [Scope-exit resource cleanup](#scoped-resource-bindings) |
 | `via` | Declared member/access mode, parameter mode, or `let via name` receiver | [Static mode parameters and dependent reception](#access-mode-inference-with-via-and-infer) |
 | `infer` | Return modifier in `-> infer T` on a signature with explicit `via` inputs | [Inferred result access modes, sources and dependencies](#return-construction-access-modes-and-sources) |
 | `capture` | `&capture` | [Surviving environment creation](#closures-factory-signatures-and-lexical-environments) |
 | `up` | `&up`, `&up{...}`, or `&up(owner){...}` | [Callable environment abstraction or named-source access](#state-groups-and-captured-layers) |
 
-In `&up(owner){...}`, `sub` selects the current module's storage, a module path or `Super` selects another module's storage, and a lowercase identifier selects an enclosing callable layer. Invalid mode-inference placements use `E0412` under [access mode inference](#access-mode-inference-with-via-and-infer).
+In `&up(owner){...}`, `sub` selects the current module's storage, a module path or `Super` selects another module's storage, and a lowercase identifier selects an enclosing callable layer. In `StatementSequence`, same-line `pub(pkg) ...` or `opaque(pkg) type ...` is rejected as a sequential declaration (`E0703`), whereas a newline after `opaque(pkg)` ends an ordinary call expression. Invalid mode-inference placements use `E0412` under [access mode inference](#access-mode-inference-with-via-and-infer).
 
 Primitive type spellings listed under [Value Types](#value-types), including `never`, are reserved type names. They denote their intrinsic types and are unavailable as ordinary identifiers or field labels (`E0113`).
 
 ```ril
 -- Reserved and contextual keywords in action:
-pub opaque type Token = int            -- 'pub', 'opaque', 'type'
+pub opaque(pkg) type Token = int       -- 'pub', 'opaque', 'pkg', 'type'
+pub(pkg) type(linear) Lease(u64)       -- 'pub', 'pkg', 'type', 'linear'
 meta let COMPILE_ID = 101              -- 'meta', 'let'
 eff Logger { log(str) -> () }          -- 'eff'
 use ril/array::{push}                  -- 'use'
@@ -1186,9 +1195,10 @@ assert(len(ref full) == 1)
 Sum types represent tagged disjoint unions. Constructor equations allow generalized algebraic data types (GADTs). A present variant payload is always parenthesized; a record payload is the single unnamed payload `(.{...})`. The sum declaration's own `{...}` delimits its variant list.
 
 ```ebnf
-SumTypeDecl     ::= { MetaAttr } [ "pub" ] "type" PascalCase [ GenericParams ] [ WhereClause ]
+SumTypeDecl     ::= { MetaAttr } [ Visibility ] [ Opacity ] "type" [ TypeModifiers ] PascalCase [ GenericParams ] [ WhereClause ]
                     "{" VariantDeclList "}"
-VariantDeclList ::= VariantDeclItem { "," VariantDeclItem } [ "," ]
+VariantDeclList ::= ".." [ "," ]
+                  | VariantDeclItem { "," VariantDeclItem } [ "," [ ".." [ "," ] ] ]
 VariantDeclItem ::= VariantDecl | VariantSpread
 VariantSpread   ::= ".." TypeReference
 VariantDecl     ::= { MetaAttr } PascalCase [ GenericParams ] [ VariantPayload ] [ "->" TypeExpression ]
@@ -1199,7 +1209,7 @@ SumInjectExpr   ::= TypeReference "(" ".." Expression [ "," ] ")"
 ```
 
 ```ril
-type Option<T> {
+type Option<T: linear> {
     Some(T),
     None,
 }
@@ -1230,6 +1240,41 @@ fn eval<T>(e: Expr<T>) -> T {
 ```
 
 ```ril
+-- Extensible ('..') and opaque sum declarations:
+-- In package 'net', file 'net/error.ril':
+pub type IoError { NotFound(str), Timeout(int), .. }
+pub type FutureEvent { .. }
+pub opaque(pkg) type Handshake { Init, Ready(int) }
+-- type PrivateOpen { A, .. }                  -- Error [E0354]: extensible '..' in '.ril' requires 'pub'
+-- pub(pkg) type PkgOpen { A, .. }             -- Error [E0354]: already closed throughout defining 'pkg'
+
+-- Inside defining 'pkg' ('net'): variant set is closed, Handshake is transparent
+pub fn retry_ms(err: IoError) -> int {
+    match err {
+        IoError::NotFound(_) -> 0,
+        IoError::Timeout(ms) -> ms,
+        -- _ -> -1,                            -- Error [E0304]: closed inside defining 'pkg'
+    }
+}
+pub fn absurd(ev: FutureEvent) -> never { match ev {} }
+pub fn step_code(h: Handshake) -> int {
+    match h { Handshake::Init -> 0, Handshake::Ready(n) -> n }
+}
+
+-- Outside defining 'pkg': IoError is open; Handshake variants are sealed
+-- fn external_handle(err: IoError, h: Handshake) -> int {
+--     -- match err { IoError::NotFound(_) -> 0, IoError::Timeout(ms) -> ms }
+--                                             -- Error [E0303]: open sum requires catch-all '_'
+--     -- let _ = Handshake::Init              -- Error [E0308]: opaque sum constructor is sealed
+--     -- match h { Handshake::Init -> 0, _ -> 1 } -- Error [E0308]: opaque sum variants are sealed
+--     match err {
+--         IoError::Timeout(ms) -> ms,
+--         _                    -> -1,         -- OK: required catch-all for future variants
+--     }
+-- }
+```
+
+```ril
 type Box<T> { Item<U>(U) -> Box<U> }
 let boxed: Box<int> = Box::Item(1)
 type Payload = Box<int>.Item           -- int
@@ -1237,7 +1282,7 @@ type Payload = Box<int>.Item           -- int
 -- type Wrong<T> { Item(T) -> bool }   -- Error [E0354]: result is not an instance of Wrong
 ```
 
-| Variant rule | Requirement |
+| Variant / sum rule | Requirement |
 | :--- | :--- |
 | Omitted result equation | The enclosing sum applied to its enclosing parameters |
 | Explicit result equation | An instance of that same sum declaration (`E0354` otherwise) |
@@ -1245,6 +1290,8 @@ type Payload = Box<int>.Item           -- int
 | Recovery | After transparent expansion, the parameter occurs as a bare argument or beneath rigid nominal, sum, or structural type constructors |
 | Computed static argument / type-function inversion | Does not establish recovery of a parameter |
 | Matching | Result equations supply arm-local equalities; recovered parameters do not introduce escaping existential types |
+| Extensible `..` (`E0354`, `E0303`, `E0304`) | Trailing `..` marks an extensible sum (`E0354` without `pub` in `.ril`, or without `pub`/`pub(pkg)` in `.d.ril`). `.ril` extensible sums are closed inside their defining `pkg` (`E0304` on redundant `_`) and open outside `pkg` (requiring an unguarded `_` or variable catch-all, `E0303`); `.d.ril` extensible sums are open in all scopes, and GADT equations never prune the unknown residual |
+| `Opacity` (`E0308`, `E0911`) | `opaque` seals constructors, variant patterns/`is`, `T.Variant`, and `variants(<T>)` outside the defining `sub` (`E0308`); `pub opaque(pkg)` seals them outside the defining `pkg` (`E0911` without `pub`). Sealed sums do not participate in unqualified variant resolution |
 
 Substitution must satisfy every occurrence of a recovered parameter and its declared sort. These declaration checks do not perform inverse evaluation of arbitrary type functions.
 
@@ -1388,37 +1435,50 @@ if sup_live is LiveSup::MutBuf {
     sup_live.0.count += 1
 }
 -- let dead = sub_live                         -- Error [E0549]: source ended by '..new'
+
+-- Extensible spreading inside defining 'pkg' vs external open boundaries:
+pub type ExtSub { Disconnected, .. }
+pub type ExtSup { ..ExtSub, AuthFailed, .. }   -- OK: ExtSup also declares '..'
+-- pub type ClosedSup { ..ExtSub, AuthFailed } -- Error [E0213]: spreading '..' sum requires '..' on target
+-- Outside 'ExtSub' defining 'pkg':
+-- type BadExtSpread { ..ExtSub, Local }       -- Error [E0308]: open sum cannot be spread outside defining 'pkg'
 ```
 
 | Aspect | Rule |
 | :--- | :--- |
-| Spread target (`E0306`, `E0308`, `E0313`, `E0907`) | `..TypeReference` must resolve to a visible concrete sum instance (`E0306` non-sum or unspecialized generic; `E0308` opaque; `E0907` `.d.ril`); direct spread cycles fail `E0313` |
+| Spread target (`E0306`, `E0308`, `E0313`, `E0213`, `E0907`) | `..TypeReference` must resolve to a closed transparent concrete sum at the declaration site (`E0306` non-sum or unspecialized generic; `E0308` opaque or open outside `pkg`; `E0907` uninterpreted `.d.ril`). Direct spread cycles fail `E0313`; spreading a `..`-declared sum inside `pkg` requires `..` on `Sup` (`E0213`) |
 | Idempotent absorption (`E0213`, `E0203`) | Duplicate explicit variants fail `E0203`. Spread/explicit duplicates merge iff standard ADT variants share tag/parentheses category, `K-EQ` normalized payloads, and member modes (`E0213: ConflictingVariantSpreadError` otherwise) |
-| Ownership & metadata (`E0206`) | Spliced variants belong to `Sup` (bare `V` is `E0206` when both sums are visible). `variants(<Sup>)` deduplicates; `variant_attrs` concatenates in source order; `variant_doc` prefers local doc |
-| Subset relation ($Sub \preceq_{\text{sum}} Sup$) | Reflexive, transitive relation on visible concrete sums: every `Sub` variant has a merge-compatible counterpart in `Sup` (`E0308` across opaque boundaries) |
-| Injection `Sup(..expr)` | Requires `expr : Sub` with $Sub \preceq_{\text{sum}} Sup$ (`E0301`/`E0306`/`E0308`). Allocates a fresh `Sup` value and receives payload constituents under `K-RECV` (`Sup(..new expr)` ends `expr`, `E0549`) |
+| Ownership & metadata (`E0206`) | Spliced variants belong to `Sup` (bare `V` is `E0206` when both sums are transparent). `variants(<Sup>)` deduplicates; `variant_attrs` concatenates in source order; `variant_doc` prefers local doc |
+| Subset relation ($Sub \preceq_{\text{sum}} Sup$) | Reflexive, transitive relation when `Sub` is closed and transparent and `Sup` is transparent (`Sup` may be open): every `Sub` variant has a merge-compatible counterpart in `Sup` (`E0308` when `Sub` is open or either sum is opaque) |
+| Injection `Sup(..expr)` | Requires `expr : Sub` with $Sub \preceq_{\text{sum}} Sup$ (`E0301`/`E0306`/`E0308`). Allocates a fresh `Sup` value and receives payload constituents under `K-RECV` (`Sup(..new expr)` ends `expr`, `E0549`, and is required when `Sub` is linear) |
 
 ### Nominal Type Wrappers
 
 A nominal wrapper introduces a distinct type identity while retaining the underlying type's run-time representation. Wrapping or unwrapping introduces no additional shared-object root and preserves the underlying object identity.
 
 ```ebnf
-NominalDecl      ::= { MetaAttr } [ "pub" ] "type" PascalCase [ GenericParams ] [ "(" [ TypeList ] ")" ] [ WhereClause ]
+NominalDecl      ::= { MetaAttr } [ Visibility ] [ Opacity ] "type" [ TypeModifiers ] PascalCase [ GenericParams ] [ "(" [ TypeList ] ")" ] [ WhereClause ]
 ```
 
 With no parenthesized payload clause, `NominalDecl` defines a **Unit Nominal Type** (e.g. `type Marker`).
 - **Value Construction**: The bare identifier `Marker` denotes its canonical singleton value (`let m = Marker`).
-- **Pattern Matching**: `Marker` acts as a nullary constructor pattern in `match` expressions (`match event { Marker -> ... }`). In `let` statements, patterns introducing zero variable bindings (such as `let Marker = m`) are prohibited under the **Non-Vacuous Binding Invariant (`E0309: VacuousBindingError`)**.
-- **Prelude Unwrapping**: Unwrapping via `inner(Marker)` evaluates to `()`.
+- **Pattern Matching**: `Marker` acts as a nullary constructor pattern in `match` expressions (`match event { Marker -> ... }`). In `let` statements, non-linear patterns introducing zero variable bindings (such as `let Marker = m`) are prohibited under the **Non-Vacuous Binding Invariant (`E0309: VacuousBindingError`)**.
+- **Prelude Unwrapping**: Unwrapping a non-linear transparent wrapper via `inner(Marker)` evaluates to `()`.
+- **Opacity (`opaque`, `pub opaque(pkg)`)**: Inside the transparency scope (`sub` for `opaque`, `pkg` for `pub opaque(pkg)`), explicit construction (`W(...)` / `Marker`), pattern matching, and `inner(...)` are admitted without implicit conversion; outside that scope they fail `E0308` (`<NominalWrapper<W>> == <never>`).
 - **Nominal Type Identity**: A unit nominal type is distinct from structural `()`. For example, `Result<Marker, E>` requires `Ok(Marker)` and does not permit `Ok()`. This type distinction provides no graph-isolation guarantee.
 
 ```ril
--- Unit Nominal Types (domain markers):
+-- Unit Nominal Types (domain markers) and Opaque Nominal Wrappers:
 type Marker
-type AdminToken
+pub opaque type Capability
+pub opaque(pkg) type HandleId(u64)
 
 let m: Marker = Marker                 -- OK: bare identifier value construction
 let raw_unit: () = inner(m)            -- OK: unwrap unit nominal wrapper evaluates to ()
+let cap: Capability = Capability       -- OK inside defining 'sub' ('E0308' outside)
+let hid = HandleId(42u64)              -- OK inside defining 'pkg' ('E0308' outside)
+let raw_hid: u64 = inner(hid)          -- OK inside defining 'pkg' ('E0308' outside)
+-- let implicit_hid: HandleId = 42u64  -- Error [E0301]: nominal wrapper requires explicit constructor
 let _ = m                              -- OK: explicit wildcard discard
 -- let Marker = m                      -- Error [E0309]: 'let' pattern must bind at least one variable; nullary constructor 'Marker' introduces zero bindings
 
@@ -1982,7 +2042,8 @@ Generics admit type, const-value, and member-mode parameters. Const generic para
 GenericParams         ::= "<" GenericParamDecl { "," GenericParamDecl } [ "," ] ">"
 GenericParamDecl      ::= TypeParamDecl | ConstParamDecl | ModeParamDecl
 TypeParamDecl         ::= PascalCase [ TypeConstraint ] [ "=" TypeExpression ]
-TypeConstraint        ::= [ ":" TypeSort ] { "|>" PipelineConstraint }
+TypeConstraint        ::= [ ":" TypeBound ] { "|>" PipelineConstraint }
+TypeBound             ::= "linear" [ "+" TypeSort ] | TypeSort
 TypeSort              ::= TypeSetSort | "Type" | KindSignature | RecordConstraint
 TypeSetSort           ::= TypeReference "|" TypeReference { "|" TypeReference }
 PipelineConstraint    ::= QualifiedName [ GenericArgs ]
@@ -2012,6 +2073,7 @@ ValueType             ::= TypeExpression
 - **Strict Generic Argument Sorts (`E0306`, `E0323`, `E0814`)**: Every generic argument is checked against the formal parameter's declared sort. A type parameter admits a type expression; a value parameter admits a static value of its declared sort. A value is never converted to its type; write `typeof e` to supply the type of a value. A value supplied to a type parameter is `E0306`; a value of the wrong sort supplied to a declared value parameter is `E0323`; a non-static value is `E0814`. Adaptation is one-way: a type expression may supply a `Type<T>`-sorted value parameter as a token.
 - **No Untagged Literal or Storage Union Types (`E0318`)**: Concrete values (strings, integers, booleans) and untagged value unions (`int | str`) cannot serve as storage, variable, or binding types (`E0318`). Tagged alternatives are declared with sum types (`type HttpMethod { Get, Post }`). Concrete values may be supplied as compile-time arguments only to parameters declared with a const/value sort (`Buffer<u8, 1024>`, `Matrix<f64, 4>`). Finite type sets (`T: int | f64`) are permitted exclusively as static domain constraints on generic parameters (`TypeSetSort`); each call specializes to a single rigid type.
 - **Definition-Site Evidence**: Check ordinary generic operations under [K-GEN](#generic-evidence-and-definition-checking). A guard's admission predicate does not by itself establish an arbitrary operation capability; finite token-match evidence and explicit constraints supply their prescribed facts.
+- **Affine Default & Linear Relaxation (`<T: linear>`, `E0301`, `E0721`)**: Unannotated `<T>` (or `\T`) restricts instantiations to affine types (`E0301` on `type(linear)` or linear-containing arguments). Writing `<T: linear>` (or `<T: linear + Sort>`) admits both affine and [linear types](#mandatory-consumption-linear-types) while checking the definition body against mandatory linear consumption (`E0721`) and linear reception rules (`E0603` / `E0411`).
 - **Function Generic Default Prohibition (`E0317`)**: Function generic parameters cannot declare defaults (`fn f<T = int>` is rejected); function types are inferred bidirectionally at call sites.
 
 Generic arguments follow the declaration's parameter category: type syntax for a type parameter, a static token/value expression for a value parameter. Passing a quoted type or an ordinary value to a type parameter is `E0306`; write `typeof e` when the type of a value is intended. `Type<T>` is the exact static metatype for target `T`; type quotes require a type, and declared value parameters accept values such as `42` in `Buffer<u8, 42>`.
@@ -2095,6 +2157,16 @@ type Id = \T -> <T>
 type IntType = Id<typeof 1024>        -- int: explicit value-to-type conversion
 type ByteType = Id<typeof 255u8>      -- u8
 -- type BadTypeArg = Id<1024>         -- Error [E0306]: a value cannot supply a type parameter
+
+-- Linear-capable generic relaxation (<T: linear>):
+type(linear) Lease(u64)
+fn relay<T: linear>(via item: T) -> infer T { item }
+fn drop_affine<T>(_item: T) -> () {}
+let mut moved_lease = relay(new Lease(1u64))
+let Lease(_id) = moved_lease
+-- let _ = drop_affine(new Lease(2u64))             -- Error [E0301]: default <T> rejects linear Lease
+-- fn bad_plain<T: linear>(item: T) -> T { item }   -- Error [E0603]: linear T forbids plain value parameter
+-- fn bad_leak<T: linear>(new _item: T) -> () {}    -- Error [E0721]: unconsumed linear parameter '_item'
 ```
 
 Static argument equivalence determines type and effect instantiation identity. It is distinct from run-time `==`. Arguments must first have the same admitted sort.
@@ -2125,7 +2197,7 @@ Every required generic argument at a function call must be determined, including
 
 ```ril
 -- Sum Type with default type argument:
-pub type Result<T, E = str> {
+pub type Result<T: linear, E: linear = str> {
     Ok(T),
     Err(E),
 }
@@ -2321,7 +2393,7 @@ J = (access, provenance, current obligations, latent contracts,
 
 | Context | Contents |
 | :--- | :--- |
-| `D` | Resolved declarations/scopes, schemas, primitive contracts, verified interfaces |
+| `D` | Resolved package (`pkg`)/`sub`/declaration scopes, visibility/opacity, schemas, primitive contracts, verified interfaces |
 | `Delta` | Rigid type/constructor, const, mode and row binders with their sorts |
 | `Gamma` | Value bindings: declared types, slot/access modes, callable contracts, scopes |
 | `Phi` | Declared/formation constraints and established local equality evidence |
@@ -2461,8 +2533,9 @@ capture-avoiding binder renaming. Compare these identity-bearing components:
 | Computed type | Equal forward results, or congruent symbolic applications |
 
 Opaque tokens/interfaces preserve declaration identity. Representation equivalence
-permits data operations and reception only in the exact defining scope; an inner
-`sub` is outside that scope.
+permits data operations and reception only in the declaration's transparency scope:
+the exact defining `sub` for `opaque` (an inner `sub` is outside it) or the defining
+`pkg` for `pub opaque(pkg)`.
 
 **K-EQ-RECURSION.** Transparent alias cycles require nominal or sum indirection
 (`E0313` otherwise). A repeated recursive comparison establishes equality only
@@ -2659,7 +2732,7 @@ narrow an explicitly declared domain.
 | Evidence | Definition-site check |
 | :--- | :--- |
 | Closed type set | Check each rigid member |
-| Structural / kind / const / mode bound | Use its stated schema/sort facts |
+| Structural / kind / const / mode / `linear` bound | Use its stated schema/sort/linearity facts (default `<T>` excludes linear types, `E0301`) |
 | Registered primitive guard | Use its registered eligibility facts |
 | Type equation | K-EQ and rigid constructor recovery |
 | Transparent finite guard | Check every admission path under K-GEN-MATCH below |
@@ -2725,7 +2798,7 @@ arm checks against R under Phi'
 ```
 
 Constructor recovery follows [sum rules](#sum-types-and-gadts), including opaque
-boundaries and the prohibition on arbitrary type-function inversion. Evidence
+boundaries, unprunable unknown residuals on open sums (`E0303`), and the prohibition on arbitrary type-function inversion. Evidence
 applies throughout the arm to the same rigid parameter, including legal return
 or closure transport. The outer binder identity and declared storage schema stay
 fixed; arm exit and or-pattern joins retain only common evidence.
@@ -3092,7 +3165,7 @@ The compiler infers uses from all retained possible sources and reachable operat
 | Declaration / executable marker | Required reachable evidence (`E0527` if absent) |
 | :--- | :--- |
 | `var` / `var ref` | Slot replacement |
-| `let mut` / ordinary `mut` parameter | Writable use: an interior write or an authorized writable return, store, capture, or forwarding use |
+| `let mut` / ordinary `mut` parameter | Writable use: an interior write, an authorized writable return, store, capture, or forwarding use, or terminal destructuring of a [linear binding](#mandatory-consumption-linear-types) |
 | `var mut` | Slot replacement and writable use, checked independently |
 | `let ^mut` / `var ^mut` | Shared writable reception plus writable use; `var ^mut` also requires slot replacement. Check the entire binding lifetime, including later shared assignments and internal aliases in a copy |
 | `^mut` parameter / handler binder | Actual retention of that parameter's writer beyond its temporary call/operation authority; writing alone is insufficient |
@@ -3275,7 +3348,7 @@ assert(count == 7 && packet.item.count == 1)
 ### Immutable Bindings
 
 ```ebnf
-LetDecl ::= [ "pub" ] "let" Pattern [ ":" TypeExpression ] "=" Expression [ "else" Block ]
+LetDecl ::= [ Visibility ] "let" Pattern [ ":" TypeExpression ] "=" Expression [ "else" Block ]
           | ModePreservingBinding
 ```
 
@@ -3544,10 +3617,15 @@ assert(v_left.count == 11 && v_right.count == 20)
 ### Type Declarations and Opaque Types
 
 ```ebnf
+Visibility       ::= "pub" [ "(" "pkg" ")" ]
+Opacity          ::= "opaque" [ "(" "pkg" ")" ]
+TypeModifiers    ::= "(" TypeModifierList ")"
+TypeModifierList ::= TypeModifier { "," TypeModifier } [ "," ]
+TypeModifier     ::= "linear"
 MetaAttr         ::= "meta" "(" MetaArgList ")"
 MetaArgList      ::= Expression { "," Expression } [ "," ]
-TypeDecl         ::= [ "pub" ] [ "halt" ] "type" PascalCase [ GenericParams ] [ WhereClause ] "=" TypeExpression
-OpaqueTypeDecl   ::= { MetaAttr } [ "pub" ] "opaque" "type" PascalCase [ GenericParams ] [ WhereClause ] "=" TypeExpression
+TypeDecl         ::= [ Visibility ] [ "halt" ] "type" PascalCase [ GenericParams ] [ WhereClause ] "=" TypeExpression
+OpaqueTypeDecl   ::= { MetaAttr } [ Visibility ] Opacity "type" PascalCase [ GenericParams ] [ WhereClause ] "=" TypeExpression
 LocalTypeDecl    ::= TypeDecl | OpaqueTypeDecl | NominalDecl | SumTypeDecl
 WhereClause      ::= SignatureWhereClause
 TypeList         ::= TupleMember { "," TupleMember } [ "," ]
@@ -3624,6 +3702,145 @@ fn authenticate_client() -> ?SessionToken {
 }
 ```
 
+```ril
+-- Package-scoped representation opacity ('pub opaque(pkg)'):
+-- In package 'db', file 'db/types.ril':
+pub opaque(pkg) type RowCursor = .{ page: int, slot: int }
+-- opaque(pkg) type BadPrivate = int                -- Error [E0911]: 'opaque(pkg)' requires 'pub'
+-- pub(pkg) opaque(pkg) type BadPkg = int           -- Error [E0911]: 'pub(pkg)' never crosses package boundary
+
+-- In package 'db', file 'db/scan.ril' (same 'pkg'): representation is transparent
+use db/types::{RowCursor}
+pub fn next_slot(c: RowCursor) -> RowCursor {
+    .{ page: c.page, slot: c.slot + 1 }
+}
+
+-- Outside package 'db': representation is sealed
+-- fn external_peek(c: RowCursor) -> int { c.slot } -- Error [E0308]: opaque outside defining 'pkg'
+```
+
+| Opacity modifier | Transparency scope | Placement rule |
+| :--- | :--- | :--- |
+| `opaque` | Exact defining `sub` (inline child `sub`s are outside) | Admitted on `OpaqueTypeDecl`, `NominalDecl`, and `SumTypeDecl` in `.ril` (`E0901` in `.d.ril`) |
+| `pub opaque(pkg)` | Entire defining `pkg` (library files, inline `sub`s, executable root, intra-package tests) | Requires `pub` at module/`sub` scope (`E0911` on `private`, `pub(pkg)`, `where`-local, or executable-root declarations); underlying representation must satisfy `pub(pkg)` visibility (`E0910`) |
+
+#### Mandatory-Consumption Linear Types
+
+```ril
+-- In file: db/tx.ril
+pub opaque type(linear) Tx(.{ id: u64, mut ops: []str })
+
+pub fn begin(id: u64) -> new Tx {
+    Tx(.{ id, ops: [] })
+}
+pub fn record(mut tx: Tx, sql: str) &mut -> () {
+    let Tx(.{ id: _, ref ops: _ }) = ref tx
+    tx |> mut push_op(sql)
+where
+    fn push_op(mut t: Tx, s: str) &mut -> () {
+        -- Inside defining 'sub', mut destructuring projects mutable fields without consuming:
+        let Tx(.{ id: _, mut ops }) = mut t
+        ops |> mut Array::push(s)
+    }
+}
+pub fn commit(new tx: Tx) @Fiber -> Result<int, str> {
+    let Tx(.{ id, mut ops }) = tx                   -- Terminal destructuring discharges 'tx'
+    println("commit {id}")
+    Ok(len(ref ops))
+}
+pub fn rollback(new tx: Tx) -> () {
+    let Tx(.{ id: _, mut ops: _ }) = tx             -- Terminal destructuring discharges 'tx'
+}
+
+-- Typestate sum & unit linear token:
+type(linear) Permit
+pub type(linear) Conn {
+    Open(.{ fd: int }),
+    Closed,
+}
+pub fn close_conn(new c: Conn) -> new Conn {
+    match c {
+        Conn::Open(.{ fd: _ }) -> Conn::Closed,
+        Conn::Closed           -> Conn::Closed,
+    }
+}
+pub fn finish_conn(new c: Conn) -> () {
+    match c {
+        Conn::Open(.{ fd: _ }) -> (),
+        Conn::Closed           -> (),
+    }
+}
+fn consume_permit() -> () {
+    let mut p = Permit
+    let Permit = p                                  -- Discharges 'p'; exempt from E0309 and E0527
+}
+```
+
+```ril
+-- Linear flow, fallible carriers, and static rejections (client outside 'db/tx'):
+use db/tx
+use db/tx::{Tx}
+
+fn run_batch(flag: bool, step: fn() -> Result<(), str>) @Fiber -> Result<int, str> {
+    let mut tx = Tx::begin(1u64)
+    Tx::record(mut tx, "INSERT 1")
+    -- step()?                                      -- Error [E0721]: early '?' would drop active linear 'tx'
+    if let Err(e) = step() {
+        Tx::rollback(new tx)                        -- Consumed before early return
+        return Err(e)
+    }
+    let mut maybe_tx: ?Tx = if flag { Some(new tx) } else { Tx::rollback(new tx); None }
+    if maybe_tx == None {                           -- Tag-only '== None' is valid; narrowed None holds no Tx
+        return Ok(0)
+    }
+    let Some(mut active) = maybe_tx else { return Ok(0) }
+    Tx::commit(new active)
+}
+
+-- Static rejections:
+-- fn leak() -> () { let mut tx = Tx::begin(1u64) } -- Error [E0721]: unconsumed linear value 'tx'
+-- fn drop_wild() -> () { let _ = Tx::begin(1u64) } -- Error [E0721]: '_' cannot discard linear value
+-- fn plain_bind() -> () { let tx = Tx::begin(1u64) } -- Error [E0603]: plain 'let' forbidden on linear type
+-- fn shared_bind() -> () {
+--     let mut tx = Tx::begin(1u64)
+--     let ^mut alias = tx                          -- Error [E0603]: '^mut' forbidden on linear type
+--     Tx::rollback(new tx)
+-- }
+-- fn rebind_slot() -> () {
+--     var mut tx = Tx::begin(1u64)                 -- Error [E0603]: 'var' slot forbidden on linear type
+--     Tx::rollback(new tx)
+-- }
+-- fn forge_outside(new tx: Tx) -> () {
+--     let Tx(_) = tx                               -- Error [E0308]: opaque linear type cannot be destructured outside defining scope
+-- }
+-- fn bad_array() -> () { let mut xs: [mut]Tx = [] } -- Error [E0411]: arrays cannot store linear elements
+-- fn bad_eq(ref a: Tx, ref b: Tx) -> bool { a == b } -- Error [E0327]: linear types do not support '=='
+-- fn bad_closure() &capture -> (fn() -> ()) {
+--     let mut tx = Tx::begin(1u64)
+--     \-> Tx::rollback(new tx)                     -- Error [E0721]: closure cannot consume outer linear binding
+-- }
+-- eff Ask { pause() -> () }
+-- fn bad_eff_hold() @Ask -> () {
+--     let mut tx = Tx::begin(1u64)
+--     Ask::pause()                                 -- Error [E0721]: active linear 'tx' held across unhandled effect operation
+--     Tx::rollback(new tx)
+-- }
+-- fn bad_budget() -> Result<(), BudgetError> {
+--     diverge_budget(100, \-> {
+--         let mut tx = Tx::begin(1u64)             -- Error [E0822]: linear values prohibited inside diverge_budget
+--         Tx::rollback(new tx)
+--     })
+-- }
+```
+
+| Linear aspect | Rule |
+| :--- | :--- |
+| Declarations & contagion | Admitted on `.ril` `NominalDecl` / `SumTypeDecl` (`type(linear)`) and `.d.ril` [`DeclForeignType`](#external-interface-declarations). Linearity propagates through owning (`let`/`mut`) fields, tuple elements, nominal/opaque representations, sum variants, `Option<T: linear>`, `Result<T: linear, E: linear>`, `Task<T: linear, mut>`, `Channel::Receiver<T: linear, mut>`, `SendError`, `TrySendError`, `Select2/3`, and `SelectSendRecv`. `Channel::Sender`, `ref` fields, `fn`, and `Type<T>` are non-linear |
+| Bindings, guards & storage (`E0603`, `E0411`, `E0327`) | Admits `let mut`, `new` parameters/returns, and temporary `mut`/`ref` borrows; plain `let`, `^mut`, and `var`/`var mut` fail `E0603`. `<SharedObject<T>> == <never>` (`clone` `E0530`, `derive` `E0536`), `<NominalWrapper<T>> == <never>` (no `inner()`), `[M]T` and `[K: V]`/`[K: mut V]` fail `E0411`, and `==` fails `E0327` (`?T == None` / `!= None` tag tests remain valid). `<Movable<T>> == <T>` when constituents satisfy `Movable` |
+| Mandatory discharge (`E0721`, `E0308`) | Every constructed or received linear value must be handed off via `new` or terminally destructured on all normal paths (including `return`, `last`, `next`, and `?`), failing `E0721` if unconsumed or branch-mismatched and `E0549` if used twice. Terminal destructuring requires transparency scope (`E0308`), satisfies `E0527`, exempts nullary linear patterns from `E0309`, and transfers linear obligations to constituent bindings. Narrowed linear-free variants (`None`, `Err(NonLinear)`) hold zero linear obligation |
+| Unwinding & cancellation | Only `@Panic`, `@Fatal`, and structured fiber cancellation may drop active linear bindings without explicit consumption |
+| Closures, effects, budgets & `meta` (`E0721`, `E0411`, `E0822`, `E0409`) | Closures may borrow `ref`/`mut` call-locally but cannot consume captured outer linear bindings (`E0721`). `with` handled tails cannot consume outer linear bindings; active linear bindings cannot cross unhandled user `eff` operations or `Yield::emit` (`E0721`), and `eff` operations cannot take or return linear types (`E0411`). `diverge_budget` forbids linear captures, locals, and results (`E0822`; `absorb_panic` permits confined linear values). Signature `ContractGuard`s are forbidden on callables with linear parameters or linear `Ok`/`Some` returns (`E0409`). `meta` forbids linear values (`E0411`/`E0812`); `<T>`, `Type<T>`, and isolated `typeof` remain valid |
+
 #### Declaration Metadata Attributes
 
 ```ril
@@ -3669,19 +3886,25 @@ External interface declarations are declaration-only modules in `.d.ril` files, 
 Shape declarations and `byte_size` establish no external binary layout.
 
 ```ebnf
-DeclUnitItem     ::= { MetaAttr } [ "pub" ] ( DeclFunction | DeclType | DeclLet | DeclForeignType | DeclSub )
-                   | UseDecl
+DeclUnitItem            ::= { MetaAttr } [ Visibility ] ( DeclFunction | DeclType | DeclLet | DeclForeignType | DeclSub )
+                          | UseDecl
 
-DeclSub          ::= "sub" PascalCase "{" { DeclUnitItem Separator } [ DeclUnitItem ] "}"
+DeclSub                 ::= "sub" PascalCase "{" { DeclUnitItem Separator } [ DeclUnitItem ] "}"
 
-DeclFunction     ::= "fn" ValueName [ GenericParams ]
-                     "(" [ ParameterList ] ")" [ EffectAnnot ] [ StateAnnot ]
-                     [ ReturnSpec ]
-                     [ SignatureWhereClause ]
+DeclFunction            ::= "fn" ValueName [ GenericParams ]
+                            "(" [ ParameterList ] ")" [ EffectAnnot ] [ StateAnnot ]
+                            [ ReturnSpec ]
+                            [ SignatureWhereClause ]
 
-DeclType         ::= SumTypeDecl | NominalDecl | TypeDecl
-DeclForeignType  ::= "type" PascalCase [ GenericParams ]
-DeclLet          ::= "let" ScreamingSnakeCase ":" TypeExpression
+DeclType                ::= DeclSumType | DeclNominalType | DeclTypeAlias
+DeclSumType             ::= "type" [ TypeModifiers ] PascalCase [ GenericParams ] [ WhereClause ] "{" VariantDeclList "}"
+DeclNominalType         ::= "type" [ TypeModifiers ] PascalCase [ GenericParams ] "(" [ TypeList ] ")" [ WhereClause ]
+DeclTypeAlias           ::= "type" PascalCase [ GenericParams ] [ WhereClause ] "=" TypeExpression
+DeclForeignType         ::= "type" [ ForeignTypeModifiers ] PascalCase [ GenericParams ]
+ForeignTypeModifiers    ::= "(" ForeignTypeModifierList ")"
+ForeignTypeModifierList ::= ForeignTypeModifier { "," ForeignTypeModifier } [ "," ]
+ForeignTypeModifier     ::= "linear" | "movable"
+DeclLet                 ::= "let" ScreamingSnakeCase ":" TypeExpression
 ```
 
 #### Normative Rules for External Interface Modules
@@ -3694,7 +3917,7 @@ DeclLet          ::= "let" ScreamingSnakeCase ":" TypeExpression
 - **Foreign Fault Containment**: A conforming external implementation must prevent host traps and exceptions from escaping as foreign control flow or corrupting Ril execution state. The declared boundary contract maps domain failures to `Result<T, E>` and defects to Ril panic unwinding. Panic containment follows `absorb_panic` and task-boundary rules; a scope does not catch a panic from its own body, and `@Fatal` terminates the process immediately.
 - **Ordinary Exchange**: Ordinary inputs, outputs, and constants must be value types or deeply immutable ordinary shared-object data with no surviving foreign writer. They cannot contain live `ref` handles, callables, tasks, or resources. This excludes even immutable environment-free function values: only a separate callback parameter receives the temporary callback rules below. An immutable returned graph may share immutable storage; a plain return type does not establish freshness or write authority (`E0528`).
 - **Temporary Callbacks**: Invoke only during the current foreign call, on the current task. Preserve actual effects, origins, environment modes, and exclusivity; mutable invocation requires `mut` on parameter and argument. No environment inspection, retention, return, or cross-task transfer is permitted. Arguments/results must satisfy ordinary exchange or explicit resource rules; mutable data and nested callables gain no exemption.
-- **Explicit Resource Contracts (`E0908`)**: Only an explicit resource contract may extend ordinary exchange. Opaque declarations and `@Fiber`/`mut`/`^mut` alone grant no resource mutation, callback retention, copying, closing, or transfer. Reject unsupported requests. Ordinary opaque data retains its actual provenance. Resource contracts cannot grant manual control of Ril managed storage or physical addresses.
+- **Explicit Resource Contracts (`E0908`)**: Only an explicit resource contract may extend ordinary exchange. In `.d.ril`, `type(linear) H` declares a task-pinned linear foreign handle (`<Movable<H>> == <never>`, rejecting cross-task `fork_with` / `Channel` transfer with `E0411` / `E0602`), while `type(linear, movable) H` declares a cross-task transferable linear foreign handle (`<Movable<H>> == <H>`). Both admit `new` creation/consumption and `mut` / `ref` borrowing on `.d.ril` functions and forbid `DeclLet` constants (`E0908`); writing `movable` without `linear` fails `E0908`, and writing `opaque` / `opaque(pkg)` in `.d.ril` fails `E0901`. Extensible `.d.ril` sums (`{ ..., .. }`) are open in all scopes and ineligible as map/set keys (`E0328`). Other opaque declarations and `@Fiber`/`mut`/`^mut` alone grant no resource mutation, callback retention, copying, closing, or transfer. Resource contracts cannot grant manual control of Ril managed storage or physical addresses.
 - **Trusted Boundary**: An external entity's conformance to its declared contract is a trusted premise. Static checking verifies the Ril program against that contract. Diagnostic explanations identify the foreign contract as the origin of trusted facts; other authority requires proof.
 - **Termination and Fault Boundary**: A bodyless external function automatically carries implicit `Diverge`, `Panic`, and `Fatal`, including when its source omits `@`; other omitted operational effect and state rows remain closed. Its declaration cannot assert absence of `Diverge` or budget coverage, and cannot be marked `halt`. A reachable external call propagates `Diverge`, `Panic`, and `Fatal` and is inadmissible within `diverge_budget` (`E0822`) or `absorb_panic` (`E0608`). Language-defined built-ins follow their specified contracts; verified ordinary Ril definitions retain their full effect rows across module boundaries.
 
@@ -3744,6 +3967,19 @@ pub fn read_attribute(elem: DomElement, key: str) @Fiber -> Result<?str, DomErro
 -- Missing body in standard .ril module (E0902):
 -- In file: platform/dom.ril (standard module)
 -- fn unimplemented_render(elem: DomElement) -> () -- Error [E0902]: function 'unimplemented_render' declared in standard '.ril' module must have an implementation body
+```
+
+```ril
+-- Linear foreign handles and extensible host sums in 'platform/sys.d.ril':
+pub type SysErrno { Perm, NoEnt, .. }            -- Open in all scopes (including same 'pkg'); no map key ('E0328')
+pub type(linear) GpuFence                        -- Task-pinned linear handle (<Movable<GpuFence>> == <never>)
+pub type(linear, movable) OwnedFd                -- Movable linear handle (<Movable<OwnedFd>> == <OwnedFd>)
+-- pub type(movable) BadHandle                   -- Error [E0908]: 'movable' requires 'linear'
+-- pub let STDIN_FD: OwnedFd                     -- Error [E0908]: linear handle cannot be an ambient 'let' constant
+
+pub fn open_fd(path: str) @Fiber -> new Result<OwnedFd, SysErrno>
+pub fn write_fd(mut fd: OwnedFd, data: bytes) @Fiber &mut -> Result<int, SysErrno>
+pub fn close_fd(new fd: OwnedFd) @Fiber -> Result<(), SysErrno>
 ```
 
 The DOM interface above admits read-only `DomWindow`/`DomElement` resource descriptors, the `WINDOW` constant, and the two displayed operations. Repeated queries may designate the same external object; a stable descriptor does not make that object immutable. These operations grant no ordinary write authority, clone/transfer authority, or authority to pass a descriptor to another task. Attribute results are ordinary immutable data. Mutation and retained listener registration are not declared in this interface.
@@ -4048,9 +4284,9 @@ assert(by_range?[(1..3)] == Some(9))   -- Range-typed key
 | Records / tuples / arrays | Labels and values / positions and values / length and elements |
 | Sums / nominal wrappers | Constructor and payload / same nominal identity and underlying value (`E0305` for distinct wrappers) |
 | Maps / sets | Key-value membership / membership; insertion order ignored |
-| Ordinary opaque types | Same-type equality when the representation supports it |
-| Option compared to `None` | Tag only; payload need not support equality |
-| Callable, task, resource, type-function values | `E0327`, including nested constituents |
+| Ordinary opaque types (including `opaque` / `opaque(pkg)` nominal & sum) | Same-type equality when the underlying representation supports it |
+| Option compared to `None` | Tag only; payload need not support equality (including `?Linear`) |
+| Callable, task, resource, linear, type-function values | `E0327`, including nested constituents |
 
 Ordering (`<`, `<=`, `>`, `>=`) accepts same-typed numbers, strings, or bytes only (`E0327` for an unsupported operand type; `E0301` for different otherwise admissible types). Strings/bytes use lexicographic order; every ordered comparison involving NaN is false.
 
@@ -4061,7 +4297,7 @@ For finite cyclic graphs, equality is the greatest binary relation satisfying th
 | `bool`, integers (`int`, `i8..i64`, `u8..u64`), `str`, `bytes`, integer ranges, `()` | Allowed |
 | Records, tuples, arrays, sums, maps, sets | Allowed as deeply immutable graphs when every constituent type recursively satisfies this table |
 | Nominal / ordinary opaque wrappers | Allowed when their representation recursively satisfies this table; opacity remains enforced |
-| Floats, callables, tasks, resources, static-only values, or any nested occurrence of them | `E0328` |
+| Floats, callables, tasks, resources, linear types, `.d.ril` extensible sums (`{ .. }`), static-only values, or any nested occurrence of them | `E0328` |
 
 | Key rule | Contract |
 | :--- | :--- |
@@ -4174,7 +4410,7 @@ IsValueExpr     ::= Expression
 | Form / boundary | Meaning |
 | :--- | :--- |
 | Resolved constructor head | Structural test; tag first, then payload. Ordinary callable heads are value expressions. Constructor arity, tuple equivalence and opacity rules apply |
-| Sum subset (`..Sub`) | Tag-subset test on visible sums with $Sub \preceq_{\text{sum}} Sup$ (`E0301` non-sum subject or $Sub \npreceq_{\text{sum}} Sup$; `E0306` non-sum `Sub`; `E0308` opaque); succeeds when the tag belongs to `Sub` |
+| Sum subset (`..Sub`) | Tag-subset test when `Sub` is closed and transparent and $Sub \preceq_{\text{sum}} Sup$ (`E0301` non-sum subject or $Sub \npreceq_{\text{sum}} Sup$; `E0306` non-sum `Sub`; `E0308` opaque or open `Sub`); succeeds when the tag belongs to `Sub` |
 | Existing name / other expression | Evaluate and compare with `==`; `E0301`/`E0305` for incompatible types, `E0327` for unsupported equality. No binders or binding modifiers |
 | Tuple / record test | Test components / listed known fields in written order; omitted record fields are unconstrained. Shorthand `.{ field }` means `.{ field: field }`, reading the outer name |
 | `bytes[...]` (`IsBytes`) | Subject must be `bytes` (`E0301` otherwise); items test `u8` values/ranges/`_` or `bytes`-typed chunk expressions in order, with at most one `..` matching zero or more middle bytes (`E0347` if repeated) |
@@ -4559,7 +4795,7 @@ RecordValueField ::= [ MemberMode ] FieldLabel [ ":" Expression ] | ".." Express
 
 An optional preceding `TypeReference` selects the constructed declaration (`Point.{...}`).
 
-Explicit fields override equally named fields from a value spread, independent of written position. Multiple explicit definitions are `E0210`; conflicting spreads without an override are `E0211`. Spreads preserve member schemas, references, and actual access modes. A typed constructor inherits omitted modes; an untyped explicit field defaults to immutable. Neither spreading nor a written mode upgrades a stored source.
+Explicit fields override equally named fields from a value spread, independent of written position. Overriding a [linear constituent](#mandatory-consumption-linear-types) from a spread is `E0721`. Multiple explicit definitions are `E0210`; conflicting spreads without an override are `E0211`. Spreads preserve member schemas, references, and actual access modes. A typed constructor inherits omitted modes; an untyped explicit field defaults to immutable. Neither spreading nor a written mode upgrades a stored source.
 
 A declared `via` member resolves through the typed receiver's context and canonical reception rules. Untyped fields use their concrete declared modes. An explicit construction operand or its dependent template elaboration may initialize a compatible typed slot after its complete receiving proof, consuming the old path. A `new expression` outside a supported receiving position is `E0548`.
 
@@ -4608,7 +4844,7 @@ let kept = Id<ServerConfig>.{ host: "0.0.0.0" } -- OK: nominal identity retains 
 | :--- | :--- |
 | Placement | Admitted only on plain (`let`) or `var` fields of the root record in a `.ril` `TypeDecl`, `OpaqueTypeDecl`, or `NominalDecl` (`E0404` on `mut`/`^mut`/`ref`/`via`; `E0359` on nested/anonymous records; `E0901` in `.d.ril`) |
 | Evaluation & scope | Evaluated left-to-right in field declaration order after explicit and spread fields when omitted at `TypeRef.{...}`; may reference earlier fields of the same record (`E0408` on self/later fields) |
-| Purity & state | No outward operational effects or mutable/live state (`E0409`); read-only deeply immutable `.ril` `&up(sub)` / `&up` dependencies propagate to callers that omit the field |
+| Purity, visibility & state | No outward operational effects or mutable/live state (`E0409`); direct module binding references on exported (`pub`/`pub(pkg)`) types must be at least as visible as the type (`E0910`); read-only deeply immutable `.ril` `&up(sub)` / `&up` dependencies propagate to callers that omit the field |
 | Type identity | `<RawConfig> == <.{ timeout_ms: int, retries: int }>`; direct lexical alias references in `TypeRef.{...}` preserve defaults, while type tokens (`Type<T>`) and computed type functions carry pure structural shapes without transparent-alias defaults; `NominalDecl` and `OpaqueTypeDecl` retain defaults through their declaration identity |
 
 ### Assignments and Compound Assignments
@@ -4985,10 +5221,10 @@ fn unwrap_or_zero(value: ?int) -> int {
 }
 ```
 
-Without `else`, patterns must be irrefutable under the initializer's static type/refinement (`E0345`), including mutable/destructuring bindings. A single-variant constructor may qualify. Guarded names exist after success, not in the failure block.
+Without `else`, patterns must be irrefutable under the initializer's static type/refinement (`E0345`), including mutable/destructuring bindings. A single-variant closed transparent constructor may qualify; an open sum (`{ .. }` outside its defining `pkg`, or in `.d.ril`) remains refutable (`E0345`). Guarded names exist after success, not in the failure block. For a temporary `expr` in `let Pattern = expr else`, every refutable complement branch $\neg\text{Pattern}$ must carry zero [linear constituents](#mandatory-consumption-linear-types) (`E0721`).
 
 - **Non-Completing Failure Branch (`E0321`)**: The `else` block must have type `never`. It may transfer control, panic, or run indefinitely; `never` alone establishes no termination judgment.
-- **Non-Vacuous Binding (`E0309`)**: Every ordinary or guarded `let` must bind a variable, except unguarded `let _ = expr`. Nullary patterns, unit patterns, and guarded wildcard discards are rejected. Binding-free tests use `?`, `is`, or `match`.
+- **Non-Vacuous Binding (`E0309`)**: Every ordinary or guarded `let` must bind a variable, except unguarded `let _ = expr` (for non-linear `expr`) and terminal destructuring of a nullary linear constructor (`let Permit = p`). Other nullary patterns, unit patterns, and guarded wildcard discards are rejected. Binding-free tests use `?`, `is`, or `match`.
 
 ```ril
 fn process_account(data: [str: str]) -> Result<str, str> {
@@ -5082,7 +5318,7 @@ These binding patterns govern `match`, bindings, `if let` / `while let`, iterati
 
 A tuple or array pattern without a rest requires exactly its written number of elements. With a rest, its subject must contain at least the number of non-rest elements; prefix and suffix patterns select from their corresponding ends, and the rest may be empty. Tuple rests are anonymous. Named array rests use the range-indexing copy rules and ordinary array extent, access-mode, publication, and sharing checks.
 
-`SumSubsetPattern` (`..Sub`) matches variants belonging to `Sub` without bindings on a visible sum subject `Sup` with $Sub \preceq_{\text{sum}} Sup$ (`E0301`/`E0306`/`E0308` otherwise; `E0309` in vacuous `let ..Sub = e`), subtracting `Sub`'s variants from remaining coverage (`E0304` if none remain). Direct unparenthesized `..` items in array, `bytes`, `str`, and record patterns parse as container rests (`E0103`), whereas tuple `(..Sub)`, parenthesized `[(..Sub)]`, and field `.{ f: ..Sub }` parse as `SumSubsetPattern`.
+`SumSubsetPattern` (`..Sub`) matches variants belonging to a closed transparent `Sub` without bindings on a transparent sum subject `Sup` with $Sub \preceq_{\text{sum}} Sup$ (`E0301`/`E0306`/`E0308` otherwise, including open or opaque `Sub`; `E0309` in vacuous `let ..Sub = e`), subtracting `Sub`'s variants from remaining coverage (`E0304` if none remain and no open residual exists). Direct unparenthesized `..` items in array, `bytes`, `str`, and record patterns parse as container rests (`E0103`), whereas tuple `(..Sub)`, parenthesized `[(..Sub)]`, and field `.{ f: ..Sub }` parse as `SumSubsetPattern`. In a consuming `match` or destructuring binding, `_`, `..Sub`, and tuple/array/record `..` rests cannot discard reachable [linear constituents](#mandatory-consumption-linear-types) (`E0721`).
 
 | Sequence pattern | Rule |
 | :--- | :--- |
@@ -5373,8 +5609,8 @@ NarrowingExpr      ::= NarrowingPredicate
 - **Environment Splitting**: Predicate $P$ splits context $\Gamma$ into true/false environments: $\Gamma \vdash P \rightsquigarrow (\Gamma_t, \Gamma_f)$.
 - **Zero-Binding Refinement**: Narrowing refines existing bindings in-place across conditional branches.
 - **Non-Binding Predicates**: `x is Variant(expected)` reads an existing expected value; an unresolved name is `E0204`. Use `match` or guarded bindings to introduce payload variables. `is` has no trailing guard.
-- **Value-Test Refinement**: A successful constructor test refines the tested stable path to that variant; `x is ..Sub` narrows active variants to `Sub`'s subset on success and excludes `Sub`'s subset on failure (`E0311` when disjoint from remaining active variants). Constructor-test failure excludes the variant only when the payload test covers every payload (for example, a bare tag or all wildcards); a failed value comparison alone excludes no variant. Alternatives join their proven facts. Expected-expression writes invalidate affected facts (`E0310`, or `E0533` for unproved independence); completing the test does not restore them.
-- **Payload Projection ($S|_V$)**: Narrowing to a single active variant $V$ (via `x is V` or exhausting all other variants) refines sum type $S$ to $S|_V$ ([Sum Types and GADTs](#sum-types-and-gadts)); when multiple variants remain active, direct payload projection raises `E0337`:
+- **Value-Test Refinement**: A successful constructor test refines the tested stable path to that variant; `x is ..Sub` (for closed transparent `Sub`) narrows active variants to `Sub`'s subset on success and excludes `Sub`'s subset on failure (`E0311` when disjoint from remaining active variants and no open residual remains). Constructor-test failure excludes the variant only when the payload test covers every payload (for example, a bare tag or all wildcards); a failed value comparison or open inner sum test alone excludes no outer variant. Alternatives join their proven facts. Expected-expression writes invalidate affected facts (`E0310`, or `E0533` for unproved independence); completing the test does not restore them.
+- **Payload Projection ($S|_V$)**: Narrowing to a single known active variant $V$ with no open residual (via `x is V`, or exhausting all other variants of a closed sum) refines sum type $S$ to $S|_V$ ([Sum Types and GADTs](#sum-types-and-gadts)); when multiple variants or an extensible `..` residual remain active, direct payload projection raises `E0337`:
    - Payload-free tag. Value projection raises `E0337`.
    - Zero-element positional payload. Unit `()` has no positional components.
    - Single declared payload member. Project via `.0` (`p.0`). `?T != None` directly unboxes to `T`.
@@ -5572,7 +5808,7 @@ fn test_deep_path_narrowing(root: .{ a: ?.{ b: ?.{ c: ?.{ d: int } } } }) -> () 
 Named functions are declared at module scope or in a block's `where` clause. Their declarations are in scope throughout the enclosing declaration scope, allowing mutual recursion without forward declarations. Captured bindings must still be initialized before use.
 
 ```ebnf
-FunctionDecl         ::= { MetaAttr } [ "pub" ] [ "halt" ] "fn" ValueName [ GenericParams ]
+FunctionDecl         ::= { MetaAttr } [ Visibility ] [ "halt" ] "fn" ValueName [ GenericParams ]
                          "(" [ ParameterList ] ")" [ EffectAnnot ] [ StateAnnot ] [ ReturnSpec ]
                          [ SignatureWhereClause ] [ Block ]
 SignatureWhereClause ::= "where" SignatureWhereItem { Separator SignatureWhereItem } [ Separator ]
@@ -5766,7 +6002,7 @@ meta let RATIO = checked_ratio(20, 4)        -- Evaluates statically to Ok(5)
 | Fallible propagation (`E0712`, `E0713`) | Every guard callable must return `Result<(), E>` or `?()` (`E0712`), compatible under postfix `?` with the enclosing function's `Result<T, E_out>` or `?T` return type (`E0713`); contract failure never panics |
 | Scope & entry order | Explicit arguments and omitted defaults bind left-to-right first (`E0408` unchanged on defaults). Parameter guards then run in declaration order with all parameters in scope via `(p \|> [ref] guard(args))?` |
 | Return guard order | On normal or early `return`, `Err` / `None` returns immediately; `Ok(v)` / `Some(v)` runs each return guard via `(v \|> [ref] guard(args))?` before returning `Ok(v)` / `Some(v)`. `\|> ref` preserves `new` qualification on `v`; referencing a `new` parameter in a return guard is `E0549` |
-| Purity & first-class values | Guards admit no outward operational effects or mutable/capturing state (`E0409`); read-only immutable `.ril` `&up`/`&up(sub)` joins the enclosing contract, and `halt` requires `Diverge`-free guards (`E0820`). `meta fn` executes the same `?` semantics at compile time. Coercing a guarded `fn` to a `CallableType` retains its entry and exit guards |
+| Purity & first-class values | Guards admit no outward operational effects or mutable/capturing state (`E0409`), and are prohibited on callables with [linear](#mandatory-consumption-linear-types) parameters or linear `Ok`/`Some` return payloads (`E0409`); read-only immutable `.ril` `&up`/`&up(sub)` joins the enclosing contract, and `halt` requires `Diverge`-free guards (`E0820`). `meta fn` executes the same `?` semantics at compile time. Coercing a guarded `fn` to a `CallableType` retains its entry and exit guards |
 
 ```ril
 -- Implementation Bodies and Built-in Declarations:
@@ -6617,7 +6853,7 @@ cells[0].count += 1
 
 | Construction parameter concern | Normative rule |
 | :--- | :--- |
-| Eligible type (`E0411`) | Types admitted by [`Movable`](#task-handles-movable-guard-and-combinators): ordinary shared-object data, single-owner channel endpoints, and fixed-`mut` endpoint carriers. Value types, task/scope authority, non-movable resources, callable roots, and any graph containing retained callable environments or non-movable authority are excluded; wrapping, opacity, or an outer fresh root cannot hide them |
+| Eligible type (`E0411`) | Types admitted by [`Movable`](#task-handles-movable-guard-and-combinators) (ordinary shared-object data, `.ril` `type(linear)` and `.d.ril` `type(linear, movable)` types with movable constituents, single-owner channel endpoints, and fixed-`mut` carriers) plus task-pinned `.d.ril` `type(linear)` handles on same-task calls. Value types, task/scope authority, uncontracted foreign resources, callable roots, and any graph containing retained callable environments are excluded; wrapping, opacity, or an outer fresh root cannot hide them |
 | Eligible expression (`E0548`) | Prove complete initial-reception eligibility: eligible constructed writable regions are isolated from pre-existing writable regions and have no surviving outside writer, observer, or active environment. Preserve immutable constituent sharing, aliases, cycles, and member schemas |
 | Existing bindings (`E0548`) | Handoff requires a fixed writable local with active qualification from [checked initial reception](#construction-qualified-locals-and-mode-preserving-reception). Immutable/observed, borrowed, published, reassignable or otherwise unqualified bindings are ineligible |
 | Forwarding source | An active construction formal/local, verified eligible construction expression, or checked storage handoff may be handed onward. Projection does not split construction authority; only a verified consuming decomposition establishes separately eligible payload paths |
@@ -6627,10 +6863,10 @@ cells[0].count += 1
 | Outside aliases | An outstanding derived reference or environment cannot remain independently usable across a handoff. Alias, lifetime, exclusivity, and task-boundary checks remain required; invalidating a source path does not invalidate or grant authority to unrelated established bindings |
 | Return | Declared `-> new T` checks and hands onward a bare qualified source. Forwarding an existing path through an inferred construction result requires an explicit construction operand or checked template dependency. Return preparation ends transferred sources and derived accesses before cleanup, including on failure. Locally constructed roots follow their construction-return rules |
 | Publication and sharing | Immutable publication or independent escape/sharing of the qualifying path ends initial-forwarding eligibility. Temporary observation/borrowing may preserve it under the alias checks. Deliberate `^mut` sharing still requires its source authority, retention annotations, and markers; it cannot be disguised as another `new` reception. A root `new` handoff alone adds no `&^mut`; already acknowledged shared constituents retain their separate graph obligations |
-| Omitted transfer | A construction parameter is affine: it may be discarded on completion only subject to outstanding Result-inspection and other ordinary completion obligations. Failure or abort does not return construction authority to an ended caller path. Any ordinary immutable result still must satisfy the usual whole-graph publication checks |
+| Omitted transfer | Affine construction parameters may be discarded on completion subject to Result-inspection (`E0720`) and ordinary completion obligations; [linear](#mandatory-consumption-linear-types) construction parameters must be handed off or terminally destructured on every normal path (`E0721`). Failure or abort does not return construction authority to an ended caller path. Any ordinary immutable result still must satisfy the usual whole-graph publication checks |
 | Higher-order use | Callable parameter modes must match (`E0407`); aliases, imports, ascriptions, and callback forwarding preserve construction-path consumption and result-source metadata. An ordinary parameter or an open effect or state/provenance row cannot substitute for `new` mode |
 | Defaults | A `new` parameter cannot have a default (`E0404`); an actual handoff requires its explicit argument marker |
-| Effect/foreign boundary | Construction input is prohibited on effect-operation parameters and handler binders (`E0411`), and bodyless foreign calls (`E0908`). These boundaries use their declared temporary modes |
+| Effect/foreign boundary | Construction input is prohibited on effect-operation parameters and handler binders (`E0411`), and on bodyless foreign calls except `.d.ril` `type(linear)` / `type(linear, movable)` resource contracts (`E0908`). Other boundaries use their declared temporary modes |
 | Phase | This is a run-time construction mode. Static/meta/type computation has no construction-input mode; a `new` parameter in a static declaration is `E0411`, and run-time construction handoffs are not static computations |
 
 A `new expression` handoff requires a matching construction argument, compatible construction return, qualified fixed writable local initializer, template-dependent receiver, or verified typed-storage reception. Record/tuple/array/map initializers require a receiver proving matching construction eligibility; untyped immutable reception is ineligible. [Fixed writable locals](#construction-qualified-locals-and-mode-preserving-reception) retain eligible construction paths as provenance; `let via` receives access modes dependent on lexically bound mode parameters. Missing and wrong ordinary argument modes are `E0405` and `E0406`; a construction operand outside a receiving position is `E0548`. Ordinary immutable reception publishes data and ends forwarding eligibility. Allocations and handoffs retain their true identities.
@@ -6780,7 +7016,7 @@ assert(pair(a: 10, 20) == (10, 20))
 -- pair(10, a: 20)                     -- Error [E0325]: a is already bound
 ```
 
-- Named and anonymous parameters share the same default rules. Defaults permit no residual operational effects and no mutable, live, or `.d.ril` external state obligations (`E0409`); read-only deeply immutable `.ril` `&up(sub){...}` and `&up{...}` origins are permitted and join the caller's contract when evaluated, and implicit Diverge is allowed and propagates when evaluated. A `halt` definition must also exclude Diverge in every admitted default. `mut`/`^mut`/`new`/`via` defaults are forbidden (`E0404`). A `ref` default is received in its declared mode without a caller token; explicit supplied arguments still require `ref`. Earlier `ref` parameters do not exempt a later ordinary default from immutable reception.
+- Named and anonymous parameters share the same default rules. Defaults permit no residual operational effects and no mutable, live, or `.d.ril` external state obligations (`E0409`); direct module binding references in defaults of exported (`pub` / `pub(pkg)`) callables must be at least as visible as the callable (`E0910`); read-only deeply immutable `.ril` `&up(sub){...}` and `&up{...}` origins are permitted and join the caller's contract when evaluated, and implicit Diverge is allowed and propagates when evaluated. A `halt` definition must also exclude Diverge in every admitted default. `mut`/`^mut`/`new`/`via` defaults are forbidden (`E0404`). A `ref` default is received in its declared mode without a caller token; explicit supplied arguments still require `ref`. Earlier `ref` parameters do not exempt a later ordinary default from immutable reception.
 - Explicit arguments evaluate in written left-to-right order; omitted defaults follow in parameter order. A default may use earlier parameters, not itself or later parameters.
 - Bind arguments in written order: a positional argument selects the first unbound parameter in declaration order; a named argument selects its named parameter. Selecting an already bound parameter is `E0325`. Binding selection does not reorder evaluation.
 - Function generic defaults are prohibited (`E0317`).
@@ -7632,7 +7868,7 @@ assert(two_states() == (7, "seven"))
 Repeated arms for the same instantiated operation are `E0622`, including through aliases. A handler discharges only the instances it covers; uncovered instances remain residual. Effect instances containing still-symbolic enclosing static parameters retain those parameter identities until instantiation.
 
 ```ebnf
-EffectDecl       ::= { MetaAttr } [ "pub" ] "eff" PascalCase [ GenericParams ] "{" EffectMemberList "}"
+EffectDecl       ::= { MetaAttr } [ Visibility ] "eff" PascalCase [ GenericParams ] "{" EffectMemberList "}"
 EffectMemberList ::= EffectOpDecl { "," EffectOpDecl } [ "," ]
                    | EffectSpread { "," EffectSpread } [ "," ]
 EffectSpread     ::= ".." EffectIdentifier
@@ -7643,7 +7879,7 @@ EffectIdentifier ::= QualifiedName [ GenericArgs ]
 EffectOperationRef ::= EffectIdentifier "::" ValueName
 ```
 
-An effect-set alias writes every included instance with the record-spread marker `..`: `eff AsyncIo { ..Io, ..Fiber }`. Each `..EffectIdentifier` expands that instance's operation identities; the alias creates no new identity. An effect declaration body is either an operation list or a `..` member list, never a mixture (`E0120`). Effect identifiers resolve to operational `PascalCase` effect declarations. Writing `@Diverge`, `@Panic`, `@Fatal`, `..Diverge`, `..Panic`, `..Fatal`, or declaring `eff Diverge`, `eff Panic`, or `eff Fatal` in source is `E0620`. Operation signatures use ordinary parameter-mode and state/provenance rules for read-only, temporary writable or retained writable access. A `new` operation parameter is `E0411`; a `via` parameter or `infer` result is `E0412`. Operation declarations require concrete signatures.
+An effect-set alias writes every included instance with the record-spread marker `..`: `eff AsyncIo { ..Io, ..Fiber }`. Each `..EffectIdentifier` expands that instance's operation identities; the alias creates no new identity. An effect declaration body is either an operation list or a `..` member list, never a mixture (`E0120`). Effect identifiers resolve to operational `PascalCase` effect declarations. Writing `@Diverge`, `@Panic`, `@Fatal`, `..Diverge`, `..Panic`, `..Fatal`, or declaring `eff Diverge`, `eff Panic`, or `eff Fatal` in source is `E0620`. Operation signatures use ordinary parameter-mode and state/provenance rules for read-only, temporary writable or retained writable access. A `new` operation parameter or [linear](#mandatory-consumption-linear-types) operation parameter/return is `E0411`; a `via` parameter or `infer` result is `E0412`. Operation declarations require concrete signatures.
 
 ```ril
 -- Console and BufferIo have the declarations above.
@@ -7785,7 +8021,7 @@ Destructured shared-object bindings receive no more than the mode and every sour
 | Continuation starts | Revoke the authority; end all arm access through the parameter and derived aliases (`E0540`) |
 | `resume` returns | No restoration; value-type copies, independent data, and lawful retained `^mut` authority remain usable |
 
-Outer function/callback activations stay active. Independent captures and ambient aliases remain separate exclusivity participants. Neither resumption nor `^mut` extends a call-scoped or resource-scoped lifetime.
+Outer function/callback activations stay active. Independent captures and ambient aliases remain separate exclusivity participants. Neither resumption nor `^mut` extends a call-scoped or resource-scoped lifetime. A `with` handled tail cannot consume outer [linear bindings](#mandatory-consumption-linear-types), and holding an active linear binding across an unhandled user `eff` operation or `Yield::emit` fails `E0721`.
 
 | Retained handler context | Rule |
 | :--- | :--- |
@@ -8257,7 +8493,7 @@ fn bounded_write() &up(sub){mut outside_count} -> Result<int, BudgetError> {
 -- diverge_budget(100, \-> Fiber::yield())        -- Error [E0822]
 ```
 
-Reachable bodyless foreign calls, Fiber/I/O and cancellation queries (`Concurrent::is_cancelled`, `Concurrent::check_cancelled`), `@Scope` operations (`fork`, `fork_with`, `join`, `cancel`, `cancel_scope`), structured-concurrency scopes and combinators, resource endpoint operations, and parallel combinators remain excluded (`E0822`) even when their effect labels are handled. Ordinary algebraic effects may propagate with their selected handlers' coverage requirements; the budget never erases their labels. Finite ordinary-data primitives and sequential collection computations follow their contracts; repeated computation must be charged or have a finite contract. Coverage does not grant state, access, lifetime, or resource authority.
+Reachable bodyless foreign calls, Fiber/I/O and cancellation queries (`Concurrent::is_cancelled`, `Concurrent::check_cancelled`), `@Scope` operations (`fork`, `fork_with`, `join`, `cancel`, `cancel_scope`), structured-concurrency scopes and combinators, resource endpoint operations, [linear](#mandatory-consumption-linear-types) captures/locals/results, and parallel combinators remain excluded (`E0822`) even when their effect labels are handled. Ordinary algebraic effects may propagate with their selected handlers' coverage requirements; the budget never erases their labels. Finite ordinary-data primitives and sequential collection computations follow their contracts; repeated computation must be charged or have a finite contract. Coverage does not grant state, access, lifetime, or resource authority.
 
 Exhaustion is a private control transfer to the particular budget invocation whose allowance expired. It irrevocably abandons that protected computation, runs its required Diverge-free cleanup, then returns `Err` from that invocation. It is neither an algebraic operation nor a catchable panic. Inner source handlers, Result fallbacks, and budgets cannot intercept or resume an outer exhaustion; no refill is possible. Prior writes remain committed.
 
@@ -8361,7 +8597,7 @@ pub type PanicError { Panicked(PanicInfo) }
 
 pub halt fn panic_cause(info: PanicInfo) -> PanicCause
 pub halt fn panic_message(info: PanicInfo) -> str
-pub fn absorb_panic<T>(action: fn() @& -> T) -> Result<T, PanicError>
+pub fn absorb_panic<T: linear>(via action: fn() @& -> infer T) -> infer Result<T, PanicError>
 pub halt fn fatal(message: str) -> never
 ```
 
@@ -8414,7 +8650,7 @@ var global_state = 0
 ```ril
 -- Canonical declarations in ril/concurrent (explicit module Concurrent):
 -- Built-in effect, handle, and guard:
---   Scope, Task<T, M: MemberMode = MemberMode::Let>, Movable (kind: Type -> Type)
+--   Scope, Task<T: linear, M: MemberMode = MemberMode::Let>, Movable (kind: Type -> Type)
 
 pub type TaskFault {
     Panicked(PanicInfo),
@@ -8422,20 +8658,20 @@ pub type TaskFault {
 }
 
 -- Nursery boundaries (@Scope -> @Concurrent):
-pub fn scope<T>(via body: fn() @& -> infer Result<T, TaskFault>) @Concurrent -> infer Result<T, TaskFault>
-pub fn scope_with<P, T>(
+pub fn scope<T: linear>(via body: fn() @& -> infer Result<T, TaskFault>) @Concurrent -> infer Result<T, TaskFault>
+pub fn scope_with<P: linear, T: linear>(
     via ctx: P,
     via body: fn(via P) @& -> infer Result<T, TaskFault>,
 ) @Concurrent -> infer Result<T, TaskFault>
 
 -- Nursery operations (@Scope):
-pub fn fork<T, M: MemberMode>(via work: fn() @& -> infer T) @Scope -> Task<T, M>
-pub fn fork_with<P, T, M: MemberMode>(
+pub fn fork<T: linear, M: MemberMode>(via work: fn() @& -> infer T) @Scope -> Task<T, M>
+pub fn fork_with<P: linear, T: linear, M: MemberMode>(
     via payload: P,
     via work: fn(via P) @& -> infer T,
 ) @Scope -> Task<T, M>
-pub fn join<T, M: MemberMode>(task: Task<T, M>) @Scope -> new Result<T, TaskFault>
-pub fn cancel<T, M: MemberMode>(task: Task<T, M>) @Scope -> new Result<?T, TaskFault>
+pub fn join<T: linear, M: MemberMode>(task: Task<T, M>) @Scope -> new Result<T, TaskFault>
+pub fn cancel<T: linear, M: MemberMode>(task: Task<T, M>) @Scope -> new Result<?T, TaskFault>
 pub fn cancel_scope() @Scope -> ()
 
 -- Cooperative cancellation (@Fiber):
@@ -8443,7 +8679,7 @@ pub fn is_cancelled() @Fiber -> bool
 pub fn check_cancelled() @Fiber -> ()
 
 -- Declarative combinators (@Concurrent):
-pub fn zip<A, B>(
+pub fn zip<A: linear, B: linear>(
     via left: fn() @& -> infer A,
     via right: fn() @& -> infer B,
 ) @Concurrent -> infer Result<(via A, via B), TaskFault>
@@ -8593,11 +8829,11 @@ fn first_ok() @Concurrent -> Result<Result<int, []str>, TaskFault> {
 
 | Construct | Rule |
 | :--- | :--- |
-| `Movable` (`E0411`) | Pure guard (`Type -> Type`) returning `<T>` for `SharedObject` types, channel endpoints (`Sender<T, M>`, `Receiver<T, M>`), and nonempty tuples, records, nominal wrappers, opaque representations, or sums of value/`Movable` constituents with fixed `mut` on endpoint-bearing slots; returns `<never>` for value types, `Task<T, M>`, callables, `let scoped` (`E0548`/`E0604`), and uncontracted `.d.ril` handles (`E0411`/`E0601`/`E0908`) |
-| `Task<T, M>` | Affine handle (`<SharedObject<Task<T, M>>> == <never>`; `clone` `E0530`, `derive` `E0536`, `new` `E0411`). `M` defaults to `MemberMode::Let` (immutable/copied `T`) and admits `mut` (`MemberMode::Mut`) for isolated `new T` returns where `T \|> Movable` (`ref`/`^mut`/`var` fail `E0601`/`E0356`). When `M` is `mut`, `join` preserves construction qualification and pending array reception families until the caller selects storage |
+| `Movable` (`E0411`) | Pure guard (`Type -> Type`) returning `<T>` for `SharedObject` types, `.ril` `type(linear)` and `.d.ril` `type(linear, movable)` types with movable constituents, channel endpoints (`Sender<T, M>`, `Receiver<T, M>`), and nonempty tuples, records, nominal wrappers, opaque representations, or sums of value/`Movable` constituents with fixed `mut` on endpoint/linear-bearing slots; returns `<never>` for value types, `Task<T, M>`, callables, `let scoped` (`E0548`/`E0604`), task-pinned `.d.ril` `type(linear)` handles, and uncontracted `.d.ril` handles (`E0411`/`E0601`/`E0908`) |
+| `Task<T, M>` | Affine handle unless `T` is [linear](#mandatory-consumption-linear-types) (`<SharedObject<Task<T, M>>> == <never>`; `clone` `E0530`, `derive` `E0536`, `new` `E0411`). `M` defaults to `MemberMode::Let` (immutable/copied `T`) and admits `mut` (`MemberMode::Mut`) for isolated `new T` returns where `T \|> Movable` (`ref`/`^mut`/`var` fail `E0601`/`E0356`). When `M` is `mut`, `join` preserves construction qualification and pending array reception families until the caller selects storage |
 | Confinement & consumption (`E0606`, `E0609`) | Placing a handle in any aggregate/collection, capturing in an escaping closure or child task, sending on a channel, returning from `scope` / `scope_with`, or consuming in another scope reports `E0606` first. Consuming a handle twice or after branch-uncertain consumption reports `E0609` |
-| `join`, `cancel`, `Result` duty (`E0720`) | `cancel` awaits child termination and returns `Ok(Some(v))` (completed), `Err(TaskFault::Panicked(info))` (panicked), or `Ok(None)` (cancelled). `join` returns `Err(TaskFault::Cancelled)` only after prior cancellation. Dropping an unconsumed `Task<R, M>` whose `R` contains a `Result` on normal exit or `?` is `E0720` |
-| Declarative combinators | `zip` and `map` preserve `new` child results (`zip` yields disjoint `(mut A, mut B)` when branches return `new`; `map` yields element-isolated `new Result<[mut]U, TaskFault>` when `work` returns `new U` for `U \|> SharedObject`). `race` and `race_all` (`race_all([]) == Ok(None)`) forbid `Result` in `T` (`E0720`). `try_*` and `race_ok` (`race_ok([]) == Ok(Err([]))`) cancel siblings on the first `Err` (`try_*`) or `Ok` (`race_ok`) and forbid nested `Result` payloads (`E0720`) |
+| `join`, `cancel`, `Result` & linear duty (`E0720`, `E0721`) | `cancel` awaits child termination and returns `Ok(Some(v))` (completed), `Err(TaskFault::Panicked(info))` (panicked), or `Ok(None)` (cancelled). `join` returns `Err(TaskFault::Cancelled)` only after prior cancellation. Dropping an unconsumed `Task<R, M>` on normal exit or `?` is `E0720` when `R` contains a `Result` and `E0721` when `R` is linear |
+| Declarative combinators | `zip` and `map` preserve `new` child results (`zip` yields disjoint `(mut A, mut B)` when branches return `new`; `map` yields element-isolated `new Result<[mut]U, TaskFault>` when `work` returns `new U` for `U \|> SharedObject`). `all`, `for_each`, `try_*`, `race`, `race_all`, and `race_ok` keep affine type parameters (`E0301` on linear `T`/`E`). `race` and `race_all` (`race_all([]) == Ok(None)`) forbid `Result` in `T` (`E0720`). `try_*` and `race_ok` (`race_ok([]) == Ok(Err([]))`) cancel siblings on the first `Err` (`try_*`) or `Ok` (`race_ok`) and forbid nested `Result` payloads (`E0720`) |
 | Phase, budgets, `absorb_panic` | Run-time only (`E0810`), excluded from `diverge_budget` (`E0822`), and rejected unhandled across `absorb_panic` (`E0608`); pure slices inside a child body may still use budgets or `absorb_panic` |
 
 #### Structured Cancellation and Fault Precedence
@@ -8654,8 +8890,8 @@ pub type Step<P, R> {
 }
 
 -- Divide-and-conquer:
-pub fn join<L, R>(via left: fn() & -> infer L, via right: fn() & -> infer R) -> infer (via L, via R)
-pub fn join_with<A, B, L, R>(
+pub fn join<L: linear, R: linear>(via left: fn() & -> infer L, via right: fn() & -> infer R) -> infer (via L, via R)
+pub fn join_with<A: linear, B: linear, L: linear, R: linear>(
     via a: A,
     via b: B,
     via left: fn(via A) & -> infer L,
@@ -8912,65 +9148,73 @@ assert(r == Err("stop"))
 ```ril
 -- Canonical declarations in ril/concurrent/channel (explicit module Channel):
 -- Built-in endpoint types:
---   Sender<T, M: MemberMode = MemberMode::Let>
---   Receiver<T, M: MemberMode = MemberMode::Let>
+--   Sender<T: linear, M: MemberMode = MemberMode::Let>
+--   Receiver<T: linear, M: MemberMode = MemberMode::Let>
 
-pub type SendError<T> { Closed(T) }
-pub type TrySendError<T> { Full(T), Closed(T) }
+pub type SendError<T: linear> { Closed(T) }
+pub type TrySendError<T: linear> { Full(T), Closed(T) }
 pub type RecvError { Closed }
 pub type TryRecvError { Empty, Closed }
 
-pub type Select2<A, B> {
+pub type Select2<A: linear, B: linear> {
     First(Result<A, RecvError>),
     Second(Result<B, RecvError>),
 }
-pub type Select3<A, B, C> {
+pub type Select3<A: linear, B: linear, C: linear> {
     First(Result<A, RecvError>),
     Second(Result<B, RecvError>),
     Third(Result<C, RecvError>),
 }
-pub type SelectSendRecv<S, R> {
+pub type SelectSendRecv<S: linear, R: linear> {
     Sent(Result<(), SendError<S>>),
     Received(via S, via Result<R, RecvError>),
 }
 
 -- Creation & producer duplication:
-pub fn bounded<T, M: MemberMode>(capacity: int) @Fiber -> new (mut Sender<T, M>, mut Receiver<T, M>)
-pub fn unbounded<T, M: MemberMode>() @Fiber -> new (mut Sender<T, M>, mut Receiver<T, M>)
-pub fn clone_sender<T, M: MemberMode>(ref tx: Sender<T, M>) @Fiber -> new Sender<T, M>
+pub fn bounded<T: linear, M: MemberMode>(capacity: int) @Fiber -> new (mut Sender<T, M>, mut Receiver<T, M>)
+pub fn unbounded<T: linear, M: MemberMode>() @Fiber -> new (mut Sender<T, M>, mut Receiver<T, M>)
+pub fn clone_sender<T: linear, M: MemberMode>(ref tx: Sender<T, M>) @Fiber -> new Sender<T, M>
 
 -- Send & receive:
-pub fn send<T, M: MemberMode>(
+pub fn send<T: linear, M: MemberMode>(
     mut tx: Sender<T, M>,
     via item: T,
 ) @Fiber &mut -> infer Result<(), SendError<T>>
-pub fn try_send<T, M: MemberMode>(
+pub fn try_send<T: linear, M: MemberMode>(
     mut tx: Sender<T, M>,
     via item: T,
 ) &mut -> infer Result<(), TrySendError<T>>
-pub fn recv<T, M: MemberMode>(mut rx: Receiver<T, M>) @Fiber &mut -> new Result<T, RecvError>
-pub fn try_recv<T, M: MemberMode>(mut rx: Receiver<T, M>) &mut -> new Result<T, TryRecvError>
+pub fn recv<T: linear, M: MemberMode>(mut rx: Receiver<T, M>) @Fiber &mut -> new Result<T, RecvError>
+pub fn try_recv<T: linear, M: MemberMode>(mut rx: Receiver<T, M>) &mut -> new Result<T, TryRecvError>
 
 -- Close, inspection & drain:
-pub fn close<T, M: MemberMode>(mut tx: Sender<T, M>) &mut -> ()
+pub fn close<T: linear, M: MemberMode>(mut tx: Sender<T, M>) &mut -> ()
 pub fn close_recv<T, M: MemberMode>(mut rx: Receiver<T, M>) &mut -> ()
-pub fn is_closed<T, M: MemberMode>(ref rx: Receiver<T, M>) -> bool
-pub fn len<T, M: MemberMode>(ref rx: Receiver<T, M>) -> int
-pub fn capacity<T, M: MemberMode>(ref rx: Receiver<T, M>) -> ?int
+pub fn is_closed<T: linear, M: MemberMode>(ref rx: Receiver<T, M>) -> bool
+pub fn len<T: linear, M: MemberMode>(ref rx: Receiver<T, M>) -> int
+pub fn capacity<T: linear, M: MemberMode>(ref rx: Receiver<T, M>) -> ?int
 pub fn drain<T, M: MemberMode>(new rx: Receiver<T, M>) @Fiber -> new []T
 pub fn close_and_drain<T, M: MemberMode>(new rx: Receiver<T, M>) @Fiber -> new []T
+pub fn drain_each<T: linear, M: MemberMode>(
+    new rx: Receiver<T, M>,
+    mut f: fn(via T) @& -> (),
+) @Fiber &mut -> ()
+pub fn close_and_drain_each<T: linear, M: MemberMode>(
+    new rx: Receiver<T, M>,
+    mut f: fn(via T) @& -> (),
+) @Fiber &mut -> ()
 
 -- Multi-way waiting:
-pub fn select_recv2<A, B, MA: MemberMode, MB: MemberMode>(
+pub fn select_recv2<A: linear, B: linear, MA: MemberMode, MB: MemberMode>(
     mut rx1: Receiver<A, MA>,
     mut rx2: Receiver<B, MB>,
 ) @Fiber &mut -> new Select2<A, B>
-pub fn select_recv3<A, B, C, MA: MemberMode, MB: MemberMode, MC: MemberMode>(
+pub fn select_recv3<A: linear, B: linear, C: linear, MA: MemberMode, MB: MemberMode, MC: MemberMode>(
     mut rx1: Receiver<A, MA>,
     mut rx2: Receiver<B, MB>,
     mut rx3: Receiver<C, MC>,
 ) @Fiber &mut -> new Select3<A, B, C>
-pub fn select_send_recv<S, R, MS: MemberMode, MR: MemberMode>(
+pub fn select_send_recv<S: linear, R: linear, MS: MemberMode, MR: MemberMode>(
     mut tx: Sender<S, MS>,
     via item: S,
     mut rx: Receiver<R, MR>,
@@ -9085,6 +9329,34 @@ fn collect_packets(new rx: Channel::Receiver<Packet, mut>) @Fiber -> new []Packe
     rx |> new Channel::close_and_drain
 }
 
+-- Streaming mandatory-consumption linear payloads with drain_each:
+type(linear) Ticket(u64)
+fn stream_tickets() @Async -> Result<u64, TaskFault> {
+    with scope()
+    let (mut tx, mut rx) = Channel::bounded<Ticket, mut>(4)
+    let prod = tx |> new fork_with \new p_tx -> {
+        let scoped mut _close = CloseGuard.{ on_close: \-> Channel::close(mut p_tx) }
+        match Channel::send(mut p_tx, new Ticket(7u64)) {
+            Ok() -> (),
+            Err(Channel::SendError::Closed(Ticket(_))) -> (),
+        }
+    }
+    var sum = 0u64
+    rx |> new Channel::drain_each \new t -> {
+        let Ticket(id) = t
+        sum += id
+    }
+    join(prod)?
+    Ok(sum)
+}
+-- fn leak_linear_rx() @Fiber -> () {
+--     let (mut tx, mut rx) = Channel::bounded<Ticket, mut>(2)
+--     Channel::close(mut tx)                           -- Error [E0721]: linear Receiver<Ticket, mut> must be drained
+-- }
+-- fn bad_close_linear(mut rx: Channel::Receiver<Ticket, mut>) &mut -> () {
+--     Channel::close_recv(mut rx)                      -- Error [E0301]: close_recv rejects linear payload
+-- }
+
 -- Static rejections:
 -- let (mut tx, mut rx) = Channel::bounded(4)
 -- let _ = Channel::send(mut tx, 1)
@@ -9106,16 +9378,16 @@ fn collect_packets(new rx: Channel::Receiver<Packet, mut>) @Fiber -> new []Packe
 | :--- | :--- |
 | Creation | `bounded` (`capacity < 0` panics; `capacity == 0` is synchronous rendezvous) and `unbounded` require `@Fiber`, omit `Diverge`, and return proven disjoint `(mut tx, mut rx)` endpoints |
 | Ownership & transfer (`E0603`, `E0549`, `E0606`) | `Sender<T, M>` and `Receiver<T, M>` satisfy `Movable` (`<SharedObject<...>> == <never>`; `clone` `E0530`, `derive` `E0536`, `[mut]E` `E0411`). Same-task calls borrow via `mut` / `ref`; cross-task handoff uses `new` (`E0549` after transfer). `^mut`, plain `let`, and `var` / `var mut` on endpoints or endpoint-bearing fields fail `E0603`; escaping an owning `scope` / `scope_with` fails `E0606`. `clone_sender` (`@Fiber`, no `Diverge`) duplicates producers |
-| Payload eligibility (`E0602`) | `M` defaults to `MemberMode::Let` (deeply immutable or value `T`) and admits `mut` (`MemberMode::Mut`) for isolated `new T` handoff where `T \|> Movable`. `ref`, `^mut`, `var`, `Task<T, M>`, `let scoped`, or uncontracted `.d.ril` payloads fail `E0602` / `E0356` |
-| Closure & `let scoped mut` | Endpoints close deterministically on `close` / `close_recv` / `drain` / `close_and_drain`, `let scoped mut` exit, unreturned child exit, or owning `scope` / `scope_with` completion; once the last active sender closes, receivers drain buffered items then return `Closed`. Built-in `scoped` cleanup closes `Sender<T, M>` (`close`) and `Result`-free `Receiver<T, M>` (`close_recv`) |
-| Non-blocking vs `@Fiber` calls | `try_send`, `try_recv`, `close`, `close_recv` (idempotent), `is_closed`, `len`, and `capacity` (`None` if unbounded) have empty operational effects and no `Diverge` (eligible in `scoped` cleanups). `send`, `recv`, `drain`, `close_and_drain`, and `select_*` carry `@Fiber` + `Diverge` and check cancellation; `select_*` polls ready branches fairly, commits at most one branch, and rejects aliased endpoints (`E0523`) |
+| Payload eligibility (`E0602`) | `M` defaults to `MemberMode::Let` (deeply immutable or value `T`) and admits `mut` (`MemberMode::Mut`) for isolated `new T` handoff where `T \|> Movable` (including movable [linear](#mandatory-consumption-linear-types) types). `ref`, `^mut`, `var`, `Task<T, M>`, `let scoped`, task-pinned `.d.ril` `type(linear)` handles, or uncontracted `.d.ril` payloads fail `E0602` / `E0356` |
+| Closure & `let scoped mut` | Endpoints close deterministically on `close` / `close_recv` / `drain*` / `close_and_drain*`, `let scoped mut` exit, unreturned child exit, or owning `scope` / `scope_with` completion; once the last active sender closes, receivers drain buffered items then return `Closed`. Built-in `scoped` cleanup closes `Sender<T, M>` (`close`) and affine `Result`-free `Receiver<T, M>` (`close_recv`) |
+| Non-blocking vs `@Fiber` calls | `try_send`, `try_recv`, `close`, `close_recv` (idempotent), `is_closed`, `len`, and `capacity` (`None` if unbounded) have empty operational effects and no `Diverge` (eligible in `scoped` cleanups). `send`, `recv`, `drain*`, `close_and_drain*`, and `select_*` carry `@Fiber` + `Diverge` (plus callback obligations on `*_each`) and check cancellation; `select_*` polls ready branches fairly, commits at most one branch, and rejects aliased endpoints (`E0523`) |
 | Select reception | Independent static member modes, fixed per call: unsent `S` retains its authority; received `R` follows `MR` (`Let`: immutable/copied; `mut`: isolated `new R`) |
-| Batch eligibility (`E0411`) | `[M]T` must be well formed; `M = mut` requires `T \|> SharedObject`. `M = Let` supplies immutable elements; `M = mut` supplies both `[]T` publication and element-isolated `[mut]T` initial reception |
-| `drain` | Consume `rx`; collect in receive order until all senders close and the queue empties |
-| `close_and_drain` | Consume `rx`; atomically close reception and take the remaining queue in receive order, including any queue on an already closed receiver |
+| Batch eligibility (`E0411`, `E0301`) | `drain` and `close_and_drain` require affine `T` (`E0301` on linear `T`) and well-formed `[M]T` (`M = mut` requires `T \|> SharedObject`, `E0411`). `M = Let` supplies immutable elements; `M = mut` supplies both `[]T` publication and element-isolated `[mut]T` initial reception |
+| `drain` / `drain_each` | Consume `rx`; collect (`drain`) or invoke `f` sequentially (`drain_each`, `new T` when `M = mut`) in receive order until all senders close and the queue empties |
+| `close_and_drain` / `close_and_drain_each` | Consume `rx`; atomically close reception and take (`close_and_drain`) or pass to `f` in receive order (`close_and_drain_each`) the remaining queue, including any queue on an already closed receiver |
 | Commits | Channel operations and closure share an atomic commit order. Buffered sends commit on enqueue; zero-capacity sends commit on rendezvous. A committed send succeeds even if it returns after closure; an uncommitted send observing closure returns `Closed(item)`, unless cancelled first |
-| Cancellation & faults | `drain` checks cancellation while waiting. `close_and_drain` checks before its atomic commit and returns without further suspension. Abnormal unwinding releases the partial batch and receiver; committed transfers remain final |
-| Fallible payloads (`E0720`) | Undelivered items and nested `Result` values retain their inspection obligations. A `Result`-bearing receiver forbids `close_recv` / `let scoped mut` and must be drained on normal exit; abnormal unwinding follows ordinary cleanup rules |
+| Cancellation & faults | `drain*` checks cancellation while waiting; `close_and_drain` checks before its atomic commit and returns without further suspension, while `close_and_drain_each` forwards `f`'s effects/state. Abnormal unwinding (including `@Panic` in `f`) releases the remaining queue and receiver; committed transfers remain final |
+| Fallible & linear payloads (`E0720`, `E0721`) | Undelivered items and nested `Result` values retain their inspection/consumption obligations. `Sender<T, M>` remains affine; a `Result`-bearing or linear-bearing `Receiver<T, M>` forbids `close_recv` and `let scoped mut`, and must be drained (`drain*` / `close_and_drain*`) on normal exit (`E0720` for `Result`, `E0721` for linear `T`) |
 
 
 
@@ -9540,8 +9812,8 @@ type UiEvent { Click(.{ x: int, y: int }), Hover(int, int), Focus }
 meta let EVENT_VARIANTS = variants(<UiEvent>) -- ["Click", "Focus", "Hover"]
 ```
 
-- **Product Types (`coords(<T>)`)**: For records and tuples, `coords(<T>)` evaluates to `[](MemberMode, CoordKey<T>)` pairing each coordinate's `MemberMode` with its coordinate key (`str` field names in UTF-8 byte order for records; ascending `int` indices for tuples; `[]` for `()`). Non-product targets trigger `E0358`.
-- **Sum Types (`variants(<T>)`)**: For sum types, `variants(<T>)` evaluates to `[]str` of deduplicated variant constructor names (including [spliced `..Sub` variants](#sum-variant-spreading-and-subset-inclusion)) in UTF-8 byte order (`E0301` on non-sum).
+- **Product Types (`coords(<T>)`)**: For transparent records and tuples, `coords(<T>)` evaluates to `[](MemberMode, CoordKey<T>)` pairing each coordinate's `MemberMode` with its coordinate key (`str` field names in UTF-8 byte order for records; ascending `int` indices for tuples; `[]` for `()`). Non-product targets trigger `E0358`; sealed opaque targets trigger `E0308`.
+- **Sum Types (`variants(<T>)`)**: For closed transparent sum types at the query site, `variants(<T>)` evaluates to `[]str` of deduplicated variant constructor names (including [spliced `..Sub` variants](#sum-variant-spreading-and-subset-inclusion)) in UTF-8 byte order (`E0301` on non-sum; `E0308` on sealed opaque sums or open extensible sums outside their defining `pkg` / in `.d.ril`).
 
 #### Static Coordinate Parameters and Computed Value Projection
 
@@ -9589,8 +9861,8 @@ A `meta` parameter receives a compile-time static argument in ordinary call posi
 #### Universal Constituent Projection
 
 For a composite type $T$ and coordinate key $k$, `T.(k)` statically projects the constituent shape:
-- **Records**: `User.id` or `User.("id")` resolves to the field type.
-- **Sum Types**: `UiEvent.Click` or `UiEvent.("Click")` resolves to the variant payload type under Constructor-Tuple Equivalence (multi-field variants resolve to `(T1, ..., Tn)`; single-field to $T_1$; unit / nullary to `()`).
+- **Records**: `User.id` or `User.("id")` resolves to the field type (`E0308` when `User` is sealed by `opaque` / `opaque(pkg)`).
+- **Sum Types**: `UiEvent.Click` or `UiEvent.("Click")` resolves to the variant payload type under Constructor-Tuple Equivalence (`E0308` when `UiEvent` is sealed by `opaque` / `opaque(pkg)`): multi-field variants resolve to `(T1, ..., Tn)`; single-field to $T_1$; unit / nullary to `()`.
 - **Tuples**: `Pair.0` or `Pair.(0)` resolves to the positional component type.
 
 ```ril
@@ -9719,12 +9991,12 @@ meta let _ = assert(!Reflect::has_default(<RawAlias>, "x")) -- <RawAlias> == <.{
 | `Reflect` operation (`ril/reflect`) | Canonical declaration | Behavior |
 | :--- | :--- | :--- |
 | `Reflect::attrs` | `pub halt meta fn attrs<T, A>(target: Type<T>) -> []A` | Attributes of exact type `A` on nominal, opaque, or sum `T` in source order (`[]` for structural types) |
-| `Reflect::field_attrs` | `pub halt meta fn field_attrs<T, A>(target: Type<T>, meta key: str \|> Key<UnwrapOrSelf<T>>) -> []A` | Attributes of exact type `A` on root record field `key` of nominal or visible opaque `T` (`[]` for structural types) |
-| `Reflect::variant_attrs` | `pub halt meta fn variant_attrs<T, A>(target: Type<T>, meta variant: str) -> []A` | Attributes of exact type `A` on variant `variant` of sum `T`, concatenating `..Sub` and explicit attributes in source order (`E0301` / `E0323` if invalid) |
+| `Reflect::field_attrs` | `pub halt meta fn field_attrs<T, A>(target: Type<T>, meta key: str \|> Key<UnwrapOrSelf<T>>) -> []A` | Attributes of exact type `A` on root record field `key` of transparent nominal or opaque `T` (`[]` for structural types; `E0308` / `E0323` when `T` is sealed) |
+| `Reflect::variant_attrs` | `pub halt meta fn variant_attrs<T, A>(target: Type<T>, meta variant: str) -> []A` | Attributes of exact type `A` on known variant `variant` of transparent sum `T`, concatenating `..Sub` and explicit attributes in source order (`E0308` if sealed; `E0301` / `E0323` if invalid) |
 | `Reflect::doc` | `pub halt meta fn doc<T>(target: Type<T>) -> ?str` | Attached `--\|` outer doc text on nominal, opaque, or sum `T` (`None` if absent or structural) |
-| `Reflect::field_doc` | `pub halt meta fn field_doc<T>(target: Type<T>, meta key: str \|> Key<UnwrapOrSelf<T>>) -> ?str` | Attached `--\|` doc text on root record field `key` of nominal or visible opaque `T` (`None` if absent or structural) |
-| `Reflect::variant_doc` | `pub halt meta fn variant_doc<T>(target: Type<T>, meta variant: str) -> ?str` | Attached `--\|` doc text on sum variant `variant` (local doc on `T` if present, else first non-`None` spread doc) |
-| `Reflect::has_default` | `pub halt meta fn has_default<T>(target: Type<T>, meta key: str \|> Key<UnwrapOrSelf<T>>) -> bool` | `true` iff `T` is a nominal or visible opaque record declaration whose root field `key` declares `= expr` (`false` for structural types, including transparent `type` aliases) |
+| `Reflect::field_doc` | `pub halt meta fn field_doc<T>(target: Type<T>, meta key: str \|> Key<UnwrapOrSelf<T>>) -> ?str` | Attached `--\|` doc text on root record field `key` of transparent nominal or opaque `T` (`None` if absent or structural; `E0308` / `E0323` when `T` is sealed) |
+| `Reflect::variant_doc` | `pub halt meta fn variant_doc<T>(target: Type<T>, meta variant: str) -> ?str` | Attached `--\|` doc text on known variant `variant` of transparent sum `T` (`E0308` if sealed; local doc on `T` if present, else first non-`None` spread doc) |
+| `Reflect::has_default` | `pub halt meta fn has_default<T>(target: Type<T>, meta key: str \|> Key<UnwrapOrSelf<T>>) -> bool` | `true` iff `T` is a transparent nominal or opaque record declaration whose root field `key` declares `= expr` (`false` for structural types, including transparent `type` aliases) |
 
 ### Structural Type Pattern Matching
 
@@ -9900,8 +10172,8 @@ type IntType = typeof 1024                     -- int
 ### Compile-Time Evaluation and Layout Queries
 
 ```ebnf
-MetaLetDecl      ::= [ "pub" ] "meta" "let" ( ScreamingSnakeCase | "_" ) [ ":" TypeExpression ] "=" Expression
-MetaFnDecl       ::= { MetaAttr } [ "pub" ] [ "halt" ] "meta" "fn" ValueName [ GenericParams ]
+MetaLetDecl      ::= [ Visibility ] "meta" "let" ( ScreamingSnakeCase | "_" ) [ ":" TypeExpression ] "=" Expression
+MetaFnDecl       ::= { MetaAttr } [ Visibility ] [ "halt" ] "meta" "fn" ValueName [ GenericParams ]
                      "(" [ ParameterList ] ")" ReturnSpec [ SignatureWhereClause ] Block
 ```
 
@@ -9960,7 +10232,7 @@ meta let _ = assert(BYTE_SIZE == 1)
 ### Modules and Compilation Units
 
 ```ebnf
-SubDecl ::= { MetaAttr } [ "pub" ] "sub" PascalCase "{" { SubItem Separator } [ SubItem ] "}"
+SubDecl ::= { MetaAttr } [ Visibility ] "sub" PascalCase "{" { SubItem Separator } [ SubItem ] "}"
 SubItem ::= UseDecl | SubDecl | FunctionDecl | MetaFnDecl | MetaLetDecl
           | LetDecl | LetMutDecl | SharedMutDecl | VarDecl | VarMutDecl
           | LetRefDecl | VarRefDecl | OpaqueTypeDecl | TypeDecl | NominalDecl
@@ -9970,13 +10242,16 @@ SubItem ::= UseDecl | SubDecl | FunctionDecl | MetaFnDecl | MetaLetDecl
 ```ril
 -- 1. In file: math/geometry.ril (Library Implementation sub -> Geometry)
 let PI = 3.141592653589793              -- Private to file sub 'Geometry'
+pub(pkg) let DEG_PER_RAD = 57.2957795   -- Visible throughout defining 'pkg', hidden externally
 pub let TAU = 6.283185307179586         -- Public immutable constant
 var call_count = 0                      -- Private mutable state
 -- pub var shared_count = 0             -- Error [E0906]: mutable static state cannot be 'pub'
+-- pub(pkg) var pkg_count = 0           -- Error [E0906]: mutable static state cannot be 'pub(pkg)'
 -- pub let mut shared_buf: []int = []   -- Error [E0906]: mutable static handle cannot be 'pub'
 -- use Super::{PI}                      -- Error [E0208]: file root has no enclosing 'Super' scope
 
 fn record_call() &up(sub){mut call_count} -> () { call_count += 1 }
+pub(pkg) fn bump_internal() &record_call -> () { record_call() }
 
 pub sub Transform {
     -- Hermetic scope: only Prelude is ambient; access enclosing scope via 'Super::'
@@ -9984,8 +10259,8 @@ pub sub Transform {
     -- fn touch() &up(Super){mut call_count} -> () { Super::call_count += 1 }
     -- Error [E0201]: parent mutable state is strictly private to its defining scope
 
-    pub fn scale_tau(k: f64) &Super::record_call &up(Super){TAU} -> f64 {
-        Super::record_call()            -- OK: 'Super::' accesses enclosing non-pub declarations
+    pub fn scale_tau(k: f64) &Super::bump_internal &up(Super){TAU} -> f64 {
+        Super::bump_internal()          -- OK: 'pub fn' may carry '&pkg_fn' / '&up(sub){mut priv}'
         Super::TAU * k
     }
 }
@@ -9996,14 +10271,15 @@ pub sub AsyncIo {
     pub fn read_file(path: str) @Fiber -> Result<[]u8, str>
 }
 
--- 3. In file: app/main.ril (Executable Root Unit: non-sub, cannot be imported)
-use math/geometry::{TAU}
+-- 3. In file: app/main.ril (Executable Root Unit: shares 'pkg' identity, non-sub, unimportable)
+use math/geometry::{TAU, DEG_PER_RAD}
 use math/geometry::Transform
 use platform/fs::AsyncIo::{read_file}
 -- use app/main                         -- Error [E0208]: executable root is not an importable 'sub'
 
 let APP_VERSION = 1
 -- pub let EXPORTED = 1                 -- Error [E0905]: executable root cannot declare top-level 'pub'
+-- pub(pkg) let PKG_EXPORT = 1          -- Error [E0905]: executable root cannot declare top-level 'pub(pkg)'
 -- pub sub Exposed {}                   -- Error [E0905]: executable root cannot declare top-level 'pub'
 
 sub Metrics {                           -- OK: private inline sub inside executable root
@@ -10019,20 +10295,20 @@ fn main() @Fiber &Metrics::bump -> () {
 }
 ```
 
-| Unit / Scope | `sub` Identity | Top-Level `pub` | `fn main` | Hermetic / Visibility Rules |
+| Unit / Scope | `sub` Identity | Top-Level `Visibility` | `fn main` | Hermetic / Visibility Rules |
 | :--- | :--- | :--- | :--- | :--- |
-| **Executable Root (`.ril`)** | Non-`sub`; unimportable (`E0208`) | Prohibited (`E0905`; `pub fn main` is `E0904`) | Required ordinary root `fn main` (`E0903`) | Enclosing scope for its inline `sub`s via `Super::` |
-| **Library File (`.ril`)** | File is `sub` (`to_pascal_case(stem)`) | Allowed on immutable/type/fn/eff/sub/use items | Prohibited (`E0904`) | Private by default (`E0201`); mutable state is never `pub` (`E0906`) |
-| **External Contract (`.d.ril`)** | File is `sub` (`to_pascal_case(stem)`) | Allowed on bodyless contract items | Prohibited (`E0901` / `E0904`) | `DeclSub` enforces `.d.ril` rules recursively (`E0901`) |
-| **Inline `sub` (`[pub] sub Name`)** | `PascalCase` (`E0101`/`E0102`); `Super` is `E0203` | Allowed inside `sub` (mutable state is `E0906`) | Prohibited (`E0904`) | Hermetic (Prelude only); `Super::` reaches enclosing non-mutable items; downward access requires `pub` (`E0201`) |
+| **Executable Root (`.ril`)** | Non-`sub`; unimportable (`E0208`); shares `pkg` identity | Prohibited (`E0905`; `pub`/`pub(pkg) fn main` is `E0904`) | Required ordinary root `fn main` (`E0903`) | Enclosing scope for its inline `sub`s via `Super::` |
+| **Library File (`.ril`)** | File is `sub` (`to_pascal_case(stem)`) | `pub` and `pub(pkg)` allowed on immutable/type/fn/eff/sub/use items | Prohibited (`E0904`) | Private by default (`E0201`); mutable/live state is never `pub`/`pub(pkg)` (`E0906`). Files with zero root `pub` items have `pub(pkg)` module visibility (`E0201` externally) |
+| **External Contract (`.d.ril`)** | File is `sub` (`to_pascal_case(stem)`) | `pub` and `pub(pkg)` allowed on bodyless contract items | Prohibited (`E0901` / `E0904`) | `DeclSub` enforces `.d.ril` rules recursively (`E0901`) |
+| **Inline `sub` (`[Visibility] sub Name`)** | `PascalCase` (`E0101`/`E0102`); `Super` is `E0203` | `pub` and `pub(pkg)` allowed inside `sub` (mutable state is `E0906`) | Prohibited (`E0904`) | Hermetic (Prelude only); `Super::` reaches enclosing non-mutable items; downward access requires `pub` or same-`pkg` `pub(pkg)` (`E0201`) |
 
-Inline `sub` declarations are permitted only at file top-level or directly inside another `sub` (rejected in sequential statements with `E0703`, block `where` with `E0702`, and signature `where` with `E0704`).
+Inline `sub` declarations and `Visibility` modifiers are permitted only at file top-level or directly inside another `sub` (rejected in sequential statements with `E0703`, block `where` with `E0702`, and signature `where` with `E0704`).
 
 ### Module Imports and Visibility
 
 ```ebnf
-UseDecl    ::= [ "pub" ] "use" FilePath [ "as" PascalCase ]
-             | [ "pub" ] "use" ModulePath "::" ( "{" ImportList "}" | "*" | ImportItem )
+UseDecl    ::= [ Visibility ] "use" FilePath [ "as" PascalCase ]
+             | [ Visibility ] "use" ModulePath "::" ( "{" ImportList "}" | "*" | ImportItem )
 FilePath   ::= SnakeCase { "/" SnakeCase }
 ModulePath ::= FilePath { "::" PascalCase }
              | "Super" { "::" "Super" } { "::" PascalCase }
@@ -10058,8 +10334,36 @@ An unresolved module or `Super::` path is `E0208`. A selective import or qualifi
 - **Path Separators (`/` vs `::`) and `Super::`**:
    - `/` separates `snake_case` file-system segments (`FilePath`); `::` navigates `PascalCase` `sub` namespaces and member projections (`E0101`).
    - `Super` is valid as a leading `Super::` prefix (`use Super::...` or `Super::member`) or as a module owner in `&up(Super){...}` / `&up(Super::Child){...}`, stepping into the immediately enclosing `sub` or root file scope.
-- **Scoping & Re-Exports**:
-   - A `use` declaration resolves imports in its enclosing file, `sub`, or block scope. Re-exporting a parent mutable binding via `pub use Super::{...}` is rejected under `E0906`.
+- **Scoping & Re-Exports (`E0201`, `E0906`, `E0910`)**:
+   - A `use` declaration resolves imports in its enclosing file, `sub`, or block scope. Re-exporting a parent mutable binding via `pub use` / `pub(pkg) use` is rejected under `E0906`.
+   - Re-exports cannot widen declared visibility (`pub use` of a `private` or `pub(pkg)` target, or `pub(pkg) use` of a `private` target, fails `E0201`). `pub use M::*` exports `M`'s `pub` members; `pub(pkg) use M::*` exports `M`'s `pub` and `pub(pkg)` members.
+
+```ril
+-- Package visibility ('pub(pkg)'), re-exports, and exported interface leaks ('E0910'):
+-- In package 'store', file 'store/codec.ril' (no root 'pub' -> module visibility is 'pub(pkg)'):
+pub(pkg) type Header(.{ magic: u32 })
+pub(pkg) let DEFAULT_LIMIT = 64
+
+-- In package 'store', file 'store/api.ril':
+use store/codec::{Header, DEFAULT_LIMIT}
+type SecretTag(int)
+type RawPair = (int, str)                            -- Transparent alias expands in signatures
+
+pub opaque type Sealed = SecretTag                   -- OK: 'pub opaque' hides private representation
+pub opaque(pkg) type Cursor = Header                 -- OK: representation is >= 'pub(pkg)'
+pub fn open_pair() -> RawPair { (1, "ok") }          -- OK: expands to '(int, str)'
+
+-- pub use store/codec::{Header}                     -- Error [E0201]: 'pub use' cannot widen 'pub(pkg)'
+-- pub opaque(pkg) type BadCursor = SecretTag        -- Error [E0910]: 'pub opaque(pkg)' leaks private 'SecretTag'
+-- pub fn leak_type() -> Header { Header(.{ magic: 0u32 }) } -- Error [E0910]: 'pub' signature leaks 'pub(pkg)' 'Header'
+-- pub fn leak_default(n: int = DEFAULT_LIMIT) -> int { n }  -- Error [E0910]: 'pub' default reads 'pub(pkg)' binding
+```
+
+| Visibility & package rule | Requirement |
+| :--- | :--- |
+| Lattice & `pkg` scope | `private` < `pub(pkg)` < `pub`. One `pkg` identity covers a package's `.ril`/`.d.ril` modules, executable root, and intra-package tests; `ril/...` is reserved for the standard library, and mounted dependency root names are disjoint from local root modules (`E0203`) |
+| Sealed internal files (`E0201`) | A library file with at least one root `pub` item is externally importable; a library file with zero root `pub` items has `pub(pkg)` module visibility (`E0201` from external packages) |
+| Interface consistency (`E0910`) | For an item of effective visibility $V \in \{\text{pub(pkg)}, \text{pub}\}$ along a reachable module path, after expanding transparent `TypeDecl` aliases, rigid types in signatures, non-opaque fields/variants, `TypeFunctionExpr` bodies, `pub opaque(pkg)` representations ($\ge \text{pub(pkg)}$), unhandled `@Eff`, standalone/returned `CallableType` `&provider` references, and direct module bindings read in parameter/field defaults must have visibility $\ge V$. `pub opaque` representations and a `FunctionDecl`'s own `StateAnnot` (`&pkg_fn`, `&up(sub){...}`) are exempt |
 
 ```ril
 -- 1. Automatic PascalCase Namespace Binding & Explicit Aliasing:
@@ -10181,9 +10485,9 @@ The prelude is an ambient lexical scope enclosing every compilation unit, includ
 | :--- | :--- |
 | Built-in functions below | Bare names: `len`, `clone`, `derive`, `diverge_budget`, `absorb_panic`, `panic_cause`, `panic_message`, `panic`, `fatal`, `assert`, etc. |
 | Library modules below | Whole public namespace through `Module::member` |
-| Standard types / sorts | `Option<T>`, `Result<T, E>`, `Set<T>`, `BudgetError`, `PanicCause`, `PanicInfo`, `PanicError`, `MemberMode`. Constructors follow ordinary resolution |
+| Standard types / sorts | `Option<T: linear>`, `Result<T: linear, E: linear>`, `Set<T>`, `BudgetError`, `PanicCause`, `PanicInfo`, `PanicError`, `MemberMode`. Constructors follow ordinary resolution |
 | Effect labels / sets | Operational: `Fiber`, `Concurrent`, `Async`, `Yield<T>`; implicit non-operational (semantic interfaces only): `Diverge`, `Panic`, `Fatal` |
-| Static type operations | `SharedObject`, `LenTarget`, `Tuple`, `NominalWrapper`, `Unwrap` |
+| Static type operations | `SharedObject`, `LenTarget`, `Tuple`, `NominalWrapper`, `Unwrap`, `UnwrapOrSelf` |
 | Scoped draft type | `Draft<T>` in [recipe and helper contracts](#normative-rules-for-functional-updates) |
 | Language constructs | Primitive types, `Type`, `Type<T>`, `?T`, and collection syntax |
 | Explicit `use` | Ordinary module aliases or selected member bindings in the declaring scope |
@@ -10211,8 +10515,8 @@ Other standard-library modules use explicit imports with their specified effect,
 
 ```ril
 -- Canonical declarations in ril/platform:
--- pub type Os { Linux, Macos, Windows, Freebsd, Wasi, Unknown }
--- pub type Arch { X86_64, Aarch64, Riscv64, Wasm32, Unknown }
+-- pub type Os { Linux, Macos, Windows, Freebsd, Wasi, .. }
+-- pub type Arch { X86_64, Aarch64, Riscv64, Wasm32, .. }
 -- pub type Endian { Little, Big }
 -- pub meta let OS: Os
 -- pub meta let ARCH: Arch
@@ -10291,13 +10595,13 @@ Built-in operations use the same surface signature forms as user-defined Ril fun
 | `clone` | `pub fn clone<T \|> SharedObject>(via value: T) -> new T` | None | Run-time | $O(\text{visited + materialized})$ | Isolated construction `new T` for ordinary shared-object data |
 | `derive` | `pub fn derive<T \|> SharedObject>(base: T, recipe: fn(mut draft: Draft<T>) @& -> ()) -> T` | Forwards recipe | Run-time | No uniform complexity guarantee | Path updates on an immutable shared-object root via a confined draft |
 | `diverge_budget` | `pub fn diverge_budget<T>(limit: u64, action: fn() @& -> T) -> Result<T, BudgetError>` | Forwards action minus `Diverge` | Dual-phase | See [charging rules](#allowance-and-charging) | Covered finite evaluation; preserves other effects and state/provenance obligations |
-| `absorb_panic` | `pub fn absorb_panic<T>(action: fn() @& -> T) -> Result<T, PanicError>` | Forwards action minus `Panic` | Run-time | $O(1)$ boundary + action | Unwind-safe synchronous `@Panic` containment (`E0608`); does not intercept `@Fatal` |
+| `absorb_panic` | `pub fn absorb_panic<T: linear>(via action: fn() @& -> infer T) -> infer Result<T, PanicError>` | Forwards action minus `Panic` | Run-time | $O(1)$ boundary + action | Unwind-safe synchronous `@Panic` containment (`E0608`); does not intercept `@Fatal` |
 | `panic_cause` | `pub halt fn panic_cause(info: PanicInfo) -> PanicCause` | None | Run-time | $O(1)$ | Extract `PanicCause` from `PanicInfo` (`E0810` in static evaluation) |
 | `panic_message` | `pub halt fn panic_message(info: PanicInfo) -> str` | None | Run-time | $O(1)$ / $O(\text{digits})$ | Format human-readable message for `panic_cause(info)` (`E0810` in static evaluation) |
 | `byte_size` | `pub meta fn byte_size<T>(token: Type<T>) -> int` | None | Static only | $O(1)$ | Size of the represented target's value/handle; static-only targets have no run-time layout |
 | `type_name` | `pub meta fn type_name<T>(token: Type<T>) -> str` | None | Static only | $O(\text{len})$ | Diagnostic description of the token's target, including static metatypes; spelling does not determine type identity |
-| `coords` | `pub meta fn coords<T>(token: Type<T>) -> [](MemberMode, CoordKey<T>)` | None | Static only | $O(\text{members})$ | Enumerate member modes and coordinates for record or tuple product types; non-product targets trigger `E0358` |
-| `variants` | `pub meta fn variants<T>(token: Type<T>) -> []str` | None | Static only | $O(\text{variants})$ | Enumerate variant constructor names for sum types; non-sum targets trigger `E0301` |
+| `coords` | `pub meta fn coords<T>(token: Type<T>) -> [](MemberMode, CoordKey<T>)` | None | Static only | $O(\text{members})$ | Enumerate member modes and coordinates for transparent record or tuple product types (`E0358` non-product; `E0308` sealed) |
+| `variants` | `pub meta fn variants<T>(token: Type<T>) -> []str` | None | Static only | $O(\text{variants})$ | Enumerate variant constructor names for closed transparent sum types (`E0301` non-sum; `E0308` sealed or open) |
 | `Key` | `pub halt type Key = \key: CoordKey<T>, T -> match <T> { <.{ .. }> -> if coords(<T>) \|> Array::any(\(m, k) -> k == key) { <()> } else { <never> }, <()> \| <(_, ..)> -> if coords(<T>) \|> Array::any(\(m, k) -> k == key) { <()> } else { <never> }, _ -> <never> }` | None | Static only | $O(\text{members})$ | Pipeline constraint guard verifying coordinate `key` belongs to product target `T`; invalid key yields `<never>`, intercepted by `E0323` |
 | `panic` | `pub halt fn panic(message: str) -> never` | Implicit `@Panic` | Dual-phase | Finite | Initiates LIFO panic unwinding at run time; stops static evaluation with `E0831` |
 | `fatal` | `pub halt fn fatal(message: str) -> never` | Implicit `@Fatal` | Dual-phase | Finite | Terminates the OS process immediately without unwinding at run time; stops static evaluation with `E0831` |
@@ -10311,10 +10615,10 @@ Built-in operations use the same surface signature forms as user-defined Ril fun
 
 | Guard | Admitted input |
 | :--- | :--- |
-| `SharedObject` | Ordinary record, nonempty tuple, array, map, set, or sum roots with any legal member or storage modes, including nominal or opaque types with an ordinary shared-object representation. Value, callable, resource, and scoped-authority roots are excluded. Across an opaque boundary the guard uses the checked representation category and preserves the sealed identity. Graph eligibility and actual access are separate checks |
-| `LenTarget` | `str`, `bytes`, arrays, maps, sets, and `Parallel::Slice` views with any legal storage or member modes. A nominal wrapper requires explicit unwrapping. An opaque representation is available only in its exact defining scope |
-| `Tuple` | Visible tuple types of arity zero or at least two, with any legal member modes |
-| `NominalWrapper` | Visible nominal wrapper declarations, including unit nominal declarations. Sum and opaque declarations introduce no such wrapper |
+| `SharedObject` | Non-linear ordinary record, nonempty tuple, array, map, set, or sum roots with any legal member or storage modes, including non-linear nominal or opaque types with an ordinary shared-object representation. Value, callable, resource, [linear](#mandatory-consumption-linear-types), and scoped-authority roots are excluded. Across an opaque boundary the guard uses the checked representation category and preserves the sealed identity. Graph eligibility and actual access are separate checks |
+| `LenTarget` | `str`, `bytes`, arrays, maps, sets, and `Parallel::Slice` views with any legal storage or member modes. A nominal wrapper requires explicit unwrapping. An opaque representation is available only in its transparency scope |
+| `Tuple` | Transparent tuple types of arity zero or at least two, with any legal member modes |
+| `NominalWrapper` | Transparent non-linear `NominalDecl` declarations (including unit nominals and `opaque` / `opaque(pkg)` nominals inside their transparency scope). Sealed nominals, `type(linear)`, `OpaqueTypeDecl`, and sums return `<never>` |
 
 The following definition gives the `Tuple` guard's behavior under the [structural type-pattern rules](#structural-type-pattern-matching). The `<(_, ..)>` pattern covers all tuples with arity $\ge 2$, while `<()>` matches the empty unit tuple:
 
@@ -10337,7 +10641,7 @@ meta let _ = assert(<SharedObject<[mut]Cell>> == <[mut]Cell>)
 meta let _ = assert(<LenTarget<[str: ref Cell]>> == <[str: ref Cell]>)
 ```
 
-`Unwrap<W>` is a static type operation on `W |> NominalWrapper`. It produces the wrapper's immediate payload type with its declared member modes, or `()` for a unit nominal. `inner` uses this type and derives the result access and provenance separately. `Draft<T>` follows the [scoped draft rules](#normative-rules-for-functional-updates). `CoordKey<T>` is the associated coordinate key sort: `str` for record product types and `int` for tuple product types.
+`Unwrap<W>` is a static type operation on `W |> NominalWrapper`. It produces the wrapper's immediate payload type with its declared member modes, or `()` for a unit nominal; `UnwrapOrSelf<T>` produces `Unwrap<T>` when `<NominalWrapper<T>> == <T>` in the current scope and `T` otherwise. `inner` uses `Unwrap<W>` and derives the result access and provenance separately. `Draft<T>` follows the [scoped draft rules](#normative-rules-for-functional-updates). `CoordKey<T>` is the associated coordinate key sort: `str` for record product types and `int` for tuple product types.
 
 An ineligible type argument normally fails its guard with `E0301`. At the built-in call boundary, apply the specific diagnostics for value-type argument modes (`E0401`), opaque unwrapping (`E0308`), non-clonable authority (`E0530`), and invalid `derive` inputs (`E0536`) under their defining rules.
 
@@ -10489,7 +10793,7 @@ This index assigns each code its diagnostic name and points to its defining rule
 | **`E0305`** | [`NominalTypeMismatchError`](#nominal-type-wrappers) |
 | **`E0306`** | [`KindMismatchError`](#structural-type-pattern-matching); [Generic Parameters](#generic-parameters-defaults-and-value-sorts); [Static Parameter Sorts](#static-parameter-sorts-and-adaptation-rules); [Record Rows](#record-types-and-row-polymorphism); [Static Layout](#compile-time-evaluation-and-layout-queries); [Sum Variant Spreading](#sum-variant-spreading-and-subset-inclusion) |
 | **`E0307`** | [`MissingFieldError`](#record-types-and-row-polymorphism) |
-| **`E0308`** | [`OpaqueBoundaryViolationError`](#type-declarations-and-opaque-types); [Sum Variant Spreading](#sum-variant-spreading-and-subset-inclusion) |
+| **`E0308`** | [`OpaqueBoundaryViolationError`](#type-declarations-and-opaque-types); [Sum Types and GADTs](#sum-types-and-gadts); [Nominal Type Wrappers](#nominal-type-wrappers); [Sum Variant Spreading](#sum-variant-spreading-and-subset-inclusion); [Static Introspection](#coordinate-and-variant-introspection-coords-variants) |
 | **`E0309`** | [`VacuousBindingError`](#guarded-bindings-and-non-vacuous-invariant) |
 | **`E0310`** | [`InvalidatedNarrowingAccessError`](#flow-sensitive-type-narrowing) |
 | **`E0311`** | [`ContradictoryNarrowingError`](#flow-sensitive-type-narrowing) |
@@ -10558,7 +10862,7 @@ This index assigns each code its diagnostic name and points to its defining rule
 | **`E0408`** | [`InvalidDefaultParameterReferenceError`](#default-parameters-and-named-arguments); [Record Construction and Spread Update](#record-construction-and-spread-update) |
 | **`E0409`** | [`ImpureParameterDefaultError`](#default-parameters-and-named-arguments); [Signature Value Contracts](#signature-value-contracts); [Record Construction and Spread Update](#record-construction-and-spread-update) |
 | **`E0410`** | [`InvalidMutableArgumentTargetError`](#parameter-modes-caller-obligations-and-defaults) |
-| **`E0411`** | [`InvalidConstructionParameterError`](#fresh-construction-parameters) |
+| **`E0411`** | [`InvalidConstructionParameterError`](#fresh-construction-parameters); [Mandatory-Consumption Linear Types](#mandatory-consumption-linear-types) |
 | **`E0412`** | [`InvalidModeInferencePlacementError`](#access-mode-inference-with-via-and-infer) |
 
 ### Bindings, State, Access Modes, and Resource Contracts
@@ -10608,7 +10912,7 @@ This index assigns each code its diagnostic name and points to its defining rule
 | :---: | :--- |
 | **`E0601`** | [`CrossTaskAuthorityError`](#structured-concurrency-and-panic-containment) |
 | **`E0602`** | [`IllegalChannelPayloadAuthorityError`](#structured-concurrency-channels) |
-| **`E0603`** | [`ChannelEndpointAliasingConflictError`](#structured-concurrency-channels) |
+| **`E0603`** | [`ChannelEndpointAliasingConflictError`](#structured-concurrency-channels); [Mandatory-Consumption Linear Types](#mandatory-consumption-linear-types) |
 | **`E0604`** | [`ScopedResourceEscapeError`](#scoped-resource-bindings) |
 | **`E0605`** | [`InvalidParallelDependencyError`](#deterministic-data-parallelism-and-divide-and-conquer-primitives) |
 | **`E0606`** | [`ScopedTaskEscapeError`](#structured-concurrency-and-panic-containment); [Task Handles](#task-handles-movable-guard-and-combinators); [Structured Concurrency Channels](#structured-concurrency-channels) |
@@ -10651,6 +10955,7 @@ This index assigns each code its diagnostic name and points to its defining rule
 | **`E0714`** | [`InvalidFallbackOperandError`](#error-and-fallback-operators) |
 | **`E0715`** | [`InvalidSafeAccessReceiverError`](#error-and-fallback-operators) |
 | **`E0720`** | [`UnusedFallibleResultError`](#mandatory-inspection-of-fallible-results); [Task Handles](#task-handles-movable-guard-and-combinators); [Structured Concurrency Channels](#structured-concurrency-channels) |
+| **`E0721`** | [`UnconsumedLinearValueError`](#mandatory-consumption-linear-types); [Task Handles](#task-handles-movable-guard-and-combinators); [Structured Concurrency Channels](#structured-concurrency-channels) |
 
 ### Static Computation and Finiteness
 
@@ -10665,7 +10970,7 @@ This index assigns each code its diagnostic name and points to its defining rule
 | **`E0816`** | [`RuntimeTypeTokenProhibitedError`](#pure-type-functions-and-result-restrictions) |
 | **`E0820`** | [`HaltFinitenessViolationError`](#termination-and-halt-contracts); [Deterministic Data Parallelism and Divide-and-Conquer Primitives](#deterministic-data-parallelism-and-divide-and-conquer-primitives) |
 | **`E0821`** | [`HaltPurityViolationError`](#termination-and-halt-contracts) |
-| **`E0822`** | [`InvalidBudgetBoundaryError`](#finite-evaluation-with-diverge) |
+| **`E0822`** | [`InvalidBudgetBoundaryError`](#finite-evaluation-with-diverge); [Mandatory-Consumption Linear Types](#mandatory-consumption-linear-types) |
 | **`E0830`** | [`MetaAssertionFailedError`](#pure-type-functions-and-result-restrictions) |
 | **`E0831`** | [`StaticEvaluationPanicError`](#pure-type-functions-and-result-restrictions) |
 
@@ -10682,3 +10987,5 @@ This index assigns each code its diagnostic name and points to its defining rule
 | **`E0907`** | [`ForeignStructuralFieldPenetrationError`](#external-interface-declarations) |
 | **`E0908`** | [`UnsupportedExternalAuthorityContractError`](#external-interface-declarations) |
 | **`E0909`** | [`BuiltinSignatureMismatchError`](#named-function-declarations-and-contrast-matrix) |
+| **`E0910`** | [`ExportedVisibilityLeakError`](#module-imports-and-visibility) |
+| **`E0911`** | [`InvalidOpacityModifierError`](#type-declarations-and-opaque-types) |

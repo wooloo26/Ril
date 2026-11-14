@@ -7,6 +7,8 @@ import RilAccess.Examples.Summary
 import RilAccess.Examples.Resumption
 import RilAccess.Examples.Draft
 import RilAccess.Examples.Handoff
+import RilAccess.Examples.Linear
+import RilAccess.Examples.Visibility
 
 namespace RilAccess.Examples
 
@@ -14,6 +16,7 @@ def allFixtures : List (String × Bool) :=
   fixtures ++ Integrated.Examples.fixtures ++ Calls.Examples.fixtures ++
     GraphAuthority.Examples.fixtures ++ CoreBoundary.Examples.fixtures ++
     CoreSummary.Examples.fixtures ++ CoreResumption.Examples.fixtures ++ Draft.Examples.fixtures ++
-    Integrated.HandoffExamples.fixtures ++ Draft.Examples.loweringFixtures
+    Integrated.HandoffExamples.fixtures ++ Draft.Examples.loweringFixtures ++
+    LinearExamples.fixtures ++ VisibilityExamples.fixtures
 
 end RilAccess.Examples

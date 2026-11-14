@@ -37,7 +37,7 @@ def operandRegisters : Atom → List Nat
   | .bind source _ _ | .read source | .write source | .replaceScalar source |
       .retain source | .beginBorrow source _ | .parameter source _ _ => [source.register]
   | .assign source destination => [source.register, destination]
-  | .move source _ => [source]
+  | .move source _ | .destructure source => [source]
   | .pairWrite left right => [left.register, right.register]
   | _ => []
 
@@ -128,8 +128,9 @@ def infer : Syntax → World → Except Error (List World)
     let l ← infer left world
     let r ← infer right world
     pure (l ++ r)
-  | .invoke arguments _ body, world => do
-    if arguments.all (argumentPresent world) then
+  | .invoke arguments captures body, world => do
+    if arguments.all (argumentPresent world) &&
+        captures.all (fun reg => !(resolve world ⟨reg, []⟩).any (fun r => r.grant.linear)) then
       let prepared ← Integrated.infer (.sequence (.atom .enterScope) (prepare arguments)) world
       checkMany (fun entry => do
         let front ← infer body entry
@@ -140,6 +141,7 @@ def check (program : Syntax) : Except Error Integrated.Analysis :=
   if valid program && decide (Integrated.binders (lower program)).Nodup then do
     let worlds ← infer program initialWorld
     if worlds.any (fun world => !world.frames.isEmpty) then .error .unclosedScope
+    else if worlds.any hasUnconsumedLinear then .error .unconsumedLinear
     else
       match (worlds.flatMap World.requirements).find?
           (fun requirement => !satisfiesUse (allUses worlds) requirement) with

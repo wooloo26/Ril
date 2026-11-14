@@ -253,8 +253,10 @@ theorem check_infer (h : check program = .ok analysis) :
     · contradiction
     · split at h
       · contradiction
-      · cases h
-        exact ⟨rfl, rfl⟩
+      · split at h
+        · contradiction
+        · cases h
+          exact ⟨rfl, rfl⟩
 
 theorem check_reachable_uses (h : check program = .ok analysis)
     (hr : requirement ∈ analysis.worlds.flatMap World.requirements) :
@@ -269,10 +271,12 @@ theorem check_reachable_uses (h : check program = .ok analysis)
     · contradiction
     · split at h
       · contradiction
-      · rename_i hnone
-        cases h
-        have hn := List.find?_eq_none.mp hnone requirement hr
-        simpa using hn
+      · split at h
+        · contradiction
+        · rename_i hnone
+          cases h
+          have hn := List.find?_eq_none.mp hnone requirement hr
+          simpa using hn
 
 theorem check_unique_declarations (h : check program = .ok analysis) :
     (binders (lower program)).Nodup := by

@@ -4,6 +4,8 @@ import RilAccess.Provenance.Identity
 import RilAccess.Effects.Boundary
 import RilAccess.Effects.Resumption
 import RilAccess.Access.Handoff
+import RilAccess.Access.Linear
+import RilAccess.Visibility
 import RilAccess.Draft.Lowering
 import RilAccess.Provenance.Limits
 
@@ -115,6 +117,13 @@ structure CrossingGuarantees : Prop where
   originSound : ∀ (c : GraphCrossing) o,
     taskGraphCrossing c = true → o ∈ c.graphOrigins →
       (o.source.kind ≠ .foreign ∨ c.explicitResourceContract = true) ∧ o.scope ≤ c.targetScope
+  pinnedForeignRejected : ∀ (c : GraphCrossing) o,
+    o ∈ c.graphOrigins → o.source.kind = .foreign → c.explicitResourceContract = false →
+      taskGraphCrossing c = false
+  movableEndpointExclusive : ∀ (c : GraphCrossing),
+    taskGraphCrossing c = true → c.mode = .movableEndpoint →
+      c.sourceConsumed = true ∧ c.explicitResourceContract = true ∧
+        ∀ m ∈ c.dataAccess, m ≠ .ref ∧ m ≠ .shared
   noChildWriteParentLiveRace : ∀ (graph : GraphAuthority.Graph Nat) crossingView survivingViews
       mode latent origins extAlias scopedAuth consumed targetScope contract
       (rChild rParent : GraphAuthority.Root Nat) fChild fParent obj mChild mParent,
@@ -136,6 +145,73 @@ structure CrossingGuarantees : Prop where
     rParent ∈ graph.roots → rParent.view ∈ survivingViews →
     GraphAuthority.Path graph.edges rParent.object rParent.access fParent obj mParent →
     mParent.writes = true → False
+
+structure LinearGuarantees : Prop where
+  callsDischargeAll : ∀ (program : Calls.Syntax) analysis world token,
+    Calls.check program = .ok analysis → world ∈ analysis.worlds →
+      token ∈ world.tokens → token.linear = true → token.active = false
+  scopeExitDischarge : ∀ (world next : Integrated.World) frame token,
+    Integrated.checkAtom .leaveScope world = .ok next → world.frames.head? = some frame →
+      token ∈ world.tokens → token.linear = true → frame.parentScope < token.scope →
+      token.active = false
+  noPlainOrSharedCopy : ∀ (world : Integrated.World) resolved mode scope,
+    resolved.grant.linear = true → (mode.access = .immutable ∨ mode.access = .shared) →
+      Integrated.receiving world resolved mode scope = false
+  noRetain : ∀ (evidence : Integrated.Evidence),
+    Integrated.authorized evidence = true → evidence.rule = .retain →
+      evidence.resolved.grant.linear = false
+  handoffConservesObligation : ∀ (world next : Integrated.World) source destination resolved,
+    Integrated.checkAtom (.move source destination) world = .ok next →
+    Integrated.resolve world ⟨source, []⟩ = some resolved →
+    resolved.grant.linear = true →
+      (∀ dep ∈ resolved.permission.dependencies, (Integrated.lookupToken next dep).any Integrated.Token.active = false) ∧
+        ∃ fresh, Integrated.lookupToken next world.nextToken = some fresh ∧
+          fresh.linear = true ∧ fresh.active = true ∧ fresh.region = resolved.pointer
+  destructureDischarges : ∀ (world next : Integrated.World) source resolved,
+    Integrated.checkAtom (.destructure source) world = .ok next →
+    Integrated.resolve world ⟨source, []⟩ = some resolved →
+      Integrated.Use.mk source .writable ∈ next.uses ∧
+        (∀ dep ∈ resolved.permission.dependencies, (Integrated.lookupToken next dep).any Integrated.Token.active = false) ∧
+        (∀ path derived dep, Integrated.resolve next path = some derived →
+          dep ∈ derived.permission.dependencies → dep ∈ resolved.permission.dependencies →
+          Integrated.live derived = false)
+  effectSuspensionGuard : ∀ delimiterScope (authority : Integrated.World) token,
+    token ∈ authority.tokens → token.linear = true → token.active = true →
+      delimiterScope < token.scope →
+      CoreResumption.canSuspendEffect delimiterScope authority = false ∧
+        CoreResumption.abortDelimiter delimiterScope authority = none
+  abortPreservesOuterLinear : ∀ delimiterScope (authority after : Integrated.World) id token,
+    CoreResumption.abortDelimiter delimiterScope authority = some after →
+    Integrated.lookupToken authority id = some token →
+    token.linear = true → token.active = true →
+      token.scope ≤ delimiterScope ∧ Integrated.lookupToken after id = some token
+
+structure VisibilityGuarantees : Prop where
+  opaquePkgRequiresPub : ∀ (vis : VisibilityModel.Visibility),
+    VisibilityModel.validOpacity vis .opaquePkg = true ↔ vis = .pubExport
+  opaquePkgBoundary :
+    VisibilityModel.visibleFrom .pubExport .externalPkg = true ∧
+    VisibilityModel.representationTransparent .pubExport .opaquePkg .samePkg = true ∧
+    VisibilityModel.representationTransparent .pubExport .opaquePkg .externalPkg = false
+  signatureLeakRejected : ∀ (refs : List VisibilityModel.Visibility),
+    VisibilityModel.Visibility.pubPkg ∈ refs →
+      VisibilityModel.signatureWellFormed true .pubExport refs = false
+  rilExtensibleClosedInPkg : ∀ (s : VisibilityModel.SumDef) ctx covered,
+    s.origin = .rilPkg → s.extensible = true → (ctx = .sameScope ∨ ctx = .samePkg) →
+    VisibilityModel.canMatchVariants s ctx = true → (∀ v ∈ s.variants, v ∈ covered) →
+      VisibilityModel.exhaustiveMatch s ctx covered false = true ∧
+        VisibilityModel.exhaustiveMatch s ctx covered true = false
+  rilExtensibleOpenExternally : ∀ (s : VisibilityModel.SumDef) covered,
+    s.origin = .rilPkg → s.extensible = true →
+    VisibilityModel.canMatchVariants s .externalPkg = true →
+      VisibilityModel.exhaustiveMatch s .externalPkg covered false = false ∧
+        VisibilityModel.exhaustiveMatch s .externalPkg covered true = true
+  foreignExtensibleOpenEverywhere : ∀ (s : VisibilityModel.SumDef) ctx covered,
+    s.origin = .foreignDecl → s.extensible = true →
+      VisibilityModel.exhaustiveMatch s ctx covered false = false
+  opaquePkgSumBlocksExternalMatch : ∀ (s : VisibilityModel.SumDef) covered hasWildcard,
+    s.op = .opaquePkg →
+      VisibilityModel.exhaustiveMatch s .externalPkg covered hasWildcard = false
 
 structure CallableMatchGuarantees : Prop where
   reflexive : ∀ (pureSources : List Source) (s : Summary), s.subsumes pureSources s = true
@@ -161,6 +237,8 @@ structure Guarantees : Prop where
   effects : EffectGuarantees
   draft : DraftGuarantees
   crossing : CrossingGuarantees
+  linear : LinearGuarantees
+  visibility : VisibilityGuarantees
 
 theorem verified : Guarantees where
   solver := ⟨fun _ => ⟨solve_closed, solve_grounded, solve_nodup, fun _ => solve_least⟩⟩
@@ -186,7 +264,23 @@ theorem verified : Guarantees where
     fun _ _ _ _ _ => Draft.publication_ends_privilege,
     fun _ _ _ _ _ _ _ _ _ _ => Draft.conforming_external_cannot_escape⟩
   crossing := ⟨@taskGraphCrossing_no_live_ref, @taskGraphCrossing_origin_sound,
+    @pinned_foreign_rejected_across_task, @movable_endpoint_exclusive_consumed,
     @GraphAuthority.graph_crossing_no_child_write_parent_live_race,
     @GraphAuthority.graph_crossing_no_parent_write_child_any_race⟩
+  linear := ⟨fun _ _ _ _ h hw ht hlin => Integrated.checked_calls_no_unconsumed_linear h hw ht hlin,
+    fun _ _ _ _ h hf ht hlin hinner => Integrated.leaveScope_no_active_inner_linear h hf ht hlin hinner,
+    fun _ _ _ _ hlin hmode => Integrated.linear_rejects_plain_and_shared_receiving hlin hmode,
+    fun _ h hr => Integrated.linear_cannot_retain h hr,
+    fun _ _ _ _ _ h hr hlin => Integrated.linear_handoff_transfers_obligation h hr hlin,
+    fun _ _ _ _ h hr => Integrated.destructure_discharges_and_revokes h hr,
+    fun _ _ _ hm hlin hact hinner => CoreResumption.active_inner_linear_blocks_suspension hm hlin hact hinner,
+    fun _ _ _ _ _ h hlook hlin hact => CoreResumption.abortDelimiter_preserves_active_linear h hlook hlin hact⟩
+  visibility := ⟨fun _ => VisibilityModel.opaquePkg_requires_pubExport,
+    VisibilityModel.opaquePkg_boundary,
+    fun _ hmem => VisibilityModel.signature_rejects_pubPkg_leak hmem,
+    fun _ _ _ horig hext hctx hcan hall => VisibilityModel.ril_extensible_closed_inside_pkg horig hext hctx hcan hall,
+    fun _ _ horig hext hcan => VisibilityModel.ril_extensible_open_outside_pkg horig hext hcan,
+    fun _ _ _ horig hext => VisibilityModel.foreign_extensible_open_everywhere horig hext,
+    fun _ _ _ hop => VisibilityModel.opaquePkg_sum_blocks_external_match hop⟩
 
 end RilAccess.CoreVerification

@@ -377,6 +377,27 @@ theorem taskGraphCrossing_origin_sound {c : GraphCrossing} {o : Origin}
   simp only [originLegalAcrossTask, Bool.and_eq_true, Bool.or_eq_true, decide_eq_true_eq] at horig
   exact horig
 
+theorem pinned_foreign_rejected_across_task {c : GraphCrossing} {o : Origin}
+    (ho : o ∈ c.graphOrigins) (hforeign : o.source.kind = SourceKind.foreign)
+    (hpinned : c.explicitResourceContract = false) :
+    taskGraphCrossing c = false := by
+  cases ht : taskGraphCrossing c with
+  | false => rfl
+  | true =>
+    have ⟨hkind, _⟩ := taskGraphCrossing_origin_sound ht ho
+    rcases hkind with hne | hcontract
+    · exact False.elim (hne hforeign)
+    · simp [hpinned] at hcontract
+
+theorem movable_endpoint_exclusive_consumed {c : GraphCrossing}
+    (h : taskGraphCrossing c = true) (hmode : c.mode = .movableEndpoint) :
+    c.sourceConsumed = true ∧ c.explicitResourceContract = true ∧
+      ∀ m ∈ c.dataAccess, m ≠ Access.ref ∧ m ≠ Access.shared := by
+  simp only [taskGraphCrossing, graphCrossingModeValid, hmode, Bool.and_eq_true] at h
+  refine ⟨h.2.1.1, h.2.1.2, ?_⟩
+  intro m hm
+  exact of_decide_eq_true (List.all_eq_true.mp h.2.2 m hm)
+
 structure ForeignContract where
   sources : List Source
   deriving Repr, DecidableEq
