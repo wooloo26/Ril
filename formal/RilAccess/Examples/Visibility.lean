@@ -47,7 +47,24 @@ def fixtures : List (String × Bool) :=
       !exhaustiveMatch opaquePkgToken .externalPkg [0] true),
    ("sum: pub opaque sum permits defining-scope match only",
       exhaustiveMatch opaqueScopeSecret .sameScope [0, 1] false &&
-      !exhaustiveMatch opaqueScopeSecret .samePkg [0, 1] false)]
+      !exhaustiveMatch opaqueScopeSecret .samePkg [0, 1] false),
+   ("anchor: pkg/... sees pub(pkg) while ril/... and external deps do not",
+      visibleFrom .pubPkg (importContext .pkg) &&
+      !visibleFrom .pubPkg (importContext .ril) &&
+      !visibleFrom .pubPkg (importContext .externalDep)),
+   ("anchor: dependency mount names pkg and ril rejected",
+      !validDependencyMountName "pkg" &&
+      !validDependencyMountName "ril" &&
+      validDependencyMountName "crypto"),
+   ("sub: pub opaque(pkg) rejected inside private or pub(pkg) enclosing sub (E0911)",
+      validPathOpacity true [.pubExport] .pubExport .opaquePkg &&
+      !validPathOpacity true [.pubPkg] .pubExport .opaquePkg &&
+      !validPathOpacity true [.priv] .pubExport .opaquePkg),
+   ("sub: generic sub permits meta let and rejects runtime module storage (E0912)",
+      validSubStorage 0 .runtimeStorage &&
+      validSubStorage 1 .metaConst &&
+      !validSubStorage 1 .runtimeStorage &&
+      !validSubStorage 2 .runtimeStorage)]
 
 theorem fixtures_all_pass : fixtures.all Prod.snd = true := by decide +kernel
 

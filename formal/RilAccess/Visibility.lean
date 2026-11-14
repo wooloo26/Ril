@@ -1,9 +1,11 @@
 import RilAccess.Model
 
-/-! Package visibility lattice (`private` < `pub(pkg)` < `pub`), representation
-opacity (`opaque` vs `pub opaque(pkg)`), exported signature leak detection (`E0910`),
-opacity well-formedness (`E0911`), and extensible sum (`..`) exhaustiveness across
-package and `.d.ril` boundaries (`E0303`, `E0304`, `E0908`). -/
+/-! Package visibility lattice (`private` < `pub(pkg)` < `pub`), package import
+anchors (`pkg`, `ril`, external dependencies), representation opacity (`opaque` vs
+`pub opaque(pkg)`), nested `sub` path visibility (`E0911`), parameterized `sub`
+statelessness (`E0912`), exported signature leak detection (`E0910`), and extensible
+sum (`..`) exhaustiveness across package and `.d.ril` boundaries (`E0303`, `E0304`,
+`E0908`). -/
 namespace RilAccess.VisibilityModel
 
 inductive Visibility where
@@ -25,6 +27,20 @@ inductive ObserverContext where
   | samePkg
   | externalPkg
   deriving Repr, DecidableEq
+
+inductive PackageAnchor where
+  | pkg
+  | ril
+  | externalDep
+  deriving Repr, DecidableEq
+
+def importContext : PackageAnchor → ObserverContext
+  | .pkg => .samePkg
+  | .ril => .externalPkg
+  | .externalDep => .externalPkg
+
+def validDependencyMountName (name : String) : Bool :=
+  name != "pkg" && name != "ril"
 
 def visibleFrom (vis : Visibility) (ctx : ObserverContext) : Bool :=
   match vis, ctx with
@@ -59,6 +75,29 @@ def effectiveVisibility (moduleHasPub : Bool) (declVis : Visibility) : Visibilit
   | .priv => .priv
   | .pubPkg => .pubPkg
   | .pubExport => if moduleHasPub then .pubExport else .pubPkg
+
+def Visibility.min (a b : Visibility) : Visibility :=
+  if Visibility.le a b then a else b
+
+/-- Effective visibility along an enclosing `sub` path caps the declaration's reachability. -/
+def pathVisibility (moduleHasPub : Bool) (enclosingSubs : List Visibility) (declVis : Visibility) : Visibility :=
+  enclosingSubs.foldl Visibility.min (effectiveVisibility moduleHasPub declVis)
+
+/-- E0911: `pub opaque(pkg)` requires a `pub`-reachable module and enclosing `sub` path. -/
+def validPathOpacity (moduleHasPub : Bool) (enclosingSubs : List Visibility) (declVis : Visibility) (op : Opacity) : Bool :=
+  validOpacity (pathVisibility moduleHasPub enclosingSubs declVis) op
+
+inductive SubStorageKind where
+  | metaConst
+  | runtimeStorage
+  deriving Repr, DecidableEq
+
+/-- E0912: Parameterized `sub`s (and any nested child `sub`s) permit `meta let` constants
+while rejecting runtime module storage (`let`, `var`, `let mut`, `let ^mut`, `let ref`). -/
+def validSubStorage (enclosingGenericSubs : Nat) (kind : SubStorageKind) : Bool :=
+  match kind with
+  | .metaConst => true
+  | .runtimeStorage => decide (enclosingGenericSubs = 0)
 
 /-- E0910: Every type referenced by a declaration's signature must have effective
 visibility at least as wide as the declaration's own effective visibility. -/
@@ -166,5 +205,61 @@ theorem opaquePkg_sum_blocks_external_match {s : SumDef} {covered : List Nat} {h
     (hop : s.op = .opaquePkg) :
     exhaustiveMatch s .externalPkg covered hasWildcard = false := by
   simp [exhaustiveMatch, canMatchVariants, representationTransparent, hop]
+
+theorem pkg_anchor_isolates_package_visibility :
+    visibleFrom .pubPkg (importContext .pkg) = true ∧
+    visibleFrom .pubPkg (importContext .ril) = false ∧
+    visibleFrom .pubPkg (importContext .externalDep) = false ∧
+    validDependencyMountName "pkg" = false ∧
+    validDependencyMountName "ril" = false := by
+  decide
+
+theorem foldl_min_le_init (xs : List Visibility) (init : Visibility) :
+    (xs.foldl Visibility.min init).rank ≤ init.rank := by
+  induction xs generalizing init with
+  | nil => exact Nat.le_refl _
+  | cons hd tl ih =>
+    have hstep := ih (Visibility.min init hd)
+    have hmin : (Visibility.min init hd).rank ≤ init.rank := by
+      cases init <;> cases hd <;> decide
+    exact Nat.le_trans hstep hmin
+
+theorem foldl_min_le_mem {xs : List Visibility} {init v : Visibility} (hv : v ∈ xs) :
+    (xs.foldl Visibility.min init).rank ≤ v.rank := by
+  induction xs generalizing init with
+  | nil => nomatch hv
+  | cons hd tl ih =>
+    rcases List.mem_cons.mp hv with rfl | htl
+    · have hstep := foldl_min_le_init tl (Visibility.min init v)
+      have hmin : (Visibility.min init v).rank ≤ v.rank := by
+        cases init <;> cases v <;> decide
+      exact Nat.le_trans hstep hmin
+    · exact ih htl
+
+theorem nonPub_enclosing_sub_rejects_opaquePkg {moduleHasPub : Bool}
+    {enclosingSubs : List Visibility} {declVis subVis : Visibility}
+    (hmem : subVis ∈ enclosingSubs) (hnot : subVis ≠ .pubExport) :
+    validPathOpacity moduleHasPub enclosingSubs declVis .opaquePkg = false := by
+  have hle := foldl_min_le_mem (init := effectiveVisibility moduleHasPub declVis) hmem
+  have hsub : subVis.rank ≤ 1 := by
+    cases subVis with
+    | priv => decide
+    | pubPkg => decide
+    | pubExport => exact False.elim (hnot rfl)
+  have hpath : (pathVisibility moduleHasPub enclosingSubs declVis).rank ≤ 1 :=
+    Nat.le_trans hle hsub
+  cases hp : pathVisibility moduleHasPub enclosingSubs declVis with
+  | priv => simp [validPathOpacity, hp, validOpacity]
+  | pubPkg => simp [validPathOpacity, hp, validOpacity]
+  | pubExport =>
+    rw [hp] at hpath
+    simp [Visibility.rank] at hpath
+
+theorem generic_sub_rejects_runtime_storage {depth : Nat} (hgen : 0 < depth) :
+    validSubStorage depth .runtimeStorage = false ∧
+      validSubStorage depth .metaConst = true := by
+  refine ⟨?_, rfl⟩
+  simp [validSubStorage]
+  omega
 
 end RilAccess.VisibilityModel

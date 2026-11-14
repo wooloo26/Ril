@@ -541,14 +541,15 @@ SnakeCase          ::= [a-z] [a-z0-9]* { "_" [a-z0-9]+ }
 ScreamingSnakeCase ::= [A-Z] [A-Z0-9]* { "_" [A-Z0-9]+ }
 UnderscoreName     ::= "_" [a-z] [a-z0-9]* { "_" [a-z0-9]+ }
 Wildcard           ::= "_"
-QualifiedName    ::= { "Super" "::" } { PascalCase "::" } Identifier
+SubSegment         ::= PascalCase [ GenericArgs ]
+QualifiedName      ::= { "Super" "::" } { SubSegment "::" } Identifier
 ```
 
 Identifier grammatical roles obey the **Closed Casing Invariant**:
 
 - **`PascalCase`**: Reserved for types (`type`), sum type variant constructors, nominal wrappers, algebraic effects (`eff`), generic type parameters (`T`, `ItemType`), and `sub` namespace identifiers (`Array`, `Channel`, `Geometry`, `Super`).
    - **Acronym Title-Casing Rule**: Acronyms within `PascalCase` must be title-cased as regular words (`HttpServer`, `UserId`, `JsonParser`, not `HTTPServer`, `UserID`, `JSONParser`) (`E0102`).
-- **`snake_case`**: Used for run-time variables (local bindings, function parameters, reassignable variables `var`, and pinned mutable handles `let mut`), const generic parameters (`cap: int`), named functions (`fn`, `meta fn`), record fields, and module file path segments (`ril/array`, `math/geometry`).
+- **`snake_case`**: Used for run-time variables (local bindings, function parameters, reassignable variables `var`, and pinned mutable handles `let mut`), const generic parameters (`cap: int`), named functions (`fn`, `meta fn`), record fields, and module file path segments (`ril/array`, `pkg/math/geometry`).
 - **`SCREAMING_SNAKE_CASE`**: Reserved for compile-time constants (`meta let`) and top-level immutable constants (`let`). Top-level mutable variables (`var`, `let mut`, `let ^mut`, and `var ^mut`) must use `snake_case`.
 - **Static Keys and Field Labels**: Static coordinate parameters (`meta key |> Key<T>` or `meta key: str |> Key<T>`), const generic keys, and mapped comprehension patterns (`[coords(<T>) as (m, k)]`) use `snake_case`. Ordinary record field labels use `snake_case`, optionally with one leading underscore. A mapped record generated from sum variants exposes `PascalCase` variant labels verbatim.
 - **Wildcard and Leading Underscores**: A single underscore `_` is the wildcard discard pattern (`Wildcard`), not an identifier (`E0322`). In parameter lists, `_` discards an unnamed input without exempting `mut` or `^mut` parameters from reachable authority use (`E0527`). An identifier with a leading underscore, such as `_snake_case`, follows the same binding and mutable-authority use requirements as other identifiers (`E0527`).
@@ -661,7 +662,8 @@ Contextual keywords are identifiers outside the forms below. Recognize each form
 
 | Word | Contextual form | Meaning |
 | :--- | :--- | :--- |
-| `pkg` | `pub(pkg)` or `opaque(pkg)` | [Package-scoped visibility or opacity](#modules-and-compilation-units) |
+| `pkg` | `pub(pkg)`, `opaque(pkg)`, or `use pkg/...` | [Package-scoped visibility, opacity, or current-package import root](#modules-and-compilation-units) |
+| `big`, `little` | Trailing endianness in `BytesSegmentSpec` | [Explicit multi-byte endianness in `bytes[...]`](#text-and-byte-operations) |
 | `opaque` | `opaque [ (pkg) ] type`, after optional visibility | [Hidden type representation](#type-declarations-and-opaque-types) |
 | `linear` | `type(linear)` modifier or `<T: linear>` bound | [Mandatory-consumption linear types](#mandatory-consumption-linear-types) |
 | `movable` | `type(linear, movable)` in `.d.ril` | [Cross-task foreign linear handle](#external-interface-declarations) |
@@ -1820,7 +1822,7 @@ fn bump(mut x: Cell) &mut -> () { x.count += 1 }
 
 Infer the admitted finite domain from the body, schemas, verified dependencies, and explicit semantic constraints; then normalize the whole family; finally validate named annotations. Missing annotations never prune alternatives. A proper inferred subdomain is allowed, but explicitly promised instances cannot be removed. Check every admitted alternative's type, authority use, provenance, escape, exclusivity, resources, full effects including Diverge, and budget obligations; unknown facts remain obligations.
 
-`E0550` rejects a declaration-owned `via` parameter/schema whose mode is invariant over all admitted type/static arguments and dependencies, including nested array/map occurrences. A template-local `let via` requires access modes or provenance dependent on lexically bound mode parameters or selected-call relations from an input callable's open mode pattern, including contained schemas and consumption/source relations. Check this dependency at template level. Open callable patterns and `-> infer` are exempt from this redundancy check. Invalid/empty families use their underlying diagnostic; `E0527` checks each mutable/shared alternative's actual use.
+`E0550` rejects a declaration-owned `via` parameter/schema whose mode is invariant over all admitted type/static arguments and dependencies (including enclosing `sub` `GenericParams` and nested array/map occurrences). A template-local `let via` requires access modes or provenance dependent on lexically bound mode parameters or selected-call relations from an input callable's open mode pattern, including contained schemas and consumption/source relations. Check this dependency at template level. Open callable patterns and `-> infer` are exempt from this redundancy check. Invalid/empty families use their underlying diagnostic; `E0527` checks each mutable/shared alternative's actual use.
 
 ```ril
 fn store(mut xs: [^mut]Cell, ^mut value: Cell) &^mut -> () {
@@ -2527,7 +2529,7 @@ capture-avoiding binder renaming. Compare these identity-bearing components:
 | Record | Same labels, constituent types and declared modes; field order irrelevant |
 | Tuple | Same arity, constituent types and declared modes |
 | Collection | Same constructor/storage mode, equal types and equivalent static arguments |
-| Nominal / sum / opaque / foreign | Same declaration identity and equal/equivalent arguments |
+| Nominal / sum / opaque / foreign | Same declaration identity and equal/equivalent arguments (including enclosing `sub` static arguments) |
 | Callable | Equal schemas/modes and normalized complete contracts; bound sources renamed by parameter position |
 | `Type<A>` | Exact `A` identity |
 | Computed type | Equal forward results, or congruent symbolic applications |
@@ -3020,6 +3022,7 @@ opaque metadata, environments and latent type-producing authority:
 | Run-time parameter/result/storage/capture/constant | Recursively exclude tokens/static-only metatypes (`E0816`) |
 | Meta result | Exclude tokens and type-producing authority (`E0812`) |
 | `meta let` | Tokens may remain static; eligible token-free ordinary results may become constants |
+| `meta <expr>` | Evaluate in `MetaValue`; publish deeply immutable snapshot free of tokens (`E0812`), callables/resources (`E0816`), linear values (`E0411`), and live writers (`E0535`), stripping `new` |
 | Completed type token | One well-formed target, retaining schema/identity |
 | Source budget exhaustion | `Err(BudgetError::Exhausted)` after cleanup; inspect/propagate/return Result |
 | Compiler root exhaustion | Uncatchable `E0811`; partial previews remain diagnostic data |
@@ -3704,13 +3707,13 @@ fn authenticate_client() -> ?SessionToken {
 
 ```ril
 -- Package-scoped representation opacity ('pub opaque(pkg)'):
--- In package 'db', file 'db/types.ril':
+-- In package 'db', file 'types.ril':
 pub opaque(pkg) type RowCursor = .{ page: int, slot: int }
 -- opaque(pkg) type BadPrivate = int                -- Error [E0911]: 'opaque(pkg)' requires 'pub'
 -- pub(pkg) opaque(pkg) type BadPkg = int           -- Error [E0911]: 'pub(pkg)' never crosses package boundary
 
--- In package 'db', file 'db/scan.ril' (same 'pkg'): representation is transparent
-use db/types::{RowCursor}
+-- In package 'db', file 'scan.ril' (same 'pkg'): representation is transparent
+use pkg/types::{RowCursor}
 pub fn next_slot(c: RowCursor) -> RowCursor {
     .{ page: c.page, slot: c.slot + 1 }
 }
@@ -3722,7 +3725,7 @@ pub fn next_slot(c: RowCursor) -> RowCursor {
 | Opacity modifier | Transparency scope | Placement rule |
 | :--- | :--- | :--- |
 | `opaque` | Exact defining `sub` (inline child `sub`s are outside) | Admitted on `OpaqueTypeDecl`, `NominalDecl`, and `SumTypeDecl` in `.ril` (`E0901` in `.d.ril`) |
-| `pub opaque(pkg)` | Entire defining `pkg` (library files, inline `sub`s, executable root, intra-package tests) | Requires `pub` at module/`sub` scope (`E0911` on `private`, `pub(pkg)`, `where`-local, or executable-root declarations); underlying representation must satisfy `pub(pkg)` visibility (`E0910`) |
+| `pub opaque(pkg)` | Entire defining `pkg` (library files, inline `sub`s, executable root, intra-package tests) | Requires `pub` along a `pub`-reachable module/`sub` path (`E0911` on `private`, `pub(pkg)`, non-`pub` enclosing `sub`s, `where`-local, or executable-root declarations); underlying representation must satisfy `pub(pkg)` visibility (`E0910`) |
 
 #### Mandatory-Consumption Linear Types
 
@@ -3908,7 +3911,7 @@ DeclLet                 ::= "let" ScreamingSnakeCase ":" TypeExpression
 ```
 
 #### Normative Rules for External Interface Modules
-- **Body Prohibition Invariant (`E0901`)**: Functions declared in `.d.ril` must not contain implementation bodies (`{ ... }`). Top-level constants must not declare initialization expressions (`= expr`). Supplying an implementation body or initializer in a `.d.ril` file is statically rejected under `E0901: BodyInDeclModuleError`.
+- **Body Prohibition Invariant (`E0901`)**: Functions declared in `.d.ril` must not contain implementation bodies (`{ ... }`), top-level constants must not declare initialization expressions (`= expr`), and `DeclSub` declarations must not declare `GenericParams` (`<...>`). Supplying any of these in a `.d.ril` file is statically rejected under `E0901: BodyInDeclModuleError`.
 - **Missing Body Invariant (`E0902`, `E0909`)**: Functions declared in `.ril` modules require an implementation body unless they match a registered built-in primitive identity. Unregistered bodyless functions trigger `E0902: MissingBodyInStandardModuleError`; signature mismatches against registered primitive contracts trigger `E0909: BuiltinSignatureMismatchError`. External host signatures reside in `.d.ril` modules.
 - **Uninterpreted Foreign Types**: A type declaration in `.d.ril` without a definition body (`pub type DomWindow`) defines an uninterpreted foreign nominal type. Direct field access (`x.field`), bracket indexing (`x[0]`), nominal unwrapping (`inner(x)`), pattern deconstruction, and direct value instantiation are statically rejected under `E0907: ForeignStructuralFieldPenetrationError`.
 - **Exchange Data Types**: Transparent type aliases, records, and tagged sum types may provide full shape definitions in `.d.ril` for foreign data exchange.
@@ -4029,14 +4032,14 @@ Static checking validates the Ril declaration and call; the foreign body's confo
 Literal         ::= IntLiteral | FloatLiteral | StringLiteral | RawStringLiteral
                   | ByteStringLiteral | "true" | "false" | "(" ")"
 Expression      ::= Literal | HoleExpr | QualifiedName [ GenericArgs ] | EffectOperationRef | "(" Expression ")"
-                  | TupleExpr | RecordExpr | ArrayExpr | MapExpr | Block
+                  | TupleExpr | RecordExpr | ArrayExpr | MapExpr | BytesExpr | Block
                   | CallExpr | SumInjectExpr | AnonFnExpr | AccessorExpr | MatchExpr
                   | IfExpr | LoopExpr | WhileExpr | ForExpr | ControlTransfer
                   | ResumeExpr | AssignmentExpr | UnaryExpr | BinaryExpr | PipelineExpr | SharingExpr | ConstructionTransferExpr
                   | MemberExpr | IndexExpr | RangeExpr | IsExpr
                   | Expression "?" | TypeQuoteExpr
 HoleExpr        ::= "..."
-UnaryExpr       ::= ( "-" | "!" | "~" | "typeof" | "^mut" ) Expression
+UnaryExpr       ::= ( "-" | "!" | "~" | "typeof" | "meta" | "^mut" ) Expression
 TypeQuoteExpr   ::= "<" TypeExpression ">"
 ConstructionTransferExpr ::= "new" Expression
 ArgumentMode    ::= "ref" | "mut" | "^mut" | "new"
@@ -4076,7 +4079,7 @@ fn fill(mut buf: Buf, n: int) &mut -> Result<int, str> {
 | Level | Operators | Associativity | Description |
 | :---: | :--- | :---: | :--- |
 | **1** | `.` `?.` `?[` `[]` `()` `::` postfix `?` | Left | Member access, safe navigation, indexing, invocation, postfix `?`; a type quote is a primary operand |
-| **2** | `-` `!` `~` `typeof` `^mut` `new` | Unary Prefix | Arithmetic negation, logical NOT, bitwise NOT, static introspection (`typeof`), explicit local writable sharing (`^mut`), construction transfer (`new`) |
+| **2** | `-` `!` `~` `typeof` `meta` `^mut` `new` | Unary Prefix | Arithmetic negation, logical NOT, bitwise NOT, static introspection (`typeof`), compile-time evaluation (`meta`), explicit local writable sharing (`^mut`), construction transfer (`new`) |
 | **3** | `*` `/` `%` `/?` `%?` | Left | Multiplication, division, remainder, safe division/remainder |
 | **4** | `+` `-` | Left | Addition, subtraction |
 | **5** | `<<` `>>` | Left | Bitwise shift left, bitwise shift right |
@@ -4401,7 +4404,8 @@ IsTuple         ::= "(" ")" | "(" IsTest "," IsTest { "," IsTest } [ "," ] ")"
 IsRecord        ::= [ TypeReference ] ".{" [ IsField { "," IsField } [ "," ] ] "}"
 IsField         ::= FieldLabel [ ":" IsTest ]
 IsBytes         ::= "bytes" "[" [ IsBytesItem { "," IsBytesItem } [ "," ] ] "]"
-IsBytesItem     ::= "_" | ".." | RangePattern | IsValueExpr
+IsBytesItem     ::= ".."
+                  | ( "_" | RangePattern | IsValueExpr ) [ ":" BytesSegmentSpec ]
 IsStr           ::= "str" "[" [ IsStrItem { "," IsStrItem } [ "," ] ] "]"
 IsStrItem       ::= ".." | IsValueExpr
 IsValueExpr     ::= Expression
@@ -4413,7 +4417,7 @@ IsValueExpr     ::= Expression
 | Sum subset (`..Sub`) | Tag-subset test when `Sub` is closed and transparent and $Sub \preceq_{\text{sum}} Sup$ (`E0301` non-sum subject or $Sub \npreceq_{\text{sum}} Sup$; `E0306` non-sum `Sub`; `E0308` opaque or open `Sub`); succeeds when the tag belongs to `Sub` |
 | Existing name / other expression | Evaluate and compare with `==`; `E0301`/`E0305` for incompatible types, `E0327` for unsupported equality. No binders or binding modifiers |
 | Tuple / record test | Test components / listed known fields in written order; omitted record fields are unconstrained. Shorthand `.{ field }` means `.{ field: field }`, reading the outer name |
-| `bytes[...]` (`IsBytes`) | Subject must be `bytes` (`E0301` otherwise); items test `u8` values/ranges/`_` or `bytes`-typed chunk expressions in order, with at most one `..` matching zero or more middle bytes (`E0347` if repeated) |
+| `bytes[...]` (`IsBytes`) | Subject must be `bytes` (`E0301` otherwise). Unannotated items test `u8` values/ranges/`_` or `bytes` chunk expressions; `: BytesSegmentSpec` tests [bit, endian, and length-prefixed segments](#text-and-byte-operations) (`E0362`/`E0363`), masking expected integers to $k$ bits and treating negative/excess `bytes(len)` lengths as non-match (`0 @Panic`). At most one `..` (`E0347`); dynamic `bytes(len)` after `..` is `E0349` |
 | `str[...]` (`IsStr`) | Subject must be `str` (`E0301` otherwise); items test `str`-typed prefix chunk expressions in order, with optional single `..` followed by at most one trailing `str` suffix expression (`E0347` if `..` repeated; `E0349` if more than one item follows `..`) |
 | Arrays / maps | Ordinary value expressions with their normal syntax and evaluation order |
 | `_` / literal range / `\|` | Ignore constituent / existing integer range-pattern rules / try alternatives left-to-right until one succeeds |
@@ -4434,6 +4438,8 @@ assert(number is 3 && number > 0)     -- Logical continuation outside the test
 let magic = bytes"PNG"
 let packet = bytes"\x89PNG\r\n\x1a\n\x00"
 assert(packet is bytes[0x89u8, magic, .., 0x00u8])
+let ipv4_hdr = bytes"\x45\x00\x00\x14"
+assert(ipv4_hdr is bytes[4u8: u8(4), _: u8(4), 0u8, 20u16: u16 big])
 
 let dir = "src/"
 let path = "src/parser/lexer.ril"
@@ -4571,8 +4577,8 @@ assert(Bytes::at(b, 0) == Some(82u8)) -- The original bytes still start with 'R'
 - **`ref` Target (`E0543`)**: A fresh range result cannot bind directly to a persistent `ref`. Publish it immutable through `let` or an ordinary parameter, or receive it with a lawful `let mut` binding; a later `ref` observes that established origin. Forwarding preserves whether publication actually occurred.
 - **Bounds**: For length N, a half-open range requires `0 <= lower <= upper <= N`; equal bounds produce an empty array, including at N. Omitted lower bounds mean zero; an omitted upper bound denotes the exclusive end N. A written inclusive upper bound h requires `0 <= lower <= h < N` and selects through h. Negative, reversed, or out-of-range bounds panic; bounds are never clamped. Safe range lookup (`arr?[a..b]`) returns an Option of the corresponding array result (`None` when out of bounds).
 - **Primitive Sub-Sequences**:
-  - `str[a..b]` and `str[a..=b]` evaluate to an independent `str` based on Unicode scalar indices. For a string of length $N$, half-open bounds require $0 \le a \le b \le N$; inclusive bounds require $0 \le a \le b < N$. Range indexing and string length share the same Unicode scalar coordinate system; `s[0..len(s)]` safely selects the entire text.
-  - `bytes[a..b]` and `bytes[a..=b]` evaluate to an independent `bytes` byte sub-sequence. For a byte sequence of length $N$, half-open bounds require $0 \le a \le b \le N$; inclusive bounds require $0 \le a \le b < N$.
+  - `s[a..b]` and `s[a..=b]` on `s: str` evaluate to an independent `str` based on Unicode scalar indices. For a string of length $N$, half-open bounds require $0 \le a \le b \le N$; inclusive bounds require $0 \le a \le b < N$. Range indexing and string length share the same Unicode scalar coordinate system; `s[0..len(s)]` safely selects the entire text.
+  - `b[a..b]` and `b[a..=b]` on `b: bytes` evaluate to an independent `bytes` byte sub-sequence. For a byte sequence of length $N$, half-open bounds require $0 \le a \le b \le N$; inclusive bounds require $0 \le a \le b < N$.
   - Safe primitive range lookup returns `?str` or `?bytes`, with `None` for invalid bounds.
 - **Array Stability**: Structural mutation is `E0526` during iteration or `E0537` before the last possible use of any derived `ref`/observer environment. Nonoverlapping element writes remain allowed.
 
@@ -4628,6 +4634,52 @@ array[0] = 1u8
 assert(copied == bytes"\x00B" && Bytes::at(copied, 2) == None)
 for String::scalars(text) as scalar { assert(scalar <= 0x10FFFFu32) }
 ```
+
+```ebnf
+BytesExpr        ::= "bytes" "[" [ BytesExprItem { "," BytesExprItem } [ "," ] ] "]"
+BytesExprItem    ::= ".." Expression
+                   | Expression [ ":" BytesSegmentSpec ]
+BytesSegmentSpec ::= BytesIntType [ "(" BytesWidthSpec ")" ] [ EndianSpec ]
+                   | BytesFloatType EndianSpec
+                   | "bool"
+                   | "bytes" "(" Expression ")"
+BytesIntType     ::= "u8" | "u16" | "u32" | "u64" | "i8" | "i16" | "i32" | "i64"
+BytesFloatType   ::= "f32" | "f64"
+BytesWidthSpec   ::= IntLiteral | QualifiedName
+EndianSpec       ::= "big" | "little"
+```
+
+```ril
+let payload = bytes"OK"
+let dyn_nib: u8 = 0xABu8                        -- Low 4 bits (0xBu8) packed without @Panic
+let frame: bytes = bytes[
+    4u8: u8(4), dyn_nib: u8(4),                 -- 8-bit MSB-first group -> 0x4B
+    true: bool, false: bool, 5u8: u8(6),        -- 1 + 1 + 6 = 8 bits -> 0x85
+    Numeric::wrap<u16>(len(payload)): u16 big,  -- 0x00, 0x02
+    -2i16: i16 little,                          -- 0xFE, 0xFF
+    1.5f32: f32 big,                            -- 0x3F, 0xC0, 0x00, 0x00
+    ..payload,                                  -- Splices bytes; repeatable in BytesExpr
+]
+assert(frame == bytes"\x4B\x85\x00\x02\xFE\xFF\x3F\xC0\x00\x00OK")
+
+meta let PROTO_HDR = bytes[1u8: u8(4), 0u8: u8(4), 256u16: u16 big]
+
+-- let _ = bytes[1u16: u16]                     -- Error [E0362]: width > 8 requires 'big' or 'little'
+-- let _ = bytes[1u8: u8 big]                   -- Error [E0362]: width <= 8 forbids endianness
+-- let _ = bytes[1u16: u16(12) little, 0u8: u8(4)] -- Error [E0362]: 'little' requires byte-multiple width
+-- let _ = bytes[1u8: u8(4), 2u16: u16 little, 0u8: u8(4)] -- Error [E0362]: 'little' requires byte-aligned offset
+-- let _ = bytes[payload: bytes(2)]             -- Error [E0362]: use '..payload' in BytesExpr
+-- let _ = bytes[1u8: u8(4), 1u8: u8(3)]        -- Error [E0363]: contiguous bit run is 7 bits (not 8 * m)
+-- let _ = bytes[16u8: u8(4), 0u8: u8(4)]       -- Error [E0326]: literal 16 exceeds u8(4) range 0..=15
+-- let _ = new bytes[1u8]                       -- Error [E0548]: 'bytes' is a copy-by-value type
+```
+
+| `bytes[...]` segment rule | Contract |
+| :--- | :--- |
+| Carriers & widths (`E0362`) | Unannotated `BytesExprItem` expects `u8`; `..chunk` expects `bytes` (`E0301`) and may repeat in `BytesExpr`. `T(k)` on `u8..u64`/`i8..i64` requires static `int` $1 \le k \le \text{width}(T)$ (`E0814` non-static, `E0362` out of bounds); `bool` has $k = 1$; `f32`/`f64` fix $k = 32$/$64$; `int` is excluded (`E0362`). `bytes(len)` is admitted only in [`BytesPattern`](#pattern-matching) and [`IsBytes`](#value-tests-with-is) (`E0362` in `BytesExpr`) |
+| Endianness (`big`, `little`, `E0362`) | Contextual keywords inside `BytesSegmentSpec`. Forbidden when $k \le 8$; mandatory when $k > 8$ and on `f32`/`f64`. `little` additionally requires $k \bmod 8 = 0$ and a byte-aligned start offset within its bit group (`E0362`) |
+| Bit-group alignment (`E0363`) | Every maximal contiguous run of bit/fixed-width segments between `[`, `]`, `..chunk`/`..`, `ByteStringLiteral`, or `bytes(len)` packs MSB-first and must sum to $8m$ bits (`E0363`) |
+| Encoding & range (`E0326`) | Dual-phase and finite (`0 @Panic` beyond operand evaluation, evaluating left-to-right). Dynamic integers mask low $k$ bits ($\bmod 2^k$); integer literals outside unsigned $0..2^k-1$ or signed $-2^{k-1}..2^{k-1}-1$ fail `E0326`. `f32`/`f64` emit IEEE-754 binary32/binary64 bits |
 
 ### Pipeline Operators
 
@@ -5299,7 +5351,11 @@ TuplePatternElement ::= Pattern | ".."
 ArrayPattern       ::= "[" [ ArrayPatternElement { "," ArrayPatternElement } [ "," ] ] "]"
 ArrayPatternElement ::= Pattern | ".." [ Identifier ]
 BytesPattern       ::= "bytes" "[" [ BytesPatternElement { "," BytesPatternElement } [ "," ] ] "]"
-BytesPatternElement ::= ByteStringLiteral | RangePattern | NumericPattern | WildcardPattern | Identifier | ".." [ Identifier ]
+BytesPatternElement ::= ByteStringLiteral
+                      | ".." [ Identifier ]
+                      | BytesPatternTarget [ ":" BytesSegmentSpec ]
+BytesPatternTarget ::= BytesPatternAtom { "|" BytesPatternAtom }
+BytesPatternAtom   ::= RangePattern | NumericPattern | "true" | "false" | WildcardPattern | Identifier
 StrPattern         ::= "str" "[" [ StrPatternElement { "," StrPatternElement } [ "," ] ] "]"
 StrPatternElement  ::= StringLiteral | RawStringLiteral | ".." [ Identifier ]
 RecordPattern      ::= [ TypeReference ] ".{" [ RecordPatternField { "," RecordPatternField } [ "," ] ] "}"
@@ -5322,7 +5378,7 @@ A tuple or array pattern without a rest requires exactly its written number of e
 
 | Sequence pattern | Rule |
 | :--- | :--- |
-| `bytes[...]` | Subject must be `bytes` (`E0301` otherwise). Elements match single `u8` literals/ranges/`_`/`u8` value bindings or `ByteStringLiteral` chunks; at most one `..` / `..rest` (`E0347` if repeated) binds the remaining slice as `bytes` (`E0402` if a reference/mutable modifier is written) |
+| `bytes[...]` | Subject must be `bytes` (`E0301`). Elements match `u8` literals/ranges/`_`/bindings, `ByteStringLiteral` chunks, or [`: BytesSegmentSpec`](#text-and-byte-operations) segments (`E0362`/`E0363`), sign-extending `i8..i64(k)` from bit $k - 1$ and matching `f32`/`f64` by exact IEEE-754 bits (`NaN` matches only `_`/binder). `bytes(n)` accepts a non-negative literal/static constant or any integer binder bound to its left before `..` (`E0349` for computed expressions or dynamic `bytes(n)` after `..`); negative or excess `n` fails to match (`0 @Panic`) and subtracts no static coverage (`E0303`/`E0304`). At most one `..` / `..rest` (`E0347`; `E0402` on `ref`/`mut` modifiers) |
 | `str[...]` | Subject must be `str` (`E0301` otherwise). Elements match non-interpolated `StringLiteral` / `RawStringLiteral` UTF-8 prefix chunks plus at most one trailing `..` / `..rest` binding `str` (`E0349` for interpolated chunks or non-trailing `..`; `E0347` if `..` repeated) |
 
 ```ril
@@ -5362,15 +5418,17 @@ if let [prefix, .., suffix] = numbers {
     assert(prefix == 1 && suffix == 5)         -- OK: front and back extraction with middle discarded
 }
 
--- Byte-sequence and string-prefix destructuring:
-let frame = bytes"\x89PNG\r\n\x1a\n\x01payload"
-let (ver, body) = match frame {
-    bytes[0x89u8, bytes"PNG\r\n\x1a\n", v, ..rest] -> (v, rest),
-    bytes[0x41u8..=0x5Au8, ..] -> (0u8, bytes""),
-    _ -> (0u8, bytes""),
+-- Byte-sequence, bit-level, and length-prefixed destructuring:
+let frame = bytes"\x45\x00\x00\x03abc\xFF"
+let (ihl, body, tail) = match frame {
+    bytes[4u8: u8(4), h: u8(4), 0u8, n: u16 big, data: bytes(n), ..rest] -> (h, data, rest),
+    bytes[_, ..] -> (0u8, bytes"", bytes""),
+    bytes[]      -> (0u8, bytes"", bytes""),
 }
-assert(ver == 1u8 && body == bytes"payload")
--- match frame { bytes[..a, ..b] -> () }       -- Error [E0347]: at most one '..' permitted
+assert(ihl == 5u8 && body == bytes"abc" && tail == bytes"\xFF")
+-- match frame { bytes[..a, ..b] -> () }                  -- Error [E0347]: at most one '..' permitted
+-- match frame { bytes[.., n: u8, b: bytes(n)] -> (), _ -> () } -- Error [E0349]: dynamic bytes(n) after '..'
+-- match frame { bytes[n: u8, b: bytes(n + 1)] -> (), _ -> () } -- Error [E0349]: computed length in pattern
 
 let url = "https://ril.dev/spec"
 let route = match url {
@@ -7447,7 +7505,7 @@ These call forms use the same [callable contracts](#callable-contracts) and conc
 
 Accessing module-level or captured bindings records concrete named-source obligations. Named definitions spell their source groups and inherited concrete named obligations, directly or through an admissible function state contract reference. Anonymous definitions retain concrete source identities in their inferred contracts. Callable-dependent and varying `via`-mode obligations may be forwarded symbolically alongside concrete named obligations.
 
-This includes reading a module-level `meta let NAME` in a run-time value expression: the inferred contract records that named source, and a named definition declares `&up(sub){NAME}` for a current-module binding or `&up(Module){NAME}` for an external/parent/child module binding. Compile-time evaluation and immutability do not erase the source. Reads performed in the static/type domain are exempt from this run-time state obligation, including type expressions and static arguments.
+This includes reading a module-level `meta let NAME` in a run-time value expression, inside a runtime-materialized `meta <expr>`, or through a runtime-read local `meta let`: the inferred contract records that named source, and a named definition declares `&up(sub){NAME}` for a current-module binding or `&up(Module){NAME}` for an external/parent/child module binding (`&up(Ring){NAME}` for a parameterized `sub Ring<...>`, anchored to its uninstantiated declaration). Direct lexical reads of an enclosing callable's `meta` or const generic parameter inside a runtime-materialized `meta <expr>` likewise record `&up{param}` / `&up(outer){param}`. Reads performed purely in the static/type domain (`TypeExpression`, `GenericArgs`, `BytesWidthSpec`, `meta(...)` attributes, `meta fn` bodies, and static-only `meta let`) are exempt.
 
 Within either kind of source group, a bare item permits read-only access, whether its actual data is immutable or live. It does not promise deep immutability or create a `let ref` binding. `mut name` adds writes; `^mut name` additionally permits retained writable sharing. Each mode applies only to its own item.
 
@@ -7513,7 +7571,7 @@ where
 }
 ```
 
-- **Module Groups (`E0538`)**: `&up(sub){...}` names storage bindings owned directly by the current `sub` or executable root. Storage bindings from an imported module, enclosing `Super`, or inline child `sub` use `&up(ModuleOwner){item}` where `ModuleOwner` names the visible module (`Platform`, `Super`, `Geometry::Transform`) and `item` is the unqualified binding name inside that module (`E0538` if qualified or placed under `sub`). A named function declaration is not a storage item.
+- **Module Groups (`E0538`)**: `&up(sub){...}` names storage bindings owned directly by the current `sub` or executable root. Storage bindings from an imported module, enclosing `Super`, or inline child `sub` use `&up(ModuleOwner){item}` where `ModuleOwner` names the visible uninstantiated module path (`Platform`, `Super`, `Geometry::Transform`, `Ring`; `SubAliasDecl` aliases resolve to the underlying `sub`, and generic `<...>` in `ModuleOwner` is `E0538`) and `item` is the unqualified binding name inside that module (`E0538` if qualified or placed under `sub`). A named function declaration is not a storage item.
 - **Environment Groups (`E0538`)**: `&up{...}` contains captured bindings from one enclosing callable layer. A directly enclosing layer needs no owner. A farther named layer requires its function name in `&up(owner){...}`. A farther anonymous layer uses a separate ownerless `&up{...}` group. An explicit owner verifies the source layer; it cannot select a same-spelled binding hidden by shadowing.
 - **Resolution Before Classification**: Resolve each item by ordinary lexical rules, including shadowing, then verify its group and declaration owner. Preserve its actual activation identity in metadata.
 - **Layers and Activations**: Named functions and lambdas introduce callable layers. Blocks, loops, and handler arms do not introduce function layers; their binding identities, dynamic activations, lifetimes, and handler contexts remain distinct. An object's possible origin does not change its binding's declaration layer.
@@ -7589,7 +7647,7 @@ pub fn retain(^mut cell: Cell) &up(sub){mut private_count} -> ^mut(cell) Cell {
 }
 
 -- client.ril
-use counter
+use pkg/counter
 fn wrapper() &Counter::advance -> () { Counter::advance() }
 fn through_alias() &Counter::advance -> () {
     let action = Counter::advance
@@ -7644,7 +7702,7 @@ type AdvanceContract = fn() &advance -> () -- OK: verified named-state projectio
 
 ```ril
 -- Counter is the ordinary module defined above.
-use counter
+use pkg/counter
 -- fn private_reference() &Counter::private_advance -> () {} -- Error [E0201]: private provider
 -- fn unknown_reference() &Counter::missing -> () {}         -- Error [E0209]: no such module member
 -- let invalid = \&Counter::advance -> ()               -- Error [E0539]: anonymous annotation
@@ -7682,8 +7740,8 @@ pub fn logged_advance() @Log &up(sub){mut private_count} -> () {
 }
 
 -- client.ril
-use counter
-use counter::{Log, advance as bump}
+use pkg/counter
+use pkg/counter::{Log, advance as bump}
 fn imported_alias() &bump -> () { bump() }  -- Declaration alias, not a value alias
 fn logged_wrapper() @Log &Counter::logged_advance -> () { Counter::logged_advance() }
 -- fn missing_effect() &Counter::logged_advance -> () { Counter::logged_advance() }
@@ -7865,7 +7923,7 @@ assert(two_states() == (7, "seven"))
 | Generic arguments in source | Appear on the effect name; operations declare no independent generic parameter list |
 | Handler arm | Handles one determined instance; never implicitly handles every instantiation |
 
-Repeated arms for the same instantiated operation are `E0622`, including through aliases. A handler discharges only the instances it covers; uncovered instances remain residual. Effect instances containing still-symbolic enclosing static parameters retain those parameter identities until instantiation.
+Repeated arms for the same instantiated operation are `E0622`, including through aliases. A handler discharges only the instances it covers; uncovered instances remain residual. Effect instances containing still-symbolic enclosing static parameters retain those parameter identities until instantiation; two arms in one `with`, or a `with` arm and a residual protected-body effect, sharing an `EffectDecl` with unifiable symbolic static arguments not proved disjoint at the definition site fail `E0622`.
 
 ```ebnf
 EffectDecl       ::= { MetaAttr } [ Visibility ] "eff" PascalCase [ GenericParams ] "{" EffectMemberList "}"
@@ -7921,7 +7979,12 @@ The operand of `resume` must match the handled operation's result type (`E0624`)
 
 ```ril
 eff ReadNumber { get() -> int }
+eff Ask<T> { get() -> T }
 fn ordinary() -> int { 1 }
+-- fn overlap<T>(x: T) -> int {
+--     with { Ask<int>::get() -> resume 1, Ask<T>::get() -> resume x }
+--     Ask<int>::get()
+-- }                                    -- Error [E0622]: Ask<int> and Ask<T> may overlap when T = int
 fn handler_targets() -> int {
     -- with ordinary() -> resume 1   -- Error [E0621]: target is not an effect operation
     -- with { ReadNumber::get() -> resume 1, ReadNumber::get() -> resume 2 }
@@ -10033,7 +10096,8 @@ TypePatternField     ::= [ MemberMode ] FieldLabel ":" ( TypePatternInner | "_" 
 TypeRestPattern      ::= ".." [ PascalCase ]
 TypeArrayPattern     ::= "[" [ ElementAccessMode ] "]" TypePatternInner
 TypeMapPattern       ::= "[" TypePatternInner ":" [ ElementAccessMode ] TypePatternInner "]"
-RigidNominalPattern  ::= QualifiedName [ "<" TypePatternArg { "," TypePatternArg } [ "," ] ">" ]
+RigidNominalPattern  ::= { "Super" "::" } { RigidPatternSegment "::" } RigidPatternSegment
+RigidPatternSegment  ::= PascalCase [ "<" TypePatternArg { "," TypePatternArg } [ "," ] ">" ]
 TypePatternArg       ::= TypePatternInner | MemberModeLiteral
 PrimitivePattern     ::= PrimitiveType
 ```
@@ -10227,16 +10291,66 @@ meta let _ = assert(BYTE_SIZE == 1)
 | Visibility | Prelude declaration with ordinary lexical shadowing; not reserved syntax |
 | Layout | May depend on the abstract target; grants no packed layout or field-offset guarantee |
 
+```ril
+fn frame_stride<T>(count: int) -> int {
+    count * meta align_to(byte_size(<T>), 8)
+}
+
+fn slot_bytes(x: []int) -> int {
+    meta byte_size(<typeof x>)                 -- Isolated typeof checks without reading 'x'
+}
+
+let squares: []int = meta {
+    let mut acc: []int = []
+    for 0..4 as i { acc |> mut Array::push(i * i) }
+    acc                                        -- Publishes deeply immutable []int snapshot
+}
+let mut copy = clone(squares)                  -- OK: clone yields isolated 'new []int'
+-- let mut bad = meta [1, 2]                   -- Error [E0520]: 'meta' strips 'new' freshness
+
+meta fn parse_port(s: str) -> Result<u16, str> {
+    match s { "http" -> Ok(80u16), _ -> Err("unknown") }
+}
+fn resolve_port() -> Result<u16, str> {
+    let port = (meta parse_port("http"))?      -- OK: '?' applies outside the 'meta' root
+    Ok(port)
+}
+-- fn leak_q() -> Result<u16, str> { Ok(meta { parse_port("x")? }) } -- Error [E0205]: '?' cannot cross 'meta' root
+
+halt fn add_offset(i: int) -> int {
+    let sum = meta { var s = 0; var k = 0; while k < 4 { s += k; k += 1 }; s }
+    sum + i                                    -- OK: static Diverge runs at compile time; runtime call is halt
+}
+-- halt meta fn bad_halt() -> int { meta { while false {}; 0 } } -- Error [E0820]: uncovered Diverge in halt meta fn
+
+meta let BASE_OFFSET = 64
+fn with_base(x: int) &up(sub){BASE_OFFSET} -> int {
+    x + meta (BASE_OFFSET + 8)                 -- Runtime materialization retains '&up(sub){BASE_OFFSET}'
+}
+-- fn bad_rt(n: int) -> int { meta (n + 1) }   -- Error [E0814]: runtime binding 'n' read inside 'meta'
+-- let bad_tok = meta <int>                    -- Error [E0812]: type tokens cannot escape 'meta' expression
+-- let bad_fn  = meta (\x: int -> x + 1)       -- Error [E0816]: callables cannot materialize from 'meta'
+```
+
+| `meta <expr>` rule | Requirement |
+| :--- | :--- |
+| Evaluation & budget | Evaluates `<expr>` in `MetaValue` under the active compiler root budget (`E0811`; nested `meta` shares the root budget, and `diverge_budget` bounds steps within that root). Ordinary `fn` calls fail `E0810`; runtime variable reads fail `E0814` (isolated `typeof` remains valid) |
+| Published snapshot | Result must recursively exclude type tokens (`E0812`), callables/resources (`E0816`), linear types (`E0411`), and live writers (`E0535`), publishing a deeply immutable value with `new` stripped (`E0520` on `let mut`; `clone` yields `new T`) |
+| Control & handler boundary | `return`, `last`, `next`, bare `?`, and `resume` cannot cross a `meta` root boundary (`E0707`, `E0205`, `E0623`). `Pattern` forbids `meta <expr>` (`E0349`; `IsValueExpr` admits it) |
+| `halt` & provenance | Runtime `halt fn` ignores compile-time `Diverge` inside `meta <expr>`; `halt meta fn` and `halt type` still reject uncovered static `Diverge` (`E0820`). Runtime-materialized `meta <expr>` retains `&up` (`E0510`) and exported-visibility (`E0910`) obligations on direct lexical static reads |
+
 ## Modules, Program Execution, and Prelude
 
 ### Modules and Compilation Units
 
 ```ebnf
-SubDecl ::= { MetaAttr } [ Visibility ] "sub" PascalCase "{" { SubItem Separator } [ SubItem ] "}"
-SubItem ::= UseDecl | SubDecl | FunctionDecl | MetaFnDecl | MetaLetDecl
-          | LetDecl | LetMutDecl | SharedMutDecl | VarDecl | VarMutDecl
-          | LetRefDecl | VarRefDecl | OpaqueTypeDecl | TypeDecl | NominalDecl
-          | SumTypeDecl | EffectDecl
+SubDecl      ::= { MetaAttr } [ Visibility ] "sub" PascalCase [ GenericParams ] "{" { SubItem Separator } [ SubItem ] "}"
+SubAliasDecl ::= [ Visibility ] "sub" PascalCase [ GenericParams ] "=" SubReference
+SubReference ::= { "Super" "::" } { SubSegment "::" } SubSegment
+SubItem      ::= UseDecl | SubDecl | SubAliasDecl | FunctionDecl | MetaFnDecl | MetaLetDecl
+               | LetDecl | LetMutDecl | SharedMutDecl | VarDecl | VarMutDecl
+               | LetRefDecl | VarRefDecl | OpaqueTypeDecl | TypeDecl | NominalDecl
+               | SumTypeDecl | EffectDecl
 ```
 
 ```ril
@@ -10272,10 +10386,10 @@ pub sub AsyncIo {
 }
 
 -- 3. In file: app/main.ril (Executable Root Unit: shares 'pkg' identity, non-sub, unimportable)
-use math/geometry::{TAU, DEG_PER_RAD}
-use math/geometry::Transform
+use pkg/math/geometry::{TAU, DEG_PER_RAD}
+use pkg/math/geometry::Transform
 use platform/fs::AsyncIo::{read_file}
--- use app/main                         -- Error [E0208]: executable root is not an importable 'sub'
+-- use pkg/app/main                     -- Error [E0208]: executable root is not an importable 'sub'
 
 let APP_VERSION = 1
 -- pub let EXPORTED = 1                 -- Error [E0905]: executable root cannot declare top-level 'pub'
@@ -10302,37 +10416,73 @@ fn main() @Fiber &Metrics::bump -> () {
 | **External Contract (`.d.ril`)** | File is `sub` (`to_pascal_case(stem)`) | `pub` and `pub(pkg)` allowed on bodyless contract items | Prohibited (`E0901` / `E0904`) | `DeclSub` enforces `.d.ril` rules recursively (`E0901`) |
 | **Inline `sub` (`[Visibility] sub Name`)** | `PascalCase` (`E0101`/`E0102`); `Super` is `E0203` | `pub` and `pub(pkg)` allowed inside `sub` (mutable state is `E0906`) | Prohibited (`E0904`) | Hermetic (Prelude only); `Super::` reaches enclosing non-mutable items; downward access requires `pub` or same-`pkg` `pub(pkg)` (`E0201`) |
 
-Inline `sub` declarations and `Visibility` modifiers are permitted only at file top-level or directly inside another `sub` (rejected in sequential statements with `E0703`, block `where` with `E0702`, and signature `where` with `E0704`).
+Inline `sub` declarations, `sub` aliases (`SubAliasDecl`), and `Visibility` modifiers are permitted only at file top-level or directly inside another `sub` (rejected in sequential statements with `E0703`, block `where` with `E0702`, and signature `where` with `E0704`).
+
+```ril
+pub sub Ring<T, cap: int = 16> {
+    pub meta let CAP = cap                      -- OK: static 'meta let' permitted; cap adds no '&up'
+    pub opaque type Buf = .{ mut data: []T }
+
+    pub fn empty() -> new Buf { .{ data: [] } }
+    pub fn limit() &up(sub){CAP} -> int { CAP }
+
+    pub sub View<U> {
+        pub fn pair(x: Super::T, y: U) -> (Super::T, U) { (x, y) }
+    }
+    -- var count = 0                            -- Error [E0912]: runtime module storage prohibited in generic sub
+    -- let ZERO = 0                             -- Error [E0912]: use 'meta let' in generic sub
+}
+
+pub sub IntRing = Ring<int, 64>                 -- Transparent applicative alias -> Ring<int, 64>
+pub sub VecRing<T> = Ring<[]T, 32>
+use IntRing::{Buf, empty}                       -- OK: fully instantiated alias admits 'use'
+-- use Ring::{empty}                            -- Error [E0340]: uninstantiated generic sub in 'use'
+
+fn read_cap() &up(Ring){CAP} -> int {           -- Anchored to uninstantiated 'Ring' ('Ring<int>' is E0538)
+    IntRing::limit()
+}
+let a: Ring<int, 64>::Buf = IntRing::empty()    -- OK: applicative K-EQ identity
+-- let b: Ring<int, 32>::Buf = a                -- Error [E0301]: Ring<int, 64>::Buf != Ring<int, 32>::Buf
+```
+
+| Parameterized `sub` rule | Requirement |
+| :--- | :--- |
+| Placement & aliases (`E0901`, `E0313`, `E0340`) | Inline `.ril` `SubDecl` and `SubAliasDecl` accept `[ GenericParams ]` (trailing defaults `E0316`, forward refs `E0320`, explicit instantiation required when unconstrained `E0340`; `.d.ril` `DeclSub` forbids `<...>` with `E0901`). `SubAliasDecl` expands transparently (`E0313` on cycles, `E0708` on `meta(...)`). `UseDecl` carries no `<...>`; importing from an uninstantiated generic `sub` fails `E0340`, while a fully instantiated `SubAliasDecl` admits `use` |
+| Hermetic scope & `Super::` | Header bounds, guards, and defaults resolve in the enclosing scope plus prior parameters (`E0910` applies). Inside the body, `GenericParams` are directly in scope (zero `&up` obligation on const params), are non-exported (`Ring<int>::T` fails `E0209`), and are reachable in child `sub`s via `Super::T` / `Super::cap` |
+| Stateless invariant (`E0912`) | Any `sub` with non-empty `GenericParams` (or nested inside one) forbids runtime module storage (`let`, `let mut`, `let ^mut`, `var`, `var mut`, `let ref`, `var ref`) with `E0912`. `meta let` is permitted; runtime reads anchor `&up` to the uninstantiated `ModuleOwner` (`&up(Ring){CAP}`; `<...>` in `ModuleOwner` fails `E0538`) |
+| Applicative identity & finiteness (`K-EQ`, `E0313`, `E0811`) | Nominal, opaque, sum, and effect declarations inside `S<Args>` include all enclosing normalized `sub` static arguments in `K-EQ`, even when unused by fields. Unpruned recursive calls across `S<...>` must keep static arguments regular (`E0313` on strictly growing types), and instantiating `S<...>` charges the compiler root budget (`E0811`) |
 
 ### Module Imports and Visibility
 
 ```ebnf
-UseDecl    ::= [ Visibility ] "use" FilePath [ "as" PascalCase ]
-             | [ Visibility ] "use" ModulePath "::" ( "{" ImportList "}" | "*" | ImportItem )
-FilePath   ::= SnakeCase { "/" SnakeCase }
-ModulePath ::= FilePath { "::" PascalCase }
-             | "Super" { "::" "Super" } { "::" PascalCase }
-             | PascalCase { "::" PascalCase }
-ImportList ::= ImportItem { "," ImportItem } [ "," ]
-ImportItem ::= Identifier [ "as" Identifier ]
+UseDecl     ::= [ Visibility ] "use" FilePath [ "as" PascalCase ]
+              | [ Visibility ] "use" ModulePath "::" ( "{" ImportList "}" | "*" | ImportItem )
+PackageRoot ::= "pkg" | "ril" | SnakeCase
+FilePath    ::= PackageRoot "/" SnakeCase { "/" SnakeCase }
+ModulePath  ::= FilePath { "::" PascalCase }
+              | "Super" { "::" "Super" } { "::" PascalCase }
+              | PascalCase { "::" PascalCase }
+ImportList  ::= ImportItem { "," ImportItem } [ "," ]
+ImportItem  ::= Identifier [ "as" Identifier ]
 ```
 
 #### Normative Module Import Rules
 
 ```ril
--- Fixture module math/numbers.ril exports ONE; math/absent does not exist.
--- use math/absent                      -- Error [E0208]: no module at this path
--- use math/numbers::{TWO}              -- Error [E0209]: no member TWO in the resolved module
-use math/numbers::{ONE}                 -- OK
+-- Fixture module math/numbers.ril in current package exports ONE; math/absent does not exist.
+-- use numbers                           -- Error [E0208]: file import requires a package root ('pkg/...', 'ril/...', or '<dep>/...')
+-- use pkg/math/absent                   -- Error [E0208]: no module at this path
+-- use pkg/math/numbers::{TWO}           -- Error [E0209]: no member TWO in the resolved module
+use pkg/math/numbers::{ONE}              -- OK
 ```
 
 An unresolved module or `Super::` path is `E0208`. A selective import or qualified access naming an absent member is `E0209`. An inaccessible member is `E0201`; an unavailable ordinary lexical name is `E0204`. Import name collisions and protected names (`Type`, `Super`) are `E0203`.
 
 - **File-to-`PascalCase` Mapping (`to_pascal_case`)**:
-   - `use FilePath` without `::` or `as` binds `to_pascal_case(last_segment)` in the current scope (`math/geometry` $\rightarrow$ `Geometry`, `data/string_builder` $\rightarrow$ `StringBuilder`, `crypto/sha256_hash` $\rightarrow$ `Sha256Hash`).
+   - `use FilePath` without `::` or `as` binds `to_pascal_case(last_segment)` in the current scope (`pkg/math/geometry` $\rightarrow$ `Geometry`, `pkg/data/string_builder` $\rightarrow$ `StringBuilder`, `crypto/sha256_hash` $\rightarrow$ `Sha256Hash`).
    - Every `_`-separated segment in a module file name must begin with `[a-z]`, and the derived `PascalCase` name must satisfy acronym title-casing (`E0102`, rejecting single-letter prefixes before letters such as `a_b` $\rightarrow$ `AB` and digit-leading segments after `_` such as `sha_256`) and protected-name rules (`E0203`, rejecting `super.ril`).
-- **Path Separators (`/` vs `::`) and `Super::`**:
-   - `/` separates `snake_case` file-system segments (`FilePath`); `::` navigates `PascalCase` `sub` namespaces and member projections (`E0101`).
+- **Path Separators (`/` vs `::`), Package Roots, and `Super::`**:
+   - `/` separates `snake_case` file-system segments (`FilePath`) anchored by `pkg/...` (current package), `ril/...` (standard library), or `<dep>/...` (mounted direct dependency; mount names `pkg` and `ril` are prohibited); `::` navigates `PascalCase` `sub` namespaces and member projections (`E0101`).
    - `Super` is valid as a leading `Super::` prefix (`use Super::...` or `Super::member`) or as a module owner in `&up(Super){...}` / `&up(Super::Child){...}`, stepping into the immediately enclosing `sub` or root file scope.
 - **Scoping & Re-Exports (`E0201`, `E0906`, `E0910`)**:
    - A `use` declaration resolves imports in its enclosing file, `sub`, or block scope. Re-exporting a parent mutable binding via `pub use` / `pub(pkg) use` is rejected under `E0906`.
@@ -10340,12 +10490,12 @@ An unresolved module or `Super::` path is `E0208`. A selective import or qualifi
 
 ```ril
 -- Package visibility ('pub(pkg)'), re-exports, and exported interface leaks ('E0910'):
--- In package 'store', file 'store/codec.ril' (no root 'pub' -> module visibility is 'pub(pkg)'):
+-- In package 'store', file 'codec.ril' (no root 'pub' -> module visibility is 'pub(pkg)'):
 pub(pkg) type Header(.{ magic: u32 })
 pub(pkg) let DEFAULT_LIMIT = 64
 
--- In package 'store', file 'store/api.ril':
-use store/codec::{Header, DEFAULT_LIMIT}
+-- In package 'store', file 'api.ril':
+use pkg/codec::{Header, DEFAULT_LIMIT}
 type SecretTag(int)
 type RawPair = (int, str)                            -- Transparent alias expands in signatures
 
@@ -10353,7 +10503,7 @@ pub opaque type Sealed = SecretTag                   -- OK: 'pub opaque' hides p
 pub opaque(pkg) type Cursor = Header                 -- OK: representation is >= 'pub(pkg)'
 pub fn open_pair() -> RawPair { (1, "ok") }          -- OK: expands to '(int, str)'
 
--- pub use store/codec::{Header}                     -- Error [E0201]: 'pub use' cannot widen 'pub(pkg)'
+-- pub use pkg/codec::{Header}                       -- Error [E0201]: 'pub use' cannot widen 'pub(pkg)'
 -- pub opaque(pkg) type BadCursor = SecretTag        -- Error [E0910]: 'pub opaque(pkg)' leaks private 'SecretTag'
 -- pub fn leak_type() -> Header { Header(.{ magic: 0u32 }) } -- Error [E0910]: 'pub' signature leaks 'pub(pkg)' 'Header'
 -- pub fn leak_default(n: int = DEFAULT_LIMIT) -> int { n }  -- Error [E0910]: 'pub' default reads 'pub(pkg)' binding
@@ -10361,24 +10511,24 @@ pub fn open_pair() -> RawPair { (1, "ok") }          -- OK: expands to '(int, st
 
 | Visibility & package rule | Requirement |
 | :--- | :--- |
-| Lattice & `pkg` scope | `private` < `pub(pkg)` < `pub`. One `pkg` identity covers a package's `.ril`/`.d.ril` modules, executable root, and intra-package tests; `ril/...` is reserved for the standard library, and mounted dependency root names are disjoint from local root modules (`E0203`) |
+| Lattice & package roots | `private` < `pub(pkg)` < `pub`. One `pkg` identity covers a package's `.ril`/`.d.ril` modules, executable root, and intra-package tests; `pkg/...` addresses the current package, `ril/...` addresses the standard library, and `<dep>/...` addresses mounted direct dependencies (forbidding mount names `pkg`/`ril` and single-segment file paths, `E0208`) |
 | Sealed internal files (`E0201`) | A library file with at least one root `pub` item is externally importable; a library file with zero root `pub` items has `pub(pkg)` module visibility (`E0201` from external packages) |
-| Interface consistency (`E0910`) | For an item of effective visibility $V \in \{\text{pub(pkg)}, \text{pub}\}$ along a reachable module path, after expanding transparent `TypeDecl` aliases, rigid types in signatures, non-opaque fields/variants, `TypeFunctionExpr` bodies, `pub opaque(pkg)` representations ($\ge \text{pub(pkg)}$), unhandled `@Eff`, standalone/returned `CallableType` `&provider` references, and direct module bindings read in parameter/field defaults must have visibility $\ge V$. `pub opaque` representations and a `FunctionDecl`'s own `StateAnnot` (`&pkg_fn`, `&up(sub){...}`) are exempt |
+| Interface consistency (`E0910`) | For an item of effective visibility $V \in \{\text{pub(pkg)}, \text{pub}\}$ along a reachable module path, after expanding transparent `TypeDecl`/`SubAliasDecl` aliases, rigid types in signatures, generic `sub` header bounds/guards/defaults, non-opaque fields/variants, `TypeFunctionExpr` bodies, `pub opaque(pkg)` representations ($\ge \text{pub(pkg)}$), unhandled `@Eff`, standalone/returned `CallableType` `&provider` references, and direct static bindings read in parameter/field defaults or runtime-materialized `meta <expr>` in exported generic bodies must have visibility $\ge V$. `pub opaque` representations and a `FunctionDecl`'s own `StateAnnot` (`&pkg_fn`, `&up(sub){...}`) are exempt |
 
 ```ril
 -- 1. Automatic PascalCase Namespace Binding & Explicit Aliasing:
-use math/geometry                       -- Binds 'Geometry'
+use pkg/math/geometry                   -- Binds 'Geometry'
 let area = Geometry::circle_area(5.0)
 use ril/crypto as Hash                  -- Overrides derived name with 'Hash'
 -- use ril/crypto as hash               -- Error [E0101]: alias must be PascalCase
 -- use ril/crypto as Super              -- Error [E0203]: 'Super' is protected
--- use math/Geometry                    -- Error [E0101]: file path segments must be snake_case
--- use net/a_b                          -- Error [E0102]: derived 'AB' violates PascalCase acronym rule
--- use crypto/sha_256                   -- Error [E0102]: segment after '_' must start with [a-z]
+-- use pkg/math/Geometry                -- Error [E0101]: file path segments must be snake_case
+-- use pkg/net/a_b                      -- Error [E0102]: derived 'AB' violates PascalCase acronym rule
+-- use pkg/crypto/sha_256               -- Error [E0102]: segment after '_' must start with [a-z]
 
 -- 2. Nested Inline sub & Super:: Imports:
-use math/geometry::Transform            -- Binds inline sub 'Transform' from 'math/geometry'
-use math/geometry::Transform::{scale_tau as scale}
+use pkg/math/geometry::Transform        -- Binds inline sub 'Transform' from 'pkg/math/geometry'
+use pkg/math/geometry::Transform::{scale_tau as scale}
 pub use ril/math::*                     -- Glob re-export of public items
 
 sub Outer {
@@ -10847,6 +10997,8 @@ This index assigns each code its diagnostic name and points to its defining rule
 | **`E0359`** | [`InvalidFieldDefaultPlacementError`](#record-construction-and-spread-update) |
 | **`E0360`** | [`UnfinishedExpressionHoleError`](#expression-holes) |
 | **`E0361`** | [`DivisionByZeroError`](#arithmetic-operators) |
+| **`E0362`** | [`InvalidBytesSegmentSpecError`](#text-and-byte-operations) |
+| **`E0363`** | [`UnalignedBytesBitGroupError`](#text-and-byte-operations) |
 
 ### Parameters, Argument Modes, and Defaults
 
@@ -10989,3 +11141,4 @@ This index assigns each code its diagnostic name and points to its defining rule
 | **`E0909`** | [`BuiltinSignatureMismatchError`](#named-function-declarations-and-contrast-matrix) |
 | **`E0910`** | [`ExportedVisibilityLeakError`](#module-imports-and-visibility) |
 | **`E0911`** | [`InvalidOpacityModifierError`](#type-declarations-and-opaque-types) |
+| **`E0912`** | [`StatefulGenericSubError`](#modules-and-compilation-units) |

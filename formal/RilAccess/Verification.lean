@@ -212,6 +212,18 @@ structure VisibilityGuarantees : Prop where
   opaquePkgSumBlocksExternalMatch : ∀ (s : VisibilityModel.SumDef) covered hasWildcard,
     s.op = .opaquePkg →
       VisibilityModel.exhaustiveMatch s .externalPkg covered hasWildcard = false
+  pkgAnchorIsolation :
+    VisibilityModel.visibleFrom .pubPkg (VisibilityModel.importContext .pkg) = true ∧
+    VisibilityModel.visibleFrom .pubPkg (VisibilityModel.importContext .ril) = false ∧
+    VisibilityModel.visibleFrom .pubPkg (VisibilityModel.importContext .externalDep) = false ∧
+    VisibilityModel.validDependencyMountName "pkg" = false ∧
+    VisibilityModel.validDependencyMountName "ril" = false
+  nonPubSubBlocksOpaquePkg : ∀ moduleHasPub (enclosingSubs : List VisibilityModel.Visibility) declVis subVis,
+    subVis ∈ enclosingSubs → subVis ≠ .pubExport →
+      VisibilityModel.validPathOpacity moduleHasPub enclosingSubs declVis .opaquePkg = false
+  genericSubStateless : ∀ depth, 0 < depth →
+    VisibilityModel.validSubStorage depth .runtimeStorage = false ∧
+      VisibilityModel.validSubStorage depth .metaConst = true
 
 structure CallableMatchGuarantees : Prop where
   reflexive : ∀ (pureSources : List Source) (s : Summary), s.subsumes pureSources s = true
@@ -281,6 +293,9 @@ theorem verified : Guarantees where
     fun _ _ _ horig hext hctx hcan hall => VisibilityModel.ril_extensible_closed_inside_pkg horig hext hctx hcan hall,
     fun _ _ horig hext hcan => VisibilityModel.ril_extensible_open_outside_pkg horig hext hcan,
     fun _ _ _ horig hext => VisibilityModel.foreign_extensible_open_everywhere horig hext,
-    fun _ _ _ hop => VisibilityModel.opaquePkg_sum_blocks_external_match hop⟩
+    fun _ _ _ hop => VisibilityModel.opaquePkg_sum_blocks_external_match hop,
+    VisibilityModel.pkg_anchor_isolates_package_visibility,
+    fun _ _ _ _ hmem hnot => VisibilityModel.nonPub_enclosing_sub_rejects_opaquePkg hmem hnot,
+    fun _ hgen => VisibilityModel.generic_sub_rejects_runtime_storage hgen⟩
 
 end RilAccess.CoreVerification
