@@ -45,6 +45,18 @@ theorem attenuate_write (hw : (attenuate outer member).writes = true) :
     outer.writes = true ∧ member.writes = true := by
   cases outer <;> cases member <;> simp_all [attenuate, Access.writes]
 
+def SourceKind.admitsPureRil : SourceKind → Bool
+  | .parameter | .module | .capture => true
+  | .allocation | .foreign => false
+
+/-- Verified deeply immutable `.ril` or static origins; foreign and allocation sources never qualify. -/
+def isPureOrigin (pureSources : List Source) (o : Origin) : Bool :=
+  o.source.kind.admitsPureRil && decide (o.source ∈ pureSources)
+
+theorem foreign_origin_never_pure (h : o.source.kind = .foreign) :
+    isPureOrigin pureSources o = false := by
+  simp [isPureOrigin, h, SourceKind.admitsPureRil]
+
 def Separated (a b : List Nat) : Prop := ∀ x ∈ a, x ∉ b
 
 end RilAccess

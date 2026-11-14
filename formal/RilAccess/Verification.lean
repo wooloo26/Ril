@@ -137,11 +137,27 @@ structure CrossingGuarantees : Prop where
     GraphAuthority.Path graph.edges rParent.object rParent.access fParent obj mParent →
     mParent.writes = true → False
 
+structure CallableMatchGuarantees : Prop where
+  reflexive : ∀ (pureSources : List Source) (s : Summary), s.subsumes pureSources s = true
+  transitive : ∀ (pureSources : List Source) (a b c : Summary),
+    b.subsumes pureSources a = true → c.subsumes pureSources b = true → c.subsumes pureSources a = true
+  pureMatchesAny : ∀ (pureSources : List Source) (actual expected : Summary),
+    actual.isPure pureSources = true → expected.subsumes pureSources actual = true
+  foreignNeverPure : ∀ (pureSources : List Source) (expected actual : Summary) (o : Origin),
+    o.source.kind = .foreign → o ∈ actual.namedReads → expected.subsumes pureSources actual = true →
+      o ∈ expected.namedReads ∨ o ∈ expected.writes ∨ o ∈ expected.retained
+  retainedStrict : ∀ (pureSources : List Source) (expected actual : Summary) (o : Origin),
+    o ∈ actual.retained → expected.subsumes pureSources actual = true → o ∈ expected.retained
+  instantiationMonotone : ∀ (pureSources : List Source) (expected actual : CoreSummary.Template) (call : CoreSummary.CallInstance),
+    expected.subsumes pureSources actual = true →
+      (CoreSummary.instantiate call expected).subsumes pureSources (CoreSummary.instantiate call actual) = true
+
 structure Guarantees : Prop where
   solver : SolverGuarantees
   provenance : ProvenanceGuarantees
   access : AccessGuarantees
   entry : EntryGuarantees
+  callableMatch : CallableMatchGuarantees
   effects : EffectGuarantees
   draft : DraftGuarantees
   crossing : CrossingGuarantees
@@ -155,6 +171,11 @@ theorem verified : Guarantees where
   entry := ⟨fun _ _ _ => CoreEntry.snapshot_objects,
     fun _ _ _ _ _ _ _ => CoreSummary.checked_at_entry_parameter_is_reachable,
     fun _ _ _ _ h => ⟨CoreSummary.checked_facts h, (CoreSummary.checked_valid h).2⟩⟩
+  callableMatch := ⟨summary_subsumes_refl, fun _ _ _ _ => summary_subsumes_trans,
+    fun _ _ expected hp => pure_summary_subsumed_by_any hp expected,
+    fun _ _ _ _ => foreign_read_not_erased_by_pure,
+    fun _ _ _ _ => retained_not_subsumed_by_write_only,
+    fun _ _ _ call h => CoreSummary.template_subsumes_instantiate h call⟩
   effects := ⟨CoreBoundary.handled_effects_exact,
     fun _ _ _ _ _ => CoreBoundary.external_environment_blocks_discharge,
     fun _ _ _ _ => CoreResumption.aliases_cannot_resume_twice,

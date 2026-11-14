@@ -118,6 +118,115 @@ def Summary.combine (a b : Summary) : Summary :=
 def Summary.handle (s : Summary) (effect : Nat) : Summary :=
   { s with effects := s.effects.filter (fun e => e != effect) }
 
+def Summary.isPure (pureSources : List Source) (s : Summary) : Bool :=
+  s.effects.isEmpty &&
+  s.rootReturn.isEmpty &&
+  s.contained.isEmpty &&
+  s.writes.isEmpty &&
+  s.retained.isEmpty &&
+  s.namedReads.all (isPureOrigin pureSources) &&
+  s.createdEnvironments.all (isPureOrigin pureSources)
+
+/-- CallableType upper-bound contract matching after pure-origin reduction (`actual ⊑ expected`). -/
+def Summary.subsumes (pureSources : List Source) (expected actual : Summary) : Bool :=
+  actual.effects.all (fun e => decide (e ∈ expected.effects)) &&
+  actual.rootReturn.all (fun o => decide (o ∈ expected.rootReturn)) &&
+  actual.contained.all (fun o => decide (o ∈ expected.contained)) &&
+  actual.retained.all (fun o => decide (o ∈ expected.retained)) &&
+  actual.writes.all (fun o => decide (o ∈ expected.writes ∨ o ∈ expected.retained)) &&
+  actual.namedReads.all (fun o =>
+    isPureOrigin pureSources o ||
+    decide (o ∈ expected.namedReads ∨ o ∈ expected.writes ∨ o ∈ expected.retained)) &&
+  actual.createdEnvironments.all (fun o =>
+    isPureOrigin pureSources o || decide (o ∈ expected.createdEnvironments))
+
+structure SummarySubsumes (pureSources : List Source) (expected actual : Summary) : Prop where
+  effects : ∀ e ∈ actual.effects, e ∈ expected.effects
+  rootReturn : ∀ o ∈ actual.rootReturn, o ∈ expected.rootReturn
+  contained : ∀ o ∈ actual.contained, o ∈ expected.contained
+  retained : ∀ o ∈ actual.retained, o ∈ expected.retained
+  writes : ∀ o ∈ actual.writes, o ∈ expected.writes ∨ o ∈ expected.retained
+  namedReads : ∀ o ∈ actual.namedReads,
+    isPureOrigin pureSources o = true ∨ o ∈ expected.namedReads ∨ o ∈ expected.writes ∨ o ∈ expected.retained
+  createdEnvironments : ∀ o ∈ actual.createdEnvironments,
+    isPureOrigin pureSources o = true ∨ o ∈ expected.createdEnvironments
+
+theorem summary_subsumes_iff {pureSources : List Source} {expected actual : Summary} :
+    expected.subsumes pureSources actual = true ↔ SummarySubsumes pureSources expected actual := by
+  constructor
+  · intro h
+    simp only [Summary.subsumes, Bool.and_eq_true, List.all_eq_true, Bool.or_eq_true,
+      decide_eq_true_eq] at h
+    exact ⟨h.1.1.1.1.1.1, h.1.1.1.1.1.2, h.1.1.1.1.2, h.1.1.1.2, h.1.1.2, h.1.2, h.2⟩
+  · intro h
+    simp only [Summary.subsumes, Bool.and_eq_true, List.all_eq_true, Bool.or_eq_true,
+      decide_eq_true_eq]
+    exact ⟨⟨⟨⟨⟨⟨h.effects, h.rootReturn⟩, h.contained⟩, h.retained⟩, h.writes⟩, h.namedReads⟩,
+      h.createdEnvironments⟩
+
+theorem summary_subsumes_refl (pureSources : List Source) (s : Summary) :
+    s.subsumes pureSources s = true := by
+  rw [summary_subsumes_iff]
+  exact ⟨fun _ h => h, fun _ h => h, fun _ h => h, fun _ h => h,
+    fun _ h => Or.inl h, fun _ h => Or.inr (Or.inl h), fun _ h => Or.inr h⟩
+
+theorem summary_subsumes_trans {pureSources : List Source} {a b c : Summary}
+    (hab : b.subsumes pureSources a = true) (hbc : c.subsumes pureSources b = true) :
+    c.subsumes pureSources a = true := by
+  have hab' := summary_subsumes_iff.mp hab
+  have hbc' := summary_subsumes_iff.mp hbc
+  rw [summary_subsumes_iff]
+  refine ⟨?_, ?_, ?_, ?_, ?_, ?_, ?_⟩
+  · intro e he; exact hbc'.effects e (hab'.effects e he)
+  · intro o ho; exact hbc'.rootReturn o (hab'.rootReturn o ho)
+  · intro o ho; exact hbc'.contained o (hab'.contained o ho)
+  · intro o ho; exact hbc'.retained o (hab'.retained o ho)
+  · intro o ho
+    rcases hab'.writes o ho with hw | hr
+    · exact hbc'.writes o hw
+    · exact Or.inr (hbc'.retained o hr)
+  · intro o ho
+    rcases hab'.namedReads o ho with hp | hn | hw | hr
+    · exact Or.inl hp
+    · exact hbc'.namedReads o hn
+    · rcases hbc'.writes o hw with hw' | hr'
+      · exact Or.inr (Or.inr (Or.inl hw'))
+      · exact Or.inr (Or.inr (Or.inr hr'))
+    · exact Or.inr (Or.inr (Or.inr (hbc'.retained o hr)))
+  · intro o ho
+    rcases hab'.createdEnvironments o ho with hp | hc
+    · exact Or.inl hp
+    · exact hbc'.createdEnvironments o hc
+
+theorem pure_summary_subsumed_by_any {pureSources : List Source} {actual : Summary}
+    (hp : actual.isPure pureSources = true) (expected : Summary) :
+    expected.subsumes pureSources actual = true := by
+  simp only [Summary.isPure, Bool.and_eq_true, List.isEmpty_iff, List.all_eq_true] at hp
+  rcases hp with ⟨⟨⟨⟨⟨⟨heff, hroot⟩, hcont⟩, hwr⟩, hret⟩, hreads⟩, henv⟩
+  rw [summary_subsumes_iff]
+  refine ⟨?_, ?_, ?_, ?_, ?_, ?_, ?_⟩
+  · intro _ h; simp [heff] at h
+  · intro _ h; simp [hroot] at h
+  · intro _ h; simp [hcont] at h
+  · intro _ h; simp [hret] at h
+  · intro _ h; simp [hwr] at h
+  · intro o h; exact Or.inl (hreads o h)
+  · intro o h; exact Or.inl (henv o h)
+
+theorem foreign_read_not_erased_by_pure {pureSources : List Source} {expected actual : Summary} {o : Origin}
+    (hf : o.source.kind = .foreign) (hr : o ∈ actual.namedReads)
+    (hsub : expected.subsumes pureSources actual = true) :
+    o ∈ expected.namedReads ∨ o ∈ expected.writes ∨ o ∈ expected.retained := by
+  have h := (summary_subsumes_iff.mp hsub).namedReads o hr
+  rcases h with hp | hrest
+  · rw [foreign_origin_never_pure hf] at hp; contradiction
+  · exact hrest
+
+theorem retained_not_subsumed_by_write_only {pureSources : List Source} {expected actual : Summary} {o : Origin}
+    (hr : o ∈ actual.retained) (hsub : expected.subsumes pureSources actual = true) :
+    o ∈ expected.retained :=
+  (summary_subsumes_iff.mp hsub).retained o hr
+
 structure Crossing where
   dataAccess : List Access
   latentSources : List Origin

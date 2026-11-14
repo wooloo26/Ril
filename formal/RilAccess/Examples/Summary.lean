@@ -36,6 +36,19 @@ def allFields : Template :=
   ⟨[.parameter 0 0], [.parameter 0 1], [.parameter 0 1], [.concrete saved],
     [.concrete parameterCapture], [freshReference], [6]⟩
 
+def pureConst : Origin := ⟨⟨.module, 50⟩, 0, 50, 0, 0⟩
+def liveVar : Origin := ⟨⟨.module, 51⟩, 0, 51, 0, 0⟩
+def foreignHandle : Origin := ⟨⟨.foreign, 52⟩, 0, 52, 0, 0⟩
+def pureTable : List Source := [pureConst.source, parameterCapture.source, foreignHandle.source]
+def emptySummary : Summary := ⟨[], [], [], [], [], [], []⟩
+def pureReadSummary : Summary := { emptySummary with namedReads := [pureConst], createdEnvironments := [parameterCapture] }
+def liveReadSummary : Summary := { emptySummary with namedReads := [liveVar] }
+def foreignReadSummary : Summary := { emptySummary with namedReads := [foreignHandle] }
+def writeSummary : Summary := { emptySummary with writes := [liveVar], effects := [6] }
+def retainedSummary : Summary := { emptySummary with retained := [liveVar], effects := [6, 7] }
+def pureReadTemplate : Template := { namedReads := [.concrete pureConst] }
+def upperEffectTemplate : Template := { effects := [6, 7] }
+
 def fixtures : List (String × Bool) :=
   [("core entry: cyclic graph closure includes exactly both entry objects",
       decide ((capturedOrigins heap [saved]).length = 2 ∧
@@ -87,7 +100,23 @@ def fixtures : List (String × Bool) :=
    ("identity: conflicting ownership cannot prove separation",
       !CoreEntry.separated heap [inserted] [conflictingOwner]),
    ("core graph: different provenance descriptions cannot hide object alias",
-      !CoreEntry.separated heap [saved] [sameObject])]
+      !CoreEntry.separated heap [saved] [sameObject]),
+   ("callable match: verified pure .ril read and capture fit empty callable type",
+      emptySummary.subsumes pureTable pureReadSummary),
+   ("callable match: live module var read rejected by empty callable type",
+      !emptySummary.subsumes pureTable liveReadSummary),
+   ("callable match: foreign .d.ril source never qualifies as pure",
+      !emptySummary.subsumes pureTable foreignReadSummary),
+   ("callable match: effect subset and write-to-retained state upper bound accepted",
+      retainedSummary.subsumes pureTable writeSummary && writeSummary.subsumes pureTable liveReadSummary),
+   ("callable match: retained state cannot downgrade to write-only callable type",
+      !writeSummary.subsumes pureTable retainedSummary),
+   ("callable match: root return source subset accepted and superset rejected",
+      ({ emptySummary with rootReturn := [saved, child] }).subsumes pureTable { emptySummary with rootReturn := [saved] } &&
+        !({ emptySummary with rootReturn := [saved] }).subsumes pureTable { emptySummary with rootReturn := [saved, child] }),
+   ("callable match: template subsumption preserved across call instantiation",
+      upperEffectTemplate.subsumes pureTable pureReadTemplate &&
+        (instantiate actual upperEffectTemplate).subsumes pureTable (instantiate actual pureReadTemplate))]
 
 theorem fixtures_all_pass : fixtures.all Prod.snd = true := by decide +kernel
 

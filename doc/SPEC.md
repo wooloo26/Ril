@@ -550,7 +550,7 @@ Identifier grammatical roles obey the **Closed Casing Invariant**:
 - **`snake_case`**: Used for run-time variables (local bindings, function parameters, reassignable variables `var`, and pinned mutable handles `let mut`), const generic parameters (`cap: int`), named functions (`fn`, `meta fn`), record fields, and module file path segments (`ril/array`, `math/geometry`).
 - **`SCREAMING_SNAKE_CASE`**: Reserved for compile-time constants (`meta let`) and top-level immutable constants (`let`). Top-level mutable variables (`var`, `let mut`, `let ^mut`, and `var ^mut`) must use `snake_case`.
 - **Static Keys and Field Labels**: Static coordinate parameters (`meta key |> Key<T>` or `meta key: str |> Key<T>`), const generic keys, and mapped comprehension patterns (`[coords(<T>) as (m, k)]`) use `snake_case`. Ordinary record field labels use `snake_case`, optionally with one leading underscore. A mapped record generated from sum variants exposes `PascalCase` variant labels verbatim.
-- **Wildcard and Leading Underscores**: A single underscore `_` is the wildcard discard pattern, not an identifier (`E0322`). An identifier with a leading underscore, such as `_snake_case`, follows the same binding and mutable-authority use requirements as other identifiers (`E0527`).
+- **Wildcard and Leading Underscores**: A single underscore `_` is the wildcard discard pattern (`Wildcard`), not an identifier (`E0322`). In parameter lists, `_` discards an unnamed input without exempting `mut` or `^mut` parameters from reachable authority use (`E0527`). An identifier with a leading underscore, such as `_snake_case`, follows the same binding and mutable-authority use requirements as other identifiers (`E0527`).
 
 ```ril
 type First { Shared }
@@ -1465,9 +1465,9 @@ Default immutable reception follows the [common mode tables](#binding-modes-and-
 | Surviving writer or live origin | Reject with `E0535`; reception cannot copy, freeze, consume, or revoke that authority |
 | `clone` | Copy data admitted by [`SharedObject`](#normative-rules-for-built-in-operations) into an isolated construction result `new T`. Preserve the baseline schema and nominal or opaque identity; anonymous array copies use [initial reception](#initial-reception-of-construction-arrays). Immutable reception publishes the copied contents as a snapshot, including cyclic contents |
 | Copy execution | Read the source once as a stable snapshot; no suspension, user callback, or overlapping write |
-| Non-clonable authority | Reject with `E0530` at the root or in a constituent, including retained environments, scoped resources, tasks, and channel endpoints hidden in wrappers or `ref` handles |
+| Non-clonable authority | Reject with `E0530` at the root or in a constituent, including mutable, live-observer, foreign-handle, or retained-handler environments, scoped resources, tasks, and channel endpoints hidden in wrappers or `ref` handles |
 | Value types | Copy by ordinary value passage. `clone(value)` fails the type guard (`E0301`). A value-type `ref` argument is `E0401` |
-| Function / resource value | Immutable environment-free functions support ordinary copying. Sender duplication (`Channel::clone_sender`) follows the [channel resource contract](#structured-concurrency-channels) |
+| Function / resource value | Immutable functions and closures over verified pure origins support ordinary copying, including inside cloned shared objects. Sender duplication (`Channel::clone_sender`) follows the [channel resource contract](#structured-concurrency-channels) |
 
 Writable reception of a clone activates declared writable members and the selected construction-array storage mode. Each writable occurrence of an immutable constituent gets separate storage. This materialization must be finite (`E0530`). Copied live objects retain their internal alias and cycle relationships under the ordinary writable reception checks. A `new` return preserves the construction and reception facts.
 
@@ -1499,17 +1499,22 @@ Ascription grants no authority and cannot turn resources into ordinary data. Roo
 type Animal = .{ name: str }
 type Dog = .{ name: str, breed: str }
 type Getter<T> = fn() -> T
+eff Log { write(str) -> () }
+let SCALE = 2
+fn scaled(x: int) &up(sub){SCALE} -> int { x * SCALE }
 fn make_dog() -> Dog { .{ name: "Fido", breed: "Collie" } }
-let get_dog: Getter<Dog> = make_dog       -- OK
--- let get_animal: Getter<Animal> = make_dog -- Error [E0301]: closed records reject width subtyping
+let get_dog: Getter<Dog> = make_dog            -- OK
+let pure_fn: fn(int) -> int = scaled           -- OK: SCALE is a verified pure .ril constant
+let upper_fn: fn(int) @Log -> int = scaled     -- OK: {} fits within @Log
+-- let get_animal: Getter<Animal> = make_dog   -- Error [E0301]: closed records reject width subtyping
 ```
 
 | Type position | Subtyping |
 | :--- | :--- |
 | Closed record | No width subtyping; extra fields require an open row |
 | Record member | Writable/`ref` schemas retain matching modes; immutable reception compares mode-suppressed data shapes. Writable/replaceable data is invariant; immutable data covariant |
-| Callable with identical concrete parameter modes | Parameters contravariant; result shape covariant; independently check result guarantees and exact closed rows. Explicit `via` mode patterns retain their actual verified family; effect/state openness alone does not change modes |
-| `&^mut` clause | Includes its prescribed write/retention implications during normalization; a closed `&^mut` row does not match an actual `&mut`-only row, and openness never changes parameter or handle modes |
+| Callable with identical concrete parameter modes | Parameters contravariant; result shape covariant; result guarantees checked independently; closed operational-effect and state/provenance rows upper-bound actual obligations after pure-origin reduction. Explicit `via` mode patterns retain their actual verified family; effect/state openness never changes modes |
+| `&mut` / `&^mut` clauses | Omitted $\sqsubset$ `&mut` $\sqsubset$ `&^mut` on callable types (`&^mut` covers `&mut`, not vice versa); openness never changes parameter or handle modes |
 | Array / map | Element and key/value types invariant |
 | Tuple | Components invariant; immutable reception suppresses modes, otherwise modes match; only `var` members permit slot replacement |
 | Sum / nominal arguments | Invariant; transparent aliases retain the expanded type's identity |
@@ -2290,7 +2295,7 @@ NominalRef       ::= QualifiedName [ GenericArgs ]
 | :--- | :--- |
 | Data types | Inert shapes: structural products/collections, sums and GADTs, nominal wrappers, opaque types, or pure type-function results |
 | Record/tuple member mode | Binding and access mode bound; `var` controls replacement, `mut` interior writes, `ref` observation; no ambient state or provenance clause |
-| Callable arrow | Carries a complete latent contract; closed rows match exactly, explicit open markers preserve additional actual obligations, and callable values may be stored, passed, returned, and nested in data |
+| Callable arrow | Carries a complete latent contract; closed rows bound actual operational effects and non-pure state/provenance, explicit open markers preserve additional actual obligations, and callable values may be stored, passed, returned, and nested in data |
 | Bare `@Eff` / `&State`, or open markers `@` / `&` / `@&`, as a data type | `E0330` / `E0331`; effects use `eff` declarations, state/provenance clauses and callable-row markers are not standalone values or data types |
 | Direct effect or state/provenance suffix on a variant | `E0332`, with or without a payload |
 | Direct effect or state/provenance suffix on a record field or tuple component | `E0333`; a callable constituent may carry its own suffix |
@@ -2606,8 +2611,8 @@ For callable synthesis, identical parameter shapes and compatible concrete modes
 admit structurally joined results. Other data variance may use an already
 determined operand shape admitted by all targets. Require common result/source
 guarantees and valid handle reception, including mixed-root and lifetime checks.
-Calls and explicit expected contracts check every actual alternative; closed
-rows match exactly. Contextual checking can succeed where synthesis lacks a result.
+Calls and explicit expected contracts check every actual alternative under
+`MatchCallable`. Contextual checking can succeed where synthesis lacks a result.
 
 ```text
 normal-successor facts = facts common to normal alternatives
@@ -2825,10 +2830,11 @@ activations, conditions, mode history, entry relations, footprints and alternati
 
 ```text
 MatchCallable: for every actual alternative
-  check data variance, concrete modes, result/source guarantees,
+  check data variance, identical concrete modes, result/source guarantees,
         contained dependencies, environment access and resource/scope lifetime
-  closed dimension: exact normalized effect/state-provenance row
-  open dimension:   satisfy every explicit entry; retain additional actual entries
+  pure origins:     reduce verified deeply immutable .ril and static meta reads/captures to empty
+  closed dimension: normalized actual operational effects / remaining state-provenance <= expected
+  open dimension:   retain additional actual entries; written entries set baseline upper bounds
 ```
 
 ```text
@@ -2883,8 +2889,9 @@ fn plain() -> () {}
 fn traced() @Trace -> () { Trace::mark() }
 let selected: fn() @& -> () = if choose_trace { traced } else { plain }
 let inferred = if choose_trace { traced } else { plain } -- OK: retain actual alternatives
--- let wrong: fn() @Trace -> () = inferred -- Error [E0534]: plain still lacks Trace
--- let exact: fn() @Trace -> () = selected -- Error [E0534]: the plain alternative lacks Trace
+let bounded: fn() @Trace -> () = inferred      -- OK: both {} and @Trace fit within @Trace
+let bounded_open: fn() @Trace -> () = selected -- OK: preserved alternatives fit within @Trace
+-- let closed_pure: fn() -> () = inferred      -- Error [E0534]: the traced alternative exceeds {}
 ```
 
 ### Recursive Summaries and Grounded Inference
@@ -5572,7 +5579,7 @@ SignatureWhereClause ::= "where" SignatureWhereItem { Separator SignatureWhereIt
 SignatureWhereItem   ::= LocalTypeDecl | FunctionDecl | MetaFnDecl
 ParameterList        ::= Parameter { "," Parameter } [ "," ]
 Parameter            ::= RegularParam | MetaParam
-RegularParam         ::= [ ParameterMode ] ValueName [ ":" TypeExpression ] { ContractGuard } [ "=" Expression ]
+RegularParam         ::= [ ParameterMode ] ( ValueName | Wildcard ) [ ":" TypeExpression ] { ContractGuard } [ "=" Expression ]
 MetaParam            ::= "meta" ValueName [ ":" ValueType ] { "|>" PipelineConstraint } [ "=" Expression ]
 ReturnSpec           ::= ReturnType { ContractGuard }
 ContractGuard        ::= "|>" [ "ref" ] QualifiedName [ GenericArgs ] [ "(" [ ContractArgList ] ")" ]
@@ -5784,7 +5791,7 @@ let r1 = calculate_tax(100)            -- OK: direct call
 | :--- | :--- | :--- | :--- |
 | **Declaration availability** | Throughout the enclosing module or block declaration scope; captures obey initialization rules | No declaration hoisting; evaluate the function expression at its source position | No declaration hoisting; evaluate the function expression at its source position |
 | **Environment Capture** | Explicit named origins; block-local values can retain an environment | None (no captured state) | Actual lexical environment, abbreviated in types by `&up` |
-| **Type Representation** | Item identity / `fn(P) -> R` | `fn(P) -> R` | `fn(P) &up -> R` |
+| **Type Representation** | Item identity / `fn(P) -> R` | `fn(P) -> R` | `fn(P) -> R` (pure immutable/static captures) or `fn(P) &up -> R` |
 | **Handle Requirement** | Direct declaration call; stored values follow actual environment modes | Callable via `let` handle | `let` (immutable), `let ref` (live observer), or writable handle (mutable environment) |
 
 ### Callable Contracts
@@ -5838,7 +5845,7 @@ The compiler must infer the full checked contract of every public, private, loca
 | :--- | :--- |
 | Infer | Derive all possible origins, reachable uses, and normalized obligations from the body, context, and verified dependencies; source annotations cannot justify themselves |
 | Complete | Expose the full inferred contract and the source annotations required for named definitions; preserve the specified anonymous-function source omissions |
-| Validate | Check missing annotations, idle modes/markers, excess state/provenance annotations, and exact closed contracts against the inferred program behavior and source authority |
+| Validate | Check missing annotations, idle modes/markers, excess definition annotations, and callable-type bounds against inferred program behavior and source authority |
 
 | Inference / completion | Requirement |
 | :--- | :--- |
@@ -5903,27 +5910,25 @@ type MutatorWithOpenState = fn(mut Cell) &mut & -> ()
 
 | Row form on a callable type | Matching requirement |
 | :--- | :--- |
-| Omitted effects / `@{}` | Closed empty operational effect row (implicit `Diverge`, `Panic`, and `Fatal` remain permitted) |
-| Explicit nonempty effects | Closed exact normalized operational effect row |
+| Omitted effects / `@{}` | Closed empty operational effect bound (implicit `Diverge`, `Panic`, and `Fatal` remain permitted) |
+| Explicit nonempty effects | Closed operational effect upper bound (`actual` $\subseteq$ `expected` after alias expansion) |
 | Standalone `@` | Open operational effect dimension; preserve all actual residual effects |
-| Omitted state/provenance clauses | Closed normalized state and provenance obligations supplied by the written clauses and the return annotation's implicit baseline |
-| Explicit `&{}` | Closed empty total state/provenance row, including the return annotation's baseline; incompatible return retention cannot be hidden |
-| Explicit nonempty state/provenance clauses | Closed exact normalized total state/provenance row, including the return baseline |
-| Standalone `&` | Open state/provenance dimension; written state/provenance clauses remain requirements and additional actual obligations are preserved |
-| `@&` | The combined spelling of open effects and open state/provenance |
+| Omitted state/provenance clauses | Closed state/provenance upper bound equal to the return annotation's implicit baseline after pure-origin reduction |
+| Explicit `&{}` | Closed empty total state/provenance bound, requiring both non-pure state and root-return retention to be empty |
+| Explicit nonempty state/provenance clauses | Closed total state/provenance upper bound (`actual` $\sqsubseteq$ `expected` after pure-origin reduction and return-baseline inclusion) |
+| Standalone `&` | Open state/provenance dimension; written clauses set a static baseline and additional actual obligations are preserved |
+| `@&` | Combined open operational effects and open state/provenance |
 
-An open effect marker opens the whole effect dimension. State/provenance openness may accompany concrete requirements such as `&mut`, `&up(sub){...}`, `&up{...}`, or `&return{...}`. Opening one dimension leaves the other closed; source authority, invocation access modes and retention are checked independently. Combining open state/provenance (`&` or `@&`) with the closed-total assertion `&{}` is `E0547`; use effect-only `@` for open effects with empty state/provenance obligations.
+An open effect marker opens the whole effect dimension. State/provenance openness may accompany baseline clauses such as `&mut`, `&up(sub){...}`, `&up{...}`, or `&return{...}`. Opening one dimension leaves the other closed; source authority, invocation access modes, and retention are checked independently. Combining open state/provenance (`&` or `@&`) with `&{}` is `E0547`; use `@` for open effects with closed empty state/provenance.
 
-Explicit empty rows are admitted on first-order and higher-order callable types and definitions when their complete contracts satisfy them; incompatible contracts use the applicable diagnostic. Named source completion and symbolic callback obligations follow [mandatory contract completion](#mandatory-contract-inference-and-completion).
-
-Open markers belong only to `CallableType` arrows. A standalone `@`, `&`, or `@&` directly annotating a named or anonymous definition, an effect-operation declaration, or a bodyless foreign declaration is `E0547: InvalidOpenRowPlacementError`; so is placing an open state/provenance marker on the same arrow as `&{}`. An open callable type nested in a definition's parameter, result, or data schema remains valid; it is that nested type's arrow which is open. A bodyless foreign declaration provides a trusted explicit contract and has no implementation from which to infer an open invocation row.
+Open markers belong only to `CallableType` arrows. Placing `@`, `&`, or `@&` directly on a named or anonymous definition, an effect-operation declaration, or a bodyless foreign declaration is `E0547: InvalidOpenRowPlacementError`. An open callable type nested in a definition's parameter, result, or data schema remains valid.
 
 ```ril
 fn plain() -> () {}
 fn logged() @Log -> () { Log::write("event") }
 let pure: PureAction = plain
--- let closed: PureAction = logged             -- Error [E0534]: Log is additional to the closed empty effect row
--- let overstated: LoggedAction = plain        -- Error [E0534]: the exact Log row is absent
+let widened: LoggedAction = plain              -- OK: {} fits within @Log
+-- let closed: PureAction = logged             -- Error [E0534]: Log exceeds the closed empty effect row
 let effect_open: EffectOpenAction = logged     -- OK: its actual Log obligation remains
 let fully_open: OpenAction = logged            -- OK: no obligation is erased
 
@@ -5932,7 +5937,7 @@ closed_invoke(plain)                            -- OK
 -- closed_invoke(effect_open)                  -- Error [E0534]: this actual invocation has Log
 -- fn incomplete_escape() @& -> () {}          -- Error [E0547]: open markers are not definition annotations
 -- let invalid = \ @ -> ()                     -- Error [E0547]: a lambda infers its actual effect row
--- type ConflictingRows = fn() @& &{} -> ()    -- Error [E0547]: the state/provenance dimension cannot be both open and explicitly closed
+-- type ConflictingRows = fn() @& &{} -> ()    -- Error [E0547]: cannot be both open and explicitly empty
 ```
 
 An explicit `&{}` constrains total state and provenance obligations, including root-return retention, capture, inherited access and contained dependencies. Omitted state/provenance clauses include the return annotation's implicit baseline:
@@ -5961,68 +5966,102 @@ fn give_logged() -> EffectOpenAction { logged }
 
 #### Callable Contract Matching
 
-Match a callable's complete normalized contract at every assignment, argument, aggregate member, return and module/type boundary. Closed effect and state/provenance rows require exact equality. Open rows admit additional actual entries only in their selected dimension; every explicitly written entry must be satisfied.
+```ril
+-- 1. Pure origins: named definitions spell &up / &capture; CallableType treats verified pure origins as empty
+meta let FACTOR = 3
+let OFFSETS = [10, 20]
+var live_bias = 1
 
-Normalization expands effect-set and transparent aliases, compares effect instances using static-argument identity, canonicalizes source and provider identities, combines equivalent access entries, and includes access modes implied by a return annotation. Duplicate spellings do not create different contracts. Preserve [verified operation footprints, conditions and callable alternatives](#authority-calls-and-contract-operations); a displayed effect row does not erase them. Formal parameter labels and their bound return-source references are alpha-renamed by parameter position before comparison; external and captured sources retain their resolved declaration and activation identities.
+fn scale(x: int) &up(sub){FACTOR, OFFSETS} -> int { x * FACTOR + OFFSETS[0] }
+-- fn missing_annot(x: int) -> int { x * FACTOR }           -- Error [E0510]: definition signature stays complete
+fn make_adder(base: int) &capture -> (fn(int) -> int) { \x -> x + base }
+fn with_live(x: int) &up(sub){live_bias} -> int { x + live_bias }
 
-Parameter data shapes are contravariant and result data shapes covariant. Construction-array result arrows first select the promised schema from each actual reception family. Concrete parameter modes match; explicit `via` mode patterns check the actual family and its acceptance conditions. Root and contained guarantees, source authority, construction qualification and resource/scoped lifetimes are independent checks. For a family, every retained alternative must satisfy closed-row matching.
-
-Named definition annotations validate the required concrete projection plus preserved symbolic dependencies. Later closed callable-type ascriptions check the full inferred contract, including metadata-only mode-dependent clauses.
-
-The `&up` callable-type abstraction admits an environment-free callable or the checked abstract environment shape. Normalize it for matching and preserve private captured origins, modes, lifetimes, and correlations in verified metadata. Additional effects, named module access, independent retained publication, and the invocation's `&capture` obligation require separate annotations.
-
-| Callable contract component | Rule |
-| :--- | :--- |
-| Closed operational effect row | Exact normalized actual operational effects |
-| Implicit execution effects | `Diverge`, `Panic`, and `Fatal` are tracked in verified semantic summaries across aliases and ascriptions, distinguishing direct `fatal` from cleanup double faults for [parallel callbacks](#parallel-faults-fatal-visibility-and-budgets) |
-| Closed state/provenance row | Exact normalized actual obligations after the written environment abstraction and implicit return baseline |
-| Open effects / state-provenance | Preserve the actual complete row; permit additional entries only in the opened dimension |
-| Parameter/handle access modes | Unchanged by openness, aliases, or ascription |
-| Root returns | Construction, access mode, and source guarantees remain independently checked |
-| Construction-array results | Promise the written baseline schema; preserve additional verified initial receptions. Every target must supply the requested guarantee (`E0534`) |
-| Contained return dependencies | Explicit dependencies must match; open `&` may admit additional actual `&return` facts, all of which continue to propagate |
-| Symbolic callback dependencies | Preserve their complete conditions and instantiate them at calls; closure of a destination row checks those conditions rather than erasing them |
-| Alternatives | Preserve every possible obligation and only common guarantees under [provenance](#complete-provenance-and-required-annotations). Every retained callable-contract alternative must satisfy a closed equality or an open required entry; a union cannot invent a required entry missing from one alternative |
-| Named definitions | Complete concrete source annotations; symbolic parameter-dependent obligations remain in the full verified contract |
-| Anonymous definitions | Full inference; no requirement to spell inferred annotations in source |
-| Incompatible callable value | `E0534`; parameter-mode mismatches retain `E0407` and other dedicated conditions retain their codes |
-| Bodyless foreign declarations | Trusted explicit operational-effect/state rows plus automatic `Diverge`, `Panic`, and `Fatal`; no absence-of-`Diverge` or coverage guarantee follows |
-
-Verified semantic summaries retain fine paths, mode history, input/output relations and output correlations. Every actual observed/retained constituent of a returned graph, including one admitted by an open state/provenance row, is checked before immutable publication, task crossing, further retention or exclusivity-sensitive access.
+fn apply_pure(x: int, f: fn(int) -> int) -> int { f(x) }
+fn run_pure(n: int) -> int {
+    let f: fn(int) -> int = make_adder(n)                   -- OK: immutable 'n' is a pure capture
+    apply_pure(f(2), scale)                                 -- OK: closed 'fn(int) -> int' adds no &up to caller
+}
+-- let bad_live: fn(int) -> int = with_live                 -- Error [E0534]: 'var live_bias' is not a pure origin
+```
 
 ```ril
+-- 2. Closed upper-bound matching (@ and &), lexical &up, and strict modes (E0407, E0527)
 eff Log { write(str) -> () }
+eff Audit { record(str) -> () }
+type Cell = .{ var count: int }
 var global_count = 0
+
 fn plain() -> () {}
 fn logged() @Log -> () { Log::write("event") }
 fn tick() &up(sub){mut global_count} -> () { global_count += 1 }
+fn bump(mut c: Cell) &mut -> () { c.count += 1 }
+
 type Action = fn() @& -> ()
-type PureAction = fn() -> ()
-type ExactLog = fn() @Log -> ()
-type ExactTick = fn() &tick -> ()
+type BoundedLog = fn() @Log -> ()
+type BoundedBoth = fn() @Log + Audit -> ()
+type TickAction = fn() &tick -> ()
+
+let ok_plain: BoundedLog = plain                            -- OK: {} <= @Log
+let ok_logged: BoundedBoth = logged                         -- OK: @Log <= @Log + Audit
+let selected: Action = if choose_log { plain } else { logged }
+let ok_branch: BoundedLog = selected                        -- OK: every retained alternative <= @Log
+let ok_share_bound: fn(^mut Cell) &^mut -> () = \^mut c -> { let _keep = .{ mut item: ^mut c } }
+let ok_mut_to_shared_state: fn(mut Cell) &^mut -> () = bump -- OK: &mut <= &^mut (parameter mode stays 'mut')
+let ok_baseline_open: fn(mut Cell) &mut & -> () = \mut c -> { tick(); c.count += 1 }
+
+fn call_closed_bound() &tick -> () {
+    let h: TickAction = plain                               -- Closed CallableType sets invocation contract
+    h()
+}
 
 fn invoke(action: Action) -> () { action() }
 fn closed(action: Action) @{} &{} -> () { action() }
-let action: Action = logged
-let exact_log: ExactLog = logged
-let exact_tick: ExactTick = tick
--- let loses_state: fn() @ -> () = tick          -- Error [E0534]: state/provenance remains closed
--- let loses_effect: fn() & -> () = logged       -- Error [E0534]: effects remain closed
--- let fewer_effects: ExactLog = plain           -- Error [E0534]: exact matching rejects missing Log too
-let selected: Action = if choose_log { plain } else { logged }
--- let not_exact: ExactLog = selected           -- Error [E0534]: the plain alternative lacks the required exact Log row
-closed(plain)                                   -- OK
--- closed(selected)                            -- Error [E0534]: the possible Log obligation remains
+closed(plain)                                               -- OK
+-- closed(selected)                                         -- Error [E0534]: possible Log exceeds @{}
+-- let loses_state: fn() @ -> () = tick                     -- Error [E0534]: state row is closed empty
+-- let loses_effect: fn() & -> () = logged                  -- Error [E0534]: effect row is closed empty
+-- let mod_as_up: fn() &up -> () = tick                     -- Error [E0534]: &up never covers module state
+-- let mode_mismatch: fn(^mut Cell) &^mut -> () = bump      -- Error [E0407]: 'mut' and '^mut' parameters differ
+-- let unused_mut = \mut _: Cell -> ()                      -- Error [E0527]: wildcard does not waive writable use
 fn call_plain() -> () { invoke(plain) }
 fn call_logged() @Log -> () { invoke(logged) }
 fn call_tick() &tick -> () { invoke(tick) }
--- fn missing_log() -> () { invoke(logged) }     -- Error [E0612]: named callers complete concrete obligations
--- fn missing_state() -> () { invoke(tick) }     -- Error [E0510]
+-- fn missing_log() -> () { invoke(logged) }                -- Error [E0612]: named callers complete concrete obligations
+-- fn missing_state() -> () { invoke(tick) }                -- Error [E0510]
 ```
 
-Later closed matching of a callable passed through an open type uses its preserved actual contract. Named-function state references resolve to the provider's verified named projection with its original source identities; other contract components are matched separately.
+```ril
+-- 3. Higher-order contravariance and open-callback instantiation
+fn accept_logged(cb: fn() @Log -> ()) @Log -> () { cb() }
+let accept_pure: fn(fn() -> ()) @Log -> () = accept_logged  -- OK: parameter contract is contravariant
 
-Invoking already shared storage does not itself publish another writer. Actual environment mode determines whether invocation needs a writable or observation handle. Implicit `Diverge`, `Panic`, and `Fatal` survive every ascription in semantic metadata. Budget coverage and panic-boundary unwind safety remain independently checked, including when operational requests have been handled.
+let open_as_logged: fn(fn() @Log -> ()) @Log -> () = invoke -- OK: symbolic callback @Log covered by outer @Log
+-- let open_erased: fn(fn() @Log -> ()) -> () = invoke      -- Error [E0534]: callback's @Log escapes closed outer @{}
+```
+
+| Origin classification | Eligibility in `CallableType` matching and purity |
+| :--- | :--- |
+| **Verified pure origin** (reduces to $\emptyset$) | Fixed non-replaceable binding with immutable reception (`meta let` value, `meta` / const parameter, `.ril` module `let`, enclosing `let`, plain parameter, immutable pattern/`for`/handler binding) whose representation graph—penetrating all `opaque type` and nominal wrappers via `K-IFACE`—contains only value types, deeply immutable shared objects, or pure callables |
+| **Non-pure origin** (retained as obligation) | `var` (including scalar `var x: int`), `mut` / `^mut` / `new` / `ref` bindings or parameters, `let scoped` (`E0604`), `.d.ril` `DeclLet` or uncontracted `DeclForeignType` handles, `Task` / `Parallel::Slice` / channel endpoints, and retained outer lexical `with` handler environments |
+
+| Contract component | `MatchCallable(actual, expected)` rule |
+| :--- | :--- |
+| Parameter modes & data | Modes strictly equal (`E0407`); data types contravariant ($P_{\text{expected}} <: P_{\text{actual}}$); `mut` and `^mut` retain `E0527` |
+| Return mode, data & root sources | Root return mode strictly equal (`-> T`, `new T`, `ref(...) T`, `^mut(...) T`); data types covariant ($R_{\text{actual}} <: R_{\text{expected}}$); `ref(S₁) <: ref(S₂)` and `^mut(S₁) <: ^mut(S₂)` when $S_1 \subseteq S_2$ after positional $\alpha$-renaming |
+| Construction-array results | Select the promised baseline schema from each actual reception family; preserve additional verified initial receptions (`E0534` if absent) |
+| Closed operational effects | $\text{norm}(E_{\text{actual}}) \subseteq \text{norm}(E_{\text{expected}})$ after effect-set alias expansion; generic effect static arguments remain invariant |
+| Implicit execution effects | `Diverge`, `Panic`, and `Fatal` remain in semantic summaries across aliases and ascriptions, distinguishing direct `fatal` from cleanup double faults |
+| Anonymous parameter state | $\emptyset \sqsubset \text{\texttt{\&mut}} \sqsubset \text{\texttt{\&\textasciicircum mut}}$ |
+| Environment creation & `&up` | $\emptyset \sqsubset \text{\texttt{\&capture}}$ (pure-only captures reduce to $\emptyset$); $\emptyset \sqsubset \text{\texttt{\&up}}$, and `&up` covers lexical `&up{...}` / `&up(owner){...}` (handle modes `let` / `ref` / `mut` checked independently), never module `&up(sub){...}` / `&up(Module){...}` |
+| Non-pure named state & `&provider` | After pure-origin reduction and `&provider` expansion, pointwise per binding $b$: $\text{absent} \sqsubset \text{bare}(b) \sqsubset \text{\texttt{mut}}(b) \sqsubset \text{\texttt{\textasciicircum mut}}(b)$. Explicit `&{}` requires empty remaining state and empty root-return retention |
+| Contained `&return` | Separate subset checks $\text{RetRef}_{\text{actual}} \subseteq \text{RetRef}_{\text{expected}}$ and $\text{RetSharedMut}_{\text{actual}} \subseteq \text{RetSharedMut}_{\text{expected}}$ |
+| Open rows (`@`, `&`, `@&`, `S₀ &`) | Preserve actual obligations in the opened dimension; written `S₀` sets a static baseline ($\emptyset \sqsubseteq S_0 \sqsubseteq S_0\text{\texttt{ \&}}$). Later closed matching checks the preserved actual contract |
+| Alternatives & higher-order arrows | Every retained alternative must satisfy `expected`. Closing an outer arrow over an open callback parameter instantiates symbolic callback dependencies at the destination parameter's upper bound |
+| Closed `CallableType` calls | Invoking a value typed as a closed `CallableType` charges that arrow's declared `@` and `&` rows while retaining semantic `Diverge`/`Panic`/`Fatal` and handle requirements |
+| Named / anonymous / foreign definitions | Named definitions spell exact concrete obligations (`E0510`, `E0529`, `E0612`); anonymous definitions infer contracts without mandatory source spelling; bodyless `.d.ril` declarations supply trusted explicit `@`/`&` rows plus `Diverge`, `Panic`, and `Fatal` |
+
+Normalization expands effect-set and transparent type aliases, canonicalizes declaration/activation identities, $\alpha$-renames formal parameters by position, and preserves verified operation footprints, fine paths, and output correlations. Reading a callable-bearing immutable record is a pure read, while invoking an extracted callable applies its own latent contract; `K-FIX` retains call-graph edges through immutable constant bindings so indirect recursion still introduces `Diverge`, and ascribed callable upper bounds never manufacture `E0527` write evidence during fixed-point inference.
 
 ```ril
 fn repeat(n: int, action: Action) -> () {
@@ -6412,7 +6451,7 @@ halt fn checked() -> int { done() }              -- Unmarked helpers are admissi
 
 Invocation-cycle analysis includes callable-valued members, recursive types, mutable/live storage, captured environments, and handler re-entry. A cycle cannot establish its own absence of Diverge from its written signatures. Use verified contracts and established acyclic invocation dependencies; unresolved potentially cyclic dependencies introduce Diverge. Reading inert cyclic data alone introduces none. A verified budget can discharge a cyclic invocation within its protected action; the containing function need not retain that Diverge. Analyze definitions and their dependencies conservatively; neither evaluation on sample inputs nor arithmetic/structural descent removes an inferred Diverge. An unreachable static branch contributes no obligation.
 
-Purity requires absence of outward operational effects and mutable, live, capturing, or foreign state/provenance obligations after lawful handling and local discharge; read-only `&up(sub){...}` and `&up{...}` items resolved to verified deeply immutable `.ril` bindings (`meta let`, immutable `.ril` module `let`, and immutable enclosing `let` / plain parameters) are permitted when explicitly annotated (`E0510` if omitted), and the non-operational Diverge label may remain. Thus a pure function may diverge. `halt` additionally requires absence of Diverge for every admitted invocation, including all admitted parameter-default and signature-guard evaluations. Residual Diverge is `E0820`; operational effects or mutable, live (`ref` / `&mut` / `&^mut`), capturing (`&capture`), or `.d.ril` `pub let` external state obligations are `E0821`. Local mutation, temporary environments, and completely handled finite local effects remain allowed. Explicit caller-supplied arguments retain their separate caller obligations.
+Purity requires absence of outward operational effects and non-pure state/provenance obligations after lawful handling and local discharge; read-only `&up(sub){...}` and `&up{...}` items and `&capture` environments resolved exclusively to [verified pure origins](#callable-contract-matching) (`meta let`, `meta` / const parameters, immutable `.ril` module `let`, and immutable enclosing `let` / plain parameters) are permitted when explicitly annotated (`E0510` if omitted), and the non-operational Diverge label may remain. Thus a pure function may diverge. `halt` additionally requires absence of Diverge for every admitted invocation, including all admitted parameter-default and signature-guard evaluations. Residual Diverge is `E0820`; operational effects or mutable, live (`ref` / `&mut` / `&^mut`), non-pure capturing (`&capture`), or `.d.ril` external state obligations are `E0821`. Local mutation, temporary environments, and completely handled finite local effects remain allowed. Explicit caller-supplied arguments retain their separate caller obligations.
 
 `halt` is an optional developer assertion on `fn`, `meta fn`, or type functions; callers and helpers need not carry the marker. Ordinary functions, type functions, and compile-time roots may retain Diverge. Static evaluation still has its [compiler budget](#pure-type-functions-and-result-restrictions). The marker neither installs a budget nor changes the declaration's call family, and cannot silently narrow explicitly promised inputs. Higher-order requirements use ordinary effect/state row constraints; no additional hidden termination contract is introduced.
 
@@ -6436,6 +6475,9 @@ meta let MAX_RETRIES = 3
 let ALLOWED_MODES = ["fast", "safe"]
 halt fn max_attempts() &up(sub){MAX_RETRIES, ALLOWED_MODES} -> int {
     MAX_RETRIES + len(ALLOWED_MODES)                    -- OK: read-only deeply immutable .ril bindings
+}
+halt fn make_scaler(factor: int) &capture -> (fn(int) -> int) {
+    \x -> x * factor                                    -- OK: pure capture; target type needs no &up
 }
 
 var outside_count = 0
@@ -6815,7 +6857,7 @@ Callable types admit no default-expression syntax. An ascription may rename labe
 ```ebnf
 AnonFnExpr    ::= "\" [ AnonParams ] [ EffectAnnot ] [ StateAnnot ] "->" ( Expression | Block )
 AnonParams    ::= AnonParam { "," AnonParam } [ "," ]
-AnonParam     ::= [ ParameterMode ] ValueName [ ":" TypeExpression ] [ "=" Expression ]
+AnonParam     ::= [ ParameterMode ] ( ValueName | Wildcard ) [ ":" TypeExpression ] [ "=" Expression ]
 AccessorExpr  ::= "\" AccessorNav AccessorField { AccessorNav AccessorField }
 AccessorNav   ::= "." | "?."
 AccessorField ::= FieldLabel | TupleIndex
@@ -6889,8 +6931,10 @@ let dept_names = opt_depts |> Array::map(\?.name)                -- Evaluates to
 ```ril
 type Adder = fn(int) &up -> int
 fn make_adder(base: int) &capture -> new Adder { \x -> base + x }
+fn make_pure_adder(base: int) &capture -> (fn(int) -> int) { \x -> base + x }
 let add5 = make_adder(5)                -- Immutable captured value
-assert(add5(10) == 15)
+let pure5 = make_pure_adder(5)          -- Pure capture needs no &up on CallableType
+assert(add5(10) == 15 && pure5(10) == 15)
 
 type Step = fn() &up -> int
 fn create_counter(start: int) &capture -> new Step {
@@ -7083,7 +7127,7 @@ packet.item.count += 1
 | Extra storage/contained/captured writable path, including a closure plus a direct reference or multiple mutable closures over one cell | Independent `&^mut` or its named form, even inside one returned tuple |
 | Unchanged returned graph / mutation of already shared storage | No repeated publication or duplicate `&^mut`/`&capture`; existing aliases, cycles, and environments remain provenance facts |
 | Concrete definition | Reject excessive state/provenance annotations with `E0529`; actual retention satisfies the common `E0527` requirement for `^mut` |
-| Callable type | Use [exact closed or explicitly open matching](#callable-contract-matching), without changing parameter modes |
+| Callable type | Use [closed upper-bound or explicitly open matching](#callable-contract-matching), without changing parameter modes |
 
 Count each newly surviving external path, mutable environment, and separately exposed graph. Receiving a returned writer acknowledges its publication. Apply writable sharing markers to actual retained aliases, including in results of `clone`.
 
@@ -7238,7 +7282,7 @@ where
 - **Resolution Before Classification**: Resolve each item by ordinary lexical rules, including shadowing, then verify its group and declaration owner. Preserve its actual activation identity in metadata.
 - **Layers and Activations**: Named functions and lambdas introduce callable layers. Blocks, loops, and handler arms do not introduce function layers; their binding identities, dynamic activations, lifetimes, and handler contexts remain distinct. An object's possible origin does not change its binding's declaration layer.
 - **Grouping**: Invocation-access items from different callable layers require separate groups, even when both use ownerless `&up{...}`. A return group may summarize multiple resolved origins while preserving their identities. Each mode applies only to its own item. Empty or wrongly classified source groups are `E0538`; invalid return dependencies use `E0545`.
-- **Definitions and Types**: Named definitions must spell their inferred concrete groups. Anonymous functions infer and retain these groups without a source-completion obligation. An explicitly written anonymous group is checked. In a callable type, names bind at the type's declaration site; [exact and open matching](#callable-contract-matching) cannot rebind them to similarly named captures in an assigned value.
+- **Definitions and Types**: Named definitions must spell their inferred concrete groups. Anonymous functions infer and retain these groups without a source-completion obligation. An explicitly written anonymous group is checked. In a callable type, names bind at the type's declaration site; [callable contract matching](#callable-contract-matching) cannot rebind them to similarly named captures in an assigned value.
 
 ```ril
 fn outer_layer() -> int {
@@ -7333,7 +7377,7 @@ fn retain_wrapped(^mut cell: Counter::Cell) &Counter::retain -> ^mut(cell) Count
 - **Provider (`E0539`)**: `&callee` / `&Module::callee` / `&Super::callee` selects a visible ordinary named Ril definition's verified named-state contract. Resolve names first: lexical absence `E0204`, unresolved module/parent scope `E0208`, absent module member `E0209`, private member `E0201`; then reject a wrong provider kind with `E0539`. Value aliases and callable parameters are not providers.
 - **Position (`E0539`)**: Allowed on ordinary named function definitions and callable types. Reject it as a direct annotation on anonymous definitions, effect operations, and bodyless foreign declarations. A nested callable type may use a verified provider reference independently of its enclosing construct.
 - **Concrete Named Projection**: A reference denotes the provider's concrete module/captured source items and their verified access modes for its current invocation, including concrete named dependencies obtained through other calls. The bindings and lexical owners remain anchored to the provider's scope. It does not include effects, anonymous parameter modes, standalone `&capture`/`&^mut`, symbolic callback dependencies, or a returned callable's future invocation obligations.
-- **Coverage**: On a named definition, after local discharge, match inherited concrete named obligations by origin and access mode; the caller need not invoke the provider by name. On a callable type, the verified named projection participates in exact closed matching or in an explicitly open state/provenance row. A reference imports no return relation: declare that separately. Actual parameter writes and extra retention still need `&mut`/`&^mut`; root-return retention follows its own annotation. Unrelated references on a definition leave `E0510`; unnecessary references there remain `E0529`.
+- **Coverage**: On a named definition, after local discharge, match inherited concrete named obligations by origin and access mode; the caller need not invoke the provider by name. On a callable type, the verified named projection supplies upper-bound entries (after pure-origin reduction) in closed or open state/provenance matching. A reference imports no return relation: declare that separately. Actual parameter writes and extra retention still need `&mut`/`&^mut`; root-return retention follows its own annotation. Unrelated references on a definition leave `E0510`; unnecessary references there remain `E0529`.
 - **Propagation**: Calls through aliases and higher-order helpers preserve concrete dependencies under [complete provenance](#complete-provenance-and-required-annotations). An explicit `&{}` constrains total state, including referenced state.
 - **Declaration Identity**: Declaration import aliases and re-exports preserve provider identity. References to callable-valued bindings such as `let action = callee` are `E0539`. Built-in state and provenance spellings take precedence; a same-spelled provider function requires a qualified reference. Access to private state follows the provider visibility and source-group rules.
 
@@ -7426,7 +7470,7 @@ Callable handles use the [common mode tables](#binding-modes-and-storage-matrix)
 | :--- | :--- |
 | Persistent mutable captures | Writable handle or `mut`/`^mut` parameter |
 | Live observer captures | `ref` handle/parameter |
-| Plain `let`, plain `var`, or unmodified parameter | Immutable environment |
+| Immutable environment | Plain `let`, plain `var`, or ordinary parameter |
 | Named state / effects | Check independently of handle mode, including transitive handler access; immutable handles erase no obligation |
 | Declared external access only | Does not itself create a mutable environment |
 
@@ -7841,7 +7885,7 @@ let existing = { with Read::get() -> resume 7; ask_read }
     -- read_without_state(captured)    -- Error [E0534]: the retained handler environment cannot cross a closed state row
 }
 -- read_without_state leaves callback effects symbolic and closes its own total state.
--- The retained-handler negative case therefore tests the state boundary independently of effect equality.
+-- The retained-handler negative case therefore tests the state boundary independently of effect matching.
 ```
 
 ```ril

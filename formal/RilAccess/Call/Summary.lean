@@ -184,4 +184,60 @@ theorem checked_distinct_fresh_objects
   intro equalObjects
   exact serials (fresh_object_injective equalObjects)
 
+def Reference.isPure (pureSources : List Source) : Reference → Bool
+  | .concrete origin => isPureOrigin pureSources origin
+  | .parameter _ _ | .fresh _ _ => false
+
+theorem reference_pure_resolves_pure {pureSources : List Source} {r : Reference}
+    (h : Reference.isPure pureSources r = true) (call : CallInstance) :
+    isPureOrigin pureSources (resolve call r) = true := by
+  cases r <;> simp_all [Reference.isPure, resolve]
+
+def Template.subsumes (pureSources : List Source) (expected actual : Template) : Bool :=
+  actual.effects.all (fun e => decide (e ∈ expected.effects)) &&
+  actual.rootReturn.all (fun r => decide (r ∈ expected.rootReturn)) &&
+  actual.contained.all (fun r => decide (r ∈ expected.contained)) &&
+  actual.retained.all (fun r => decide (r ∈ expected.retained)) &&
+  actual.writes.all (fun r => decide (r ∈ expected.writes ∨ r ∈ expected.retained)) &&
+  actual.namedReads.all (fun r =>
+    Reference.isPure pureSources r ||
+    decide (r ∈ expected.namedReads ∨ r ∈ expected.writes ∨ r ∈ expected.retained)) &&
+  actual.createdEnvironments.all (fun r =>
+    Reference.isPure pureSources r || decide (r ∈ expected.createdEnvironments))
+
+theorem template_subsumes_instantiate {pureSources : List Source} {expected actual : Template}
+    (h : expected.subsumes pureSources actual = true) (call : CallInstance) :
+    (instantiate call expected).subsumes pureSources (instantiate call actual) = true := by
+  simp only [Template.subsumes, Bool.and_eq_true, List.all_eq_true, Bool.or_eq_true,
+    decide_eq_true_eq] at h
+  rcases h with ⟨⟨⟨⟨⟨⟨heff, hroot⟩, hcont⟩, hret⟩, hwr⟩, hreads⟩, henv⟩
+  rw [summary_subsumes_iff]
+  refine ⟨heff, ?_, ?_, ?_, ?_, ?_, ?_⟩
+  · intro o ho
+    obtain ⟨r, hr, rfl⟩ := List.mem_map.mp ho
+    exact List.mem_map_of_mem (hroot r hr)
+  · intro o ho
+    obtain ⟨r, hr, rfl⟩ := List.mem_map.mp ho
+    exact List.mem_map_of_mem (hcont r hr)
+  · intro o ho
+    obtain ⟨r, hr, rfl⟩ := List.mem_map.mp ho
+    exact List.mem_map_of_mem (hret r hr)
+  · intro o ho
+    obtain ⟨r, hr, rfl⟩ := List.mem_map.mp ho
+    rcases hwr r hr with hw | hr'
+    · exact Or.inl (List.mem_map_of_mem hw)
+    · exact Or.inr (List.mem_map_of_mem hr')
+  · intro o ho
+    obtain ⟨r, hr, rfl⟩ := List.mem_map.mp ho
+    rcases hreads r hr with hp | hn | hw | hr'
+    · exact Or.inl (reference_pure_resolves_pure hp call)
+    · exact Or.inr (Or.inl (List.mem_map_of_mem hn))
+    · exact Or.inr (Or.inr (Or.inl (List.mem_map_of_mem hw)))
+    · exact Or.inr (Or.inr (Or.inr (List.mem_map_of_mem hr')))
+  · intro o ho
+    obtain ⟨r, hr, rfl⟩ := List.mem_map.mp ho
+    rcases henv r hr with hp | hc
+    · exact Or.inl (reference_pure_resolves_pure hp call)
+    · exact Or.inr (List.mem_map_of_mem hc)
+
 end RilAccess.CoreSummary
