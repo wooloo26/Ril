@@ -19,8 +19,8 @@ def authority : World :=
   let world := atom world (.write (p 2))
   atom world (.read (p 3))
 
-def origin : Origin := ⟨⟨.module, 1⟩, 0, 1, 0, 0⟩
-def start : State := ⟨[⟨7, ⟨1, 2, 0⟩, 1⟩, ⟨8, ⟨1, 2, 0⟩, 1⟩], ⟨1, 2, 0⟩,
+def origin : Origin := ⟨⟨.module, 1⟩, 0, 1, 0⟩
+def start : State := ⟨[⟨7, ⟨1, 2⟩, 1⟩, ⟨8, ⟨1, 2⟩, 1⟩], ⟨1, 2⟩,
   authority, [⟨.write, origin, .handler⟩], []⟩
 def afterFirst := (resume start 7).getD start
 def afterOther := (resume afterFirst 8).getD start
@@ -57,9 +57,8 @@ def fixtures : List (String × Bool) :=
    ("core resume: operation and dependent loans are inactive",
       afterFirst.authority.loans.all (fun loan => !loan.active)),
    ("core resume: previously committed write survives", decide (afterOther.committed = start.committed)),
-   ("core resume: other arm cannot use escaped handle", (resume { start with current := ⟨9, 2, 0⟩ } 7).isNone),
-   ("core resume: callable boundary rejects escaped handle", (resume { start with current := ⟨1, 9, 0⟩ } 7).isNone),
-   ("core resume: task boundary rejects escaped handle", (resume { start with current := ⟨1, 2, 9⟩ } 7).isNone),
+   ("core resume: other arm cannot use escaped handle", (resume { start with current := ⟨9, 2⟩ } 7).isNone),
+   ("core resume: callable boundary rejects escaped handle", (resume { start with current := ⟨1, 9⟩ } 7).isNone),
    ("core resume: unavailable identity rejected", (resume start 99).isNone)]
 
 theorem fixtures_all_pass : fixtures.all Prod.snd = true := by decide +kernel

@@ -30,43 +30,43 @@ structure Footprint where
   escaping : List Origin
   deriving Repr, DecidableEq
 
-def owned (activation task scope : Nat) (o : Origin) : Bool :=
+def owned (activation scope : Nat) (o : Origin) : Bool :=
   decide (o.source.kind = .allocation) && decide (o.activation = activation) &&
-    decide (o.task = task) && decide (o.scope = scope)
+    decide (o.scope = scope)
 
-def confined (activation task scope : Nat) (f : Footprint) : Bool :=
-  (f.roots ++ f.environments).all (owned activation task scope) && f.escaping.isEmpty
+def confined (activation scope : Nat) (f : Footprint) : Bool :=
+  (f.roots ++ f.environments).all (owned activation scope) && f.escaping.isEmpty
 
 def localEvent : EventKind → Bool
   | .read | .write => true
   | _ => false
 
-def discharge (activation task scope : Nat) (f : Footprint) (events : List Event) : List Event :=
+def discharge (activation scope : Nat) (f : Footprint) (events : List Event) : List Event :=
   events.filter fun e =>
-    !(localEvent e.kind && owned activation task scope e.origin && confined activation task scope f)
+    !(localEvent e.kind && owned activation scope e.origin && confined activation scope f)
 
 theorem discharge_only_confined (he : e ∈ events)
-    (hn : e ∉ discharge activation task scope f events) :
-    localEvent e.kind = true ∧ owned activation task scope e.origin = true ∧
-      confined activation task scope f = true := by
+    (hn : e ∉ discharge activation scope f events) :
+    localEvent e.kind = true ∧ owned activation scope e.origin = true ∧
+      confined activation scope f = true := by
   simp only [discharge, List.mem_filter, Bool.not_eq_true', Bool.and_eq_false_iff,
     not_and, he, true_implies] at hn
   simp_all
 
 theorem retained_event_survives (he : e ∈ events) (hk : localEvent e.kind = false) :
-    e ∈ discharge activation task scope f events := by
+    e ∈ discharge activation scope f events := by
   simp [discharge, he, hk]
 
-theorem confined_roots (h : confined activation task scope f = true)
-    (ho : o ∈ f.roots ++ f.environments) : owned activation task scope o = true := by
-  have hall : (f.roots ++ f.environments).all (owned activation task scope) = true :=
+theorem confined_roots (h : confined activation scope f = true)
+    (ho : o ∈ f.roots ++ f.environments) : owned activation scope o = true := by
+  have hall : (f.roots ++ f.environments).all (owned activation scope) = true :=
     (by simpa only [confined, Bool.and_eq_true] using h :
-      (f.roots ++ f.environments).all (owned activation task scope) = true ∧
+      (f.roots ++ f.environments).all (owned activation scope) = true ∧
         f.escaping.isEmpty = true).1
   exact List.all_eq_true.mp hall o ho
 
 theorem escaping_prevents_discharge (he : f.escaping ≠ []) :
-    confined activation task scope f = false := by
+    confined activation scope f = false := by
   cases h : f.escaping <;> simp_all [confined]
 
 def FootprintCovers (abstract concrete : Footprint) : Prop :=
@@ -75,8 +75,8 @@ def FootprintCovers (abstract concrete : Footprint) : Prop :=
   (∀ o ∈ concrete.escaping, o ∈ abstract.escaping)
 
 theorem confinement_from_overapproximation (cover : FootprintCovers abstract concrete)
-    (h : confined activation task scope abstract = true) :
-    confined activation task scope concrete = true := by
+    (h : confined activation scope abstract = true) :
+    confined activation scope concrete = true := by
   have ha := h
   simp only [confined, Bool.and_eq_true, List.isEmpty_iff] at ha
   simp only [confined, Bool.and_eq_true, List.isEmpty_iff]
@@ -94,8 +94,8 @@ theorem confinement_from_overapproximation (cover : FootprintCovers abstract con
       simp [ha.2] at hm
 
 theorem static_discharge_safe (cover : FootprintCovers abstract concrete)
-    (he : e ∈ events) (hn : e ∉ discharge activation task scope abstract events) :
-    e ∉ discharge activation task scope concrete events := by
+    (he : e ∈ events) (hn : e ∉ discharge activation scope abstract events) :
+    e ∉ discharge activation scope concrete events := by
   obtain ⟨hk, ho, hf⟩ := discharge_only_confined he hn
   simp [discharge, hk, ho, confinement_from_overapproximation cover hf]
 
@@ -227,24 +227,6 @@ theorem retained_not_subsumed_by_write_only {pureSources : List Source} {expecte
     o ∈ expected.retained :=
   (summary_subsumes_iff.mp hsub).retained o hr
 
-structure Crossing where
-  dataAccess : List Access
-  latentSources : List Origin
-  scopedAuthority : Bool
-  detachedResource : Bool
-  explicitResourceContract : Bool
-  deriving Repr, DecidableEq
-
-def taskCrossing (c : Crossing) : Bool :=
-  !c.scopedAuthority && c.latentSources.isEmpty &&
-    c.dataAccess.all (fun m => decide (m = .immutable)) &&
-    (!c.detachedResource || c.explicitResourceContract)
-
-theorem task_no_live_data (h : taskCrossing c = true) (hm : m ∈ c.dataAccess) :
-    m = .immutable := by
-  simp only [taskCrossing, Bool.and_eq_true] at h
-  exact of_decide_eq_true (List.all_eq_true.mp h.1.2 m hm)
-
 def allocationBound : List Nat → Nat
   | [] => 0
   | x :: xs => max (x + 1) (allocationBound xs)
@@ -292,111 +274,6 @@ theorem disjoint_check_sound (h : disjointUnknownSelections left right = true) :
     Separated left right := by
   intro x hx
   exact of_decide_eq_true (List.all_eq_true.mp h x hx)
-
-inductive CrossingMode where
-  | immutableData
-  | isolatedConstruction
-  | movableEndpoint
-  deriving Repr, DecidableEq
-
-structure GraphCrossing where
-  mode : CrossingMode
-  dataAccess : List Access
-  latentSources : List Origin
-  graphOrigins : List Origin
-  transferredObjects : List Nat
-  writableObjects : List Nat
-  callerLiveObjects : List Nat
-  callerWritableObjects : List Nat
-  hasExternalAlias : Bool
-  scopedAuthority : Bool
-  sourceConsumed : Bool
-  targetScope : Nat
-  explicitResourceContract : Bool
-  deriving Repr, DecidableEq
-
-def originLegalAcrossTask (explicitContract : Bool) (targetScope : Nat) (o : Origin) : Bool :=
-  (decide (o.source.kind ≠ SourceKind.foreign) || explicitContract) &&
-    decide (o.scope ≤ targetScope)
-
-def graphCrossingCommon (c : GraphCrossing) : Bool :=
-  !c.scopedAuthority &&
-  c.latentSources.isEmpty &&
-  !c.hasExternalAlias &&
-  c.graphOrigins.all (originLegalAcrossTask c.explicitResourceContract c.targetScope) &&
-  disjointUnknownSelections c.transferredObjects c.callerWritableObjects &&
-  disjointUnknownSelections c.writableObjects c.callerLiveObjects
-
-def graphCrossingModeValid (c : GraphCrossing) : Bool :=
-  match c.mode with
-  | .immutableData =>
-      c.writableObjects.isEmpty &&
-      c.dataAccess.all (fun m => decide (m = Access.immutable))
-  | .isolatedConstruction =>
-      c.sourceConsumed &&
-      c.dataAccess.all (fun m => decide (m ≠ Access.ref))
-  | .movableEndpoint =>
-      c.sourceConsumed &&
-      c.explicitResourceContract &&
-      c.dataAccess.all (fun m => decide (m ≠ Access.ref ∧ m ≠ Access.shared))
-
-def taskGraphCrossing (c : GraphCrossing) : Bool :=
-  graphCrossingCommon c && graphCrossingModeValid c
-
-theorem taskGraphCrossing_no_live_ref {c : GraphCrossing} {m : Access}
-    (h : taskGraphCrossing c = true) (hm : m ∈ c.dataAccess) :
-    m ≠ Access.ref := by
-  simp only [taskGraphCrossing, Bool.and_eq_true] at h
-  have hmode := h.2
-  unfold graphCrossingModeValid at hmode
-  cases hc : c.mode <;> simp only [hc, Bool.and_eq_true] at hmode
-  · have himm : m = Access.immutable := of_decide_eq_true (List.all_eq_true.mp hmode.2 m hm)
-    rw [himm]
-    decide
-  · exact of_decide_eq_true (List.all_eq_true.mp hmode.2 m hm)
-  · exact (of_decide_eq_true (List.all_eq_true.mp hmode.2 m hm)).1
-
-theorem taskGraphCrossing_writable_disjoint_caller_live {c : GraphCrossing}
-    (h : taskGraphCrossing c = true) :
-    Separated c.writableObjects c.callerLiveObjects := by
-  simp only [taskGraphCrossing, graphCrossingCommon, Bool.and_eq_true] at h
-  exact disjoint_check_sound h.1.2
-
-theorem taskGraphCrossing_transferred_disjoint_caller_writable {c : GraphCrossing}
-    (h : taskGraphCrossing c = true) :
-    Separated c.transferredObjects c.callerWritableObjects := by
-  simp only [taskGraphCrossing, graphCrossingCommon, Bool.and_eq_true] at h
-  exact disjoint_check_sound h.1.1.2
-
-theorem taskGraphCrossing_origin_sound {c : GraphCrossing} {o : Origin}
-    (h : taskGraphCrossing c = true) (ho : o ∈ c.graphOrigins) :
-    (o.source.kind ≠ SourceKind.foreign ∨ c.explicitResourceContract = true) ∧
-      o.scope ≤ c.targetScope := by
-  simp only [taskGraphCrossing, graphCrossingCommon, Bool.and_eq_true] at h
-  have horig := List.all_eq_true.mp h.1.1.1.2 o ho
-  simp only [originLegalAcrossTask, Bool.and_eq_true, Bool.or_eq_true, decide_eq_true_eq] at horig
-  exact horig
-
-theorem pinned_foreign_rejected_across_task {c : GraphCrossing} {o : Origin}
-    (ho : o ∈ c.graphOrigins) (hforeign : o.source.kind = SourceKind.foreign)
-    (hpinned : c.explicitResourceContract = false) :
-    taskGraphCrossing c = false := by
-  cases ht : taskGraphCrossing c with
-  | false => rfl
-  | true =>
-    have ⟨hkind, _⟩ := taskGraphCrossing_origin_sound ht ho
-    rcases hkind with hne | hcontract
-    · exact False.elim (hne hforeign)
-    · simp [hpinned] at hcontract
-
-theorem movable_endpoint_exclusive_consumed {c : GraphCrossing}
-    (h : taskGraphCrossing c = true) (hmode : c.mode = .movableEndpoint) :
-    c.sourceConsumed = true ∧ c.explicitResourceContract = true ∧
-      ∀ m ∈ c.dataAccess, m ≠ Access.ref ∧ m ≠ Access.shared := by
-  simp only [taskGraphCrossing, graphCrossingModeValid, hmode, Bool.and_eq_true] at h
-  refine ⟨h.2.1.1, h.2.1.2, ?_⟩
-  intro m hm
-  exact of_decide_eq_true (List.all_eq_true.mp h.2.2 m hm)
 
 structure ForeignContract where
   sources : List Source

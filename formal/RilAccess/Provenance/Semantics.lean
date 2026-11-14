@@ -21,14 +21,13 @@ structure Configuration where
   events : List Event
   nextObject : Nat
   activation : Nat
-  task : Nat
   scope : Nat
   calls : List Nat
   handlers : List Nat
   cleanups : List Nat
 
 def initial (entry : Nat) : Configuration :=
-  ⟨some entry, fun _ => [], [], [], 0, 0, 0, 0, [], [], []⟩
+  ⟨some entry, fun _ => [], [], [], 0, 0, 0, [], [], []⟩
 
 def setRoot (c : Configuration) (r : Nat) (o : Origin) : Configuration :=
   { c with roots := fun n => if n = r then [o] else c.roots n }
@@ -39,7 +38,6 @@ def enterContext (c : Configuration) (m : Mechanism) (id : Nat) : Configuration 
       { c with calls := c.activation :: c.calls, activation := id }
   | .handler => { c with handlers := id :: c.handlers }
   | .cleanup | .resource => { c with cleanups := id :: c.cleanups }
-  | .task => { c with task := id }
   | _ => c
 
 def leaveContext (c : Configuration) (m : Mechanism) : Configuration :=
@@ -56,7 +54,7 @@ inductive Reach (heap : List HeapEdge) : Origin → Origin → Prop where
 
 /-- Independent concrete transitions. Static inferred facts are never premises. -/
 def freshOrigin (c : Configuration) (s : Source) : Origin :=
-  ⟨s, c.activation, c.nextObject, c.task, c.scope⟩
+  ⟨s, c.activation, c.nextObject, c.scope⟩
 
 inductive Execute : Action → Configuration → Configuration → Prop where
   | seed :

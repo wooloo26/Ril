@@ -84,11 +84,6 @@ def namedModuleRead : ResolvedProgram := straight
   [.seed 0 ambient, .copy 0 1 .module, .emit .read 1 false .higherOrder]
   [.exactEvents [.event .read ambient]]
 
-def hiddenTaskSource : ResolvedProgram := straight
-  [.seed 0 ambient, .copy 0 1 .closure, .enter .task 1,
-    .emit .read 1 false .higherOrder]
-  [.absent (.event .read ambient)]
-
 def recursiveUseRules : List (Rule Nat) := [⟨[0], 1⟩, ⟨[1], 0⟩]
 
 def groundedUseRules : List (Rule Nat) := ⟨[], 0⟩ :: recursiveUseRules
@@ -146,8 +141,8 @@ theorem overwrite_only_new_source (ht : Trace staleRoot (initial staleRoot.entry
 theorem overwrite_old_source_spurious :
     Fact.event .read parameter ∈ solve staleRoot.rules := by decide +kernel
 
-def sampleOrigin : Origin := ⟨freshA, 0, 0, 0, 0⟩
-def externalOrigin : Origin := ⟨parameter, 0, 1, 0, 0⟩
+def sampleOrigin : Origin := ⟨freshA, 0, 0, 0⟩
+def externalOrigin : Origin := ⟨parameter, 0, 1, 0⟩
 def writeEvent : Event := ⟨.write, sampleOrigin, .binding⟩
 def privateFootprint : Footprint := ⟨[sampleOrigin], [], []⟩
 
@@ -191,13 +186,12 @@ def fixtures : List (String × Bool) :=
    ("abort cleanup state", accepts cleanupWrite),
    ("handler state", accepts handlerWrite),
    ("module identity", accepts namedModuleRead),
-   ("hidden task source rejected", !accepts hiddenTaskSource),
    ("ungrounded recursive use", decide (solve recursiveUseRules = [])),
    ("grounded recursive use", decide (1 ∈ solve groundedUseRules)),
    ("visible conservative overwrite", accepts staleRoot),
    ("joint permute relation", correlatedSeparated [([0], [1]), ([1], [0])]),
    ("unknown selections overlap", !disjointUnknownSelections [0, 1] [1, 2]),
-   ("confined write discharged", decide (discharge 0 0 0 privateFootprint [writeEvent] = [])),
+   ("confined write discharged", decide (discharge 0 0 privateFootprint [writeEvent] = [])),
    ("nonempty execution", accepts witness)]
 
 theorem fixtures_all_pass : fixtures.all Prod.snd = true := by decide +kernel

@@ -9,7 +9,7 @@ variable {input : Input} {pool : List Cell} {object old : Nat} {cell : Cell}
 structure InputFacts (input : Input) : Prop where
   objects : (input.pool.map (fun cell => cell.origin.object)).Nodup
   cells : ∀ cell ∈ input.pool, cell.origin.object ∈ input.reserved ∧
-    owned input.context.activation input.context.task input.context.scope cell.origin = false ∧
+    owned input.context.activation input.context.scope cell.origin = false ∧
     contentsFit (lookup input.pool) cell.storage cell.contents = true
   root : (lookup input.pool input.root).isSome = true
   authority : GraphAuthority.immutableConsistent input.authorityGraph = true
@@ -54,9 +54,9 @@ inductive Path (heap : Heap) : Nat → List Nat → Nat → Prop where
 structure ObservationFacts (input : Input) (observation : ExternalObservation) : Prop where
   footprint : ∃ footprint, observation.footprint = .known footprint ∧
     ∀ origin ∈ footprint.roots ++ footprint.environments ++ footprint.escaping,
-      origin.object ∈ input.reserved ∧ owned input.context.activation input.context.task input.context.scope origin = false
+      origin.object ∈ input.reserved ∧ owned input.context.activation input.context.scope origin = false
   events : ∀ event ∈ observation.events, event.origin.object ∈ input.reserved ∧
-    owned input.context.activation input.context.task input.context.scope event.origin = false
+    owned input.context.activation input.context.scope event.origin = false
 
 theorem observation_facts (h : observationAllowed input observation = true) :
     ObservationFacts input observation := by

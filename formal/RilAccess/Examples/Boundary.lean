@@ -3,10 +3,10 @@ import RilAccess.Call.Summary
 
 namespace RilAccess.CoreBoundary.Examples
 
-def localOrigin : Origin := ⟨⟨.allocation, 1⟩, 7, 3, 0, 9⟩
-def external : Origin := ⟨⟨.module, 17⟩, 0, 1, 0, 0⟩
-def captured : Origin := ⟨⟨.capture, 4⟩, 5, 8, 0, 2⟩
-def foreign : Origin := ⟨⟨.foreign, 11⟩, 0, 2, 0, 0⟩
+def localOrigin : Origin := ⟨⟨.allocation, 1⟩, 7, 3, 9⟩
+def external : Origin := ⟨⟨.module, 17⟩, 0, 1, 0⟩
+def captured : Origin := ⟨⟨.capture, 4⟩, 5, 8, 2⟩
+def foreign : Origin := ⟨⟨.foreign, 11⟩, 0, 2, 0⟩
 def emptySummary : Summary := ⟨[], [], [], [], [], [], []⟩
 def emptyRoots : Footprint := ⟨[], [], []⟩
 
@@ -28,90 +28,27 @@ def mixedEffects : Boundary :=
     cleanup := { emptySummary with effects := [3, 6] } }
 def outerHandler : Boundary := { privateBoundary with body := handled handlerEffect 3 }
 
-def callInstance : CoreSummary.CallInstance := ⟨(fun _ _ => localOrigin), [1, 3, 9], 12, 2, 14⟩
-
-def outerHeapOrigin : Origin := ⟨⟨.allocation, 21⟩, 7, 3, 0, 2⟩
-def endpointOrigin : Origin := ⟨⟨.foreign, 31⟩, 7, 3, 0, 2⟩
-
-def isolatedWithSharedImmutable : GraphAuthority.Graph Nat :=
-  ⟨[⟨0, 10, .mut⟩, ⟨1, 20, .immutable⟩],
-   [⟨10, 0, 20, ⟨false, .immutable⟩, .immutable⟩,
-    ⟨10, 1, 11, ⟨true, .mut⟩, .mut⟩]⟩
-
-def isolatedHandoffCrossing : GraphCrossing :=
-  GraphAuthority.buildGraphCrossing isolatedWithSharedImmutable 0 [1] .isolatedConstruction
-    [] [outerHeapOrigin] false false true 2 false
-
-def refBearingGraph : GraphAuthority.Graph Nat :=
-  ⟨[⟨0, 10, .mut⟩], [⟨10, 0, 12, ⟨false, .ref⟩, .ref⟩]⟩
-
-def refBearingCrossing : GraphCrossing :=
-  GraphAuthority.buildGraphCrossing refBearingGraph 0 [] .isolatedConstruction
-    [] [outerHeapOrigin] false false true 2 false
-
-def childWriteParentRefGraph : GraphAuthority.Graph Nat :=
-  ⟨[⟨0, 10, .mut⟩, ⟨1, 11, .ref⟩],
-   [⟨10, 0, 11, ⟨false, .mut⟩, .mut⟩]⟩
-
-def childWriteParentRefCrossing : GraphCrossing :=
-  GraphAuthority.buildGraphCrossing childWriteParentRefGraph 0 [1] .isolatedConstruction
-    [] [outerHeapOrigin] false false true 2 false
-
-def parentWriteChildReadGraph : GraphAuthority.Graph Nat :=
-  ⟨[⟨0, 10, .mut⟩, ⟨1, 20, .shared⟩],
-   [⟨10, 0, 20, ⟨false, .immutable⟩, .immutable⟩]⟩
-
-def parentWriteChildReadCrossing : GraphCrossing :=
-  GraphAuthority.buildGraphCrossing parentWriteChildReadGraph 0 [1] .isolatedConstruction
-    [] [outerHeapOrigin] false false true 2 false
-
-def endpointGraph : GraphAuthority.Graph Nat :=
-  ⟨[⟨0, 30, .mut⟩], []⟩
-
-def validEndpointCrossing : GraphCrossing :=
-  GraphAuthority.buildGraphCrossing endpointGraph 0 [1] .movableEndpoint
-    [] [endpointOrigin] false false true 2 true
-
-def sharedEndpointGraph : GraphAuthority.Graph Nat :=
-  ⟨[⟨0, 30, .shared⟩], []⟩
-
-def sharedEndpointCrossing : GraphCrossing :=
-  GraphAuthority.buildGraphCrossing sharedEndpointGraph 0 [] .movableEndpoint
-    [] [endpointOrigin] false false true 2 true
+def callInstance : CoreSummary.CallInstance := ⟨(fun _ _ => localOrigin), [1, 3, 9], 12, 14⟩
 
 def fixtures : List (String × Bool) :=
-  [("core boundary: closed local state can discharge", (outward privateBoundary 7 0 9).isEmpty),
-   ("core boundary: hidden handler environment blocks discharge", !(outward handlerEnvironment 7 0 9).isEmpty),
-   ("core boundary: hidden cleanup environment blocks discharge", !(outward cleanupEnvironment 7 0 9).isEmpty),
+  [("core boundary: closed local state can discharge", (outward privateBoundary 7 9).isEmpty),
+   ("core boundary: hidden handler environment blocks discharge", !(outward handlerEnvironment 7 9).isEmpty),
+   ("core boundary: hidden cleanup environment blocks discharge", !(outward cleanupEnvironment 7 9).isEmpty),
    ("core boundary: handling eliminates its effect only", (handled handlerState 3).effects.isEmpty &&
       decide (external ∈ (handled handlerState 3).writes)),
    ("core boundary: handler's own-family effect remains outward", decide ((handled handlerEffect 3).effects = [3])),
    ("core boundary: residual cleanup effect remains outward", decide ((handled cleanupEffect 3).effects = [3])),
    ("core boundary: only protected body effects are eliminated", decide ((handled mixedEffects 3).effects = [4, 3, 5, 3, 6])),
    ("core boundary: outer handler may discharge the inner arm's effect", (handled outerHandler 3).effects.isEmpty),
-   ("core boundary: actual handler state survives handling and discharge", (outward handlerState 7 0 9).any
+   ("core boundary: actual handler state survives handling and discharge", (outward handlerState 7 9).any
       (fun event => decide (event.kind = .write ∧ event.origin = external))),
-   ("core boundary: actual cleanup state survives handling and discharge", (outward cleanupState 7 0 9).any
+   ("core boundary: actual cleanup state survives handling and discharge", (outward cleanupState 7 9).any
       (fun event => decide (event.kind = .write ∧ event.origin = foreign))),
    ("core boundary: module identity cannot be rebound by call substitution", decide (CoreSummary.resolve callInstance (.concrete external) = external)),
    ("core boundary: selected capture identity cannot be rebound", decide (CoreSummary.resolve callInstance (.concrete captured) = captured)),
    ("core boundary: foreign identity cannot be rebound", decide (CoreSummary.resolve callInstance (.concrete foreign) = foreign)),
    ("core boundary: local allocation cannot impersonate an entry object", decide ((CoreSummary.resolve callInstance (.fresh localOrigin.source localOrigin.object)).object ∉ callInstance.existingObjects)),
-   ("core boundary: local allocation keeps its producer source", decide ((CoreSummary.resolve callInstance (.fresh localOrigin.source localOrigin.object)).source = localOrigin.source)),
-   ("core boundary: immutable task data without latent authority accepted", taskCrossing ⟨[.immutable], [], false, false, false⟩),
-   ("core boundary: live task data rejected", !taskCrossing ⟨[.ref], [], false, false, false⟩),
-   ("core boundary: immutable data does not hide latent cross-task state", !taskCrossing ⟨[.immutable], [external], false, false, false⟩),
-   ("core boundary: isolated construction handoff with shared immutable subgraph accepted", taskGraphCrossing isolatedHandoffCrossing),
-   ("core boundary: isolated construction handoff requires consuming source path", !taskGraphCrossing { isolatedHandoffCrossing with sourceConsumed := false }),
-   ("core boundary: isolated construction rejects wrapped live ref", !taskGraphCrossing refBearingCrossing),
-   ("core boundary: child writable object vs surviving parent ref observer rejected", !taskGraphCrossing childWriteParentRefCrossing),
-   ("core boundary: surviving parent writer vs transferred child object rejected", !taskGraphCrossing parentWriteChildReadCrossing),
-   ("core boundary: movable single-owner endpoint handoff accepted", taskGraphCrossing validEndpointCrossing),
-   ("core boundary: uncontracted foreign origin rejected across task", !taskGraphCrossing { validEndpointCrossing with explicitResourceContract := false }),
-   ("core boundary: shared writable authority rejected on movable endpoint", !taskGraphCrossing sharedEndpointCrossing),
-   ("core boundary: inner scope origin cannot escape to outer task scope", !taskGraphCrossing { isolatedHandoffCrossing with graphOrigins := [localOrigin] }),
-   ("core boundary: lexical scoped cleanup authority cannot cross task", !taskGraphCrossing { isolatedHandoffCrossing with scopedAuthority := true }),
-   ("core boundary: captured latent authority cannot hide inside isolated handoff", !taskGraphCrossing { isolatedHandoffCrossing with latentSources := [captured] })]
+   ("core boundary: local allocation keeps its producer source", decide ((CoreSummary.resolve callInstance (.fresh localOrigin.source localOrigin.object)).source = localOrigin.source))]
 
 theorem fixtures_all_pass : fixtures.all Prod.snd = true := by decide +kernel
 

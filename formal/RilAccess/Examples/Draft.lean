@@ -12,9 +12,9 @@ def arraySlot : Slot := ⟨.object 200, fixedMode⟩
 def cellStorage : Storage := .fixed 100 [scalarSlot]
 def arrayStorage : Storage := .variable 200 cellSlot
 def tupleStorage : Storage := .fixed 300 [arraySlot, arraySlot]
-def context : Context := ⟨42, 7, 0, 8⟩
-def oldOrigin (object : Nat) : Origin := ⟨⟨.allocation, 1⟩, 1, object, 0, 1⟩
-def outsideOrigin : Origin := ⟨⟨.module, 77⟩, 0, 9, 0, 0⟩
+def context : Context := ⟨42, 7, 8⟩
+def oldOrigin (object : Nat) : Origin := ⟨⟨.allocation, 1⟩, 1, object, 1⟩
+def outsideOrigin : Origin := ⟨⟨.module, 77⟩, 0, 9, 0⟩
 
 def input : Input :=
   { pool := [⟨oldOrigin 0, cellStorage, [.scalar 0 1]⟩,

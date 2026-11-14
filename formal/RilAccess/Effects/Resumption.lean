@@ -9,7 +9,6 @@ open Integrated
 structure Context where
   arm : Nat
   callable : Nat
-  task : Nat
   deriving Repr, DecidableEq
 
 structure Slot where

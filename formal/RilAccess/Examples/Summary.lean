@@ -2,10 +2,10 @@ import RilAccess.Call.Summary
 
 namespace RilAccess.CoreSummary.Examples
 
-def saved : Origin := ⟨⟨.allocation, 1⟩, 4, 1, 0, 5⟩
-def child : Origin := ⟨⟨.module, 2⟩, 0, 2, 0, 0⟩
-def inserted : Origin := ⟨⟨.allocation, 3⟩, 4, 3, 0, 5⟩
-def parameterCapture : Origin := ⟨⟨.parameter, 7⟩, 4, 4, 0, 5⟩
+def saved : Origin := ⟨⟨.allocation, 1⟩, 4, 1, 5⟩
+def child : Origin := ⟨⟨.module, 2⟩, 0, 2, 0⟩
+def inserted : Origin := ⟨⟨.allocation, 3⟩, 4, 3, 5⟩
+def parameterCapture : Origin := ⟨⟨.parameter, 7⟩, 4, 4, 5⟩
 def sameObject : Origin := { inserted with object := saved.object }
 def heap : List HeapEdge := [⟨saved, 0, child⟩, ⟨child, 0, saved⟩]
 def laterHeap : List HeapEdge := ⟨saved, 1, inserted⟩ :: heap
@@ -23,7 +23,7 @@ def conflictingOwner : Origin := { parentAlias with activation := 99 }
 
 def actual : CallInstance :=
   ⟨(fun _ selection => if selection = 0 then saved else if selection = 1 then child else inserted),
-    [1, 2, 3, 4], 9, 0, 10⟩
+    [1, 2, 3, 4], 9, 10⟩
 
 def projected : Template := { rootReturn := [.parameter 0 1] }
 def forged : Template := { rootReturn := [.parameter 0 2] }
@@ -36,9 +36,9 @@ def allFields : Template :=
   ⟨[.parameter 0 0], [.parameter 0 1], [.parameter 0 1], [.concrete saved],
     [.concrete parameterCapture], [freshReference], [6]⟩
 
-def pureConst : Origin := ⟨⟨.module, 50⟩, 0, 50, 0, 0⟩
-def liveVar : Origin := ⟨⟨.module, 51⟩, 0, 51, 0, 0⟩
-def foreignHandle : Origin := ⟨⟨.foreign, 52⟩, 0, 52, 0, 0⟩
+def pureConst : Origin := ⟨⟨.module, 50⟩, 0, 50, 0⟩
+def liveVar : Origin := ⟨⟨.module, 51⟩, 0, 51, 0⟩
+def foreignHandle : Origin := ⟨⟨.foreign, 52⟩, 0, 52, 0⟩
 def pureTable : List Source := [pureConst.source, parameterCapture.source, foreignHandle.source]
 def emptySummary : Summary := ⟨[], [], [], [], [], [], []⟩
 def pureReadSummary : Summary := { emptySummary with namedReads := [pureConst], createdEnvironments := [parameterCapture] }

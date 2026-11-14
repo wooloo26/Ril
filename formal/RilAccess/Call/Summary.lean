@@ -22,14 +22,13 @@ structure CallInstance where
   parameter : Nat → Nat → Origin
   existingObjects : List Nat
   activation : Nat
-  task : Nat
   scope : Nat
 
 def resolve (actual : CallInstance) : Reference → Origin
   | .concrete origin => origin
   | .parameter formal selection => actual.parameter formal selection
   | .fresh source serial =>
-    ⟨source, actual.activation, freshObject actual.existingObjects serial, actual.task, actual.scope⟩
+    ⟨source, actual.activation, freshObject actual.existingObjects serial, actual.scope⟩
 
 def references (summary : Template) : List Reference :=
   summary.rootReturn ++ summary.contained ++ summary.writes ++ summary.retained ++
@@ -46,10 +45,10 @@ def instantiate (actual : CallInstance) (summary : Template) : Summary :=
 
 def referenceValid (actual : CallInstance) (frozen : CoreEntry.Frozen) : Reference → Bool
   | .concrete origin => decide (origin.object ∈ actual.existingObjects) &&
-      !owned actual.activation actual.task actual.scope origin
+      !owned actual.activation actual.scope origin
   | .parameter formal selection => (frozen.snapshots.any (fun entry =>
       decide (entry.formal = formal ∧ actual.parameter formal selection ∈ entry.origins))) &&
-      !owned actual.activation actual.task actual.scope (actual.parameter formal selection)
+      !owned actual.activation actual.scope (actual.parameter formal selection)
   | .fresh source _ => decide (source.kind = .allocation)
 
 def freshReferences (summary : Template) : List (Source × Nat) :=
@@ -64,7 +63,7 @@ def valid (actual : CallInstance) (frozen : CoreEntry.Frozen) (summary : Templat
   decide ((frozen.snapshots.map CoreEntry.Snapshot.formal).Nodup) &&
   distinctFreshSerials summary &&
   frozen.snapshots.all (fun entry => entry.origins.all (fun origin => decide (origin.object ∈ actual.existingObjects) &&
-    !owned actual.activation actual.task actual.scope origin)) &&
+    !owned actual.activation actual.scope origin)) &&
   (references summary).all (referenceValid actual frozen)
 
 inductive Error where
@@ -85,7 +84,7 @@ structure InputFacts (actual : CallInstance) (frozen : CoreEntry.Frozen) (summar
   uniqueFormals : (frozen.snapshots.map CoreEntry.Snapshot.formal).Nodup
   freshSerials : distinctFreshSerials summary = true
   entries : ∀ entry ∈ frozen.snapshots, ∀ origin ∈ entry.origins,
-    origin.object ∈ actual.existingObjects ∧ owned actual.activation actual.task actual.scope origin = false
+    origin.object ∈ actual.existingObjects ∧ owned actual.activation actual.scope origin = false
   references : ∀ reference ∈ CoreSummary.references summary, referenceValid actual frozen reference = true
 
 theorem checked_valid (h : check actual frozen summary = .ok result) :
@@ -118,7 +117,7 @@ theorem checked_parameter_uses_frozen_entry
     ∃ entry ∈ frozen.snapshots, entry.formal = formal ∧ actual.parameter formal selection ∈ entry.origins := by
   have hp := (checked_facts h).references _ hr
   have hh : frozen.snapshots.any (fun entry => decide (entry.formal = formal ∧ actual.parameter formal selection ∈ entry.origins)) = true ∧
-      (!owned actual.activation actual.task actual.scope (actual.parameter formal selection)) = true := by
+      (!owned actual.activation actual.scope (actual.parameter formal selection)) = true := by
     simpa only [referenceValid, Bool.and_eq_true] using hp
   simpa only [List.any_eq_true, decide_eq_true_eq] using hh.1
 
@@ -154,17 +153,17 @@ theorem checked_fresh_origin_excludes_frozen_entry
 theorem checked_existing_origin_is_not_callee_local
     (h : check actual frozen summary = .ok result) (hr : reference ∈ references summary)
     (hn : ∀ source serial, reference ≠ .fresh source serial) :
-    owned actual.activation actual.task actual.scope (resolve actual reference) = false := by
+    owned actual.activation actual.scope (resolve actual reference) = false := by
   have hp := (checked_facts h).references _ hr
   cases reference with
   | fresh source serial => exact False.elim (hn source serial rfl)
   | concrete origin =>
-    have hh : origin.object ∈ actual.existingObjects ∧ owned actual.activation actual.task actual.scope origin = false := by
+    have hh : origin.object ∈ actual.existingObjects ∧ owned actual.activation actual.scope origin = false := by
       simpa only [referenceValid, Bool.and_eq_true, Bool.not_eq_true', decide_eq_true_eq] using hp
     exact hh.2
   | parameter formal selection =>
     have hh : frozen.snapshots.any (fun entry => decide (entry.formal = formal ∧ actual.parameter formal selection ∈ entry.origins)) = true ∧
-        owned actual.activation actual.task actual.scope (actual.parameter formal selection) = false := by
+        owned actual.activation actual.scope (actual.parameter formal selection) = false := by
       simpa only [referenceValid, Bool.and_eq_true, Bool.not_eq_true'] using hp
     exact hh.2
 

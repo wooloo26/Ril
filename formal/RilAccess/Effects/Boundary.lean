@@ -46,8 +46,8 @@ def events (summary : Summary) (mechanism : Mechanism) : List Event :=
 def state (boundary : Boundary) : List Event :=
   events boundary.body .call ++ events boundary.handler .handler ++ events boundary.cleanup .cleanup
 
-def outward (boundary : Boundary) (activation task scope : Nat) : List Event :=
-  discharge activation task scope (footprint boundary) (state boundary)
+def outward (boundary : Boundary) (activation scope : Nat) : List Event :=
+  discharge activation scope (footprint boundary) (state boundary)
 
 theorem handled_state_components (boundary : Boundary) (effect : Nat) :
     (handled boundary effect).rootReturn = boundary.body.rootReturn ++ boundary.handler.rootReturn ++ boundary.cleanup.rootReturn ∧
@@ -59,16 +59,16 @@ theorem handled_state_components (boundary : Boundary) (effect : Nat) :
   ⟨rfl, rfl, rfl, rfl, rfl, rfl⟩
 
 theorem discharged_state_requires_complete_confinement
-    (he : event ∈ state boundary) (hn : event ∉ outward boundary activation task scope) :
-    localEvent event.kind = true ∧ owned activation task scope event.origin = true ∧
-      confined activation task scope (footprint boundary) = true := discharge_only_confined he hn
+    (he : event ∈ state boundary) (hn : event ∉ outward boundary activation scope) :
+    localEvent event.kind = true ∧ owned activation scope event.origin = true ∧
+      confined activation scope (footprint boundary) = true := discharge_only_confined he hn
 
 theorem external_environment_blocks_discharge
     (he : origin ∈ boundary.handlerEnvironment ++ boundary.cleanupEnvironment)
-    (ho : owned activation task scope origin = false) :
-    outward boundary activation task scope = state boundary := by
-  have hn : confined activation task scope (footprint boundary) = false := by
-    cases hc : confined activation task scope (footprint boundary) with
+    (ho : owned activation scope origin = false) :
+    outward boundary activation scope = state boundary := by
+  have hn : confined activation scope (footprint boundary) = false := by
+    cases hc : confined activation scope (footprint boundary) with
     | false => rfl
     | true =>
       have hm : origin ∈ (footprint boundary).roots ++ (footprint boundary).environments := by
@@ -83,8 +83,8 @@ theorem external_environment_blocks_discharge
 
 theorem handled_handler_and_cleanup_writes_survive
     (he : origin ∈ boundary.handler.writes ∨ origin ∈ boundary.cleanup.writes)
-    (ho : owned activation task scope origin = false) :
-    ∃ event ∈ outward boundary activation task scope, event.kind = .write ∧ event.origin = origin := by
+    (ho : owned activation scope origin = false) :
+    ∃ event ∈ outward boundary activation scope, event.kind = .write ∧ event.origin = origin := by
   have eventPresent : ∃ event ∈ state boundary, event.kind = .write ∧ event.origin = origin := by
     rcases he with hh | hc
     · refine ⟨⟨.write, origin, .handler⟩, ?_, rfl, rfl⟩

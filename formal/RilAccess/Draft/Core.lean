@@ -62,14 +62,13 @@ def contentsFit (heap : Heap) : Storage → List Value → Bool
 structure Context where
   producer : Nat
   activation : Nat
-  task : Nat
   scope : Nat
   deriving Repr, DecidableEq
 
 def Context.source (context : Context) : Source := ⟨.allocation, context.producer⟩
 
 def Context.origin (context : Context) (object : Nat) : Origin :=
-  ⟨context.source, context.activation, object, context.task, context.scope⟩
+  ⟨context.source, context.activation, object, context.scope⟩
 
 structure Input where
   pool : List Cell
@@ -108,7 +107,7 @@ def Input.authoritiesReserved (input : Input) : Bool :=
   input.outside.roots.all (fun root => decide (root.object ∈ input.reserved)) &&
   input.outside.edges.all (fun edge => decide (edge.parent ∈ input.reserved ∧ edge.child ∈ input.reserved)) &&
   input.environments.all (fun origin => decide (origin.object ∈ input.reserved) &&
-    !owned input.context.activation input.context.task input.context.scope origin)
+    !owned input.context.activation input.context.scope origin)
 
 def Input.schemasValid (input : Input) : Bool :=
   decide ((input.schemas.map Storage.tag).Nodup) &&
@@ -127,7 +126,7 @@ def Input.valid (input : Input) : Bool :=
   decide ((input.pool.map (fun cell => cell.origin.object)).Nodup) &&
   input.pool.all (fun cell =>
     decide (cell.origin.object ∈ input.reserved) &&
-    !owned input.context.activation input.context.task input.context.scope cell.origin &&
+    !owned input.context.activation input.context.scope cell.origin &&
     contentsFit (lookup input.pool) cell.storage cell.contents) &&
   (lookup input.pool input.root).isSome &&
   GraphAuthority.immutableConsistent input.authorityGraph &&
@@ -248,7 +247,7 @@ def externalPreservesInputs (input : Input) (event : Event) : Bool :=
 
 def eventAllowed (input : Input) (event : Event) : Bool :=
   decide (event.origin.object ∈ input.reserved ∧ event.origin.source ∈ input.externalSources) &&
-    !owned input.context.activation input.context.task input.context.scope event.origin &&
+    !owned input.context.activation input.context.scope event.origin &&
     externalPreservesInputs input event
 
 def observationAllowed (input : Input) (observation : ExternalObservation) : Bool :=
@@ -258,7 +257,7 @@ def observationAllowed (input : Input) (observation : ExternalObservation) : Boo
     observation.events.all (eventAllowed input) &&
     (footprint.roots ++ footprint.environments ++ footprint.escaping).all (fun origin =>
       decide (origin.object ∈ input.reserved) &&
-        !owned input.context.activation input.context.task input.context.scope origin) &&
+        !owned input.context.activation input.context.scope origin) &&
     Identity.coherent (input.pool.map Cell.origin ++ input.environments ++
       observation.events.map Event.origin ++ footprint.roots ++ footprint.environments ++ footprint.escaping)
 
@@ -292,7 +291,7 @@ def World.footprint (world : World) : Footprint :=
 
 def World.outward (world : World) : List Event :=
   if world.observations.all ExternalObservation.known then
-    discharge world.input.context.activation world.input.context.task world.input.context.scope
+    discharge world.input.context.activation world.input.context.scope
       world.footprint world.events
   else world.events
 

@@ -30,7 +30,6 @@ structure Origin where
   source : Source
   activation : Nat
   object : Nat
-  task : Nat
   scope : Nat
   deriving Repr, DecidableEq
 

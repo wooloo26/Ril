@@ -9,8 +9,8 @@ abbrev ObjectId := Nat
 /-- Tree regions retain their coordinate; they are not flattened to allocation IDs. -/
 abbrev RegionKey := ObjectId × List Nat
 
-def owner (origin : Origin) : Nat × Nat × Nat :=
-  (origin.activation, origin.task, origin.scope)
+def owner (origin : Origin) : Nat × Nat :=
+  (origin.activation, origin.scope)
 
 def coherent (origins : List Origin) : Bool :=
   origins.all fun left => origins.all fun right =>

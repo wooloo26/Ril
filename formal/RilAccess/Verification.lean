@@ -67,10 +67,10 @@ structure EffectGuarantees : Prop where
     effect ∈ (CoreBoundary.handled boundary handledEffect).effects ↔
       (effect ∈ boundary.body.effects ∧ effect ≠ handledEffect) ∨
         effect ∈ boundary.handler.effects ∨ effect ∈ boundary.cleanup.effects
-  environments : ∀ (boundary : CoreBoundary.Boundary) activation task scope origin,
+  environments : ∀ (boundary : CoreBoundary.Boundary) activation scope origin,
     origin ∈ boundary.handlerEnvironment ++ boundary.cleanupEnvironment →
-    owned activation task scope origin = false →
-    CoreBoundary.outward boundary activation task scope = CoreBoundary.state boundary
+    owned activation scope origin = false →
+    CoreBoundary.outward boundary activation scope = CoreBoundary.state boundary
   affine : ∀ (state next finish : CoreResumption.State) ticket,
     CoreResumption.resume state ticket = some next → CoreResumption.Trace next finish →
       CoreResumption.resume finish ticket = none
@@ -110,41 +110,6 @@ structure DraftGuarantees : Prop where
     Draft.ExternalConforms observation actualEvents actualEffects footprint →
     origin ∈ footprint.roots ++ footprint.environments ++ footprint.escaping →
       origin.object ∉ finish.draftObjects
-
-structure CrossingGuarantees : Prop where
-  noLiveRef : ∀ (c : GraphCrossing) m,
-    taskGraphCrossing c = true → m ∈ c.dataAccess → m ≠ .ref
-  originSound : ∀ (c : GraphCrossing) o,
-    taskGraphCrossing c = true → o ∈ c.graphOrigins →
-      (o.source.kind ≠ .foreign ∨ c.explicitResourceContract = true) ∧ o.scope ≤ c.targetScope
-  pinnedForeignRejected : ∀ (c : GraphCrossing) o,
-    o ∈ c.graphOrigins → o.source.kind = .foreign → c.explicitResourceContract = false →
-      taskGraphCrossing c = false
-  movableEndpointExclusive : ∀ (c : GraphCrossing),
-    taskGraphCrossing c = true → c.mode = .movableEndpoint →
-      c.sourceConsumed = true ∧ c.explicitResourceContract = true ∧
-        ∀ m ∈ c.dataAccess, m ≠ .ref ∧ m ≠ .shared
-  noChildWriteParentLiveRace : ∀ (graph : GraphAuthority.Graph Nat) crossingView survivingViews
-      mode latent origins extAlias scopedAuth consumed targetScope contract
-      (rChild rParent : GraphAuthority.Root Nat) fChild fParent obj mChild mParent,
-    taskGraphCrossing (GraphAuthority.buildGraphCrossing graph crossingView survivingViews
-      mode latent origins extAlias scopedAuth consumed targetScope contract) = true →
-    rChild ∈ graph.roots → rChild.view = crossingView →
-    GraphAuthority.Path graph.edges rChild.object rChild.access fChild obj mChild →
-    mChild.writes = true →
-    rParent ∈ graph.roots → rParent.view ∈ survivingViews →
-    GraphAuthority.Path graph.edges rParent.object rParent.access fParent obj mParent →
-    mParent ≠ .immutable → False
-  noParentWriteChildAnyRace : ∀ (graph : GraphAuthority.Graph Nat) crossingView survivingViews
-      mode latent origins extAlias scopedAuth consumed targetScope contract
-      (rChild rParent : GraphAuthority.Root Nat) fChild fParent obj mChild mParent,
-    taskGraphCrossing (GraphAuthority.buildGraphCrossing graph crossingView survivingViews
-      mode latent origins extAlias scopedAuth consumed targetScope contract) = true →
-    rChild ∈ graph.roots → rChild.view = crossingView →
-    GraphAuthority.Path graph.edges rChild.object rChild.access fChild obj mChild →
-    rParent ∈ graph.roots → rParent.view ∈ survivingViews →
-    GraphAuthority.Path graph.edges rParent.object rParent.access fParent obj mParent →
-    mParent.writes = true → False
 
 structure LinearGuarantees : Prop where
   callsDischargeAll : ∀ (program : Calls.Syntax) analysis world token,
@@ -248,7 +213,6 @@ structure Guarantees : Prop where
   callableMatch : CallableMatchGuarantees
   effects : EffectGuarantees
   draft : DraftGuarantees
-  crossing : CrossingGuarantees
   linear : LinearGuarantees
   visibility : VisibilityGuarantees
 
@@ -267,7 +231,7 @@ theorem verified : Guarantees where
     fun _ _ _ _ => retained_not_subsumed_by_write_only,
     fun _ _ _ call h => CoreSummary.template_subsumes_instantiate h call⟩
   effects := ⟨CoreBoundary.handled_effects_exact,
-    fun _ _ _ _ _ => CoreBoundary.external_environment_blocks_discharge,
+    fun _ _ _ _ => CoreBoundary.external_environment_blocks_discharge,
     fun _ _ _ _ => CoreResumption.aliases_cannot_resume_twice,
     fun _ _ _ _ _ _ => CoreResumption.derived_access_ends,
     fun _ _ _ _ => CoreResumption.dependent_operation_loan,
@@ -275,10 +239,6 @@ theorem verified : Guarantees where
   draft := ⟨fun _ _ _ _ => Draft.prepared_root_sound, fun _ _ _ => Draft.checked_path_recipe_prefixes,
     fun _ _ _ _ _ => Draft.publication_ends_privilege,
     fun _ _ _ _ _ _ _ _ _ _ => Draft.conforming_external_cannot_escape⟩
-  crossing := ⟨@taskGraphCrossing_no_live_ref, @taskGraphCrossing_origin_sound,
-    @pinned_foreign_rejected_across_task, @movable_endpoint_exclusive_consumed,
-    @GraphAuthority.graph_crossing_no_child_write_parent_live_race,
-    @GraphAuthority.graph_crossing_no_parent_write_child_any_race⟩
   linear := ⟨fun _ _ _ _ h hw ht hlin => Integrated.checked_calls_no_unconsumed_linear h hw ht hlin,
     fun _ _ _ _ h hf ht hlin hinner => Integrated.leaveScope_no_active_inner_linear h hf ht hlin hinner,
     fun _ _ _ _ hlin hmode => Integrated.linear_rejects_plain_and_shared_receiving hlin hmode,
