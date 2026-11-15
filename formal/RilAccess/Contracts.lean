@@ -227,6 +227,36 @@ theorem retained_not_subsumed_by_write_only {pureSources : List Source} {expecte
     o ∈ expected.retained :=
   (summary_subsumes_iff.mp hsub).retained o hr
 
+/-- Named `fn` contract completion (`E0510`, `E0529`, `E0612`): a named function's
+declared concrete effects and state/provenance obligations must neither omit required
+actual obligations (`declared.subsumes pureSources actual`) nor spell unexercised
+excess obligations (`actual.subsumes pureSources declared`). -/
+def Summary.exactContract (pureSources : List Source) (declared actual : Summary) : Bool :=
+  declared.subsumes pureSources actual && actual.subsumes pureSources declared
+
+theorem exactContract_rejects_excess_write {pureSources : List Source}
+    {declared actual : Summary} {o : Origin}
+    (hdecl : o ∈ declared.writes)
+    (hnoWrite : o ∉ actual.writes) (hnoRetain : o ∉ actual.retained) :
+    Summary.exactContract pureSources declared actual = false := by
+  cases hex : Summary.exactContract pureSources declared actual with
+  | false => rfl
+  | true =>
+    simp only [Summary.exactContract, Bool.and_eq_true] at hex
+    rcases (summary_subsumes_iff.mp hex.2).writes o hdecl with hw | hr
+    · exact False.elim (hnoWrite hw)
+    · exact False.elim (hnoRetain hr)
+
+theorem exactContract_rejects_excess_retained {pureSources : List Source}
+    {declared actual : Summary} {o : Origin}
+    (hdecl : o ∈ declared.retained) (hnoRetain : o ∉ actual.retained) :
+    Summary.exactContract pureSources declared actual = false := by
+  cases hex : Summary.exactContract pureSources declared actual with
+  | false => rfl
+  | true =>
+    simp only [Summary.exactContract, Bool.and_eq_true] at hex
+    exact False.elim (hnoRetain ((summary_subsumes_iff.mp hex.2).retained o hdecl))
+
 def allocationBound : List Nat → Nat
   | [] => 0
   | x :: xs => max (x + 1) (allocationBound xs)

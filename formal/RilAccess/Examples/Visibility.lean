@@ -54,7 +54,11 @@ def fixtures : List (String × Bool) :=
    ("anchor: dependency mount names pkg and ril rejected",
       !validDependencyMountName "pkg" &&
       !validDependencyMountName "ril" &&
-      validDependencyMountName "crypto")]
+      validDependencyMountName "crypto"),
+   ("sub: enclosing private or pub(pkg) inline sub caps effective path visibility",
+      decide (pathVisibility true [.pubExport] .pubExport = .pubExport) &&
+      decide (pathVisibility true [.pubPkg] .pubExport = .pubPkg) &&
+      decide (pathVisibility true [.priv] .pubExport = .priv))]
 
 theorem fixtures_all_pass : fixtures.all Prod.snd = true := by decide +kernel
 

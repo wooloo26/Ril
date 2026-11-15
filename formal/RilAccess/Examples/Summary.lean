@@ -116,7 +116,12 @@ def fixtures : List (String × Bool) :=
         !({ emptySummary with rootReturn := [saved] }).subsumes pureTable { emptySummary with rootReturn := [saved, child] }),
    ("callable match: template subsumption preserved across call instantiation",
       upperEffectTemplate.subsumes pureTable pureReadTemplate &&
-        (instantiate actual upperEffectTemplate).subsumes pureTable (instantiate actual pureReadTemplate))]
+        (instantiate actual upperEffectTemplate).subsumes pureTable (instantiate actual pureReadTemplate)),
+   ("named fn contract: exact contract accepts matching obligations and rejects unexercised &mut/&^mut (E0529)",
+      Summary.exactContract pureTable writeSummary writeSummary &&
+      Summary.exactContract pureTable emptySummary pureReadSummary &&
+      !Summary.exactContract pureTable writeSummary emptySummary &&
+      !Summary.exactContract pureTable retainedSummary writeSummary)]
 
 theorem fixtures_all_pass : fixtures.all Prod.snd = true := by decide +kernel
 

@@ -87,4 +87,17 @@ theorem leaveScope_deactivates_inner_permission
     cases hmap
     omega
 
+/-- `with` cleanup contract (`E0541`, `E0616`): a named cleanup handler must accept
+a single `ref T`, `mut T`, or `new T` parameter (never plain `T` or `^mut T`), return
+`()`, and remain synchronous (forbidding `@Async`). -/
+def validScopedCleanupContract (mode : ParameterMode) (returnsUnit : Bool) (hasAsyncEffect : Bool) : Bool :=
+  (decide (mode = .observe) || decide (mode = .mutable) || decide (mode = .construction)) &&
+    returnsUnit && !hasAsyncEffect
+
+theorem scoped_cleanup_rejects_async_and_shared
+    {mode : ParameterMode} {returnsUnit hasAsyncEffect : Bool}
+    (hbad : hasAsyncEffect = true ∨ returnsUnit = false ∨ mode = .immutable ∨ mode = .retained) :
+    validScopedCleanupContract mode returnsUnit hasAsyncEffect = false := by
+  rcases hbad with ha | hr | hm | hm <;> simp [validScopedCleanupContract, *]
+
 end RilAccess.Integrated

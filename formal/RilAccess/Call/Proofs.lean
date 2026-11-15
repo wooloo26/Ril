@@ -57,7 +57,10 @@ theorem infer_agrees (h : infer program entry = .ok worlds) :
           cases hb : infer body input with
           | error error => simp [hb] at hbody
           | ok front =>
-            simpa only [hb, Integrated.infer, ih hb, except_bind_ok, finish] using hbody
+            simp only [hb, except_bind_ok] at hbody
+            split at hbody
+            · simpa only [Integrated.infer, ih hb, except_bind_ok, finish] using hbody
+            · contradiction
     · contradiction
 
 theorem prepare_erases (arguments : List Argument) (state : RawState) :
@@ -99,8 +102,28 @@ theorem checked_core (h : check program = .ok analysis) :
     simp only [hi, except_bind_ok] at h
     split at h
     · contradiction
-    · cases h
-      exact ⟨infer_agrees hi, rfl⟩
+    · split at h
+      · contradiction
+      · cases h
+        exact ⟨infer_agrees hi, rfl⟩
+
+theorem check_reachable_uses (h : check program = .ok analysis)
+    (hr : requirement ∈ analysis.worlds.flatMap World.requirements) :
+    satisfiesUse (allUses analysis.worlds) requirement = true := by
+  unfold check at h
+  split at h <;> try contradiction
+  cases hi : infer program initialWorld with
+  | error error => simp [hi] at h
+  | ok worlds =>
+    simp only [hi, except_bind_ok] at h
+    split at h
+    · contradiction
+    · split at h
+      · contradiction
+      · rename_i hnone
+        cases h
+        have hn := List.find?_eq_none.mp hnone requirement hr
+        simpa using hn
 
 theorem access_and_provenance (h : check program = .ok analysis)
     (hr : state ∈ execute program initialWorld.raw)
@@ -141,5 +164,16 @@ theorem retained_formal_needs_survival
   · rename_i token htoken
     refine ⟨token, htoken, ?_⟩
     simpa [List.any_eq_true] using h
+
+theorem retained_mode_needs_survival
+    (h : requiredUse entry frontier argument = true) (hm : argument.mode = .retained) :
+    ∃ token, parameterToken entry argument.formal = some token ∧
+      ∃ world ∈ frontier, retainedBeyond token world = true := by
+  unfold requiredUse at h
+  split at h
+  · contradiction
+  · rename_i token htoken
+    refine ⟨token, htoken, ?_⟩
+    simpa [hm, List.any_eq_true] using h
 
 end RilAccess.Calls

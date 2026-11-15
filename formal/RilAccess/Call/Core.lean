@@ -112,6 +112,18 @@ def formalRetained (entry : World) (frontier : List World) (formal : Nat) : Bool
   | none => false
   | some token => frontier.any (retainedBeyond token)
 
+def requiredUse (entry : World) (frontier : List World) (argument : Argument) : Bool :=
+  match parameterToken entry argument.formal with
+  | none => false
+  | some token =>
+    match argument.mode with
+    | .immutable | .observe | .construction => true
+    | .mutable => frontier.any (fun world => world.evidence.any (evidenceUses token))
+    | .retained => frontier.any (retainedBeyond token)
+
+def requiredUses (entry : World) (frontier : List World) (arguments : List Argument) : Bool :=
+  arguments.all (requiredUse entry frontier)
+
 def finish (worlds : List World) : Except Error (List World) :=
   checkMany (fun world => do
     let next ← checkAtom .leaveScope world
@@ -132,14 +144,18 @@ def infer : Syntax → World → Except Error (List World)
       let prepared ← Integrated.infer (.sequence (.atom .enterScope) (prepare arguments)) world
       checkMany (fun entry => do
         let front ← infer body entry
-        finish front) prepared
+        if requiredUses entry front arguments then finish front else .error .invalidCertificate) prepared
     else .error .invalidSource
 
 def check (program : Syntax) : Except Error Integrated.Analysis :=
   if valid program && decide (Integrated.binders (lower program)).Nodup then do
     let worlds ← infer program initialWorld
     if worlds.any (fun world => !world.frames.isEmpty) then .error .unclosedScope
-    else .ok ⟨worlds, worlds.flatMap worldOrigins⟩
+    else
+      match (worlds.flatMap World.requirements).find?
+          (fun requirement => !satisfiesUse (allUses worlds) requirement) with
+      | some requirement => .error (.absentUse requirement)
+      | none => .ok ⟨worlds, worlds.flatMap worldOrigins⟩
   else .error .invalidSource
 
 end RilAccess.Calls

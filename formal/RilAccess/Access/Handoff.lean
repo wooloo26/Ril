@@ -28,7 +28,7 @@ theorem move_facts (h : checkAtom (.move source destination) world = .ok next) :
         simpa only [Bool.and_eq_true] using permitted
       cases executed
       refine ⟨resolved, rfl, flags.2, rfl, ?_⟩
-      simp [install, putPermission, rawLookup, putRaw]
+      simp [install, addRequirement, markUse, putPermission, rawLookup, putRaw]
     · contradiction
 
 theorem moved_lookup (h : checkAtom (.move source destination) world = .ok next)

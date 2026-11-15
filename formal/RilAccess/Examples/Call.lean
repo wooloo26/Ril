@@ -49,8 +49,11 @@ def ordinaryWriteCannotRetain := sequence [access [.allocate 0 (fixed .mut) []],
   .invoke [arg 0 10 .mutable] [] (access [.retain (p 10)])]
 def retainedWriter := sequence [access [.allocate 0 (fixed .mut) []],
   .invoke [arg 0 10 .retained] [] (access [.retain (p 10)])]
-def upperBoundSharedWrite := sequence [access [.allocate 0 (fixed .mut) []],
+def writeAloneNotRetention := sequence [access [.allocate 0 (fixed .mut) []],
   .invoke [arg 0 10 .retained] [] (access [.write (p 10)])]
+def callLocalSharingNotRetention := sequence [access [.allocate 0 (fixed .mut) []],
+  .invoke [arg 0 10 .retained] []
+    (access [.bind (p 10) 12 (fixed .shared), .write (p 12)])]
 def retainedThroughAlias := sequence [access [.allocate 0 (fixed .mut) []],
   .invoke [arg 0 10 .retained] []
     (access [.bind (p 10) 12 (fixed .shared), .retain (p 12)])]
@@ -63,7 +66,7 @@ def nestedRetention := sequence [access [.allocate 0 (fixed .mut) []],
 def nestedRetentionFromTemporary := sequence [access [.allocate 0 (fixed .mut) []],
   .invoke [arg 0 10 .mutable] []
     (.invoke [arg 10 20 .retained] [] (access [.retain (p 20)]))]
-def upperBoundMutRead := sequence [access [.allocate 0 (fixed .mut) []],
+def noCircularUse := sequence [access [.allocate 0 (fixed .mut) []],
   .invoke [arg 0 10 .mutable] []
     (.invoke [arg 10 20 .mutable] [] (access [.read (p 20)]))]
 def possibleWrite := sequence [access [.allocate 0 (fixed .mut) []],
@@ -92,9 +95,17 @@ def declaredCapture := sequence [access [.allocate 0 (fixed .mut) [], .allocate 
 def independentCapture := sequence [access [.allocate 0 (fixed .mut) []],
   .invoke [arg 0 10 .mutable] [0] (access [.write (p 10), .read (p 0)])]
 def aliasedRetainedWriters := sequence [access [.allocate 0 (fixed .mut) []],
-  .invoke [arg 0 10 .retained, arg 0 11 .retained] [] (access [.retain (p 10)])]
-def selectiveSiblingRetention := sequence [access [.allocate 0 (fixed .mut) [], .allocate 1 (fixed .mut) []],
+  .invoke [arg 0 10 .retained, arg 0 11 .retained] [] (access [.retain (p 10), .retain (p 11)])]
+def formalAliasIsNotRetention := sequence [access [.allocate 0 (fixed .mut) [], .allocate 1 (fixed .mut) []],
   .invoke [arg 0 10 .retained, arg 1 11 .retained] [] (access [.retain (p 10)])]
+def overwrittenPublication := sequence [access [.allocate 0 (fixed .mut) [],
+  .bind (p 0) 1 (slot .shared), .allocate 2 (fixed .mut) []],
+  .invoke [arg 2 10 .retained] [0, 1]
+    (access [.assign (p 10) 1, .assign (p 0) 1]), access [.write (p 1)]]
+def survivingPublication := sequence [access [.allocate 0 (fixed .mut) [],
+  .bind (p 0) 1 (slot .shared), .allocate 2 (fixed .mut) []],
+  .invoke [arg 2 10 .retained] [1]
+    (access [.assign (p 10) 1]), access [.write (p 1)]]
 
 def fixtures : List (String × Bool) :=
   [("call: mutable argument", accepted mutate),
@@ -105,14 +116,8 @@ def fixtures : List (String × Bool) :=
    ("call: write/read conflict rejected", !accepted writeReadAlias),
    ("call: ordinary mut cannot retain", !accepted ordinaryWriteCannotRetain),
    ("call: retained writer survives", accepted retainedWriter),
-   ("call: upper-bound ^mut write-only call accepted while formalRetained stays false",
-      accepted upperBoundSharedWrite &&
-      inspectCall [.allocate 0 (fixed .mut) []] [arg 0 10 .retained] (access [.write (p 10)])
-        (fun entry front => formalMutated entry front 10 && !formalRetained entry front 10)),
-   ("call: local sharing inside call does not trigger outward formalRetained",
-      inspectCall [.allocate 0 (fixed .mut) []] [arg 0 10 .retained]
-        (access [.bind (p 10) 12 (fixed .shared), .write (p 12)])
-        (fun entry front => !formalRetained entry front 10)),
+   ("call: write alone is not retention", !accepted writeAloneNotRetention),
+   ("call: local sharing is not outward retention", !accepted callLocalSharingNotRetention),
    ("call: retained alias keeps formal authority origin",
       accepted retainedThroughAlias &&
       inspectCall [.allocate 0 (fixed .mut) []] [arg 0 10 .retained]
@@ -121,11 +126,7 @@ def fixtures : List (String × Bool) :=
    ("call: nested mut forwarding", accepted nestedMutation),
    ("call: nested retained forwarding", accepted nestedRetention),
    ("call: temporary forwarding cannot retain", !accepted nestedRetentionFromTemporary),
-   ("call: upper-bound mut forwarding without write accepted while formalMutated stays false",
-      accepted upperBoundMutRead &&
-      inspectCall [.allocate 0 (fixed .mut) []] [arg 0 10 .mutable]
-        (.invoke [arg 10 20 .mutable] [] (access [.read (p 20)]))
-        (fun entry front => !formalMutated entry front 10)),
+   ("call: forwarding cannot invent writable use", !accepted noCircularUse),
    ("call: use on a retained alternative", accepted possibleWrite),
    ("call: argument markers match exactly", !accepted wrongMarker),
    ("call: formal slots are fixed", !accepted rebindFormal),
@@ -138,20 +139,9 @@ def fixtures : List (String × Bool) :=
    ("call: declared independent capture", accepted declaredCapture),
    ("call: captured alias is a separate participant", !accepted independentCapture),
    ("call: aliased ^mut writers rejected at call boundary", !accepted aliasedRetainedWriters),
-   ("call: upper-bound ^mut sibling formal stays unretained when only peer formal retains",
-      accepted selectiveSiblingRetention &&
-      inspectCall [.allocate 0 (fixed .mut) [], .allocate 1 (fixed .mut) []]
-        [arg 0 10 .retained, arg 1 11 .retained]
-        (access [.retain (p 10)])
-        (fun entry front => formalRetained entry front 10 && !formalRetained entry front 11)),
-   ("call: overwritten publication is not surviving retention",
-      inspectCall [.allocate 0 (fixed .mut) [], .bind (p 0) 1 (slot .shared), .allocate 2 (fixed .mut) []]
-        [arg 2 10 .retained] (access [.assign (p 10) 1, .assign (p 0) 1])
-        (fun entry front => !formalRetained entry front 10)),
-   ("call: outer binding roots surviving publication",
-      inspectCall [.allocate 0 (fixed .mut) [], .bind (p 0) 1 (slot .shared), .allocate 2 (fixed .mut) []]
-        [arg 2 10 .retained] (access [.assign (p 10) 1])
-        (fun entry front => formalRetained entry front 10))]
+   ("call: unretained sibling ^mut formal rejected (E0527)", !accepted formalAliasIsNotRetention),
+   ("call: overwritten publication is not surviving retention", !accepted overwrittenPublication),
+   ("call: outer binding roots surviving publication", accepted survivingPublication)]
 
 theorem fixtures_all_pass : fixtures.all Prod.snd = true := by decide +kernel
 

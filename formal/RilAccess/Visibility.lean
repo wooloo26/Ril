@@ -67,6 +67,13 @@ def effectiveVisibility (moduleHasPub : Bool) (declVis : Visibility) : Visibilit
   | .pubPkg => .pubPkg
   | .pubExport => if moduleHasPub then .pubExport else .pubPkg
 
+def Visibility.min (a b : Visibility) : Visibility :=
+  if Visibility.le a b then a else b
+
+/-- Effective visibility along an enclosing inline `sub` path caps the declaration's reachability. -/
+def pathVisibility (moduleHasPub : Bool) (enclosingSubs : List Visibility) (declVis : Visibility) : Visibility :=
+  enclosingSubs.foldl Visibility.min (effectiveVisibility moduleHasPub declVis)
+
 /-- E0910: Every type or `with` cleanup handler referenced by a declaration's public
 interface must have effective visibility at least as wide as the declaration. -/
 def signatureWellFormed (moduleHasPub : Bool) (declVis : Visibility) (referencedVis : List Visibility) : Bool :=
@@ -198,5 +205,34 @@ theorem pkg_anchor_isolates_package_visibility :
     validDependencyMountName "pkg" = false ∧
     validDependencyMountName "ril" = false := by
   decide
+
+theorem foldl_min_le_init (xs : List Visibility) (init : Visibility) :
+    (xs.foldl Visibility.min init).rank ≤ init.rank := by
+  induction xs generalizing init with
+  | nil => exact Nat.le_refl _
+  | cons hd tl ih =>
+    have hstep := ih (Visibility.min init hd)
+    have hmin : (Visibility.min init hd).rank ≤ init.rank := by
+      cases init <;> cases hd <;> decide
+    exact Nat.le_trans hstep hmin
+
+theorem foldl_min_le_mem {xs : List Visibility} {init v : Visibility} (hv : v ∈ xs) :
+    (xs.foldl Visibility.min init).rank ≤ v.rank := by
+  induction xs generalizing init with
+  | nil => nomatch hv
+  | cons hd tl ih =>
+    rcases List.mem_cons.mp hv with rfl | htl
+    · have hstep := foldl_min_le_init tl (Visibility.min init v)
+      have hmin : (Visibility.min init v).rank ≤ v.rank := by
+        cases init <;> cases v <;> decide
+      exact Nat.le_trans hstep hmin
+    · exact ih htl
+
+theorem enclosing_sub_caps_pathVisibility {moduleHasPub : Bool}
+    {enclosingSubs : List Visibility} {declVis subVis : Visibility}
+    (hmem : subVis ∈ enclosingSubs) :
+    Visibility.le (pathVisibility moduleHasPub enclosingSubs declVis) subVis = true := by
+  unfold Visibility.le pathVisibility
+  exact decide_eq_true (foldl_min_le_mem hmem)
 
 end RilAccess.VisibilityModel

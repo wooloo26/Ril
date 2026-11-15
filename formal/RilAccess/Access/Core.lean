@@ -99,7 +99,7 @@ inductive ParameterMode where
 inductive Atom where
   | allocate (destination : Nat) (mode : MemberMode) (schema : Schema)
   | allocateResource (destination : Nat) (schema : Schema)
-  | allocateScoped (destination : Nat) (mutable : Bool) (schema : Schema)
+  | allocateScoped (destination : Nat) (mutable : Bool) (schema : Schema) (cleanupWrites : Bool := true)
   | bind (source : Path) (destination : Nat) (mode : MemberMode)
   | assign (source : Path) (destination : Nat)
   | read (path : Path)
@@ -118,7 +118,7 @@ inductive Atom where
 
 def eraseAtom : Atom → RawAtom
   | .allocate destination _ _ | .allocateResource destination _ |
-      .allocateScoped destination _ _ => .allocate destination
+      .allocateScoped destination _ _ _ => .allocate destination
   | .bind source destination _ | .assign source destination => .copy source destination
   | .read path => .observe .read path
   | .write path | .replaceScalar path => .observe .write path
@@ -168,6 +168,20 @@ structure Loan where
 structure Frame where
   parentScope : Nat
   loan : Option Nat
+  deriving Repr, DecidableEq
+
+inductive UseKind where
+  | writable | replacement | retention | sharedReception
+  deriving Repr, DecidableEq
+
+structure Use where
+  register : Nat
+  kind : UseKind
+  deriving Repr, DecidableEq
+
+structure Requirement where
+  register : Nat
+  mode : MemberMode
   deriving Repr, DecidableEq
 
 /-- Authority ancestry is distinct from lifetime dependencies. An independently
@@ -256,6 +270,8 @@ structure World where
   scope : Nat := 0
   frames : List Frame := []
   loans : List Loan := []
+  requirements : List Requirement := []
+  uses : List Use := []
   evidence : List Evidence := []
   deriving Repr, DecidableEq
 
@@ -300,6 +316,12 @@ def initialWorld : World := {}
 
 def unused (w : World) (r : Nat) : Bool := (lookupPermission w r).isNone
 
+def markUse (w : World) (r : Nat) (kind : UseKind) : World :=
+  { w with uses := ⟨r, kind⟩ :: w.uses }
+
+def addRequirement (w : World) (r : Nat) (mode : MemberMode) : World :=
+  { w with requirements := ⟨r, mode⟩ :: w.requirements }
+
 def invalidateQualification (w : World) (pointer : Pointer) : World :=
   { w with tokens := w.tokens.map fun token =>
       if overlaps token.region pointer then { token with qualified := false } else token }
@@ -317,7 +339,8 @@ def addToken (w : World) (region : Pointer) (temporary qualified retained : Bool
 
 def install (w : World) (register : Nat) (mode : MemberMode) (dependencies : List Nat)
     (scope : Nat) (immutableOrigin : Bool) (isScoped : Bool := false) : World :=
-  putPermission w ⟨register, mode, dependencies, true, scope, immutableOrigin, isScoped⟩
+  addRequirement (putPermission w ⟨register, mode, dependencies, true, scope, immutableOrigin, isScoped⟩)
+    register mode
 
 def eligibleMove (w : World) (r : Resolved) : Bool :=
   live r && !r.permission.isScoped && noLoanConflict r w.loans && r.object && r.effective.writes &&
@@ -368,7 +391,8 @@ def transfer (w : World) (atom : Atom) : Option World := do
   match atom with
   | .allocate destination mode schema =>
     if unused w destination && checkSchema schema &&
-        (decide (mode.access = .immutable) || decide (mode.access = .mut)) then
+        (decide (mode.access = .immutable) || decide (mode.access = .mut) ||
+          (mode.replaceable && decide (mode.access = .shared))) then
       let pointer := Pointer.mk w.raw.nextObject [] ⟨.allocation, destination⟩
       let grant := Grant.mk pointer.object pointer.source mode.access schema false
       let next := addToken w pointer false
@@ -384,13 +408,15 @@ def transfer (w : World) (atom : Atom) : Option World := do
       pure (install { next with raw, grants := grant :: w.grants } destination ⟨false, .mut⟩
         [w.nextToken] w.scope false)
     else none
-  | .allocateScoped destination mutable schema =>
+  | .allocateScoped destination mutable schema cleanupWrites =>
     if unused w destination && checkSchema schema then
       let access : Access := if mutable then .mut else .immutable
       let pointer := Pointer.mk w.raw.nextObject [] ⟨.allocation, destination⟩
       let grant := Grant.mk pointer.object pointer.source access schema false
       let next := addToken w pointer false false false w.scope
-      pure (install { next with raw, grants := grant :: w.grants } destination ⟨false, access⟩
+      let base := { next with raw, grants := grant :: w.grants }
+      let used := if mutable && cleanupWrites then markUse base destination .writable else base
+      pure (install used destination ⟨false, access⟩
         [w.nextToken] w.scope (!mutable) true)
     else none
   | .bind source destination mode =>
@@ -399,7 +425,9 @@ def transfer (w : World) (atom : Atom) : Option World := do
       if mode.access = .shared then
         let next := addToken (invalidateQualification w r.pointer) r.pointer false false false w.scope
           r.permission.dependencies
-        pure (install { next with raw } destination mode [w.nextToken] w.scope false)
+        pure (install (markUse (markUse { next with raw } source.register .writable)
+          destination .sharedReception) destination mode
+          [w.nextToken] w.scope false)
       else
         pure (install { w with raw } destination mode r.permission.dependencies w.scope
           (deepImmutable r))
@@ -413,15 +441,18 @@ def transfer (w : World) (atom : Atom) : Option World := do
         if !r.grant.resource && eligibleMove w r then
           let next := addToken (endTokens w r.permission.dependencies) r.pointer false false false target.scope
             r.permission.dependencies
-          pure (install { next with raw } destination target.mode [w.nextToken] target.scope false)
+          pure (install (markUse (markUse { next with raw } destination .replacement)
+            source.register .writable) destination target.mode [w.nextToken] target.scope false)
         else none
       else if receiving w r target.mode target.scope then
         if target.mode.access = .shared then
           let next := addToken (invalidateQualification w r.pointer) r.pointer false false false target.scope
             r.permission.dependencies
-          pure (install { next with raw } destination target.mode [w.nextToken] target.scope false)
+          pure (install (markUse (markUse (markUse { next with raw } destination .replacement)
+            source.register .writable) destination .sharedReception)
+            destination target.mode [w.nextToken] target.scope false)
         else
-          pure (install { w with raw } destination target.mode
+          pure (install (markUse { w with raw } destination .replacement) destination target.mode
             r.permission.dependencies target.scope (deepImmutable r))
       else none
     else none
@@ -436,17 +467,19 @@ def transfer (w : World) (atom : Atom) : Option World := do
     if authorized evidence then
       let next := { w with raw, evidence := evidence :: w.evidence }
       match atom with
+      | .read _ => pure next
       | .retain _ =>
-        pure (addToken (invalidateQualification next evidence.resolved.pointer)
-          evidence.resolved.pointer false false true 0 evidence.resolved.permission.dependencies)
-      | _ => pure next
+        let next := addToken (invalidateQualification next evidence.resolved.pointer)
+          evidence.resolved.pointer false false true 0 evidence.resolved.permission.dependencies
+        pure (markUse (markUse next path.register .writable) path.register .retention)
+      | _ => pure (markUse next path.register .writable)
     else none
   | .move source destination =>
     let r ← resolve w ⟨source, []⟩
     if unused w destination && eligibleMove w r then
       let next := addToken (endTokens w r.permission.dependencies) r.pointer false true false w.scope
         r.permission.dependencies
-      pure (install { next with raw } destination ⟨false, .mut⟩
+      pure (install (markUse { next with raw } source .writable) destination ⟨false, .mut⟩
         [w.nextToken] w.scope false)
     else none
   | .pairWrite left right =>
@@ -455,7 +488,8 @@ def transfer (w : World) (atom : Atom) : Option World := do
     let le ← snapshot w left .write .write [r.pointer]
     let re ← snapshot w right .write .write [l.pointer]
     if authorized le && authorized re then
-      pure { w with raw, evidence := re :: le :: w.evidence }
+      pure (markUse (markUse { w with raw, evidence := re :: le :: w.evidence }
+        left.register .writable) right.register .writable)
     else none
   | .enterScope =>
     pure { w with raw, scope := w.scope + 1, frames := ⟨w.scope, none⟩ :: w.frames }
@@ -471,7 +505,7 @@ def transfer (w : World) (atom : Atom) : Option World := do
       let next := { next with
         raw, scope, frames := ⟨w.scope, some w.nextToken⟩ :: w.frames,
         loans := ⟨w.nextToken, r.pointer, true, true⟩ :: w.loans }
-      pure (install next destination ⟨false, .mut⟩
+      pure (install (markUse next source.register .writable) destination ⟨false, .mut⟩
         (w.nextToken :: r.permission.dependencies) scope false)
     else none
   | .parameter source destination mode =>
@@ -495,25 +529,25 @@ def transfer (w : World) (atom : Atom) : Option World := do
       | .mutable =>
         if r.effective.writes && r.grant.declared.writes then
           let next := addToken w r.pointer true false false w.scope r.permission.dependencies
-          pure (putPermission { next with
+          pure (putPermission (markUse { next with
             raw,
-            loans := ⟨w.nextToken, r.pointer, true, false⟩ :: w.loans }
+            loans := ⟨w.nextToken, r.pointer, true, false⟩ :: w.loans } source.register .writable)
             ⟨destination, ⟨false, .mut⟩, w.nextToken :: r.permission.dependencies, true, w.scope, false, false⟩)
         else none
       | .retained =>
         if !r.grant.resource && !r.permission.isScoped && r.effective.writes && r.grant.declared.writes && noTemporary r then
           let next := addToken (invalidateQualification w r.pointer) r.pointer false false false w.scope
             r.permission.dependencies
-          pure (putPermission { next with
+          pure (putPermission (markUse { next with
             raw,
-            loans := ⟨w.nextToken, r.pointer, true, false⟩ :: w.loans }
+            loans := ⟨w.nextToken, r.pointer, true, false⟩ :: w.loans } source.register .writable)
             ⟨destination, ⟨false, .shared⟩, [w.nextToken], true, w.scope, false, false⟩)
         else none
       | .construction =>
         if eligibleMove w r then
           let next := addToken (endTokens w r.permission.dependencies) r.pointer false true false w.scope
             r.permission.dependencies
-          pure (putPermission { next with raw }
+          pure (putPermission (markUse { next with raw } source.register .writable)
             ⟨destination, ⟨false, .mut⟩, [w.nextToken], true, w.scope, false, false⟩)
         else none
     else none
@@ -527,6 +561,7 @@ def transfer (w : World) (atom : Atom) : Option World := do
 inductive Error where
   | rejected (atom : Atom)
   | invalidCertificate
+  | absentUse (requirement : Requirement)
   | unclosedScope
   | invalidSource
   deriving Repr, DecidableEq
@@ -536,7 +571,7 @@ def expectedGrants (w : World) : Atom → List Grant
     ⟨w.raw.nextObject, ⟨.allocation, destination⟩, mode.access, schema, false⟩ :: w.grants
   | .allocateResource destination schema =>
     ⟨w.raw.nextObject, ⟨.allocation, destination⟩, .mut, schema, true⟩ :: w.grants
-  | .allocateScoped destination mutable schema =>
+  | .allocateScoped destination mutable schema _ =>
     ⟨w.raw.nextObject, ⟨.allocation, destination⟩, if mutable then .mut else .immutable, schema, false⟩ :: w.grants
   | _ => w.grants
 
@@ -578,7 +613,7 @@ def erase : Code → Erased
 def atomDeclarations : Atom → List (Source × Access × Schema)
   | .allocate destination mode schema => [(⟨.allocation, destination⟩, mode.access, schema)]
   | .allocateResource destination schema => [(⟨.allocation, destination⟩, .mut, schema)]
-  | .allocateScoped destination mutable schema =>
+  | .allocateScoped destination mutable schema _ =>
     [(⟨.allocation, destination⟩, if mutable then .mut else .immutable, schema)]
   | _ => []
 
@@ -588,7 +623,7 @@ def declarations : Code → List (Source × Access × Schema)
 
 def binders : Code → List Nat
   | .atom (.allocate destination _ _) | .atom (.allocateResource destination _) |
-      .atom (.allocateScoped destination _ _) | .atom (.bind _ destination _) |
+      .atom (.allocateScoped destination _ _ _) | .atom (.bind _ destination _) |
       .atom (.move _ destination) | .atom (.beginBorrow _ destination) |
       .atom (.parameter _ destination _) => [destination]
   | .atom _ => []
@@ -650,6 +685,14 @@ def surfaceValid : Syntax → Bool
   | .sequence first second | .branch first second => surfaceValid first && surfaceValid second
   | .block body | .borrow _ _ body => surfaceValid body
 
+def allUses (worlds : List World) : List Use := worlds.flatMap World.uses
+
+def satisfiesUse (uses : List Use) (requirement : Requirement) : Bool :=
+  (!requirement.mode.replaceable || decide (Use.mk requirement.register .replacement ∈ uses)) &&
+    (!requirement.mode.access.writes || decide (Use.mk requirement.register .writable ∈ uses)) &&
+    (decide (requirement.mode.access ≠ .shared) ||
+      decide (Use.mk requirement.register .sharedReception ∈ uses))
+
 structure Analysis where
   worlds : List World
   origins : List Source
@@ -664,6 +707,10 @@ def check (program : Syntax) : Except Error Analysis :=
     .error .invalidSource else do
   let worlds ← infer (lower program) initialWorld
   if worlds.any (fun world => !world.frames.isEmpty) then .error .unclosedScope
-  else .ok ⟨worlds, worlds.flatMap worldOrigins⟩
+  else
+    let requirements := worlds.flatMap World.requirements
+    match requirements.find? (fun requirement => !satisfiesUse (allUses worlds) requirement) with
+    | some requirement => .error (.absentUse requirement)
+    | none => .ok ⟨worlds, worlds.flatMap worldOrigins⟩
 
 end RilAccess.Integrated

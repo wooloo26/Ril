@@ -90,6 +90,12 @@ def scopedExpiredAfterBlockExit : Calls.Syntax :=
     (.block (.sequence (.command (.allocateScoped 0 true [])) (.command (.write (p 0)))))
     (.command (.read (p 0))))
 
+def scopedRefCleanupIdleMutRejected : Calls.Syntax :=
+  Calls.Syntax.access (.block (.sequence (.command (.allocateScoped 0 true [] false)) (.command (.read (p 0)))))
+
+def scopedRefCleanupBodyMutAccepted : Calls.Syntax :=
+  Calls.Syntax.access (.block (.sequence (.command (.allocateScoped 0 true [] false)) (.command (.write (p 0)))))
+
 def fixtures : List (String × Bool) :=
   [("resource: affine handle permits scope exit without mandatory E0721 consumption", accepted resourceImplicitDropOk),
    ("resource: chained new handoff transfers exclusive handle", accepted resourceChainedHandoff),
@@ -109,7 +115,17 @@ def fixtures : List (String × Bool) :=
    ("scoped: retaining with let binding rejected (E0604)", !accepted scopedRetainEscapeRejected),
    ("scoped: passing with let binding to new cleanup/consumer inside block rejected (E0604)", !accepted scopedCallNewHandoffRejected),
    ("scoped: capturing with let binding in closure rejected (E0604)", !accepted scopedClosureCaptureRejected),
-   ("scoped: accessing with let binding after block exit rejected", !accepted scopedExpiredAfterBlockExit)]
+   ("scoped: accessing with let binding after block exit rejected", !accepted scopedExpiredAfterBlockExit),
+   ("scoped: with let mut under ref cleanup rejects idle writer (E0527)", !accepted scopedRefCleanupIdleMutRejected),
+   ("scoped: with let mut under ref cleanup accepts body write", accepted scopedRefCleanupBodyMutAccepted),
+   ("scoped: cleanup contract accepts ref/mut/new () and rejects @Async, ^mut, plain, or non-() (E0541/E0616)",
+      validScopedCleanupContract .observe true false &&
+      validScopedCleanupContract .mutable true false &&
+      validScopedCleanupContract .construction true false &&
+      !validScopedCleanupContract .mutable true true &&
+      !validScopedCleanupContract .retained true false &&
+      !validScopedCleanupContract .immutable true false &&
+      !validScopedCleanupContract .mutable false false)]
 
 theorem fixtures_all_pass : fixtures.all Prod.snd = true := by decide +kernel
 

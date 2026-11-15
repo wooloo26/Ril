@@ -48,6 +48,15 @@ structure AccessGuarantees : Prop where
     Integrated.resolve next path = some derived →
     id ∈ derived.permission.dependencies → id ∈ resolved.permission.dependencies →
     Integrated.live derived = false
+  reachableUses : ∀ (program : Calls.Syntax) analysis requirement,
+    Calls.check program = .ok analysis →
+    requirement ∈ analysis.worlds.flatMap Integrated.World.requirements →
+      Integrated.satisfiesUse (Integrated.allUses analysis.worlds) requirement = true
+  retainedSurvival : ∀ entry frontier (argument : Calls.Argument),
+    Calls.requiredUse entry frontier argument = true →
+    argument.mode = .retained →
+      ∃ token, Calls.parameterToken entry argument.formal = some token ∧
+        ∃ world ∈ frontier, Calls.retainedBeyond token world = true
 
 structure EntryGuarantees : Prop where
   physical : ∀ (frozen : CoreEntry.Frozen) entry object,
@@ -148,6 +157,9 @@ structure ScopedGuarantees : Prop where
     perm ∈ next.permissions →
     frame.parentScope < perm.scope →
       perm.alive = false
+  cleanupRejectsAsyncAndShared : ∀ mode returnsUnit hasAsyncEffect,
+    (hasAsyncEffect = true ∨ returnsUnit = false ∨ mode = .immutable ∨ mode = .retained) →
+      Integrated.validScopedCleanupContract mode returnsUnit hasAsyncEffect = false
 
 structure VisibilityGuarantees : Prop where
   opaqueScopeBoundary :
@@ -185,6 +197,9 @@ structure VisibilityGuarantees : Prop where
     VisibilityModel.visibleFrom .pubPkg (VisibilityModel.importContext .externalDep) = false ∧
     VisibilityModel.validDependencyMountName "pkg" = false ∧
     VisibilityModel.validDependencyMountName "ril" = false
+  enclosingSubCapsVisibility : ∀ moduleHasPub (enclosingSubs : List VisibilityModel.Visibility) declVis subVis,
+    subVis ∈ enclosingSubs →
+      VisibilityModel.Visibility.le (VisibilityModel.pathVisibility moduleHasPub enclosingSubs declVis) subVis = true
 
 structure CallableMatchGuarantees : Prop where
   reflexive : ∀ (pureSources : List Source) (s : Summary), s.subsumes pureSources s = true
@@ -200,6 +215,12 @@ structure CallableMatchGuarantees : Prop where
   instantiationMonotone : ∀ (pureSources : List Source) (expected actual : CoreSummary.Template) (call : CoreSummary.CallInstance),
     expected.subsumes pureSources actual = true →
       (CoreSummary.instantiate call expected).subsumes pureSources (CoreSummary.instantiate call actual) = true
+  exactRejectsExcessWrite : ∀ (pureSources : List Source) (declared actual : Summary) (o : Origin),
+    o ∈ declared.writes → o ∉ actual.writes → o ∉ actual.retained →
+      Summary.exactContract pureSources declared actual = false
+  exactRejectsExcessRetained : ∀ (pureSources : List Source) (declared actual : Summary) (o : Origin),
+    o ∈ declared.retained → o ∉ actual.retained →
+      Summary.exactContract pureSources declared actual = false
 
 structure ConcurrencyGuarantees : Prop where
   sharedCaptureRejectsMutableScopedOrResource : ∀ (world : Integrated.World) (r : Integrated.Resolved),
@@ -250,7 +271,10 @@ theorem verified : Guarantees where
   provenance := ⟨fun _ _ _ _ => provenance_coverage,
     fun _ _ => ProvenanceIdentity.trace_invariant, fun _ _ _ => ProvenanceIdentity.cfg_entry_can_freeze⟩
   access := ⟨fun _ _ _ _ => Calls.every_prefix_authorized, fun _ _ => Calls.source_progress,
-    fun _ _ _ _ => Integrated.handoff_preserves_identity, fun _ _ _ _ _ _ _ _ => Integrated.handoff_ends_derived_access⟩
+    fun _ _ _ _ => Integrated.handoff_preserves_identity,
+    fun _ _ _ _ _ _ _ _ => Integrated.handoff_ends_derived_access,
+    fun _ _ _ h hr => Calls.check_reachable_uses h hr,
+    fun _ _ _ h hm => Calls.retained_mode_needs_survival h hm⟩
   entry := ⟨fun _ _ _ => CoreEntry.snapshot_objects,
     fun _ _ _ _ _ _ _ => CoreSummary.checked_at_entry_parameter_is_reachable,
     fun _ _ _ _ h => ⟨CoreSummary.checked_facts h, (CoreSummary.checked_valid h).2⟩⟩
@@ -258,7 +282,9 @@ theorem verified : Guarantees where
     fun _ _ expected hp => pure_summary_subsumed_by_any hp expected,
     fun _ _ _ _ => foreign_read_not_erased_by_pure,
     fun _ _ _ _ => retained_not_subsumed_by_write_only,
-    fun _ _ _ call h => CoreSummary.template_subsumes_instantiate h call⟩
+    fun _ _ _ call h => CoreSummary.template_subsumes_instantiate h call,
+    fun _ _ _ _ hdecl hnoW hnoR => exactContract_rejects_excess_write hdecl hnoW hnoR,
+    fun _ _ _ _ hdecl hnoR => exactContract_rejects_excess_retained hdecl hnoR⟩
   effects := ⟨CoreBoundary.handled_effects_exact,
     fun _ _ _ _ => CoreBoundary.external_environment_blocks_discharge,
     fun _ _ _ _ _ _ h hr hi hd => CoreBoundary.complete_fn_op_revokes_temporary_permission h hr hi hd,
@@ -283,7 +309,8 @@ theorem verified : Guarantees where
     fun _ _ _ _ hsc => Integrated.scoped_rejects_escape hsc,
     fun _ h hr => Integrated.scoped_cannot_retain h hr,
     fun _ _ _ _ hlook hsc => Integrated.scoped_rejects_reassignment hlook hsc,
-    fun _ _ _ _ h hf hp hinner => Integrated.leaveScope_deactivates_inner_permission h hf hp hinner⟩
+    fun _ _ _ _ h hf hp hinner => Integrated.leaveScope_deactivates_inner_permission h hf hp hinner,
+    fun _ _ _ hbad => Integrated.scoped_cleanup_rejects_async_and_shared hbad⟩
   visibility := ⟨VisibilityModel.opaqueScope_boundary,
     fun _ hmem => VisibilityModel.signature_rejects_pubPkg_leak hmem,
     VisibilityModel.topLevel_rejects_mutable_and_live_state,
@@ -291,6 +318,7 @@ theorem verified : Guarantees where
     fun _ _ horig hext hcan => VisibilityModel.ril_extensible_open_outside_pkg horig hext hcan,
     fun _ _ _ horig hext => VisibilityModel.foreign_extensible_open_everywhere horig hext,
     fun _ _ _ _ hop hout => VisibilityModel.opaqueScope_sum_blocks_outside_scope_match hop hout,
-    VisibilityModel.pkg_anchor_isolates_package_visibility⟩
+    VisibilityModel.pkg_anchor_isolates_package_visibility,
+    fun _ _ _ _ hmem => VisibilityModel.enclosing_sub_caps_pathVisibility hmem⟩
 
 end RilAccess.CoreVerification
