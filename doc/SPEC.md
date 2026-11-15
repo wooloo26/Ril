@@ -3808,15 +3808,21 @@ fn run_batch(flag: bool, step: fn() -> Result<(), str>) @Io -> Result<int, str> 
 --     let mut tx = Tx::begin(1u64)
 --     \-> Tx::rollback(new tx)                     -- Error [E0721]: closure cannot consume outer linear binding
 -- }
+eff Audit { fn log(str) -> () }
+fn ok_fn_hold() @Audit -> () {
+    let mut tx = Tx::begin(1u64)
+    Audit::log("step")                           -- OK: active linear 'tx' held across unhandled fn operation
+    Tx::rollback(new tx)
+}
 -- eff Ask { ctl pause() -> () }
 -- fn bad_eff_hold() @Ask -> () {
 --     let mut tx = Tx::begin(1u64)
---     Ask::pause()                                 -- Error [E0721]: active linear 'tx' held across unhandled ctl operation
+--     Ask::pause()                              -- Error [E0721]: active linear 'tx' held across unhandled ctl operation
 --     Tx::rollback(new tx)
 -- }
 -- fn bad_budget() -> Result<(), BudgetError> {
 --     diverge_budget(100, \-> {
---         let mut tx = Tx::begin(1u64)             -- Error [E0822]: linear values prohibited inside diverge_budget
+--         let mut tx = Tx::begin(1u64)          -- Error [E0822]: linear values prohibited inside diverge_budget
 --         Tx::rollback(new tx)
 --     })
 -- }
@@ -3826,9 +3832,9 @@ fn run_batch(flag: bool, step: fn() -> Result<(), str>) @Io -> Result<int, str> 
 | :--- | :--- |
 | Declarations & contagion | Admitted on `.ril` `NominalDecl` / `SumTypeDecl` (`type(linear)`) and `.d.ril` [`DeclForeignType`](#external-interface-declarations). Linearity propagates through owning (`let`/`mut`) fields, tuple elements, nominal/opaque representations, sum variants, `Option<T: linear>`, `Result<T: linear, E: linear>`, `Task<T: linear>`, and `Receiver<T: linear>`. `Sender<T: linear>`, `ref` fields, `fn`, and `Type<T>` are non-linear |
 | Bindings, guards & storage (`E0603`, `E0411`, `E0327`) | Admits `let mut`, `new` parameters/returns, and temporary `mut`/`ref` borrows; plain `let`, `^mut`, and `var`/`var mut` fail `E0603`. `<SharedObject<T>> == <never>` (`clone` `E0530`, `derive` `E0536`), `<NominalWrapper<T>> == <never>` (no `inner()`), `[M]T` and `[K: V]`/`[K: mut V]` fail `E0411`, and `==` fails `E0327` (`?T == None` / `!= None` tag tests remain valid) |
-| Mandatory discharge (`E0721`, `E0308`) | Every constructed or received linear value must be handed off via `new` or terminally destructured on all normal paths (including `return`, `last`, `next`, and `?`), failing `E0721` if unconsumed or branch-mismatched (including already-evaluated linear argument temporaries) and `E0549` if used twice. Terminal destructuring requires transparency scope (`E0308`), satisfies `E0527`, exempts nullary linear patterns from `E0309`, and transfers linear obligations to constituent bindings. Narrowed linear-free variants (`None`, `Err(NonLinear)`) hold zero linear obligation |
+| Mandatory discharge (`E0721`, `E0308`) | Every constructed or received linear value must be handed off via `new` or terminally destructured on all normal paths (including `return`, `last`, `next`, and `?`), failing `E0721` if unconsumed or branch-mismatched (including evaluated argument temporaries) and `E0549` if used twice. Terminal destructuring requires transparency scope (`E0308`), satisfies `E0527`, exempts nullary linear patterns from `E0309`, and transfers linear obligations to constituent bindings. Narrowed linear-free variants (`None`, `Err(NonLinear)`) hold zero linear obligation |
 | Unwinding | Only `@Panic` and `@Fatal` may drop active linear bindings without explicit consumption |
-| Closures, effects, concurrency, budgets & `meta` (`E0721`, `E0411`, `E0822`, `E0409`) | General closures may borrow `ref`/`mut` call-locally but cannot consume captured outer linear bindings (`E0721`), except direct single-shot task closures passed to [`spawn` / `zip` / `run` / `uncancellable`](#structured-async-concurrency-and-channels). `with` handler arms cannot consume outer linear bindings; `fn` effect operations admit `new` and `linear` parameters/returns and allow active linear bindings across `@Io` and unhandled `fn` operations (recording `linear_live_ops` in `K-IFACE` so handling them with unshielded `@Async` fails `E0721` at `with`), whereas `ctl` operations forbid `new`/`linear` parameters/returns (`E0411`) and active linear bindings cannot cross unhandled `ctl` operations (`Yield::emit`), `@Scope` operations, or `@Async` suspension points outside [`Async::uncancellable`](#structured-async-concurrency-and-channels) (`E0721`). `diverge_budget` forbids linear captures, locals, and results (`E0822`; `absorb_panic` permits confined linear values). Signature `ContractGuard`s are forbidden on callables with linear parameters or linear `Ok`/`Some` returns (`E0409`). `meta` forbids linear values (`E0411`/`E0812`); `<T>`, `Type<T>`, and isolated `typeof` remain valid |
+| Closures, effects, concurrency, budgets & `meta` (`E0721`, `E0411`, `E0822`, `E0409`) | General closures and handler arms cannot consume outer linear bindings (`E0721`), except single-shot task closures ([Structured Async Concurrency](#structured-async-concurrency-and-channels)). `fn` operations admit `new`/`linear` signatures and allow active linear bindings across `@Io` and unhandled `fn` calls (`linear_live_ops` in `K-IFACE`); `ctl` operations forbid `new`/`linear` signatures (`E0411`), and active linear bindings cannot cross unhandled `ctl`, `@Scope`, or unshielded `@Async` calls (`E0721`). `diverge_budget` (`E0822`), `ContractGuard`s (`E0409`), and `meta` (`E0411`/`E0812`) forbid linear values |
 
 #### Declaration Metadata Attributes
 
@@ -5190,7 +5196,7 @@ assert(total == 12)                        -- 0 + 2 + 4 + 6
 
 ### Control Transfers
 
-Control transfers alter sequential evaluation order. Ril supports lexical control transfers (`last`, `next`, `return`) strictly scoped to the innermost enclosing loop, function, or direct `fn` handler arm. A direct `fn` handler arm (`with Op(...) -> ...`) forms a local `return` / `?` / loop boundary: `return` and `?` complete that operation invocation rather than the enclosing function, and `last` / `next` cannot target loops outside the arm (`E0707`). Delimited `ctl` handler arms (`with ctl Op(...) -> ...`) introduce no function boundary. Loop labels are not part of the language.
+Lexical control transfers (`last`, `next`, `return`) target the innermost enclosing loop, function, or direct `fn` handler arm; loop labels are not part of the language.
 
 ```ebnf
 ControlTransfer ::= ( "last" [ Expression ] )
@@ -5236,6 +5242,21 @@ fn search(matrix: [][]int, target: int) -> bool {
     }
     false
 }
+
+-- Direct 'fn' handler arm forms a local 'return' / '?' / loop boundary:
+eff Gate { fn clamp(n: int) -> int }
+fn run_clamped() -> int {
+    for 1..=2 as _ {
+        with Gate::clamp(n) -> {
+            -- last                         -- Error [E0707]: cannot target outer loop across fn arm
+            if n < 0 { return 0 }           -- Completes Gate::clamp, not run_clamped
+            n
+        }
+        return Gate::clamp(-5) + 10
+    }
+    0
+}
+assert(run_clamped() == 10)
 
 -- Rejection of Invalid Control Transfer (E0707):
 -- last 42                                  -- Error [E0707]: 'last' statement used outside loop body
@@ -6178,9 +6199,12 @@ type EffectOpenAction = fn() @ -> ()
 type StateOpenAction = fn() & -> ()
 type OpenAction = fn() @& -> ()
 type LoggedAction = fn() @Log -> ()
+type DualLoggedAction = fn() @Log @Audit -> ()
 type LoggedWithOpenState = fn() @Log & -> ()
 type EffectOpenMutator = fn(mut Cell) @ &mut -> ()
 type MutatorWithOpenState = fn(mut Cell) &mut & -> ()
+-- type BadEmptyMix = fn() @{} @Log -> ()          -- Error [E0120]: '@{}' cannot mix with '@Effect' clauses
+-- type BadOpenMix = fn() @Log @ -> ()             -- Error [E0120]: open '@' cannot mix with '@Effect' clauses
 ```
 
 | Row form on a callable type | Matching requirement |
@@ -6194,7 +6218,7 @@ type MutatorWithOpenState = fn(mut Cell) &mut & -> ()
 | Standalone `&` | Open state/provenance dimension; written clauses set a static baseline and additional actual obligations are preserved |
 | `@&` | Combined open operational effects and open state/provenance |
 
-An open effect marker opens the whole effect dimension. Multiple closed operational effects write consecutive `@Effect` clauses (`@Log @Audit`); mixing standalone `@{}` or open `@` / `@&` with explicit `@Effect` clauses (`@{} @Log`, `@Log @{}`, `@Log @`, `@& @Log`) is syntactically rejected (`E0120`). State/provenance openness may accompany baseline clauses such as `&mut`, `&up(sub){...}`, `&up{...}`, or `&return{...}`. Opening one dimension leaves the other closed; source authority, invocation access modes, and retention are checked independently. Combining open state/provenance (`&` or `@&`) with `&{}` is `E0547`; use `@` for open effects with closed empty state/provenance.
+An open effect marker opens the whole effect dimension. State/provenance openness may accompany baseline clauses such as `&mut`, `&up(sub){...}`, `&up{...}`, or `&return{...}`. Opening one dimension leaves the other closed; source authority, invocation access modes, and retention are checked independently. Combining open state/provenance (`&` or `@&`) with `&{}` is `E0547`; use `@` for open effects with closed empty state/provenance.
 
 Open markers belong only to `CallableType` arrows. Placing `@`, `&`, or `@&` directly on a named or anonymous definition, an effect-operation declaration, or a bodyless foreign declaration is `E0547: InvalidOpenRowPlacementError`. An open callable type nested in a definition's parameter, result, or data schema remains valid.
 
@@ -6317,8 +6341,8 @@ let open_as_logged: fn(fn() @Log -> ()) @Log -> () = invoke -- OK: symbolic call
 
 | Origin classification | Eligibility in `CallableType` matching and purity |
 | :--- | :--- |
-| **Verified pure origin** (reduces to $\emptyset$) | Fixed non-replaceable binding with immutable reception (`meta let` value, `meta` / const parameter, `.ril` module `let`, enclosing `let`, plain parameter, immutable pattern/`for`/handler binding) whose representation graph—penetrating all `opaque type` and nominal wrappers via `K-IFACE`—contains only value types, deeply immutable shared objects, or pure callables; plus retained outer lexical `fn` handler environments whose complete `Summary` has empty `writes` / `retained` / `rootReturn` / `contained`, verified-pure `namedReads` and `createdEnvironments`, and concurrently admissible residual operational effects |
-| **Non-pure origin** (retained as obligation) | `var` (including scalar `var x: int`), `mut` / `^mut` / `new` / `ref` bindings or parameters, `let scoped` (`E0604`), `.d.ril` `DeclLet` or `DeclForeignType` handles, [linear bindings](#mandatory-consumption-linear-types), retained outer `ctl` handler environments, and stateful or effect-impure `fn` handler environments |
+| **Verified pure origin** (reduces to $\emptyset$) | Fixed non-replaceable binding with immutable reception (`meta let` value, `meta` / const parameter, `.ril` module `let`, enclosing `let`, plain parameter, immutable pattern/`for`/handler binding) whose representation graph—penetrating all `opaque type` and nominal wrappers via `K-IFACE`—contains only value types, deeply immutable shared objects, or pure callables; plus pure stateless outer `fn` handler environments |
+| **Non-pure origin** (retained as obligation) | `var` (including scalar `var x: int`), `mut` / `^mut` / `new` / `ref` bindings or parameters, `let scoped` (`E0604`), `.d.ril` `DeclLet` or `DeclForeignType` handles, [linear bindings](#mandatory-consumption-linear-types), and retained `ctl` or stateful/impure `fn` handler environments |
 
 | Contract component | `MatchCallable(actual, expected)` rule |
 | :--- | :--- |
@@ -6823,7 +6847,7 @@ let ref observed = cell
 | `^mut p: T` / `^mut target` or `\|> ^mut` | Pinned writable shared-object/environment access; may retain a writer |
 | `new p: T` / `new expression` or `\|> new` | Unpublished ordinary construction authority; explicit handoff ends the old construction paths |
 
-The ordinary `ref`/`mut`/`^mut` modes cover named/anonymous functions, callable types, effect operations/handlers, and generic/built-in instantiations. Fresh construction parameters add the verified `new` path for ordinary Ril callables, direct `fn` effect operations/handlers, and recognized storage inputs; `ctl` effect and foreign restrictions remain explicit. [Fresh storage inputs](#homogeneous-storage-authority) receive construction authority before ordinary immutable publication. A wrapper must declare `new` or an admitted preserving `via` input to retain that path; an ordinary immutable wrapper still publishes data. `via` is not admitted on effect/handler or foreign boundary parameters (`E0412`).
+The `ref`/`mut`/`^mut` modes cover named/anonymous functions, callable types, effect operations/handlers, and generic/built-in instantiations. `new` applies to ordinary Ril callables, direct `fn` effect operations/handlers, and [fresh storage inputs](#homogeneous-storage-authority) (`E0411` on `ctl` operations/handlers). A wrapper must declare `new` or a preserving `via` input to retain construction authority; an ordinary immutable wrapper publishes data. `via` is forbidden on effect/handler and foreign parameters (`E0412`).
 
 | Invalid use | Diagnostic |
 | :--- | :--- |
@@ -6904,7 +6928,7 @@ cells[0].count += 1
 | Omitted transfer | Affine construction parameters may be discarded on completion subject to Result-inspection (`E0720`) and ordinary completion obligations; [linear](#mandatory-consumption-linear-types) construction parameters must be handed off or terminally destructured on every normal path (`E0721`). Failure or abort does not return construction authority to an ended caller path. Any ordinary immutable result still must satisfy the usual whole-graph publication checks |
 | Higher-order use | Callable parameter modes must match (`E0407`); aliases, imports, ascriptions, and callback forwarding preserve construction-path consumption and result-source metadata. An ordinary parameter or an open effect or state/provenance row cannot substitute for `new` mode |
 | Defaults | A `new` parameter cannot have a default (`E0404`); an actual handoff requires its explicit argument marker |
-| Effect/foreign boundary | Construction input is permitted on direct `fn` effect-operation parameters and matching `fn` handler binders (for eligible types), prohibited on delimited `ctl` effect-operation parameters and `ctl` handler binders (`E0411`), and prohibited on bodyless foreign calls except `.d.ril` `type(linear)` resource contracts (`E0908`). Other boundaries use their declared temporary modes |
+| Effect/foreign boundary | Permitted on direct `fn` effect operations and `fn` handler binders (`E0411` on `ctl` operations/arms); prohibited on bodyless foreign calls except `.d.ril` `type(linear)` resource contracts (`E0908`) |
 | Phase | This is a run-time construction mode. Static/meta/type computation has no construction-input mode; a `new` parameter in a static declaration is `E0411`, and run-time construction handoffs are not static computations |
 
 A `new expression` handoff requires a matching construction argument, compatible construction return, qualified fixed writable local initializer, template-dependent receiver, or verified typed-storage reception. Record/tuple/array/map initializers require a receiver proving matching construction eligibility; untyped immutable reception is ineligible. [Fixed writable locals](#construction-qualified-locals-and-mode-preserving-reception) retain eligible construction paths as provenance; `let via` receives access modes dependent on lexically bound mode parameters. Missing and wrong ordinary argument modes are `E0405` and `E0406`; a construction operand outside a receiving position is `E0548`. Ordinary immutable reception publishes data and ends forwarding eligibility. Allocations and handoffs retain their true identities.
@@ -7554,7 +7578,7 @@ where
 - **Module Groups (`E0538`)**: `&up(sub){...}` names storage bindings owned directly by the current `sub` or executable root. Storage bindings from an imported module, enclosing `Super`, or inline child `sub` use `&up(ModuleOwner){item}` where `ModuleOwner` names the visible uninstantiated module path (`Platform`, `Super`, `Geometry::Transform`, `Ring`; `SubAliasDecl` aliases resolve to the underlying `sub`, and generic `<...>` in `ModuleOwner` is `E0538`) and `item` is the unqualified binding name inside that module (`E0538` if qualified or placed under `sub`). A named function declaration is not a storage item.
 - **Environment Groups (`E0538`)**: `&up{...}` contains captured bindings from one enclosing callable layer. A directly enclosing layer needs no owner. A farther named layer requires its function name in `&up(owner){...}`. A farther anonymous layer uses a separate ownerless `&up{...}` group. An explicit owner verifies the source layer; it cannot select a same-spelled binding hidden by shadowing.
 - **Resolution Before Classification**: Resolve each item by ordinary lexical rules, including shadowing, then verify its group and declaration owner. Preserve its actual activation identity in metadata.
-- **Layers and Activations**: Named functions and lambdas introduce callable layers. Blocks, loops, and handler arms do not introduce named/lambda capture-group owner layers (`fn` handler arms form local `return`/`?`/loop control boundaries only); their binding identities, dynamic activations, lifetimes, and handler contexts remain distinct. An object's possible origin does not change its binding's declaration layer.
+- **Layers and Activations**: Named functions and lambdas introduce callable layers. Blocks, loops, and handler arms introduce no capture-group owner layers (`fn` arms bound `return`/`?`/loops only); their binding identities, activations, lifetimes, and handler contexts are distinct. An object's possible origin does not change its binding's declaration layer.
 - **Grouping**: Invocation-access items from different callable layers require separate groups, even when both use ownerless `&up{...}`. A return group may summarize multiple resolved origins while preserving their identities. Each mode applies only to its own item. Empty or wrongly classified source groups are `E0538`; invalid return dependencies use `E0545`.
 - **Definitions and Types**: Named definitions must spell their inferred concrete groups. Anonymous functions infer and retain these groups without a source-completion obligation. An explicitly written anonymous group is checked. In a callable type, names bind at the type's declaration site; [callable contract matching](#callable-contract-matching) cannot rebind them to similarly named captures in an assigned value.
 
@@ -7761,7 +7785,7 @@ Check possible storage origins, not distinct field names or indices. Only confli
 | Independent argument, capture, or ambient path treated as part of a `mut` formal | Not the same call authority, even if object identity matches |
 | Nested forwarding through a `mut` formal or its call-local closure | Suspend the caller's access until return; derived authority cannot outlive that call |
 
-Inactive aliases permit sequential sharing. Access through the formal and its call-local derived paths belongs to that invocation; independent paths remain separate participants. Direct or transitive effect-operation calls intercepted by an active enclosing `with` handler arm check exclusivity (`E0523`, `E0524`, `E0526`) between the operation's arguments and that arm's external read, write, and retained-sharing footprint.
+Inactive aliases permit sequential sharing. Access through the formal and its call-local derived paths belongs to that invocation; independent paths and active `with` handler footprints remain separate participants.
 
 ```ril
 type Cell = .{ var count: int }
@@ -7773,6 +7797,13 @@ fn swap(mut a: Cell, mut b: Cell) &mut -> () {
 let mut cells: [mut]Cell = [Cell.{ count: 1 }, Cell.{ count: 2 }]
 swap(mut cells[0], mut cells[1])        -- OK: distinct allocations, not merely distinct indices
 -- swap(mut cells[0], mut cells[0])    -- Error [E0523]: same writable origin
+
+eff Bump { fn step(mut c: Cell) &mut -> () }
+let mut shared_cell = Cell.{ count: 0 }
+{
+    with Bump::step(mut c) -> { shared_cell.count += 1; c.count += 1 }
+    -- Bump::step(mut shared_cell)     -- Error [E0523]: argument overlaps active handler arm's write footprint
+}
 
 let cell = Cell.{ count: 0 }
 let mut copied = clone((mut cell, mut cell))
@@ -7919,27 +7950,23 @@ EffectIdentifier   ::= QualifiedName [ GenericArgs ]
 EffectOperationRef ::= EffectIdentifier "::" ValueName
 ```
 
-Every operation declaration begins with either `fn` (direct capability operation) or contextual `ctl` (affine delimited control operation), separated by `Separator` (`;` or newline). Multiple operational effects on a function or callable type write consecutive `@Effect` clauses (`@Console @BufferIo`, `@Io @Async`) without `+`; `@{}` closes an empty operational effect row. An effect-set alias writes every included instance with the record-spread marker `..`: `eff AsyncIo { ..Io, ..Async }`. Each `..EffectIdentifier` expands that instance's operation identities; the alias creates no new identity. An effect declaration body is either an operation list or a `..` member list, never a mixture (`E0120`). Effect identifiers resolve to operational `PascalCase` effect declarations. Writing `@Diverge`, `@Panic`, `@Fatal`, `..Diverge`, `..Panic`, `..Fatal`, or declaring `eff Diverge`, `eff Panic`, or `eff Fatal` in source is `E0620`.
+Consecutive `@Effect` clauses (`@Console @BufferIo`, `@Io @Async`) declare multiple operational effects; `@{}` closes an empty operational effect row. Effect-set aliases expand included instances with `..` (`eff AsyncIo { ..Io, ..Async }`); mixing operations and `..` members is `E0120`, and writing or declaring `Diverge`, `Panic`, or `Fatal` as operational effects is `E0620`. Both operation kinds require concrete signatures without `via` or `infer` (`E0412`).
 
-| Operation kind | Static & runtime contract |
+| Operation kind | Contract |
 | :--- | :--- |
-| **`fn` operation** (direct capability call) | Guarantees single in-place return of result type `R` to the caller without capturing or aborting its delimited continuation; admits ordinary, `ref`, `mut`, `^mut`, and `new` parameters, `new` returns, and [`type(linear)`](#mandatory-consumption-linear-types) parameters/returns (subject to eligible-type checks, `E0411`); allows callers to hold active `linear` bindings across unhandled `fn` calls (`K-IFACE` records `linear_live_ops`) |
-| **`ctl` operation** (affine delimited control) | Reifies the delimited continuation up to the matching `with` boundary for single-shot `resume` or delimited early abort; admits ordinary, `ref`, `mut`, and `^mut` parameters only, prohibiting `new` parameters and `type(linear)` parameters/returns (`E0411`) and prohibiting active `linear` bindings across unhandled `ctl` calls (`E0721`) |
-
-Both operation kinds forbid `via` parameters and `infer` results (`E0412`) and require concrete operation signatures.
+| **`fn`** (direct capability) | Returns result `R` in place without capturing or aborting the continuation; admits ordinary, `ref`, `mut`, `^mut`, and `new` parameters, `new` returns, and [`linear`](#mandatory-consumption-linear-types) signatures (`E0411` if ineligible); callers may hold active `linear` bindings across unhandled `fn` calls (`linear_live_ops` in `K-IFACE`) |
+| **`ctl`** (delimited control) | Captures the delimited continuation up to `with` for single-shot `resume` or early abort; admits ordinary, `ref`, `mut`, and `^mut` parameters only, forbidding `new` parameters and `linear` signatures (`E0411`) and forbidding active `linear` bindings across unhandled `ctl` calls (`E0721`) |
 
 ```ril
 -- Console and BufferIo have the declarations above.
--- Effectful computation: invokes print twice and read_line once
 fn hello() @Console -> () {
-    Console::print("Enter name:")      -- First intercepted operation
-    let name = Console::read_line()     -- Second intercepted operation
-    Console::print("Hello, {name}")  -- Third intercepted operation (deep handler re-entered)
+    Console::print("Enter name:")
+    let name = Console::read_line()
+    Console::print("Hello, {name}")
 }
 
--- Effectful computation invoking state-annotating BufferIo:
 fn fill_header(mut target: []u8) @BufferIo &mut -> int {
-    BufferIo::read_into(mut target)    -- OK: &mut annotation flows through caller to operation
+    BufferIo::read_into(mut target)    -- OK: &mut flows through caller to operation
 }
 
 -- Direct fn operations transferring linear and construction authority:
@@ -7948,6 +7975,9 @@ eff Ledger {
     fn open(id: u64) -> new Tx
     fn commit(new tx: Tx) -> Result<(), str>
 }
+-- eff BadCtl { ctl take(new tx: Tx) -> () }  -- Error [E0411]: ctl operation forbids new / linear
+-- eff BadVia { fn pass(via x: []u8) -> []u8 } -- Error [E0412]: operation forbids via / infer
+
 fn checkout(id: u64) @Console @Ledger -> Result<(), str> {
     let mut tx = Ledger::open(id)
     Console::print("opened {id}")      -- OK: active linear 'tx' held across unhandled fn operation
@@ -7977,12 +8007,10 @@ fn run_console() -> () {
 }
 ```
 
-An operation-arm `with` covers the remaining block; every arm runs under outer handlers, even for its own effect family. Handler arms echo the operation's `fn` / `ctl` kind (`E0621` when `ctl` is written on a `fn` operation arm or omitted on a `ctl` operation arm):
+An operation-arm `with` covers the remaining block; every arm runs under outer handlers, even for its own effect family. `with f(args)` without `->` is a [parameterized callable application](#parameterized-handler-applications).
 
-- **Direct `fn` arm (`Op(p) -> expr`)**: Evaluates `expr` directly to the operation's result type `R` (`E0301` on mismatch), returns that value in place to the call site while keeping this handler active for the rest of the protected block, and forbids `resume` (`E0623`). A `fn` arm forms a local `return` / `?` / loop control boundary (`return` and `?` complete that operation call rather than the enclosing function; `last` / `next` targeting outer loops fail `E0707`) and **cannot leave unhandled `ctl` effects residual** (`E0614`, preventing outer delimited aborts from bypassing active linear frames between the handler and call site).
-- **Delimited `ctl` arm (`ctl Op(p) -> expr`)**: Captures the delimited continuation up to this `with` boundary. `resume value` checks `value : R` (`E0624`) and reinstalls this handler across the resumed continuation; for protected-block answer type `A`, both `resume value` and the arm's final value—including delimited abort paths without `resume` and post-resumption tails—must have type `A` (`E0625`). An incompatible retained handler selection uses `E0614`.
-
-The separate parameterized application form below (`with f(args)` without `->`, including `with ctl(args)` when an ordinary function is named `ctl`) passes the remaining computation to a callable.
+- **Direct `fn` arm (`Op(p) -> expr`)**: Evaluates `expr : R` (`E0301`), returns in place to the call site while keeping the handler active, forms a local `return` / `?` / loop boundary (`E0707`), forbids `resume` (`E0623`), and forbids residual unhandled `ctl` effects (`E0614`).
+- **Delimited `ctl` arm (`ctl Op(p) -> expr`)**: Captures the continuation up to `with`; `resume value` checks `value : R` (`E0624`) and reinstalls this handler across the resumed continuation, and both `resume value` and the arm's final value must match block answer type `A` (`E0625`).
 
 ```ril
 eff ReadNumber { ctl get() -> int }
@@ -7994,28 +8022,23 @@ fn ordinary() -> int { 1 }
 --     Ask<int>::get()
 -- }                                    -- Error [E0622]: Ask<int> and Ask<T> may overlap when T = int
 fn handler_targets() -> int {
-    -- with ordinary() -> 1            -- Error [E0621]: target is not an effect operation
-    -- with ReadNumber::get() -> resume 1 -- Error [E0621]: ctl operation requires 'ctl' on handler arm
-    -- with ctl Counter::next() -> 1   -- Error [E0621]: fn operation forbids 'ctl' on handler arm
-    -- with Counter::next() -> resume 1 -- Error [E0623]: 'resume' is prohibited inside a fn handler arm
+    -- with ordinary() -> 1                -- Error [E0621]: target is not an effect operation
+    -- with ReadNumber::get() -> resume 1  -- Error [E0621]: ctl operation requires 'ctl' on arm
+    -- with ctl Counter::next() -> 1       -- Error [E0621]: fn operation forbids 'ctl' on arm
+    -- with Counter::next() -> resume 1    -- Error [E0623]: 'resume' prohibited in fn arm
+    -- with Counter::next() -> ReadNumber::get() -- Error [E0614]: fn arm leaves unhandled ctl effect
     -- with { ctl ReadNumber::get() -> resume 1, ctl ReadNumber::get() -> resume 2 }
-    -- Error [E0622]: two arms for the same operation in one with
+    -- Error [E0622]: duplicate operation in one with
     with ctl ReadNumber::get() -> resume 1
-    ReadNumber::get()                 -- OK
+    ReadNumber::get()                     -- OK
 }
-fn resume_type() -> int {
+fn resume_and_answer_types() -> int {
     -- with ctl ReadNumber::get() -> resume "one" -- Error [E0624]: operation result is int
-    with ctl ReadNumber::get() -> resume 1
-    ReadNumber::get()
-}
-fn answer_type() -> int {
-    -- with ctl ReadNumber::get() -> "aborted" -- Error [E0625]: arm answer is str, block answer is int
-    with ctl ReadNumber::get() -> 0   -- OK: abort answer fits the block
+    -- with ctl ReadNumber::get() -> "aborted"    -- Error [E0625]: arm answer is str, block answer is int
+    with ctl ReadNumber::get() -> 0       -- OK: abort answer fits block
     ReadNumber::get()
 }
 ```
-
-An operation-arm target (the form with `->`) must resolve to an effect operation with matching `fn` / `ctl` kind (`E0621`). Missing names still use name-resolution diagnostics. Repeating an operation in one `with` is `E0622`; a nested handler for the same operation is allowed. Omitted operations forward outward and are not a missing-arm error; residual obligations use `E0612` when not handled or declared. A parameterized application without `->` follows ordinary callable resolution and argument checking.
 
 ```ebnf
 WithStatement ::= "with" ( HandlerSpec | WithApplication )
@@ -8027,7 +8050,7 @@ WithApplication ::= QualifiedName [ GenericArgs ] "(" [ ArgumentList ] ")"
 ResumeExpr    ::= "resume" Expression
 ```
 
-A leading `ref`/`mut`/`^mut` (plus `new` on a `fn` handler arm) on a handler parameter specifies its operation-parameter mode before pattern interpretation. A `new` binder on a `ctl` arm or for an ineligible type is `E0411`, and `via` is `E0412`. The remaining pattern must be irrefutable and unmodified: `var` is `E0403`, and nested modes are `E0406`. Modes must match the operation declaration (`E0406`); non-operation handler targets or `fn`/`ctl` arm mismatches use `E0621`.
+A leading `ref` / `mut` / `^mut` (plus `new` on `fn` arms; `E0411` on `ctl` arms or ineligible types, `E0412` for `via`) specifies the operation-parameter mode (`E0406` on mismatch or nested mode); the inner pattern must be irrefutable (`E0345`) and non-`var` (`E0403`).
 
 ```ril
 eff ReadAt { ctl get(int) -> int }
@@ -8047,7 +8070,7 @@ fn edit_once(mut cell: Cell) &mut -> int {
         target.count += 1
         let saved = target.count
         let answer = resume ()
-        -- target.count += 1            -- Error [E0540]: this operation authority has ended
+        -- target.count += 1            -- Error [E0540]: temporary mut authority ended at resume
         answer + saved
     }
     Edit::apply(mut cell)
@@ -8057,45 +8080,39 @@ fn edit_once(mut cell: Cell) &mut -> int {
 
 | Handler dispatch | Rule |
 | :--- | :--- |
-| One `with` | At most one arm per operation (`E0622`), echoing `ctl` iff the operation is `ctl` (`E0621`) |
+| One `with` | At most one arm per operation (`E0622`), echoing `ctl` iff the operation is `ctl` (`E0621`); nested `with` for the same operation is allowed |
 | Parameters | Irrefutable patterns (`E0345`); explicit modes match the operation declaration (`E0406`) |
 | Request-value branches | Ordinary `if`/`match` inside the arm |
 | Unlisted operation | Forward outward; retain unhandled effects (`E0612`) |
 | Direct operation / verified footprint | Remove the matching handled operation obligation; other possible operations remain |
-| Discharge an abstract effect instance | Cover every operation that its available contract permits; an unknown `@Effect` boundary permits the whole instance. Preserve any verified operation footprint; built-in resource/system obligations follow their separate rules |
+| Discharge an abstract effect instance | Cover every operation that its available contract permits; an unknown `@Effect` boundary permits the whole instance |
 
 ```ril
 type Cell = .{ var count: int }
 eff Store { fn keep(^mut cell: Cell) &^mut -> () }
+eff Sink { fn consume(new cell: Cell) -> int }
+
 let mut cell = Cell.{ count: 0 }
 let mut held: [^mut]Cell = []
-with Store::keep(^mut value) -> {
-    held |> mut Array::push(^mut value)
+with {
+    Store::keep(^mut value) -> held |> mut Array::push(^mut value),
+    Sink::consume(new fresh) -> fresh.count,
 }
 Store::keep(^mut cell)
 held[0].count += 1
-assert(cell.count == 1)
--- with Store::keep(mut value) -> () -- Error [E0406]: temporary mode cannot replace retained mode
+assert(cell.count == 1 && Sink::consume(new Cell.{ count: 9 }) == 9)
+-- with Store::keep(mut value) -> ()    -- Error [E0406]: temporary mode cannot replace retained mode
 ```
 
 | Operation parameter | Handler binder | Granted authority |
 | :--- | :--- | :--- |
 | Default | Plain pattern | Deeply immutable data; value types copy |
 | `ref` | `ref pattern` | Read-only observation of shared-object data or callable environments; preserve live origins and source lifetimes |
-| `mut` | `mut pattern` | Temporary operation authority, ending when a `fn` arm returns or when a `ctl` arm starts `resume` |
-| `^mut` | `^mut pattern` | Retained writable authority; actual retention remains tracked |
-| `new` (`fn` operation only) | `new pattern` | Unpublished construction or linear authority transferred into the `fn` arm (`E0411` on `ctl` operations/arms) |
+| `mut` | `mut pattern` | Temporary operation authority, revoked when a `fn` arm returns or when a `ctl` arm starts `resume` (`E0540` on post-`resume` access) |
+| `^mut` | `^mut pattern` | Retained writable authority (`E0527`); survives `resume` without extending scoped lifetimes |
+| `new` (`fn` only) | `new pattern` | Construction or `linear` authority transferred into the `fn` arm (`E0411` on `ctl`) |
 
-Destructured shared-object bindings receive no more than the mode and every source path permit; value-type constituents remain independent read-only copies. A `^mut` handler parameter still must exercise its authority under `E0527`. Resumption does not revoke lawful retained authority, but neither the handler mode nor the operation declaration extends a scoped lifetime or suspends exclusivity checks on independent origins.
-`ref` parameters retain their observation restrictions across resumption; the following revocation rule concerns temporary `mut` authority on `ctl` arms (`fn` arms revoke `mut` upon returning to the call site):
-
-| `ctl` operation's ordinary `mut` authority | Arm's access |
-| :--- | :--- |
-| Before `resume`, including evaluation of its value | Access through the matching parameter |
-| Continuation starts | Revoke the authority; end all arm access through the parameter and derived aliases (`E0540`) |
-| `resume` returns | No restoration; value-type copies, independent data, and lawful retained `^mut` authority remain usable |
-
-Outer function/callback activations stay active. Independent captures and ambient aliases remain separate exclusivity participants (`E0523`, `E0524`, `E0526`). Neither resumption nor `^mut` extends a call-scoped or resource-scoped lifetime. Because handler arms may be entered zero or multiple times, neither `fn` nor `ctl` arms may consume outer `new` bindings (`E0549`) or outer [linear bindings](#mandatory-consumption-linear-types) (`E0721`); a `with` handled tail likewise cannot consume outer linear bindings (`E0721`). Holding an active linear binding across an unhandled `ctl` operation (including `Yield::emit`) or handling a `fn` operation in `linear_live_ops` with an arm carrying unshielded `@Async` fails `E0721`.
+Handler arms and `with` tails cannot consume outer `new` (`E0549`) or outer [`linear`](#mandatory-consumption-linear-types) bindings (`E0721`). Handling a `fn` operation in `linear_live_ops` with an arm carrying unshielded `@Async` fails `E0721`.
 
 | Retained handler context | Rule |
 | :--- | :--- |
@@ -8283,24 +8300,20 @@ assert(returned_from_action() == 9)
 
 ### Affine Resumption and Delimited Early Abort
 
-`resume` is available only inside `ctl` handler arms and is affine: repeated use or escape from its arm is rejected. A `ctl` arm returning without resumption aborts the delimited computation up to that `with` boundary and runs `let scoped` cleanup in reverse order. Prior writes remain committed.
+`resume` is available only inside `ctl` handler arms (`E0623` elsewhere) and is affine: a second use is `E0610`, and capturing it across a callable boundary is `E0611`. Returning without `resume` aborts up to that `with` boundary and runs `let scoped` cleanups in LIFO order while preserving prior writes.
 
 ```ril
 fn outside_handler() -> int {
-    -- resume 1                      -- Error [E0623]: no enclosing ctl operation arm
+    -- resume 1                              -- Error [E0623]: no enclosing ctl operation arm
     1
 }
-```
 
-`resume` without an enclosing `ctl` effect-operation arm (including inside a `fn` handler arm) is `E0623`. Capturing an enclosing `ctl` arm's resumption across a prohibited callable boundary remains `E0611`; a second use remains `E0610`. Access through an operation's ended temporary mutable authority, including a derived alias after resumption begins, is `E0540`. This does not revoke an independent lawful retained authority.
-
-```ril
 -- Affine Resumption Violation: invoking resume more than once
 eff Op { ctl query() -> int }
 fn bad_double_resume() -> int {
     with ctl Op::query() -> {
         let first = resume 1
-        -- let second = resume 2        -- Error [E0610]: affine resumption 'resume' invoked more than once
+        -- let second = resume 2             -- Error [E0610]: affine resumption 'resume' invoked more than once
         first
     }
     Op::query()
@@ -8360,18 +8373,25 @@ fn test_early_abort() -> () {
 | `@Panic` | Implicit non-operational | Forbidden (`E0620`) | [`absorb_panic`](#panic-absorption-with-absorb_panic) or [`Async::supervise`](#structured-async-concurrency-and-channels) (`E0608`) |
 | `@Fatal` | Implicit non-operational | Forbidden (`E0620`) | None; terminates the OS process immediately |
 
-`Io` (`ril/io`) and `Async` (`ril/async`) are predefined dual-role `(SystemEffect, ModuleNamespace)` declarations. The prelude pre-binds their `SystemEffect` role (`@Io`, `@Async`), alongside `Scope` and `Yield<T>`. Writing an unaliased `use ril/io` or `use ril/async` activates both roles on that same predefined identity so module paths (`Async::try_zip(...)`, `Io::stdout()`) and effect clauses (`@Io @Async`) coexist in one scope without collision (`E0203`) or shadowing (`E0620`); an aliased import (`use ril/async as Rt`) binds only the module role on `Rt` while leaving `@Async` in scope.
+`Io` (`ril/io`) and `Async` (`ril/async`) share predefined `(SystemEffect, ModuleNamespace)` identities: the prelude binds `@Io`, `@Async`, `Scope`, and `Yield<T>`, and unaliased `use ril/io` or `use ril/async` activates the module path on the same name.
 
 ```ril
 use ril/file
+use ril/async                               -- Activates Async::* alongside prelude @Async
+use ril/async as Rt                         -- Binds module role on Rt; @Async stays in scope
 
 fn read_config(path: str) @Io -> Result<str, str> {
     File::read(path)
 }
+fn pause_once() @Async -> () {
+    Async::yield_now()
+    Rt::yield_now()
+}
+-- fn bad_alias_eff() @Rt -> () {}          -- Error [E0620]: module alias is not an effect
 -- fn missing_io(path: str) -> Result<str, str> { File::read(path) } -- Error [E0612]: unhandled @Io
--- with Io() -> 0                                                    -- Error [E0621]: system effect has no user operation arm
--- with Async() -> 0                                                 -- Error [E0621]: system effect has no user operation arm
--- with Scope() -> 0                                                 -- Error [E0621]: system effect has no user operation arm
+-- with Io() -> 0                           -- Error [E0621]: system effect has no user operation arm
+-- with Async() -> 0                        -- Error [E0621]: system effect has no user operation arm
+-- with Scope() -> 0                        -- Error [E0621]: system effect has no user operation arm
 
 fn spin() -> int { loop {} }                   -- Semantic contract: @Diverge
 fn ratio(a: int, d: int) -> int { a / d }      -- Semantic contract: @Panic
@@ -8490,13 +8510,16 @@ fn bounded_write() &up(sub){mut outside_count} -> Result<int, BudgetError> {
 --     bounded_write()                         -- Error [E0821]: budget does not discharge external writes
 -- }
 
--- Host @Io, outward unhandled @Async/@Scope, and foreign calls remain uncovered by diverge_budget:
--- fn bounded_io() @Io -> Result<(), BudgetError> {
---     diverge_budget(100, \-> println("step"))    -- Error [E0822]
--- }
+use ril/async
+halt fn bounded_async() -> Result<int, BudgetError> {
+    diverge_budget(50, \-> Async::run(\-> { Async::yield_now(); 7 }))
+}
+assert(bounded_async() is Ok(7))
+-- diverge_budget(50, \-> println("step"))         -- Error [E0822]: @Io is uncovered
+-- diverge_budget(50, \-> Async::yield_now())      -- Error [E0822]: unhandled @Async is uncovered
 ```
 
-Reachable bodyless foreign calls, `@Io` operations, outward unhandled `@Async` or `@Scope` obligations, and [linear](#mandatory-consumption-linear-types) captures, locals, or results remain excluded (`E0822`). Closed `@Io`-free [`Async::run`](#structured-async-concurrency-and-channels) invocations inside `diverge_budget` are covered, charging fiber spawns and scheduler wakeups against active allowances and suspending allowances during LIFO `scoped` cleanup on exhaustion. Ordinary algebraic effects may propagate with their selected handlers' coverage requirements; the budget never erases their labels. Finite ordinary-data primitives, sequential collection computations, and [deterministic parallel combinators](#deterministic-data-parallelism-and-divide-and-conquer-primitives) follow their contracts; repeated computation must be charged or have a finite contract. Coverage does not grant state, access, lifetime, or resource authority.
+Bodyless foreign calls, `@Io`, unhandled `@Async` / `@Scope`, and [linear](#mandatory-consumption-linear-types) captures, locals, or results fail coverage (`E0822`). Closed `@Io`-free [`Async::run`](#structured-async-concurrency-and-channels) calls are covered, charging fiber spawns and scheduler wakeups against active allowances. Ordinary algebraic effects propagate with their selected handlers' coverage requirements; finite primitives, sequential collection computations, and [deterministic parallel combinators](#deterministic-data-parallelism-and-divide-and-conquer-primitives) follow their contracts. Coverage grants no state, access, lifetime, or resource authority.
 
 Exhaustion is a private control transfer to the particular budget invocation whose allowance expired. It irrevocably abandons that protected computation, runs its required Diverge-free cleanup, then returns `Err` from that invocation. It is neither an algebraic operation nor a catchable panic. Inner source handlers, Result fallbacks, and budgets cannot intercept or resume an outer exhaustion; no refill is possible. Prior writes remain committed.
 
@@ -8653,10 +8676,10 @@ var global_state = 0
 ### Structured Async Concurrency and Channels
 
 ```ril
--- Prelude built-in pure type guard (inspects K-IFACE representation across opaque wrappers, returning <T> or <never>):
+-- Prelude type guard (penetrates opaque wrappers via K-IFACE, returning <T> or <never>):
 pub halt type Sendable = \T: linear -> ...
 
--- Canonical declarations in ril/async (explicit module Async; @Io, @Async, @Scope, Sendable are in prelude):
+-- Canonical declarations in ril/async (module Async; @Io, @Async, @Scope, Sendable in prelude):
 pub opaque type Task<T: linear |> Sendable>
 pub type Zip<A: linear, B: linear> = (via A, via B)
 pub type TaskFault {
@@ -8665,7 +8688,7 @@ pub type TaskFault {
 }
 pub type TimeoutError { Elapsed }
 
--- 1. Local fiber scheduler, cooperative suspension, timers, and cancellation shielding:
+-- Scheduler, suspension, timers, and cancellation shielding:
 pub fn run<T: linear |> Sendable>(via action: fn() @ -> infer T) -> infer T
 pub fn yield_now() @Async -> ()
 pub fn sleep_ms(ms: u64) @Io @Async -> ()
@@ -8676,7 +8699,7 @@ pub fn timeout_ms<T |> Sendable>(
     work: fn() @ -> T,
 ) @Io @Async -> Result<T, TimeoutError>
 
--- 2. Structured nurseries (@Scope[sigma] -> @Async) and fault supervision:
+-- Structured nurseries (@Scope -> @Async) and fault supervision:
 pub fn scope<T: linear>(via body: fn() @& -> infer T) @Async -> infer T
 pub fn try_scope<T |> Sendable, E |> Sendable>(
     body: fn() @& -> Result<T, E>,
@@ -8685,13 +8708,13 @@ pub fn supervise<T |> Sendable>(
     work: fn() @ -> T,
 ) @Async -> Result<T, TaskFault>
 
--- 3. Nursery child-task primitives (@Scope[sigma]):
+-- Nursery child-task primitives (@Scope):
 pub fn spawn<T: linear |> Sendable>(via work: fn() @ -> infer T) @Scope -> new Task<T>
 pub fn join<T: linear |> Sendable>(via task: Task<T>) @Scope @Async -> infer T
 pub fn cancel<T |> Sendable>(new task: Task<T>) @Scope @Async -> ?T
 pub fn cancel_scope() @Scope -> ()
 
--- 4. Declarative structured combinators (@Async):
+-- Declarative structured combinators (@Async):
 pub fn zip<A: linear |> Sendable, B: linear |> Sendable>(
     via left: fn() @ -> infer A,
     via right: fn() @ -> infer B,
@@ -8715,7 +8738,7 @@ pub fn race<T |> Sendable>(
 ```
 
 ```ril
--- Canonical declarations in ril/async/channel (explicit module Channel):
+-- Canonical declarations in ril/async/channel (module Channel):
 pub opaque type Sender<T: linear |> Sendable>
 pub opaque type Receiver<T: linear |> Sendable>
 
@@ -8749,12 +8772,12 @@ pub fn drain<T: linear |> Sendable>(
 
 ```ril
 use ril/async
-use ril/async::{scope, try_scope, spawn, join}
+use ril/async::{scope, try_scope, spawn, join, cancel}
 
 eff Http { fn get(url: str) -> Result<str, str> }
 eff Audit { fn log(msg: str) -> () }
 
--- 1. Declarative concurrent combinators and zero-nesting timeouts:
+-- 1. Concurrent combinators and timeout:
 fn load_home(uid: int) @Http @Async -> Result<(str, []str), str> {
     let (profile, urls) = Async::try_zip(
         \-> Http::get("/users/{uid}"),
@@ -8764,95 +8787,130 @@ fn load_home(uid: int) @Http @Async -> Result<(str, []str), str> {
     Ok((profile, posts))
 }
 
-fn quick_pair(uid: int) @Http @Io @Async -> Result<Result<(str, []str), str>, Async::TimeoutError> {
+fn quick_home(uid: int) @Http @Io @Async -> Result<Result<(str, []str), str>, Async::TimeoutError> {
     with Async::timeout_ms(500u64)
     load_home(uid)
 }
 
--- 2. Short-circuit structured nursery with automatic sibling cancellation:
+-- 2. Short-circuit nursery, memoized plain join, and consuming cancel:
 fn sync_account(uid: int) @Http @Audit @Async -> Result<(str, str), str> {
     with try_scope()
-    spawn \-> Audit::log("sync {uid}")              -- Unjoined Task<()> is awaited before Ok exit
+    spawn \-> Audit::log("sync {uid}")              -- Unjoined Task<()> awaited before Ok exit
     let profile = spawn \-> Http::get("/users/{uid}")
     let orders = spawn \-> Http::get("/orders/{uid}")
-    Ok((join(profile)?, join(orders)?))             -- Err on profile cancels and drains orders and audit task
+    let mut warmup = spawn \-> Audit::log("warm")
+    let _ = cancel(new warmup)                      -- Consuming cancel (warmup ended, E0549 on reuse)
+    -- let _ = join(new warmup)                     -- Error [E0549]: task path already consumed
+    let user = join(profile)?
+    assert(user == join(profile)?)                  -- Plain Task<T> allows idempotent memoized join
+    Ok((user, join(orders)?))                       -- Err cancels and drains siblings before returning
 }
 
--- 3. Exclusive mutable ownership handoff via single-shot task closure:
+-- 3. Single-shot 'new' / 'linear' move and cancellation-shielded commit:
 type Packet = .{ mut bytes: []u8 }
+type(linear) Permit(u64)
+fn release_permit(new p: Permit) -> u64 { let Permit(id) = p; id }
 
-fn build_packet(seed: u8) @Async -> Packet {
+fn build_and_commit(seed: u8, new permit: Permit) @Async -> (Packet, u64) {
     with scope()
     let mut initial = Packet.{ bytes: [seed] }
-    let mut task = spawn \-> {
-        let mut pkt = new initial                   -- Single-shot task closure moves 'initial' (parent path ends, E0549)
+    let mut pkt_task = spawn \-> {
+        let mut pkt = new initial                   -- Single-shot closure moves 'initial' (ended in parent, E0549)
         pkt.bytes |> mut Array::push(seed + 1u8)
         pkt
     }
-    let mut out = join(new task)                    -- Recovers exclusive 'let mut' authority
+    -- Async::yield_now()                           -- Error [E0721]: active linear 'permit' across unshielded @Async
+    let id = {
+        with Async::uncancellable()                 -- Shields atomic linear handoff across @Async
+        Async::yield_now()
+        release_permit(new permit)
+    }
+    let mut out = join(new pkt_task)                -- Single-use 'join(new ...)' recovers 'let mut' authority
     out.bytes |> mut Array::push(0xFFu8)
-    out
+    (out, id)
 }
 
--- 4. Deterministic @Io-free concurrent unit testing via Async::run and pure fn handlers:
+-- 4. Fault supervision and deterministic @Io-free Async::run:
 fn test_sync_account() -> () {
     with {
         Http::get(url) -> Ok("mock:{url}"),
         Audit::log(_msg) -> (),
     }
-    let res = Async::run \-> sync_account(42)       -- Pure stateless fn handlers cross fibers; @Async discharged locally
+    let res = Async::run \-> {                      -- Pure fn handlers cross fibers; @Async discharged locally
+        let faulted = Async::supervise(\-> { panic("boom"); 0 })
+        assert(faulted is Err(Async::TaskFault::Panicked(_)))
+        sync_account(42)
+    }
     assert(res is Ok(_))
 }
 ```
 
 ```ril
+use ril/async
 use ril/async::{scope, spawn}
 use ril/async/channel
 
--- 5. Bounded backpressure channel with deterministic endpoint closure and stream iteration:
+-- 5. Multi-producer bounded channel, stream iteration, and linear drain:
 fn sum_squares(limit: int) @Async -> int {
     with scope()
     let (mut tx, mut rx) = Channel::bounded(16)
+    let mut tx2 = Channel::clone(ref tx)            -- Clones Sender handle; Receiver stays unique
     spawn \-> {
-        let mut tx = new tx                         -- Moves Sender; even early 'last' exit closes endpoint deterministically
+        let mut tx = new tx                         -- Moves Sender; scope exit or 'close' decrements count
         for 1..=limit as x {
             if Channel::send(mut tx, x * x) is Err(_) { last }
         }
-        Channel::close(new tx)                      -- Explicit consuming close prevents subsequent send (E0549)
+        Channel::close(new tx)                      -- Consuming close (ended path, E0549 on reuse)
     }
+    Channel::close(new tx2)
     var total = 0
-    for Channel::stream(mut rx) as sq {             -- Consumes @Yield<int> stream until all Senders close
+    for Channel::stream(mut rx) as sq {             -- Yields items until all Senders close
         total += sq
     }
     total
 }
 
--- Static rejections across concurrent boundaries:
+fn drain_permits(new rx: Channel::Receiver<Permit>) -> int {
+    var count = 0
+    Channel::drain(new rx, \new p -> {              -- Synchronous linear drain; wakes pending sends as Closed
+        let Permit(_) = p
+        count += 1
+    })
+    count
+}
+
+-- 6. Sendable queries and static concurrent rejections:
+meta let _ = assert(<Sendable<Channel::Sender<int>>> == <Channel::Sender<int>>)
+meta let _ = assert(<Sendable<Async::Task<int>>> == <never>)
+meta let _ = assert(<SharedObject<Channel::Sender<int>>> == <never>)
+
+-- let frozen = Packet.{ bytes: [1u8] }
+-- let (mut ptx, mut prx) = Channel::bounded<Packet>(4)
+-- let _ = Channel::send(mut ptx, frozen)           -- Error [E0548]: writable-schema T requires 'new' handoff
 -- var shared_counter = 0
--- fn bad_state() @Async -> () {
---     with scope()
---     spawn \-> { shared_counter += 1 }            -- Error [E0601]: concurrent task cannot capture mutable state
--- }
--- fn bad_escape() @Async -> Async::Task<int> {
---     with scope()
---     spawn \-> 1                                  -- Error [E0604]: Task<int> cannot escape its nursery scope
--- }
+-- spawn \-> { shared_counter += 1 }                -- Error [E0601]: task cannot access external mutable state
+-- let _ = Async::supervise(\-> { shared_counter += 1; 0 }) -- Error [E0608]: unwind-unsafe external state
+-- fn leak_task() @Async -> Async::Task<int> { with scope(); spawn \-> 1 } -- Error [E0604]: Task escapes scope
 -- eff Bail { ctl abort() -> never }
--- fn bad_ctl() @Bail @Async -> () {
+-- fn bad_ctl() @Bail @Async -> () { with scope(); spawn \-> Bail::abort() } -- Error [E0615]: ctl crosses fiber
+-- fn drop_res() @Async -> () { with scope(); let _ = spawn \-> Ok<int, str>(1) } -- Error [E0720]
+-- fn drop_lin(new p: Permit) @Async -> () { with scope(); let mut _t = spawn \-> p } -- Error [E0721]
+-- fn cancel_lin(new p: Permit) @Async -> () {
 --     with scope()
---     spawn \-> Bail::abort()                      -- Error [E0615]: unhandled ctl effect cannot cross fiber boundary
+--     let mut t = spawn \-> p
+--     let _ = Async::cancel(new t)                 -- Error [E0301]: cancel forbids linear payload
 -- }
 ```
 
-| Concurrency / channel aspect | Normative rule |
+| Concurrency / channel aspect | Rule |
 | :--- | :--- |
-| `Sendable` guard (`E0301`) | Pure built-in guard penetrating `opaque type` and nominal wrappers via `K-IFACE` while returning `<T>` when eligible or `<never>` otherwise. Admits value types, `.ril` shared objects and `type(linear)` carriers without `ref`/`^mut` member modes whose constituents satisfy `Sendable`, `Sender<U>` / `Receiver<U>`, and closed pure/stateless `CallableType` arrows whose operational effects are concurrently admissible (`@Io`, `@Async`, and pure `fn` effects). Rejects `Task`, `Draft`, `let scoped` handles, and `.d.ril` foreign types |
-| Cross-fiber authority & single-shot `new` move (`E0601`, `E0549`) | Concurrent task callbacks (`run`, `spawn`, `zip`, `try_zip`, `map`, `try_map`, `race`, `supervise`, `timeout_ms`) use closed state rows (`@`), rejecting `ref`, `mut`, `^mut`, `var`, `scoped`, non-pure module state, and mutable/observer environment captures (`E0601`). Direct inline closures supplied to single-invocation primitives (`run`, `spawn`, `zip`, `try_zip`, `race`, `supervise`, `timeout_ms`, excluding multi-element `map`/`try_map`) may consume enclosing qualified `new` / `linear` bindings once, ending the parent path at closure creation (`E0549`). Cross-fiber `via` and `-> infer` admit only `{immutable/value reception, new construction handoff}`, rejecting `ref`/`mut`/`^mut` (`E0601`) |
-| Concurrent effect boundary (`E0615`) | Child fibers isolate outer `@Scope`, unhandled `ctl` effects (including `@Yield<T>`), and stateful or effect-impure outer `fn` handlers (`E0615`). `@Io`, `@Async`, and outer `fn` handlers whose complete `Summary` is [verified pure](#callable-contract-matching) forward safely across concurrent branches |
-| Nursery region $\sigma$ & `Task<T>` consumption (`E0604`, `E0549`, `E0720`, `E0721`) | Each `scope` / `try_scope` activation binds a fresh erased static region identity $\sigma$, discharging `@Scope` to `@Async`; `join` and `cancel` require a `Task` from the innermost active $\sigma$, and returning or storing a `Task` or `@Scope`-bearing closure outside $\sigma$ fails `E0604`. `<SharedObject<Task<T>>> == <never>` (`E0301` on `clone`/`derive`/`==`/map keys). Immutable `let t = spawn(...)` permits idempotent memoized `join(t)`; mutable or linear results and `cancel(new t)` require `let mut t = spawn(...)` with single-use `new t` consumption (`E0549` on reuse). Normal `scope` / `Ok` exit awaits unjoined non-linear tasks in reverse spawn order; `try_scope` `Err` short-circuit cancels and awaits unjoined siblings before returning `Err`. `Task<T: linear>` cannot be left unjoined or passed to `cancel` (`E0721` / `E0301`); `Task<Result<...>>` must be joined or cancelled on normal paths (`E0720`) |
-| Cooperative cancellation & `uncancellable` (`E0721`, `E0720`, `E0608`) | Unshielded `@Async` suspension points (`yield_now`, `sleep_ms`, `join`, `cancel`, `Channel::send`, `Channel::recv`, `Channel::stream`, and nested `@Async` combinators) act as delimited cancellation checkpoints that unwind active fibers via LIFO `let scoped` cleanups when cancelled; holding an unconsumed `linear` binding across an unshielded `@Async` call fails `E0721`. `Async::uncancellable` shields its dynamic extent from cancellation unwinding (latching signals until exit while still propagating `@Panic`/`@Fatal`), admitting atomic linear commits and channel sends; `is_cancelled()` is a pure `halt` query. `timeout_ms` cancels `work` on timer expiry and awaits cleanup before returning `Err(TimeoutError::Elapsed)`. `supervise` enforces `absorb_panic` unwind safety (`E0608`) alongside `E0601`/`E0615`, catching child `@Panic` and internal child `Cancelled` as `Err(TaskFault::...)` while still propagating outer parent cancellation. `try_scope`, `try_zip`, `try_map`, `race`, `timeout_ms`, `supervise`, `cancel`, and `close_recv` statically reject `: linear` and nested `Result` success payloads (`E0301` / `E0720`) |
-| `Async::run`, deadlock detection & fault priority (`E0810`) | Run-time only (`E0810` in static evaluation). `Async::run` executes a single-root deterministic FIFO cooperative scheduler discharging `@Async` while forwarding residual `@Io` and pure `fn` effects. If both the ready queue and pending `@Io` set become empty before the root fiber finishes, `Async::run` immediately raises `@Panic` (`PanicCause::AsyncDeadlock`), preserving `halt` soundness on `@Io`-free finite programs. Multi-branch reduction priority across `scope`, `try_scope`, `zip`, `try_zip`, `map`, `try_map`, and `race`: `@Fatal` (including `DoubleFaultFatal`) $\succ$ first observed child `@Panic` (after cancelling and draining siblings; never swallowed by a `race` winner or `Err`) $\succ$ outer parent `Cancelled` $\succ$ first `Err(e)` / winning `Ok(v)` |
-| Typed channels (`Sender<T>`, `Receiver<T>`) (`E0301`, `E0411`, `E0548`, `E0549`, `E0603`, `E0720`, `E0721`) | `bounded(capacity)` panics (`@Panic`) if `capacity <= 0`. `<SharedObject<Sender<T>>> == <never>` and `<SharedObject<Receiver<T>>> == <never>`: both are stack-owned resource handles (`let mut` / `new`, `Channel::clone(ref tx) -> new Sender<T>`), forbidden in `clone`/`derive`/`==`/map keys (`E0301`) and in shared heap containers `[M]Sender<T>` / `[M]Receiver<T>` (`E0411` / `E0603`). `Sender<T>` is always affine even when `T: linear`, deterministically decrementing the active sender count upon `close(new tx)` or lexical scope exit and waking pending `recv`/`stream` calls with `None` / stream completion when reaching zero. `Receiver<T>` inherits linearity when `T: linear` (`E0721`) and inspection duty when `T` contains `Result` (`E0720`). Whenever `T` has writable schema constituents or is `linear`, `send` and `try_send` require `new` handoff (`E0548` on frozen shared objects, preventing mutability laundering through `recv -> new ?T`), returning unsent items inside `Err(Closed(item))` / `Err(Full(item))`. `close_recv(new rx)` closes affine non-`Result` receivers; `drain(new rx, f)` is synchronous (no `@Async`), atomically marking `rx` closed—waking blocked `send`s with `Err(Closed(item))`—and invoking `f` on each buffered item |
+| `Sendable` (`E0301`) | Penetrates `opaque type` and nominal wrappers via `K-IFACE` (`<T>` or `<never>`). Admits value types, `.ril` shared objects and `type(linear)` carriers without `ref`/`^mut` members whose constituents are `Sendable`, `Sender<U>` / `Receiver<U>`, and closed pure/stateless callables limited to `@Io`, `@Async`, and pure `fn` effects; rejects `Task`, `Draft`, `let scoped`, and `.d.ril` foreign types |
+| Cross-fiber authority (`E0601`, `E0549`) | Task callbacks close state (`@`), rejecting `ref`, `mut`, `^mut`, `var`, `scoped`, and non-pure captures (`E0601`); cross-fiber `via` / `-> infer` restrict modes to `{immutable/value, new}`. Direct inline closures passed to single-shot primitives (`run`, `spawn`, `zip`, `try_zip`, `race`, `supervise`, `timeout_ms`, excluding `map`/`try_map`) may move outer `new` / `linear` bindings once (`E0549` on parent reuse) |
+| Effect boundary (`E0615`) | Fibers isolate outer `@Scope`, unhandled `ctl` effects (including `@Yield<T>`), and stateful or impure outer `fn` handlers (`E0615`); `@Io`, `@Async`, and [verified-pure](#callable-contract-matching) outer `fn` handlers cross fibers |
+| Nursery $\sigma$ & `Task<T>` (`E0604`, `E0549`, `E0720`, `E0721`) | `scope` / `try_scope` bind a fresh static region $\sigma$ discharging `@Scope` to `@Async`; escaping `Task` or `@Scope` closures or mixing regions fails `E0604`, and `<SharedObject<Task<T>>> == <never>` (`E0301`). Plain `let t` allows memoized `join(t)`; mutable/linear payloads and `cancel(new t)` require single-use `let mut t` (`E0549`). Normal exit awaits unjoined non-linear tasks in reverse spawn order; `try_scope` `Err` cancels and awaits siblings. `Task<T: linear>` forbids `cancel` (`E0301`) and omission (`E0721`); `Task<Result<...>>` requires `join` or `cancel` (`E0720`) |
+| Cancellation, `uncancellable` & `supervise` (`E0721`, `E0720`, `E0608`) | Unshielded `@Async` points unwind cancelled fibers via LIFO `let scoped` cleanups and reject live `linear` bindings (`E0721`). `uncancellable` latches cancellation until exit (`@Panic`/`@Fatal` still propagate); `timeout_ms` cancels and awaits `work` on expiry. `supervise` enforces unwind safety (`E0608`), converting child `@Panic` and internal `Cancelled` into `Err(TaskFault::...)` while propagating parent cancellation. `try_*`, `race`, `timeout_ms`, `supervise`, `cancel`, and `close_recv` reject `linear` and nested `Result` payloads (`E0301` / `E0720`) |
+| `Async::run`, deadlock & fault priority (`E0810`) | Run-time only (`E0810` in static evaluation). Deterministic FIFO scheduler discharging `@Async`; panics (`PanicCause::AsyncDeadlock`) if ready and pending-`@Io` queues empty before root completion. Multi-branch priority: `@Fatal` $\succ$ first child `@Panic` (after cancelling and draining siblings) $\succ$ parent `Cancelled` $\succ$ first `Err` / winning `Ok` |
+| Channels (`E0301`, `E0411`, `E0548`, `E0549`, `E0603`, `E0720`, `E0721`) | `bounded(capacity)` panics if `capacity <= 0`. `Sender<T>` and `Receiver<T>` are non-`SharedObject` stack handles (`E0301`; forbidden in heap `[M]` containers, `E0411`/`E0603`). `Sender<T>` is affine (`clone(ref tx) -> new Sender<T>`), waking `recv`/`stream` when the last sender closes; `Receiver<T>` inherits `T`'s linearity (`E0721`) and `Result` inspection (`E0720`, rejecting `close_recv`). Writable-schema or `linear` `T` requires `new` on `send`/`try_send` (`E0548`), returning unsent items on `Err`. Synchronous `drain(new rx, f)` closes `rx` (waking blocked `send`s as `Closed`) and drains buffered items through `f` |
 
 ### Deterministic Data Parallelism and Divide-and-Conquer Primitives
 
@@ -10112,7 +10170,7 @@ fn main() @Io @Async -> Result<(), str> {
 | Declaration | Non-public ordinary named Ril function at executable root top-level; `halt` is allowed subject to its usual checks |
 | Value / generic parameters | None, including defaulted parameters |
 | Result | `()` or the language's `Result<(), str>`, after transparent alias expansion |
-| Effects / state | Ordinary declaration and provenance rules; undeclared residual operational effects remain `E0612`; implicit Diverge is allowed without an annotation or handler |
+| Effects / state | Ordinary declaration and provenance rules; undeclared residual operational effects are `E0612`; implicit Diverge needs no annotation or handler |
 | Residual user-defined or nursery effect | No program-environment handler; residual user-defined `eff`, `@Scope`, or `@Yield<T>` fails `E0612` even if listed on `main` |
 
 | Completed program outcome | Environment behavior |
@@ -10377,7 +10435,7 @@ Every produced Result carries an obligation to inspect, propagate, unpack, or re
 | `_`, overwrite, removal, lost last path | Do not discharge |
 | Outer tag test | Does not inspect an inner Result |
 | `?` | Propagates failure to the enclosing callable |
-| `Task<T>` / `Receiver<T>` carrying `Result` | `Task` must be `join`ed (and its `Result` inspected) or `cancel`ed on normal exit (`try_scope` `Err` short-circuit cancels unjoined siblings); `Receiver` must be consumed via `Channel::drain` (`close_recv` is rejected, `E0720`); `try_scope`, `try_zip`, `try_map`, `race`, `timeout_ms`, and `supervise` forbid nested `Result` success payloads (`E0720`) |
+| `Task<T>` / `Receiver<T>` carrying `Result` | `Task` must be `join`ed (inspecting its `Result`) or `cancel`ed on normal exit; `Receiver` requires `Channel::drain` (`close_recv` fails `E0720`); `try_scope`, `try_zip`, `try_map`, `race`, `timeout_ms`, and `supervise` reject nested `Result` payloads (`E0720`) |
 | Normal completion, including `Err` return | Cannot abandon other outstanding Results |
 | Abnormal unwinding | May discard |
 
