@@ -2,11 +2,11 @@
 
 Ril is a programming language designed to make data permissions flow explicitly through computation and remain fully traceable.
 
-[language specification](doc/SPEC.md) 
+[language specification](doc/SPEC.md)
 
 ```ril
 -- Access-mode dependencies propagate through generic calls and local reception.
-type Cell = .{ var value: i64 }
+type Cell = .{ var value: int }
 
 fn relay<T>(via value: T) -> infer T {
     let via item = value
@@ -14,12 +14,14 @@ fn relay<T>(via value: T) -> infer T {
 }
 
 fn append<T>(mut xs: [via]T, via value: T) &mut -> () {
-    xs !> Array::push(relay(value))
+    xs |> mut Array::push(relay(value))
 }
 
+fn make_cells() -> new []Cell { [Cell.{ value: 1 }] }
+
 fn transfer() -> () {
-    let mut cells: [mut]Cell = []
-    let mut cell = Cell.{ value: 1 }
+    let mut cells: [mut]Cell = make_cells() -- Fresh graph adopts the receiver's schema.
+    let mut cell = Cell.{ value: 2 }
     append(mut cells, new cell)
     -- cell.value                           -- E0549: source path ended.
 }
@@ -27,7 +29,7 @@ fn transfer() -> () {
 
 ```ril
 -- Function signatures record environment creation, sharing, and contained origins.
-type Step = fn() &up -> i64
+type Step = fn() &up -> int
 fn make_shared_step(^mut cell: Cell)
     &capture &^mut &return{^mut cell} -> new Step {
     \-> { cell.value += 1; cell.value }
@@ -40,10 +42,6 @@ fn sharing() -> () {
     cell.value += 1
     assert(step() == 3)
 }
-
-var visits = 0
-fn record_visit() &up(sub){mut visits} -> () { visits += 1 }
-fn visit() &record_visit -> () { record_visit() } -- Inherit verified named state.
 ```
 
 ```ril
@@ -61,23 +59,25 @@ fn update_snapshot() -> () {
 ```
 
 ```ril
-fn update_title<T: .{ title: str, .. }>(item: T, new_title: str) -> T {
-    item |> derive \mut draft -> { draft.title = new_title }
-}
+-- Effect handlers apply to the rest of their enclosing block.
+eff Clock { fn now_ms() -> int }
+fn timestamp() @Clock -> str { "time={Clock::now_ms()}" }
 
-fn revise_article() -> () {
-    let article = .{ title: "old", published: true }
-    let revised = update_title(article, "new")
-    assert(article.title == "old" && revised.title == "new" && revised.published)
+fn virtual_time() -> str {
+    with Clock::now_ms() -> 1700
+    timestamp()
 }
 ```
 
 ```ril
--- The budget bounds eligible computation; cleanup and recovery must also be finite.
-fn spin() -> i64 { loop {} }
-halt fn bounded() -> Result<i64, BudgetError> {
-    with div_budget(1_000)
-    spin()
+-- Structured concurrency can run with deterministic scheduling.
+use ril/async as AsyncRt
+
+fn concurrent_sum() -> int {
+    AsyncRt::run \-> {
+        let pair = AsyncRt::zip(\-> 20, \-> 22)
+        pair.first + pair.second
+    }
 }
 ```
 
@@ -87,6 +87,6 @@ type Select = \T: .{ ..R }, keys: []str -> {
     let selected = coords(<T>) |> Array::filter(\(_, key) -> keys |> Array::contains(key))
     <.{ m [selected as (m, k)]: T.(k) }>
 }
-type Model = .{ id: i64, var title: str, mut rows: []i64 }
-type Editable = Select<Model, ["title", "rows"]> -- .{ var title: str, mut rows: []i64 }
+type Model = .{ id: int, var title: str, mut rows: []int }
+type Editable = Select<Model, ["title", "rows"]> -- .{ var title: str, mut rows: []int }
 ```
