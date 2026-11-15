@@ -30,6 +30,11 @@ def outerHandler : Boundary := { privateBoundary with body := handled handlerEff
 
 def callInstance : CoreSummary.CallInstance := ⟨(fun _ _ => localOrigin), [1, 3, 9], 12, 14⟩
 
+def pureSources : List Source := [external.source, captured.source]
+def pureFnHandler : Summary := { emptySummary with namedReads := [external], effects := [10] }
+def branchSummary : Summary := { emptySummary with writes := [localOrigin], effects := [3, 10] }
+def dischargedBranch : Summary := dischargeSharedFnEffect branchSummary pureFnHandler 3
+
 def fixtures : List (String × Bool) :=
   [("core boundary: closed local state can discharge", (outward privateBoundary 7 9).isEmpty),
    ("core boundary: hidden handler environment blocks discharge", !(outward handlerEnvironment 7 9).isEmpty),
@@ -48,7 +53,18 @@ def fixtures : List (String × Bool) :=
    ("core boundary: selected capture identity cannot be rebound", decide (CoreSummary.resolve callInstance (.concrete captured) = captured)),
    ("core boundary: foreign identity cannot be rebound", decide (CoreSummary.resolve callInstance (.concrete foreign) = foreign)),
    ("core boundary: local allocation cannot impersonate an entry object", decide ((CoreSummary.resolve callInstance (.fresh localOrigin.source localOrigin.object)).object ∉ callInstance.existingObjects)),
-   ("core boundary: local allocation keeps its producer source", decide ((CoreSummary.resolve callInstance (.fresh localOrigin.source localOrigin.object)).source = localOrigin.source))]
+   ("core boundary: local allocation keeps its producer source", decide ((CoreSummary.resolve callInstance (.fresh localOrigin.source localOrigin.object)).source = localOrigin.source)),
+   ("core boundary: pure stateless fn handler is concurrently shareable",
+      concurrentShareableFnHandler pureSources [10] true pureFnHandler [captured]),
+   ("core boundary: ctl handler rejected across concurrent boundary (E0615)",
+      !concurrentShareableFnHandler pureSources [10] false pureFnHandler [captured]),
+   ("core boundary: stateful or foreign-reading fn handler rejected (E0615)",
+      !concurrentShareableFnHandler pureSources [10] true { pureFnHandler with writes := [external] } [] &&
+      !concurrentShareableFnHandler pureSources [10] true { pureFnHandler with namedReads := [foreign] } []),
+   ("core boundary: parallel boundary rejects effectful fn handler (E0615)",
+      !concurrentShareableFnHandler pureSources [] true pureFnHandler [captured]),
+   ("core boundary: shared fn handler discharges effect without polluting branch writes",
+      decide (dischargedBranch.effects = [10, 10] ∧ dischargedBranch.writes = [localOrigin]))]
 
 theorem fixtures_all_pass : fixtures.all Prod.snd = true := by decide +kernel
 

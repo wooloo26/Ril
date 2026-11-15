@@ -3,6 +3,7 @@ import RilAccess.Call.Summary
 import RilAccess.Provenance.Identity
 import RilAccess.Effects.Boundary
 import RilAccess.Effects.Resumption
+import RilAccess.Effects.Concurrency
 import RilAccess.Access.Handoff
 import RilAccess.Access.Linear
 import RilAccess.Visibility
@@ -87,6 +88,30 @@ structure EffectGuarantees : Prop where
     CoreResumption.resume state ticket = some next →
     Integrated.lookupToken state.authority id = some token → token.retained = true →
       Integrated.lookupToken next.authority id = some token
+  fnRejectsResume : ∀ (state : CoreResumption.State) ticket,
+    (∀ slot ∈ state.slots, slot.id = ticket → slot.kind = .fn) →
+      CoreResumption.resume state ticket = none
+  fnCannotAbort : ∀ delimiterScope (authority : Integrated.World),
+    CoreResumption.abortOpDelimiter .fn delimiterScope authority = none ∧
+      CoreResumption.canInvokeEffect .fn delimiterScope authority = true
+  fnPreservesLinear : ∀ (state next : CoreResumption.State) ticket id token,
+    CoreResumption.completeFnOp state ticket = some next →
+    Integrated.lookupToken state.authority id = some token → token.temporary = false →
+      Integrated.lookupToken next.authority id = some token
+  fnRevokesTemporary : ∀ (state next : CoreResumption.State) ticket id path resolved,
+    CoreResumption.completeFnOp state ticket = some next →
+    Integrated.resolve next.authority path = some resolved →
+    id ∈ Integrated.temporaryWrites state.authority state.authority.scope →
+    id ∈ resolved.permission.dependencies →
+      Integrated.live resolved = false
+  ctlNotConcurrentShareable : ∀ pureSources admissibleEffects handler handlerEnv,
+    CoreBoundary.concurrentShareableFnHandler pureSources admissibleEffects false handler handlerEnv = false
+  sharedFnPreservesIsolation : ∀ pureSources admissibleEffects isFn branch handler handlerEnv effect,
+    CoreBoundary.concurrentShareableFnHandler pureSources admissibleEffects isFn handler handlerEnv = true →
+      (CoreBoundary.dischargeSharedFnEffect branch handler effect).writes = branch.writes ∧
+      (CoreBoundary.dischargeSharedFnEffect branch handler effect).retained = branch.retained ∧
+      (∀ e ∈ (CoreBoundary.dischargeSharedFnEffect branch handler effect).effects,
+        (e ∈ branch.effects ∧ e ≠ effect) ∨ e ∈ admissibleEffects)
 
 structure DraftGuarantees : Prop where
   preparedRoot : ∀ (shape : Draft.RootShape) value input start,
@@ -205,6 +230,49 @@ structure CallableMatchGuarantees : Prop where
     expected.subsumes pureSources actual = true →
       (CoreSummary.instantiate call expected).subsumes pureSources (CoreSummary.instantiate call actual) = true
 
+structure ConcurrencyGuarantees : Prop where
+  sharedCaptureRejectsMutableOrLinear : ∀ (world : Integrated.World) (r : Integrated.Resolved),
+    CoreConcurrency.eligibleSharedCapture world r = true →
+      r.grant.linear = false ∧ Integrated.deepImmutable r = true ∧ Integrated.live r = true
+  sharedCaptureReadOnly : ∀ (world : Integrated.World) path (e : Integrated.Evidence),
+    Integrated.resolve world path = some e.resolved →
+    e.resolved.permission.mode.access = .immutable →
+    Integrated.authorized e = true →
+      e.rule = .read ∧ e.observation.kind = .read
+  spawnMoveDisjoint : ∀ (world next : Integrated.World) source childDestination resolved,
+    CoreConcurrency.spawnMoveCapture world source childDestination = .ok next →
+    Integrated.resolve world ⟨source, []⟩ = some resolved →
+      Integrated.rawLookup next.raw childDestination = some resolved.pointer ∧
+      (∀ dep ∈ resolved.permission.dependencies, (Integrated.lookupToken next dep).any Integrated.Token.active = false) ∧
+      (∀ path derived dep, Integrated.resolve next path = some derived →
+        dep ∈ derived.permission.dependencies → dep ∈ resolved.permission.dependencies →
+        Integrated.live derived = false)
+  channelNoMutabilityLaundering : ∀ (world : Integrated.World) (r : Integrated.Resolved),
+    r.effective = .immutable → CoreConcurrency.eligibleChannelSend true world r = false
+  crossScopeRejected : ∀ (nursery : CoreConcurrency.NurseryState) taskId taskSigma asMove,
+    taskSigma ≠ nursery.activeSigma →
+      CoreConcurrency.joinTask nursery taskId taskSigma asMove = none ∧
+        CoreConcurrency.cancelTask nursery taskId taskSigma = none
+  singleShotTaskNoReuse : ∀ (nursery next : CoreConcurrency.NurseryState) taskId taskSigma nextSigma anyMove,
+    CoreConcurrency.joinTask nursery taskId taskSigma true = some next →
+      CoreConcurrency.joinTask next taskId nextSigma anyMove = none ∧
+        CoreConcurrency.cancelTask next taskId nextSigma = none
+  linearTaskNoCancelOrLeak : ∀ (nursery : CoreConcurrency.NurseryState) taskId sigma entry,
+    nursery.tasks.find? (fun t => decide (t.id = taskId)) = some entry →
+    entry.linearResult = true →
+      CoreConcurrency.cancelTask nursery taskId sigma = none ∧
+        (entry.consumed = false →
+          CoreConcurrency.canExitScope nursery = false ∧
+          CoreConcurrency.drainPlainTasks nursery = none)
+  fallibleTaskMustSettle : ∀ (nursery : CoreConcurrency.NurseryState) entry,
+    entry ∈ nursery.tasks → entry.fallibleResult = true → entry.settled = false →
+      CoreConcurrency.canExitScope nursery = false ∧ CoreConcurrency.drainPlainTasks nursery = none
+  unshieldedAsyncBlocksLinear : ∀ delimiterScope (authority : Integrated.World) token,
+    token ∈ authority.tokens → token.linear = true → token.active = true →
+    delimiterScope < token.scope →
+      CoreConcurrency.canSuspendAsync false delimiterScope authority = false ∧
+        CoreConcurrency.canSuspendAsync true delimiterScope authority = true
+
 structure Guarantees : Prop where
   solver : SolverGuarantees
   provenance : ProvenanceGuarantees
@@ -212,6 +280,7 @@ structure Guarantees : Prop where
   entry : EntryGuarantees
   callableMatch : CallableMatchGuarantees
   effects : EffectGuarantees
+  concurrency : ConcurrencyGuarantees
   draft : DraftGuarantees
   linear : LinearGuarantees
   visibility : VisibilityGuarantees
@@ -235,7 +304,24 @@ theorem verified : Guarantees where
     fun _ _ _ _ => CoreResumption.aliases_cannot_resume_twice,
     fun _ _ _ _ _ _ => CoreResumption.derived_access_ends,
     fun _ _ _ _ => CoreResumption.dependent_operation_loan,
-    fun _ _ _ _ _ => CoreResumption.retained_authority_survives⟩
+    fun _ _ _ _ _ => CoreResumption.retained_authority_survives,
+    fun _ _ hfn => CoreResumption.fn_slot_rejects_resume hfn,
+    CoreResumption.fn_op_cannot_abort_delimiter,
+    fun _ _ _ _ _ h hlook hnonTemp => CoreResumption.complete_fn_op_preserves_linear_token h hlook hnonTemp,
+    fun _ _ _ _ _ _ h hr hi hd => CoreResumption.complete_fn_op_revokes_temporary_permission h hr hi hd,
+    CoreBoundary.ctl_handler_not_concurrent_shareable,
+    fun _ _ _ _ _ _ _ h =>
+      let hiso := CoreBoundary.shared_fn_handler_preserves_branch_isolation h
+      ⟨hiso.1, hiso.2.1, hiso.2.2.2.2.1⟩⟩
+  concurrency := ⟨fun _ _ h => CoreConcurrency.cross_fiber_capture_rejects_mutable_or_linear h,
+    fun _ _ _ hr himm hauth => CoreConcurrency.shared_capture_forbids_authorized_writes hr himm hauth,
+    fun _ _ _ _ _ h hr => CoreConcurrency.spawned_move_disjoint_from_parent_live_permissions h hr,
+    fun _ _ hfrozen => CoreConcurrency.frozen_object_cannot_launder_mutability_via_channel hfrozen,
+    fun _ _ _ _ hcross => CoreConcurrency.cross_scope_task_rejected hcross,
+    fun _ _ _ _ _ _ h => CoreConcurrency.duplicate_exclusive_task_consumption_rejected h,
+    fun _ _ _ _ hfind hlin => CoreConcurrency.linear_task_cannot_cancel_or_leak hfind hlin,
+    fun _ _ hm hfall hun => CoreConcurrency.unsettled_fallible_task_blocks_scope_exit hm hfall hun,
+    fun _ _ _ hm hlin hact hinner => CoreConcurrency.unshielded_async_blocks_active_linear hm hlin hact hinner⟩
   draft := ⟨fun _ _ _ _ => Draft.prepared_root_sound, fun _ _ _ => Draft.checked_path_recipe_prefixes,
     fun _ _ _ _ _ => Draft.publication_ends_privilege,
     fun _ _ _ _ _ _ _ _ _ _ => Draft.conforming_external_cannot_escape⟩

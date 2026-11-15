@@ -20,7 +20,7 @@ def authority : World :=
   atom world (.read (p 3))
 
 def origin : Origin := ⟨⟨.module, 1⟩, 0, 1, 0⟩
-def start : State := ⟨[⟨7, ⟨1, 2⟩, 1⟩, ⟨8, ⟨1, 2⟩, 1⟩], ⟨1, 2⟩,
+def start : State := ⟨[⟨7, ⟨1, 2⟩, 1, .ctl⟩, ⟨8, ⟨1, 2⟩, 1, .ctl⟩], ⟨1, 2⟩,
   authority, [⟨.write, origin, .handler⟩], []⟩
 def afterFirst := (resume start 7).getD start
 def afterOther := (resume afterFirst 8).getD start
@@ -36,6 +36,18 @@ def afterRead := (resume readState 7).getD readState
 def missingDependency : State :=
   { start with authority := { authority with permissions := authority.permissions.map (fun permission =>
       if permission.register = 3 then { permission with dependencies := [4] } else permission) } }
+
+def fnAuthority : World :=
+  let world := atom initialWorld .enterScope
+  let world := atom world (.allocateLinear 5 [])
+  let world := atom world (.allocate 6 ⟨false, .mut⟩ [])
+  let world := atom world .enterScope
+  let world := atom world (.parameter (p 6) 7 .mutable)
+  let world := atom world .activateParameters
+  atom world (.write (p 7))
+
+def fnState : State := ⟨[⟨11, ⟨1, 2⟩, 2, .fn⟩], ⟨1, 2⟩, fnAuthority, [], []⟩
+def afterFn : State := (completeFnOp fnState 11).getD fnState
 
 def fixtures : List (String × Bool) :=
   [("core resume: actual operation ledger is valid", ledgerValid authority),
@@ -59,7 +71,15 @@ def fixtures : List (String × Bool) :=
    ("core resume: previously committed write survives", decide (afterOther.committed = start.committed)),
    ("core resume: other arm cannot use escaped handle", (resume { start with current := ⟨9, 2⟩ } 7).isNone),
    ("core resume: callable boundary rejects escaped handle", (resume { start with current := ⟨1, 9⟩ } 7).isNone),
-   ("core resume: unavailable identity rejected", (resume start 99).isNone)]
+   ("core resume: unavailable identity rejected", (resume start 99).isNone),
+   ("core resume: fn operation slot rejects resume (E0623)", (resume fnState 11).isNone),
+   ("core resume: fn operation completes directly and revokes temporary mut parameter",
+      (completeFnOp fnState 11).isSome && !currentLive afterFn.authority 7),
+   ("core resume: fn operation preserves active linear token across call",
+      currentLive afterFn.authority 5 && hasUnconsumedLinear afterFn.authority),
+   ("core resume: fn op allowed across inner linear token while ctl op blocked (E0721)",
+      canInvokeEffect .fn 0 fnAuthority && !canInvokeEffect .ctl 0 fnAuthority &&
+      (abortOpDelimiter .fn 0 fnAuthority).isNone)]
 
 theorem fixtures_all_pass : fixtures.all Prod.snd = true := by decide +kernel
 

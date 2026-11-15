@@ -6,6 +6,10 @@ namespace RilAccess.CoreResumption
 
 open Integrated
 
+inductive OpKind where
+  | fn | ctl
+  deriving Repr, DecidableEq
+
 structure Context where
   arm : Nat
   callable : Nat
@@ -15,6 +19,7 @@ structure Slot where
   id : Nat
   context : Context
   scope : Nat
+  kind : OpKind := .ctl
   deriving Repr, DecidableEq
 
 structure State where
@@ -30,10 +35,20 @@ def State.activeAuthority (state : State) : List Nat :=
 def resume (state : State) (ticket : Nat) : Option State := do
   let slot ← state.slots.find? (fun slot => decide (slot.id = ticket))
   let after := endBoundary state.authority (temporaryWrites state.authority slot.scope)
-  if decide (slot.context = state.current ∧ slot.scope = state.authority.scope ∧ ticket ∉ state.consumed) &&
+  if decide (slot.kind = .ctl ∧ slot.context = state.current ∧ slot.scope = state.authority.scope ∧ ticket ∉ state.consumed) &&
       (ledgerValid state.authority && ledgerValid after) then
     some { state with
       authority := endBoundary state.authority (temporaryWrites state.authority slot.scope),
+      consumed := ticket :: state.consumed }
+  else none
+
+def completeFnOp (state : State) (ticket : Nat) : Option State := do
+  let slot ← state.slots.find? (fun slot => decide (slot.id = ticket))
+  let after := endBoundary state.authority (temporaryWrites state.authority slot.scope)
+  if decide (slot.kind = .fn ∧ slot.context = state.current ∧ slot.scope = state.authority.scope ∧ ticket ∉ state.consumed) &&
+      (ledgerValid state.authority && ledgerValid after) then
+    some { state with
+      authority := after,
       consumed := ticket :: state.consumed }
   else none
 
@@ -42,7 +57,8 @@ variable {state next finish : State} {slot : Slot} {ticket id : Nat} {dependenci
 structure ResumeFacts (state : State) (ticket : Nat) (next : State) : Prop where
   slot : ∃ slot ∈ state.slots, slot.id = ticket ∧ slot.context = state.current ∧
     slot.scope = state.authority.scope ∧
-    next.authority = endBoundary state.authority (temporaryWrites state.authority slot.scope)
+    next.authority = endBoundary state.authority (temporaryWrites state.authority slot.scope) ∧
+    slot.kind = .ctl
   unused : ticket ∉ state.consumed
   consumed : next.consumed = ticket :: state.consumed
   committed : next.committed = state.committed
@@ -60,14 +76,24 @@ theorem successful_resume (h : resume state ticket = some next) : ResumeFacts st
     change (if _ then _ else _) = some next at h
     split at h
     · rename_i hc
-      have checks : (slot.context = state.current ∧ slot.scope = state.authority.scope ∧ ticket ∉ state.consumed) ∧
+      have checks : (slot.kind = .ctl ∧ slot.context = state.current ∧ slot.scope = state.authority.scope ∧ ticket ∉ state.consumed) ∧
           (ledgerValid state.authority = true ∧
             ledgerValid (endBoundary state.authority (temporaryWrites state.authority slot.scope)) = true) := by
         simpa only [Bool.and_eq_true, decide_eq_true_eq] using hc
       cases h
-      exact ⟨⟨slot, hm, hi, checks.1.1, checks.1.2.1, rfl⟩,
-        checks.1.2.2, rfl, rfl, ledger_facts checks.2.1, ledger_facts checks.2.2⟩
+      exact ⟨⟨slot, hm, hi, checks.1.2.1, checks.1.2.2.1, rfl, checks.1.1⟩,
+        checks.1.2.2.2, rfl, rfl, ledger_facts checks.2.1, ledger_facts checks.2.2⟩
     · contradiction
+
+theorem fn_slot_rejects_resume (hfn : ∀ slot ∈ state.slots, slot.id = ticket → slot.kind = .fn) :
+    resume state ticket = none := by
+  cases hr : resume state ticket with
+  | none => rfl
+  | some next =>
+    obtain ⟨slot, hm, hid, _, _, _, hctl⟩ := (successful_resume hr).slot
+    have eqFn := hfn slot hm hid
+    rw [eqFn] at hctl
+    contradiction
 
 theorem consumed_cannot_resume (hc : ticket ∈ state.consumed) : resume state ticket = none := by
   cases hr : resume state ticket with
@@ -98,7 +124,7 @@ theorem aliases_cannot_resume_twice (h : resume state ticket = some next)
 theorem operation_dependency_ends (h : resume state ticket = some next)
     (hi : id ∈ temporaryWrites state.authority state.authority.scope) (hd : id ∈ dependencies) :
     lifetimeEnabled next.authority dependencies = false := by
-  obtain ⟨slot, _, _, _, scope, he⟩ := (successful_resume h).slot
+  obtain ⟨slot, _, _, _, scope, he, _⟩ := (successful_resume h).slot
   rw [he, scope]
   exact dependency_ends_access hi hd
 
@@ -106,7 +132,7 @@ theorem independent_view_survives (h : resume state ticket = some next)
     (hl : lifetimeEnabled state.authority dependencies = true)
     (hd : ∀ id ∈ dependencies, id ∉ temporaryWrites state.authority state.authority.scope) :
     lifetimeEnabled next.authority dependencies = true := by
-  obtain ⟨slot, _, _, _, scope, he⟩ := (successful_resume h).slot
+  obtain ⟨slot, _, _, _, scope, he, _⟩ := (successful_resume h).slot
   rw [he, scope]
   exact independent_access_survives hl hd
 
@@ -124,21 +150,21 @@ theorem derived_access_ends (h : resume state ticket = some next)
 theorem retained_authority_survives (h : resume state ticket = some next)
     (hr : lookupToken state.authority id = some token) (ht : token.retained = true) :
     lookupToken next.authority id = some token := by
-  obtain ⟨slot, _, _, _, scope, he⟩ := (successful_resume h).slot
+  obtain ⟨slot, _, _, _, scope, he, _⟩ := (successful_resume h).slot
   rw [he, scope, unrelated_lookup (retained_not_temporary hr ht)]
   exact hr
 
 theorem outer_authority_survives (h : resume state ticket = some next)
     (hr : lookupToken state.authority id = some token) (hs : token.scope ≠ state.authority.scope) :
     lookupToken next.authority id = some token := by
-  obtain ⟨slot, _, _, _, scope, he⟩ := (successful_resume h).slot
+  obtain ⟨slot, _, _, _, scope, he, _⟩ := (successful_resume h).slot
   rw [he, scope, unrelated_lookup (other_scope_not_temporary hr hs)]
   exact hr
 
 theorem ended_operation_loan (h : resume state ticket = some next)
     (hl : loan ∈ next.authority.loans)
     (hi : loan.token ∈ temporaryWrites state.authority state.authority.scope) : loan.active = false := by
-  obtain ⟨slot, _, _, _, scope, he⟩ := (successful_resume h).slot
+  obtain ⟨slot, _, _, _, scope, he, _⟩ := (successful_resume h).slot
   rw [he, scope] at hl
   exact ended_loan_inactive hl hi
 
@@ -146,7 +172,7 @@ theorem dependent_operation_loan (h : resume state ticket = some next)
     (hl : loan ∈ next.authority.loans)
     (hi : loan.token ∈ lifetimeClosure state.authority
       (temporaryWrites state.authority state.authority.scope)) : loan.active = false := by
-  obtain ⟨slot, _, _, _, scope, he⟩ := (successful_resume h).slot
+  obtain ⟨slot, _, _, _, scope, he, _⟩ := (successful_resume h).slot
   rw [he, scope] at hl
   exact dependent_loan_inactive hl hi
 
@@ -234,5 +260,73 @@ theorem abortDelimiter_preserves_active_linear {delimiterScope : Nat} {authority
     have hnotgt : ¬(token.scope > delimiterScope) := Nat.not_lt.mpr hscope
     simp [hnotgt]
   · contradiction
+
+def canInvokeEffect (kind : OpKind) (delimiterScope : Nat) (authority : World) : Bool :=
+  match kind with
+  | .fn => true
+  | .ctl => canSuspendEffect delimiterScope authority
+
+def abortOpDelimiter (kind : OpKind) (delimiterScope : Nat) (authority : World) : Option World :=
+  match kind with
+  | .fn => none
+  | .ctl => abortDelimiter delimiterScope authority
+
+theorem fn_op_cannot_abort_delimiter (delimiterScope : Nat) (authority : World) :
+    abortOpDelimiter .fn delimiterScope authority = none ∧
+      canInvokeEffect .fn delimiterScope authority = true :=
+  ⟨rfl, rfl⟩
+
+structure FnOpFacts (state : State) (ticket : Nat) (next : State) : Prop where
+  slot : ∃ slot ∈ state.slots, slot.id = ticket ∧ slot.kind = .fn ∧
+    slot.context = state.current ∧ slot.scope = state.authority.scope ∧
+    next.authority = endBoundary state.authority (temporaryWrites state.authority slot.scope)
+  afterLedger : WorldInvariant next.authority
+
+theorem successful_completeFnOp (h : completeFnOp state ticket = some next) : FnOpFacts state ticket next := by
+  cases hf : state.slots.find? (fun slot => decide (slot.id = ticket)) with
+  | none => simp [completeFnOp, hf] at h
+  | some slot =>
+    have hm := List.mem_of_find?_eq_some hf
+    have hi : slot.id = ticket := of_decide_eq_true
+      (List.find?_some (p := fun candidate : Slot => decide (candidate.id = ticket)) hf)
+    simp only [completeFnOp, hf] at h
+    change (if _ then _ else _) = some next at h
+    split at h
+    · rename_i hc
+      have checks : (slot.kind = .fn ∧ slot.context = state.current ∧ slot.scope = state.authority.scope ∧ ticket ∉ state.consumed) ∧
+          (ledgerValid state.authority = true ∧
+            ledgerValid (endBoundary state.authority (temporaryWrites state.authority slot.scope)) = true) := by
+        simpa only [Bool.and_eq_true, decide_eq_true_eq] using hc
+      cases h
+      exact ⟨⟨slot, hm, hi, checks.1.1, checks.1.2.1, checks.1.2.2.1, rfl⟩, ledger_facts checks.2.2⟩
+    · contradiction
+
+theorem complete_fn_op_preserves_linear_token (h : completeFnOp state ticket = some next)
+    (hlook : lookupToken state.authority id = some token)
+    (hnonTemp : token.temporary = false) :
+    lookupToken next.authority id = some token := by
+  obtain ⟨slot, _, _, _, _, scope, he⟩ := (successful_completeFnOp h).slot
+  have notTemp : id ∉ temporaryWrites state.authority state.authority.scope := by
+    intro hmem
+    obtain ⟨selected, hs, htemp, _, _⟩ := selected_temporary hmem
+    have eq : token = selected := Option.some.inj (hlook.symm.trans hs)
+    cases eq
+    simp [hnonTemp] at htemp
+  rw [he, scope, unrelated_lookup notTemp]
+  exact hlook
+
+theorem complete_fn_op_revokes_temporary_permission (h : completeFnOp state ticket = some next)
+    (hr : resolve next.authority path = some resolved)
+    (hi : id ∈ temporaryWrites state.authority state.authority.scope)
+    (hd : id ∈ resolved.permission.dependencies) : live resolved = false := by
+  cases hl : live resolved with
+  | false => rfl
+  | true =>
+    have enabled := resolved_live_dependencies (successful_completeFnOp h).afterLedger hr hl
+    obtain ⟨slot, _, _, _, _, scope, he⟩ := (successful_completeFnOp h).slot
+    have ended : lifetimeEnabled next.authority resolved.permission.dependencies = false := by
+      rw [he, scope]
+      exact dependency_ends_access hi hd
+    simp [ended] at enabled
 
 end RilAccess.CoreResumption
