@@ -1,9 +1,9 @@
 import RilAccess.Model
 
-/-! Package visibility lattice (`private` < `pub(pkg)` < `pub`), package import
-anchors (`pkg`, `ril`, external dependencies), module representation opacity
+/-! Package visibility lattice (`private` < `pub(pkg)` < `pub`), contextual package
+import anchors (`pkg`, `ril`, external dependencies), module representation opacity
 (`transparent` vs `opaque`), top-level module purity (`E0906`), exported signature
-and `close` contract leak detection (`E0910`), and extensible sum (`..`)
+and `with` cleanup contract leak detection (`E0910`), and extensible sum (`..`)
 exhaustiveness across package and `.d.ril` boundaries (`E0303`, `E0304`, `E0308`). -/
 namespace RilAccess.VisibilityModel
 
@@ -67,7 +67,7 @@ def effectiveVisibility (moduleHasPub : Bool) (declVis : Visibility) : Visibilit
   | .pubPkg => .pubPkg
   | .pubExport => if moduleHasPub then .pubExport else .pubPkg
 
-/-- E0910: Every type or `close` handler referenced by a declaration's public
+/-- E0910: Every type or `with` cleanup handler referenced by a declaration's public
 interface must have effective visibility at least as wide as the declaration. -/
 def signatureWellFormed (moduleHasPub : Bool) (declVis : Visibility) (referencedVis : List Visibility) : Bool :=
   let eff := effectiveVisibility moduleHasPub declVis
@@ -80,7 +80,7 @@ inductive TopLevelBindingKind where
   deriving Repr, DecidableEq
 
 /-- E0906: Module top-level permits only pure deeply immutable `let` and `meta let`
-constants; `var`, `let mut`, `let ^mut`, and `let ref` are prohibited. -/
+constants; `var`, `let mut`, `let ^mut`, `let ref`, and `with let` are prohibited. -/
 def validTopLevelBinding : TopLevelBindingKind → Bool
   | .pureConst | .metaConst => true
   | .mutableOrLiveState => false

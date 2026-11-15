@@ -1,13 +1,13 @@
 import RilAccess.Access.Handoff
 
-/-! Scoped `close` resource bindings (`let scoped` / `let scoped mut`) and foreign
-`.d.ril` `resource` affine handles:
-- `.d.ril` `resource` handles forbid plain immutable snapshot freezing, `^mut`
+/-! Scoped `with` resource bindings (`with let` / `with let mut`) and foreign
+`.d.ril` `opaque type` affine handles:
+- `.d.ril` `opaque type` handles forbid plain immutable snapshot freezing, `^mut`
   sharing, `var mut` overwrite, and `.retain`, while permitting `new` handoff and
   scoped `mut`/`ref` borrows without imposing mandatory `E0721` consumption.
-- `let scoped` bindings forbid slot replacement (`E0532`), local rebinding, `new`
-  handoff, and `.retain` escape (`E0604`), and are deterministically deactivated
-  at lexical `.leaveScope`. -/
+- `with let` bindings forbid slot replacement (`E0532`), local rebinding, `new`
+  handoff (blocking early manual `close(new r)` double-close), and `.retain` escape
+  (`E0604`), and are deterministically deactivated at lexical `.leaveScope`. -/
 namespace RilAccess.Integrated
 
 variable {world next : World} {source destination id : Nat} {resolved : Resolved}

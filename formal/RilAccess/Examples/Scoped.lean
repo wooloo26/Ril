@@ -20,7 +20,7 @@ def seq (items : List Calls.Syntax) : Calls.Syntax :=
 
 def accepted (program : Calls.Syntax) : Bool := (Calls.check program).isOk
 
--- Foreign `.d.ril` `resource` affine handle fixtures:
+-- Foreign `.d.ril` `opaque type` affine handle fixtures:
 def resourceImplicitDropOk : Calls.Syntax :=
   Calls.Syntax.access (.block (.sequence (.command (.allocateResource 0 [])) (.command (.write (p 0)))))
 
@@ -51,7 +51,7 @@ def resourceClosureCaptureRejected : Calls.Syntax :=
   seq [accessCmd [.allocateResource 0 []],
     .invoke [] [0] (accessCmd [.write (p 0)])]
 
--- `let scoped` / `let scoped mut` (`close` contract) fixtures:
+-- `with let` / `with let mut` (`with <fn>` cleanup contract) fixtures:
 def scopedMutBlockUseAndBorrow : Calls.Syntax :=
   Calls.Syntax.access (.block
     (Integrated.Syntax.sequence (.command (.allocateScoped 0 true []))
@@ -100,16 +100,16 @@ def fixtures : List (String × Bool) :=
    ("resource: var mut slot overwrite rejected", !accepted resourceVarMutOverwriteRejected),
    ("resource: mut call borrow followed by new consumption accepted", accepted resourceCallBorrowAndConsume),
    ("resource: closure environment capture of resource handle rejected (E0604)", !accepted resourceClosureCaptureRejected),
-   ("scoped: let scoped mut permits interior writes and lexical borrows", accepted scopedMutBlockUseAndBorrow),
-   ("scoped: let scoped mut permits ref and mut call borrows inside declaring scope", accepted scopedCallRefAndMutBorrows),
-   ("scoped: plain let scoped forbids mutation (E0520)", !accepted scopedImmutableRejectsWrite),
-   ("scoped: reassigning let scoped binding rejected (E0532)", !accepted scopedReassignRejected),
-   ("scoped: moving let scoped binding via new handoff rejected (E0604)", !accepted scopedMoveEscapeRejected),
-   ("scoped: rebinding let scoped binding to local alias rejected (E0604)", !accepted scopedRebindEscapeRejected),
-   ("scoped: retaining let scoped binding rejected (E0604)", !accepted scopedRetainEscapeRejected),
-   ("scoped: passing let scoped binding to new parameter rejected (E0604)", !accepted scopedCallNewHandoffRejected),
-   ("scoped: capturing let scoped binding in closure rejected (E0604)", !accepted scopedClosureCaptureRejected),
-   ("scoped: accessing let scoped binding after block exit rejected", !accepted scopedExpiredAfterBlockExit)]
+   ("scoped: with let mut permits interior writes and lexical borrows", accepted scopedMutBlockUseAndBorrow),
+   ("scoped: with let mut permits ref and mut call borrows inside declaring scope", accepted scopedCallRefAndMutBorrows),
+   ("scoped: plain with let forbids mutation (E0520)", !accepted scopedImmutableRejectsWrite),
+   ("scoped: reassigning with let binding rejected (E0532)", !accepted scopedReassignRejected),
+   ("scoped: moving with let binding via new handoff rejected (E0604)", !accepted scopedMoveEscapeRejected),
+   ("scoped: rebinding with let binding to local alias rejected (E0604)", !accepted scopedRebindEscapeRejected),
+   ("scoped: retaining with let binding rejected (E0604)", !accepted scopedRetainEscapeRejected),
+   ("scoped: passing with let binding to new cleanup/consumer inside block rejected (E0604)", !accepted scopedCallNewHandoffRejected),
+   ("scoped: capturing with let binding in closure rejected (E0604)", !accepted scopedClosureCaptureRejected),
+   ("scoped: accessing with let binding after block exit rejected", !accepted scopedExpiredAfterBlockExit)]
 
 theorem fixtures_all_pass : fixtures.all Prod.snd = true := by decide +kernel
 
