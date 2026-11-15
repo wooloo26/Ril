@@ -1113,7 +1113,7 @@ DeclUnitItem    ::= UseDecl | DeclSub | DeclFunction | DeclType | DeclEffect | D
 DeclSub         ::= { MetaAttr } [ Visibility ] "sub" PascalCase
                     "{" { DeclUnitItem Separator } [ DeclUnitItem ] "}"
 DeclFunction    ::= { MetaAttr } [ Visibility ] "fn" ValueName [ GenericParams ]
-                    "(" [ ParameterList ] ")" ReturnSpec [ SignatureWhereClause ]
+                    "(" [ ParameterList ] ")" ReturnSpec
 DeclType        ::= DeclSumType | DeclNominalType | DeclTypeAlias | DeclOpaqueType
 DeclTypeHead    ::= { MetaAttr } [ Visibility ] "type" PascalCase [ GenericParams ]
 DeclSumType     ::= DeclTypeHead "{" VariantDeclList "}" [ WithCleanupClause ]
@@ -1171,9 +1171,9 @@ ComparisonExpr           ::= PipelineExpr [ RelOperator PipelineExpr ]
                            | IsExpr
 RelOperator              ::= "==" | "!=" | "<" | "<=" | ">" | ">="
 PipelineExpr             ::= RangeExpr { PipelineStep }
-PipelineStep             ::= "|>" [ ArgumentMode ] PostfixAtomExpr [ TrailingClosure ]
+PipelineStep             ::= "|>" [ ArgumentMode ] PipelineTarget [ TrailingClosure ] [ "?" ]
                            | "as" TypeReference
-ForIterable              ::= RangeExpr { "|>" [ ArgumentMode ] PostfixAtomExpr [ TrailingClosure ] }
+ForIterable              ::= RangeExpr { "|>" [ ArgumentMode ] PipelineTarget [ TrailingClosure ] [ "?" ] }
 RangeExpr                ::= BitwiseOrExpr [ ( ".." | "..=" ) BitwiseOrExpr ]
 SliceRangeExpr           ::= [ BitwiseOrExpr ] ( ".." | "..=" ) [ BitwiseOrExpr ]
 BitwiseOrExpr            ::= BitwiseXorExpr { "|" BitwiseXorExpr }
@@ -1206,6 +1206,10 @@ ArgumentMode             ::= "mut" | "ref" | "^mut" | "new"
 TupleIndex               ::= Digit { Digit }
 MemberExpr               ::= PostfixExpr ( "." | "?." ) ( FieldLabel | TupleIndex | "(" Expression ")" )
 IndexExpr                ::= PostfixExpr [ "?" ] "[" ( Expression | SliceRangeExpr ) "]"
+PipelineTarget           ::= AtomExpr
+                           | PipelineTarget "(" [ ArgumentList ] ")"
+                           | PipelineTarget ( "." | "?." ) ( FieldLabel | TupleIndex | "(" Expression ")" )
+                           | PipelineTarget [ "?" ] "[" ( Expression | SliceRangeExpr ) "]"
 PostfixAtomExpr          ::= AtomExpr
                            | PostfixAtomExpr "(" [ ArgumentList ] ")"
                            | PostfixAtomExpr ( "." | "?." ) ( FieldLabel | TupleIndex | "(" Expression ")" )
@@ -1243,7 +1247,7 @@ MapEntry                 ::= Expression ":" Expression
 | 7 | `^` | Left |
 | 8 | `\|` | Left |
 | 9 | `..` `..=` | Non-associative |
-| 10 | `\|>` `\|> ref` `\|> mut` `\|> ^mut` `\|> new`, `e as SupType` | Left |
+| 10 | `\|>` `\|> ref` `\|> mut` `\|> ^mut` `\|> new` (with optional step `?`), `e as SupType` | Left |
 | 11 | `==` `!=` `<` `<=` `>` `>=` `is` | Non-associative |
 | 12 | `&&` | Left (short-circuit) |
 | 13 | `\|\|` | Left (short-circuit) |
@@ -1365,12 +1369,16 @@ cells |> mut Array::push(Cell.{ v: 2 }) -- OK: 'elem' last use has ended
 
 ### Text and Byte Operations
 
-Strings combine via interpolation `"{left}{right}"` or `String::join`. Prelude modules `String` and `Bytes` provide dual-phase UTF-8 and byte conversions:
+Strings combine via interpolation `"{left}{right}"` or `String::join`. Prelude modules `String` and `Bytes` provide dual-phase text, diagnostic formatting, and byte operations:
+- `String::inspect<T>(via value: T) -> str`: pure dual-phase diagnostic formatter accepting plain values/snapshots or `ref` shared-object views (`E0401` on `ref` value types; `mut`/`^mut`/`new` markers rejected). Formats primitives, escaped `str`/`bytes` literals, tuples, collections, and transparent records/nominals/sums structurally (rendering runtime reference cycles as `"..."`), and formats sealed `opaque` types outside their defining scope, `.d.ril` `opaque` handles, callables, and runtime concurrency/draft handles as `"<TypeName>"` (or `"<fn>"`).
 - `String::at(text: str, index: int) -> ?int`, `String::scalars(text: str) -> new []int`, `String::from_scalars(via values: []int) -> ?str`
 - `String::encode_utf8(text: str) -> bytes`, `String::decode_utf8(data: bytes) -> ?str` (`None` on ill-formed UTF-8)
 - `Bytes::at(data: bytes, index: int) -> ?int`, `Bytes::to_array(data: bytes) -> new []int`, `Bytes::from_array(via values: []int) -> ?bytes` (`None` if any integer lies outside `0..=255`)
 
 ```ril
+type Pair = .{ id: int, label: str }
+let mut p = Pair.{ id: 7, label: "ok" }
+assert(String::inspect(ref p) == `.{ id: 7, label: "ok" }` && String::inspect(Some 3) == "Some 3")
 assert(Bytes::from_array([65, 66]) == Some bytes"AB" && Bytes::from_array([256]) == None)
 assert(String::decode_utf8(String::encode_utf8("Ril")) == Some "Ril")
 assert(String::decode_utf8(bytes"\xC0\xAF") == None)
@@ -1378,7 +1386,7 @@ assert(String::decode_utf8(bytes"\xC0\xAF") == None)
 
 ### Pipeline and Fallible Operators
 
-- **Mode-Aware Pipelines (`x |> [mode] f(a)` / `x |> [mode] f`)**: Evaluates `x` first, then callee `f` and remaining arguments left-to-right, passing `x` as the first argument under `[mode]` (`E0338` if `f` is non-callable):
+- **Mode-Aware Pipelines (`x |> [mode] f(a) [\...] [?]` / `x |> [mode] f [\...] [?]`)**: Evaluates `x` first, then callee `f` and remaining arguments left-to-right, passing `x` as the first argument under `[mode]` (`E0338` if `f` is non-callable); an optional trailing `?` propagates `Result` / `Option` on that step's call result (`x |> f(a)?` ≡ `(f(x, a))?`):
 
 | Pipeline form | Equivalent call | Left-operand requirement |
 | :--- | :--- | :--- |
@@ -1399,10 +1407,14 @@ assert(String::decode_utf8(bytes"\xC0\xAF") == None)
 ```ril
 type Config = .{ host: ?str }
 fn resolve_host(cfg: ?Config) -> str { cfg?.host ?? "localhost" }
+fn parse_pos(s: str) -> Result<int, str> { if s == "80" { Ok 80 } else { Err "bad" } }
+fn check_port(p: int) -> Result<int, str> { if p > 0 { Ok p } else { Err "zero" } }
+fn load_port(raw: str) -> Result<int, str> { Ok (raw |> parse_pos? |> check_port?) }
 
 let mut buf = [1, 2]
 buf |> mut Array::push(3)
 assert(buf |> ref len == 3 && resolve_host(None) == "localhost")
+assert(load_port("80") == Ok 80 && load_port("x") == Err "bad")
 -- clone(ref buf) |> mut Array::push(4) -- Error [E0410]: '|> mut' requires an AssignTarget
 -- let top_q = (Ok 1)?                  -- Error [E0205]: '?' outside function/closure frame
 -- let _ = 1 |> 2                       -- Error [E0338]: pipeline target is not callable
@@ -1665,8 +1677,8 @@ assert(area(Rect (3.0, 4.0)) == 12.0)
 ```ebnf
 FunctionDecl         ::= { MetaAttr } [ Visibility ] "fn" ValueName [ GenericParams ]
                          "(" [ ParameterList ] ")" ReturnSpec
-                         [ SignatureWhereClause ] [ Block ]
-SignatureWhereClause ::= "where" ( "{" SignatureWhereList "}" | SignatureWhereList )
+                         [ [ SignatureWhereClause ] Block ]
+SignatureWhereClause ::= "where" SignatureWhereList
 SignatureWhereList   ::= SignatureWhereItem { Separator SignatureWhereItem } [ Separator ]
 SignatureWhereItem   ::= LocalTypeDecl | FunctionDecl | MetaFnDecl
 ParameterList        ::= Parameter { "," Parameter } [ "," ]
@@ -1690,7 +1702,7 @@ ReturnSources        ::= ValueName { "|" ValueName }
 
 | Declaration kind | Syntax | Phase | Effects & state |
 | :--- | :--- | :--- | :--- |
-| Ordinary `fn` | `fn f(...) [@Eff] [&State] -> T { ... }` | Run-time (`len`/`panic`/`assert` dual-phase) | Explicit `@Eff` and minimal `&State` required on named definitions (`E0510`, `E0529`, `E0612`) |
+| Ordinary `fn` | `fn f(...) [@Eff] [&State] -> T { ... }` | Run-time (`len`/`panic`/`assert`/`String::inspect` dual-phase) | Explicit `@Eff` and minimal `&State` required on named definitions (`E0510`, `E0529`, `E0612`) |
 | Compile-time `meta fn` | `meta fn f(...) -> T { ... }` | Static (`TypeEval` / `MetaValue` + saturated compile-time fold in `RunTime`) | Pure only (`E0813`); result token-free (`E0812`) |
 | Type function | `type F = \T -> <...>` | Static (`TypeEval`) | Pure only (`E0335`); returns single `Type<U>` token |
 | Built-in bodyless `fn` | Bodyless `fn` in prelude `.ril` | Per primitive contract | Must match registered primitive module, name, and signature (`E0902`, `E0909`) |
@@ -1700,7 +1712,7 @@ ReturnSources        ::= ValueName { "|" ValueName }
 
 | Tier rule | Requirement |
 | :--- | :--- |
-| `SignatureWhereClause` (`E0704`) | Admits `LocalTypeDecl` (`type`), `FunctionDecl` (`fn`), and `MetaFnDecl` (`meta fn`); declaring `eff` or `sub` fails `E0704: InvalidSignatureWhereItemError` (value bindings fail `E0702`). Visible across the function signature (`PipelineConstraint`s, `ContractGuard`s, types) and body |
+| `SignatureWhereClause` (`E0704`, `E0120`) | Braceless `where` list (`where { ... }` and `pub`/`pub(pkg)` on `where` items fail `E0120`) permitted on bodied `fn` / `meta fn` declarations and terminated by the body's opening `{`. Admits `LocalTypeDecl` (`type`), `FunctionDecl` (`fn`), and `MetaFnDecl` (`meta fn`); declaring `eff` or `sub` fails `E0704: InvalidSignatureWhereItemError` (value bindings fail `E0702`). Visible across the function signature (`PipelineConstraint`s, `ContractGuard`s, types) and body |
 | Signature confinement (`E0706`) | Types and guards referenced in the signature must be declared in `SignatureWhereClause` or an enclosing scope; referencing `BlockWhereClause` items in the signature fails `E0706: SignatureTypeNotInSignatureWhereError` |
 | Downward isolation & uniqueness (`E0705`, `E0203`) | `SignatureWhereClause` items cannot reference `BlockWhereClause` items (`E0705: DownwardScopeReferenceError`), whereas `BlockWhereClause` may reference `SignatureWhereClause`. Duplicate names across both tiers fail `E0203` |
 
@@ -1716,6 +1728,7 @@ where
     fn _helper_tag() -> int { 1 }
 }
 
+-- fn bad_braced(x: int) -> int where { type T = int } { x }        -- Error [E0120]: 'where' clauses do not use '{ ... }'
 -- fn bad_sig_eff(x: int) -> int where eff E { fn op() -> () } { x } -- Error [E0704]: 'eff' prohibited in signature 'where'
 -- fn bad_down() -> Wrap where type Wrap = .{ s: Inner } { Wrap.{ s: .{ n: 0 } } where type Inner = .{ n: int } } -- Error [E0705]
 -- fn bad_sig_ref(cb: Cb) -> () { cb() where type Cb = fn() -> () }  -- Error [E0706]: signature references block 'where'
@@ -1900,7 +1913,8 @@ test_defaults()
 ### Anonymous Functions, Trailing Closures, and Projection Accessors
 
 ```ebnf
-AnonFnExpr    ::= "\" [ AnonParams ] [ EffectAnnot ] [ StateAnnot ] "->" Expression
+AnonFnExpr    ::= "\" [ AnonParams ] [ EffectAnnot ] [ StateAnnot ] "->" AnonFnBody
+AnonFnBody    ::= Block | Expression
 AnonParams    ::= AnonParam { "," AnonParam } [ "," ]
 AnonParam     ::= [ ParameterMode ] ( ValueName | Wildcard ) [ ":" TypeExpression ] [ "=" Expression ]
 AccessorExpr  ::= "\" AccessorNav AccessorField { AccessorNav AccessorField }
@@ -1908,7 +1922,7 @@ AccessorNav   ::= "." | "?."
 AccessorField ::= FieldLabel | TupleIndex
 ```
 
-- **Trailing Closures**: A `CallExpr` may pass its final callable argument as a trailing `AnonFnExpr` or `AccessorExpr` directly after `(...)`—or omit empty `()` when the callable is the sole argument (`absorb_panic \-> { ... }`, `AsyncRt::scope \mut s -> { ... }`). Postfix `?` chains directly onto trailing-closure calls.
+- **Closure Body Termination & Trailing Closures**: When `{` immediately follows `->`, `AnonFnBody` parses as a self-delimited `Block` ending at its matching `}` (non-block bodies parse as `Expression`). A `CallExpr` or `PipelineStep` may pass its final callable argument as a trailing `AnonFnExpr` or `AccessorExpr` directly after `(...)`—or omit `()` when no other explicit arguments remain (`absorb_panic \-> { ... }`, `AsyncRt::scope \mut s -> { ... }`). Postfix `?` and outer `|>` steps attach directly after a block-bodied trailing closure.
 - **Shorthand Projection Accessors (`\.field`, `\.0`, `\?.field`)**: Desugar to unary pure closures (`\x -> x.field`, `\x -> x.0`, `\x -> x?.field`) over records, nominal wrappers, tuples, and single-variant narrowed sums (`E0336` on unknown field, `E0312` on out-of-bounds tuple index, `E0337` on collections or unnarrowed sums). Any `?.` segment lifts the result to `?T`.
 
 ```ril
@@ -1927,11 +1941,12 @@ fn test_closures_and_accessors() -> Result<int, str> {
         Org.{ title: "Core", dept: Some Dept.{ name: "Infra", code: ("INF", 10) } },
         Org.{ title: "Labs", dept: None },
     ]
-    assert((orgs |> Array::map(\.title)) == ["Core", "Labs"])
-    assert((orgs |> Array::map(\.dept?.code.1)) == [Some 10, None])
+    assert((orgs |> Array::map \.title) == ["Core", "Labs"])
+    assert((orgs |> Array::map \.dept?.code.1) == [Some 10, None])
+    assert(([1, 2, 3] |> Array::map \x -> { x * 2 } |> Array::filter \x -> { x > 2 }) == [4, 6])
 
     let mut log: []str = []
-    let code = with_tx(mut log) \mut entries -> {
+    let code = log |> mut with_tx \mut entries -> {
         Array::push(mut entries, "insert")
         Ok 200
     }?
@@ -2322,7 +2337,7 @@ meta let _ = assert(PAGE == 4096)
 
 | Evaluation context | Permitted calls (`E0810` otherwise) |
 | :--- | :--- |
-| `TypeEval` (type functions, guards) | Type functions, `meta fn`, static reflection, dual-phase built-ins (`len`, `assert`, `panic`) |
+| `TypeEval` (type functions, guards) | Type functions, `meta fn`, static reflection, dual-phase built-ins (`len`, `assert`, `panic`, `String::inspect`) |
 | `MetaValue` (`meta fn`, `meta let`, `meta(...)`) | `meta fn`, static reflection, dual-phase built-ins |
 | `RunTime` (`fn`, closures) | Ordinary `fn`, foreign `.d.ril` `fn`, built-ins, plus direct saturated `meta fn` calls with static arguments (folded to immutable snapshots) |
 
