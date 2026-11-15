@@ -216,10 +216,16 @@ structure CallableMatchGuarantees : Prop where
     expected.subsumes pureSources actual = true →
       (CoreSummary.instantiate call expected).subsumes pureSources (CoreSummary.instantiate call actual) = true
   exactRejectsExcessWrite : ∀ (pureSources : List Source) (declared actual : Summary) (o : Origin),
-    o ∈ declared.writes → o ∉ actual.writes → o ∉ actual.retained →
+    o ∈ declared.writes → o ∉ actual.writes →
       Summary.exactContract pureSources declared actual = false
   exactRejectsExcessRetained : ∀ (pureSources : List Source) (declared actual : Summary) (o : Origin),
     o ∈ declared.retained → o ∉ actual.retained →
+      Summary.exactContract pureSources declared actual = false
+  exactRejectsMissingEnvironment : ∀ (pureSources : List Source) (declared actual : Summary) (o : Origin),
+    o ∈ actual.createdEnvironments → o ∉ declared.createdEnvironments →
+      Summary.exactContract pureSources declared actual = false
+  exactRejectsMissingLocalRead : ∀ (pureSources : List Source) (declared actual : Summary) (o : Origin),
+    o.source.kind ≠ .module → o ∈ actual.namedReads → o ∉ declared.namedReads →
       Summary.exactContract pureSources declared actual = false
 
 structure ConcurrencyGuarantees : Prop where
@@ -283,8 +289,10 @@ theorem verified : Guarantees where
     fun _ _ _ _ => foreign_read_not_erased_by_pure,
     fun _ _ _ _ => retained_not_subsumed_by_write_only,
     fun _ _ _ call h => CoreSummary.template_subsumes_instantiate h call,
-    fun _ _ _ _ hdecl hnoW hnoR => exactContract_rejects_excess_write hdecl hnoW hnoR,
-    fun _ _ _ _ hdecl hnoR => exactContract_rejects_excess_retained hdecl hnoR⟩
+    fun _ _ _ _ hdecl hnoW => exactContract_rejects_excess_write hdecl hnoW,
+    fun _ _ _ _ hdecl hnoR => exactContract_rejects_excess_retained hdecl hnoR,
+    fun _ _ _ _ hactual hmissing => exactContract_rejects_missing_environment hactual hmissing,
+    fun _ _ _ _ hlocal hactual hmissing => exactContract_rejects_missing_local_read hlocal hactual hmissing⟩
   effects := ⟨CoreBoundary.handled_effects_exact,
     fun _ _ _ _ => CoreBoundary.external_environment_blocks_discharge,
     fun _ _ _ _ _ _ h hr hi hd => CoreBoundary.complete_fn_op_revokes_temporary_permission h hr hi hd,

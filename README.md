@@ -19,8 +19,8 @@ fn append<T>(mut xs: [via]T, via value: T) &mut -> () {
 
 fn make_cells() -> new []Cell { [Cell.{ value: 1 }] }
 
-fn transfer() -> () {
-    let mut cells: [mut]Cell = make_cells() -- Fresh graph adopts the receiver's schema.
+fn receive_cells() -> () {
+    let mut cells: [mut]Cell = make_cells() -- New elements receive writable access.
     let mut cell = Cell.{ value: 2 }
     append(mut cells, new cell)
     -- cell.value                           -- E0549: source path ended.
@@ -28,7 +28,23 @@ fn transfer() -> () {
 ```
 
 ```ril
--- Function signatures record environment creation, sharing, and contained origins.
+-- New containers preserve the sources of nested shared objects.
+type Shelf = .{ mut rows: [^mut]Cell }
+fn shared_shelf(^mut cell: Cell) &^mut &return{^mut cell} -> new Shelf {
+    Shelf.{ rows: [^mut cell] }
+}
+
+fn nested_sources() -> () {
+    let mut cell = Cell.{ value: 0 }
+    let mut shelf = shared_shelf(^mut cell)
+    shelf.rows[0].value += 1
+    assert(cell.value == 1)                 -- The nested Cell still shares its source.
+    -- let frozen = shared_shelf(^mut cell) -- E0535: external writer survives.
+}
+```
+
+```ril
+-- A new closure records its environment and captured shared source.
 type Step = fn() &up -> int
 fn make_shared_step(^mut cell: Cell)
     &capture &^mut &return{^mut cell} -> new Step {

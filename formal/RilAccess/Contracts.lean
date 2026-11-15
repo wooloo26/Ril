@@ -227,25 +227,70 @@ theorem retained_not_subsumed_by_write_only {pureSources : List Source} {expecte
     o ∈ expected.retained :=
   (summary_subsumes_iff.mp hsub).retained o hr
 
-/-- Named `fn` contract completion (`E0510`, `E0529`, `E0612`): a named function's
-declared concrete effects and state/provenance obligations must neither omit required
-actual obligations (`declared.subsumes pureSources actual`) nor spell unexercised
-excess obligations (`actual.subsumes pureSources declared`). -/
+/-- Rows compare as sets: order and repeated provenance explanations are irrelevant. -/
+def sameMembers [DecidableEq α] (left right : List α) : Bool :=
+  left.all (fun item => decide (item ∈ right)) &&
+    right.all (fun item => decide (item ∈ left))
+
+theorem sameMembers_iff [DecidableEq α] {left right : List α} :
+    sameMembers left right = true ↔ ∀ item, item ∈ left ↔ item ∈ right := by
+  simp only [sameMembers, Bool.and_eq_true, List.all_eq_true, decide_eq_true_eq]
+  constructor
+  · rintro ⟨forward, backward⟩ item
+    exact ⟨forward item, backward item⟩
+  · intro h
+    exact ⟨fun item hi => (h item).mp hi, fun item hi => (h item).mpr hi⟩
+
+/-- Pure module constants require no named state clause. Pure local reads and
+environment creation still require their definition-site `&up` / `&capture`. -/
+def isPureModuleConstant (pureSources : List Source) (origin : Origin) : Bool :=
+  decide (origin.source.kind = .module) && isPureOrigin pureSources origin
+
+def Summary.requiredNamedReads (pureSources : List Source) (summary : Summary) : List Origin :=
+  summary.namedReads.filter (fun origin => !isPureModuleConstant pureSources origin)
+
+/-- Named definitions spell exact exercised obligations (`E0510`, `E0529`,
+`E0612`). Callable upper-bound matching and pure-capture reduction are separate. -/
 def Summary.exactContract (pureSources : List Source) (declared actual : Summary) : Bool :=
-  declared.subsumes pureSources actual && actual.subsumes pureSources declared
+  sameMembers declared.effects actual.effects &&
+  sameMembers declared.rootReturn actual.rootReturn &&
+  sameMembers declared.contained actual.contained &&
+  sameMembers declared.writes actual.writes &&
+  sameMembers declared.retained actual.retained &&
+  sameMembers declared.createdEnvironments actual.createdEnvironments &&
+  sameMembers (declared.requiredNamedReads pureSources) (actual.requiredNamedReads pureSources)
+
+structure SummaryExactContract (pureSources : List Source) (declared actual : Summary) : Prop where
+  effects : ∀ effect, effect ∈ declared.effects ↔ effect ∈ actual.effects
+  rootReturn : ∀ origin, origin ∈ declared.rootReturn ↔ origin ∈ actual.rootReturn
+  contained : ∀ origin, origin ∈ declared.contained ↔ origin ∈ actual.contained
+  writes : ∀ origin, origin ∈ declared.writes ↔ origin ∈ actual.writes
+  retained : ∀ origin, origin ∈ declared.retained ↔ origin ∈ actual.retained
+  createdEnvironments : ∀ origin,
+    origin ∈ declared.createdEnvironments ↔ origin ∈ actual.createdEnvironments
+  namedReads : ∀ origin,
+    origin ∈ declared.requiredNamedReads pureSources ↔ origin ∈ actual.requiredNamedReads pureSources
+
+theorem summary_exactContract_iff {pureSources : List Source} {declared actual : Summary} :
+    Summary.exactContract pureSources declared actual = true ↔
+      SummaryExactContract pureSources declared actual := by
+  simp only [Summary.exactContract, Bool.and_eq_true, sameMembers_iff]
+  constructor
+  · rintro ⟨⟨⟨⟨⟨⟨effects, roots⟩, contained⟩, writes⟩, retained⟩, environments⟩, reads⟩
+    exact ⟨effects, roots, contained, writes, retained, environments, reads⟩
+  · intro h
+    exact ⟨⟨⟨⟨⟨⟨h.effects, h.rootReturn⟩, h.contained⟩, h.writes⟩, h.retained⟩,
+      h.createdEnvironments⟩, h.namedReads⟩
 
 theorem exactContract_rejects_excess_write {pureSources : List Source}
     {declared actual : Summary} {o : Origin}
     (hdecl : o ∈ declared.writes)
-    (hnoWrite : o ∉ actual.writes) (hnoRetain : o ∉ actual.retained) :
+    (hnoWrite : o ∉ actual.writes) :
     Summary.exactContract pureSources declared actual = false := by
   cases hex : Summary.exactContract pureSources declared actual with
   | false => rfl
   | true =>
-    simp only [Summary.exactContract, Bool.and_eq_true] at hex
-    rcases (summary_subsumes_iff.mp hex.2).writes o hdecl with hw | hr
-    · exact False.elim (hnoWrite hw)
-    · exact False.elim (hnoRetain hr)
+    exact False.elim (hnoWrite (((summary_exactContract_iff.mp hex).writes o).mp hdecl))
 
 theorem exactContract_rejects_excess_retained {pureSources : List Source}
     {declared actual : Summary} {o : Origin}
@@ -254,8 +299,30 @@ theorem exactContract_rejects_excess_retained {pureSources : List Source}
   cases hex : Summary.exactContract pureSources declared actual with
   | false => rfl
   | true =>
-    simp only [Summary.exactContract, Bool.and_eq_true] at hex
-    exact False.elim (hnoRetain ((summary_subsumes_iff.mp hex.2).retained o hdecl))
+    exact False.elim (hnoRetain (((summary_exactContract_iff.mp hex).retained o).mp hdecl))
+
+theorem exactContract_rejects_missing_environment {pureSources : List Source}
+    {declared actual : Summary} {o : Origin}
+    (hactual : o ∈ actual.createdEnvironments) (hmissing : o ∉ declared.createdEnvironments) :
+    Summary.exactContract pureSources declared actual = false := by
+  cases hex : Summary.exactContract pureSources declared actual with
+  | false => rfl
+  | true =>
+    exact False.elim (hmissing
+      (((summary_exactContract_iff.mp hex).createdEnvironments o).mpr hactual))
+
+theorem exactContract_rejects_missing_local_read {pureSources : List Source}
+    {declared actual : Summary} {o : Origin}
+    (hlocal : o.source.kind ≠ .module) (hactual : o ∈ actual.namedReads)
+    (hmissing : o ∉ declared.namedReads) :
+    Summary.exactContract pureSources declared actual = false := by
+  cases hex : Summary.exactContract pureSources declared actual with
+  | false => rfl
+  | true =>
+    have required : o ∈ actual.requiredNamedReads pureSources := by
+      simp [Summary.requiredNamedReads, isPureModuleConstant, hlocal, hactual]
+    have declaredRead := ((summary_exactContract_iff.mp hex).namedReads o).mpr required
+    exact False.elim (hmissing (List.mem_filter.mp declaredRead).1)
 
 def allocationBound : List Nat → Nat
   | [] => 0

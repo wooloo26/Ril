@@ -258,13 +258,29 @@ theorem replacement_preserves_schema
       exact ⟨old, hm, hslot.1, hslot.2, hr, replacement_present⟩
     · contradiction
 
-/-- Existing writable storage needs an explicit shared receiving marker. This
-permission component deliberately does not assert the missing lifetime proof. -/
+/-- Existing aliases received with an explicit `^mut` marker require shared
+storage. New-region reception and stored-source lifetimes are separate judgments. -/
 def receiveStored (member source : Access) (sharedMarker : Bool) : Option Access :=
   match member with
   | .immutable => if !sharedMarker && decide (source = .immutable) then some .immutable else none
-  | .ref => if !sharedMarker then some .ref else none
-  | .mut | .shared => if sharedMarker && source.writes then some .shared else none
+  | .ref => if !sharedMarker && decide (source = .ref) then some .ref else none
+  | .mut => none
+  | .shared => if sharedMarker && source.writes then some .shared else none
+
+theorem shared_reception_requires_shared_storage
+    (h : receiveStored member source true = some held) :
+    member = .shared ∧ held = .shared := by
+  cases member <;> cases source <;> cases held <;>
+    simp_all [receiveStored, Access.writes]
+
+theorem shared_marker_rejected_by_mut_storage (source : Access) :
+    receiveStored .mut source true = none := rfl
+
+theorem stored_reference_requires_reference_source
+    (h : receiveStored .ref source marker = some held) :
+    source = .ref ∧ held = .ref := by
+  cases source <;> cases held <;> cases marker <;>
+    simp_all [receiveStored]
 
 def checkedReplace (graph : Graph Node) (receiver : Nat) (parentPath : List Nat)
     (field source : Nat) (sourcePath : List Nat) (sharedMarker : Bool) : Option (Graph Node) := do

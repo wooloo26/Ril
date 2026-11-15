@@ -15,7 +15,7 @@ def repeated : Graph :=
   ⟨[⟨0, 0, .mut⟩], [⟨0, 0, 1, fixed .mut, .mut⟩, ⟨0, 1, 1, fixed .mut, .mut⟩]⟩
 
 def readonlySibling : Graph :=
-  ⟨[⟨0, 0, .mut⟩], [⟨0, 0, 1, fixed .ref, .mut⟩, ⟨0, 1, 1, fixed .mut, .mut⟩]⟩
+  ⟨[⟨0, 0, .mut⟩], [⟨0, 0, 1, fixed .ref, .ref⟩, ⟨0, 1, 1, fixed .mut, .mut⟩]⟩
 
 def frozenRoot : Graph := { cycle with roots := [⟨0, 0, .immutable⟩] }
 
@@ -31,14 +31,36 @@ def immutableAndWriter : Graph :=
 def mutableSlot : Graph :=
   ⟨[⟨0, 0, .mut⟩, ⟨1, 2, .mut⟩], [⟨0, 0, 1, variableMode .mut, .mut⟩]⟩
 
+def sharedSlot : Graph :=
+  ⟨mutableSlot.roots, [⟨0, 0, 1, variableMode .shared, .shared⟩]⟩
+
 def fixedSlot : Graph :=
-  ⟨mutableSlot.roots, [⟨0, 0, 1, fixed .mut, .mut⟩]⟩
+  ⟨sharedSlot.roots, [⟨0, 0, 1, fixed .shared, .shared⟩]⟩
 
 def referenceSlot : Graph :=
-  ⟨mutableSlot.roots, [⟨0, 0, 1, variableMode .ref, .ref⟩]⟩
+  ⟨mutableSlot.roots ++ [⟨2, 2, .ref⟩], [⟨0, 0, 1, variableMode .ref, .ref⟩]⟩
 
-def checkedShared := checkedReplace mutableSlot 0 [] 0 1 [] true
-def checkedRef := checkedReplace referenceSlot 0 [] 0 1 [] false
+def checkedShared := checkedReplace sharedSlot 0 [] 0 1 [] true
+def checkedRef := checkedReplace referenceSlot 0 [] 0 2 [] false
+
+/-- The outer nodes represent assembled wrappers around existing source objects.
+These fixtures check path authority and identity, not construction reception or
+the separate lifetime conditions of stored sources. -/
+def nestedSources : Graph :=
+  ⟨[⟨0, 0, .mut⟩, ⟨1, 3, .shared⟩, ⟨2, 3, .ref⟩, ⟨3, 4, .immutable⟩],
+   [⟨0, 0, 1, fixed .mut, .mut⟩,
+    ⟨1, 0, 2, fixed .mut, .mut⟩,
+    ⟨2, 0, 5, variableMode .shared, .shared⟩,
+    ⟨2, 1, 3, fixed .shared, .shared⟩,
+    ⟨2, 2, 3, fixed .ref, .ref⟩,
+    ⟨2, 3, 4, fixed .immutable, .immutable⟩]⟩
+
+def nestedSharedStored := checkedReplace nestedSources 0 [0, 0] 0 1 [] true
+
+def frozenNestedSources : Graph :=
+  { nestedSources with
+    roots := nestedSources.roots.map fun root =>
+      if root.view = 0 then { root with access := .immutable } else root }
 
 def fixtures : List (String × Bool) :=
   [("graph: cyclic authority closure", decide (Fact.mk 0 1 .mut ∈ analyze cycle)),
@@ -53,15 +75,57 @@ def fixtures : List (String × Bool) :=
    ("graph: plain immutable and writer conflict", !immutableConsistent immutableAndWriter),
    ("graph: writable shared field replacement", checkedShared.isSome),
    ("graph: field replacement does not change declared member mode", decide (checkedShared.map
-      (fun graph => (graph.edges.head?).map Edge.member) = some (some (variableMode .mut)))),
+      (fun graph => (graph.edges.head?).map Edge.member) = some (some (variableMode .shared)))),
    ("graph: fixed object field cannot be replaced", !(checkedReplace fixedSlot 0 [] 0 1 [] true).isSome),
-   ("graph: retained storage requires acknowledgment", !(checkedReplace mutableSlot 0 [] 0 1 [] false).isSome),
+   ("graph: retained storage requires acknowledgment", !(checkedReplace sharedSlot 0 [] 0 1 [] false).isSome),
+   ("graph: shared reception requires shared storage rather than mut storage",
+      (receiveStored .mut .shared true).isNone &&
+      (receiveStored .mut .mut true).isNone &&
+      !(checkedReplace mutableSlot 0 [] 0 1 [] true).isSome),
    ("graph: readonly stored reference remains readonly", decide (checkedRef.map
       (fun graph => canWritePath graph 0 [0]) = some false)),
+   ("graph: reference storage rejects implicit mode conversion",
+      (receiveStored .ref .mut false).isNone &&
+      (receiveStored .ref .shared false).isNone &&
+      (receiveStored .ref .immutable false).isNone &&
+      !(checkedReplace referenceSlot 0 [] 0 1 [] false).isSome),
    ("graph: shared marker cannot be idle at readonly reception", !(checkedReplace referenceSlot 0 [] 0 1 [] true).isSome),
    ("graph: post-entry edge cannot fabricate old entry origin", decide (2 ∉ entryObjects mutableSlot 0)),
    ("graph: current reachability includes newly stored object", decide (checkedShared.map
-      (fun graph => decide (2 ∈ entryObjects graph 0)) = some true))]
+      (fun graph => decide (2 ∈ entryObjects graph 0)) = some true)),
+   ("graph: nested wrappers remain writable above existing source boundaries",
+      canWritePath nestedSources 0 [] && canWritePath nestedSources 0 [0] &&
+      canWritePath nestedSources 0 [0, 0] && immutableConsistent nestedSources),
+   ("graph: nested shared member preserves shared mode and external object identity",
+      decide (resolveView nestedSources 0 [0, 0, 1] = some (3, .shared)) &&
+      decide (resolveView nestedSources 1 [] = some (3, .shared))),
+   ("graph: outer writers cannot upgrade a nested ref to the same shared object",
+      decide (resolveView nestedSources 0 [0, 0, 2] = some (3, .ref)) &&
+      decide (resolveView nestedSources 2 [] = some (3, .ref)) &&
+      hasWriter nestedSources 3 && !canWritePath nestedSources 0 [0, 0, 2]),
+   ("graph: outer writers cannot upgrade a nested immutable source",
+      decide (resolveView nestedSources 0 [0, 0, 3] = some (4, .immutable)) &&
+      decide (resolveView nestedSources 3 [] = some (4, .immutable)) &&
+      !canWritePath nestedSources 0 [0, 0, 3]),
+   ("graph: explicit shared reception matches shared storage exactly",
+      decide (receiveStored .shared .shared true = some .shared) &&
+      decide (nestedSharedStored.map (fun graph => resolveView graph 0 [0, 0, 0]) =
+        some (some (3, .shared)))),
+   ("graph: nested shared reception preserves declared replaceable shared schema",
+      decide (nestedSharedStored.map (fun graph =>
+        (graph.edges.find? fun edge => decide (edge.parent = 2 ∧ edge.field = 0)).map
+          Edge.member) = some (some (variableMode .shared)))),
+   ("graph: nested storage cannot omit shared acknowledgment or upgrade readonly sources",
+      !(checkedReplace nestedSources 0 [0, 0] 0 1 [] false).isSome &&
+      !(checkedReplace nestedSources 0 [0, 0] 0 2 [] true).isSome &&
+      !(checkedReplace nestedSources 0 [0, 0] 0 3 [] true).isSome),
+   ("graph: two nested element paths retain their alias after shared storage",
+      decide (nestedSharedStored.map (fun graph =>
+        decide (resolveView graph 0 [0, 0, 0] = some (3, .shared) ∧
+          resolveView graph 0 [0, 0, 1] = some (3, .shared))) = some true)),
+   ("graph: freezing the outer root cannot coexist with an external nested writer",
+      !canWritePath frozenNestedSources 0 [0, 0, 1] &&
+      hasWriter frozenNestedSources 3 && !immutableConsistent frozenNestedSources)]
 
 theorem fixtures_all_pass : fixtures.all Prod.snd = true := by decide +kernel
 

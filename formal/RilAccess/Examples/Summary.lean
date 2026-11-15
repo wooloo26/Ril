@@ -39,9 +39,13 @@ def allFields : Template :=
 def pureConst : Origin := ⟨⟨.module, 50⟩, 0, 50, 0⟩
 def liveVar : Origin := ⟨⟨.capture, 51⟩, 0, 51, 0⟩
 def foreignHandle : Origin := ⟨⟨.foreign, 52⟩, 0, 52, 0⟩
-def pureTable : List Source := [pureConst.source, parameterCapture.source, foreignHandle.source]
+def pureLocal : Origin := ⟨⟨.capture, 53⟩, 0, 53, 0⟩
+def pureTable : List Source := [pureConst.source, parameterCapture.source, foreignHandle.source, pureLocal.source]
 def emptySummary : Summary := ⟨[], [], [], [], [], [], []⟩
 def pureReadSummary : Summary := { emptySummary with namedReads := [pureConst], createdEnvironments := [parameterCapture] }
+def moduleReadSummary : Summary := { emptySummary with namedReads := [pureConst] }
+def pureLocalReadSummary : Summary := { emptySummary with namedReads := [pureLocal, parameterCapture] }
+def factorySummary : Summary := { emptySummary with createdEnvironments := [parameterCapture] }
 def liveReadSummary : Summary := { emptySummary with namedReads := [liveVar] }
 def foreignReadSummary : Summary := { emptySummary with namedReads := [foreignHandle] }
 def writeSummary : Summary := { emptySummary with writes := [liveVar], effects := [6] }
@@ -103,6 +107,8 @@ def fixtures : List (String × Bool) :=
       !CoreEntry.separated heap [saved] [sameObject]),
    ("callable match: verified pure .ril read and capture fit empty callable type",
       emptySummary.subsumes pureTable pureReadSummary),
+   ("callable match: pure contained return provenance cannot disappear into an empty contract",
+      !emptySummary.subsumes pureTable { emptySummary with contained := [pureConst] }),
    ("callable match: live captured var read rejected by empty callable type",
       !emptySummary.subsumes pureTable liveReadSummary),
    ("callable match: foreign .d.ril source never qualifies as pure",
@@ -119,9 +125,30 @@ def fixtures : List (String × Bool) :=
         (instantiate actual upperEffectTemplate).subsumes pureTable (instantiate actual pureReadTemplate)),
    ("named fn contract: exact contract accepts matching obligations and rejects unexercised &mut/&^mut (E0529)",
       Summary.exactContract pureTable writeSummary writeSummary &&
-      Summary.exactContract pureTable emptySummary pureReadSummary &&
       !Summary.exactContract pureTable writeSummary emptySummary &&
-      !Summary.exactContract pureTable retainedSummary writeSummary)]
+      !Summary.exactContract pureTable retainedSummary writeSummary),
+   ("named fn contract: retained state cannot hide an unexercised write (E0529)",
+      !Summary.exactContract pureTable { retainedSummary with writes := [liveVar] } retainedSummary),
+   ("named fn contract: pure immutable factory capture still requires &capture (E0510)",
+      !Summary.exactContract pureTable emptySummary pureReadSummary &&
+      Summary.exactContract pureTable factorySummary pureReadSummary &&
+      !Summary.exactContract pureTable factorySummary emptySummary),
+   ("named fn contract: pure outer locals and parameters still require &up (E0510)",
+      !Summary.exactContract pureTable emptySummary pureLocalReadSummary &&
+      Summary.exactContract pureTable pureLocalReadSummary pureLocalReadSummary &&
+      !Summary.exactContract pureTable pureLocalReadSummary emptySummary),
+   ("named fn contract: only verified pure module reads need no state clause",
+      Summary.exactContract pureTable emptySummary moduleReadSummary &&
+      !Summary.exactContract [] emptySummary moduleReadSummary &&
+      !Summary.exactContract pureTable emptySummary foreignReadSummary),
+   ("named fn contract: rows ignore ordering and duplicate provenance explanations",
+      Summary.exactContract pureTable
+        { emptySummary with writes := [liveVar, liveVar], effects := [6, 7] }
+        { emptySummary with writes := [liveVar], effects := [7, 6, 7] }),
+   ("named fn contract: return and effect rows remain exact",
+      !Summary.exactContract pureTable emptySummary { emptySummary with rootReturn := [saved] } &&
+      !Summary.exactContract pureTable emptySummary { emptySummary with contained := [pureConst] } &&
+      !Summary.exactContract pureTable emptySummary { emptySummary with effects := [6] })]
 
 theorem fixtures_all_pass : fixtures.all Prod.snd = true := by decide +kernel
 
