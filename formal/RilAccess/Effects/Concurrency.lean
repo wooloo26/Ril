@@ -1,11 +1,9 @@
-import RilAccess.Access.Handoff
-import RilAccess.Access.Linear
-import RilAccess.Effects.Resumption
+import RilAccess.Access.Scoped
 
-/-! Structured async concurrency (`@Scope`, `@Async`), cross-fiber capture isolation
-(`E0601` / `E0549`), channel mutability-laundering prevention (`E0548`), nursery
-region branding (`E0604`), mandatory task/result consumption (`E0720` / `E0721`),
-and cancellation-checkpoint shielding (`Async::uncancellable`). -/
+/-! Structured async concurrency (`Async::Scope`, `Async::Task<T>`, `@Async`),
+cross-fiber capture isolation (`E0601` / `E0549`), channel mutability-laundering
+prevention (`E0548`), nursery region branding (`E0604`), and mandatory fallible
+`Result` task inspection (`E0720`). -/
 namespace RilAccess.CoreConcurrency
 
 open Integrated
@@ -15,7 +13,7 @@ inductive CaptureFlavor where
   deriving Repr, DecidableEq
 
 /-- E0601 shared cross-fiber capture check: concurrent task closures may share only
-non-linear, deeply immutable bindings with no conflicting active writes. -/
+non-resource, non-scoped, deeply immutable bindings with no conflicting active writes. -/
 def eligibleSharedCapture (world : World) (r : Resolved) : Bool :=
   receiving world r ⟨false, .immutable⟩ world.scope
 
@@ -23,26 +21,29 @@ def spawnSharedCapture (world : World) (source : Path) (childDestination : Nat) 
   checkAtom (.bind source childDestination ⟨false, .immutable⟩) world
 
 /-- Single-shot task closures (`run`, `spawn`, `zip`, `try_zip`, `race`, `supervise`,
-`timeout_ms`) may consume a qualified `new` / `linear` binding once via move handoff. -/
+`timeout_ms`) may consume a qualified `new` binding once via move handoff (`E0549`). -/
 def spawnMoveCapture (world : World) (source childDestination : Nat) : Except Error World :=
   checkAtom (.move source childDestination) world
 
-/-- E0548 channel send reception: writable-constituent or linear payloads require
-exclusive `new` move handoff so `Channel::recv -> new ?T` cannot launder mutability. -/
+/-- E0548 channel send reception: writable-constituent payloads require exclusive
+`new` move handoff so `Channel::recv -> new ?T` cannot launder mutability. -/
 def eligibleChannelSend (requiresMove : Bool) (world : World) (r : Resolved) : Bool :=
   if requiresMove then eligibleMove world r else eligibleSharedCapture world r
 
-theorem cross_fiber_capture_rejects_mutable_or_linear {world : World} {r : Resolved}
+theorem cross_fiber_capture_rejects_mutable_scoped_or_resource {world : World} {r : Resolved}
     (h : eligibleSharedCapture world r = true) :
-    r.grant.linear = false ∧ deepImmutable r = true ∧ live r = true := by
+    r.grant.resource = false ∧ r.permission.isScoped = false ∧
+      deepImmutable r = true ∧ live r = true := by
   simp only [eligibleSharedCapture, receiving, Bool.and_eq_true, Bool.not_eq_true'] at h
-  exact ⟨h.2.1, h.2.2, h.1.1.1⟩
+  exact ⟨h.2.1, h.1.1.1.2, h.2.2, h.1.1.1.1⟩
 
-theorem mutable_or_linear_rejected_by_shared_capture {world : World} {r : Resolved}
-    (hbad : r.grant.linear = true ∨ (r.permission.immutableOrigin = false ∧ r.effective.writes = true)) :
+theorem mutable_scoped_or_resource_rejected_by_shared_capture {world : World} {r : Resolved}
+    (hbad : r.grant.resource = true ∨ r.permission.isScoped = true ∨
+      (r.permission.immutableOrigin = false ∧ r.effective.writes = true)) :
     eligibleSharedCapture world r = false := by
-  rcases hbad with hlin | ⟨hnoOrig, hw⟩
-  · simp [eligibleSharedCapture, receiving, hlin]
+  rcases hbad with hres | hsc | ⟨hnoOrig, hw⟩
+  · simp [eligibleSharedCapture, receiving, hres]
+  · simp [eligibleSharedCapture, receiving, hsc]
   · have hnotImm : r.effective ≠ .immutable := by
       intro heq
       rw [heq] at hw
@@ -147,7 +148,6 @@ structure TaskEntry where
   id : Nat
   regionSigma : Nat
   mode : TaskMode
-  linearResult : Bool := false
   fallibleResult : Bool := false
   consumed : Bool := false
   settled : Bool := false
@@ -158,8 +158,9 @@ structure NurseryState where
   tasks : List TaskEntry := []
   deriving Repr, DecidableEq
 
-/-- `Scope::join`: `asMove = true` models `join(new task)` on exclusive/linear handles;
-`asMove = false` models idempotent memoized `join(task)` on plain `let` handles. -/
+/-- `Async::join(mut s, via task)`: `asMove = true` models `join(mut s, new task)`
+on exclusive handles; `asMove = false` models idempotent memoized `join(mut s, task)`
+on plain `let` handles. -/
 def joinTask (nursery : NurseryState) (taskId taskSigma : Nat) (asMove : Bool) : Option NurseryState := do
   let entry ← nursery.tasks.find? (fun t => decide (t.id = taskId))
   if decide (taskSigma = nursery.activeSigma ∧ entry.regionSigma = nursery.activeSigma) && !entry.consumed then
@@ -170,31 +171,31 @@ def joinTask (nursery : NurseryState) (taskId taskSigma : Nat) (asMove : Bool) :
             if t.id = taskId then { t with consumed := true, settled := true } else t }
       else none
     else
-      if decide (entry.mode = .sharedImmutable) && !entry.linearResult then
+      if decide (entry.mode = .sharedImmutable) then
         some { nursery with
           tasks := nursery.tasks.map fun t =>
             if t.id = taskId then { t with settled := true } else t }
       else none
   else none
 
-/-- `Scope::cancel(new task)`: requires matching nursery region `σ`, an unconsumed
-exclusive handle, and a non-linear task result (`where T is ~Linear`). -/
+/-- `Async::cancel(mut s, new task)`: requires matching nursery region `σ` (`E0604`)
+and an unconsumed exclusive handle (`E0549`). -/
 def cancelTask (nursery : NurseryState) (taskId taskSigma : Nat) : Option NurseryState := do
   let entry ← nursery.tasks.find? (fun t => decide (t.id = taskId))
   if decide (taskSigma = nursery.activeSigma ∧ entry.regionSigma = nursery.activeSigma) &&
-      decide (entry.mode = .exclusiveSingleShot) && !entry.consumed && !entry.linearResult then
+      decide (entry.mode = .exclusiveSingleShot) && !entry.consumed then
     some { nursery with
       tasks := nursery.tasks.map fun t =>
         if t.id = taskId then { t with consumed := true, settled := true } else t }
   else none
 
 def canExitScope (nursery : NurseryState) : Bool :=
-  nursery.tasks.all fun t => t.settled && (!t.linearResult || t.consumed)
+  nursery.tasks.all TaskEntry.settled
 
-/-- Normal `scope` / `Ok` exit barrier: rejects unconsumed linear tasks (`E0721`) and
-uninspected `Result` tasks (`E0720`), then awaits/settles remaining plain tasks. -/
+/-- Normal `scope` / `Ok` exit barrier: rejects uninspected `Result` tasks (`E0720`),
+then awaits/settles remaining plain tasks in reverse spawn order. -/
 def drainPlainTasks (nursery : NurseryState) : Option NurseryState :=
-  if nursery.tasks.any (fun t => (t.linearResult && !t.consumed) || (t.fallibleResult && !t.settled)) then
+  if nursery.tasks.any (fun t => t.fallibleResult && !t.settled) then
     none
   else
     some { nursery with tasks := nursery.tasks.map fun t => { t with settled := true } }
@@ -224,12 +225,11 @@ theorem duplicate_exclusive_task_consumption_rejected
     split at h
     · split at h
       · cases h
-        have hfindNext : nextSigma = nextSigma ∧
+        have hfindNext :
             ((nursery.tasks.map fun t =>
               if t.id = taskId then { t with consumed := true, settled := true } else t).find?
               (fun t => decide (t.id = taskId))) =
               some { entry with consumed := true, settled := true } := by
-          refine ⟨rfl, ?_⟩
           rw [List.find?_map]
           have keepId : ∀ candidate : TaskEntry,
               (if candidate.id = taskId then { candidate with consumed := true, settled := true }
@@ -237,31 +237,9 @@ theorem duplicate_exclusive_task_consumption_rejected
             intro candidate; split <;> rfl
           simp only [Function.comp_def, keepId, hf, Option.map_some, hid, ↓reduceIte]
         unfold joinTask cancelTask
-        simp [hfindNext.2]
+        simp [hfindNext]
       · contradiction
     · contradiction
-
-theorem linear_task_cannot_cancel_or_leak
-    {nursery : NurseryState} {taskId sigma : Nat} {entry : TaskEntry}
-    (hfind : nursery.tasks.find? (fun t => decide (t.id = taskId)) = some entry)
-    (hlin : entry.linearResult = true) :
-    cancelTask nursery taskId sigma = none ∧
-      (entry.consumed = false → canExitScope nursery = false ∧ drainPlainTasks nursery = none) := by
-  refine ⟨?_, ?_⟩
-  · unfold cancelTask
-    simp [hfind, hlin]
-  · intro hunconsumed
-    have hm := List.mem_of_find?_eq_some hfind
-    have hnotExit : canExitScope nursery = false := by
-      cases hc : canExitScope nursery with
-      | false => rfl
-      | true =>
-        have hall := List.all_eq_true.mp hc entry hm
-        simp [hlin, hunconsumed] at hall
-    have hany : (nursery.tasks.any fun t =>
-        (t.linearResult && !t.consumed) || (t.fallibleResult && !t.settled)) = true :=
-      List.any_eq_true.mpr ⟨entry, hm, by simp [hlin, hunconsumed]⟩
-    exact ⟨hnotExit, by simp [drainPlainTasks, hany]⟩
 
 theorem unsettled_fallible_task_blocks_scope_exit
     {nursery : NurseryState} {entry : TaskEntry}
@@ -274,8 +252,7 @@ theorem unsettled_fallible_task_blocks_scope_exit
     | true =>
       have hall := List.all_eq_true.mp hc entry hm
       simp [hunsettled] at hall
-  have hany : (nursery.tasks.any fun t =>
-      (t.linearResult && !t.consumed) || (t.fallibleResult && !t.settled)) = true :=
+  have hany : (nursery.tasks.any fun t => t.fallibleResult && !t.settled) = true :=
     List.any_eq_true.mpr ⟨entry, hm, by simp [hfallible, hunsettled]⟩
   exact ⟨hnotExit, by simp [drainPlainTasks, hany]⟩
 
@@ -285,30 +262,7 @@ theorem drainPlainTasks_enables_scope_exit {nursery drained : NurseryState}
   unfold drainPlainTasks at h
   split at h
   · contradiction
-  · rename_i hnoBad
-    cases h
-    simp only [canExitScope, List.all_map]
-    apply List.all_eq_true.mpr
-    intro t ht
-    have hnotBad : ((t.linearResult && !t.consumed) || (t.fallibleResult && !t.settled)) = false := by
-      cases hb : (t.linearResult && !t.consumed) || (t.fallibleResult && !t.settled) with
-      | false => rfl
-      | true => exact False.elim (hnoBad (List.any_eq_true.mpr ⟨t, ht, hb⟩))
-    cases hlin : t.linearResult <;> cases hcons : t.consumed <;> simp_all
-
-/-- E0721 async cancellation checkpoint guard: unshielded `@Async` suspension points
-cannot be crossed while an active linear token resides inside the cancellable scope;
-`Async::uncancellable` (`uncancellable = true`) shields cancellation unwinding. -/
-def canSuspendAsync (uncancellable : Bool) (delimiterScope : Nat) (authority : World) : Bool :=
-  uncancellable || CoreResumption.canSuspendEffect delimiterScope authority
-
-theorem unshielded_async_blocks_active_linear
-    {delimiterScope : Nat} {authority : World} {token : Token}
-    (hm : token ∈ authority.tokens) (hlin : token.linear = true) (hact : token.active = true)
-    (hinner : delimiterScope < token.scope) :
-    canSuspendAsync false delimiterScope authority = false ∧
-      canSuspendAsync true delimiterScope authority = true := by
-  have ⟨hblock, _⟩ := CoreResumption.active_inner_linear_blocks_suspension hm hlin hact hinner
-  exact ⟨by simp [canSuspendAsync, hblock], by simp [canSuspendAsync]⟩
+  · cases h
+    simp [canExitScope]
 
 end RilAccess.CoreConcurrency

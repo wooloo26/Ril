@@ -122,18 +122,22 @@ def rejectsRoot (shape : RootShape) (value : Value) (source : Input) : Bool :=
 
 def loweringFixtures : List (String × Bool) :=
   let unit := unitValue 4
-  let someShort := lowerUnitVariant 4 (oldOrigin 4) (.payload 801) .emptyCall
-  let someExplicit := lowerUnitVariant 4 (oldOrigin 4) (.payload 801) .unitArgument
+  let someSpaced := lowerUnitVariant 4 (oldOrigin 4) (.payload 801) .spacedUnitArgument
   let noneTag := lowerUnitVariant 4 (oldOrigin 5) (.tag 802) .bare
   [("lowering: unit is a tuple with no shared-object tag",
       RootShape.unit.isTuple && RootShape.unit.objectTag.isNone),
-    ("lowering: Some() and Some(()) lower to the same unit payload",
-      someShort.toOption == someExplicit.toOption &&
-        someShort.toOption.map Cell.contents == some [unit]),
-    ("lowering: None has no payload and None() is rejected",
+    ("lowering: Some () lowers to unit payload while adjacent Some() is rejected (E0125)",
+      someSpaced.toOption.map Cell.contents == some [unit] &&
+        (match lowerUnitVariant 4 (oldOrigin 4) (.payload 801) .adjacentCall with
+         | .error .adjacentConstructorCall => true
+         | _ => false)),
+    ("lowering: None has no payload while None () (E0116) and None() (E0125) are rejected",
       noneTag.toOption.map Cell.contents == some [] &&
-        (match lowerUnitVariant 4 (oldOrigin 5) (.tag 802) .emptyCall with
-         | .error .nullaryVariantCall => true
+        (match lowerUnitVariant 4 (oldOrigin 5) (.tag 802) .spacedUnitArgument with
+         | .error .nullaryVariantArgument => true
+         | _ => false) &&
+        (match lowerUnitVariant 4 (oldOrigin 5) (.tag 802) .adjacentCall with
+         | .error .adjacentConstructorCall => true
          | _ => false)),
     ("derive: unit is rejected even with a matching heap number",
       rejectsRoot .unit unit emptyRecordInput &&
@@ -143,8 +147,8 @@ def loweringFixtures : List (String × Bool) :=
       match prepareRoot (.record 800) (.reference 4) emptyRecordInput with
       | .ok world => world.input.root == 4 && result [done] world.input == some ⟨4, .immutable⟩
       | .error _ => false),
-    ("derive: Some() has a sum object root",
-      match someShort with
+    ("derive: Some () has a sum object root",
+      match someSpaced with
       | .ok cell =>
         match prepareRoot (.sum 801) (.reference 4) (withExtraObject cell) with
         | .ok world => result [done] world.input == some ⟨4, .immutable⟩

@@ -133,9 +133,7 @@ def scopeEscapePreventsMove := sequence [command (.allocate 0 (fixed .mut) []),
   command (.write (path 1))]
 def chainedHandoff := atoms [.allocate 0 (fixed .mut) [], .bind (path 0) 1 (fixed .ref),
   .move 0 2, .move 2 3, .write (path 3)]
-def laterSharedReception := atoms [.allocate 0 (replaceableMode .shared) [],
-  .write (path 0), .allocate 1 (fixed .mut) [], .assign (path 1) 0, .write (path 0)]
-def sharedWriterWithoutReception := atoms [.allocate 0 (replaceableMode .shared) [], .write (path 0)]
+def directSharedAllocate := atoms [.allocate 0 (replaceableMode .shared) [], .write (path 0)]
 
 def confinedResult (program : Syntax) (scope : Nat) : Bool :=
   match check program with
@@ -159,7 +157,7 @@ def fixtures : List (String × Bool) :=
   [("immutable read", accepted immutableRead),
    ("immutable write rejected", !accepted immutableWrite),
    ("local writable use", accepted localWrite),
-   ("idle writer rejected", !accepted idleWriter),
+   ("upper-bound read-only local mut accepted", accepted idleWriter),
    ("live observer", accepted liveObserver),
    ("observer upgrade rejected", !accepted observerUpgrade),
    ("shared writer", accepted sharedWriter),
@@ -181,7 +179,7 @@ def fixtures : List (String × Bool) :=
    ("nested borrowing", accepted nestedBorrow),
    ("temporary sharing rejected", !accepted temporarySharing),
    ("temporary retention rejected", !accepted temporaryRetention),
-   ("idle temporary writer rejected", !accepted idleBorrow),
+   ("upper-bound read-only borrow accepted", accepted idleBorrow),
    ("ended borrower observer rejected", !accepted endedBorrowObserver),
    ("escaping borrower observer rejected", !accepted escapingBorrowObserver),
    ("suspended root replacement rejected", !accepted suspendedReplacement),
@@ -215,8 +213,7 @@ def fixtures : List (String × Bool) :=
    ("scope escape is inferred", accepted scopeSharedEscape),
    ("inferred escape prevents handoff", !accepted scopeEscapePreventsMove),
    ("ended paths permit subsequent handoff", accepted chainedHandoff),
-   ("later shared assignment justifies var shared reception", accepted laterSharedReception),
-   ("writing alone does not justify shared local reception", !accepted sharedWriterWithoutReception)]
+   ("direct shared allocation without reception rejected", !accepted directSharedAllocate)]
 
 theorem fixtures_all_pass : fixtures.all Prod.snd = true := by decide +kernel
 

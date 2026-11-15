@@ -1,8 +1,14 @@
 import RilAccess.Contracts
+import RilAccess.Access.Lifetime
 
-/-! The state/provenance boundary kernel. Handler selection and callback bodies
-arrive through resolved contracts; effect elimination and local discharge must
-preserve their state obligations and concrete environment identities. -/
+/-! The state/provenance and direct `fn`-effect handler boundary kernel.
+Ril effects consist exclusively of direct tail-resumptive `fn` operations:
+- Effect handling discharges covered `@Eff` labels while preserving handler and
+  cleanup state/environment obligations.
+- Completing a `fn` operation arm revokes temporary `mut` operation parameters and
+  dependent observers/loans while preserving outer and retained authority.
+- Across concurrent boundaries (`E0615`), only pure stateless `fn` handlers with
+  admissible outward effects may cross fibers. -/
 namespace RilAccess.CoreBoundary
 
 structure Boundary where
@@ -98,13 +104,84 @@ theorem handled_handler_and_cleanup_writes_survive
   refine ⟨event, List.mem_filter.mpr ⟨hev, ?_⟩, hk, heq⟩
   simp [heq, ho]
 
-/-- E0615 concurrent handler capture guard: only `fn` handlers (`isFn = true`) with
+/-- Direct 1-shot `fn` operation completion over the authority ledger: returning
+from the handler arm revokes temporary `mut` operation parameters for `opScope`
+while preserving retained and outer non-temporary tokens. -/
+def completeFnOp (authority : Integrated.World) (opScope : Nat) : Option Integrated.World :=
+  let after := Integrated.endBoundary authority (Integrated.temporaryWrites authority opScope)
+  if decide (opScope = authority.scope) &&
+      (Integrated.ledgerValid authority && Integrated.ledgerValid after) then
+    some after
+  else none
+
+theorem complete_fn_op_facts {authority next : Integrated.World} {opScope : Nat}
+    (h : completeFnOp authority opScope = some next) :
+    opScope = authority.scope ∧
+    next = Integrated.endBoundary authority (Integrated.temporaryWrites authority opScope) ∧
+    Integrated.WorldInvariant authority ∧
+    Integrated.WorldInvariant next := by
+  unfold completeFnOp at h
+  change (if _ then _ else _) = some next at h
+  split at h
+  · rename_i hc
+    have checks : opScope = authority.scope ∧
+        (Integrated.ledgerValid authority = true ∧
+          Integrated.ledgerValid (Integrated.endBoundary authority (Integrated.temporaryWrites authority opScope)) = true) := by
+      simpa only [Bool.and_eq_true, decide_eq_true_eq] using hc
+    cases h
+    exact ⟨checks.1, rfl, Integrated.ledger_facts checks.2.1, Integrated.ledger_facts checks.2.2⟩
+  · contradiction
+
+theorem complete_fn_op_revokes_temporary_permission
+    {authority next : Integrated.World} {opScope id : Nat}
+    {path : Integrated.Path} {resolved : Integrated.Resolved}
+    (h : completeFnOp authority opScope = some next)
+    (hr : Integrated.resolve next path = some resolved)
+    (hi : id ∈ Integrated.temporaryWrites authority authority.scope)
+    (hd : id ∈ resolved.permission.dependencies) :
+    Integrated.live resolved = false := by
+  obtain ⟨hscope, heq, _, hafter⟩ := complete_fn_op_facts h
+  cases hl : Integrated.live resolved with
+  | false => rfl
+  | true =>
+    have enabled := Integrated.resolved_live_dependencies hafter hr hl
+    have ended : Integrated.lifetimeEnabled next resolved.permission.dependencies = false := by
+      rw [heq, hscope]
+      exact Integrated.dependency_ends_access hi hd
+    simp [ended] at enabled
+
+theorem complete_fn_op_ends_dependent_loan
+    {authority next : Integrated.World} {opScope : Nat} {loan : Integrated.Loan}
+    (h : completeFnOp authority opScope = some next)
+    (hl : loan ∈ next.loans)
+    (hi : loan.token ∈ Integrated.lifetimeClosure authority
+      (Integrated.temporaryWrites authority authority.scope)) :
+    loan.active = false := by
+  obtain ⟨hscope, heq, _, _⟩ := complete_fn_op_facts h
+  rw [heq, hscope] at hl
+  exact Integrated.dependent_loan_inactive hl hi
+
+theorem complete_fn_op_preserves_non_temporary
+    {authority next : Integrated.World} {opScope id : Nat} {token : Integrated.Token}
+    (h : completeFnOp authority opScope = some next)
+    (hlook : Integrated.lookupToken authority id = some token)
+    (hnonTemp : token.temporary = false) :
+    Integrated.lookupToken next id = some token := by
+  obtain ⟨hscope, heq, _, _⟩ := complete_fn_op_facts h
+  have notTemp : id ∉ Integrated.temporaryWrites authority authority.scope := by
+    intro hmem
+    obtain ⟨selected, hs, htemp, _, _⟩ := Integrated.selected_temporary hmem
+    have eq : token = selected := Option.some.inj (hlook.symm.trans hs)
+    cases eq
+    simp [hnonTemp] at htemp
+  rw [heq, hscope, Integrated.unrelated_lookup notTemp]
+  exact hlook
+
+/-- E0615 concurrent handler capture guard: only pure stateless `fn` handlers with
 no writes, retentions, or reference returns, pure immutable Ril/static reads and
-captured environments, and admissible outward effects may be shared across
-`Scope::spawn` or `Parallel::*` boundaries. -/
+captured environments, and admissible outward effects may cross fiber boundaries. -/
 def concurrentShareableFnHandler (pureSources : List Source) (admissibleEffects : List Nat)
-    (isFn : Bool) (handler : Summary) (handlerEnv : List Origin) : Bool :=
-  isFn &&
+    (handler : Summary) (handlerEnv : List Origin) : Bool :=
   handler.rootReturn.isEmpty &&
   handler.contained.isEmpty &&
   handler.writes.isEmpty &&
@@ -117,31 +194,24 @@ def concurrentShareableFnHandler (pureSources : List Source) (admissibleEffects 
 def dischargeSharedFnEffect (branch handler : Summary) (effect : Nat) : Summary :=
   (branch.handle effect).combine handler
 
-theorem ctl_handler_not_concurrent_shareable
-    (pureSources : List Source) (admissibleEffects : List Nat)
-    (handler : Summary) (handlerEnv : List Origin) :
-    concurrentShareableFnHandler pureSources admissibleEffects false handler handlerEnv = false := by
-  simp [concurrentShareableFnHandler]
-
 theorem concurrent_handler_pure_and_stateless
     {pureSources : List Source} {admissibleEffects : List Nat}
-    {isFn : Bool} {handler : Summary} {handlerEnv : List Origin}
-    (h : concurrentShareableFnHandler pureSources admissibleEffects isFn handler handlerEnv = true) :
-    isFn = true ∧
+    {handler : Summary} {handlerEnv : List Origin}
+    (h : concurrentShareableFnHandler pureSources admissibleEffects handler handlerEnv = true) :
     { handler with effects := [] }.isPure pureSources = true ∧
     (∀ o ∈ handlerEnv, isPureOrigin pureSources o = true) ∧
     (∀ e ∈ handler.effects, e ∈ admissibleEffects) := by
   simp only [concurrentShareableFnHandler, Bool.and_eq_true, List.all_eq_true,
     decide_eq_true_eq] at h
-  rcases h with ⟨⟨⟨⟨⟨⟨⟨⟨hfn, hroot⟩, hcont⟩, hwr⟩, hret⟩, hreads⟩, hcrenv⟩, henv⟩, heff⟩
-  refine ⟨hfn, ?_, henv, heff⟩
+  rcases h with ⟨⟨⟨⟨⟨⟨⟨hroot, hcont⟩, hwr⟩, hret⟩, hreads⟩, hcrenv⟩, henv⟩, heff⟩
+  refine ⟨?_, henv, heff⟩
   simp only [Summary.isPure, List.isEmpty_nil, Bool.true_and, Bool.and_eq_true, List.all_eq_true]
   exact ⟨⟨⟨⟨⟨hroot, hcont⟩, hwr⟩, hret⟩, hreads⟩, hcrenv⟩
 
 theorem shared_fn_handler_preserves_branch_isolation
     {pureSources : List Source} {admissibleEffects : List Nat}
-    {isFn : Bool} {branch handler : Summary} {handlerEnv : List Origin} {effect : Nat}
-    (h : concurrentShareableFnHandler pureSources admissibleEffects isFn handler handlerEnv = true) :
+    {branch handler : Summary} {handlerEnv : List Origin} {effect : Nat}
+    (h : concurrentShareableFnHandler pureSources admissibleEffects handler handlerEnv = true) :
     (dischargeSharedFnEffect branch handler effect).writes = branch.writes ∧
     (dischargeSharedFnEffect branch handler effect).retained = branch.retained ∧
     (dischargeSharedFnEffect branch handler effect).rootReturn = branch.rootReturn ∧
@@ -151,7 +221,7 @@ theorem shared_fn_handler_preserves_branch_isolation
     (∀ o ∈ (dischargeSharedFnEffect branch handler effect).namedReads,
       o ∈ branch.namedReads ∨ isPureOrigin pureSources o = true) := by
   have hstat := concurrent_handler_pure_and_stateless h
-  have hpure := hstat.2.1
+  have hpure := hstat.1
   simp only [Summary.isPure, List.isEmpty_nil, Bool.true_and, Bool.and_eq_true,
     List.isEmpty_iff, List.all_eq_true] at hpure
   rcases hpure with ⟨⟨⟨⟨⟨hroot, hcont⟩, hwr⟩, hret⟩, hreads⟩, _⟩
@@ -165,7 +235,7 @@ theorem shared_fn_handler_preserves_branch_isolation
       List.mem_filter, bne_iff_ne, ne_eq] at he
     rcases he with hb | hh
     · exact Or.inl hb
-    · exact Or.inr (hstat.2.2.2 e hh)
+    · exact Or.inr (hstat.2.2 e hh)
   · intro o ho
     simp only [dischargeSharedFnEffect, Summary.combine, Summary.handle, List.mem_append] at ho
     rcases ho with hb | hh

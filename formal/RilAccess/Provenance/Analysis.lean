@@ -6,7 +6,7 @@ namespace RilAccess
 /-- Mechanism labels retain the explanation/lowering site, not extra authority. -/
 inductive Mechanism where
   | binding | aggregate | projection | call | higherOrder | returnValue | closure
-  | via | infer | module | opaque | handler | resume | cleanup | resource
+  | via | infer | module | opaque | handler | cleanup | resource
   | clone | derive | handoff
   deriving Repr, DecidableEq
 

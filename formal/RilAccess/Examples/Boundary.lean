@@ -35,6 +35,23 @@ def pureFnHandler : Summary := { emptySummary with namedReads := [external], eff
 def branchSummary : Summary := { emptySummary with writes := [localOrigin], effects := [3, 10] }
 def dischargedBranch : Summary := dischargeSharedFnEffect branchSummary pureFnHandler 3
 
+def atomStep (w : Integrated.World) (op : Integrated.Atom) : Integrated.World :=
+  (Integrated.checkAtom op w).toOption.getD w
+
+def fnOpAuthority : Integrated.World :=
+  let w := atomStep Integrated.initialWorld (.allocate 0 ⟨false, .mut⟩ [])
+  let w := atomStep w (.bind ⟨0, []⟩ 1 ⟨false, .shared⟩)
+  let w := atomStep w (.retain ⟨1, []⟩)
+  let w := atomStep w .enterScope
+  let w := atomStep w (.parameter ⟨1, []⟩ 2 .mutable)
+  let w := atomStep w (.parameter ⟨2, []⟩ 3 .observe)
+  let w := atomStep w .activateParameters
+  let w := atomStep w (.write ⟨2, []⟩)
+  atomStep w (.read ⟨3, []⟩)
+
+def afterFnOp : Integrated.World := (completeFnOp fnOpAuthority 1).getD fnOpAuthority
+def regLive (w : Integrated.World) (r : Nat) : Bool := (Integrated.resolve w ⟨r, []⟩).any Integrated.live
+
 def fixtures : List (String × Bool) :=
   [("core boundary: closed local state can discharge", (outward privateBoundary 7 9).isEmpty),
    ("core boundary: hidden handler environment blocks discharge", !(outward handlerEnvironment 7 9).isEmpty),
@@ -54,15 +71,23 @@ def fixtures : List (String × Bool) :=
    ("core boundary: foreign identity cannot be rebound", decide (CoreSummary.resolve callInstance (.concrete foreign) = foreign)),
    ("core boundary: local allocation cannot impersonate an entry object", decide ((CoreSummary.resolve callInstance (.fresh localOrigin.source localOrigin.object)).object ∉ callInstance.existingObjects)),
    ("core boundary: local allocation keeps its producer source", decide ((CoreSummary.resolve callInstance (.fresh localOrigin.source localOrigin.object)).source = localOrigin.source)),
+   ("core boundary: fn op arm completion revokes temporary mut parameter and derived observer",
+      regLive fnOpAuthority 2 && regLive fnOpAuthority 3 &&
+      (completeFnOp fnOpAuthority 1).isSome &&
+      !regLive afterFnOp 2 && !regLive afterFnOp 3),
+   ("core boundary: fn op arm completion deactivates operation loans and releases outer writer",
+      afterFnOp.loans.all (fun loan => !loan.active) &&
+      (Integrated.checkAtom (.write ⟨1, []⟩) afterFnOp).isOk),
+   ("core boundary: fn op arm completion preserves outer and retained tokens",
+      (Integrated.lookupToken afterFnOp 0).any Integrated.Token.active &&
+      (Integrated.lookupToken afterFnOp 2).any Integrated.Token.active),
    ("core boundary: pure stateless fn handler is concurrently shareable",
-      concurrentShareableFnHandler pureSources [10] true pureFnHandler [captured]),
-   ("core boundary: ctl handler rejected across concurrent boundary (E0615)",
-      !concurrentShareableFnHandler pureSources [10] false pureFnHandler [captured]),
-   ("core boundary: stateful or foreign-reading fn handler rejected (E0615)",
-      !concurrentShareableFnHandler pureSources [10] true { pureFnHandler with writes := [external] } [] &&
-      !concurrentShareableFnHandler pureSources [10] true { pureFnHandler with namedReads := [foreign] } []),
+      concurrentShareableFnHandler pureSources [10] pureFnHandler [captured]),
+   ("core boundary: stateful or foreign-reading fn handler rejected across fibers (E0615)",
+      !concurrentShareableFnHandler pureSources [10] { pureFnHandler with writes := [external] } [] &&
+      !concurrentShareableFnHandler pureSources [10] { pureFnHandler with namedReads := [foreign] } []),
    ("core boundary: parallel boundary rejects effectful fn handler (E0615)",
-      !concurrentShareableFnHandler pureSources [] true pureFnHandler [captured]),
+      !concurrentShareableFnHandler pureSources [] pureFnHandler [captured]),
    ("core boundary: shared fn handler discharges effect without polluting branch writes",
       decide (dischargedBranch.effects = [10, 10] ∧ dischargedBranch.writes = [localOrigin]))]
 

@@ -37,7 +37,7 @@ def operandRegisters : Atom → List Nat
   | .bind source _ _ | .read source | .write source | .replaceScalar source |
       .retain source | .beginBorrow source _ | .parameter source _ _ => [source.register]
   | .assign source destination => [source.register, destination]
-  | .move source _ | .destructure source => [source]
+  | .move source _ => [source]
   | .pairWrite left right => [left.register, right.register]
   | _ => []
 
@@ -66,7 +66,7 @@ def prepareRaw (arguments : List Argument) : RawState → List RawState :=
     (rawStep (.copy argument.source argument.formal) state).toList.flatMap (prepareRaw rest)
 
 /-- Runtime calls copy evaluated argument handles left-to-right. They do not
-inspect parameter modes, markers, required-use evidence, or authority tokens. -/
+inspect parameter modes, markers, or authority tokens. -/
 def execute : Syntax → RawState → List RawState
   | .access body, state => Integrated.sourceExecute body state
   | .sequence first second, state => (execute first state).flatMap (execute second)
@@ -85,7 +85,7 @@ def evidenceUses (token : Nat) (evidence : Evidence) : Bool :=
     (decide (evidence.rule = .write) || decide (evidence.rule = .replaceScalar) ||
       decide (evidence.rule = .retain))
 
-/-- This checks surviving authority, not writes or object equality. The parent
+/-- This checks surviving authority (`&^mut`), not writes or object equality. The parent
 relation preserves the distinction between independent aliased participants. -/
 def rootedWriter (world : World) (token : Token) : Bool :=
   token.retained || world.permissions.any fun permission =>
@@ -102,17 +102,15 @@ def retainedBeyond (formalToken : Nat) (world : World) : Bool :=
     rootedWriter world token &&
     decide (formalToken ∈ tokenAncestors world.tokens token.id)
 
-def requiredUse (entry : World) (frontier : List World) (argument : Argument) : Bool :=
-  match parameterToken entry argument.formal with
+def formalMutated (entry : World) (frontier : List World) (formal : Nat) : Bool :=
+  match parameterToken entry formal with
   | none => false
-  | some token =>
-    match argument.mode with
-    | .immutable | .observe | .construction => true
-    | .mutable => frontier.any (fun world => world.evidence.any (evidenceUses token))
-    | .retained => frontier.any (retainedBeyond token)
+  | some token => frontier.any (fun world => world.evidence.any (evidenceUses token))
 
-def requiredUses (entry : World) (frontier : List World) (arguments : List Argument) : Bool :=
-  arguments.all (requiredUse entry frontier)
+def formalRetained (entry : World) (frontier : List World) (formal : Nat) : Bool :=
+  match parameterToken entry formal with
+  | none => false
+  | some token => frontier.any (retainedBeyond token)
 
 def finish (worlds : List World) : Except Error (List World) :=
   checkMany (fun world => do
@@ -130,23 +128,18 @@ def infer : Syntax → World → Except Error (List World)
     pure (l ++ r)
   | .invoke arguments captures body, world => do
     if arguments.all (argumentPresent world) &&
-        captures.all (fun reg => !(resolve world ⟨reg, []⟩).any (fun r => r.grant.linear)) then
+        captures.all (fun reg => !(resolve world ⟨reg, []⟩).any (fun r => r.grant.resource || r.permission.isScoped)) then
       let prepared ← Integrated.infer (.sequence (.atom .enterScope) (prepare arguments)) world
       checkMany (fun entry => do
         let front ← infer body entry
-        if requiredUses entry front arguments then finish front else .error .invalidCertificate) prepared
+        finish front) prepared
     else .error .invalidSource
 
 def check (program : Syntax) : Except Error Integrated.Analysis :=
   if valid program && decide (Integrated.binders (lower program)).Nodup then do
     let worlds ← infer program initialWorld
     if worlds.any (fun world => !world.frames.isEmpty) then .error .unclosedScope
-    else if worlds.any hasUnconsumedLinear then .error .unconsumedLinear
-    else
-      match (worlds.flatMap World.requirements).find?
-          (fun requirement => !satisfiesUse (allUses worlds) requirement) with
-      | some requirement => .error (.absentUse requirement)
-      | none => .ok ⟨worlds, worlds.flatMap worldOrigins⟩
+    else .ok ⟨worlds, worlds.flatMap worldOrigins⟩
   else .error .invalidSource
 
 end RilAccess.Calls

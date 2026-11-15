@@ -8,7 +8,7 @@ variable {world next : World} {source destination id : Nat} {resolved derived : 
 theorem move_facts (h : checkAtom (.move source destination) world = .ok next) :
     ∃ resolved, resolve world ⟨source, []⟩ = some resolved ∧ eligibleMove world resolved = true ∧
       next.tokens =
-        ⟨world.nextToken, resolved.pointer, true, false, true, false, world.scope, resolved.permission.dependencies, [], resolved.grant.linear⟩ ::
+        ⟨world.nextToken, resolved.pointer, true, false, true, false, world.scope, resolved.permission.dependencies, []⟩ ::
           (endTokens world resolved.permission.dependencies).tokens ∧
       rawLookup next.raw destination = some resolved.pointer := by
   have executed := (checked_atom_facts h).executed
@@ -28,7 +28,7 @@ theorem move_facts (h : checkAtom (.move source destination) world = .ok next) :
         simpa only [Bool.and_eq_true] using permitted
       cases executed
       refine ⟨resolved, rfl, flags.2, rfl, ?_⟩
-      simp [install, addRequirement, putPermission, markUse, rawLookup, putRaw]
+      simp [install, putPermission, rawLookup, putRaw]
     · contradiction
 
 theorem moved_lookup (h : checkAtom (.move source destination) world = .ok next)

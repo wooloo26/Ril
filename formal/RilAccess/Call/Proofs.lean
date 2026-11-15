@@ -57,10 +57,7 @@ theorem infer_agrees (h : infer program entry = .ok worlds) :
           cases hb : infer body input with
           | error error => simp [hb] at hbody
           | ok front =>
-            simp only [hb, except_bind_ok] at hbody
-            split at hbody
-            · simpa only [Integrated.infer, ih hb, except_bind_ok, finish] using hbody
-            · contradiction
+            simpa only [hb, Integrated.infer, ih hb, except_bind_ok, finish] using hbody
     · contradiction
 
 theorem prepare_erases (arguments : List Argument) (state : RawState) :
@@ -102,12 +99,8 @@ theorem checked_core (h : check program = .ok analysis) :
     simp only [hi, except_bind_ok] at h
     split at h
     · contradiction
-    · split at h
-      · contradiction
-      · split at h
-        · contradiction
-        · cases h
-          exact ⟨infer_agrees hi, rfl⟩
+    · cases h
+      exact ⟨infer_agrees hi, rfl⟩
 
 theorem access_and_provenance (h : check program = .ok analysis)
     (hr : state ∈ execute program initialWorld.raw)
@@ -138,15 +131,15 @@ theorem source_progress (h : check program = .ok analysis) :
   rw [lower_correct]
   exact (infer_faultFree (checked_core h).1).progress
 
-theorem retained_mode_needs_survival
-    (h : requiredUse entry frontier argument = true) (hm : argument.mode = .retained) :
-    ∃ token, parameterToken entry argument.formal = some token ∧
+theorem retained_formal_needs_survival
+    (h : formalRetained entry frontier formal = true) :
+    ∃ token, parameterToken entry formal = some token ∧
       ∃ world ∈ frontier, retainedBeyond token world = true := by
-  unfold requiredUse at h
+  unfold formalRetained at h
   split at h
   · contradiction
   · rename_i token htoken
     refine ⟨token, htoken, ?_⟩
-    simpa [hm, List.any_eq_true] using h
+    simpa [List.any_eq_true] using h
 
 end RilAccess.Calls

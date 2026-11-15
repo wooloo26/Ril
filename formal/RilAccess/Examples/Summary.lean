@@ -37,7 +37,7 @@ def allFields : Template :=
     [.concrete parameterCapture], [freshReference], [6]⟩
 
 def pureConst : Origin := ⟨⟨.module, 50⟩, 0, 50, 0⟩
-def liveVar : Origin := ⟨⟨.module, 51⟩, 0, 51, 0⟩
+def liveVar : Origin := ⟨⟨.capture, 51⟩, 0, 51, 0⟩
 def foreignHandle : Origin := ⟨⟨.foreign, 52⟩, 0, 52, 0⟩
 def pureTable : List Source := [pureConst.source, parameterCapture.source, foreignHandle.source]
 def emptySummary : Summary := ⟨[], [], [], [], [], [], []⟩
@@ -103,7 +103,7 @@ def fixtures : List (String × Bool) :=
       !CoreEntry.separated heap [saved] [sameObject]),
    ("callable match: verified pure .ril read and capture fit empty callable type",
       emptySummary.subsumes pureTable pureReadSummary),
-   ("callable match: live module var read rejected by empty callable type",
+   ("callable match: live captured var read rejected by empty callable type",
       !emptySummary.subsumes pureTable liveReadSummary),
    ("callable match: foreign .d.ril source never qualifies as pure",
       !emptySummary.subsumes pureTable foreignReadSummary),

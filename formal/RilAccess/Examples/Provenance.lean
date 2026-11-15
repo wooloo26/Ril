@@ -77,7 +77,7 @@ def cleanupWrite : ResolvedProgram :=
 
 def handlerWrite : ResolvedProgram := straight
   [.seed 0 parameter, .enter .handler 3, .emit .write 0 false .handler,
-    .leave .resume, .leave .handler]
+    .leave .handler]
   [.present (.event .write parameter)]
 
 def namedModuleRead : ResolvedProgram := straight

@@ -251,32 +251,8 @@ theorem check_infer (h : check program = .ok analysis) :
     simp only [hi, except_bind_ok] at h
     split at h
     · contradiction
-    · split at h
-      · contradiction
-      · split at h
-        · contradiction
-        · cases h
-          exact ⟨rfl, rfl⟩
-
-theorem check_reachable_uses (h : check program = .ok analysis)
-    (hr : requirement ∈ analysis.worlds.flatMap World.requirements) :
-    satisfiesUse (allUses analysis.worlds) requirement = true := by
-  unfold check at h
-  split at h <;> try contradiction
-  cases hi : infer (lower program) initialWorld with
-  | error error => simp [hi] at h
-  | ok worlds =>
-    simp only [hi, except_bind_ok] at h
-    split at h
-    · contradiction
-    · split at h
-      · contradiction
-      · split at h
-        · contradiction
-        · rename_i hnone
-          cases h
-          have hn := List.find?_eq_none.mp hnone requirement hr
-          simpa using hn
+    · cases h
+      exact ⟨rfl, rfl⟩
 
 theorem check_unique_declarations (h : check program = .ok analysis) :
     (binders (lower program)).Nodup := by
