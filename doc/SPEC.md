@@ -463,7 +463,7 @@ TypeReference  ::= QualifiedName [ GenericArgs ]
 
 ### Value Types
 
-`bool`, `int`, `f64`, `str`, `bytes`, `()`, and `never` have no object identity and copy logically by value (implementations may share immutable backing buffers transparently). Value types forbid `ref`, `mut`, and `^mut` access modes in bindings, record fields, collection elements (`E0402`), and parameters (`E0401`).
+`bool`, `int`, `f64`, `str`, `bytes`, `()`, and `never` have no object identity and copy logically by value (implementations may share immutable backing buffers transparently). Value types forbid `ref`, `mut`, and `^mut` access modes in bindings, record fields, collection elements, and `ref`/`^mut` expressions (`E0402`), and in parameters/call markers (`E0401`).
 
 ```ril
 let a = "hello"
@@ -896,10 +896,10 @@ C |- e <= TypeResult ; J              type-producing result checking
 ### Subtyping, Reception, and Contract Compatibility
 
 - **K-RECV (`Receive`)**: Validates receiving an expression of synthesized mode/origins into a target binding, parameter, element, or return schema:
-  - Plain immutable receivers require deeply immutable inputs, or a `new` result with freezable new regions and deeply immutable old-source boundaries (`E0535` on surviving writers or live `ref` origins).
+  - Plain immutable receivers require plain deeply immutable inputs, or a `new` result with freezable new regions and deeply immutable old-source boundaries (`E0535` on surviving writers or `ref` mode/origins).
   - Persistent `mut` bindings, `mut` fields, and `[mut]T` / `[K: mut V]` elements require unshared writable authority or `new` regions free of `^mut` constituents (`E0510` unacknowledged alias, `E0522` container laundering, `E0520` immutable/`ref` source). Temporary `mut` parameters (`fn(mut p: T)`) accept `mut` or `^mut` places under `mut place` / `|> mut` (`E0406` marker mismatch, `E0523`/`E0524` call overlap).
   - Shared `^mut` receivers (`let`/`var ^mut`, `^mut` fields, `[^mut]T` / `[K: ^mut V]` elements) require writable sources (`^mut` acknowledgment on existing roots, `E0510`, or `new` `&up` closures retaining a `^mut` source).
-  - `let ref` requires pinned `let mut` origins, non-`var` `ref` handles, or immutable shared objects (`E0531` on `var` / `var ref` roots, `E0543` on unanchored temporaries). `var ref` requires origins outliving the slot (`E0531`, `E0604`). Mutable heap `ref` slots (`[ref]T`, `[K: ref V]`, `.{ var ref f: T }`) accept only deeply immutable snapshots on write (`E0531` / `E0604` / `E0607`; fresh `new` wrappers record `&return{ref x}`).
+  - `let ref` and `var ref` declarations accept pinned `let mut` origins, non-`var` `ref` handles, or immutable shared objects (`E0531` on `var` / `var ref` roots, `E0543` on unanchored temporaries, `E0604` if not outliving `var ref`). `var ref` reassignments and `ref` member/element slots (`[ref]T`, `[K: ref V]`, `.{ [var] ref f: T }`) require `ref`-mode expressions—existing `ref` bindings/parameters or explicit `ref expr` (`E0357` on bare plain/`mut` values). Writing into an existing mutable heap `ref` slot rejects local live/temporary borrows (`E0531` / `E0604` / `E0607`), while fresh `new` wrappers record `&return{ref x}`.
   - `new` receivers require qualified construction results or `new x` root handoff ending `x` (`E0548`, `E0549`), choosing modes only for new regions while preserving old-source boundaries.
   - Scoped `use [mut] x = expr` anchors `expr` in an implicit block cleanup slot until scope exit, checking `expr` against $\max(M_{\text{body}}, M_{\text{clean}})$ and exposing `ref` (or `mut`) inside the block.
 
@@ -994,7 +994,7 @@ UseResourceDecl       ::= "use" [ "mut" ] ( ValueName | Wildcard ) [ ":" TypeExp
 | `let ^mut x = e` | Pinned (`E0502`) | Shared writable | Existing writable handle (`^mut` marker) or `new` `&up` closure retaining a `^mut` source |
 | `var ^mut x = e` | Reassignable | Shared writable | Writable handle (`^mut` marker on replacement) |
 | `let ref x = e` | Pinned (`E0502`) | Read-only live view (`E0520`) | Pinned `let mut`, non-`var` `ref` handle, or immutable shared object (`E0531` on `var` / `var ref`, `E0543`) |
-| `var ref x = e` | Reassignable | Read-only live view (`E0520`) | Eligible `ref` origin outliving `x` on each assignment (`E0531`, `E0543`, `E0604`) |
+| `var ref x = e` | Reassignable | Read-only live view (`E0520`) | Eligible origin outliving `x` (`ref expr` or `ref` handle on replacement; `E0357`, `E0531`, `E0543`, `E0604`) |
 | `use [mut] x = e` | Pinned & confined (`E0502`, `E0604`) | `ref` (`use x`) or `mut` (`use mut x`) | Satisfies $\max(M_{\text{body}}, M_{\text{clean}})$ for type's `use <fn>` cleanup (`E0541`) |
 
 #### Reachable Authority Use
@@ -1082,11 +1082,16 @@ slot = Doc.{ title: "snap2" }          -- OK: slot replacement of immutable snap
 -- let ref bad_obs = slot              -- Error [E0531]: reassignable 'var' cannot anchor 'let ref'
 
 var ref cur_view = fixed_doc
-cur_view = reader                      -- OK: 'var ref' rebinds when origin outlives slot
+cur_view = ref draft                   -- OK: 'var ref' reassignment takes explicit 'ref'
+-- cur_view = fixed_doc                -- Error [E0357]: 'var ref' slot requires 'ref' expression
 -- let ref bad_vref = cur_view         -- Error [E0531]: reassignable 'var ref' cannot anchor 'let ref'
-let mut views: [ref]Doc = [fixed_doc]
-Array::push(mut views, fixed_doc)      -- OK: immutable snapshot stored in mutable '[ref]Doc'
--- Array::push(mut views, reader)      -- Error [E0531]: mutable heap 'ref' slot rejects live borrow
+
+let mut docs: []Doc = [fixed_doc]      -- OK: plain 'let' snapshots use '[]Doc'
+Array::push(mut docs, fixed_doc)
+-- let mut bad_views: [ref]Doc = [fixed_doc] -- Error [E0357]: plain element does not match '[ref]Doc'
+let mut views = [ref fixed_doc]        -- OK: explicit 'ref' synthesizes '[ref]Doc'
+Array::push(mut views, ref fixed_doc)
+-- Array::push(mut views, reader)      -- Error [E0531]: mutable heap 'ref' slot rejects local live borrow
 ```
 
 ### Scoped Resource Bindings
@@ -1232,12 +1237,14 @@ AdditiveExpr             ::= MultiplicativeExpr { ( "+" | "-" ) MultiplicativeEx
 MultiplicativeExpr       ::= UnaryExpr { ( "*" | "/" | "%" ) UnaryExpr }
 UnaryExpr                ::= ( "-" | "!" | "~" ) UnaryExpr
                            | ConstructionTransferExpr
+                           | ObserveExpr
                            | SharingExpr
                            | ConstructorExpr
                            | PostfixExpr
 ConstructionTransferExpr ::= "new" ValueName
+ObserveExpr              ::= "ref" PostfixExpr
 SharingExpr              ::= "^mut" PostfixExpr
-ConstructorExpr          ::= ConstructorPath [ "new" | "^mut" ] ConstructorArg
+ConstructorExpr          ::= ConstructorPath [ "new" | "ref" | "^mut" ] ConstructorArg
 ConstructorPath          ::= { "Super" "::" } { PathSegment "::" } PascalCase [ GenericArgs ]
 ConstructorArg           ::= ( "!" | "~" ) ConstructorArg
                            | PostfixAtomExpr
@@ -1287,7 +1294,7 @@ MapEntry                 ::= Expression ":" Expression
 | Precedence (high → low) | Operators / forms | Associativity |
 | :---: | :--- | :---: |
 | 1 | `.` `?.` `f(...)` `f \...` `a[i]` `a?[i]` `?` `Type.{...}` `::` | Left |
-| 2 | Unary `-` `!` `~` `^mut e` `new x`, space constructor `Tag arg` | Right |
+| 2 | Unary `-` `!` `~` `ref e` `^mut e` `new x`, space constructor `Tag arg` | Right |
 | 3 | `*` `/` `%` | Left |
 | 4 | `+` `-` | Left |
 | 5 | `<<` `>>` | Left |
@@ -1304,7 +1311,7 @@ MapEntry                 ::= Expression ":" Expression
 | 16 | `=` `+=` `-=` `*=` `/=` `%=` `&=` `\|=` `^=` `<<=` `>>=` | Non-associative (`E0701`) |
 | 17 | `where` (`BlockWhereClause`) | Non-associative |
 
-- **Lexical Adjacency, Argument Markers & Space Construction (`E0125`, `E0406`)**: Function calls attach `(` (`parse(s)`), array/map indexing attaches `[` (`xs[0]`), and all named record constructions attach `.{` (`User.{ id: 1 }`). At the top level of a call `Argument`, leading `new` or `^mut` always parses as the call's `ArgumentMode` marker (`E0406` if mismatched against a plain parameter). Sum variants and non-record nominal constructors require whitespace before their payload (`Ok 42`, `Ok ()`, `Some .{ x: 1 }`, `Some [1, 2]`, `Ok (-1)`). Bare `Block` `{...}` and bare `AnonFnExpr` `\...` are excluded from `ConstructorArg`, so `if opt == None { ... }` and `call(None) \-> ...` parse unambiguously.
+- **Lexical Adjacency, Argument Markers & Space Construction (`E0125`, `E0406`)**: Function calls attach `(` (`parse(s)`), array/map indexing attaches `[` (`xs[0]`), and all named record constructions attach `.{` (`User.{ id: 1 }`). At the top level of a call `Argument`, leading `mut`, `ref`, `^mut`, or `new` always parses as the call's `ArgumentMode` marker (`E0406` if mismatched against a plain parameter). Sum variants and non-record nominal constructors require whitespace before their payload (`Ok 42`, `Ok ()`, `Some .{ x: 1 }`, `Some [1, 2]`, `Ok (-1)`). Bare `Block` `{...}` and bare `AnonFnExpr` `\...` are excluded from `ConstructorArg`, so `if opt == None { ... }` and `call(None) \-> ...` parse unambiguously.
 - **Expression Holes (`...`, `E0360`)**: `...` has type `never`, satisfies any expected type and access mode during partial checking, and suppresses cascading `E0527` / `E0549` diagnostics along paths ending in `...`, while failing complete builds with `E0360: UnfinishedExpressionHoleError`.
 
 ```ril
