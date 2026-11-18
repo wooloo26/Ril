@@ -1,123 +1,36 @@
 # Development scripts
 
-`scripts/` is the shared uv project for repository utilities that are easier to
-write as scripts. Python 3.13 is selected in `.python-version` and dependencies
-are pinned in `uv.lock`.
+Run the commands below from the repository root with uv and Python 3.13.
 
 ## Script quality checks
-
-Run from the repository root:
 
 ```sh
 uv sync --directory scripts --locked
 uv run --directory scripts --locked quality
-```
-
-The quality command runs Ruff formatting checks, Ruff lint, strict mypy, pytest,
-and documentation validation. Each check runs with this project as its working
-directory, so its caches stay here. It reports all failed checks and exits nonzero.
-
-Run individual checks from the repository root:
-
-```sh
-uv run --directory scripts --locked doc_check
-uv run --directory scripts --locked ruff check .
-uv run --directory scripts --locked ruff format --check .
-uv run --directory scripts --locked mypy
 uv run --directory scripts --locked pytest
 ```
 
-To format Python files, run `uv run --directory scripts ruff format .`.
-To update locked dependencies, run `uv lock --directory scripts --upgrade`.
+`quality` runs Ruff formatting and lint checks, mypy, pytest, and `doc_check`.
+
+## Documentation validation
+
+```sh
+uv run --directory scripts --locked doc_check
+uv run --directory scripts --locked doc_check ../doc/SPEC.md
+```
+
+`doc_check` checks Markdown structure, local links, and Ril EBNF. It scans the
+repository by default. Explicit paths are relative to `scripts/`, and the
+selected files share an EBNF production namespace.
 
 ## Formal verification
 
-With `lake` on `PATH`, run this command from the repository root.
+With `lake` on `PATH`, run the Lean build, fixtures, and axiom audit.
 
 ```sh
 uv run --directory scripts --locked formal_check
 ```
 
-The runner builds the Lean project in [`formal/`](../formal/lakefile.toml), checks
-its examples, and audits project declarations. Lake keeps its build products
-under `formal/.lake/`.
-
-The resolved provenance checker takes a closed, typed CFG with concrete
-member schemas. Its certificate covers erased stack-machine prefixes,
-including active recursive calls, and proves progress at every running state.
-Accepted loops and recursive calls can execute indefinitely. Purity concerns
-outward effects and state obligations. A pure callable can have deeply
-immutable return sources, which remain part of callable contract matching.
-Start at [the checker](../formal/RilAccess/Provenance/Kernel.lean) and
-[the erased machine theorems](../formal/RilAccess/Provenance/MachineProofs.lean).
-
-The [shared heap](../formal/RilAccess/Graph/Reachability.lean) computes
-physical reachability for call entry, provenance, and graph authority.
-The [contract representation](../formal/RilAccess/Contracts.lean) can hold
-symbolic references or instantiated origins. [Reference provenance](../formal/RilAccess/Reference/Provenance/Analysis.lean)
-retains the flow-insensitive model and its coverage proofs. The
-[reference reachability reduction](../formal/RilAccess/Reference/Provenance/Limits.lean)
-relates exact source reachability to halting for an arbitrary small-step machine.
-Its undecidability result assumes that the machine can represent the diagonal
-program for any computable proposed decider.
-
-The resolved analysis distinguishes the first object at a site from later
-instances. When a dereference needs a unique later instance, the checker
-reports `summarizedSlot`. Unresolved possible parameter writes report
-`uncertainWrite`. The saturation budget limits analysis work and
-reports `analysisLimit` if closure has yet to be reached. Every successful
-certificate contains the least closed solution. The [SPEC's `E0811` budget](../doc/SPEC.md#pure-type-functions-and-result-restrictions)
-applies to compile-time execution of static roots. The checker selects root
-reception modes for qualified construction results and uses the resolved IR's
-concrete member schemas.
-
-Use [`summarize`](../formal/RilAccess/Provenance/Module.lean) to check a function
-body and export its call-boundary facts for a prepared abstract entry.
-The consumer checks schema and entry compatibility and applies the same
-transfer as the closed-program analysis. Entry summaries specialize to the
-selected abstract entry and its verified call graph.
-
-[Scoped cleanup lowering](../formal/RilAccess/Provenance/Cleanup.lean) models
-resolved synchronous cleanup routines. Normal exit and exceptional exit enter
-LIFO cleanup routes. Each cleanup must return before the route expires its
-resource and invokes the next cleanup. The erased machine preserves the
-exceptional continuation. The [composition fixtures](../formal/RilAccess/Examples/Composition.lean)
-exercise writes through a suspended outer frame and a diverging cleanup that
-keeps later cleanups pending.
-
-## Documentation validation
-
-The default scope is all Markdown in the repository, excluding hidden and common
-generated directories. Explicit input paths are relative to the working directory
-(`scripts/` with the commands above). For example:
-
-```sh
-uv run --directory scripts --locked doc_check ../doc/SPEC.md
-```
-
-Markdown is parsed structurally, including tables and strikethrough. Checks cover
-heading-level jumps, unclosed or unlabelled code fences, and local links/images.
-Heading anchors use GitHub-style lowercasing, punctuation removal, Unicode
-letters/numbers/marks, and duplicate suffixes; explicit HTML IDs and named anchors
-are also recognized. Remote URLs are skipped. Link locations identify the
-containing Markdown block; EBNF columns are relative to the extracted code.
-
-EBNF blocks share a production namespace across the selected files. Checks cover
-malformed productions, unbalanced delimiters, invalid lexical ranges, duplicate
-definitions and undefined nonterminal references, including forward references
-between blocks. Quoted terminals are literal spellings, including SPEC's quoted
-single backslash. Compact character classes containing ranges, negation or
-escapes are recognized; `[Name]` and `[ Name ]` remain optional references.
-
-The `Grammar Notation` section is syntax-checked as explanatory notation without
-exporting its schematic productions or resolving its metavariables. The small,
-documented list of prose-defined lexical names and the notation-section setting
-live in `[tool.doc_check]` in `pyproject.toml`; unknown names are never silently
-accepted. Selecting only part of the grammar can report references defined in
-unselected files.
-
-These checks do not execute Ril examples or prove grammar unambiguity, operator
-precedence, typing, access modes, effects or other semantic conformance rules.
-
-Diagnostics use `path:line:column: CODE message`. Exit status is 0 for success,
-1 for validation errors, and 2 for invalid input or invocation.
+The runtime proofs cover finite execution prefixes, including prefixes of
+diverging runs. See the [checker](../formal/RilAccess/Provenance/Kernel.lean)
+and [machine proofs](../formal/RilAccess/Provenance/MachineProofs.lean).
