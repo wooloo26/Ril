@@ -205,8 +205,8 @@ theorem concurrent_handler_pure_and_stateless
     decide_eq_true_eq] at h
   rcases h with ⟨⟨⟨⟨⟨⟨⟨hroot, hcont⟩, hwr⟩, hret⟩, hreads⟩, hcrenv⟩, henv⟩, heff⟩
   refine ⟨?_, henv, heff⟩
-  simp only [Summary.isPure, List.isEmpty_nil, Bool.true_and, Bool.and_eq_true, List.all_eq_true]
-  exact ⟨⟨⟨⟨⟨hroot, hcont⟩, hwr⟩, hret⟩, hreads⟩, hcrenv⟩
+  rw [List.isEmpty_iff.mp hroot, List.isEmpty_iff.mp hcont] at *
+  simpa [Summary.isPure, hwr, hret, List.all_eq_true] using And.intro hreads hcrenv
 
 theorem shared_fn_handler_preserves_branch_isolation
     {pureSources : List Source} {admissibleEffects : List Nat}
@@ -221,10 +221,9 @@ theorem shared_fn_handler_preserves_branch_isolation
     (∀ o ∈ (dischargeSharedFnEffect branch handler effect).namedReads,
       o ∈ branch.namedReads ∨ isPureOrigin pureSources o = true) := by
   have hstat := concurrent_handler_pure_and_stateless h
-  have hpure := hstat.1
-  simp only [Summary.isPure, List.isEmpty_nil, Bool.true_and, Bool.and_eq_true,
-    List.isEmpty_iff, List.all_eq_true] at hpure
-  rcases hpure with ⟨⟨⟨⟨⟨hroot, hcont⟩, hwr⟩, hret⟩, hreads⟩, _⟩
+  simp only [concurrentShareableFnHandler, Bool.and_eq_true, List.isEmpty_iff,
+    List.all_eq_true] at h
+  rcases h with ⟨⟨⟨⟨⟨⟨⟨hroot, hcont⟩, hwr⟩, hret⟩, hreads⟩, _⟩, _⟩, _⟩
   refine ⟨?_, ?_, ?_, ?_, ?_, ?_⟩
   · simp [dischargeSharedFnEffect, Summary.combine, Summary.handle, hwr]
   · simp [dischargeSharedFnEffect, Summary.combine, Summary.handle, hret]

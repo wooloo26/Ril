@@ -74,11 +74,19 @@ def Visibility.min (a b : Visibility) : Visibility :=
 def pathVisibility (moduleHasPub : Bool) (enclosingSubs : List Visibility) (declVis : Visibility) : Visibility :=
   enclosingSubs.foldl Visibility.min (effectiveVisibility moduleHasPub declVis)
 
-/-- E0910: Every type or `use` cleanup handler referenced by a declaration's public
-interface must have effective visibility at least as wide as the declaration. -/
-def signatureWellFormed (moduleHasPub : Bool) (declVis : Visibility) (referencedVis : List Visibility) : Bool :=
-  let eff := effectiveVisibility moduleHasPub declVis
-  referencedVis.all fun itemVis => Visibility.le eff (effectiveVisibility moduleHasPub itemVis)
+structure DeclarationVisibility where
+  moduleHasPub : Bool
+  enclosingSubs : List Visibility
+  declared : Visibility
+  deriving Repr, DecidableEq
+
+def DeclarationVisibility.effective (decl : DeclarationVisibility) : Visibility :=
+  pathVisibility decl.moduleHasPub decl.enclosingSubs decl.declared
+
+/-- E0910: Every reference in a public interface must have effective visibility
+at least as wide as the declaration. -/
+def signatureWellFormed (decl : DeclarationVisibility) (references : List DeclarationVisibility) : Bool :=
+  references.all fun item => Visibility.le decl.effective item.effective
 
 inductive TopLevelBindingKind where
   | pureConst
@@ -92,13 +100,7 @@ def validTopLevelBinding : TopLevelBindingKind → Bool
   | .pureConst | .metaConst => true
   | .mutableOrLiveState => false
 
-inductive SumOrigin where
-  | rilPkg
-  | foreignDecl
-  deriving Repr, DecidableEq
-
 structure SumDef where
-  origin : SumOrigin
   vis : Visibility
   op : Opacity
   extensible : Bool
@@ -109,7 +111,7 @@ def canMatchVariants (s : SumDef) (ctx : ObserverContext) : Bool :=
   representationTransparent s.vis s.op ctx
 
 def requiresWildcard (s : SumDef) (ctx : ObserverContext) : Bool :=
-  s.extensible && (decide (s.origin = .foreignDecl) || decide (ctx = .externalPkg))
+  s.extensible && decide (ctx = .externalPkg)
 
 /-- Exhaustiveness and non-redundancy check for sum pattern matching:
 - Open sums (`requiresWildcard = true`) require a wildcard arm even if all currently
@@ -148,14 +150,10 @@ theorem pubPkg_hidden_externally :
     visibleFrom .pubPkg .externalPkg = false := by
   decide
 
-theorem signature_rejects_pubPkg_leak {refs : List Visibility}
-    (hmem : Visibility.pubPkg ∈ refs) :
-    signatureWellFormed true .pubExport refs = false := by
-  cases hs : signatureWellFormed true .pubExport refs with
-  | false => rfl
-  | true =>
-    have hall := List.all_eq_true.mp hs .pubPkg hmem
-    simp [effectiveVisibility, Visibility.le, Visibility.rank] at hall
+theorem signature_visibility_iff (decl : DeclarationVisibility) (refs : List DeclarationVisibility) :
+    signatureWellFormed decl refs = true ↔
+      ∀ ref ∈ refs, decl.effective.rank ≤ ref.effective.rank := by
+  simp [signatureWellFormed, Visibility.le, List.all_eq_true]
 
 theorem topLevel_rejects_mutable_and_live_state :
     validTopLevelBinding .pureConst = true ∧
@@ -163,34 +161,26 @@ theorem topLevel_rejects_mutable_and_live_state :
     validTopLevelBinding .mutableOrLiveState = false := by
   decide
 
-theorem ril_extensible_closed_inside_pkg {s : SumDef} {ctx : ObserverContext} {covered : List Nat}
-    (horig : s.origin = .rilPkg) (hext : s.extensible = true)
+theorem extensible_closed_inside_pkg {s : SumDef} {ctx : ObserverContext} {covered : List Nat}
     (hctx : ctx = .sameScope ∨ ctx = .samePkg)
     (hcan : canMatchVariants s ctx = true)
     (hall : ∀ v ∈ s.variants, v ∈ covered) :
     exhaustiveMatch s ctx covered false = true ∧
       exhaustiveMatch s ctx covered true = false := by
   have hreq : requiresWildcard s ctx = false := by
-    rcases hctx with rfl | rfl <;> simp [requiresWildcard, horig, hext]
+    rcases hctx with rfl | rfl <;> simp [requiresWildcard]
   have hallBool : (s.variants.all fun v => decide (v ∈ covered)) = true :=
     List.all_eq_true.mpr (fun v hv => decide_eq_true (hall v hv))
   simp [exhaustiveMatch, hcan, hreq, hallBool]
 
-theorem ril_extensible_open_outside_pkg {s : SumDef} {covered : List Nat}
-    (horig : s.origin = .rilPkg) (hext : s.extensible = true)
+theorem extensible_open_outside_pkg {s : SumDef} {covered : List Nat}
+    (hext : s.extensible = true)
     (hcan : canMatchVariants s .externalPkg = true) :
     exhaustiveMatch s .externalPkg covered false = false ∧
       exhaustiveMatch s .externalPkg covered true = true := by
   have hreq : requiresWildcard s .externalPkg = true := by
-    simp [requiresWildcard, horig, hext]
+    simp [requiresWildcard, hext]
   simp [exhaustiveMatch, hcan, hreq]
-
-theorem foreign_extensible_open_everywhere {s : SumDef} {ctx : ObserverContext} {covered : List Nat}
-    (horig : s.origin = .foreignDecl) (hext : s.extensible = true) :
-    exhaustiveMatch s ctx covered false = false := by
-  have hreq : requiresWildcard s ctx = true := by
-    simp [requiresWildcard, horig, hext]
-  simp [exhaustiveMatch, hreq]
 
 theorem opaqueScope_sum_blocks_outside_scope_match {s : SumDef} {ctx : ObserverContext}
     {covered : List Nat} {hasWildcard : Bool}

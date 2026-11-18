@@ -11,7 +11,8 @@ structure CleanupSlot where
 
 /-- Resolved synchronous cleanup dispatch. Each registration captures the
     handler that is active at that declaration. The target accepts one mutable
-    resource parameter and completes normally on the supported slice. -/
+    resource parameter. The route advances to the next resource when the call
+    returns normally. Panics raised by cleanup routines are outside this model. -/
 inductive ScopeDeclaration where
   | handler (effect target : Nat)
   | resource (slot : CleanupSlot) (effect : Option Nat := none)
@@ -46,6 +47,21 @@ theorem cleanupRoute_lifo (first : Nat) (resources : List CleanupSlot) :
   rw [mapped]
   change resources.reverse.zipIdx.map (CleanupSlot.closer ∘ Prod.fst) = _
   rw [← List.map_map, List.zipIdx_map_fst]
+
+/-- A cleanup call saves a normal continuation to resource expiry. Unwinding
+    skips this continuation because the call supplies no abort target. -/
+theorem cleanupRoute_call_continuation
+    (member : Instruction.invoke target args destination next onAbort ∈ cleanupRoute first resources) :
+    onAbort = none ∧
+      ∃ register, Instruction.step [.expire register] (next + 1) ∈ cleanupRoute first resources := by
+  unfold cleanupRoute at *
+  obtain ⟨⟨slot, index⟩, found, instruction⟩ := List.mem_flatMap.mp member
+  simp only [List.mem_cons, List.not_mem_nil, or_false] at instruction
+  rcases instruction with call | expiry
+  · cases call
+    refine ⟨rfl, slot.register, List.mem_flatMap.mpr ⟨(slot, index), found, ?_⟩⟩
+    simp
+  · cases expiry
 
 /-- The abort continuation enters the same checked cleanup sequence as normal
     exit and then continues unwinding. Registration and expiry are erased. -/

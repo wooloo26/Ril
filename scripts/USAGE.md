@@ -45,6 +45,9 @@ under `formal/.lake/`.
 The resolved provenance checker takes a closed, typed CFG with concrete
 member schemas. Its certificate covers erased stack-machine prefixes,
 including active recursive calls, and proves progress at every running state.
+Accepted loops and recursive calls can execute indefinitely. Purity concerns
+outward effects and state obligations. A pure callable can have deeply
+immutable return sources, which remain part of callable contract matching.
 Start at [the checker](../formal/RilAccess/Provenance/Kernel.lean) and
 [the erased machine theorems](../formal/RilAccess/Provenance/MachineProofs.lean).
 
@@ -52,14 +55,19 @@ The [shared heap](../formal/RilAccess/Graph/Reachability.lean) computes
 physical reachability for call entry, provenance, and graph authority.
 The [contract representation](../formal/RilAccess/Contracts.lean) can hold
 symbolic references or instantiated origins. [Reference provenance](../formal/RilAccess/Reference/Provenance/Analysis.lean)
-retains the flow-insensitive model and its coverage proofs.
+retains the flow-insensitive model and its coverage proofs. The
+[reference reachability reduction](../formal/RilAccess/Reference/Provenance/Limits.lean)
+relates exact source reachability to halting for an arbitrary small-step machine.
+Its undecidability result assumes that the machine can represent the diagonal
+program for any computable proposed decider.
 
 The resolved analysis distinguishes the first object at a site from later
 instances. When a dereference needs a unique later instance, the checker
 reports `summarizedSlot`. Unresolved possible parameter writes report
 `uncertainWrite`. The saturation budget limits analysis work and
 reports `analysisLimit` if closure has yet to be reached. Every successful
-certificate contains the least closed solution. The checker selects root
+certificate contains the least closed solution. The [SPEC's `E0811` budget](../doc/SPEC.md#pure-type-functions-and-result-restrictions)
+applies to compile-time execution of static roots. The checker selects root
 reception modes for qualified construction results and uses the resolved IR's
 concrete member schemas.
 
@@ -70,11 +78,12 @@ transfer as the closed-program analysis. Entry summaries specialize to the
 selected abstract entry and its verified call graph.
 
 [Scoped cleanup lowering](../formal/RilAccess/Provenance/Cleanup.lean) models
-resolved synchronous cleanup routines that complete normally. Normal exit
-and exceptional exit enter LIFO cleanup routes. The checker verifies that
-resources expire in that order, and the erased machine preserves the
+resolved synchronous cleanup routines. Normal exit and exceptional exit enter
+LIFO cleanup routes. Each cleanup must return before the route expires its
+resource and invokes the next cleanup. The erased machine preserves the
 exceptional continuation. The [composition fixtures](../formal/RilAccess/Examples/Composition.lean)
-exercise a cleanup handler's write through a suspended outer frame.
+exercise writes through a suspended outer frame and a diverging cleanup that
+keeps later cleanups pending.
 
 ## Documentation validation
 

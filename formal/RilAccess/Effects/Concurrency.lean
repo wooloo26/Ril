@@ -12,30 +12,50 @@ inductive CaptureFlavor where
   | sharedImmutable | singleShotMove
   deriving Repr, DecidableEq
 
-/-- E0601 shared cross-fiber capture check: concurrent task closures may share only
-non-resource, non-scoped, deeply immutable bindings with no conflicting active writes. -/
+private def sendableMember (access : Access) : Bool :=
+  access != .ref && access != .shared
+
+/-- The data fragment of Sendable represented by the permission ledger. -/
+def sendableData (r : Resolved) : Bool :=
+  !r.grant.resource && r.grant.schema.all fun field =>
+    !(r.pointer.fields.isPrefixOf field.coordinate && r.pointer.fields != field.coordinate) ||
+      sendableMember field.mode.access
+
+/-- E0601 permits shared capture of pinned deeply immutable bindings. -/
 def eligibleSharedCapture (world : World) (r : Resolved) : Bool :=
-  receiving world r ⟨false, .immutable⟩ world.scope
+  receiving world r ⟨false, .immutable⟩ world.scope &&
+    !r.permission.mode.replaceable && (r.permission.mode.access == .immutable) &&
+    r.members.all sendableMember && sendableData r
 
 def spawnSharedCapture (world : World) (source : Path) (childDestination : Nat) : Except Error World :=
-  checkAtom (.bind source childDestination ⟨false, .immutable⟩) world
+  let bind := Atom.bind source childDestination ⟨false, .immutable⟩
+  if (resolve world source).any (eligibleSharedCapture world) then checkAtom bind world
+  else .error (.rejected bind)
 
 /-- Single-shot task closures (`run`, `spawn`, `zip`, `try_zip`, `race`, `supervise`,
 `timeout_ms`) may consume a qualified `new` binding once via move handoff (`E0549`). -/
 def spawnMoveCapture (world : World) (source childDestination : Nat) : Except Error World :=
-  checkAtom (.move source childDestination) world
+  let move := Atom.move source childDestination
+  if (resolve world ⟨source, []⟩).any sendableData then checkAtom move world
+  else .error (.rejected move)
 
 /-- E0548 channel send reception: writable-constituent payloads require exclusive
 `new` move handoff so `Channel::recv -> new ?T` cannot launder mutability. -/
 def eligibleChannelSend (requiresMove : Bool) (world : World) (r : Resolved) : Bool :=
-  if requiresMove then eligibleMove world r else eligibleSharedCapture world r
+  sendableData r &&
+    (if requiresMove then eligibleMove world r else receiving world r ⟨false, .immutable⟩ world.scope)
 
 theorem cross_fiber_capture_rejects_mutable_scoped_or_resource {world : World} {r : Resolved}
     (h : eligibleSharedCapture world r = true) :
     r.grant.resource = false ∧ r.permission.isScoped = false ∧
-      deepImmutable r = true ∧ live r = true := by
-  simp only [eligibleSharedCapture, receiving, Bool.and_eq_true, Bool.not_eq_true'] at h
-  exact ⟨h.2.1, h.1.1.1.2, h.2.2, h.1.1.1.1⟩
+      deepImmutable r = true ∧ live r = true ∧
+      r.permission.mode.replaceable = false ∧ r.permission.mode.access = .immutable ∧
+      sendableData r = true := by
+  simp only [eligibleSharedCapture, Bool.and_eq_true, Bool.not_eq_true', beq_iff_eq] at h
+  obtain ⟨⟨⟨⟨received, pinned⟩, mode⟩, _⟩, sendable⟩ := h
+  simp only [receiving, Bool.and_eq_true, Bool.not_eq_true'] at received
+  exact ⟨received.2.1, received.1.1.1.2, received.2.2, received.1.1.1.1,
+    pinned, mode, sendable⟩
 
 theorem mutable_scoped_or_resource_rejected_by_shared_capture {world : World} {r : Resolved}
     (hbad : r.grant.resource = true ∨ r.permission.isScoped = true ∨
@@ -123,17 +143,24 @@ theorem spawned_move_disjoint_from_parent_live_permissions
     {world next : World} {source childDestination : Nat} {resolved : Resolved}
     (h : spawnMoveCapture world source childDestination = .ok next)
     (hr : resolve world ⟨source, []⟩ = some resolved) :
+    sendableData resolved = true ∧
     rawLookup next.raw childDestination = some resolved.pointer ∧
     (∀ dep ∈ resolved.permission.dependencies, (lookupToken next dep).any Token.active = false) ∧
     (∀ path derived dep, resolve next path = some derived →
       dep ∈ derived.permission.dependencies → dep ∈ resolved.permission.dependencies →
       live derived = false) := by
-  obtain ⟨actual, hres, hptr⟩ := handoff_preserves_identity h
+  have sendable : sendableData resolved = true := by
+    by_cases hs : sendableData resolved = true
+    · exact hs
+    · simp [spawnMoveCapture, hr, hs] at h
+  have moved : checkAtom (.move source childDestination) world = .ok next := by
+    simpa [spawnMoveCapture, hr, sendable] using h
+  obtain ⟨actual, hres, hptr⟩ := handoff_preserves_identity moved
   have eq : actual = resolved := Option.some.inj (hres.symm.trans hr)
   subst actual
-  exact ⟨hptr,
-    fun dep hdep => handoff_revokes_dependency h hr hdep,
-    fun path derived dep hcur hdep hold => handoff_ends_derived_access h hr hcur hdep hold⟩
+  exact ⟨sendable, hptr,
+    fun dep hdep => handoff_revokes_dependency moved hr hdep,
+    fun path derived dep hcur hdep hold => handoff_ends_derived_access moved hr hcur hdep hold⟩
 
 theorem frozen_object_cannot_launder_mutability_via_channel
     {world : World} {r : Resolved} (hfrozen : r.effective = .immutable) :
@@ -151,6 +178,7 @@ structure TaskEntry where
   fallibleResult : Bool := false
   consumed : Bool := false
   settled : Bool := false
+  pendingInspections : Nat := 0
   deriving Repr, DecidableEq
 
 structure NurseryState where
@@ -158,24 +186,22 @@ structure NurseryState where
   tasks : List TaskEntry := []
   deriving Repr, DecidableEq
 
+private def TaskEntry.joined (entry : TaskEntry) (asMove : Bool) : TaskEntry :=
+  { entry with
+    consumed := asMove
+    settled := true
+    pendingInspections := entry.pendingInspections + entry.fallibleResult.toNat }
+
 /-- `Fiber::join(mut s, via task)`: `asMove = true` models `join(mut s, new task)`
 on exclusive handles; `asMove = false` models idempotent memoized `join(mut s, task)`
-on plain `let` handles. -/
+on plain `let` handles. Inspection of the returned Result is a separate action. -/
 def joinTask (nursery : NurseryState) (taskId taskSigma : Nat) (asMove : Bool) : Option NurseryState := do
   let entry ← nursery.tasks.find? (fun t => decide (t.id = taskId))
-  if decide (taskSigma = nursery.activeSigma ∧ entry.regionSigma = nursery.activeSigma) && !entry.consumed then
-    if asMove then
-      if decide (entry.mode = .exclusiveSingleShot) then
-        some { nursery with
-          tasks := nursery.tasks.map fun t =>
-            if t.id = taskId then { t with consumed := true, settled := true } else t }
-      else none
-    else
-      if decide (entry.mode = .sharedImmutable) then
-        some { nursery with
-          tasks := nursery.tasks.map fun t =>
-            if t.id = taskId then { t with settled := true } else t }
-      else none
+  let mode := if asMove then TaskMode.exclusiveSingleShot else .sharedImmutable
+  if decide (taskSigma = nursery.activeSigma ∧ entry.regionSigma = nursery.activeSigma) &&
+      !entry.consumed && decide (entry.mode = mode) then
+    some { nursery with tasks := nursery.tasks.map fun t =>
+      if t.id = taskId then t.joined asMove else t }
   else none
 
 /-- `Fiber::cancel(mut s, new task)`: requires matching nursery region `σ` (`E0604`)
@@ -189,13 +215,25 @@ def cancelTask (nursery : NurseryState) (taskId taskSigma : Nat) : Option Nurser
         if t.id = taskId then { t with consumed := true, settled := true } else t }
   else none
 
-def canExitScope (nursery : NurseryState) : Bool :=
-  nursery.tasks.all TaskEntry.settled
+/-- Record the inspection of the Result produced by a successful join. -/
+def inspectJoinedResult (nursery : NurseryState) (taskId taskSigma : Nat) : Option NurseryState := do
+  let entry ← nursery.tasks.find? (fun t => decide (t.id = taskId))
+  if decide (taskSigma = nursery.activeSigma ∧ entry.regionSigma = nursery.activeSigma) &&
+      entry.fallibleResult && entry.settled && decide (entry.pendingInspections > 0) then
+    some { nursery with tasks := nursery.tasks.map fun t =>
+      if t.id = taskId then { t with pendingInspections := t.pendingInspections - 1 } else t }
+  else none
 
-/-- Normal `scope` / `Ok` exit barrier: rejects uninspected `Result` tasks (`E0720`),
-then awaits/settles remaining plain tasks in reverse spawn order. -/
+def TaskEntry.pendingResult (entry : TaskEntry) : Bool :=
+  entry.fallibleResult && !(entry.settled && decide (entry.pendingInspections = 0))
+
+def canExitScope (nursery : NurseryState) : Bool :=
+  nursery.tasks.all fun entry => entry.settled && !entry.pendingResult
+
+/-- Static normal-exit barrier (`E0720`). Once Result obligations are handled,
+implicit awaits can settle the remaining plain tasks. -/
 def drainPlainTasks (nursery : NurseryState) : Option NurseryState :=
-  if nursery.tasks.any (fun t => t.fallibleResult && !t.settled) then
+  if nursery.tasks.any TaskEntry.pendingResult then
     none
   else
     some { nursery with tasks := nursery.tasks.map fun t => { t with settled := true } }
@@ -221,39 +259,34 @@ theorem duplicate_exclusive_task_consumption_rejected
     have hid : entry.id = taskId := of_decide_eq_true
       (List.find?_some (p := fun candidate : TaskEntry => decide (candidate.id = taskId)) hf)
     simp only [hf, ↓reduceIte] at h
-    change (if _ then if _ then _ else _ else _) = some next at h
+    change (if _ then _ else _) = some next at h
     split at h
-    · split at h
-      · cases h
-        have hfindNext :
-            ((nursery.tasks.map fun t =>
-              if t.id = taskId then { t with consumed := true, settled := true } else t).find?
-              (fun t => decide (t.id = taskId))) =
-              some { entry with consumed := true, settled := true } := by
-          rw [List.find?_map]
-          have keepId : ∀ candidate : TaskEntry,
-              (if candidate.id = taskId then { candidate with consumed := true, settled := true }
-               else candidate).id = candidate.id := by
-            intro candidate; split <;> rfl
-          simp only [Function.comp_def, keepId, hf, Option.map_some, hid, ↓reduceIte]
-        unfold joinTask cancelTask
-        simp [hfindNext]
-      · contradiction
+    · cases h
+      have hfindNext :
+          ((nursery.tasks.map fun t => if t.id = taskId then t.joined true else t).find?
+            (fun t => decide (t.id = taskId))) = some (entry.joined true) := by
+        rw [List.find?_map]
+        have keepId : ∀ candidate : TaskEntry,
+            (if candidate.id = taskId then candidate.joined true else candidate).id = candidate.id := by
+          intro candidate; split <;> rfl
+        simp only [Function.comp_def, keepId, hf, Option.map_some, hid, ↓reduceIte]
+      unfold joinTask cancelTask
+      simp only [hfindNext]
+      simp [TaskEntry.joined]
     · contradiction
 
-theorem unsettled_fallible_task_blocks_scope_exit
+theorem pending_result_blocks_scope_exit
     {nursery : NurseryState} {entry : TaskEntry}
-    (hm : entry ∈ nursery.tasks) (hfallible : entry.fallibleResult = true)
-    (hunsettled : entry.settled = false) :
+    (hm : entry ∈ nursery.tasks) (hpending : entry.pendingResult = true) :
     canExitScope nursery = false ∧ drainPlainTasks nursery = none := by
   have hnotExit : canExitScope nursery = false := by
     cases hc : canExitScope nursery with
     | false => rfl
     | true =>
       have hall := List.all_eq_true.mp hc entry hm
-      simp [hunsettled] at hall
-  have hany : (nursery.tasks.any fun t => t.fallibleResult && !t.settled) = true :=
-    List.any_eq_true.mpr ⟨entry, hm, by simp [hfallible, hunsettled]⟩
+      simp [hpending] at hall
+  have hany : nursery.tasks.any TaskEntry.pendingResult = true :=
+    List.any_eq_true.mpr ⟨entry, hm, hpending⟩
   exact ⟨hnotExit, by simp [drainPlainTasks, hany]⟩
 
 theorem drainPlainTasks_enables_scope_exit {nursery drained : NurseryState}
@@ -262,7 +295,18 @@ theorem drainPlainTasks_enables_scope_exit {nursery drained : NurseryState}
   unfold drainPlainTasks at h
   split at h
   · contradiction
-  · cases h
-    simp [canExitScope]
+  · rename_i clear
+    cases h
+    simp only [canExitScope, List.all_map, List.all_eq_true, Function.comp_def, Bool.true_and]
+    intro entry member
+    have pending : entry.pendingResult = false := by
+      cases hp : entry.pendingResult
+      · rfl
+      · exact False.elim (clear (List.any_eq_true.mpr ⟨entry, member, hp⟩))
+    by_cases fallible : entry.fallibleResult = true
+    · have completed : entry.settled = true ∧ entry.pendingInspections = 0 := by
+        simpa [TaskEntry.pendingResult, fallible, Bool.and_eq_true] using pending
+      simp [TaskEntry.pendingResult, completed.2]
+    · simp [TaskEntry.pendingResult, fallible]
 
 end RilAccess.CoreConcurrency

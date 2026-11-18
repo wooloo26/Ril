@@ -23,6 +23,12 @@ def cleanupProgram (writes : Bool) : Program :=
   let failing : Function := ⟨[], {}, [.abort]⟩
   ⟨[main, wrapper, closingWorker, writingHandler, failing, failing], []⟩
 
+def divergingCleanupProgram : Program :=
+  let resources := [.resource ⟨0, 10, 1, []⟩, .resource ⟨1, 11, 2, []⟩]
+  let main : Function := { code := lowerScope resources 3 [] }
+  let diverging : Function := { closingWorker with code := [.step [.write 0] 1, .branch [1]] }
+  ⟨[main, closingWorker, diverging, { code := [.ret none] }], []⟩
+
 def replaceCleanupInstruction (pc : Nat) (instruction : Instruction) : Program :=
   let program := cleanupProgram true
   let wrapper := program.functions[1]?.getD ⟨[], {}, []⟩
@@ -55,6 +61,8 @@ def summaryReuse (mismatch : Bool) : Bool :=
 def compositionFixtures : List (String × Bool) :=
   [("composition: exceptional exit closes both resources through the installed handler",
     (check (cleanupProgram true)).isOk),
+   ("composition: the checker accepts a synchronous cleanup that diverges",
+    (check divergingCleanupProgram).isOk),
    ("composition: an outer write by a cleanup handler requires its caller's state row",
     match check (cleanupProgram false) with
     | .error err => err.function == 1 && err.error == .contract
@@ -75,6 +83,41 @@ def compositionFixtures : List (String × Bool) :=
    ("composition: an incompatible abstract entry cannot reuse the summary", summaryReuse true)]
 
 theorem compositionFixtures_pass : compositionFixtures.all Prod.snd = true := by decide +kernel
+
+theorem diverging_cleanup_stays_in_first_cleanup_call :
+    ∃ (frame : RawFrame) (continuation : Continuation),
+      continuation.function = 0 ∧ continuation.next = 6 ∧
+      let state := Machine.running 2 1 frame [continuation]
+      MachineTrace divergingCleanupProgram.erase state ∧
+      MachineStep divergingCleanupProgram.erase state state ∧
+      ∀ next, MachineStep divergingCleanupProgram.erase state next → next = state := by
+  let code := divergingCleanupProgram.erase
+  let first := RawFrame.allocate {} 0 10
+  let both := first.allocate 1 11
+  let body : RawFrame := ⟨[], both.memory⟩
+  let closeFrame : RawFrame := ⟨[(0, ⟨11, none⟩)], both.memory⟩
+  let afterBody : Continuation := ⟨0, 5, none, both, some 10⟩
+  let afterClose : Continuation := ⟨0, 6, none, both, none⟩
+  have allocated₁ : MachineTrace code (.running 0 1 first []) :=
+    .tail .start (.primitive (action := .alloc 0 10) rfl (by decide) rfl)
+  have scoped₁ : MachineTrace code (.running 0 2 first []) :=
+    .tail allocated₁ (.primitive (action := .skip) rfl (by decide) rfl)
+  have allocated₂ : MachineTrace code (.running 0 3 both []) :=
+    .tail scoped₁ (.primitive (action := .alloc 1 11) rfl (by decide) rfl)
+  have scoped₂ : MachineTrace code (.running 0 4 both []) :=
+    .tail allocated₂ (.primitive (action := .skip) rfl (by decide) rfl)
+  have enteredBody : MachineTrace code (.running 3 0 body [afterBody]) :=
+    .tail scoped₂ (.enter rfl rfl)
+  have returning : MachineTrace code (.running 0 5 both []) :=
+    .tail enteredBody (.leave rfl rfl rfl)
+  have closing : MachineTrace code (.running 2 0 closeFrame [afterClose]) :=
+    .tail returning (.enter rfl rfl)
+  have wrote : MachineTrace code (.running 2 1 closeFrame [afterClose]) :=
+    .tail closing (.primitive (action := .write 0) rfl (by decide) rfl)
+  refine ⟨closeFrame, afterClose, rfl, rfl, wrote, .branch rfl (by decide), ?_⟩
+  intro next step
+  have instruction : rawInstruction divergingCleanupProgram.erase 2 1 = some (.branch [1]) := rfl
+  cases step <;> simp_all
 
 theorem exceptional_cleanup_executes :
     let program := cleanupProgram true

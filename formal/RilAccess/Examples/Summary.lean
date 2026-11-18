@@ -107,8 +107,15 @@ def fixtures : List (String × Bool) :=
       !CoreEntry.separated heap [saved] [sameObject]),
    ("callable match: verified pure .ril read and capture fit empty callable type",
       emptySummary.subsumes pureTable pureReadSummary),
-   ("callable match: pure contained return provenance cannot disappear into an empty contract",
-      !emptySummary.subsumes pureTable { emptySummary with contained := [pureConst] }),
+   ("callable match: deeply immutable return sources preserve purity and must match the contract",
+      let returns : Summary := { emptySummary with rootReturn := [parameterCapture], contained := [pureConst] }
+      returns.isPure pureTable &&
+        !returns.isPure [] &&
+        !Summary.isPure pureTable { returns with rootReturn := [foreignHandle] } &&
+        !Summary.isPure pureTable { returns with contained := [liveVar] } &&
+        returns.subsumes pureTable returns &&
+        !Summary.subsumes pureTable { returns with rootReturn := [] } returns &&
+        !Summary.subsumes pureTable { returns with contained := [] } returns),
    ("callable match: live captured var read rejected by empty callable type",
       !emptySummary.subsumes pureTable liveReadSummary),
    ("callable match: foreign .d.ril source never qualifies as pure",

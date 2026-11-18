@@ -60,6 +60,10 @@ structure CompositionGuarantees : Prop where
   cleanupOrder : ∀ first resources,
     Provenance.cleanupInvocations (Provenance.cleanupRoute first resources) =
       resources.reverse.map Provenance.CleanupSlot.closer
+  cleanupContinuation : ∀ first resources target args destination next onAbort,
+    Provenance.Instruction.invoke target args destination next onAbort ∈ Provenance.cleanupRoute first resources →
+    onAbort = none ∧ ∃ register,
+      Provenance.Instruction.step [.expire register] (next + 1) ∈ Provenance.cleanupRoute first resources
   cleanupHandler : ∀ slot effect above below,
     Provenance.resolveCleanups [] [.handler effect above, .resource slot (some effect), .handler effect below] =
       [{ slot with closer := above }]
@@ -202,9 +206,12 @@ structure ScopedGuarantees : Prop where
     perm ∈ next.permissions →
     frame.parentScope < perm.scope →
       perm.alive = false
-  cleanupRejectsFiberAndShared : ∀ mode returnsUnit hasFiberEffect,
-    (hasFiberEffect = true ∨ returnsUnit = false ∨ mode = .immutable ∨ mode = .retained) →
-      Integrated.validScopedCleanupContract mode returnsUnit hasFiberEffect = false
+  cleanupContract : ∀ (contract : Integrated.ScopedCleanupContract),
+    Integrated.validScopedCleanupContract contract = true ↔
+      (contract.mode = .observe ∨ contract.mode = .mutable ∨ contract.mode = .construction) ∧
+      contract.returnsUnit = true ∧ contract.hasFiberEffect = false ∧
+      contract.writes = decide (contract.mode = .mutable) ∧
+      contract.retains = false ∧ contract.captures = false
 
 structure VisibilityGuarantees : Prop where
   opaqueScopeBoundary :
@@ -213,26 +220,23 @@ structure VisibilityGuarantees : Prop where
     VisibilityModel.representationTransparent .pubExport .opaqueScope .sameScope = true ∧
     VisibilityModel.representationTransparent .pubExport .opaqueScope .samePkg = false ∧
     VisibilityModel.representationTransparent .pubExport .opaqueScope .externalPkg = false
-  signatureLeakRejected : ∀ (refs : List VisibilityModel.Visibility),
-    VisibilityModel.Visibility.pubPkg ∈ refs →
-      VisibilityModel.signatureWellFormed true .pubExport refs = false
+  signatureVisibility : ∀ (decl : VisibilityModel.DeclarationVisibility) refs,
+    VisibilityModel.signatureWellFormed decl refs = true ↔
+      ∀ ref ∈ refs, decl.effective.rank ≤ ref.effective.rank
   topLevelPurity :
     VisibilityModel.validTopLevelBinding .pureConst = true ∧
     VisibilityModel.validTopLevelBinding .metaConst = true ∧
     VisibilityModel.validTopLevelBinding .mutableOrLiveState = false
-  rilExtensibleClosedInPkg : ∀ (s : VisibilityModel.SumDef) ctx covered,
-    s.origin = .rilPkg → s.extensible = true → (ctx = .sameScope ∨ ctx = .samePkg) →
+  sumClosedInPkg : ∀ (s : VisibilityModel.SumDef) ctx covered,
+    (ctx = .sameScope ∨ ctx = .samePkg) →
     VisibilityModel.canMatchVariants s ctx = true → (∀ v ∈ s.variants, v ∈ covered) →
       VisibilityModel.exhaustiveMatch s ctx covered false = true ∧
         VisibilityModel.exhaustiveMatch s ctx covered true = false
-  rilExtensibleOpenExternally : ∀ (s : VisibilityModel.SumDef) covered,
-    s.origin = .rilPkg → s.extensible = true →
+  extensibleOpenExternally : ∀ (s : VisibilityModel.SumDef) covered,
+    s.extensible = true →
     VisibilityModel.canMatchVariants s .externalPkg = true →
       VisibilityModel.exhaustiveMatch s .externalPkg covered false = false ∧
         VisibilityModel.exhaustiveMatch s .externalPkg covered true = true
-  foreignExtensibleOpenEverywhere : ∀ (s : VisibilityModel.SumDef) ctx covered,
-    s.origin = .foreignDecl → s.extensible = true →
-      VisibilityModel.exhaustiveMatch s ctx covered false = false
   opaqueScopeSumBlocksOutsideMatch : ∀ (s : VisibilityModel.SumDef) ctx covered hasWildcard,
     s.op = .opaqueScope → ctx ≠ .sameScope →
       VisibilityModel.exhaustiveMatch s ctx covered hasWildcard = false
@@ -250,8 +254,11 @@ structure CallableMatchGuarantees : Prop where
   reflexive : ∀ (pureSources : List Source) (s : Summary), s.subsumes pureSources s = true
   transitive : ∀ (pureSources : List Source) (a b c : Summary),
     b.subsumes pureSources a = true → c.subsumes pureSources b = true → c.subsumes pureSources a = true
-  pureMatchesAny : ∀ (pureSources : List Source) (actual expected : Summary),
-    actual.isPure pureSources = true → expected.subsumes pureSources actual = true
+  pureMatchesReturns : ∀ (pureSources : List Source) (actual expected : Summary),
+    actual.isPure pureSources = true →
+      (expected.subsumes pureSources actual = true ↔
+        (∀ o ∈ actual.rootReturn, o ∈ expected.rootReturn) ∧
+        (∀ o ∈ actual.contained, o ∈ expected.contained))
   foreignNeverPure : ∀ (pureSources : List Source) (expected actual : Summary) (o : Origin),
     o.source.kind = .foreign → o ∈ actual.namedReads → expected.subsumes pureSources actual = true →
       o ∈ expected.namedReads ∨ o ∈ expected.writes ∨ o ∈ expected.retained
@@ -277,7 +284,9 @@ structure ConcurrencyGuarantees : Prop where
   sharedCaptureRejectsMutableScopedOrResource : ∀ (world : Integrated.World) (r : Integrated.Resolved),
     CoreConcurrency.eligibleSharedCapture world r = true →
       r.grant.resource = false ∧ r.permission.isScoped = false ∧
-        Integrated.deepImmutable r = true ∧ Integrated.live r = true
+        Integrated.deepImmutable r = true ∧ Integrated.live r = true ∧
+        r.permission.mode.replaceable = false ∧ r.permission.mode.access = .immutable ∧
+        CoreConcurrency.sendableData r = true
   sharedCaptureReadOnly : ∀ (world : Integrated.World) path (e : Integrated.Evidence),
     Integrated.resolve world path = some e.resolved →
     e.resolved.permission.mode.access = .immutable →
@@ -286,6 +295,7 @@ structure ConcurrencyGuarantees : Prop where
   spawnMoveDisjoint : ∀ (world next : Integrated.World) source childDestination resolved,
     CoreConcurrency.spawnMoveCapture world source childDestination = .ok next →
     Integrated.resolve world ⟨source, []⟩ = some resolved →
+      CoreConcurrency.sendableData resolved = true ∧
       Integrated.rawLookup next.raw childDestination = some resolved.pointer ∧
       (∀ dep ∈ resolved.permission.dependencies, (Integrated.lookupToken next dep).any Integrated.Token.active = false) ∧
       (∀ path derived dep, Integrated.resolve next path = some derived →
@@ -301,8 +311,8 @@ structure ConcurrencyGuarantees : Prop where
     CoreConcurrency.joinTask nursery taskId taskSigma true = some next →
       CoreConcurrency.joinTask next taskId nextSigma anyMove = none ∧
         CoreConcurrency.cancelTask next taskId nextSigma = none
-  fallibleTaskMustSettle : ∀ (nursery : CoreConcurrency.NurseryState) entry,
-    entry ∈ nursery.tasks → entry.fallibleResult = true → entry.settled = false →
+  fallibleTaskResultRequired : ∀ (nursery : CoreConcurrency.NurseryState) entry,
+    entry ∈ nursery.tasks → entry.pendingResult = true →
       CoreConcurrency.canExitScope nursery = false ∧ CoreConcurrency.drainPlainTasks nursery = none
 
 structure Guarantees : Prop where
@@ -335,6 +345,7 @@ theorem verified : Guarantees where
     entryFootprint := fun _ _ _ _ => Provenance.prepared_external_roots
     summary := fun _ _ _ _ _ _ => Provenance.summarize_sound
     cleanupOrder := Provenance.cleanupRoute_lifo
+    cleanupContinuation := fun _ _ _ _ _ _ _ => Provenance.cleanupRoute_call_continuation
     cleanupHandler := Provenance.later_handler_does_not_replace_saved_cleanup
     draftHeap := fun _ _ _ _ _ => Draft.stored_reference_in_physical_heap
     transfer := fun _ _ _ _ _ _ _ => Provenance.consumed_region_isolated
@@ -348,7 +359,7 @@ theorem verified : Guarantees where
     fun _ _ _ _ _ _ _ => CoreSummary.checked_at_entry_parameter_is_reachable,
     fun _ _ _ _ h => ⟨CoreSummary.checked_facts h, (CoreSummary.checked_valid h).2⟩⟩
   callableMatch := ⟨summary_subsumes_refl, fun _ _ _ _ => summary_subsumes_trans,
-    fun _ _ expected hp => pure_summary_subsumed_by_any hp expected,
+    fun _ _ expected hp => pure_summary_subsumes_iff hp expected,
     fun _ _ _ _ => foreign_read_not_erased_by_pure,
     fun _ _ _ _ => retained_not_subsumed_by_write_only,
     fun _ _ _ call h => CoreSummary.template_subsumes_instantiate h call,
@@ -370,7 +381,7 @@ theorem verified : Guarantees where
     fun _ _ hfrozen => CoreConcurrency.frozen_object_cannot_launder_mutability_via_channel hfrozen,
     fun _ _ _ _ hcross => CoreConcurrency.cross_scope_task_rejected hcross,
     fun _ _ _ _ _ _ h => CoreConcurrency.duplicate_exclusive_task_consumption_rejected h,
-    fun _ _ hm hfall hun => CoreConcurrency.unsettled_fallible_task_blocks_scope_exit hm hfall hun⟩
+    fun _ _ => CoreConcurrency.pending_result_blocks_scope_exit⟩
   draft := ⟨fun _ _ _ _ => Draft.prepared_root_sound, fun _ _ _ => Draft.checked_path_recipe_prefixes,
     fun _ _ _ _ _ => Draft.publication_ends_privilege,
     fun _ _ _ _ _ _ _ _ _ _ => Draft.conforming_external_cannot_escape⟩
@@ -381,13 +392,12 @@ theorem verified : Guarantees where
     fun _ h hr => Integrated.scoped_cannot_retain h hr,
     fun _ _ _ _ hlook hsc => Integrated.scoped_rejects_reassignment hlook hsc,
     fun _ _ _ _ h hf hp hinner => Integrated.leaveScope_deactivates_inner_permission h hf hp hinner,
-    fun _ _ _ hbad => Integrated.scoped_cleanup_rejects_fiber_and_shared hbad⟩
+    Integrated.scoped_cleanup_contract_iff⟩
   visibility := ⟨VisibilityModel.opaqueScope_boundary,
-    fun _ hmem => VisibilityModel.signature_rejects_pubPkg_leak hmem,
+    VisibilityModel.signature_visibility_iff,
     VisibilityModel.topLevel_rejects_mutable_and_live_state,
-    fun _ _ _ horig hext hctx hcan hall => VisibilityModel.ril_extensible_closed_inside_pkg horig hext hctx hcan hall,
-    fun _ _ horig hext hcan => VisibilityModel.ril_extensible_open_outside_pkg horig hext hcan,
-    fun _ _ _ horig hext => VisibilityModel.foreign_extensible_open_everywhere horig hext,
+    fun _ _ _ => VisibilityModel.extensible_closed_inside_pkg,
+    fun _ _ => VisibilityModel.extensible_open_outside_pkg,
     fun _ _ _ _ hop hout => VisibilityModel.opaqueScope_sum_blocks_outside_scope_match hop hout,
     VisibilityModel.pkg_anchor_isolates_package_visibility,
     fun _ _ _ _ hmem => VisibilityModel.enclosing_sub_caps_pathVisibility hmem⟩

@@ -22,6 +22,8 @@ def diagnoses (program : Program) (error : Error) : Bool :=
 def overwrite : Program := single [.alloc 0 10, .alloc 0 20, .write 0]
 def future : Program := single [.read 0, .alloc 0 10]
 def looping : Program := ⟨[⟨[], {}, [.step [.alloc 0 10] 1, .step [.write 0] 2, .branch [0, 3], .abort]⟩], []⟩
+def divergentLoop : Program := ⟨[{ code := [.branch [0]] }], []⟩
+def divergentRecursion : Program := ⟨[{ code := [.invoke 0 [] none 1, .ret none] }], []⟩
 
 def beforeWrites (program : Program) (pc : Nat) (register : Register) : List Object :=
   match check program with
@@ -168,6 +170,8 @@ def fixtures : List (String × Bool) :=
    ("resolved provenance: future allocation cannot justify earlier access", diagnoses future .unavailable),
    ("resolved provenance: statically pruned branch cannot justify an authority use",
     diagnoses (recursiveWriter false) .unusedParameter),
+   ("resolved provenance: accepts loops and recursion without a normal exit",
+    accepts divergentLoop && accepts divergentRecursion),
    ("resolved provenance: repeated allocation at one site converges",
     agrees (beforeWrites looping 1 0) [⟨10, none⟩, ⟨10, some 0⟩]),
    ("resolved provenance: the first object at a site is distinct from later allocations", accepts (sameSite false)),
@@ -200,6 +204,22 @@ def fixtures : List (String × Bool) :=
     accepts (localFactoryWrite false) && diagnoses (localFactoryWrite true) .contract)]
 
 theorem fixtures_pass : fixtures.all Prod.snd = true := by decide +kernel
+
+theorem divergent_loop_steps :
+    ∃ run : Nat → Machine,
+      run 0 = .running 0 0 {} [] ∧
+      ∀ n, run n = .running 0 0 {} [] ∧ MachineStep divergentLoop.erase (run n) (run (n + 1)) := by
+  exact ⟨fun _ => .running 0 0 {} [], rfl, fun _ => ⟨rfl, .branch rfl (by decide)⟩⟩
+
+theorem divergent_recursion_steps :
+    ∃ run : Nat → Machine,
+      run 0 = .running 0 0 {} [] ∧
+      ∀ n, (∃ stack, run n = .running 0 0 {} stack ∧ stack.length = n) ∧
+        MachineStep divergentRecursion.erase (run n) (run (n + 1)) := by
+  let continuation : Continuation := ⟨0, 1, none, {}, none⟩
+  refine ⟨fun n => .running 0 0 {} (List.replicate n continuation), rfl, ?_⟩
+  intro n
+  exact ⟨⟨_, rfl, List.length_replicate⟩, .enter rfl rfl⟩
 
 /-- Non-vacuity of the main theorem on an actual allocation and reassignment. -/
 theorem overwrite_executes :

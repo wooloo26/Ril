@@ -13,17 +13,21 @@ def baseWorld : World :=
   let world := atom world (.allocate 2 ⟨false, .mut⟩ [⟨[0], ⟨false, .mut⟩, true⟩])
   let world := atom world (.bind (p 2) 5 ⟨true, .shared⟩)
   let world := atom world (.allocateResource 3 [])
-  atom world (.allocateScoped 4 true [])
+  let world := atom world (.allocateScoped 4 true [])
+  let world := atom world (.bind (p 0) 6 ⟨false, .ref⟩)
+  let world := atom world (.allocate 7 ⟨true, .immutable⟩ [])
+  let world := atom world (.allocate 8 ⟨false, .mut⟩
+    [⟨[0], ⟨false, .mut⟩, true⟩, ⟨[0, 0], ⟨false, .ref⟩, true⟩])
+  atom world (.allocate 9 ⟨false, .mut⟩ [⟨[0], ⟨false, .shared⟩, true⟩])
 
 def afterShared : World := (spawnSharedCapture baseWorld (p 0) 10).toOption.getD baseWorld
 def afterMove : World := (spawnMoveCapture baseWorld 1 11).toOption.getD baseWorld
-def afterResourceMove : World := (spawnMoveCapture baseWorld 3 13).toOption.getD baseWorld
 
 def nursery : NurseryState :=
   ⟨7,
-   [⟨1, 7, .sharedImmutable, false, false, false⟩,
-    ⟨2, 7, .exclusiveSingleShot, false, false, false⟩,
-    ⟨3, 7, .exclusiveSingleShot, true, false, false⟩]⟩
+   [{ id := 1, regionSigma := 7, mode := .sharedImmutable },
+    { id := 2, regionSigma := 7, mode := .exclusiveSingleShot },
+    { id := 3, regionSigma := 7, mode := .exclusiveSingleShot, fallibleResult := true }]⟩
 
 def afterPlainJoin : NurseryState := (joinTask nursery 1 7 false).getD nursery
 def afterExclusiveJoin : NurseryState := (joinTask nursery 2 7 true).getD nursery
@@ -42,16 +46,26 @@ def fixtures : List (String × Bool) :=
       (spawnSharedCapture baseWorld (p 0) 10).isOk &&
       (checkAtom (.read (p 10)) afterShared).isOk &&
       !(checkAtom (.write (p 10)) afterShared).isOk),
+   ("concurrency: shared capture rejects ref and var bindings of immutable objects (E0601)",
+      (resolve baseWorld (p 6)).any deepImmutable &&
+      (resolve baseWorld (p 7)).any deepImmutable &&
+      !(spawnSharedCapture baseWorld (p 6) 10).isOk &&
+      !(spawnSharedCapture baseWorld (p 7) 10).isOk),
    ("concurrency: single-shot move transfers exclusive binding and ends parent path (E0549)",
       (spawnMoveCapture baseWorld 1 11).isOk &&
       !(resolve afterMove (p 1)).any live &&
       (resolve afterMove (p 11)).any live &&
       !(spawnMoveCapture afterMove 1 12).isOk),
-   ("concurrency: single-shot move transfers foreign resource handle and rejects scoped binding (E0604)",
-      (spawnMoveCapture baseWorld 3 13).isOk &&
-      !(resolve afterResourceMove (p 3)).any live &&
-      (resolve afterResourceMove (p 13)).any live &&
+   ("concurrency: single-shot moves across fibers reject foreign and scoped resources",
+      (checkAtom (.move 3 13) baseWorld).isOk &&
+      !(spawnMoveCapture baseWorld 3 13).isOk &&
       !(spawnMoveCapture baseWorld 4 14).isOk),
+   ("concurrency: transfer rejects foreign handles and data containing ref or shared members",
+      !(resolve baseWorld (p 3)).any (eligibleChannelSend true baseWorld) &&
+      !(resolve baseWorld (p 8)).any (eligibleChannelSend true baseWorld) &&
+      !(resolve baseWorld (p 9)).any (eligibleChannelSend true baseWorld) &&
+      !(spawnMoveCapture baseWorld 8 10).isOk &&
+      !(spawnMoveCapture baseWorld 9 10).isOk),
    ("concurrency: channel send rejects frozen immutable object for writable schema (E0548)",
       !(resolve baseWorld (p 0)).any (eligibleChannelSend true baseWorld) &&
       (resolve baseWorld (p 1)).any (eligibleChannelSend true baseWorld) &&
@@ -66,10 +80,25 @@ def fixtures : List (String × Bool) :=
       (cancelTask afterExclusiveJoin 2 7).isNone),
    ("concurrency: cancel settles exclusive task handle",
       (cancelTask nursery 2 7).isSome && (cancelTask nursery 3 7).isSome),
-   ("concurrency: uninspected Result task blocks scope exit (E0720)",
-      !canExitScope nursery && (drainPlainTasks nursery).isNone),
-   ("concurrency: settling Result task enables automatic plain-task nursery drain",
-      (drainPlainTasks afterFallibleJoined).any canExitScope)]
+   ("concurrency: uninspected Result blocks scope exit even after join (E0720)",
+      (inspectJoinedResult nursery 3 7).isNone &&
+      (drainPlainTasks nursery).isNone &&
+      (joinTask nursery 3 7 true).isSome &&
+      (drainPlainTasks afterFallibleJoined).isNone &&
+      (inspectJoinedResult afterFallibleJoined 3 99).isNone),
+   ("concurrency: inspecting the joined Result or cancelling enables the normal-exit drain",
+      ((inspectJoinedResult afterFallibleJoined 3 7).bind drainPlainTasks).any canExitScope &&
+      ((cancelTask nursery 3 7).bind drainPlainTasks).any canExitScope),
+   ("concurrency: each memoized join returning a Result requires inspection",
+      let state : NurseryState :=
+        ⟨7, [{ id := 1, regionSigma := 7, mode := .sharedImmutable, fallibleResult := true }]⟩
+      let twice := (joinTask state 1 7 false).bind fun once => joinTask once 1 7 false
+      match twice.bind (inspectJoinedResult · 1 7) with
+      | none => false
+      | some inspectedOnce =>
+        !canExitScope inspectedOnce &&
+          (drainPlainTasks inspectedOnce).isNone &&
+          (inspectJoinedResult inspectedOnce 1 7).any canExitScope)]
 
 theorem fixtures_all_pass : fixtures.all Prod.snd = true := by decide +kernel
 

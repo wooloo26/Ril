@@ -4,10 +4,14 @@ namespace RilAccess.Examples.VisibilityExamples
 
 open VisibilityModel
 
-def rilExtIoError : SumDef := ⟨.rilPkg, .pubExport, .transparent, true, [0, 1]⟩
-def foreignErrno : SumDef := ⟨.foreignDecl, .pubExport, .transparent, true, [0, 1]⟩
-def emptyOpenFuture : SumDef := ⟨.rilPkg, .pubExport, .transparent, true, []⟩
-def opaqueScopeSecret : SumDef := ⟨.rilPkg, .pubExport, .opaqueScope, false, [0, 1]⟩
+def rilExtIoError : SumDef := ⟨.pubExport, .transparent, true, [0, 1]⟩
+def foreignErrno : SumDef := ⟨.pubExport, .transparent, true, [1, 2, 3]⟩
+def emptyOpenFuture : SumDef := ⟨.pubExport, .transparent, true, []⟩
+def opaqueScopeSecret : SumDef := ⟨.pubExport, .opaqueScope, false, [0, 1]⟩
+
+def publicRoot : DeclarationVisibility := ⟨true, [], .pubExport⟩
+def packageRoot : DeclarationVisibility := ⟨true, [], .pubPkg⟩
+def underPackageSub : DeclarationVisibility := ⟨true, [.pubExport, .pubPkg], .pubExport⟩
 
 def fixtures : List (String × Bool) :=
   [("visibility: pub(pkg) visible across defining package", visibleFrom .pubPkg .samePkg),
@@ -19,11 +23,17 @@ def fixtures : List (String × Bool) :=
       !representationTransparent .pubExport .opaqueScope .samePkg &&
       !representationTransparent .pubExport .opaqueScope .externalPkg),
    ("visibility: pub signature or use cleanup clause referencing pub(pkg) item rejected (E0910)",
-      !signatureWellFormed true .pubExport [.pubExport, .pubPkg]),
+      !signatureWellFormed publicRoot [publicRoot, packageRoot]),
    ("visibility: pub signature referencing pub item accepted",
-      signatureWellFormed true .pubExport [.pubExport]),
+      signatureWellFormed publicRoot [publicRoot]),
    ("visibility: pub(pkg) signature referencing pub(pkg) item accepted",
-      signatureWellFormed true .pubPkg [.pubPkg]),
+      signatureWellFormed packageRoot [packageRoot]),
+   ("visibility: E0910 uses the effective sub path of the declaration and each reference",
+      !signatureWellFormed publicRoot [underPackageSub] &&
+      !signatureWellFormed publicRoot [⟨true, [.priv], .pubExport⟩] &&
+      !signatureWellFormed publicRoot [⟨false, [], .pubExport⟩] &&
+      signatureWellFormed underPackageSub [packageRoot] &&
+      signatureWellFormed packageRoot [underPackageSub]),
    ("visibility: pub-less library file caps effective visibility at pub(pkg)",
       decide (effectiveVisibility false .pubExport = .pubPkg)),
    ("visibility: module top-level accepts pure/meta constants and rejects mutable or live state (E0906)",
@@ -37,13 +47,15 @@ def fixtures : List (String × Bool) :=
    ("sum: .ril extensible sum requires wildcard outside package (E0303)",
       !exhaustiveMatch rilExtIoError .externalPkg [0, 1] false &&
       exhaustiveMatch rilExtIoError .externalPkg [0, 1] true),
-   ("sum: .d.ril extensible sum requires wildcard even inside same scope/package (E0303)",
-      !exhaustiveMatch foreignErrno .sameScope [0, 1] false &&
-      exhaustiveMatch foreignErrno .sameScope [0, 1] true),
+   ("sum: .d.ril extensible sum requires wildcard only outside the defining package when variants are covered",
+      exhaustiveMatch foreignErrno .samePkg [1, 2, 3] false &&
+      !exhaustiveMatch foreignErrno .samePkg [1, 2, 3] true &&
+      !exhaustiveMatch foreignErrno .externalPkg [1, 2, 3] false &&
+      exhaustiveMatch foreignErrno .externalPkg [1, 2, 3] true),
    ("sum: empty extensible { .. } sum admits wildcard externally",
       exhaustiveMatch emptyOpenFuture .externalPkg [] true &&
       !exhaustiveMatch emptyOpenFuture .externalPkg [] false),
-   ("sum: pub opaque sum permits defining-file match only and blocks external/package match (E0908)",
+   ("sum: pub opaque sum permits matching within its defining scope (E0308)",
       exhaustiveMatch opaqueScopeSecret .sameScope [0, 1] false &&
       !exhaustiveMatch opaqueScopeSecret .samePkg [0, 1] false &&
       !exhaustiveMatch opaqueScopeSecret .externalPkg [0] true),

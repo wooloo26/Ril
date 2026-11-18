@@ -87,17 +87,28 @@ theorem leaveScope_deactivates_inner_permission
     cases hmap
     omega
 
-/-- `use` cleanup contract (`E0541`, `E0616`): a named cleanup handler must accept
-a single `ref T`, `mut T`, or `new T` parameter (never plain `T` or `^mut T`), return
-`()`, and remain synchronous (forbidding `@fiber`). -/
-def validScopedCleanupContract (mode : ParameterMode) (returnsUnit : Bool) (hasFiberEffect : Bool) : Bool :=
-  (decide (mode = .observe) || decide (mode = .mutable) || decide (mode = .construction)) &&
-    returnsUnit && !hasFiberEffect
+structure ScopedCleanupContract where
+  mode : ParameterMode
+  returnsUnit : Bool := true
+  hasFiberEffect : Bool := false
+  writes : Bool := false
+  retains : Bool := false
+  captures : Bool := false
+  deriving Repr, DecidableEq
 
-theorem scoped_cleanup_rejects_fiber_and_shared
-    {mode : ParameterMode} {returnsUnit hasFiberEffect : Bool}
-    (hbad : hasFiberEffect = true ∨ returnsUnit = false ∨ mode = .immutable ∨ mode = .retained) :
-    validScopedCleanupContract mode returnsUnit hasFiberEffect = false := by
-  rcases hbad with ha | hr | hm | hm <;> simp [validScopedCleanupContract, *]
+/-- Signature of the resolved, single-parameter cleanup function (`E0541`, `E0616`). -/
+def validScopedCleanupContract (contract : ScopedCleanupContract) : Bool :=
+  let mode := contract.mode
+  (decide (mode = .observe) || decide (mode = .mutable) || decide (mode = .construction)) &&
+    contract.returnsUnit && !contract.hasFiberEffect &&
+    decide (contract.writes = decide (mode = .mutable)) && !contract.retains && !contract.captures
+
+theorem scoped_cleanup_contract_iff (contract : ScopedCleanupContract) :
+    validScopedCleanupContract contract = true ↔
+      (contract.mode = .observe ∨ contract.mode = .mutable ∨ contract.mode = .construction) ∧
+      contract.returnsUnit = true ∧ contract.hasFiberEffect = false ∧
+      contract.writes = decide (contract.mode = .mutable) ∧
+      contract.retains = false ∧ contract.captures = false := by
+  simp [validScopedCleanupContract, Bool.and_eq_true, Bool.or_eq_true, and_assoc, or_assoc]
 
 end RilAccess.Integrated

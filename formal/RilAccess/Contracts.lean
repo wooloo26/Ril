@@ -127,10 +127,11 @@ def Summary.combine (a b : Summary) : Summary :=
 def Summary.handle (s : Summary) (effect : Nat) : Summary :=
   { s with effects := s.effects.filter (fun e => e != effect) }
 
+/-- Deeply immutable return origins incur no outward state obligation. -/
 def Summary.isPure (pureSources : List Source) (s : Summary) : Bool :=
   s.effects.isEmpty &&
-  s.rootReturn.isEmpty &&
-  s.contained.isEmpty &&
+  s.rootReturn.all (isPureOrigin pureSources) &&
+  s.contained.all (isPureOrigin pureSources) &&
   s.writes.isEmpty &&
   s.retained.isEmpty &&
   s.namedReads.all (isPureOrigin pureSources) &&
@@ -210,16 +211,18 @@ theorem summary_subsumes_trans {pureSources : List Source} {a b c : Summary}
     · exact Or.inl hp
     · exact hbc'.createdEnvironments o hc
 
-theorem pure_summary_subsumed_by_any {pureSources : List Source} {actual : Summary}
+theorem pure_summary_subsumes_iff {pureSources : List Source} {actual : Summary}
     (hp : actual.isPure pureSources = true) (expected : Summary) :
-    expected.subsumes pureSources actual = true := by
+    expected.subsumes pureSources actual = true ↔
+      (∀ o ∈ actual.rootReturn, o ∈ expected.rootReturn) ∧
+      (∀ o ∈ actual.contained, o ∈ expected.contained) := by
   simp only [Summary.isPure, Bool.and_eq_true, List.isEmpty_iff, List.all_eq_true] at hp
-  rcases hp with ⟨⟨⟨⟨⟨⟨heff, hroot⟩, hcont⟩, hwr⟩, hret⟩, hreads⟩, henv⟩
+  rcases hp with ⟨⟨⟨⟨⟨⟨heff, _⟩, _⟩, hwr⟩, hret⟩, hreads⟩, henv⟩
   rw [summary_subsumes_iff]
-  refine ⟨?_, ?_, ?_, ?_, ?_, ?_, ?_⟩
+  refine ⟨fun h => ⟨h.rootReturn, h.contained⟩, ?_⟩
+  rintro ⟨hroot, hcont⟩
+  refine ⟨?_, hroot, hcont, ?_, ?_, ?_, ?_⟩
   · intro _ h; simp [heff] at h
-  · intro _ h; simp [hroot] at h
-  · intro _ h; simp [hcont] at h
   · intro _ h; simp [hret] at h
   · intro _ h; simp [hwr] at h
   · intro o h; exact Or.inl (hreads o h)

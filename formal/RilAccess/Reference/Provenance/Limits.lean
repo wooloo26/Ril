@@ -2,6 +2,10 @@ import RilAccess.Reference.Provenance.Semantics
 
 namespace RilAccess
 
+/-! Limits of exact source reachability for an arbitrary small-step machine.
+The halting relation here expresses a reduction for the reference model.
+The resolved checker certifies execution prefixes by abstract saturation. -/
+
 /-- An arbitrary deterministic small-step machine, with `none` meaning halted. -/
 inductive Halts (step : Nat → Option Nat) : Nat → Prop where
   | stop : step state = none → Halts step state

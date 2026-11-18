@@ -128,13 +128,19 @@ def fixtures : List (String × Bool) :=
    ("scoped: use mut rejects idle writer without body mutation (E0527)", !accepted scopedIdleMutRejected),
    ("scoped: use mut accepts body write", accepted scopedBodyMutAccepted),
    ("scoped: cleanup contract accepts ref/mut/new () and rejects @fiber, ^mut, plain, or non-() (E0541/E0616)",
-      validScopedCleanupContract .observe true false &&
-      validScopedCleanupContract .mutable true false &&
-      validScopedCleanupContract .construction true false &&
-      !validScopedCleanupContract .mutable true true &&
-      !validScopedCleanupContract .retained true false &&
-      !validScopedCleanupContract .immutable true false &&
-      !validScopedCleanupContract .mutable false false)]
+      validScopedCleanupContract { mode := .observe } &&
+      validScopedCleanupContract { mode := .mutable, writes := true } &&
+      validScopedCleanupContract { mode := .construction } &&
+      !validScopedCleanupContract { mode := .mutable, writes := true, hasFiberEffect := true } &&
+      !validScopedCleanupContract { mode := .retained } &&
+      !validScopedCleanupContract { mode := .immutable } &&
+      !validScopedCleanupContract { mode := .mutable, writes := true, returnsUnit := false }),
+   ("scoped: cleanup writes require mut Self and retained sharing and captures are prohibited (E0541)",
+      !validScopedCleanupContract { mode := .mutable } &&
+      !validScopedCleanupContract { mode := .observe, writes := true } &&
+      !validScopedCleanupContract { mode := .construction, writes := true } &&
+      !validScopedCleanupContract { mode := .mutable, writes := true, retains := true } &&
+      !validScopedCleanupContract { mode := .observe, captures := true })]
 
 theorem fixtures_all_pass : fixtures.all Prod.snd = true := by decide +kernel
 
