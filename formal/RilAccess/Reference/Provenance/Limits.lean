@@ -1,4 +1,4 @@
-import RilAccess.Provenance.Semantics
+import RilAccess.Reference.Provenance.Semantics
 
 namespace RilAccess
 

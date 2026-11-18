@@ -46,15 +46,35 @@ The resolved provenance checker takes a closed, typed CFG with concrete
 member schemas. Its certificate covers erased stack-machine prefixes,
 including active recursive calls, and proves progress at every running state.
 Start at [the checker](../formal/RilAccess/Provenance/Kernel.lean) and
-[the erased machine theorems](../formal/RilAccess/Provenance/Machine.lean).
+[the erased machine theorems](../formal/RilAccess/Provenance/MachineProofs.lean).
 
-The reference analysis distinguishes the first object at a site from later
+The [shared heap](../formal/RilAccess/Graph/Reachability.lean) computes
+physical reachability for call entry, provenance, and graph authority.
+The [contract representation](../formal/RilAccess/Contracts.lean) can hold
+symbolic references or instantiated origins. [Reference provenance](../formal/RilAccess/Reference/Provenance/Analysis.lean)
+retains the flow-insensitive model and its coverage proofs.
+
+The resolved analysis distinguishes the first object at a site from later
 instances. When a dereference needs a unique later instance, the checker
-reports `summarizedSlot`. The saturation budget limits analysis work and
+reports `summarizedSlot`. Unresolved possible parameter writes report
+`uncertainWrite`. The saturation budget limits analysis work and
 reports `analysisLimit` if closure has yet to be reached. Every successful
 certificate contains the least closed solution. The checker selects root
 reception modes for qualified construction results and uses the resolved IR's
 concrete member schemas.
+
+Use [`summarize`](../formal/RilAccess/Provenance/Module.lean) to check a function
+body and export its call-boundary facts for a prepared abstract entry.
+The consumer checks schema and entry compatibility and applies the same
+transfer as the closed-program analysis. Entry summaries specialize to the
+selected abstract entry and its verified call graph.
+
+[Scoped cleanup lowering](../formal/RilAccess/Provenance/Cleanup.lean) models
+resolved synchronous cleanup routines that complete normally. Normal exit
+and exceptional exit enter LIFO cleanup routes. The checker verifies that
+resources expire in that order, and the erased machine preserves the
+exceptional continuation. The [composition fixtures](../formal/RilAccess/Examples/Composition.lean)
+exercise a cleanup handler's write through a suspended outer frame.
 
 ## Documentation validation
 

@@ -1,11 +1,10 @@
 import RilAccess.Provenance.Machine
+import RilAccess.Provenance.Kernel
 
 set_option maxRecDepth 8192
 set_option maxHeartbeats 12000000
 
 namespace RilAccess.Provenance.Examples
-
-open Integrated (ParameterMode)
 
 def localCode (actions : List Primitive) : List Instruction :=
   actions.zipIdx.map (fun (action, pc) => .step [action] (pc + 1))
@@ -154,6 +153,15 @@ def abortingWriter (declared : Bool) : Program :=
   let callee : Function := ⟨[.mutable], { writes := declared }, [.step [.write 0] 1, .abort]⟩
   ⟨[main, callee], []⟩
 
+def localFactoryWrite (declared : Bool) : Program :=
+  let main : Function := ⟨[], {}, [
+    .invoke 2 [] (some (0, .mut)) 1, .invoke 2 [] (some (1, .mut)) 2,
+    .invoke 1 [⟨1, .construction⟩] none 3, .ret none]⟩
+  let callee : Function := ⟨[.construction], { writes := declared }, [
+    .step [.alloc 0 11] 1, .invoke 2 [] (some (1, .mut)) 2, .step [.write 1] 3, .ret none]⟩
+  let factory : Function := ⟨[], { result := .construction }, [.step [.alloc 0 10] 1, .ret (some 0)]⟩
+  ⟨[main, callee, factory], []⟩
+
 def fixtures : List (String × Bool) :=
   [("resolved provenance: root replacement removes prior origin",
     decide (beforeWrites overwrite 2 0 = [⟨20, none⟩])),
@@ -187,7 +195,9 @@ def fixtures : List (String × Bool) :=
    ("resolved provenance: forwarding a temporary borrow as ref cannot publish it",
     diagnoses temporaryForward .schema),
    ("resolved provenance: a write on an aborting prefix still requires its contract",
-    accepts (abortingWriter true) && diagnoses (abortingWriter false) .contract)]
+    accepts (abortingWriter true) && diagnoses (abortingWriter false) .contract),
+   ("resolved provenance: writes to a later factory instance discharge locally",
+    accepts (localFactoryWrite false) && diagnoses (localFactoryWrite true) .contract)]
 
 theorem fixtures_pass : fixtures.all Prod.snd = true := by decide +kernel
 
@@ -210,8 +220,8 @@ theorem recursive_executes :
   let program := recursiveWriter true
   let caller := RawFrame.allocate {} 0 10
   let entry : RawFrame := ⟨[(0, ⟨10, none⟩)], caller.memory⟩
-  let first : Continuation := ⟨0, 2, none, caller⟩
-  let second : Continuation := ⟨1, 4, none, entry⟩
+  let first : Continuation := ⟨0, 2, none, caller, none⟩
+  let second : Continuation := ⟨1, 4, none, entry, none⟩
   have allocated : MachineTrace program.erase (.running 0 1 caller []) :=
     .tail .start (.primitive (action := .alloc 0 10) rfl (by decide) rfl)
   have called : MachineTrace program.erase (.running 1 0 entry [first]) :=

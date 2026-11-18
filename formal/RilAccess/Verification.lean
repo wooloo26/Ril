@@ -1,14 +1,16 @@
 import RilAccess.Call.Proofs
 import RilAccess.Call.Summary
-import RilAccess.Provenance.Identity
+import RilAccess.Reference.Provenance.Identity
 import RilAccess.Effects.Boundary
 import RilAccess.Effects.Concurrency
 import RilAccess.Access.Handoff
 import RilAccess.Access.Scoped
 import RilAccess.Visibility
 import RilAccess.Draft.Lowering
-import RilAccess.Provenance.Limits
-import RilAccess.Provenance.Machine
+import RilAccess.Reference.Provenance.Limits
+import RilAccess.Provenance.MachineProofs
+import RilAccess.Provenance.Module
+import RilAccess.Provenance.Cleanup
 
 /-! Principal interface results, grouped by semantics. This bundle is not a
 refinement theorem for an unrestricted language combining every model. All
@@ -16,7 +18,7 @@ boundary authenticity/completeness premises remain explicit in their interfaces.
 namespace RilAccess.CoreVerification
 
 structure SolverGuarantees : Prop where
-  leastGrounded : ∀ (rules : List (Rule Fact)), Closed rules (solve rules) ∧
+  leastGrounded : ∀ (Fact : Type) [DecidableEq Fact] (rules : List (Rule Fact)), Closed rules (solve rules) ∧
     Grounded rules (solve rules) ∧ (solve rules).Nodup ∧
     ∀ facts, Closed rules facts → ∀ fact ∈ solve rules, fact ∈ facts
 
@@ -34,6 +36,8 @@ structure ProvenanceGuarantees : Prop where
     Provenance.check program budget = .ok certificate →
     Provenance.MachineTrace program.erase (.running fn pc frame stack) →
     ∃ next, Provenance.MachineStep program.erase (.running fn pc frame stack) next
+
+structure ReferenceProvenanceGuarantees : Prop where
   coverage : ∀ (program : ResolvedProgram) analysis state event,
     analyze program = .ok analysis → Trace program (initial program.entry) state → event ∈ state.events →
       Fact.event event.kind event.origin.source ∈ analysis.facts
@@ -43,6 +47,33 @@ structure ProvenanceGuarantees : Prop where
     Trace program (initial program.entry) state →
     (∀ origin ∈ arguments.flatMap Prod.snd, ProvenanceIdentity.Known state origin) →
     ∃ frozen, CoreEntry.capturePrepared state.heap arguments = .ok frozen
+
+structure CompositionGuarantees : Prop where
+  entryFootprint : ∀ signature before arguments prepared,
+    Provenance.prepare signature before arguments = .ok prepared →
+    Includes (prepared.caller.external ++ prepared.caller.liveObjects) prepared.entered.outside
+  summary : ∀ (program : Provenance.Program) (entry : Provenance.Entry) budget summary frozen result,
+    Provenance.summarize program entry budget = .ok summary →
+    entry.world.raw = Provenance.RawFrame.abstract frozen →
+    Provenance.Executes program.erase entry.function frozen result →
+    Provenance.SummaryCovers program summary frozen result
+  cleanupOrder : ∀ first resources,
+    Provenance.cleanupInvocations (Provenance.cleanupRoute first resources) =
+      resources.reverse.map Provenance.CleanupSlot.closer
+  cleanupHandler : ∀ slot effect above below,
+    Provenance.resolveCleanups [] [.handler effect above, .resource slot (some effect), .handler effect below] =
+      [{ slot with closer := above }]
+  draftHeap : ∀ (input : Draft.Input) (cell : Draft.Cell) child index member,
+    cell ∈ input.pool → (Draft.Value.reference child, index) ∈ cell.contents.zipIdx →
+    cell.storage.member index = some member →
+    (⟨cell.origin.object, index, child⟩ : HeapLink Nat) ∈ input.physicalHeap
+  transfer : ∀ (world : Provenance.World) register object moved ended frame outside,
+    Provenance.consume world register = .ok (object, moved, ended) →
+    world.raw = Provenance.RawFrame.abstract frame →
+    Includes (outside.map Provenance.Object.abstract) (ended.liveObjects ++ ended.external) →
+    ∃ root, frame.get register = some root ∧
+      ∀ target, Heap.Reaches (Provenance.ownedLinks world.ownership frame.memory.heap) [root] target →
+        Heap.Reaches frame.memory.heap outside target → False
 
 structure AccessGuarantees : Prop where
   calls : ∀ (program : Calls.Syntax) analysis middle event,
@@ -129,7 +160,7 @@ structure DraftGuarantees : Prop where
     ∃ start commands, Draft.prepare input = some start ∧ Draft.lowerRecipe start recipe = some commands ∧
       ∀ middle, Draft.Prefix commands start middle →
         Draft.WorldInvariant input middle ∧ Draft.SourcesCovered middle.memory input.sources ∧
-          ∀ event ∈ middle.events, Fact.event event.kind event.origin.source ∈ analysis.facts
+    ∀ event ∈ middle.events, Draft.Fact.event event.kind event.origin.source ∈ analysis.facts
   publication : ∀ (input : Draft.Input) start program finish published,
     Draft.prepare input = some start → Draft.Trace program start finish → finish.output = some published →
     published.access = .immutable ∧ finish.active = false ∧
@@ -277,6 +308,8 @@ structure ConcurrencyGuarantees : Prop where
 structure Guarantees : Prop where
   solver : SolverGuarantees
   provenance : ProvenanceGuarantees
+  referenceProvenance : ReferenceProvenanceGuarantees
+  composition : CompositionGuarantees
   access : AccessGuarantees
   entry : EntryGuarantees
   callableMatch : CallableMatchGuarantees
@@ -287,11 +320,25 @@ structure Guarantees : Prop where
   visibility : VisibilityGuarantees
 
 theorem verified : Guarantees where
-  solver := ⟨fun _ => ⟨solve_closed, solve_grounded, solve_nodup, fun _ => solve_least⟩⟩
-  provenance := ⟨fun _ _ _ => Provenance.verified_program,
-    fun _ _ _ _ => Provenance.verified_machine, fun _ _ _ _ _ _ _ => Provenance.machine_progress,
-    fun _ _ _ _ => provenance_coverage,
+  solver := by
+    constructor
+    intro α inst rules
+    exact ⟨solve_closed, solve_grounded, solve_nodup, fun _ => solve_least⟩
+  provenance := {
+    resolved := fun _ _ _ => Provenance.verified_program
+    erasedMachine := fun _ _ _ _ => Provenance.verified_machine
+    erasedProgress := fun _ _ _ _ _ _ _ => Provenance.machine_progress
+  }
+  referenceProvenance := ⟨fun _ _ _ _ => provenance_coverage,
     fun _ _ => ProvenanceIdentity.trace_invariant, fun _ _ _ => ProvenanceIdentity.cfg_entry_can_freeze⟩
+  composition := {
+    entryFootprint := fun _ _ _ _ => Provenance.prepared_external_roots
+    summary := fun _ _ _ _ _ _ => Provenance.summarize_sound
+    cleanupOrder := Provenance.cleanupRoute_lifo
+    cleanupHandler := Provenance.later_handler_does_not_replace_saved_cleanup
+    draftHeap := fun _ _ _ _ _ => Draft.stored_reference_in_physical_heap
+    transfer := fun _ _ _ _ _ _ _ => Provenance.consumed_region_isolated
+  }
   access := ⟨fun _ _ _ _ => Calls.every_prefix_authorized, fun _ _ => Calls.source_progress,
     fun _ _ _ _ => Integrated.handoff_preserves_identity,
     fun _ _ _ _ _ _ _ _ => Integrated.handoff_ends_derived_access,

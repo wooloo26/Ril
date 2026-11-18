@@ -6,6 +6,22 @@ inductive Access where
   | immutable | ref | mut | shared
   deriving Repr, DecidableEq
 
+inductive ParameterMode where
+  | immutable | observe | mutable | retained | construction
+  deriving Repr, DecidableEq
+
+def ParameterMode.access : ParameterMode → Access
+  | .immutable => .immutable
+  | .observe => .ref
+  | .mutable | .construction => .mut
+  | .retained => .shared
+
+/-- Conflicts refer to actual regions. Modes determine which pairs need a
+    separation check independently of the region representation. -/
+def ParameterMode.conflicts (left right : ParameterMode) : Bool :=
+  left == .mutable || right == .mutable || left == .retained && right == .retained ||
+    left == .construction || right == .construction
+
 structure MemberMode where
   replaceable : Bool
   access : Access
@@ -32,6 +48,34 @@ structure Origin where
   object : Nat
   scope : Nat
   deriving Repr, DecidableEq
+
+/-- Explanation of a state event. Labels carry no authority. -/
+inductive Mechanism where
+  | binding | aggregate | projection | call | higherOrder | returnValue | closure
+  | via | infer | module | opaque | handler | cleanup | resource
+  | clone | derive | handoff
+  deriving Repr, DecidableEq
+
+inductive EventKind where
+  | read | write | retain | capture | rootReturn | containedReturn | transfer
+  deriving Repr, DecidableEq
+
+structure Event where
+  kind : EventKind
+  origin : Origin
+  mechanism : Mechanism
+  deriving Repr, DecidableEq
+
+structure HeapLink (Object : Type) where
+  parent : Object
+  field : Nat
+  child : Object
+  deriving Repr, DecidableEq
+
+def HeapLink.map (f : α → β) (edge : HeapLink α) : HeapLink β :=
+  ⟨f edge.parent, edge.field, f edge.child⟩
+
+abbrev HeapEdge := HeapLink Origin
 
 /-- Path attenuation cannot manufacture writable authority. -/
 def attenuate (outer member : Access) : Access :=

@@ -1,4 +1,4 @@
-import RilAccess.Provenance.Semantics
+import RilAccess.Model
 
 namespace RilAccess
 
@@ -99,15 +99,24 @@ theorem static_discharge_safe (cover : FootprintCovers abstract concrete)
   obtain ⟨hk, ho, hf⟩ := discharge_only_confined he hn
   simp [discharge, hk, ho, confinement_from_overapproximation cover hf]
 
-structure Summary where
-  rootReturn : List Origin
-  contained : List Origin
-  writes : List Origin
-  retained : List Origin
-  createdEnvironments : List Origin
-  namedReads : List Origin
-  effects : List Nat
+structure SummaryOf (Reference : Type) where
+  rootReturn : List Reference := []
+  contained : List Reference := []
+  writes : List Reference := []
+  retained : List Reference := []
+  createdEnvironments : List Reference := []
+  namedReads : List Reference := []
+  effects : List Nat := []
   deriving Repr, DecidableEq
+
+abbrev Summary := SummaryOf Origin
+
+def SummaryOf.references (s : SummaryOf α) : List α :=
+  s.rootReturn ++ s.contained ++ s.writes ++ s.retained ++ s.createdEnvironments ++ s.namedReads
+
+def SummaryOf.map (f : α → β) (s : SummaryOf α) : SummaryOf β :=
+  ⟨s.rootReturn.map f, s.contained.map f, s.writes.map f, s.retained.map f,
+    s.createdEnvironments.map f, s.namedReads.map f, s.effects⟩
 
 def Summary.combine (a b : Summary) : Summary :=
   ⟨a.rootReturn ++ b.rootReturn, a.contained ++ b.contained, a.writes ++ b.writes,
@@ -128,17 +137,20 @@ def Summary.isPure (pureSources : List Source) (s : Summary) : Bool :=
   s.createdEnvironments.all (isPureOrigin pureSources)
 
 /-- CallableType upper-bound contract matching after pure-origin reduction (`actual ⊑ expected`). -/
-def Summary.subsumes (pureSources : List Source) (expected actual : Summary) : Bool :=
+def SummaryOf.subsumesBy [DecidableEq α] (pure : α → Bool) (expected actual : SummaryOf α) : Bool :=
   actual.effects.all (fun e => decide (e ∈ expected.effects)) &&
   actual.rootReturn.all (fun o => decide (o ∈ expected.rootReturn)) &&
   actual.contained.all (fun o => decide (o ∈ expected.contained)) &&
   actual.retained.all (fun o => decide (o ∈ expected.retained)) &&
   actual.writes.all (fun o => decide (o ∈ expected.writes ∨ o ∈ expected.retained)) &&
   actual.namedReads.all (fun o =>
-    isPureOrigin pureSources o ||
+    pure o ||
     decide (o ∈ expected.namedReads ∨ o ∈ expected.writes ∨ o ∈ expected.retained)) &&
   actual.createdEnvironments.all (fun o =>
-    isPureOrigin pureSources o || decide (o ∈ expected.createdEnvironments))
+    pure o || decide (o ∈ expected.createdEnvironments))
+
+def Summary.subsumes (pureSources : List Source) (expected actual : Summary) : Bool :=
+  SummaryOf.subsumesBy (isPureOrigin pureSources) expected actual
 
 structure SummarySubsumes (pureSources : List Source) (expected actual : Summary) : Prop where
   effects : ∀ e ∈ actual.effects, e ∈ expected.effects
@@ -155,11 +167,11 @@ theorem summary_subsumes_iff {pureSources : List Source} {expected actual : Summ
     expected.subsumes pureSources actual = true ↔ SummarySubsumes pureSources expected actual := by
   constructor
   · intro h
-    simp only [Summary.subsumes, Bool.and_eq_true, List.all_eq_true, Bool.or_eq_true,
+    simp only [Summary.subsumes, SummaryOf.subsumesBy, Bool.and_eq_true, List.all_eq_true, Bool.or_eq_true,
       decide_eq_true_eq] at h
     exact ⟨h.1.1.1.1.1.1, h.1.1.1.1.1.2, h.1.1.1.1.2, h.1.1.1.2, h.1.1.2, h.1.2, h.2⟩
   · intro h
-    simp only [Summary.subsumes, Bool.and_eq_true, List.all_eq_true, Bool.or_eq_true,
+    simp only [Summary.subsumes, SummaryOf.subsumesBy, Bool.and_eq_true, List.all_eq_true, Bool.or_eq_true,
       decide_eq_true_eq]
     exact ⟨⟨⟨⟨⟨⟨h.effects, h.rootReturn⟩, h.contained⟩, h.retained⟩, h.writes⟩, h.namedReads⟩,
       h.createdEnvironments⟩

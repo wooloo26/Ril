@@ -1,4 +1,5 @@
-import RilAccess.Contracts
+import RilAccess.Graph.Reachability
+import RilAccess.Logic
 
 /-! Finite authority closure for shared, cyclic, mutable graphs. The closure is
 for summaries: permission to use one path is checked on that particular path,
@@ -6,10 +7,6 @@ never inferred from another writable path to the same object. -/
 namespace RilAccess.GraphAuthority
 
 variable {Node : Type} [DecidableEq Node]
-
-@[simp] theorem option_bind_some (value : α) (f : α → Option β) :
-    (some value >>= f) = f value := rfl
-@[simp] theorem option_bind_none (f : α → Option β) : (none >>= f) = none := rfl
 
 def modes : List Access := [.immutable, .ref, .mut, .shared]
 
@@ -29,11 +26,7 @@ structure Edge (Node : Type := Nat) where
   held : Access
   deriving Repr, DecidableEq
 
-structure RawEdge (Node : Type := Nat) where
-  parent : Node
-  field : Nat
-  child : Node
-  deriving Repr, DecidableEq
+abbrev RawEdge (Node : Type := Nat) := HeapLink Node
 
 def eraseEdge (edge : Edge Node) : RawEdge Node := ⟨edge.parent, edge.field, edge.child⟩
 
@@ -343,12 +336,21 @@ theorem readonly_path_never_writes
     simp [Access.writes] at contradiction
 
 def entryObjects (graph : Graph Node) (view : Nat) : List Node :=
-  ((analyze graph).filter (fun fact => decide (fact.view = view))).map (fun fact => fact.object)
+  Heap.reachable (eraseEdges graph.edges) ((graph.roots.filter (·.view == view)).map Root.object)
+
+omit [DecidableEq Node] in
+theorem RawPath.extend {rawEdges : List (RawEdge Node)} (path : RawPath rawEdges start fields object)
+    (base : Heap.Reaches rawEdges roots start) : Heap.Reaches rawEdges roots object := by
+  induction path with
+  | here => exact base
+  | next present _ ih => exact ih (.edge present base)
 
 theorem entry_object_covered (hr : root ∈ graph.roots)
     (hp : Path graph.edges root.object root.access fields object mode) :
     object ∈ entryObjects graph root.view := by
-  apply List.mem_map.mpr
-  exact ⟨⟨root.view, object, mode⟩, List.mem_filter.mpr ⟨path_covered hr hp, by simp⟩, rfl⟩
+  apply Heap.reachable_exact.mpr
+  have member : root.object ∈ ((graph.roots.filter (·.view == root.view)).map Root.object) :=
+    List.mem_map.mpr ⟨root, List.mem_filter.mpr ⟨hr, by simp⟩, rfl⟩
+  exact (path_erases hp).extend (.root member)
 
 end RilAccess.GraphAuthority

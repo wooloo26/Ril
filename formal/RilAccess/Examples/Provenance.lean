@@ -1,5 +1,5 @@
 import RilAccess.Contracts
-import RilAccess.Provenance.Limits
+import RilAccess.Reference.Provenance.Limits
 
 set_option maxRecDepth 4096
 set_option maxHeartbeats 8000000

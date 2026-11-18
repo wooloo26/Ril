@@ -198,7 +198,7 @@ theorem concurrent_handler_pure_and_stateless
     {pureSources : List Source} {admissibleEffects : List Nat}
     {handler : Summary} {handlerEnv : List Origin}
     (h : concurrentShareableFnHandler pureSources admissibleEffects handler handlerEnv = true) :
-    { handler with effects := [] }.isPure pureSources = true ∧
+    Summary.isPure pureSources { handler with effects := [] } = true ∧
     (∀ o ∈ handlerEnv, isPureOrigin pureSources o = true) ∧
     (∀ e ∈ handler.effects, e ∈ admissibleEffects) := by
   simp only [concurrentShareableFnHandler, Bool.and_eq_true, List.all_eq_true,

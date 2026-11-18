@@ -1,4 +1,5 @@
 import RilAccess.Call.Entry
+import RilAccess.Contracts
 
 namespace RilAccess.CoreSummary
 
@@ -8,15 +9,7 @@ inductive Reference where
   | fresh (source : Source) (serial : Nat)
   deriving Repr, DecidableEq
 
-structure Template where
-  rootReturn : List Reference := []
-  contained : List Reference := []
-  writes : List Reference := []
-  retained : List Reference := []
-  createdEnvironments : List Reference := []
-  namedReads : List Reference := []
-  effects : List Nat := []
-  deriving Repr, DecidableEq
+abbrev Template := SummaryOf Reference
 
 structure CallInstance where
   parameter : Nat → Nat → Origin
@@ -31,17 +24,13 @@ def resolve (actual : CallInstance) : Reference → Origin
     ⟨source, actual.activation, freshObject actual.existingObjects serial, actual.scope⟩
 
 def references (summary : Template) : List Reference :=
-  summary.rootReturn ++ summary.contained ++ summary.writes ++ summary.retained ++
-    summary.createdEnvironments ++ summary.namedReads
+  summary.references
 
 def origins (summary : Summary) : List Origin :=
-  summary.rootReturn ++ summary.contained ++ summary.writes ++ summary.retained ++
-    summary.createdEnvironments ++ summary.namedReads
+  summary.references
 
 def instantiate (actual : CallInstance) (summary : Template) : Summary :=
-  ⟨summary.rootReturn.map (resolve actual), summary.contained.map (resolve actual), summary.writes.map (resolve actual),
-    summary.retained.map (resolve actual), summary.createdEnvironments.map (resolve actual),
-    summary.namedReads.map (resolve actual), summary.effects⟩
+  summary.map (resolve actual)
 
 def referenceValid (actual : CallInstance) (frozen : CoreEntry.Frozen) : Reference → Bool
   | .concrete origin => decide (origin.object ∈ actual.existingObjects) &&
@@ -104,7 +93,7 @@ theorem checked_facts (h : check actual frozen summary = .ok result) : InputFact
 
 theorem all_components_instantiated :
     origins (instantiate actual summary) = (references summary).map (resolve actual) := by
-  simp only [origins, instantiate, references, List.map_append]
+  simp only [origins, instantiate, references, SummaryOf.references, SummaryOf.map, List.map_append]
 
 theorem every_concrete_identity_survives (he : Reference.concrete origin ∈ references summary) :
     origin ∈ origins (instantiate actual summary) := by
@@ -193,21 +182,12 @@ theorem reference_pure_resolves_pure {pureSources : List Source} {r : Reference}
   cases r <;> simp_all [Reference.isPure, resolve]
 
 def Template.subsumes (pureSources : List Source) (expected actual : Template) : Bool :=
-  actual.effects.all (fun e => decide (e ∈ expected.effects)) &&
-  actual.rootReturn.all (fun r => decide (r ∈ expected.rootReturn)) &&
-  actual.contained.all (fun r => decide (r ∈ expected.contained)) &&
-  actual.retained.all (fun r => decide (r ∈ expected.retained)) &&
-  actual.writes.all (fun r => decide (r ∈ expected.writes ∨ r ∈ expected.retained)) &&
-  actual.namedReads.all (fun r =>
-    Reference.isPure pureSources r ||
-    decide (r ∈ expected.namedReads ∨ r ∈ expected.writes ∨ r ∈ expected.retained)) &&
-  actual.createdEnvironments.all (fun r =>
-    Reference.isPure pureSources r || decide (r ∈ expected.createdEnvironments))
+  SummaryOf.subsumesBy (Reference.isPure pureSources) expected actual
 
 theorem template_subsumes_instantiate {pureSources : List Source} {expected actual : Template}
     (h : expected.subsumes pureSources actual = true) (call : CallInstance) :
     (instantiate call expected).subsumes pureSources (instantiate call actual) = true := by
-  simp only [Template.subsumes, Bool.and_eq_true, List.all_eq_true, Bool.or_eq_true,
+  simp only [Template.subsumes, SummaryOf.subsumesBy, Bool.and_eq_true, List.all_eq_true, Bool.or_eq_true,
     decide_eq_true_eq] at h
   rcases h with ⟨⟨⟨⟨⟨⟨heff, hroot⟩, hcont⟩, hret⟩, hwr⟩, hreads⟩, henv⟩
   rw [summary_subsumes_iff]

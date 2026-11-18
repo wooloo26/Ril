@@ -1,4 +1,5 @@
 import RilAccess.Contracts
+import RilAccess.Solver
 
 /-! An integrated, finite, mode-erased access calculus. All authority and alias
 facts below are computed from declarations and operations, not supplied flags. -/
@@ -92,9 +93,7 @@ def rawStep (a : RawAtom) (s : RawState) : Option RawState :=
     pure { s with observations := ⟨.write, r⟩ :: ⟨.write, l⟩ :: s.observations }
   | .skip => some s
 
-inductive ParameterMode where
-  | immutable | observe | mutable | retained | construction
-  deriving Repr, DecidableEq
+abbrev ParameterMode := RilAccess.ParameterMode
 
 inductive Atom where
   | allocate (destination : Nat) (mode : MemberMode) (schema : Schema)

@@ -1,16 +1,7 @@
 import RilAccess.Access.Core
+import RilAccess.Logic
 
 namespace RilAccess.Integrated
-
-@[simp] theorem except_bind_ok (value : α) (f : α → Except ε β) :
-    (Except.ok value >>= f) = f value := rfl
-@[simp] theorem except_bind_error (error : ε) (f : α → Except ε β) :
-    (Except.error error >>= f) = .error error := rfl
-@[simp] theorem except_map_ok (value : α) (f : α → β) :
-    f <$> (Except.ok value : Except ε α) = .ok (f value) := rfl
-@[simp] theorem except_map_error (error : ε) (f : α → β) :
-    f <$> (Except.error error : Except ε α) = .error error := rfl
-@[simp] theorem except_pure (value : α) : (pure value : Except ε α) = .ok value := rfl
 
 variable {w next : World} {atom : Atom} {code : Code} {worlds : List World}
   {program : Syntax} {analysis : Analysis} {state : RawState}

@@ -1,6 +1,6 @@
 import RilAccess.Solver
 
-namespace RilAccess.Provenance
+namespace RilAccess
 
 /-- A demand-driven rule engine. A rule can depend on facts already discovered
     (for example, a return from a particular abstract call entry). -/
@@ -56,4 +56,4 @@ theorem saturate_least [DecidableEq α] {expand : List α → α → List α}
       · obtain ⟨x, hx, hy⟩ := List.mem_flatMap.mp (List.mem_filter.mp (List.mem_eraseDups.mp hy)).1
         exact stable x (base x hx) y (mono base x y hy)
 
-end RilAccess.Provenance
+end RilAccess

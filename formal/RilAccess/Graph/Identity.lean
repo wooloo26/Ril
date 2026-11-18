@@ -1,4 +1,4 @@
-import RilAccess.Graph.Authority
+import RilAccess.Graph.Reachability
 
 /-! Physical reachability uses object IDs. Source labels are explanations and
 must not split a physical object into distinct graph nodes. -/
@@ -19,16 +19,12 @@ def coherent (origins : List Origin) : Bool :=
 def labels (heap : List HeapEdge) (roots : List Origin) : List Origin :=
   (roots ++ heap.flatMap (fun edge => [edge.parent, edge.child])).eraseDups
 
-def graph (heap : List HeapEdge) (roots : List Origin) : GraphAuthority.Graph ObjectId :=
-  ⟨roots.map (fun origin => ⟨0, origin.object, .ref⟩),
-    heap.map (fun edge => ⟨edge.parent.object, edge.field, edge.child.object, ⟨false, .ref⟩, .ref⟩)⟩
-
 inductive Reach (heap : List HeapEdge) : ObjectId → ObjectId → Prop where
   | refl : Reach heap object object
   | cons : edge ∈ heap → Reach heap edge.child.object target → Reach heap edge.parent.object target
 
 def objects (heap : List HeapEdge) (roots : List Origin) : List ObjectId :=
-  ((GraphAuthority.analyze (graph heap roots)).map GraphAuthority.Fact.object).eraseDups
+  Heap.reachable (heap.map (HeapLink.map Origin.object)) (roots.map Origin.object)
 
 def origins (heap : List HeapEdge) (allRoots roots : List Origin) : List Origin :=
   (labels heap allRoots).filter (fun origin => decide (origin.object ∈ objects heap roots))
@@ -38,52 +34,40 @@ theorem same_owner {knownOrigins : List Origin} (h : coherent knownOrigins = tru
   have pair := List.all_eq_true.mp (List.all_eq_true.mp h left hl) right hr
   exact (of_decide_eq_true pair).resolve_left (not_not_intro hi)
 
-theorem source_reach (h : RilAccess.Reach heap root target) : Reach heap root.object target.object := by
-  induction h with
-  | refl => exact .refl
-  | cons he _ ih => exact .cons he ih
+theorem Reach.append (path : Reach heap root edge.parent.object) (present : edge ∈ heap) :
+    Reach heap root edge.child.object := by
+  generalize endpoint : edge.parent.object = target at path
+  induction path with
+  | refl =>
+    rw [← endpoint]
+    exact .cons present .refl
+  | cons member _ ih =>
+    exact .cons member (ih endpoint)
 
-theorem finite_path (h : Reach heap root target) :
-    ∃ fields, GraphAuthority.Path (graph heap roots).edges root .ref fields target .ref := by
-  induction h with
-  | refl => exact ⟨[], .here⟩
-  | @cons edge target he _ ih =>
-    obtain ⟨fields, hp⟩ := ih
-    exact ⟨edge.field :: fields, .next (List.mem_map.mpr ⟨edge, he, rfl⟩) hp⟩
+theorem Reach.extend (path : Reach heap root target)
+    (base : Heap.Reaches (heap.map (HeapLink.map Origin.object)) roots root) :
+    Heap.Reaches (heap.map (HeapLink.map Origin.object)) roots target := by
+  induction path with
+  | refl => exact base
+  | @cons edge _ present _ ih =>
+    exact ih (.edge (edge := edge.map Origin.object) (List.mem_map_of_mem present) base)
 
 theorem path_covered (hr : root ∈ roots) (hp : Reach heap root.object target) :
-    target ∈ objects heap roots := by
-  obtain ⟨fields, path⟩ := finite_path (roots := roots) hp
-  have rootPresent : GraphAuthority.Root.mk 0 root.object .ref ∈ (graph heap roots).roots :=
-    List.mem_map.mpr ⟨root, hr, rfl⟩
-  apply List.mem_eraseDups.mpr
-  exact List.mem_map.mpr ⟨⟨0, target, .ref⟩, GraphAuthority.path_covered rootPresent path, rfl⟩
+    target ∈ objects heap roots :=
+  Heap.reachable_exact.mpr (hp.extend (.root (List.mem_map_of_mem hr)))
 
 theorem object_has_path (ht : target ∈ objects heap roots) :
     ∃ root ∈ roots, Reach heap root.object target := by
-  obtain ⟨fact, hf, heq⟩ := List.mem_map.mp (List.mem_eraseDups.mp ht)
-  have statement : ∀ fact, GraphAuthority.Granted (graph heap roots) fact →
-      ∃ root ∈ roots, Reach heap root.object fact.object := by
-    intro fact granted
-    induction granted with
-    | @root selected hr =>
-      obtain ⟨origin, ho, he⟩ := List.mem_map.mp hr
-      have hx : origin.object = selected.object := congrArg GraphAuthority.Root.object he
-      refine ⟨origin, ho, ?_⟩
-      rw [← hx]
-      exact .refl
-    | @edge root edge mode _ hedge _ ih =>
-      obtain ⟨original, ho, he⟩ := List.mem_map.mp hedge
-      cases he
-      obtain ⟨start, hs, hp⟩ := ih
-      have appendEdge : ∀ a b, Reach heap a b → ∀ edge ∈ heap, edge.parent.object = b →
-          Reach heap a edge.child.object := by
-        intro a b path
-        induction path with
-        | refl => intro edge hm he; cases he; exact .cons hm .refl
-        | cons hm _ ih => intro edge heq hp; exact .cons hm (ih edge heq hp)
-      exact ⟨start, hs, appendEdge _ _ hp original ho rfl⟩
-  simpa only [heq] using statement fact (GraphAuthority.analyze_grounded hf)
+  have walk := Heap.reachable_exact.mp ht
+  clear ht
+  induction walk with
+  | root found =>
+    obtain ⟨root, member, rfl⟩ := List.mem_map.mp found
+    exact ⟨root, member, .refl⟩
+  | edge present _ ih =>
+    obtain ⟨edge, member, rfl⟩ := List.mem_map.mp present
+    obtain ⟨root, initial, path⟩ := ih
+    exact ⟨root, initial, path.append member⟩
 
 theorem objects_exact : target ∈ objects heap roots ↔ ∃ root ∈ roots, Reach heap root.object target :=
   ⟨object_has_path, fun ⟨_, hr, hp⟩ => path_covered hr hp⟩

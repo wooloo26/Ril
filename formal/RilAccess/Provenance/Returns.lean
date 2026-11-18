@@ -10,7 +10,7 @@ theorem slot_abstract (program : Program) (object : Object) (field : Field) :
 
 theorem ownedLinks_abstract (ownership : List (Object × Field)) (heap : List Link) :
     (ownedLinks ownership heap).map Link.abstract = ownedLinks ownership (heap.map Link.abstract) := by
-  simp [ownedLinks, List.filter_map, Function.comp_def, Link.abstract]
+  simp [ownedLinks, List.filter_map, Function.comp_def, Link.abstract, HeapLink.map]
 
 theorem isolated_sound {world : World} {frame : RawFrame}
     (hw : world.raw = frame.abstract)
@@ -33,6 +33,19 @@ theorem isolated_sound {world : World} {frame : RawFrame}
   have absent := List.all_eq_true.mp h _ hf
   rw [hw, raw_abstract_heap] at absent
   simp [old] at absent
+
+/-- Shared proof for exclusive transfers, including a resolved single-shot
+    fiber or channel handoff supplied with its live parent footprint. -/
+theorem consumed_region_isolated {world ended : World} {frame : RawFrame}
+    (h : consume world register = .ok (object, moved, ended))
+    (hw : world.raw = frame.abstract)
+    (covers : Includes (outside.map Object.abstract) (ended.liveObjects ++ ended.external)) :
+    ∃ root, frame.get register = some root ∧
+      ∀ target, Reaches (ownedLinks world.ownership frame.memory.heap) [root] target →
+        Reaches frame.memory.heap outside target → False := by
+  obtain ⟨⟨original, live⟩, _, safe⟩ := consume_conditions h
+  obtain ⟨root, present, rfl⟩ := view_available hw live
+  exact ⟨root, present, fun _ own external => isolated_sound hw safe covers own external⟩
 
 theorem mapM_covers {f : α → Option β} (h : List.mapM f xs = some ys) (hx : x ∈ xs) :
     ∃ y ∈ ys, f x = some y := by
@@ -80,7 +93,7 @@ theorem boundary_found {world : World} {frame : RawFrame}
   refine List.mem_eraseDups.mpr (List.mem_filterMap.mpr ⟨edge.abstract, ?_, ?_⟩)
   · rw [hw, raw_abstract_heap]
     exact List.mem_map_of_mem present
-  · simp [Link.abstract, inNew, slot_abstract, schema, old]
+  · simp [Link.abstract, HeapLink.map, inNew, slot_abstract, schema, old]
 
 def ReturnGuarantee (program : Program) (function : Function) (frozen frame : RawFrame)
     (world : World) (source : Option Register) (value : Returned) : Prop :=
@@ -138,7 +151,7 @@ theorem checked_return_sound {entry world : World} {frozen frame : RawFrame}
         simp [checkReturn, hc, hv, need, require] at h
         split at h
         · rename_i valid
-          refine ⟨register, object, view, rfl, hr, hv, valid.1, ?_⟩
+          refine ⟨register, object, view, rfl, hr, hv, valid.1.1, ?_⟩
           obtain ⟨formal, member, _, fromEntry⟩ := valid.2
           exact ⟨formal, member, entry_source_sound hf fromEntry⟩
         · simp at h
@@ -184,7 +197,7 @@ theorem checked_return_sound {entry world : World} {frozen frame : RawFrame}
               exact ⟨origin, contains, mode, mode ▸ permits, actual⟩
         · simp at h
 
-theorem checked_return_ready (checked : Checked program facts) {frozen frame : RawFrame}
+theorem checked_return_ready (checked : Checked program facts inputs) {frozen frame : RawFrame}
     (hfrozen : entry.world.raw = frozen.abstract)
     (covered : Covered program facts entry (.at pc frame))
     (hf : program.functions[entry.function]? = some function)

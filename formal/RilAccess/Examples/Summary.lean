@@ -118,8 +118,8 @@ def fixtures : List (String × Bool) :=
    ("callable match: retained state cannot downgrade to write-only callable type",
       !writeSummary.subsumes pureTable retainedSummary),
    ("callable match: root return source subset accepted and superset rejected",
-      ({ emptySummary with rootReturn := [saved, child] }).subsumes pureTable { emptySummary with rootReturn := [saved] } &&
-        !({ emptySummary with rootReturn := [saved] }).subsumes pureTable { emptySummary with rootReturn := [saved, child] }),
+      Summary.subsumes pureTable { emptySummary with rootReturn := [saved, child] } { emptySummary with rootReturn := [saved] } &&
+        !Summary.subsumes pureTable { emptySummary with rootReturn := [saved] } { emptySummary with rootReturn := [saved, child] }),
    ("callable match: template subsumption preserved across call instantiation",
       upperEffectTemplate.subsumes pureTable pureReadTemplate &&
         (instantiate actual upperEffectTemplate).subsumes pureTable (instantiate actual pureReadTemplate)),

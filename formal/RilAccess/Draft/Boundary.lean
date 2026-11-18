@@ -258,7 +258,7 @@ theorem checked_recipe (h : check input program = some analysis) :
     cases hr : runChecked program start with
     | none => simp [check, hp, hr] at h
     | some finish =>
-      simp only [check, hp, GraphAuthority.option_bind_some, hr] at h
+      simp only [check, hp, option_bind_some, hr] at h
       change (if finish.active then none else _) = some analysis at h
       split at h
       · contradiction

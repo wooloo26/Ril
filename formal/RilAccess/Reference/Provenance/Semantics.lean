@@ -1,18 +1,6 @@
-import RilAccess.Provenance.Analysis
+import RilAccess.Reference.Provenance.Analysis
 
 namespace RilAccess
-
-structure HeapEdge where
-  parent : Origin
-  field : Nat
-  child : Origin
-  deriving Repr, DecidableEq
-
-structure Event where
-  kind : EventKind
-  origin : Origin
-  mechanism : Mechanism
-  deriving Repr, DecidableEq
 
 structure Configuration where
   pc : Option Nat

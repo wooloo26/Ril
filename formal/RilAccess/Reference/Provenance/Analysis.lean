@@ -3,17 +3,6 @@ import RilAccess.Solver
 
 namespace RilAccess
 
-/-- Mechanism labels retain the explanation/lowering site, not extra authority. -/
-inductive Mechanism where
-  | binding | aggregate | projection | call | higherOrder | returnValue | closure
-  | via | infer | module | opaque | handler | cleanup | resource
-  | clone | derive | handoff
-  deriving Repr, DecidableEq
-
-inductive EventKind where
-  | read | write | retain | capture | rootReturn | containedReturn | transfer
-  deriving Repr, DecidableEq
-
 inductive Fact where
   | active (pc : Nat)
   | root (register : Nat) (source : Source)

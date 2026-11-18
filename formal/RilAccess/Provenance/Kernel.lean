@@ -1,4 +1,5 @@
 import RilAccess.Provenance.Checking
+import RilAccess.Solver.Saturation
 
 namespace RilAccess.Provenance
 
@@ -12,13 +13,17 @@ inductive Judgment where
   | returned (entry : Entry) (source : Option Register) (world : World) (value : Returned)
   | aborted (entry : Entry) (world : World)
   | use (entry : Entry) (use : Use)
-  | writesObject (entry : Entry) (object : Object)
+  | writesObject (entry : Entry) (region : AllocationClass) (localAllocation : Bool)
   | publication (entry : Entry)
   | rejected (function pc : Nat) (error : Error)
   deriving Repr, DecidableEq
 
 def record (entry : Entry) (uses : List Use) : List Judgment :=
   uses.map (.use entry)
+
+def abortFacts (entry : Entry) (pc : Nat) (world : World) : List Judgment :=
+  if world.scopes.isEmpty then .aborted entry world :: record entry (survivingStores world none)
+  else [.rejected entry.function pc .scopeOrder]
 
 def useActual (prepared : Prepared) (use : Use) : List Use :=
   match prepared.actuals[use.1]? with
@@ -28,26 +33,45 @@ def useActual (prepared : Prepared) (use : Use) : List Use :=
     | .rootRetain | .retain => []
     | kind => used view kind
 
-def propagate (program : Program) (entry callee : Entry) (pc next : Nat) (prepared : Prepared)
-    (destination : Option (Register × Access)) : Judgment → List Judgment
-  | .use key use =>
-    if key = callee then record entry (useActual prepared use) else []
-  | .writesObject key object =>
-    if key = callee then [.writesObject entry object] else []
+inductive CallFact where
+  | use (use : Use)
+  | write (region : AllocationClass) (localAllocation : Bool)
+  | publication
+  | returned (source : Option Register) (world : World) (value : Returned)
+  | aborted (world : World)
+  deriving Repr, DecidableEq
+
+@[simp] def Judgment.callFact (callee : Entry) : Judgment → Option CallFact
+  | .use key evidence =>
+    if key = callee then some (.use evidence) else none
+  | .writesObject key object localAllocation =>
+    if key = callee then some (.write object localAllocation) else none
   | .publication key =>
-    if key = callee then [.publication entry] else []
+    if key = callee then some .publication else none
   | .returned key source exited result =>
-    if key = callee then
-      match resume program prepared exited source result destination with
-      | .ok after => [.point entry next after]
-      | .error error => [.rejected entry.function pc error]
-    else []
+    if key = callee then some (.returned source exited result) else none
   | .aborted key exited =>
-    if key = callee then
-      let after := abortCall prepared exited
-      .aborted entry after :: record entry (survivingStores after none)
-    else []
-  | _ => []
+    if key = callee then some (.aborted exited) else none
+  | _ => none
+
+@[simp] def applyCallFact (program : Program) (entry : Entry) (pc next : Nat)
+    (prepared : Prepared) (destination : Option (Register × Access)) (onAbort : Option Nat) : CallFact → List Judgment
+  | .use use => record entry (useActual prepared use)
+  | .write object localAllocation => [.writesObject entry object localAllocation]
+  | .publication => [.publication entry]
+  | .returned source exited result =>
+    match resume program prepared exited source result destination with
+    | .ok after => [.point entry next after]
+    | .error error => [.rejected entry.function pc error]
+  | .aborted exited =>
+    let after := abortCall prepared exited
+    match onAbort with
+    | none => abortFacts entry pc after
+    | some handler => [.point entry handler after]
+
+def propagate (program : Program) (entry callee : Entry) (pc next : Nat) (prepared : Prepared)
+    (destination : Option (Register × Access)) (onAbort : Option Nat) (fact : Judgment) : List Judgment :=
+  (fact.callFact callee).toList.flatMap (applyCallFact program entry pc next prepared destination onAbort)
 
 def expand (program : Program) (known : List Judgment) : Judgment → List Judgment
   | .point entry pc world =>
@@ -64,11 +88,12 @@ def expand (program : Program) (known : List Judgment) : Judgment → List Judgm
         else alternatives.flatMap fun action =>
           match primitive program action world with
           | .ok (after, uses) =>
-            let written := (action.writer.bind world.raw.get).toList.map (.writesObject entry)
+            let written := (action.writer.bind world.view).toList.map fun (object, view) =>
+              .writesObject entry object.allocationClass view.localAllocation
             let published := match action with | .publish _ => [.publication entry] | _ => []
             .point entry next after :: (record entry uses ++ written ++ published)
           | .error error => [.rejected entry.function pc error]
-      | some (.invoke callee arguments destination next) =>
+      | some (.invoke callee arguments destination next onAbort) =>
         match program.functions[callee]? with
         | none => [.rejected entry.function pc .missingInstruction]
         | some target =>
@@ -77,12 +102,14 @@ def expand (program : Program) (known : List Judgment) : Judgment → List Judgm
           | .ok prepared =>
             let called : Entry := ⟨callee, prepared.entered⟩
             .point called 0 prepared.entered ::
-              known.flatMap (propagate program entry called pc next prepared destination)
+              known.flatMap (propagate program entry called pc next prepared destination onAbort)
       | some (.ret source) =>
-        match checkReturn program function entry.world world source with
-        | .ok value => .returned entry source world value :: record entry (value.uses ++ survivingStores world source)
-        | .error error => [.rejected entry.function pc error]
-      | some .abort => .aborted entry world :: record entry (survivingStores world none)
+        if world.scopes.isEmpty then
+          match checkReturn program function entry.world world source with
+          | .ok value => .returned entry source world value :: record entry (value.uses ++ survivingStores world source)
+          | .error error => [.rejected entry.function pc error]
+        else [.rejected entry.function pc .scopeOrder]
+      | some .abort => abortFacts entry pc world
   | _ => []
 
 theorem expand_monotone (program : Program) : MonotoneExpansion (expand program) := by
@@ -96,7 +123,7 @@ theorem expand_monotone (program : Program) : MonotoneExpansion (expand program)
       | none => simpa only [expand, hf, hi] using member
       | some instruction =>
         cases instruction <;> simp only [expand, hf, hi] at member ⊢ <;> try exact member
-        rename_i callee arguments destination next
+        rename_i callee arguments destination next onAbort
         cases hc : program.functions[callee]? with
         | none => simpa only [hc] using member
         | some target =>
@@ -111,11 +138,14 @@ theorem expand_monotone (program : Program) : MonotoneExpansion (expand program)
   | _ => simp [expand] at member
 
 def startEntry : Entry := ⟨0, {}⟩
-def seed : List Judgment := [.point startEntry 0 startEntry.world]
+def entrySeed (entry : Entry) : List Judgment := [.point entry 0 entry.world]
+def seed : List Judgment := entrySeed startEntry
+
+def validSchemas (program : Program) : Bool :=
+  decide ((program.slots.map (fun s => (s.site, s.field))).Nodup)
 
 def validProgram (program : Program) : Bool :=
-  (program.functions[0]?).any (fun f => f.parameters.isEmpty) &&
-  decide ((program.slots.map (fun s => (s.site, s.field))).Nodup)
+  (program.functions[0]?).any (fun f => f.parameters.isEmpty) && validSchemas program
 
 def entryUses (facts : List Judgment) (entry : Entry) : List Use :=
   facts.filterMap fun
@@ -130,13 +160,26 @@ def inferredContained (facts : List Judgment) (entry : Entry) : List OldSource :
 def agrees (xs ys : List α) [DecidableEq α] : Bool :=
   xs.all (fun x => ys.contains x) && ys.all (fun y => xs.contains y)
 
-def parameterWrite (function : Function) (facts : List Judgment) (entry : Entry) : Bool :=
+def writeFootprint (function : Function) (facts : List Judgment) (entry : Entry) : List AllocationClass :=
   let writable := function.parameters.zipIdx.filterMap (fun (mode, formal) =>
     if (paramAccess mode).writes then entry.world.raw.get formal else none)
-  let regions := reachable entry.world.raw.memory.heap writable
-  facts.any fun
-    | .writesObject key object => key == entry && regions.contains object
-    | _ => false
+  let regions := (reachable entry.world.raw.memory.heap writable).map Object.allocationClass
+  facts.filterMap fun
+    | .writesObject key object localAllocation =>
+      if key == entry && !localAllocation && regions.contains object then some object else none
+    | _ => none
+
+structure WriteEvidence where
+  grounded : Bool
+  possible : Bool
+  deriving Repr, DecidableEq
+
+def parameterWrites (function : Function) (facts : List Judgment) (entry : Entry) : WriteEvidence :=
+  let overlap := writeFootprint function facts entry
+  let byAuthority := (entryUses facts entry).any (fun (formal, kind) =>
+    kind == .write && (function.parameters[formal]?).any (fun mode => (paramAccess mode).writes))
+  let grounded := byAuthority || overlap.any AllocationClass.singleton
+  ⟨grounded, grounded || !overlap.isEmpty⟩
 
 def checkInterface (program : Program) (facts : List Judgment) (entry : Entry) : Except Error Unit := do
   let function ← need program.functions[entry.function]? .missingInstruction
@@ -147,11 +190,11 @@ def checkInterface (program : Program) (facts : List Judgment) (entry : Entry) :
     | .retained => uses.contains (formal, .retain) || uses.contains (formal, .rootRetain) ||
       uses.contains (formal, .publish)
     | _ => true) .unusedParameter
-  let writes := parameterWrite function facts entry || uses.any (fun (formal, kind) =>
-    kind == .write && (function.parameters[formal]?).any (fun mode => (paramAccess mode).writes))
+  let writes := parameterWrites function facts entry
+  require (writes.grounded == writes.possible) .uncertainWrite
   let retains := facts.contains (.publication entry) ||
     uses.any (fun (_, kind) => kind == .retain || kind == .publish)
-  require (function.contract.writes == writes && function.contract.retains == retains &&
+  require (function.contract.writes == writes.grounded && function.contract.retains == retains &&
     agrees function.contract.contained (inferredContained facts entry)) .contract
 
 structure Diagnostic where
@@ -182,14 +225,18 @@ def interfaceFailure (program : Program) (facts : List Judgment) : Option Diagno
 
 /-- Exhaustion is a diagnostic. A returned certificate always represents
     a closed and least solution, regardless of the requested work budget. -/
-def check (program : Program) (budget : Nat := 256) : Except Diagnostic Certificate :=
-  if validProgram program then
-    match saturate (expand program) budget seed with
-    | none => .error ⟨0, 0, .analysisLimit⟩
+def checkEntry (program : Program) (entry : Entry) (budget : Nat := 256) : Except Diagnostic Certificate :=
+  if validSchemas program then
+    match saturate (expand program) budget (entrySeed entry) with
+    | none => .error ⟨entry.function, 0, .analysisLimit⟩
     | some facts =>
       match (failures facts).head?.orElse (fun _ => interfaceFailure program facts) with
       | some diagnostic => .error diagnostic
       | none => .ok ⟨facts⟩
+  else .error ⟨entry.function, 0, .invalidProgram⟩
+
+def check (program : Program) (budget : Nat := 256) : Except Diagnostic Certificate :=
+  if validProgram program then checkEntry program startEntry budget
   else .error ⟨0, 0, .invalidProgram⟩
 
 end RilAccess.Provenance

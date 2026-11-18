@@ -1,4 +1,5 @@
 import RilAccess.Graph.Identity
+import RilAccess.Contracts
 
 namespace RilAccess.CoreEntry
 

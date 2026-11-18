@@ -2,45 +2,19 @@ import RilAccess.Provenance.Verified
 
 namespace RilAccess.Provenance
 
-inductive Reaches (heap : List Link) (roots : List Object) : Object → Prop where
-  | root : object ∈ roots → Reaches heap roots object
-  | edge : edge ∈ heap → Reaches heap roots edge.parent → Reaches heap roots edge.child
+abbrev Reaches := Heap.Reaches (Node := Object)
 
 theorem reachable_exact : object ∈ reachable heap roots ↔ Reaches heap roots object := by
-  rw [reachable, solve_exact]
-  constructor
-  · intro h
-    induction h with
-    | rule rule hr _ ih =>
-      rcases List.mem_append.mp hr with hs | hs
-      · obtain ⟨root, member, rfl⟩ := List.mem_map.mp hs
-        exact .root member
-      · obtain ⟨edge, member, rfl⟩ := List.mem_map.mp hs
-        exact .edge member (ih edge.parent (by simp))
-  · intro h
-    induction h with
-    | root hr =>
-      exact .rule ⟨[], _⟩ (List.mem_append_left _ (List.mem_map.mpr ⟨_, hr, rfl⟩)) (by simp)
-    | @edge edge hl _ ih =>
-      apply Derives.rule ⟨[edge.parent], edge.child⟩
-        (List.mem_append_right _ (List.mem_map.mpr ⟨edge, hl, rfl⟩))
-      intro value h
-      have eq := List.mem_singleton.mp h
-      subst value
-      exact ih
+  exact Heap.reachable_exact
 
 theorem Reaches.abstract (run : Reaches heap roots object) :
-    Reaches (heap.map Link.abstract) (roots.map Object.abstract) object.abstract := by
-  induction run with
-  | root member => exact .root (List.mem_map_of_mem member)
-  | @edge edge member _ ih => exact .edge (edge := edge.abstract) (List.mem_map_of_mem member) ih
+    Reaches (heap.map Link.abstract) (roots.map Object.abstract) object.abstract :=
+  run.map Object.abstract
 
 theorem separated_sound (h : separated (heap.map Link.abstract)
     (left.map Object.abstract) (right.map Object.abstract) = true)
-    (hl : Reaches heap left object) (hr : Reaches heap right object) : False := by
-  have test := List.all_eq_true.mp h _ (reachable_exact.mpr hl.abstract)
-  have other := reachable_exact.mpr hr.abstract
-  simp [other] at test
+    (hl : Reaches heap left object) (hr : Reaches heap right object) : False :=
+  Heap.separated_sound h (Reaches.abstract hl) (Reaches.abstract hr)
 
 theorem Object.abstract_eq_self {object : Object} (h : object.singleton = true) :
     object.abstract = object := by
@@ -52,7 +26,7 @@ theorem Link.abstract_eq_self {edge : Link}
     (hp : edge.parent.singleton = true) (hc : edge.child.singleton = true) :
     edge.abstract = edge := by
   cases edge
-  simp_all [Link.abstract, Object.abstract_eq_self]
+  simp_all [Link.abstract, HeapLink.map, Object.abstract_eq_self]
 
 theorem frozen_links {heap : List Link} (h : edge ∈ (heap.map Link.abstract).filter
     (fun edge => edge.parent.singleton && edge.child.singleton)) : edge ∈ heap := by
@@ -131,6 +105,9 @@ theorem metadata_operands (h : metadata program action world = .ok (after, uses)
   case move destination source =>
     subst register
     cases hv : world.view source <;> simp [metadata, consume, hv, need] at h ⊢
+  case scope source =>
+    subst register
+    cases hv : world.view source <;> simp [metadata, consume, hv, need] at h ⊢
   case store parent field source moving =>
     cases hp : world.view parent
     · simp [metadata, hp, need] at h
@@ -149,10 +126,14 @@ theorem metadata_operands (h : metadata program action world = .ok (after, uses)
   case publish source =>
     subst register
     cases hv : world.view source <;> simp [metadata, hv, need] at h ⊢
+  case expire source =>
+    subst register
+    cases hv : world.view source <;> simp [metadata, hv, need] at h ⊢
 
 theorem primitive_metadata (h : primitive program action world = .ok (after, uses)) :
     ∃ edited, metadata program action world = .ok (edited, uses) ∧ after.views = edited.views := by
   unfold primitive at h
+  cases hd : availableDestination action world <;> simp [hd, require] at h
   cases hm : metadata program action world with
   | error error => simp [hm] at h
   | ok value =>
@@ -205,7 +186,7 @@ def LocalSafety (facts : List Judgment) (entry : Entry) (pc : Nat) (frame : RawF
       ∃ object view, frame.get register = some object ∧
         world.view register = some (object.abstract, view) ∧ view.mode.writes = true
 
-theorem checked_step_ready (checked : Checked program facts)
+theorem checked_step_ready (checked : Checked program facts inputs)
     (covered : Covered program facts entry (.at pc frame))
     (hf : program.functions[entry.function]? = some function)
     (hi : function.code[pc]? = some (.step alternatives next)) (ha : action ∈ alternatives) :
@@ -226,8 +207,6 @@ theorem checked_step_ready (checked : Checked program facts)
       obtain ⟨object, present, rfl⟩ := view_available hw hv
       exact ⟨object, v, present, rfl⟩
   · exact fun _ writer => primitive_authorized hp hw writer
-
-open Integrated (ParameterMode)
 
 def argumentsAt (frame : RawFrame) (arguments : List Argument) : Option (List (Object × ParameterMode)) :=
   arguments.mapM fun arg => (frame.get arg.source).map (·, arg.marker)
@@ -311,35 +290,29 @@ theorem prepare_separates {world : World} {frame : RawFrame}
     (h : prepare function world arguments = .ok prepared)
     (hw : world.raw = frame.abstract) :
     ∃ actuals, argumentsAt frame arguments = some actuals ∧ ConcreteSeparate frame.memory.heap actuals := by
-  unfold prepare at h
-  cases hm : decide (arguments.map Argument.marker = function.parameters) <;> simp [hm, require] at h
-  cases he : evaluateArguments world arguments with
-  | error error => simp [he] at h
-  | ok pair =>
-    obtain ⟨after, evaluated⟩ := pair
-    cases hs : separateArguments world.raw.memory.heap evaluated <;> simp [he, hs] at h
-    have evaluatedEq := evaluation_records_actuals he
-    rw [hw, argumentsAt_abstract] at evaluatedEq
-    cases ha : argumentsAt frame arguments with
-    | none => simp [ha] at evaluatedEq
-    | some actuals =>
-      have eq := Option.some.inj (by simpa [ha] using evaluatedEq :
-        some (actuals.map abstractArgument) = some (evaluatedModes evaluated))
-      refine ⟨actuals, rfl, ?_⟩
-      have safe := separateArguments_pairwise hs
-      rw [← eq, List.pairwise_map] at safe
-      apply safe.imp
-      intro left right test conflict object hl hr
-      have noOverlap := test conflict
-      rw [hw] at noOverlap
-      exact separated_sound (left := [left.1]) (right := [right.1]) noOverlap hl hr
+  have facts := prepare_facts h
+  have evaluatedEq := evaluation_records_actuals facts.evaluated
+  rw [hw, argumentsAt_abstract] at evaluatedEq
+  cases ha : argumentsAt frame arguments with
+  | none => simp [ha] at evaluatedEq
+  | some actuals =>
+    have eq := Option.some.inj (by simpa [ha] using evaluatedEq :
+      some (actuals.map abstractArgument) = some (evaluatedModes prepared.actuals))
+    refine ⟨actuals, rfl, ?_⟩
+    have safe := separateArguments_pairwise facts.separated
+    rw [← eq, List.pairwise_map] at safe
+    apply safe.imp
+    intro left right test conflict object hl hr
+    have noOverlap := test conflict
+    rw [hw] at noOverlap
+    exact separated_sound (left := [left.1]) (right := [right.1]) noOverlap hl hr
 
 /-- A reachable call has concrete arguments and satisfies physical disjointness
     for every pair whose modes require separation. -/
-theorem checked_call_ready (checked : Checked program facts)
+theorem checked_call_ready (checked : Checked program facts inputs)
     (covered : Covered program facts entry (.at pc frame))
     (hf : program.functions[entry.function]? = some function)
-    (hi : function.code[pc]? = some (.invoke callee arguments destination next)) :
+    (hi : function.code[pc]? = some (.invoke callee arguments destination next onAbort)) :
     ∃ (prepared : Prepared) (actuals : List (Object × ParameterMode)) (entered : RawFrame),
       frame.prepare (arguments.map Argument.source) = some entered ∧
       argumentsAt frame arguments = some actuals ∧ ConcreteSeparate frame.memory.heap actuals ∧

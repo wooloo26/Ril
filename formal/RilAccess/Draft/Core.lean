@@ -1,4 +1,6 @@
 import RilAccess.Graph.Identity
+import RilAccess.Graph.Authority
+import RilAccess.Contracts
 
 /-! Finite path updates over immutable snapshots. The draft owns its root and
 copies the selected descendants on each write. -/
@@ -102,6 +104,19 @@ def Input.authorityGraph (input : Input) : GraphAuthority.Graph Nat :=
       ⟨allocationBound (input.outside.roots.map GraphAuthority.Root.view) + cell.origin.object,
         cell.origin.object, .immutable⟩),
     input.outside.edges ++ inputEdges input⟩
+
+def Input.physicalHeap (input : Input) : List (HeapLink Nat) :=
+  GraphAuthority.eraseEdges input.authorityGraph.edges
+
+theorem stored_reference_in_physical_heap {input : Input} {cell : Cell} {child index : Nat}
+    (present : cell ∈ input.pool) (reference : (Value.reference child, index) ∈ cell.contents.zipIdx)
+    (schema : cell.storage.member index = some member) :
+    (⟨cell.origin.object, index, child⟩ : HeapLink Nat) ∈ input.physicalHeap := by
+  unfold Input.physicalHeap GraphAuthority.eraseEdges
+  apply List.mem_map.mpr
+  refine ⟨⟨cell.origin.object, index, child, member.mode, member.mode.access⟩, ?_, rfl⟩
+  apply List.mem_append_right
+  exact List.mem_flatMap.mpr ⟨cell, present, List.mem_filterMap.mpr ⟨_, reference, by simp [schema]⟩⟩
 
 def Input.authoritiesReserved (input : Input) : Bool :=
   input.outside.roots.all (fun root => decide (root.object ∈ input.reserved)) &&
@@ -298,6 +313,10 @@ def World.outward (world : World) : List Event :=
 /-- A finite source bound for memory and outputs, not a grant of authority. -/
 def Input.sources (input : Input) : List Source :=
   input.context.source :: input.pool.map (fun cell => cell.origin.source)
+
+inductive Fact where
+  | event (kind : EventKind) (source : Source)
+  deriving Repr, DecidableEq
 
 def commandRules (input : Input) : Command → List (Rule Fact)
   | .rewrite _ _ | .allocate _ _ => [⟨[], .event .write input.context.source⟩]

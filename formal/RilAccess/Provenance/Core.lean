@@ -1,12 +1,9 @@
-import RilAccess.Access.Core
-import RilAccess.Provenance.FixedPoint
+import RilAccess.Model
 
 /-! A closed, resolved core for source analysis. The runtime executes only
 registers, allocations, and heap operations. Frames, receiver modes, loans and
 contract rows are checked by the compiler-facing interpretation. -/
 namespace RilAccess.Provenance
-
-open Integrated (ParameterMode)
 
 abbrev Register := Nat
 abbrev Field := Nat
@@ -15,6 +12,18 @@ structure Object where
   site : Nat
   occurrence : Option Nat
   deriving Repr, DecidableEq
+
+inductive AllocationClass where
+  | first (site : Nat)
+  | repeated (site : Nat)
+  deriving Repr, DecidableEq
+
+def Object.allocationClass (object : Object) : AllocationClass :=
+  if object.occurrence.isNone then .first object.site else .repeated object.site
+
+def AllocationClass.singleton : AllocationClass → Bool
+  | .first _ => true
+  | .repeated _ => false
 
 def Object.singleton (object : Object) : Bool := object.occurrence.isNone
 
@@ -27,14 +36,10 @@ def getSlot (slots : List (Nat × α)) (key : Nat) : Option α :=
 def putSlot (slots : List (Nat × α)) (key : Nat) (value : α) : List (Nat × α) :=
   (key, value) :: slots.filter (fun slot => slot.1 != key)
 
-structure Link where
-  parent : Object
-  field : Field
-  child : Object
-  deriving Repr, DecidableEq
+abbrev Link := HeapLink Object
 
 def Link.abstract (link : Link) : Link :=
-  ⟨link.parent.abstract, link.field, link.child.abstract⟩
+  link.map Object.abstract
 
 def Link.atSlot (parent : Object) (field : Field) (link : Link) : Bool :=
   decide (link.parent = parent ∧ link.field = field)
@@ -70,6 +75,7 @@ inductive Prim where
   | read (register : Register)
   | write (register : Register)
   | publish (register : Register)
+  | skip
   deriving Repr, DecidableEq
 
 def RawFrame.allocateAt (frame : RawFrame) (destination site : Nat) (repeated : Bool) : RawFrame :=
@@ -97,6 +103,7 @@ def runPrim (action : Prim) (frame : RawFrame) : Option RawFrame :=
         (frame.memory.heap.find? (Link.atSlot owner field)).map (fun link => frame.put destination link.child)
   | .read register | .write register | .publish register =>
       (frame.get register).map fun _ => frame
+  | .skip => some frame
 
 inductive Primitive where
   | alloc (destination site : Nat)
@@ -107,6 +114,8 @@ inductive Primitive where
   | read (register : Register)
   | write (register : Register)
   | publish (register : Register)
+  | scope (register : Register)
+  | expire (register : Register)
   deriving Repr, DecidableEq
 
 def Primitive.erase : Primitive → Prim
@@ -117,16 +126,21 @@ def Primitive.erase : Primitive → Prim
   | .read r => .read r
   | .write r => .write r
   | .publish r => .publish r
+  | .scope _ | .expire _ => .skip
 
 def Primitive.operands : Primitive → List Register
   | .alloc _ _ => []
   | .bind _ source _ | .move _ source => [source]
   | .select _ parent _ => [parent]
   | .store parent _ source _ => [parent, source]
-  | .read register | .write register | .publish register => [register]
+  | .read register | .write register | .publish register | .scope register | .expire register => [register]
 
 def Primitive.writer : Primitive → Option Register
   | .write register | .store register _ _ _ => some register
+  | _ => none
+
+def Primitive.destination : Primitive → Option Register
+  | .alloc d _ | .bind d _ _ | .move d _ | .select d _ _ => some d
   | _ => none
 
 structure Argument where
@@ -159,7 +173,8 @@ inductive Instruction where
       concrete keys have already been resolved. A pruned branch is absent. -/
   | branch (targets : List Nat)
   | step (alternatives : List Primitive) (next : Nat)
-  | invoke (callee : Nat) (arguments : List Argument) (destination : Option (Register × Access)) (next : Nat)
+  | invoke (callee : Nat) (arguments : List Argument) (destination : Option (Register × Access))
+      (next : Nat) (onAbort : Option Nat := none)
   | ret (source : Option Register)
   | abort
   deriving Repr, DecidableEq
@@ -192,7 +207,8 @@ def Program.instruction (program : Program) (function pc : Nat) : Option Instruc
 inductive RawInstruction where
   | branch (targets : List Nat)
   | step (alternatives : List Prim) (next : Nat)
-  | invoke (callee : Nat) (arguments : List Register) (destination : Option Register) (next : Nat)
+  | invoke (callee : Nat) (arguments : List Register) (destination : Option Register)
+      (next : Nat) (onAbort : Option Nat := none)
   | ret (source : Option Register)
   | abort
   deriving Repr, DecidableEq
@@ -200,7 +216,8 @@ inductive RawInstruction where
 def Instruction.erase : Instruction → RawInstruction
   | .branch targets => .branch targets
   | .step alternatives next => .step (alternatives.map Primitive.erase) next
-  | .invoke callee args dest next => .invoke callee (args.map Argument.source) (dest.map Prod.fst) next
+  | .invoke callee args dest next onAbort =>
+    .invoke callee (args.map Argument.source) (dest.map Prod.fst) next onAbort
   | .ret source => .ret source
   | .abort => .abort
 
@@ -228,6 +245,11 @@ inductive Position (α : Type) where
   | aborted (state : α)
   deriving Repr, DecidableEq
 
+def Position.unwind (onAbort : Option Nat) (frame : α) : Position α :=
+  match onAbort with
+  | none => .aborted frame
+  | some next => .at next frame
+
 def rawInstruction (code : List (List RawInstruction)) (function pc : Nat) : Option RawInstruction :=
   (code[function]?).bind (fun f => f[pc]?)
 
@@ -249,7 +271,7 @@ inductive Executes (code : List (List RawInstruction)) :
       Executes code function entry (.at next after)
   | call :
       Executes code function entry (.at pc before) →
-      rawInstruction code function pc = some (.invoke callee arguments destination next) →
+      rawInstruction code function pc = some (.invoke callee arguments destination next onAbort) →
       before.prepare arguments = some entered →
       Executes code callee entered (.returned source exited) →
       exited.returnValue source = some result →
@@ -257,10 +279,10 @@ inductive Executes (code : List (List RawInstruction)) :
       Executes code function entry (.at next after)
   | callAbort :
       Executes code function entry (.at pc before) →
-      rawInstruction code function pc = some (.invoke callee arguments destination next) →
+      rawInstruction code function pc = some (.invoke callee arguments destination next onAbort) →
       before.prepare arguments = some entered →
       Executes code callee entered (.aborted exited) →
-      Executes code function entry (.aborted { before with memory := exited.memory })
+      Executes code function entry (Position.unwind onAbort { before with memory := exited.memory })
   | ret :
       Executes code function entry (.at pc before) →
       rawInstruction code function pc = some (.ret source) →

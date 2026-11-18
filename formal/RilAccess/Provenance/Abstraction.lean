@@ -1,11 +1,14 @@
 import RilAccess.Provenance.Kernel
-import RilAccess.Access.Proofs
-import RilAccess.Graph.Authority
+import RilAccess.Logic
 
 namespace RilAccess.Provenance
 
 @[simp] theorem Object.abstract_singleton (object : Object) :
     object.abstract.singleton = object.singleton := by
+  cases object with | mk site occurrence => cases occurrence <;> rfl
+
+@[simp] theorem Object.abstract_allocationClass (object : Object) :
+    object.abstract.allocationClass = object.allocationClass := by
   cases object with | mk site occurrence => cases occurrence <;> rfl
 
 theorem Object.eq_of_singleton_abstract {left right : Object} (h : left.abstract = right.abstract)
@@ -26,7 +29,7 @@ theorem Object.eq_of_singleton_abstract {left right : Object} (h : left.abstract
 
 @[simp] theorem Link.abstract_idem (link : Link) : link.abstract.abstract = link.abstract := by
   cases link
-  simp [Link.abstract]
+  simp [Link.abstract, HeapLink.map]
 
 @[simp] theorem Memory.abstract_idem (memory : Memory) : memory.abstract.abstract = memory.abstract := by
   cases memory
@@ -63,7 +66,7 @@ theorem Link.atSlot_abstract (link : Link) (parent : Object) (field : Field)
     link.abstract.atSlot parent.abstract field = link.atSlot parent field := by
   have eq : (link.parent.abstract = parent.abstract) = (link.parent = parent) :=
     propext ⟨fun he => Object.eq_of_singleton_abstract he h, congrArg Object.abstract⟩
-  simp [Link.atSlot, Link.abstract, eq]
+  simp [Link.atSlot, Link.abstract, HeapLink.map, eq]
 
 @[simp] theorem raw_abstract_sites (frame : RawFrame) :
     frame.abstract.memory.sites = frame.memory.sites := rfl
@@ -131,6 +134,7 @@ theorem runPrim_abstract (frame : RawFrame) (action : Prim)
       simp [runPrim, he, RawFrame.put_abstract]
   | read register | write register | publish register =>
     cases he : frame.get register <;> simp [runPrim, he]
+  | skip => simp [runPrim]
   | store parent field source =>
     cases hp : frame.get parent with
     | none => simp [runPrim, hp]
@@ -141,7 +145,7 @@ theorem runPrim_abstract (frame : RawFrame) (action : Prim)
       · simp only [runPrim, RawFrame.get_abstract, hp, he, Option.map_some, Option.bind_some,
           Option.some.injEq]
         simp [RawFrame.store, RawFrame.abstract, Memory.abstract, abstract_filter_slot _ _ _ hs,
-          List.map_map, Function.comp_def, Link.abstract, Object.abstract_idem]
+          List.map_map, Function.comp_def, Link.abstract, HeapLink.map, Object.abstract_idem]
         rw [List.filter_map, List.map_map]
         simp [Function.comp_def]
   | select destination parent field =>
@@ -152,7 +156,7 @@ theorem runPrim_abstract (frame : RawFrame) (action : Prim)
       have hf := abstract_find_slot frame.memory.heap owner field hs
       simp only [runPrim, raw_abstract_heap, RawFrame.get_abstract, hp, Option.map_some, Option.bind_some, ← hf]
       cases he : frame.memory.heap.find? (Link.atSlot owner field) <;>
-        simp [RawFrame.put_abstract, Link.abstract]
+        simp [RawFrame.put_abstract, Link.abstract, HeapLink.map]
 
 theorem World.view_object {world : World} {register : Register} {object : Object} {view : View}
     (h : world.view register = some (object, view)) :
@@ -197,6 +201,7 @@ theorem primitive_refines (h : primitive program action world = .ok (after, uses
     (hw : world.raw = frame.abstract) :
     ∃ raw, runPrim action.erase frame = some raw ∧ after.raw = raw.abstract := by
   unfold primitive at h
+  cases hd : availableDestination action world <;> simp [hd, require] at h
   cases hm : metadata program action world with
   | error error => simp [hm] at h
   | ok value =>
@@ -253,8 +258,14 @@ theorem RawFrame.return_abstract (frame : RawFrame) (source : Option Register) :
     unfold RawFrame.returnValue
     simp [Option.mapM, RawFrame.get_abstract, Function.comp_def]
 
-theorem prepare_raw (h : prepare function world arguments = .ok prepared) :
-    world.raw.prepare (arguments.map Argument.source) = some prepared.entered.raw := by
+structure PreparedFacts (world : World) (arguments : List Argument) (prepared : Prepared) : Prop where
+  evaluated : evaluateArguments world arguments = .ok (prepared.caller, prepared.actuals)
+  separated : separateArguments world.raw.memory.heap prepared.actuals = true
+  raw : world.raw.prepare (arguments.map Argument.source) = some prepared.entered.raw
+  roots : prepared.entered.outside = (prepared.caller.external ++ prepared.caller.liveObjects).eraseDups
+
+theorem prepare_facts (h : prepare function world arguments = .ok prepared) :
+    PreparedFacts world arguments prepared := by
   unfold prepare at h
   cases ha : decide (arguments.map Argument.marker = function.parameters) <;> simp [ha, require] at h
   cases he : evaluateArguments world arguments with
@@ -264,10 +275,21 @@ theorem prepare_raw (h : prepare function world arguments = .ok prepared) :
     cases hs : separateArguments world.raw.memory.heap actuals <;> simp [he, hs] at h
     cases hr : world.raw.prepare (arguments.map Argument.source) <;> simp [hr, need] at h
     cases h
-    rfl
+    exact ⟨he, hs, hr, rfl⟩
 
-theorem consume_ends (h : consume world register = .ok (object, view, ended)) :
-    ended = world.endPath register := by
+theorem prepare_raw (h : prepare function world arguments = .ok prepared) :
+    world.raw.prepare (arguments.map Argument.source) = some prepared.entered.raw :=
+  (prepare_facts h).raw
+
+theorem prepared_external_roots (h : prepare function world arguments = .ok prepared) :
+    Includes (prepared.caller.external ++ prepared.caller.liveObjects) prepared.entered.outside := by
+  rw [(prepare_facts h).roots]
+  exact fun _ member => List.mem_eraseDups.mpr member
+
+theorem consume_conditions (h : consume world register = .ok (object, view, ended)) :
+    (∃ original, world.view register = some (object, original)) ∧
+      ended = world.endPath register ∧
+      isolated world object (ended.liveObjects ++ ended.external) = true := by
   unfold consume at h
   cases hv : world.view register with
   | none => simp [hv, need] at h
@@ -275,10 +297,15 @@ theorem consume_ends (h : consume world register = .ok (object, view, ended)) :
     obtain ⟨obj, v⟩ := data
     simp [hv, need, require] at h
     split at h
+    · rename_i allowed
+      simp at h
+      obtain ⟨rfl, rfl, rfl⟩ := h
+      exact ⟨⟨v, rfl⟩, rfl, allowed.2⟩
     · simp at h
-      obtain ⟨_, _, rfl⟩ := h
-      rfl
-    · simp at h
+
+theorem consume_ends (h : consume world register = .ok (object, view, ended)) :
+    ended = world.endPath register :=
+  (consume_conditions h).2.1
 
 theorem consume_raw (h : consume world register = .ok (object, view, ended)) :
     ended.raw = world.raw := by
@@ -317,17 +344,8 @@ theorem evaluated_raw (h : evaluateArguments world arguments = .ok (ended, evalu
           exact ih he
 
 theorem prepared_caller_raw (h : prepare function world arguments = .ok prepared) :
-    prepared.caller.raw = world.raw := by
-  unfold prepare at h
-  cases ha : decide (arguments.map Argument.marker = function.parameters) <;> simp [ha, require] at h
-  cases he : evaluateArguments world arguments with
-  | error error => simp [he] at h
-  | ok data =>
-    obtain ⟨after, actuals⟩ := data
-    cases hs : separateArguments world.raw.memory.heap actuals <;> simp [he, hs] at h
-    cases hr : world.raw.prepare (arguments.map Argument.source) <;> simp [hr, need] at h
-    cases h
-    exact evaluated_raw he
+    prepared.caller.raw = world.raw :=
+  evaluated_raw (prepare_facts h).evaluated
 
 @[simp] theorem rawInstruction_erase (program : Program) (function pc : Nat) :
     rawInstruction program.erase function pc = (program.instruction function pc).map Instruction.erase := by

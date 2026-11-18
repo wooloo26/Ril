@@ -1,4 +1,5 @@
 import RilAccess.Call.Entry
+import RilAccess.Reference.Provenance.Semantics
 
 /-! The provenance CFG generates consistent identities. Its mechanism/context
 labels are not proofs of dynamic activation freshness or source-level calls. -/
