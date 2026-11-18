@@ -18,7 +18,7 @@ def fixtures : List (String × Bool) :=
       representationTransparent .pubExport .opaqueScope .sameScope &&
       !representationTransparent .pubExport .opaqueScope .samePkg &&
       !representationTransparent .pubExport .opaqueScope .externalPkg),
-   ("visibility: pub signature or with cleanup clause referencing pub(pkg) item rejected (E0910)",
+   ("visibility: pub signature or use cleanup clause referencing pub(pkg) item rejected (E0910)",
       !signatureWellFormed true .pubExport [.pubExport, .pubPkg]),
    ("visibility: pub signature referencing pub item accepted",
       signatureWellFormed true .pubExport [.pubExport]),

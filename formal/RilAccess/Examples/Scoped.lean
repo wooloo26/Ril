@@ -51,7 +51,14 @@ def resourceClosureCaptureRejected : Calls.Syntax :=
   seq [accessCmd [.allocateResource 0 []],
     .invoke [] [0] (accessCmd [.write (p 0)])]
 
--- `with let` / `with let mut` (`with <fn>` cleanup contract) fixtures:
+-- `use` / `use mut` (`use <fn>` cleanup contract) fixtures:
+def scopedReadOnlyResourceObserveOk : Calls.Syntax :=
+  seq [accessCmd [.allocateScoped 0 false [] true],
+    .invoke [⟨p 0, 10, .observe, .observe⟩] [] (accessCmd [.read (p 10)])]
+
+def scopedReadOnlyUnusedOk : Calls.Syntax :=
+  Calls.Syntax.access (.block (.command (.allocateScoped 0 false [] true)))
+
 def scopedMutBlockUseAndBorrow : Calls.Syntax :=
   Calls.Syntax.access (.block
     (Integrated.Syntax.sequence (.command (.allocateScoped 0 true []))
@@ -62,27 +69,27 @@ def scopedCallRefAndMutBorrows : Calls.Syntax :=
     .invoke [⟨p 0, 10, .observe, .observe⟩] [] (accessCmd [.read (p 10)]),
     .invoke [⟨p 0, 11, .mutable, .mutable⟩] [] (accessCmd [.write (p 11)])]
 
-def scopedImmutableRejectsWrite : Calls.Syntax :=
+def scopedReadOnlyRejectsWrite : Calls.Syntax :=
   accessCmd [.allocateScoped 0 false [], .write (p 0)]
 
 def scopedReassignRejected : Calls.Syntax :=
   accessCmd [.allocateScoped 0 true [], .allocate 1 (fixed .mut) [], .assign (p 1) 0]
 
 def scopedMoveEscapeRejected : Calls.Syntax :=
-  accessCmd [.allocateScoped 0 true [], .move 0 1]
+  accessCmd [.allocateScoped 0 false [], .move 0 1]
 
 def scopedRebindEscapeRejected : Calls.Syntax :=
-  accessCmd [.allocateScoped 0 true [], .bind (p 0) 1 (fixed .ref)]
+  accessCmd [.allocateScoped 0 false [], .bind (p 0) 1 (fixed .ref)]
 
 def scopedRetainEscapeRejected : Calls.Syntax :=
   accessCmd [.allocateScoped 0 true [], .retain (p 0)]
 
 def scopedCallNewHandoffRejected : Calls.Syntax :=
-  seq [accessCmd [.allocateScoped 0 true []],
+  seq [accessCmd [.allocateScoped 0 false []],
     .invoke [⟨p 0, 10, .construction, .construction⟩] [] (accessCmd [.write (p 10)])]
 
 def scopedClosureCaptureRejected : Calls.Syntax :=
-  seq [accessCmd [.allocateScoped 0 true []],
+  seq [accessCmd [.allocateScoped 0 false []],
     .invoke [] [0] (accessCmd [.read (p 0)])]
 
 def scopedExpiredAfterBlockExit : Calls.Syntax :=
@@ -90,11 +97,11 @@ def scopedExpiredAfterBlockExit : Calls.Syntax :=
     (.block (.sequence (.command (.allocateScoped 0 true [])) (.command (.write (p 0)))))
     (.command (.read (p 0))))
 
-def scopedRefCleanupIdleMutRejected : Calls.Syntax :=
-  Calls.Syntax.access (.block (.sequence (.command (.allocateScoped 0 true [] false)) (.command (.read (p 0)))))
+def scopedIdleMutRejected : Calls.Syntax :=
+  Calls.Syntax.access (.block (.sequence (.command (.allocateScoped 0 true [])) (.command (.read (p 0)))))
 
-def scopedRefCleanupBodyMutAccepted : Calls.Syntax :=
-  Calls.Syntax.access (.block (.sequence (.command (.allocateScoped 0 true [] false)) (.command (.write (p 0)))))
+def scopedBodyMutAccepted : Calls.Syntax :=
+  Calls.Syntax.access (.block (.sequence (.command (.allocateScoped 0 true [])) (.command (.write (p 0)))))
 
 def fixtures : List (String × Bool) :=
   [("resource: affine handle permits scope exit without mandatory E0721 consumption", accepted resourceImplicitDropOk),
@@ -106,19 +113,21 @@ def fixtures : List (String × Bool) :=
    ("resource: var mut slot overwrite rejected", !accepted resourceVarMutOverwriteRejected),
    ("resource: mut call borrow followed by new consumption accepted", accepted resourceCallBorrowAndConsume),
    ("resource: closure environment capture of resource handle rejected (E0604)", !accepted resourceClosureCaptureRejected),
-   ("scoped: with let mut permits interior writes and lexical borrows", accepted scopedMutBlockUseAndBorrow),
-   ("scoped: with let mut permits ref and mut call borrows inside declaring scope", accepted scopedCallRefAndMutBorrows),
-   ("scoped: plain with let forbids mutation (E0520)", !accepted scopedImmutableRejectsWrite),
-   ("scoped: reassigning with let binding rejected (E0532)", !accepted scopedReassignRejected),
-   ("scoped: moving with let binding via new handoff rejected (E0604)", !accepted scopedMoveEscapeRejected),
-   ("scoped: rebinding with let binding to local alias rejected (E0604)", !accepted scopedRebindEscapeRejected),
-   ("scoped: retaining with let binding rejected (E0604)", !accepted scopedRetainEscapeRejected),
-   ("scoped: passing with let binding to new cleanup/consumer inside block rejected (E0604)", !accepted scopedCallNewHandoffRejected),
-   ("scoped: capturing with let binding in closure rejected (E0604)", !accepted scopedClosureCaptureRejected),
-   ("scoped: accessing with let binding after block exit rejected", !accepted scopedExpiredAfterBlockExit),
-   ("scoped: with let mut under ref cleanup rejects idle writer (E0527)", !accepted scopedRefCleanupIdleMutRejected),
-   ("scoped: with let mut under ref cleanup accepts body write", accepted scopedRefCleanupBodyMutAccepted),
-   ("scoped: cleanup contract accepts ref/mut/new () and rejects @Async, ^mut, plain, or non-() (E0541/E0616)",
+   ("scoped: plain use on foreign resource handle permits ref observation", accepted scopedReadOnlyResourceObserveOk),
+   ("scoped: plain use without body reads requires no E0527 write use", accepted scopedReadOnlyUnusedOk),
+   ("scoped: use mut permits interior writes and lexical borrows", accepted scopedMutBlockUseAndBorrow),
+   ("scoped: use mut permits ref and mut call borrows inside declaring scope", accepted scopedCallRefAndMutBorrows),
+   ("scoped: plain use forbids mutation (E0520)", !accepted scopedReadOnlyRejectsWrite),
+   ("scoped: reassigning use binding rejected (E0532)", !accepted scopedReassignRejected),
+   ("scoped: moving use binding via new handoff rejected (E0604)", !accepted scopedMoveEscapeRejected),
+   ("scoped: rebinding use binding to local alias rejected (E0604)", !accepted scopedRebindEscapeRejected),
+   ("scoped: retaining use binding rejected (E0604)", !accepted scopedRetainEscapeRejected),
+   ("scoped: passing use binding to new cleanup/consumer inside block rejected (E0604)", !accepted scopedCallNewHandoffRejected),
+   ("scoped: capturing use binding in closure rejected (E0604)", !accepted scopedClosureCaptureRejected),
+   ("scoped: accessing use binding after block exit rejected", !accepted scopedExpiredAfterBlockExit),
+   ("scoped: use mut rejects idle writer without body mutation (E0527)", !accepted scopedIdleMutRejected),
+   ("scoped: use mut accepts body write", accepted scopedBodyMutAccepted),
+   ("scoped: cleanup contract accepts ref/mut/new () and rejects @fiber, ^mut, plain, or non-() (E0541/E0616)",
       validScopedCleanupContract .observe true false &&
       validScopedCleanupContract .mutable true false &&
       validScopedCleanupContract .construction true false &&

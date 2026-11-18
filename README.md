@@ -87,11 +87,11 @@ fn virtual_time() -> str {
 
 ```ril
 -- Structured concurrency can run with deterministic scheduling.
-use ril/async as AsyncRt
+use ril/fiber
 
 fn concurrent_sum() -> int {
-    AsyncRt::run \-> {
-        let pair = AsyncRt::zip(\-> 20, \-> 22)
+    Fiber::run \-> {
+        let pair = Fiber::zip(\-> 20, \-> 22)
         pair.first + pair.second
     }
 }

@@ -157,9 +157,9 @@ structure ScopedGuarantees : Prop where
     perm ∈ next.permissions →
     frame.parentScope < perm.scope →
       perm.alive = false
-  cleanupRejectsAsyncAndShared : ∀ mode returnsUnit hasAsyncEffect,
-    (hasAsyncEffect = true ∨ returnsUnit = false ∨ mode = .immutable ∨ mode = .retained) →
-      Integrated.validScopedCleanupContract mode returnsUnit hasAsyncEffect = false
+  cleanupRejectsFiberAndShared : ∀ mode returnsUnit hasFiberEffect,
+    (hasFiberEffect = true ∨ returnsUnit = false ∨ mode = .immutable ∨ mode = .retained) →
+      Integrated.validScopedCleanupContract mode returnsUnit hasFiberEffect = false
 
 structure VisibilityGuarantees : Prop where
   opaqueScopeBoundary :
@@ -318,7 +318,7 @@ theorem verified : Guarantees where
     fun _ h hr => Integrated.scoped_cannot_retain h hr,
     fun _ _ _ _ hlook hsc => Integrated.scoped_rejects_reassignment hlook hsc,
     fun _ _ _ _ h hf hp hinner => Integrated.leaveScope_deactivates_inner_permission h hf hp hinner,
-    fun _ _ _ hbad => Integrated.scoped_cleanup_rejects_async_and_shared hbad⟩
+    fun _ _ _ hbad => Integrated.scoped_cleanup_rejects_fiber_and_shared hbad⟩
   visibility := ⟨VisibilityModel.opaqueScope_boundary,
     fun _ hmem => VisibilityModel.signature_rejects_pubPkg_leak hmem,
     VisibilityModel.topLevel_rejects_mutable_and_live_state,

@@ -1,11 +1,11 @@
 import RilAccess.Access.Handoff
 
-/-! Scoped `with` resource bindings (`with let` / `with let mut`) and foreign
+/-! Scoped `use` resource bindings (`use` / `use mut`) and foreign
 `.d.ril` `opaque type` affine handles:
 - `.d.ril` `opaque type` handles forbid plain immutable snapshot freezing, `^mut`
   sharing, `var mut` overwrite, and `.retain`, while permitting `new` handoff and
   scoped `mut`/`ref` borrows without imposing mandatory `E0721` consumption.
-- `with let` bindings forbid slot replacement (`E0532`), local rebinding, `new`
+- `use` bindings forbid slot replacement (`E0532`), local rebinding, `new`
   handoff (blocking early manual `close(new r)` double-close), and `.retain` escape
   (`E0604`), and are deterministically deactivated at lexical `.leaveScope`. -/
 namespace RilAccess.Integrated
@@ -87,17 +87,17 @@ theorem leaveScope_deactivates_inner_permission
     cases hmap
     omega
 
-/-- `with` cleanup contract (`E0541`, `E0616`): a named cleanup handler must accept
+/-- `use` cleanup contract (`E0541`, `E0616`): a named cleanup handler must accept
 a single `ref T`, `mut T`, or `new T` parameter (never plain `T` or `^mut T`), return
-`()`, and remain synchronous (forbidding `@Async`). -/
-def validScopedCleanupContract (mode : ParameterMode) (returnsUnit : Bool) (hasAsyncEffect : Bool) : Bool :=
+`()`, and remain synchronous (forbidding `@fiber`). -/
+def validScopedCleanupContract (mode : ParameterMode) (returnsUnit : Bool) (hasFiberEffect : Bool) : Bool :=
   (decide (mode = .observe) || decide (mode = .mutable) || decide (mode = .construction)) &&
-    returnsUnit && !hasAsyncEffect
+    returnsUnit && !hasFiberEffect
 
-theorem scoped_cleanup_rejects_async_and_shared
-    {mode : ParameterMode} {returnsUnit hasAsyncEffect : Bool}
-    (hbad : hasAsyncEffect = true ∨ returnsUnit = false ∨ mode = .immutable ∨ mode = .retained) :
-    validScopedCleanupContract mode returnsUnit hasAsyncEffect = false := by
+theorem scoped_cleanup_rejects_fiber_and_shared
+    {mode : ParameterMode} {returnsUnit hasFiberEffect : Bool}
+    (hbad : hasFiberEffect = true ∨ returnsUnit = false ∨ mode = .immutable ∨ mode = .retained) :
+    validScopedCleanupContract mode returnsUnit hasFiberEffect = false := by
   rcases hbad with ha | hr | hm | hm <;> simp [validScopedCleanupContract, *]
 
 end RilAccess.Integrated

@@ -1,6 +1,6 @@
 import RilAccess.Access.Scoped
 
-/-! Structured async concurrency (`Async::Scope`, `Async::Task<T>`, `@Async`),
+/-! Structured fiber concurrency (`Fiber::Scope`, `Fiber::Task<T>`, `@fiber`),
 cross-fiber capture isolation (`E0601` / `E0549`), channel mutability-laundering
 prevention (`E0548`), nursery region branding (`E0604`), and mandatory fallible
 `Result` task inspection (`E0720`). -/
@@ -158,7 +158,7 @@ structure NurseryState where
   tasks : List TaskEntry := []
   deriving Repr, DecidableEq
 
-/-- `Async::join(mut s, via task)`: `asMove = true` models `join(mut s, new task)`
+/-- `Fiber::join(mut s, via task)`: `asMove = true` models `join(mut s, new task)`
 on exclusive handles; `asMove = false` models idempotent memoized `join(mut s, task)`
 on plain `let` handles. -/
 def joinTask (nursery : NurseryState) (taskId taskSigma : Nat) (asMove : Bool) : Option NurseryState := do
@@ -178,7 +178,7 @@ def joinTask (nursery : NurseryState) (taskId taskSigma : Nat) (asMove : Bool) :
       else none
   else none
 
-/-- `Async::cancel(mut s, new task)`: requires matching nursery region `σ` (`E0604`)
+/-- `Fiber::cancel(mut s, new task)`: requires matching nursery region `σ` (`E0604`)
 and an unconsumed exclusive handle (`E0549`). -/
 def cancelTask (nursery : NurseryState) (taskId taskSigma : Nat) : Option NurseryState := do
   let entry ← nursery.tasks.find? (fun t => decide (t.id = taskId))

@@ -99,7 +99,7 @@ inductive ParameterMode where
 inductive Atom where
   | allocate (destination : Nat) (mode : MemberMode) (schema : Schema)
   | allocateResource (destination : Nat) (schema : Schema)
-  | allocateScoped (destination : Nat) (mutable : Bool) (schema : Schema) (cleanupWrites : Bool := true)
+  | allocateScoped (destination : Nat) (mutable : Bool) (schema : Schema) (resource : Bool := false)
   | bind (source : Path) (destination : Nat) (mode : MemberMode)
   | assign (source : Path) (destination : Nat)
   | read (path : Path)
@@ -408,16 +408,15 @@ def transfer (w : World) (atom : Atom) : Option World := do
       pure (install { next with raw, grants := grant :: w.grants } destination ⟨false, .mut⟩
         [w.nextToken] w.scope false)
     else none
-  | .allocateScoped destination mutable schema cleanupWrites =>
+  | .allocateScoped destination mutable schema resource =>
     if unused w destination && checkSchema schema then
-      let access : Access := if mutable then .mut else .immutable
+      let access : Access := if mutable then .mut else .ref
       let pointer := Pointer.mk w.raw.nextObject [] ⟨.allocation, destination⟩
-      let grant := Grant.mk pointer.object pointer.source access schema false
+      let grant := Grant.mk pointer.object pointer.source .mut schema resource
       let next := addToken w pointer false false false w.scope
       let base := { next with raw, grants := grant :: w.grants }
-      let used := if mutable && cleanupWrites then markUse base destination .writable else base
-      pure (install used destination ⟨false, access⟩
-        [w.nextToken] w.scope (!mutable) true)
+      pure (install base destination ⟨false, access⟩
+        [w.nextToken] w.scope false true)
     else none
   | .bind source destination mode =>
     let r ← resolve w source
@@ -571,8 +570,8 @@ def expectedGrants (w : World) : Atom → List Grant
     ⟨w.raw.nextObject, ⟨.allocation, destination⟩, mode.access, schema, false⟩ :: w.grants
   | .allocateResource destination schema =>
     ⟨w.raw.nextObject, ⟨.allocation, destination⟩, .mut, schema, true⟩ :: w.grants
-  | .allocateScoped destination mutable schema _ =>
-    ⟨w.raw.nextObject, ⟨.allocation, destination⟩, if mutable then .mut else .immutable, schema, false⟩ :: w.grants
+  | .allocateScoped destination _ schema resource =>
+    ⟨w.raw.nextObject, ⟨.allocation, destination⟩, .mut, schema, resource⟩ :: w.grants
   | _ => w.grants
 
 /-- Representation checks only: history snapshots need not remain live. -/
@@ -613,8 +612,8 @@ def erase : Code → Erased
 def atomDeclarations : Atom → List (Source × Access × Schema)
   | .allocate destination mode schema => [(⟨.allocation, destination⟩, mode.access, schema)]
   | .allocateResource destination schema => [(⟨.allocation, destination⟩, .mut, schema)]
-  | .allocateScoped destination mutable schema _ =>
-    [(⟨.allocation, destination⟩, if mutable then .mut else .immutable, schema)]
+  | .allocateScoped destination _ schema _ =>
+    [(⟨.allocation, destination⟩, .mut, schema)]
   | _ => []
 
 def declarations : Code → List (Source × Access × Schema)
