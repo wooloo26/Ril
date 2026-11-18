@@ -8,6 +8,7 @@ import RilAccess.Access.Scoped
 import RilAccess.Visibility
 import RilAccess.Draft.Lowering
 import RilAccess.Provenance.Limits
+import RilAccess.Provenance.Machine
 
 /-! Principal interface results, grouped by semantics. This bundle is not a
 refinement theorem for an unrestricted language combining every model. All
@@ -20,6 +21,19 @@ structure SolverGuarantees : Prop where
     ∀ facts, Closed rules facts → ∀ fact ∈ solve rules, fact ∈ facts
 
 structure ProvenanceGuarantees : Prop where
+  resolved : ∀ (program : Provenance.Program) budget certificate,
+    Provenance.check program budget = .ok certificate →
+    Provenance.Checked program certificate.facts ∧
+    ∀ result, Provenance.Executes program.erase 0 {} result →
+      Provenance.Covered program certificate.facts Provenance.startEntry result ∧
+      Provenance.RuntimeGuarantee program certificate.facts Provenance.startEntry {} result
+  erasedMachine : ∀ (program : Provenance.Program) budget certificate machine,
+    Provenance.check program budget = .ok certificate → Provenance.MachineTrace program.erase machine →
+    Provenance.MachineGuarantee program certificate.facts machine
+  erasedProgress : ∀ (program : Provenance.Program) budget certificate fn pc frame stack,
+    Provenance.check program budget = .ok certificate →
+    Provenance.MachineTrace program.erase (.running fn pc frame stack) →
+    ∃ next, Provenance.MachineStep program.erase (.running fn pc frame stack) next
   coverage : ∀ (program : ResolvedProgram) analysis state event,
     analyze program = .ok analysis → Trace program (initial program.entry) state → event ∈ state.events →
       Fact.event event.kind event.origin.source ∈ analysis.facts
@@ -274,7 +288,9 @@ structure Guarantees : Prop where
 
 theorem verified : Guarantees where
   solver := ⟨fun _ => ⟨solve_closed, solve_grounded, solve_nodup, fun _ => solve_least⟩⟩
-  provenance := ⟨fun _ _ _ _ => provenance_coverage,
+  provenance := ⟨fun _ _ _ => Provenance.verified_program,
+    fun _ _ _ _ => Provenance.verified_machine, fun _ _ _ _ _ _ _ => Provenance.machine_progress,
+    fun _ _ _ _ => provenance_coverage,
     fun _ _ => ProvenanceIdentity.trace_invariant, fun _ _ _ => ProvenanceIdentity.cfg_entry_can_freeze⟩
   access := ⟨fun _ _ _ _ => Calls.every_prefix_authorized, fun _ _ => Calls.source_progress,
     fun _ _ _ _ => Integrated.handoff_preserves_identity,

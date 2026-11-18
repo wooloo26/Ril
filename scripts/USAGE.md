@@ -42,6 +42,20 @@ The runner builds the Lean project in [`formal/`](../formal/lakefile.toml), chec
 its examples, and audits project declarations. Lake keeps its build products
 under `formal/.lake/`.
 
+The resolved provenance checker takes a closed, typed CFG with concrete
+member schemas. Its certificate covers erased stack-machine prefixes,
+including active recursive calls, and proves progress at every running state.
+Start at [the checker](../formal/RilAccess/Provenance/Kernel.lean) and
+[the erased machine theorems](../formal/RilAccess/Provenance/Machine.lean).
+
+The reference analysis distinguishes the first object at a site from later
+instances. When a dereference needs a unique later instance, the checker
+reports `summarizedSlot`. The saturation budget limits analysis work and
+reports `analysisLimit` if closure has yet to be reached. Every successful
+certificate contains the least closed solution. The checker selects root
+reception modes for qualified construction results and uses the resolved IR's
+concrete member schemas.
+
 ## Documentation validation
 
 The default scope is all Markdown in the repository, excluding hidden and common

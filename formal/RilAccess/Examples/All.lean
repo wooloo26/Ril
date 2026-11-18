@@ -9,6 +9,7 @@ import RilAccess.Examples.Handoff
 import RilAccess.Examples.Scoped
 import RilAccess.Examples.Visibility
 import RilAccess.Examples.Concurrency
+import RilAccess.Examples.ResolvedProvenance
 
 namespace RilAccess.Examples
 
@@ -18,6 +19,6 @@ def allFixtures : List (String × Bool) :=
     CoreSummary.Examples.fixtures ++ Draft.Examples.fixtures ++
     Integrated.HandoffExamples.fixtures ++ Draft.Examples.loweringFixtures ++
     ScopedExamples.fixtures ++ VisibilityExamples.fixtures ++
-    CoreConcurrency.Examples.fixtures
+    CoreConcurrency.Examples.fixtures ++ Provenance.Examples.fixtures
 
 end RilAccess.Examples
