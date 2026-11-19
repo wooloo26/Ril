@@ -28,30 +28,27 @@ inductive UnitVariant where
   | payload (schema : Nat)
 
 inductive ConstructorForm where
-  | bare | adjacentCall | spacedUnitArgument
+  | bare | unitCall
 
 inductive ConstructorError where
-  | adjacentConstructorCall -- E0125
-  | nullaryVariantArgument -- E0116
+  | nullaryVariantArgument -- E0338
   | callableValue
   deriving Repr, DecidableEq
 
-/-- Lower a resolved tag or space-separated unit-literal construction (`Some ()`).
-Adjacent `Tag(...)` call syntax is rejected (`E0125`); bare payload constructors
-denote callable values and are outside this sum allocation boundary. -/
+/-- Lower a resolved unit tag (`None`) or empty-argument unit-payload construction (`Some()`).
+Calling a unit tag fails (`E0338`); bare payload constructors denote callable
+values and are outside this sum allocation boundary. -/
 def lowerUnitVariant (unitTag : Nat) (origin : Origin) (variant : UnitVariant)
     (form : ConstructorForm) : Except ConstructorError Cell :=
   match variant, form with
-  | _, .adjacentCall => .error .adjacentConstructorCall
   | .tag schema, .bare => .ok ⟨origin, .fixed schema [], []⟩
-  | .tag _, .spacedUnitArgument => .error .nullaryVariantArgument
+  | .tag _, .unitCall => .error .nullaryVariantArgument
   | .payload _, .bare => .error .callableValue
-  | .payload schema, .spacedUnitArgument =>
+  | .payload schema, .unitCall =>
     .ok ⟨origin, .fixed schema [⟨.scalar unitTag, ⟨false, .immutable⟩⟩], [unitValue unitTag]⟩
 
-theorem adjacent_constructor_call_rejected (unitTag : Nat) (origin : Origin) (variant : UnitVariant) :
-    lowerUnitVariant unitTag origin variant .adjacentCall = .error .adjacentConstructorCall := by
-  cases variant <;> rfl
+theorem unit_tag_call_rejected (unitTag : Nat) (origin : Origin) (schema : Nat) :
+    lowerUnitVariant unitTag origin (.tag schema) .unitCall = .error .nullaryVariantArgument := rfl
 
 inductive DeriveInputError where
   | invalidDeriveInput -- E0536

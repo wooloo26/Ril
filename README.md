@@ -80,7 +80,7 @@ eff Clock { fn now_ms() -> int }
 fn timestamp() @Clock -> str { "time={Clock::now_ms()}" }
 
 fn virtual_time() -> str {
-    with Clock::now_ms() -> 1700
+    with Clock::now_ms = \-> 1700
     timestamp()
 }
 ```
