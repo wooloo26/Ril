@@ -99,7 +99,7 @@ fn concurrent_sum() -> int {
 
 ```ril
 -- Schema transformations preserve both slot replacement and access modes.
-type Select = \T: .{ ..R }, keys: []str -> {
+type Select = \T: .{ .. }, keys: []str -> {
     let selected = coords(<T>) |> Array::filter(\(_, key) -> keys |> Array::contains(key))
     <.{ m [selected as (m, k)]: T.(k) }>
 }
