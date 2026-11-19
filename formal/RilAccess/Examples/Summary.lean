@@ -53,7 +53,7 @@ def retainedSummary : Summary := { emptySummary with retained := [liveVar], effe
 def pureReadTemplate : Template := { namedReads := [.concrete pureConst] }
 def upperEffectTemplate : Template := { effects := [6, 7] }
 
-def fixtures : List (String × Bool) :=
+def examples : List (String × Bool) :=
   [("core entry: cyclic graph closure includes exactly both entry objects",
       decide ((capturedOrigins heap [saved]).length = 2 ∧
         saved ∈ capturedOrigins heap [saved] ∧ child ∈ capturedOrigins heap [saved])),
@@ -107,7 +107,7 @@ def fixtures : List (String × Bool) :=
       !CoreEntry.separated heap [saved] [sameObject]),
    ("callable match: verified pure .ril read and capture fit empty callable type",
       emptySummary.subsumes pureTable pureReadSummary),
-   ("callable match: deeply immutable return sources preserve purity and must match the contract",
+   ("callable match: deeply immutable return sources preserve purity and must match the signature",
       let returns : Summary := { emptySummary with rootReturn := [parameterCapture], contained := [pureConst] }
       returns.isPure pureTable &&
         !returns.isPure [] &&
@@ -130,33 +130,33 @@ def fixtures : List (String × Bool) :=
    ("callable match: template subsumption preserved across call instantiation",
       upperEffectTemplate.subsumes pureTable pureReadTemplate &&
         (instantiate actual upperEffectTemplate).subsumes pureTable (instantiate actual pureReadTemplate)),
-   ("named fn contract: exact contract accepts matching obligations and rejects unexercised &mut/&^mut (E0529)",
-      Summary.exactContract pureTable writeSummary writeSummary &&
-      !Summary.exactContract pureTable writeSummary emptySummary &&
-      !Summary.exactContract pureTable retainedSummary writeSummary),
-   ("named fn contract: retained state cannot hide an unexercised write (E0529)",
-      !Summary.exactContract pureTable { retainedSummary with writes := [liveVar] } retainedSummary),
-   ("named fn contract: pure immutable factory capture still requires &capture (E0510)",
-      !Summary.exactContract pureTable emptySummary pureReadSummary &&
-      Summary.exactContract pureTable factorySummary pureReadSummary &&
-      !Summary.exactContract pureTable factorySummary emptySummary),
-   ("named fn contract: pure outer locals and parameters still require &up (E0510)",
-      !Summary.exactContract pureTable emptySummary pureLocalReadSummary &&
-      Summary.exactContract pureTable pureLocalReadSummary pureLocalReadSummary &&
-      !Summary.exactContract pureTable pureLocalReadSummary emptySummary),
-   ("named fn contract: only verified pure module reads need no state clause",
-      Summary.exactContract pureTable emptySummary moduleReadSummary &&
-      !Summary.exactContract [] emptySummary moduleReadSummary &&
-      !Summary.exactContract pureTable emptySummary foreignReadSummary),
-   ("named fn contract: rows ignore ordering and duplicate provenance explanations",
-      Summary.exactContract pureTable
+   ("named fn signature: exact signature accepts matching obligations and rejects unexercised &mut/&^mut (E0529)",
+      Summary.exactSignature pureTable writeSummary writeSummary &&
+      !Summary.exactSignature pureTable writeSummary emptySummary &&
+      !Summary.exactSignature pureTable retainedSummary writeSummary),
+   ("named fn signature: retained state cannot hide an unexercised write (E0529)",
+      !Summary.exactSignature pureTable { retainedSummary with writes := [liveVar] } retainedSummary),
+   ("named fn signature: pure immutable factory capture still requires &capture (E0510)",
+      !Summary.exactSignature pureTable emptySummary pureReadSummary &&
+      Summary.exactSignature pureTable factorySummary pureReadSummary &&
+      !Summary.exactSignature pureTable factorySummary emptySummary),
+   ("named fn signature: pure outer locals and parameters still require &up (E0510)",
+      !Summary.exactSignature pureTable emptySummary pureLocalReadSummary &&
+      Summary.exactSignature pureTable pureLocalReadSummary pureLocalReadSummary &&
+      !Summary.exactSignature pureTable pureLocalReadSummary emptySummary),
+   ("named fn signature: only verified pure module reads need no state clause",
+      Summary.exactSignature pureTable emptySummary moduleReadSummary &&
+      !Summary.exactSignature [] emptySummary moduleReadSummary &&
+      !Summary.exactSignature pureTable emptySummary foreignReadSummary),
+   ("named fn signature: rows ignore ordering and duplicate provenance explanations",
+      Summary.exactSignature pureTable
         { emptySummary with writes := [liveVar, liveVar], effects := [6, 7] }
         { emptySummary with writes := [liveVar], effects := [7, 6, 7] }),
-   ("named fn contract: return and effect rows remain exact",
-      !Summary.exactContract pureTable emptySummary { emptySummary with rootReturn := [saved] } &&
-      !Summary.exactContract pureTable emptySummary { emptySummary with contained := [pureConst] } &&
-      !Summary.exactContract pureTable emptySummary { emptySummary with effects := [6] })]
+   ("named fn signature: return and effect rows remain exact",
+      !Summary.exactSignature pureTable emptySummary { emptySummary with rootReturn := [saved] } &&
+      !Summary.exactSignature pureTable emptySummary { emptySummary with contained := [pureConst] } &&
+      !Summary.exactSignature pureTable emptySummary { emptySummary with effects := [6] })]
 
-theorem fixtures_all_pass : fixtures.all Prod.snd = true := by decide +kernel
+theorem examples_all_pass : examples.all Prod.snd = true := by decide +kernel
 
 end RilAccess.CoreSummary.Examples

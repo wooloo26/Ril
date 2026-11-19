@@ -52,7 +52,7 @@ def fnOpAuthority : Integrated.World :=
 def afterFnOp : Integrated.World := (completeFnOp fnOpAuthority 1).getD fnOpAuthority
 def regLive (w : Integrated.World) (r : Nat) : Bool := (Integrated.resolve w ⟨r, []⟩).any Integrated.live
 
-def fixtures : List (String × Bool) :=
+def examples : List (String × Bool) :=
   [("core boundary: closed local state can discharge", (outward privateBoundary 7 9).isEmpty),
    ("core boundary: hidden handler environment blocks discharge", !(outward handlerEnvironment 7 9).isEmpty),
    ("core boundary: hidden cleanup environment blocks discharge", !(outward cleanupEnvironment 7 9).isEmpty),
@@ -75,8 +75,8 @@ def fixtures : List (String × Bool) :=
       regLive fnOpAuthority 2 && regLive fnOpAuthority 3 &&
       (completeFnOp fnOpAuthority 1).isSome &&
       !regLive afterFnOp 2 && !regLive afterFnOp 3),
-   ("core boundary: fn op arm completion deactivates operation loans and releases outer writer",
-      afterFnOp.loans.all (fun loan => !loan.active) &&
+   ("core boundary: fn op arm completion deactivates operation holds and releases outer writer",
+      afterFnOp.holds.all (fun hold => !hold.active) &&
       (Integrated.checkAtom (.write ⟨1, []⟩) afterFnOp).isOk),
    ("core boundary: fn op arm completion preserves outer and retained tokens",
       (Integrated.lookupToken afterFnOp 0).any Integrated.Token.active &&
@@ -91,6 +91,6 @@ def fixtures : List (String × Bool) :=
    ("core boundary: shared fn handler discharges effect without polluting branch writes",
       decide (dischargedBranch.effects = [10, 10] ∧ dischargedBranch.writes = [localOrigin]))]
 
-theorem fixtures_all_pass : fixtures.all Prod.snd = true := by decide +kernel
+theorem examples_all_pass : examples.all Prod.snd = true := by decide +kernel
 
 end RilAccess.CoreBoundary.Examples

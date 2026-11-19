@@ -6,7 +6,7 @@ theorem declared_contains (checked : Checked program facts inputs)
     (activated : Judgment.point entry 0 entry.world ∈ facts)
     (returned : Judgment.returned entry source world value ∈ facts)
     (hf : program.functions[entry.function]? = some function) :
-    Includes value.contained function.contract.contained := by
+    Includes value.contained function.signature.contained := by
   have entryListed : entry ∈ entries facts :=
     List.mem_eraseDups.mpr (List.mem_filterMap.mpr ⟨_, activated, rfl⟩)
   have interface := checked.interfaces entry entryListed
@@ -82,7 +82,7 @@ def RuntimeGuarantee (program : Program) (facts : List Judgment) (entry : Entry)
     ∃ (function : Function) (world : World) (value : Returned),
       program.functions[entry.function]? = some function ∧
       ReturnGuarantee program function frozen frame world source value ∧
-      Includes value.contained function.contract.contained
+      Includes value.contained function.signature.contained
   | .aborted _ => True
 
 /-- A certificate applies to any finite prefix starting at an activated frame.

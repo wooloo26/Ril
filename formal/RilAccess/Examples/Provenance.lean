@@ -1,4 +1,4 @@
-import RilAccess.Contracts
+import RilAccess.Signatures
 import RilAccess.Reference.Provenance.Limits
 
 set_option maxRecDepth 4096
@@ -173,7 +173,7 @@ theorem witness_executes : Trace witness witnessStart witnessEnd := by
 theorem witness_event_present : witnessEvent ∈ witnessEnd.events := by
   simp [witnessEnd]
 
-def fixtures : List (String × Bool) :=
+def examples : List (String × Bool) :=
   [("shared alias accepted", accepts aliasWrite),
    ("hidden alias rejected", !accepts hiddenAlias),
    ("missing origin rejected", !accepts rootless),
@@ -194,6 +194,6 @@ def fixtures : List (String × Bool) :=
    ("confined write discharged", decide (discharge 0 0 privateFootprint [writeEvent] = [])),
    ("nonempty execution", accepts witness)]
 
-theorem fixtures_all_pass : fixtures.all Prod.snd = true := by decide +kernel
+theorem examples_all_pass : examples.all Prod.snd = true := by decide +kernel
 
 end RilAccess.Examples

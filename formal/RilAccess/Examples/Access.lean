@@ -30,42 +30,42 @@ def variableImmutable := atoms [.allocate 0 (replaceableMode .immutable) [], .al
   .assign (path 1) 0, .read (path 0)]
 def variableConstruction := atoms [.allocate 0 (replaceableMode .mut) [], .allocate 1 (fixed .mut) [],
   .assign (path 1) 0, .write (path 0)]
-def variableCannotMove := atoms [.allocate 0 (replaceableMode .mut) [], .move 0 1, .write (path 1)]
+def variableCannotHandoff := atoms [.allocate 0 (replaceableMode .mut) [], .handoff 0 1, .write (path 1)]
 def variableNotPinned := atoms [.allocate 0 (replaceableMode .mut) [], .bind (path 0) 1 (fixed .ref)]
 def oldSharedAliasSurvives := atoms [.allocate 0 (replaceableMode .mut) [],
   .bind (path 0) 1 (fixed .shared), .write (path 1), .allocate 2 (fixed .mut) [],
   .assign (path 2) 0, .write (path 0), .write (path 1)]
-def validMove := atoms [.allocate 0 (fixed .mut) [], .bind (path 0) 1 (fixed .ref),
-  .move 0 2, .write (path 2)]
-def movedSource := atoms [.allocate 0 (fixed .mut) [], .move 0 1, .write (path 0)]
+def validHandoff := atoms [.allocate 0 (fixed .mut) [], .bind (path 0) 1 (fixed .ref),
+  .handoff 0 2, .write (path 2)]
+def movedSource := atoms [.allocate 0 (fixed .mut) [], .handoff 0 1, .write (path 0)]
 def movedObserver := atoms [.allocate 0 (fixed .mut) [], .bind (path 0) 1 (fixed .ref),
-  .move 0 2, .write (path 2), .read (path 1)]
-def sharedPreventsMove := atoms [.allocate 0 (fixed .mut) [],
-  .bind (path 0) 1 (fixed .shared), .write (path 1), .move 0 2]
+  .handoff 0 2, .write (path 2), .read (path 1)]
+def sharedPreventsHandoff := atoms [.allocate 0 (fixed .mut) [],
+  .bind (path 0) 1 (fixed .shared), .write (path 1), .handoff 0 2]
 
-def validBorrow := sequence [command (.allocate 0 (fixed .mut) []),
-  .borrow (path 0) 1 (command (.write (path 1))), command (.write (path 0))]
-def independentBorrowWrite := sequence [command (.allocate 0 (fixed .mut) []),
-  .borrow (path 0) 1 (command (.write (path 0)))]
-def independentBorrowRead := sequence [command (.allocate 0 (fixed .mut) []),
-  .borrow (path 0) 1 (atoms [.write (path 1), .read (path 0)])]
-def nestedBorrow := sequence [command (.allocate 0 (fixed .mut) []),
-  .borrow (path 0) 1 (sequence [.borrow (path 1) 2 (command (.write (path 2))),
+def validScopedAccess := sequence [command (.allocate 0 (fixed .mut) []),
+  .scopedStep (path 0) 1 (command (.write (path 1))), command (.write (path 0))]
+def independentScopedWrite := sequence [command (.allocate 0 (fixed .mut) []),
+  .scopedStep (path 0) 1 (command (.write (path 0)))]
+def independentScopedRead := sequence [command (.allocate 0 (fixed .mut) []),
+  .scopedStep (path 0) 1 (atoms [.write (path 1), .read (path 0)])]
+def nestedScopedAccess := sequence [command (.allocate 0 (fixed .mut) []),
+  .scopedStep (path 0) 1 (sequence [.scopedStep (path 1) 2 (command (.write (path 2))),
     command (.write (path 1))]), command (.write (path 0))]
 def temporarySharing := sequence [command (.allocate 0 (fixed .mut) []),
-  .borrow (path 0) 1 (atoms [.bind (path 1) 2 (fixed .shared), .write (path 2)])]
+  .scopedStep (path 0) 1 (atoms [.bind (path 1) 2 (fixed .shared), .write (path 2)])]
 def temporaryRetention := sequence [command (.allocate 0 (fixed .mut) []),
-  .borrow (path 0) 1 (command (.retain (path 1)))]
-def idleBorrow := sequence [command (.allocate 0 (fixed .mut) []),
-  .borrow (path 0) 1 (command (.read (path 1)))]
-def endedBorrowObserver := sequence [command (.allocate 0 (fixed .mut) []),
-  .borrow (path 0) 1 (atoms [.bind (path 1) 2 (fixed .ref), .read (path 2), .write (path 1)]),
+  .scopedStep (path 0) 1 (command (.retain (path 1)))]
+def idleScopedAccess := sequence [command (.allocate 0 (fixed .mut) []),
+  .scopedStep (path 0) 1 (command (.read (path 1)))]
+def endedScopedObserver := sequence [command (.allocate 0 (fixed .mut) []),
+  .scopedStep (path 0) 1 (atoms [.bind (path 1) 2 (fixed .ref), .read (path 2), .write (path 1)]),
   command (.read (path 2))]
-def escapingBorrowObserver := sequence [command (.allocate 0 (fixed .mut) []),
+def escapingScopedObserver := sequence [command (.allocate 0 (fixed .mut) []),
   command (.bind (path 0) 2 (replaceableMode .ref)),
-  .borrow (path 0) 1 (atoms [.write (path 1), .assign (path 1) 2])]
+  .scopedStep (path 0) 1 (atoms [.write (path 1), .assign (path 1) 2])]
 def suspendedReplacement := sequence [command (.allocate 0 (replaceableMode .mut) []),
-  .borrow (path 0) 1 (atoms [.allocate 2 (fixed .mut) [], .assign (path 2) 0, .write (path 1)])]
+  .scopedStep (path 0) 1 (atoms [.allocate 2 (fixed .mut) [], .assign (path 2) 0, .write (path 1)])]
 
 def scalarSchema (replaceable : Bool) : Schema :=
   [⟨[0], ⟨replaceable, .immutable⟩, false⟩]
@@ -106,7 +106,7 @@ def uncertainOverlap := sequence [command (.allocate 0 (fixed .mut) []),
   command (.pairWrite (path 2) (path 3))]
 def scopeEnded := sequence [.block (atoms [.allocate 0 (fixed .mut) [], .write (path 0)]),
   command (.read (path 0))]
-def retainedPreventsMove := atoms [.allocate 0 (fixed .mut) [], .retain (path 0), .move 0 1]
+def retainedPreventsHandoff := atoms [.allocate 0 (fixed .mut) [], .retain (path 0), .handoff 0 1]
 def scopedRetention : Syntax := .block (atoms [.allocate 0 (fixed .mut) [], .retain (path 0)])
 def possibleUse := sequence [command (.allocate 0 (fixed .mut) []),
   .branch (command (.write (path 0))) (command (.read (path 0)))]
@@ -114,7 +114,7 @@ def unclosed := atoms [.enterScope, .allocate 0 (fixed .immutable) []]
 def rootless := atoms [.write (path 0)]
 
 def injectedScopeEnd := sequence [command (.allocate 0 (fixed .mut) []),
-  .borrow (path 0) 1 (atoms [.leaveScope, .write (path 0), .enterScope])]
+  .scopedStep (path 0) 1 (atoms [.leaveScope, .write (path 0), .enterScope])]
 
 def duplicatedDeclaration := Syntax.branch
   (atoms [.allocate 0 (fixed .mut) [], .write (path 0)])
@@ -127,12 +127,12 @@ def scalarObserver := atoms [.allocate 0 (fixed .mut) (scalarSchema true),
 def scopeSharedEscape := sequence [command (.allocate 0 (fixed .mut) []),
   command (.bind (path 0) 1 (replaceableMode .shared)),
   .block (atoms [.allocate 2 (fixed .mut) [], .assign (path 2) 1]), command (.write (path 1))]
-def scopeEscapePreventsMove := sequence [command (.allocate 0 (fixed .mut) []),
+def scopeEscapePreventsHandoff := sequence [command (.allocate 0 (fixed .mut) []),
   command (.bind (path 0) 1 (replaceableMode .shared)),
-  .block (atoms [.allocate 2 (fixed .mut) [], .assign (path 2) 1, .move 2 3]),
+  .block (atoms [.allocate 2 (fixed .mut) [], .assign (path 2) 1, .handoff 2 3]),
   command (.write (path 1))]
 def chainedHandoff := atoms [.allocate 0 (fixed .mut) [], .bind (path 0) 1 (fixed .ref),
-  .move 0 2, .move 2 3, .write (path 3)]
+  .handoff 0 2, .handoff 2 3, .write (path 3)]
 def laterSharedReception := atoms [.allocate 0 (replaceableMode .shared) [],
   .write (path 0), .allocate 1 (fixed .mut) [], .assign (path 1) 0, .write (path 0)]
 def sharedWriterWithoutReception := atoms [.allocate 0 (replaceableMode .shared) [], .write (path 0)]
@@ -151,11 +151,11 @@ def forgedMemberRejected : Bool :=
   | some resolved =>
     let forged := { resolved with
       members := [], effective := .shared,
-      permission := { resolved.permission with mode := fixed .shared } }
-    let evidence : Evidence := ⟨⟨.write, resolved.pointer⟩, .write, forged, [], []⟩
-    authorizedLocal evidence && !authorized evidence
+      binding := { resolved.binding with mode := fixed .shared } }
+    let accessCheck : AccessCheck := ⟨⟨.write, resolved.pointer⟩, .write, forged, [], []⟩
+    authorizedLocal accessCheck && !authorized accessCheck
 
-def fixtures : List (String × Bool) :=
+def examples : List (String × Bool) :=
   [("immutable read", accepted immutableRead),
    ("immutable write rejected", !accepted immutableWrite),
    ("local writable use", accepted localWrite),
@@ -168,22 +168,22 @@ def fixtures : List (String × Bool) :=
    ("fixed replacement rejected", !accepted fixedReplacement),
    ("var immutable replacement", accepted variableImmutable),
    ("var mutable construction input", accepted variableConstruction),
-   ("var construction qualification rejected", !accepted variableCannotMove),
+   ("var construction qualification rejected", !accepted variableCannotHandoff),
    ("var root is not pinned", !accepted variableNotPinned),
    ("old alias survives replacement", accepted oldSharedAliasSurvives),
-   ("qualified handoff", accepted validMove),
+   ("qualified handoff", accepted validHandoff),
    ("ended handoff source rejected", !accepted movedSource),
    ("ended derived observer rejected", !accepted movedObserver),
-   ("shared root cannot hand off", !accepted sharedPreventsMove),
-   ("temporary borrowing", accepted validBorrow),
-   ("independent borrowed write rejected", !accepted independentBorrowWrite),
-   ("independent borrowed read rejected", !accepted independentBorrowRead),
-   ("nested borrowing", accepted nestedBorrow),
+   ("shared root cannot hand off", !accepted sharedPreventsHandoff),
+   ("block-scoped hold", accepted validScopedAccess),
+   ("independent write under active hold rejected", !accepted independentScopedWrite),
+   ("independent read under active write hold rejected", !accepted independentScopedRead),
+   ("nested scoped holds", accepted nestedScopedAccess),
    ("temporary sharing rejected", !accepted temporarySharing),
    ("temporary retention rejected", !accepted temporaryRetention),
-   ("idle temporary writer rejected", !accepted idleBorrow),
-   ("ended borrower observer rejected", !accepted endedBorrowObserver),
-   ("escaping borrower observer rejected", !accepted escapingBorrowObserver),
+   ("idle temporary writer rejected", !accepted idleScopedAccess),
+   ("ended borrower observer rejected", !accepted endedScopedObserver),
+   ("escaping borrower observer rejected", !accepted escapingScopedObserver),
    ("suspended root replacement rejected", !accepted suspendedReplacement),
    ("scalar slot replacement", accepted scalarReplacement),
    ("fixed scalar slot rejected", !accepted fixedScalarReplacement),
@@ -198,7 +198,7 @@ def fixtures : List (String × Bool) :=
    ("correlated permute", accepted permute),
    ("possible overlap rejected", !accepted uncertainOverlap),
    ("scope expiry", !accepted scopeEnded),
-   ("retention ends qualification", !accepted retainedPreventsMove),
+   ("retention ends qualification", !accepted retainedPreventsHandoff),
    ("retention survives scope", accepted scopedRetention),
    ("use on one retained branch", accepted possibleUse),
    ("unclosed scope rejected", !accepted unclosed),
@@ -213,12 +213,12 @@ def fixtures : List (String × Bool) :=
    ("duplicate schema field rejected", !accepted duplicateField),
    ("scalar cannot receive ref", !accepted scalarObserver),
    ("scope escape is inferred", accepted scopeSharedEscape),
-   ("inferred escape prevents handoff", !accepted scopeEscapePreventsMove),
+   ("inferred escape prevents handoff", !accepted scopeEscapePreventsHandoff),
    ("ended paths permit subsequent handoff", accepted chainedHandoff),
    ("later shared assignment justifies var shared reception", accepted laterSharedReception),
    ("writing alone does not justify shared local reception", !accepted sharedWriterWithoutReception)]
 
-theorem fixtures_all_pass : fixtures.all Prod.snd = true := by decide +kernel
+theorem examples_all_pass : examples.all Prod.snd = true := by decide +kernel
 
 theorem permute_two_worlds :
     (check permute).toOption.map (fun analysis => analysis.worlds.length) = some 2 := by decide +kernel

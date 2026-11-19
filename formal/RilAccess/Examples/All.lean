@@ -14,12 +14,12 @@ import RilAccess.Examples.Composition
 
 namespace RilAccess.Examples
 
-def allFixtures : List (String × Bool) :=
-  fixtures ++ Integrated.Examples.fixtures ++ Calls.Examples.fixtures ++
-    GraphAuthority.Examples.fixtures ++ CoreBoundary.Examples.fixtures ++
-    CoreSummary.Examples.fixtures ++ Draft.Examples.fixtures ++
-    Integrated.HandoffExamples.fixtures ++ Draft.Examples.loweringFixtures ++
-    ScopedExamples.fixtures ++ VisibilityExamples.fixtures ++
-    CoreConcurrency.Examples.fixtures ++ Provenance.Examples.fixtures ++ Provenance.Examples.compositionFixtures
+def allExamples : List (String × Bool) :=
+  examples ++ Integrated.Examples.examples ++ Calls.Examples.examples ++
+    GraphAuthority.Examples.examples ++ CoreBoundary.Examples.examples ++
+    CoreSummary.Examples.examples ++ Draft.Examples.examples ++
+    Integrated.HandoffExamples.examples ++ Draft.Examples.loweringExamples ++
+    ScopedExamples.examples ++ VisibilityExamples.examples ++
+    CoreConcurrency.Examples.examples ++ Provenance.Examples.examples ++ Provenance.Examples.compositionExamples
 
 end RilAccess.Examples

@@ -1,5 +1,5 @@
 import RilAccess.Call.Entry
-import RilAccess.Contracts
+import RilAccess.Signatures
 
 namespace RilAccess.CoreSummary
 

@@ -88,7 +88,7 @@ structure Analysis where
   deriving Repr, DecidableEq
 
 inductive Diagnostic where
-  | contractMismatch (check : Check) (inferred : Analysis)
+  | signatureMismatch (check : Check) (inferred : Analysis)
   | missingOrigin (pc register : Nat) (inferred : Analysis)
   deriving Repr, DecidableEq
 
@@ -117,7 +117,7 @@ def analyze (p : ResolvedProgram) : Except Diagnostic Analysis :=
   | some (pc, register) => .error (.missingOrigin pc register inferred)
   | none =>
     match p.checks.find? (fun c => !checkHolds facts c) with
-    | some c => .error (.contractMismatch c inferred)
+    | some c => .error (.signatureMismatch c inferred)
     | none => .ok inferred
 
 /-- Per-point queries intentionally share the flow-insensitive region solution. -/

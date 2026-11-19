@@ -34,8 +34,8 @@ def mutateInserted : RecipeStep := .rewrite [0, 1] [.scalar 0 8]
 def outsideWrite : Event := ⟨.write, outsideOrigin, .cleanup⟩
 def outsideCapture : Event := ⟨.capture, outsideOrigin, .closure⟩
 
-/-- These external fixtures concern one scalar slot, with no hidden payload.
-This helper is fixture data, not inference of a complete contract from an event. -/
+/-- These external examples concern one scalar slot, with no hidden payload.
+This helper is example data, not inference of a complete signature from an event. -/
 def external (event : Event) : RecipeStep :=
   .external ⟨[event], [], .known ⟨[event.origin], [], []⟩⟩
 
@@ -120,7 +120,7 @@ def rejectsRoot (shape : RootShape) (value : Value) (source : Input) : Bool :=
   | .error .invalidDeriveInput => true
   | .ok _ => false
 
-def loweringFixtures : List (String × Bool) :=
+def loweringExamples : List (String × Bool) :=
   let unit := unitValue 4
   let someUnit := lowerUnitVariant 4 (oldOrigin 4) (.payload 801) .unitCall
   let noneTag := lowerUnitVariant 4 (oldOrigin 5) (.tag 802) .bare
@@ -157,7 +157,7 @@ def loweringFixtures : List (String × Bool) :=
         rejectsRoot (.record 800) (.reference 9) emptyRecordInput &&
         rejectsRoot (.record 800) (.reference 4) live)]
 
-def fixtures : List (String × Bool) :=
+def examples : List (String × Bool) :=
   [("derive: tuple member replacement accepted", accepted tupleUpdate),
    ("derive: tuple declaration modes survive the draft",
        ((checkRecipe input tupleUpdate).bind (fun a => (a.result.memory 10).map Cell.storage)) == some tupleStorage),
@@ -205,7 +205,7 @@ def fixtures : List (String × Bool) :=
       state [grow, external outsideWrite, aborted] == some [outsideWrite]),
    ("derive: captured external state survives abort",
       state [grow, external outsideCapture, aborted] == some [outsideCapture]),
-   ("derive: external contract cannot write protected input", !accepted
+   ("derive: external operation cannot write protected input", !accepted
       [external ⟨.write, oldOrigin 0, .call⟩, done]
       { input with externalSources := (oldOrigin 0).source :: input.externalSources }),
    ("derive: external source obligation cannot be omitted", !accepted
@@ -226,7 +226,7 @@ def fixtures : List (String × Bool) :=
    ("derive: live source writer rejects input", !accepted [done] liveInput),
    ("derive: readonly reception is not immutable reception", !accepted [done]
       { input with admissions := input.admissions.map (fun (object, _) => (object, .ref)) }),
-   ("derive: missing reception evidence rejected", !accepted [done] { input with admissions := [] }),
+   ("derive: missing reception proof rejected", !accepted [done] { input with admissions := [] }),
    ("derive: inconsistent duplicate reception rejected", !accepted [done]
       { input with admissions := (0, .ref) :: input.admissions }),
    ("derive: draft capture escape rejected", !accepted [external ⟨.capture, context.origin 11, .closure⟩, done]),
@@ -257,6 +257,6 @@ def fixtures : List (String × Bool) :=
          decide (Fact.event .write context.source ∈ analysis.facts ∧
            Fact.event .write outsideOrigin.source ∈ analysis.facts))]
 
-theorem fixtures_all_pass : fixtures.all Prod.snd = true := by decide +kernel
+theorem examples_all_pass : examples.all Prod.snd = true := by decide +kernel
 
 end RilAccess.Draft.Examples

@@ -9,13 +9,13 @@ namespace RilAccess.CoreConcurrency
 open Integrated
 
 inductive CaptureFlavor where
-  | sharedImmutable | singleShotMove
+  | sharedImmutable | singleShotHandoff
   deriving Repr, DecidableEq
 
 private def sendableMember (access : Access) : Bool :=
   access != .ref && access != .shared
 
-/-- The data fragment of Sendable represented by the permission ledger. -/
+/-- The data fragment of Sendable represented by the binding-access ledger. -/
 def sendableData (r : Resolved) : Bool :=
   !r.grant.resource && r.grant.schema.all fun field =>
     !(r.pointer.fields.isPrefixOf field.coordinate && r.pointer.fields != field.coordinate) ||
@@ -24,7 +24,7 @@ def sendableData (r : Resolved) : Bool :=
 /-- E0601 permits shared capture of pinned deeply immutable bindings. -/
 def eligibleSharedCapture (world : World) (r : Resolved) : Bool :=
   receiving world r ⟨false, .immutable⟩ world.scope &&
-    !r.permission.mode.replaceable && (r.permission.mode.access == .immutable) &&
+    !r.binding.mode.replaceable && (r.binding.mode.access == .immutable) &&
     r.members.all sendableMember && sendableData r
 
 def spawnSharedCapture (world : World) (source : Path) (childDestination : Nat) : Except Error World :=
@@ -33,23 +33,23 @@ def spawnSharedCapture (world : World) (source : Path) (childDestination : Nat) 
   else .error (.rejected bind)
 
 /-- Single-shot task closures (`run`, `spawn`, `zip`, `try_zip`, `race`, `supervise`,
-`timeout_ms`) may consume a qualified `new` binding once via move handoff (`E0549`). -/
-def spawnMoveCapture (world : World) (source childDestination : Nat) : Except Error World :=
-  let move := Atom.move source childDestination
-  if (resolve world ⟨source, []⟩).any sendableData then checkAtom move world
-  else .error (.rejected move)
+`timeout_ms`) may hand off a `new`-qualified binding once (`E0549`). -/
+def spawnHandoffCapture (world : World) (source childDestination : Nat) : Except Error World :=
+  let handoff := Atom.handoff source childDestination
+  if (resolve world ⟨source, []⟩).any sendableData then checkAtom handoff world
+  else .error (.rejected handoff)
 
-/-- E0548 channel send reception: writable-constituent payloads require exclusive
-`new` move handoff so `Channel::recv -> new ?T` cannot launder mutability. -/
-def eligibleChannelSend (requiresMove : Bool) (world : World) (r : Resolved) : Bool :=
+/-- E0548 channel send reception: writable-constituent payloads require single-use
+`new` handoff so `Channel::recv -> new ?T` cannot launder mutability. -/
+def eligibleChannelSend (requiresHandoff : Bool) (world : World) (r : Resolved) : Bool :=
   sendableData r &&
-    (if requiresMove then eligibleMove world r else receiving world r ⟨false, .immutable⟩ world.scope)
+    (if requiresHandoff then eligibleHandoff world r else receiving world r ⟨false, .immutable⟩ world.scope)
 
 theorem cross_fiber_capture_rejects_mutable_scoped_or_resource {world : World} {r : Resolved}
     (h : eligibleSharedCapture world r = true) :
-    r.grant.resource = false ∧ r.permission.isScoped = false ∧
+    r.grant.resource = false ∧ r.binding.isScoped = false ∧
       deepImmutable r = true ∧ live r = true ∧
-      r.permission.mode.replaceable = false ∧ r.permission.mode.access = .immutable ∧
+      r.binding.mode.replaceable = false ∧ r.binding.mode.access = .immutable ∧
       sendableData r = true := by
   simp only [eligibleSharedCapture, Bool.and_eq_true, Bool.not_eq_true', beq_iff_eq] at h
   obtain ⟨⟨⟨⟨received, pinned⟩, mode⟩, _⟩, sendable⟩ := h
@@ -58,8 +58,8 @@ theorem cross_fiber_capture_rejects_mutable_scoped_or_resource {world : World} {
     pinned, mode, sendable⟩
 
 theorem mutable_scoped_or_resource_rejected_by_shared_capture {world : World} {r : Resolved}
-    (hbad : r.grant.resource = true ∨ r.permission.isScoped = true ∨
-      (r.permission.immutableOrigin = false ∧ r.effective.writes = true)) :
+    (hbad : r.grant.resource = true ∨ r.binding.isScoped = true ∨
+      (r.binding.immutableOrigin = false ∧ r.effective.writes = true)) :
     eligibleSharedCapture world r = false := by
   rcases hbad with hres | hsc | ⟨hnoOrig, hw⟩
   · simp [eligibleSharedCapture, receiving, hres]
@@ -97,14 +97,14 @@ theorem traverse_immutable_stays_immutable {schema : Schema} {base fields : List
             exact ih hrec
         · simp [hf, hrem, hobj] at ht
 
-theorem shared_capture_forbids_authorized_writes {world : World} {path : Path} {e : Evidence}
+theorem shared_capture_forbids_authorized_writes {world : World} {path : Path} {e : AccessCheck}
     (hr : resolve world path = some e.resolved)
-    (himm : e.resolved.permission.mode.access = .immutable)
+    (himm : e.resolved.binding.mode.access = .immutable)
     (hauth : authorized e = true) :
     e.rule = .read ∧ e.observation.kind = .read := by
   have htrav : e.resolved.effective = .immutable ∧ e.resolved.parentAccess = .immutable := by
     unfold resolve at hr
-    cases hp : lookupPermission world path.register with
+    cases hp : lookupBinding world path.register with
     | none => simp [hp] at hr
     | some perm =>
       cases hroot : rawLookup world.raw path.register with
@@ -139,22 +139,22 @@ theorem shared_capture_forbids_authorized_writes {world : World} {path : Path} {
   | retain =>
     simp [authorizedLocal, hrule, htrav.1, Access.writes] at hloc
 
-theorem spawned_move_disjoint_from_parent_live_permissions
+theorem spawned_handoff_disjoint_from_parent_live_bindings
     {world next : World} {source childDestination : Nat} {resolved : Resolved}
-    (h : spawnMoveCapture world source childDestination = .ok next)
+    (h : spawnHandoffCapture world source childDestination = .ok next)
     (hr : resolve world ⟨source, []⟩ = some resolved) :
     sendableData resolved = true ∧
     rawLookup next.raw childDestination = some resolved.pointer ∧
-    (∀ dep ∈ resolved.permission.dependencies, (lookupToken next dep).any Token.active = false) ∧
+    (∀ dep ∈ resolved.binding.dependencies, (lookupToken next dep).any Token.active = false) ∧
     (∀ path derived dep, resolve next path = some derived →
-      dep ∈ derived.permission.dependencies → dep ∈ resolved.permission.dependencies →
+      dep ∈ derived.binding.dependencies → dep ∈ resolved.binding.dependencies →
       live derived = false) := by
   have sendable : sendableData resolved = true := by
     by_cases hs : sendableData resolved = true
     · exact hs
-    · simp [spawnMoveCapture, hr, hs] at h
-  have moved : checkAtom (.move source childDestination) world = .ok next := by
-    simpa [spawnMoveCapture, hr, sendable] using h
+    · simp [spawnHandoffCapture, hr, hs] at h
+  have moved : checkAtom (.handoff source childDestination) world = .ok next := by
+    simpa [spawnHandoffCapture, hr, sendable] using h
   obtain ⟨actual, hres, hptr⟩ := handoff_preserves_identity moved
   have eq : actual = resolved := Option.some.inj (hres.symm.trans hr)
   subst actual
@@ -165,7 +165,7 @@ theorem spawned_move_disjoint_from_parent_live_permissions
 theorem frozen_object_cannot_launder_mutability_via_channel
     {world : World} {r : Resolved} (hfrozen : r.effective = .immutable) :
     eligibleChannelSend true world r = false := by
-  simp [eligibleChannelSend, eligibleMove, hfrozen, Access.writes]
+  simp [eligibleChannelSend, eligibleHandoff, hfrozen, Access.writes]
 
 inductive TaskMode where
   | sharedImmutable | exclusiveSingleShot
@@ -186,22 +186,22 @@ structure NurseryState where
   tasks : List TaskEntry := []
   deriving Repr, DecidableEq
 
-private def TaskEntry.joined (entry : TaskEntry) (asMove : Bool) : TaskEntry :=
+private def TaskEntry.joined (entry : TaskEntry) (asHandoff : Bool) : TaskEntry :=
   { entry with
-    consumed := asMove
+    consumed := asHandoff
     settled := true
     pendingInspections := entry.pendingInspections + entry.fallibleResult.toNat }
 
 /-- `Fiber::join(mut s, via task)`: `asMove = true` models `join(mut s, new task)`
 on exclusive handles; `asMove = false` models idempotent memoized `join(mut s, task)`
 on plain `let` handles. Inspection of the returned Result is a separate action. -/
-def joinTask (nursery : NurseryState) (taskId taskSigma : Nat) (asMove : Bool) : Option NurseryState := do
+def joinTask (nursery : NurseryState) (taskId taskSigma : Nat) (asHandoff : Bool) : Option NurseryState := do
   let entry ← nursery.tasks.find? (fun t => decide (t.id = taskId))
-  let mode := if asMove then TaskMode.exclusiveSingleShot else .sharedImmutable
+  let mode := if asHandoff then TaskMode.exclusiveSingleShot else .sharedImmutable
   if decide (taskSigma = nursery.activeSigma ∧ entry.regionSigma = nursery.activeSigma) &&
       !entry.consumed && decide (entry.mode = mode) then
     some { nursery with tasks := nursery.tasks.map fun t =>
-      if t.id = taskId then t.joined asMove else t }
+      if t.id = taskId then t.joined asHandoff else t }
   else none
 
 /-- `Fiber::cancel(mut s, new task)`: requires matching nursery region `σ` (`E0604`)
@@ -238,9 +238,9 @@ def drainPlainTasks (nursery : NurseryState) : Option NurseryState :=
   else
     some { nursery with tasks := nursery.tasks.map fun t => { t with settled := true } }
 
-theorem cross_scope_task_rejected {nursery : NurseryState} {taskId taskSigma : Nat} {asMove : Bool}
+theorem cross_scope_task_rejected {nursery : NurseryState} {taskId taskSigma : Nat} {asHandoff : Bool}
     (hcross : taskSigma ≠ nursery.activeSigma) :
-    joinTask nursery taskId taskSigma asMove = none ∧
+    joinTask nursery taskId taskSigma asHandoff = none ∧
       cancelTask nursery taskId taskSigma = none := by
   unfold joinTask cancelTask
   cases hf : nursery.tasks.find? (fun t => decide (t.id = taskId)) with
@@ -248,9 +248,9 @@ theorem cross_scope_task_rejected {nursery : NurseryState} {taskId taskSigma : N
   | some entry => simp [hcross]
 
 theorem duplicate_exclusive_task_consumption_rejected
-    {nursery next : NurseryState} {taskId taskSigma nextSigma : Nat} {anyMove : Bool}
+    {nursery next : NurseryState} {taskId taskSigma nextSigma : Nat} {anyHandoff : Bool}
     (h : joinTask nursery taskId taskSigma true = some next) :
-    joinTask next taskId nextSigma anyMove = none ∧
+    joinTask next taskId nextSigma anyHandoff = none ∧
       cancelTask next taskId nextSigma = none := by
   unfold joinTask at h
   cases hf : nursery.tasks.find? (fun t => decide (t.id = taskId)) with

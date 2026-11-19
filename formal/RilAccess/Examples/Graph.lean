@@ -44,8 +44,8 @@ def checkedShared := checkedReplace sharedSlot 0 [] 0 1 [] true
 def checkedRef := checkedReplace referenceSlot 0 [] 0 2 [] false
 
 /-- The outer nodes represent assembled wrappers around existing source objects.
-These fixtures check path authority and identity, not construction reception or
-the separate lifetime conditions of stored sources. -/
+These examples check path authority and identity, not construction reception or
+the separate scope conditions of stored sources. -/
 def nestedSources : Graph :=
   ⟨[⟨0, 0, .mut⟩, ⟨1, 3, .shared⟩, ⟨2, 3, .ref⟩, ⟨3, 4, .immutable⟩],
    [⟨0, 0, 1, fixed .mut, .mut⟩,
@@ -62,11 +62,11 @@ def frozenNestedSources : Graph :=
     roots := nestedSources.roots.map fun root =>
       if root.view = 0 then { root with access := .immutable } else root }
 
-def fixtures : List (String × Bool) :=
+def examples : List (String × Bool) :=
   [("graph: cyclic authority closure", decide (Fact.mk 0 1 .mut ∈ analyze cycle)),
    ("graph: cycle returns to original identity", decide (resolvePath cycle.edges 0 .mut [0, 0] = some (0, .mut))),
    ("graph: repeated paths preserve alias", decide (resolvePath repeated.edges 0 .mut [0] = resolvePath repeated.edges 0 .mut [1])),
-   ("graph: readonly sibling cannot borrow another path's writer", !canWritePath readonlySibling 0 [0]),
+   ("graph: readonly sibling cannot acquire another path's writer", !canWritePath readonlySibling 0 [0]),
    ("graph: writable sibling remains writable", canWritePath readonlySibling 0 [1]),
    ("graph: summary records a writer without upgrading readonly path", hasWriter readonlySibling 1),
    ("graph: immutable root suppresses cyclic writes", !hasWriter frozenRoot 1),
@@ -127,7 +127,7 @@ def fixtures : List (String × Bool) :=
       !canWritePath frozenNestedSources 0 [0, 0, 1] &&
       hasWriter frozenNestedSources 3 && !immutableConsistent frozenNestedSources)]
 
-theorem fixtures_all_pass : fixtures.all Prod.snd = true := by decide +kernel
+theorem examples_all_pass : examples.all Prod.snd = true := by decide +kernel
 
 theorem erased_cycle : RawPath (eraseEdges cycle.edges) 0 [0, 0] 0 := by
   exact path_erases (resolve_path_sound (by decide +kernel :

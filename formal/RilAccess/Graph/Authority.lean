@@ -2,7 +2,7 @@ import RilAccess.Graph.Reachability
 import RilAccess.Logic
 
 /-! Finite authority closure for shared, cyclic, mutable graphs. The closure is
-for summaries: permission to use one path is checked on that particular path,
+for summaries: authority to use one path is checked on that particular path,
 never inferred from another writable path to the same object. -/
 namespace RilAccess.GraphAuthority
 
@@ -252,7 +252,7 @@ theorem replacement_preserves_schema
     · contradiction
 
 /-- Existing aliases received with an explicit `^mut` marker require shared
-storage. New-region reception and stored-source lifetimes are separate judgments. -/
+storage. New-region reception and stored-source scopes are separate judgments. -/
 def receiveStored (member source : Access) (sharedMarker : Bool) : Option Access :=
   match member with
   | .immutable => if !sharedMarker && decide (source = .immutable) then some .immutable else none

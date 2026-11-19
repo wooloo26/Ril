@@ -107,7 +107,7 @@ def survivingPublication := sequence [access [.allocate 0 (fixed .mut) [],
   .invoke [arg 2 10 .retained] [1]
     (access [.assign (p 10) 1]), access [.write (p 1)]]
 
-def fixtures : List (String × Bool) :=
+def examples : List (String × Bool) :=
   [("call: mutable argument", accepted mutate),
    ("call: temporary observation pins current var target", accepted observeVariable),
    ("call: read/read aliasing", accepted readAliased),
@@ -132,7 +132,7 @@ def fixtures : List (String × Bool) :=
    ("call: formal slots are fixed", !accepted rebindFormal),
    ("call: construction input", accepted constructInput),
    ("call: observed input has no construction authority", !accepted observedInputIsNotConstruction),
-   ("call: formal lifetime ends", !accepted formalCannotEscape),
+   ("call: formal valid scope ends", !accepted formalCannotEscape),
    ("call: immutable input", accepted immutableInput),
    ("call: plain input cannot publish a live writer", !accepted mutablePlainInput),
    ("call: undeclared capture rejected", !accepted undeclaredCapture),
@@ -143,6 +143,6 @@ def fixtures : List (String × Bool) :=
    ("call: overwritten publication is not surviving retention", !accepted overwrittenPublication),
    ("call: outer binding roots surviving publication", accepted survivingPublication)]
 
-theorem fixtures_all_pass : fixtures.all Prod.snd = true := by decide +kernel
+theorem examples_all_pass : examples.all Prod.snd = true := by decide +kernel
 
 end RilAccess.Calls.Examples

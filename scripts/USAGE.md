@@ -25,7 +25,7 @@ selected files share an EBNF production namespace.
 
 ## Formal verification
 
-With `lake` on `PATH`, run the Lean build, fixtures, and axiom audit.
+With `lake` on `PATH`, run the Lean build, examples, and axiom audit.
 
 ```sh
 uv run --directory scripts --locked formal_check

@@ -97,7 +97,7 @@ theorem boundary_found {world : World} {frame : RawFrame}
 
 def ReturnGuarantee (program : Program) (function : Function) (frozen frame : RawFrame)
     (world : World) (source : Option Register) (value : Returned) : Prop :=
-  match function.contract.result with
+  match function.signature.result with
   | .unit => source = none
   | mode =>
     ∃ register object view, source = some register ∧ frame.get register = some object ∧
@@ -124,7 +124,7 @@ theorem checked_return_sound {entry world : World} {frozen frame : RawFrame}
     (h : checkReturn program function entry world source = .ok value) :
     ReturnGuarantee program function frozen frame world source value := by
   unfold ReturnGuarantee
-  cases hc : function.contract.result with
+  cases hc : function.signature.result with
   | unit =>
     cases source <;> simp_all [checkReturn]
   | plain =>

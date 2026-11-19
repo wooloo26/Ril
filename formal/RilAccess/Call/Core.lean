@@ -35,9 +35,9 @@ def lower : Syntax → Code
 
 def operandRegisters : Atom → List Nat
   | .bind source _ _ | .read source | .write source | .replaceScalar source |
-      .retain source | .beginBorrow source _ | .parameter source _ _ => [source.register]
+      .retain source | .beginHold source _ | .parameter source _ _ => [source.register]
   | .assign source destination => [source.register, destination]
-  | .move source _ => [source]
+  | .handoff source _ => [source]
   | .pairWrite left right => [left.register, right.register]
   | _ => []
 
@@ -77,23 +77,23 @@ def argumentPresent (w : World) (argument : Argument) : Bool :=
   (resolve w argument.source).isSome && unused w argument.formal
 
 def parameterToken (entry : World) (formal : Nat) : Option Nat := do
-  let permission ← lookupPermission entry formal
-  permission.dependencies.head?
+  let binding ← lookupBinding entry formal
+  binding.dependencies.head?
 
-def evidenceUses (token : Nat) (evidence : Evidence) : Bool :=
-  decide (token ∈ evidence.resolved.authorityOrigins) &&
-    (decide (evidence.rule = .write) || decide (evidence.rule = .replaceScalar) ||
-      decide (evidence.rule = .retain))
+def accessCheckUses (token : Nat) (accessCheck : AccessCheck) : Bool :=
+  decide (token ∈ accessCheck.resolved.authorityOrigins) &&
+    (decide (accessCheck.rule = .write) || decide (accessCheck.rule = .replaceScalar) ||
+      decide (accessCheck.rule = .retain))
 
 /-- This checks surviving authority (`&^mut`), not writes or object equality. The parent
 relation preserves the distinction between independent aliased participants. -/
 def rootedWriter (world : World) (token : Token) : Bool :=
-  token.retained || world.permissions.any fun permission =>
-    permission.alive && permission.mode.access.writes && decide (permission.scope < world.scope) &&
-      decide (token.id ∈ permission.dependencies) &&
-      permission.dependencies.all (fun id =>
+  token.retained || world.bindings.any fun binding =>
+    binding.alive && binding.mode.access.writes && decide (binding.scope < world.scope) &&
+      decide (token.id ∈ binding.dependencies) &&
+      binding.dependencies.all (fun id =>
         match lookupToken world id with | some dependency => dependency.active | none => false) &&
-      match rawLookup world.raw permission.register with
+      match rawLookup world.raw binding.register with
       | some pointer => contains token.region pointer
       | none => false
 
@@ -105,7 +105,7 @@ def retainedBeyond (formalToken : Nat) (world : World) : Bool :=
 def formalMutated (entry : World) (frontier : List World) (formal : Nat) : Bool :=
   match parameterToken entry formal with
   | none => false
-  | some token => frontier.any (fun world => world.evidence.any (evidenceUses token))
+  | some token => frontier.any (fun world => world.accessChecks.any (accessCheckUses token))
 
 def formalRetained (entry : World) (frontier : List World) (formal : Nat) : Bool :=
   match parameterToken entry formal with
@@ -118,7 +118,7 @@ def requiredUse (entry : World) (frontier : List World) (argument : Argument) : 
   | some token =>
     match argument.mode with
     | .immutable | .observe | .construction => true
-    | .mutable => frontier.any (fun world => world.evidence.any (evidenceUses token))
+    | .mutable => frontier.any (fun world => world.accessChecks.any (accessCheckUses token))
     | .retained => frontier.any (retainedBeyond token)
 
 def requiredUses (entry : World) (frontier : List World) (arguments : List Argument) : Bool :=
@@ -140,7 +140,7 @@ def infer : Syntax → World → Except Error (List World)
     pure (l ++ r)
   | .invoke arguments captures body, world => do
     if arguments.all (argumentPresent world) &&
-        captures.all (fun reg => !(resolve world ⟨reg, []⟩).any (fun r => r.grant.resource || r.permission.isScoped)) then
+        captures.all (fun reg => !(resolve world ⟨reg, []⟩).any (fun r => r.grant.resource || r.binding.isScoped)) then
       let prepared ← Integrated.infer (.sequence (.atom .enterScope) (prepare arguments)) world
       checkMany (fun entry => do
         let front ← infer body entry

@@ -1,8 +1,8 @@
 import RilAccess.Model
 
 /-! A closed, resolved core for source analysis. The runtime executes only
-registers, allocations, and heap operations. Frames, receiver modes, loans and
-contract rows are checked by the compiler-facing interpretation. -/
+registers, allocations, and heap operations. Frames, receiver modes, holds and
+signature rows are checked by the compiler-facing interpretation. -/
 namespace RilAccess.Provenance
 
 abbrev Register := Nat
@@ -108,7 +108,7 @@ def runPrim (action : Prim) (frame : RawFrame) : Option RawFrame :=
 inductive Primitive where
   | alloc (destination site : Nat)
   | bind (destination source : Register) (mode : Access)
-  | move (destination source : Register)
+  | handoff (destination source : Register)
   | store (parent : Register) (field : Field) (source : Register) (consume : Bool := false)
   | select (destination parent : Register) (field : Field)
   | read (register : Register)
@@ -120,7 +120,7 @@ inductive Primitive where
 
 def Primitive.erase : Primitive → Prim
   | .alloc d s => .alloc d s
-  | .bind d s _ | .move d s => .copy d s
+  | .bind d s _ | .handoff d s => .copy d s
   | .store p f s _ => .store p f s
   | .select d p f => .select d p f
   | .read r => .read r
@@ -130,7 +130,7 @@ def Primitive.erase : Primitive → Prim
 
 def Primitive.operands : Primitive → List Register
   | .alloc _ _ => []
-  | .bind _ source _ | .move _ source => [source]
+  | .bind _ source _ | .handoff _ source => [source]
   | .select _ parent _ => [parent]
   | .store parent _ source _ => [parent, source]
   | .read register | .write register | .publish register | .scope register | .expire register => [register]
@@ -140,7 +140,7 @@ def Primitive.writer : Primitive → Option Register
   | _ => none
 
 def Primitive.destination : Primitive → Option Register
-  | .alloc d _ | .bind d _ _ | .move d _ | .select d _ _ => some d
+  | .alloc d _ | .bind d _ _ | .handoff d _ | .select d _ _ => some d
   | _ => none
 
 structure Argument where
@@ -161,7 +161,7 @@ structure OldSource where
   mode : Access
   deriving Repr, DecidableEq
 
-structure Contract where
+structure Signature where
   result : ReturnMode := .unit
   writes : Bool := false
   retains : Bool := false
@@ -181,12 +181,12 @@ inductive Instruction where
 
 structure Function where
   parameters : List ParameterMode := []
-  contract : Contract := {}
+  signature : Signature := {}
   code : List Instruction
   deriving Repr, DecidableEq
 
 /-- Schemas are indexed by allocation site and resolved slot. The checker
-    rejects ambiguous keys. Permission metadata never changes the schema. -/
+    rejects ambiguous keys. Access-mode metadata never changes the schema. -/
 structure Slot where
   site : Nat
   field : Field

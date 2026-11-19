@@ -102,7 +102,7 @@ theorem metadata_operands (h : metadata program action world = .ok (after, uses)
   case bind destination source mode =>
     subst register
     cases hv : world.view source <;> simp [metadata, hv, need] at h ⊢
-  case move destination source =>
+  case handoff destination source =>
     subst register
     cases hv : world.view source <;> simp [metadata, consume, hv, need] at h ⊢
   case scope source =>
@@ -169,11 +169,11 @@ theorem primitive_authorized {world : World} {frame : RawFrame}
     ∃ object view, frame.get register = some object ∧
       world.view register = some (object.abstract, view) ∧ view.mode.writes = true := by
   obtain ⟨edited, hm, _⟩ := primitive_metadata h
-  have evidence : ∃ object view, world.view register = some (object, view) ∧ view.mode.writes = true := by
+  have accessCheck : ∃ object view, world.view register = some (object, view) ∧ view.mode.writes = true := by
     cases action <;> simp [Primitive.writer] at writer
     case store => subst register; exact metadata_store hm
     case write => subst register; exact metadata_write hm
-  obtain ⟨_, view, hv, writable⟩ := evidence
+  obtain ⟨_, view, hv, writable⟩ := accessCheck
   obtain ⟨object, present, rfl⟩ := view_available hw hv
   exact ⟨object, view, present, hv, writable⟩
 

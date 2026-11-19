@@ -81,7 +81,7 @@ def wrapOld (operation : Primitive) : Program :=
     .step [.alloc 0 10] 1,
     .invoke 1 [⟨0, .observe⟩] (some (1, .mut)) 2,
     .step [.select 2 1 0] 3,
-    .step [.move 3 1] 4,
+    .step [.handoff 3 1] 4,
     .step [operation] 5,
     .ret none]⟩
   let factory : Function := ⟨[.observe], { result := .construction, contained := [⟨0, .ref⟩] },
@@ -164,7 +164,7 @@ def localFactoryWrite (declared : Bool) : Program :=
   let factory : Function := ⟨[], { result := .construction }, [.step [.alloc 0 10] 1, .ret (some 0)]⟩
   ⟨[main, callee, factory], []⟩
 
-def fixtures : List (String × Bool) :=
+def examples : List (String × Bool) :=
   [("resolved provenance: root replacement removes prior origin",
     decide (beforeWrites overwrite 2 0 = [⟨20, none⟩])),
    ("resolved provenance: future allocation cannot justify earlier access", diagnoses future .unavailable),
@@ -195,15 +195,15 @@ def fixtures : List (String × Bool) :=
    ("resolved provenance: outward shared stores keep parameter retention alive", accepts (retention false)),
    ("resolved provenance: overwritten shared store cannot justify retention", diagnoses (retention true) .unusedParameter),
    ("resolved provenance: a write through a nested call and new wrapper reaches the old formal",
-    accepts (writeThroughWrapper true) && diagnoses (writeThroughWrapper false) .contract),
-   ("resolved provenance: forwarding a temporary borrow as ref cannot publish it",
+    accepts (writeThroughWrapper true) && diagnoses (writeThroughWrapper false) .signature),
+   ("resolved provenance: forwarding a call-scoped ref view cannot publish it",
     diagnoses temporaryForward .schema),
-   ("resolved provenance: a write on an aborting prefix still requires its contract",
-    accepts (abortingWriter true) && diagnoses (abortingWriter false) .contract),
+   ("resolved provenance: a write on an aborting prefix still requires its signature clause",
+    accepts (abortingWriter true) && diagnoses (abortingWriter false) .signature),
    ("resolved provenance: writes to a later factory instance discharge locally",
-    accepts (localFactoryWrite false) && diagnoses (localFactoryWrite true) .contract)]
+    accepts (localFactoryWrite false) && diagnoses (localFactoryWrite true) .signature)]
 
-theorem fixtures_pass : fixtures.all Prod.snd = true := by decide +kernel
+theorem examples_pass : examples.all Prod.snd = true := by decide +kernel
 
 theorem divergent_loop_steps :
     ∃ run : Nat → Machine,

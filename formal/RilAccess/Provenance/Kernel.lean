@@ -42,8 +42,8 @@ inductive CallFact where
   deriving Repr, DecidableEq
 
 @[simp] def Judgment.callFact (callee : Entry) : Judgment → Option CallFact
-  | .use key evidence =>
-    if key = callee then some (.use evidence) else none
+  | .use key accessCheck =>
+    if key = callee then some (.use accessCheck) else none
   | .writesObject key object localAllocation =>
     if key = callee then some (.write object localAllocation) else none
   | .publication key =>
@@ -169,12 +169,12 @@ def writeFootprint (function : Function) (facts : List Judgment) (entry : Entry)
       if key == entry && !localAllocation && regions.contains object then some object else none
     | _ => none
 
-structure WriteEvidence where
+structure WriteStatus where
   grounded : Bool
   possible : Bool
   deriving Repr, DecidableEq
 
-def parameterWrites (function : Function) (facts : List Judgment) (entry : Entry) : WriteEvidence :=
+def parameterWrites (function : Function) (facts : List Judgment) (entry : Entry) : WriteStatus :=
   let overlap := writeFootprint function facts entry
   let byAuthority := (entryUses facts entry).any (fun (formal, kind) =>
     kind == .write && (function.parameters[formal]?).any (fun mode => (paramAccess mode).writes))
@@ -194,8 +194,8 @@ def checkInterface (program : Program) (facts : List Judgment) (entry : Entry) :
   require (writes.grounded == writes.possible) .uncertainWrite
   let retains := facts.contains (.publication entry) ||
     uses.any (fun (_, kind) => kind == .retain || kind == .publish)
-  require (function.contract.writes == writes.grounded && function.contract.retains == retains &&
-    agrees function.contract.contained (inferredContained facts entry)) .contract
+  require (function.signature.writes == writes.grounded && function.signature.retains == retains &&
+    agrees function.signature.contained (inferredContained facts entry)) .signature
 
 structure Diagnostic where
   function : Nat

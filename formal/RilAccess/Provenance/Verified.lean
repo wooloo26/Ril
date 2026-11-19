@@ -275,8 +275,8 @@ theorem covers_execution (checked : Checked program facts inputs)
     cases instruction <;> simp [Instruction.erase] at erases
     case ret stored =>
       subst stored
-      obtain ⟨value, contract, reported⟩ := checked.ret member hf hi
-      exact ⟨world, value, body, equivalent, reported, hf, contract⟩
+      obtain ⟨value, signature, reported⟩ := checked.ret member hf hi
+      exact ⟨world, value, body, equivalent, reported, hf, signature⟩
   | @abort function initial pc before _ code ih =>
     have ⟨world, equivalent, member⟩ := ih he hw seeded
     rw [← he] at code

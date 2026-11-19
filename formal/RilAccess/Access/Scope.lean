@@ -1,43 +1,43 @@
 import RilAccess.Access.Progress
 import RilAccess.Graph.Identity
 
-/-! Lifetimes are checked against the current ledger. Token.parents records
-origin ancestry and is deliberately not used as a lifetime dependency. -/
+/-! Scope dependencies are checked against the current ledger. Token.parents records
+origin ancestry and is deliberately not used as a scope dependency. -/
 namespace RilAccess.Integrated
 
 variable {world : World} {id scope : Nat} {ids dependencies : List Nat} {token : Token}
-  {loan : Loan} {path : Path} {resolved : Resolved}
+  {hold : Hold} {path : Path} {resolved : Resolved}
 
 def Pointer.regionKey (pointer : Pointer) : Identity.RegionKey := (pointer.object, pointer.fields)
 
 theorem region_ignores_source_labels (left right : Pointer) (a b : Source) :
     overlaps { left with source := a } { right with source := b } = overlaps left right := rfl
 
-def lifetimeClosure (world : World) (ids : List Nat) : List Nat :=
+def scopeClosure (world : World) (ids : List Nat) : List Nat :=
   solve (ids.map (fun id => Rule.mk [] id) ++ world.tokens.flatMap (fun token =>
     token.dependencies.map (fun dependency => Rule.mk [dependency] token.id)))
 
-theorem lifetimeClosure_root (hi : id ∈ ids) : id ∈ lifetimeClosure world ids := by
+theorem scopeClosure_root (hi : id ∈ ids) : id ∈ scopeClosure world ids := by
   apply solve_closed ⟨[], id⟩ (List.mem_append_left _ (List.mem_map.mpr ⟨id, hi, rfl⟩))
   simp
 
 def endBoundary (world : World) (ids : List Nat) : World :=
   { endTokens world ids with
-    loans := world.loans.map (fun loan =>
-      if loan.token ∈ lifetimeClosure world ids then { loan with active := false } else loan) }
+    holds := world.holds.map (fun hold =>
+      if hold.token ∈ scopeClosure world ids then { hold with active := false } else hold) }
 
-def lifetimeEnabled (world : World) (dependencies : List Nat) : Bool :=
+def scopeEnabled (world : World) (dependencies : List Nat) : Bool :=
   !dependencies.isEmpty && dependencies.all (fun id => (lookupToken world id).any Token.active)
 
 /-- A scope snapshot is supplied by the operation-call correspondence. Ordinary
 readonly observations and retained parameters are not mutable temporary roots. -/
 def temporaryWrites (world : World) (scope : Nat) : List Nat :=
-  world.loans.filterMap fun loan =>
-    match lookupToken world loan.token with
+  world.holds.filterMap fun hold =>
+    match lookupToken world hold.token with
     | none => none
     | some token =>
-      if loan.writes && token.temporary && !token.retained && decide (token.scope = scope)
-      then some loan.token else none
+      if hold.writes && token.temporary && !token.retained && decide (token.scope = scope)
+      then some hold.token else none
 
 theorem lookup_token (h : lookupToken world id = some token) :
     token ∈ world.tokens ∧ token.id = id :=
@@ -73,40 +73,40 @@ theorem unrelated_lookup (hi : id ∉ ids) :
   | some token => simp [(lookup_token hm).2, hi]
 
 theorem dependency_ends_access (hi : id ∈ ids) (hd : id ∈ dependencies) :
-    lifetimeEnabled (endBoundary world ids) dependencies = false := by
-  cases he : lifetimeEnabled (endBoundary world ids) dependencies with
+    scopeEnabled (endBoundary world ids) dependencies = false := by
+  cases he : scopeEnabled (endBoundary world ids) dependencies with
   | false => rfl
   | true =>
     have hall := he
-    simp only [lifetimeEnabled, Bool.and_eq_true] at hall
+    simp only [scopeEnabled, Bool.and_eq_true] at hall
     have active := List.all_eq_true.mp hall.2 id hd
     simp [ended_not_active hi] at active
 
-theorem independent_access_survives (hl : lifetimeEnabled world dependencies = true)
+theorem independent_access_survives (hl : scopeEnabled world dependencies = true)
     (hd : ∀ id ∈ dependencies, id ∉ ids) :
-    lifetimeEnabled (endBoundary world ids) dependencies = true := by
-  simp only [lifetimeEnabled, Bool.and_eq_true] at hl ⊢
+    scopeEnabled (endBoundary world ids) dependencies = true := by
+  simp only [scopeEnabled, Bool.and_eq_true] at hl ⊢
   refine ⟨hl.1, List.all_eq_true.mpr ?_⟩
   intro id hi
   rw [unrelated_lookup (hd id hi)]
   exact List.all_eq_true.mp hl.2 id hi
 
-theorem dependent_loan_inactive (hl : loan ∈ (endBoundary world ids).loans) (hi : loan.token ∈ lifetimeClosure world ids) :
-    loan.active = false := by
+theorem dependent_hold_inactive (hl : hold ∈ (endBoundary world ids).holds) (hi : hold.token ∈ scopeClosure world ids) :
+    hold.active = false := by
   obtain ⟨before, _, he⟩ := List.mem_map.mp hl
-  by_cases ended : before.token ∈ lifetimeClosure world ids
+  by_cases ended : before.token ∈ scopeClosure world ids
   · rw [if_pos ended] at he
     cases he; rfl
   · rw [if_neg ended] at he
     cases he; contradiction
 
-theorem ended_loan_inactive (hl : loan ∈ (endBoundary world ids).loans) (hi : loan.token ∈ ids) :
-    loan.active = false := dependent_loan_inactive hl (lifetimeClosure_root hi)
+theorem ended_hold_inactive (hl : hold ∈ (endBoundary world ids).holds) (hi : hold.token ∈ ids) :
+    hold.active = false := dependent_hold_inactive hl (scopeClosure_root hi)
 
 theorem selected_temporary (hi : id ∈ temporaryWrites world scope) :
     ∃ token, lookupToken world id = some token ∧ token.temporary = true ∧ token.retained = false ∧ token.scope = scope := by
-  obtain ⟨loan, _, he⟩ := List.mem_filterMap.mp hi
-  cases hm : lookupToken world loan.token with
+  obtain ⟨hold, _, he⟩ := List.mem_filterMap.mp hi
+  cases hm : lookupToken world hold.token with
   | none => simp [hm] at he
   | some token =>
     simp only [hm] at he
@@ -136,23 +136,23 @@ theorem other_scope_not_temporary (hr : lookupToken world id = some token) (hs :
 /-- Resolve creates a fresh snapshot of the current ledger, not an authority
 grant obtained by reusing an earlier successful observation. -/
 structure ResolutionFacts (world : World) (path : Path) (resolved : Resolved) : Prop where
-  permission : lookupPermission world path.register = some resolved.permission
+  binding : lookupBinding world path.register = some resolved.binding
   root : ∃ root, rawLookup world.raw path.register = some root ∧
     resolved.pointer = { root with fields := root.fields ++ path.fields }
-  tokens : resolved.tokens = resolved.permission.dependencies.filterMap (lookupToken world)
+  tokens : resolved.tokens = resolved.binding.dependencies.filterMap (lookupToken world)
 
 theorem resolution_facts (h : resolve world path = some resolved) : ResolutionFacts world path resolved := by
   unfold resolve at h
-  cases hp : lookupPermission world path.register with
+  cases hp : lookupBinding world path.register with
   | none => simp [hp] at h
-  | some permission =>
+  | some binding =>
     cases hr : rawLookup world.raw path.register with
     | none => simp [hp, hr] at h
     | some root =>
       cases hg : world.grants.find? (fun grant => decide (grant.object = root.object)) with
       | none => simp [hp, hr, hg] at h
       | some grant =>
-        cases ht : traverse grant.schema root.fields permission.mode.access path.fields with
+        cases ht : traverse grant.schema root.fields binding.mode.access path.fields with
         | none => simp [hp, hr, hg, ht] at h
         | some result =>
           obtain ⟨members, effective, parent, replaceable, object⟩ := result
@@ -161,20 +161,20 @@ theorem resolution_facts (h : resolve world path = some resolved) : ResolutionFa
           exact ⟨hp, ⟨root, hr, rfl⟩, rfl⟩
 
 theorem resolved_tokens (h : resolve world path = some resolved) :
-    lookupPermission world path.register = some resolved.permission ∧
-      resolved.tokens = resolved.permission.dependencies.filterMap (lookupToken world) :=
-  ⟨(resolution_facts h).permission, (resolution_facts h).tokens⟩
+    lookupBinding world path.register = some resolved.binding ∧
+      resolved.tokens = resolved.binding.dependencies.filterMap (lookupToken world) :=
+  ⟨(resolution_facts h).binding, (resolution_facts h).tokens⟩
 
 theorem resolved_live_dependencies (hw : WorldInvariant world) (hr : resolve world path = some resolved)
-    (hl : live resolved = true) : lifetimeEnabled world resolved.permission.dependencies = true := by
-  obtain ⟨permission, tokens⟩ := resolved_tokens hr
+    (hl : live resolved = true) : scopeEnabled world resolved.binding.dependencies = true := by
+  obtain ⟨binding, tokens⟩ := resolved_tokens hr
   simp only [live, Bool.and_eq_true] at hl
-  unfold lifetimeEnabled
+  unfold scopeEnabled
   simp only [Bool.and_eq_true]
   refine ⟨hl.1.1.1.2, ?_⟩
   apply List.all_eq_true.mpr
   intro id hi
-  have known := hw.dependenciesKnown _ (List.mem_of_find?_eq_some permission) id hi
+  have known := hw.dependenciesKnown _ (List.mem_of_find?_eq_some binding) id hi
   cases ht : lookupToken world id with
   | none => simp [ht] at known
   | some token =>

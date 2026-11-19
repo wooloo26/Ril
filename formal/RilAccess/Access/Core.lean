@@ -1,4 +1,4 @@
-import RilAccess.Contracts
+import RilAccess.Signatures
 import RilAccess.Solver
 
 /-! An integrated, finite, mode-erased access calculus. All authority and alias
@@ -75,7 +75,7 @@ inductive RawAtom where
   | skip
   deriving Repr, DecidableEq
 
-/-- Runtime interpretation has no authority, alias, or lifetime checks. -/
+/-- Runtime interpretation has no authority, alias, or scope checks. -/
 def rawStep (a : RawAtom) (s : RawState) : Option RawState :=
   match a with
   | .allocate r =>
@@ -105,11 +105,11 @@ inductive Atom where
   | write (path : Path)
   | replaceScalar (path : Path)
   | retain (path : Path)
-  | move (source destination : Nat)
+  | handoff (source destination : Nat)
   | pairWrite (left right : Path)
   | enterScope
   | leaveScope
-  | beginBorrow (source : Path) (destination : Nat)
+  | beginHold (source : Path) (destination : Nat)
   | parameter (source : Path) (destination : Nat) (mode : ParameterMode)
   | activateParameters
   | skip
@@ -122,9 +122,9 @@ def eraseAtom : Atom → RawAtom
   | .read path => .observe .read path
   | .write path | .replaceScalar path => .observe .write path
   | .retain path => .observe .retain path
-  | .move source destination => .copy ⟨source, []⟩ destination
+  | .handoff source destination => .copy ⟨source, []⟩ destination
   | .pairWrite left right => .pairWrite left right
-  | .beginBorrow source destination | .parameter source destination _ => .copy source destination
+  | .beginHold source destination | .parameter source destination _ => .copy source destination
   | .enterScope | .leaveScope | .activateParameters | .skip => .skip
 
 structure Grant where
@@ -147,7 +147,7 @@ structure Token where
   dependencies : List Nat
   deriving Repr, DecidableEq
 
-structure Permission where
+structure BindingAccess where
   register : Nat
   mode : MemberMode
   dependencies : List Nat
@@ -157,7 +157,7 @@ structure Permission where
   isScoped : Bool := false
   deriving Repr, DecidableEq
 
-structure Loan where
+structure Hold where
   token : Nat
   region : Pointer
   writes : Bool
@@ -166,7 +166,7 @@ structure Loan where
 
 structure Frame where
   parentScope : Nat
-  loan : Option Nat
+  hold : Option Nat
   deriving Repr, DecidableEq
 
 inductive UseKind where
@@ -183,15 +183,15 @@ structure Requirement where
   mode : MemberMode
   deriving Repr, DecidableEq
 
-/-- Authority ancestry is distinct from lifetime dependencies. An independently
-retained writer can outlive its parent while preserving its checked provenance. -/
+/-- Authority ancestry is distinct from scope dependencies. An independently
+retained writer can persist beyond its parent scope while preserving its checked provenance. -/
 def tokenAncestors (tokens : List Token) (id : Nat) : List Nat :=
   solve (Rule.mk [] id :: tokens.flatMap fun token =>
     token.parents.map fun parent => Rule.mk [token.id] parent)
 
 structure Resolved where
   pointer : Pointer
-  permission : Permission
+  binding : BindingAccess
   grant : Grant
   members : List Access
   effective : Access
@@ -203,40 +203,40 @@ structure Resolved where
   deriving Repr, DecidableEq
 
 def live (r : Resolved) : Bool :=
-  r.permission.alive && !r.permission.dependencies.isEmpty &&
-    decide (r.tokens.length = r.permission.dependencies.length) &&
+  r.binding.alive && !r.binding.dependencies.isEmpty &&
+    decide (r.tokens.length = r.binding.dependencies.length) &&
     r.tokens.all (fun token => token.active && contains token.region r.pointer) &&
     decide (r.grant.object = r.pointer.object ∧ r.grant.source = r.pointer.source)
 
-def noLoanConflict (r : Resolved) (loans : List Loan) (writing : Bool := true) : Bool :=
-  loans.all fun loan => !loan.active || !overlaps loan.region r.pointer ||
-    decide (loan.token ∈ r.authorityOrigins) ||
-    (!writing && (!loan.writes || r.permission.immutableOrigin || decide (r.effective = .immutable)))
+def noHoldConflict (r : Resolved) (holds : List Hold) (writing : Bool := true) : Bool :=
+  holds.all fun hold => !hold.active || !overlaps hold.region r.pointer ||
+    decide (hold.token ∈ r.authorityOrigins) ||
+    (!writing && (!hold.writes || r.binding.immutableOrigin || decide (r.effective = .immutable)))
 
 def noTemporary (r : Resolved) : Bool := r.tokens.all (fun token => !token.temporary)
 
 def deepImmutable (r : Resolved) : Bool :=
-  r.permission.immutableOrigin || decide (r.effective = .immutable)
+  r.binding.immutableOrigin || decide (r.effective = .immutable)
 
 inductive ObservationRule where
   | read | write | replaceScalar | retain
   deriving Repr, DecidableEq
 
-structure Evidence where
+structure AccessCheck where
   observation : Observation
   rule : ObservationRule
   resolved : Resolved
-  loans : List Loan
+  holds : List Hold
   peers : List Pointer
   deriving Repr, DecidableEq
 
-/-- A declarative, decidable policy on a concrete permission snapshot. -/
-def authorizedLocal (e : Evidence) : Bool :=
+/-- A declarative, decidable policy on a concrete binding-access snapshot. -/
+def authorizedLocal (e : AccessCheck) : Bool :=
   let r := e.resolved
   decide (e.observation.pointer = r.pointer) && live r &&
-    noLoanConflict r e.loans (decide (e.rule ≠ .read)) &&
+    noHoldConflict r e.holds (decide (e.rule ≠ .read)) &&
     e.peers.all (fun peer => !overlaps peer r.pointer) &&
-    decide (r.effective = pathAccess r.permission.mode.access r.members) &&
+    decide (r.effective = pathAccess r.binding.mode.access r.members) &&
     match e.rule with
     | .read => decide (e.observation.kind = .read)
     | .write => decide (e.observation.kind = .write) && r.object &&
@@ -244,12 +244,12 @@ def authorizedLocal (e : Evidence) : Bool :=
     | .replaceScalar => decide (e.observation.kind = .write) && !r.object &&
         r.replaceable && r.parentAccess.writes && r.grant.declared.writes
     | .retain => decide (e.observation.kind = .retain) && r.object &&
-        !r.grant.resource && !r.permission.isScoped &&
+        !r.grant.resource && !r.binding.isScoped &&
         r.effective.writes && r.grant.declared.writes && noTemporary r
 
 /-- Recheck the complete physical path against its original allocation schema.
 Alias-local metadata alone cannot certify a writable originally-immutable member. -/
-def originalPolicy (e : Evidence) : Bool :=
+def originalPolicy (e : AccessCheck) : Bool :=
   match traverse e.resolved.grant.schema [] e.resolved.grant.declared e.observation.pointer.fields with
   | none => false
   | some (_, effective, parent, replaceable, object) =>
@@ -258,62 +258,62 @@ def originalPolicy (e : Evidence) : Bool :=
     | .write | .retain => object && effective.writes
     | .replaceScalar => !object && replaceable && parent.writes
 
-def authorized (e : Evidence) : Bool := authorizedLocal e && originalPolicy e
+def authorized (e : AccessCheck) : Bool := authorizedLocal e && originalPolicy e
 
 structure World where
   raw : RawState := {}
-  permissions : List Permission := []
+  bindings : List BindingAccess := []
   grants : List Grant := []
   tokens : List Token := []
   nextToken : Nat := 0
   scope : Nat := 0
   frames : List Frame := []
-  loans : List Loan := []
+  holds : List Hold := []
   requirements : List Requirement := []
   uses : List Use := []
-  evidence : List Evidence := []
+  accessChecks : List AccessCheck := []
   deriving Repr, DecidableEq
 
-def lookupPermission (w : World) (r : Nat) : Option Permission :=
-  w.permissions.find? fun permission => decide (permission.register = r)
+def lookupBinding (w : World) (r : Nat) : Option BindingAccess :=
+  w.bindings.find? fun binding => decide (binding.register = r)
 
-def putPermission (w : World) (p : Permission) : World :=
-  { w with permissions := p :: w.permissions.filter (fun old => decide (old.register ≠ p.register)) }
+def putBinding (w : World) (p : BindingAccess) : World :=
+  { w with bindings := p :: w.bindings.filter (fun old => decide (old.register ≠ p.register)) }
 
 def lookupToken (w : World) (id : Nat) : Option Token :=
   w.tokens.find? fun token => decide (token.id = id)
 
 /-- Unknown dependencies do not establish expiry. An explicitly ended dependency
 does establish that this derived path can no longer act. -/
-def bindingEnded (w : World) (permission : Permission) : Bool :=
-  !permission.alive || permission.dependencies.any fun id =>
+def bindingEnded (w : World) (binding : BindingAccess) : Bool :=
+  !binding.alive || binding.dependencies.any fun id =>
     match lookupToken w id with
     | some token => !token.active
     | none => false
 
 def resolve (w : World) (path : Path) : Option Resolved := do
-  let permission ← lookupPermission w path.register
+  let binding ← lookupBinding w path.register
   let root ← rawLookup w.raw path.register
   let grant ← w.grants.find? fun grant => decide (grant.object = root.object)
   let (members, effective, parent, replaceable, object) ←
-    traverse grant.schema root.fields permission.mode.access path.fields
+    traverse grant.schema root.fields binding.mode.access path.fields
   let pointer := { root with fields := root.fields ++ path.fields }
-  let tokens := permission.dependencies.filterMap (lookupToken w)
-  let ancestors := permission.dependencies.flatMap (tokenAncestors w.tokens)
-  pure ⟨pointer, permission, grant, members, effective, parent, replaceable, object, tokens, ancestors⟩
+  let tokens := binding.dependencies.filterMap (lookupToken w)
+  let ancestors := binding.dependencies.flatMap (tokenAncestors w.tokens)
+  pure ⟨pointer, binding, grant, members, effective, parent, replaceable, object, tokens, ancestors⟩
 
 def snapshot (w : World) (path : Path) (kind : EventKind) (rule : ObservationRule)
-    (peers : List Pointer := []) : Option Evidence := do
+    (peers : List Pointer := []) : Option AccessCheck := do
   let r ← resolve w path
-  pure ⟨⟨kind, r.pointer⟩, rule, r, w.loans, peers⟩
+  pure ⟨⟨kind, r.pointer⟩, rule, r, w.holds, peers⟩
 
 def certified (w : World) : Bool :=
-  decide (w.raw.observations = w.evidence.map Evidence.observation) && w.evidence.all authorized &&
-    w.evidence.all (fun e => decide (e.resolved.grant ∈ w.grants))
+  decide (w.raw.observations = w.accessChecks.map AccessCheck.observation) && w.accessChecks.all authorized &&
+    w.accessChecks.all (fun e => decide (e.resolved.grant ∈ w.grants))
 
 def initialWorld : World := {}
 
-def unused (w : World) (r : Nat) : Bool := (lookupPermission w r).isNone
+def unused (w : World) (r : Nat) : Bool := (lookupBinding w r).isNone
 
 def markUse (w : World) (r : Nat) (kind : UseKind) : World :=
   { w with uses := ⟨r, kind⟩ :: w.uses }
@@ -338,28 +338,28 @@ def addToken (w : World) (region : Pointer) (temporary qualified retained : Bool
 
 def install (w : World) (register : Nat) (mode : MemberMode) (dependencies : List Nat)
     (scope : Nat) (immutableOrigin : Bool) (isScoped : Bool := false) : World :=
-  addRequirement (putPermission w ⟨register, mode, dependencies, true, scope, immutableOrigin, isScoped⟩)
+  addRequirement (putBinding w ⟨register, mode, dependencies, true, scope, immutableOrigin, isScoped⟩)
     register mode
 
-def eligibleMove (w : World) (r : Resolved) : Bool :=
-  live r && !r.permission.isScoped && noLoanConflict r w.loans && r.object && r.effective.writes &&
-    r.grant.declared.writes && !r.permission.mode.replaceable &&
-    decide (r.permission.dependencies.length = 1) &&
+def eligibleHandoff (w : World) (r : Resolved) : Bool :=
+  live r && !r.binding.isScoped && noHoldConflict r w.holds && r.object && r.effective.writes &&
+    r.grant.declared.writes && !r.binding.mode.replaceable &&
+    decide (r.binding.dependencies.length = 1) &&
     r.tokens.all (fun token => token.qualified && !token.temporary && !token.retained &&
       decide (token.region = r.pointer)) &&
-    w.permissions.all (fun permission =>
-      bindingEnded w permission ||
-      match rawLookup w.raw permission.register with
+    w.bindings.all (fun binding =>
+      bindingEnded w binding ||
+      match rawLookup w.raw binding.register with
       | none => false
       | some pointer => !overlaps pointer r.pointer ||
-          permission.dependencies.all (fun id => decide (id ∈ r.permission.dependencies))) &&
+          binding.dependencies.all (fun id => decide (id ∈ r.binding.dependencies))) &&
     w.tokens.all (fun token => !token.retained || !overlaps token.region r.pointer)
 
 def receiving (w : World) (r : Resolved) (mode : MemberMode) (scope : Nat) : Bool :=
-  live r && !r.permission.isScoped && noLoanConflict r w.loans mode.access.writes && r.object &&
+  live r && !r.binding.isScoped && noHoldConflict r w.holds mode.access.writes && r.object &&
   match mode.access with
   | .immutable => !r.grant.resource && deepImmutable r
-  | .ref => !r.permission.mode.replaceable &&
+  | .ref => !r.binding.mode.replaceable &&
       r.tokens.all (fun token => decide (token.scope ≤ scope) || token.retained)
   | .mut => false
   | .shared => !r.grant.resource && r.effective.writes && r.grant.declared.writes && noTemporary r
@@ -373,13 +373,13 @@ def checkSchema (schema : Schema) : Bool :=
 def closeScope (w : World) (frame : Frame) : World :=
   { w with
     scope := frame.parentScope, frames := w.frames.drop 1,
-    permissions := w.permissions.map fun p =>
+    bindings := w.bindings.map fun p =>
       if p.scope > frame.parentScope then { p with alive := false } else p,
     tokens := w.tokens.map fun token =>
       if token.scope > frame.parentScope && !token.retained then
         { token with active := false, qualified := false } else token,
-    loans := w.loans.filter (fun loan =>
-      match lookupToken w loan.token with
+    holds := w.holds.filter (fun hold =>
+      match lookupToken w hold.token with
       | some token => decide (token.scope ≤ frame.parentScope)
       | none => true) }
 
@@ -422,36 +422,36 @@ def transfer (w : World) (atom : Atom) : Option World := do
     if unused w destination && receiving w r mode w.scope then
       if mode.access = .shared then
         let next := addToken (invalidateQualification w r.pointer) r.pointer false false false w.scope
-          r.permission.dependencies
+          r.binding.dependencies
         pure (install (markUse (markUse { next with raw } source.register .writable)
           destination .sharedReception) destination mode
           [w.nextToken] w.scope false)
       else
-        pure (install { w with raw } destination mode r.permission.dependencies w.scope
+        pure (install { w with raw } destination mode r.binding.dependencies w.scope
           (deepImmutable r))
     else none
   | .assign source destination =>
-    let target ← lookupPermission w destination
+    let target ← lookupBinding w destination
     let targetPath ← resolve w ⟨destination, []⟩
     let r ← resolve w source
-    if target.alive && !target.isScoped && target.mode.replaceable && live targetPath && noLoanConflict targetPath w.loans then
+    if target.alive && !target.isScoped && target.mode.replaceable && live targetPath && noHoldConflict targetPath w.holds then
       if target.mode.access = .mut then
-        if !r.grant.resource && eligibleMove w r then
-          let next := addToken (endTokens w r.permission.dependencies) r.pointer false false false target.scope
-            r.permission.dependencies
+        if !r.grant.resource && eligibleHandoff w r then
+          let next := addToken (endTokens w r.binding.dependencies) r.pointer false false false target.scope
+            r.binding.dependencies
           pure (install (markUse (markUse { next with raw } destination .replacement)
             source.register .writable) destination target.mode [w.nextToken] target.scope false)
         else none
       else if receiving w r target.mode target.scope then
         if target.mode.access = .shared then
           let next := addToken (invalidateQualification w r.pointer) r.pointer false false false target.scope
-            r.permission.dependencies
+            r.binding.dependencies
           pure (install (markUse (markUse (markUse { next with raw } destination .replacement)
             source.register .writable) destination .sharedReception)
             destination target.mode [w.nextToken] target.scope false)
         else
           pure (install (markUse { w with raw } destination .replacement) destination target.mode
-            r.permission.dependencies target.scope (deepImmutable r))
+            r.binding.dependencies target.scope (deepImmutable r))
       else none
     else none
   | .read path | .write path | .replaceScalar path | .retain path =>
@@ -461,22 +461,22 @@ def transfer (w : World) (atom : Atom) : Option World := do
       | .retain _ => .retain
       | .replaceScalar _ => .replaceScalar
       | _ => .write
-    let evidence ← snapshot w path kind rule
-    if authorized evidence then
-      let next := { w with raw, evidence := evidence :: w.evidence }
+    let accessCheck ← snapshot w path kind rule
+    if authorized accessCheck then
+      let next := { w with raw, accessChecks := accessCheck :: w.accessChecks }
       match atom with
       | .read _ => pure next
       | .retain _ =>
-        let next := addToken (invalidateQualification next evidence.resolved.pointer)
-          evidence.resolved.pointer false false true 0 evidence.resolved.permission.dependencies
+        let next := addToken (invalidateQualification next accessCheck.resolved.pointer)
+          accessCheck.resolved.pointer false false true 0 accessCheck.resolved.binding.dependencies
         pure (markUse (markUse next path.register .writable) path.register .retention)
       | _ => pure (markUse next path.register .writable)
     else none
-  | .move source destination =>
+  | .handoff source destination =>
     let r ← resolve w ⟨source, []⟩
-    if unused w destination && eligibleMove w r then
-      let next := addToken (endTokens w r.permission.dependencies) r.pointer false true false w.scope
-        r.permission.dependencies
+    if unused w destination && eligibleHandoff w r then
+      let next := addToken (endTokens w r.binding.dependencies) r.pointer false true false w.scope
+        r.binding.dependencies
       pure (install (markUse { next with raw } source .writable) destination ⟨false, .mut⟩
         [w.nextToken] w.scope false)
     else none
@@ -486,7 +486,7 @@ def transfer (w : World) (atom : Atom) : Option World := do
     let le ← snapshot w left .write .write [r.pointer]
     let re ← snapshot w right .write .write [l.pointer]
     if authorized le && authorized re then
-      pure (markUse (markUse { w with raw, evidence := re :: le :: w.evidence }
+      pure (markUse (markUse { w with raw, accessChecks := re :: le :: w.accessChecks }
         left.register .writable) right.register .writable)
     else none
   | .enterScope =>
@@ -494,66 +494,66 @@ def transfer (w : World) (atom : Atom) : Option World := do
   | .leaveScope =>
     let frame ← w.frames.head?
     pure { closeScope w frame with raw }
-  | .beginBorrow source destination =>
+  | .beginHold source destination =>
     let r ← resolve w source
-    if unused w destination && live r && noLoanConflict r w.loans && r.object &&
+    if unused w destination && live r && noHoldConflict r w.holds && r.object &&
         r.effective.writes && r.grant.declared.writes then
       let scope := w.scope + 1
-      let next := addToken w r.pointer true false false scope r.permission.dependencies
+      let next := addToken w r.pointer true false false scope r.binding.dependencies
       let next := { next with
         raw, scope, frames := ⟨w.scope, some w.nextToken⟩ :: w.frames,
-        loans := ⟨w.nextToken, r.pointer, true, true⟩ :: w.loans }
+        holds := ⟨w.nextToken, r.pointer, true, true⟩ :: w.holds }
       pure (install (markUse next source.register .writable) destination ⟨false, .mut⟩
-        (w.nextToken :: r.permission.dependencies) scope false)
+        (w.nextToken :: r.binding.dependencies) scope false)
     else none
   | .parameter source destination mode =>
     let r ← resolve w source
     let writing := match mode with | .immutable | .observe => false | _ => true
-    if unused w destination && live r && noLoanConflict r w.loans writing && r.object then
+    if unused w destination && live r && noHoldConflict r w.holds writing && r.object then
       match mode with
       | .immutable =>
-        if !r.grant.resource && !r.permission.isScoped && deepImmutable r then
-          let next := addToken w r.pointer false false false w.scope r.permission.dependencies
-          pure (putPermission { next with raw }
+        if !r.grant.resource && !r.binding.isScoped && deepImmutable r then
+          let next := addToken w r.pointer false false false w.scope r.binding.dependencies
+          pure (putBinding { next with raw }
             ⟨destination, ⟨false, .immutable⟩, [w.nextToken], true, w.scope, true, false⟩)
         else none
       | .observe =>
-        let next := addToken w r.pointer true false false w.scope r.permission.dependencies
-        pure (putPermission { next with
+        let next := addToken w r.pointer true false false w.scope r.binding.dependencies
+        pure (putBinding { next with
           raw,
-          loans := ⟨w.nextToken, r.pointer, false, false⟩ :: w.loans }
-          ⟨destination, ⟨false, .ref⟩, w.nextToken :: r.permission.dependencies,
+          holds := ⟨w.nextToken, r.pointer, false, false⟩ :: w.holds }
+          ⟨destination, ⟨false, .ref⟩, w.nextToken :: r.binding.dependencies,
             true, w.scope, deepImmutable r, false⟩)
       | .mutable =>
         if r.effective.writes && r.grant.declared.writes then
-          let next := addToken w r.pointer true false false w.scope r.permission.dependencies
-          pure (putPermission (markUse { next with
+          let next := addToken w r.pointer true false false w.scope r.binding.dependencies
+          pure (putBinding (markUse { next with
             raw,
-            loans := ⟨w.nextToken, r.pointer, true, false⟩ :: w.loans } source.register .writable)
-            ⟨destination, ⟨false, .mut⟩, w.nextToken :: r.permission.dependencies, true, w.scope, false, false⟩)
+            holds := ⟨w.nextToken, r.pointer, true, false⟩ :: w.holds } source.register .writable)
+            ⟨destination, ⟨false, .mut⟩, w.nextToken :: r.binding.dependencies, true, w.scope, false, false⟩)
         else none
       | .retained =>
-        if !r.grant.resource && !r.permission.isScoped && r.effective.writes && r.grant.declared.writes && noTemporary r then
+        if !r.grant.resource && !r.binding.isScoped && r.effective.writes && r.grant.declared.writes && noTemporary r then
           let next := addToken (invalidateQualification w r.pointer) r.pointer false false false w.scope
-            r.permission.dependencies
-          pure (putPermission (markUse { next with
+            r.binding.dependencies
+          pure (putBinding (markUse { next with
             raw,
-            loans := ⟨w.nextToken, r.pointer, true, false⟩ :: w.loans } source.register .writable)
+            holds := ⟨w.nextToken, r.pointer, true, false⟩ :: w.holds } source.register .writable)
             ⟨destination, ⟨false, .shared⟩, [w.nextToken], true, w.scope, false, false⟩)
         else none
       | .construction =>
-        if eligibleMove w r then
-          let next := addToken (endTokens w r.permission.dependencies) r.pointer false true false w.scope
-            r.permission.dependencies
-          pure (putPermission (markUse { next with raw } source.register .writable)
+        if eligibleHandoff w r then
+          let next := addToken (endTokens w r.binding.dependencies) r.pointer false true false w.scope
+            r.binding.dependencies
+          pure (putBinding (markUse { next with raw } source.register .writable)
             ⟨destination, ⟨false, .mut⟩, [w.nextToken], true, w.scope, false, false⟩)
         else none
     else none
   | .activateParameters =>
-    pure { w with raw, loans := w.loans.map fun loan =>
-      match lookupToken w loan.token with
-      | some token => if token.scope = w.scope then { loan with active := true } else loan
-      | none => loan }
+    pure { w with raw, holds := w.holds.map fun hold =>
+      match lookupToken w hold.token with
+      | some token => if token.scope = w.scope then { hold with active := true } else hold
+      | none => hold }
   | .skip => pure { w with raw }
 
 inductive Error where
@@ -579,9 +579,9 @@ def ledgerValid (w : World) : Bool :=
   w.tokens.all (fun token =>
     (decide (token.id < w.nextToken) && !(token.temporary && token.retained)) &&
     token.dependencies.all (fun id => decide (id < token.id) && (lookupToken w id).isSome)) &&
-  w.permissions.all (fun permission => permission.dependencies.all (fun id =>
-    (lookupToken w id).any (fun token => token.dependencies.all (fun parent => decide (parent ∈ permission.dependencies))))) &&
-  w.loans.all (fun loan => (lookupToken w loan.token).isSome)
+  w.bindings.all (fun binding => binding.dependencies.all (fun id =>
+    (lookupToken w id).any (fun token => token.dependencies.all (fun parent => decide (parent ∈ binding.dependencies))))) &&
+  w.holds.all (fun hold => (lookupToken w hold.token).isSome)
 
 def checkAtom (atom : Atom) (w : World) : Except Error World :=
   match transfer w atom with
@@ -622,7 +622,7 @@ def declarations : Code → List (Source × Access × Schema)
 def binders : Code → List Nat
   | .atom (.allocate destination _ _) | .atom (.allocateResource destination _) |
       .atom (.allocateScoped destination _ _ _) | .atom (.bind _ destination _) |
-      .atom (.move _ destination) | .atom (.beginBorrow _ destination) |
+      .atom (.handoff _ destination) | .atom (.beginHold _ destination) |
       .atom (.parameter _ destination _) => [destination]
   | .atom _ => []
   | .sequence first second | .choice first second => binders first ++ binders second
@@ -656,7 +656,7 @@ inductive Syntax where
   | sequence (first second : Syntax)
   | branch (left right : Syntax)
   | block (body : Syntax)
-  | borrow (source : Path) (destination : Nat) (body : Syntax)
+  | scopedStep (source : Path) (destination : Nat) (body : Syntax)
   deriving Repr, DecidableEq
 
 def lower : Syntax → Code
@@ -664,8 +664,8 @@ def lower : Syntax → Code
   | .sequence first second => .sequence (lower first) (lower second)
   | .branch left right => .choice (lower left) (lower right)
   | .block body => .sequence (.atom .enterScope) (.sequence (lower body) (.atom .leaveScope))
-  | .borrow source destination body =>
-    .sequence (.atom (.beginBorrow source destination)) (.sequence (lower body) (.atom .leaveScope))
+  | .scopedStep source destination body =>
+    .sequence (.atom (.beginHold source destination)) (.sequence (lower body) (.atom .leaveScope))
 
 /-- Source execution independently erases modes and lexical authority bookkeeping. -/
 def sourceExecute : Syntax → RawState → List RawState
@@ -673,15 +673,15 @@ def sourceExecute : Syntax → RawState → List RawState
   | .sequence first second, state => (sourceExecute first state).flatMap (sourceExecute second)
   | .branch left right, state => sourceExecute left state ++ sourceExecute right state
   | .block body, state => sourceExecute body state
-  | .borrow source destination body, state =>
+  | .scopedStep source destination body, state =>
     (rawStep (.copy source destination) state).toList.flatMap (sourceExecute body)
 
 def surfaceValid : Syntax → Bool
-  | .command .enterScope | .command .leaveScope | .command (.beginBorrow _ _) |
+  | .command .enterScope | .command .leaveScope | .command (.beginHold _ _) |
       .command (.parameter _ _ _) | .command .activateParameters => false
   | .command _ => true
   | .sequence first second | .branch first second => surfaceValid first && surfaceValid second
-  | .block body | .borrow _ _ body => surfaceValid body
+  | .block body | .scopedStep _ _ body => surfaceValid body
 
 def allUses (worlds : List World) : List Use := worlds.flatMap World.uses
 

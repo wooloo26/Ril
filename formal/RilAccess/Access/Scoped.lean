@@ -1,10 +1,10 @@
 import RilAccess.Access.Handoff
 
 /-! Scoped `use` resource bindings (`use` / `use mut`) and foreign
-`.d.ril` `opaque type` affine handles:
+`.d.ril` `opaque type` exclusive, non-duplicable host handles:
 - `.d.ril` `opaque type` handles forbid plain immutable snapshot freezing, `^mut`
   sharing, `var mut` overwrite, and `.retain`, while permitting `new` handoff and
-  scoped `mut`/`ref` borrows without imposing mandatory `E0721` consumption.
+  scoped `mut`/`ref` access without imposing mandatory `E0721` handoff.
 - `use` bindings forbid slot replacement (`E0532`), local rebinding, `new`
   handoff (blocking early manual `close(new r)` double-close), and `.retain` escape
   (`E0604`), and are deterministically deactivated at lexical `.leaveScope`. -/
@@ -19,42 +19,42 @@ theorem resource_rejects_plain_and_shared_receiving
     receiving world resolved mode scope = false := by
   rcases hmode with hm | hm <;> simp [receiving, hm, hres]
 
-theorem resource_cannot_retain {evidence : Evidence}
-    (h : authorized evidence = true) (hr : evidence.rule = .retain) :
-    evidence.resolved.grant.resource = false := by
+theorem resource_cannot_retain {accessCheck : AccessCheck}
+    (h : authorized accessCheck = true) (hr : accessCheck.rule = .retain) :
+    accessCheck.resolved.grant.resource = false := by
   have hloc := authorization_local h
   simp_all [authorizedLocal]
 
 theorem resource_handoff_transfers_exclusively
-    (h : checkAtom (.move source destination) world = .ok next)
+    (h : checkAtom (.handoff source destination) world = .ok next)
     (hr : resolve world ⟨source, []⟩ = some resolved) :
-    (∀ dep ∈ resolved.permission.dependencies, (lookupToken next dep).any Token.active = false) ∧
+    (∀ dep ∈ resolved.binding.dependencies, (lookupToken next dep).any Token.active = false) ∧
       ∃ fresh, lookupToken next world.nextToken = some fresh ∧
         fresh.qualified = true ∧ fresh.active = true ∧ fresh.region = resolved.pointer := by
   refine ⟨fun dep hdep => handoff_revokes_dependency h hr hdep, ?_⟩
-  obtain ⟨actual, resolvedAt, _, table, _⟩ := move_facts h
+  obtain ⟨actual, resolvedAt, _, table, _⟩ := handoff_facts h
   have eq : actual = resolved := Option.some.inj (resolvedAt.symm.trans hr)
   subst actual
   refine ⟨⟨world.nextToken, resolved.pointer, true, false, true, false, world.scope,
-    resolved.permission.dependencies, []⟩, ?_, rfl, rfl, rfl⟩
+    resolved.binding.dependencies, []⟩, ?_, rfl, rfl, rfl⟩
   unfold lookupToken
   rw [table, List.find?_cons]
   simp
 
 theorem scoped_rejects_escape {mode : MemberMode} {scope : Nat}
-    (hsc : resolved.permission.isScoped = true) :
-    eligibleMove world resolved = false ∧
+    (hsc : resolved.binding.isScoped = true) :
+    eligibleHandoff world resolved = false ∧
       receiving world resolved mode scope = false := by
-  exact ⟨by simp [eligibleMove, hsc], by simp [receiving, hsc]⟩
+  exact ⟨by simp [eligibleHandoff, hsc], by simp [receiving, hsc]⟩
 
-theorem scoped_cannot_retain {evidence : Evidence}
-    (h : authorized evidence = true) (hr : evidence.rule = .retain) :
-    evidence.resolved.permission.isScoped = false := by
+theorem scoped_cannot_retain {accessCheck : AccessCheck}
+    (h : authorized accessCheck = true) (hr : accessCheck.rule = .retain) :
+    accessCheck.resolved.binding.isScoped = false := by
   have hloc := authorization_local h
   simp_all [authorizedLocal]
 
-theorem scoped_rejects_reassignment {target : Permission}
-    (hlook : lookupPermission world destination = some target)
+theorem scoped_rejects_reassignment {target : BindingAccess}
+    (hlook : lookupBinding world destination = some target)
     (hsc : target.isScoped = true) :
     transfer world (.assign ⟨source, []⟩ destination) = none := by
   unfold transfer
@@ -69,10 +69,10 @@ theorem scoped_rejects_reassignment {target : Permission}
       | none => rfl
       | some rs => simp [hsc]
 
-theorem leaveScope_deactivates_inner_permission
+theorem leaveScope_deactivates_inner_binding
     (h : checkAtom .leaveScope world = .ok next)
     {frame : Frame} (hframe : world.frames.head? = some frame)
-    {perm : Permission} (hp : perm ∈ next.permissions)
+    {perm : BindingAccess} (hp : perm ∈ next.bindings)
     (hinner : frame.parentScope < perm.scope) :
     perm.alive = false := by
   have executed := (checked_atom_facts h).executed
@@ -87,7 +87,7 @@ theorem leaveScope_deactivates_inner_permission
     cases hmap
     omega
 
-structure ScopedCleanupContract where
+structure ScopedCleanupSignature where
   mode : ParameterMode
   returnsUnit : Bool := true
   hasFiberEffect : Bool := false
@@ -97,18 +97,18 @@ structure ScopedCleanupContract where
   deriving Repr, DecidableEq
 
 /-- Signature of the resolved, single-parameter cleanup function (`E0541`, `E0616`). -/
-def validScopedCleanupContract (contract : ScopedCleanupContract) : Bool :=
-  let mode := contract.mode
+def validScopedCleanupSignature (signature : ScopedCleanupSignature) : Bool :=
+  let mode := signature.mode
   (decide (mode = .observe) || decide (mode = .mutable) || decide (mode = .construction)) &&
-    contract.returnsUnit && !contract.hasFiberEffect &&
-    decide (contract.writes = decide (mode = .mutable)) && !contract.retains && !contract.captures
+    signature.returnsUnit && !signature.hasFiberEffect &&
+    decide (signature.writes = decide (mode = .mutable)) && !signature.retains && !signature.captures
 
-theorem scoped_cleanup_contract_iff (contract : ScopedCleanupContract) :
-    validScopedCleanupContract contract = true ↔
-      (contract.mode = .observe ∨ contract.mode = .mutable ∨ contract.mode = .construction) ∧
-      contract.returnsUnit = true ∧ contract.hasFiberEffect = false ∧
-      contract.writes = decide (contract.mode = .mutable) ∧
-      contract.retains = false ∧ contract.captures = false := by
-  simp [validScopedCleanupContract, Bool.and_eq_true, Bool.or_eq_true, and_assoc, or_assoc]
+theorem scoped_cleanup_signature_iff (signature : ScopedCleanupSignature) :
+    validScopedCleanupSignature signature = true ↔
+      (signature.mode = .observe ∨ signature.mode = .mutable ∨ signature.mode = .construction) ∧
+      signature.returnsUnit = true ∧ signature.hasFiberEffect = false ∧
+      signature.writes = decide (signature.mode = .mutable) ∧
+      signature.retains = false ∧ signature.captures = false := by
+  simp [validScopedCleanupSignature, Bool.and_eq_true, Bool.or_eq_true, and_assoc, or_assoc]
 
 end RilAccess.Integrated

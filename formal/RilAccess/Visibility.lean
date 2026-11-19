@@ -3,7 +3,7 @@ import RilAccess.Model
 /-! Package visibility lattice (`private` < `pub(pkg)` < `pub`), contextual package
 import anchors (`pkg`, `ril`, external dependencies), module representation opacity
 (`transparent` vs `opaque`), top-level module purity (`E0906`), exported signature
-and `use` cleanup contract leak detection (`E0910`), and extensible sum (`..`)
+and `use` cleanup declaration leak detection (`E0910`), and extensible sum (`..`)
 exhaustiveness across package and `.d.ril` boundaries (`E0303`, `E0304`, `E0308`). -/
 namespace RilAccess.VisibilityModel
 

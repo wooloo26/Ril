@@ -84,18 +84,18 @@ structure AccessGuarantees : Prop where
     Calls.check program = .ok analysis →
     Integrated.Prefix (Integrated.erase (Calls.lower program)) Integrated.initialWorld.raw middle →
     event ∈ middle.observations → event.pointer.source ∈ analysis.origins ∧
-      ∃ evidence, evidence.observation = event ∧ Integrated.authorized evidence = true
+      ∃ accessCheck, accessCheck.observation = event ∧ Integrated.authorized accessCheck = true
   progress : ∀ (program : Calls.Syntax) analysis,
     Calls.check program = .ok analysis → ∃ result, result ∈ Calls.execute program Integrated.initialWorld.raw
   handoff : ∀ (world next : Integrated.World) source destination,
-    Integrated.checkAtom (.move source destination) world = .ok next →
+    Integrated.checkAtom (.handoff source destination) world = .ok next →
     ∃ resolved, Integrated.resolve world ⟨source, []⟩ = some resolved ∧
       Integrated.rawLookup next.raw destination = some resolved.pointer
   derivedExpiry : ∀ (world next : Integrated.World) source destination resolved path derived id,
-    Integrated.checkAtom (.move source destination) world = .ok next →
+    Integrated.checkAtom (.handoff source destination) world = .ok next →
     Integrated.resolve world ⟨source, []⟩ = some resolved →
     Integrated.resolve next path = some derived →
-    id ∈ derived.permission.dependencies → id ∈ resolved.permission.dependencies →
+    id ∈ derived.binding.dependencies → id ∈ resolved.binding.dependencies →
     Integrated.live derived = false
   reachableUses : ∀ (program : Calls.Syntax) analysis requirement,
     Calls.check program = .ok analysis →
@@ -133,14 +133,14 @@ structure EffectGuarantees : Prop where
     CoreBoundary.completeFnOp authority opScope = some next →
     Integrated.resolve next path = some resolved →
     id ∈ Integrated.temporaryWrites authority authority.scope →
-    id ∈ resolved.permission.dependencies →
+    id ∈ resolved.binding.dependencies →
       Integrated.live resolved = false
-  fnEndsDependentLoans : ∀ (authority next : Integrated.World) opScope loan,
+  fnEndsDependentHolds : ∀ (authority next : Integrated.World) opScope hold,
     CoreBoundary.completeFnOp authority opScope = some next →
-    loan ∈ next.loans →
-    loan.token ∈ Integrated.lifetimeClosure authority
+    hold ∈ next.holds →
+    hold.token ∈ Integrated.scopeClosure authority
       (Integrated.temporaryWrites authority authority.scope) →
-      loan.active = false
+      hold.active = false
   fnPreservesNonTemporary : ∀ (authority next : Integrated.World) opScope id token,
     CoreBoundary.completeFnOp authority opScope = some next →
     Integrated.lookupToken authority id = some token →
@@ -180,38 +180,38 @@ structure ScopedGuarantees : Prop where
   resourceNoPlainOrSharedCopy : ∀ (world : Integrated.World) resolved mode scope,
     resolved.grant.resource = true → (mode.access = .immutable ∨ mode.access = .shared) →
       Integrated.receiving world resolved mode scope = false
-  resourceNoRetain : ∀ (evidence : Integrated.Evidence),
-    Integrated.authorized evidence = true → evidence.rule = .retain →
-      evidence.resolved.grant.resource = false
+  resourceNoRetain : ∀ (accessCheck : Integrated.AccessCheck),
+    Integrated.authorized accessCheck = true → accessCheck.rule = .retain →
+      accessCheck.resolved.grant.resource = false
   resourceHandoffExclusive : ∀ (world next : Integrated.World) source destination resolved,
-    Integrated.checkAtom (.move source destination) world = .ok next →
+    Integrated.checkAtom (.handoff source destination) world = .ok next →
     Integrated.resolve world ⟨source, []⟩ = some resolved →
-      (∀ dep ∈ resolved.permission.dependencies, (Integrated.lookupToken next dep).any Integrated.Token.active = false) ∧
+      (∀ dep ∈ resolved.binding.dependencies, (Integrated.lookupToken next dep).any Integrated.Token.active = false) ∧
         ∃ fresh, Integrated.lookupToken next world.nextToken = some fresh ∧
           fresh.qualified = true ∧ fresh.active = true ∧ fresh.region = resolved.pointer
   scopedRejectsEscape : ∀ (world : Integrated.World) resolved mode scope,
-    resolved.permission.isScoped = true →
-      Integrated.eligibleMove world resolved = false ∧
+    resolved.binding.isScoped = true →
+      Integrated.eligibleHandoff world resolved = false ∧
         Integrated.receiving world resolved mode scope = false
-  scopedNoRetain : ∀ (evidence : Integrated.Evidence),
-    Integrated.authorized evidence = true → evidence.rule = .retain →
-      evidence.resolved.permission.isScoped = false
+  scopedNoRetain : ∀ (accessCheck : Integrated.AccessCheck),
+    Integrated.authorized accessCheck = true → accessCheck.rule = .retain →
+      accessCheck.resolved.binding.isScoped = false
   scopedRejectsReassignment : ∀ (world : Integrated.World) source destination target,
-    Integrated.lookupPermission world destination = some target →
+    Integrated.lookupBinding world destination = some target →
     target.isScoped = true →
       Integrated.transfer world (.assign ⟨source, []⟩ destination) = none
   scopeExitDeactivatesInner : ∀ (world next : Integrated.World) frame perm,
     Integrated.checkAtom .leaveScope world = .ok next →
     world.frames.head? = some frame →
-    perm ∈ next.permissions →
+    perm ∈ next.bindings →
     frame.parentScope < perm.scope →
       perm.alive = false
-  cleanupContract : ∀ (contract : Integrated.ScopedCleanupContract),
-    Integrated.validScopedCleanupContract contract = true ↔
-      (contract.mode = .observe ∨ contract.mode = .mutable ∨ contract.mode = .construction) ∧
-      contract.returnsUnit = true ∧ contract.hasFiberEffect = false ∧
-      contract.writes = decide (contract.mode = .mutable) ∧
-      contract.retains = false ∧ contract.captures = false
+  cleanupSignature : ∀ (signature : Integrated.ScopedCleanupSignature),
+    Integrated.validScopedCleanupSignature signature = true ↔
+      (signature.mode = .observe ∨ signature.mode = .mutable ∨ signature.mode = .construction) ∧
+      signature.returnsUnit = true ∧ signature.hasFiberEffect = false ∧
+      signature.writes = decide (signature.mode = .mutable) ∧
+      signature.retains = false ∧ signature.captures = false
 
 structure VisibilityGuarantees : Prop where
   opaqueScopeBoundary :
@@ -269,47 +269,47 @@ structure CallableMatchGuarantees : Prop where
       (CoreSummary.instantiate call expected).subsumes pureSources (CoreSummary.instantiate call actual) = true
   exactRejectsExcessWrite : ∀ (pureSources : List Source) (declared actual : Summary) (o : Origin),
     o ∈ declared.writes → o ∉ actual.writes →
-      Summary.exactContract pureSources declared actual = false
+      Summary.exactSignature pureSources declared actual = false
   exactRejectsExcessRetained : ∀ (pureSources : List Source) (declared actual : Summary) (o : Origin),
     o ∈ declared.retained → o ∉ actual.retained →
-      Summary.exactContract pureSources declared actual = false
+      Summary.exactSignature pureSources declared actual = false
   exactRejectsMissingEnvironment : ∀ (pureSources : List Source) (declared actual : Summary) (o : Origin),
     o ∈ actual.createdEnvironments → o ∉ declared.createdEnvironments →
-      Summary.exactContract pureSources declared actual = false
+      Summary.exactSignature pureSources declared actual = false
   exactRejectsMissingLocalRead : ∀ (pureSources : List Source) (declared actual : Summary) (o : Origin),
     o.source.kind ≠ .module → o ∈ actual.namedReads → o ∉ declared.namedReads →
-      Summary.exactContract pureSources declared actual = false
+      Summary.exactSignature pureSources declared actual = false
 
 structure ConcurrencyGuarantees : Prop where
   sharedCaptureRejectsMutableScopedOrResource : ∀ (world : Integrated.World) (r : Integrated.Resolved),
     CoreConcurrency.eligibleSharedCapture world r = true →
-      r.grant.resource = false ∧ r.permission.isScoped = false ∧
+      r.grant.resource = false ∧ r.binding.isScoped = false ∧
         Integrated.deepImmutable r = true ∧ Integrated.live r = true ∧
-        r.permission.mode.replaceable = false ∧ r.permission.mode.access = .immutable ∧
+        r.binding.mode.replaceable = false ∧ r.binding.mode.access = .immutable ∧
         CoreConcurrency.sendableData r = true
-  sharedCaptureReadOnly : ∀ (world : Integrated.World) path (e : Integrated.Evidence),
+  sharedCaptureReadOnly : ∀ (world : Integrated.World) path (e : Integrated.AccessCheck),
     Integrated.resolve world path = some e.resolved →
-    e.resolved.permission.mode.access = .immutable →
+    e.resolved.binding.mode.access = .immutable →
     Integrated.authorized e = true →
       e.rule = .read ∧ e.observation.kind = .read
-  spawnMoveDisjoint : ∀ (world next : Integrated.World) source childDestination resolved,
-    CoreConcurrency.spawnMoveCapture world source childDestination = .ok next →
+  spawnHandoffDisjoint : ∀ (world next : Integrated.World) source childDestination resolved,
+    CoreConcurrency.spawnHandoffCapture world source childDestination = .ok next →
     Integrated.resolve world ⟨source, []⟩ = some resolved →
       CoreConcurrency.sendableData resolved = true ∧
       Integrated.rawLookup next.raw childDestination = some resolved.pointer ∧
-      (∀ dep ∈ resolved.permission.dependencies, (Integrated.lookupToken next dep).any Integrated.Token.active = false) ∧
+      (∀ dep ∈ resolved.binding.dependencies, (Integrated.lookupToken next dep).any Integrated.Token.active = false) ∧
       (∀ path derived dep, Integrated.resolve next path = some derived →
-        dep ∈ derived.permission.dependencies → dep ∈ resolved.permission.dependencies →
+        dep ∈ derived.binding.dependencies → dep ∈ resolved.binding.dependencies →
         Integrated.live derived = false)
   channelNoMutabilityLaundering : ∀ (world : Integrated.World) (r : Integrated.Resolved),
     r.effective = .immutable → CoreConcurrency.eligibleChannelSend true world r = false
-  crossScopeRejected : ∀ (nursery : CoreConcurrency.NurseryState) taskId taskSigma asMove,
+  crossScopeRejected : ∀ (nursery : CoreConcurrency.NurseryState) taskId taskSigma asHandoff,
     taskSigma ≠ nursery.activeSigma →
-      CoreConcurrency.joinTask nursery taskId taskSigma asMove = none ∧
+      CoreConcurrency.joinTask nursery taskId taskSigma asHandoff = none ∧
         CoreConcurrency.cancelTask nursery taskId taskSigma = none
-  singleShotTaskNoReuse : ∀ (nursery next : CoreConcurrency.NurseryState) taskId taskSigma nextSigma anyMove,
+  singleShotTaskNoReuse : ∀ (nursery next : CoreConcurrency.NurseryState) taskId taskSigma nextSigma anyHandoff,
     CoreConcurrency.joinTask nursery taskId taskSigma true = some next →
-      CoreConcurrency.joinTask next taskId nextSigma anyMove = none ∧
+      CoreConcurrency.joinTask next taskId nextSigma anyHandoff = none ∧
         CoreConcurrency.cancelTask next taskId nextSigma = none
   fallibleTaskResultRequired : ∀ (nursery : CoreConcurrency.NurseryState) entry,
     entry ∈ nursery.tasks → entry.pendingResult = true →
@@ -363,21 +363,21 @@ theorem verified : Guarantees where
     fun _ _ _ _ => foreign_read_not_erased_by_pure,
     fun _ _ _ _ => retained_not_subsumed_by_write_only,
     fun _ _ _ call h => CoreSummary.template_subsumes_instantiate h call,
-    fun _ _ _ _ hdecl hnoW => exactContract_rejects_excess_write hdecl hnoW,
-    fun _ _ _ _ hdecl hnoR => exactContract_rejects_excess_retained hdecl hnoR,
-    fun _ _ _ _ hactual hmissing => exactContract_rejects_missing_environment hactual hmissing,
-    fun _ _ _ _ hlocal hactual hmissing => exactContract_rejects_missing_local_read hlocal hactual hmissing⟩
+    fun _ _ _ _ hdecl hnoW => exactSignature_rejects_excess_write hdecl hnoW,
+    fun _ _ _ _ hdecl hnoR => exactSignature_rejects_excess_retained hdecl hnoR,
+    fun _ _ _ _ hactual hmissing => exactSignature_rejects_missing_environment hactual hmissing,
+    fun _ _ _ _ hlocal hactual hmissing => exactSignature_rejects_missing_local_read hlocal hactual hmissing⟩
   effects := ⟨CoreBoundary.handled_effects_exact,
     fun _ _ _ _ => CoreBoundary.external_environment_blocks_discharge,
-    fun _ _ _ _ _ _ h hr hi hd => CoreBoundary.complete_fn_op_revokes_temporary_permission h hr hi hd,
-    fun _ _ _ _ h hl hi => CoreBoundary.complete_fn_op_ends_dependent_loan h hl hi,
+    fun _ _ _ _ _ _ h hr hi hd => CoreBoundary.complete_fn_op_revokes_call_binding h hr hi hd,
+    fun _ _ _ _ h hl hi => CoreBoundary.complete_fn_op_ends_dependent_hold h hl hi,
     fun _ _ _ _ _ h hlook hnonTemp => CoreBoundary.complete_fn_op_preserves_non_temporary h hlook hnonTemp,
     fun _ _ _ _ _ _ h =>
       let hiso := CoreBoundary.shared_fn_handler_preserves_branch_isolation h
       ⟨hiso.1, hiso.2.1, hiso.2.2.2.2.1⟩⟩
   concurrency := ⟨fun _ _ h => CoreConcurrency.cross_fiber_capture_rejects_mutable_scoped_or_resource h,
     fun _ _ _ hr himm hauth => CoreConcurrency.shared_capture_forbids_authorized_writes hr himm hauth,
-    fun _ _ _ _ _ h hr => CoreConcurrency.spawned_move_disjoint_from_parent_live_permissions h hr,
+    fun _ _ _ _ _ h hr => CoreConcurrency.spawned_handoff_disjoint_from_parent_live_bindings h hr,
     fun _ _ hfrozen => CoreConcurrency.frozen_object_cannot_launder_mutability_via_channel hfrozen,
     fun _ _ _ _ hcross => CoreConcurrency.cross_scope_task_rejected hcross,
     fun _ _ _ _ _ _ h => CoreConcurrency.duplicate_exclusive_task_consumption_rejected h,
@@ -391,8 +391,8 @@ theorem verified : Guarantees where
     fun _ _ _ _ hsc => Integrated.scoped_rejects_escape hsc,
     fun _ h hr => Integrated.scoped_cannot_retain h hr,
     fun _ _ _ _ hlook hsc => Integrated.scoped_rejects_reassignment hlook hsc,
-    fun _ _ _ _ h hf hp hinner => Integrated.leaveScope_deactivates_inner_permission h hf hp hinner,
-    Integrated.scoped_cleanup_contract_iff⟩
+    fun _ _ _ _ h hf hp hinner => Integrated.leaveScope_deactivates_inner_binding h hf hp hinner,
+    Integrated.scoped_cleanup_signature_iff⟩
   visibility := ⟨VisibilityModel.opaqueScope_boundary,
     VisibilityModel.signature_visibility_iff,
     VisibilityModel.topLevel_rejects_mutable_and_live_state,

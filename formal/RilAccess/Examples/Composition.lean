@@ -58,14 +58,14 @@ def summaryReuse (mismatch : Bool) : Bool :=
             | _ => false) && (failures results).isEmpty
         | .error _ => false
 
-def compositionFixtures : List (String × Bool) :=
+def compositionExamples : List (String × Bool) :=
   [("composition: exceptional exit closes both resources through the installed handler",
     (check (cleanupProgram true)).isOk),
    ("composition: the checker accepts a synchronous cleanup that diverges",
     (check divergingCleanupProgram).isOk),
    ("composition: an outer write by a cleanup handler requires its caller's state row",
     match check (cleanupProgram false) with
-    | .error err => err.function == 1 && err.error == .contract
+    | .error err => err.function == 1 && err.error == .signature
     | _ => false),
    ("composition: scoped paths must expire in LIFO order",
     match check (replaceCleanupInstruction 11 (.step [.expire 1] 12)) with
@@ -82,7 +82,7 @@ def compositionFixtures : List (String × Bool) :=
    ("composition: a body-derived summary applies without the provider's code", summaryReuse false),
    ("composition: an incompatible abstract entry cannot reuse the summary", summaryReuse true)]
 
-theorem compositionFixtures_pass : compositionFixtures.all Prod.snd = true := by decide +kernel
+theorem compositionExamples_pass : compositionExamples.all Prod.snd = true := by decide +kernel
 
 theorem diverging_cleanup_stays_in_first_cleanup_call :
     ∃ (frame : RawFrame) (continuation : Continuation),

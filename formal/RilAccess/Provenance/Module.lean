@@ -8,7 +8,7 @@ structure EntrySummary where
   private mk ::
   entry : Entry
   parameters : List ParameterMode
-  contract : Contract
+  signature : Signature
   slots : List Slot
   outcomes : List CallFact
   deriving Repr
@@ -18,13 +18,13 @@ def summarize (program : Program) (entry : Entry) (budget : Nat := 256) :
   let some body := program.functions[entry.function]? | throw ⟨entry.function, 0, .missingInstruction⟩
   let certificate ← checkEntry program entry budget
   let outcomes := (certificate.facts.filterMap (Judgment.callFact entry)).eraseDups
-  return ⟨entry, body.parameters, body.contract, program.slots, outcomes⟩
+  return ⟨entry, body.parameters, body.signature, program.slots, outcomes⟩
 
 def EntrySummary.apply (summary : EntrySummary) (program : Program) (caller : Entry)
     (pc next : Nat) (before : World) (arguments : List Argument)
     (receiver : Option (Register × Access)) (onAbort : Option Nat := none) : Except Error (List Judgment) := do
   require (decide (program.slots = summary.slots)) .schema
-  let signature : Function := ⟨summary.parameters, summary.contract, []⟩
+  let signature : Function := ⟨summary.parameters, summary.signature, []⟩
   let call ← prepare signature before arguments
   require (decide (call.entered = summary.entry.world)) .summaryEntry
   let outcomes := summary.outcomes.flatMap (applyCallFact program caller pc next call receiver onAbort)
@@ -35,7 +35,7 @@ def EntrySummary.apply (summary : EntrySummary) (program : Program) (caller : En
 theorem summarized_body (h : summarize program entry budget = .ok summary) :
     ∃ body certificate, program.functions[entry.function]? = some body ∧
       checkEntry program entry budget = .ok certificate ∧
-      summary = ⟨entry, body.parameters, body.contract, program.slots,
+      summary = ⟨entry, body.parameters, body.signature, program.slots,
         (certificate.facts.filterMap (Judgment.callFact entry)).eraseDups⟩ := by
   unfold summarize at h
   cases hb : program.functions[entry.function]? with
@@ -60,9 +60,9 @@ def SummaryCovers (program : Program) (summary : EntrySummary) (frozen : RawFram
     ∃ (world : World) (value : Returned) (body : Function), world.raw = frame.abstract ∧
       .returned source world value ∈ summary.outcomes ∧
       program.functions[summary.entry.function]? = some body ∧
-      body.contract = summary.contract ∧
+      body.signature = summary.signature ∧
       ReturnGuarantee program body frozen frame world source value ∧
-      Includes value.contained summary.contract.contained
+      Includes value.contained summary.signature.contained
   | .aborted frame =>
     ∃ world : World, world.raw = frame.abstract ∧ .aborted world ∈ summary.outcomes
 
@@ -115,13 +115,13 @@ theorem summarize_at_call {before : World} {caller frozen : RawFrame}
 theorem exported_transfer (h : summarize provider entry budget = .ok summary)
     (applied : summary.apply program caller pc next before arguments receiver onAbort = .ok outputs)
     (fact : CallFact) (member : fact ∈ summary.outcomes) :
-    ∃ prepared, prepare ⟨summary.parameters, summary.contract, []⟩ before arguments = .ok prepared ∧
+    ∃ prepared, prepare ⟨summary.parameters, summary.signature, []⟩ before arguments = .ok prepared ∧
       prepared.entered = entry.world ∧
       Includes (applyCallFact program caller pc next prepared receiver onAbort fact) outputs := by
   obtain ⟨body, cert, hb, hc, hx⟩ := summarized_body h
   have summaryEntry : summary.entry = entry := congrArg EntrySummary.entry hx
   by_cases hs : program.slots = summary.slots
-  · cases hp : prepare ⟨summary.parameters, summary.contract, []⟩ before arguments with
+  · cases hp : prepare ⟨summary.parameters, summary.signature, []⟩ before arguments with
     | error error => simp [EntrySummary.apply, hs, hp, require] at applied
     | ok prepared =>
       by_cases he : prepared.entered = summary.entry.world

@@ -87,7 +87,7 @@ inductive HeapChange (before after : World) : Prop where
       after.memory = put before.memory before.nextObject ⟨before.input.context.origin before.nextObject, layout, values⟩ →
       HeapChange before after
 
-/-- Local operational evidence decoded once. No global safety predicate is an
+/-- Local operational step facts decoded once. No global safety predicate is an
 input to the executable checker. Trace invariants are proved from these deltas. -/
 structure StepFacts (before : World) (command : Command) (after : World) : Prop where
   executed : execute command before = some after

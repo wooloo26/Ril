@@ -1,6 +1,6 @@
 import RilAccess.Graph.Identity
 import RilAccess.Graph.Authority
-import RilAccess.Contracts
+import RilAccess.Signatures
 
 /-! Finite path updates over immutable snapshots. The draft owns its root and
 copies the selected descendants on each write. -/
@@ -213,7 +213,7 @@ inductive Exit where
 
 /-- External events observe separately checked boundary operations; they do not
 execute or grant authority to an external body. Its complete access, alias and
-lifetime obligations remain a caller/implementation conformance condition. -/
+scope obligations remain a caller/implementation conformance condition. -/
 inductive Command where
   | rewrite (object : Nat) (contents : List Value)
   | allocate (storage : Storage) (contents : List Value)
@@ -253,7 +253,7 @@ def execute (command : Command) (world : World) : Option World :=
   | .effect effect => some { world with effects := effect :: world.effects }
   | .finish reason => some (finished world reason)
 
-/-- External contracts cannot write, retain a writer to, or transfer an input
+/-- External operations cannot write, retain a writer to, or transfer an input
 object. Reads/captures of an already immutable input preserve its snapshot. -/
 def externalPreservesInputs (input : Input) (event : Event) : Bool :=
   match event.kind with

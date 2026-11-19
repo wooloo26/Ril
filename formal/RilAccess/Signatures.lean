@@ -137,7 +137,7 @@ def Summary.isPure (pureSources : List Source) (s : Summary) : Bool :=
   s.namedReads.all (isPureOrigin pureSources) &&
   s.createdEnvironments.all (isPureOrigin pureSources)
 
-/-- CallableType upper-bound contract matching after pure-origin reduction (`actual ⊑ expected`). -/
+/-- CallableType upper-bound compatibility matching after pure-origin reduction (`actual ⊑ expected`). -/
 def SummaryOf.subsumesBy [DecidableEq α] (pure : α → Bool) (expected actual : SummaryOf α) : Bool :=
   actual.effects.all (fun e => decide (e ∈ expected.effects)) &&
   actual.rootReturn.all (fun o => decide (o ∈ expected.rootReturn)) &&
@@ -266,7 +266,7 @@ def Summary.requiredNamedReads (pureSources : List Source) (summary : Summary) :
 
 /-- Named definitions spell exact exercised obligations (`E0510`, `E0529`,
 `E0612`). Callable upper-bound matching and pure-capture reduction are separate. -/
-def Summary.exactContract (pureSources : List Source) (declared actual : Summary) : Bool :=
+def Summary.exactSignature (pureSources : List Source) (declared actual : Summary) : Bool :=
   sameMembers declared.effects actual.effects &&
   sameMembers declared.rootReturn actual.rootReturn &&
   sameMembers declared.contained actual.contained &&
@@ -275,7 +275,7 @@ def Summary.exactContract (pureSources : List Source) (declared actual : Summary
   sameMembers declared.createdEnvironments actual.createdEnvironments &&
   sameMembers (declared.requiredNamedReads pureSources) (actual.requiredNamedReads pureSources)
 
-structure SummaryExactContract (pureSources : List Source) (declared actual : Summary) : Prop where
+structure SummaryExactSignature (pureSources : List Source) (declared actual : Summary) : Prop where
   effects : ∀ effect, effect ∈ declared.effects ↔ effect ∈ actual.effects
   rootReturn : ∀ origin, origin ∈ declared.rootReturn ↔ origin ∈ actual.rootReturn
   contained : ∀ origin, origin ∈ declared.contained ↔ origin ∈ actual.contained
@@ -286,10 +286,10 @@ structure SummaryExactContract (pureSources : List Source) (declared actual : Su
   namedReads : ∀ origin,
     origin ∈ declared.requiredNamedReads pureSources ↔ origin ∈ actual.requiredNamedReads pureSources
 
-theorem summary_exactContract_iff {pureSources : List Source} {declared actual : Summary} :
-    Summary.exactContract pureSources declared actual = true ↔
-      SummaryExactContract pureSources declared actual := by
-  simp only [Summary.exactContract, Bool.and_eq_true, sameMembers_iff]
+theorem summary_exactSignature_iff {pureSources : List Source} {declared actual : Summary} :
+    Summary.exactSignature pureSources declared actual = true ↔
+      SummaryExactSignature pureSources declared actual := by
+  simp only [Summary.exactSignature, Bool.and_eq_true, sameMembers_iff]
   constructor
   · rintro ⟨⟨⟨⟨⟨⟨effects, roots⟩, contained⟩, writes⟩, retained⟩, environments⟩, reads⟩
     exact ⟨effects, roots, contained, writes, retained, environments, reads⟩
@@ -297,46 +297,46 @@ theorem summary_exactContract_iff {pureSources : List Source} {declared actual :
     exact ⟨⟨⟨⟨⟨⟨h.effects, h.rootReturn⟩, h.contained⟩, h.writes⟩, h.retained⟩,
       h.createdEnvironments⟩, h.namedReads⟩
 
-theorem exactContract_rejects_excess_write {pureSources : List Source}
+theorem exactSignature_rejects_excess_write {pureSources : List Source}
     {declared actual : Summary} {o : Origin}
     (hdecl : o ∈ declared.writes)
     (hnoWrite : o ∉ actual.writes) :
-    Summary.exactContract pureSources declared actual = false := by
-  cases hex : Summary.exactContract pureSources declared actual with
+    Summary.exactSignature pureSources declared actual = false := by
+  cases hex : Summary.exactSignature pureSources declared actual with
   | false => rfl
   | true =>
-    exact False.elim (hnoWrite (((summary_exactContract_iff.mp hex).writes o).mp hdecl))
+    exact False.elim (hnoWrite (((summary_exactSignature_iff.mp hex).writes o).mp hdecl))
 
-theorem exactContract_rejects_excess_retained {pureSources : List Source}
+theorem exactSignature_rejects_excess_retained {pureSources : List Source}
     {declared actual : Summary} {o : Origin}
     (hdecl : o ∈ declared.retained) (hnoRetain : o ∉ actual.retained) :
-    Summary.exactContract pureSources declared actual = false := by
-  cases hex : Summary.exactContract pureSources declared actual with
+    Summary.exactSignature pureSources declared actual = false := by
+  cases hex : Summary.exactSignature pureSources declared actual with
   | false => rfl
   | true =>
-    exact False.elim (hnoRetain (((summary_exactContract_iff.mp hex).retained o).mp hdecl))
+    exact False.elim (hnoRetain (((summary_exactSignature_iff.mp hex).retained o).mp hdecl))
 
-theorem exactContract_rejects_missing_environment {pureSources : List Source}
+theorem exactSignature_rejects_missing_environment {pureSources : List Source}
     {declared actual : Summary} {o : Origin}
     (hactual : o ∈ actual.createdEnvironments) (hmissing : o ∉ declared.createdEnvironments) :
-    Summary.exactContract pureSources declared actual = false := by
-  cases hex : Summary.exactContract pureSources declared actual with
+    Summary.exactSignature pureSources declared actual = false := by
+  cases hex : Summary.exactSignature pureSources declared actual with
   | false => rfl
   | true =>
     exact False.elim (hmissing
-      (((summary_exactContract_iff.mp hex).createdEnvironments o).mpr hactual))
+      (((summary_exactSignature_iff.mp hex).createdEnvironments o).mpr hactual))
 
-theorem exactContract_rejects_missing_local_read {pureSources : List Source}
+theorem exactSignature_rejects_missing_local_read {pureSources : List Source}
     {declared actual : Summary} {o : Origin}
     (hlocal : o.source.kind ≠ .module) (hactual : o ∈ actual.namedReads)
     (hmissing : o ∉ declared.namedReads) :
-    Summary.exactContract pureSources declared actual = false := by
-  cases hex : Summary.exactContract pureSources declared actual with
+    Summary.exactSignature pureSources declared actual = false := by
+  cases hex : Summary.exactSignature pureSources declared actual with
   | false => rfl
   | true =>
     have required : o ∈ actual.requiredNamedReads pureSources := by
       simp [Summary.requiredNamedReads, isPureModuleConstant, hlocal, hactual]
-    have declaredRead := ((summary_exactContract_iff.mp hex).namedReads o).mpr required
+    have declaredRead := ((summary_exactSignature_iff.mp hex).namedReads o).mpr required
     exact False.elim (hmissing (List.mem_filter.mp declaredRead).1)
 
 def allocationBound : List Nat → Nat
@@ -387,14 +387,14 @@ theorem disjoint_check_sound (h : disjointUnknownSelections left right = true) :
   intro x hx
   exact of_decide_eq_true (List.all_eq_true.mp h x hx)
 
-structure ForeignContract where
+structure ForeignSignature where
   sources : List Source
   deriving Repr, DecidableEq
 
-def ForeignConforms (contract : ForeignContract) (trace : List Event) : Prop :=
-  ∀ e ∈ trace, e.origin.source ∈ contract.sources
+def ForeignConforms (signature : ForeignSignature) (trace : List Event) : Prop :=
+  ∀ e ∈ trace, e.origin.source ∈ signature.sources
 
-theorem foreign_sources_covered (conforms : ForeignConforms contract trace)
-    (he : e ∈ trace) : e.origin.source ∈ contract.sources := conforms e he
+theorem foreign_sources_covered (conforms : ForeignConforms signature trace)
+    (he : e ∈ trace) : e.origin.source ∈ signature.sources := conforms e he
 
 end RilAccess

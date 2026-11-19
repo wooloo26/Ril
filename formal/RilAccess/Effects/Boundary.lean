@@ -1,12 +1,12 @@
-import RilAccess.Contracts
-import RilAccess.Access.Lifetime
+import RilAccess.Signatures
+import RilAccess.Access.Scope
 
 /-! The state/provenance and direct `fn`-effect handler boundary kernel.
 Ril effects consist exclusively of direct tail-resumptive `fn` operations:
 - Effect handling discharges covered `@Eff` labels while preserving handler and
   cleanup state/environment obligations.
 - Completing a `fn` operation arm revokes temporary `mut` operation parameters and
-  dependent observers/loans while preserving outer and retained authority.
+  dependent views/holds while preserving outer and retained authority.
 - Across concurrent boundaries (`E0615`), only pure stateless `fn` handlers with
   admissible outward effects may cross fibers. -/
 namespace RilAccess.CoreBoundary
@@ -132,34 +132,34 @@ theorem complete_fn_op_facts {authority next : Integrated.World} {opScope : Nat}
     exact ⟨checks.1, rfl, Integrated.ledger_facts checks.2.1, Integrated.ledger_facts checks.2.2⟩
   · contradiction
 
-theorem complete_fn_op_revokes_temporary_permission
+theorem complete_fn_op_revokes_call_binding
     {authority next : Integrated.World} {opScope id : Nat}
     {path : Integrated.Path} {resolved : Integrated.Resolved}
     (h : completeFnOp authority opScope = some next)
     (hr : Integrated.resolve next path = some resolved)
     (hi : id ∈ Integrated.temporaryWrites authority authority.scope)
-    (hd : id ∈ resolved.permission.dependencies) :
+    (hd : id ∈ resolved.binding.dependencies) :
     Integrated.live resolved = false := by
   obtain ⟨hscope, heq, _, hafter⟩ := complete_fn_op_facts h
   cases hl : Integrated.live resolved with
   | false => rfl
   | true =>
     have enabled := Integrated.resolved_live_dependencies hafter hr hl
-    have ended : Integrated.lifetimeEnabled next resolved.permission.dependencies = false := by
+    have ended : Integrated.scopeEnabled next resolved.binding.dependencies = false := by
       rw [heq, hscope]
       exact Integrated.dependency_ends_access hi hd
     simp [ended] at enabled
 
-theorem complete_fn_op_ends_dependent_loan
-    {authority next : Integrated.World} {opScope : Nat} {loan : Integrated.Loan}
+theorem complete_fn_op_ends_dependent_hold
+    {authority next : Integrated.World} {opScope : Nat} {hold : Integrated.Hold}
     (h : completeFnOp authority opScope = some next)
-    (hl : loan ∈ next.loans)
-    (hi : loan.token ∈ Integrated.lifetimeClosure authority
+    (hl : hold ∈ next.holds)
+    (hi : hold.token ∈ Integrated.scopeClosure authority
       (Integrated.temporaryWrites authority authority.scope)) :
-    loan.active = false := by
+    hold.active = false := by
   obtain ⟨hscope, heq, _, _⟩ := complete_fn_op_facts h
   rw [heq, hscope] at hl
-  exact Integrated.dependent_loan_inactive hl hi
+  exact Integrated.dependent_hold_inactive hl hi
 
 theorem complete_fn_op_preserves_non_temporary
     {authority next : Integrated.World} {opScope id : Nat} {token : Integrated.Token}

@@ -21,7 +21,7 @@ def baseWorld : World :=
   atom world (.allocate 9 ⟨false, .mut⟩ [⟨[0], ⟨false, .shared⟩, true⟩])
 
 def afterShared : World := (spawnSharedCapture baseWorld (p 0) 10).toOption.getD baseWorld
-def afterMove : World := (spawnMoveCapture baseWorld 1 11).toOption.getD baseWorld
+def afterHandoff : World := (spawnHandoffCapture baseWorld 1 11).toOption.getD baseWorld
 
 def nursery : NurseryState :=
   ⟨7,
@@ -33,7 +33,7 @@ def afterPlainJoin : NurseryState := (joinTask nursery 1 7 false).getD nursery
 def afterExclusiveJoin : NurseryState := (joinTask nursery 2 7 true).getD nursery
 def afterFallibleJoined : NurseryState := (joinTask nursery 3 7 true).getD nursery
 
-def fixtures : List (String × Bool) :=
+def examples : List (String × Bool) :=
   [("concurrency: base ledger with immutable, mut, shared, resource, and scoped bindings is valid",
       ledgerValid baseWorld),
    ("concurrency: deeply immutable binding accepted for cross-fiber shared capture",
@@ -52,20 +52,20 @@ def fixtures : List (String × Bool) :=
       !(spawnSharedCapture baseWorld (p 6) 10).isOk &&
       !(spawnSharedCapture baseWorld (p 7) 10).isOk),
    ("concurrency: single-shot move transfers exclusive binding and ends parent path (E0549)",
-      (spawnMoveCapture baseWorld 1 11).isOk &&
-      !(resolve afterMove (p 1)).any live &&
-      (resolve afterMove (p 11)).any live &&
-      !(spawnMoveCapture afterMove 1 12).isOk),
+      (spawnHandoffCapture baseWorld 1 11).isOk &&
+      !(resolve afterHandoff (p 1)).any live &&
+      (resolve afterHandoff (p 11)).any live &&
+      !(spawnHandoffCapture afterHandoff 1 12).isOk),
    ("concurrency: single-shot moves across fibers reject foreign and scoped resources",
-      (checkAtom (.move 3 13) baseWorld).isOk &&
-      !(spawnMoveCapture baseWorld 3 13).isOk &&
-      !(spawnMoveCapture baseWorld 4 14).isOk),
+      (checkAtom (.handoff 3 13) baseWorld).isOk &&
+      !(spawnHandoffCapture baseWorld 3 13).isOk &&
+      !(spawnHandoffCapture baseWorld 4 14).isOk),
    ("concurrency: transfer rejects foreign handles and data containing ref or shared members",
       !(resolve baseWorld (p 3)).any (eligibleChannelSend true baseWorld) &&
       !(resolve baseWorld (p 8)).any (eligibleChannelSend true baseWorld) &&
       !(resolve baseWorld (p 9)).any (eligibleChannelSend true baseWorld) &&
-      !(spawnMoveCapture baseWorld 8 10).isOk &&
-      !(spawnMoveCapture baseWorld 9 10).isOk),
+      !(spawnHandoffCapture baseWorld 8 10).isOk &&
+      !(spawnHandoffCapture baseWorld 9 10).isOk),
    ("concurrency: channel send rejects frozen immutable object for writable schema (E0548)",
       !(resolve baseWorld (p 0)).any (eligibleChannelSend true baseWorld) &&
       (resolve baseWorld (p 1)).any (eligibleChannelSend true baseWorld) &&
@@ -100,6 +100,6 @@ def fixtures : List (String × Bool) :=
           (drainPlainTasks inspectedOnce).isNone &&
           (inspectJoinedResult inspectedOnce 1 7).any canExitScope)]
 
-theorem fixtures_all_pass : fixtures.all Prod.snd = true := by decide +kernel
+theorem examples_all_pass : examples.all Prod.snd = true := by decide +kernel
 
 end RilAccess.CoreConcurrency.Examples

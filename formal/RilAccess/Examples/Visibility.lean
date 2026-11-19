@@ -13,7 +13,7 @@ def publicRoot : DeclarationVisibility := ⟨true, [], .pubExport⟩
 def packageRoot : DeclarationVisibility := ⟨true, [], .pubPkg⟩
 def underPackageSub : DeclarationVisibility := ⟨true, [.pubExport, .pubPkg], .pubExport⟩
 
-def fixtures : List (String × Bool) :=
+def examples : List (String × Bool) :=
   [("visibility: pub(pkg) visible across defining package", visibleFrom .pubPkg .samePkg),
    ("visibility: pub(pkg) hidden from external packages", !visibleFrom .pubPkg .externalPkg),
    ("visibility: pub opaque type visible across package and externally while representation stays file-scoped",
@@ -72,6 +72,6 @@ def fixtures : List (String × Bool) :=
       decide (pathVisibility true [.pubPkg] .pubExport = .pubPkg) &&
       decide (pathVisibility true [.priv] .pubExport = .priv))]
 
-theorem fixtures_all_pass : fixtures.all Prod.snd = true := by decide +kernel
+theorem examples_all_pass : examples.all Prod.snd = true := by decide +kernel
 
 end RilAccess.Examples.VisibilityExamples

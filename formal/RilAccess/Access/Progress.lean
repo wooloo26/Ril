@@ -147,7 +147,7 @@ theorem every_prefix_authorized (h : check program = .ok analysis)
     (hp : Prefix (erase (lower program)) initialWorld.raw middle)
     (he : event ∈ middle.observations) :
     event.pointer.source ∈ analysis.origins ∧
-      ∃ evidence, evidence.observation = event ∧ authorized evidence = true := by
+      ∃ accessCheck, accessCheck.observation = event ∧ authorized accessCheck = true := by
   obtain ⟨result, hr, hevent⟩ := prefix_event_extends hp (infer_faultFree (check_infer h).1) he
   rw [← lower_correct] at hr
   exact access_and_provenance h hr hevent
@@ -206,28 +206,28 @@ theorem infer_grant_origin (h : infer code w = .ok worlds) (hm : result ∈ worl
           · exact Or.inl hold
           · exact Or.inr (List.mem_append_right _ hright)
 
-theorem certified_grant_member (h : certified world = true) (he : evidence ∈ world.evidence) :
-    evidence.resolved.grant ∈ world.grants := by
-  have hall : world.evidence.all (fun e => decide (e.resolved.grant ∈ world.grants)) = true := by
+theorem certified_grant_member (h : certified world = true) (he : accessCheck ∈ world.accessChecks) :
+    accessCheck.resolved.grant ∈ world.grants := by
+  have hall : world.accessChecks.all (fun e => decide (e.resolved.grant ∈ world.grants)) = true := by
     simp only [certified, Bool.and_eq_true] at h
     exact h.2
-  exact of_decide_eq_true (List.all_eq_true.mp hall evidence he)
+  exact of_decide_eq_true (List.all_eq_true.mp hall accessCheck he)
 
 /-- Each runtime write is backed by an actual mutable allocation declaration in
 the checked syntax, not by a caller-provided grant or a forged snapshot. -/
 theorem original_declaration_covered (h : check program = .ok analysis)
     (hr : state ∈ sourceExecute program initialWorld.raw) (he : event ∈ state.observations) :
-    ∃ evidence, evidence.observation = event ∧ authorized evidence = true ∧
-      (evidence.resolved.grant.source, evidence.resolved.grant.declared,
-        evidence.resolved.grant.schema) ∈ declarations (lower program) := by
+    ∃ accessCheck, accessCheck.observation = event ∧ authorized accessCheck = true ∧
+      (accessCheck.resolved.grant.source, accessCheck.resolved.grant.declared,
+        accessCheck.resolved.grant.schema) ∈ declarations (lower program) := by
   have hi := (check_infer h).1
   rw [lower_correct] at hr
   obtain ⟨world, hm, hraw⟩ := infer_simulation hi hr
-  obtain ⟨evidence, hem, heq, hsafe⟩ := certified_evidence (infer_certified hi hm)
+  obtain ⟨accessCheck, hem, heq, hsafe⟩ := certified_accessChecks (infer_certified hi hm)
     (by simpa [hraw] using he)
   have hg := certified_grant_member (infer_certified hi hm) hem
   rcases infer_grant_origin hi hm hg with hbad | hdeclared
   · simp [initialWorld] at hbad
-  · exact ⟨evidence, heq, hsafe, hdeclared⟩
+  · exact ⟨accessCheck, heq, hsafe, hdeclared⟩
 
 end RilAccess.Integrated

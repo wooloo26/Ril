@@ -98,7 +98,7 @@ inductive Error where
   | overlap
   | construction
   | returnSource
-  | contract
+  | signature
   | unusedParameter
   | summarizedSlot
   | uncertainWrite
@@ -153,7 +153,7 @@ def metadata (program : Program) (action : Primitive) (world : World) : Except E
     let dependencies := if mode == .ref then (source :: view.dependencies).eraseDups else []
     let bound := { view with mode, qualified := false, dependencies }
     return (world.setView destination bound, [])
-  | .move destination source =>
+  | .handoff destination source =>
     let (_, view, ended) ← consume world source
     return (ended.setView destination view, used view .consume)
   | .store parent field source moving =>
@@ -294,7 +294,7 @@ structure Returned where
 
 def checkReturn (program : Program) (function : Function) (entry world : World)
     (source : Option Register) : Except Error Returned := do
-  match function.contract.result, source with
+  match function.signature.result, source with
   | .unit, none => return ⟨none, [], []⟩
   | .plain, some register =>
     let (_, view) ← need (world.view register)

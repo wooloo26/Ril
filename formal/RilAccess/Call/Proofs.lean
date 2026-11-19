@@ -129,13 +129,13 @@ theorem access_and_provenance (h : check program = .ok analysis)
     (hr : state ∈ execute program initialWorld.raw)
     (he : event ∈ state.observations) :
     event.pointer.source ∈ analysis.origins ∧
-      ∃ evidence, evidence.observation = event ∧ authorized evidence = true := by
+      ∃ accessCheck, accessCheck.observation = event ∧ authorized accessCheck = true := by
   obtain ⟨hi, horigins⟩ := checked_core h
   rw [lower_correct] at hr
   obtain ⟨world, hm, hraw⟩ := infer_simulation hi hr
   have hw : event ∈ world.raw.observations := by simpa [hraw] using he
-  obtain ⟨evidence, _, heq, hsafe⟩ := certified_evidence (infer_certified hi hm) hw
-  refine ⟨?_, evidence, heq, hsafe⟩
+  obtain ⟨accessCheck, _, heq, hsafe⟩ := certified_accessChecks (infer_certified hi hm) hw
+  refine ⟨?_, accessCheck, heq, hsafe⟩
   rw [horigins]
   exact List.mem_flatMap.mpr ⟨world, hm,
     List.mem_append_left _ (List.mem_append_left _ (List.mem_map.mpr ⟨event, hw, rfl⟩))⟩
@@ -144,7 +144,7 @@ theorem every_prefix_authorized (h : check program = .ok analysis)
     (hp : Prefix (erase (lower program)) initialWorld.raw middle)
     (he : event ∈ middle.observations) :
     event.pointer.source ∈ analysis.origins ∧
-      ∃ evidence, evidence.observation = event ∧ authorized evidence = true := by
+      ∃ accessCheck, accessCheck.observation = event ∧ authorized accessCheck = true := by
   obtain ⟨result, hr, hevent⟩ := prefix_event_extends hp (infer_faultFree (checked_core h).1) he
   rw [← lower_correct] at hr
   exact access_and_provenance h hr hevent
