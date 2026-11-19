@@ -19,7 +19,7 @@ This document defines Ril syntax, static semantics, access modes, state and prov
 | :--- | :--- |
 | Binding / access | `let`, `var`, and `use` govern slot scope and replacement; plain (unmodified), `ref`, `mut`, `^mut`, and `new` govern path access and authority |
 | Provenance / `new` subgraphs | Provenance tracks which existing sources a value references and which parts are `new`; `new` lets the target choose modes for newly constructed subgraphs while nested existing sources keep their authority and aliases |
-| Values / shared objects | `bool`, `int`, `f64`, `str`, `bytes`, and `()` copy by value; records, nonempty tuples, collections, and sums have GC-managed identity |
+| Values / shared objects | `bool`, `int`, `f64`, `str`, `bytes`, and `()` copy by value; records, nonempty tuples, collections, and sums have automatically reclaimed object identity |
 | Record forms / constructors | Named and anonymous records attach `.{...}` (`User.{ id: 1 }`); payload variants and non-record nominal constructors use tight `(...)` (`Ok(42)`, `Ok()`, `Rect(10.0, 20.0)`, `UserId(42)`) |
 | Aliases / nominal / opaque | `type A = B` is a structural alias; `nominal type A = B` has distinct public identity; `opaque type A = B` seals representation outside its defining file or `sub` |
 | Reachable authority use | `var` requires reachable slot replacement, `mut` requires writable or `new`-handoff use, `^mut` parameters require surviving retention, and named state annotations must be minimal (`E0527`, `E0529`) |
@@ -205,6 +205,8 @@ A conforming Ril implementation must:
 2. Reject invalid programs with the diagnostic code assigned to each violated condition.
 3. Preserve left-to-right operand evaluation, value/shared-object semantics, LIFO scope cleanup, and complete provenance checking across module interfaces.
 
+**Implementation Freedom (As-If Rule)**: This specification defines static validity and observable abstract-machine behavior, not internal compiler or runtime architecture. Conforming implementations may use any execution model (ahead-of-time compilation, JIT compilation, bytecode execution, or interpretation), memory management strategy (tracing GC, cycle-collecting reference counting, escape-analyzed stack or region allocation), generic implementation strategy (monomorphization, specialization, or boxed/witness dispatch), or static-analysis representation, provided every observable result and diagnostic matches this specification.
+
 ### Diagnostic Classification
 
 ```ril
@@ -221,6 +223,8 @@ Specific diagnostics take precedence over general syntax (`E0120`) or type misma
 
 Operands and call arguments evaluate strictly left-to-right; short-circuit operators (`&&`, `||`, `??`, `?.`, `?[`) and control transfers (`return`, `break`, `continue`, `?`) skip unevaluated operands.
 
+**Abstract Object-Graph Model**: Throughout this specification, *object graph*, *reachability*, *`new` subgraph*, and *existing-source boundary* are abstract semantic concepts modeling object identity, aliasing, deep immutability, and provenance. They impose no requirement on physical memory layout, heap vs. stack placement, pointer representation, or static-analysis data structures.
+
 ```ril
 let mut trace: []int = []
 let ^mut log = \n: int -> { Array::push(mut trace, n); n }
@@ -230,16 +234,16 @@ assert(total == 7 && trace == [1, 2, 3])
 
 | Memory property | Requirement |
 | :--- | :--- |
-| Automatic reclamation | Tracing GC reclaims unreachable shared-object graphs, including cycles, without running user code |
-| Identity preservation | Moving GC preserves object identity, aliasing, and active `ref`/`mut`/`^mut` relationships |
-| Authority independence | Object liveness grants no write authority; `use` deterministic cleanup is independent of GC |
+| Automatic reclamation | Unreachable shared-object graphs, including reference cycles, must be reclaimed automatically without running user code (no reclamation finalizers) |
+| Location-independent identity | Object identity, aliasing, and active `ref`/`mut`/`^mut` relationships are independent of physical storage location; implementations may relocate objects, stack-allocate non-escaping objects, or share immutable representations transparently |
+| Authority independence | Object liveness grants no write authority; deterministic `use` cleanup is independent of automatic reclamation |
 
 ### Failure Model and Purity
 
 Ril separates expected domain failures from programming defects:
 
 1. **Recoverable Errors (`!<T, E>` / `Result<T, E>` and `?T` / `Option<T>`)**: Carried as explicit values. Every `Result` must be inspected, propagated via `?`, or handled via `??` (`E0720`).
-2. **Defects (`panic` / `assert`)**: Trigger deterministic LIFO stack unwinding, running active `use` cleanup functions without requiring signature annotations. Panic-isolation boundaries (`absorb_panic`, `Fiber::supervise`) convert panics into `!<T, PanicError>` / `!<T, TaskFault>`.
+2. **Defects (`panic` / `assert`)**: Trigger deterministic LIFO unwinding of active scopes, running active `use` cleanup functions without requiring signature annotations. Panic-isolation boundaries (`absorb_panic`, `Fiber::supervise`) convert panics into `!<T, PanicError>` / `!<T, TaskFault>`.
 3. **Purity**: A callable is pure when its normalized outward effect set is empty and its outward state obligations reduce to empty after local containment. Relations to deeply immutable return sources add no state effect but remain part of return-provenance matching. `never` denotes computations that never complete normally.
 
 ```ril
@@ -262,8 +266,8 @@ fn connect_port(raw: str) -> new !<int, str> {
 | Bit shift `x << k` or `x >> k` with `k < 0` (non-constant `k`) | LIFO panic unwinding (`"negative shift count"`) |
 | Out-of-bounds array/byte index `xs[i]` or slice `xs[a..b]` | LIFO panic unwinding |
 | `panic(msg)` or false `assert(cond)` | LIFO panic unwinding |
-| Secondary panic inside `use` cleanup during active panic/cancel unwinding | Immediate OS process termination (panic during cleanup bypasses `absorb_panic`) |
-| Unrecoverable host memory or call-stack exhaustion | Immediate OS process termination |
+| Secondary panic inside `use` cleanup during active panic/cancel unwinding | Immediate uncatchable program termination (abort; bypasses `absorb_panic`) |
+| Unrecoverable execution-resource exhaustion (host memory or call depth) | Immediate uncatchable program termination (abort) |
 
 ---
 
@@ -526,7 +530,7 @@ let b = a                              -- Value copy
 
 ### Shared Object Types
 
-Records (`.{...}`), nonempty tuples `(A, B)`, arrays `[M]T`, maps `[K: M V]`, `Set<T>`, and sum instances have heap allocation identity managed by tracing GC. Shared-object status permits aliasing of immutable snapshots (`let`) and explicit shared writable bindings (`^mut`), never implicit shared mutation.
+Records (`.{...}`), nonempty tuples `(A, B)`, arrays `[M]T`, maps `[K: M V]`, `Set<T>`, and sum instances have automatically reclaimed object identity (implementations need not heap-allocate objects whose identity or lifetime can be proven local). Shared-object status permits aliasing of immutable snapshots (`let`) and explicit shared writable bindings (`^mut`), never implicit shared mutation.
 
 ### Record Types and Open Record Tails
 
@@ -584,7 +588,7 @@ MemberMode      ::= "var" [ "mut" | "^mut" | "ref" ]
 
 ### Array, Map, Set, and Tuple Types
 
-Arrays `[M]T`, maps `[K: M V]`, and `Set<T>` are GC-managed collections; tuples `()` and `(A, B, ...)` are fixed-arity immutable aggregates.
+Arrays `[M]T`, maps `[K: M V]`, and `Set<T>` are shared-object collections with automatically reclaimed identity; tuples `()` and `(A, B, ...)` are fixed-arity immutable aggregates.
 
 ```ril
 let xs: []int = [10, 20, 30]
@@ -784,7 +788,7 @@ Subtyping $S <: T$ holds **only** for:
 
 ### Complete Provenance and Required Annotations
 
-Access modes, sources, state writes, environment captures, and effects are static judgments verified modularly across call boundaries and erased before code generation.
+Access modes, sources, state writes, environment captures, and effects are purely static judgments verified modularly across call boundaries; they have no observable runtime representation and require no runtime tracking or dispatch.
 
 Named functions spell their minimal `@Eff` and non-pure state/provenance clauses (`&mut`, `&^mut`, `&capture`, `&up(...)`, `&return(...)`); anonymous closures infer complete signatures automatically.
 
@@ -842,7 +846,7 @@ In higher-order parameter types, `fn(via T) @& -> infer R` opens mode polymorphi
 
 ### Functional Updates via Derive
 
-`derive(base, \mut draft -> { ... })` (typically piped as `base |> derive \mut draft -> { ... }`) performs path-targeted updates on a deeply immutable `SharedObject` snapshot using structural sharing, returning a new deeply immutable `T`.
+`derive(base, \mut draft -> { ... })` (typically piped as `base |> derive \mut draft -> { ... }`) performs path-targeted updates on a deeply immutable `SharedObject` snapshot, returning a new deeply immutable `T` while leaving `base` unchanged (implementations may structurally share unchanged immutable subgraphs).
 
 ```ril
 type Profile = .{ email: str, tags: []str }
@@ -906,7 +910,7 @@ type Checked<n: int |> WrongCheck> = int
 -- fn dyn_cap(n: int) -> () { let _: Chunk<int, n> = .{ data: [] } } -- Error [E0814]: non-static value argument
 ```
 
-- **Closed type sets (`T: int | f64`)**: Every member is checked at definition time (`E0301`), each call specializes `T` to one concrete type (`E0306`), and `match <T>` over all members is exhaustive (`E0304` on redundant `_`). Bare untagged unions or literal types fail `E0318`.
+- **Closed type sets (`T: int | f64`)**: Every member is checked at definition time (`E0301`), each call instantiates `T` to one concrete type (`E0306`), and `match <T>` over all members is exhaustive (`E0304` on redundant `_`). Bare untagged unions or literal types fail `E0318`.
 - **Static type checks (`T |> Check<Args>`)**: Passes `T` first; holds iff $T \not\equiv \text{never} \wedge \text{Check}\langle T, \text{Args} \rangle \equiv T$ (`E0301`, `E0306`).
 - **Static value checks (`cap: int |> Positive`)**: Runs after kind checking and substitution; accepts `<()>`, rejects `<never>` (`E0323`), and fails `E0306` on any other type value. `Key<T>` (`val |> Key<T>` $\equiv$ `Key<val, T>`) validates coordinates of `T`.
 - **Strict parameter kinds (`E0306`, `E0323`, `E0814`, `E0340`, `E0344`)**: Ordinary values and type values cannot supply type parameters (`E0306`; write `typeof e`). Type syntax adapts one-way to a declared `Type<T>` static value parameter. `Reflect::MemberMode` re-exports prelude `MemberMode`.
@@ -1014,7 +1018,7 @@ C |- e <= TypeResult ; J              type-producing result checking
 | `use [mut] x = expr` | Anchors `expr` in an implicit block cleanup slot, checked against $\max(M_{\text{body}}, M_{\text{clean}})$; exposes `ref` (or `mut`) in body | `E0541`, `E0548`, `E0520` |
 
 - **`ref` reassignments & `ref` slots**: `var ref` reassignments and `[ref]T` / `[K: ref V]` / `.{ [var] ref f: T }` slots require `ref`-mode expressions (`ref expr` or an existing `ref` binding/parameter; bare plain/`mut` values fail `E0357`).
-- **Mutable heap `ref` slots**: Writing into an existing mutable heap `ref` slot rejects local live or temporary `ref` views (`E0531` / `E0604` / `E0607`), while newly constructed `new` wrappers record `&return(ref x)`.
+- **Mutable shared-object `ref` slots**: Writing into an existing mutable record or collection `ref` slot rejects local live or temporary `ref` views (`E0531` / `E0604` / `E0607`), while newly constructed `new` wrappers record `&return(ref x)`.
 
 ### Bidirectional Expression Checking
 
@@ -1031,7 +1035,7 @@ assert(read_id(.{ id: 1, name: "a" }) + read_id(.{ id: 2, ok: true }) == 3)
 -- var poly_slot = \x -> x              -- Error [E0344]: reassignable storage requires a fixed concrete type
 ```
 
-- **Local generalization (`K-ANON`)**: Pure anonymous functions bound by local `let` generalize unresolved unconstrained parameters and open record-tail constraints, specializing independently at each call site.
+- **Local generalization (`K-ANON`)**: Pure anonymous functions bound by local `let` generalize unresolved unconstrained parameters and open record-tail constraints, instantiating independently at each call site.
 - **Multi-`?` error join**: When an unannotated closure has multiple `?` sites over `!<_, E_i>`, its inferred error type is the unique greatest sum $E_{\max} \in \{E_i\}$ under $\preceq_{\text{sum}}$ (`E0344` if none dominates and no contextual `CallableType` supplies the target).
 - **Fixed concrete storage**: `var` slots, array/map elements, record fields, and escaping runtime values require fixed concrete schemas (`E0344`).
 
@@ -1084,7 +1088,7 @@ assert(sample(1) == 20 && <SampleOut> == <int>)
 
 ### Semantic Interfaces and Diagnostic Boundaries
 
-- **K-IFACE**: Compiled module interfaces retain normalized parameter/return schemas, labels and defaults, `via` mode correlations, `use` cleanup declarations, `Sendable`/`SharedObject` facts across `opaque` boundaries, effect sets, and minimal provenance relations.
+- **K-IFACE**: Module semantic interfaces retain normalized parameter/return schemas, labels and defaults, `via` mode correlations, `use` cleanup declarations, `Sendable`/`SharedObject` facts across `opaque` boundaries, effect sets, and minimal provenance relations across compilation-unit boundaries.
   - Return and storage metadata maps `new`/existing subgraphs and concrete effects/state of open `@`/`&`/`@&` callables to nested member/element paths and branch alternatives, preserved across generic substitution, aliases, record/collection storage, and module export.
 
 ---
@@ -1158,7 +1162,7 @@ assert(c.count == 6)
 
 ### New-Qualified Locals and Mode-Preserving Reception
 
-A pinned `let mut` (fixed binding slot, independent of GC object movement) initialized by construction, `clone`, or a `new`-qualified result retains `new` qualification while its `new` subgraphs have no independent surviving outside aliases.
+A pinned `let mut` (fixed binding slot, independent of physical object relocation) initialized by construction, `clone`, or a `new`-qualified result retains `new` qualification while its `new` subgraphs have no independent surviving outside aliases.
 
 Contained existing sources keep their own provenance; `new x` preserves identity, ends `x` and dependent paths (`E0549`), and leaves independent existing-source paths valid. Handing off or freezing a `new`-qualified local always requires explicit `new x`—including at return boundaries (`new b`, `Ok(new out)`), never implicitly transferring on scope exit. On a named `fn`, returning a `new`-qualified `SharedObject` requires declaring `-> new T` (`E0544`); whether to freeze or mutate it is decided by the caller.
 
@@ -1226,7 +1230,7 @@ Array::push(mut views, ref fixed_doc)
 
 -- Rejected on collection elements:
 -- let mut bad_views: [ref]Doc = [fixed_doc] -- Error [E0357]: plain element != '[ref]Doc'
--- Array::push(mut views, reader)      -- Error [E0531]: mutable heap 'ref' slot rejects local live 'ref' view
+-- Array::push(mut views, reader)      -- Error [E0531]: mutable collection 'ref' slot rejects local live 'ref' view
 ```
 
 ### Scoped Resource Bindings
@@ -1269,7 +1273,7 @@ fn run_query() @io -> new !<int, str> {
 - **Body mode & reception**: `use x` exposes `ref` (`use _` keeps an anonymous slot); `use mut x` exposes `mut` (`E0527` requires a body write). `expr` is checked against $\max(M_{\text{body}}, M_{\text{clean}})$ under $\text{\texttt{ref}} < \text{\texttt{mut}} < \text{\texttt{new}}$ (`E0548`, `E0520`).
 - **Cleanup effects (`E0616`, `E0612`)**: Synchronous `@io` and user `fn` effects are allowed and charged at the `use` site (`E0612`); `@fiber` is prohibited (`E0616`). `with` handlers declared **above** `use` handle its cleanup `@Eff`; handlers declared **below** exit earlier and do not.
 - **Confinement (`E0532`, `E0604`)**: Forbids `use var` (`E0532`), `^mut` sharing, rebinding, early `new x` handoff, return escape, and closure/fiber capture (`E0604`, `E0601`).
-- **LIFO execution**: Cleanup runs once per initialized binding in reverse order on normal exit, `return`, `break`, `continue`, `?`, panic unwinding, and unshielded `@fiber` cancellation; a panic inside cleanup during active unwinding terminates the OS process immediately.
+- **LIFO execution**: Cleanup runs once per initialized binding in reverse order on normal exit, `return`, `break`, `continue`, `?`, panic unwinding, and unshielded `@fiber` cancellation; a panic inside cleanup during active unwinding triggers immediate uncatchable program termination (abort).
 
 ### Declaration Metadata Attributes
 
@@ -1485,7 +1489,7 @@ assert((~0 == -1) && ((-8 >> 2) == -2) && ((1 << 100) > 0))
   - Defined exclusively on `int` (`E0327` elsewhere) with infinite-width two's-complement semantics (`~x == -x - 1`, `x >> k` arithmetic floor shift).
   - Syntactic negative literal shift counts (`-k`) fail `E0361`; non-literal `k < 0` panics (`E0831` in static evaluation).
 - **Equality & Ordering (`==`, `!=`, `<`, `<=`, `>`, `>=`)**:
-  - `==` / `!=` require same-type operands (`E0301`, `E0305` on distinct nominals) recursively excluding callables, `.d.ril` `opaque` handles, `Scope`, `Task`, `Sender`, `Receiver`, and `Draft` (`E0327`). Structural equality over cyclic shared-object graphs terminates via coinductive visited-pair tracking.
+  - `==` / `!=` require same-type operands (`E0301`, `E0305` on distinct nominals) recursively excluding callables, `.d.ril` `opaque` handles, `Scope`, `Task`, `Sender`, `Receiver`, and `Draft` (`E0327`). Structural equality over cyclic shared-object graphs is defined coinductively (greatest fixed point of componentwise equivalence) and must terminate.
   - `f64` follows IEEE-754 (`NaN != NaN`, `-0.0 == 0.0`); `?T == None` / `!= None` tests the option tag even when `T` lacks equality.
   - Map keys and `Set` elements additionally forbid `f64`, extensible `{ .. }` sums, and mutable member modes (`E0328`).
   - Static type-value exception: `Type<A>` and `Type<B>` may represent different types; `<A> == <B>` holds iff `A` and `B` are type-equivalent (`!=` is its complement), regardless of value equality.
@@ -1517,7 +1521,7 @@ cells |> mut Array::push(Cell.{ v: 2 }) -- OK: 'elem' last use has ended
 ```
 
 - **Arrays `[M]T`**: Accept `int` element indices (`xs[i]` panics out of bounds; `xs?[i] -> ?T` returns `None`). Single-element bracket indexing on `str` or `bytes` fails `E0352` (use `String::at` / `Bytes::at`); dynamic bracket indexing on records fails `E0324`.
-- **Slicing (`s[a..b]`, `s[a..=b]`, `s?[a..b]`)**: Produces a newly allocated array on `[M]T` (preserving element modes; binding directly to `let ref` fails `E0543`), a Unicode-scalar sub-string on `str`, and a byte sub-sequence on `bytes`.
+- **Slicing (`s[a..b]`, `s[a..=b]`, `s?[a..b]`)**: Produces a fresh `new`-qualified array on `[M]T` (preserving element modes; binding directly to `let ref` fails `E0543`), a Unicode-scalar sub-string on `str`, and a byte sub-sequence on `bytes`.
 - **Maps `[K: M V]`**: Reads require safe lookup `m?[k] -> ?V` (`E0352` on `m[k]` reads or `m[k] += v`); direct slot assignment `m[k] = v` inserts or updates key `k`.
 - **Container Element Holds (`E0537`, `E0526`)**: On live `[M]T` and `[K: M V]` containers, `xs[i]`, `xs?[i]`, and `m?[k]` establish scoped element holds bounded by the container; mutating or resizing the container while a `ref`/`mut` hold is active or during `for` iteration fails `E0537` / `E0526`.
 - **Tuple & Static Coordinate Projection (`t.0`, `r.(key)`)**: `t.0` projects tuple elements (`E0312` out of bounds; `E0337` on sums, records, collections, or primitives). `r.(key)` projects an accessible record field or tuple slot using a compile-time `meta` coordinate validated by `Key<T>`.
@@ -1765,7 +1769,7 @@ assert(classify_packet(#"{ok}"#) == "json:ok" && classify_packet(#"{"#) == "othe
 - **Construction symmetry (`E0314`, `E0349`)**: Tight `Type.{ a, b }` unpacks named records; tight `Some(x)`, `Some(mut c)`, `Ok()`, `Rect(w, h)`, and `UserId(id)` unpack payload variants and non-record nominals (`E0314` on tuple arity mismatch; `E0349` on arbitrary expressions or `{expr}` interpolations in patterns).
 - **Or-patterns & uniqueness (`E0346`, `E0347`)**: Alternatives `P1 | P2` must bind the exact same names with identical types and modes (`E0346`); duplicate binders in one alternative fail `E0347`.
 - **Range patterns (`E0348`)**: `lo..hi` / `lo..=hi` require non-empty integer intervals (`lo < hi` for `..`, `lo <= hi` for `..=`, `E0348`).
-- **Array & `str[...]` slices (`E0349`)**: Both `[a, ..rest, z]` and `str["pre", ..rest, "suf"]` allow at most one `..` / `..rest` segment (`E0349` on multiple `..`). In `ArrayPattern`, `..rest` binds a newly allocated array slice preserving the subject's element modes; in `str[...]`, literals must be non-empty without `{expr}` interpolations (`E0349`) and match `s` iff `s` starts with concatenated prefixes, ends with concatenated suffixes, and `len(s) >= len(prefix) + len(suffix)`.
+- **Array & `str[...]` slices (`E0349`)**: Both `[a, ..rest, z]` and `str["pre", ..rest, "suf"]` allow at most one `..` / `..rest` segment (`E0349` on multiple `..`). In `ArrayPattern`, `..rest` binds a fresh `new`-qualified array slice preserving the subject's element modes; in `str[...]`, literals must be non-empty without `{expr}` interpolations (`E0349`) and match `s` iff `s` starts with concatenated prefixes, ends with concatenated suffixes, and `len(s) >= len(prefix) + len(suffix)`.
 - **Exhaustiveness & reachability (`E0303`, `E0304`)**: `match` must cover every possible value (`E0303`; arms with an `if` guard do not count toward coverage). Unreachable or shadowed arms fail `E0304`.
 - **Pattern reception (`E0402`, `E0521`, `E0551`)**: Value-type bindings forbid `ref`/`mut`/`^mut` (`E0402`); requesting `mut`/`^mut` from an immutable/`ref` subject fails `E0521`; mutable decomposition on an immutable tuple or fixed-mode sub-slot (e.g., `Rect(mut a, mut b)`) fails `E0551`. Prefix mode on `let`/`if let`/`while let`/`let ... else` (`mut`, `ref`, `^mut`, `via`) applies to the top-level bound root and unmodified leaf binders; contradictory nested `BindingModifier`s fail `E0521`/`E0357`, and `via` binders require an enclosing `via` template (`E0412`).
 
@@ -2542,7 +2546,7 @@ test_absorb()
 - **Panic isolation (`E0608`)**: `action` must not observe or mutate outer `var`/`mut`/`^mut`/`ref` state, hand off outer `new` channel endpoints (`Sender`/`Receiver`), access foreign `.d.ril` `opaque` handles, emit unhandled effects (including `@io`/`@fiber`) or stateful outer `with` handlers, or leak mutable/`use` captures.
 - **Permitted local state**: Confined local `var` / `let mut` / `use` state and pure stateless outer or local `with` handlers are allowed inside `action`.
 - **Sealed `PanicInfo` (`E0301`, `E0308`, `E0810`)**: `PanicInfo` is an opaque prelude type (`E0301` on direct construction, `E0308` on representation access); `panic_message(info)` extracts the diagnostic message at runtime (`E0810` in static evaluation).
-- **Double panic**: If a `use` cleanup function panics while unwinding an earlier panic, the runtime terminates the OS process immediately without returning `Err`.
+- **Double panic**: If a `use` cleanup function panics while unwinding an earlier panic, the program triggers immediate uncatchable termination (abort) without returning `Err`.
 
 ### Structured Fiber Concurrency and Channels
 
@@ -2733,12 +2737,12 @@ MetaFnDecl  ::= { MetaAttr } [ Visibility ] "meta" "fn" ValueName [ GenericParam
 use ril/platform
 
 fn line_ending() -> str {
-    if Platform::OS == "windows" { "\r\n" } else { "\n" } -- Unreachable branch pruned after checking
+    if Platform::OS == "windows" { "\r\n" } else { "\n" } -- Statically unreachable branch eliminated after checking
 }
 fn describe<T>(x: T) -> str {
     match <T> {
         <int> -> "int:{x}"
-        _     -> String::inspect(x)                       -- Specialized per concrete T
+        _     -> String::inspect(x)                       -- Resolved per concrete instantiation of T
     }
 }
 assert(describe(7) == "int:7" && describe(true) == "true")
@@ -2750,8 +2754,8 @@ assert(describe(7) == "int:7" && describe(true) == "true")
 | `MetaValue` (`meta fn`, `meta let`, `meta(...)`) | `meta fn`, confined closures, static reflection, and dual-phase core operations |
 | `RunTime` (`fn`, closures) | Ordinary `fn`, closures, foreign `.d.ril` `fn`, built-ins, plus direct saturated `meta fn` calls with static arguments (evaluated at compile time to immutable snapshots) |
 
-- **`meta let` branch pruning**: In runtime functions, `if` / `match` branches over `meta let` constants (such as `Platform::OS`) are fully type-, mode-, and effect-checked on all branches; statically unreachable branches and `.d.ril` symbols referenced solely within them are pruned before code generation and linking.
-- **Generic `match <T>` specialization**: Static `match <T>` over an uninstantiated type parameter checks each arm under its static type fact and selects the matching arm at specialization.
+- **`meta let` branch pruning**: In runtime functions, `if` / `match` branches over `meta let` constants (such as `Platform::OS`) are fully type-, mode-, and effect-checked on all branches; statically unreachable branches never execute, and `.d.ril` foreign symbols referenced solely within them must not be required to resolve in the target execution environment.
+- **Generic `match <T>` resolution**: Static `match <T>` over an uninstantiated type parameter checks each arm under its static type fact and resolves to the single matching arm for each concrete instantiation of `T` (implementations may achieve this via specialization/monomorphization or any semantically equivalent mechanism).
 - **Nonnegative static bounds (`E0815`)**: Negative static sizes or counts where nonnegative static values are required fail `E0815`.
 
 ### Static Introspection
