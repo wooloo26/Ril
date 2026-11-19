@@ -51,7 +51,7 @@ def resourceClosureCaptureRejected : Calls.Syntax :=
   seq [accessCmd [.allocateResource 0 []],
     .invoke [] [0] (accessCmd [.write (p 0)])]
 
--- `use` / `use mut` (`use <fn>` cleanup contract) fixtures:
+-- `use` / `use mut` (`use(<fn>)` cleanup contract) fixtures:
 def scopedReadOnlyResourceObserveOk : Calls.Syntax :=
   seq [accessCmd [.allocateScoped 0 false [] true],
     .invoke [⟨p 0, 10, .observe, .observe⟩] [] (accessCmd [.read (p 10)])]

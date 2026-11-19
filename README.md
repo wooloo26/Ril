@@ -30,7 +30,7 @@ fn receive_cells() -> () {
 ```ril
 -- New containers preserve the sources of nested shared objects.
 type Shelf = .{ mut rows: [^mut]Cell }
-fn shared_shelf(^mut cell: Cell) &^mut &return{^mut cell} -> new Shelf {
+fn shared_shelf(^mut cell: Cell) &^mut &return(^mut cell) -> new Shelf {
     Shelf.{ rows: [^mut cell] }
 }
 
@@ -47,7 +47,7 @@ fn nested_sources() -> () {
 -- A new closure records its environment and captured shared source.
 type Step = fn() &up -> int
 fn make_shared_step(^mut cell: Cell)
-    &capture &^mut &return{^mut cell} -> new Step {
+    &capture &^mut &return(^mut cell) -> new Step {
     \-> { cell.value += 1; cell.value }
 }
 
