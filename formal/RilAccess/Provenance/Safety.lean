@@ -84,10 +84,10 @@ theorem view_available {world : World} {frame : RawFrame}
   | some concrete =>
     exact ⟨concrete, rfl, (Option.some.inj (by simpa [hr] using raw)).symm⟩
 
-theorem consumed_views {ended : World} (h : consume world source = .ok (object, moved, ended))
+theorem handoff_views {ended : World} (h : takeHandoff world source = .ok (object, handed, ended))
     (hv : getSlot ended.views register = some remaining) :
     register ≠ source ∧ source ∉ remaining.dependencies := by
-  rw [consume_ends h] at hv
+  rw [handoff_ends h] at hv
   obtain ⟨slot, found, rfl⟩ := Option.map_eq_some_iff.mp hv
   have key := List.find?_some found
   have live := (List.mem_filter.mp (List.mem_of_find?_eq_some found)).2
@@ -104,11 +104,11 @@ theorem metadata_operands (h : metadata program action world = .ok (after, uses)
     cases hv : world.view source <;> simp [metadata, hv, need] at h ⊢
   case handoff destination source =>
     subst register
-    cases hv : world.view source <;> simp [metadata, consume, hv, need] at h ⊢
+    cases hv : world.view source <;> simp [metadata, takeHandoff, hv, need] at h ⊢
   case scope source =>
     subst register
-    cases hv : world.view source <;> simp [metadata, consume, hv, need] at h ⊢
-  case store parent field source moving =>
+    cases hv : world.view source <;> simp [metadata, takeHandoff, hv, need] at h ⊢
+  case store parent field source handoffSlot =>
     cases hp : world.view parent
     · simp [metadata, hp, need] at h
     · cases hs : world.view source
@@ -152,7 +152,7 @@ theorem metadata_write (h : metadata program (.write register) world = .ok (afte
     · simp [metadata, hv, need, require, hw] at h
     · exact ⟨object, view, rfl, hw⟩
 
-theorem metadata_store (h : metadata program (.store parent field source moving) world = .ok (after, uses)) :
+theorem metadata_store (h : metadata program (.store parent field source handoffSlot) world = .ok (after, uses)) :
     ∃ object view, world.view parent = some (object, view) ∧ view.mode.writes = true := by
   cases hv : world.view parent with
   | none => simp [metadata, hv, need] at h
@@ -242,7 +242,7 @@ theorem evaluation_records_actuals (he : evaluateArguments world arguments = .ok
       have saved := World.view_object hv
       cases hm : acceptsArgument view arg.marker <;> simp [hv, hm, need, require] at he
       split at he
-      · cases hc : consume world arg.source with
+      · cases hc : takeHandoff world arg.source with
         | error error => simp [hc, Except.map] at he
         | ok value =>
           obtain ⟨obj, v, ended⟩ := value
@@ -253,7 +253,7 @@ theorem evaluation_records_actuals (he : evaluateArguments world arguments = .ok
             simp [hc, hr, Except.map] at he
             obtain ⟨rfl, rfl⟩ := he
             have recorded := ih hr
-            rw [consume_raw hc] at recorded
+            rw [handoff_raw hc] at recorded
             change List.mapM _ rest = _ at recorded
             simp [argumentsAt, saved, evaluatedModes, recorded]
       · cases hr : evaluateArguments world rest with

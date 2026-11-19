@@ -20,8 +20,8 @@ structure Boundary where
   bodyRoots : Footprint
   handlerRoots : Footprint
   cleanupRoots : Footprint
-  handlerEnvironment : List Origin
-  cleanupEnvironment : List Origin
+  handlerEnvironment : List SourceInstance
+  cleanupEnvironment : List SourceInstance
   deriving Repr, DecidableEq
 
 def footprint (boundary : Boundary) : Footprint :=
@@ -42,12 +42,12 @@ theorem handled_effects_exact (boundary : Boundary) (handledEffect effect : Nat)
   simp [handled, Summary.combine, Summary.handle]
 
 def events (summary : Summary) (mechanism : Mechanism) : List Event :=
-  summary.rootReturn.map (fun origin => ⟨.rootReturn, origin, mechanism⟩) ++
-  summary.contained.map (fun origin => ⟨.containedReturn, origin, mechanism⟩) ++
-  summary.writes.map (fun origin => ⟨.write, origin, mechanism⟩) ++
-  summary.retained.map (fun origin => ⟨.retain, origin, mechanism⟩) ++
-  summary.createdEnvironments.map (fun origin => ⟨.capture, origin, mechanism⟩) ++
-  summary.namedReads.map (fun origin => ⟨.read, origin, mechanism⟩)
+  summary.rootReturn.map (fun srcInst => ⟨.rootReturn, srcInst, mechanism⟩) ++
+  summary.contained.map (fun srcInst => ⟨.containedReturn, srcInst, mechanism⟩) ++
+  summary.writes.map (fun srcInst => ⟨.write, srcInst, mechanism⟩) ++
+  summary.retained.map (fun srcInst => ⟨.retain, srcInst, mechanism⟩) ++
+  summary.createdEnvironments.map (fun srcInst => ⟨.capture, srcInst, mechanism⟩) ++
+  summary.namedReads.map (fun srcInst => ⟨.read, srcInst, mechanism⟩)
 
 def state (boundary : Boundary) : List Event :=
   events boundary.body .call ++ events boundary.handler .handler ++ events boundary.cleanup .cleanup
@@ -66,18 +66,18 @@ theorem handled_state_components (boundary : Boundary) (effect : Nat) :
 
 theorem discharged_state_requires_complete_confinement
     (he : event ∈ state boundary) (hn : event ∉ outward boundary activation scope) :
-    localEvent event.kind = true ∧ owned activation scope event.origin = true ∧
+    localEvent event.kind = true ∧ allocatedIn activation scope event.srcInst = true ∧
       confined activation scope (footprint boundary) = true := discharge_only_confined he hn
 
-theorem external_environment_blocks_discharge
-    (he : origin ∈ boundary.handlerEnvironment ++ boundary.cleanupEnvironment)
-    (ho : owned activation scope origin = false) :
+theorem outer_environment_blocks_containment
+    (he : srcInst ∈ boundary.handlerEnvironment ++ boundary.cleanupEnvironment)
+    (ho : allocatedIn activation scope srcInst = false) :
     outward boundary activation scope = state boundary := by
   have hn : confined activation scope (footprint boundary) = false := by
     cases hc : confined activation scope (footprint boundary) with
     | false => rfl
     | true =>
-      have hm : origin ∈ (footprint boundary).roots ++ (footprint boundary).environments := by
+      have hm : srcInst ∈ (footprint boundary).roots ++ (footprint boundary).environments := by
         apply List.mem_append_right
         apply List.mem_append_left
         apply List.mem_append_left
@@ -88,16 +88,16 @@ theorem external_environment_blocks_discharge
   simp [outward, discharge, hn]
 
 theorem handled_handler_and_cleanup_writes_survive
-    (he : origin ∈ boundary.handler.writes ∨ origin ∈ boundary.cleanup.writes)
-    (ho : owned activation scope origin = false) :
-    ∃ event ∈ outward boundary activation scope, event.kind = .write ∧ event.origin = origin := by
-  have eventPresent : ∃ event ∈ state boundary, event.kind = .write ∧ event.origin = origin := by
+    (he : srcInst ∈ boundary.handler.writes ∨ srcInst ∈ boundary.cleanup.writes)
+    (ho : allocatedIn activation scope srcInst = false) :
+    ∃ event ∈ outward boundary activation scope, event.kind = .write ∧ event.srcInst = srcInst := by
+  have eventPresent : ∃ event ∈ state boundary, event.kind = .write ∧ event.srcInst = srcInst := by
     rcases he with hh | hc
-    · refine ⟨⟨.write, origin, .handler⟩, ?_, rfl, rfl⟩
+    · refine ⟨⟨.write, srcInst, .handler⟩, ?_, rfl, rfl⟩
       apply List.mem_append_left
       apply List.mem_append_right
       simp [events, hh]
-    · refine ⟨⟨.write, origin, .cleanup⟩, ?_, rfl, rfl⟩
+    · refine ⟨⟨.write, srcInst, .cleanup⟩, ?_, rfl, rfl⟩
       apply List.mem_append_right
       simp [events, hc]
   obtain ⟨event, hev, hk, heq⟩ := eventPresent
@@ -108,7 +108,7 @@ theorem handled_handler_and_cleanup_writes_survive
 from the handler arm revokes temporary `mut` operation parameters for `opScope`
 while preserving retained and outer non-temporary tokens. -/
 def completeFnOp (authority : Integrated.World) (opScope : Nat) : Option Integrated.World :=
-  let after := Integrated.endBoundary authority (Integrated.temporaryWrites authority opScope)
+  let after := Integrated.endBoundary authority (Integrated.scopedWrites authority opScope)
   if decide (opScope = authority.scope) &&
       (Integrated.ledgerValid authority && Integrated.ledgerValid after) then
     some after
@@ -117,7 +117,7 @@ def completeFnOp (authority : Integrated.World) (opScope : Nat) : Option Integra
 theorem complete_fn_op_facts {authority next : Integrated.World} {opScope : Nat}
     (h : completeFnOp authority opScope = some next) :
     opScope = authority.scope ∧
-    next = Integrated.endBoundary authority (Integrated.temporaryWrites authority opScope) ∧
+    next = Integrated.endBoundary authority (Integrated.scopedWrites authority opScope) ∧
     Integrated.WorldInvariant authority ∧
     Integrated.WorldInvariant next := by
   unfold completeFnOp at h
@@ -126,7 +126,7 @@ theorem complete_fn_op_facts {authority next : Integrated.World} {opScope : Nat}
   · rename_i hc
     have checks : opScope = authority.scope ∧
         (Integrated.ledgerValid authority = true ∧
-          Integrated.ledgerValid (Integrated.endBoundary authority (Integrated.temporaryWrites authority opScope)) = true) := by
+          Integrated.ledgerValid (Integrated.endBoundary authority (Integrated.scopedWrites authority opScope)) = true) := by
       simpa only [Bool.and_eq_true, decide_eq_true_eq] using hc
     cases h
     exact ⟨checks.1, rfl, Integrated.ledger_facts checks.2.1, Integrated.ledger_facts checks.2.2⟩
@@ -137,7 +137,7 @@ theorem complete_fn_op_revokes_call_binding
     {path : Integrated.Path} {resolved : Integrated.Resolved}
     (h : completeFnOp authority opScope = some next)
     (hr : Integrated.resolve next path = some resolved)
-    (hi : id ∈ Integrated.temporaryWrites authority authority.scope)
+    (hi : id ∈ Integrated.scopedWrites authority authority.scope)
     (hd : id ∈ resolved.binding.dependencies) :
     Integrated.live resolved = false := by
   obtain ⟨hscope, heq, _, hafter⟩ := complete_fn_op_facts h
@@ -155,22 +155,22 @@ theorem complete_fn_op_ends_dependent_hold
     (h : completeFnOp authority opScope = some next)
     (hl : hold ∈ next.holds)
     (hi : hold.token ∈ Integrated.scopeClosure authority
-      (Integrated.temporaryWrites authority authority.scope)) :
+      (Integrated.scopedWrites authority authority.scope)) :
     hold.active = false := by
   obtain ⟨hscope, heq, _, _⟩ := complete_fn_op_facts h
   rw [heq, hscope] at hl
   exact Integrated.dependent_hold_inactive hl hi
 
-theorem complete_fn_op_preserves_non_temporary
+theorem complete_fn_op_preserves_non_scoped
     {authority next : Integrated.World} {opScope id : Nat} {token : Integrated.Token}
     (h : completeFnOp authority opScope = some next)
     (hlook : Integrated.lookupToken authority id = some token)
-    (hnonTemp : token.temporary = false) :
+    (hnonTemp : token.scopedHold = false) :
     Integrated.lookupToken next id = some token := by
   obtain ⟨hscope, heq, _, _⟩ := complete_fn_op_facts h
-  have notTemp : id ∉ Integrated.temporaryWrites authority authority.scope := by
+  have notTemp : id ∉ Integrated.scopedWrites authority authority.scope := by
     intro hmem
-    obtain ⟨selected, hs, htemp, _, _⟩ := Integrated.selected_temporary hmem
+    obtain ⟨selected, hs, htemp, _, _⟩ := Integrated.selected_scoped_write hmem
     have eq : token = selected := Option.some.inj (hlook.symm.trans hs)
     cases eq
     simp [hnonTemp] at htemp
@@ -181,14 +181,14 @@ theorem complete_fn_op_preserves_non_temporary
 no writes, retentions, or reference returns, pure immutable Ril/static reads and
 captured environments, and admissible outward effects may cross fiber boundaries. -/
 def concurrentShareableFnHandler (pureSources : List Source) (admissibleEffects : List Nat)
-    (handler : Summary) (handlerEnv : List Origin) : Bool :=
+    (handler : Summary) (handlerEnv : List SourceInstance) : Bool :=
   handler.rootReturn.isEmpty &&
   handler.contained.isEmpty &&
   handler.writes.isEmpty &&
   handler.retained.isEmpty &&
-  handler.namedReads.all (isPureOrigin pureSources) &&
-  handler.createdEnvironments.all (isPureOrigin pureSources) &&
-  handlerEnv.all (isPureOrigin pureSources) &&
+  handler.namedReads.all (isPureInstance pureSources) &&
+  handler.createdEnvironments.all (isPureInstance pureSources) &&
+  handlerEnv.all (isPureInstance pureSources) &&
   handler.effects.all (fun e => decide (e ∈ admissibleEffects))
 
 def dischargeSharedFnEffect (branch handler : Summary) (effect : Nat) : Summary :=
@@ -196,10 +196,10 @@ def dischargeSharedFnEffect (branch handler : Summary) (effect : Nat) : Summary 
 
 theorem concurrent_handler_pure_and_stateless
     {pureSources : List Source} {admissibleEffects : List Nat}
-    {handler : Summary} {handlerEnv : List Origin}
+    {handler : Summary} {handlerEnv : List SourceInstance}
     (h : concurrentShareableFnHandler pureSources admissibleEffects handler handlerEnv = true) :
     Summary.isPure pureSources { handler with effects := [] } = true ∧
-    (∀ o ∈ handlerEnv, isPureOrigin pureSources o = true) ∧
+    (∀ o ∈ handlerEnv, isPureInstance pureSources o = true) ∧
     (∀ e ∈ handler.effects, e ∈ admissibleEffects) := by
   simp only [concurrentShareableFnHandler, Bool.and_eq_true, List.all_eq_true,
     decide_eq_true_eq] at h
@@ -210,7 +210,7 @@ theorem concurrent_handler_pure_and_stateless
 
 theorem shared_fn_handler_preserves_branch_isolation
     {pureSources : List Source} {admissibleEffects : List Nat}
-    {branch handler : Summary} {handlerEnv : List Origin} {effect : Nat}
+    {branch handler : Summary} {handlerEnv : List SourceInstance} {effect : Nat}
     (h : concurrentShareableFnHandler pureSources admissibleEffects handler handlerEnv = true) :
     (dischargeSharedFnEffect branch handler effect).writes = branch.writes ∧
     (dischargeSharedFnEffect branch handler effect).retained = branch.retained ∧
@@ -219,7 +219,7 @@ theorem shared_fn_handler_preserves_branch_isolation
     (∀ e ∈ (dischargeSharedFnEffect branch handler effect).effects,
       (e ∈ branch.effects ∧ e ≠ effect) ∨ e ∈ admissibleEffects) ∧
     (∀ o ∈ (dischargeSharedFnEffect branch handler effect).namedReads,
-      o ∈ branch.namedReads ∨ isPureOrigin pureSources o = true) := by
+      o ∈ branch.namedReads ∨ isPureInstance pureSources o = true) := by
   have hstat := concurrent_handler_pure_and_stateless h
   simp only [concurrentShareableFnHandler, Bool.and_eq_true, List.isEmpty_iff,
     List.all_eq_true] at h

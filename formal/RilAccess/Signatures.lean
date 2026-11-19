@@ -25,17 +25,17 @@ theorem path_write_requires_members (hw : (pathAccess root members).writes = tru
     · exact ih hw m hm
 
 structure Footprint where
-  roots : List Origin
-  environments : List Origin
-  escaping : List Origin
+  roots : List SourceInstance
+  environments : List SourceInstance
+  escaping : List SourceInstance
   deriving Repr, DecidableEq
 
-def owned (activation scope : Nat) (o : Origin) : Bool :=
+def allocatedIn (activation scope : Nat) (o : SourceInstance) : Bool :=
   decide (o.source.kind = .allocation) && decide (o.activation = activation) &&
     decide (o.scope = scope)
 
 def confined (activation scope : Nat) (f : Footprint) : Bool :=
-  (f.roots ++ f.environments).all (owned activation scope) && f.escaping.isEmpty
+  (f.roots ++ f.environments).all (allocatedIn activation scope) && f.escaping.isEmpty
 
 def localEvent : EventKind → Bool
   | .read | .write => true
@@ -43,11 +43,11 @@ def localEvent : EventKind → Bool
 
 def discharge (activation scope : Nat) (f : Footprint) (events : List Event) : List Event :=
   events.filter fun e =>
-    !(localEvent e.kind && owned activation scope e.origin && confined activation scope f)
+    !(localEvent e.kind && allocatedIn activation scope e.srcInst && confined activation scope f)
 
 theorem discharge_only_confined (he : e ∈ events)
     (hn : e ∉ discharge activation scope f events) :
-    localEvent e.kind = true ∧ owned activation scope e.origin = true ∧
+    localEvent e.kind = true ∧ allocatedIn activation scope e.srcInst = true ∧
       confined activation scope f = true := by
   simp only [discharge, List.mem_filter, Bool.not_eq_true', Bool.and_eq_false_iff,
     not_and, he, true_implies] at hn
@@ -58,10 +58,10 @@ theorem retained_event_survives (he : e ∈ events) (hk : localEvent e.kind = fa
   simp [discharge, he, hk]
 
 theorem confined_roots (h : confined activation scope f = true)
-    (ho : o ∈ f.roots ++ f.environments) : owned activation scope o = true := by
-  have hall : (f.roots ++ f.environments).all (owned activation scope) = true :=
+    (ho : o ∈ f.roots ++ f.environments) : allocatedIn activation scope o = true := by
+  have hall : (f.roots ++ f.environments).all (allocatedIn activation scope) = true :=
     (by simpa only [confined, Bool.and_eq_true] using h :
-      (f.roots ++ f.environments).all (owned activation scope) = true ∧
+      (f.roots ++ f.environments).all (allocatedIn activation scope) = true ∧
         f.escaping.isEmpty = true).1
   exact List.all_eq_true.mp hall o ho
 
@@ -109,7 +109,7 @@ structure SummaryOf (Reference : Type) where
   effects : List Nat := []
   deriving Repr, DecidableEq
 
-abbrev Summary := SummaryOf Origin
+abbrev Summary := SummaryOf SourceInstance
 
 def SummaryOf.references (s : SummaryOf α) : List α :=
   s.rootReturn ++ s.contained ++ s.writes ++ s.retained ++ s.createdEnvironments ++ s.namedReads
@@ -130,12 +130,12 @@ def Summary.handle (s : Summary) (effect : Nat) : Summary :=
 /-- Deeply immutable return origins incur no outward state obligation. -/
 def Summary.isPure (pureSources : List Source) (s : Summary) : Bool :=
   s.effects.isEmpty &&
-  s.rootReturn.all (isPureOrigin pureSources) &&
-  s.contained.all (isPureOrigin pureSources) &&
+  s.rootReturn.all (isPureInstance pureSources) &&
+  s.contained.all (isPureInstance pureSources) &&
   s.writes.isEmpty &&
   s.retained.isEmpty &&
-  s.namedReads.all (isPureOrigin pureSources) &&
-  s.createdEnvironments.all (isPureOrigin pureSources)
+  s.namedReads.all (isPureInstance pureSources) &&
+  s.createdEnvironments.all (isPureInstance pureSources)
 
 /-- CallableType upper-bound compatibility matching after pure-origin reduction (`actual ⊑ expected`). -/
 def SummaryOf.subsumesBy [DecidableEq α] (pure : α → Bool) (expected actual : SummaryOf α) : Bool :=
@@ -151,7 +151,7 @@ def SummaryOf.subsumesBy [DecidableEq α] (pure : α → Bool) (expected actual 
     pure o || decide (o ∈ expected.createdEnvironments))
 
 def Summary.subsumes (pureSources : List Source) (expected actual : Summary) : Bool :=
-  SummaryOf.subsumesBy (isPureOrigin pureSources) expected actual
+  SummaryOf.subsumesBy (isPureInstance pureSources) expected actual
 
 structure SummarySubsumes (pureSources : List Source) (expected actual : Summary) : Prop where
   effects : ∀ e ∈ actual.effects, e ∈ expected.effects
@@ -160,9 +160,9 @@ structure SummarySubsumes (pureSources : List Source) (expected actual : Summary
   retained : ∀ o ∈ actual.retained, o ∈ expected.retained
   writes : ∀ o ∈ actual.writes, o ∈ expected.writes ∨ o ∈ expected.retained
   namedReads : ∀ o ∈ actual.namedReads,
-    isPureOrigin pureSources o = true ∨ o ∈ expected.namedReads ∨ o ∈ expected.writes ∨ o ∈ expected.retained
+    isPureInstance pureSources o = true ∨ o ∈ expected.namedReads ∨ o ∈ expected.writes ∨ o ∈ expected.retained
   createdEnvironments : ∀ o ∈ actual.createdEnvironments,
-    isPureOrigin pureSources o = true ∨ o ∈ expected.createdEnvironments
+    isPureInstance pureSources o = true ∨ o ∈ expected.createdEnvironments
 
 theorem summary_subsumes_iff {pureSources : List Source} {expected actual : Summary} :
     expected.subsumes pureSources actual = true ↔ SummarySubsumes pureSources expected actual := by
@@ -228,16 +228,16 @@ theorem pure_summary_subsumes_iff {pureSources : List Source} {actual : Summary}
   · intro o h; exact Or.inl (hreads o h)
   · intro o h; exact Or.inl (henv o h)
 
-theorem foreign_read_not_erased_by_pure {pureSources : List Source} {expected actual : Summary} {o : Origin}
+theorem foreign_read_not_erased_by_pure {pureSources : List Source} {expected actual : Summary} {o : SourceInstance}
     (hf : o.source.kind = .foreign) (hr : o ∈ actual.namedReads)
     (hsub : expected.subsumes pureSources actual = true) :
     o ∈ expected.namedReads ∨ o ∈ expected.writes ∨ o ∈ expected.retained := by
   have h := (summary_subsumes_iff.mp hsub).namedReads o hr
   rcases h with hp | hrest
-  · rw [foreign_origin_never_pure hf] at hp; contradiction
+  · rw [foreign_instance_never_pure hf] at hp; contradiction
   · exact hrest
 
-theorem retained_not_subsumed_by_write_only {pureSources : List Source} {expected actual : Summary} {o : Origin}
+theorem retained_not_subsumed_by_write_only {pureSources : List Source} {expected actual : Summary} {o : SourceInstance}
     (hr : o ∈ actual.retained) (hsub : expected.subsumes pureSources actual = true) :
     o ∈ expected.retained :=
   (summary_subsumes_iff.mp hsub).retained o hr
@@ -258,11 +258,11 @@ theorem sameMembers_iff [DecidableEq α] {left right : List α} :
 
 /-- Pure module constants require no named state clause. Pure local reads and
 environment creation still require their definition-site `&up` / `&capture`. -/
-def isPureModuleConstant (pureSources : List Source) (origin : Origin) : Bool :=
-  decide (origin.source.kind = .module) && isPureOrigin pureSources origin
+def isPureModuleConstant (pureSources : List Source) (srcInst : SourceInstance) : Bool :=
+  decide (srcInst.source.kind = .module) && isPureInstance pureSources srcInst
 
-def Summary.requiredNamedReads (pureSources : List Source) (summary : Summary) : List Origin :=
-  summary.namedReads.filter (fun origin => !isPureModuleConstant pureSources origin)
+def Summary.requiredNamedReads (pureSources : List Source) (summary : Summary) : List SourceInstance :=
+  summary.namedReads.filter (fun srcInst => !isPureModuleConstant pureSources srcInst)
 
 /-- Named definitions spell exact exercised obligations (`E0510`, `E0529`,
 `E0612`). Callable upper-bound matching and pure-capture reduction are separate. -/
@@ -277,14 +277,14 @@ def Summary.exactSignature (pureSources : List Source) (declared actual : Summar
 
 structure SummaryExactSignature (pureSources : List Source) (declared actual : Summary) : Prop where
   effects : ∀ effect, effect ∈ declared.effects ↔ effect ∈ actual.effects
-  rootReturn : ∀ origin, origin ∈ declared.rootReturn ↔ origin ∈ actual.rootReturn
-  contained : ∀ origin, origin ∈ declared.contained ↔ origin ∈ actual.contained
-  writes : ∀ origin, origin ∈ declared.writes ↔ origin ∈ actual.writes
-  retained : ∀ origin, origin ∈ declared.retained ↔ origin ∈ actual.retained
-  createdEnvironments : ∀ origin,
-    origin ∈ declared.createdEnvironments ↔ origin ∈ actual.createdEnvironments
-  namedReads : ∀ origin,
-    origin ∈ declared.requiredNamedReads pureSources ↔ origin ∈ actual.requiredNamedReads pureSources
+  rootReturn : ∀ srcInst, srcInst ∈ declared.rootReturn ↔ srcInst ∈ actual.rootReturn
+  contained : ∀ srcInst, srcInst ∈ declared.contained ↔ srcInst ∈ actual.contained
+  writes : ∀ srcInst, srcInst ∈ declared.writes ↔ srcInst ∈ actual.writes
+  retained : ∀ srcInst, srcInst ∈ declared.retained ↔ srcInst ∈ actual.retained
+  createdEnvironments : ∀ srcInst,
+    srcInst ∈ declared.createdEnvironments ↔ srcInst ∈ actual.createdEnvironments
+  namedReads : ∀ srcInst,
+    srcInst ∈ declared.requiredNamedReads pureSources ↔ srcInst ∈ actual.requiredNamedReads pureSources
 
 theorem summary_exactSignature_iff {pureSources : List Source} {declared actual : Summary} :
     Summary.exactSignature pureSources declared actual = true ↔
@@ -298,7 +298,7 @@ theorem summary_exactSignature_iff {pureSources : List Source} {declared actual 
       h.createdEnvironments⟩, h.namedReads⟩
 
 theorem exactSignature_rejects_excess_write {pureSources : List Source}
-    {declared actual : Summary} {o : Origin}
+    {declared actual : Summary} {o : SourceInstance}
     (hdecl : o ∈ declared.writes)
     (hnoWrite : o ∉ actual.writes) :
     Summary.exactSignature pureSources declared actual = false := by
@@ -308,7 +308,7 @@ theorem exactSignature_rejects_excess_write {pureSources : List Source}
     exact False.elim (hnoWrite (((summary_exactSignature_iff.mp hex).writes o).mp hdecl))
 
 theorem exactSignature_rejects_excess_retained {pureSources : List Source}
-    {declared actual : Summary} {o : Origin}
+    {declared actual : Summary} {o : SourceInstance}
     (hdecl : o ∈ declared.retained) (hnoRetain : o ∉ actual.retained) :
     Summary.exactSignature pureSources declared actual = false := by
   cases hex : Summary.exactSignature pureSources declared actual with
@@ -317,7 +317,7 @@ theorem exactSignature_rejects_excess_retained {pureSources : List Source}
     exact False.elim (hnoRetain (((summary_exactSignature_iff.mp hex).retained o).mp hdecl))
 
 theorem exactSignature_rejects_missing_environment {pureSources : List Source}
-    {declared actual : Summary} {o : Origin}
+    {declared actual : Summary} {o : SourceInstance}
     (hactual : o ∈ actual.createdEnvironments) (hmissing : o ∉ declared.createdEnvironments) :
     Summary.exactSignature pureSources declared actual = false := by
   cases hex : Summary.exactSignature pureSources declared actual with
@@ -327,7 +327,7 @@ theorem exactSignature_rejects_missing_environment {pureSources : List Source}
       (((summary_exactSignature_iff.mp hex).createdEnvironments o).mpr hactual))
 
 theorem exactSignature_rejects_missing_local_read {pureSources : List Source}
-    {declared actual : Summary} {o : Origin}
+    {declared actual : Summary} {o : SourceInstance}
     (hlocal : o.source.kind ≠ .module) (hactual : o ∈ actual.namedReads)
     (hmissing : o ∉ declared.namedReads) :
     Summary.exactSignature pureSources declared actual = false := by
@@ -356,11 +356,11 @@ theorem below_allocation_bound (h : x ∈ objects) : x < allocationBound objects
       simp only [allocationBound]
       omega
 
-def freshObject (old : List Nat) (object : Nat) : Nat := allocationBound old + object
+def allocatedObject (old : List Nat) (object : Nat) : Nat := allocationBound old + object
 
-theorem fresh_object_injective : Function.Injective (freshObject old) := by
+theorem allocated_object_injective : Function.Injective (allocatedObject old) := by
   intro a b h
-  unfold freshObject at h
+  unfold allocatedObject at h
   omega
 
 /-- Alternatives retain joint output assignments instead of independent unions. -/
@@ -392,9 +392,9 @@ structure ForeignSignature where
   deriving Repr, DecidableEq
 
 def ForeignConforms (signature : ForeignSignature) (trace : List Event) : Prop :=
-  ∀ e ∈ trace, e.origin.source ∈ signature.sources
+  ∀ e ∈ trace, e.srcInst.source ∈ signature.sources
 
 theorem foreign_sources_covered (conforms : ForeignConforms signature trace)
-    (he : e ∈ trace) : e.origin.source ∈ signature.sources := conforms e he
+    (he : e ∈ trace) : e.srcInst.source ∈ signature.sources := conforms e he
 
 end RilAccess

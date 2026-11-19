@@ -139,7 +139,7 @@ structure Token where
   id : Nat
   region : Pointer
   active : Bool
-  temporary : Bool
+  scopedHold : Bool
   qualified : Bool
   retained : Bool
   scope : Nat
@@ -153,7 +153,7 @@ structure BindingAccess where
   dependencies : List Nat
   alive : Bool
   scope : Nat
-  immutableOrigin : Bool
+  immutableSource : Bool
   isScoped : Bool := false
   deriving Repr, DecidableEq
 
@@ -199,7 +199,7 @@ structure Resolved where
   replaceable : Bool
   object : Bool
   tokens : List Token
-  authorityOrigins : List Nat
+  authorityAncestors : List Nat
   deriving Repr, DecidableEq
 
 def live (r : Resolved) : Bool :=
@@ -210,13 +210,13 @@ def live (r : Resolved) : Bool :=
 
 def noHoldConflict (r : Resolved) (holds : List Hold) (writing : Bool := true) : Bool :=
   holds.all fun hold => !hold.active || !overlaps hold.region r.pointer ||
-    decide (hold.token ∈ r.authorityOrigins) ||
-    (!writing && (!hold.writes || r.binding.immutableOrigin || decide (r.effective = .immutable)))
+    decide (hold.token ∈ r.authorityAncestors) ||
+    (!writing && (!hold.writes || r.binding.immutableSource || decide (r.effective = .immutable)))
 
-def noTemporary (r : Resolved) : Bool := r.tokens.all (fun token => !token.temporary)
+def noScopedHold (r : Resolved) : Bool := r.tokens.all (fun token => !token.scopedHold)
 
 def deepImmutable (r : Resolved) : Bool :=
-  r.binding.immutableOrigin || decide (r.effective = .immutable)
+  r.binding.immutableSource || decide (r.effective = .immutable)
 
 inductive ObservationRule where
   | read | write | replaceScalar | retain
@@ -245,7 +245,7 @@ def authorizedLocal (e : AccessCheck) : Bool :=
         r.replaceable && r.parentAccess.writes && r.grant.declared.writes
     | .retain => decide (e.observation.kind = .retain) && r.object &&
         !r.grant.resource && !r.binding.isScoped &&
-        r.effective.writes && r.grant.declared.writes && noTemporary r
+        r.effective.writes && r.grant.declared.writes && noScopedHold r
 
 /-- Recheck the complete physical path against its original allocation schema.
 Alias-local metadata alone cannot certify a writable originally-immutable member. -/
@@ -329,23 +329,23 @@ def endTokens (w : World) (ids : List Nat) : World :=
   { w with tokens := w.tokens.map fun token =>
       if token.id ∈ ids then { token with active := false, qualified := false } else token }
 
-def addToken (w : World) (region : Pointer) (temporary qualified retained : Bool)
+def addToken (w : World) (region : Pointer) (scopedHold qualified retained : Bool)
     (scope : Nat) (parents : List Nat := []) : World :=
   { w with
-    tokens := ⟨w.nextToken, region, true, temporary, qualified, retained, scope, parents,
-      if temporary then parents else []⟩ :: w.tokens,
+    tokens := ⟨w.nextToken, region, true, scopedHold, qualified, retained, scope, parents,
+      if scopedHold then parents else []⟩ :: w.tokens,
     nextToken := w.nextToken + 1 }
 
 def install (w : World) (register : Nat) (mode : MemberMode) (dependencies : List Nat)
-    (scope : Nat) (immutableOrigin : Bool) (isScoped : Bool := false) : World :=
-  addRequirement (putBinding w ⟨register, mode, dependencies, true, scope, immutableOrigin, isScoped⟩)
+    (scope : Nat) (immutableSource : Bool) (isScoped : Bool := false) : World :=
+  addRequirement (putBinding w ⟨register, mode, dependencies, true, scope, immutableSource, isScoped⟩)
     register mode
 
 def eligibleHandoff (w : World) (r : Resolved) : Bool :=
   live r && !r.binding.isScoped && noHoldConflict r w.holds && r.object && r.effective.writes &&
     r.grant.declared.writes && !r.binding.mode.replaceable &&
     decide (r.binding.dependencies.length = 1) &&
-    r.tokens.all (fun token => token.qualified && !token.temporary && !token.retained &&
+    r.tokens.all (fun token => token.qualified && !token.scopedHold && !token.retained &&
       decide (token.region = r.pointer)) &&
     w.bindings.all (fun binding =>
       bindingEnded w binding ||
@@ -362,7 +362,7 @@ def receiving (w : World) (r : Resolved) (mode : MemberMode) (scope : Nat) : Boo
   | .ref => !r.binding.mode.replaceable &&
       r.tokens.all (fun token => decide (token.scope ≤ scope) || token.retained)
   | .mut => false
-  | .shared => !r.grant.resource && r.effective.writes && r.grant.declared.writes && noTemporary r
+  | .shared => !r.grant.resource && r.effective.writes && r.grant.declared.writes && noScopedHold r
 
 def checkSchema (schema : Schema) : Bool :=
   decide ((schema.map Field.coordinate).Nodup) &&
@@ -533,7 +533,7 @@ def transfer (w : World) (atom : Atom) : Option World := do
             ⟨destination, ⟨false, .mut⟩, w.nextToken :: r.binding.dependencies, true, w.scope, false, false⟩)
         else none
       | .retained =>
-        if !r.grant.resource && !r.binding.isScoped && r.effective.writes && r.grant.declared.writes && noTemporary r then
+        if !r.grant.resource && !r.binding.isScoped && r.effective.writes && r.grant.declared.writes && noScopedHold r then
           let next := addToken (invalidateQualification w r.pointer) r.pointer false false false w.scope
             r.binding.dependencies
           pure (putBinding (markUse { next with
@@ -577,7 +577,7 @@ def expectedGrants (w : World) : Atom → List Grant
 def ledgerValid (w : World) : Bool :=
   decide ((w.tokens.map Token.id).Nodup) &&
   w.tokens.all (fun token =>
-    (decide (token.id < w.nextToken) && !(token.temporary && token.retained)) &&
+    (decide (token.id < w.nextToken) && !(token.scopedHold && token.retained)) &&
     token.dependencies.all (fun id => decide (id < token.id) && (lookupToken w id).isSome)) &&
   w.bindings.all (fun binding => binding.dependencies.all (fun id =>
     (lookupToken w id).any (fun token => token.dependencies.all (fun parent => decide (parent ∈ binding.dependencies))))) &&
@@ -693,10 +693,10 @@ def satisfiesUse (uses : List Use) (requirement : Requirement) : Bool :=
 
 structure Analysis where
   worlds : List World
-  origins : List Source
+  srcInsts : List Source
   deriving Repr, DecidableEq
 
-def worldOrigins (world : World) : List Source :=
+def worldInstances (world : World) : List Source :=
   (world.raw.observations.map (fun observation => observation.pointer.source) ++
     world.raw.roots.map (fun root => root.2.source)) ++ world.grants.map Grant.source
 
@@ -709,6 +709,6 @@ def check (program : Syntax) : Except Error Analysis :=
     let requirements := worlds.flatMap World.requirements
     match requirements.find? (fun requirement => !satisfiesUse (allUses worlds) requirement) with
     | some requirement => .error (.absentUse requirement)
-    | none => .ok ⟨worlds, worlds.flatMap worldOrigins⟩
+    | none => .ok ⟨worlds, worlds.flatMap worldInstances⟩
 
 end RilAccess.Integrated

@@ -6,7 +6,7 @@ namespace RilAccess.Provenance
 structure View where
   mode : Access
   qualified : Bool := false
-  temporary : Bool := false
+  scopedHold : Bool := false
   dependencies : List Register := []
   formals : List Register := []
   /-- The object was allocated after this frame's entry. This witness is
@@ -32,7 +32,7 @@ structure World where
   outside : List Object := []
   published : List Object := []
   stores : List Retention := []
-  ownership : List (Object × Field) := []
+  newSlots : List (Object × Field) := []
   scopes : List Register := []
   deriving Repr, DecidableEq
 
@@ -49,34 +49,34 @@ def World.endPath (world : World) (register : Register) : World :=
 def World.liveObjects (world : World) : List Object :=
   world.views.filterMap (fun (r, _) => world.raw.get r)
 
-def World.external (world : World) : List Object :=
+def World.outsideVisible (world : World) : List Object :=
   (world.outside ++ world.published).eraseDups
 
-def World.remember (world : World) (store : Retention) (owned : Bool) : World :=
+def World.remember (world : World) (store : Retention) (inNewSubgraph : Bool) : World :=
   let slot := (store.parent, store.field)
-  let oldOwnership := world.ownership.filter (· != slot)
-  let ownership := if owned then slot :: oldOwnership else oldOwnership
-  { world with stores := store :: world.stores.filter (fun old => !store.sameSlot old), ownership }
+  let oldNewSlots := world.newSlots.filter (· != slot)
+  let newSlots := if inNewSubgraph then slot :: oldNewSlots else oldNewSlots
+  { world with stores := store :: world.stores.filter (fun old => !store.sameSlot old), newSlots }
 
 abbrev reachable := Heap.reachable (Node := Object)
 abbrev separated := Heap.separated (Node := Object)
 
-/-- Consuming storage establishes construction ownership independently of the
+/-- Handoff storage establishes new-subgraph inclusion independently of the
     slot's access mode. The first reception can freeze a fresh child. -/
-def ownedLinks (ownership : List (Object × Field)) (edges : List Link) : List Link :=
-  edges.filter (fun edge => ownership.contains (edge.parent.abstract, edge.field))
+def newLinks (newSlots : List (Object × Field)) (edges : List Link) : List Link :=
+  edges.filter (fun edge => newSlots.contains (edge.parent.abstract, edge.field))
 
 def newRegion (world : World) (root : Object) : List Object :=
-  reachable (ownedLinks world.ownership world.raw.memory.heap) [root]
+  reachable (newLinks world.newSlots world.raw.memory.heap) [root]
 
 def isolated (world : World) (root : Object) (outside : List Object) : Bool :=
-  let external := reachable world.raw.memory.heap outside
-  (newRegion world root).all (fun o => !external.contains o)
+  let outsideVisible := reachable world.raw.memory.heap outside
+  (newRegion world root).all (fun o => !outsideVisible.contains o)
 
 def boundaries (program : Program) (world : World) (object : Object) : List (Object × Access) :=
   let region := newRegion world object
   (world.raw.memory.heap.filterMap fun edge => do
-    if !region.contains edge.parent || world.ownership.contains (edge.parent.abstract, edge.field) then none else
+    if !region.contains edge.parent || world.newSlots.contains (edge.parent.abstract, edge.field) then none else
       let schema ← program.slot edge.parent edge.field
       some (edge.child, schema.access)).eraseDups
 
@@ -114,16 +114,16 @@ def need (value : Option α) (error : Error := .unavailable) : Except Error α :
   | some result => .ok result
   | none => .error error
 
-def consume (world : World) (register : Register) :
+def takeHandoff (world : World) (register : Register) :
     Except Error (Object × View × World) := do
   let (object, view) ← need (world.view register)
   let ended := world.endPath register
-  require (view.qualified && !view.temporary &&
-    isolated world object (ended.liveObjects ++ ended.external)) .construction
+  require (view.qualified && !view.scopedHold &&
+    isolated world object (ended.liveObjects ++ ended.outsideVisible)) .construction
   return (object, { view with dependencies := [] }, ended)
 
 inductive UseKind where
-  | write | consume | retain | rootRetain | publish
+  | write | handoff | retain | rootRetain | publish
   deriving Repr, DecidableEq
 
 abbrev Use := Register × UseKind
@@ -132,7 +132,7 @@ def used (view : View) (kind : UseKind) : List Use :=
   view.formals.map (·, kind)
 
 def survivingStores (world : World) (value : Option Register) : List Use :=
-  let externallyVisible := reachable world.raw.memory.heap (world.external ++ (value.bind world.raw.get).toList)
+  let externallyVisible := reachable world.raw.memory.heap (world.outsideVisible ++ (value.bind world.raw.get).toList)
   world.stores.flatMap fun store =>
     if store.retains && externallyVisible.contains store.parent then store.formals.map (·, .retain) else []
 
@@ -141,7 +141,7 @@ def receive (view : View) (mode : Access) : Bool :=
   | .immutable => view.mode == .immutable
   | .ref => true
   | .mut => false
-  | .shared => !view.temporary && (view.mode == .shared || view.qualified)
+  | .shared => !view.scopedHold && (view.mode == .shared || view.qualified)
 
 def metadata (program : Program) (action : Primitive) (world : World) : Except Error (World × List Use) := do
   match action with
@@ -154,36 +154,36 @@ def metadata (program : Program) (action : Primitive) (world : World) : Except E
     let bound := { view with mode, qualified := false, dependencies }
     return (world.setView destination bound, [])
   | .handoff destination source =>
-    let (_, view, ended) ← consume world source
-    return (ended.setView destination view, used view .consume)
-  | .store parent field source moving =>
-    let (owner, holder) ← need (world.view parent)
+    let (_, view, ended) ← takeHandoff world source
+    return (ended.setView destination view, used view .handoff)
+  | .store parent field source handoffSlot =>
+    let (parentObj, holder) ← need (world.view parent)
     let (target, child) ← need (world.view source)
-    require owner.singleton .summarizedSlot
+    require parentObj.singleton .summarizedSlot
     require holder.mode.writes .access
-    let schema ← need (program.slot owner field) .schema
-    let occupied := world.raw.memory.heap.any (Link.atSlot owner field)
+    let schema ← need (program.slot parentObj field) .schema
+    let occupied := world.raw.memory.heap.any (Link.atSlot parentObj field)
     require (!occupied || schema.replaceable) .schema
-    if moving then
+    if handoffSlot then
       require (schema.access != .ref) .schema
-      let (_, _, ended) ← consume world source
-      require ((ended.view parent).isSome && owner != target) .construction
+      let (_, _, ended) ← takeHandoff world source
+      require ((ended.view parent).isSome && parentObj != target) .construction
       if schema.access == .immutable then
         require (freezable program world target) .construction
-      return (ended.remember ⟨owner, field, child.formals, false, child.localAllocation⟩ true,
-        used holder .write ++ used child .consume)
+      return (ended.remember ⟨parentObj, field, child.formals, false, child.localAllocation⟩ true,
+        used holder .write ++ used child .handoff)
     else
-      require (schema.access != .mut && schema.access == child.mode && !child.temporary &&
+      require (schema.access != .mut && schema.access == child.mode && !child.scopedHold &&
         (child.mode != .ref || child.dependencies.isEmpty)) .schema
-      return (world.remember ⟨owner, field, child.formals, child.mode == .shared, child.localAllocation⟩ false,
+      return (world.remember ⟨parentObj, field, child.formals, child.mode == .shared, child.localAllocation⟩ false,
         used holder .write)
   | .select destination parent field =>
-    let (owner, holder) ← need (world.view parent)
-    require owner.singleton .summarizedSlot
-    let schema ← need (program.slot owner field) .schema
+    let (parentObj, holder) ← need (world.view parent)
+    require parentObj.singleton .summarizedSlot
+    let schema ← need (program.slot parentObj field) .schema
     let mode := attenuate holder.mode schema.access
     let dependencies := (parent :: holder.dependencies).eraseDups
-    let stored := world.stores.find? (fun store => store.parent == owner && store.field == field)
+    let stored := world.stores.find? (fun store => store.parent == parentObj && store.field == field)
     let formals := (stored.map Retention.formals).getD holder.formals
     let localAllocation := stored.any Retention.localAllocation
     let view := { holder with mode, qualified := false, dependencies, formals, localAllocation }
@@ -197,11 +197,11 @@ def metadata (program : Program) (action : Primitive) (world : World) : Except E
     return (world, used view .write)
   | .publish register =>
     let (object, view) ← need (world.view register)
-    require (view.mode == .shared && !view.temporary) .access
+    require (view.mode == .shared && !view.scopedHold) .access
     return ({ world with published := (object :: world.published).eraseDups }, used view .publish)
   | .scope register =>
-    let (_, view, ended) ← consume world register
-    let opened := ended.setView register { view with qualified := false, temporary := true, confined := true }
+    let (_, view, ended) ← takeHandoff world register
+    let opened := ended.setView register { view with qualified := false, scopedHold := true, confined := true }
     return ({ opened with scopes := register :: world.scopes }, [])
   | .expire register =>
     let (_, view) ← need (world.view register)
@@ -223,9 +223,9 @@ abbrev paramAccess := ParameterMode.access
 def acceptsArgument (view : View) : ParameterMode → Bool
   | .observe => true
   | .mutable => view.mode == .mut
-  | .retained => view.mode == .shared && !view.temporary
+  | .retained => view.mode == .shared && !view.scopedHold
   | .immutable => view.mode == .immutable
-  | .construction => view.mode == .mut && view.qualified && !view.temporary
+  | .construction => view.mode == .mut && view.qualified && !view.scopedHold
 
 abbrev Evaluated := Object × View × ParameterMode
 
@@ -235,7 +235,7 @@ def evaluateArguments : World → List Argument → Except Error (World × List 
     let (object, view) ← need (world.view argument.source)
     require (acceptsArgument view argument.marker) .access
     let next ← if argument.marker == .construction then
-        (consume world argument.source).map (·.2.2)
+        (takeHandoff world argument.source).map (·.2.2)
       else pure world
     let (ended, evaluated) ← evaluateArguments next rest
     return (ended, (object, view, argument.marker) :: evaluated)
@@ -266,9 +266,9 @@ def prepare (function : Function) (caller : World) (arguments : List Argument) :
   let raw ← need (caller.raw.prepare (arguments.map Argument.source))
   let views := actuals.zipIdx.map fun ((_, argument, mode), formal) =>
     let received := formalView mode formal
-    (formal, { received with temporary := received.temporary || argument.temporary, confined := argument.confined })
-  let outside := (afterEvaluation.external ++ afterEvaluation.liveObjects).eraseDups
-  let entered : World := { raw, views, outside, ownership := caller.ownership }
+    (formal, { received with scopedHold := received.scopedHold || argument.scopedHold, confined := argument.confined })
+  let outside := (afterEvaluation.outsideVisible ++ afterEvaluation.liveObjects).eraseDups
+  let entered : World := { raw, views, outside, newSlots := caller.newSlots }
   return ⟨entered, afterEvaluation, actuals, arguments.map Argument.source⟩
 
 def formalMaySource (function : Function) (formal : Register) (mode : Access) : Bool :=
@@ -302,18 +302,18 @@ def checkReturn (program : Program) (function : Function) (entry world : World)
     return ⟨some view, [], []⟩
   | .observe formals, some register =>
     let (object, view) ← need (world.view register)
-    let origins := formals.filter (fun formal =>
+    let srcInsts := formals.filter (fun formal =>
       formalMaySource function formal .ref && entryContains entry formal object)
-    require (view.mode == .ref && !view.confined && !origins.isEmpty) .returnSource
-    return ⟨some { view with formals := origins }, [], []⟩
+    require (view.mode == .ref && !view.confined && !srcInsts.isEmpty) .returnSource
+    return ⟨some { view with formals := srcInsts }, [], []⟩
   | .retained formal, some register =>
     let (object, view) ← need (world.view register)
-    require (view.mode == .shared && !view.temporary && formalMaySource function formal .shared &&
+    require (view.mode == .shared && !view.scopedHold && formalMaySource function formal .shared &&
       entryContains entry formal object) .returnSource
     return ⟨some { view with formals := [formal] }, [], [(formal, .rootRetain)]⟩
   | .construction, some register =>
     let (object, view) ← need (world.view register)
-    require (view.qualified && isolated world object world.external) .construction
+    require (view.qualified && isolated world object world.outsideVisible) .construction
     let old ← need ((boundaries program world object).mapM (inferOld function entry)) .returnSource
     return ⟨some view, old, old.filterMap (fun s =>
       if s.mode == .shared then some (s.formal, .retain) else none)⟩
@@ -327,7 +327,7 @@ def restoreMetadata (call : Prepared) (exited : World) : World :=
   let fresh := exited.stores.map (fun store => { store with formals := actualFormals call store.formals })
   let stores := fresh ++ call.caller.stores.filter (fun old => !(fresh.any (old.sameSlot ·)))
   let published := (exited.published ++ call.caller.published).eraseDups
-  { call.caller with published, stores, ownership := exited.ownership }
+  { call.caller with published, stores, newSlots := exited.newSlots }
 
 def abortCall (call : Prepared) (exited : World) : World :=
   let restored := restoreMetadata call exited
@@ -353,9 +353,9 @@ def receiveResult (program : Program) (call : Prepared) (exited : World) (result
           (call.actuals[formal]?).toList.flatMap (fun (_, argument, _) => argument.dependencies)).eraseDups
       else []
     let qualified := view.qualified && mode == .mut
-    let temporary := mode == .ref && view.formals.any (fun formal =>
-      (call.actuals[formal]?).any (fun (_, argument, _) => argument.temporary))
-    let received := { view with mode, formals, dependencies, temporary, qualified }
+    let scopedHold := mode == .ref && view.formals.any (fun formal =>
+      (call.actuals[formal]?).any (fun (_, argument, _) => argument.scopedHold))
+    let received := { view with mode, formals, dependencies, scopedHold, qualified }
     return restored.setView register received
   | _, _, _ => throw .returnSource
 

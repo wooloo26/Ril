@@ -38,17 +38,17 @@ inductive ConstructorError where
 /-- Lower a resolved unit tag (`None`) or empty-argument unit-payload construction (`Some()`).
 Calling a unit tag fails (`E0338`); bare payload constructors denote callable
 values and are outside this sum allocation boundary. -/
-def lowerUnitVariant (unitTag : Nat) (origin : Origin) (variant : UnitVariant)
+def lowerUnitVariant (unitTag : Nat) (srcInst : SourceInstance) (variant : UnitVariant)
     (form : ConstructorForm) : Except ConstructorError Cell :=
   match variant, form with
-  | .tag schema, .bare => .ok ⟨origin, .fixed schema [], []⟩
+  | .tag schema, .bare => .ok ⟨srcInst, .fixed schema [], []⟩
   | .tag _, .unitCall => .error .nullaryVariantArgument
   | .payload _, .bare => .error .callableValue
   | .payload schema, .unitCall =>
-    .ok ⟨origin, .fixed schema [⟨.scalar unitTag, ⟨false, .immutable⟩⟩], [unitValue unitTag]⟩
+    .ok ⟨srcInst, .fixed schema [⟨.scalar unitTag, ⟨false, .immutable⟩⟩], [unitValue unitTag]⟩
 
-theorem unit_tag_call_rejected (unitTag : Nat) (origin : Origin) (schema : Nat) :
-    lowerUnitVariant unitTag origin (.tag schema) .unitCall = .error .nullaryVariantArgument := rfl
+theorem unit_tag_call_rejected (unitTag : Nat) (srcInst : SourceInstance) (schema : Nat) :
+    lowerUnitVariant unitTag srcInst (.tag schema) .unitCall = .error .nullaryVariantArgument := rfl
 
 inductive DeriveInputError where
   | invalidDeriveInput -- E0536

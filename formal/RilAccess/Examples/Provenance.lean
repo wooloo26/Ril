@@ -8,8 +8,8 @@ namespace RilAccess.Examples
 
 def parameter : Source := ⟨.parameter, 0⟩
 def ambient : Source := ⟨.module, 1⟩
-def freshA : Source := ⟨.allocation, 2⟩
-def freshB : Source := ⟨.allocation, 3⟩
+def allocA : Source := ⟨.allocation, 2⟩
+def allocB : Source := ⟨.allocation, 3⟩
 
 def straight (actions : List Action) (checks : List Check := []) : ResolvedProgram :=
   ⟨0, actions.zipIdx.map (fun (action, pc) =>
@@ -29,7 +29,7 @@ def rootless : ResolvedProgram := straight [.copy 0 1 .higherOrder, .emit .write
 instruction executable. This analyzer does not check definite initialization. -/
 def futureSeed : ResolvedProgram :=
   ⟨0, [⟨0, .emit .read 7 false .binding, [some 1]⟩,
-    ⟨1, .seed 7 freshA, [none]⟩], []⟩
+    ⟨1, .seed 7 allocA, [none]⟩], []⟩
 
 theorem future_seed_accepted : accepts futureSeed = true := by decide +kernel
 
@@ -43,9 +43,9 @@ theorem future_seed_has_no_first_step : ∀ next, ¬ Step futureSeed (initial fu
     · simp [initial, futureSeed] at hp
 
 def cyclicGraph : ResolvedProgram := straight
-  [.seed 0 freshA, .seed 1 parameter, .store 0 0 1, .store 1 0 0,
+  [.seed 0 allocA, .seed 1 parameter, .store 0 0 1, .store 1 0 0,
     .emit .retain 0 true .aggregate]
-  [.present (.event .retain freshA), .present (.event .retain parameter)]
+  [.present (.event .retain allocA), .present (.event .retain parameter)]
 
 def hiddenClosure : ResolvedProgram := straight
   [.seed 0 ambient, .copy 0 1 .closure, .emit .capture 1 false .closure,
@@ -53,19 +53,19 @@ def hiddenClosure : ResolvedProgram := straight
   [.exactEvents []]
 
 def containedReturn : ResolvedProgram := straight
-  [.seed 0 freshA, .seed 1 parameter, .store 0 0 1,
+  [.seed 0 allocA, .seed 1 parameter, .store 0 0 1,
     .emit .rootReturn 0 false .returnValue, .emit .containedReturn 0 true .returnValue]
-  [.present (.event .rootReturn freshA), .absent (.event .rootReturn parameter),
+  [.present (.event .rootReturn allocA), .absent (.event .rootReturn parameter),
     .present (.event .containedReturn parameter)]
 
 def unknownSelection : ResolvedProgram := straight
-  [.seed 0 freshA, .seed 1 freshB, .seed 2 parameter,
+  [.seed 0 allocA, .seed 1 allocB, .seed 2 parameter,
     .store 2 0 0, .store 2 1 1, .project 2 0 3, .emit .write 3 false .projection]
-  [.present (.event .write freshA), .present (.event .write freshB)]
+  [.present (.event .write allocA), .present (.event .write allocB)]
 
 /-- Field-insensitivity is deliberately visible as a precision loss. -/
 def unsupportedSeparation : ResolvedProgram :=
-  { unknownSelection with checks := [.absent (.event .write freshB)] }
+  { unknownSelection with checks := [.absent (.event .write allocB)] }
 
 def cleanupWrite : ResolvedProgram :=
   ⟨0, [⟨0, .seed 0 parameter, [some 1]⟩,
@@ -89,19 +89,19 @@ def recursiveUseRules : List (Rule Nat) := [⟨[0], 1⟩, ⟨[1], 0⟩]
 def groundedUseRules : List (Rule Nat) := ⟨[], 0⟩ :: recursiveUseRules
 
 def staleRoot : ResolvedProgram := straight
-  [.seed 0 parameter, .seed 0 freshA, .emit .read 0 false .binding]
-  [.present (.event .read parameter), .present (.event .read freshA)]
+  [.seed 0 parameter, .seed 0 allocA, .emit .read 0 false .binding]
+  [.present (.event .read parameter), .present (.event .read allocA)]
 
 def OverwriteInvariant (c : Configuration) : Prop :=
-  (c.pc = some 2 → ∀ o ∈ c.roots 0, o.source = freshA) ∧
-  (∀ e ∈ c.events, e.origin.source = freshA)
+  (c.pc = some 2 → ∀ o ∈ c.roots 0, o.source = allocA) ∧
+  (∀ e ∈ c.events, e.srcInst.source = allocA)
 
 theorem overwrite_step_preserves (hm : OverwriteInvariant c) (hs : Step staleRoot c d) :
     OverwriteInvariant d := by
   cases hs with
   | @next i c d target hi hpc hex hn =>
     have code : i = ⟨0, .seed 0 parameter, [some 1]⟩ ∨
-        i = ⟨1, .seed 0 freshA, [some 2]⟩ ∨
+        i = ⟨1, .seed 0 allocA, [some 2]⟩ ∨
         i = ⟨2, .emit .read 0 false .binding, [none]⟩ := by
       simpa [staleRoot, straight] using hi
     rcases code with rfl | rfl | rfl
@@ -128,7 +128,7 @@ theorem overwrite_step_preserves (hm : OverwriteInvariant c) (hs : Step staleRoo
         · exact hm.2 e he
 
 theorem overwrite_only_new_source (ht : Trace staleRoot (initial staleRoot.entry) c)
-    (he : e ∈ c.events) : e.origin.source = freshA := by
+    (he : e ∈ c.events) : e.srcInst.source = allocA := by
   have hm : OverwriteInvariant (initial staleRoot.entry) := by
     simp [OverwriteInvariant, initial, staleRoot, straight]
   have final : OverwriteInvariant c := by
@@ -141,10 +141,10 @@ theorem overwrite_only_new_source (ht : Trace staleRoot (initial staleRoot.entry
 theorem overwrite_old_source_spurious :
     Fact.event .read parameter ∈ solve staleRoot.rules := by decide +kernel
 
-def sampleOrigin : Origin := ⟨freshA, 0, 0, 0⟩
-def externalOrigin : Origin := ⟨parameter, 0, 1, 0⟩
-def writeEvent : Event := ⟨.write, sampleOrigin, .binding⟩
-def privateFootprint : Footprint := ⟨[sampleOrigin], [], []⟩
+def sampleInstance : SourceInstance := ⟨allocA, 0, 0, 0⟩
+def outsideInstance : SourceInstance := ⟨parameter, 0, 1, 0⟩
+def writeEvent : Event := ⟨.write, sampleInstance, .binding⟩
+def privateFootprint : Footprint := ⟨[sampleInstance], [], []⟩
 
 /-- A nonempty accepted execution, rather than just an accepted dead program. -/
 def witness : ResolvedProgram :=
@@ -152,10 +152,10 @@ def witness : ResolvedProgram :=
     ⟨1, .emit .write 0 false .binding, [none]⟩], [.present (.event .write parameter)]⟩
 
 def witnessStart := initial witness.entry
-def witnessOrigin := freshOrigin witnessStart parameter
+def witnessInstance := allocatedInstance witnessStart parameter
 def witnessSeeded : Configuration :=
-  { setRoot witnessStart 0 witnessOrigin with nextObject := 1, pc := some 1 }
-def witnessEvent : Event := ⟨.write, witnessOrigin, .binding⟩
+  { setRoot witnessStart 0 witnessInstance with nextObject := 1, pc := some 1 }
+def witnessEvent : Event := ⟨.write, witnessInstance, .binding⟩
 def witnessEnd : Configuration :=
   { witnessSeeded with events := [witnessEvent], pc := none }
 

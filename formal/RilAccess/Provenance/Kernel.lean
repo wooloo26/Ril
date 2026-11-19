@@ -186,7 +186,7 @@ def checkInterface (program : Program) (facts : List Judgment) (entry : Entry) :
   let uses := entryUses facts entry
   require (function.parameters.zipIdx.all fun (mode, formal) =>
     match mode with
-    | .mutable => uses.contains (formal, .write) || uses.contains (formal, .consume)
+    | .mutable => uses.contains (formal, .write) || uses.contains (formal, .handoff)
     | .retained => uses.contains (formal, .retain) || uses.contains (formal, .rootRetain) ||
       uses.contains (formal, .publish)
     | _ => true) .unusedParameter

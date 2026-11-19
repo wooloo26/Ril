@@ -104,11 +104,11 @@ theorem summarize_at_call {before : World} {caller frozen : RawFrame}
     (callerMatches : before.raw = caller.abstract)
     (evaluated : caller.prepare (arguments.map Argument.source) = some frozen)
     (run : Executes program.erase callee frozen result) :
-    Includes (prepared.caller.external ++ prepared.caller.liveObjects) prepared.entered.outside ∧
+    Includes (prepared.caller.outsideVisible ++ prepared.caller.liveObjects) prepared.entered.outside ∧
     SummaryCovers program summary frozen result := by
   have snapshot := prepare_raw preparedCall
   rw [callerMatches, RawFrame.prepare_abstract, evaluated] at snapshot
-  exact ⟨prepared_external_roots preparedCall, summarize_sound h (Option.some.inj snapshot).symm run⟩
+  exact ⟨prepared_outside_roots preparedCall, summarize_sound h (Option.some.inj snapshot).symm run⟩
 
 /-- The same transfer consumes a summary during the fixed point and after it
     has been exported for independent checking of a continuation. -/

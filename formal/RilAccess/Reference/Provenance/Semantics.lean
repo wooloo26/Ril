@@ -4,7 +4,7 @@ namespace RilAccess
 
 structure Configuration where
   pc : Option Nat
-  roots : Nat → List Origin
+  roots : Nat → List SourceInstance
   heap : List HeapEdge
   events : List Event
   nextObject : Nat
@@ -17,7 +17,7 @@ structure Configuration where
 def initial (entry : Nat) : Configuration :=
   ⟨some entry, fun _ => [], [], [], 0, 0, 0, [], [], []⟩
 
-def setRoot (c : Configuration) (r : Nat) (o : Origin) : Configuration :=
+def setRoot (c : Configuration) (r : Nat) (o : SourceInstance) : Configuration :=
   { c with roots := fun n => if n = r then [o] else c.roots n }
 
 def enterContext (c : Configuration) (m : Mechanism) (id : Nat) : Configuration :=
@@ -36,18 +36,18 @@ def leaveContext (c : Configuration) (m : Mechanism) : Configuration :=
   | .cleanup | .resource => { c with cleanups := c.cleanups.drop 1 }
   | _ => c
 
-inductive Reach (heap : List HeapEdge) : Origin → Origin → Prop where
+inductive Reach (heap : List HeapEdge) : SourceInstance → SourceInstance → Prop where
   | refl : Reach heap x x
   | cons : e ∈ heap → Reach heap e.child y → Reach heap e.parent y
 
 /-- Independent concrete transitions. Static inferred facts are never premises. -/
-def freshOrigin (c : Configuration) (s : Source) : Origin :=
+def allocatedInstance (c : Configuration) (s : Source) : SourceInstance :=
   ⟨s, c.activation, c.nextObject, c.scope⟩
 
 inductive Execute : Action → Configuration → Configuration → Prop where
   | seed :
       Execute (.seed r s) c
-        { setRoot c r (freshOrigin c s) with nextObject := c.nextObject + 1 }
+        { setRoot c r (allocatedInstance c s) with nextObject := c.nextObject + 1 }
   | copy : o ∈ c.roots src → Execute (.copy src to m) c (setRoot c to o)
   | store : parent ∈ c.roots a → child ∈ c.roots b →
       Execute (.store a field b) c { c with heap := (⟨parent, field, child⟩ ::
@@ -75,10 +75,10 @@ def Matched (p : ResolvedProgram) (facts : List Fact) (c : Configuration) : Prop
   (∀ r o, o ∈ c.roots r → o.source ∈ p.sources ∧ .root r o.source ∈ facts) ∧
   (∀ e ∈ c.heap, e.parent.source ∈ p.sources ∧ e.child.source ∈ p.sources ∧
     Fact.edge e.parent.source e.child.source ∈ facts) ∧
-  (∀ e ∈ c.events, Fact.event e.kind e.origin.source ∈ facts)
+  (∀ e ∈ c.events, Fact.event e.kind e.srcInst.source ∈ facts)
 
 variable {p : ResolvedProgram} {facts : List Fact} {c d : Configuration}
-  {heap : List HeapEdge} {x y o : Origin} {i : Instruction} {a : Analysis} {e : Event}
+  {heap : List HeapEdge} {x y o : SourceInstance} {i : Instruction} {a : Analysis} {e : Event}
 
 theorem initial_matched (hc : Closed p.rules facts) : Matched p facts (initial p.entry) := by
   refine ⟨?_, ?_, ?_, ?_⟩
@@ -230,7 +230,7 @@ theorem trace_preserves (hc : Closed p.rules facts) (hm : Matched p facts c)
 /-- Covers every event in every finite prefix, including exceptional exits. -/
 theorem provenance_coverage (ha : analyze p = .ok a)
     (ht : Trace p (initial p.entry) c) (he : e ∈ c.events) :
-    Fact.event e.kind e.origin.source ∈ a.facts :=
+    Fact.event e.kind e.srcInst.source ∈ a.facts :=
   (trace_preserves (analyze_least ha).1 (initial_matched (analyze_least ha).1) ht).2.2.2 e he
 
 theorem program_point_coverage (ha : analyze p = .ok a)
@@ -243,7 +243,7 @@ theorem program_point_coverage (ha : analyze p = .ok a)
 theorem forbidden_event_unreachable (ha : analyze p = .ok a)
     (hcheck : Check.absent (.event k s) ∈ p.checks)
     (ht : Trace p (initial p.entry) c) (he : e ∈ c.events)
-    (hk : e.kind = k) (hs : e.origin.source = s) : False := by
+    (hk : e.kind = k) (hs : e.srcInst.source = s) : False := by
   have hn := analyze_checks ha hcheck
   have hf := provenance_coverage ha ht he
   simp only [checkHolds, decide_eq_true_eq] at hn

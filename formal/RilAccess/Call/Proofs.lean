@@ -93,7 +93,7 @@ theorem lower_correct (program : Syntax) (state : RawState) :
 
 theorem checked_core (h : check program = .ok analysis) :
     Integrated.infer (lower program) initialWorld = .ok analysis.worlds ∧
-      analysis.origins = analysis.worlds.flatMap worldOrigins := by
+      analysis.srcInsts = analysis.worlds.flatMap worldInstances := by
   unfold check at h
   split at h <;> try contradiction
   cases hi : infer program initialWorld with
@@ -128,22 +128,22 @@ theorem check_reachable_uses (h : check program = .ok analysis)
 theorem access_and_provenance (h : check program = .ok analysis)
     (hr : state ∈ execute program initialWorld.raw)
     (he : event ∈ state.observations) :
-    event.pointer.source ∈ analysis.origins ∧
+    event.pointer.source ∈ analysis.srcInsts ∧
       ∃ accessCheck, accessCheck.observation = event ∧ authorized accessCheck = true := by
-  obtain ⟨hi, horigins⟩ := checked_core h
+  obtain ⟨hi, hsrcInsts⟩ := checked_core h
   rw [lower_correct] at hr
   obtain ⟨world, hm, hraw⟩ := infer_simulation hi hr
   have hw : event ∈ world.raw.observations := by simpa [hraw] using he
   obtain ⟨accessCheck, _, heq, hsafe⟩ := certified_accessChecks (infer_certified hi hm) hw
   refine ⟨?_, accessCheck, heq, hsafe⟩
-  rw [horigins]
+  rw [hsrcInsts]
   exact List.mem_flatMap.mpr ⟨world, hm,
     List.mem_append_left _ (List.mem_append_left _ (List.mem_map.mpr ⟨event, hw, rfl⟩))⟩
 
 theorem every_prefix_authorized (h : check program = .ok analysis)
     (hp : Prefix (erase (lower program)) initialWorld.raw middle)
     (he : event ∈ middle.observations) :
-    event.pointer.source ∈ analysis.origins ∧
+    event.pointer.source ∈ analysis.srcInsts ∧
       ∃ accessCheck, accessCheck.observation = event ∧ authorized accessCheck = true := by
   obtain ⟨result, hr, hevent⟩ := prefix_event_extends hp (infer_faultFree (checked_core h).1) he
   rw [← lower_correct] at hr

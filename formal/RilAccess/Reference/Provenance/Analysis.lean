@@ -89,7 +89,7 @@ structure Analysis where
 
 inductive Diagnostic where
   | signatureMismatch (check : Check) (inferred : Analysis)
-  | missingOrigin (pc register : Nat) (inferred : Analysis)
+  | missingInstance (pc register : Nat) (inferred : Analysis)
   deriving Repr, DecidableEq
 
 def operands : Action → List Nat
@@ -114,7 +114,7 @@ def analyze (p : ResolvedProgram) : Except Diagnostic Analysis :=
   let inferred : Analysis := ⟨facts, p.rules.filter fun r =>
     r.premises.all (fun x => decide (x ∈ facts))⟩
   match (missingOperands p facts).head? with
-  | some (pc, register) => .error (.missingOrigin pc register inferred)
+  | some (pc, register) => .error (.missingInstance pc register inferred)
   | none =>
     match p.checks.find? (fun c => !checkHolds facts c) with
     | some c => .error (.signatureMismatch c inferred)

@@ -3,7 +3,7 @@ import RilAccess.Draft.Proofs
 namespace RilAccess.Draft
 
 variable {input : Input} {world next start finish : World} {command : Command}
-  {program : List Command} {event : Event} {observation : ExternalObservation}
+  {program : List Command} {event : Event} {observation : OutsideObservation}
 
 theorem step_logs (h : step command world = some next) :
     (∀ event ∈ world.events, event ∈ next.events) ∧ (∀ effect ∈ world.effects, effect ∈ next.effects) := by
@@ -18,9 +18,9 @@ theorem trace_logs (ht : Trace program start finish) :
   | tail _ _ hs ih =>
     exact ⟨fun e he => (step_logs hs).1 e (ih.1 e he), fun e he => (step_logs hs).2 e (ih.2 e he)⟩
 
-theorem external_state_survives (hs : step (.external observation) world = some next)
+theorem outside_state_survives (hs : step (.outsideOp observation) world = some next)
     (ht : Trace program next finish) (he : event ∈ observation.events) : event ∈ finish.outward := by
-  obtain ⟨facts, hn⟩ := checked_external hs
+  obtain ⟨facts, hn⟩ := checked_outside hs
   have present : event ∈ finish.events :=
     (trace_logs ht).1 event (by rw [hn]; exact List.mem_append_left _ he)
   have hi : finish.input = world.input := (trace_frame ht).1.trans (by rw [hn]; rfl)
@@ -61,8 +61,8 @@ theorem step_output_safe (h : step command world = some next) (hw : OutputSafe w
   | allocate storage values =>
     obtain ⟨_, _, _, _, _, rfl⟩ := checked_allocate h
     intro published hp; simp [allocated, priorNone] at hp
-  | external observation =>
-    obtain ⟨_, rfl⟩ := checked_external h
+  | outsideOp observation =>
+    obtain ⟨_, rfl⟩ := checked_outside h
     intro published hp; simp [observed, priorNone] at hp
   | effect effect =>
     have he := (checked_step h).2
@@ -108,21 +108,21 @@ theorem private_draft_region (hp : prepare input = some start) (ht : Trace progr
 
 /-- Complete footprints include contained/captured/retained references, not just
 the event's top-level object. Unknown footprints never establish conformance. -/
-theorem conforming_external_cannot_escape (hp : prepare input = some start)
-    (ht : Trace program start finish) (hs : step (.external observation) finish = some next)
-    (conforms : ExternalConforms observation actualEvents actualEffects actualFootprint)
-    (ho : origin ∈ actualFootprint.roots ++ actualFootprint.environments ++ actualFootprint.escaping) :
-    origin.object ∉ finish.draftObjects := by
-  obtain ⟨footprint, known, safe⟩ := (checked_external hs).1.footprint
+theorem conforming_outside_cannot_escape (hp : prepare input = some start)
+    (ht : Trace program start finish) (hs : step (.outsideOp observation) finish = some next)
+    (conforms : OutsideConforms observation actualEvents actualEffects actualFootprint)
+    (ho : srcInst ∈ actualFootprint.roots ++ actualFootprint.environments ++ actualFootprint.escaping) :
+    srcInst.object ∉ finish.draftObjects := by
+  obtain ⟨footprint, known, safe⟩ := (checked_outside hs).1.footprint
   have covers : FootprintCovers footprint actualFootprint := by
-    simpa only [ExternalConforms, known] using conforms.2.2
-  have included : origin ∈ footprint.roots ++ footprint.environments ++ footprint.escaping := by
+    simpa only [OutsideConforms, known] using conforms.2.2
+  have included : srcInst ∈ footprint.roots ++ footprint.environments ++ footprint.escaping := by
     rcases List.mem_append.mp ho with prior | escaped
     · rcases List.mem_append.mp prior with root | env
       · exact List.mem_append_left _ (List.mem_append_left _ (covers.1 _ root))
       · exact List.mem_append_left _ (List.mem_append_right _ (covers.2.1 _ env))
     · exact List.mem_append_right _ (covers.2.2 _ escaped)
-  have below := below_allocation_bound (safe origin included).1
+  have below := below_allocation_bound (safe srcInst included).1
   intro inRegion
   have above := private_draft_region hp ht inRegion
   unfold Input.bound at above
@@ -147,7 +147,7 @@ theorem published_schema_preserved (hp : prepare input = some start)
     exact ⟨cell, copied.symm ▸ hc, schema⟩
 
 def SourcesCovered (heap : Heap) (sources : List Source) : Prop :=
-  ∀ object cell, heap object = some cell → cell.origin.source ∈ sources
+  ∀ object cell, heap object = some cell → cell.srcInst.source ∈ sources
 
 theorem initial_sources : SourcesCovered (initialHeap input) input.sources := by
   intro object cell hc
@@ -175,7 +175,7 @@ theorem step_sources (h : step command world = some next)
     intro object cell hc
     by_cases he : object = world.nextObject
     · subst object
-      have eq : Cell.mk (world.input.context.origin world.nextObject) layout values = cell := by simpa [memory, put] using hc
+      have eq : Cell.mk (world.input.context.srcInst world.nextObject) layout values = cell := by simpa [memory, put] using hc
       cases eq; exact hp
     · exact hw object cell (by simpa [memory, put, he] using hc)
 
@@ -191,7 +191,7 @@ theorem trace_sources (hp : prepare input = some start) (ht : Trace program star
 
 theorem published_sources_covered (hp : prepare input = some start)
     (ht : Trace program start finish) (ho : finish.output = some published) :
-    ∃ cell, finish.memory published.object = some cell ∧ cell.origin.source ∈ input.sources := by
+    ∃ cell, finish.memory published.object = some cell ∧ cell.srcInst.source ∈ input.sources := by
   obtain ⟨cell, hc⟩ := (trace_output_safe hp ht published ho).present
   exact ⟨cell, hc, trace_sources hp ht _ _ hc⟩
 
@@ -200,7 +200,7 @@ theorem command_fact_covered (hc : command ∈ program)
   obtain ⟨rule, hr, rfl⟩ := List.mem_map.mp hf
   have empty : rule.premises = [] := by
     cases command with
-    | external observation => obtain ⟨_, _, rfl⟩ := List.mem_map.mp hr; rfl
+    | outsideOp observation => obtain ⟨_, _, rfl⟩ := List.mem_map.mp hr; rfl
     | rewrite _ _ => simp only [commandRules, List.mem_singleton] at hr; cases hr; rfl
     | allocate _ _ => simp only [commandRules, List.mem_singleton] at hr; cases hr; rfl
     | effect _ => simp [commandRules] at hr
@@ -208,7 +208,7 @@ theorem command_fact_covered (hc : command ∈ program)
   exact solve_closed rule (List.mem_flatMap.mpr ⟨command, hc, hr⟩) (by simp [empty])
 
 theorem recipe_source_coverage (hp : prepare input = some start) (ht : Trace program start finish)
-    (he : event ∈ finish.events) : Fact.event event.kind event.origin.source ∈ analyze input program := by
+    (he : event ∈ finish.events) : Fact.event event.kind event.srcInst.source ∈ analyze input program := by
   have hi : start.input = input := congrArg World.input (prepared hp).2
   induction ht with
   | refl => rw [(prepared hp).2] at he; contradiction
@@ -295,7 +295,7 @@ theorem checked_recipe_prefixes (h : check input program = some analysis) :
     ∃ start, prepare input = some start ∧
       ∀ middle, Prefix program start middle →
         WorldInvariant input middle ∧ SourcesCovered middle.memory input.sources ∧
-          ∀ event ∈ middle.events, Fact.event event.kind event.origin.source ∈ analysis.facts := by
+          ∀ event ∈ middle.events, Fact.event event.kind event.srcInst.source ∈ analysis.facts := by
   obtain ⟨start, hp, completed, _, _, _, hf⟩ := checked_recipe h
   refine ⟨start, hp, fun middle prefixTrace => ?_⟩
   have ht := checked_prefix_trace completed prefixTrace (fun _ hc => hc)
@@ -305,7 +305,7 @@ theorem checked_path_recipe_prefixes (h : checkRecipe input recipe = some analys
     ∃ start commands, prepare input = some start ∧ lowerRecipe start recipe = some commands ∧
       ∀ middle, Prefix commands start middle →
         WorldInvariant input middle ∧ SourcesCovered middle.memory input.sources ∧
-          ∀ event ∈ middle.events, Fact.event event.kind event.origin.source ∈ analysis.facts := by
+          ∀ event ∈ middle.events, Fact.event event.kind event.srcInst.source ∈ analysis.facts := by
   unfold checkRecipe at h
   cases hp : prepare input with
   | none => simp [hp] at h

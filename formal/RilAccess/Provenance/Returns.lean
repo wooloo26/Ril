@@ -8,15 +8,15 @@ def FromEntry (frozen : RawFrame) (formal : Register) (object : Object) : Prop :
 theorem slot_abstract (program : Program) (object : Object) (field : Field) :
     program.slot object.abstract field = program.slot object field := rfl
 
-theorem ownedLinks_abstract (ownership : List (Object × Field)) (heap : List Link) :
-    (ownedLinks ownership heap).map Link.abstract = ownedLinks ownership (heap.map Link.abstract) := by
-  simp [ownedLinks, List.filter_map, Function.comp_def, Link.abstract, HeapLink.map]
+theorem ownedLinks_abstract (newSlots : List (Object × Field)) (heap : List Link) :
+    (newLinks newSlots heap).map Link.abstract = newLinks newSlots (heap.map Link.abstract) := by
+  simp [newLinks, List.filter_map, Function.comp_def, Link.abstract, HeapLink.map]
 
 theorem isolated_sound {world : World} {frame : RawFrame}
     (hw : world.raw = frame.abstract)
     (h : isolated world root.abstract outside = true)
     (covers : Includes (concreteOutside.map Object.abstract) outside)
-    (newObject : Reaches (ownedLinks world.ownership frame.memory.heap) [root] object)
+    (newObject : Reaches (newLinks world.newSlots frame.memory.heap) [root] object)
     (oldObject : Reaches frame.memory.heap concreteOutside object) : False := by
   have fresh := newObject.abstract
   rw [ownedLinks_abstract] at fresh
@@ -36,16 +36,16 @@ theorem isolated_sound {world : World} {frame : RawFrame}
 
 /-- Shared proof for exclusive transfers, including a resolved single-shot
     fiber or channel handoff supplied with its live parent footprint. -/
-theorem consumed_region_isolated {world ended : World} {frame : RawFrame}
-    (h : consume world register = .ok (object, moved, ended))
+theorem handoff_subgraph_isolated {world ended : World} {frame : RawFrame}
+    (h : takeHandoff world register = .ok (object, handed, ended))
     (hw : world.raw = frame.abstract)
-    (covers : Includes (outside.map Object.abstract) (ended.liveObjects ++ ended.external)) :
+    (covers : Includes (outside.map Object.abstract) (ended.liveObjects ++ ended.outsideVisible)) :
     ∃ root, frame.get register = some root ∧
-      ∀ target, Reaches (ownedLinks world.ownership frame.memory.heap) [root] target →
+      ∀ target, Reaches (newLinks world.newSlots frame.memory.heap) [root] target →
         Reaches frame.memory.heap outside target → False := by
-  obtain ⟨⟨original, live⟩, _, safe⟩ := consume_conditions h
+  obtain ⟨⟨original, live⟩, _, safe⟩ := handoff_conditions h
   obtain ⟨root, present, rfl⟩ := view_available hw live
-  exact ⟨root, present, fun _ own external => isolated_sound hw safe covers own external⟩
+  exact ⟨root, present, fun _ own outsideVisible => isolated_sound hw safe covers own outsideVisible⟩
 
 theorem mapM_covers {f : α → Option β} (h : List.mapM f xs = some ys) (hx : x ∈ xs) :
     ∃ y ∈ ys, f x = some y := by
@@ -80,9 +80,9 @@ theorem inferOld_sound {entry : World} {function : Function} {object : Object}
 theorem boundary_found {world : World} {frame : RawFrame}
     (hw : world.raw = frame.abstract)
     (edge : Link) (present : edge ∈ frame.memory.heap)
-    (inside : Reaches (ownedLinks world.ownership frame.memory.heap) [root] edge.parent)
+    (inside : Reaches (newLinks world.newSlots frame.memory.heap) [root] edge.parent)
     (schema : program.slot edge.parent edge.field = some member)
-    (old : (edge.parent.abstract, edge.field) ∉ world.ownership) :
+    (old : (edge.parent.abstract, edge.field) ∉ world.newSlots) :
     (edge.child.abstract, member.access) ∈ boundaries program world root.abstract := by
   have path := inside.abstract
   rw [ownedLinks_abstract] at path
@@ -105,16 +105,16 @@ def ReturnGuarantee (program : Program) (function : Function) (frozen frame : Ra
       match mode with
       | .plain => view.mode = .immutable
       | .observe formals => view.mode = .ref ∧ ∃ formal ∈ formals, FromEntry frozen formal object
-      | .retained formal => view.mode = .shared ∧ view.temporary = false ∧ FromEntry frozen formal object
+      | .retained formal => view.mode = .shared ∧ view.scopedHold = false ∧ FromEntry frozen formal object
       | .construction =>
         view.qualified = true ∧
-        (∀ outside, Includes (outside.map Object.abstract) world.external →
-          ∀ target, Reaches (ownedLinks world.ownership frame.memory.heap) [object] target →
+        (∀ outside, Includes (outside.map Object.abstract) world.outsideVisible →
+          ∀ target, Reaches (newLinks world.newSlots frame.memory.heap) [object] target →
             Reaches frame.memory.heap outside target → False) ∧
         ∀ edge ∈ frame.memory.heap,
-          Reaches (ownedLinks world.ownership frame.memory.heap) [object] edge.parent →
+          Reaches (newLinks world.newSlots frame.memory.heap) [object] edge.parent →
           ∀ member, program.slot edge.parent edge.field = some member →
-          (edge.parent.abstract, edge.field) ∉ world.ownership →
+          (edge.parent.abstract, edge.field) ∉ world.newSlots →
           ∃ old ∈ value.contained, old.mode = member.access ∧
             formalMaySource function old.formal old.mode = true ∧ FromEntry frozen old.formal edge.child
       | .unit => False
@@ -188,13 +188,13 @@ theorem checked_return_sound {entry world : World} {frozen frame : RawFrame}
             simp [hm] at h
             subst value
             refine ⟨register, object, view, rfl, hr, hv, valid.1, ?_, ?_⟩
-            · intro outside covers target inside external
-              exact isolated_sound hw valid.2 covers inside external
+            · intro outside covers target inside outsideVisible
+              exact isolated_sound hw valid.2 covers inside outsideVisible
             · intro edge present inside member schema oldMode
               have boundary := boundary_found hw edge present inside schema oldMode
-              obtain ⟨origin, contains, inferred⟩ := mapM_covers hm boundary
+              obtain ⟨srcInst, contains, inferred⟩ := mapM_covers hm boundary
               have ⟨mode, permits, actual⟩ := inferOld_sound hf inferred
-              exact ⟨origin, contains, mode, mode ▸ permits, actual⟩
+              exact ⟨srcInst, contains, mode, mode ▸ permits, actual⟩
         · simp at h
 
 theorem checked_return_ready (checked : Checked program facts inputs) {frozen frame : RawFrame}

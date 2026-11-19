@@ -78,7 +78,7 @@ def immutableSuppressesSlot := atoms [.allocate 0 (fixed .immutable) (scalarSche
   .replaceScalar (path 0 [0])]
 def observerSuppressesSlot := atoms [.allocate 0 (fixed .mut) (scalarSchema true),
   .bind (path 0) 1 (fixed .ref), .replaceScalar (path 1 [0])]
-def defaultMember := atoms [.allocate 0 (fixed .mut) [⟨[0], fixed .immutable, true⟩],
+def plainMember := atoms [.allocate 0 (fixed .mut) [⟨[0], fixed .immutable, true⟩],
   .bind (path 0 [0]) 1 (fixed .shared), .write (path 1)]
 def disjointMembers := atoms [.allocate 0 (fixed .mut)
   [⟨[0], fixed .mut, true⟩, ⟨[1], fixed .mut, true⟩],
@@ -182,15 +182,15 @@ def examples : List (String × Bool) :=
    ("temporary sharing rejected", !accepted temporarySharing),
    ("temporary retention rejected", !accepted temporaryRetention),
    ("idle temporary writer rejected", !accepted idleScopedAccess),
-   ("ended borrower observer rejected", !accepted endedScopedObserver),
-   ("escaping borrower observer rejected", !accepted escapingScopedObserver),
+   ("ended scoped view rejected", !accepted endedScopedObserver),
+   ("escaping scoped view rejected", !accepted escapingScopedObserver),
    ("suspended root replacement rejected", !accepted suspendedReplacement),
    ("scalar slot replacement", accepted scalarReplacement),
    ("fixed scalar slot rejected", !accepted fixedScalarReplacement),
    ("scalar is not an object", !accepted scalarNotObject),
    ("immutable suppresses var member", !accepted immutableSuppressesSlot),
    ("observer suppresses var member", !accepted observerSuppressesSlot),
-   ("default member grants no writer", !accepted defaultMember),
+   ("plain member grants no writer", !accepted plainMember),
    ("disjoint members", accepted disjointMembers),
    ("alias overlap rejected", !accepted overlappingPair),
    ("nested member path", accepted nestedMember),

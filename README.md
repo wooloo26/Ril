@@ -1,6 +1,6 @@
 # Ril
 
-Ril is a programming language designed to make data permissions flow explicitly through computation and remain fully traceable.
+Ril is a programming language designed to make data access authority flow explicitly through computation and remain fully traceable.
 
 [language specification](doc/SPEC.md)
 
@@ -39,7 +39,7 @@ fn nested_sources() -> () {
     let mut shelf = shared_shelf(^mut cell)
     shelf.rows[0].value += 1
     assert(cell.value == 1)                 -- The nested Cell still shares its source.
-    -- let frozen = shared_shelf(^mut cell) -- E0535: external writer survives.
+    -- let frozen = shared_shelf(^mut cell) -- E0535: surviving outside writer.
 }
 ```
 

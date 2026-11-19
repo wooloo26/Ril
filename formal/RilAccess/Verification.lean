@@ -40,18 +40,18 @@ structure ProvenanceGuarantees : Prop where
 structure ReferenceProvenanceGuarantees : Prop where
   coverage : ∀ (program : ResolvedProgram) analysis state event,
     analyze program = .ok analysis → Trace program (initial program.entry) state → event ∈ state.events →
-      Fact.event event.kind event.origin.source ∈ analysis.facts
+      Fact.event event.kind event.srcInst.source ∈ analysis.facts
   identity : ∀ (program : ResolvedProgram) state,
     Trace program (initial program.entry) state → ProvenanceIdentity.WorldInvariant state
   entry : ∀ (program : ResolvedProgram) state arguments,
     Trace program (initial program.entry) state →
-    (∀ origin ∈ arguments.flatMap Prod.snd, ProvenanceIdentity.Known state origin) →
+    (∀ srcInst ∈ arguments.flatMap Prod.snd, ProvenanceIdentity.Known state srcInst) →
     ∃ frozen, CoreEntry.capturePrepared state.heap arguments = .ok frozen
 
 structure CompositionGuarantees : Prop where
   entryFootprint : ∀ signature before arguments prepared,
     Provenance.prepare signature before arguments = .ok prepared →
-    Includes (prepared.caller.external ++ prepared.caller.liveObjects) prepared.entered.outside
+    Includes (prepared.caller.outsideVisible ++ prepared.caller.liveObjects) prepared.entered.outside
   summary : ∀ (program : Provenance.Program) (entry : Provenance.Entry) budget summary frozen result,
     Provenance.summarize program entry budget = .ok summary →
     entry.world.raw = Provenance.RawFrame.abstract frozen →
@@ -70,20 +70,20 @@ structure CompositionGuarantees : Prop where
   draftHeap : ∀ (input : Draft.Input) (cell : Draft.Cell) child index member,
     cell ∈ input.pool → (Draft.Value.reference child, index) ∈ cell.contents.zipIdx →
     cell.storage.member index = some member →
-    (⟨cell.origin.object, index, child⟩ : HeapLink Nat) ∈ input.physicalHeap
-  transfer : ∀ (world : Provenance.World) register object moved ended frame outside,
-    Provenance.consume world register = .ok (object, moved, ended) →
+    (⟨cell.srcInst.object, index, child⟩ : HeapLink Nat) ∈ input.physicalHeap
+  transfer : ∀ (world : Provenance.World) register object handed ended frame outside,
+    Provenance.takeHandoff world register = .ok (object, handed, ended) →
     world.raw = Provenance.RawFrame.abstract frame →
-    Includes (outside.map Provenance.Object.abstract) (ended.liveObjects ++ ended.external) →
+    Includes (outside.map Provenance.Object.abstract) (ended.liveObjects ++ ended.outsideVisible) →
     ∃ root, frame.get register = some root ∧
-      ∀ target, Heap.Reaches (Provenance.ownedLinks world.ownership frame.memory.heap) [root] target →
+      ∀ target, Heap.Reaches (Provenance.newLinks world.newSlots frame.memory.heap) [root] target →
         Heap.Reaches frame.memory.heap outside target → False
 
 structure AccessGuarantees : Prop where
   calls : ∀ (program : Calls.Syntax) analysis middle event,
     Calls.check program = .ok analysis →
     Integrated.Prefix (Integrated.erase (Calls.lower program)) Integrated.initialWorld.raw middle →
-    event ∈ middle.observations → event.pointer.source ∈ analysis.origins ∧
+    event ∈ middle.observations → event.pointer.source ∈ analysis.srcInsts ∧
       ∃ accessCheck, accessCheck.observation = event ∧ Integrated.authorized accessCheck = true
   progress : ∀ (program : Calls.Syntax) analysis,
     Calls.check program = .ok analysis → ∃ result, result ∈ Calls.execute program Integrated.initialWorld.raw
@@ -125,26 +125,26 @@ structure EffectGuarantees : Prop where
     effect ∈ (CoreBoundary.handled boundary handledEffect).effects ↔
       (effect ∈ boundary.body.effects ∧ effect ≠ handledEffect) ∨
         effect ∈ boundary.handler.effects ∨ effect ∈ boundary.cleanup.effects
-  environments : ∀ (boundary : CoreBoundary.Boundary) activation scope origin,
-    origin ∈ boundary.handlerEnvironment ++ boundary.cleanupEnvironment →
-    owned activation scope origin = false →
+  environments : ∀ (boundary : CoreBoundary.Boundary) activation scope srcInst,
+    srcInst ∈ boundary.handlerEnvironment ++ boundary.cleanupEnvironment →
+    allocatedIn activation scope srcInst = false →
     CoreBoundary.outward boundary activation scope = CoreBoundary.state boundary
-  fnRevokesTemporary : ∀ (authority next : Integrated.World) opScope id path resolved,
+  fnRevokesScopedWrites : ∀ (authority next : Integrated.World) opScope id path resolved,
     CoreBoundary.completeFnOp authority opScope = some next →
     Integrated.resolve next path = some resolved →
-    id ∈ Integrated.temporaryWrites authority authority.scope →
+    id ∈ Integrated.scopedWrites authority authority.scope →
     id ∈ resolved.binding.dependencies →
       Integrated.live resolved = false
   fnEndsDependentHolds : ∀ (authority next : Integrated.World) opScope hold,
     CoreBoundary.completeFnOp authority opScope = some next →
     hold ∈ next.holds →
     hold.token ∈ Integrated.scopeClosure authority
-      (Integrated.temporaryWrites authority authority.scope) →
+      (Integrated.scopedWrites authority authority.scope) →
       hold.active = false
-  fnPreservesNonTemporary : ∀ (authority next : Integrated.World) opScope id token,
+  fnPreservesNonScoped : ∀ (authority next : Integrated.World) opScope id token,
     CoreBoundary.completeFnOp authority opScope = some next →
     Integrated.lookupToken authority id = some token →
-    token.temporary = false →
+    token.scopedHold = false →
       Integrated.lookupToken next id = some token
   sharedFnPreservesIsolation : ∀ pureSources admissibleEffects branch handler handlerEnv effect,
     CoreBoundary.concurrentShareableFnHandler pureSources admissibleEffects handler handlerEnv = true →
@@ -164,17 +164,17 @@ structure DraftGuarantees : Prop where
     ∃ start commands, Draft.prepare input = some start ∧ Draft.lowerRecipe start recipe = some commands ∧
       ∀ middle, Draft.Prefix commands start middle →
         Draft.WorldInvariant input middle ∧ Draft.SourcesCovered middle.memory input.sources ∧
-    ∀ event ∈ middle.events, Draft.Fact.event event.kind event.origin.source ∈ analysis.facts
+    ∀ event ∈ middle.events, Draft.Fact.event event.kind event.srcInst.source ∈ analysis.facts
   publication : ∀ (input : Draft.Input) start program finish published,
     Draft.prepare input = some start → Draft.Trace program start finish → finish.output = some published →
     published.access = .immutable ∧ finish.active = false ∧
       (∀ command, Draft.step command finish = none) ∧ ∃ cell, finish.memory published.object = some cell
-  externalFrame : ∀ (input : Draft.Input) start program finish observation next actualEvents actualEffects footprint origin,
+  outsideFrame : ∀ (input : Draft.Input) start program finish observation next actualEvents actualEffects footprint srcInst,
     Draft.prepare input = some start → Draft.Trace program start finish →
-    Draft.step (.external observation) finish = some next →
-    Draft.ExternalConforms observation actualEvents actualEffects footprint →
-    origin ∈ footprint.roots ++ footprint.environments ++ footprint.escaping →
-      origin.object ∉ finish.draftObjects
+    Draft.step (.outsideOp observation) finish = some next →
+    Draft.OutsideConforms observation actualEvents actualEffects footprint →
+    srcInst ∈ footprint.roots ++ footprint.environments ++ footprint.escaping →
+      srcInst.object ∉ finish.draftObjects
 
 structure ScopedGuarantees : Prop where
   resourceNoPlainOrSharedCopy : ∀ (world : Integrated.World) resolved mode scope,
@@ -259,24 +259,24 @@ structure CallableMatchGuarantees : Prop where
       (expected.subsumes pureSources actual = true ↔
         (∀ o ∈ actual.rootReturn, o ∈ expected.rootReturn) ∧
         (∀ o ∈ actual.contained, o ∈ expected.contained))
-  foreignNeverPure : ∀ (pureSources : List Source) (expected actual : Summary) (o : Origin),
+  foreignNeverPure : ∀ (pureSources : List Source) (expected actual : Summary) (o : SourceInstance),
     o.source.kind = .foreign → o ∈ actual.namedReads → expected.subsumes pureSources actual = true →
       o ∈ expected.namedReads ∨ o ∈ expected.writes ∨ o ∈ expected.retained
-  retainedStrict : ∀ (pureSources : List Source) (expected actual : Summary) (o : Origin),
+  retainedStrict : ∀ (pureSources : List Source) (expected actual : Summary) (o : SourceInstance),
     o ∈ actual.retained → expected.subsumes pureSources actual = true → o ∈ expected.retained
   instantiationMonotone : ∀ (pureSources : List Source) (expected actual : CoreSummary.Template) (call : CoreSummary.CallInstance),
     expected.subsumes pureSources actual = true →
       (CoreSummary.instantiate call expected).subsumes pureSources (CoreSummary.instantiate call actual) = true
-  exactRejectsExcessWrite : ∀ (pureSources : List Source) (declared actual : Summary) (o : Origin),
+  exactRejectsExcessWrite : ∀ (pureSources : List Source) (declared actual : Summary) (o : SourceInstance),
     o ∈ declared.writes → o ∉ actual.writes →
       Summary.exactSignature pureSources declared actual = false
-  exactRejectsExcessRetained : ∀ (pureSources : List Source) (declared actual : Summary) (o : Origin),
+  exactRejectsExcessRetained : ∀ (pureSources : List Source) (declared actual : Summary) (o : SourceInstance),
     o ∈ declared.retained → o ∉ actual.retained →
       Summary.exactSignature pureSources declared actual = false
-  exactRejectsMissingEnvironment : ∀ (pureSources : List Source) (declared actual : Summary) (o : Origin),
+  exactRejectsMissingEnvironment : ∀ (pureSources : List Source) (declared actual : Summary) (o : SourceInstance),
     o ∈ actual.createdEnvironments → o ∉ declared.createdEnvironments →
       Summary.exactSignature pureSources declared actual = false
-  exactRejectsMissingLocalRead : ∀ (pureSources : List Source) (declared actual : Summary) (o : Origin),
+  exactRejectsMissingLocalRead : ∀ (pureSources : List Source) (declared actual : Summary) (o : SourceInstance),
     o.source.kind ≠ .module → o ∈ actual.namedReads → o ∉ declared.namedReads →
       Summary.exactSignature pureSources declared actual = false
 
@@ -303,17 +303,17 @@ structure ConcurrencyGuarantees : Prop where
         Integrated.live derived = false)
   channelNoMutabilityLaundering : ∀ (world : Integrated.World) (r : Integrated.Resolved),
     r.effective = .immutable → CoreConcurrency.eligibleChannelSend true world r = false
-  crossScopeRejected : ∀ (nursery : CoreConcurrency.NurseryState) taskId taskSigma asHandoff,
-    taskSigma ≠ nursery.activeSigma →
-      CoreConcurrency.joinTask nursery taskId taskSigma asHandoff = none ∧
-        CoreConcurrency.cancelTask nursery taskId taskSigma = none
-  singleShotTaskNoReuse : ∀ (nursery next : CoreConcurrency.NurseryState) taskId taskSigma nextSigma anyHandoff,
-    CoreConcurrency.joinTask nursery taskId taskSigma true = some next →
+  crossScopeRejected : ∀ (taskScope : CoreConcurrency.ScopeState) taskId taskSigma asHandoff,
+    taskSigma ≠ taskScope.activeSigma →
+      CoreConcurrency.joinTask taskScope taskId taskSigma asHandoff = none ∧
+        CoreConcurrency.cancelTask taskScope taskId taskSigma = none
+  singleShotTaskNoReuse : ∀ (taskScope next : CoreConcurrency.ScopeState) taskId taskSigma nextSigma anyHandoff,
+    CoreConcurrency.joinTask taskScope taskId taskSigma true = some next →
       CoreConcurrency.joinTask next taskId nextSigma anyHandoff = none ∧
         CoreConcurrency.cancelTask next taskId nextSigma = none
-  fallibleTaskResultRequired : ∀ (nursery : CoreConcurrency.NurseryState) entry,
-    entry ∈ nursery.tasks → entry.pendingResult = true →
-      CoreConcurrency.canExitScope nursery = false ∧ CoreConcurrency.drainPlainTasks nursery = none
+  fallibleTaskResultRequired : ∀ (taskScope : CoreConcurrency.ScopeState) entry,
+    entry ∈ taskScope.tasks → entry.pendingResult = true →
+      CoreConcurrency.canExitScope taskScope = false ∧ CoreConcurrency.drainPlainTasks taskScope = none
 
 structure Guarantees : Prop where
   solver : SolverGuarantees
@@ -342,13 +342,13 @@ theorem verified : Guarantees where
   referenceProvenance := ⟨fun _ _ _ _ => provenance_coverage,
     fun _ _ => ProvenanceIdentity.trace_invariant, fun _ _ _ => ProvenanceIdentity.cfg_entry_can_freeze⟩
   composition := {
-    entryFootprint := fun _ _ _ _ => Provenance.prepared_external_roots
+    entryFootprint := fun _ _ _ _ => Provenance.prepared_outside_roots
     summary := fun _ _ _ _ _ _ => Provenance.summarize_sound
     cleanupOrder := Provenance.cleanupRoute_lifo
     cleanupContinuation := fun _ _ _ _ _ _ _ => Provenance.cleanupRoute_call_continuation
     cleanupHandler := Provenance.later_handler_does_not_replace_saved_cleanup
     draftHeap := fun _ _ _ _ _ => Draft.stored_reference_in_physical_heap
-    transfer := fun _ _ _ _ _ _ _ => Provenance.consumed_region_isolated
+    transfer := fun _ _ _ _ _ _ _ => Provenance.handoff_subgraph_isolated
   }
   access := ⟨fun _ _ _ _ => Calls.every_prefix_authorized, fun _ _ => Calls.source_progress,
     fun _ _ _ _ => Integrated.handoff_preserves_identity,
@@ -368,10 +368,10 @@ theorem verified : Guarantees where
     fun _ _ _ _ hactual hmissing => exactSignature_rejects_missing_environment hactual hmissing,
     fun _ _ _ _ hlocal hactual hmissing => exactSignature_rejects_missing_local_read hlocal hactual hmissing⟩
   effects := ⟨CoreBoundary.handled_effects_exact,
-    fun _ _ _ _ => CoreBoundary.external_environment_blocks_discharge,
+    fun _ _ _ _ => CoreBoundary.outer_environment_blocks_containment,
     fun _ _ _ _ _ _ h hr hi hd => CoreBoundary.complete_fn_op_revokes_call_binding h hr hi hd,
     fun _ _ _ _ h hl hi => CoreBoundary.complete_fn_op_ends_dependent_hold h hl hi,
-    fun _ _ _ _ _ h hlook hnonTemp => CoreBoundary.complete_fn_op_preserves_non_temporary h hlook hnonTemp,
+    fun _ _ _ _ _ h hlook hnonTemp => CoreBoundary.complete_fn_op_preserves_non_scoped h hlook hnonTemp,
     fun _ _ _ _ _ _ h =>
       let hiso := CoreBoundary.shared_fn_handler_preserves_branch_isolation h
       ⟨hiso.1, hiso.2.1, hiso.2.2.2.2.1⟩⟩
@@ -380,11 +380,11 @@ theorem verified : Guarantees where
     fun _ _ _ _ _ h hr => CoreConcurrency.spawned_handoff_disjoint_from_parent_live_bindings h hr,
     fun _ _ hfrozen => CoreConcurrency.frozen_object_cannot_launder_mutability_via_channel hfrozen,
     fun _ _ _ _ hcross => CoreConcurrency.cross_scope_task_rejected hcross,
-    fun _ _ _ _ _ _ h => CoreConcurrency.duplicate_exclusive_task_consumption_rejected h,
+    fun _ _ _ _ _ _ h => CoreConcurrency.duplicate_exclusive_task_handoff_rejected h,
     fun _ _ => CoreConcurrency.pending_result_blocks_scope_exit⟩
   draft := ⟨fun _ _ _ _ => Draft.prepared_root_sound, fun _ _ _ => Draft.checked_path_recipe_prefixes,
     fun _ _ _ _ _ => Draft.publication_ends_privilege,
-    fun _ _ _ _ _ _ _ _ _ _ => Draft.conforming_external_cannot_escape⟩
+    fun _ _ _ _ _ _ _ _ _ _ => Draft.conforming_outside_cannot_escape⟩
   scopedClose := ⟨fun _ _ _ _ hres hmode => Integrated.resource_rejects_plain_and_shared_receiving hres hmode,
     fun _ h hr => Integrated.resource_cannot_retain h hr,
     fun _ _ _ _ _ h hr => Integrated.resource_handoff_transfers_exclusively h hr,

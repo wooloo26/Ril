@@ -81,7 +81,7 @@ def parameterToken (entry : World) (formal : Nat) : Option Nat := do
   binding.dependencies.head?
 
 def accessCheckUses (token : Nat) (accessCheck : AccessCheck) : Bool :=
-  decide (token ∈ accessCheck.resolved.authorityOrigins) &&
+  decide (token ∈ accessCheck.resolved.authorityAncestors) &&
     (decide (accessCheck.rule = .write) || decide (accessCheck.rule = .replaceScalar) ||
       decide (accessCheck.rule = .retain))
 
@@ -155,7 +155,7 @@ def check (program : Syntax) : Except Error Integrated.Analysis :=
       match (worlds.flatMap World.requirements).find?
           (fun requirement => !satisfiesUse (allUses worlds) requirement) with
       | some requirement => .error (.absentUse requirement)
-      | none => .ok ⟨worlds, worlds.flatMap worldOrigins⟩
+      | none => .ok ⟨worlds, worlds.flatMap worldInstances⟩
   else .error .invalidSource
 
 end RilAccess.Calls

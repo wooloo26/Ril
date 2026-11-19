@@ -106,7 +106,7 @@ def scopedBodyMutAccepted : Calls.Syntax :=
 def examples : List (String × Bool) :=
   [("resource: exclusive host handle permits scope exit without mandatory E0721 handoff", accepted resourceImplicitDropOk),
    ("resource: chained new handoff transfers exclusive handle", accepted resourceChainedHandoff),
-   ("resource: accessing moved-from resource handle rejected (E0549)", !accepted resourceUseAfterHandoffRejected),
+   ("resource: accessing ended resource handle rejected (E0549)", !accepted resourceUseAfterHandoffRejected),
    ("resource: plain immutable snapshot binding rejected", !accepted resourcePlainSnapshotRejected),
    ("resource: shared ^mut reception rejected", !accepted resourceSharedCopyRejected),
    ("resource: ^mut retention rejected on resource handle", !accepted resourceRetainRejected),
@@ -119,7 +119,7 @@ def examples : List (String × Bool) :=
    ("scoped: use mut permits call-scoped ref and mut access inside declaring scope", accepted scopedCallRefAndMutAccess),
    ("scoped: plain use forbids mutation (E0520)", !accepted scopedReadOnlyRejectsWrite),
    ("scoped: reassigning use binding rejected (E0532)", !accepted scopedReassignRejected),
-   ("scoped: moving use binding via new handoff rejected (E0604)", !accepted scopedHandoffEscapeRejected),
+   ("scoped: handing off use binding via new handoff rejected (E0604)", !accepted scopedHandoffEscapeRejected),
    ("scoped: rebinding use binding to local alias rejected (E0604)", !accepted scopedRebindEscapeRejected),
    ("scoped: retaining use binding rejected (E0604)", !accepted scopedRetainEscapeRejected),
    ("scoped: passing use binding to new cleanup/consumer inside block rejected (E0604)", !accepted scopedCallNewHandoffRejected),

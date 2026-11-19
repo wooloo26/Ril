@@ -4,55 +4,55 @@ import RilAccess.Signatures
 namespace RilAccess.CoreSummary
 
 inductive Reference where
-  | concrete (origin : Origin)
+  | concrete (srcInst : SourceInstance)
   | parameter (formal selection : Nat)
-  | fresh (source : Source) (serial : Nat)
+  | allocated (source : Source) (serial : Nat)
   deriving Repr, DecidableEq
 
 abbrev Template := SummaryOf Reference
 
 structure CallInstance where
-  parameter : Nat → Nat → Origin
+  parameter : Nat → Nat → SourceInstance
   existingObjects : List Nat
   activation : Nat
   scope : Nat
 
-def resolve (actual : CallInstance) : Reference → Origin
-  | .concrete origin => origin
+def resolve (actual : CallInstance) : Reference → SourceInstance
+  | .concrete srcInst => srcInst
   | .parameter formal selection => actual.parameter formal selection
-  | .fresh source serial =>
-    ⟨source, actual.activation, freshObject actual.existingObjects serial, actual.scope⟩
+  | .allocated source serial =>
+    ⟨source, actual.activation, allocatedObject actual.existingObjects serial, actual.scope⟩
 
 def references (summary : Template) : List Reference :=
   summary.references
 
-def origins (summary : Summary) : List Origin :=
+def srcInsts (summary : Summary) : List SourceInstance :=
   summary.references
 
 def instantiate (actual : CallInstance) (summary : Template) : Summary :=
   summary.map (resolve actual)
 
 def referenceValid (actual : CallInstance) (frozen : CoreEntry.Frozen) : Reference → Bool
-  | .concrete origin => decide (origin.object ∈ actual.existingObjects) &&
-      !owned actual.activation actual.scope origin
+  | .concrete srcInst => decide (srcInst.object ∈ actual.existingObjects) &&
+      !allocatedIn actual.activation actual.scope srcInst
   | .parameter formal selection => (frozen.snapshots.any (fun entry =>
-      decide (entry.formal = formal ∧ actual.parameter formal selection ∈ entry.origins))) &&
-      !owned actual.activation actual.scope (actual.parameter formal selection)
-  | .fresh source _ => decide (source.kind = .allocation)
+      decide (entry.formal = formal ∧ actual.parameter formal selection ∈ entry.srcInsts))) &&
+      !allocatedIn actual.activation actual.scope (actual.parameter formal selection)
+  | .allocated source _ => decide (source.kind = .allocation)
 
-def freshReferences (summary : Template) : List (Source × Nat) :=
+def allocatedReferences (summary : Template) : List (Source × Nat) :=
   ((references summary).filterMap (fun reference => match reference with
-    | .fresh source serial => some (source, serial) | _ => none)).eraseDups
+    | .allocated source serial => some (source, serial) | _ => none)).eraseDups
 
-def distinctFreshSerials (summary : Template) : Bool :=
-  (freshReferences summary).all fun left => (freshReferences summary).all fun right =>
+def distinctAllocationSerials (summary : Template) : Bool :=
+  (allocatedReferences summary).all fun left => (allocatedReferences summary).all fun right =>
     decide (left = right ∨ left.2 ≠ right.2)
 
 def valid (actual : CallInstance) (frozen : CoreEntry.Frozen) (summary : Template) : Bool :=
   decide ((frozen.snapshots.map CoreEntry.Snapshot.formal).Nodup) &&
-  distinctFreshSerials summary &&
-  frozen.snapshots.all (fun entry => entry.origins.all (fun origin => decide (origin.object ∈ actual.existingObjects) &&
-    !owned actual.activation actual.scope origin)) &&
+  distinctAllocationSerials summary &&
+  frozen.snapshots.all (fun entry => entry.srcInsts.all (fun srcInst => decide (srcInst.object ∈ actual.existingObjects) &&
+    !allocatedIn actual.activation actual.scope srcInst)) &&
   (references summary).all (referenceValid actual frozen)
 
 inductive Error where
@@ -64,16 +64,16 @@ def check (actual : CallInstance) (frozen : CoreEntry.Frozen) (summary : Templat
   if valid actual frozen summary then .ok (instantiate actual summary) else .error .invalidEntryOrSubstitution
 
 def checkAtEntry (actual : CallInstance) (heapAtEntry : List HeapEdge)
-    (arguments : List (Nat × List Origin)) (summary : Template) : Except Error Summary :=
+    (arguments : List (Nat × List SourceInstance)) (summary : Template) : Except Error Summary :=
   match CoreEntry.capturePrepared heapAtEntry arguments with
   | .error error => .error (.invalidEntryGraph error)
   | .ok frozen => check actual frozen summary
 
 structure InputFacts (actual : CallInstance) (frozen : CoreEntry.Frozen) (summary : Template) : Prop where
   uniqueFormals : (frozen.snapshots.map CoreEntry.Snapshot.formal).Nodup
-  freshSerials : distinctFreshSerials summary = true
-  entries : ∀ entry ∈ frozen.snapshots, ∀ origin ∈ entry.origins,
-    origin.object ∈ actual.existingObjects ∧ owned actual.activation actual.scope origin = false
+  allocationSerials : distinctAllocationSerials summary = true
+  entries : ∀ entry ∈ frozen.snapshots, ∀ srcInst ∈ entry.srcInsts,
+    srcInst.object ∈ actual.existingObjects ∧ allocatedIn actual.activation actual.scope srcInst = false
   references : ∀ reference ∈ CoreSummary.references summary, referenceValid actual frozen reference = true
 
 theorem checked_valid (h : check actual frozen summary = .ok result) :
@@ -87,26 +87,26 @@ theorem checked_facts (h : check actual frozen summary = .ok result) : InputFact
   have hv := (checked_valid h).1
   simp only [valid, Bool.and_eq_true, decide_eq_true_eq] at hv
   refine ⟨hv.1.1.1, hv.1.1.2, ?_, List.all_eq_true.mp hv.2⟩
-  intro entry he origin ho
-  have hh := List.all_eq_true.mp (List.all_eq_true.mp hv.1.2 entry he) origin ho
+  intro entry he srcInst ho
+  have hh := List.all_eq_true.mp (List.all_eq_true.mp hv.1.2 entry he) srcInst ho
   simpa only [Bool.and_eq_true, Bool.not_eq_true', decide_eq_true_eq] using hh
 
 theorem all_components_instantiated :
-    origins (instantiate actual summary) = (references summary).map (resolve actual) := by
-  simp only [origins, instantiate, references, SummaryOf.references, SummaryOf.map, List.map_append]
+    srcInsts (instantiate actual summary) = (references summary).map (resolve actual) := by
+  simp only [srcInsts, instantiate, references, SummaryOf.references, SummaryOf.map, List.map_append]
 
-theorem every_concrete_identity_survives (he : Reference.concrete origin ∈ references summary) :
-    origin ∈ origins (instantiate actual summary) := by
+theorem every_concrete_identity_survives (he : Reference.concrete srcInst ∈ references summary) :
+    srcInst ∈ srcInsts (instantiate actual summary) := by
   rw [all_components_instantiated]
-  exact List.mem_map.mpr ⟨.concrete origin, he, rfl⟩
+  exact List.mem_map.mpr ⟨.concrete srcInst, he, rfl⟩
 
 theorem checked_parameter_uses_frozen_entry
     (h : check actual frozen summary = .ok result)
     (hr : Reference.parameter formal selection ∈ references summary) :
-    ∃ entry ∈ frozen.snapshots, entry.formal = formal ∧ actual.parameter formal selection ∈ entry.origins := by
+    ∃ entry ∈ frozen.snapshots, entry.formal = formal ∧ actual.parameter formal selection ∈ entry.srcInsts := by
   have hp := (checked_facts h).references _ hr
-  have hh : frozen.snapshots.any (fun entry => decide (entry.formal = formal ∧ actual.parameter formal selection ∈ entry.origins)) = true ∧
-      (!owned actual.activation actual.scope (actual.parameter formal selection)) = true := by
+  have hh : frozen.snapshots.any (fun entry => decide (entry.formal = formal ∧ actual.parameter formal selection ∈ entry.srcInsts)) = true ∧
+      (!allocatedIn actual.activation actual.scope (actual.parameter formal selection)) = true := by
     simpa only [referenceValid, Bool.and_eq_true] using hp
   simpa only [List.any_eq_true, decide_eq_true_eq] using hh.1
 
@@ -120,7 +120,7 @@ theorem checked_at_entry_parameter_is_reachable
   | ok frozen =>
     have hs : check actual frozen summary = .ok result := by simpa [checkAtEntry, hc] using h
     obtain ⟨entry, he, hf, ho⟩ := checked_parameter_uses_frozen_entry hs hr
-    have path := (CoreEntry.snapshot_origins he ho).2
+    have path := (CoreEntry.snapshot_instances he ho).2
     obtain ⟨⟨name, savedRoots⟩, ha, heq⟩ := List.mem_map.mp he
     cases heq
     change name = formal at hf
@@ -128,57 +128,57 @@ theorem checked_at_entry_parameter_is_reachable
     have boundary := CoreEntry.captured_boundary hc
     exact ⟨savedRoots, by simpa [boundary.2] using ha, by simpa [boundary.1] using path⟩
 
-theorem fresh_origin_excludes_existing (ho : object ∈ actual.existingObjects) :
-    (resolve actual (.fresh source serial)).object ≠ object ∧ (resolve actual (.fresh source serial)).source = source := by
+theorem allocated_instance_excludes_existing (ho : object ∈ actual.existingObjects) :
+    (resolve actual (.allocated source serial)).object ≠ object ∧ (resolve actual (.allocated source serial)).source = source := by
   have hb := below_allocation_bound ho
-  simp only [resolve, freshObject]
+  simp only [resolve, allocatedObject]
   exact ⟨by omega, trivial⟩
 
-theorem checked_fresh_origin_excludes_frozen_entry
-    (h : check actual frozen summary = .ok result) (he : entry ∈ frozen.snapshots) (ho : origin ∈ entry.origins) :
-    (resolve actual (.fresh source serial)).object ≠ origin.object :=
-  (fresh_origin_excludes_existing ((checked_facts h).entries entry he origin ho).1).1
+theorem checked_allocated_instance_excludes_frozen_entry
+    (h : check actual frozen summary = .ok result) (he : entry ∈ frozen.snapshots) (ho : srcInst ∈ entry.srcInsts) :
+    (resolve actual (.allocated source serial)).object ≠ srcInst.object :=
+  (allocated_instance_excludes_existing ((checked_facts h).entries entry he srcInst ho).1).1
 
-theorem checked_existing_origin_is_not_callee_local
+theorem checked_existing_instance_is_not_callee_local
     (h : check actual frozen summary = .ok result) (hr : reference ∈ references summary)
-    (hn : ∀ source serial, reference ≠ .fresh source serial) :
-    owned actual.activation actual.scope (resolve actual reference) = false := by
+    (hn : ∀ source serial, reference ≠ .allocated source serial) :
+    allocatedIn actual.activation actual.scope (resolve actual reference) = false := by
   have hp := (checked_facts h).references _ hr
   cases reference with
-  | fresh source serial => exact False.elim (hn source serial rfl)
-  | concrete origin =>
-    have hh : origin.object ∈ actual.existingObjects ∧ owned actual.activation actual.scope origin = false := by
+  | allocated source serial => exact False.elim (hn source serial rfl)
+  | concrete srcInst =>
+    have hh : srcInst.object ∈ actual.existingObjects ∧ allocatedIn actual.activation actual.scope srcInst = false := by
       simpa only [referenceValid, Bool.and_eq_true, Bool.not_eq_true', decide_eq_true_eq] using hp
     exact hh.2
   | parameter formal selection =>
-    have hh : frozen.snapshots.any (fun entry => decide (entry.formal = formal ∧ actual.parameter formal selection ∈ entry.origins)) = true ∧
-        owned actual.activation actual.scope (actual.parameter formal selection) = false := by
+    have hh : frozen.snapshots.any (fun entry => decide (entry.formal = formal ∧ actual.parameter formal selection ∈ entry.srcInsts)) = true ∧
+        allocatedIn actual.activation actual.scope (actual.parameter formal selection) = false := by
       simpa only [referenceValid, Bool.and_eq_true, Bool.not_eq_true'] using hp
     exact hh.2
 
-theorem checked_distinct_fresh_objects
+theorem checked_distinct_allocated_objects
     (h : check actual frozen summary = .ok result)
-    (hl : Reference.fresh leftSource leftSerial ∈ references summary)
-    (hr : Reference.fresh rightSource rightSerial ∈ references summary)
+    (hl : Reference.allocated leftSource leftSerial ∈ references summary)
+    (hr : Reference.allocated rightSource rightSerial ∈ references summary)
     (hne : (leftSource, leftSerial) ≠ (rightSource, rightSerial)) :
-    (resolve actual (.fresh leftSource leftSerial)).object ≠
-      (resolve actual (.fresh rightSource rightSerial)).object := by
-  have leftMem : (leftSource, leftSerial) ∈ freshReferences summary :=
-    List.mem_eraseDups.mpr (List.mem_filterMap.mpr ⟨.fresh leftSource leftSerial, hl, rfl⟩)
-  have rightMem : (rightSource, rightSerial) ∈ freshReferences summary :=
-    List.mem_eraseDups.mpr (List.mem_filterMap.mpr ⟨.fresh rightSource rightSerial, hr, rfl⟩)
-  have hp := List.all_eq_true.mp (List.all_eq_true.mp (checked_facts h).freshSerials _ leftMem) _ rightMem
+    (resolve actual (.allocated leftSource leftSerial)).object ≠
+      (resolve actual (.allocated rightSource rightSerial)).object := by
+  have leftMem : (leftSource, leftSerial) ∈ allocatedReferences summary :=
+    List.mem_eraseDups.mpr (List.mem_filterMap.mpr ⟨.allocated leftSource leftSerial, hl, rfl⟩)
+  have rightMem : (rightSource, rightSerial) ∈ allocatedReferences summary :=
+    List.mem_eraseDups.mpr (List.mem_filterMap.mpr ⟨.allocated rightSource rightSerial, hr, rfl⟩)
+  have hp := List.all_eq_true.mp (List.all_eq_true.mp (checked_facts h).allocationSerials _ leftMem) _ rightMem
   have serials : leftSerial ≠ rightSerial := (of_decide_eq_true hp).resolve_left hne
   intro equalObjects
-  exact serials (fresh_object_injective equalObjects)
+  exact serials (allocated_object_injective equalObjects)
 
 def Reference.isPure (pureSources : List Source) : Reference → Bool
-  | .concrete origin => isPureOrigin pureSources origin
-  | .parameter _ _ | .fresh _ _ => false
+  | .concrete srcInst => isPureInstance pureSources srcInst
+  | .parameter _ _ | .allocated _ _ => false
 
 theorem reference_pure_resolves_pure {pureSources : List Source} {r : Reference}
     (h : Reference.isPure pureSources r = true) (call : CallInstance) :
-    isPureOrigin pureSources (resolve call r) = true := by
+    isPureInstance pureSources (resolve call r) = true := by
   cases r <;> simp_all [Reference.isPure, resolve]
 
 def Template.subsumes (pureSources : List Source) (expected actual : Template) : Bool :=

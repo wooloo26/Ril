@@ -7,9 +7,9 @@ variable {input : Input} {pool : List Cell} {object old : Nat} {cell : Cell}
   {storage : Storage} {program : List Command}
 
 structure InputFacts (input : Input) : Prop where
-  objects : (input.pool.map (fun cell => cell.origin.object)).Nodup
-  cells : ∀ cell ∈ input.pool, cell.origin.object ∈ input.reserved ∧
-    owned input.context.activation input.context.scope cell.origin = false ∧
+  objects : (input.pool.map (fun cell => cell.srcInst.object)).Nodup
+  cells : ∀ cell ∈ input.pool, cell.srcInst.object ∈ input.reserved ∧
+    allocatedIn input.context.activation input.context.scope cell.srcInst = false ∧
     contentsFit (lookup input.pool) cell.storage cell.contents = true
   root : (lookup input.pool input.root).isSome = true
   authority : GraphAuthority.immutableConsistent input.authorityGraph = true
@@ -33,13 +33,13 @@ theorem prepared (h : prepare input = some world) :
   · contradiction
 
 theorem valid_cell (h : input.valid = true) (hc : cell ∈ input.pool) :
-    cell.origin.object ∈ input.reserved ∧ contentsFit (lookup input.pool) cell.storage cell.contents = true :=
+    cell.srcInst.object ∈ input.reserved ∧ contentsFit (lookup input.pool) cell.storage cell.contents = true :=
   ⟨((input_facts h).cells _ hc).1, ((input_facts h).cells _ hc).2.2⟩
 
 theorem lookup_present (h : lookup pool object = some cell) :
-    cell ∈ pool ∧ cell.origin.object = object :=
+    cell ∈ pool ∧ cell.srcInst.object = object :=
   ⟨List.mem_of_find?_eq_some h, of_decide_eq_true
-    (List.find?_some (p := fun candidate : Cell => decide (candidate.origin.object = object)) h)⟩
+    (List.find?_some (p := fun candidate : Cell => decide (candidate.srcInst.object = object)) h)⟩
 
 theorem initial_draft_root (h : lookup input.pool input.root = some cell) :
     initialHeap input input.draftRoot = some (copyRoot input cell) := by
@@ -51,12 +51,12 @@ inductive Path (heap : Heap) : Nat → List Nat → Nat → Prop where
       heap object = some cell → cell.contents[index]? = some (.reference child) →
       Path heap child rest target → Path heap object (index :: rest) target
 
-structure ObservationFacts (input : Input) (observation : ExternalObservation) : Prop where
+structure ObservationFacts (input : Input) (observation : OutsideObservation) : Prop where
   footprint : ∃ footprint, observation.footprint = .known footprint ∧
-    ∀ origin ∈ footprint.roots ++ footprint.environments ++ footprint.escaping,
-      origin.object ∈ input.reserved ∧ owned input.context.activation input.context.scope origin = false
-  events : ∀ event ∈ observation.events, event.origin.object ∈ input.reserved ∧
-    owned input.context.activation input.context.scope event.origin = false
+    ∀ srcInst ∈ footprint.roots ++ footprint.environments ++ footprint.escaping,
+      srcInst.object ∈ input.reserved ∧ allocatedIn input.context.activation input.context.scope srcInst = false
+  events : ∀ event ∈ observation.events, event.srcInst.object ∈ input.reserved ∧
+    allocatedIn input.context.activation input.context.scope event.srcInst = false
 
 theorem observation_facts (h : observationAllowed input observation = true) :
     ObservationFacts input observation := by
@@ -65,9 +65,9 @@ theorem observation_facts (h : observationAllowed input observation = true) :
   | known footprint =>
     simp only [observationAllowed, hf, Bool.and_eq_true] at h
     constructor
-    · refine ⟨footprint, hf, fun origin ho => ?_⟩
+    · refine ⟨footprint, hf, fun srcInst ho => ?_⟩
       simpa only [Bool.and_eq_true, decide_eq_true_eq, Bool.not_eq_true'] using
-        List.all_eq_true.mp h.1.2 origin ho
+        List.all_eq_true.mp h.1.2 srcInst ho
     · intro event he
       have checks := List.all_eq_true.mp h.1.1 event he
       simp only [eventAllowed, Bool.and_eq_true, decide_eq_true_eq, Bool.not_eq_true'] at checks
@@ -84,7 +84,7 @@ inductive HeapChange (before after : World) : Prop where
       before.input.bound ≤ before.nextObject → before.memory before.nextObject = none →
       layout ∈ before.input.schemas → contentsFit after.memory layout values = true →
       values.all (confinedValue (allocated before layout values)) = true →
-      after.memory = put before.memory before.nextObject ⟨before.input.context.origin before.nextObject, layout, values⟩ →
+      after.memory = put before.memory before.nextObject ⟨before.input.context.srcInst before.nextObject, layout, values⟩ →
       HeapChange before after
 
 /-- Local operational step facts decoded once. No global safety predicate is an
@@ -97,10 +97,10 @@ structure StepFacts (before : World) (command : Command) (after : World) : Prop 
   locals : after.locals = before.locals ∨
     (after.locals = before.nextObject :: before.locals ∧ before.input.bound ≤ before.nextObject)
   eventDelta : ∃ added, after.events = added ++ before.events ∧
-    ∀ event ∈ added, Fact.event event.kind event.origin.source ∈ (commandRules before.input command).map Rule.conclusion
+    ∀ event ∈ added, Fact.event event.kind event.srcInst.source ∈ (commandRules before.input command).map Rule.conclusion
   effectDelta : ∃ added, after.effects = added ++ before.effects
-  knownPreserved : before.observations.all ExternalObservation.known = true →
-    after.observations.all ExternalObservation.known = true
+  knownPreserved : before.observations.all OutsideObservation.known = true →
+    after.observations.all OutsideObservation.known = true
 
 theorem checked_step (h : step command world = some next) :
     admissible command world = true ∧ execute command world = some next := by
@@ -118,7 +118,7 @@ theorem closed_no_step (ha : world.active = false) : step command world = none :
 
 theorem checked_rewrite (h : step (.rewrite object contents) world = some next) :
     ∃ cell, world.memory object = some cell ∧ world.input.bound ≤ object ∧
-      cell.origin = world.input.context.origin object ∧
+      cell.srcInst = world.input.context.srcInst object ∧
       contentsFit world.memory cell.storage contents = true ∧
       contents.all (confinedValue world) = true ∧ next = rewritten world object cell contents := by
   obtain ⟨ha, he⟩ := checked_step h
@@ -136,7 +136,7 @@ theorem checked_allocate (h : step (.allocate storage contents) world = some nex
   have hn : next = allocated world storage contents := by simpa [execute] using he.symm
   exact ⟨ha.2.2.1.1.1, ha.2.2.1.1.2, ha.2.1, by simpa [hn] using ha.2.2.1.2, ha.2.2.2, hn⟩
 
-theorem checked_external (h : step (.external observation) world = some next) :
+theorem checked_outside (h : step (.outsideOp observation) world = some next) :
     ObservationFacts world.input observation ∧ next = observed world observation := by
   obtain ⟨ha, he⟩ := checked_step h
   simp only [admissible, Bool.and_eq_true] at ha
@@ -149,27 +149,27 @@ theorem step_facts (h : step command world = some next) : StepFacts world comman
   | rewrite object values =>
     obtain ⟨cell, hm, hb, ho, typed, refs, rfl⟩ := checked_rewrite h
     refine ⟨executed, active, rfl, .rewrite hm hb typed refs rfl, Or.inl rfl,
-      ⟨[⟨.write, cell.origin, .derive⟩], rfl, ?_⟩, ⟨[], rfl⟩, fun x => x⟩
+      ⟨[⟨.write, cell.srcInst, .derive⟩], rfl, ?_⟩, ⟨[], rfl⟩, fun x => x⟩
     intro event he
-    have eq : event = ⟨.write, cell.origin, .derive⟩ := by simpa using he
+    have eq : event = ⟨.write, cell.srcInst, .derive⟩ := by simpa using he
     subst event
-    simp [commandRules, ho, Context.origin]
+    simp [commandRules, ho, Context.srcInst]
   | allocate storage values =>
     obtain ⟨hb, hn, schema, typed, refs, rfl⟩ := checked_allocate h
     refine ⟨executed, active, rfl, .allocate hb hn schema typed refs rfl, Or.inr ⟨rfl, hb⟩,
-      ⟨[⟨.write, world.input.context.origin world.nextObject, .derive⟩], rfl, ?_⟩,
+      ⟨[⟨.write, world.input.context.srcInst world.nextObject, .derive⟩], rfl, ?_⟩,
       ⟨[], rfl⟩, fun x => x⟩
     intro event he
-    have eq : event = ⟨.write, world.input.context.origin world.nextObject, .derive⟩ := by simpa using he
+    have eq : event = ⟨.write, world.input.context.srcInst world.nextObject, .derive⟩ := by simpa using he
     subst event
-    simp [commandRules, Context.origin]
-  | external observation =>
-    obtain ⟨facts, rfl⟩ := checked_external h
-    have known : observation.known = true := by obtain ⟨fp, hf, _⟩ := facts.footprint; simp [ExternalObservation.known, hf]
+    simp [commandRules, Context.srcInst]
+  | outsideOp observation =>
+    obtain ⟨facts, rfl⟩ := checked_outside h
+    have known : observation.known = true := by obtain ⟨fp, hf, _⟩ := facts.footprint; simp [OutsideObservation.known, hf]
     refine ⟨executed, active, rfl, .stable rfl, Or.inl rfl, ⟨observation.events, rfl, ?_⟩,
       ⟨observation.effects, rfl⟩, ?_⟩
     · intro event he
-      exact List.mem_map.mpr ⟨⟨[], .event event.kind event.origin.source⟩,
+      exact List.mem_map.mpr ⟨⟨[], .event event.kind event.srcInst.source⟩,
         List.mem_map.mpr ⟨event, he, rfl⟩, rfl⟩
     · intro previous; simp [observed, known, previous]
   | effect effect =>
@@ -219,8 +219,8 @@ theorem step_preserves_snapshot (h : step command world = some next)
       rw [same, missing] at hc
       contradiction
     simpa [allocated, put, different] using hc
-  | external observation =>
-    obtain ⟨_, rfl⟩ := checked_external h
+  | outsideOp observation =>
+    obtain ⟨_, rfl⟩ := checked_outside h
     exact hc
   | effect id =>
     cases Option.some.inj (checked_step h).2
@@ -238,16 +238,16 @@ theorem trace_preserves_snapshot (ht : Trace program start finish)
     exact step_preserves_snapshot hs ih (by simpa [(trace_frame earlier).1] using outsideRoot)
 
 theorem base_snapshot_preserved (hp : prepare input = some start) (ht : Trace program start finish) (hc : cell ∈ input.pool) :
-    finish.memory cell.origin.object = lookup input.pool cell.origin.object := by
+    finish.memory cell.srcInst.object = lookup input.pool cell.srcInst.object := by
   obtain ⟨hv, he⟩ := prepared hp
   have hb := below_allocation_bound (valid_cell hv hc).1
   have hm := (trace_frame ht).2
   rw [he] at hm
-  rw [hm cell.origin.object hb]
+  rw [hm cell.srcInst.object hb]
   simp [initialHeap, Input.bound, hb]
 
 theorem step_identity (h : step command world = some next) (hc : world.memory object = some cell) :
-    ∃ current, next.memory object = some current ∧ current.origin = cell.origin ∧ current.storage = cell.storage := by
+    ∃ current, next.memory object = some current ∧ current.srcInst = cell.srcInst ∧ current.storage = cell.storage := by
   cases (step_facts h).heap with
   | stable he => exact ⟨cell, he ▸ hc, rfl, rfl⟩
   | @rewrite address previous values hm _ _ _ he =>
@@ -262,7 +262,7 @@ theorem step_identity (h : step command world = some next) (hc : world.memory ob
     exact ⟨cell, by simpa [he, put, different] using hc, rfl, rfl⟩
 
 theorem trace_identity (ht : Trace program start finish) (hc : start.memory object = some cell) :
-    ∃ current, finish.memory object = some current ∧ current.origin = cell.origin ∧ current.storage = cell.storage := by
+    ∃ current, finish.memory object = some current ∧ current.srcInst = cell.srcInst ∧ current.storage = cell.storage := by
   induction ht with
   | refl => exact ⟨cell, hc, rfl, rfl⟩
   | tail _ _ hs ih =>
@@ -350,7 +350,7 @@ theorem step_well_typed (h : step command world = some next) (hw : WellTyped wor
     intro object cell hc
     by_cases he : object = world.nextObject
     · subst object
-      have eq : Cell.mk (world.input.context.origin world.nextObject) layout values = cell := by
+      have eq : Cell.mk (world.input.context.srcInst world.nextObject) layout values = cell := by
         simpa [memory, put] using hc
       cases eq
       exact typed
@@ -373,11 +373,11 @@ theorem fixed_shape_preserved (hp : prepare input = some start)
 
 theorem admitted_inputs_have_no_writer (hp : prepare input = some start)
     (hc : cell ∈ input.pool) (hw : writer ∈ GraphAuthority.analyze input.authorityGraph)
-    (ho : writer.object = cell.origin.object) (hm : writer.access.writes = true) : False := by
+    (ho : writer.object = cell.srcInst.object) (hm : writer.access.writes = true) : False := by
   have valid := input_facts (prepared hp).1
   let root : GraphAuthority.Root Nat :=
-    ⟨allocationBound (input.outside.roots.map GraphAuthority.Root.view) + cell.origin.object,
-      cell.origin.object, .immutable⟩
+    ⟨allocationBound (input.outside.roots.map GraphAuthority.Root.view) + cell.srcInst.object,
+      cell.srcInst.object, .immutable⟩
   have hr : root ∈ input.authorityGraph.roots :=
     List.mem_append_right _ (List.mem_map.mpr ⟨cell, hc, rfl⟩)
   exact GraphAuthority.immutable_has_no_writer valid.authority
@@ -396,7 +396,7 @@ theorem allocation_has_declared_schema (h : step (.allocate storage contents) wo
   exact ha.2.1
 
 theorem admitted_mode_is_immutable (hp : prepare input = some start) (hc : cell ∈ input.pool) :
-    ∃ admission ∈ input.admissions, admission.1 = cell.origin.object ∧ admission.2 = .immutable := by
+    ∃ admission ∈ input.admissions, admission.1 = cell.srcInst.object ∧ admission.2 = .immutable := by
   have receptions := (input_facts (prepared hp).1).receptions
   simp only [Input.receptionsValid, Bool.and_eq_true] at receptions
   have received := List.all_eq_true.mp receptions.2 cell hc
@@ -480,7 +480,7 @@ structure WorldInvariant (initialInput : Input) (world : World) : Prop where
   typed : WellTyped world.memory
   locals : LocalsBound world
   sealed : RegionSealed world
-  boundaries : world.observations.all ExternalObservation.known = true
+  boundaries : world.observations.all OutsideObservation.known = true
 
 theorem prepare_invariant (hp : prepare input = some start) : WorldInvariant input start := by
   refine ⟨congrArg World.input (prepared hp).2, ?_, prepared_well_typed hp, ?_, prepared_sealed hp, ?_⟩

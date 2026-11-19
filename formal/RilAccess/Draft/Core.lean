@@ -36,7 +36,7 @@ inductive Value where
   deriving Repr, DecidableEq
 
 structure Cell where
-  origin : Origin
+  srcInst : SourceInstance
   storage : Storage
   contents : List Value
   deriving Repr, DecidableEq
@@ -44,7 +44,7 @@ structure Cell where
 abbrev Heap := Nat → Option Cell
 
 def lookup (pool : List Cell) (object : Nat) : Option Cell :=
-  pool.find? (fun cell => decide (cell.origin.object = object))
+  pool.find? (fun cell => decide (cell.srcInst.object = object))
 
 def put (heap : Heap) (object : Nat) (cell : Cell) : Heap :=
   fun selected => if selected = object then some cell else heap selected
@@ -69,7 +69,7 @@ structure Context where
 
 def Context.source (context : Context) : Source := ⟨.allocation, context.producer⟩
 
-def Context.origin (context : Context) (object : Nat) : Origin :=
+def Context.srcInst (context : Context) (object : Nat) : SourceInstance :=
   ⟨context.source, context.activation, object, context.scope⟩
 
 structure Input where
@@ -80,29 +80,29 @@ structure Input where
   outside : GraphAuthority.Graph Nat
   schemas : List Storage := []
   admissions : List (Nat × Access) := []
-  environments : List Origin := []
-  externalSources : List Source := []
+  environments : List SourceInstance := []
+  outsideSources : List Source := []
 
 def Input.bound (input : Input) : Nat := allocationBound input.reserved
 
 def Input.draftRoot (input : Input) : Nat := input.bound
 
 def copyRoot (input : Input) (cell : Cell) : Cell :=
-  { cell with origin := input.context.origin input.draftRoot }
+  { cell with srcInst := input.context.srcInst input.draftRoot }
 
 def inputEdges (input : Input) : List (GraphAuthority.Edge Nat) :=
   input.pool.flatMap fun cell => cell.contents.zipIdx |>.filterMap fun (value, index) =>
     match value, cell.storage.member index with
     | .reference child, some member =>
-      some ⟨cell.origin.object, index, child, member.mode, member.mode.access⟩
+      some ⟨cell.srcInst.object, index, child, member.mode, member.mode.access⟩
     | _, _ => none
 
 /-- The outside graph must cover all actual independent authority roots/paths.
 The kernel computes consistency; it does not assume a supplied safety flag. -/
 def Input.authorityGraph (input : Input) : GraphAuthority.Graph Nat :=
   ⟨input.outside.roots ++ input.pool.map (fun cell =>
-      ⟨allocationBound (input.outside.roots.map GraphAuthority.Root.view) + cell.origin.object,
-        cell.origin.object, .immutable⟩),
+      ⟨allocationBound (input.outside.roots.map GraphAuthority.Root.view) + cell.srcInst.object,
+        cell.srcInst.object, .immutable⟩),
     input.outside.edges ++ inputEdges input⟩
 
 def Input.physicalHeap (input : Input) : List (HeapLink Nat) :=
@@ -111,18 +111,18 @@ def Input.physicalHeap (input : Input) : List (HeapLink Nat) :=
 theorem stored_reference_in_physical_heap {input : Input} {cell : Cell} {child index : Nat}
     (present : cell ∈ input.pool) (reference : (Value.reference child, index) ∈ cell.contents.zipIdx)
     (schema : cell.storage.member index = some member) :
-    (⟨cell.origin.object, index, child⟩ : HeapLink Nat) ∈ input.physicalHeap := by
+    (⟨cell.srcInst.object, index, child⟩ : HeapLink Nat) ∈ input.physicalHeap := by
   unfold Input.physicalHeap GraphAuthority.eraseEdges
   apply List.mem_map.mpr
-  refine ⟨⟨cell.origin.object, index, child, member.mode, member.mode.access⟩, ?_, rfl⟩
+  refine ⟨⟨cell.srcInst.object, index, child, member.mode, member.mode.access⟩, ?_, rfl⟩
   apply List.mem_append_right
   exact List.mem_flatMap.mpr ⟨cell, present, List.mem_filterMap.mpr ⟨_, reference, by simp [schema]⟩⟩
 
 def Input.authoritiesReserved (input : Input) : Bool :=
   input.outside.roots.all (fun root => decide (root.object ∈ input.reserved)) &&
   input.outside.edges.all (fun edge => decide (edge.parent ∈ input.reserved ∧ edge.child ∈ input.reserved)) &&
-  input.environments.all (fun origin => decide (origin.object ∈ input.reserved) &&
-    !owned input.context.activation input.context.scope origin)
+  input.environments.all (fun srcInst => decide (srcInst.object ∈ input.reserved) &&
+    !allocatedIn input.context.activation input.context.scope srcInst)
 
 def Input.schemasValid (input : Input) : Bool :=
   decide ((input.schemas.map Storage.tag).Nodup) &&
@@ -133,15 +133,15 @@ The caller/lowering must establish that these are the actual received modes. -/
 def Input.receptionsValid (input : Input) : Bool :=
   decide ((input.admissions.map Prod.fst).Nodup) &&
   input.admissions.all (fun (object, access) => decide (access = .immutable ∧
-    object ∈ input.pool.map (fun cell => cell.origin.object))) &&
+    object ∈ input.pool.map (fun cell => cell.srcInst.object))) &&
   input.pool.all (fun cell => input.admissions.any (fun (object, access) =>
-    decide (object = cell.origin.object ∧ access = .immutable)))
+    decide (object = cell.srcInst.object ∧ access = .immutable)))
 
 def Input.valid (input : Input) : Bool :=
-  decide ((input.pool.map (fun cell => cell.origin.object)).Nodup) &&
+  decide ((input.pool.map (fun cell => cell.srcInst.object)).Nodup) &&
   input.pool.all (fun cell =>
-    decide (cell.origin.object ∈ input.reserved) &&
-    !owned input.context.activation input.context.scope cell.origin &&
+    decide (cell.srcInst.object ∈ input.reserved) &&
+    !allocatedIn input.context.activation input.context.scope cell.srcInst &&
     contentsFit (lookup input.pool) cell.storage cell.contents) &&
   (lookup input.pool input.root).isSome &&
   GraphAuthority.immutableConsistent input.authorityGraph &&
@@ -162,20 +162,20 @@ inductive FootprintKnowledge where
   | unresolved (obligations : List Nat)
   deriving Repr, DecidableEq
 
-structure ExternalObservation where
+structure OutsideObservation where
   events : List Event
   effects : List Nat
   footprint : FootprintKnowledge
   deriving Repr, DecidableEq
 
-def ExternalObservation.known (observation : ExternalObservation) : Bool :=
+def OutsideObservation.known (observation : OutsideObservation) : Bool :=
   match observation.footprint with
   | .known _ => true
   | .unresolved _ => false
 
 /-- Truthfulness/completeness belongs to the checked caller or external body.
 Unknown footprints cannot establish this premise. -/
-def ExternalConforms (observation : ExternalObservation) (actualEvents : List Event)
+def OutsideConforms (observation : OutsideObservation) (actualEvents : List Event)
     (actualEffects : List Nat) (actualFootprint : Footprint) : Prop :=
   (∀ event ∈ actualEvents, event ∈ observation.events) ∧
   (∀ effect ∈ actualEffects, effect ∈ observation.effects) ∧
@@ -193,7 +193,7 @@ structure World where
   events : List Event := []
   effects : List Nat := []
   output : Option Published := none
-  observations : List ExternalObservation := []
+  observations : List OutsideObservation := []
 
 def World.draftObjects (world : World) : List Nat :=
   world.input.draftRoot :: world.locals
@@ -217,7 +217,7 @@ scope obligations remain a caller/implementation conformance condition. -/
 inductive Command where
   | rewrite (object : Nat) (contents : List Value)
   | allocate (storage : Storage) (contents : List Value)
-  | external (observation : ExternalObservation)
+  | outsideOp (observation : OutsideObservation)
   | effect (effect : Nat)
   | finish (reason : Exit)
   deriving Repr, DecidableEq
@@ -225,16 +225,16 @@ inductive Command where
 def rewritten (world : World) (object : Nat) (cell : Cell) (contents : List Value) : World :=
   { world with
     memory := put world.memory object { cell with contents }, dirty := true,
-    events := ⟨.write, cell.origin, .derive⟩ :: world.events }
+    events := ⟨.write, cell.srcInst, .derive⟩ :: world.events }
 
 def allocated (world : World) (storage : Storage) (contents : List Value) : World :=
-  let cell : Cell := ⟨world.input.context.origin world.nextObject, storage, contents⟩
+  let cell : Cell := ⟨world.input.context.srcInst world.nextObject, storage, contents⟩
   { world with
     memory := put world.memory world.nextObject cell,
     locals := world.nextObject :: world.locals, nextObject := world.nextObject + 1,
-    events := ⟨.write, cell.origin, .derive⟩ :: world.events }
+    events := ⟨.write, cell.srcInst, .derive⟩ :: world.events }
 
-def observed (world : World) (observation : ExternalObservation) : World :=
+def observed (world : World) (observation : OutsideObservation) : World :=
   { world with
     events := observation.events ++ world.events,
     effects := observation.effects ++ world.effects, observations := observation :: world.observations }
@@ -249,46 +249,46 @@ def execute (command : Command) (world : World) : Option World :=
   match command with
   | .rewrite object contents => (world.memory object).map (fun cell => rewritten world object cell contents)
   | .allocate storage contents => some (allocated world storage contents)
-  | .external observation => some (observed world observation)
+  | .outsideOp observation => some (observed world observation)
   | .effect effect => some { world with effects := effect :: world.effects }
   | .finish reason => some (finished world reason)
 
 /-- External operations cannot write, retain a writer to, or transfer an input
 object. Reads/captures of an already immutable input preserve its snapshot. -/
-def externalPreservesInputs (input : Input) (event : Event) : Bool :=
+def outsidePreservesInputs (input : Input) (event : Event) : Bool :=
   match event.kind with
-  | .write | .retain | .transfer => decide (event.origin.object ∉ input.pool.map (fun cell => cell.origin.object))
+  | .write | .retain | .transfer => decide (event.srcInst.object ∉ input.pool.map (fun cell => cell.srcInst.object))
   | _ => true
 
 def eventAllowed (input : Input) (event : Event) : Bool :=
-  decide (event.origin.object ∈ input.reserved ∧ event.origin.source ∈ input.externalSources) &&
-    !owned input.context.activation input.context.scope event.origin &&
-    externalPreservesInputs input event
+  decide (event.srcInst.object ∈ input.reserved ∧ event.srcInst.source ∈ input.outsideSources) &&
+    !allocatedIn input.context.activation input.context.scope event.srcInst &&
+    outsidePreservesInputs input event
 
-def observationAllowed (input : Input) (observation : ExternalObservation) : Bool :=
+def observationAllowed (input : Input) (observation : OutsideObservation) : Bool :=
   match observation.footprint with
   | .unresolved _ => false
   | .known footprint =>
     observation.events.all (eventAllowed input) &&
-    (footprint.roots ++ footprint.environments ++ footprint.escaping).all (fun origin =>
-      decide (origin.object ∈ input.reserved) &&
-        !owned input.context.activation input.context.scope origin) &&
-    Identity.coherent (input.pool.map Cell.origin ++ input.environments ++
-      observation.events.map Event.origin ++ footprint.roots ++ footprint.environments ++ footprint.escaping)
+    (footprint.roots ++ footprint.environments ++ footprint.escaping).all (fun srcInst =>
+      decide (srcInst.object ∈ input.reserved) &&
+        !allocatedIn input.context.activation input.context.scope srcInst) &&
+    Identity.coherent (input.pool.map Cell.srcInst ++ input.environments ++
+      observation.events.map Event.srcInst ++ footprint.roots ++ footprint.environments ++ footprint.escaping)
 
 /-- Local guards, never a caller-provided global safety certificate. -/
 def admissible (command : Command) (world : World) : Bool :=
   world.active && match command with
   | .rewrite object contents => (world.memory object).any fun cell =>
     decide (object = world.input.draftRoot ∧ world.input.bound ≤ object) &&
-    decide (cell.origin = world.input.context.origin object) &&
+    decide (cell.srcInst = world.input.context.srcInst object) &&
     contentsFit world.memory cell.storage contents && contents.all (confinedValue world)
   | .allocate storage contents =>
     let candidate := allocated world storage contents
     decide (storage ∈ world.input.schemas) &&
       (decide (world.input.bound ≤ world.nextObject) && (world.memory world.nextObject).isNone &&
         contentsFit candidate.memory storage contents && contents.all (confinedValue candidate))
-  | .external observation => observationAllowed world.input observation
+  | .outsideOp observation => observationAllowed world.input observation
   | .effect _ | .finish .abort => true
   | .finish .normal =>
     (world.memory (if world.dirty then world.input.draftRoot else world.input.root)).isSome
@@ -302,17 +302,17 @@ inductive Trace (program : List Command) : World → World → Prop where
       step command middle = some next → Trace program start next
 
 def World.footprint (world : World) : Footprint :=
-  ⟨world.draftObjects.map world.input.context.origin, world.input.environments, []⟩
+  ⟨world.draftObjects.map world.input.context.srcInst, world.input.environments, []⟩
 
 def World.outward (world : World) : List Event :=
-  if world.observations.all ExternalObservation.known then
+  if world.observations.all OutsideObservation.known then
     discharge world.input.context.activation world.input.context.scope
       world.footprint world.events
   else world.events
 
 /-- A finite source bound for memory and outputs, not a grant of authority. -/
 def Input.sources (input : Input) : List Source :=
-  input.context.source :: input.pool.map (fun cell => cell.origin.source)
+  input.context.source :: input.pool.map (fun cell => cell.srcInst.source)
 
 inductive Fact where
   | event (kind : EventKind) (source : Source)
@@ -320,7 +320,7 @@ inductive Fact where
 
 def commandRules (input : Input) : Command → List (Rule Fact)
   | .rewrite _ _ | .allocate _ _ => [⟨[], .event .write input.context.source⟩]
-  | .external observation => observation.events.map (fun event => ⟨[], .event event.kind event.origin.source⟩)
+  | .outsideOp observation => observation.events.map (fun event => ⟨[], .event event.kind event.srcInst.source⟩)
   | _ => []
 
 def analyze (input : Input) (program : List Command) : List Fact :=
@@ -362,7 +362,7 @@ def rebuild (heap : Heap) (object : Nat) (contents : List Value) (next : Nat) :
 inductive RecipeStep where
   | rewrite (path : List Nat) (contents : List Value)
   | allocate (storage : Storage) (contents : List Value)
-  | external (observation : ExternalObservation)
+  | outsideOp (observation : OutsideObservation)
   | effect (effect : Nat)
   | finish (reason : Exit)
 
@@ -371,7 +371,7 @@ def RecipeStep.lower (world : World) : RecipeStep → Option (List Command)
     let (copies, values) ← rebuild world.memory world.input.draftRoot contents world.nextObject path
     return copies ++ [.rewrite world.input.draftRoot values]
   | .allocate storage contents => some [.allocate storage contents]
-  | .external observation => some [.external observation]
+  | .outsideOp observation => some [.outsideOp observation]
   | .effect id => some [.effect id]
   | .finish reason => some [.finish reason]
 

@@ -87,8 +87,8 @@ def RawFrame.allocateAt (frame : RawFrame) (destination site : Nat) (repeated : 
 def RawFrame.allocate (frame : RawFrame) (destination site : Nat) : RawFrame :=
   frame.allocateAt destination site (frame.memory.sites.contains site)
 
-def RawFrame.store (frame : RawFrame) (owner : Object) (field : Field) (target : Object) : RawFrame :=
-  let heap := ⟨owner, field, target⟩ :: frame.memory.heap.filter (!Link.atSlot owner field ·)
+def RawFrame.store (frame : RawFrame) (parentObj : Object) (field : Field) (target : Object) : RawFrame :=
+  let heap := ⟨parentObj, field, target⟩ :: frame.memory.heap.filter (!Link.atSlot parentObj field ·)
   { frame with memory := { frame.memory with heap } }
 
 def runPrim (action : Prim) (frame : RawFrame) : Option RawFrame :=
@@ -97,10 +97,10 @@ def runPrim (action : Prim) (frame : RawFrame) : Option RawFrame :=
   | .copy destination source =>
       (frame.get source).map (frame.put destination)
   | .store parent field source =>
-      (frame.get parent).bind fun owner => (frame.get source).map (frame.store owner field)
+      (frame.get parent).bind fun parentObj => (frame.get source).map (frame.store parentObj field)
   | .select destination parent field =>
-      (frame.get parent).bind fun owner =>
-        (frame.memory.heap.find? (Link.atSlot owner field)).map (fun link => frame.put destination link.child)
+      (frame.get parent).bind fun parentObj =>
+        (frame.memory.heap.find? (Link.atSlot parentObj field)).map (fun link => frame.put destination link.child)
   | .read register | .write register | .publish register =>
       (frame.get register).map fun _ => frame
   | .skip => some frame
@@ -109,7 +109,7 @@ inductive Primitive where
   | alloc (destination site : Nat)
   | bind (destination source : Register) (mode : Access)
   | handoff (destination source : Register)
-  | store (parent : Register) (field : Field) (source : Register) (consume : Bool := false)
+  | store (parent : Register) (field : Field) (source : Register) (handoffSlot : Bool := false)
   | select (destination parent : Register) (field : Field)
   | read (register : Register)
   | write (register : Register)

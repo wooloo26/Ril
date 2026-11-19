@@ -33,7 +33,7 @@ theorem complete_sources_given_lowering (lowering : Lowering σ transition event
     (ha : analyze p = .ok analysis)
     (ht : SurfaceTrace transition lowering.initialState state)
     (he : event ∈ events state) :
-    Fact.event event.kind event.origin.source ∈ analysis.facts := by
+    Fact.event event.kind event.srcInst.source ∈ analysis.facts := by
   have coreTrace := lowering_trace lowering ht
   rw [lowering.initialCorrect] at coreTrace
   exact provenance_coverage ha coreTrace (lowering.eventsCorrect state event he)

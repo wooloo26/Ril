@@ -13,35 +13,35 @@ def cellStorage : Storage := .fixed 100 [scalarSlot]
 def arrayStorage : Storage := .variable 200 cellSlot
 def tupleStorage : Storage := .fixed 300 [arraySlot, arraySlot]
 def context : Context := ⟨42, 7, 8⟩
-def oldOrigin (object : Nat) : Origin := ⟨⟨.allocation, 1⟩, 1, object, 1⟩
-def outsideOrigin : Origin := ⟨⟨.module, 77⟩, 0, 9, 0⟩
+def existingInstance (object : Nat) : SourceInstance := ⟨⟨.allocation, 1⟩, 1, object, 1⟩
+def outsideInstance : SourceInstance := ⟨⟨.module, 77⟩, 0, 9, 0⟩
 
 def input : Input :=
-  { pool := [⟨oldOrigin 0, cellStorage, [.scalar 0 1]⟩,
-      ⟨oldOrigin 1, arrayStorage, [.reference 0, .reference 3]⟩,
-      ⟨oldOrigin 2, tupleStorage, [.reference 1, .reference 1]⟩,
-      ⟨oldOrigin 3, cellStorage, [.scalar 0 7]⟩,
-      ⟨oldOrigin 5, cellStorage, [.scalar 0 10]⟩],
+  { pool := [⟨existingInstance 0, cellStorage, [.scalar 0 1]⟩,
+      ⟨existingInstance 1, arrayStorage, [.reference 0, .reference 3]⟩,
+      ⟨existingInstance 2, tupleStorage, [.reference 1, .reference 1]⟩,
+      ⟨existingInstance 3, cellStorage, [.scalar 0 7]⟩,
+      ⟨existingInstance 5, cellStorage, [.scalar 0 10]⟩],
     reserved := [0, 1, 2, 3, 5, 9], root := 2, context, outside := ⟨[], []⟩,
     schemas := [cellStorage, arrayStorage, tupleStorage],
     admissions := [0, 1, 2, 3, 5].map (fun object => (object, .immutable)),
-    externalSources := [outsideOrigin.source] }
+    outsideSources := [outsideInstance.source] }
 
 def done : RecipeStep := .finish .normal
 def aborted : RecipeStep := .finish .abort
 def grow : RecipeStep := .rewrite [0] [.reference 0, .reference 3, .reference 3]
 def mutateInserted : RecipeStep := .rewrite [0, 1] [.scalar 0 8]
-def outsideWrite : Event := ⟨.write, outsideOrigin, .cleanup⟩
-def outsideCapture : Event := ⟨.capture, outsideOrigin, .closure⟩
+def outsideWrite : Event := ⟨.write, outsideInstance, .cleanup⟩
+def outsideCapture : Event := ⟨.capture, outsideInstance, .closure⟩
 
 /-- These external examples concern one scalar slot, with no hidden payload.
 This helper is example data, not inference of a complete signature from an event. -/
-def external (event : Event) : RecipeStep :=
-  .external ⟨[event], [], .known ⟨[event.origin], [], []⟩⟩
+def outsideStep (event : Event) : RecipeStep :=
+  .outsideOp ⟨[event], [], .known ⟨[event.srcInst], [], []⟩⟩
 
-def hiddenWrapper : ExternalObservation :=
-  ⟨[outsideWrite], [], .known ⟨[outsideOrigin], [context.origin 11], []⟩⟩
-def unknownBoundary : ExternalObservation :=
+def hiddenWrapper : OutsideObservation :=
+  ⟨[outsideWrite], [], .known ⟨[outsideInstance], [context.srcInst 11], []⟩⟩
+def unknownBoundary : OutsideObservation :=
   ⟨[outsideWrite], [], .unresolved [17]⟩
 
 
@@ -76,9 +76,9 @@ def tupleUpdate : List RecipeStep :=
 
 def splitInput : Input :=
   { input with
-    pool := [⟨oldOrigin 2, tupleStorage, [.reference 1, .reference 6]⟩,
-      ⟨oldOrigin 6, arrayStorage, [.reference 0, .reference 3]⟩] ++
-      input.pool.filter (fun cell => decide (cell.origin.object ≠ 2)),
+    pool := [⟨existingInstance 2, tupleStorage, [.reference 1, .reference 6]⟩,
+      ⟨existingInstance 6, arrayStorage, [.reference 0, .reference 3]⟩] ++
+      input.pool.filter (fun cell => decide (cell.srcInst.object ≠ 2)),
     reserved := 6 :: input.reserved, admissions := (6, .immutable) :: input.admissions }
 
 def liveInput : Input := { input with outside := ⟨[⟨0, 3, .shared⟩], []⟩ }
@@ -86,15 +86,15 @@ def forgedStorage : Storage := .variable 100 scalarSlot
 def cycleStorage : Storage := .fixed 400 [⟨.object 400, fixedMode⟩, scalarSlot]
 def cyclic : Input :=
   { input with
-    pool := [⟨oldOrigin 4, cycleStorage, [.reference 4, .scalar 0 1]⟩],
+    pool := [⟨existingInstance 4, cycleStorage, [.reference 4, .scalar 0 1]⟩],
     root := 4, reserved := [4, 9], schemas := [cycleStorage], admissions := [(4, .immutable)] }
 
 def entryStorage : Storage := .fixed 500 [scalarSlot, scalarSlot]
 def mapStorage : Storage := .variable 600 ⟨.object 500, fixedMode⟩
 def mapInput : Input :=
   { input with
-    pool := [⟨oldOrigin 6, entryStorage, [.scalar 0 1, .scalar 0 10]⟩,
-      ⟨oldOrigin 7, mapStorage, [.reference 6]⟩],
+    pool := [⟨existingInstance 6, entryStorage, [.scalar 0 1, .scalar 0 10]⟩,
+      ⟨existingInstance 7, mapStorage, [.reference 6]⟩],
     root := 7, reserved := [6, 7, 9], schemas := [entryStorage, mapStorage],
     admissions := [(6, .immutable), (7, .immutable)] }
 def mapInsert : List RecipeStep :=
@@ -103,17 +103,17 @@ def mapInsert : List RecipeStep :=
 def setStorage : Storage := .variable 700 scalarSlot
 def setInput : Input :=
   { input with
-    pool := [⟨oldOrigin 8, setStorage, [.scalar 0 1, .scalar 0 2]⟩],
+    pool := [⟨existingInstance 8, setStorage, [.scalar 0 1, .scalar 0 2]⟩],
     root := 8, reserved := [8, 9], schemas := [setStorage], admissions := [(8, .immutable)] }
 
 def withExtraObject (cell : Cell) : Input :=
-  let object := cell.origin.object
+  let object := cell.srcInst.object
   { input with
     pool := cell :: input.pool,
     reserved := object :: input.reserved, schemas := cell.storage :: input.schemas,
     admissions := (object, .immutable) :: input.admissions }
 
-def emptyRecordInput : Input := withExtraObject ⟨oldOrigin 4, .fixed 800 [], []⟩
+def emptyRecordInput : Input := withExtraObject ⟨existingInstance 4, .fixed 800 [], []⟩
 
 def rejectsRoot (shape : RootShape) (value : Value) (source : Input) : Bool :=
   match prepareRoot shape value source with
@@ -122,18 +122,18 @@ def rejectsRoot (shape : RootShape) (value : Value) (source : Input) : Bool :=
 
 def loweringExamples : List (String × Bool) :=
   let unit := unitValue 4
-  let someUnit := lowerUnitVariant 4 (oldOrigin 4) (.payload 801) .unitCall
-  let noneTag := lowerUnitVariant 4 (oldOrigin 5) (.tag 802) .bare
+  let someUnit := lowerUnitVariant 4 (existingInstance 4) (.payload 801) .unitCall
+  let noneTag := lowerUnitVariant 4 (existingInstance 5) (.tag 802) .bare
   [("lowering: unit is a tuple with no shared-object tag",
       RootShape.unit.isTuple && RootShape.unit.objectTag.isNone),
     ("lowering: Some() lowers to unit payload while bare Some is callable",
       someUnit.toOption.map Cell.contents == some [unit] &&
-        (match lowerUnitVariant 4 (oldOrigin 4) (.payload 801) .bare with
+        (match lowerUnitVariant 4 (existingInstance 4) (.payload 801) .bare with
          | .error .callableValue => true
          | _ => false)),
     ("lowering: None has no payload while None() is rejected (E0338)",
       noneTag.toOption.map Cell.contents == some [] &&
-        (match lowerUnitVariant 4 (oldOrigin 5) (.tag 802) .unitCall with
+        (match lowerUnitVariant 4 (existingInstance 5) (.tag 802) .unitCall with
          | .error .nullaryVariantArgument => true
          | _ => false)),
     ("derive: unit is rejected even with a matching heap number",
@@ -202,21 +202,21 @@ def examples : List (String × Bool) :=
        (checkRecipe input [done]).any (fun analysis => analysis.facts.isEmpty)),
    ("derive: ordinary local draft writes discharge", state [grow, done] == some []),
    ("derive: external cleanup writes survive abort",
-      state [grow, external outsideWrite, aborted] == some [outsideWrite]),
+      state [grow, outsideStep outsideWrite, aborted] == some [outsideWrite]),
    ("derive: captured external state survives abort",
-      state [grow, external outsideCapture, aborted] == some [outsideCapture]),
+      state [grow, outsideStep outsideCapture, aborted] == some [outsideCapture]),
    ("derive: external operation cannot write protected input", !accepted
-      [external ⟨.write, oldOrigin 0, .call⟩, done]
-      { input with externalSources := (oldOrigin 0).source :: input.externalSources }),
+      [outsideStep ⟨.write, existingInstance 0, .call⟩, done]
+      { input with outsideSources := (existingInstance 0).source :: input.outsideSources }),
    ("derive: external source obligation cannot be omitted", !accepted
-      [external outsideWrite, done] { input with externalSources := [] }),
+      [outsideStep outsideWrite, done] { input with outsideSources := [] }),
    ("derive: abort publishes no result", accepted [grow, aborted] && (result [grow, aborted]).isNone),
    ("derive: abort preserves every base entry", contents [grow, mutateInserted, aborted] 1 ==
       some [.reference 0, .reference 3] && contents [grow, mutateInserted, aborted] 3 == some [.scalar 0 7]),
    ("derive: recipe effects remain on abort",
        ((checkRecipe input [.effect 5, grow, aborted]).map (fun a => a.result.effects)) == some [5]),
    ("derive: outside environment blocks local discharge",
-      (state [grow, done] { input with environments := [outsideOrigin] }).any (fun events => !events.isEmpty)),
+      (state [grow, done] { input with environments := [outsideInstance] }).any (fun events => !events.isEmpty)),
     ("derive: source object cannot be written", !(check input [.rewrite 1 [], .finish .normal]).isSome),
     ("derive: fixed tuple arity cannot shrink", !accepted [.rewrite [] [.reference 1], done]),
     ("derive: fixed tuple arity cannot grow", !accepted [.rewrite [] [.reference 1, .reference 1, .reference 1], done]),
@@ -229,8 +229,8 @@ def examples : List (String × Bool) :=
    ("derive: missing reception proof rejected", !accepted [done] { input with admissions := [] }),
    ("derive: inconsistent duplicate reception rejected", !accepted [done]
       { input with admissions := (0, .ref) :: input.admissions }),
-   ("derive: draft capture escape rejected", !accepted [external ⟨.capture, context.origin 11, .closure⟩, done]),
-   ("derive: draft retained writer escape rejected", !accepted [external ⟨.retain, context.origin 11, .call⟩, done]),
+   ("derive: draft capture escape rejected", !accepted [outsideStep ⟨.capture, context.srcInst 11, .closure⟩, done]),
+   ("derive: draft retained writer escape rejected", !accepted [outsideStep ⟨.retain, context.srcInst 11, .call⟩, done]),
    ("derive: draft alias is unusable after publication", !accepted [done, grow]),
    ("derive: draft alias is unusable after abort", !accepted [aborted, grow]),
    ("derive: unclosed recipe rejected", !accepted [grow]),
@@ -238,24 +238,24 @@ def examples : List (String × Bool) :=
    ("derive: inconsistent type-tag declarations rejected", !accepted [done]
       { input with schemas := forgedStorage :: input.schemas }),
    ("derive: dangling input reference rejected", !accepted [done]
-      { input with pool := input.pool.filter (fun cell => decide (cell.origin.object ≠ 3)) }),
+      { input with pool := input.pool.filter (fun cell => decide (cell.srcInst.object ≠ 3)) }),
    ("derive: incomplete object reservation rejected", !accepted [done] { input with reserved := [0, 1, 2, 9] }),
    ("derive: outside future-identity alias rejected", !accepted [done]
       { input with outside := ⟨[⟨0, 11, .shared⟩], []⟩ }),
    ("derive: reused context cannot hide old state", !accepted [done]
       { input with context := { context with activation := 1, scope := 1 } }),
-   ("derive: captured environment cannot reuse draft ownership", !accepted [done]
-      { input with environments := [context.origin 9] }),
+   ("derive: captured environment cannot reuse draft allocation context", !accepted [done]
+      { input with environments := [context.srcInst 9] }),
    ("derive: old wrapper event cannot hide a draft capture",
-      !accepted [.external hiddenWrapper, done]),
-   ("derive: unknown footprint remains an obligation", !accepted [.external unknownBoundary, done]),
+      !accepted [.outsideOp hiddenWrapper, done]),
+   ("derive: unknown footprint remains an obligation", !accepted [.outsideOp unknownBoundary, done]),
    ("derive: known external effects propagate",
-       ((checkRecipe input [.external ⟨[outsideWrite], [8], .known ⟨[outsideOrigin], [], []⟩⟩, done]).map
+       ((checkRecipe input [.outsideOp ⟨[outsideWrite], [8], .known ⟨[outsideInstance], [], []⟩⟩, done]).map
         (fun analysis => analysis.result.effects)) == some [8]),
    ("derive: source analysis includes actual local and external writes",
-       (checkRecipe input [grow, external outsideWrite, aborted]).any fun analysis =>
+       (checkRecipe input [grow, outsideStep outsideWrite, aborted]).any fun analysis =>
          decide (Fact.event .write context.source ∈ analysis.facts ∧
-           Fact.event .write outsideOrigin.source ∈ analysis.facts))]
+           Fact.event .write outsideInstance.source ∈ analysis.facts))]
 
 theorem examples_all_pass : examples.all Prod.snd = true := by decide +kernel
 

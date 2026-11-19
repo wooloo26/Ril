@@ -42,7 +42,7 @@ structure Source where
   deriving Repr, DecidableEq
 
 /-- Activations and allocation identities are retained in concrete metadata. -/
-structure Origin where
+structure SourceInstance where
   source : Source
   activation : Nat
   object : Nat
@@ -62,7 +62,7 @@ inductive EventKind where
 
 structure Event where
   kind : EventKind
-  origin : Origin
+  srcInst : SourceInstance
   mechanism : Mechanism
   deriving Repr, DecidableEq
 
@@ -75,7 +75,7 @@ structure HeapLink (Object : Type) where
 def HeapLink.map (f : α → β) (edge : HeapLink α) : HeapLink β :=
   ⟨f edge.parent, edge.field, f edge.child⟩
 
-abbrev HeapEdge := HeapLink Origin
+abbrev HeapEdge := HeapLink SourceInstance
 
 /-- Path attenuation cannot manufacture writable authority. -/
 def attenuate (outer member : Access) : Access :=
@@ -93,12 +93,12 @@ def SourceKind.admitsPureRil : SourceKind → Bool
   | .allocation | .foreign => false
 
 /-- Verified deeply immutable `.ril` or static origins; foreign and allocation sources never qualify. -/
-def isPureOrigin (pureSources : List Source) (o : Origin) : Bool :=
+def isPureInstance (pureSources : List Source) (o : SourceInstance) : Bool :=
   o.source.kind.admitsPureRil && decide (o.source ∈ pureSources)
 
-theorem foreign_origin_never_pure (h : o.source.kind = .foreign) :
-    isPureOrigin pureSources o = false := by
-  simp [isPureOrigin, h, SourceKind.admitsPureRil]
+theorem foreign_instance_never_pure (h : o.source.kind = .foreign) :
+    isPureInstance pureSources o = false := by
+  simp [isPureInstance, h, SourceKind.admitsPureRil]
 
 def Separated (a b : List Nat) : Prop := ∀ x ∈ a, x ∉ b
 

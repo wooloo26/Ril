@@ -96,7 +96,7 @@ def examples : List (String × Bool) :=
    ("graph: nested wrappers remain writable above existing source boundaries",
       canWritePath nestedSources 0 [] && canWritePath nestedSources 0 [0] &&
       canWritePath nestedSources 0 [0, 0] && immutableConsistent nestedSources),
-   ("graph: nested shared member preserves shared mode and external object identity",
+   ("graph: nested shared member preserves shared mode and outside object identity",
       decide (resolveView nestedSources 0 [0, 0, 1] = some (3, .shared)) &&
       decide (resolveView nestedSources 1 [] = some (3, .shared))),
    ("graph: outer writers cannot upgrade a nested ref to the same shared object",
@@ -123,7 +123,7 @@ def examples : List (String × Bool) :=
       decide (nestedSharedStored.map (fun graph =>
         decide (resolveView graph 0 [0, 0, 0] = some (3, .shared) ∧
           resolveView graph 0 [0, 0, 1] = some (3, .shared))) = some true)),
-   ("graph: freezing the outer root cannot coexist with an external nested writer",
+   ("graph: freezing the outer root cannot coexist with an outside nested writer",
       !canWritePath frozenNestedSources 0 [0, 0, 1] &&
       hasWriter frozenNestedSources 3 && !immutableConsistent frozenNestedSources)]
 

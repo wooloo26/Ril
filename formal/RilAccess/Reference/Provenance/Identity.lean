@@ -5,17 +5,17 @@ import RilAccess.Reference.Provenance.Semantics
 labels are not proofs of dynamic activation freshness or source-level calls. -/
 namespace RilAccess.ProvenanceIdentity
 
-def Known (state : Configuration) (origin : Origin) : Prop :=
-  (∃ register, origin ∈ state.roots register) ∨
-  (∃ edge ∈ state.heap, origin = edge.parent ∨ origin = edge.child) ∨
-  (∃ event ∈ state.events, origin = event.origin)
+def Known (state : Configuration) (srcInst : SourceInstance) : Prop :=
+  (∃ register, srcInst ∈ state.roots register) ∨
+  (∃ edge ∈ state.heap, srcInst = edge.parent ∨ srcInst = edge.child) ∨
+  (∃ event ∈ state.events, srcInst = event.srcInst)
 
 structure WorldInvariant (state : Configuration) : Prop where
-  bounded : ∀ origin, Known state origin → origin.object < state.nextObject
+  bounded : ∀ srcInst, Known state srcInst → srcInst.object < state.nextObject
   canonical : ∀ left right, Known state left → Known state right → left.object = right.object → left = right
 
-theorem known_setRoot (h : Known (setRoot state register value) origin) :
-    Known state origin ∨ origin = value := by
+theorem known_setRoot (h : Known (setRoot state register value) srcInst) :
+    Known state srcInst ∨ srcInst = value := by
   rcases h with ⟨selected, ho⟩ | heap | events
   · by_cases he : selected = register
     · subst selected; simp [setRoot] at ho; exact Or.inr ho
@@ -28,20 +28,20 @@ theorem reachable_known (hk : Known state root) (hp : Reach state.heap root targ
   | refl => exact hk
   | cons he _ ih => exact ih (Or.inr (Or.inl ⟨_, he, Or.inr rfl⟩))
 
-theorem execution_origins (hx : Execute action before after) :
-    (after.nextObject = before.nextObject ∧ ∀ origin, Known after origin → Known before origin) ∨
+theorem execution_instances (hx : Execute action before after) :
+    (after.nextObject = before.nextObject ∧ ∀ srcInst, Known after srcInst → Known before srcInst) ∨
     (∃ source, after.nextObject = before.nextObject + 1 ∧
-      ∀ origin, Known after origin → Known before origin ∨ origin = freshOrigin before source) := by
+      ∀ srcInst, Known after srcInst → Known before srcInst ∨ srcInst = allocatedInstance before source) := by
   cases hx with
   | seed =>
     exact Or.inr ⟨_, rfl, fun _ ho => known_setRoot ho⟩
   | copy ho =>
-    refine Or.inl ⟨rfl, fun origin hk => ?_⟩
+    refine Or.inl ⟨rfl, fun srcInst hk => ?_⟩
     rcases known_setRoot hk with old | rfl
     · exact old
     · exact Or.inl ⟨_, ho⟩
   | store hparent hchild =>
-    refine Or.inl ⟨rfl, fun origin hk => ?_⟩
+    refine Or.inl ⟨rfl, fun srcInst hk => ?_⟩
     rcases hk with root | ⟨edge, he, endpoint⟩ | events
     · exact Or.inl root
     · rcases List.mem_cons.mp he with rfl | he
@@ -51,12 +51,12 @@ theorem execution_origins (hx : Execute action before after) :
       · exact Or.inr (Or.inl ⟨edge, (List.mem_filter.mp he).1, endpoint⟩)
     · exact Or.inr (Or.inr events)
   | project hp he _ _ =>
-    refine Or.inl ⟨rfl, fun origin hk => ?_⟩
+    refine Or.inl ⟨rfl, fun srcInst hk => ?_⟩
     rcases known_setRoot hk with old | rfl
     · exact old
     · exact Or.inr (Or.inl ⟨_, he, Or.inr rfl⟩)
   | emitRoot ho =>
-    refine Or.inl ⟨rfl, fun origin hk => ?_⟩
+    refine Or.inl ⟨rfl, fun srcInst hk => ?_⟩
     rcases hk with root | heap | ⟨event, he, rfl⟩
     · exact Or.inl root
     · exact Or.inr (Or.inl heap)
@@ -64,7 +64,7 @@ theorem execution_origins (hx : Execute action before after) :
       · exact Or.inl ⟨_, ho⟩
       · exact Or.inr (Or.inr ⟨event, he, rfl⟩)
   | emitDeep ho hp =>
-    refine Or.inl ⟨rfl, fun origin hk => ?_⟩
+    refine Or.inl ⟨rfl, fun srcInst hk => ?_⟩
     rcases hk with root | heap | ⟨event, he, rfl⟩
     · exact Or.inl root
     · exact Or.inr (Or.inl heap)
@@ -79,20 +79,20 @@ theorem execution_origins (hx : Execute action before after) :
 
 theorem execution_preserves (hw : WorldInvariant before) (hx : Execute action before after) :
     WorldInvariant after := by
-  rcases execution_origins hx with ⟨counter, existing⟩ | ⟨source, counter, introduced⟩
+  rcases execution_instances hx with ⟨counter, existing⟩ | ⟨source, counter, introduced⟩
   · exact ⟨fun o ho => by rw [counter]; exact hw.bounded o (existing o ho),
       fun a b ha hb he => hw.canonical a b (existing a ha) (existing b hb) he⟩
   · constructor
-    · intro origin ho
-      rcases introduced origin ho with old | rfl
-      · have hb := hw.bounded origin old; omega
-      · simp [freshOrigin, counter]
+    · intro srcInst ho
+      rcases introduced srcInst ho with old | rfl
+      · have hb := hw.bounded srcInst old; omega
+      · simp [allocatedInstance, counter]
     · intro left right hl hr he
       rcases introduced left hl with oldLeft | rfl <;>
         rcases introduced right hr with oldRight | rfl
       · exact hw.canonical _ _ oldLeft oldRight he
-      · have hb := hw.bounded left oldLeft; simp only [freshOrigin] at he; omega
-      · have hb := hw.bounded right oldRight; simp only [freshOrigin] at he; omega
+      · have hb := hw.bounded left oldLeft; simp only [allocatedInstance] at he; omega
+      · have hb := hw.bounded right oldRight; simp only [allocatedInstance] at he; omega
       · rfl
 
 theorem trace_invariant (ht : Trace program (initial program.entry) state) : WorldInvariant state := by
@@ -109,8 +109,8 @@ theorem trace_invariant (ht : Trace program (initial program.entry) state) : Wor
 theorem metadata_coherent (hw : WorldInvariant state)
     (represented : ∀ root ∈ roots, Known state root) :
     Identity.coherent (Identity.labels state.heap roots) = true := by
-  have known : ∀ origin ∈ Identity.labels state.heap roots, Known state origin := by
-    intro origin ho
+  have known : ∀ srcInst ∈ Identity.labels state.heap roots, Known state srcInst := by
+    intro srcInst ho
     rcases List.mem_append.mp (List.mem_eraseDups.mp ho) with root | edges
     · exact represented _ root
     · obtain ⟨edge, he, endpoint⟩ := List.mem_flatMap.mp edges
@@ -124,7 +124,7 @@ theorem metadata_coherent (hw : WorldInvariant state)
   intro right hr
   apply decide_eq_true
   by_cases hi : left.object = right.object
-  · exact Or.inr (congrArg Identity.owner (hw.canonical _ _ (known _ hl) (known _ hr) hi))
+  · exact Or.inr (congrArg Identity.allocationContext (hw.canonical _ _ (known _ hl) (known _ hr) hi))
   · exact Or.inl hi
 
 theorem cfg_entry_can_freeze (ht : Trace program (initial program.entry) state)

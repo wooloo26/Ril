@@ -2,7 +2,7 @@ import RilAccess.Access.Progress
 import RilAccess.Graph.Identity
 
 /-! Scope dependencies are checked against the current ledger. Token.parents records
-origin ancestry and is deliberately not used as a scope dependency. -/
+source ancestry and is deliberately not used as a scope dependency. -/
 namespace RilAccess.Integrated
 
 variable {world : World} {id scope : Nat} {ids dependencies : List Nat} {token : Token}
@@ -30,13 +30,13 @@ def scopeEnabled (world : World) (dependencies : List Nat) : Bool :=
   !dependencies.isEmpty && dependencies.all (fun id => (lookupToken world id).any Token.active)
 
 /-- A scope snapshot is supplied by the operation-call correspondence. Ordinary
-readonly observations and retained parameters are not mutable temporary roots. -/
-def temporaryWrites (world : World) (scope : Nat) : List Nat :=
+readonly observations and retained parameters are not call-scoped mutable roots. -/
+def scopedWrites (world : World) (scope : Nat) : List Nat :=
   world.holds.filterMap fun hold =>
     match lookupToken world hold.token with
     | none => none
     | some token =>
-      if hold.writes && token.temporary && !token.retained && decide (token.scope = scope)
+      if hold.writes && token.scopedHold && !token.retained && decide (token.scope = scope)
       then some hold.token else none
 
 theorem lookup_token (h : lookupToken world id = some token) :
@@ -103,8 +103,8 @@ theorem dependent_hold_inactive (hl : hold ∈ (endBoundary world ids).holds) (h
 theorem ended_hold_inactive (hl : hold ∈ (endBoundary world ids).holds) (hi : hold.token ∈ ids) :
     hold.active = false := dependent_hold_inactive hl (scopeClosure_root hi)
 
-theorem selected_temporary (hi : id ∈ temporaryWrites world scope) :
-    ∃ token, lookupToken world id = some token ∧ token.temporary = true ∧ token.retained = false ∧ token.scope = scope := by
+theorem selected_scoped_write (hi : id ∈ scopedWrites world scope) :
+    ∃ token, lookupToken world id = some token ∧ token.scopedHold = true ∧ token.retained = false ∧ token.scope = scope := by
   obtain ⟨hold, _, he⟩ := List.mem_filterMap.mp hi
   cases hm : lookupToken world hold.token with
   | none => simp [hm] at he
@@ -117,18 +117,18 @@ theorem selected_temporary (hi : id ∈ temporaryWrites world scope) :
       exact ⟨token, hm, flags.1.1.2, flags.1.2, flags.2⟩
     · contradiction
 
-theorem retained_not_temporary (hr : lookupToken world id = some token) (ht : token.retained = true) :
-    id ∉ temporaryWrites world scope := by
+theorem retained_not_scoped_hold (hr : lookupToken world id = some token) (ht : token.retained = true) :
+    id ∉ scopedWrites world scope := by
   intro hi
-  obtain ⟨selected, hs, _, hn, _⟩ := selected_temporary hi
+  obtain ⟨selected, hs, _, hn, _⟩ := selected_scoped_write hi
   have eq : token = selected := Option.some.inj (hr.symm.trans hs)
   cases eq
   simp [ht] at hn
 
-theorem other_scope_not_temporary (hr : lookupToken world id = some token) (hs : token.scope ≠ scope) :
-    id ∉ temporaryWrites world scope := by
+theorem other_scope_not_scoped_hold (hr : lookupToken world id = some token) (hs : token.scope ≠ scope) :
+    id ∉ scopedWrites world scope := by
   intro hi
-  obtain ⟨selected, ht, _, _, hc⟩ := selected_temporary hi
+  obtain ⟨selected, ht, _, _, hc⟩ := selected_scoped_write hi
   have eq : token = selected := Option.some.inj (hr.symm.trans ht)
   cases eq
   exact hs hc

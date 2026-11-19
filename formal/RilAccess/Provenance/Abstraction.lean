@@ -76,33 +76,33 @@ theorem Link.atSlot_abstract (link : Link) (parent : Object) (field : Field)
 @[simp] theorem raw_abstract_heap (frame : RawFrame) :
     frame.abstract.memory.heap = frame.memory.heap.map Link.abstract := rfl
 
-theorem abstract_filter_slot (heap : List Link) (owner : Object) (field : Field)
-    (hs : owner.singleton = true) :
-    (heap.filter (!Link.atSlot owner field ·)).map Link.abstract =
-      (heap.map Link.abstract).filter (!Link.atSlot owner.abstract field ·) := by
+theorem abstract_filter_slot (heap : List Link) (parentObj : Object) (field : Field)
+    (hs : parentObj.singleton = true) :
+    (heap.filter (!Link.atSlot parentObj field ·)).map Link.abstract =
+      (heap.map Link.abstract).filter (!Link.atSlot parentObj.abstract field ·) := by
   induction heap with
   | nil => rfl
   | cons link heap ih =>
-    simp only [List.filter_cons, List.map_cons, Link.atSlot_abstract link owner field hs]
+    simp only [List.filter_cons, List.map_cons, Link.atSlot_abstract link parentObj field hs]
     split <;> simp [ih]
 
-theorem abstract_find_slot (heap : List Link) (owner : Object) (field : Field)
-    (hs : owner.singleton = true) :
-    (heap.find? (Link.atSlot owner field)).map Link.abstract =
-      (heap.map Link.abstract).find? (Link.atSlot owner.abstract field) := by
+theorem abstract_find_slot (heap : List Link) (parentObj : Object) (field : Field)
+    (hs : parentObj.singleton = true) :
+    (heap.find? (Link.atSlot parentObj field)).map Link.abstract =
+      (heap.map Link.abstract).find? (Link.atSlot parentObj.abstract field) := by
   induction heap with
   | nil => rfl
   | cons link heap ih =>
-    simp only [List.find?_cons, List.map_cons, Link.atSlot_abstract link owner field hs]
+    simp only [List.find?_cons, List.map_cons, Link.atSlot_abstract link parentObj field hs]
     split <;> simp [ih]
 
-def PreciseOwner (frame : RawFrame) : Prim → Prop
+def PreciseParent (frame : RawFrame) : Prim → Prop
   | .store parent _ _ | .select _ parent _ =>
       ∀ object, frame.get parent = some object → object.singleton = true
   | _ => True
 
 theorem runPrim_abstract (frame : RawFrame) (action : Prim)
-    (h : PreciseOwner frame action) :
+    (h : PreciseParent frame action) :
     (runPrim action frame).map RawFrame.abstract =
       (runPrim action frame.abstract).map RawFrame.abstract := by
   cases action with
@@ -138,8 +138,8 @@ theorem runPrim_abstract (frame : RawFrame) (action : Prim)
   | store parent field source =>
     cases hp : frame.get parent with
     | none => simp [runPrim, hp]
-    | some owner =>
-      have hs := h owner hp
+    | some parentObj =>
+      have hs := h parentObj hp
       cases he : frame.get source
       · simp [runPrim, hp, he]
       · simp only [runPrim, RawFrame.get_abstract, hp, he, Option.map_some, Option.bind_some,
@@ -151,11 +151,11 @@ theorem runPrim_abstract (frame : RawFrame) (action : Prim)
   | select destination parent field =>
     cases hp : frame.get parent with
     | none => simp [runPrim, hp]
-    | some owner =>
-      have hs := h owner hp
-      have hf := abstract_find_slot frame.memory.heap owner field hs
+    | some parentObj =>
+      have hs := h parentObj hp
+      have hf := abstract_find_slot frame.memory.heap parentObj field hs
       simp only [runPrim, raw_abstract_heap, RawFrame.get_abstract, hp, Option.map_some, Option.bind_some, ← hf]
-      cases he : frame.memory.heap.find? (Link.atSlot owner field) <;>
+      cases he : frame.memory.heap.find? (Link.atSlot parentObj field) <;>
         simp [RawFrame.put_abstract, Link.abstract, HeapLink.map]
 
 theorem World.view_object {world : World} {register : Register} {object : Object} {view : View}
@@ -165,19 +165,19 @@ theorem World.view_object {world : World} {register : Register} {object : Object
   cases hr : world.raw.get register <;> cases hv : getSlot world.views register <;> simp_all
 
 theorem metadata_precise (h : metadata program action world = .ok (edited, uses))
-    (hw : world.raw = frame.abstract) : PreciseOwner frame action.erase := by
+    (hw : world.raw = frame.abstract) : PreciseParent frame action.erase := by
   cases action <;> try trivial
-  case store parent field source moving =>
+  case store parent field source handoffSlot =>
     intro object ho
     unfold metadata at h
     cases hv : world.view parent with
     | none => simp [hv, need] at h
     | some pair =>
-      obtain ⟨owner, view⟩ := pair
-      have hs : owner.singleton = true := by
-        cases hv' : world.view source <;> cases hb : owner.singleton <;>
+      obtain ⟨parentObj, view⟩ := pair
+      have hs : parentObj.singleton = true := by
+        cases hv' : world.view source <;> cases hb : parentObj.singleton <;>
           simp_all [need, require]
-      have eq : owner = object.abstract := by
+      have eq : parentObj = object.abstract := by
         have := World.view_object hv
         simp [hw, ho] at this
         exact this.symm
@@ -188,10 +188,10 @@ theorem metadata_precise (h : metadata program action world = .ok (edited, uses)
     cases hv : world.view parent with
     | none => simp [hv, need] at h
     | some pair =>
-      obtain ⟨owner, view⟩ := pair
-      have hs : owner.singleton = true := by
-        cases hb : owner.singleton <;> simp_all [need, require]
-      have eq : owner = object.abstract := by
+      obtain ⟨parentObj, view⟩ := pair
+      have hs : parentObj.singleton = true := by
+        cases hb : parentObj.singleton <;> simp_all [need, require]
+      have eq : parentObj = object.abstract := by
         have := World.view_object hv
         simp [hw, ho] at this
         exact this.symm
@@ -262,7 +262,7 @@ structure PreparedFacts (world : World) (arguments : List Argument) (prepared : 
   evaluated : evaluateArguments world arguments = .ok (prepared.caller, prepared.actuals)
   separated : separateArguments world.raw.memory.heap prepared.actuals = true
   raw : world.raw.prepare (arguments.map Argument.source) = some prepared.entered.raw
-  roots : prepared.entered.outside = (prepared.caller.external ++ prepared.caller.liveObjects).eraseDups
+  roots : prepared.entered.outside = (prepared.caller.outsideVisible ++ prepared.caller.liveObjects).eraseDups
 
 theorem prepare_facts (h : prepare function world arguments = .ok prepared) :
     PreparedFacts world arguments prepared := by
@@ -281,16 +281,16 @@ theorem prepare_raw (h : prepare function world arguments = .ok prepared) :
     world.raw.prepare (arguments.map Argument.source) = some prepared.entered.raw :=
   (prepare_facts h).raw
 
-theorem prepared_external_roots (h : prepare function world arguments = .ok prepared) :
-    Includes (prepared.caller.external ++ prepared.caller.liveObjects) prepared.entered.outside := by
+theorem prepared_outside_roots (h : prepare function world arguments = .ok prepared) :
+    Includes (prepared.caller.outsideVisible ++ prepared.caller.liveObjects) prepared.entered.outside := by
   rw [(prepare_facts h).roots]
   exact fun _ member => List.mem_eraseDups.mpr member
 
-theorem consume_conditions (h : consume world register = .ok (object, view, ended)) :
+theorem handoff_conditions (h : takeHandoff world register = .ok (object, view, ended)) :
     (∃ original, world.view register = some (object, original)) ∧
       ended = world.endPath register ∧
-      isolated world object (ended.liveObjects ++ ended.external) = true := by
-  unfold consume at h
+      isolated world object (ended.liveObjects ++ ended.outsideVisible) = true := by
+  unfold takeHandoff at h
   cases hv : world.view register with
   | none => simp [hv, need] at h
   | some data =>
@@ -303,13 +303,13 @@ theorem consume_conditions (h : consume world register = .ok (object, view, ende
       exact ⟨⟨v, rfl⟩, rfl, allowed.2⟩
     · simp at h
 
-theorem consume_ends (h : consume world register = .ok (object, view, ended)) :
+theorem handoff_ends (h : takeHandoff world register = .ok (object, view, ended)) :
     ended = world.endPath register :=
-  (consume_conditions h).2.1
+  (handoff_conditions h).2.1
 
-theorem consume_raw (h : consume world register = .ok (object, view, ended)) :
+theorem handoff_raw (h : takeHandoff world register = .ok (object, view, ended)) :
     ended.raw = world.raw := by
-  rw [consume_ends h]
+  rw [handoff_ends h]
   rfl
 
 theorem evaluated_raw (h : evaluateArguments world arguments = .ok (ended, evaluated)) :
@@ -324,7 +324,7 @@ theorem evaluated_raw (h : evaluateArguments world arguments = .ok (ended, evalu
       obtain ⟨object, view⟩ := data
       cases hm : acceptsArgument view argument.marker <;> simp [hv, hm, need, require] at h
       split at h
-      · cases hc : consume world argument.source with
+      · cases hc : takeHandoff world argument.source with
         | error error => simp [hc, Except.map] at h
         | ok transfer =>
           obtain ⟨obj, v, after⟩ := transfer
@@ -334,7 +334,7 @@ theorem evaluated_raw (h : evaluateArguments world arguments = .ok (ended, evalu
             obtain ⟨last, actuals⟩ := result
             simp [hc, Except.map, he] at h
             obtain ⟨rfl, _⟩ := h
-            exact (ih he).trans (consume_raw hc)
+            exact (ih he).trans (handoff_raw hc)
       · cases he : evaluateArguments world rest with
         | error error => simp [he] at h
         | ok result =>

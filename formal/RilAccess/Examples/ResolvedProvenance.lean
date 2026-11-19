@@ -108,7 +108,7 @@ def completeNewGraph (mode : Access) : Program :=
     localCode [.alloc 0 10, .alloc 1 11, .store 0 0 1 true] ++ [.ret (some 0)]⟩
   ⟨[caller, factory], [⟨10, 0, ⟨false, .immutable⟩⟩]⟩
 
-def consumedArgument : Program :=
+def endedArgument : Program :=
   let caller : Function := ⟨[], {}, [
     .step [.alloc 0 10] 1, .invoke 1 [⟨0, .construction⟩, ⟨0, .observe⟩] none 2, .ret none]⟩
   ⟨[caller, ⟨[.construction, .observe], {}, [.ret none]⟩], []⟩
@@ -184,13 +184,13 @@ def examples : List (String × Bool) :=
    ("resolved provenance: post-entry insertion cannot fabricate an entry source", diagnoses (entryReturn true) .returnSource),
    ("resolved provenance: new wrapper composes old ref provenance with live independent path",
     accepts (wrapOld (.read 0))),
-   ("resolved provenance: a projection derived from a moved wrapper expires",
+   ("resolved provenance: a projection derived from a handed-off wrapper expires",
     diagnoses (wrapOld (.read 2)) .unavailable),
    ("resolved provenance: a new wrapper cannot upgrade an old read-only member", diagnoses upgradeOld .access),
    ("resolved provenance: an old live ref prevents immutable reception", diagnoses freezeOldView .construction),
-   ("resolved provenance: a fresh child in a plain slot belongs to the complete new graph",
+   ("resolved provenance: a newly allocated child in a plain slot belongs to the complete new graph",
     accepts (completeNewGraph .immutable) && accepts (completeNewGraph .mut)),
-   ("resolved provenance: new argument expires before a later argument", diagnoses consumedArgument .unavailable),
+   ("resolved provenance: new argument expires before a later argument", diagnoses endedArgument .unavailable),
    ("resolved provenance: base-case write grounds recursion", accepts (recursiveWriter true)),
    ("resolved provenance: outward shared stores keep parameter retention alive", accepts (retention false)),
    ("resolved provenance: overwritten shared store cannot justify retention", diagnoses (retention true) .unusedParameter),

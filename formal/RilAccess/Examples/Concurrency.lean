@@ -23,15 +23,15 @@ def baseWorld : World :=
 def afterShared : World := (spawnSharedCapture baseWorld (p 0) 10).toOption.getD baseWorld
 def afterHandoff : World := (spawnHandoffCapture baseWorld 1 11).toOption.getD baseWorld
 
-def nursery : NurseryState :=
+def taskScope : ScopeState :=
   ⟨7,
    [{ id := 1, regionSigma := 7, mode := .sharedImmutable },
     { id := 2, regionSigma := 7, mode := .exclusiveSingleShot },
     { id := 3, regionSigma := 7, mode := .exclusiveSingleShot, fallibleResult := true }]⟩
 
-def afterPlainJoin : NurseryState := (joinTask nursery 1 7 false).getD nursery
-def afterExclusiveJoin : NurseryState := (joinTask nursery 2 7 true).getD nursery
-def afterFallibleJoined : NurseryState := (joinTask nursery 3 7 true).getD nursery
+def afterPlainJoin : ScopeState := (joinTask taskScope 1 7 false).getD taskScope
+def afterExclusiveJoin : ScopeState := (joinTask taskScope 2 7 true).getD taskScope
+def afterFallibleJoined : ScopeState := (joinTask taskScope 3 7 true).getD taskScope
 
 def examples : List (String × Bool) :=
   [("concurrency: base ledger with immutable, mut, shared, resource, and scoped bindings is valid",
@@ -71,26 +71,26 @@ def examples : List (String × Bool) :=
       (resolve baseWorld (p 1)).any (eligibleChannelSend true baseWorld) &&
       (resolve baseWorld (p 0)).any (eligibleChannelSend false baseWorld)),
    ("concurrency: cross-scope task join and cancel rejected (E0604)",
-      (joinTask nursery 1 99 false).isNone && (cancelTask nursery 2 99).isNone),
+      (joinTask taskScope 1 99 false).isNone && (cancelTask taskScope 2 99).isNone),
    ("concurrency: plain let task supports idempotent memoized join",
-      (joinTask nursery 1 7 false).isSome && (joinTask afterPlainJoin 1 7 false).isSome),
+      (joinTask taskScope 1 7 false).isSome && (joinTask afterPlainJoin 1 7 false).isSome),
    ("concurrency: exclusive task handle rejects duplicate join or cancel (E0549)",
-      (joinTask nursery 2 7 true).isSome &&
+      (joinTask taskScope 2 7 true).isSome &&
       (joinTask afterExclusiveJoin 2 7 true).isNone &&
       (cancelTask afterExclusiveJoin 2 7).isNone),
    ("concurrency: cancel settles exclusive task handle",
-      (cancelTask nursery 2 7).isSome && (cancelTask nursery 3 7).isSome),
+      (cancelTask taskScope 2 7).isSome && (cancelTask taskScope 3 7).isSome),
    ("concurrency: uninspected Result blocks scope exit even after join (E0720)",
-      (inspectJoinedResult nursery 3 7).isNone &&
-      (drainPlainTasks nursery).isNone &&
-      (joinTask nursery 3 7 true).isSome &&
+      (inspectJoinedResult taskScope 3 7).isNone &&
+      (drainPlainTasks taskScope).isNone &&
+      (joinTask taskScope 3 7 true).isSome &&
       (drainPlainTasks afterFallibleJoined).isNone &&
       (inspectJoinedResult afterFallibleJoined 3 99).isNone),
    ("concurrency: inspecting the joined Result or cancelling enables the normal-exit drain",
       ((inspectJoinedResult afterFallibleJoined 3 7).bind drainPlainTasks).any canExitScope &&
-      ((cancelTask nursery 3 7).bind drainPlainTasks).any canExitScope),
+      ((cancelTask taskScope 3 7).bind drainPlainTasks).any canExitScope),
    ("concurrency: each memoized join returning a Result requires inspection",
-      let state : NurseryState :=
+      let state : ScopeState :=
         ⟨7, [{ id := 1, regionSigma := 7, mode := .sharedImmutable, fallibleResult := true }]⟩
       let twice := (joinTask state 1 7 false).bind fun once => joinTask once 1 7 false
       match twice.bind (inspectJoinedResult · 1 7) with

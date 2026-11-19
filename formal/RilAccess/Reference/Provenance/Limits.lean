@@ -72,13 +72,13 @@ theorem no_computable_exact_decider
 
 /-- Allocation-site abstraction intentionally forgets the unbounded serial. -/
 theorem same_site_distinct_objects (s : Source) (activation scope serial : Nat) :
-    (Origin.mk s activation serial scope).source =
-      (Origin.mk s activation (serial + 1) scope).source ∧
-    Origin.mk s activation serial scope ≠
-      Origin.mk s activation (serial + 1) scope := by
+    (SourceInstance.mk s activation serial scope).source =
+      (SourceInstance.mk s activation (serial + 1) scope).source ∧
+    SourceInstance.mk s activation serial scope ≠
+      SourceInstance.mk s activation (serial + 1) scope := by
   refine ⟨rfl, ?_⟩
   intro he
-  have hobj := congrArg Origin.object he
+  have hobj := congrArg SourceInstance.object he
   simp at hobj
 
 end RilAccess

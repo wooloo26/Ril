@@ -9,28 +9,28 @@ abbrev ObjectId := Nat
 /-- Tree regions retain their coordinate; they are not flattened to allocation IDs. -/
 abbrev RegionKey := ObjectId × List Nat
 
-def owner (origin : Origin) : Nat × Nat :=
-  (origin.activation, origin.scope)
+def allocationContext (srcInst : SourceInstance) : Nat × Nat :=
+  (srcInst.activation, srcInst.scope)
 
-def coherent (origins : List Origin) : Bool :=
-  origins.all fun left => origins.all fun right =>
-    decide (left.object ≠ right.object ∨ owner left = owner right)
+def coherent (srcInsts : List SourceInstance) : Bool :=
+  srcInsts.all fun left => srcInsts.all fun right =>
+    decide (left.object ≠ right.object ∨ allocationContext left = allocationContext right)
 
-def labels (heap : List HeapEdge) (roots : List Origin) : List Origin :=
+def labels (heap : List HeapEdge) (roots : List SourceInstance) : List SourceInstance :=
   (roots ++ heap.flatMap (fun edge => [edge.parent, edge.child])).eraseDups
 
 inductive Reach (heap : List HeapEdge) : ObjectId → ObjectId → Prop where
   | refl : Reach heap object object
   | cons : edge ∈ heap → Reach heap edge.child.object target → Reach heap edge.parent.object target
 
-def objects (heap : List HeapEdge) (roots : List Origin) : List ObjectId :=
-  Heap.reachable (heap.map (HeapLink.map Origin.object)) (roots.map Origin.object)
+def objects (heap : List HeapEdge) (roots : List SourceInstance) : List ObjectId :=
+  Heap.reachable (heap.map (HeapLink.map SourceInstance.object)) (roots.map SourceInstance.object)
 
-def origins (heap : List HeapEdge) (allRoots roots : List Origin) : List Origin :=
-  (labels heap allRoots).filter (fun origin => decide (origin.object ∈ objects heap roots))
+def srcInsts (heap : List HeapEdge) (allRoots roots : List SourceInstance) : List SourceInstance :=
+  (labels heap allRoots).filter (fun srcInst => decide (srcInst.object ∈ objects heap roots))
 
-theorem same_owner {knownOrigins : List Origin} (h : coherent knownOrigins = true) (hl : left ∈ knownOrigins)
-    (hr : right ∈ knownOrigins) (hi : left.object = right.object) : owner left = owner right := by
+theorem same_context {knownInstances : List SourceInstance} (h : coherent knownInstances = true) (hl : left ∈ knownInstances)
+    (hr : right ∈ knownInstances) (hi : left.object = right.object) : allocationContext left = allocationContext right := by
   have pair := List.all_eq_true.mp (List.all_eq_true.mp h left hl) right hr
   exact (of_decide_eq_true pair).resolve_left (not_not_intro hi)
 
@@ -45,12 +45,12 @@ theorem Reach.append (path : Reach heap root edge.parent.object) (present : edge
     exact .cons member (ih endpoint)
 
 theorem Reach.extend (path : Reach heap root target)
-    (base : Heap.Reaches (heap.map (HeapLink.map Origin.object)) roots root) :
-    Heap.Reaches (heap.map (HeapLink.map Origin.object)) roots target := by
+    (base : Heap.Reaches (heap.map (HeapLink.map SourceInstance.object)) roots root) :
+    Heap.Reaches (heap.map (HeapLink.map SourceInstance.object)) roots target := by
   induction path with
   | refl => exact base
   | @cons edge _ present _ ih =>
-    exact ih (.edge (edge := edge.map Origin.object) (List.mem_map_of_mem present) base)
+    exact ih (.edge (edge := edge.map SourceInstance.object) (List.mem_map_of_mem present) base)
 
 theorem path_covered (hr : root ∈ roots) (hp : Reach heap root.object target) :
     target ∈ objects heap roots :=
@@ -72,13 +72,13 @@ theorem object_has_path (ht : target ∈ objects heap roots) :
 theorem objects_exact : target ∈ objects heap roots ↔ ∃ root ∈ roots, Reach heap root.object target :=
   ⟨object_has_path, fun ⟨_, hr, hp⟩ => path_covered hr hp⟩
 
-theorem origins_exact : origin ∈ origins heap allRoots roots ↔
-    origin ∈ labels heap allRoots ∧ ∃ root ∈ roots, Reach heap root.object origin.object := by
-  simp only [origins, List.mem_filter, decide_eq_true_eq, objects_exact]
+theorem instances_exact : srcInst ∈ srcInsts heap allRoots roots ↔
+    srcInst ∈ labels heap allRoots ∧ ∃ root ∈ roots, Reach heap root.object srcInst.object := by
+  simp only [srcInsts, List.mem_filter, decide_eq_true_eq, objects_exact]
 
 /-- A caller still has to establish that this finite graph covers its actual
 heap/roots. This predicate is a theorem premise, not an axiom or a safety flag. -/
-def Represents (heap : List HeapEdge) (roots : List Origin)
+def Represents (heap : List HeapEdge) (roots : List SourceInstance)
     (actualReach : ObjectId → ObjectId → Prop) : Prop :=
   ∀ root ∈ roots, ∀ target, actualReach root.object target → Reach heap root.object target
 

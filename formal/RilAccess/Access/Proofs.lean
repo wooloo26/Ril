@@ -18,7 +18,7 @@ theorem authorization_original (h : authorized e = true) : originalPolicy e = tr
 
 theorem receiving_cannot_upgrade (h : receiving w r mode scope = true)
     (hw : mode.access.writes = true) :
-    r.effective.writes = true ∧ r.grant.declared.writes = true ∧ noTemporary r = true := by
+    r.effective.writes = true ∧ r.grant.declared.writes = true ∧ noScopedHold r = true := by
   cases mode with
   | mk replaceable access => cases access <;> simp_all [receiving, Access.writes]
 
@@ -40,7 +40,7 @@ theorem original_member_write_bound (h : authorized accessCheck = true)
 structure WorldInvariant (world : World) : Prop where
   tokenIds : (world.tokens.map Token.id).Nodup
   tokenBound : ∀ token ∈ world.tokens, token.id < world.nextToken
-  retainedNotTemporary : ∀ token ∈ world.tokens, token.temporary = true → token.retained = false
+  retainedNotTemporary : ∀ token ∈ world.tokens, token.scopedHold = true → token.retained = false
   scopeDependencies : ∀ token ∈ world.tokens, ∀ id ∈ token.dependencies,
     id < token.id ∧ (lookupToken world id).isSome = true
   dependenciesKnown : ∀ binding ∈ world.bindings, ∀ id ∈ binding.dependencies,
@@ -56,10 +56,10 @@ theorem ledger_facts (h : ledgerValid w = true) : WorldInvariant w := by
     have checked := List.all_eq_true.mp h.1.1.2 token ht
     simp only [Bool.and_eq_true, decide_eq_true_eq] at checked
     exact checked.1.1
-  · intro token ht temporary
+  · intro token ht scopedHold
     have flags := List.all_eq_true.mp h.1.1.2 token ht
     simp only [Bool.and_eq_true] at flags
-    simpa [temporary] using flags.1.2
+    simpa [scopedHold] using flags.1.2
   · intro token ht id hi
     have checked := List.all_eq_true.mp h.1.1.2 token ht
     simp only [Bool.and_eq_true] at checked
@@ -233,7 +233,7 @@ theorem lower_correct (program : Syntax) (state : RawState) :
 
 theorem check_infer (h : check program = .ok analysis) :
     infer (lower program) initialWorld = .ok analysis.worlds ∧
-    analysis.origins = analysis.worlds.flatMap worldOrigins := by
+    analysis.srcInsts = analysis.worlds.flatMap worldInstances := by
   unfold check at h
   split at h <;> try contradiction
   cases hi : infer (lower program) initialWorld with
@@ -286,26 +286,26 @@ theorem certified_accessChecks (h : certified world = true) (he : event ∈ worl
 theorem access_and_provenance (h : check program = .ok analysis)
     (hr : state ∈ sourceExecute program initialWorld.raw)
     (he : event ∈ state.observations) :
-    event.pointer.source ∈ analysis.origins ∧
+    event.pointer.source ∈ analysis.srcInsts ∧
       ∃ accessCheck, accessCheck.observation = event ∧ authorized accessCheck = true := by
-  obtain ⟨hi, horigins⟩ := check_infer h
+  obtain ⟨hi, hsrcInsts⟩ := check_infer h
   rw [lower_correct] at hr
   obtain ⟨world, hm, hraw⟩ := infer_simulation hi hr
   have hw : event ∈ world.raw.observations := by simpa [hraw] using he
   obtain ⟨accessCheck, _, heq, hsafe⟩ := certified_accessChecks (infer_certified hi hm) hw
   refine ⟨?_, accessCheck, heq, hsafe⟩
-  rw [horigins]
+  rw [hsrcInsts]
   exact List.mem_flatMap.mpr ⟨world, hm,
     List.mem_append_left _ (List.mem_append_left _ (List.mem_map.mpr ⟨event, hw, rfl⟩))⟩
 
-theorem storage_origin_coverage (h : check program = .ok analysis)
+theorem storage_instance_coverage (h : check program = .ok analysis)
     (hr : state ∈ sourceExecute program initialWorld.raw) (hb : binding ∈ state.roots) :
-    binding.2.source ∈ analysis.origins := by
-  obtain ⟨hi, horigins⟩ := check_infer h
+    binding.2.source ∈ analysis.srcInsts := by
+  obtain ⟨hi, hsrcInsts⟩ := check_infer h
   rw [lower_correct] at hr
   obtain ⟨world, hm, hraw⟩ := infer_simulation hi hr
   have hw : binding ∈ world.raw.roots := by simpa [hraw] using hb
-  rw [horigins]
+  rw [hsrcInsts]
   exact List.mem_flatMap.mpr ⟨world, hm,
     List.mem_append_left _ (List.mem_append_right _ (List.mem_map.mpr ⟨binding, hw, rfl⟩))⟩
 
@@ -339,7 +339,7 @@ theorem authorized_scalar_replacement (h : authorized accessCheck = true)
   simp_all [authorizedLocal]
 
 theorem authorized_retention (h : authorized accessCheck = true)
-    (hr : accessCheck.rule = .retain) : noTemporary accessCheck.resolved = true := by
+    (hr : accessCheck.rule = .retain) : noScopedHold accessCheck.resolved = true := by
   have h := authorization_local h
   simp_all [authorizedLocal]
 
@@ -354,7 +354,7 @@ theorem active_dependency_required (h : live r = true) (ht : token ∈ r.tokens)
 theorem independent_hold_blocks (h : noHoldConflict r holds = true) (hl : hold ∈ holds)
     (hoverlap : overlaps hold.region r.pointer = true)
     (hactive : hold.active = true)
-    (hindependent : hold.token ∉ r.authorityOrigins) : False := by
+    (hindependent : hold.token ∉ r.authorityAncestors) : False := by
   have hall := List.all_eq_true.mp h hold hl
   simp [hoverlap, hactive, hindependent] at hall
 

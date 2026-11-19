@@ -146,7 +146,7 @@ theorem every_prefix_authorized (h : check program = .ok analysis)
     {middle : RawState}
     (hp : Prefix (erase (lower program)) initialWorld.raw middle)
     (he : event ∈ middle.observations) :
-    event.pointer.source ∈ analysis.origins ∧
+    event.pointer.source ∈ analysis.srcInsts ∧
       ∃ accessCheck, accessCheck.observation = event ∧ authorized accessCheck = true := by
   obtain ⟨result, hr, hevent⟩ := prefix_event_extends hp (infer_faultFree (check_infer h).1) he
   rw [← lower_correct] at hr
@@ -155,7 +155,7 @@ theorem every_prefix_authorized (h : check program = .ok analysis)
 theorem checkAtom_grants (h : checkAtom operation w = .ok next) :
     next.grants = expectedGrants w operation := (checked_atom_facts h).grants
 
-theorem atomic_grant_origin (h : checkAtom operation w = .ok next) (hg : grant ∈ next.grants) :
+theorem atomic_grant_source (h : checkAtom operation w = .ok next) (hg : grant ∈ next.grants) :
     grant ∈ w.grants ∨ (grant.source, grant.declared, grant.schema) ∈ atomDeclarations operation := by
   rw [checkAtom_grants h] at hg
   cases operation <;> simp only [expectedGrants] at hg
@@ -165,7 +165,7 @@ theorem atomic_grant_origin (h : checkAtom operation w = .ok next) (hg : grant �
        · exact Or.inr (by simp [atomDeclarations])
        · exact Or.inl hg)
 
-theorem infer_grant_origin (h : infer code w = .ok worlds) (hm : result ∈ worlds)
+theorem infer_grant_source (h : infer code w = .ok worlds) (hm : result ∈ worlds)
     (hg : grant ∈ result.grants) :
     grant ∈ w.grants ∨ (grant.source, grant.declared, grant.schema) ∈ declarations code := by
   induction code generalizing w worlds result with
@@ -177,7 +177,7 @@ theorem infer_grant_origin (h : infer code w = .ok worlds) (hm : result ∈ worl
       subst worlds
       simp only [List.mem_singleton] at hm
       subst result
-      exact atomic_grant_origin hc hg
+      exact atomic_grant_source hc hg
   | sequence first second ihFirst ihSecond =>
     cases hf : infer first w with
     | error error => simp [infer, hf] at h
@@ -226,7 +226,7 @@ theorem original_declaration_covered (h : check program = .ok analysis)
   obtain ⟨accessCheck, hem, heq, hsafe⟩ := certified_accessChecks (infer_certified hi hm)
     (by simpa [hraw] using he)
   have hg := certified_grant_member (infer_certified hi hm) hem
-  rcases infer_grant_origin hi hm hg with hbad | hdeclared
+  rcases infer_grant_source hi hm hg with hbad | hdeclared
   · simp [initialWorld] at hbad
   · exact ⟨accessCheck, heq, hsafe, hdeclared⟩
 

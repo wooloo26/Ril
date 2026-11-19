@@ -18,7 +18,7 @@ def examples : List (String × Bool) :=
    ("handoff: derived view valid scope ends", !currentLive after 1),
    ("handoff: new construction path is live", currentLive after 2),
    ("handoff: unrelated authority record unchanged", lookupToken after 1 == lookupToken before 1),
-   ("handoff: consumed source cannot transfer twice", !(checkAtom (.handoff 0 3) after).isOk),
+   ("handoff: ended source cannot hand off twice", !(checkAtom (.handoff 0 3) after).isOk),
    ("handoff: malformed token counter cannot authorize transfer",
       !(checkAtom (.handoff 0 2) { before with nextToken := 0 }).isOk),
    ("regions: sibling coordinates remain different identities",
