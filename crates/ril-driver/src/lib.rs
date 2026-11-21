@@ -14,9 +14,15 @@ use ril_sema::{
     iface::{self, Interface},
     ty::{self, TypedProgram},
 };
-use ril_test::{CheckResult, Stage, TestDriver, Unit, VirtualPackage};
+use ril_test::{CheckResult, ExecOutput, Stage, TestDriver, Unit, VirtualPackage};
 
-pub const AVAILABLE: ril_test::Milestone = ril_test::Milestone::M3;
+mod native;
+mod package;
+
+pub use native::worker_entry;
+pub use package::load_package;
+
+pub const AVAILABLE: ril_test::Milestone = ril_test::Milestone::M4;
 
 #[derive(Default)]
 pub struct Driver;
@@ -37,13 +43,12 @@ impl Driver {
                 return Ok(CheckResult::default());
             }
             let typed = ty::check(program, pkg.budget)?;
-            if stage >= Stage::Access {
+            if stage == Stage::Access {
                 access::check(&typed)?;
             }
-            if stage > Stage::Access {
-                return Ok(CheckResult::unsupported(format!(
-                    "compiler stage {stage:?} is unavailable"
-                )));
+            if stage >= Stage::Mir {
+                let analysis = access::check(&typed)?;
+                ril_backend::mir::lower(&typed, &analysis).map_err(|err| vec![err])?;
             }
             Ok(CheckResult {
                 signatures: iface::signatures(&typed),
@@ -172,5 +177,17 @@ impl TestDriver for Driver {
             diagnostics,
             ..CheckResult::default()
         }
+    }
+
+    fn run_jit(&self, package: &VirtualPackage) -> Result<ExecOutput, Vec<Diagnostic>> {
+        self.execute_jit(package)
+    }
+
+    fn build_aot(
+        &self,
+        package: &VirtualPackage,
+        output: &std::path::Path,
+    ) -> Result<(), Vec<Diagnostic>> {
+        self.compile_aot(package, output)
     }
 }

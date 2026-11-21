@@ -10,3 +10,6 @@ pub use ffi::symbols;
 pub use gc::{GcRuntime, Object, TypeDesc, Value};
 pub use num::RilInt;
 pub use unwind::Runtime;
+
+#[cfg(test)]
+mod tests;

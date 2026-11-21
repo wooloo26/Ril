@@ -1,0 +1,71 @@
+-- @suite runtime_core
+-- @default_stage run
+
+-- @case bigints_and_float run-pass backend=both
+-- @expect-stdout 1267650600228229401496703205376
+-- @expect-stdout -2:-1
+fn main() @io -> () {
+    let big = 1 << 100
+    println("{big}")
+    println("{-7 / 3}:{-7 % 3}")
+    assert(3.0 * 2.0 == 6.0)
+}
+
+-- @case bin_exit_status_return run-pass backend=both
+-- @expect-exit 1
+fn main() -> new !<(), str> { Err("message on stderr") }
+
+-- @case unicode_and_index run-pass backend=both
+-- @expect-stdout 2:β
+fn main() @io -> () {
+    let text = "αβ"
+    assert(bytes"\xFF\0"[0] == 255)
+    println("{len(text)}:{text[1]}")
+}
+
+-- @case managed_graph_and_clone run-pass backend=both
+-- @expect-stdout 11:1
+type Cell = .{ var count: int }
+fn main() @io -> () {
+    let snap = Cell.{ count: 1 }
+    let mut cell = clone(snap)
+    cell.count += 10
+    println("{cell.count}:{snap.count}")
+}
+
+-- @case ssa_branches_and_loops run-pass backend=both
+-- @expect-stdout 15
+fn sum(limit: int) -> int {
+    var total = 0
+    var i = 1
+    while i <= limit {
+        total += i
+        i += 1
+    }
+    total
+}
+fn main() @io -> () {
+    let choose = sum(5)
+    let value = if choose > 10 { choose } else { 0 }
+    println("{value}")
+}
+
+-- @case meta_prunes_unreachable_foreign_call run-pass backend=both
+-- @expect-stdout present
+-- @file pkg/main.ril
+use pkg/host
+meta let AVAILABLE = false
+fn main() @io -> () {
+    if AVAILABLE { Host::ril_test_symbol_that_is_not_linked() }
+    println("present")
+}
+-- @file pkg/host.d.ril
+pub fn ril_test_symbol_that_is_not_linked() @io -> ()
+
+-- @case static_snapshot run-pass backend=both
+-- @expect-stdout 6
+meta fn values(scale: int) -> []int { [scale, scale * 2, scale * 3] }
+fn main() @io -> () {
+    let vector = values(2)
+    println("{vector[2]}")
+}

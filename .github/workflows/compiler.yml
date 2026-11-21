@@ -10,9 +10,10 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        stage: [m0, m1, m2, m3]
+        stage: [m0, m1, m2, m3, m4]
     env:
       RIL_TEST_STAGE: ${{ matrix.stage }}
+      RIL_GC_STRESS: '1'
     steps:
       - uses: actions/checkout@v4
       - run: rustup show

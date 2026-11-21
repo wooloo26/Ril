@@ -1,0 +1,56 @@
+-- @suite runtime_effects
+-- @default_stage run
+
+-- @case division_by_zero_unwinds run-panic "integer division by zero" backend=both
+fn divide(n: int) -> int { 20 / n }
+fn main() -> () { let _ = divide(0) }
+
+-- @case negative_shift_unwinds run-panic "negative shift count" backend=both
+fn shift(n: int) -> int { 15 << n }
+fn main() -> () { let _ = shift(-1) }
+
+-- @case cleanup_runs_in_reverse_order run-pass backend=both
+-- @expect-stdout second
+-- @expect-stdout first
+opaque type Resource use(close) = .{ message: str }
+fn acquire(message: str) -> new Resource { Resource.{ message } }
+fn close(new resource: Resource) @io -> () { println(resource.message) }
+fn main() @io -> () {
+    use first = acquire("first")
+    use second = acquire("second")
+}
+
+-- @case panic_runs_cleanup run-panic "failure" backend=both
+-- @expect-stdout cleanup
+opaque type Resource use(close) = .{ id: int }
+fn close(new resource: Resource) @io -> () { println("cleanup") }
+fn main() @io -> () {
+    use resource = Resource.{ id: 1 }
+    panic("failure")
+}
+
+-- @case double_panic_aborts run-abort backend=both
+opaque type Bomb use(detonate) = .{ id: int }
+fn detonate(new _b: Bomb) -> () { panic("second") }
+fn main() -> () {
+    let outcome = absorb_panic \-> {
+        use _b = Bomb.{ id: 1 }
+        panic("first")
+    }
+    match outcome { Ok(_) -> (); Err(_) -> () }
+}
+
+-- @case lexical_user_effect run-pass backend=both
+-- @expect-stdout 42
+eff Clock { fn now() -> int }
+fn main() @io -> () {
+    with Clock::now = \-> 42
+    println("{Clock::now()}")
+}
+
+-- @case panic_absorption run-pass backend=both
+-- @expect-stdout survived
+fn main() @io -> () {
+    let outcome = absorb_panic \-> { panic("caught") }
+    match outcome { Ok(_) -> (); Err(_) -> println("survived") }
+}

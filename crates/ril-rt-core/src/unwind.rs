@@ -6,11 +6,12 @@ pub struct Runtime {
     pub unwinding: u8,
     pub gc: GcRuntime,
     message: Option<String>,
+    suspended: Vec<Option<String>>,
 }
 
 impl Runtime {
     pub fn raise(&mut self, message: impl Into<String>) {
-        if self.unwinding != 0 {
+        if self.unwinding != 0 || self.suspended.iter().any(Option::is_some) {
             eprintln!("[RIL_RT_ABORT:DOUBLE_PANIC]");
             std::process::abort();
         }
@@ -21,6 +22,18 @@ impl Runtime {
     pub fn take_panic(&mut self) -> Option<String> {
         self.unwinding = 0;
         self.message.take()
+    }
+
+    pub(crate) fn enter_cleanup(&mut self) {
+        let pending = self.take_panic();
+        self.suspended.push(pending);
+    }
+
+    pub(crate) fn leave_cleanup(&mut self) {
+        if let Some(Some(pending)) = self.suspended.pop() {
+            self.message = Some(pending);
+            self.unwinding = 1;
+        }
     }
 
     pub fn finish(&mut self, value: Value) -> i32 {

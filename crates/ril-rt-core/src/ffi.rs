@@ -53,6 +53,8 @@ runtime_functions! {
     fn ril_rt_roots_push(rt, count: usize) { rt.gc.push_frame(count); }
     fn ril_rt_roots_set(rt, slot: usize, value: Value) { rt.gc.set_root(slot, value); }
     fn ril_rt_roots_pop(rt) { rt.gc.pop_frame(); }
+    fn ril_rt_cleanup_enter(rt) { rt.enter_cleanup(); }
+    fn ril_rt_cleanup_leave(rt) { rt.leave_cleanup(); }
     fn ril_rt_safepoint(rt) { rt.gc.safepoint(); }
     fn ril_rt_alloc_words(rt, count: usize, desc: TypeDesc) -> Value {
         if count > 64 { rt.raise("invalid runtime type descriptor"); return Value::UNIT; }

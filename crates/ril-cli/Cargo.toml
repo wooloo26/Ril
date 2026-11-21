@@ -13,6 +13,7 @@ ril-base.workspace = true
 ril-driver.workspace = true
 ril-test.workspace = true
 clap.workspace = true
+tempfile.workspace = true
 
 [[bin]]
 name = "ril"

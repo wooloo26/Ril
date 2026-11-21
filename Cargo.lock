@@ -699,6 +699,7 @@ dependencies = [
  "ril-base",
  "ril-driver",
  "ril-test",
+ "tempfile",
 ]
 
 [[package]]
@@ -711,6 +712,9 @@ dependencies = [
  "ril-rt-core",
  "ril-sema",
  "ril-test",
+ "serde",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]

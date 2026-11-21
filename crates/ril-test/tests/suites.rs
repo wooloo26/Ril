@@ -7,6 +7,9 @@ use ril_driver::{AVAILABLE, Driver};
 use ril_test::{Milestone, discover, trials};
 
 fn main() {
+    if let Some(status) = ril_driver::worker_entry() {
+        std::process::exit(status);
+    }
     let args = Arguments::from_args();
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests");
     let cases = (|| {
