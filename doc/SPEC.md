@@ -2951,8 +2951,10 @@ ImportItem  ::= Identifier [ "as" Identifier ]
 
 ```ril
 use ril/file
+use ril/fiber
 
 fn main() @io @fiber -> new !<(), str> {
+    Fiber::yield_now()
     let raw = File::read("config.json")?
     if raw == "" { Err("empty config") } else { Ok() }
 }

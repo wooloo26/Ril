@@ -184,9 +184,6 @@ impl FiberBackend for StackBackend {
 unsafe fn schedule(raw: Raw, action: Value) -> Result<Value, String> {
     // SAFETY: the generated caller owns one live context throughout scheduling.
     let state = unsafe { context(raw) };
-    if state.fiber.running {
-        return Err("nested Fiber::run".into());
-    }
     state.fiber.running = true;
     let root = start(state, raw, action, None);
     let stack_size = std::env::var("RIL_FIBER_STACK")
@@ -364,6 +361,12 @@ fn error(rt: &mut Runtime, message: impl Into<String>) -> Value {
 
 #[unsafe(no_mangle)]
 unsafe extern "C" fn ril_fiber_run(raw: Raw, action: Value) -> Value {
+    // SAFETY: no context borrow is retained when entering the generated action.
+    if unsafe { context(raw) }.fiber.running {
+        // SAFETY: Fiber::run always receives a nullary callable. Its nested
+        // action can suspend on the same scheduler as the calling fiber.
+        return unsafe { invoke(raw, action, None) };
+    }
     // SAFETY: the live context remains available through all stacks created for this run.
     match unsafe { schedule(raw, action) } {
         Ok(value) => value,

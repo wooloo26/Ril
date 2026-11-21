@@ -20,6 +20,7 @@ pub(crate) struct Register(pub usize);
 pub struct Program {
     pub(crate) functions: Vec<Function>,
     pub(crate) entry: FunctionId,
+    pub(crate) suspend_at_entry: bool,
 }
 
 #[derive(Debug)]

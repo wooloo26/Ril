@@ -1,6 +1,24 @@
 -- @suite concurrency_deterministic
 -- @default_stage run
 
+-- @case executable_fiber_effect_drives_the_scheduler run-pass backend=both
+-- @expect-stdout parent
+-- @expect-stdout child
+-- @expect-stdout 42
+use ril/fiber
+fn main() @io @fiber -> () {
+    let answer = Fiber::scope \mut s -> {
+        let child = Fiber::spawn(mut s) \-> {
+            println("child")
+            Fiber::run \-> { Fiber::yield_now(); 40 }
+        }
+        println("parent")
+        Fiber::yield_now()
+        Fiber::join(mut s, child) + 2
+    }
+    println("{answer}")
+}
+
 -- @case fifo_yield_order run-pass backend=both
 -- @expect-stdout a1
 -- @expect-stdout b1

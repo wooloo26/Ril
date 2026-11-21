@@ -47,12 +47,20 @@ pub(super) fn lower(typed: &TypedProgram, analysis: &Analysis) -> Result<Program
         queued: Vec::new(),
         boxed: captured_slots(typed),
     };
+    let suspend_at_entry = typed
+        .callables
+        .get(&entry)
+        .is_some_and(|callable| callable.effects.iter().any(|effect| effect == "fiber"));
     let entry = lowering.queue(Work::Named(entry, BTreeMap::new(), Vec::new()));
     let mut functions = Vec::new();
     while let Some(work) = lowering.queued.get(functions.len()).cloned() {
         functions.push(lowering.function(work)?);
     }
-    Ok(Program { entry, functions })
+    Ok(Program {
+        entry,
+        functions,
+        suspend_at_entry,
+    })
 }
 
 fn captured_slots(typed: &TypedProgram) -> BTreeSet<DefinitionId> {

@@ -126,7 +126,9 @@ impl<M: Module> MirToClifTranslator<'_, M> {
             use std::fmt::Write as _;
             writeln!(ir, "\n; {}\n{code}", function.name).map_err(diagnostic)?;
         }
-        let entry = compiler.wrapper(program.entry)?;
+        let (entry, wrapper) = compiler.wrapper(program.entry, program.suspend_at_entry)?;
+        use std::fmt::Write as _;
+        writeln!(ir, "\n; executable entry\n{wrapper}").map_err(diagnostic)?;
         Ok((entry, ir))
     }
 
@@ -437,7 +439,7 @@ impl<M: Module> MirToClifTranslator<'_, M> {
         }
     }
 
-    fn wrapper(&mut self, entry: FunctionId) -> Result<FuncId> {
+    fn wrapper(&mut self, entry: FunctionId, suspend_at_entry: bool) -> Result<(FuncId, String)> {
         let mut context = self.module.make_context();
         context.func.signature = self.signature(0, Some(types::I32));
         let id = self
@@ -451,9 +453,19 @@ impl<M: Module> MirToClifTranslator<'_, M> {
         let rt = self.handle(&mut builder, "ril_rt_create", &[])?;
         let null = builder.ins().iconst(types::I64, 0);
         let function = self.function_id(entry)?;
-        let value = self
-            .call(&mut builder, function, &[rt, null, null])
-            .ok_or_else(|| diagnostic("entry has no return value"))?;
+        let value = if suspend_at_entry {
+            let entry = self.module.declare_func_in_func(function, builder.func);
+            let address = builder.ins().func_addr(types::I64, entry);
+            let closure = self.handle(
+                &mut builder,
+                "ril_rt_closure",
+                &[rt, address, null, null, null],
+            )?;
+            self.handle(&mut builder, "ril_fiber_run", &[rt, closure])?
+        } else {
+            self.call(&mut builder, function, &[rt, null, null])
+                .ok_or_else(|| diagnostic("entry has no return value"))?
+        };
         let exit = self
             .native(
                 &mut builder,
@@ -471,7 +483,7 @@ impl<M: Module> MirToClifTranslator<'_, M> {
         self.module
             .define_function(id, &mut context)
             .map_err(diagnostic)?;
-        Ok(id)
+        Ok((id, context.func.display().to_string()))
     }
 }
 
