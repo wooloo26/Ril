@@ -2,10 +2,10 @@ use std::{path::PathBuf, sync::Arc};
 
 use crate::diag::{Code, Diagnostic};
 
-#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct FileId(pub usize);
 
-#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct Span {
     pub file: FileId,
     pub start: usize,

@@ -1,0 +1,36 @@
+-- @suite via_compat
+-- @default_stage access
+
+-- @prelude
+pub type Cell = .{ var count: int }
+
+-- @case domain_tightened compat-fail E0552
+-- @baseline
+pub fn read(via c: Cell) -> int { c.count }
+-- @revision
+pub fn read(via c: Cell) -> int { c.count += 1; c.count }
+-- ^ E0552
+
+-- @case equivalent_via_revision compat-pass
+-- @baseline
+pub fn read(via c: Cell) -> int { c.count }
+-- @revision
+pub fn read(via c: Cell) -> int { c.count + 0 }
+
+-- @case signature_format compile-pass no-prelude
+-- @expect-sig square "fn square(x: int) -> int"
+fn square(x: int) -> int { x * x }
+
+-- @case infer_requires_its_own_via compile-fail E0412
+fn invalid(x: Cell) -> infer Cell { x }
+-- ^ E0412
+
+-- @case concrete_value_has_no_mode_family compile-fail E0550
+fn invalid(via x: int) -> int { x }
+-- ^ E0550
+
+-- @case via_local_preserves_template compile-pass
+pub fn relay(via source: Cell) -> infer Cell {
+    let via local = source
+    local
+}

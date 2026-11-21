@@ -9,9 +9,14 @@ use ril_frontend::{
     lexer,
     parser::{self, FileKind},
 };
+use ril_sema::{
+    access::{self, Analysis},
+    iface::{self, Interface},
+    ty::{self, TypedProgram},
+};
 use ril_test::{CheckResult, Stage, TestDriver, Unit, VirtualPackage};
 
-pub const AVAILABLE: ril_test::Milestone = ril_test::Milestone::M2;
+pub const AVAILABLE: ril_test::Milestone = ril_test::Milestone::M3;
 
 #[derive(Default)]
 pub struct Driver;
@@ -24,26 +29,49 @@ pub struct Checked {
 impl Driver {
     pub fn check(&self, pkg: &VirtualPackage, stage: Stage) -> Checked {
         let (sources, program) = frontend(pkg, stage);
-        let result = match program {
-            Err(diagnostics) => CheckResult {
-                diagnostics,
-                ..CheckResult::default()
-            },
-            Ok(Some(program)) if stage >= Stage::Type => {
-                match ril_sema::ty::check(program, pkg.budget) {
-                    Err(diagnostics) => CheckResult {
-                        diagnostics,
-                        ..CheckResult::default()
-                    },
-                    Ok(_) if stage > Stage::Type => {
-                        CheckResult::unsupported(format!("compiler stage {stage:?} is unavailable"))
-                    }
-                    Ok(_) => CheckResult::default(),
-                }
+        let result = (|| {
+            let Some(program) = program? else {
+                return Ok(CheckResult::default());
+            };
+            if stage < Stage::Type {
+                return Ok(CheckResult::default());
             }
-            Ok(_) => CheckResult::default(),
-        };
+            let typed = ty::check(program, pkg.budget)?;
+            if stage >= Stage::Access {
+                access::check(&typed)?;
+            }
+            if stage > Stage::Access {
+                return Ok(CheckResult::unsupported(format!(
+                    "compiler stage {stage:?} is unavailable"
+                )));
+            }
+            Ok(CheckResult {
+                signatures: iface::signatures(&typed),
+                ..CheckResult::default()
+            })
+        })()
+        .unwrap_or_else(|diagnostics| CheckResult {
+            diagnostics,
+            ..CheckResult::default()
+        });
         Checked { sources, result }
+    }
+
+    pub fn analyze(
+        &self,
+        pkg: &VirtualPackage,
+    ) -> Result<(TypedProgram, Analysis), Vec<Diagnostic>> {
+        let (_, frontend) = frontend(pkg, Stage::Hir);
+        let program =
+            frontend?.ok_or_else(|| vec![Diagnostic::unsupported("missing frontend program")])?;
+        let typed = ty::check(program, pkg.budget)?;
+        let analysis = access::check(&typed)?;
+        Ok((typed, analysis))
+    }
+
+    pub fn interface(&self, pkg: &VirtualPackage) -> Result<Interface, Vec<Diagnostic>> {
+        let (program, analysis) = self.analyze(pkg)?;
+        Ok(Interface::build(&program, &analysis))
     }
 }
 
@@ -133,5 +161,16 @@ fn frontend(
 impl TestDriver for Driver {
     fn check_stage(&self, pkg: &VirtualPackage, upto: Stage) -> CheckResult {
         self.check(pkg, upto).result
+    }
+
+    fn check_compat(&self, base: &VirtualPackage, revision: &VirtualPackage) -> CheckResult {
+        let diagnostics = match (self.interface(base), self.interface(revision)) {
+            (Ok(base), Ok(revision)) => base.compare(&revision),
+            (Err(diagnostics), _) | (_, Err(diagnostics)) => diagnostics,
+        };
+        CheckResult {
+            diagnostics,
+            ..CheckResult::default()
+        }
     }
 }

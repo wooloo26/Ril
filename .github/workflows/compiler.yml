@@ -10,7 +10,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        stage: [m0, m1, m2]
+        stage: [m0, m1, m2, m3]
     env:
       RIL_TEST_STAGE: ${{ matrix.stage }}
     steps:
@@ -32,3 +32,16 @@ jobs:
       - uses: actions/checkout@v4
       - run: rustup toolchain install nightly --profile minimal --component miri
       - run: cargo miri test -p ril-rt-core --locked
+
+  formal:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: leanprover/lean-action@v1
+        with:
+          lake-package-directory: formal
+      - run: lake -d formal build horn-oracle access-check
+      - run: formal/.lake/build/bin/access-check
+      - run: cargo test -p ril-test --test interfaces --locked
+        env:
+          RIL_HORN_ORACLE: ${{ github.workspace }}/formal/.lake/build/bin/horn-oracle

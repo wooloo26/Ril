@@ -1,0 +1,70 @@
+-- @suite obligations
+-- @default_stage access
+
+-- @case exact_io_asserted compile-pass
+fn emit() @io -> () { println("message") }
+
+-- @case missing_io compile-fail E0612
+fn emit() -> () { println("message") }
+-- ^ E0612
+
+-- @case top_level_effect compile-fail E0202 unit=lib
+let boot = println("message")
+-- ^ E0202
+
+-- @case handler_contains_effect compile-pass
+eff Clock { fn now() -> int }
+fn read() -> int {
+    with Clock::now = \-> 42
+    Clock::now()
+}
+
+-- @case effect_without_handler compile-fail E0612
+eff Clock { fn now() -> int }
+fn read() -> int { Clock::now() }
+-- ^ E0612
+
+-- @case duplicate_handler_operation compile-fail E0622
+eff Clock { fn now() -> int }
+fn read() -> int {
+    with {
+        Clock::now = \-> 2
+        Clock::now = \-> 4
+        -- ^ E0622
+    }
+    Clock::now()
+}
+
+-- @case resource_needs_cleanup compile-fail E0541
+fn use_number() -> () { use number = 0 }
+-- ^ E0541
+
+-- @case synchronous_cleanup compile-pass
+opaque type Handle use(close) = .{ id: int }
+fn close(new resource: Handle) @io -> () { println("closed") }
+fn acquire() -> new Handle { Handle.{ id: 42 } }
+fn scoped() @io -> int {
+    use handle = acquire()
+    handle.id
+}
+
+-- @case resource_does_not_escape compile-fail E0604
+opaque type Handle use(close) = .{ id: int }
+fn close(new resource: Handle) -> () {}
+fn acquire() -> new Handle { Handle.{ id: 42 } }
+fn scoped() -> new Handle {
+    use handle = acquire()
+    new handle
+    -- ^ E0604
+}
+
+-- @case cleanup_cannot_suspend compile-fail E0616
+use ril/fiber
+opaque type Handle use(close) = .{ id: int }
+fn close(new resource: Handle) @fiber -> () { Fiber::yield() }
+fn acquire() -> new Handle { Handle.{ id: 42 } }
+fn scoped() @fiber -> int {
+    use handle = acquire()
+    -- ^ E0616
+    handle.id
+}

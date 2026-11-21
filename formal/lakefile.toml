@@ -15,3 +15,7 @@ root = "Main"
 [[lean_exe]]
 name = "audit"
 root = "Audit"
+
+[[lean_exe]]
+name = "horn-oracle"
+root = "HornOracle"

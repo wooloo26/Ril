@@ -115,6 +115,36 @@ impl Program {
             .unwrap_or_else(|| ril_base::ice!("missing HIR file {}", id.0))
     }
 
+    pub fn export_name(&self, id: DefinitionId) -> String {
+        let def = self.definition(id);
+        let origin = self.scope(def.scope).file;
+        let mut chain = vec![def.name.value.as_str()];
+        let mut scope = def.scope;
+        while let Some(parent) = self.scope(scope).parent {
+            if let Some((_, namespace)) = self
+                .definitions()
+                .find(|(_, item)| item.kind == DefinitionKind::Namespace(scope))
+            {
+                chain.push(namespace.name.value.as_str());
+            }
+            scope = parent;
+        }
+        chain.reverse();
+        if let Some(file) = self.files.get(&origin.0) {
+            format!("{}::{}", file.path.display(), chain.join("::"))
+        } else {
+            chain.join("::")
+        }
+    }
+
+    pub fn effect_of(&self, operation: DefinitionId) -> Option<&str> {
+        let scope = self.definition(operation).scope;
+        self.definitions().find_map(|(_, definition)| {
+            (definition.kind == DefinitionKind::Effect(scope))
+                .then_some(definition.name.value.as_str())
+        })
+    }
+
     pub fn same_package(&self, a: ScopeId, b: ScopeId) -> bool {
         self.scope(a).package == self.scope(b).package
     }

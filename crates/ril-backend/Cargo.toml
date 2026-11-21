@@ -11,3 +11,9 @@ workspace = true
 [dependencies]
 ril-base.workspace = true
 ril-sema.workspace = true
+cranelift-codegen.workspace = true
+cranelift-frontend.workspace = true
+cranelift-module.workspace = true
+cranelift-object.workspace = true
+cranelift-jit.workspace = true
+cranelift-native.workspace = true

@@ -1,0 +1,135 @@
+-- @suite access
+-- @default_stage access
+
+-- @prelude
+type Cell = .{ var count: int }
+
+-- @case local_mutates_record compile-pass
+fn increment() -> int {
+    let mut cell = Cell.{ count: 0 }
+    cell.count += 1
+    cell.count
+}
+
+-- @case writable_parameter_compile_pass compile-pass
+fn increment(mut cell: Cell) &mut -> int {
+    cell.count += 1
+    cell.count
+}
+
+-- @case mutable_parameter_requires_write compile-fail E0527
+fn observe(mut cell: Cell) -> int { cell.count }
+-- ^ E0527
+
+-- @case recursive_forwarding_is_ungrounded compile-fail E0527
+fn cycle(mut cell: Cell) -> () { cycle(mut cell) }
+-- ^ E0527
+
+-- @case mutual_recursion_has_grounded_writer compile-pass
+fn first(mut cell: Cell, n: int) &mut -> () { second(mut cell, n) }
+fn second(mut cell: Cell, n: int) &mut -> () {
+    if n < 1 { cell.count = n } else { first(mut cell, n - 1) }
+}
+
+-- @case dead_branch_is_not_write_authority compile-fail E0527
+fn try_edit(mut cell: Cell) -> () {
+    if false { cell.count = 2 }
+}
+
+-- @case var_requires_replacement compile-fail E0527
+fn stale() -> int {
+    var n = 0
+    -- ^ E0527
+    n
+}
+
+-- @case replacing_immutable_slot compile-fail E0501
+fn bad() -> () {
+    let n = 0
+    n = 1
+    -- ^ E0501
+}
+
+-- @case missing_write_clause compile-fail E0510
+fn missing(mut cell: Cell) -> () { cell.count = 2 }
+-- ^ E0510
+-- @forbid E0527
+
+-- @case excessive_write_clause compile-fail E0529
+fn unnecessary(cell: Cell) &mut -> () {}
+-- ^ E0529
+
+-- @case returning_fresh_requires_new_annotation compile-fail E0544
+fn create() -> Cell { Cell.{ count: 0 } }
+-- ^ E0544
+
+-- @case named_construction compile-pass
+fn create() -> new Cell { Cell.{ count: 0 } }
+
+-- @case handoff_ends_binding compile-fail E0549
+fn transfer() -> int {
+    let mut cell = Cell.{ count: 1 }
+    let mut other = new cell
+    other.count += 2
+    cell.count
+    -- ^ E0549
+}
+
+-- @case handoff_ends_dependent_view compile-fail E0549
+fn transfer() -> int {
+    let mut cell = Cell.{ count: 1 }
+    let ref view = ref cell
+    let mut other = new cell
+    other.count += 2
+    view.count
+    -- ^ E0549
+}
+
+-- @case overlapping_mut_writers compile-fail E0523
+fn incr(mut a: Cell, mut b: Cell) &mut -> () { a.count += 1; b.count += 1 }
+fn call() -> () {
+    let mut cell = Cell.{ count: 0 }
+    incr(mut cell, mut cell)
+    -- ^ E0523
+}
+
+-- @case overlapping_read_write compile-fail E0524
+fn copy(mut a: Cell, ref b: Cell) &mut -> () { a.count = b.count }
+fn run() -> () {
+    let mut cell = Cell.{ count: 0 }
+    copy(mut cell, ref cell)
+    -- ^ E0524
+}
+
+-- @case independent_allocations compile-pass
+fn copy(mut a: Cell, ref b: Cell) &mut -> () { a.count = b.count }
+fn run() -> () {
+    let mut a = Cell.{ count: 0 }
+    let b = Cell.{ count: 1 }
+    copy(mut a, ref b)
+}
+
+-- @case shared_return_retains compile-pass
+fn keep(^mut cell: Cell) -> ^mut(cell) Cell { cell }
+
+-- @case shared_parameter_not_retained compile-fail E0527
+fn edit(^mut cell: Cell) &mut -> () { cell.count = 2 }
+-- ^ E0527
+
+-- @case generic_fallback_discards_result compile-fail E0720
+fn get() -> new !<int, str> { Ok(1) }
+fn drop<T>(_unused: T) -> () {}
+fn run() -> () { drop(get()) }
+-- ^ E0720
+
+-- @case wrapped_result_must_be_inspected compile-fail E0720
+fn get() -> new !<int, str> { Ok(1) }
+fn run() -> () {
+    let wrapped = Some(get())
+    -- ^ E0720
+}
+
+-- @case explicit_result_parameter_and_match compile-pass
+fn get() -> new !<int, str> { Ok(1) }
+fn unwrap(input: !<int, str>) -> int { match input { Ok(n) -> n; Err(_) -> 0 } }
+fn run() -> int { unwrap(get()) }
