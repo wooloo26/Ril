@@ -170,8 +170,12 @@ impl Datum {
     }
 
     pub(super) fn project(&self, coordinate: Coordinate, mode: Access) -> Self {
-        if let Some(member) = self.members.get(&coordinate) {
-            let mut member = member.clone();
+        let known = self.members.get(&coordinate).cloned().or_else(|| {
+            (coordinate == Coordinate::Dynamic)
+                .then(|| self.members.values().cloned().reduce(Self::joined))
+                .flatten()
+        });
+        if let Some(mut member) = known {
             if self.roots.iter().all(|root| root.mode == Access::Immutable) {
                 member.transform(&mut |origin| {
                     origin.mode = Access::Immutable;
@@ -183,7 +187,7 @@ impl Datum {
             }
             return member;
         }
-        let roots = self
+        let roots: Vec<_> = self
             .roots
             .iter()
             .map(|origin| {
@@ -191,14 +195,19 @@ impl Datum {
                 origin.region.selection.push(coordinate.clone());
                 if !origin.draft {
                     origin.mode = origin.mode.project(mode);
+                    // The schema of an opaque member selection can expose authority
+                    // which survived the transfer of its enclosing new object.
+                    if matches!(mode, Access::Ref | Access::Shared) {
+                        origin.new = false;
+                    }
                 }
                 origin
             })
             .collect();
         Self {
+            requires_new: self.requires_new && roots.iter().all(|root| root.new),
             roots,
             results: self.results.clone(),
-            requires_new: self.requires_new,
             ..Self::default()
         }
     }

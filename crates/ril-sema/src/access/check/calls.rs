@@ -291,6 +291,41 @@ impl Analyzer<'_> {
                                 },
                             });
                         }
+                        if matches!(mode, Mode::Mut | Mode::Shared | Mode::New) {
+                            let existing: BTreeSet<_> = value
+                                .origins()
+                                .filter(|origin| {
+                                    origin.mode.writes()
+                                        && (!origin.new
+                                            || *mode == Mode::New
+                                                && ctx
+                                                    .formals
+                                                    .contains(&Some(origin.region.source)))
+                                })
+                                .flat_map(|origin| {
+                                    std::iter::once(Obligation::WriteExisting(origin.region.source))
+                                        .chain(
+                                            origin
+                                                .dependencies
+                                                .iter()
+                                                .copied()
+                                                .map(Obligation::Write),
+                                        )
+                                })
+                                .collect();
+                            for obligation in existing {
+                                self.rules.push(Rule {
+                                    premises: vec![Fact {
+                                        owner: fun.name.span,
+                                        obligation: Obligation::WriteExisting(formal),
+                                    }],
+                                    conclusion: Fact {
+                                        owner: ctx.owner,
+                                        obligation,
+                                    },
+                                });
+                            }
+                        }
                     }
                 }
                 if matches!(mode, Mode::Mut | Mode::Shared | Mode::New) {
@@ -343,7 +378,14 @@ impl Analyzer<'_> {
                 Mode::New | Mode::Infer | Mode::Ref | Mode::Shared
             ) {
                 self.function(fun, ledger);
-                if let Some(result) = self.return_template(fun, &values, span) {
+                if let Some(mut result) = self.return_template(fun, &values, span) {
+                    if matches!(fun.signature.result_mode, Mode::Ref | Mode::Shared) {
+                        result.requires_new = false;
+                        for root in &mut result.roots {
+                            root.mode = Access::from_mode(fun.signature.result_mode);
+                            root.new = false;
+                        }
+                    }
                     return result;
                 }
             }

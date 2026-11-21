@@ -116,6 +116,35 @@ fn keep(^mut cell: Cell) -> ^mut(cell) Cell { cell }
 fn edit(^mut cell: Cell) &mut -> () { cell.count = 2 }
 -- ^ E0527
 
+-- @case new_container_writes_existing_member compile-pass
+fn update(new cells: [^mut]Cell) &mut -> int {
+    let mut local = new cells
+    local[0].count += 1
+    local[0].count
+}
+fn relay(new cells: [^mut]Cell) &mut -> int { update(new cells) }
+fn use_cell() -> int {
+    let mut local = Cell.{ count: 0 }
+    relay(new [^mut local])
+}
+
+-- @case new_container_does_not_discharge_existing_member_writes compile-fail E0510
+fn update(new cells: [^mut]Cell) -> int {
+    let mut local = new cells
+    local[0].count += 1
+    local[0].count
+}
+
+-- @case confined_new_container_writes_discharge compile-pass
+fn update(new cells: [mut]Cell) -> int {
+    let mut local = new cells
+    local[0].count += 1
+    local[0].count
+}
+
+-- @case excessive_contained_return_qualification compile-fail E0529
+fn allocate(unused: Cell) &return(unused) -> new []Cell { [Cell.{ count: 0 }] }
+
 -- @case generic_fallback_discards_result compile-fail E0720
 fn get() -> new !<int, str> { Ok(1) }
 fn drop<T>(_unused: T) -> () {}

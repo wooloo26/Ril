@@ -25,6 +25,7 @@ mod calls;
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 enum Obligation {
     Write(Span),
+    WriteExisting(Span),
     Replace(Span),
     Retain(Span),
     Share(Span),
@@ -532,7 +533,12 @@ impl<'a> Analyzer<'a> {
                     }
                 }
             }
-            for origin in value.members.values().flat_map(Datum::origins) {
+            for origin in value
+                .members
+                .values()
+                .filter(|_| ctx.expected != Mode::Plain)
+                .flat_map(Datum::origins)
+            {
                 if !origin.new
                     && let Some(index) = ctx
                         .formals
@@ -541,6 +547,17 @@ impl<'a> Analyzer<'a> {
                 {
                     actual_contained.insert((origin.mode, index));
                 }
+            }
+        }
+        if ctx.runtime && ctx.expected != Mode::Infer && !ctx.return_values.is_empty() {
+            let excess = ctx.declared_contained.iter().any(|&(mode, source)| {
+                ctx.formals
+                    .iter()
+                    .position(|decl| *decl == Some(source))
+                    .is_none_or(|index| !actual_contained.contains(&(mode, index)))
+            });
+            if excess {
+                self.error(Code::E0529, ctx.owner, "unused contained return source");
             }
         }
         self.functions.push(DefinitionCheck {
@@ -617,6 +634,11 @@ impl<'a> Analyzer<'a> {
                         summary.writes.push(param);
                     }
                 }
+                Obligation::WriteExisting(span) => {
+                    if let Some(param) = fun.formals.iter().position(|decl| *decl == Some(*span)) {
+                        summary.writes.push(param);
+                    }
+                }
                 Obligation::Share(span) => {
                     if let Some(param) = fun.formals.iter().position(|decl| *decl == Some(*span)) {
                         summary.retained.push(param);
@@ -632,6 +654,7 @@ impl<'a> Analyzer<'a> {
             }
         }
         summary.writes.sort_unstable();
+        summary.writes.dedup();
         summary.retained.sort_unstable();
         summary.effects.sort();
         summary.effects.dedup();
@@ -988,6 +1011,13 @@ impl<'a> Analyzer<'a> {
                     "return does not select its declared entry source",
                 );
             }
+            Mode::Shared if value.roots.iter().any(|root| root.mode != Access::Shared) => {
+                self.error(
+                    Code::E0528,
+                    span,
+                    "shared return requires an existing shared writer",
+                );
+            }
             _ => {}
         }
         if ctx.expected == Mode::Shared {
@@ -998,6 +1028,7 @@ impl<'a> Analyzer<'a> {
         let actual: BTreeSet<_> = value
             .members
             .values()
+            .filter(|_| ctx.expected != Mode::Plain)
             .flat_map(Datum::origins)
             .filter(|origin| !origin.new && ctx.formals.contains(&Some(origin.region.source)))
             .map(|origin| (origin.mode, origin.region.source))
@@ -2002,6 +2033,9 @@ impl<'a> Analyzer<'a> {
             );
         }
         for origin in &value.roots {
+            if !origin.new {
+                self.seed(ctx, Obligation::WriteExisting(origin.region.source));
+            }
             for id in origin
                 .dependencies
                 .iter()
