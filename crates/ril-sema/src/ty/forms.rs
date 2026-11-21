@@ -6,6 +6,7 @@ use std::{
 use ril_base::{diag::Code, span::Span};
 use ril_frontend::{
     hir::{BuiltinSum, DefinitionId, DefinitionKind},
+    lexer::{Word, word_kind},
     parser::FileKind,
     syntax::{
         self, FieldTail, GenericArg, GenericParam, Member as Coordinate, Mode, StateKind, StmtKind,
@@ -190,6 +191,9 @@ impl Checker<'_> {
                     }
                     self.fresh()
                 };
+                if param.is_meta {
+                    self.declare_meta_key(env, param);
+                }
                 if matches!(param.mode, Mode::Ref | Mode::Mut | Mode::Shared) && ty.is_value() {
                     let span = param.name.as_ref().map_or_else(
                         || self.ast(env.file).ty(signature.result).span,
@@ -247,7 +251,7 @@ impl Checker<'_> {
             .obligations
             .effects
             .iter()
-            .map(|path| self.effect_label(path))
+            .map(|path| self.effect_label(env, path))
             .collect();
         let state = signature
             .obligations
@@ -451,37 +455,82 @@ impl Checker<'_> {
                 pattern,
                 iterable,
                 field,
-            } => {
-                let Some(Value::Array(values)) = self.eval_root(env, *iterable, true) else {
-                    return Ty::Unknown;
-                };
-                let mut fields = BTreeMap::new();
-                for item in values {
-                    let mut local = env.clone();
-                    self.map_static_bindings(&mut local, *pattern, &item);
-                    let member = self.member(&mut local, storage, *field);
-                    let key = match item {
-                        Value::Str(key) => Some(key),
-                        Value::Tuple(items) => items.into_iter().find_map(|item| match item {
-                            Value::Str(name) => Some(name),
-                            _ => None,
-                        }),
-                        _ => None,
-                    };
-                    if let Some(key) = key {
-                        fields.insert(key, member);
-                    } else {
-                        self.error(Code::E0341, node.span, "mapped record keys must be strings");
-                    }
-                }
-                Ty::Record(fields, false)
-            }
+            } => self.mapped_record(env, storage, *pattern, *iterable, *field, node.span),
             Type::PatternBinding(_) | Type::PatternWildcard | Type::PatternLiteral(_) => {
                 Ty::Unknown
             }
         };
         self.types.insert(node.span, ty.clone());
         ty
+    }
+
+    fn mapped_record(
+        &mut self,
+        env: &Env,
+        storage: &syntax::Storage,
+        pattern: syntax::PatternId,
+        iterable: syntax::ExprId,
+        field: TypeId,
+        span: Span,
+    ) -> Ty {
+        let Some(iterable) = self.eval_root(env, iterable, !env.checking_type_template) else {
+            return Ty::Unknown;
+        };
+        let items: Vec<_> = match iterable {
+            Value::Array(items) => items,
+            Value::Str(text) => text.chars().map(|ch| Value::Str(ch.to_string())).collect(),
+            Value::Map(entries) => entries
+                .into_iter()
+                .map(|(key, value)| Value::Tuple(vec![key, value]))
+                .collect(),
+            _ => {
+                self.error(
+                    Code::E0341,
+                    span,
+                    "mapped record requires an iterable of coordinates",
+                );
+                return Ty::Unknown;
+            }
+        };
+        let inferred_mode = storage.mode_path.as_ref().is_some_and(|path| {
+            path.segments
+                .last()
+                .is_some_and(|part| word_kind(&part.name.value) == Some(Word::Value))
+        });
+        let mut fields = BTreeMap::new();
+        for item in items {
+            let key = match (&item, inferred_mode) {
+                (Value::Str(key), false) => Some(key),
+                (Value::Tuple(parts), true) => match parts.as_slice() {
+                    [Value::Mode(_), Value::Str(key)] => Some(key),
+                    _ => None,
+                },
+                _ => None,
+            };
+            let Some(key) = key else {
+                self.error(
+                    Code::E0341,
+                    span,
+                    "mapped record coordinate has the wrong shape",
+                );
+                continue;
+            };
+            if word_kind(key) != Some(Word::Value) {
+                self.error(
+                    Code::E0815,
+                    span,
+                    "mapped record key is not a valid field label",
+                );
+                continue;
+            }
+            let mut local = env.clone();
+            self.map_static_bindings(&mut local, pattern, &item);
+            let member = self.member(&mut local, storage, field);
+            if fields.insert(key.clone(), member).is_some() {
+                self.error(Code::E0210, span, "duplicate mapped record field");
+            }
+        }
+        Ty::Record(fields, false)
     }
 
     fn member(&mut self, env: &mut Env, mode: &syntax::Storage, ty: TypeId) -> Member {
@@ -700,7 +749,7 @@ impl Checker<'_> {
         }))
     }
 
-    fn type_arguments(
+    pub(super) fn type_arguments(
         &mut self,
         env: &mut Env,
         id: DefinitionId,
@@ -947,6 +996,17 @@ impl Checker<'_> {
         type_level: bool,
     ) -> Ty {
         let mut ty = self.normalize(base);
+        if let Coordinate::Computed(expr) = field
+            && let syntax::Expr::Path(path) = &self.ast(env.file).expr(*expr).value
+            && let Some(key) = self.resolve(path.span)
+            && env
+                .meta_keys
+                .get(&key)
+                .is_some_and(|target| self.normalize(target) == ty)
+            && !env.generics.contains_key(&key)
+        {
+            return Ty::Projection(Box::new(ty), key);
+        }
         if ty == Ty::PanicInfo {
             self.error(Code::E0308, span, "PanicInfo is opaque");
             return Ty::Unknown;
@@ -1013,7 +1073,11 @@ impl Checker<'_> {
                 })
             }
             (Ty::Tuple(items), Some(Value::Int(index))) => {
-                use num_traits::ToPrimitive as _;
+                use num_traits::{Signed as _, ToPrimitive as _};
+                if index.is_negative() {
+                    self.error(Code::E0815, span, "negative static tuple coordinate");
+                    return Ty::Unknown;
+                }
                 index
                     .to_usize()
                     .and_then(|index| items.get(index))
@@ -1024,12 +1088,7 @@ impl Checker<'_> {
                     })
             }
             (Ty::Record(..) | Ty::Tuple(_), None) => {
-                if !matches!(field, Coordinate::Computed(expr)
-                    if matches!(&self.ast(env.file).expr(*expr).value, syntax::Expr::Path(path)
-                        if self.resolve(path.span).is_some_and(|id| env.generics.contains_key(&id))))
-                {
-                    self.error(Code::E0324, span, "projection coordinate must be static");
-                }
+                self.error(Code::E0324, span, "projection coordinate must be static");
                 Ty::Unknown
             }
             (Ty::Unknown | Ty::Never | Ty::Infer(_), _) => Ty::Unknown,
@@ -1042,6 +1101,76 @@ impl Checker<'_> {
                 Ty::Unknown
             }
         }
+    }
+
+    pub(super) fn declare_meta_key(&mut self, env: &mut Env, parameter: &syntax::Parameter) {
+        let Some(key) = parameter
+            .name
+            .as_ref()
+            .and_then(|name| self.resolve(name.span))
+        else {
+            return;
+        };
+        for &guard in &parameter.guards {
+            if let syntax::Expr::Path(path) = &self.ast(env.file).expr(guard).value
+                && self.prelude_key(path)
+                && let Some(argument) = path
+                    .segments
+                    .last()
+                    .and_then(|member| member.arguments.first())
+            {
+                let owner = self.type_argument(env, argument);
+                env.meta_keys.insert(key, owner);
+                return;
+            }
+        }
+    }
+
+    fn prelude_key(&self, path: &syntax::Path) -> bool {
+        self.resolve(path.span).is_some_and(|id| {
+            let def = self.hir.definition(id);
+            matches!(def.kind, DefinitionKind::Primitive(_)) && def.name.value == "Key"
+        })
+    }
+
+    fn has_key(&mut self, env: &Env, base: &Ty, key: &Value) -> bool {
+        match (self.normalize(base), key) {
+            (Ty::Record(fields, _), Value::Str(key)) => fields.contains_key(key),
+            (Ty::Tuple(items), Value::Int(key)) => {
+                use num_traits::ToPrimitive as _;
+                key.to_usize().is_some_and(|index| index < items.len())
+            }
+            (Ty::Adt(adt), _)
+                if adt.kind == AdtKind::Nominal
+                    || adt.kind == AdtKind::Opaque && adt.defining_scope == env.scope =>
+            {
+                self.representation(env, &adt)
+                    .is_some_and(|ty| self.has_key(env, &ty, key))
+            }
+            (Ty::Unknown | Ty::Infer(_), _) => true,
+            _ => false,
+        }
+    }
+
+    pub(super) fn specialize_projections(&mut self, env: &mut Env, ty: &Ty, span: Span) -> Ty {
+        use super::check::transform;
+        transform(ty, &mut |candidate| {
+            let Ty::Projection(base, key) = candidate else {
+                return None;
+            };
+            let Some(GenericValue::Data(key)) = env.generics.get(key) else {
+                return None;
+            };
+            let field = match key {
+                Value::Str(name) => Coordinate::Name(syntax::Name::new(name.clone(), span)),
+                Value::Int(index) => Coordinate::Index(syntax::Name::new(index.to_string(), span)),
+                _ => return Some(Ty::Unknown),
+            };
+            if !self.has_key(env, base, key) {
+                return Some(Ty::Unknown);
+            }
+            Some(self.project(env, &field, base, span, true))
+        })
     }
 
     pub(super) fn eligible_key(
@@ -1176,6 +1305,60 @@ impl Checker<'_> {
         }
     }
 
+    pub(super) fn specialize_meta_call(
+        &mut self,
+        function: DefinitionId,
+        generics: &HashMap<DefinitionId, GenericValue>,
+        supplied: &[bool],
+        metadata: &BTreeMap<usize, Value>,
+        result: &Ty,
+        span: Span,
+    ) -> Ty {
+        let def = self.hir.definition(function);
+        let Some(stmt) = def.stmt else {
+            return result.clone();
+        };
+        let StmtKind::Function(function) = &self.ast(def.name.span.file).stmt(stmt).value.kind
+        else {
+            return result.clone();
+        };
+        let mut local = Env::new(def.name.span.file, def.scope);
+        local.generics.clone_from(generics);
+        local.phase = Phase::TypeEval;
+        for (index, parameter) in function
+            .signature
+            .params
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| p.is_meta)
+        {
+            let value = metadata.get(&index).cloned().or_else(|| {
+                if supplied.get(index) != Some(&true)
+                    && let Some(default) = parameter.default
+                {
+                    self.eval_root(&local, default, true)
+                } else {
+                    None
+                }
+            });
+            let Some(value) = value else { continue };
+            let value = GenericValue::Data(value);
+            if let Some(key) = parameter
+                .name
+                .as_ref()
+                .and_then(|name| self.resolve(name.span))
+            {
+                local.generics.insert(key, value.clone());
+            }
+            for &guard in &parameter.guards {
+                if let syntax::Expr::Path(path) = &self.ast(local.file).expr(guard).value {
+                    self.apply_static_check(&mut local, path, &value, span);
+                }
+            }
+        }
+        self.specialize_projections(&mut local, result, span)
+    }
+
     fn apply_static_check(
         &mut self,
         env: &mut Env,
@@ -1193,6 +1376,22 @@ impl Checker<'_> {
                 && !self.is_sendable(env, ty, &mut HashSet::new())
             {
                 self.error(Code::E0301, span, "type does not satisfy Sendable");
+            }
+            if self.prelude_key(path)
+                && let GenericValue::Data(key) = input
+                && let Some(arg) = path
+                    .segments
+                    .last()
+                    .and_then(|segment| segment.arguments.first())
+            {
+                let target = self.type_argument(env, arg);
+                if !self.has_key(env, &target, key) {
+                    self.error(
+                        Code::E0323,
+                        span,
+                        "invalid coordinate for the statically checked type",
+                    );
+                }
             }
             return;
         }

@@ -1,6 +1,7 @@
 mod check;
 mod concurrency;
 mod coverage;
+mod effects;
 mod eval;
 mod expr;
 mod forms;
@@ -40,6 +41,7 @@ pub enum Ty {
     Infer(u32),
     Unknown,
     Param(DefinitionId),
+    Projection(Box<Ty>, DefinitionId),
     Adt(Arc<Adt>),
     Tuple(Vec<Member>),
     Record(BTreeMap<String, Member>, bool),
@@ -67,7 +69,8 @@ impl Ty {
             Self::Map(key, item) => key.contains_type_value() || item.ty.contains_type_value(),
             Self::Tuple(items) => items.iter().any(|m| m.ty.contains_type_value()),
             Self::Record(items, _) => items.values().any(|m| m.ty.contains_type_value()),
-            Self::Set(inner)
+            Self::Projection(inner, _)
+            | Self::Set(inner)
             | Self::Option(inner)
             | Self::Draft(inner)
             | Self::Task(inner)
@@ -98,7 +101,19 @@ impl Ty {
     }
 
     pub fn display<'a>(&'a self, hir: &'a Program) -> Display<'a> {
-        Display { ty: self, hir }
+        Display {
+            ty: self,
+            hir,
+            qualified: false,
+        }
+    }
+
+    pub(crate) fn qualified_display<'a>(&'a self, hir: &'a Program) -> Display<'a> {
+        Display {
+            ty: self,
+            hir,
+            qualified: true,
+        }
     }
 }
 
@@ -186,11 +201,50 @@ pub struct TypedProgram {
     pub subset_tags: HashMap<Span, Vec<String>>,
     pub tuple_payloads: HashMap<Span, usize>,
     pub(crate) receptions: HashMap<Span, Vec<reception::Adjustment>>,
+    pub(crate) effect_instances: BTreeMap<String, effects::Instance>,
+    pub(crate) operation_effects: HashMap<Span, String>,
+    pub(crate) operation_instances: HashMap<Span, effects::Instance>,
+    pub(crate) effect_applications: HashMap<Span, Vec<String>>,
+}
+
+impl TypedProgram {
+    pub(crate) fn effect_definition(&self, label: &str) -> Option<DefinitionId> {
+        self.effect_instances
+            .get(label)
+            .map(|instance| instance.definition)
+            .or_else(|| self.hir.effect_by_label(label))
+    }
+
+    pub(crate) fn effect_covers(&self, covering: &str, actual: &str) -> bool {
+        covering == actual
+            || self.effect_instances.get(covering).map_or_else(
+                || self.hir.effect_covers(covering, actual),
+                |instance| instance.includes.contains(actual),
+            )
+    }
+
+    pub fn operation_evidence(
+        &self,
+        operation: DefinitionId,
+        occurrence: Span,
+        types: &BTreeMap<DefinitionId, Ty>,
+    ) -> Option<String> {
+        if let Some(instance) = self.operation_instances.get(&occurrence) {
+            let label = instance.native_label(&self.hir, types);
+            Some(format!(
+                "{label}::{}",
+                self.hir.definition(operation).name.value
+            ))
+        } else {
+            self.hir.operation_label(operation)
+        }
+    }
 }
 
 pub struct Display<'a> {
     ty: &'a Ty,
     hir: &'a Program,
+    qualified: bool,
 }
 
 impl fmt::Display for Display<'_> {
@@ -198,6 +252,7 @@ impl fmt::Display for Display<'_> {
         let show = |t| Display {
             ty: t,
             hir: self.hir,
+            qualified: self.qualified,
         };
         match self.ty {
             Ty::Unit => f.write_str("()"),
@@ -212,8 +267,18 @@ impl fmt::Display for Display<'_> {
             Ty::Mode => f.write_str("MemberMode"),
             Ty::Infer(_) | Ty::Unknown => f.write_str("_"),
             Ty::Param(id) => f.write_str(&self.hir.definition(*id).name.value),
+            Ty::Projection(base, key) => write!(
+                f,
+                "{}.({})",
+                show(base),
+                self.hir.definition(*key).name.value
+            ),
             Ty::Adt(adt) => {
-                f.write_str(&self.hir.definition(adt.definition).name.value)?;
+                if self.qualified {
+                    f.write_str(&self.hir.export_name(adt.definition))?;
+                } else {
+                    f.write_str(&self.hir.definition(adt.definition).name.value)?;
+                }
                 if !adt.arguments.is_empty() {
                     f.write_str("<")?;
                     for (index, arg) in adt.arguments.iter().enumerate() {

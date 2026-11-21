@@ -32,7 +32,13 @@ enum Obligation {
     Capture,
     StatefulHandler,
     Effect(String),
-    Operation(DefinitionId),
+    Operation(Operation),
+}
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct Operation {
+    id: DefinitionId,
+    effect: String,
 }
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -47,7 +53,7 @@ struct Context {
     file: FileId,
     formals: Vec<Option<Span>>,
     via: BTreeSet<Span>,
-    handlers: BTreeMap<DefinitionId, Datum>,
+    handlers: BTreeMap<Operation, Datum>,
     local_effects: BTreeSet<String>,
     expected: Mode,
     returns: Vec<Span>,
@@ -235,6 +241,49 @@ impl<'a> Analyzer<'a> {
         self.use_effect(ctx, Obligation::Effect(effect.into()), span, None);
     }
 
+    fn operation(&self, id: DefinitionId, path: Span) -> Option<Operation> {
+        let definition = self.program.hir.operation_effect(id)?;
+        let effect = self
+            .program
+            .operation_effects
+            .get(&path)
+            .cloned()
+            .unwrap_or_else(|| self.program.hir.effect_label(definition));
+        Some(Operation { id, effect })
+    }
+
+    fn effect_operations(&self, effect: &str) -> Vec<Operation> {
+        let hir = &self.program.hir;
+        let Some(definition) = self.program.effect_definition(effect) else {
+            return Vec::new();
+        };
+        let children = self
+            .program
+            .effect_instances
+            .get(effect)
+            .map(|instance| &instance.includes);
+        hir.effect_operations(definition)
+            .filter_map(|id| {
+                let original = hir.operation_effect(id)?;
+                let instance = if original == definition {
+                    effect.to_owned()
+                } else if let Some(label) = children
+                    .into_iter()
+                    .flatten()
+                    .find(|label| self.program.effect_definition(label) == Some(original))
+                {
+                    label.clone()
+                } else {
+                    hir.effect_label(original)
+                };
+                Some(Operation {
+                    id,
+                    effect: instance,
+                })
+            })
+            .collect()
+    }
+
     fn use_effect(
         &mut self,
         ctx: &Context,
@@ -245,20 +294,9 @@ impl<'a> Analyzer<'a> {
         if ctx.shadow || !ctx.reachable {
             return;
         }
-        let hir = &self.program.hir;
         let (label, operations) = match &obligation {
-            Obligation::Operation(operation) => {
-                let effect = hir.operation_effect(*operation).unwrap_or_else(|| {
-                    ril_base::ice!("operation summary refers to a non-effect function")
-                });
-                (hir.effect_label(effect), vec![*operation])
-            }
-            Obligation::Effect(effect) => {
-                let operations = hir
-                    .effect_by_label(effect)
-                    .map_or_else(Vec::new, |id| hir.effect_operations(id).collect());
-                (effect.clone(), operations)
-            }
+            Obligation::Operation(operation) => (operation.effect.clone(), vec![operation.clone()]),
+            Obligation::Effect(effect) => (effect.clone(), self.effect_operations(effect)),
             _ => ril_base::ice!("expected effect obligation"),
         };
         if !operations.is_empty() && operations.iter().all(|id| ctx.handlers.contains_key(id)) {
@@ -279,7 +317,14 @@ impl<'a> Analyzer<'a> {
             }
             return;
         }
-        let error = if ctx.local_effects.contains(&label) {
+        let local_effect = self
+            .program
+            .effect_definition(&label)
+            .is_some_and(|definition| {
+                ctx.local_effects
+                    .contains(&self.program.hir.effect_label(definition))
+            });
+        let error = if local_effect {
             Some((
                 Code::E0618,
                 "effect must be handled in its declaring block".into(),
@@ -580,11 +625,7 @@ impl<'a> Analyzer<'a> {
                     up.insert(*span);
                 }
                 Obligation::Effect(effect) => summary.effects.push(effect.clone()),
-                Obligation::Operation(operation) => {
-                    if let Some(effect) = self.program.hir.operation_effect(*operation) {
-                        summary.effects.push(self.program.hir.effect_label(effect));
-                    }
-                }
+                Obligation::Operation(operation) => summary.effects.push(operation.effect.clone()),
                 Obligation::Capture => summary.captures = true,
                 _ => {}
             }
@@ -619,7 +660,7 @@ impl<'a> Analyzer<'a> {
             if !sig
                 .effects
                 .iter()
-                .any(|declared| self.program.hir.effect_covers(declared, effect))
+                .any(|declared| self.program.effect_covers(declared, effect))
             {
                 self.error(Code::E0612, name, format!("unhandled @{effect}"));
             }
@@ -628,7 +669,7 @@ impl<'a> Analyzer<'a> {
             if !summary
                 .effects
                 .iter()
-                .any(|actual| self.program.hir.effect_covers(effect, actual))
+                .any(|actual| self.program.effect_covers(effect, actual))
             {
                 self.error(
                     Code::E0612,

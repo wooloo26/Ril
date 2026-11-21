@@ -268,8 +268,10 @@ impl<'a> Lowering<'a> {
             }
         }
         for (param, value) in params.iter().zip(builder.params(entry)) {
-            for &guard in &param.guards {
-                builder.run_guard(guard, value)?;
+            if !param.is_meta {
+                for &guard in &param.guards {
+                    builder.run_guard(guard, value)?;
+                }
             }
         }
         let result = match body {
@@ -784,8 +786,7 @@ impl<'a> Builder<'_, 'a> {
                     let label = self
                         .global
                         .typed
-                        .hir
-                        .operation_label(operation)
+                        .operation_evidence(operation, handler.operation.span, &self.types)
                         .ok_or_else(|| self.unsupported(node.span, "invalid handler operation"))?;
                     let key = self.string(&label);
                     installed.push((key, self.expr(handler.value)?));
@@ -1019,7 +1020,11 @@ impl<'a> Builder<'_, 'a> {
             }
             return self.primitive(name, args, span);
         }
-        if let Some(label) = self.global.typed.hir.operation_label(id) {
+        if let Some(label) = self
+            .global
+            .typed
+            .operation_evidence(id, path.span, &self.types)
+        {
             let operation = self
                 .global
                 .declaration(id)

@@ -35,6 +35,10 @@ pub(super) fn check(hir: Program, budget: Option<u64>) -> Result<TypedProgram, V
         live: HashSet::new(),
         implicit_exits: Vec::new(),
         narrowings: HashMap::new(),
+        effect_instances: BTreeMap::new(),
+        operation_effects: HashMap::new(),
+        operation_instances: HashMap::new(),
+        effect_applications: HashMap::new(),
         navigation_values: HashMap::new(),
         subset_tags: HashMap::new(),
         tuple_payloads: HashMap::new(),
@@ -76,6 +80,10 @@ pub(super) fn check(hir: Program, budget: Option<u64>) -> Result<TypedProgram, V
         callables,
         static_values,
         narrowings,
+        effect_instances,
+        operation_effects,
+        operation_instances,
+        effect_applications,
         subset_tags,
         tuple_payloads,
         receptions,
@@ -89,6 +97,10 @@ pub(super) fn check(hir: Program, budget: Option<u64>) -> Result<TypedProgram, V
         static_values,
         narrowings,
         navigation_values,
+        effect_instances,
+        operation_effects,
+        operation_instances,
+        effect_applications,
         subset_tags,
         tuple_payloads,
         receptions,
@@ -110,6 +122,7 @@ pub(super) struct Env {
     pub(super) generics: HashMap<DefinitionId, GenericValue>,
     pub(super) domains: HashMap<DefinitionId, Vec<Ty>>,
     pub(super) sendable_guards: HashSet<DefinitionId>,
+    pub(super) meta_keys: HashMap<DefinitionId, Ty>,
     pub(super) expected_return: Option<Ty>,
     pub(super) inferred_return: Option<usize>,
     pub(super) return_scope: Option<Span>,
@@ -119,6 +132,7 @@ pub(super) struct Env {
     pub(super) unrefined: Option<Span>,
     pub(super) nominal_fields: Option<Span>,
     pub(super) map_store: Option<Span>,
+    pub(super) checking_type_template: bool,
 }
 
 impl Env {
@@ -130,6 +144,7 @@ impl Env {
             generics: HashMap::new(),
             domains: HashMap::new(),
             sendable_guards: HashSet::new(),
+            meta_keys: HashMap::new(),
             expected_return: None,
             inferred_return: None,
             return_scope: None,
@@ -139,6 +154,7 @@ impl Env {
             unrefined: None,
             nominal_fields: None,
             map_store: None,
+            checking_type_template: false,
         }
     }
 }
@@ -159,6 +175,10 @@ pub(super) struct Checker<'a> {
     pub(super) implicit_exits: Vec<ImplicitExits>,
     pub(super) narrowings: HashMap<Span, usize>,
     pub(super) navigation_values: HashMap<Span, Ty>,
+    pub(super) effect_instances: BTreeMap<String, super::effects::Instance>,
+    pub(super) operation_effects: HashMap<Span, String>,
+    pub(super) operation_instances: HashMap<Span, super::effects::Instance>,
+    pub(super) effect_applications: HashMap<Span, Vec<String>>,
     pub(super) subset_tags: HashMap<Span, Vec<String>>,
     pub(super) tuple_payloads: HashMap<Span, usize>,
     pub(super) receptions: HashMap<Span, Vec<super::reception::Adjustment>>,
@@ -195,12 +215,6 @@ impl<'a> Checker<'a> {
             Some(Resolution::Definition(def)) => Some(def),
             _ => None,
         }
-    }
-
-    pub(super) fn effect_label(&self, path: &syntax::Path) -> String {
-        self.resolve(path.span)
-            .filter(|&id| matches!(self.hir.definition(id).kind, DefinitionKind::Effect(_)))
-            .map_or_else(|| path_name(path), |id| self.hir.effect_label(id))
     }
 
     pub(super) fn exposes_type(
@@ -248,7 +262,8 @@ impl<'a> Checker<'a> {
     pub(super) fn member_mode(&self, env: &Env, storage: &Storage) -> MemberMode {
         if let Some(path) = &storage.mode_path
             && let Some(id) = self.resolve(path.span)
-            && let Some(GenericValue::Mode(mode)) = env.generics.get(&id)
+            && let Some(GenericValue::Mode(mode) | GenericValue::Data(Value::Mode(mode))) =
+                env.generics.get(&id)
         {
             return *mode;
         }
@@ -357,7 +372,7 @@ impl<'a> Checker<'a> {
                         expected
                             .effects
                             .iter()
-                            .any(|cover| self.hir.effect_covers(cover, effect))
+                            .any(|cover| self.effect_covers(cover, effect))
                     }))
             && (expected.open_state
                 || !actual.open_state
@@ -564,6 +579,9 @@ impl<'a> Checker<'a> {
         {
             if let Some(name) = &p.name {
                 self.define_name(name, ty.ty.clone());
+                if p.is_meta {
+                    self.declare_meta_key(&mut local, p);
+                }
                 if p.mode != Mode::Plain
                     && let Some(id) = self.resolve(name.span)
                 {
@@ -602,6 +620,7 @@ impl<'a> Checker<'a> {
             .signature
             .params
             .iter()
+            .filter(|parameter| !parameter.is_meta)
             .flat_map(|p| &p.guards)
             .chain(&fun.signature.guards)
         {
@@ -767,6 +786,7 @@ impl<'a> Checker<'a> {
                     }
                     TypeDefinition::Function(params, body) => {
                         local.phase = Phase::TypeEval;
+                        local.checking_type_template = true;
                         self.validate_defaults(&local, params);
                         self.generic_env(&mut local, params);
                         let ty = self.expr(&mut local, *body, None);
@@ -791,9 +811,12 @@ impl<'a> Checker<'a> {
                         && self.hir.operation_effect(operation).is_some()
                     {
                         let mut expected = (*self.declare_function(operation)).clone();
+                        let bindings = self.operation_instance(env, operation, &handler.operation);
                         for parameter in &mut expected.parameters {
                             parameter.label = None;
+                            parameter.ty = substitute(&parameter.ty, &bindings);
                         }
+                        expected.result = substitute(&expected.result, &bindings);
                         expected.open_effects = true;
                         expected.open_state = true;
                         self.expect(env, handler.value, &Ty::Callable(Arc::new(expected)));
@@ -859,7 +882,10 @@ impl<'a> Checker<'a> {
         match def.kind {
             DefinitionKind::Function => {
                 let call = self.declare_function(id);
-                if !callee && self.is_meta_fn(id) {
+                if !callee
+                    && (self.is_meta_fn(id)
+                        || call.parameters.iter().any(|parameter| parameter.is_meta))
+                {
                     self.error(
                         Code::E0810,
                         span,
@@ -976,6 +1002,7 @@ pub(super) fn transform(ty: &Ty, f: &mut impl FnMut(&Ty) -> Option<Ty>) -> Ty {
         Ty::Option(item) => Ty::Option(wrap(item, f)),
         Ty::Result(ok, err) => Ty::Result(wrap(ok, f), wrap(err, f)),
         Ty::Draft(ty) => Ty::Draft(wrap(ty, f)),
+        Ty::Projection(ty, key) => Ty::Projection(wrap(ty, f), *key),
         Ty::Task(ty) => Ty::Task(wrap(ty, f)),
         Ty::Sender(ty) => Ty::Sender(wrap(ty, f)),
         Ty::Receiver(ty) => Ty::Receiver(wrap(ty, f)),

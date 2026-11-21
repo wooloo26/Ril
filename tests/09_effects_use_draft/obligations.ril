@@ -145,3 +145,30 @@ eff Larger { ..Base; fn other() -> bool }
 fn accept(handler: fn() @Larger -> int) @Larger -> int { handler() }
 fn callback() @Base -> int { Base::operation() }
 fn call() @Larger -> int { accept(callback) }
+
+-- @case generic_effect_handler_applies_to_one_instance compile-fail E0612
+eff State<T> { fn read() -> T }
+fn bad() -> str {
+    with State<int>::read = \-> 1
+    State<str>::read()
+}
+
+-- @case generic_effect_specializes_handler_signature compile-fail E0534
+eff State<T> { fn read() -> T }
+fn bad() -> () {
+    with State<str>::read = \-> 4
+    -- ^ E0534
+}
+
+-- @case generic_effect_annotation_can_cover_monomorphic_callee compile-pass
+eff State<T> { fn read() -> T }
+fn read() @State<int> -> int { State<int>::read() }
+fn run() -> int {
+    with State<int>::read = \-> 4
+    read()
+}
+
+-- @case incompatible_instances_cannot_share_a_spliced_operation compile-fail E0622
+eff State<T> { fn read() -> T }
+eff Both { ..State<int>; ..State<str> }
+fn invalid() @Both -> int { Both::read() }

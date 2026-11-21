@@ -333,7 +333,15 @@ impl Checker<'_> {
             }
             Expr::Unit => Ok(Value::Unit),
             Expr::Path(path) => self.eval_path(env, slots, path, fuel),
-            Expr::Quote(ty) => Ok(Value::Type(Box::new(self.type_expr(env, *ty)))),
+            Expr::Quote(ty) => {
+                let mut quoted = env.clone();
+                quoted.generics.extend(
+                    slots
+                        .iter()
+                        .map(|(&id, value)| (id, GenericValue::Data(value.clone()))),
+                );
+                Ok(Value::Type(Box::new(self.type_expr(&mut quoted, *ty))))
+            }
             Expr::Unary { op, value } => {
                 let value = self.evaluate(env, slots, *value, fuel)?;
                 match (op.value.as_str(), value) {

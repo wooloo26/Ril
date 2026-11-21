@@ -222,17 +222,23 @@ impl Analyzer<'_> {
             }
             return self.primitive(ctx, ledger, name, &values, span);
         }
-        if let Some(id) = id
-            && self.program.hir.operation_effect(id).is_some()
+        if let (Some(id), Expr::Path(path)) = (id, &callee.value)
+            && let Some(operation) = self.operation(id, path.span)
         {
-            self.use_effect(ctx, Obligation::Operation(id), span, None);
+            self.use_effect(ctx, Obligation::Operation(operation), span, None);
         }
         if let Some(sig) = sig {
-            for effect in &sig.effects {
+            for (index, template) in sig.effects.iter().enumerate() {
+                let applied = self
+                    .program
+                    .effect_applications
+                    .get(&span)
+                    .and_then(|effects| effects.get(index))
+                    .unwrap_or(template);
                 if let Some(fun) = syntax.filter(|fun| fun.body.is_some()) {
-                    self.link_effects(ctx, fun.name.span, effect, span);
+                    self.link_effects(ctx, fun.name.span, template, applied, span);
                 } else {
-                    self.effect(ctx, effect, span);
+                    self.effect(ctx, applied, span);
                 }
             }
             if sig.open_effects
@@ -420,23 +426,66 @@ impl Analyzer<'_> {
         }
     }
 
-    fn link_effects(&mut self, ctx: &Context, owner: Span, effect: &str, span: Span) {
-        let hir = &self.program.hir;
-        let obligations = hir.effect_by_label(effect).map_or_else(
-            || vec![Obligation::Effect(effect.into())],
-            |id| {
-                hir.included_effects(id)
-                    .map(|id| Obligation::Effect(hir.effect_label(id)))
-                    .chain(hir.effect_operations(id).map(Obligation::Operation))
-                    .collect()
-            },
-        );
-        for obligation in obligations {
-            let prerequisite = Fact {
+    fn link_effects(
+        &mut self,
+        ctx: &Context,
+        owner: Span,
+        template: &str,
+        applied: &str,
+        span: Span,
+    ) {
+        self.use_effect(
+            ctx,
+            Obligation::Effect(applied.into()),
+            span,
+            Some(Fact {
                 owner,
-                obligation: obligation.clone(),
+                obligation: Obligation::Effect(template.into()),
+            }),
+        );
+        let template_includes = self
+            .program
+            .effect_instances
+            .get(template)
+            .map(|instance| &instance.includes);
+        let applied_includes = self
+            .program
+            .effect_instances
+            .get(applied)
+            .map(|instance| &instance.includes);
+        for included in template_includes.into_iter().flatten() {
+            let Some(origin) = self.program.effect_definition(included) else {
+                continue;
             };
-            self.use_effect(ctx, obligation, span, Some(prerequisite));
+            if let Some(label) = applied_includes
+                .into_iter()
+                .flatten()
+                .find(|label| self.program.effect_definition(label) == Some(origin))
+            {
+                self.use_effect(
+                    ctx,
+                    Obligation::Effect(label.clone()),
+                    span,
+                    Some(Fact {
+                        owner,
+                        obligation: Obligation::Effect(included.clone()),
+                    }),
+                );
+            }
+        }
+        let applied = self.effect_operations(applied);
+        for from in self.effect_operations(template) {
+            if let Some(to) = applied.iter().find(|op| op.id == from.id) {
+                self.use_effect(
+                    ctx,
+                    Obligation::Operation(to.clone()),
+                    span,
+                    Some(Fact {
+                        owner,
+                        obligation: Obligation::Operation(from),
+                    }),
+                );
+            }
         }
     }
 
@@ -939,12 +988,12 @@ impl Analyzer<'_> {
         let mut operations = BTreeSet::new();
         let mut installed = std::collections::BTreeMap::new();
         for handler in handlers {
-            let id = self.definition(handler.operation.span);
             let span = handler.operation.span;
-            if let Some(id) = id
-                && self.program.hir.operation_effect(id).is_some()
-            {
-                if !operations.insert(id) {
+            let operation = self
+                .definition(span)
+                .and_then(|id| self.operation(id, span));
+            if let Some(operation) = &operation {
+                if !operations.insert(operation.clone()) {
                     self.error(Code::E0622, span, "duplicate operation in handler group");
                 }
             } else {
@@ -965,8 +1014,8 @@ impl Analyzer<'_> {
             if matches!(handler.mode, Mode::Ref | Mode::Mut | Mode::Shared) {
                 ledger.holds.push(value.clone());
             }
-            if let Some(id) = id {
-                installed.insert(id, value);
+            if let Some(operation) = operation {
+                installed.insert(operation, value);
             }
         }
         ctx.handlers.extend(installed);
@@ -1114,11 +1163,7 @@ impl Analyzer<'_> {
             .filter(|rule| rule.conclusion.owner == inner.owner)
             .filter_map(|rule| match &rule.conclusion.obligation {
                 Obligation::Effect(effect) => Some(effect.clone()),
-                Obligation::Operation(operation) => self
-                    .program
-                    .hir
-                    .operation_effect(*operation)
-                    .map(|effect| self.program.hir.effect_label(effect)),
+                Obligation::Operation(operation) => Some(operation.effect.clone()),
                 _ => None,
             })
             .collect();

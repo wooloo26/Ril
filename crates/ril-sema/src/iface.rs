@@ -49,7 +49,7 @@ impl Interface {
             shape.effects.clear();
             shape.state.clear();
             let shape = Ty::Callable(std::sync::Arc::new(shape))
-                .display(&program.hir)
+                .qualified_display(&program.hir)
                 .to_string();
             functions.insert(
                 key,

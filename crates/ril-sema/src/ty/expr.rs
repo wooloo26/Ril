@@ -1289,7 +1289,7 @@ impl<'a> Checker<'a> {
             obligations
                 .effects
                 .iter()
-                .map(|path| self.effect_label(path))
+                .map(|path| self.effect_label(&mut local, path))
                 .collect()
         };
         Ty::Callable(Arc::new(Callable {
@@ -1316,11 +1316,17 @@ impl<'a> Checker<'a> {
             _ => None,
         };
         let def_id = path.and_then(|p| self.resolve(p.span));
-        if !env.shadow
-            && let Some(effect) = def_id.and_then(|id| self.hir.operation_effect(id))
-        {
-            env.effects_seen.insert(self.hir.effect_label(effect));
-        }
+        let effect_arguments = if let (Some(id), Some(path)) = (def_id, path) {
+            let args = self.operation_instance(env, id, path);
+            if !env.shadow
+                && let Some(label) = self.operation_effects.get(&path.span)
+            {
+                env.effects_seen.insert(label.clone());
+            }
+            args
+        } else {
+            Default::default()
+        };
         let mut pending_meta = false;
         let (ty, generics) = if let Some(id) = def_id {
             let def = self.hir.definition(id);
@@ -1405,10 +1411,9 @@ impl<'a> Checker<'a> {
                     let args = path
                         .and_then(|p| p.segments.last())
                         .map_or(&[][..], |p| p.arguments.as_slice());
-                    (
-                        Ty::Callable(self.declare_function(id)),
-                        self.call_argument_types(env, id, args, span),
-                    )
+                    let mut generic = self.call_argument_types(env, id, args, span);
+                    generic.extend(effect_arguments);
+                    (Ty::Callable(self.declare_function(id)), generic)
                 }
                 _ => (
                     self.path_expr(
@@ -1435,6 +1440,7 @@ impl<'a> Checker<'a> {
         };
 
         let result = substitute(&call.result, &generics);
+        let has_meta = call.parameters.iter().any(|parameter| parameter.is_meta);
         if let Some(expect) = expected {
             self.fits(env, &result, expect);
         }
@@ -1454,6 +1460,7 @@ impl<'a> Checker<'a> {
             return self.normalize(&result);
         }
         let mut used = vec![false; call.parameters.len()];
+        let mut metadata = BTreeMap::new();
         for arg in args {
             let location = if let Some(name) = &arg.name {
                 call.parameters
@@ -1507,14 +1514,17 @@ impl<'a> Checker<'a> {
                     "required explicit argument mode does not match",
                 );
             }
-            if parameter.is_meta && !env.shadow {
-                self.eval_root(env, arg.value, true);
+            if parameter.is_meta
+                && !env.shadow
+                && let Some(value) = self.eval_root(env, arg.value, true)
+            {
+                metadata.insert(index, value);
             }
         }
         if call
             .parameters
             .iter()
-            .zip(used)
+            .zip(&used)
             .any(|(param, supplied)| !supplied && !param.optional)
         {
             self.error(Code::E0314, span, "required argument is missing");
@@ -1533,8 +1543,17 @@ impl<'a> Checker<'a> {
                 self.writes_place(env, argument.value);
             }
         }
+        let effects = if !call.effects.is_empty()
+            && let Some(id) = def_id
+            && let Some(specialized) = self.call_effects(id, &generics)
+        {
+            self.effect_applications.insert(span, specialized.clone());
+            specialized
+        } else {
+            call.effects.clone()
+        };
         if !env.shadow {
-            env.effects_seen.extend(call.effects.iter().cloned());
+            env.effects_seen.extend(effects);
         }
         if let Some(known) = def_id {
             self.validate_generic_uses(env, known, &generics, span);
@@ -1542,6 +1561,14 @@ impl<'a> Checker<'a> {
         if pending_meta && let Some(id) = def_id {
             self.eval_call_root(env, id, args, span);
         }
+        let result = if has_meta
+            && !env.shadow
+            && let Some(id) = def_id
+        {
+            self.specialize_meta_call(id, &generics, &used, &metadata, &result, span)
+        } else {
+            result
+        };
         self.normalize(&result)
     }
 

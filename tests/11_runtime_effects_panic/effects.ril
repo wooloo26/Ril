@@ -179,3 +179,42 @@ fn main() @io -> () {
         }
     }
 }
+
+-- @case different_generic_effect_instances_keep_distinct_evidence run-pass backend=both
+eff State<T> { fn read() -> T; fn decode(data: T) -> int }
+fn int_value() @State<int> -> int { State<int>::read() }
+fn main() -> () {
+    with {
+        State<int>::read = \-> 42
+        State<str>::read = \-> "six"
+        State<str>::decode = \data -> len(data)
+    }
+    assert(int_value() == 42)
+    assert(State<str>::decode(State<str>::read()) == 3)
+}
+
+-- @case polymorphic_named_effect_dispatch_specializes_evidence run-pass backend=both
+eff State<T> { fn read() -> T }
+fn read<T>() @State<T> -> T { State<T>::read() }
+fn main() -> () {
+    with {
+        State<int>::read = \-> 40
+        State<str>::read = \-> "ok"
+    }
+    assert(read<int>() == 40)
+    assert(read<str>() == "ok")
+}
+
+-- @case generic_effect_spread_substitutes_arguments_transitively run-pass backend=both
+eff State<T> { fn read() -> T }
+eff Mid<T> { ..State<T> }
+eff Large<T> { ..Mid<T>; fn extra() -> () }
+fn read<T>() @Large<T> -> T { Large<T>::read() }
+fn main() -> () {
+    with {
+        Mid<int>::read = \-> 42
+        State<str>::read = \-> "value"
+    }
+    assert(read<int>() == 42)
+    assert(read<str>() == "value")
+}

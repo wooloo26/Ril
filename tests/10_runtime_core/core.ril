@@ -251,3 +251,13 @@ fn main() -> () {
     assert(table?[(1, "a")] == Some(20))
     assert(table == [(2, "b"): 30, (1, "a"): 20])
 }
+
+-- @case static_coordinate_specializes_generic_getter run-pass backend=both
+fn read<T: .{ .. }>(via item: T, meta key: str |> Key<T>) -> infer T.(key) {
+    item.(key)
+}
+fn main() -> () {
+    let item = .{ size: 3, label: "valid" }
+    assert(read(item, "size") == 3)
+    assert(read(item, "label") == "valid")
+}

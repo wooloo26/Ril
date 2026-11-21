@@ -145,3 +145,34 @@ meta fn evaluate() -> int {
     order
 }
 meta let _ = assert(evaluate() == 12)
+
+-- @case meta_key_specializes_projection_and_rejects_unknown_coordinate compile-fail E0323
+fn read<T: .{ .. }>(via item: T, meta key: str |> Key<T>) -> infer T.(key) {
+    item.(key)
+}
+fn bad() -> int { read(.{ size: 2 }, "missing") }
+-- ^ E0323
+
+-- @case projection_meta_argument_must_be_static compile-fail E0814
+fn read<T: .{ .. }>(via item: T, meta key: str |> Key<T>) -> infer T.(key) {
+    item.(key)
+}
+fn bad(key: str) -> int { read(.{ size: 2 }, key) }
+-- ^ E0814
+
+-- @case mapped_record_reads_static_locals_and_preserves_member_modes compile-pass
+type Select = \T: .{ .. }, keys: []str -> {
+    let chosen = coords(<T>) |> Array::filter(\(_, k) -> Array::contains(keys, k))
+    <.{ m [chosen as (m, k)]: T.(k) }>
+}
+type Model = .{ id: int, var title: str, mut rows: []int }
+type Patch = Select<Model, ["title", "rows"]>
+meta let _ = assert(<Patch> == <.{ var title: str, mut rows: []int }>)
+
+-- @case invalid_mapped_record_field_label compile-fail E0815
+type Invalid = .{ [["where"] as key]: int }
+-- ^ E0815
+
+-- @case duplicate_mapped_record_field_label compile-fail E0210
+type Invalid = .{ [["key", "key"] as key]: int }
+-- ^ E0210
