@@ -6,6 +6,7 @@ mod expr;
 mod forms;
 mod narrowing;
 mod pattern;
+pub(crate) mod reception;
 mod value;
 
 use std::{
@@ -184,6 +185,8 @@ pub struct TypedProgram {
     pub narrowings: HashMap<Span, usize>,
     pub navigation_values: HashMap<Span, Ty>,
     pub subset_tags: HashMap<Span, Vec<String>>,
+    pub tuple_payloads: HashMap<Span, usize>,
+    pub(crate) receptions: HashMap<Span, Vec<reception::Adjustment>>,
 }
 
 pub struct Display<'a> {

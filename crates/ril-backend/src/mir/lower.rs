@@ -936,6 +936,9 @@ impl<'a> Builder<'_, 'a> {
                 Ok(self.boolean(cfg!(unix)))
             }
             DefinitionKind::Variant(_) => Ok(self.tag(&def.name.value, Vec::new())),
+            DefinitionKind::Type if self.global.typed.hir.unit_constructor(source) => {
+                Ok(self.tag(&def.name.value, Vec::new()))
+            }
             DefinitionKind::Function
                 if self
                     .global
@@ -1035,10 +1038,21 @@ impl<'a> Builder<'_, 'a> {
             return Ok(self.invoke_closure(closure, args));
         }
         if matches!(def.kind, DefinitionKind::Variant(_) | DefinitionKind::Type) {
-            let args = args
+            let mut args = args
                 .iter()
                 .map(|arg| self.expr(arg.value))
                 .collect::<Result<Vec<_>>>()?;
+            if let Some(&arity) = self.global.typed.tuple_payloads.get(&span)
+                && let [tuple] = args.as_slice()
+            {
+                let tuple = *tuple;
+                args = (0..arity)
+                    .map(|index| {
+                        let index = self.integer(&index.to_string());
+                        self.runtime("ril_rt_load", vec![tuple, index])
+                    })
+                    .collect();
+            }
             return Ok(self.tag(name, args));
         }
         let Some(function) = self.global.declaration(id) else {
@@ -1320,6 +1334,35 @@ impl<'a> Builder<'_, 'a> {
             self.current = Some(done);
             return Ok(self.result_param(done));
         }
+        if name == "inner"
+            && let [arg] = args
+        {
+            let wrapper = self.collection(arg.value)?;
+            return Ok(
+                match self
+                    .global
+                    .typed
+                    .types
+                    .get(&span)
+                    .map(|ty| self.concrete(ty))
+                {
+                    Some(Ty::Unit) => self.unit(),
+                    Some(Ty::Tuple(parts)) => {
+                        let tuple = self.runtime("ril_rt_tuple", Vec::new());
+                        for index in 0..parts.len() {
+                            let key = self.integer(&index.to_string());
+                            let value = self.runtime("ril_rt_load", vec![wrapper, key]);
+                            self.runtime("ril_rt_append", vec![tuple, value]);
+                        }
+                        tuple
+                    }
+                    _ => {
+                        let key = self.integer("0");
+                        self.runtime("ril_rt_load", vec![wrapper, key])
+                    }
+                },
+            );
+        }
         let mut args = args
             .iter()
             .map(|arg| self.expr(arg.value))
@@ -1351,10 +1394,6 @@ impl<'a> Builder<'_, 'a> {
             "clone" => "ril_rt_clone",
             "inspect" => "ril_rt_inspect",
             "push" => "ril_rt_append",
-            "inner" => {
-                args.push(self.integer("0"));
-                "ril_rt_load"
-            }
             "panic_message" => "ril_rt_panic_message",
             _ => return Err(self.unsupported(span, &format!("primitive {name}"))),
         };

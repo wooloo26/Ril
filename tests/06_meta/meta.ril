@@ -111,3 +111,26 @@ type Number = \T -> match <T> { <int> -> <T>; _ -> <never> }
 type Checked<T |> Number> = .{ item: T }
 type Invalid = Checked<bool>
 -- ^ E0301
+
+-- @case reflection_filters_type_field_and_variant_metadata compile-pass
+nominal type Role = str
+meta(Role("admin"), "ignored", Role("writer"))
+nominal type Request = .{ meta(Role("private")) email: str }
+type ApiError { meta(Role("log")) Missing; Unused }
+type NestedError { ..ApiError; Bad }
+meta let ROLES = Reflect::attrs<Request, Role>(<Request>)
+meta let FIELD_ROLES: []Role = Reflect::field_attrs(<Request>, "email")
+meta let VARIANT_ROLES = Reflect::variant_attrs<NestedError, Role>(<NestedError>, "Missing")
+meta let _ = assert(ROLES == [Role("admin"), Role("writer")])
+meta let _ = assert(FIELD_ROLES == [Role("private")])
+meta let _ = assert(VARIANT_ROLES == [Role("log")])
+
+-- @case metadata_cannot_contain_a_runtime_callable compile-fail E0816
+nominal type Role = str
+meta((\x: int -> x, 1))
+nominal type Request = .{ email: str }
+
+-- @case field_metadata_requires_a_valid_key compile-fail E0323
+nominal type Request = .{ email: str }
+meta let INVALID = Reflect::field_attrs<Request, str>(<Request>, "unknown")
+-- ^ E0323

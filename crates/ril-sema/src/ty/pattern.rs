@@ -15,7 +15,13 @@ impl Checker<'_> {
     pub(super) fn pattern(&mut self, env: &mut Env, id: PatternId, input: &Ty) {
         let ast = self.ast(env.file);
         let node = ast.pattern(id);
-        let normalized = self.normalize(input);
+        let mut normalized = self.normalize(input);
+        self.types.insert(node.span, normalized.clone());
+        if !matches!(node.value, Pattern::Binding(..) | Pattern::Wildcard)
+            && let Ty::Draft(representation) = normalized
+        {
+            normalized = *representation;
+        }
         match &node.value {
             Pattern::Binding(_, name) | Pattern::Rest(Some(name)) => {
                 self.define_name(name, normalized);

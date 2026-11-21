@@ -18,7 +18,7 @@ use super::{
     flow::{Coordinate, Datum, Ledger, Slot, conflicts},
     horn::{self, Rule},
 };
-use crate::ty::{self, AdtKind, Callable, Ty, TypedProgram, Value};
+use crate::ty::{self, AdtKind, Callable, Ty, TypedProgram, Value, reception};
 
 mod calls;
 
@@ -93,6 +93,7 @@ struct DefinitionCheck {
     declared: Callable,
     actual_roots: Vec<usize>,
     actual_contained: Vec<(Access, usize)>,
+    returns: Vec<Datum>,
     via: BTreeSet<Span>,
     returned_new: bool,
     capture_names: BTreeSet<Span>,
@@ -510,6 +511,7 @@ impl<'a> Analyzer<'a> {
             actual_contained: actual_contained.into_iter().collect(),
             returned_new: !ctx.return_values.is_empty()
                 && ctx.return_values.iter().all(|value| value.requires_new),
+            returns: ctx.return_values,
             capture_names: captures,
         });
     }
@@ -716,6 +718,23 @@ impl<'a> Analyzer<'a> {
                 };
                 let span = ast.expr(*value_id).span;
                 let mut value = self.expr(ctx, ledger, *value_id);
+                if let Some(adjustments) = self.program.receptions.get(&span) {
+                    for adjustment in adjustments {
+                        if !value.requires_new
+                            || !Self::retarget(
+                                &mut value,
+                                &adjustment.path,
+                                Access::from_mode(adjustment.mode),
+                            )
+                        {
+                            self.error(
+                                Code::E0522,
+                                span,
+                                "existing container members must retain their access modes",
+                            );
+                        }
+                    }
+                }
                 if !ctx.reachable {
                     return Datum::default();
                 }
@@ -792,6 +811,71 @@ impl<'a> Analyzer<'a> {
         }
     }
 
+    fn retarget(value: &mut Datum, path: &[reception::Step], mode: Access) -> bool {
+        let Some((step, rest)) = path.split_first() else {
+            if value.roots.iter().any(|root| !root.new) {
+                return false;
+            }
+            for root in &mut value.roots {
+                root.mode = mode;
+            }
+            return true;
+        };
+        let coordinate = match step {
+            reception::Step::Field(name) => Coordinate::Field(name.clone()),
+            reception::Step::Position(index) => Coordinate::Index(index.to_string()),
+            reception::Step::Elements => {
+                return if value.members.is_empty() {
+                    value.roots.iter().all(|root| root.new)
+                } else {
+                    value
+                        .members
+                        .values_mut()
+                        .all(|member| Self::retarget(member, rest, mode))
+                };
+            }
+        };
+        if let Some(member) = value.members.get_mut(&coordinate) {
+            Self::retarget(member, rest, mode)
+        } else {
+            value.origins().all(|origin| origin.new)
+        }
+    }
+
+    fn receive_member(&mut self, mut value: Datum, mode: Access, span: Span) -> Datum {
+        if value.roots.is_empty() {
+            return value;
+        }
+        if value.requires_new {
+            for root in &mut value.roots {
+                root.mode = mode;
+            }
+            return value;
+        }
+        let valid = value.roots.iter().all(|root| root.mode == mode);
+        if !valid {
+            let code = match mode {
+                Access::Immutable => Code::E0535,
+                Access::Ref => Code::E0357,
+                Access::Mut if value.writers() => Code::E0510,
+                Access::Mut | Access::Shared => Code::E0522,
+            };
+            self.error(
+                code,
+                span,
+                "existing source does not match the member's access mode",
+            );
+        }
+        if mode == Access::Mut && value.writers() {
+            self.error(
+                Code::E0510,
+                span,
+                "mutable member requires an exclusive handoff",
+            );
+        }
+        value
+    }
+
     fn returned(&mut self, ctx: &mut Context, ledger: &mut Ledger, value: Datum, span: Span) {
         ledger.inspect(&value);
         if value.origins().any(|origin| origin.confined.is_some()) {
@@ -857,6 +941,10 @@ impl<'a> Analyzer<'a> {
                 .any(|source| !ctx.declared_contained.contains(source))
         {
             self.error(Code::E0510, ctx.owner, "missing contained return source");
+        }
+        for &(_, source) in actual.iter().filter(|(mode, _)| *mode == Access::Shared) {
+            self.seed(ctx, Obligation::Retain(source));
+            self.seed(ctx, Obligation::Share(source));
         }
         ctx.return_values.push(value);
     }
@@ -1107,6 +1195,7 @@ impl<'a> Analyzer<'a> {
                     if mode == Mode::Plain && !resource {
                         value.transform(&mut |origin| {
                             origin.mode = Access::Immutable;
+                            origin.new = false;
                         });
                     }
                     value.requires_new = false;
@@ -1165,12 +1254,34 @@ impl<'a> Analyzer<'a> {
             }
             Pattern::Record { fields, .. } => {
                 for field in fields {
-                    let child = value.project(
-                        Coordinate::Field(field.name.value.clone()),
-                        Access::Immutable,
-                    );
+                    let coordinate = Coordinate::Field(field.name.value.clone());
+                    let member_mode = self.member_schema(node.span, &coordinate).0;
+                    let child = value.project(coordinate, member_mode);
+                    let mut received = field.storage.clone();
+                    if received.mode == Mode::Plain {
+                        received.mode = storage.mode;
+                    }
+                    let requested = field
+                        .pattern
+                        .and_then(|id| match &self.ast(ctx.file).pattern(id).value {
+                            Pattern::Binding(binding, _) if binding.mode != Mode::Plain => {
+                                Some(binding.mode)
+                            }
+                            _ => None,
+                        })
+                        .unwrap_or(received.mode);
+                    if matches!(requested, Mode::Mut | Mode::Shared)
+                        && !(child.writers()
+                            && (member_mode.writes() || child.origins().any(|origin| origin.draft)))
+                    {
+                        self.error(
+                            Code::E0521,
+                            field.name.span,
+                            "pattern field cannot receive writable authority",
+                        );
+                    }
                     if let Some(pattern) = field.pattern {
-                        self.bind(ctx, ledger, pattern, &field.storage, child, resource);
+                        self.bind(ctx, ledger, pattern, &received, child, resource);
                     } else {
                         let mut child = child;
                         child.transform(&mut |origin| {
@@ -1180,8 +1291,8 @@ impl<'a> Analyzer<'a> {
                             field.name.span,
                             Slot {
                                 decl: field.name.span,
-                                variable: field.storage.variable,
-                                mode: field.storage.mode,
+                                variable: received.variable,
+                                mode: requested,
                                 value: child,
                             },
                         );
@@ -1276,24 +1387,30 @@ impl<'a> Analyzer<'a> {
             Expr::Record { fields, .. } => {
                 let mut record = Datum::source(span, Access::Mut, true);
                 for field in fields {
+                    let coordinate = Coordinate::Field(field.name.value.clone());
                     let value = if let Some(expr) = field.value {
                         self.expr(ctx, ledger, expr)
                     } else {
                         self.read_span(ctx, ledger, field.name.span)
                     };
-                    record
-                        .members
-                        .insert(Coordinate::Field(field.name.value.clone()), value);
+                    let access = self.member_schema(span, &coordinate).0;
+                    let value = self.receive_member(
+                        value,
+                        access,
+                        field.value.map_or(field.name.span, |id| ast.expr(id).span),
+                    );
+                    record.members.insert(coordinate, value);
                 }
                 record
             }
             Expr::Tuple(items) | Expr::Array(items) => {
                 let mut sequence = Datum::source(span, Access::Mut, true);
                 for (i, &item) in items.iter().enumerate() {
-                    sequence.members.insert(
-                        Coordinate::Index(i.to_string()),
-                        self.expr(ctx, ledger, item),
-                    );
+                    let coordinate = Coordinate::Index(i.to_string());
+                    let value = self.expr(ctx, ledger, item);
+                    let access = self.member_schema(span, &coordinate).0;
+                    let value = self.receive_member(value, access, ast.expr(item).span);
+                    sequence.members.insert(coordinate, value);
                 }
                 sequence
             }
@@ -1301,9 +1418,12 @@ impl<'a> Analyzer<'a> {
                 let mut map = Datum::source(span, Access::Mut, true);
                 for (i, &(key, value)) in entries.iter().enumerate() {
                     self.expr(ctx, ledger, key);
+                    let coordinate = Coordinate::Index(i.to_string());
+                    let access = self.member_schema(span, &coordinate).0;
+                    let datum = self.expr(ctx, ledger, value);
                     map.members.insert(
-                        Coordinate::Index(i.to_string()),
-                        self.expr(ctx, ledger, value),
+                        coordinate,
+                        self.receive_member(datum, access, ast.expr(value).span),
                     );
                 }
                 map
@@ -1594,6 +1714,11 @@ impl<'a> Analyzer<'a> {
                 self.seed(ctx, Obligation::ReadUp(decl));
             }
             slot.value.clone()
+        } else if self
+            .definition(span)
+            .is_some_and(|id| self.program.hir.unit_constructor(id))
+        {
+            Datum::source(span, Access::Mut, true)
         } else if !self.ty(span).is_value()
             && self.definition(span).is_some_and(|def| {
                 self.program.hir.definition(def).kind == DefinitionKind::Constant

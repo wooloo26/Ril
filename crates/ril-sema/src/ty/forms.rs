@@ -352,6 +352,10 @@ impl Checker<'_> {
                             field.name.span,
                             "metadata requires a nominal root field",
                         );
+                    } else {
+                        for &attribute in &field.attrs {
+                            self.metadata(env, attribute);
+                        }
                     }
                     if let Some(default) = field.default {
                         if !nominal {

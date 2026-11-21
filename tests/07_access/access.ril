@@ -157,3 +157,69 @@ fn test() -> int {
     cell.count += 1
     output
 }
+
+-- @case new_reception_can_select_mutable_element_mode compile-pass no-prelude
+type Cell = .{ var value: int }
+fn allocate() -> new []Cell { [Cell.{ value: 1 }] }
+fn edit() -> int {
+    let mut cells: [mut]Cell = allocate()
+    cells[0].value += 1
+    cells[0].value
+}
+
+-- @case existing_container_cannot_select_new_element_mode compile-fail E0522 no-prelude
+type Cell = .{ var value: int }
+fn edit(cells: []Cell) -> int {
+    let mut writable: [mut]Cell = cells
+    -- ^ E0522
+    writable[0].value += 1
+    writable[0].value
+}
+-- @forbid E0301
+
+-- @case existing_source_inside_new_container_cannot_become_writable compile-fail E0522 no-prelude
+type Cell = .{ var value: int }
+fn wrap(cell: Cell) &return(cell) -> new []Cell { [cell] }
+fn edit(cell: Cell) -> int {
+    let mut writable: [mut]Cell = wrap(cell)
+    -- ^ E0522
+    writable[0].value += 1
+    writable[0].value
+}
+-- @forbid E0301
+
+-- @case new_subgraph_selects_mode_beside_existing_source compile-pass no-prelude
+type Cell = .{ var value: int }
+type Both = .{ old: Cell, mut fresh: []Cell }
+fn wrap(cell: Cell) &return(cell) -> new Both {
+    Both.{ old: cell, fresh: [Cell.{ value: 3 }] }
+}
+fn edit(cell: Cell) -> int {
+    let mut writable: .{ old: Cell, mut fresh: [mut]Cell } = wrap(cell)
+    writable.fresh[0].value += 1
+    writable.fresh[0].value
+}
+
+-- @case destructuring_cannot_upgrade_immutable_field compile-fail E0521 no-prelude
+type Box = .{ fixed: []int }
+fn invalid() -> () {
+    let Box.{ mut fixed } = Box.{ fixed: [1, 2] }
+    -- ^ E0521
+    Array::push(mut fixed, 3)
+}
+
+-- @case snapshot_blocks_writable_destructuring_even_on_mutable_schema compile-fail E0521 no-prelude
+type Box = .{ mut field: []int }
+fn invalid(snapshot: Box) -> () {
+    let Box.{ mut field } = snapshot
+    -- ^ E0521
+    Array::push(mut field, 3)
+}
+
+-- @case array_reference_mode_synthesizes_from_explicit_reference compile-pass no-prelude
+type Cell = .{ var value: int }
+fn build(snapshot: Cell) &return(ref snapshot) -> new [ref]Cell {
+    let mut views = [ref snapshot]
+    Array::push(mut views, ref snapshot)
+    new views
+}

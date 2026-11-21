@@ -161,6 +161,21 @@ impl Program {
         self.scope(self.definition(id).scope).primitive_module
     }
 
+    pub fn unit_constructor(&self, id: DefinitionId) -> bool {
+        let def = self.definition(id);
+        let Some(stmt) = def.stmt else {
+            return false;
+        };
+        let file = self.file(def.name.span.file);
+        file.kind != FileKind::Foreign
+            && matches!(
+                &file.ast.stmt(stmt).value.kind,
+                StmtKind::Type(declaration)
+                    if declaration.kind == crate::syntax::TypeKind::Nominal
+                    && matches!(declaration.definition, TypeDefinition::Opaque)
+            )
+    }
+
     pub fn text_builtin(&self, id: DefinitionId) -> Option<TextBuiltin> {
         use TextBuiltin::*;
         if !matches!(self.definition(id).kind, DefinitionKind::Primitive(_)) {
@@ -899,7 +914,16 @@ impl Program {
                 "",
                 "Reflect",
                 Static,
-                &["MemberMode", "has_default", "coords", "variants", "key"],
+                &[
+                    "MemberMode",
+                    "attrs",
+                    "field_attrs",
+                    "variant_attrs",
+                    "has_default",
+                    "coords",
+                    "variants",
+                    "key",
+                ],
             ),
             ("io", "Io", Runtime, &["print", "println"]),
             ("file", "File", Runtime, &["read", "write", "open", "close"]),

@@ -9,8 +9,8 @@ use ril_frontend::{
 use crate::ty::Ty;
 
 use super::{
-    Access, Analyzer, Context, Coordinate, Datum, Fact, Input, Ledger, ModeUse, Obligation, Rule,
-    Slot, conflicts,
+    Access, Analyzer, Context, Coordinate, Datum, DefinitionCheck, Fact, Input, Ledger, ModeUse,
+    Obligation, Rule, Slot, conflicts,
 };
 
 impl Analyzer<'_> {
@@ -322,6 +322,12 @@ impl Analyzer<'_> {
             if fun.is_meta {
                 return self.snapshot_value(span);
             }
+            if matches!(fun.signature.result_mode, Mode::New | Mode::Infer) {
+                self.function(fun, ledger);
+                if let Some(result) = self.return_template(fun, &values, span) {
+                    return result;
+                }
+            }
             let sources = self.declared_sources(&fun.signature);
             let mut result = match fun.signature.result_mode {
                 Mode::New => Datum::source(span, Access::Mut, true),
@@ -459,23 +465,119 @@ impl Analyzer<'_> {
         values: &[(usize, Mode, Datum)],
         span: Span,
     ) -> Datum {
-        // The flow of a single via input is preserved even across local rebinding.
-        let mut inputs = fun
-            .signature
-            .params
+        // Recursive calls may precede completion of their own return template.
+        // Keep every possible formal source and avoid promising fresh ownership.
+        values
             .iter()
-            .enumerate()
-            .filter(|(_, param)| param.mode == Mode::Via);
-        if let (Some((index, _)), None) = (inputs.next(), inputs.next())
-            && let Some((_, mode, value)) = values.iter().find(|(formal, _, _)| *formal == index)
-        {
-            let mut result = value.clone();
-            for root in &mut result.roots {
-                root.mode = Access::from_mode(*mode);
-            }
-            return result;
+            .filter_map(|(index, _, value)| {
+                fun.signature
+                    .params
+                    .get(*index)
+                    .filter(|formal| formal.mode == Mode::Via)
+                    .map(|_| value.clone())
+            })
+            .reduce(Datum::joined)
+            .map_or_else(
+                || self.snapshot_value(span),
+                |mut value| {
+                    value.requires_new = false;
+                    value
+                },
+            )
+    }
+
+    fn return_template(
+        &self,
+        fun: &ril_frontend::syntax::Function,
+        arguments: &[(usize, Mode, Datum)],
+        span: Span,
+    ) -> Option<Datum> {
+        let definition = self
+            .functions
+            .iter()
+            .find(|definition| definition.owner == fun.name.span)?;
+        definition
+            .returns
+            .iter()
+            .map(|datum| {
+                Self::instantiate_return(definition, arguments, datum, span, &mut Vec::new())
+            })
+            .reduce(Datum::joined)
+    }
+
+    fn instantiate_return(
+        definition: &DefinitionCheck,
+        arguments: &[(usize, Mode, Datum)],
+        template: &Datum,
+        span: Span,
+        output_path: &mut Vec<Coordinate>,
+    ) -> Datum {
+        let mut output = template
+            .roots
+            .iter()
+            .filter_map(|origin| {
+                let formal = definition
+                    .formals
+                    .iter()
+                    .position(|formal| *formal == Some(origin.region.source));
+                if let Some(index) = formal {
+                    let (_, receiver, actual) = arguments
+                        .iter()
+                        .find(|(position, _, _)| *position == index)?;
+                    let formal = definition.formals.get(index).copied().flatten()?;
+                    let via = definition.via.contains(&formal);
+                    let mut actual = actual.clone();
+                    if via {
+                        for root in &mut actual.roots {
+                            root.mode = Access::from_mode(*receiver);
+                        }
+                    }
+                    for (index, coordinate) in origin.region.selection.iter().enumerate() {
+                        let cap = if index + 1 == origin.region.selection.len() {
+                            origin.mode
+                        } else {
+                            Access::Mut
+                        };
+                        actual = actual.project(coordinate.clone(), cap);
+                    }
+                    if !via {
+                        actual.transform(&mut |member| {
+                            member.mode = member.mode.project(origin.mode);
+                            member.new &= origin.new;
+                        });
+                        actual.requires_new &= origin.new;
+                    }
+                    Some(actual)
+                } else {
+                    let mut mapped = origin.clone();
+                    mapped.branches.clear();
+                    if mapped.new {
+                        mapped.region.source = span;
+                        mapped.region.selection.clone_from(output_path);
+                        mapped.dependencies.clear();
+                        mapped.confined = None;
+                    }
+                    Some(Datum {
+                        roots: vec![mapped],
+                        requires_new: template.requires_new,
+                        ..Datum::default()
+                    })
+                }
+            })
+            .reduce(Datum::joined)
+            .unwrap_or_default();
+        for (coordinate, member) in &template.members {
+            output_path.push(coordinate.clone());
+            let specialized =
+                Self::instantiate_return(definition, arguments, member, span, output_path);
+            output_path.pop();
+            output.members.insert(coordinate.clone(), specialized);
         }
-        self.snapshot_value(span)
+        output
+            .latent_effects
+            .extend(template.latent_effects.iter().cloned());
+        output.stateful_handler |= template.stateful_handler;
+        output
     }
 
     fn prepare_argument(
@@ -490,10 +592,7 @@ impl Analyzer<'_> {
         match mode {
             Mode::New => self.handoff(ctx, ledger, &mut value, span),
             Mode::Mut | Mode::Shared => {
-                if !matches!(
-                    self.ast(ctx.file).expr(arg.value).value,
-                    Expr::Path(_) | Expr::Member { .. } | Expr::Index { .. }
-                ) {
+                if !self.mutable_argument_place(ctx, arg.value, mode) {
                     self.error(
                         Code::E0410,
                         span,
@@ -529,6 +628,25 @@ impl Analyzer<'_> {
             _ => {}
         }
         value
+    }
+
+    fn mutable_argument_place(&self, ctx: &Context, id: ExprId, mode: Mode) -> bool {
+        let ast = self.ast(ctx.file);
+        match &ast.expr(id).value {
+            Expr::Path(_) => true,
+            Expr::Member { .. } | Expr::Index { .. } => ast.navigation_chain(id).is_none(),
+            Expr::Call { callee, args } if mode == Mode::Mut => {
+                matches!(
+                    &ast.expr(*callee).value,
+                    Expr::Path(path)
+                        if self.definition(path.span).is_some_and(|def| {
+                            let def = self.program.hir.definition(def);
+                            matches!(def.kind, DefinitionKind::Primitive(_)) && def.name.value == "inner"
+                        })
+                ) && matches!(args.as_slice(), [arg] if arg.mode == Mode::Mut)
+            }
+            _ => false,
+        }
     }
 
     fn snapshot_value(&self, span: Span) -> Datum {

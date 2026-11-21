@@ -203,3 +203,41 @@ fn main() -> () {
     assert(status(Account::Invalid as Failure) == 2)
     assert(status(Failure::Other) == 3)
 }
+
+-- @case direct_reflection_call_becomes_runtime_snapshot run-pass backend=both
+nominal type Role = str
+meta(Role("admin"))
+nominal type Request = .{ email: str }
+fn main() -> () {
+    let roles: []Role = Reflect::attrs(<Request>)
+    assert(len(roles) == 1 && inner(roles[0]) == "admin")
+}
+
+-- @case tuple_payload_accepts_tuple_or_separate_arguments run-pass backend=both
+type Shape { Rect(int, int) }
+nominal type Size = (int, int)
+nominal type Empty
+meta let STATIC_RECT = Shape::Rect((9, 2))
+fn main() -> () {
+    let pair = (9, 2)
+    assert(Shape::Rect(pair) == STATIC_RECT)
+    assert(Shape::Rect(9, 2) == STATIC_RECT)
+    assert(inner(Size(pair)) == pair)
+    assert(inner(Empty) == ())
+}
+
+-- @case contextual_opaque_constructor_instantiates_generic_type run-pass backend=both
+nominal type Open
+opaque type Resource<Flag> = .{ value: int }
+fn make() -> new Resource<Open> { Resource.{ value: 42 } }
+fn main() -> () { assert(make().value == 42) }
+
+-- @case draft_nominal_inner_projects_into_working_copy run-pass backend=both
+nominal type Bag = []int
+fn main() -> () {
+    let base = Bag([1, 2])
+    let next = base |> derive \mut draft -> {
+        inner(mut draft) |> mut Array::push(3)
+    }
+    assert(inner(base) == [1, 2] && inner(next) == [1, 2, 3])
+}

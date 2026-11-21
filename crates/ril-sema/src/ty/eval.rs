@@ -7,7 +7,7 @@ use ril_frontend::{
     hir::{DefinitionId, DefinitionKind, PrimitivePhase, TextBuiltin},
     syntax::{
         self, Argument, Condition, Expr, ExprId, Member as Coordinate, Mode, StmtKind, StringPart,
-        Transfer,
+        Transfer, Type, TypeDefinition, Variant,
     },
 };
 
@@ -163,6 +163,31 @@ impl Checker<'_> {
             .eval_args(&mut root, &mut slots, args, &mut fuel)
             .and_then(|args| self.eval_function(&root, id, args, span, &mut fuel));
         self.finish_eval(span, output, true)
+    }
+
+    pub(super) fn eval_metadata_root(
+        &mut self,
+        env: &Env,
+        path: &syntax::Path,
+        args: &[Argument],
+        span: Span,
+    ) {
+        let mut env = env.clone();
+        env.phase = Phase::MetaValue;
+        let mut fuel = Budget {
+            remaining: self.budget,
+            depth: 0,
+        };
+        let result = self
+            .eval_args(&mut env, &mut Values::new(), args, &mut fuel)
+            .and_then(|values| {
+                let values = values
+                    .into_iter()
+                    .map(|(_, value)| value)
+                    .collect::<Vec<_>>();
+                self.eval_metadata(&mut env, path, &values, span)
+            });
+        self.finish_eval(span, result, true);
     }
 
     fn finish_eval(&mut self, span: Span, result: Eval, required: bool) -> Option<Value> {
@@ -665,6 +690,9 @@ impl Checker<'_> {
                 result
             }
             DefinitionKind::Variant(_) => Ok(Value::Tag(def.name.value.clone(), Vec::new())),
+            DefinitionKind::Type if self.hir.unit_constructor(id) => {
+                Ok(Value::Tag(def.name.value.clone(), Vec::new()))
+            }
             DefinitionKind::Primitive(_) => match def.name.value.as_str() {
                 "None" => Ok(Value::Tag("None".into(), Vec::new())),
                 "OS" => Ok(Value::Str(std::env::consts::OS.into())),
@@ -764,17 +792,27 @@ impl Checker<'_> {
                         .collect();
                     if let Some(builtin) = self.hir.text_builtin(id) {
                         eval_text(builtin, &args, span)
+                    } else if self.hir.primitive_module(id) == Some("Reflect")
+                        && matches!(name, "attrs" | "field_attrs" | "variant_attrs")
+                    {
+                        self.eval_metadata(env, path, &args, span)
                     } else {
                         self.eval_primitive(env, name, args, span)
                     }
                 }
                 DefinitionKind::Variant(_) | DefinitionKind::Type => {
-                    let values = self
+                    let values: Vec<_> = self
                         .eval_args(env, slots, args, fuel)?
                         .into_iter()
                         .map(|(_, value)| value)
                         .collect();
-                    Ok(Value::Tag(name.into(), values))
+                    if self.tuple_payloads.contains_key(&span)
+                        && let [Value::Tuple(items)] = values.as_slice()
+                    {
+                        Ok(Value::Tag(name.into(), items.clone()))
+                    } else {
+                        Ok(Value::Tag(name.into(), values))
+                    }
                 }
                 DefinitionKind::Function => {
                     let args = self.eval_args(env, slots, args, fuel)?;
@@ -942,6 +980,7 @@ impl Checker<'_> {
             ("inner", [Value::Tag(_, values)]) if values.len() == 1 => {
                 values.first().cloned().ok_or_else(|| nonstatic(span))
             }
+            ("inner", [Value::Tag(_, values)]) if values.is_empty() => Ok(Value::Unit),
             ("inner", [Value::Tag(_, values)]) => Ok(Value::Tuple(values.clone())),
             ("inspect", [value]) => Ok(Value::Str(render(value))),
             ("contains", [Value::Array(values), item]) => {
@@ -1022,6 +1061,158 @@ impl Checker<'_> {
             }
             _ => Err(nonstatic(span)),
         }
+    }
+
+    fn eval_metadata(
+        &mut self,
+        env: &mut Env,
+        path: &syntax::Path,
+        args: &[Value],
+        span: Span,
+    ) -> Eval {
+        let Some(member) = path.segments.last() else {
+            return Err(nonstatic(span));
+        };
+        let Some(Value::Type(target)) = args.first() else {
+            return Err(Signal::Error(
+                Code::E0306,
+                span,
+                "metadata query requires a type value",
+            ));
+        };
+        let attribute = if let Some(argument) = member.arguments.get(1) {
+            self.type_argument(env, argument)
+        } else if let Some(Ty::Array(member)) = self.types.get(&span) {
+            self.normalize(&member.ty)
+        } else {
+            return Err(Signal::Error(
+                Code::E0344,
+                span,
+                "metadata query requires an attribute type",
+            ));
+        };
+        let key = match (member.name.value.as_str(), args.get(1)) {
+            ("attrs", None) => None,
+            ("field_attrs" | "variant_attrs", Some(Value::Str(key))) => Some(key.as_str()),
+            _ => return Err(nonstatic(span)),
+        };
+        let Some((local, expressions)) =
+            self.metadata_source(env, target, &member.name.value, key, span)?
+        else {
+            return Ok(Value::Array(Vec::new()));
+        };
+        let values = expressions
+            .into_iter()
+            .filter_map(|expression| self.metadata(&local, expression))
+            .filter_map(|(ty, value)| (ty == attribute).then_some(value))
+            .collect();
+        Ok(Value::Array(values))
+    }
+
+    fn metadata_source(
+        &mut self,
+        env: &Env,
+        target: &Ty,
+        operation: &str,
+        key: Option<&str>,
+        span: Span,
+    ) -> Eval<Option<(Env, Vec<ExprId>)>> {
+        let Ty::Adt(adt) = target else {
+            return match (operation, target, key) {
+                ("attrs", _, _) => Ok(None),
+                ("field_attrs", Ty::Record(fields, _), Some(key)) if fields.contains_key(key) => {
+                    Ok(None)
+                }
+                _ => Err(Signal::Error(
+                    Code::E0323,
+                    span,
+                    "invalid metadata coordinate",
+                )),
+            };
+        };
+        let def = self.hir.definition(adt.definition);
+        let Some(stmt) = def.stmt else {
+            return Ok(None);
+        };
+        let local = self.instantiate_adt(adt);
+        let node = self.ast(local.file).stmt(stmt);
+        let Some(key) = key else {
+            return Ok(Some((local, node.value.attrs.clone())));
+        };
+        if adt.kind == AdtKind::Foreign {
+            return Err(Signal::Error(
+                Code::E0907,
+                span,
+                "foreign representation is sealed",
+            ));
+        }
+        if matches!(adt.kind, AdtKind::Opaque | AdtKind::OpaqueSum)
+            && adt.defining_scope != env.scope
+        {
+            return Err(Signal::Error(
+                Code::E0308,
+                span,
+                "opaque representation is sealed",
+            ));
+        }
+        if let StmtKind::Type(declaration) = &node.value.kind {
+            match (&declaration.definition, operation) {
+                (TypeDefinition::Data(rep), "field_attrs") => {
+                    if let Type::Record { fields, .. } = &self.ast(local.file).ty(*rep).value
+                        && let Some(field) = fields.iter().find(|field| field.name.value == key)
+                    {
+                        return Ok(Some((local, field.attrs.clone())));
+                    }
+                }
+                (TypeDefinition::Sum(_), "variant_attrs") => {
+                    if let Some(source) = self.variant_metadata(adt, key, &mut Default::default()) {
+                        return Ok(Some(source));
+                    }
+                }
+                _ => {}
+            }
+        }
+        Err(Signal::Error(
+            Code::E0323,
+            span,
+            "invalid metadata coordinate",
+        ))
+    }
+
+    fn variant_metadata(
+        &mut self,
+        adt: &super::Adt,
+        tag: &str,
+        visited: &mut std::collections::HashSet<DefinitionId>,
+    ) -> Option<(Env, Vec<ExprId>)> {
+        if !visited.insert(adt.definition) {
+            return None;
+        }
+        let mut local = self.instantiate_adt(adt);
+        let definition = self.hir.definition(adt.definition);
+        let StmtKind::Type(declaration) = &self.ast(local.file).stmt(definition.stmt?).value.kind
+        else {
+            return None;
+        };
+        let TypeDefinition::Sum(variants) = &declaration.definition else {
+            return None;
+        };
+        for variant in variants {
+            match variant {
+                Variant::Constructor { name, attrs, .. } if name.value == tag => {
+                    return Some((local, attrs.clone()));
+                }
+                Variant::Spread(ty) => {
+                    if let Ty::Adt(subset) = self.type_expr(&mut local, *ty)
+                        && let Some(found) = self.variant_metadata(&subset, tag, visited)
+                    {
+                        return Some(found);
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
     }
 
     fn eval_coords(&mut self, env: &Env, ty: &Ty, span: Span) -> Eval {

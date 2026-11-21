@@ -9,10 +9,7 @@ use ril_base::{
 };
 use ril_frontend::{
     hir::{DefinitionId, DefinitionKind, Program, Resolution, ScopeId},
-    syntax::{
-        self, Ast, Function, Mode, Name, StmtId, StmtKind, Storage, TypeDefinition, TypeKind,
-        Variant,
-    },
+    syntax::{self, Ast, Function, Mode, Name, StmtId, StmtKind, Storage, TypeDefinition, Variant},
 };
 
 use super::narrowing::Refinements;
@@ -40,8 +37,11 @@ pub(super) fn check(hir: Program, budget: Option<u64>) -> Result<TypedProgram, V
         narrowings: HashMap::new(),
         navigation_values: HashMap::new(),
         subset_tags: HashMap::new(),
+        tuple_payloads: HashMap::new(),
+        receptions: HashMap::new(),
         narrow_errors: HashMap::new(),
         constants: HashSet::new(),
+        active_metadata: HashSet::new(),
         stack: Vec::new(),
         budget: budget.unwrap_or(DEFAULT_BUDGET),
     };
@@ -77,6 +77,8 @@ pub(super) fn check(hir: Program, budget: Option<u64>) -> Result<TypedProgram, V
         static_values,
         narrowings,
         subset_tags,
+        tuple_payloads,
+        receptions,
         ..
     } = ck;
     Ok(TypedProgram {
@@ -88,6 +90,8 @@ pub(super) fn check(hir: Program, budget: Option<u64>) -> Result<TypedProgram, V
         narrowings,
         navigation_values,
         subset_tags,
+        tuple_payloads,
+        receptions,
     })
 }
 
@@ -152,8 +156,11 @@ pub(super) struct Checker<'a> {
     pub(super) narrowings: HashMap<Span, usize>,
     pub(super) navigation_values: HashMap<Span, Ty>,
     pub(super) subset_tags: HashMap<Span, Vec<String>>,
+    pub(super) tuple_payloads: HashMap<Span, usize>,
+    pub(super) receptions: HashMap<Span, Vec<super::reception::Adjustment>>,
     pub(super) narrow_errors: HashMap<Span, Code>,
     constants: HashSet<DefinitionId>,
+    active_metadata: HashSet<Span>,
     pub(super) stack: Vec<DefinitionId>,
     pub(super) budget: u64,
 }
@@ -593,24 +600,7 @@ impl<'a> Checker<'a> {
     pub(super) fn statement(&mut self, env: &mut Env, item: StmtId, tail: bool) -> Ty {
         let node = self.ast(env.file).stmt(item);
         for &attribute in &node.value.attrs {
-            let mut local = env.clone();
-            local.phase = Phase::MetaValue;
-            let ty = self.expr(&mut local, attribute, None);
-            if ty.contains_type_value() {
-                self.error(
-                    Code::E0812,
-                    self.ast(env.file).expr(attribute).span,
-                    "type value in metadata",
-                );
-            } else if matches!(ty, Ty::Callable(_) | Ty::Draft(_)) {
-                self.error(
-                    Code::E0816,
-                    self.ast(env.file).expr(attribute).span,
-                    "invalid static metadata value",
-                );
-            } else {
-                self.eval_root(&local, attribute, true);
-            }
+            self.metadata(env, attribute);
         }
         match &node.value.kind {
             StmtKind::Binding {
@@ -632,7 +622,7 @@ impl<'a> Checker<'a> {
                 };
                 let expect = ty.map(|ty| self.type_expr(local, ty));
                 let inferred = match (value, &expect) {
-                    (Some(expr), Some(ty)) => self.expect(local, *expr, ty),
+                    (Some(expr), Some(ty)) => self.receive(local, *expr, ty),
                     (Some(expr), None) => self.expr(local, *expr, None),
                     (None, Some(ty)) => ty.clone(),
                     (None, None) => Ty::Unknown,
@@ -801,6 +791,47 @@ impl<'a> Checker<'a> {
         Ty::Unit
     }
 
+    pub(super) fn metadata(
+        &mut self,
+        env: &Env,
+        expression: syntax::ExprId,
+    ) -> Option<(Ty, Value)> {
+        let span = self.ast(env.file).expr(expression).span;
+        if !self.active_metadata.insert(span) {
+            self.error(Code::E0811, span, "recursive metadata evaluation");
+            return None;
+        }
+        let mut local = env.clone();
+        local.phase = Phase::MetaValue;
+        let ty = self.expr(&mut local, expression, None);
+        let ty = self.normalize(&ty);
+        let mut invalid = false;
+        transform(&ty, &mut |part| {
+            invalid |= matches!(
+                part,
+                Ty::Callable(_)
+                    | Ty::Draft(_)
+                    | Ty::Scope
+                    | Ty::Task(_)
+                    | Ty::Sender(_)
+                    | Ty::Receiver(_)
+            ) || matches!(part, Ty::Adt(adt) if adt.kind == AdtKind::Foreign);
+            None
+        });
+        let result = if ty.contains_type_value() {
+            self.error(Code::E0812, span, "type value in metadata");
+            None
+        } else if invalid {
+            self.error(Code::E0816, span, "invalid static metadata value");
+            None
+        } else {
+            self.eval_root(&local, expression, true)
+                .map(|value| (ty, value))
+        };
+        self.active_metadata.remove(&span);
+        result
+    }
+
     pub(super) fn def_type(
         &mut self,
         env: &mut Env,
@@ -850,29 +881,15 @@ impl<'a> Checker<'a> {
             DefinitionKind::Variant(_) => self.variant(env, id, None, span),
             DefinitionKind::Type | DefinitionKind::Sum(_) if callee => Ty::Unknown,
             DefinitionKind::Type | DefinitionKind::Sum(_) => {
-                let primitive = def.stmt.and_then(|item| {
-                    match &self.ast(def.name.span.file).stmt(item).value.kind {
-                        StmtKind::Type(decl)
-                            if decl.kind == TypeKind::Nominal
-                                && matches!(decl.definition, TypeDefinition::Opaque) =>
-                        {
-                            Some(Ty::Adt(Arc::new(super::Adt {
-                                definition: id,
-                                kind: AdtKind::Nominal,
-                                defining_scope: def.scope,
-                                visibility: def.visibility,
-                                arguments: Vec::new(),
-                            })))
-                        }
-                        _ => None,
-                    }
-                });
-                if let Some(ty) = primitive {
-                    ty
-                } else {
-                    self.error(Code::E0319, span, "bare type in value expression");
-                    Ty::Unknown
+                if self.hir.unit_constructor(id)
+                    && let Some(stmt) = def.stmt
+                    && let StmtKind::Type(decl) =
+                        &self.ast(def.name.span.file).stmt(stmt).value.kind
+                {
+                    return self.adt(id, decl, Vec::new());
                 }
+                self.error(Code::E0319, span, "bare type in value expression");
+                Ty::Unknown
             }
             DefinitionKind::Primitive(_) => self.primitive_type(env, &def.name.value, span, callee),
             _ => Ty::Unknown,

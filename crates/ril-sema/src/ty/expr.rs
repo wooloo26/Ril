@@ -168,7 +168,7 @@ impl<'a> Checker<'a> {
                 let member = if let Some(Ty::Array(member)) = expected {
                     (**member).clone()
                 } else {
-                    Member::plain(self.fresh())
+                    self.inferred_element(env, items.first().copied())
                 };
                 if items.is_empty() && expected.is_none() {
                     self.error(
@@ -200,7 +200,10 @@ impl<'a> Checker<'a> {
             Expr::Map(items) => {
                 let (key, member) = match expected {
                     Some(Ty::Map(key, value)) => ((**key).clone(), (**value).clone()),
-                    _ => (self.fresh(), Member::plain(self.fresh())),
+                    _ => (
+                        self.fresh(),
+                        self.inferred_element(env, items.first().map(|(_, value)| *value)),
+                    ),
                 };
                 if items.is_empty() && expected.is_none() {
                     self.error(
@@ -915,7 +918,14 @@ impl<'a> Checker<'a> {
         let mut all = BTreeMap::new();
         for variant in variants {
             match variant {
-                syntax::Variant::Constructor { name, payload, .. } => {
+                syntax::Variant::Constructor {
+                    name,
+                    payload,
+                    attrs,
+                } => {
+                    for &attribute in attrs {
+                        self.metadata(&local, attribute);
+                    }
                     let payload = payload.as_ref().map(|items| {
                         items
                             .iter()
@@ -1058,7 +1068,7 @@ impl<'a> Checker<'a> {
         span: Span,
     ) -> Ty {
         let data = name
-            .map(|path| self.named_type(env, path))
+            .map(|path| self.constructor_type(env, path, expected))
             .or_else(|| expected.cloned());
         let mut raw = data.clone();
         if let Some(Ty::Adt(adt)) = &data {
@@ -1157,6 +1167,21 @@ impl<'a> Checker<'a> {
             self.def_type(env, id, field.name.span, false)
         } else {
             Ty::Unknown
+        }
+    }
+
+    fn inferred_element(&mut self, env: &Env, element: Option<ExprId>) -> Member {
+        let mode = match element.map(|id| &self.ast(env.file).expr(id).value) {
+            Some(Expr::Unary { op, .. }) if op.value == "ref" => Mode::Ref,
+            Some(Expr::Unary { op, .. }) if op.value == "^mut" => Mode::Shared,
+            _ => Mode::Plain,
+        };
+        Member {
+            mode: super::MemberMode {
+                variable: false,
+                mode,
+            },
+            ty: self.fresh(),
         }
     }
 
@@ -1267,6 +1292,15 @@ impl<'a> Checker<'a> {
             let def = self.hir.definition(id);
             match def.kind {
                 DefinitionKind::Primitive(phase) => {
+                    if self.hir.primitive_module(id) == Some("Reflect")
+                        && matches!(
+                            def.name.value.as_str(),
+                            "attrs" | "field_attrs" | "variant_attrs"
+                        )
+                        && let Some(path) = path
+                    {
+                        return self.reflect_call(env, path, args, expected, span);
+                    }
                     if let Some(builtin) = self.hir.text_builtin(id) {
                         return self.text_call(env, builtin, args, span);
                     }
@@ -1293,9 +1327,10 @@ impl<'a> Checker<'a> {
                     return self.primitive_call(env, &def.name.value, args, expected, span);
                 }
                 DefinitionKind::Type => {
-                    let ty = self.named_type(
+                    let ty = self.constructor_type(
                         env,
                         path.unwrap_or_else(|| ril_base::ice!("constructor without path")),
+                        expected,
                     );
                     return self.nominal_constructor(env, ty, args, span);
                 }
@@ -1344,6 +1379,21 @@ impl<'a> Checker<'a> {
         let result = substitute(&call.result, &generics);
         if let Some(expect) = expected {
             self.fits(env, &result, expect);
+        }
+        if def_id
+            .is_some_and(|id| matches!(self.hir.definition(id).kind, DefinitionKind::Variant(_)))
+            && self.check_tuple_payload(
+                env,
+                args,
+                &call
+                    .parameters
+                    .iter()
+                    .map(|p| p.ty.clone())
+                    .collect::<Vec<_>>(),
+                span,
+            )
+        {
+            return self.normalize(&result);
         }
         let mut used = vec![false; call.parameters.len()];
         for arg in args {
@@ -1464,6 +1514,9 @@ impl<'a> Checker<'a> {
             Some(Ty::Tuple(fields)) => fields.into_iter().map(|m| m.ty).collect(),
             Some(one) => vec![one],
         };
+        if self.check_tuple_payload(env, args, &params, span) {
+            return ty;
+        }
         if args.len() != params.len() {
             self.error(Code::E0314, span, "invalid constructor payload arity");
         }
@@ -1478,6 +1531,49 @@ impl<'a> Checker<'a> {
             self.expect(env, arg.value, &ty);
         }
         ty
+    }
+
+    fn constructor_type(
+        &mut self,
+        env: &mut Env,
+        path: &syntax::Path,
+        expected: Option<&Ty>,
+    ) -> Ty {
+        if let Some(Ty::Adt(adt)) = expected
+            && self.resolve(path.span) == Some(adt.definition)
+            && path
+                .segments
+                .last()
+                .is_some_and(|segment| segment.arguments.is_empty())
+        {
+            Ty::Adt(Arc::clone(adt))
+        } else {
+            self.named_type(env, path)
+        }
+    }
+
+    fn check_tuple_payload(
+        &mut self,
+        env: &mut Env,
+        arguments: &[Argument],
+        parts: &[Ty],
+        span: Span,
+    ) -> bool {
+        let [argument] = arguments else { return false };
+        if parts.len() < 2 {
+            return false;
+        }
+        let tuple = Ty::Tuple(parts.iter().cloned().map(Member::plain).collect());
+        if argument.mode != Mode::Plain {
+            self.error(
+                Code::E0406,
+                self.ast(env.file).expr(argument.value).span,
+                "tuple payload must be plain",
+            );
+        }
+        self.expect(env, argument.value, &tuple);
+        self.tuple_payloads.insert(span, parts.len());
+        true
     }
 
     pub(super) fn primitive_type(
@@ -1648,7 +1744,11 @@ impl<'a> Checker<'a> {
                 }
                 first
             }
-            "inner" => match &first {
+            "inner" => match if let Ty::Draft(wrapped) = &first {
+                wrapped
+            } else {
+                &first
+            } {
                 Ty::Adt(adt) if adt.kind == AdtKind::Foreign => {
                     self.error(Code::E0907, span, "foreign representation is sealed");
                     Ty::Unknown
@@ -1799,5 +1899,64 @@ impl<'a> Checker<'a> {
             self.expect(env, arg.value, &expected);
         }
         output
+    }
+
+    fn reflect_call(
+        &mut self,
+        env: &mut Env,
+        path: &syntax::Path,
+        args: &[Argument],
+        expected: Option<&Ty>,
+        span: Span,
+    ) -> Ty {
+        let Some(member) = path.segments.last() else {
+            return Ty::Unknown;
+        };
+        let arity = if member.name.value == "attrs" { 1 } else { 2 };
+        if args.len() != arity {
+            self.error(Code::E0314, span, "incorrect metadata query arity");
+            return Ty::Unknown;
+        }
+        if member.arguments.len() > 2 {
+            self.error(
+                Code::E0340,
+                span,
+                "metadata query takes target and attribute types",
+            );
+        }
+        let target = Ty::TypeValue(
+            member
+                .arguments
+                .first()
+                .map(|arg| Box::new(self.type_argument(env, arg))),
+        );
+        if let Some(value) = args.first() {
+            self.expect(env, value.value, &target);
+        }
+        if let Some(key) = args.get(1) {
+            self.expect(env, key.value, &Ty::Str);
+        }
+        let attribute = member
+            .arguments
+            .get(1)
+            .map(|arg| self.type_argument(env, arg))
+            .or_else(|| match expected {
+                Some(Ty::Array(member)) => Some(member.ty.clone()),
+                _ => None,
+            });
+        let Some(attribute) = attribute else {
+            self.error(
+                Code::E0344,
+                span,
+                "metadata query requires an attribute type",
+            );
+            return Ty::Unknown;
+        };
+        let result = Ty::Array(Box::new(Member::plain(attribute)));
+        self.types.insert(span, result.clone());
+        if env.phase == Phase::Runtime && !env.shadow {
+            self.eval_metadata_root(env, path, args, span);
+        }
+        result
     }
 }

@@ -49,3 +49,41 @@ fn invalid(via c: Cell) -> infer Cell {
     -- ^ E0550
     local
 }
+
+-- @case narrower_inferred_root_relation_is_compatible compat-pass
+-- @baseline
+pub fn choose(first: bool, via a: Cell, via b: Cell) -> infer Cell {
+    if first { a } else { b }
+}
+-- @revision
+pub fn choose(first: bool, via a: Cell, via b: Cell) -> infer Cell { a }
+
+-- @case additional_inferred_root_breaks_compatibility compat-fail E0552
+-- @baseline
+pub fn choose(first: bool, via a: Cell, via b: Cell) -> infer Cell { a }
+-- @revision
+pub fn choose(first: bool, via a: Cell, via b: Cell) -> infer Cell {
+-- ^ E0552
+    if first { a } else { b }
+}
+
+-- @case multi_input_inference_preserves_selected_sources compile-pass
+fn choose(condition: bool, via left: Cell, via right: Cell) -> infer Cell {
+    if condition { left } else { right }
+}
+fn use_both(condition: bool) -> int {
+    let mut left = Cell.{ count: 2 }
+    let mut right = Cell.{ count: 3 }
+    let ref view = choose(condition, ref left, ref right)
+    left.count += 1
+    right.count += 1
+    view.count
+}
+
+-- @case inferred_new_result_is_independent_of_via_input compile-pass
+fn copied(via source: Cell) -> infer Cell { Cell.{ count: source.count } }
+fn use_copy() -> int {
+    let mut copy = copied(Cell.{ count: 1 })
+    copy.count += 1
+    copy.count
+}

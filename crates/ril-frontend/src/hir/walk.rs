@@ -734,6 +734,9 @@ impl Walk<'_> {
                 }
                 let mut names = HashSet::new();
                 for field in fields {
+                    for &attr in &field.attrs {
+                        self.expr(attr);
+                    }
                     self.storage(&field.storage);
                     if !names.insert(&field.name.value) {
                         self.report(Code::E0210, field.name.span, "duplicate record field");
