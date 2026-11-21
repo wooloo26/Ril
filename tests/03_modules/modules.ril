@@ -1,0 +1,131 @@
+-- @suite modules
+-- @default_stage hir
+
+-- @case imports_and_reexports compile-pass unit=bin
+-- @file pkg/main.ril
+use pkg/math/circle
+use pkg/utility::answer
+fn main() -> () {
+    assert(Circle::is_round())
+    assert(answer() == 42)
+}
+-- @file pkg/math/circle.ril
+pub fn is_round() -> bool { true }
+-- @file pkg/utility.ril
+pub use pkg/values::answer
+-- @file pkg/values.ril
+pub fn answer() -> int { 42 }
+
+-- @case sub_parent_qualified compile-pass unit=lib
+pkg let outer = 1
+pub sub UnitCircle {
+    pub fn limit() -> int { Super::outer }
+}
+
+-- @case sub_isolated compile-fail E0204 unit=lib
+pub let outer = 1
+pub sub UnitCircle {
+    pub fn limit() -> int { outer }
+    -- ^ E0204
+}
+
+-- @case file_root_has_no_super compile-fail E0208 unit=lib
+use Super::something
+-- ^ E0208
+
+-- @case package_private compile-fail E0201 unit=bin
+-- @file pkg/main.ril
+use dep/info
+fn main() -> () {}
+-- @file dep/info.ril
+pkg let value = 1
+
+-- @case private_selection compile-fail E0201 unit=bin
+-- @file pkg/main.ril
+use pkg/math::number
+-- ^ E0201
+fn main() -> () {}
+-- @file pkg/math.ril
+let number = 1
+
+-- @case unavailable_module compile-fail E0208 unit=bin
+use pkg/missing
+-- ^ E0208
+fn main() -> () {}
+
+-- @case unavailable_member compile-fail E0209 unit=bin
+-- @file pkg/main.ril
+use pkg/math::missing
+-- ^ E0209
+fn main() -> () {}
+-- @file pkg/math.ril
+pub fn exists() -> bool { true }
+
+-- @case bad_derived_name compile-fail E0102 unit=bin
+-- @file pkg/main.ril
+use pkg/a_b
+-- ^ E0102
+fn main() -> () {}
+-- @file pkg/a_b.ril
+pub fn exists() -> bool { true }
+
+-- @case visibility_leak compile-fail E0910 unit=lib
+type Hidden = .{ value: int }
+pub fn leak() -> new Hidden { Hidden.{ value: 1 } }
+-- ^ E0910
+
+-- @case opaque_hides_representation compile-pass unit=lib
+type Hidden = .{ value: int }
+pub opaque type Wrapper = Hidden
+
+-- @case helper_capture_before_initialization compile-fail E0207 unit=lib
+fn count() -> int {
+    let early = outer()
+    -- ^ E0207
+    let base = 1
+    early
+where
+    fn outer() -> int { inner_helper() }
+    fn inner_helper() &up(base) -> int { base }
+}
+
+-- @case downward_from_signature_where compile-fail E0705 unit=lib
+fn f() -> Top where
+    type Top = Lower
+    -- ^ E0705
+{
+    ()
+where
+    type Lower = ()
+}
+
+-- @case signature_cannot_see_block_where compile-fail E0706 unit=lib
+fn f() -> Lower {
+-- ^ E0706
+    ()
+where
+    type Lower = ()
+}
+
+-- @case fallback_transfer_rejected_in_hir compile-fail E0710
+fn test(x: ?int) -> int { x ?? return 0 }
+-- ^ E0710
+
+-- @case missing_main compile-fail E0903 unit=bin
+fn helper() -> int { 1 }
+
+-- @case invalid_main compile-fail E0904 unit=bin
+fn main() -> int { 1 }
+-- ^ E0904
+
+-- @case executable_root_is_private compile-fail E0905 unit=bin
+pub fn main() -> () {}
+-- ^ E0905
+
+-- @case no_top_level_var compile-fail E0906 unit=lib
+var value = 1
+-- ^ E0906
+
+-- @case bodyless_normal_fn compile-fail E0902 unit=lib
+fn bodyless() -> ()
+-- ^ E0902

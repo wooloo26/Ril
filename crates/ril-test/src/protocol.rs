@@ -65,6 +65,32 @@ pub enum Activation {
 }
 
 impl Case {
+    pub(super) fn spec(
+        id: String,
+        line: usize,
+        mode: CaseMode,
+        stage: Stage,
+        pkg: VirtualPackage,
+        required: Milestone,
+    ) -> Self {
+        Self {
+            id,
+            line,
+            mode,
+            stage,
+            pkg,
+            baseline: None,
+            primary: None,
+            forbidden: Vec::new(),
+            markers: Vec::new(),
+            signatures: Vec::new(),
+            backend: Backend::Both,
+            stdout: None,
+            exit: None,
+            required,
+        }
+    }
+
     pub fn activation(&self, enabled: Milestone) -> Activation {
         if self.required <= enabled {
             Activation::Ready

@@ -17,14 +17,15 @@ struct Cli {
 enum Action {
     Check {
         path: PathBuf,
-        #[arg(long, default_value = "source")]
+        #[arg(long, default_value = "parse")]
         stage: Stage,
         #[arg(long, default_value = "lib")]
         unit: Unit,
     },
     Test {
-        #[arg(default_value = "tests")]
-        path: PathBuf,
+        path: Option<PathBuf>,
+        #[arg(long)]
+        sync_spec_md: bool,
     },
 }
 
@@ -57,8 +58,15 @@ fn run(cli: Cli) -> Result<ExitCode, String> {
                 ExitCode::FAILURE
             })
         }
-        Action::Test { path } => {
-            let suites = ril_test::discover(&path)?;
+        Action::Test { path, sync_spec_md } => {
+            let suites = if sync_spec_md {
+                let path = path.unwrap_or_else(|| PathBuf::from("doc/SPEC.md"));
+                let source = std::fs::read_to_string(&path)
+                    .map_err(|err| format!("{}: {err}", path.display()))?;
+                vec![ril_test::spec_suite(&path, &source, Stage::Parse)?]
+            } else {
+                ril_test::discover(&path.unwrap_or_else(|| PathBuf::from("tests")))?
+            };
             let mut failed = 0;
             let mut passed = 0;
             let mut skipped = 0;

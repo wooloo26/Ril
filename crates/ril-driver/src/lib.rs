@@ -1,7 +1,15 @@
 #![forbid(unsafe_code)]
 
-use ril_base::span::SourceMap;
-use ril_test::{CheckResult, Stage, TestDriver, VirtualPackage};
+use ril_base::{
+    diag::Diagnostic,
+    span::{FileId, SourceMap},
+};
+use ril_frontend::{
+    hir::{self, Program},
+    lexer,
+    parser::{self, FileKind},
+};
+use ril_test::{CheckResult, Stage, TestDriver, Unit, VirtualPackage};
 
 pub const AVAILABLE: ril_test::Milestone = ril_test::Milestone::M1;
 
@@ -15,27 +23,102 @@ pub struct Checked {
 
 impl Driver {
     pub fn check(&self, pkg: &VirtualPackage, stage: Stage) -> Checked {
-        let mut sources = SourceMap::default();
-        let mut result = CheckResult::default();
-        let mut valid = Vec::new();
-        for (path, file) in &pkg.files {
-            match sources.add(path.clone(), &file.bytes) {
-                Ok(id) => valid.push(id),
-                Err(diagnostic) => result.diagnostics.push(*diagnostic),
+        let (sources, program) = frontend(pkg, stage);
+        let result = match program {
+            Err(diagnostics) => CheckResult {
+                diagnostics,
+                ..CheckResult::default()
+            },
+            Ok(_) if stage > Stage::Hir => {
+                CheckResult::unsupported(format!("compiler stage {stage:?} is unavailable"))
             }
-        }
-        if result.diagnostics.is_empty() && stage >= Stage::Lex {
-            for file in valid.into_iter().filter_map(|id| sources.get(id)) {
-                if let Err(diagnostic) = ril_frontend::lexer::lex(file) {
-                    result.diagnostics.push(diagnostic);
-                }
-            }
-        }
-        if result.diagnostics.is_empty() && stage > Stage::Lex {
-            result = CheckResult::unsupported(format!("compiler stage {stage:?} is unavailable"));
-        }
+            Ok(_) => CheckResult::default(),
+        };
         Checked { sources, result }
     }
+}
+
+fn frontend(
+    pkg: &VirtualPackage,
+    stage: Stage,
+) -> (SourceMap, Result<Option<Program>, Vec<Diagnostic>>) {
+    let mut sources = SourceMap::default();
+    let mut diagnostics = Vec::new();
+    let mut valid = Vec::new();
+    let mut entry = None;
+    for (path, file) in &pkg.files {
+        match sources.add(path.clone(), &file.bytes) {
+            Ok(id) => {
+                if path == &pkg.entry {
+                    entry = Some(id);
+                }
+                valid.push(id);
+            }
+            Err(diagnostic) => diagnostics.push(*diagnostic),
+        }
+    }
+    if stage == Stage::Source || !diagnostics.is_empty() {
+        let result = if diagnostics.is_empty() {
+            Ok(None)
+        } else {
+            Err(diagnostics)
+        };
+        return (sources, result);
+    }
+
+    let mut tokenized = Vec::new();
+    for file in valid.into_iter().filter_map(|id| sources.get(id)) {
+        match lexer::lex(file) {
+            Ok(tokens) => tokenized.push((file, tokens)),
+            Err(diagnostic) => diagnostics.push(diagnostic),
+        }
+    }
+    let mut parsed = Vec::new();
+    if stage >= Stage::Parse && diagnostics.is_empty() {
+        for (file, tokens) in tokenized {
+            let kind = if file.path().to_string_lossy().ends_with(".d.ril")
+                || Some(file.id()) == entry && pkg.unit == Unit::Decl
+            {
+                FileKind::Foreign
+            } else if Some(file.id()) != entry {
+                FileKind::Module
+            } else {
+                match pkg.unit {
+                    Unit::Bin => FileKind::Executable,
+                    Unit::Lib => FileKind::Module,
+                    Unit::Snippet => FileKind::Snippet,
+                    Unit::Decl => FileKind::Foreign,
+                }
+            };
+            match parser::parse(file, &tokens, kind) {
+                Ok(ast) => parsed.push(hir::File {
+                    id: file.id(),
+                    kind,
+                    path: file.path().into(),
+                    ast,
+                }),
+                Err(diagnostic) => diagnostics.push(diagnostic),
+            }
+        }
+    }
+    let result = if !diagnostics.is_empty() {
+        Err(diagnostics)
+    } else if stage < Stage::Hir {
+        Ok(None)
+    } else {
+        let Some(entry) = entry else {
+            return (
+                sources,
+                Err(vec![Diagnostic::error(
+                    ril_base::diag::Code::E0208,
+                    ril_base::span::Span::new(FileId(0), 0, 0),
+                    format!("missing entry {}", pkg.entry.display()),
+                )]),
+            );
+        };
+        hir::lower(parsed, entry).map(Some)
+    };
+    (sources, result)
 }
 
 impl TestDriver for Driver {

@@ -1,0 +1,83 @@
+-- @suite syntax
+-- @default_stage parse
+
+-- @case generic_close_and_layout compile-pass
+meta let SAME = <!<int, str>>==<!<int, str>>
+let out = convert<!<int, !<str, str>>>(
+  .{ key: 1,
+     value: (2, 3)
+  },
+)
+    |> finish?
+    .name
+let live = false || true && 1 + 2 * 3 == 7
+let nested: ??int = Some(Some(1))
+
+-- @case closure_patterns compile-pass
+let transform = \(a, b): (int, int) -> a + b
+let label = apply(record) \.member?.field
+
+-- @case optional_slice compile-pass
+let before = values?[..2]
+let after = values[2..]
+let all = values[..]
+let opened = 1 ..= 3
+
+-- @case for_iterable_uses_as_for_binding compile-pass
+fn for_loop(xs: []int) -> () {
+    for xs |> filter as n {
+        assert(n > 0)
+    }
+}
+
+-- @case syntax_condition compile-fail E0120
+let value = @
+-- ^ E0120
+
+-- @case unexpected_eof compile-fail E0121
+let value = 2 +
+
+-- @case unclosed_delimiter compile-fail E0122
+let value = (1 + 1
+-- ^ E0122
+-- @forbid E0120, E0121
+
+-- @case mismatched_delimiter compile-fail E0123
+let value = [1, 2)
+-- ^ E0123
+-- @forbid E0120
+
+-- @case missing_colon compile-fail E0124
+fn value(x int) -> int { x }
+-- ^ E0124
+
+-- @case reserved_identifier compile-fail E0113
+let int = 1
+-- ^ E0113
+
+-- @case wrong_type_casing compile-fail E0101
+type widget = int
+-- ^ E0101
+
+-- @case constant_in_pattern compile-fail E0103
+let Some(USER_ID) = Some(1)
+-- ^ E0103
+
+-- @case chained_assignment compile-fail E0701
+let impossible = a = b = c
+-- ^ E0701
+
+-- @case fallback_transfer_is_syntactic compile-pass
+fn test(x: ?int) -> int { x ?? return 0 }
+
+-- @case foreign_inherits_restrictions compile-fail E0901 unit=decl
+pub sub Posix {
+    pub fn get() -> int { 1 }
+    -- ^ E0901
+}
+
+-- @case argument_modes compile-pass
+fn call() -> () {
+    run(mut cell, ref snapshot, ^mut writer, new owned)
+    with Clock::get = ref handler
+}
