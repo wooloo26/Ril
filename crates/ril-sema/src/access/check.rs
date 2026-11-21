@@ -116,7 +116,7 @@ struct Analyzer<'a> {
     cleanups: BTreeMap<Span, CleanupAction>,
 }
 
-pub(super) fn check(program: &TypedProgram) -> Result<Analysis, Vec<Diagnostic>> {
+pub(super) fn analyze(program: &TypedProgram) -> (Analysis, Vec<Diagnostic>) {
     let mut analyzer = Analyzer {
         program,
         diagnostics: Vec::new(),
@@ -184,11 +184,7 @@ pub(super) fn check(program: &TypedProgram) -> Result<Analysis, Vec<Diagnostic>>
             }
         }
     }
-    if analyzer.diagnostics.is_empty() {
-        Ok(analysis)
-    } else {
-        Err(analyzer.diagnostics)
-    }
+    (analysis, analyzer.diagnostics)
 }
 
 impl<'a> Analyzer<'a> {
@@ -565,7 +561,13 @@ impl<'a> Analyzer<'a> {
         for fact in facts.iter().filter(|fact| fact.owner == fun.owner) {
             match &fact.obligation {
                 Obligation::Write(span) => {
-                    if let Some(param) = fun.formals.iter().position(|decl| *decl == Some(*span)) {
+                    if let Some(param) = fun.formals.iter().position(|decl| *decl == Some(*span))
+                        && fun
+                            .declared
+                            .parameters
+                            .get(param)
+                            .is_some_and(|formal| formal.mode != Mode::New)
+                    {
                         summary.writes.push(param);
                     }
                 }
@@ -1336,6 +1338,7 @@ impl<'a> Analyzer<'a> {
                         }
                         for root in &mut value.roots {
                             root.mode = Access::Shared;
+                            root.new = false;
                         }
                         value.requires_new = false;
                     }
@@ -1778,12 +1781,16 @@ impl<'a> Analyzer<'a> {
         if ctx.reachable {
             ledger.revoked.extend(&dependencies);
         }
-        for id in dependencies {
+        for &id in &dependencies {
             self.seed(ctx, Obligation::Write(id));
         }
+        value.transform(&mut |origin| {
+            origin
+                .dependencies
+                .retain(|dependency| !dependencies.contains(dependency));
+        });
         for root in &mut value.roots {
             root.new = true;
-            root.dependencies.clear();
         }
         value.requires_new = true;
     }

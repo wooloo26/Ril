@@ -312,7 +312,7 @@ impl Walk<'_> {
         self.obligations(&signature.obligations);
         self.ty(signature.result);
         for &guard in &signature.guards {
-            self.expr(guard);
+            self.guard(guard);
         }
         for source in &signature.result_sources {
             self.resolve_name(source);
@@ -324,11 +324,17 @@ impl Walk<'_> {
             self.ty(ty);
         }
         for &guard in &parameter.guards {
-            self.expr(guard);
+            self.guard(guard);
         }
         if let Some(value) = parameter.default {
             self.expr(value);
         }
+    }
+
+    fn guard(&mut self, expression: ExprId) {
+        let previous = std::mem::replace(&mut self.exposure, Visibility::Private);
+        self.expr(expression);
+        self.exposure = previous;
     }
 
     fn generics(&mut self, parameters: &[GenericParam]) {

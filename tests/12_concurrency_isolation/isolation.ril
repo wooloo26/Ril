@@ -63,3 +63,12 @@ fn bad() -> int {
     Fiber::run \-> Clock::tick()
     -- ^ E0615
 }
+
+-- @case channel_checks_sendable_through_nominal_representation compile-fail E0301
+use ril/channel
+type Cell = .{ var value: int }
+nominal type Borrowed = .{ ref view: Cell }
+fn bad() -> () {
+    let _ = Channel::bounded<Borrowed>(1)
+    -- ^ E0301
+}

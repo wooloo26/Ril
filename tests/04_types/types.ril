@@ -274,3 +274,9 @@ fn widen(value: Small) -> Large { value as Large }
 -- @case grouping_ends_optional_navigation compile-fail E0337
 type Route = .{ pair: (str, int) }
 fn port(route: ?Route) -> int { (route?.pair).1 }
+
+-- @case unchecked_map_read_is_rejected compile-fail E0352
+fn read(values: [str: int]) -> int { values["key"] }
+
+-- @case map_compound_assignment_is_rejected compile-fail E0352
+fn update(mut values: [str: int]) &mut -> () { values["key"] += 1 }

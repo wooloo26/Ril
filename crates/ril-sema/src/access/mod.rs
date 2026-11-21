@@ -77,5 +77,14 @@ pub struct Analysis {
 }
 
 pub fn check(program: &TypedProgram) -> Result<Analysis, Vec<Diagnostic>> {
-    check::check(program)
+    let (analysis, diagnostics) = check::analyze(program);
+    if diagnostics.is_empty() {
+        Ok(analysis)
+    } else {
+        Err(diagnostics)
+    }
+}
+
+pub fn horn_rules(program: &TypedProgram) -> Vec<horn::Rule<usize>> {
+    check::analyze(program).0.horn_rules
 }

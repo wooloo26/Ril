@@ -29,8 +29,7 @@ impl Driver {
     }
 
     pub fn horn_json(&self, package: &VirtualPackage) -> Result<String> {
-        let (_, access) = self.analyze(package)?;
-        serde_json::to_string_pretty(&access.horn_rules).map_err(failure)
+        serde_json::to_string_pretty(&self.horn_rules(package)?).map_err(failure)
     }
 
     pub fn compile_aot(&self, package: &VirtualPackage, output: &Path) -> Result<()> {

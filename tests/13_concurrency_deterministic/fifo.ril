@@ -94,3 +94,31 @@ fn main() @io -> () {
         match outcome { Ok(_) -> (); Err(_) -> println("recovered") }
     }
 }
+
+-- @case zero_capacity_send_waits_for_receiver run-pass backend=both
+-- @expect-stdout sending
+-- @expect-stdout receiving
+-- @expect-stdout sent
+use ril/fiber
+use ril/channel
+fn main() @io -> () {
+    Fiber::run \-> Fiber::scope \mut scope -> {
+        let Channel::ChannelPair.{ mut tx, mut rx } = Channel::bounded(0)
+        match Channel::try_send(mut tx, 41) {
+            Err(Channel::TrySendError::Full(41)) -> ()
+            _ -> panic("zero-capacity send must wait for receiver")
+        }
+        let sender = Fiber::spawn(mut scope) \-> {
+            use mut outlet = new tx
+            println("sending")
+            match Channel::send(mut outlet, 42) {
+                Ok() -> println("sent")
+                Err(_) -> panic("channel closed early")
+            }
+        }
+        Fiber::yield_now()
+        println("receiving")
+        assert(Channel::recv(mut rx) == Some(42))
+        Fiber::join(mut scope, sender)
+    }
+}

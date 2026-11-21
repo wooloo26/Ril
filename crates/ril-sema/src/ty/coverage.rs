@@ -198,7 +198,6 @@ impl Checker<'_> {
                 ("Ok".into(), vec![(**ok).clone()]),
                 ("Err".into(), vec![(**err).clone()]),
             ],
-            Ty::PanicError => vec![("Panicked".into(), vec![Ty::PanicInfo])],
             Ty::Tuple(items) => vec![(
                 "tuple".into(),
                 items.iter().map(|item| item.ty.clone()).collect(),

@@ -134,3 +134,14 @@ nominal type Request = .{ email: str }
 nominal type Request = .{ email: str }
 meta let INVALID = Reflect::field_attrs<Request, str>(<Request>, "unknown")
 -- ^ E0323
+
+-- @case static_map_updates_use_structural_keys_and_ordered_operands compile-pass
+meta fn evaluate() -> int {
+    var order = 0
+    let mut values = [(1, "key"): 10]
+    values[{ order = order * 10 + 1; (1, "key") }] = { order = order * 10 + 2; 30 }
+    assert(values?[(1, "key")] == Some(30))
+    assert(len(values) == 1)
+    order
+}
+meta let _ = assert(evaluate() == 12)

@@ -577,6 +577,15 @@ impl Analyzer<'_> {
             .latent_effects
             .extend(template.latent_effects.iter().cloned());
         output.stateful_handler |= template.stateful_handler;
+        if !template.environments.is_empty() {
+            output.environments.insert(span);
+        }
+        output.invocations.extend(
+            template
+                .invocations
+                .iter()
+                .map(|(&owner, captures)| (owner, captures.clone())),
+        );
         output
     }
 
@@ -603,6 +612,13 @@ impl Analyzer<'_> {
                 }
                 if mode == Mode::Shared && value.origins().any(|origin| origin.confined.is_some()) {
                     self.error(Code::E0604, span, "resource authority cannot be retained");
+                }
+                if mode == Mode::Shared {
+                    for root in &mut value.roots {
+                        root.mode = Access::Shared;
+                        root.new = false;
+                    }
+                    value.requires_new = false;
                 }
             }
             Mode::Plain
@@ -1061,7 +1077,12 @@ impl Analyzer<'_> {
                 }
             })
             .collect();
-        let mut closure = Datum::source(node.span, Access::Immutable, false);
+        let new = ctx.expected == Mode::New;
+        let mut closure = Datum::source(
+            node.span,
+            if new { Access::Mut } else { Access::Immutable },
+            new,
+        );
         for (index, slot) in used
             .iter()
             .filter_map(|span| ledger.slots.get(span))

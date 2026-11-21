@@ -410,6 +410,12 @@ fn store(rt: &mut Runtime, target: Value, key: Value, value: Value) -> Value {
         .gc
         .integer(key)
         .and_then(num_traits::ToPrimitive::to_usize);
+    let matching_key = match rt.gc.object(target) {
+        Some(Object::Map(entries)) => entries
+            .iter()
+            .position(|(stored, _)| rt.gc.equal(*stored, key).unwrap_or(false)),
+        _ => None,
+    };
     match rt.gc.object_mut(target) {
         Some(Object::Record(fields)) if let Some(key) = key_text => {
             fields.insert(key, value);
@@ -422,7 +428,7 @@ fn store(rt: &mut Runtime, target: Value, key: Value, value: Value) -> Value {
             }
         }
         Some(Object::Map(entries)) => {
-            if let Some((_, slot)) = entries.iter_mut().find(|(k, _)| *k == key) {
+            if let Some((_, slot)) = matching_key.and_then(|index| entries.get_mut(index)) {
                 *slot = value;
             } else {
                 entries.push((key, value));

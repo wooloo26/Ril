@@ -109,6 +109,7 @@ pub(super) struct Env {
     pub(super) phase: Phase,
     pub(super) generics: HashMap<DefinitionId, GenericValue>,
     pub(super) domains: HashMap<DefinitionId, Vec<Ty>>,
+    pub(super) sendable_guards: HashSet<DefinitionId>,
     pub(super) expected_return: Option<Ty>,
     pub(super) inferred_return: Option<usize>,
     pub(super) return_scope: Option<Span>,
@@ -117,6 +118,7 @@ pub(super) struct Env {
     pub(super) refinements: Refinements,
     pub(super) unrefined: Option<Span>,
     pub(super) nominal_fields: Option<Span>,
+    pub(super) map_store: Option<Span>,
 }
 
 impl Env {
@@ -127,6 +129,7 @@ impl Env {
             phase: Phase::Runtime,
             generics: HashMap::new(),
             domains: HashMap::new(),
+            sendable_guards: HashSet::new(),
             expected_return: None,
             inferred_return: None,
             return_scope: None,
@@ -135,6 +138,7 @@ impl Env {
             refinements: Refinements::default(),
             unrefined: None,
             nominal_fields: None,
+            map_store: None,
         }
     }
 }
@@ -317,6 +321,18 @@ impl<'a> Checker<'a> {
                         .all(|(name, b)| a.get(name).is_some_and(|a| self.member_fits(env, a, b)))
             }
             (Ty::Callable(a), Ty::Callable(b)) => self.callable_fits(env, a, b),
+            (Ty::Adt(a), Ty::Adt(b)) if a.definition == b.definition => {
+                a.arguments.len() == b.arguments.len()
+                    && a.arguments
+                        .iter()
+                        .zip(&b.arguments)
+                        .all(|(actual, expected)| match (actual, expected) {
+                            (GenericValue::Type(actual), GenericValue::Type(expected)) => {
+                                self.fits(env, actual, expected)
+                            }
+                            _ => actual == expected,
+                        })
+            }
             (Ty::Adt(adt), _) if adt.kind == AdtKind::Opaque && adt.defining_scope == env.scope => {
                 self.representation(env, adt)
                     .is_some_and(|ty| self.fits(env, &ty, &expected))

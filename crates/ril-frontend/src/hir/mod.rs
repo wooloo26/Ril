@@ -46,6 +46,54 @@ pub enum TextBuiltin {
     FromArray,
 }
 
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum BuiltinSum {
+    PanicError,
+    TaskFault,
+    TimeoutError,
+    SendError,
+    TrySendError,
+    TryRecvError,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum BuiltinPayload {
+    UnitTag,
+    PanicInfo,
+    Element,
+}
+
+impl BuiltinSum {
+    pub const fn name(self) -> &'static str {
+        use BuiltinSum::*;
+        match self {
+            PanicError => "PanicError",
+            TaskFault => "TaskFault",
+            TimeoutError => "TimeoutError",
+            SendError => "SendError",
+            TrySendError => "TrySendError",
+            TryRecvError => "TryRecvError",
+        }
+    }
+
+    pub const fn variants(self) -> &'static [(&'static str, BuiltinPayload)] {
+        use BuiltinPayload::*;
+        use BuiltinSum::*;
+        match self {
+            PanicError => &[("Panicked", PanicInfo)],
+            TaskFault => &[("Panicked", PanicInfo), ("Cancelled", UnitTag)],
+            TimeoutError => &[("Elapsed", UnitTag)],
+            SendError => &[("Closed", Element)],
+            TrySendError => &[("Closed", Element), ("Full", Element)],
+            TryRecvError => &[("Closed", UnitTag), ("Empty", UnitTag)],
+        }
+    }
+
+    pub const fn has_parameter(self) -> bool {
+        matches!(self, Self::SendError | Self::TrySendError)
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DefinitionKind {
     Function,
@@ -124,6 +172,7 @@ pub struct Program {
     local_effects: BTreeSet<DefinitionId>,
     effect_spreads: BTreeMap<DefinitionId, BTreeSet<DefinitionId>>,
     pending_operations: Vec<effects::PendingOperation>,
+    builtin_sums: BTreeMap<BuiltinSum, DefinitionId>,
     pub entry: FileId,
     prelude: ScopeId,
 }
@@ -199,6 +248,18 @@ impl Program {
         }
     }
 
+    pub fn builtin_sum(&self, id: DefinitionId) -> Option<BuiltinSum> {
+        self.builtin_sums
+            .iter()
+            .find_map(|(&kind, &definition)| (definition == id).then_some(kind))
+    }
+
+    pub fn builtin_sum_id(&self, kind: BuiltinSum) -> DefinitionId {
+        self.builtin_sums
+            .get(&kind)
+            .copied()
+            .unwrap_or_else(|| ril_base::ice!("unregistered built-in sum {kind:?}"))
+    }
     pub fn operation_effect(&self, operation: DefinitionId) -> Option<DefinitionId> {
         let scope = self.definition(operation).scope;
         self.definitions().find_map(|(id, definition)| {
@@ -496,6 +557,7 @@ pub fn lower(files: Vec<File>, entry: FileId) -> Result<Program, Vec<Diagnostic>
         local_effects: BTreeSet::new(),
         effect_spreads: BTreeMap::new(),
         pending_operations: Vec::new(),
+        builtin_sums: BTreeMap::new(),
         entry,
         prelude: ScopeId(0),
     };
@@ -706,9 +768,30 @@ impl Program {
                     self.collect(namespace, &items, imports, errors);
                     result
                 }
-                StmtKind::Binding { pattern, .. } => {
+                StmtKind::Binding {
+                    pattern,
+                    storage,
+                    is_meta,
+                    value,
+                    ..
+                } => {
                     if let Pattern::Binding(_, name) = &self.file(file).ast.pattern(pattern).value {
-                        self.register(scope, name.clone(), DefinitionKind::Constant, id, vis)
+                        let source = self.file(file);
+                        let kind = if source.kind == FileKind::Snippet
+                            && !is_meta
+                            && (storage.variable
+                                || storage.mode != crate::syntax::Mode::Plain
+                                || value.is_some_and(|value| {
+                                    matches!(
+                                        source.ast.expr(value).value,
+                                        crate::syntax::Expr::Closure { .. }
+                                    )
+                                })) {
+                            DefinitionKind::Local
+                        } else {
+                            DefinitionKind::Constant
+                        };
+                        self.register(scope, name.clone(), kind, id, vis)
                     } else {
                         continue;
                     }
@@ -828,15 +911,7 @@ impl Program {
                 self.primitive(self.prelude, name, phase);
             }
         }
-        let panic_error = self.new_scope(file, "ril".into(), None, Visibility::Public);
-        self.primitive(panic_error, "Panicked", PrimitivePhase::Runtime);
-        self.scope_mut(self.prelude).names.insert(
-            "PanicError".into(),
-            Entry {
-                target: Target::Module(panic_error),
-                visibility: Visibility::Public,
-            },
-        );
+        self.register_builtin_sum(self.prelude, BuiltinSum::PanicError);
         use PrimitivePhase::{Both, Runtime, Static};
         let modules: &[(&str, &str, PrimitivePhase, &[&str])] = &[
             (
@@ -961,8 +1036,6 @@ impl Program {
                     "Scope",
                     "Task",
                     "Zip",
-                    "TaskFault",
-                    "TimeoutError",
                 ],
             ),
             (
@@ -984,9 +1057,6 @@ impl Program {
                     "Sender",
                     "Receiver",
                     "ChannelPair",
-                    "SendError",
-                    "TrySendError",
-                    "TryRecvError",
                 ],
             ),
             ("os", "Os", Runtime, &[]),
@@ -998,6 +1068,18 @@ impl Program {
             self.scope_mut(module).primitive_module = Some(name);
             for &member in members {
                 self.primitive(module, member, phase);
+            }
+            let sums = match name {
+                "Fiber" => &[BuiltinSum::TaskFault, BuiltinSum::TimeoutError][..],
+                "Channel" => &[
+                    BuiltinSum::SendError,
+                    BuiltinSum::TrySendError,
+                    BuiltinSum::TryRecvError,
+                ][..],
+                _ => &[],
+            };
+            for &kind in sums {
+                self.register_builtin_sum(module, kind);
             }
             if file_name.is_empty() {
                 if name == "Set" || name == "MemberMode" {
@@ -1014,6 +1096,42 @@ impl Program {
                 self.modules
                     .insert(PathBuf::from("ril").join(file_name), module);
             }
+        }
+    }
+
+    fn register_builtin_sum(&mut self, scope: ScopeId, kind: BuiltinSum) {
+        let at = Span::new(self.scope(scope).file, 0, 0);
+        let namespace = self.child(scope, Visibility::Public, false);
+        let owner = self.new_def(
+            scope,
+            Name::new(kind.name().into(), at),
+            DefinitionKind::Sum(namespace),
+            None,
+            Visibility::Public,
+        );
+        self.builtin_sums.insert(kind, owner);
+        self.scope_mut(scope).names.insert(
+            kind.name().into(),
+            Entry {
+                target: Target::Def(owner),
+                visibility: Visibility::Public,
+            },
+        );
+        for &(name, _) in kind.variants() {
+            let operation = self.new_def(
+                namespace,
+                Name::new(name.into(), at),
+                DefinitionKind::Variant(owner),
+                None,
+                Visibility::Public,
+            );
+            self.scope_mut(namespace).names.insert(
+                name.into(),
+                Entry {
+                    target: Target::Def(operation),
+                    visibility: Visibility::Public,
+                },
+            );
         }
     }
 

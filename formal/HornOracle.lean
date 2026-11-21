@@ -36,6 +36,11 @@ def compare (case : JsonComparison) : Bool :=
   RilAccess.SummaryOf.subsumesBy (fun _ => false) case.baseline.formal case.revision.formal &&
     (!case.baseline.constructs || case.revision.constructs)
 
+def solve (entries : List JsonRule) : List Nat :=
+  let rules : List (RilAccess.Rule Nat) :=
+    entries.map fun rule => ⟨rule.premises, rule.conclusion⟩
+  (RilAccess.solve rules).mergeSort
+
 def main (args : List String) : IO Unit := do
   let stdin ← IO.getStdin
   let source ← stdin.readToEnd
@@ -46,10 +51,11 @@ def main (args : List String) : IO Unit := do
     let .ok cases := fromJson? (α := List JsonComparison) json
       | throw (IO.userError "expected a JSON array of callable summaries")
     stdout.putStrLn (toJson (cases.map compare)).compress
+  else if args == ["batch"] then
+    let .ok cases := fromJson? (α := List (List JsonRule)) json
+      | throw (IO.userError "expected a JSON array of Horn programs")
+    stdout.putStrLn (toJson (cases.map solve)).compress
   else
     let .ok entries := fromJson? (α := List JsonRule) json
       | throw (IO.userError "expected a JSON array of Horn rules")
-    let rules : List (RilAccess.Rule Nat) :=
-      entries.map fun rule => ⟨rule.premises, rule.conclusion⟩
-    let facts := (RilAccess.solve rules).mergeSort
-    stdout.putStrLn (toJson facts).compress
+    stdout.putStrLn (toJson (solve entries)).compress

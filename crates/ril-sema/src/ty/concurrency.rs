@@ -1,7 +1,13 @@
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+    collections::{BTreeMap, HashSet},
+    sync::Arc,
+};
 
 use ril_base::{diag::Code, span::Span};
-use ril_frontend::syntax::{Argument, Mode};
+use ril_frontend::{
+    hir::{BuiltinSum, DefinitionId},
+    syntax::{Argument, Mode},
+};
 
 use super::{
     Callable, Member, MemberMode, Parameter, Ty,
@@ -68,10 +74,21 @@ impl Checker<'_> {
     ) -> Ty {
         match (name, args) {
             ("run" | "uncancellable" | "supervise", [action]) => {
-                let result = self.callback(env, action, None, expected);
+                let target = if name == "supervise" {
+                    expected.and_then(|ty| match ty {
+                        Ty::Result(ok, _) => Some(ok.as_ref()),
+                        _ => None,
+                    })
+                } else {
+                    expected
+                };
+                let result = self.callback(env, action, None, target);
                 if name == "supervise" {
                     self.reject_nested_result(&result, span);
-                    Ty::Result(Box::new(result), Box::new(Ty::Unknown))
+                    Ty::Result(
+                        Box::new(result),
+                        Box::new(self.builtin_sum_type(BuiltinSum::TaskFault, None)),
+                    )
                 } else {
                     result
                 }
@@ -83,7 +100,7 @@ impl Checker<'_> {
                 self.require_marker(scope, Mode::Mut, env);
                 self.expect(env, scope.value, &Ty::Scope);
                 let result = self.callback(env, work, None, None);
-                if !sendable(&result) {
+                if !self.is_sendable(env, &result, &mut HashSet::new()) {
                     self.error(Code::E0301, span, "task result is not Sendable");
                 }
                 Ty::Task(Box::new(result))
@@ -121,7 +138,10 @@ impl Checker<'_> {
                 self.expect(env, duration.value, &Ty::Int);
                 let result = self.callback(env, work, None, None);
                 self.reject_nested_result(&result, span);
-                Ty::Result(Box::new(result), Box::new(Ty::Unknown))
+                Ty::Result(
+                    Box::new(result),
+                    Box::new(self.builtin_sum_type(BuiltinSum::TimeoutError, None)),
+                )
             }
             ("zip" | "try_zip" | "race", [left, right]) => {
                 let a = self.callback(env, left, None, None);
@@ -233,10 +253,18 @@ impl Checker<'_> {
                     self.error(Code::E0301, span, "send requires a channel sender");
                 }
                 let item = self.expect(env, value.value, &item(&sender));
-                if !sendable(&item) {
+                if !self.is_sendable(env, &item, &mut HashSet::new()) {
                     self.error(Code::E0301, span, "channel item is not Sendable");
                 }
-                Ty::Result(Box::new(Ty::Unit), Box::new(Ty::Unknown))
+                let error = if name == "send" {
+                    BuiltinSum::SendError
+                } else {
+                    BuiltinSum::TrySendError
+                };
+                Ty::Result(
+                    Box::new(Ty::Unit),
+                    Box::new(self.builtin_sum_type(error, Some(self.normalize(&item)))),
+                )
             }
             ("recv" | "try_recv", [receiver]) => {
                 self.require_marker(receiver, Mode::Mut, env);
@@ -247,7 +275,10 @@ impl Checker<'_> {
                 if name == "recv" {
                     Ty::Option(Box::new(item(&ty)))
                 } else {
-                    Ty::Result(Box::new(item(&ty)), Box::new(Ty::Unknown))
+                    Ty::Result(
+                        Box::new(item(&ty)),
+                        Box::new(self.builtin_sum_type(BuiltinSum::TryRecvError, None)),
+                    )
                 }
             }
             ("close" | "close_recv", [endpoint]) => {
@@ -356,26 +387,76 @@ impl Checker<'_> {
             self.error(Code::E0720, span, "operation would hide a fallible payload");
         }
     }
-}
 
-fn sendable(ty: &Ty) -> bool {
-    let member = |m: &Member| !matches!(m.mode.mode, Mode::Ref | Mode::Shared) && sendable(&m.ty);
-    match ty {
-        Ty::Scope | Ty::Task(_) | Ty::Draft(_) | Ty::TypeValue(_) => false,
-        Ty::Adt(adt) => adt.kind != super::AdtKind::Foreign,
-        Ty::Record(fields, _) => fields.values().all(member),
-        Ty::Tuple(items) => items.iter().all(member),
-        Ty::Array(item) => member(item),
-        Ty::Map(key, item) => sendable(key) && member(item),
-        Ty::Option(t) | Ty::Set(t) | Ty::Sender(t) | Ty::Receiver(t) => sendable(t),
-        Ty::Result(a, b) => sendable(a) && sendable(b),
-        Ty::Callable(sig) => {
-            sig.effects
+    pub(super) fn is_sendable(
+        &mut self,
+        env: &Env,
+        ty: &Ty,
+        active: &mut HashSet<DefinitionId>,
+    ) -> bool {
+        match self.normalize(ty) {
+            Ty::Scope | Ty::Task(_) | Ty::Draft(_) | Ty::TypeValue(_) | Ty::Mode => false,
+            Ty::Param(id) => {
+                env.sendable_guards.contains(&id)
+                    || env.domains.get(&id).is_some_and(|domain| {
+                        domain.iter().all(|ty| self.is_sendable(env, ty, active))
+                    })
+            }
+            Ty::Adt(adt) => {
+                if adt.kind == super::AdtKind::Foreign {
+                    return false;
+                }
+                if !active.insert(adt.definition) {
+                    return true;
+                }
+                let result = if matches!(adt.kind, super::AdtKind::Sum | super::AdtKind::OpaqueSum)
+                {
+                    self.sum_variants(&adt)
+                        .values()
+                        .flatten()
+                        .all(|ty| self.is_sendable(env, ty, active))
+                } else {
+                    self.representation(env, &adt)
+                        .is_none_or(|ty| self.is_sendable(env, &ty, active))
+                };
+                active.remove(&adt.definition);
+                result
+            }
+            Ty::Record(fields, _) => fields
+                .values()
+                .all(|member| self.sendable_member(env, member, active)),
+            Ty::Tuple(items) => items
                 .iter()
-                .all(|e| matches!(e.as_str(), "io" | "fiber"))
-                && !sig.open_state
-                && sig.state.is_empty()
+                .all(|member| self.sendable_member(env, member, active)),
+            Ty::Array(item) => self.sendable_member(env, &item, active),
+            Ty::Map(key, item) => {
+                self.is_sendable(env, &key, active) && self.sendable_member(env, &item, active)
+            }
+            Ty::Option(t) | Ty::Set(t) | Ty::Sender(t) | Ty::Receiver(t) => {
+                self.is_sendable(env, &t, active)
+            }
+            Ty::Result(a, b) => {
+                self.is_sendable(env, &a, active) && self.is_sendable(env, &b, active)
+            }
+            Ty::Callable(sig) => {
+                sig.effects
+                    .iter()
+                    .all(|e| matches!(e.as_str(), "io" | "fiber"))
+                    && !sig.open_effects
+                    && !sig.open_state
+                    && sig.state.is_empty()
+            }
+            _ => true,
         }
-        _ => true,
+    }
+
+    fn sendable_member(
+        &mut self,
+        env: &Env,
+        member: &Member,
+        active: &mut HashSet<DefinitionId>,
+    ) -> bool {
+        !matches!(member.mode.mode, Mode::Ref | Mode::Shared)
+            && self.is_sendable(env, &member.ty, active)
     }
 }

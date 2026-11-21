@@ -28,6 +28,46 @@ enum Signal {
     Continue,
 }
 
+struct Place {
+    root: DefinitionId,
+    path: Vec<Value>,
+    span: Span,
+}
+
+impl Place {
+    fn slot<'a>(&self, slots: &'a mut Values, insert: bool) -> Eval<&'a mut Value> {
+        let mut value = slots.get_mut(&self.root).ok_or(Signal::Error(
+            Code::E0813,
+            self.span,
+            "static assignment cannot update outer runtime storage",
+        ))?;
+        for (index, key) in self.path.iter().enumerate() {
+            value = match (value, key) {
+                (Value::Record(fields), Value::Str(name)) => fields.get_mut(name),
+                (Value::Array(items) | Value::Tuple(items), Value::Int(key)) => {
+                    key.to_usize().and_then(|index| items.get_mut(index))
+                }
+                (Value::Map(entries), key) => {
+                    let existing = entries
+                        .iter()
+                        .position(|(stored, _)| ieee_equal(stored, key));
+                    if let Some(key) = existing {
+                        entries.get_mut(key).map(|(_, value)| value)
+                    } else if insert && index + 1 == self.path.len() {
+                        entries.push((key.clone(), Value::Unit));
+                        entries.last_mut().map(|(_, value)| value)
+                    } else {
+                        None
+                    }
+                }
+                _ => None,
+            }
+            .ok_or_else(|| defect(self.span, "invalid static assignment target"))?;
+        }
+        Ok(value)
+    }
+}
+
 struct Budget {
     remaining: u64,
     depth: usize,
@@ -313,9 +353,23 @@ impl Checker<'_> {
             }
             Expr::Binary { op, left, right } => {
                 let op = op.value.as_str();
-                if op == "=" {
-                    let value = self.evaluate(env, slots, *right, fuel)?;
-                    self.assign(env, slots, *left, value, fuel)?;
+                if matches!(
+                    op,
+                    "=" | "+=" | "-=" | "*=" | "/=" | "%=" | "&=" | "|=" | "^=" | ">>=" | "<<="
+                ) {
+                    let place = self.eval_place(env, slots, *left, fuel)?;
+                    let current = if op == "=" {
+                        None
+                    } else {
+                        Some(place.slot(slots, false)?.clone())
+                    };
+                    let mut value = self.evaluate(env, slots, *right, fuel)?;
+                    if let Some(current) = current {
+                        let operator = op.strip_suffix('=').unwrap_or_default();
+                        value = arithmetic(operator, current, value)
+                            .map_err(|message| defect(span, message))?;
+                    }
+                    *place.slot(slots, op == "=")? = value;
                     return Ok(Value::Unit);
                 }
                 let a = self.evaluate(env, slots, *left, fuel)?;
@@ -335,18 +389,7 @@ impl Checker<'_> {
                     }
                     (operator, a) => {
                         let b = self.evaluate(env, slots, *right, fuel)?;
-                        if matches!(
-                            operator,
-                            "+=" | "-=" | "*=" | "/=" | "%=" | "&=" | "|=" | "^=" | ">>=" | "<<="
-                        ) {
-                            let op = operator.strip_suffix('=').unwrap_or_default();
-                            let value =
-                                arithmetic(op, a, b).map_err(|message| defect(span, message))?;
-                            self.assign(env, slots, *left, value, fuel)?;
-                            Ok(Value::Unit)
-                        } else {
-                            arithmetic(operator, a, b).map_err(|message| defect(span, message))
-                        }
+                        arithmetic(operator, a, b).map_err(|message| defect(span, message))
                     }
                 }
             }
@@ -510,14 +553,19 @@ impl Checker<'_> {
             Expr::Tuple(items) => self.eval_list(env, slots, items, fuel).map(Value::Tuple),
             Expr::Array(items) => self.eval_list(env, slots, items, fuel).map(Value::Array),
             Expr::Map(entries) => {
-                let entries = entries
-                    .iter()
-                    .map(|&(key, value)| {
-                        let key = self.evaluate(env, slots, key, fuel)?;
-                        Ok((key, self.evaluate(env, slots, value, fuel)?))
-                    })
-                    .collect::<Eval<Vec<_>>>()?;
-                Ok(Value::Map(entries))
+                let mut map = Vec::new();
+                for &(key, value) in entries {
+                    let key = self.evaluate(env, slots, key, fuel)?;
+                    let value = self.evaluate(env, slots, value, fuel)?;
+                    if let Some((_, slot)) =
+                        map.iter_mut().find(|(stored, _)| ieee_equal(stored, &key))
+                    {
+                        *slot = value;
+                    } else {
+                        map.push((key, value));
+                    }
+                }
+                Ok(Value::Map(map))
             }
             Expr::Record { fields, .. } => {
                 let mut record = BTreeMap::new();
@@ -1366,54 +1414,54 @@ impl Checker<'_> {
         })
     }
 
-    fn assign(
+    fn eval_place(
         &mut self,
         env: &mut Env,
         slots: &mut Values,
         lhs: ExprId,
-        value: Value,
         fuel: &mut Budget,
-    ) -> Eval<()> {
+    ) -> Eval<Place> {
         let node = self.ast(env.file).expr(lhs);
         match &node.value {
             Expr::Path(path) => {
-                let id = self
+                let root = self
                     .resolve(path.span)
                     .ok_or_else(|| nonstatic(node.span))?;
-                if !slots.contains_key(&id) {
-                    return Err(Signal::Error(
-                        Code::E0813,
-                        node.span,
-                        "static assignment cannot update outer runtime storage",
-                    ));
-                }
-                slots.insert(id, value);
-                Ok(())
+                Ok(Place {
+                    root,
+                    path: Vec::new(),
+                    span: node.span,
+                })
             }
             Expr::Member {
                 base,
                 member,
                 safe: false,
             } => {
-                let mut old = self.evaluate(env, slots, *base, fuel)?;
-                match (member, &mut old) {
-                    (Coordinate::Name(name), Value::Record(fields))
-                        if fields.contains_key(&name.value) =>
-                    {
-                        fields.insert(name.value.clone(), value);
-                    }
-                    (Coordinate::Index(index), Value::Tuple(values)) => {
-                        let slot = index
+                let mut place = self.eval_place(env, slots, *base, fuel)?;
+                let key = match member {
+                    Coordinate::Name(name) => Value::Str(name.value.clone()),
+                    Coordinate::Index(index) => Value::Int(
+                        index
                             .value
-                            .parse::<usize>()
-                            .ok()
-                            .and_then(|index| values.get_mut(index))
-                            .ok_or_else(|| defect(node.span, "invalid tuple assignment"))?;
-                        *slot = value;
-                    }
-                    _ => return Err(defect(node.span, "invalid static assignment")),
-                }
-                self.assign(env, slots, *base, old, fuel)
+                            .parse()
+                            .map_err(|_| defect(index.span, "invalid tuple index"))?,
+                    ),
+                    Coordinate::Computed(key) => self.evaluate(env, slots, *key, fuel)?,
+                };
+                place.path.push(key);
+                place.span = node.span;
+                Ok(place)
+            }
+            Expr::Index {
+                base,
+                index,
+                safe: false,
+            } => {
+                let mut place = self.eval_place(env, slots, *base, fuel)?;
+                place.path.push(self.evaluate(env, slots, *index, fuel)?);
+                place.span = node.span;
+                Ok(place)
             }
             _ => Err(defect(node.span, "invalid static assignment target")),
         }

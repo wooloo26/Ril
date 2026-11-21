@@ -5,7 +5,7 @@ use std::{
 
 use ril_base::{diag::Code, span::Span};
 use ril_frontend::{
-    hir::{DefinitionId, DefinitionKind},
+    hir::{BuiltinSum, DefinitionId, DefinitionKind},
     parser::FileKind,
     syntax::{
         self, FieldTail, GenericArg, GenericParam, Member as Coordinate, Mode, StateKind, StmtKind,
@@ -132,6 +132,15 @@ impl Checker<'_> {
     pub(super) fn generic_env(&mut self, env: &mut Env, params: &[GenericParam]) {
         for param in params {
             if let Some(id) = self.resolve(param.name.span) {
+                if param.guards.iter().any(|guard| {
+                    self.resolve(guard.span).is_some_and(|symbol| {
+                        let symbol = self.hir.definition(symbol);
+                        matches!(symbol.kind, DefinitionKind::Primitive(_))
+                            && symbol.name.value == "Sendable"
+                    })
+                }) {
+                    env.sendable_guards.insert(id);
+                }
                 if param
                     .name
                     .value
@@ -502,6 +511,16 @@ impl Checker<'_> {
             _ => {}
         }
         let resolved = self.resolve(path.span);
+        if let Some(kind) = resolved.and_then(|id| self.hir.builtin_sum(id)) {
+            if last.arguments.len() != usize::from(kind.has_parameter()) {
+                self.error(Code::E0340, path.span, "incorrect number of type arguments");
+            }
+            let element = last
+                .arguments
+                .first()
+                .map(|arg| self.type_argument(env, arg));
+            return self.builtin_sum_type(kind, element);
+        }
         if let Some(def) = resolved
             && matches!(self.hir.primitive_module(def), Some("Fiber" | "Channel"))
         {
@@ -534,7 +553,6 @@ impl Checker<'_> {
             };
             match last.name.value.as_str() {
                 "PanicInfo" => return Ty::PanicInfo,
-                "PanicError" => return Ty::PanicError,
                 "Option" => return Ty::Option(Box::new(ty_arg())),
                 "Result" => {
                     let ok = ty_arg();
@@ -663,6 +681,22 @@ impl Checker<'_> {
             defining_scope: def.scope,
             visibility: def.visibility,
             arguments,
+        }))
+    }
+
+    pub(super) fn builtin_sum_type(&self, kind: BuiltinSum, element: Option<Ty>) -> Ty {
+        let definition = self.hir.builtin_sum_id(kind);
+        let def = self.hir.definition(definition);
+        Ty::Adt(Arc::new(Adt {
+            definition,
+            kind: AdtKind::Sum,
+            defining_scope: def.scope,
+            visibility: def.visibility,
+            arguments: if kind.has_parameter() {
+                vec![GenericValue::Type(element.unwrap_or(Ty::Unknown))]
+            } else {
+                Vec::new()
+            },
         }))
     }
 
@@ -810,6 +844,41 @@ impl Checker<'_> {
         let DefinitionKind::Variant(parent) = def.kind else {
             return Ty::Unknown;
         };
+        if let Some(kind) = self.hir.builtin_sum(parent) {
+            let result = if let Some(Ty::Adt(target)) = expected
+                && target.definition == parent
+            {
+                Ty::Adt(Arc::clone(target))
+            } else {
+                let element = kind.has_parameter().then(|| self.fresh());
+                self.builtin_sum_type(kind, element)
+            };
+            let Ty::Adt(adt) = &result else {
+                return Ty::Unknown;
+            };
+            let payload = self
+                .sum_variants(adt)
+                .remove(&def.name.value)
+                .unwrap_or_default();
+            if payload.is_empty() {
+                return result;
+            }
+            return Ty::Callable(Arc::new(Callable {
+                parameters: payload
+                    .into_iter()
+                    .map(|ty| Parameter {
+                        label: None,
+                        mode: Mode::Plain,
+                        ty,
+                        optional: false,
+                        is_meta: false,
+                    })
+                    .collect(),
+                result,
+                result_mode: Mode::New,
+                ..unknown_callable()
+            }));
+        }
         let owner = self.hir.definition(parent);
         let Some(stmt) = owner.stmt else {
             return Ty::Unknown;
@@ -975,7 +1044,12 @@ impl Checker<'_> {
         }
     }
 
-    fn eligible_key(&mut self, env: &Env, ty: &Ty, seen: &mut HashSet<DefinitionId>) -> bool {
+    pub(super) fn eligible_key(
+        &mut self,
+        env: &Env,
+        ty: &Ty,
+        seen: &mut HashSet<DefinitionId>,
+    ) -> bool {
         let immutable = |m: &Member| m.mode == super::MemberMode::PLAIN;
         match ty {
             Ty::F64 | Ty::Callable(_) | Ty::Draft(_) | Ty::TypeValue(_) => false,
@@ -1114,6 +1188,12 @@ impl Checker<'_> {
         };
         let def = self.hir.definition(check);
         if matches!(def.kind, DefinitionKind::Primitive(_)) {
+            if def.name.value == "Sendable"
+                && let GenericValue::Type(ty) = input
+                && !self.is_sendable(env, ty, &mut HashSet::new())
+            {
+                self.error(Code::E0301, span, "type does not satisfy Sendable");
+            }
             return;
         }
         let Some(stmt) = def.stmt else { return };

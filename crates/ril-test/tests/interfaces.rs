@@ -34,46 +34,39 @@ fn exported_horn_facts_agree_with_lean() {
     let Some(oracle) = std::env::var_os("RIL_HORN_ORACLE") else {
         return;
     };
-    let paths = [
-        (
-            "access.ril",
-            include_str!("../../../tests/07_access/access.ril"),
-        ),
-        (
-            "via.ril",
-            include_str!("../../../tests/08_via_compat/via.ril"),
-        ),
-        (
-            "effects.ril",
-            include_str!("../../../tests/09_effects_use_draft/obligations.ril"),
-        ),
-    ];
-    let mut count = 0;
-    for (path, source) in paths {
-        let suite = parse_suite(Path::new(path), source).unwrap();
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests");
+    let mut cases = Vec::new();
+    for suite in ril_test::discover(&root).unwrap() {
         for case in suite.cases {
-            if let Ok((_, analysis)) = Driver.analyze(&case.pkg) {
-                let mut child = Command::new(&oracle)
-                    .stdin(Stdio::piped())
-                    .stdout(Stdio::piped())
-                    .spawn()
-                    .unwrap();
-                let input = serde_json::to_vec(&analysis.horn_rules).unwrap();
-                child.stdin.take().unwrap().write_all(&input).unwrap();
-                let output = child.wait_with_output().unwrap();
-                assert!(output.status.success(), "{path} {}", case.id);
-                let expected = serde_json::from_slice::<BTreeSet<usize>>(&output.stdout).unwrap();
-                assert_eq!(
-                    horn::solve(&analysis.horn_rules),
-                    expected,
-                    "{path} {}",
-                    case.id
-                );
-                count += 1;
+            let inputs: Vec<_> = if let Some(baseline) = &case.baseline {
+                vec![("baseline", baseline), ("revision", &case.pkg)]
+            } else {
+                vec![("source", &case.pkg)]
+            };
+            for (label, package) in inputs {
+                if let Ok(rules) = Driver.horn_rules(package) {
+                    cases.push((format!("{}::{} ({label})", suite.name, case.id), rules));
+                }
             }
         }
     }
-    assert!(count >= 10);
+    assert!(cases.len() >= 75);
+    let requests = cases.iter().map(|(_, rules)| rules).collect::<Vec<_>>();
+    let mut child = Command::new(oracle)
+        .arg("batch")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let input = serde_json::to_vec(&requests).unwrap();
+    child.stdin.take().unwrap().write_all(&input).unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success());
+    let expected: Vec<BTreeSet<usize>> = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(cases.len(), expected.len());
+    for ((case, rules), expected) in cases.into_iter().zip(expected) {
+        assert_eq!(horn::solve(&rules), expected, "{case}");
+    }
 }
 
 #[test]

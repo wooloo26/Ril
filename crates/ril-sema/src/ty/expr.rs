@@ -7,7 +7,10 @@ use num_traits::{Signed, Zero};
 use ril_base::{diag::Code, span::Span};
 
 use ril_frontend::{
-    hir::{DefinitionId, DefinitionKind, PrimitivePhase, Resolution, TextBuiltin},
+    hir::{
+        BuiltinPayload, BuiltinSum, DefinitionId, DefinitionKind, PrimitivePhase, Resolution,
+        TextBuiltin,
+    },
     syntax::{
         self, Argument, Condition, Expr, ExprId, Mode, StmtKind, Transfer, TypeDefinition,
         ValueField,
@@ -152,7 +155,7 @@ impl<'a> Checker<'a> {
             }
             Expr::Index { base, index, .. } => {
                 let base = self.expr(env, *base, None);
-                self.index(env, base, *index, span)
+                self.index(env, base, *index, false, span)
             }
             Expr::Range { start, end, .. } => {
                 for &value in start.iter().chain(end) {
@@ -216,10 +219,7 @@ impl<'a> Checker<'a> {
                     self.expect(env, k, &key);
                     self.expect(env, v, &member.ty);
                 }
-                if matches!(
-                    self.normalize(&key),
-                    Ty::F64 | Ty::Callable(_) | Ty::Draft(_)
-                ) {
+                if !self.eligible_key(env, &self.normalize(&key), &mut HashSet::new()) {
                     self.error(Code::E0328, span, "invalid map key type");
                 }
                 Ty::Map(Box::new(key), Box::new(member))
@@ -439,8 +439,12 @@ impl<'a> Checker<'a> {
         );
         let ast = self.ast(env.file);
         let previous = env.unrefined;
+        let previous_map_store = env.map_store;
         if assignment {
             env.unrefined = Some(ast.expr(left).span);
+        }
+        if name == "=" {
+            env.map_store = Some(ast.expr(left).span);
         }
         let a = self.expr(
             env,
@@ -452,6 +456,7 @@ impl<'a> Checker<'a> {
             },
         );
         env.unrefined = previous;
+        env.map_store = previous_map_store;
         let a = self.normalize(&a);
         let fallback;
         let right_expected = match (&a, name) {
@@ -861,6 +866,11 @@ impl<'a> Checker<'a> {
         if actual.definition == target.definition {
             return actual.arguments == target.arguments;
         }
+        if self.hir.builtin_sum(actual.definition) == Some(BuiltinSum::PanicError)
+            && self.hir.builtin_sum(target.definition) == Some(BuiltinSum::TaskFault)
+        {
+            return true;
+        }
         if (target.kind == AdtKind::OpaqueSum && env.scope != target.defining_scope)
             || !active.insert(target.definition)
         {
@@ -909,6 +919,23 @@ impl<'a> Checker<'a> {
         active: &mut HashSet<DefinitionId>,
         at: Span,
     ) -> BTreeMap<String, Option<Vec<Ty>>> {
+        if let Some(kind) = self.hir.builtin_sum(adt.definition) {
+            return kind
+                .variants()
+                .iter()
+                .map(|&(tag, payload)| {
+                    let shape = match payload {
+                        BuiltinPayload::UnitTag => None,
+                        BuiltinPayload::PanicInfo => Some(vec![Ty::PanicInfo]),
+                        BuiltinPayload::Element => Some(vec![match adt.arguments.first() {
+                            Some(super::GenericValue::Type(element)) => element.clone(),
+                            _ => Ty::Unknown,
+                        }]),
+                    };
+                    (tag.into(), shape)
+                })
+                .collect();
+        }
         if !active.insert(adt.definition) {
             self.error(Code::E0313, at, "cyclic sum spread");
             return BTreeMap::new();
@@ -1015,7 +1042,7 @@ impl<'a> Checker<'a> {
                     if *safe && let Ty::Option(inner) = ty {
                         ty = *inner;
                     }
-                    self.index(env, ty, *index, node.span)
+                    self.index(env, ty, *index, *safe, node.span)
                 }
                 _ => ril_base::ice!("unexpected navigation step"),
             };
@@ -1030,10 +1057,17 @@ impl<'a> Checker<'a> {
         }
     }
 
-    fn index(&mut self, env: &mut Env, base: Ty, index: ExprId, span: Span) -> Ty {
+    fn index(&mut self, env: &mut Env, base: Ty, index: ExprId, safe: bool, span: Span) -> Ty {
         let mut base = self.normalize(&base);
         if let Ty::Draft(inner) = base {
             base = *inner;
+        }
+        if matches!(base, Ty::Map(..)) && !safe && env.map_store != Some(span) {
+            self.error(
+                Code::E0352,
+                span,
+                "map reads require the safe index operator",
+            );
         }
         let (key, value) = match &base {
             Ty::Array(item) => (Ty::Int, item.ty.clone()),
@@ -1305,12 +1339,36 @@ impl<'a> Checker<'a> {
                         return self.text_call(env, builtin, args, span);
                     }
                     if let Some(module @ ("Fiber" | "Channel")) = self.hir.primitive_module(id) {
+                        let explicit = if module == "Channel"
+                            && matches!(def.name.value.as_str(), "bounded" | "unbounded" | "mpsc")
+                            && let Some(segment) = path.and_then(|path| path.segments.last())
+                            && let Some(argument) = segment.arguments.first()
+                        {
+                            if segment.arguments.len() > 1 {
+                                self.error(
+                                    Code::E0340,
+                                    segment.name.span,
+                                    "channel constructor takes one element type",
+                                );
+                            }
+                            let ty = self.type_argument(env, argument);
+                            if !self.is_sendable(env, &ty, &mut HashSet::new()) {
+                                self.error(
+                                    Code::E0301,
+                                    span,
+                                    "channel element type is not Sendable",
+                                );
+                            }
+                            Some(super::concurrency::channel_pair(ty))
+                        } else {
+                            None
+                        };
                         return self.concurrent_call(
                             env,
                             module,
                             &def.name.value,
                             args,
-                            expected,
+                            explicit.as_ref().or(expected),
                             span,
                         );
                     }
@@ -1650,7 +1708,7 @@ impl<'a> Checker<'a> {
         let arity = match name {
             "Some" | "Err" | "panic" | "print" | "println" | "len" | "clone" | "inner"
             | "inspect" | "type_name" | "coords" | "variants" | "to_f64" | "to_int" | "trunc"
-            | "absorb_panic" | "panic_message" | "Panicked" => Some(1..=1),
+            | "absorb_panic" | "panic_message" => Some(1..=1),
             "Ok" => Some(0..=1),
             "assert" => Some(1..=2),
             "has_default" | "contains" | "push" | "filter" | "map" | "checked_div"
@@ -1818,10 +1876,6 @@ impl<'a> Checker<'a> {
                 self.require(env, span, &first, &Ty::PanicInfo);
                 Ty::Str
             }
-            "Panicked" => {
-                self.require(env, span, &first, &Ty::PanicInfo);
-                Ty::PanicError
-            }
             "PanicInfo" => {
                 self.error(Code::E0301, span, "PanicInfo has no accessible constructor");
                 Ty::Unknown
@@ -1859,7 +1913,10 @@ impl<'a> Checker<'a> {
                             "panic action requires a closed empty effect set",
                         );
                     }
-                    Ty::Result(Box::new(call.result.clone()), Box::new(Ty::PanicError))
+                    Ty::Result(
+                        Box::new(call.result.clone()),
+                        Box::new(self.builtin_sum_type(BuiltinSum::PanicError, None)),
+                    )
                 }
                 _ => Ty::Unknown,
             },

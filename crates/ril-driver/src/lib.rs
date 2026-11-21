@@ -66,14 +66,24 @@ impl Driver {
         &self,
         pkg: &VirtualPackage,
     ) -> Result<(TypedProgram, Analysis), Vec<Diagnostic>> {
-        let (_, frontend) = frontend(pkg, Stage::Hir);
-        let program =
-            frontend?.ok_or_else(|| vec![Diagnostic::unsupported("missing frontend program")])?;
-        let typed = ty::check(program, pkg.budget)?;
+        let typed = self.typed(pkg)?;
         let analysis = access::check(&typed)?;
         Ok((typed, analysis))
     }
 
+    fn typed(&self, pkg: &VirtualPackage) -> Result<TypedProgram, Vec<Diagnostic>> {
+        let (_, program) = frontend(pkg, Stage::Hir);
+        let program =
+            program?.ok_or_else(|| vec![Diagnostic::unsupported("missing frontend program")])?;
+        ty::check(program, pkg.budget)
+    }
+
+    pub fn horn_rules(
+        &self,
+        pkg: &VirtualPackage,
+    ) -> Result<Vec<access::horn::Rule<usize>>, Vec<Diagnostic>> {
+        Ok(access::horn_rules(&self.typed(pkg)?))
+    }
     pub fn interface(&self, pkg: &VirtualPackage) -> Result<Interface, Vec<Diagnostic>> {
         let (program, analysis) = self.analyze(pkg)?;
         Ok(Interface::build(&program, &analysis))

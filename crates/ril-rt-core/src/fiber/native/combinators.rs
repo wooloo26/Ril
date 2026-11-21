@@ -7,7 +7,7 @@ use num_traits::ToPrimitive;
 
 use crate::{Object, Runtime, Value};
 
-use super::{Completion, Event, Raw, Task, context, error, invoke, start, tag, wait, wait_task};
+use super::{Completion, Event, Raw, Task, context, error, start, tag, wait, wait_task};
 
 enum First {
     Task(Task, Completion),
@@ -95,7 +95,7 @@ unsafe extern "C" fn ril_fiber_supervise(raw: Raw, work: Value) -> Value {
             return tag(rt, "Ok", Some(value));
         }
         Some(Completion::Panicked(message)) => {
-            let detail = rt.gc.alloc(Object::Str(message));
+            let detail = rt.gc.alloc(Object::PanicInfo(message));
             tag(rt, "Panicked", Some(detail))
         }
         Some(Completion::Cancelled) => tag(rt, "Cancelled", None),
@@ -310,34 +310,7 @@ extern "C" fn ril_fiber_try_map(raw: Raw, array: Value, callback: Value) -> Valu
     map(raw, array, callback, true)
 }
 
-#[unsafe(no_mangle)]
-unsafe extern "C" fn ril_channel_drain(raw: Raw, receiver: Value, consumer: Value) -> Value {
-    // SAFETY: drop the runtime borrow before calling the consumer.
-    let rt = unsafe { context(raw) };
-    let Some(Object::Receiver(id)) = rt.gc.object(receiver) else {
-        return error(rt, "invalid receiver");
-    };
-    let id = *id;
-    let Some(channel) = rt.fiber.channels.get_mut(&id) else {
-        return error(rt, "unknown channel");
-    };
-    channel.receiver = false;
-    let queued = std::mem::take(&mut channel.queued);
-    rt.fiber.wake.insert(id);
-    for value in queued {
-        // SAFETY: synchronous inspection between invocations.
-        let active = unsafe { context(raw) }.unwinding == 0;
-        if active {
-            // SAFETY: the channel consumer has a single payload argument.
-            unsafe { invoke(raw, consumer, Some(value)) };
-        }
-        // SAFETY: this invocation returned and the item no longer needs pinning.
-        unsafe { context(raw) }.gc.unpin(value);
-    }
-    Value::UNIT
-}
-
-pub(super) fn symbols() -> [(&'static str, *const u8); 8] {
+pub(super) fn symbols() -> [(&'static str, *const u8); 7] {
     [
         ("ril_fiber_supervise", ril_fiber_supervise as *const u8),
         ("ril_fiber_timeout", ril_fiber_timeout as *const u8),
@@ -346,6 +319,5 @@ pub(super) fn symbols() -> [(&'static str, *const u8); 8] {
         ("ril_fiber_race", ril_fiber_race as *const u8),
         ("ril_fiber_map", ril_fiber_map as *const u8),
         ("ril_fiber_try_map", ril_fiber_try_map as *const u8),
-        ("ril_channel_drain", ril_channel_drain as *const u8),
     ]
 }

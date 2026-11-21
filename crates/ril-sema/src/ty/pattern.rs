@@ -256,7 +256,6 @@ impl Checker<'_> {
             | ("Ok", Ty::Result(inner, _))
             | ("Err", Ty::Result(_, inner)) => vec![(**inner).clone()],
             ("None", Ty::Option(_)) => Vec::new(),
-            ("Panicked", Ty::PanicError) => vec![Ty::PanicInfo],
             (_, Ty::Adt(adt)) if adt.kind == AdtKind::Foreign => {
                 self.error(
                     Code::E0907,

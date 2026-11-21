@@ -223,3 +223,31 @@ fn build(snapshot: Cell) &return(ref snapshot) -> new [ref]Cell {
     Array::push(mut views, ref snapshot)
     new views
 }
+
+-- @case moving_composite_rebases_nested_dependencies compile-pass no-prelude
+type Buffer = .{ mut items: []int }
+fn make() -> new Buffer {
+    let mut buffer = Buffer.{ items: [1] }
+    Array::push(mut buffer.items, 2)
+    new buffer
+}
+fn move_twice() -> int {
+    let mut initial = make()
+    let mut moved = new initial
+    Array::push(mut moved.items, 3)
+    len(ref moved.items)
+}
+
+-- @case moved_composite_keeps_independent_shared_source compile-pass no-prelude
+type Cell = .{ var value: int }
+type Holder = .{ mut cells: [^mut]Cell }
+fn hold(^mut cell: Cell) &^mut &return(^mut cell) -> new Holder {
+    Holder.{ cells: [^mut cell] }
+}
+fn edit() -> int {
+    let mut cell = Cell.{ value: 2 }
+    let mut original = hold(^mut cell)
+    let mut moved = new original
+    moved.cells[0].value += 1
+    cell.value
+}
