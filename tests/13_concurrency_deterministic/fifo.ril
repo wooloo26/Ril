@@ -1,6 +1,18 @@
 -- @suite concurrency_deterministic
 -- @default_stage run
 
+-- @case bodyless_fiber_module_uses_registered_runtime run-pass backend=both
+-- @expect-stdout 42
+-- @file pkg/main.ril
+use ril/fiber
+fn main() @io -> () {
+    let value = Fiber::run \-> { Fiber::yield_now(); 42 }
+    println("{value}")
+}
+-- @file ril/fiber.ril
+pub fn run<Output |> Sendable>(via action: fn() @& -> infer Output) -> infer Output
+pub fn yield_now() @fiber -> ()
+
 -- @case executable_fiber_effect_drives_the_scheduler run-pass backend=both
 -- @expect-stdout parent
 -- @expect-stdout child

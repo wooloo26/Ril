@@ -1,17 +1,155 @@
-use std::path::Path;
+use std::{path::Path, sync::OnceLock};
 
-use ril_base::diag::{Code, Diagnostic};
+use ril_base::{
+    diag::{Code, Diagnostic},
+    span::{FileId, SourceFile, Span},
+};
 
-use crate::syntax::{Ast, Expr, Function, Mode, Type, TypeId};
+use crate::{
+    lexer,
+    parser::{self, FileKind},
+    syntax::{Ast, Expr, Function, GenericParam, Mode, StmtKind, Type, TypeDecl, TypeId},
+};
 
-use super::PrimitivePhase;
+use super::{BuiltinSum, File, PrimitivePhase};
+
+pub(super) enum TypeRegistration {
+    Object,
+    Alias,
+    Sum(BuiltinSum),
+}
+
+pub(super) fn module(path: &Path) -> Option<&'static str> {
+    match path.to_str()? {
+        "ril/prelude.ril" => Some("Prelude"),
+        "ril/fiber.ril" => Some("Fiber"),
+        "ril/channel.ril" => Some("Channel"),
+        _ => None,
+    }
+}
+
+fn declarations(path: &Path) -> Option<&'static File> {
+    static PRELUDE: OnceLock<File> = OnceLock::new();
+    static FIBER: OnceLock<File> = OnceLock::new();
+    static CHANNEL: OnceLock<File> = OnceLock::new();
+    let (cache, text) = match module(path)? {
+        "Prelude" => (&PRELUDE, include_str!("standard/prelude.ril")),
+        "Fiber" => (&FIBER, include_str!("standard/fiber.ril")),
+        "Channel" => (&CHANNEL, include_str!("standard/channel.ril")),
+        _ => return None,
+    };
+    Some(cache.get_or_init(|| {
+        let source = SourceFile::from_bytes(FileId(usize::MAX), path.into(), text.as_bytes())
+            .unwrap_or_else(|error| ril_base::ice!("invalid registered source: {error:?}"));
+        let tokens = lexer::lex(&source)
+            .unwrap_or_else(|error| ril_base::ice!("invalid registered tokens: {error:?}"));
+        let ast = parser::parse(&source, &tokens, FileKind::Module)
+            .unwrap_or_else(|error| ril_base::ice!("invalid registered declaration: {error:?}"));
+        File::new(source, FileKind::Module, ast, tokens)
+    }))
+}
+
+fn signature(
+    file: &File,
+    start: Span,
+    declaration: Span,
+    parameters: &[GenericParam],
+) -> Vec<String> {
+    let mut tokens = Vec::new();
+    let mut input = file.token_text(start.join(declaration)).peekable();
+    while let Some(token) = input.next() {
+        if token == ","
+            && input
+                .peek()
+                .is_some_and(|next| matches!(*next, ")" | ">" | "}"))
+        {
+            continue;
+        }
+        if token == ">>" {
+            tokens.extend([">".into(), ">".into()]);
+        } else if let Some(index) = parameters
+            .iter()
+            .position(|param| param.name.value == token)
+        {
+            tokens.push(format!("#{index}"));
+        } else {
+            tokens.push(token.into());
+        }
+    }
+    tokens
+}
+
+pub(super) fn registered_type(
+    file: &File,
+    declaration: Span,
+    actual: &TypeDecl,
+) -> Option<Result<TypeRegistration, Diagnostic>> {
+    let registered = declarations(&file.path)?;
+    let (node, expected) = registered.ast.items.iter().find_map(|&item| {
+        let node = registered.ast.stmt(item);
+        match &node.value.kind {
+            StmtKind::Type(ty) if actual.name.value == ty.name.value => Some((node, ty)),
+            _ => None,
+        }
+    })?;
+    if actual.kind != expected.kind
+        || signature(file, actual.name.span, declaration, &actual.generics)
+            != signature(
+                registered,
+                expected.name.span,
+                node.span,
+                &expected.generics,
+            )
+    {
+        return Some(Err(mismatch(actual.name.span)));
+    }
+    use BuiltinSum::*;
+    let registration = match actual.name.value.as_str() {
+        "PanicError" => TypeRegistration::Sum(PanicError),
+        "TaskFault" => TypeRegistration::Sum(TaskFault),
+        "TimeoutError" => TypeRegistration::Sum(TimeoutError),
+        "SendError" => TypeRegistration::Sum(SendError),
+        "TrySendError" => TypeRegistration::Sum(TrySendError),
+        "TryRecvError" => TypeRegistration::Sum(TryRecvError),
+        "ChannelPair" | "Zip" => TypeRegistration::Alias,
+        _ => TypeRegistration::Object,
+    };
+    Some(Ok(registration))
+}
 
 pub(super) fn bodyless(
-    path: &Path,
-    ast: &Ast,
+    file: &File,
+    declaration: Span,
     function: &Function,
 ) -> Result<PrimitivePhase, Diagnostic> {
     use PrimitivePhase::{Both, Runtime};
+    let path = &file.path;
+    let ast = &file.ast;
+    if let Some(registered) = declarations(path)
+        && let Some((node, expected)) = registered.ast.items.iter().find_map(|&item| {
+            let node = registered.ast.stmt(item);
+            match &node.value.kind {
+                StmtKind::Function(expected) if expected.name.value == function.name.value => {
+                    Some((node, expected))
+                }
+                _ => None,
+            }
+        })
+    {
+        return if !function.is_meta
+            && signature(file, function.name.span, declaration, &function.generics)
+                == signature(
+                    registered,
+                    expected.name.span,
+                    node.span,
+                    &expected.generics,
+                )
+        {
+            Ok(Runtime)
+        } else {
+            Err(mismatch(function.name.span))
+        };
+    }
     let path_is_prelude = path == Path::new("ril/prelude.ril");
     let name = function.name.value.as_str();
     let sig = &function.signature;
@@ -27,11 +165,7 @@ pub(super) fn bodyless(
         _ => None,
     };
     let Some((phase, output, parameters, effects)) = routine else {
-        return Err(Diagnostic::error(
-            Code::E0902,
-            function.name.span,
-            "function requires a body",
-        ));
+        return Err(missing_body(function.name.span));
     };
     let mut valid = sig.params.len() == parameters.len()
         && sig.params.iter().zip(parameters).all(|(param, expected)| {
@@ -80,12 +214,20 @@ pub(super) fn bodyless(
     if valid {
         Ok(phase)
     } else {
-        Err(Diagnostic::error(
-            Code::E0909,
-            function.name.span,
-            "declaration differs from the registered primitive signature",
-        ))
+        Err(mismatch(function.name.span))
     }
+}
+
+pub(super) fn missing_body(span: Span) -> Diagnostic {
+    Diagnostic::error(Code::E0902, span, "function requires a body")
+}
+
+fn mismatch(span: Span) -> Diagnostic {
+    Diagnostic::error(
+        Code::E0909,
+        span,
+        "declaration differs from the registered primitive signature",
+    )
 }
 
 fn simple_type(ast: &Ast, id: TypeId) -> Option<&str> {

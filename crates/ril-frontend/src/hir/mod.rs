@@ -658,6 +658,7 @@ pub fn lower(files: Vec<File>, entry: FileId) -> Result<Program, Vec<Diagnostic>
             Visibility::Package
         };
         let root = program.new_scope(id, package, None, cap);
+        program.scope_mut(root).primitive_module = builtins::module(&path);
         program.roots.insert(id.0, root);
         if kind != FileKind::Executable {
             let name = module_key(&path);
@@ -748,6 +749,7 @@ impl Program {
         errors: &mut Vec<Diagnostic>,
     ) {
         let file = self.scope(scope).file;
+        let module_root = self.roots.get(&file.0) == Some(&scope);
         for &id in items {
             let node = self.file(file).ast.stmt(id).clone();
             let vis = node.value.visibility;
@@ -755,8 +757,12 @@ impl Program {
                 StmtKind::Function(function) => {
                     let kind =
                         if function.body.is_none() && self.file(file).kind != FileKind::Foreign {
-                            let file = self.file(file);
-                            match builtins::bodyless(&file.path, &file.ast, &function) {
+                            let registered = if module_root {
+                                builtins::bodyless(self.file(file), node.span, &function)
+                            } else {
+                                Err(builtins::missing_body(function.name.span))
+                            };
+                            match registered {
                                 Ok(phase) => DefinitionKind::Primitive(phase),
                                 Err(diagnostic) => {
                                     errors.push(diagnostic);
@@ -769,9 +775,23 @@ impl Program {
                     self.register(scope, function.name, kind, id, vis)
                 }
                 StmtKind::Type(decl) => {
+                    let registration = if module_root {
+                        builtins::registered_type(self.file(file), node.span, &decl)
+                    } else {
+                        None
+                    };
+                    let contract = match registration {
+                        Some(Ok(registration)) => Some(registration),
+                        Some(Err(diagnostic)) => {
+                            errors.push(diagnostic);
+                            continue;
+                        }
+                        None => None,
+                    };
                     if matches!(decl.definition, TypeDefinition::Opaque)
                         && self.file(file).kind != FileKind::Foreign
                         && decl.kind == crate::syntax::TypeKind::Opaque
+                        && contract.is_none()
                     {
                         errors.push(Diagnostic::error(
                             Code::E0902,
@@ -787,6 +807,9 @@ impl Program {
                         else {
                             continue;
                         };
+                        if let Some(builtins::TypeRegistration::Sum(builtin)) = contract {
+                            self.builtin_sums.insert(builtin, sum);
+                        }
                         for variant in variants {
                             if let Variant::Constructor { name, .. } = variant
                                 && let Ok(def) = self
@@ -808,7 +831,12 @@ impl Program {
                         }
                         Ok(sum)
                     } else {
-                        self.register(scope, decl.name, DefinitionKind::Type, id, vis)
+                        let kind = if matches!(contract, Some(builtins::TypeRegistration::Object)) {
+                            DefinitionKind::Primitive(PrimitivePhase::Runtime)
+                        } else {
+                            DefinitionKind::Type
+                        };
+                        self.register(scope, decl.name, kind, id, vis)
                     }
                 }
                 StmtKind::Effect {

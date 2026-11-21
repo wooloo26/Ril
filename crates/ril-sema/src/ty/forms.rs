@@ -572,6 +572,7 @@ impl Checker<'_> {
         }
         if let Some(def) = resolved
             && matches!(self.hir.primitive_module(def), Some("Fiber" | "Channel"))
+            && matches!(self.hir.definition(def).kind, DefinitionKind::Primitive(_))
         {
             if last.name.value == "Scope" {
                 return Ty::Scope;

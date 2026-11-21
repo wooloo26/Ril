@@ -130,6 +130,27 @@ var value = 1
 fn bodyless() -> ()
 -- ^ E0902
 
+-- @case bodyless_fiber_contract_validates_exact_effects compile-fail E0909 unit=lib
+-- @file pkg/main.ril
+use ril/fiber
+-- @file ril/fiber.ril
+pub fn yield_now() @io -> ()
+-- ^ E0909
+
+-- @case builtin_body_requires_the_registered_module_identity compile-fail E0902 unit=lib
+-- @file pkg/main.ril
+use pkg/fiber
+-- @file pkg/fiber.ril
+pub fn yield_now() @fiber -> ()
+-- ^ E0902
+
+-- @case builtin_handle_representation_is_fixed compile-fail E0909 unit=lib
+-- @file pkg/main.ril
+use ril/fiber
+-- @file ril/fiber.ril
+pub opaque type Scope = int
+-- ^ E0909
+
 -- @case registered_prelude_primitive_can_be_bodyless compile-pass unit=lib
 -- @file pkg/main.ril
 use ril/prelude

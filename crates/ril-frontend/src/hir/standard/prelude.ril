@@ -1,0 +1,5 @@
+pub opaque type PanicInfo = str
+pub type PanicError { Panicked(PanicInfo) }
+
+pub fn panic_message(info: PanicInfo) -> str
+pub fn absorb_panic<T>(via action: fn() @& -> infer T) -> infer !<T, PanicError>

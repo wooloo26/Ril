@@ -296,15 +296,24 @@ Spaces (` `) and tabs (`\t`) separate tokens. Bare `{ ... }` blocks (`Block`, `s
 
 ```ril
 -- Tightly attached delimiters vs. spaced operators:
+type User = .{ id: int }
+fn f<T>(value: T) -> T { value }
+let xs = [1, 2]
+let a = 0; let b = 2; let c = 1
 let user = User.{ id: 1 }              -- Tight '.{' attaches to 'User'
 let pair = f<int>(xs[0])               -- Tight '<', '(', and '['
 let cmp  = a < b && b > c              -- Spaced '<' / '>' are relational comparisons
 meta let SAME = <!<int, str>>==<!<int, str>> -- Each committed '>' closes one '<'
 
 -- Multi-line continuation on pipeline and field access:
-let label = raw
-    |> parse_user?
-    .name
+type ParsedUser = .{ name: str }
+fn parse_user(raw: str) -> new !<ParsedUser, str> { Ok(ParsedUser.{ name: raw }) }
+fn read_label(raw: str) -> new !<str, str> {
+    let label = raw
+        |> parse_user?
+        .name
+    Ok(label)
+}
 ```
 
 - **Line continuation**: A newline does **not** emit `Separator` when:
@@ -1211,6 +1220,10 @@ assert(reader.title == "v3")
 
 ```ril
 -- 2. Reassignable 'var' and 'var ref' slots:
+type Doc = .{ var title: str }
+let fixed_doc = Doc.{ title: "v0" }
+let mut draft = Doc.{ title: "v1" }
+draft.title = "v2"
 var slot = Doc.{ title: "snap1" }
 slot = Doc.{ title: "snap2" }          -- OK: slot replacement of immutable snapshots
 -- let ref bad_obs = slot              -- Error [E0531]: reassignable 'var' cannot anchor 'let ref'
@@ -1223,6 +1236,8 @@ cur_view = ref draft                   -- OK: 'var ref' reassignment takes expli
 
 ```ril
 -- 3. Collection element modes match strictly:
+type Doc = .{ var title: str }
+let fixed_doc = Doc.{ title: "v0" }
 let mut docs: []Doc = [fixed_doc]      -- Plain immutable elements
 Array::push(mut docs, fixed_doc)
 let mut views = [ref fixed_doc]        -- Explicit 'ref' synthesizes '[ref]Doc'
@@ -2154,6 +2169,7 @@ Parameters forbid `var` (`E0403`; copy into a local `var` if slot replacement is
 | `via x: T` | Mode-dependent | Instantiates static mode template from caller's supplied mode |
 
 ```ril
+type Node = .{ var val: int }
 fn bump_node(mut n: Node) &mut -> () { n.val += 1 }
 fn take_node(new n: Node) -> int { n.val }
 
@@ -2299,6 +2315,7 @@ test_counter()
 ### Local State Containment, Parameter Mutation, and Sharing
 
 ```ril
+type Node = .{ var val: int }
 fn reset_node(new c: Node) -> int {
     let mut o = new c
     o.val = 0                              -- OK: write to handed-off 'new' subgraph stays local
@@ -2517,7 +2534,7 @@ The prelude predeclares two lowercase system effect labels (`@io` and `@fiber`),
 `absorb_panic` contains synchronous defects behind a panic-isolation boundary, running active `use` cleanup functions inside the protected closure before returning `Err(PanicError::Panicked(info))`:
 
 ```ril
--- Prelude declarations:
+-- File: ril/prelude.ril
 pub opaque type PanicInfo = str
 pub type PanicError { Panicked(PanicInfo) }
 
@@ -2602,7 +2619,7 @@ assert(Fiber::run(\-> sum_pipeline(4)) == 30)
   - `join(mut s, new task)` preserves `work`'s `infer T` qualification; plain/`ref` `join` freezes `T` (`E0535`).
 
 ```ril
--- Canonical declarations in ril/fiber:
+-- File: ril/fiber.ril
 pub opaque type Scope
 pub opaque type Task<T |> Sendable>
 pub type Zip<A, B, M1: MemberMode = let, M2: MemberMode = let> = .{ M1 first: A, M2 second: B }
@@ -2644,7 +2661,7 @@ pub fn race<T |> Sendable>(via left: fn() @& -> infer T, via right: fn() @& -> i
 ```
 
 ```ril
--- Canonical declarations in ril/channel:
+-- File: ril/channel.ril
 pub opaque type Sender<T |> Sendable> use(close)
 pub opaque type Receiver<T |> Sendable>
 pub type ChannelPair<T |> Sendable> = .{ mut tx: Sender<T>, mut rx: Receiver<T> }
@@ -2917,6 +2934,7 @@ Visibility ::= "pub" | "pkg"
 ### Module Imports and Visibility
 
 ```ril
+-- Context: math/circle.ril
 use pkg/math/circle as Circle
 use pkg/math/circle::(PI, area, UnitCircle as Uc)
 ```

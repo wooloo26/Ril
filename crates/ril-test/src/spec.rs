@@ -1,10 +1,15 @@
-use std::path::Path;
+use std::{
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+};
 
 use crate::{Case, CaseMode, Milestone, Stage, Suite, Unit, VirtualPackage};
 
 pub fn spec_suite(path: &Path, source: &str, stage: Stage) -> Result<Suite, String> {
     let mut open = None;
     let mut cases = Vec::new();
+    let mut contexts = Vec::new();
+    let mut modules = BTreeMap::new();
     let mut snippet = Vec::new();
     for (index, line) in source.split_inclusive('\n').enumerate() {
         let current = index + 1;
@@ -13,7 +18,25 @@ pub fn spec_suite(path: &Path, source: &str, stage: Stage) -> Result<Suite, Stri
         if let Some((count, start, ril)) = open {
             if ticks >= count && text.get(ticks..).is_some_and(str::is_empty) {
                 if ril {
-                    cases.push(make_case(stage, start, &snippet));
+                    let case = make_case(stage, start, &snippet);
+                    if snippet
+                        .iter()
+                        .any(|&(_, line)| line.trim().starts_with("-- File: "))
+                        && let Some(file) = case.pkg.files.get(&case.pkg.entry)
+                    {
+                        modules.insert(case.pkg.entry.clone(), file.clone());
+                    }
+                    contexts.push(
+                        snippet
+                            .iter()
+                            .filter_map(|&(line, source)| {
+                                source
+                                    .strip_prefix("-- Context: ")
+                                    .map(|name| (line, virtual_path(name.trim())))
+                            })
+                            .collect::<Vec<_>>(),
+                    );
+                    cases.push(case);
                     snippet.clear();
                 }
                 open = None;
@@ -37,6 +60,21 @@ pub fn spec_suite(path: &Path, source: &str, stage: Stage) -> Result<Suite, Stri
     if cases.is_empty() {
         return Err(format!("{}: no Ril snippets", path.display()));
     }
+    for (case, context) in cases.iter_mut().zip(contexts) {
+        for (line, dependency) in context {
+            let file = modules.get(&dependency).ok_or_else(|| {
+                format!(
+                    "{}:{line}: missing named snippet {}",
+                    path.display(),
+                    dependency.display(),
+                )
+            })?;
+            case.pkg
+                .files
+                .entry(dependency)
+                .or_insert_with(|| file.clone());
+        }
+    }
     Ok(Suite {
         name: "spec".into(),
         path: path.into(),
@@ -54,7 +92,7 @@ fn make_case(stage: Stage, line: usize, text: &[(usize, &str)]) -> Case {
         Unit::Snippet
     });
     if let Some(filename) = filename {
-        pkg.entry = Path::new("pkg").join(filename);
+        pkg.entry = virtual_path(filename);
     }
     let file = pkg.files.entry(pkg.entry.clone()).or_default();
     for &(number, source) in text {
@@ -68,4 +106,12 @@ fn make_case(stage: Stage, line: usize, text: &[(usize, &str)]) -> Case {
         pkg,
         Milestone::M1,
     )
+}
+
+fn virtual_path(filename: &str) -> PathBuf {
+    if filename.starts_with("ril/") || filename.starts_with("pkg/") {
+        filename.into()
+    } else {
+        Path::new("pkg").join(filename)
+    }
 }

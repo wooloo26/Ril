@@ -1,0 +1,17 @@
+pub opaque type Sender<T |> Sendable> use(close)
+pub opaque type Receiver<T |> Sendable>
+pub type ChannelPair<T |> Sendable> = .{ mut tx: Sender<T>, mut rx: Receiver<T> }
+pub type SendError<T> { Closed(T) }
+pub type TrySendError<T> { Full(T); Closed(T) }
+pub type TryRecvError { Empty; Closed }
+
+pub fn bounded<T |> Sendable>(capacity: int) -> new ChannelPair<T>
+pub fn unbounded<T |> Sendable>() -> new ChannelPair<T>
+pub fn clone<T |> Sendable>(ref tx: Sender<T>) -> new Sender<T>
+pub fn send<T |> Sendable>(mut tx: Sender<T>, via item: T) @fiber &mut -> infer !<(), SendError<T>>
+pub fn try_send<T |> Sendable>(mut tx: Sender<T>, via item: T) &mut -> infer !<(), TrySendError<T>>
+pub fn recv<T |> Sendable>(mut rx: Receiver<T>) @fiber &mut -> new ?T
+pub fn try_recv<T |> Sendable>(mut rx: Receiver<T>) &mut -> new !<T, TryRecvError>
+pub fn close<T |> Sendable>(new tx: Sender<T>) -> ()
+pub fn close_recv<T |> Sendable>(new rx: Receiver<T>) -> ()
+pub fn drain<T |> Sendable>(new rx: Receiver<T>, via f: fn(via T) @& -> ()) -> ()
