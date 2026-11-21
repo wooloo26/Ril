@@ -1,6 +1,12 @@
 -- @suite meta
 -- @default_stage type
 
+-- @case dual_phase_text_literals_and_labeled_join compile-pass
+meta fn assemble(parts: []str) -> str { String::join(separator: "/", parts: parts) }
+meta let JOIN_CHECK = assert(assemble(["a", "β"]) == "a/β")
+meta let BYTE_CHECK = assert(String::inspect(bytes"A\xFF") == #"bytes"A\xff""#)
+meta let TEXT_CHECK = assert(String::inspect("{{a}}\u{1}") == #""{{a}}\u{1}""#)
+
 -- @case static_arbitrary_precision compile-pass
 meta let BIG = 1 << 150
 meta let _ = assert(BIG > 100000000000000000000000000000000)

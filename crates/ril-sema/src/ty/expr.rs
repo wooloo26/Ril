@@ -1962,6 +1962,10 @@ impl<'a> Checker<'a> {
         let option = |ty| Ty::Option(Box::new(ty));
         let int_array = || Ty::Array(Box::new(Member::plain(Ty::Int)));
         let (inputs, output) = match builtin {
+            Join => (
+                vec![Ty::Array(Box::new(Member::plain(Ty::Str))), Ty::Str],
+                Ty::Str,
+            ),
             StartsWith | EndsWith => (vec![Ty::Str, Ty::Str], Ty::Bool),
             ScalarAt => (vec![Ty::Str, Ty::Int], option(Ty::Int)),
             ByteAt => (vec![Ty::Bytes, Ty::Int], option(Ty::Int)),
@@ -1972,15 +1976,35 @@ impl<'a> Checker<'a> {
             EncodeUtf8 => (vec![Ty::Str], Ty::Bytes),
             DecodeUtf8 => (vec![Ty::Bytes], option(Ty::Str)),
         };
-        if inputs.len() != args.len() {
+        let Some(order) = builtin.argument_order(
+            args.iter()
+                .map(|arg| arg.name.as_ref().map(|label| label.value.as_str())),
+        ) else {
             self.error(
                 Code::E0314,
                 span,
-                "incorrect number of text helper arguments",
+                "text arguments do not match the primitive's parameters",
             );
+            return output;
+        };
+        let mut written_types = vec![(None, false); args.len()];
+        for (index, (written, expected)) in order.into_iter().zip(inputs).enumerate() {
+            let borrow = index == 0 && matches!(builtin, Join | FromScalars | FromArray);
+            if let Some(slot) = written_types.get_mut(written) {
+                *slot = (Some(expected), borrow);
+            }
         }
-        for (arg, expected) in args.iter().zip(inputs) {
-            self.expect(env, arg.value, &expected);
+        for (arg, (ty, borrow)) in args.iter().zip(written_types) {
+            if let Some(ty) = ty {
+                self.expect(env, arg.value, &ty);
+            }
+            if !(arg.mode == Mode::Plain || borrow) {
+                self.error(
+                    Code::E0406,
+                    self.ast(env.file).expr(arg.value).span,
+                    "text primitive argument mode does not match",
+                );
+            }
         }
         output
     }

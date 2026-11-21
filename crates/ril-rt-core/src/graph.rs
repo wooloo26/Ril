@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::{GcRuntime, Object, Value};
+use crate::{GcRuntime, Object, Value, text};
 
 impl GcRuntime {
     pub fn equal(&self, a: Value, b: Value) -> Result<bool, &'static str> {
@@ -160,8 +160,8 @@ impl GcRuntime {
             Value::FALSE => "false".into(),
             _ => match self.object(value) {
                 Some(Object::Int(i)) => i.to_string(),
-                Some(Object::F64(f)) => f64::from_bits(*f).to_string(),
-                Some(Object::Str(text)) => format!("{text:?}"),
+                Some(Object::F64(f)) => format!("{:?}", f64::from_bits(*f)),
+                Some(Object::Str(value)) => text::inspect_string(value),
                 Some(Object::PanicInfo(_)) => "<PanicInfo>".into(),
                 Some(Object::Closure { .. }) => "<fn>".into(),
                 Some(Object::Task { .. }) => "<Task>".into(),
@@ -169,7 +169,7 @@ impl GcRuntime {
                 Some(Object::Sender(_)) => "<Sender>".into(),
                 Some(Object::Receiver(_)) => "<Receiver>".into(),
                 Some(Object::Draft { .. }) => "<Draft>".into(),
-                Some(Object::Bytes(bytes)) => format!("bytes{bytes:?}"),
+                Some(Object::Bytes(bytes)) => text::inspect_bytes(bytes),
                 Some(Object::Array(items)) => format!(
                     "[{}]",
                     items

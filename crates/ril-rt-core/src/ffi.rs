@@ -180,6 +180,12 @@ runtime_functions! {
         let test = read_text(rt, value).and_then(|text| read_text(rt, prefix).map(|prefix| Value::boolean(text.starts_with(&prefix))));
         rt.checked(test)
     }
+    fn ril_rt_str_join(rt, parts: Value, separator: Value) -> Value {
+        match text::join(&rt.gc, parts, separator) {
+            Some(text) => rt.gc.alloc(Object::Str(text)),
+            None => rt.checked(Err("String::join requires []str and str")),
+        }
+    }
     fn ril_rt_str_ends_with(rt, value: Value, suffix: Value) -> Value {
         let test = read_text(rt, value).and_then(|text| read_text(rt, suffix).map(|suffix| Value::boolean(text.ends_with(&suffix))));
         rt.checked(test)

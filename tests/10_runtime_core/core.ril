@@ -1,6 +1,19 @@
 -- @suite runtime_core
 -- @default_stage run
 
+-- @case text_helpers_keep_written_evaluation_order_and_literal_escapes run-pass backend=both
+-- @expect-stdout separator
+-- @expect-stdout parts
+fn main() @io -> () {
+    let joined = String::join(
+        separator: { println("separator"); "/" },
+        parts: { println("parts"); ["a", "β"] },
+    )
+    assert(joined == "a/β" && String::join([], "|") == "")
+    assert(String::inspect(bytes"A\xFF") == #"bytes"A\xff""#)
+    assert(String::inspect("{{a}}\u{1}") == #""{{a}}\u{1}""#)
+}
+
 -- @case bigints_and_float run-pass backend=both
 -- @expect-stdout 1267650600228229401496703205376
 -- @expect-stdout -2:-1

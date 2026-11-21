@@ -34,6 +34,7 @@ pub enum PrimitivePhase {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TextBuiltin {
+    Join,
     StartsWith,
     EndsWith,
     ScalarAt,
@@ -44,6 +45,41 @@ pub enum TextBuiltin {
     ByteAt,
     ToArray,
     FromArray,
+}
+
+impl TextBuiltin {
+    pub const fn parameters(self) -> &'static [&'static str] {
+        use TextBuiltin::*;
+        match self {
+            Join => &["parts", "separator"],
+            StartsWith => &["text", "prefix"],
+            EndsWith => &["text", "suffix"],
+            ScalarAt => &["text", "index"],
+            Scalars | EncodeUtf8 => &["text"],
+            FromScalars | FromArray => &["values"],
+            DecodeUtf8 | ToArray => &["data"],
+            ByteAt => &["data", "index"],
+        }
+    }
+
+    pub fn argument_order<'a>(
+        self,
+        labels: impl IntoIterator<Item = Option<&'a str>>,
+    ) -> Option<Vec<usize>> {
+        let parameters = self.parameters();
+        let mut order = vec![None; parameters.len()];
+        for (written, label) in labels.into_iter().enumerate() {
+            let expected = if let Some(label) = label {
+                parameters.iter().position(|&param| param == label)?
+            } else {
+                order.iter().position(Option::is_none)?
+            };
+            if order.get_mut(expected)?.replace(written).is_some() {
+                return None;
+            }
+        }
+        order.into_iter().collect()
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -234,6 +270,7 @@ impl Program {
             self.primitive_module(id)?,
             self.definition(id).name.value.as_str(),
         ) {
+            ("String", "join") => Some(Join),
             ("String", "starts_with") => Some(StartsWith),
             ("String", "ends_with") => Some(EndsWith),
             ("String", "at") => Some(ScalarAt),
@@ -941,6 +978,7 @@ impl Program {
                     "len",
                     "bytes",
                     "from_bytes",
+                    "join",
                     "split",
                     "starts_with",
                     "ends_with",

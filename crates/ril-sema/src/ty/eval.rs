@@ -90,6 +90,16 @@ fn eval_text(builtin: TextBuiltin, args: &[Value], span: Span) -> Eval {
         value.map_or_else(none, |value| Value::Tag("Some".into(), vec![value]))
     };
     match (builtin, args) {
+        (Join, [Value::Array(parts), Value::Str(separator)]) => {
+            let parts = parts
+                .iter()
+                .map(|part| match part {
+                    Value::Str(text) => Ok(text.as_str()),
+                    _ => Err(nonstatic(span)),
+                })
+                .collect::<Eval<Vec<_>>>()?;
+            Ok(Value::Str(parts.join(separator)))
+        }
         (StartsWith, [Value::Str(text), Value::Str(pattern)]) => {
             Ok(Value::Bool(text.starts_with(pattern)))
         }
@@ -841,14 +851,23 @@ impl Checker<'_> {
                 }
                 DefinitionKind::Primitive(_) => {
                     fuel.step(span)?;
-                    let args: Vec<_> = self
-                        .eval_args(env, slots, args, fuel)?
-                        .into_iter()
-                        .map(|(_, value)| value)
-                        .collect();
+                    let args = self.eval_args(env, slots, args, fuel)?;
                     if let Some(builtin) = self.hir.text_builtin(id) {
-                        eval_text(builtin, &args, span)
-                    } else if self.hir.primitive_module(id) == Some("Reflect")
+                        let order = builtin
+                            .argument_order(args.iter().map(|(label, _)| label.as_deref()))
+                            .ok_or_else(|| nonstatic(span))?;
+                        let ordered = order
+                            .into_iter()
+                            .map(|index| {
+                                args.get(index)
+                                    .map(|(_, value)| value.clone())
+                                    .ok_or_else(|| nonstatic(span))
+                            })
+                            .collect::<Eval<Vec<_>>>()?;
+                        return eval_text(builtin, &ordered, span);
+                    }
+                    let args = args.into_iter().map(|(_, value)| value).collect::<Vec<_>>();
+                    if self.hir.primitive_module(id) == Some("Reflect")
                         && matches!(name, "attrs" | "field_attrs" | "variant_attrs")
                     {
                         self.eval_metadata(env, path, &args, span)

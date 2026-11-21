@@ -1409,6 +1409,7 @@ impl<'a> Builder<'_, 'a> {
     fn text_builtin(&mut self, builtin: TextBuiltin, args: &[Argument]) -> Result<Register> {
         use TextBuiltin::*;
         let symbol = match builtin {
+            Join => "ril_rt_str_join",
             StartsWith => "ril_rt_str_starts_with",
             EndsWith => "ril_rt_str_ends_with",
             ScalarAt => "ril_rt_str_at",
@@ -1420,10 +1421,25 @@ impl<'a> Builder<'_, 'a> {
             ToArray => "ril_rt_bytes_to_array",
             FromArray => "ril_rt_bytes_from_array",
         };
-        let args = args
+        let order = builtin
+            .argument_order(
+                args.iter()
+                    .map(|arg| arg.name.as_ref().map(|label| label.value.as_str())),
+            )
+            .unwrap_or_else(|| ril_base::ice!("text primitive arguments passed type checking"));
+        let written = args
             .iter()
             .map(|arg| self.expr(arg.value))
             .collect::<Result<Vec<_>>>()?;
+        let args = order
+            .into_iter()
+            .map(|index| {
+                written
+                    .get(index)
+                    .copied()
+                    .unwrap_or_else(|| ril_base::ice!("missing checked text argument"))
+            })
+            .collect();
         Ok(self.runtime(symbol, args))
     }
 

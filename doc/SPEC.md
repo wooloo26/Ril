@@ -1544,7 +1544,7 @@ assert(String::decode_utf8(bytes"\xC0\xAF") == None)
 - **`String::inspect<T>(via value: T) -> str`**: Pure dual-phase diagnostic formatter accepting plain values/snapshots or `ref` shared-object views (`E0401` on `ref` value types; `mut`/`^mut`/`new` markers rejected).
   - Formats primitives, escaped `str`/`bytes` literals, tuples, collections, and transparent records/nominals/sums structurally (rendering runtime reference cycles as `"..."`).
   - Formats sealed `opaque` types outside their defining scope, `.d.ril` `opaque` handles, callables, and runtime concurrency/draft handles as `"<TypeName>"` (or `"<fn>"`).
-- **String helpers**: `String::starts_with(text: str, prefix: str) -> bool`, `String::ends_with(text: str, suffix: str) -> bool`, `String::at(text: str, index: int) -> new ?int`, `String::scalars(text: str) -> new []int`, `String::from_scalars(via values: []int) -> new ?str`.
+- **String helpers**: `String::join(via parts: []str, separator: str) -> str` joins parts in array order and returns an empty string for an empty array. `String::starts_with(text: str, prefix: str) -> bool`, `String::ends_with(text: str, suffix: str) -> bool`, `String::at(text: str, index: int) -> new ?int`, `String::scalars(text: str) -> new []int`, `String::from_scalars(via values: []int) -> new ?str`.
 - **UTF-8 & Bytes helpers**: `String::encode_utf8(text: str) -> bytes`, `String::decode_utf8(data: bytes) -> new ?str` (`None` on ill-formed UTF-8), `Bytes::at(data: bytes, index: int) -> new ?int`, `Bytes::to_array(data: bytes) -> new []int`, `Bytes::from_array(via values: []int) -> new ?bytes` (`None` outside `0..=255`).
 
 ### Pipeline and Fallible Operators

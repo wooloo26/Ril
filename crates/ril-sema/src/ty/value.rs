@@ -1,4 +1,4 @@
-use std::{cmp::Ordering, collections::BTreeMap};
+use std::{cmp::Ordering, collections::BTreeMap, fmt::Write as _};
 
 use num_bigint::BigInt;
 use num_traits::{Signed, ToPrimitive, Zero};
@@ -130,9 +130,9 @@ pub fn render(value: &Value) -> String {
         Value::Unit => "()".into(),
         Value::Bool(value) => value.to_string(),
         Value::Int(value) => value.to_string(),
-        Value::F64(value) => f64::from_bits(*value).to_string(),
-        Value::Str(value) => format!("{value:?}"),
-        Value::Bytes(value) => format!("bytes{value:?}"),
+        Value::F64(value) => format!("{:?}", f64::from_bits(*value)),
+        Value::Str(value) => inspect_string(value),
+        Value::Bytes(value) => inspect_bytes(value),
         Value::Tuple(values) => format!("({})", render_list(values)),
         Value::Array(values) => format!("[{}]", render_list(values)),
         Value::Record(fields) => format!(
@@ -156,6 +156,48 @@ pub fn render(value: &Value) -> String {
         Value::Type(_) => "<type>".into(),
         Value::Mode(mode) => super::mode_name(*mode).into(),
     }
+}
+
+fn inspect_string(text: &str) -> String {
+    let mut out = String::from("\"");
+    for ch in text.chars() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            '\0' => out.push_str("\\0"),
+            '{' => out.push_str("{{"),
+            '}' => out.push_str("}}"),
+            ch if ch.is_control() => {
+                let _ = write!(out, "\\u{{{:x}}}", u32::from(ch));
+            }
+            ch => out.push(ch),
+        }
+    }
+    out.push('"');
+    out
+}
+
+fn inspect_bytes(bytes: &[u8]) -> String {
+    let mut out = String::from("bytes\"");
+    for &byte in bytes {
+        match byte {
+            b'\\' => out.push_str("\\\\"),
+            b'"' => out.push_str("\\\""),
+            b'\n' => out.push_str("\\n"),
+            b'\r' => out.push_str("\\r"),
+            b'\t' => out.push_str("\\t"),
+            0 => out.push_str("\\0"),
+            b' '..=b'~' => out.push(char::from(byte)),
+            _ => {
+                let _ = write!(out, "\\x{byte:02x}");
+            }
+        }
+    }
+    out.push('"');
+    out
 }
 
 fn render_list(values: &[Value]) -> String {
