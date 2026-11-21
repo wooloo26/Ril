@@ -1,0 +1,88 @@
+-- @suite meta
+-- @default_stage type
+
+-- @case static_arbitrary_precision compile-pass
+meta let BIG = 1 << 150
+meta let _ = assert(BIG > 100000000000000000000000000000000)
+meta let _ = assert(-7 / 3 == -2 && -7 % 3 == -1)
+meta let _ = assert(~0 == -1 && (-8 >> 2) == -2)
+
+-- @case static_named_call_and_defaults compile-pass
+meta fn align(n: int, size: int = 16) -> int {
+    assert(n >= 0)
+    ((n + size - 1) / size) * size
+}
+meta let COUNT = align(22)
+meta let _ = assert(COUNT == 32)
+fn get() -> int { align(size: 8, n: 17) }
+meta let _ = assert(<typeof get()> == <int>)
+
+-- @case recursive_meta compile-pass budget=100
+meta fn factorial(n: int) -> int {
+    if n == 0 { 1 } else { n * factorial(n - 1) }
+}
+meta let _ = assert(factorial(6) == 720)
+
+-- @case loop_budget compile-fail E0811 budget=8
+meta fn spin() -> never { while true {} }
+-- ^ E0811
+meta let _ = spin()
+
+-- @case recursive_budget compile-fail E0811 budget=8
+meta fn spin(n: int) -> int { spin(n + 1) }
+-- ^ E0811
+meta let _ = spin(0)
+
+-- @case failing_assert compile-fail E0830
+meta let _ = assert(false)
+-- ^ E0830
+
+-- @case dynamic_negative_shift compile-fail E0831
+meta fn bad(n: int) -> int { 1 << n }
+-- ^ E0831
+meta let _ = bad(-2)
+
+-- @case phase_violation compile-fail E0810
+fn runtime() -> int { 1 }
+meta let BAD = runtime()
+-- ^ E0810
+
+-- @case meta_argument_must_be_static compile-fail E0814
+meta fn twice(n: int) -> int { n * 2 }
+fn bad(n: int) -> int { twice(n) }
+-- ^ E0814
+
+-- @case typeof_is_unevaluated compile-pass
+meta fn doomed() -> int { panic("never evaluated") }
+type Output = typeof doomed()
+meta let _ = assert(<Output> == <int>)
+
+-- @case typeof_shadow_checks_discarded_result compile-fail E0720
+fn receive() -> new !<int, str> { Ok(3) }
+type Invalid = typeof { receive(); true }
+-- ^ E0720
+
+-- @case runtime_cannot_hold_type_values compile-fail E0816
+fn bad(t: Type<int>) -> () {}
+-- ^ E0816
+
+-- @case meta_fn_cannot_return_type_value compile-fail E0812
+meta fn bad() -> Type<int> { <int> }
+-- ^ E0812
+
+-- @case type_function_selects_one_result compile-pass
+type Choose = \T -> match <T> {
+    <int> -> <str>
+    _ -> <bool>
+}
+type Output = Choose<int>
+meta let _ = assert(<Output> == <str>)
+meta let _ = assert(<Choose<f64>> == <bool>)
+
+-- @case type_identity_uses_f64_bits compile-pass
+nominal type Fixed<n: f64> = int
+meta let _ = assert(<Fixed<-0.0>> != <Fixed<0.0>>)
+meta let _ = assert(-0.0 == 0.0)
+
+-- @case scalar_length compile-pass
+meta let _ = assert(len("αβ") == 2 && len(bytes"\xFF\0") == 2)

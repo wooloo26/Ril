@@ -10,7 +10,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        stage: [m0, m1]
+        stage: [m0, m1, m2]
     env:
       RIL_TEST_STAGE: ${{ matrix.stage }}
     steps:

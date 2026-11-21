@@ -298,7 +298,7 @@ impl Parser<'_> {
             && let Ok(ty) = self.ty()
         {
             self.skip_lines();
-            if self.is(",") || self.at_end(">") {
+            if self.is(",") || self.is("->") || self.at_end(">") {
                 return Ok(GenericArg::Type(ty));
             }
         }

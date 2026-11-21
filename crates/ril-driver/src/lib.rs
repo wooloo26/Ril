@@ -11,7 +11,7 @@ use ril_frontend::{
 };
 use ril_test::{CheckResult, Stage, TestDriver, Unit, VirtualPackage};
 
-pub const AVAILABLE: ril_test::Milestone = ril_test::Milestone::M1;
+pub const AVAILABLE: ril_test::Milestone = ril_test::Milestone::M2;
 
 #[derive(Default)]
 pub struct Driver;
@@ -29,8 +29,17 @@ impl Driver {
                 diagnostics,
                 ..CheckResult::default()
             },
-            Ok(_) if stage > Stage::Hir => {
-                CheckResult::unsupported(format!("compiler stage {stage:?} is unavailable"))
+            Ok(Some(program)) if stage >= Stage::Type => {
+                match ril_sema::ty::check(program, pkg.budget) {
+                    Err(diagnostics) => CheckResult {
+                        diagnostics,
+                        ..CheckResult::default()
+                    },
+                    Ok(_) if stage > Stage::Type => {
+                        CheckResult::unsupported(format!("compiler stage {stage:?} is unavailable"))
+                    }
+                    Ok(_) => CheckResult::default(),
+                }
             }
             Ok(_) => CheckResult::default(),
         };

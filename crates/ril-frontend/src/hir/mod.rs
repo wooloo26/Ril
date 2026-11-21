@@ -115,6 +115,17 @@ impl Program {
             .unwrap_or_else(|| ril_base::ice!("missing HIR file {}", id.0))
     }
 
+    pub fn same_package(&self, a: ScopeId, b: ScopeId) -> bool {
+        self.scope(a).package == self.scope(b).package
+    }
+
+    pub fn module_scope(&self, id: FileId) -> ScopeId {
+        self.roots
+            .get(&id.0)
+            .copied()
+            .unwrap_or_else(|| ril_base::ice!("missing module scope {}", id.0))
+    }
+
     pub fn files(&self) -> impl Iterator<Item = &File> {
         self.files.values()
     }
@@ -663,7 +674,19 @@ impl Program {
                 &["inspect", "len", "bytes", "from_bytes", "split"],
             ),
             ("", "Bytes", Both, &["len", "from_str"]),
-            ("", "Numeric", Both, &["to_int", "to_f64"]),
+            (
+                "",
+                "Numeric",
+                Both,
+                &[
+                    "to_int",
+                    "to_f64",
+                    "convert",
+                    "trunc",
+                    "checked_div",
+                    "checked_rem",
+                ],
+            ),
             (
                 "",
                 "MemberMode",

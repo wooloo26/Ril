@@ -1,0 +1,118 @@
+-- @suite types
+-- @default_stage type
+
+-- @case structural_equality_and_aliases compile-pass
+type A = .{ x: int, y: str }
+type B = .{ y: str, x: int }
+fn equal(a: A, b: B) -> bool { a == b }
+fn build() -> new A { .{ y: "text", x: 1 } }
+
+-- @case local_unification_and_generic_domains compile-pass
+fn square<T: int | f64>(n: T) -> T { n * n }
+fn run() -> () {
+    assert(square(3) == 9)
+    assert(square(2.0) == 4.0)
+    let xs = [1, 2, 3]
+    assert(xs[0] == 1)
+}
+
+-- @case float_arithmetic compile-pass
+fn compare(x: f64) -> bool { 2.0 * x > 1.0 + x }
+
+-- @case mismatched_arithmetic compile-fail E0301
+let x = 3 + 2.0
+-- ^ E0301
+
+-- @case no_string_addition compile-fail E0327
+let x = "a" + "b"
+-- ^ E0327
+
+-- @case unsupported_generic_operation compile-fail E0327
+fn invalid<T>(n: T) -> T { n * n }
+-- ^ E0327
+
+-- @case literal_division_by_zero compile-fail E0361
+fn invalid(x: int) -> int { x / 0 }
+-- ^ E0361
+
+-- @case literal_negative_shift compile-fail E0361
+fn invalid(x: int) -> int { x >> -1 }
+-- ^ E0361
+
+-- @case infinite_literal compile-fail E0326
+let x = 1.0e999999
+-- ^ E0326
+
+-- @case nominal_wrappers_are_distinct compile-fail E0305
+nominal type Left = int
+nominal type Right = int
+fn invalid() -> new Left { Right(1) }
+-- ^ E0305
+
+-- @case opaque_converts_inside_scope compile-pass
+opaque type Weight = int
+fn wrap(n: int) -> new Weight { n }
+fn unwrap(w: Weight) -> int { w }
+
+-- @case opaque_member_outside_scope compile-fail E0308 unit=bin
+-- @file pkg/main.ril
+use pkg/vault
+fn read(item: Vault::Token) -> int { item.code }
+-- ^ E0308
+-- @forbid E0301, E0336
+fn main() -> () {}
+-- @file pkg/vault.ril
+pub opaque type Token = .{ code: int }
+
+-- @case foreign_member_has_priority compile-fail E0907 unit=bin
+-- @file pkg/main.ril
+use pkg/sys
+fn read(ref item: Sys::Token) -> int { item.code }
+-- ^ E0907
+-- @forbid E0301, E0308, E0336
+fn main() -> () {}
+-- @file pkg/sys.d.ril
+pub opaque type Token
+
+-- @case cyclic_transparent_aliases compile-fail E0313
+type First = Second
+type Second = First
+
+-- @case numeric_key_rejects_f64 compile-fail E0328
+type Invalid = [f64: str]
+-- ^ E0328
+
+-- @case field_diagnostic_precedence compile-fail E0336
+fn bad(x: .{ known: int }) -> int { x.unknown }
+-- ^ E0336
+-- @forbid E0301
+
+-- @case default_arguments compile-pass
+fn add(a: int, b: int = a + 1) -> int { a + b }
+let a = add(1)
+let b = add(b: 1, a: 2)
+let c = add(1, b: 2)
+
+-- @case duplicate_argument compile-fail E0325
+fn add(a: int, b: int = 1) -> int { a + b }
+let a = add(1, a: 1)
+-- ^ E0325
+
+-- @case unknown_argument compile-fail E0339
+fn add(a: int, b: int = 1) -> int { a + b }
+let a = add(1, c: 1)
+-- ^ E0339
+
+-- @case expression_not_callable compile-fail E0338
+let number = 2
+let invalid = number()
+-- ^ E0338
+-- @forbid E0301
+
+-- @case tuple_index compile-fail E0312
+let number = (1, "s").2
+-- ^ E0312
+
+-- @case conditional_never_joins compile-pass
+fn choose(x: bool) -> int { if x { return 1 } else { 2 } }
+fn forever() -> never { while true {} }

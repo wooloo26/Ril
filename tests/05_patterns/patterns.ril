@@ -1,0 +1,70 @@
+-- @suite patterns
+-- @default_stage type
+
+-- @case option_pattern compile-pass
+fn describe(value: ?str) -> str {
+    match value {
+        Some(text) -> text
+        None -> ""
+    }
+}
+
+-- @case distinct_sum_variants compile-pass
+type Message { Number(int); Reset }
+fn value(message: Message) -> int {
+    match message {
+        Number(n) -> n
+        Reset -> 0
+    }
+}
+
+-- @case boolean_coverage compile-fail E0303
+fn decode(flag: bool) -> int { match flag { true -> 1 } }
+-- ^ E0303
+
+-- @case unreachable_after_wildcard compile-fail E0304
+fn decode(flag: bool) -> int {
+    match flag {
+        _ -> 0
+        false -> 1
+        -- ^ E0304
+    }
+}
+
+-- @case guarded_arm_does_not_cover compile-fail E0303
+fn description(x: ?int) -> int {
+    match x {
+        Some(value) if value > 0 -> value
+        None -> 0
+    }
+}
+
+-- @case tuple_destructures compile-pass
+fn total(x: (int, int)) -> int { let (a, b) = x; a + b }
+
+-- @case alternatives_bind_same_names compile-fail E0346
+fn read(val: (bool, int)) -> int {
+    match val {
+        (true, a) | (false, b) -> 1
+        -- ^ E0346
+        _ -> 0
+    }
+}
+
+-- @case invalid_range compile-fail E0348
+fn hit(n: int) -> bool {
+    match n { 4 .. 3 -> true; _ -> false }
+    -- ^ E0348
+}
+
+-- @case let_else_must_exit compile-fail E0321
+fn receive(n: ?int) -> int { let Some(x) = n else {}; x }
+-- ^ E0321
+
+-- @case generic_type_facts compile-pass
+fn describe<T>(x: T) -> str {
+    match <T> {
+        <int> -> "int:{x}"
+        _ -> String::inspect(x)
+    }
+}

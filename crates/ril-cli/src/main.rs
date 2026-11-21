@@ -17,7 +17,7 @@ struct Cli {
 enum Action {
     Check {
         path: PathBuf,
-        #[arg(long, default_value = "parse")]
+        #[arg(long, default_value = "type")]
         stage: Stage,
         #[arg(long, default_value = "lib")]
         unit: Unit,
