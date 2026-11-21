@@ -191,15 +191,7 @@ impl Datum {
                 .flatten()
         });
         if let Some(mut member) = known {
-            if self.roots.iter().all(|root| root.mode == Access::Immutable) {
-                member.transform(&mut |origin| {
-                    origin.mode = Access::Immutable;
-                });
-            } else if self.roots.iter().all(|root| !root.mode.writes()) {
-                member.transform(&mut |origin| {
-                    origin.mode = Access::Ref.project(origin.mode);
-                });
-            }
+            self.attenuate(&mut member);
             return member;
         }
         let roots: Vec<_> = self
@@ -224,6 +216,17 @@ impl Datum {
             roots,
             results: self.results.clone(),
             ..Self::default()
+        }
+    }
+
+    fn attenuate(&self, member: &mut Self) {
+        if self.roots.iter().all(|root| !root.mode.writes()) {
+            let access = if self.roots.iter().all(|root| root.mode == Access::Immutable) {
+                Access::Immutable
+            } else {
+                Access::Ref
+            };
+            member.transform(&mut |origin| origin.mode = access.project(origin.mode));
         }
     }
 
@@ -265,6 +268,12 @@ pub(super) struct Slot {
     pub value: Datum,
 }
 
+#[derive(Clone)]
+struct Replacement {
+    value: Datum,
+    definite: bool,
+}
+
 #[derive(Clone, Default)]
 pub(super) struct Ledger {
     pub slots: BTreeMap<Span, Slot>,
@@ -274,6 +283,7 @@ pub(super) struct Ledger {
     pub iteration: Vec<Datum>,
     pub holds: Vec<Datum>,
     pub choices: BTreeMap<Span, usize>,
+    replacements: BTreeMap<Region, Replacement>,
 }
 
 impl Ledger {
@@ -289,6 +299,11 @@ impl Ledger {
         self.choices.insert(span, arm);
         for slot in self.slots.values_mut() {
             slot.value.transform(&mut |origin| {
+                origin.branches.insert(span, arm);
+            });
+        }
+        for replacement in self.replacements.values_mut() {
+            replacement.value.transform(&mut |origin| {
                 origin.branches.insert(span, arm);
             });
         }
@@ -326,6 +341,137 @@ impl Ledger {
             }
         }
         self.choices = prior.choices.clone();
+        self.merge_replacements(prior, alternatives);
+    }
+
+    fn merge_replacements(&mut self, prior: &Self, alternatives: &[Self]) {
+        if alternatives.is_empty() {
+            self.replacements.clone_from(&prior.replacements);
+            return;
+        }
+        let regions: BTreeSet<_> = alternatives
+            .iter()
+            .flat_map(|branch| branch.replacements.keys())
+            .collect();
+        self.replacements = regions
+            .into_iter()
+            .filter_map(|region| {
+                let entries: Vec<_> = alternatives
+                    .iter()
+                    .filter_map(|branch| branch.replacements.get(region))
+                    .collect();
+                let definite = entries.len() == alternatives.len()
+                    && entries.iter().all(|entry| entry.definite);
+                let value = entries
+                    .into_iter()
+                    .map(|entry| entry.value.clone())
+                    .reduce(Datum::joined)?;
+                Some((region.clone(), Replacement { value, definite }))
+            })
+            .collect();
+    }
+
+    pub(super) fn replace_member(&mut self, slot: &Datum, mut value: Datum) {
+        self.stamp(&mut value);
+        let single = slot
+            .roots
+            .first()
+            .is_some_and(|first| slot.roots.iter().all(|root| root.region == first.region));
+        for origin in &slot.roots {
+            let region = &origin.region;
+            let definite = single && !region.selection.contains(&Coordinate::Dynamic);
+            if definite {
+                self.replacements.insert(
+                    region.clone(),
+                    Replacement {
+                        value: value.clone(),
+                        definite,
+                    },
+                );
+            } else {
+                for (key, entry) in &mut self.replacements {
+                    if key.selection.len() == region.selection.len() && key.overlaps(region) {
+                        entry.value = std::mem::take(&mut entry.value).joined(value.clone());
+                    }
+                }
+                self.replacements
+                    .entry(region.clone())
+                    .or_insert_with(|| Replacement {
+                        value: value.clone(),
+                        definite,
+                    });
+            }
+        }
+    }
+
+    pub(super) fn project(&self, base: &Datum, coordinate: Coordinate, mode: Access) -> Datum {
+        let slot = base.slot_projection(coordinate.clone());
+        let mut always = !slot.roots.is_empty();
+        let mut changed = None;
+        for origin in slot.roots {
+            let region = &origin.region;
+            let exact = self.replacements.get(region);
+            always &= exact.is_some_and(|entry| entry.definite);
+            let candidates = self.replacements.iter().filter_map(|(key, entry)| {
+                (key.selection.len() == region.selection.len()
+                    && (key == region
+                        || !exact.is_some_and(|exact| exact.definite) && key.overlaps(region)))
+                .then_some(&entry.value)
+            });
+            changed = changed
+                .into_iter()
+                .chain(candidates.cloned())
+                .reduce(Datum::joined);
+        }
+        let Some(mut changed) = changed else {
+            return base.project(coordinate, mode);
+        };
+        base.attenuate(&mut changed);
+        if always {
+            changed
+        } else {
+            base.project(coordinate, mode).joined(changed)
+        }
+    }
+
+    pub(super) fn snapshot(&self, value: &Datum) -> Datum {
+        if self.replacements.is_empty() {
+            return value.clone();
+        }
+        self.snapshot_members(value, &mut BTreeSet::new())
+    }
+
+    fn snapshot_members(&self, value: &Datum, ancestors: &mut BTreeSet<Region>) -> Datum {
+        let mut snapshot = value.clone();
+        let regions: BTreeSet<_> = value.roots.iter().map(|root| root.region.clone()).collect();
+        if regions.iter().any(|region| ancestors.contains(region)) {
+            snapshot.members.clear();
+            return snapshot;
+        }
+        ancestors.extend(regions.iter().cloned());
+        let mut coordinates: BTreeSet<_> = value.members.keys().cloned().collect();
+        for key in self.replacements.keys() {
+            for region in &regions {
+                if key.overlaps(region)
+                    && let [coordinate] = key
+                        .selection
+                        .get(region.selection.len()..)
+                        .unwrap_or_default()
+                {
+                    coordinates.insert(coordinate.clone());
+                }
+            }
+        }
+        for coordinate in coordinates {
+            let member = self.project(value, coordinate.clone(), Access::Mut);
+            snapshot
+                .members
+                .insert(coordinate, self.snapshot_members(&member, ancestors));
+        }
+        for region in regions {
+            ancestors.remove(&region);
+        }
+        snapshot
     }
 
     pub(super) fn inspect(&mut self, datum: &Datum) {

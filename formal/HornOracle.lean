@@ -1,4 +1,5 @@
 import Lean
+import RilAccess.Examples.Summary
 import RilAccess.Signatures
 import RilAccess.Solver
 
@@ -71,6 +72,15 @@ def checkPath (path : List Nat) : Option Nat := do
   let root :: members ← path.mapM decodeAccess | none
   return encodeAccess (RilAccess.pathAccess root members)
 
+open RilAccess.CoreSummary RilAccess.CoreSummary.Examples in
+def callEntryCases : List (String × Bool) :=
+  [("replaced_member_is_not_from_old_formal_entry", (check actual entries forged).isOk),
+   ("replaced_member_is_in_new_call_entry", (checkAtEntry actual laterHeap arguments forged).isOk),
+   ("replaced_member_participates_in_call_overlap",
+     RilAccess.CoreEntry.separated laterHeap [saved] [inserted]),
+   ("call_entry_graph_includes_later_argument_preparation",
+     decide (inserted ∈ capturedInstances laterHeap [saved]))]
+
 def main (args : List String) : IO Unit := do
   let stdin ← IO.getStdin
   let source ← stdin.readToEnd
@@ -91,6 +101,8 @@ def main (args : List String) : IO Unit := do
     let some answers := paths.mapM checkPath
       | throw (IO.userError "access paths require a root and mode numbers 0 to 3")
     stdout.putStrLn (toJson answers).compress
+  else if args == ["call-entry"] then
+    stdout.putStrLn (toJson callEntryCases).compress
   else
     let .ok entries := fromJson? (α := List JsonRule) json
       | throw (IO.userError "expected a JSON array of Horn rules")

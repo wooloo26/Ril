@@ -1347,14 +1347,9 @@ impl<'a> Analyzer<'a> {
                 elements: items, ..
             } => {
                 for (i, &item) in items.iter().enumerate() {
-                    self.bind(
-                        ctx,
-                        ledger,
-                        item,
-                        storage,
-                        value.project(Coordinate::Index(i.to_string()), Access::Immutable),
-                        resource,
-                    );
+                    let child =
+                        ledger.project(&value, Coordinate::Index(i.to_string()), Access::Immutable);
+                    self.bind(ctx, ledger, item, storage, child, resource);
                 }
             }
             Pattern::Constructor(_, payload) => {
@@ -1374,7 +1369,7 @@ impl<'a> Analyzer<'a> {
                 for field in fields {
                     let coordinate = Coordinate::Field(field.name.value.clone());
                     let member_mode = self.member_schema(node.span, &coordinate).0;
-                    let child = value.project(coordinate, member_mode);
+                    let child = ledger.project(&value, coordinate, member_mode);
                     let mut received = field.storage.clone();
                     if received.mode == Mode::Plain {
                         received.mode = storage.mode;
@@ -1556,14 +1551,14 @@ impl<'a> Analyzer<'a> {
                 } else {
                     mode
                 };
-                value.project(coordinate, mode)
+                ledger.project(&value, coordinate, mode)
             }
             Expr::Index { base, index, .. } => {
                 let value = self.expr(ctx, ledger, *base);
                 self.expr(ctx, ledger, *index);
                 let coordinate = self.index_coordinate(ctx, *index);
                 let (mode, _) = self.member_schema(ast.expr(*base).span, &coordinate);
-                value.project(coordinate, mode)
+                ledger.project(&value, coordinate, mode)
             }
             Expr::Block {
                 statements,
@@ -2014,6 +2009,23 @@ impl<'a> Analyzer<'a> {
                 self.seed(ctx, Obligation::Share(source.region.source));
             }
         }
+        if ctx.reachable && !value.roots.is_empty() {
+            let access = match &node.value {
+                Expr::Member { base, .. } | Expr::Index { base, .. } => prior
+                    .roots
+                    .first()
+                    .and_then(|origin| origin.region.selection.last())
+                    .map(|coordinate| {
+                        self.member_schema(self.ast(ctx.file).expr(*base).span, coordinate)
+                            .0
+                    }),
+                _ => None,
+            };
+            if let Some(access) = access {
+                let value = self.receive_member(value, access, span);
+                ledger.replace_member(prior, value);
+            }
+        }
     }
 
     fn mutate(&mut self, ctx: &Context, ledger: &Ledger, value: &Datum, span: Span) {
@@ -2235,7 +2247,7 @@ impl<'a> Analyzer<'a> {
             if safe && index.is_some() {
                 missing.push(ledger.clone());
             }
-            value = value.project(coordinate.clone(), self.schema(ty, &coordinate).0);
+            value = ledger.project(&value, coordinate.clone(), self.schema(ty, &coordinate).0);
             ty = self
                 .program
                 .navigation_values

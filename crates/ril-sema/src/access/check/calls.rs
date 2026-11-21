@@ -97,6 +97,7 @@ impl Analyzer<'_> {
         });
         let mut given = vec![false; sig.map_or(args.len(), |signature| signature.parameters.len())];
         let mut values = Vec::new();
+        let mut value_spans = Vec::new();
         let mut choices = Vec::new();
         for arg in args {
             let node = ast.expr(arg.value);
@@ -180,14 +181,7 @@ impl Analyzer<'_> {
             if parameter.is_some_and(|p| p.is_meta) && !ctx.shadow {
                 ledger.inspect(&value);
             }
-            for (_, previous_mode, previous) in &values {
-                if let Some(mutating) = conflicts(&value, mode, previous, *previous_mode) {
-                    self.error(
-                        if mutating { Code::E0523 } else { Code::E0524 },
-                        node.span,
-                        "argument source overlaps incompatible live authority",
-                    );
-                }
+            for (_, _, previous) in &values {
                 if ledger.dead(previous) {
                     self.error(
                         Code::E0549,
@@ -197,6 +191,21 @@ impl Analyzer<'_> {
                 }
             }
             values.push((index, mode, value));
+            value_spans.push(node.span);
+        }
+        for (_, _, value) in &mut values {
+            *value = ledger.snapshot(value);
+        }
+        for (i, ((_, mode, value), argument_span)) in values.iter().zip(value_spans).enumerate() {
+            for (_, previous_mode, previous) in values.iter().take(i) {
+                if let Some(mutating) = conflicts(value, *mode, previous, *previous_mode) {
+                    self.error(
+                        if mutating { Code::E0523 } else { Code::E0524 },
+                        argument_span,
+                        "argument source overlaps incompatible live authority",
+                    );
+                }
+            }
         }
         if !choices.is_empty()
             && let Some(callee) = id
@@ -378,7 +387,7 @@ impl Analyzer<'_> {
                 Mode::New | Mode::Infer | Mode::Ref | Mode::Shared
             ) {
                 self.function(fun, ledger);
-                if let Some(mut result) = self.return_template(fun, &values, span) {
+                if let Some(mut result) = self.return_template(fun, &values, ledger, span) {
                     if matches!(fun.signature.result_mode, Mode::Ref | Mode::Shared) {
                         result.requires_new = false;
                         for root in &mut result.roots {
@@ -622,6 +631,7 @@ impl Analyzer<'_> {
         &self,
         fun: &ril_frontend::syntax::Function,
         arguments: &[(usize, Mode, Datum)],
+        entry: &Ledger,
         span: Span,
     ) -> Option<Datum> {
         let definition = self
@@ -632,7 +642,7 @@ impl Analyzer<'_> {
             .returns
             .iter()
             .map(|datum| {
-                Self::instantiate_return(definition, arguments, datum, span, &mut Vec::new())
+                Self::instantiate_return(definition, arguments, entry, datum, span, &mut Vec::new())
             })
             .reduce(Datum::joined)
     }
@@ -640,6 +650,7 @@ impl Analyzer<'_> {
     fn instantiate_return(
         definition: &DefinitionCheck,
         arguments: &[(usize, Mode, Datum)],
+        entry: &Ledger,
         template: &Datum,
         span: Span,
         output_path: &mut Vec<Coordinate>,
@@ -670,7 +681,7 @@ impl Analyzer<'_> {
                         } else {
                             Access::Mut
                         };
-                        actual = actual.project(coordinate.clone(), cap);
+                        actual = entry.project(&actual, coordinate.clone(), cap);
                     }
                     if !via {
                         actual.transform(&mut |member| {
@@ -701,7 +712,7 @@ impl Analyzer<'_> {
         for (coordinate, member) in &template.members {
             output_path.push(coordinate.clone());
             let specialized =
-                Self::instantiate_return(definition, arguments, member, span, output_path);
+                Self::instantiate_return(definition, arguments, entry, member, span, output_path);
             output_path.pop();
             output.members.insert(coordinate.clone(), specialized);
         }

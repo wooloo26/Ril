@@ -12,7 +12,7 @@ use ril_sema::{
     access::{Access, horn},
     iface::{FORMAT_VERSION, Interface},
 };
-use ril_test::parse_suite;
+use ril_test::{Stage, TestDriver, parse_suite};
 
 #[test]
 fn interface_roundtrip_is_stable_and_detects_corruption() {
@@ -251,4 +251,32 @@ fn path_attenuation_agrees_with_lean() {
         serde_json::from_slice::<Vec<u8>>(&output.stdout).unwrap(),
         expected
     );
+}
+
+#[test]
+fn call_entry_examples_agree_with_lean() {
+    let Some(oracle) = std::env::var_os("RIL_HORN_ORACLE") else {
+        return;
+    };
+    let suite = parse_suite(
+        Path::new("access.ril"),
+        include_str!("../../../tests/07_access/access.ril"),
+    )
+    .unwrap();
+    let mut child = Command::new(oracle)
+        .arg("call-entry")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(b"[]").unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success());
+    let results: Vec<(String, bool)> = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(results.len(), 4);
+    for (name, accepted) in results {
+        let case = suite.cases.iter().find(|case| case.id == name).unwrap();
+        let diagnostics = Driver.check_stage(&case.pkg, Stage::Access).diagnostics;
+        assert_eq!(diagnostics.is_empty(), accepted, "{name}: {diagnostics:?}");
+    }
 }

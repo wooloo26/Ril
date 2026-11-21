@@ -145,6 +145,45 @@ fn update(new cells: [mut]Cell) -> int {
 -- @case excessive_contained_return_qualification compile-fail E0529
 fn allocate(unused: Cell) &return(unused) -> new []Cell { [Cell.{ count: 0 }] }
 
+-- @case replaced_member_is_not_from_old_formal_entry compile-fail E0545
+type Holder = .{ var ref visible: Cell }
+fn overwrite(mut holder: Holder, ref other: Cell) &mut -> ref(holder) Cell {
+    -- ^ E0545
+    holder.visible = other
+    holder.visible
+}
+
+-- @case replaced_member_is_in_new_call_entry compile-pass
+type Holder = .{ var ref visible: Cell }
+fn see(ref holder: Holder) -> ref(holder) Cell { holder.visible }
+fn overwrite(mut holder: Holder, ref other: Cell) &mut -> ref(other) Cell {
+    holder.visible = other
+    see(ref holder)
+}
+
+-- @case conditional_replacement_preserves_both_origins compile-pass
+type Holder = .{ var ref visible: Cell }
+fn overwrite(flag: bool, mut holder: Holder, ref other: Cell) &mut -> ref(holder | other) Cell {
+    if flag { holder.visible = other }
+    holder.visible
+}
+
+-- @case replaced_member_participates_in_call_overlap compile-fail E0524
+type Holder = .{ var ref visible: Cell }
+fn copy(mut target: Cell, ref reader: Holder) &mut -> () { target.count = reader.visible.count }
+fn overlap(mut holder: Holder, mut target: Cell) &mut -> () {
+    holder.visible = ref target
+    copy(mut target, ref holder)
+    -- ^ E0524
+}
+
+-- @case call_entry_graph_includes_later_argument_preparation compile-pass
+type Holder = .{ var ref visible: Cell }
+fn see(ref holder: Holder, _marker: ()) -> ref(holder) Cell { holder.visible }
+fn overwrite(mut holder: Holder, ref other: Cell) &mut -> ref(other) Cell {
+    see(ref holder, { holder.visible = other; () })
+}
+
 -- @case generic_fallback_discards_result compile-fail E0720
 fn get() -> new !<int, str> { Ok(1) }
 fn drop<T>(_unused: T) -> () {}
