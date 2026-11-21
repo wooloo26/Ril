@@ -154,3 +154,28 @@ fn main() @io -> () {
         Err(Second) -> println("second")
     }
 }
+
+-- @case spread_effect_dispatches_to_original_operation run-pass backend=both
+fn invoke() @Combined -> int { Combined::read() }
+eff Root { fn read() -> int }
+eff Middle { ..Root }
+eff Combined { ..Middle; fn extra() -> () }
+fn main() -> () {
+    with Root::read = \-> 42
+    assert(invoke() == 42)
+}
+
+-- @case panic_boundary_accepts_first_class_action_and_opaque_info run-pass backend=both
+-- @expect-stdout expected failure
+fn fail() -> int { panic("expected failure") }
+fn main() @io -> () {
+    let action = fail
+    let caught: !<int, PanicError> = absorb_panic(action)
+    match caught {
+        Ok(_) -> panic("panic should have been absorbed")
+        Err(PanicError::Panicked(info)) -> {
+            assert(String::inspect(info) == "<PanicInfo>")
+            println(panic_message(info))
+        }
+    }
+}

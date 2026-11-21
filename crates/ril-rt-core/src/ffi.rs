@@ -136,7 +136,13 @@ runtime_functions! {
     }
     fn ril_rt_panic_take(rt) -> Value {
         let message = rt.take_panic().unwrap_or_default();
-        rt.gc.alloc(Object::Str(message))
+        rt.gc.alloc(Object::PanicInfo(message))
+    }
+    fn ril_rt_panic_message(rt, info: Value) -> Value {
+        match rt.gc.object(info) {
+            Some(Object::PanicInfo(message)) => rt.gc.alloc(Object::Str(message.clone())),
+            _ => rt.checked(Err("panic_message requires PanicInfo")),
+        }
     }
     fn ril_rt_assert(rt, condition: Value, message: Value) -> Value {
         if condition != Value::TRUE {

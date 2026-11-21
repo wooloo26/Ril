@@ -39,6 +39,7 @@ pub(super) fn check(hir: Program, budget: Option<u64>) -> Result<TypedProgram, V
         implicit_exits: Vec::new(),
         narrowings: HashMap::new(),
         navigation_values: HashMap::new(),
+        subset_tags: HashMap::new(),
         narrow_errors: HashMap::new(),
         constants: HashSet::new(),
         stack: Vec::new(),
@@ -75,6 +76,7 @@ pub(super) fn check(hir: Program, budget: Option<u64>) -> Result<TypedProgram, V
         callables,
         static_values,
         narrowings,
+        subset_tags,
         ..
     } = ck;
     Ok(TypedProgram {
@@ -85,6 +87,7 @@ pub(super) fn check(hir: Program, budget: Option<u64>) -> Result<TypedProgram, V
         static_values,
         narrowings,
         navigation_values,
+        subset_tags,
     })
 }
 
@@ -148,6 +151,7 @@ pub(super) struct Checker<'a> {
     pub(super) implicit_exits: Vec<ImplicitExits>,
     pub(super) narrowings: HashMap<Span, usize>,
     pub(super) navigation_values: HashMap<Span, Ty>,
+    pub(super) subset_tags: HashMap<Span, Vec<String>>,
     pub(super) narrow_errors: HashMap<Span, Code>,
     constants: HashSet<DefinitionId>,
     pub(super) stack: Vec<DefinitionId>,
@@ -326,10 +330,12 @@ impl<'a> Checker<'a> {
         actual.parameters.len() == expected.parameters.len()
             && (expected.open_effects
                 || !actual.open_effects
-                    && actual
-                        .effects
-                        .iter()
-                        .all(|effect| expected.effects.contains(effect)))
+                    && actual.effects.iter().all(|effect| {
+                        expected
+                            .effects
+                            .iter()
+                            .any(|cover| self.hir.effect_covers(cover, effect))
+                    }))
             && (expected.open_state
                 || !actual.open_state
                     && actual
@@ -730,6 +736,13 @@ impl<'a> Checker<'a> {
                 match &decl.definition {
                     TypeDefinition::Data(ty) => {
                         self.type_expr(&mut local, *ty);
+                    }
+                    TypeDefinition::Sum(_) if decl.generics.is_empty() => {
+                        if let Some(id) = self.resolve(decl.name.span)
+                            && let Ty::Adt(adt) = self.adt(id, decl, Vec::new())
+                        {
+                            self.sum_variants(&adt);
+                        }
                     }
                     TypeDefinition::Sum(variants) => {
                         for variant in variants {

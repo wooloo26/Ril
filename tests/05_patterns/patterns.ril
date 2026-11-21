@@ -95,3 +95,24 @@ fn get(val: ?int) -> int {
     -- ^ E0345
     n
 }
+
+-- @case included_sum_patterns_cover_all_variants compile-pass
+type Network { Offline; Timeout(int) }
+type Account { Invalid }
+type Failure { ..Network; ..Account; Other }
+fn status(value: Failure) -> int {
+    match value {
+        Network as net -> match net { Offline -> 1; Timeout(status) -> status }
+        ..Account -> 2
+        Other -> 3
+    }
+}
+
+-- @case sum_spread_rejects_conflicting_payload compile-fail E0213
+type Before { Read }
+type After { ..Before; Read() }
+-- ^ E0213
+
+-- @case sum_spread_resolves_without_recursive_expansion compile-fail E0313
+type First { ..Second }
+type Second { ..First }

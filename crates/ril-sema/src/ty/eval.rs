@@ -969,10 +969,7 @@ impl Checker<'_> {
                         ));
                     }
                     Ok(Value::Array(
-                        self.sum_variants(adt, &mut Default::default())
-                            .into_keys()
-                            .map(Value::Str)
-                            .collect(),
+                        self.sum_variants(adt).into_keys().map(Value::Str).collect(),
                     ))
                 } else {
                     Err(Signal::Error(

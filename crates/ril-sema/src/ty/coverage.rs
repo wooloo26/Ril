@@ -1,5 +1,3 @@
-use std::collections::HashSet;
-
 use ril_frontend::syntax::{Pattern, PatternId, Type};
 
 use super::{
@@ -57,6 +55,17 @@ impl Checker<'_> {
                 .iter()
                 .map(|&id| self.pattern_shape(env, id, input))
                 .collect()),
+            Pattern::Subset { ty, .. } => {
+                if let Ty::Adt(subset) = self.type_expr(&mut env.clone(), *ty) {
+                    Or(self
+                        .sum_variants(&subset)
+                        .into_iter()
+                        .map(|(tag, payload)| Constructor(tag, vec![Any; payload.len()]))
+                        .collect())
+                } else {
+                    Or(Vec::new())
+                }
+            }
             Pattern::Record { fields, .. } => {
                 if let Ty::Record(known, _) = input {
                     let fields = known
@@ -189,6 +198,7 @@ impl Checker<'_> {
                 ("Ok".into(), vec![(**ok).clone()]),
                 ("Err".into(), vec![(**err).clone()]),
             ],
+            Ty::PanicError => vec![("Panicked".into(), vec![Ty::PanicInfo])],
             Ty::Tuple(items) => vec![(
                 "tuple".into(),
                 items.iter().map(|item| item.ty.clone()).collect(),
@@ -199,9 +209,7 @@ impl Checker<'_> {
             )],
             Ty::Adt(adt) if matches!(adt.kind, AdtKind::Sum | AdtKind::OpaqueSum) => {
                 self.match_domain(env, ty)?;
-                self.sum_variants(adt, &mut HashSet::new())
-                    .into_iter()
-                    .collect()
+                self.sum_variants(adt).into_iter().collect()
             }
             Ty::TypeValue(Some(inner)) => {
                 if let Ty::Param(id) = **inner {

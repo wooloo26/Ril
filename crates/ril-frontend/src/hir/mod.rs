@@ -1,4 +1,5 @@
 mod builtins;
+mod effects;
 mod imports;
 mod walk;
 
@@ -121,6 +122,8 @@ pub struct Program {
     definitions: Vec<Definition>,
     resolutions: HashMap<Span, Resolution>,
     local_effects: BTreeSet<DefinitionId>,
+    effect_spreads: BTreeMap<DefinitionId, BTreeSet<DefinitionId>>,
+    pending_operations: Vec<effects::PendingOperation>,
     pub entry: FileId,
     prelude: ScopeId,
 }
@@ -217,6 +220,39 @@ impl Program {
                 Target::Def(operation) => Some(operation),
                 Target::Module(_) => None,
             })
+    }
+
+    pub fn effect_includes(&self, covering: DefinitionId, actual: DefinitionId) -> bool {
+        covering == actual
+            || self
+                .effect_spreads
+                .get(&covering)
+                .is_some_and(|set| set.contains(&actual))
+    }
+
+    pub fn effect_by_label(&self, label: &str) -> Option<DefinitionId> {
+        self.definitions().find_map(|(id, def)| {
+            (matches!(def.kind, DefinitionKind::Effect(_)) && self.effect_label(id) == label)
+                .then_some(id)
+        })
+    }
+
+    pub fn effect_covers(&self, covering: &str, actual: &str) -> bool {
+        covering == actual
+            || self
+                .effect_by_label(covering)
+                .zip(self.effect_by_label(actual))
+                .is_some_and(|(covering, actual)| self.effect_includes(covering, actual))
+    }
+
+    pub fn included_effects(&self, effect: DefinitionId) -> impl Iterator<Item = DefinitionId> {
+        std::iter::once(effect).chain(
+            self.effect_spreads
+                .get(&effect)
+                .into_iter()
+                .flatten()
+                .copied(),
+        )
     }
 
     pub fn same_package(&self, a: ScopeId, b: ScopeId) -> bool {
@@ -443,6 +479,8 @@ pub fn lower(files: Vec<File>, entry: FileId) -> Result<Program, Vec<Diagnostic>
         definitions: Vec::new(),
         resolutions: HashMap::new(),
         local_effects: BTreeSet::new(),
+        effect_spreads: BTreeMap::new(),
+        pending_operations: Vec::new(),
         entry,
         prelude: ScopeId(0),
     };
@@ -494,6 +532,7 @@ pub fn lower(files: Vec<File>, entry: FileId) -> Result<Program, Vec<Diagnostic>
     program.load_imports(imports, &mut errors);
     if errors.is_empty() {
         walk::check(&mut program, &mut errors);
+        program.resolve_effect_spreads(&mut errors);
     }
     if errors.is_empty() {
         Ok(program)
@@ -729,7 +768,6 @@ const PRELUDE: &[(PrimitivePhase, &[&str])] = &[
             "Result",
             "Set",
             "PanicInfo",
-            "PanicError",
             "MemberMode",
             "Draft",
             "Some",
@@ -775,6 +813,15 @@ impl Program {
                 self.primitive(self.prelude, name, phase);
             }
         }
+        let panic_error = self.new_scope(file, "ril".into(), None, Visibility::Public);
+        self.primitive(panic_error, "Panicked", PrimitivePhase::Runtime);
+        self.scope_mut(self.prelude).names.insert(
+            "PanicError".into(),
+            Entry {
+                target: Target::Module(panic_error),
+                visibility: Visibility::Public,
+            },
+        );
         use PrimitivePhase::{Both, Runtime, Static};
         let modules: &[(&str, &str, PrimitivePhase, &[&str])] = &[
             (

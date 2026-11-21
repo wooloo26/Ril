@@ -43,6 +43,7 @@ pub enum Object {
     Receiver(u64),
     F64(u64),
     Str(String),
+    PanicInfo(String),
     Bytes(Vec<u8>),
     Array(Vec<Value>),
     Tuple(Vec<Value>),
@@ -98,6 +99,7 @@ impl Object {
             | Self::Int(_)
             | Self::F64(_)
             | Self::Str(_)
+            | Self::PanicInfo(_)
             | Self::Bytes(_) => Vec::new(),
         }
     }

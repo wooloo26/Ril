@@ -26,6 +26,7 @@ impl GcRuntime {
                 f64::from_bits(*a) == f64::from_bits(*b)
             }
             (Some(Object::Str(a)), Some(Object::Str(b))) => a == b,
+            (Some(Object::PanicInfo(a)), Some(Object::PanicInfo(b))) => a == b,
             (Some(Object::Bytes(a)), Some(Object::Bytes(b))) => a == b,
             (Some(Object::Array(a)), Some(Object::Array(b)))
             | (Some(Object::Tuple(a)), Some(Object::Tuple(b))) => self.equal_parts(a, b, seen)?,
@@ -103,7 +104,11 @@ impl GcRuntime {
             .ok_or("invalid object identity")?;
         if matches!(
             original,
-            Object::Int(_) | Object::F64(_) | Object::Str(_) | Object::Bytes(_)
+            Object::Int(_)
+                | Object::F64(_)
+                | Object::Str(_)
+                | Object::Bytes(_)
+                | Object::PanicInfo(_)
         ) {
             return Ok(from);
         }
@@ -157,6 +162,13 @@ impl GcRuntime {
                 Some(Object::Int(i)) => i.to_string(),
                 Some(Object::F64(f)) => f64::from_bits(*f).to_string(),
                 Some(Object::Str(text)) => format!("{text:?}"),
+                Some(Object::PanicInfo(_)) => "<PanicInfo>".into(),
+                Some(Object::Closure { .. }) => "<fn>".into(),
+                Some(Object::Task { .. }) => "<Task>".into(),
+                Some(Object::Scope(_)) => "<Scope>".into(),
+                Some(Object::Sender(_)) => "<Sender>".into(),
+                Some(Object::Receiver(_)) => "<Receiver>".into(),
+                Some(Object::Draft { .. }) => "<Draft>".into(),
                 Some(Object::Bytes(bytes)) => format!("bytes{bytes:?}"),
                 Some(Object::Array(items)) => format!(
                     "[{}]",

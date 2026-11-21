@@ -86,3 +86,28 @@ meta let _ = assert(-0.0 == 0.0)
 
 -- @case scalar_length compile-pass
 meta let _ = assert(len("αβ") == 2 && len(bytes"\xFF\0") == 2)
+
+-- @case static_value_checks_run_with_trailing_arguments compile-pass
+type Positive = \n: int -> if n > 0 { <()> } else { <never> }
+type AtLeast = \n: int, lo: int -> if n >= lo { <()> } else { <never> }
+type Buffer<capacity: int |> Positive |> AtLeast<4> = 8> = .{ size: int }
+type Explicit = Buffer<4>
+type Default = Buffer<>
+
+-- @case static_value_check_rejects_invalid_argument compile-fail E0323
+type Positive = \n: int -> if n > 0 { <()> } else { <never> }
+type Buffer<capacity: int |> Positive> = .{ size: int }
+type Invalid = Buffer<0>
+-- ^ E0323
+
+-- @case static_value_check_rejects_wrong_result_type compile-fail E0306
+type Wrong = \n: int -> <str>
+type Checked<n: int |> Wrong> = int
+type Invalid = Checked<1>
+-- ^ E0306
+
+-- @case static_type_check_requires_preserving_the_input compile-fail E0301
+type Number = \T -> match <T> { <int> -> <T>; _ -> <never> }
+type Checked<T |> Number> = .{ item: T }
+type Invalid = Checked<bool>
+-- ^ E0301

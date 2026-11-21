@@ -692,6 +692,33 @@ impl Builder<'_, '_> {
                     }
                 }
             }
+            Pattern::Subset { .. } => {
+                let tags = self
+                    .global
+                    .typed
+                    .subset_tags
+                    .get(&node.span)
+                    .ok_or_else(|| {
+                        self.unsupported(node.span, "subset pattern requires resolved sum tags")
+                    })?;
+                if tags.is_empty() {
+                    self.terminate(Terminator::Jump(no, Vec::new()));
+                }
+                for (index, tag) in tags.iter().enumerate() {
+                    let key = self.string(tag);
+                    let condition = self.runtime("ril_rt_is_tag", vec![value, key]);
+                    let last = index + 1 == tags.len();
+                    let fallback = if last { no } else { self.block(0) };
+                    self.terminate(Terminator::Branch {
+                        condition,
+                        yes,
+                        no: fallback,
+                    });
+                    if !last {
+                        self.current = Some(fallback);
+                    }
+                }
+            }
             Pattern::Range {
                 low,
                 high,
@@ -777,16 +804,11 @@ impl Builder<'_, '_> {
     }
 
     pub(super) fn return_value(&mut self, value: Register) -> Result<()> {
-        if let Some((target, depth)) = self.capture_return {
-            self.cleanup_to(depth);
-            self.terminate(Terminator::Jump(target, vec![value]));
-        } else {
-            self.cleanup_to(0);
-            if !self.running_guard && !self.guards.is_empty() {
-                self.run_exit_guards(value)?;
-            }
-            self.terminate(Terminator::Return(value));
+        self.cleanup_to(0);
+        if !self.running_guard && !self.guards.is_empty() {
+            self.run_exit_guards(value)?;
         }
+        self.terminate(Terminator::Return(value));
         Ok(())
     }
 

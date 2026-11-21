@@ -242,7 +242,6 @@ impl<'a> Lowering<'a> {
             loops: Vec::new(),
             evidence: Register(0),
             types,
-            capture_return: None,
             guards,
             running_guard: false,
         };
@@ -330,7 +329,6 @@ struct Builder<'b, 'a> {
     loops: Vec<Loop>,
     evidence: Register,
     types: BTreeMap<DefinitionId, Ty>,
-    capture_return: Option<(BlockId, usize)>,
     guards: Vec<ExprId>,
     running_guard: bool,
 }
@@ -1326,7 +1324,7 @@ impl<'a> Builder<'_, 'a> {
             .iter()
             .map(|arg| self.expr(arg.value))
             .collect::<Result<Vec<_>>>()?;
-        if matches!(name, "Ok" | "Err" | "Some") {
+        if matches!(name, "Ok" | "Err" | "Some" | "Panicked") {
             if name == "Ok" && args.is_empty() {
                 args.push(self.unit());
             }
@@ -1357,11 +1355,7 @@ impl<'a> Builder<'_, 'a> {
                 args.push(self.integer("0"));
                 "ril_rt_load"
             }
-            "panic_message" if args.len() == 1 => {
-                return args
-                    .pop()
-                    .ok_or_else(|| self.unsupported(span, "missing panic info"));
-            }
+            "panic_message" => "ril_rt_panic_message",
             _ => return Err(self.unsupported(span, &format!("primitive {name}"))),
         };
         Ok(self.runtime(symbol, args))
@@ -1388,41 +1382,12 @@ impl<'a> Builder<'_, 'a> {
         Ok(self.runtime(symbol, args))
     }
 
-    fn inline_closure(&mut self, id: ExprId, args: &[Register], span: Span) -> Result<Register> {
-        let Expr::Closure { params, body, .. } = &self.ast().expr(id).value else {
-            return Err(self.unsupported(span, "nonliteral closure"));
-        };
-        if params.len() != args.len() {
-            return Err(self.unsupported(span, "closure arity"));
-        }
-        let old = self.locals.clone();
-        for (parameter, &value) in params.iter().zip(args) {
-            if let Some(pattern) = parameter.pattern {
-                self.bind(pattern, value)?;
-            } else if let Some(name) = &parameter.name {
-                self.bind_name(name, value);
-            }
-        }
-        let exit = self.block(1);
-        let depth = self.cleanups.len();
-        let target = self.capture_return.replace((exit, depth));
-        let result = self.expr(*body)?;
-        self.terminate(Terminator::Jump(exit, vec![result]));
-        self.capture_return = target;
-        self.locals = old;
-        self.cleanups.truncate(depth);
-        self.current = Some(exit);
-        self.params(exit)
-            .first()
-            .copied()
-            .ok_or_else(|| self.unsupported(span, "closure result"))
-    }
-
     fn absorb(&mut self, action: ExprId, span: Span) -> Result<Register> {
+        let action = self.expr(action)?;
         let caught = self.block(0);
         let join = self.block(1);
         self.traps.push((self.cleanups.len(), caught));
-        let result = self.inline_closure(action, &[], span)?;
+        let result = self.invoke_closure(action, Vec::new());
         self.traps.pop();
         let ok = self.tag("Ok", vec![result]);
         self.terminate(Terminator::Jump(join, vec![ok]));
@@ -1478,6 +1443,11 @@ impl<'a> Builder<'_, 'a> {
                     } else {
                         self.bind_name(&field.name, next);
                     }
+                }
+            }
+            Pattern::Subset { binding, .. } => {
+                if let Some(binding) = binding {
+                    self.bind(*binding, value)?;
                 }
             }
             Pattern::Wildcard

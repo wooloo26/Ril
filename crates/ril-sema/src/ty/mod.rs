@@ -34,6 +34,8 @@ pub enum Ty {
     F64,
     Str,
     Bytes,
+    PanicInfo,
+    PanicError,
     Never,
     Infer(u32),
     Unknown,
@@ -181,6 +183,7 @@ pub struct TypedProgram {
     pub static_values: HashMap<Span, Value>,
     pub narrowings: HashMap<Span, usize>,
     pub navigation_values: HashMap<Span, Ty>,
+    pub subset_tags: HashMap<Span, Vec<String>>,
 }
 
 pub struct Display<'a> {
@@ -201,6 +204,8 @@ impl fmt::Display for Display<'_> {
             Ty::F64 => f.write_str("f64"),
             Ty::Str => f.write_str("str"),
             Ty::Bytes => f.write_str("bytes"),
+            Ty::PanicInfo => f.write_str("PanicInfo"),
+            Ty::PanicError => f.write_str("PanicError"),
             Ty::Never => f.write_str("never"),
             Ty::Range => f.write_str("Range"),
             Ty::Mode => f.write_str("MemberMode"),

@@ -114,3 +114,34 @@ fn total(ok: bool) -> new !<int, str> {
     }
     Ok(total)
 }
+
+-- @case spread_effect_operation_identity_is_shared compile-fail E0622
+eff Base { fn operation() -> int }
+eff Larger { ..Base; fn extra() -> bool }
+fn invalid() -> int {
+    with {
+        Base::operation = \-> 1
+        Larger::operation = \-> 2
+        -- ^ E0622
+    }
+    Larger::operation()
+}
+
+-- @case effect_spreads_cannot_cycle compile-fail E0313 stage=hir
+eff Left { ..Right }
+eff Right { ..Left }
+
+-- @case spread_requires_an_effect compile-fail E0620 stage=hir
+type Alias = int
+eff Invalid { ..Alias }
+
+-- @case spread_with_conflicting_operation compile-fail E0622 stage=hir
+eff Base { fn operation() -> int }
+eff Larger { ..Base; fn operation() -> bool }
+
+-- @case spread_effect_subsumes_source_callable compile-pass
+eff Base { fn operation() -> int }
+eff Larger { ..Base; fn other() -> bool }
+fn accept(handler: fn() @Larger -> int) @Larger -> int { handler() }
+fn callback() @Base -> int { Base::operation() }
+fn call() @Larger -> int { accept(callback) }

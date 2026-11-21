@@ -416,16 +416,16 @@ impl Analyzer<'_> {
 
     fn link_effects(&mut self, ctx: &Context, owner: Span, effect: &str, span: Span) {
         let hir = &self.program.hir;
-        let abstract_effect = Obligation::Effect(effect.into());
-        let effect_id = hir.definitions().find_map(|(id, def)| {
-            (matches!(def.kind, DefinitionKind::Effect(_)) && hir.effect_label(id) == effect)
-                .then_some(id)
-        });
-        let operations = effect_id
-            .into_iter()
-            .flat_map(|id| hir.effect_operations(id))
-            .map(Obligation::Operation);
-        for obligation in std::iter::once(abstract_effect).chain(operations) {
+        let obligations = hir.effect_by_label(effect).map_or_else(
+            || vec![Obligation::Effect(effect.into())],
+            |id| {
+                hir.included_effects(id)
+                    .map(|id| Obligation::Effect(hir.effect_label(id)))
+                    .chain(hir.effect_operations(id).map(Obligation::Operation))
+                    .collect()
+            },
+        );
+        for obligation in obligations {
             let prerequisite = Fact {
                 owner,
                 obligation: obligation.clone(),

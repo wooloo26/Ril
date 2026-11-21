@@ -186,3 +186,20 @@ fn main() -> () {
     assert(Bytes::from_array(Bytes::to_array(ENCODED)) == Some(ENCODED))
     assert(Bytes::from_array([256]) == None)
 }
+
+-- @case included_sum_patterns_keep_members_for_the_binder run-pass backend=both
+type Network { Offline; Timeout(int) }
+type Account { Invalid }
+type Failure { ..Network; ..Account; Other }
+fn status(value: Failure) -> int {
+    match value {
+        Network as net -> match net { Offline -> 1; Timeout(status) -> status }
+        ..Account -> 2
+        Other -> 3
+    }
+}
+fn main() -> () {
+    assert(status(Network::Timeout(17) as Failure) == 17)
+    assert(status(Account::Invalid as Failure) == 2)
+    assert(status(Failure::Other) == 3)
+}

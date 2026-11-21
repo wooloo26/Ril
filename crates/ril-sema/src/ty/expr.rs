@@ -892,55 +892,90 @@ impl<'a> Checker<'a> {
         }
     }
 
-    pub(super) fn sum_variants(
+    pub(super) fn sum_variants(&mut self, adt: &super::Adt) -> BTreeMap<String, Vec<Ty>> {
+        let span = self.hir.definition(adt.definition).name.span;
+        self.sum_variant_shapes(adt, &mut HashSet::new(), span)
+            .into_iter()
+            .map(|(name, payload)| (name, payload.unwrap_or_default()))
+            .collect()
+    }
+
+    fn sum_variant_shapes(
         &mut self,
         adt: &super::Adt,
-        seen: &mut HashSet<DefinitionId>,
-    ) -> BTreeMap<String, Vec<Ty>> {
-        if !seen.insert(adt.definition) {
+        active: &mut HashSet<DefinitionId>,
+        at: Span,
+    ) -> BTreeMap<String, Option<Vec<Ty>>> {
+        if !active.insert(adt.definition) {
+            self.error(Code::E0313, at, "cyclic sum spread");
             return BTreeMap::new();
         }
         let mut local = self.instantiate_adt(adt);
-        let Some(stmt) = self.hir.definition(adt.definition).stmt else {
-            return BTreeMap::new();
-        };
-        let StmtKind::Type(decl) = &self.ast(local.file).stmt(stmt).value.kind else {
-            return BTreeMap::new();
-        };
-        let TypeDefinition::Sum(variants) = &decl.definition else {
-            return BTreeMap::new();
-        };
+        let variants = self.sum_declaration(adt).unwrap_or_default();
         let mut all = BTreeMap::new();
         for variant in variants {
             match variant {
                 syntax::Variant::Constructor { name, payload, .. } => {
-                    let payload = payload
-                        .iter()
-                        .flatten()
-                        .map(|&ty| self.type_expr(&mut local, ty))
-                        .collect();
-                    all.insert(name.value.clone(), payload);
+                    let payload = payload.as_ref().map(|items| {
+                        items
+                            .iter()
+                            .map(|&ty| self.type_expr(&mut local, ty))
+                            .collect()
+                    });
+                    self.merge_sum_variant(&mut all, name.value.clone(), payload, name.span);
                 }
                 syntax::Variant::Spread(ty) => {
-                    if let Ty::Adt(subset) = self.type_expr(&mut local, *ty) {
-                        for (name, types) in self.sum_variants(&subset, seen) {
-                            if all.get(&name).is_some_and(|prior| prior != &types) {
-                                self.error(
-                                    Code::E0213,
-                                    self.ast(local.file).ty(*ty).span,
-                                    format!("conflicting variant {name}"),
-                                );
-                            } else {
-                                all.insert(name, types);
+                    let span = self.ast(local.file).ty(*ty).span;
+                    match self.type_expr(&mut local, *ty) {
+                        Ty::Adt(subset) if subset.kind == AdtKind::Sum => {
+                            if self.sum_declaration(&subset).is_some_and(|variants| {
+                                variants
+                                    .iter()
+                                    .any(|variant| matches!(variant, syntax::Variant::Extensible))
+                            }) {
+                                self.error(Code::E0308, span, "an extensible sum cannot be spread");
+                                continue;
+                            }
+                            for (name, payload) in self.sum_variant_shapes(&subset, active, span) {
+                                self.merge_sum_variant(&mut all, name, payload, span);
                             }
                         }
+                        Ty::Adt(subset) if subset.kind == AdtKind::OpaqueSum => {
+                            self.error(Code::E0308, span, "an opaque sum cannot be spread");
+                        }
+                        Ty::Unknown | Ty::Param(_) => {}
+                        _ => self.error(Code::E0306, span, "spread target must be a sum type"),
                     }
                 }
                 syntax::Variant::Extensible => {}
             }
         }
-        seen.remove(&adt.definition);
+        active.remove(&adt.definition);
         all
+    }
+
+    fn merge_sum_variant(
+        &mut self,
+        variants: &mut BTreeMap<String, Option<Vec<Ty>>>,
+        name: String,
+        payload: Option<Vec<Ty>>,
+        span: Span,
+    ) {
+        match variants.entry(name) {
+            std::collections::btree_map::Entry::Occupied(previous)
+                if previous.get() != &payload =>
+            {
+                self.error(
+                    Code::E0213,
+                    span,
+                    format!("conflicting payload for {}", previous.key()),
+                );
+            }
+            std::collections::btree_map::Entry::Vacant(slot) => {
+                slot.insert(payload);
+            }
+            _ => {}
+        }
     }
 
     fn navigation(&mut self, env: &mut Env, base: ExprId, steps: &[ExprId]) -> Ty {
@@ -1455,7 +1490,9 @@ impl<'a> Checker<'a> {
         match name {
             "Let" => Ty::Mode,
             "Var" | "Mut" | "Ref" | "SharedMut" | "VarMut" | "VarRef" | "VarSharedMut" => Ty::Mode,
-            "bool" | "int" | "f64" | "str" | "bytes" | "never" | "Type" if !callee => {
+            "bool" | "int" | "f64" | "str" | "bytes" | "never" | "Type" | "PanicInfo"
+                if !callee =>
+            {
                 self.error(Code::E0319, span, "type value requires angle quotation");
                 Ty::Unknown
             }
@@ -1517,7 +1554,7 @@ impl<'a> Checker<'a> {
         let arity = match name {
             "Some" | "Err" | "panic" | "print" | "println" | "len" | "clone" | "inner"
             | "inspect" | "type_name" | "coords" | "variants" | "to_f64" | "to_int" | "trunc"
-            | "absorb_panic" | "panic_message" => Some(1..=1),
+            | "absorb_panic" | "panic_message" | "Panicked" => Some(1..=1),
             "Ok" => Some(0..=1),
             "assert" => Some(1..=2),
             "has_default" | "contains" | "push" | "filter" | "map" | "checked_div"
@@ -1676,7 +1713,19 @@ impl<'a> Checker<'a> {
             }
             "variants" => Ty::Array(Box::new(Member::plain(Ty::Str))),
             "contains" | "has_default" => Ty::Bool,
-            "type_name" | "inspect" | "panic_message" => Ty::Str,
+            "type_name" | "inspect" => Ty::Str,
+            "panic_message" => {
+                self.require(env, span, &first, &Ty::PanicInfo);
+                Ty::Str
+            }
+            "Panicked" => {
+                self.require(env, span, &first, &Ty::PanicInfo);
+                Ty::PanicError
+            }
+            "PanicInfo" => {
+                self.error(Code::E0301, span, "PanicInfo has no accessible constructor");
+                Ty::Unknown
+            }
             "push" => {
                 if let (Ty::Array(member), Some(item)) = (&first, types.get(1)) {
                     self.require(env, span, item, &member.ty);
@@ -1696,8 +1745,21 @@ impl<'a> Checker<'a> {
             }
             "derive" => first,
             "absorb_panic" => match first {
-                Ty::Callable(call) => {
-                    Ty::Result(Box::new(call.result.clone()), Box::new(Ty::Unknown))
+                Ty::Callable(call) if call.parameters.is_empty() => {
+                    if args.first().is_some_and(|arg| {
+                        !matches!(
+                            self.ast(env.file).expr(arg.value).value,
+                            Expr::Closure { .. }
+                        )
+                    }) && (call.open_effects || !call.effects.is_empty())
+                    {
+                        self.error(
+                            Code::E0608,
+                            span,
+                            "panic action requires a closed empty effect set",
+                        );
+                    }
+                    Ty::Result(Box::new(call.result.clone()), Box::new(Ty::PanicError))
                 }
                 _ => Ty::Unknown,
             },

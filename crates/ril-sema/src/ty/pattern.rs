@@ -181,6 +181,19 @@ impl Checker<'_> {
             }
             Pattern::Subset { ty, binding } => {
                 let subset = self.type_expr(env, *ty);
+                if !matches!(normalized, Ty::Unknown | Ty::Never)
+                    && !self.sum_subset(env, &subset, &normalized)
+                {
+                    self.error(
+                        Code::E0301,
+                        node.span,
+                        "subset pattern requires a sum included in the input",
+                    );
+                }
+                if let Ty::Adt(adt) = &subset {
+                    let tags = self.sum_variants(adt).into_keys().collect();
+                    self.subset_tags.insert(node.span, tags);
+                }
                 if let Some(binding) = binding {
                     self.pattern(env, *binding, &subset);
                 }
@@ -237,6 +250,7 @@ impl Checker<'_> {
             | ("Ok", Ty::Result(inner, _))
             | ("Err", Ty::Result(_, inner)) => vec![(**inner).clone()],
             ("None", Ty::Option(_)) => Vec::new(),
+            ("Panicked", Ty::PanicError) => vec![Ty::PanicInfo],
             (_, Ty::Adt(adt)) if adt.kind == AdtKind::Foreign => {
                 self.error(
                     Code::E0907,
@@ -251,10 +265,8 @@ impl Checker<'_> {
                 self.error(Code::E0308, span, "opaque sum is sealed");
                 Vec::new()
             }
-            (_, Ty::Adt(adt)) if matches!(adt.kind, AdtKind::Sum | AdtKind::OpaqueSum) => self
-                .sum_variants(adt, &mut HashSet::new())
-                .remove(name)
-                .unwrap_or_else(|| {
+            (_, Ty::Adt(adt)) if matches!(adt.kind, AdtKind::Sum | AdtKind::OpaqueSum) => {
+                self.sum_variants(adt).remove(name).unwrap_or_else(|| {
                     self.error(
                         Code::E0301,
                         span,
@@ -264,7 +276,8 @@ impl Checker<'_> {
                         ),
                     );
                     Vec::new()
-                }),
+                })
+            }
             (_, Ty::Adt(adt)) if self.hir.definition(adt.definition).name.value == name => {
                 match self.representation(env, adt) {
                     Some(Ty::Tuple(items)) => items.into_iter().map(|m| m.ty).collect(),
@@ -350,9 +363,7 @@ impl Checker<'_> {
                 {
                     return None;
                 }
-                self.sum_variants(adt, &mut HashSet::new())
-                    .into_keys()
-                    .collect()
+                self.sum_variants(adt).into_keys().collect()
             }
             _ => return None,
         })
@@ -528,7 +539,8 @@ impl Checker<'_> {
         bindings: &mut HashMap<ril_frontend::hir::DefinitionId, Value>,
     ) -> bool {
         let ast = self.ast(env.file);
-        match (&ast.pattern(pattern).value, value) {
+        let node = ast.pattern(pattern);
+        match (&node.value, value) {
             (Pattern::Wildcard | Pattern::Rest(None), _) => true,
             (Pattern::Binding(_, name) | Pattern::Rest(Some(name)), value) => {
                 if let Some(id) = self.resolve(name.span) {
@@ -557,6 +569,12 @@ impl Checker<'_> {
                         .flatten()
                         .zip(values)
                         .all(|(&id, value)| self.value_pattern(env, id, value, bindings))
+            }
+            (Pattern::Subset { binding, .. }, Value::Tag(tag, _)) => {
+                self.subset_tags
+                    .get(&node.span)
+                    .is_some_and(|tags| tags.contains(tag))
+                    && binding.is_none_or(|id| self.value_pattern(env, id, value, bindings))
             }
             (Pattern::Or(items), value) => items.iter().any(|&id| {
                 let mut local = bindings.clone();

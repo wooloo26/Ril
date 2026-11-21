@@ -941,6 +941,15 @@ impl Walk<'_> {
                             Some(target)
                         }
                         Err(err) => {
+                            if self.program.defer_operation(
+                                current,
+                                self.scope,
+                                &segment.name,
+                                path,
+                                &err,
+                            ) {
+                                return None;
+                            }
                             self.errors.push(err);
                             None
                         }

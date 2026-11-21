@@ -257,11 +257,8 @@ impl<'a> Analyzer<'a> {
                 (hir.effect_label(effect), vec![*operation])
             }
             Obligation::Effect(effect) => {
-                let operations = ctx
-                    .handlers
-                    .keys()
-                    .filter_map(|&operation| hir.operation_effect(operation))
-                    .find(|&id| hir.effect_label(id) == *effect)
+                let operations = hir
+                    .effect_by_label(effect)
                     .map_or_else(Vec::new, |id| hir.effect_operations(id).collect());
                 (effect.clone(), operations)
             }
@@ -615,12 +612,20 @@ impl<'a> Analyzer<'a> {
             }
         }
         for effect in &summary.effects {
-            if !sig.effects.contains(effect) {
+            if !sig
+                .effects
+                .iter()
+                .any(|declared| self.program.hir.effect_covers(declared, effect))
+            {
                 self.error(Code::E0612, name, format!("unhandled @{effect}"));
             }
         }
         for effect in &sig.effects {
-            if !summary.effects.contains(effect) {
+            if !summary
+                .effects
+                .iter()
+                .any(|actual| self.program.hir.effect_covers(effect, actual))
+            {
                 self.error(
                     Code::E0612,
                     name,

@@ -529,6 +529,8 @@ impl Checker<'_> {
                     .unwrap_or(Ty::Unknown)
             };
             match last.name.value.as_str() {
+                "PanicInfo" => return Ty::PanicInfo,
+                "PanicError" => return Ty::PanicError,
                 "Option" => return Ty::Option(Box::new(ty_arg())),
                 "Result" => {
                     let ok = ty_arg();
@@ -690,6 +692,7 @@ impl Checker<'_> {
             if let Some(param) = self.resolve(param.name.span) {
                 local.generics.insert(param, value.clone());
             }
+            self.validate_static_checks(&mut local, param, &value, span);
             values.push(value);
         }
         (values, local)
@@ -726,7 +729,7 @@ impl Checker<'_> {
                 GenericValue::Data(static_argument(data))
             } else {
                 self.error(
-                    Code::E0306,
+                    Code::E0323,
                     span,
                     "value parameter requires a static value of its declared kind",
                 );
@@ -871,6 +874,10 @@ impl Checker<'_> {
         type_level: bool,
     ) -> Ty {
         let mut ty = self.normalize(base);
+        if ty == Ty::PanicInfo {
+            self.error(Code::E0308, span, "PanicInfo is opaque");
+            return Ty::Unknown;
+        }
         if let Ty::Param(id) = &ty {
             let id = *id;
             if let Some(GenericValue::Type(specialized)) = env.generics.get(&id) {
@@ -1014,6 +1021,9 @@ impl Checker<'_> {
             let Some(definition) = self.resolve(param.name.span) else {
                 continue;
             };
+            if let Some(argument) = supplied.get(&definition) {
+                self.validate_static_checks(&mut local, param, argument, span);
+            }
             if let Some(GenericValue::Type(actual)) = supplied.get(&definition) {
                 let actual = self.normalize(actual);
                 let domain: Vec<_> = param
@@ -1061,6 +1071,127 @@ impl Checker<'_> {
                     );
                 }
             }
+        }
+    }
+
+    fn validate_static_checks(
+        &mut self,
+        env: &mut Env,
+        parameter: &GenericParam,
+        value: &GenericValue,
+        span: Span,
+    ) {
+        let value = match value {
+            GenericValue::Type(ty) => GenericValue::Type(self.normalize(ty)),
+            value => value.clone(),
+        };
+        if env.shadow
+            || matches!(
+                value,
+                GenericValue::Type(Ty::Param(_) | Ty::Infer(_) | Ty::Unknown)
+            )
+        {
+            return;
+        }
+        for check in &parameter.guards {
+            self.apply_static_check(env, check, &value, span);
+        }
+    }
+
+    fn apply_static_check(
+        &mut self,
+        env: &mut Env,
+        path: &syntax::Path,
+        input: &GenericValue,
+        span: Span,
+    ) {
+        let Some(check) = self.resolve(path.span) else {
+            return;
+        };
+        let def = self.hir.definition(check);
+        if matches!(def.kind, DefinitionKind::Primitive(_)) {
+            return;
+        }
+        let Some(stmt) = def.stmt else { return };
+        let file = def.name.span.file;
+        let StmtKind::Type(declaration) = &self.ast(file).stmt(stmt).value.kind else {
+            self.error(
+                Code::E0306,
+                path.span,
+                "static check requires a type function",
+            );
+            return;
+        };
+        let TypeDefinition::Function(parameters, body) = &declaration.definition else {
+            self.error(
+                Code::E0306,
+                path.span,
+                "static check requires a type function",
+            );
+            return;
+        };
+        let Some((first, parameters)) = parameters.split_first() else {
+            self.error(
+                Code::E0340,
+                path.span,
+                "static check requires an input parameter",
+            );
+            return;
+        };
+        let arguments = path
+            .segments
+            .last()
+            .map_or(&[][..], |segment| segment.arguments.as_slice());
+        if arguments.len() > parameters.len() {
+            self.error(Code::E0340, path.span, "too many static check arguments");
+            return;
+        }
+        let mut local = Env::new(file, def.scope);
+        local.phase = Phase::TypeEval;
+        if let Some(id) = self.resolve(first.name.span) {
+            local.generics.insert(id, input.clone());
+        }
+        for (index, parameter) in parameters.iter().enumerate() {
+            let value = if let Some(argument) = arguments.get(index) {
+                self.generic_argument(env, parameter, argument, span)
+            } else if let Some(default) = &parameter.default {
+                self.generic_argument(&mut local, parameter, default, span)
+            } else {
+                self.error(Code::E0340, path.span, "missing static check argument");
+                return;
+            };
+            if let Some(id) = self.resolve(parameter.name.span) {
+                local.generics.insert(id, value);
+            }
+        }
+        if u64::try_from(self.stack.len()).unwrap_or(u64::MAX) >= self.budget.min(256) {
+            self.error(
+                Code::E0811,
+                span,
+                "static checks exceeded the evaluation budget",
+            );
+            return;
+        }
+        self.stack.push(check);
+        let result = self.eval_root(&local, *body, true);
+        self.stack.pop();
+        let Some(result) = result else { return };
+        let Value::Type(ty) = result else {
+            self.error(Code::E0306, span, "static check must return a type value");
+            return;
+        };
+        match input {
+            GenericValue::Type(actual) if *actual == *ty && *ty != Ty::Never => {}
+            GenericValue::Type(_) => self.error(Code::E0301, span, "type rejected by static check"),
+            _ if *ty == Ty::Unit => {}
+            _ if *ty == Ty::Never => {
+                self.error(Code::E0323, span, "value rejected by static check");
+            }
+            _ => self.error(
+                Code::E0306,
+                span,
+                "static value check must return <()> or <never>",
+            ),
         }
     }
 
