@@ -67,6 +67,22 @@ pub fn choose(first: bool, via a: Cell, via b: Cell) -> infer Cell {
     if first { a } else { b }
 }
 
+-- @case changed_call_entry_projection_breaks_compatibility compat-fail E0552
+-- @baseline
+pub type Pair = .{ ref left: Cell, ref right: Cell }
+pub fn project(ref pair: Pair) -> ref(pair) Cell { pair.left }
+-- @revision
+pub type Pair = .{ ref left: Cell, ref right: Cell }
+pub fn project(ref pair: Pair) -> ref(pair) Cell { pair.right }
+-- ^ E0552
+
+-- @case changed_contained_projection_breaks_compatibility compat-fail E0552
+-- @baseline
+pub fn pack(input: Cell) &return(input) -> new []Cell { [input, Cell.{ count: 0 }] }
+-- @revision
+pub fn pack(input: Cell) &return(input) -> new []Cell { [Cell.{ count: 0 }, input] }
+-- ^ E0552
+
 -- @case multi_input_inference_preserves_selected_sources compile-pass
 fn choose(condition: bool, via left: Cell, via right: Cell) -> infer Cell {
     if condition { left } else { right }

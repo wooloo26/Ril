@@ -2,7 +2,7 @@ mod check;
 mod flow;
 pub mod horn;
 
-pub use flow::Access;
+pub use flow::{Access, Coordinate};
 
 use std::collections::BTreeMap;
 
@@ -16,8 +16,7 @@ use crate::ty::TypedProgram;
 pub struct Summary {
     pub writes: Vec<usize>,
     pub retained: Vec<usize>,
-    pub roots: Vec<usize>,
-    pub contained: Vec<(Access, usize)>,
+    pub return_sources: Vec<ReturnSource>,
     pub effects: Vec<String>,
     pub captures: bool,
     pub constructs: bool,
@@ -39,12 +38,19 @@ impl Summary {
                 .all(|effect| self.effects.contains(effect))
             && (!revised.captures || self.captures)
             && (!self.constructs || revised.constructs)
-            && revised.roots.iter().all(|root| self.roots.contains(root))
             && revised
-                .contained
+                .return_sources
                 .iter()
-                .all(|source| self.contained.contains(source))
+                .all(|source| self.return_sources.contains(source))
     }
+}
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+pub struct ReturnSource {
+    pub formal: usize,
+    pub source_path: Vec<Coordinate>,
+    pub result_path: Vec<Coordinate>,
+    pub access: Access,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
@@ -54,6 +60,17 @@ pub enum Input {
     Mut,
     Shared,
     New,
+}
+
+impl Input {
+    const fn access(self) -> Access {
+        match self {
+            Self::Plain => Access::Immutable,
+            Self::Ref => Access::Ref,
+            Self::Mut | Self::New => Access::Mut,
+            Self::Shared => Access::Shared,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

@@ -35,8 +35,8 @@ impl Access {
     }
 }
 
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub(super) enum Coordinate {
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+pub enum Coordinate {
     Field(String),
     Index(String),
     Dynamic,
@@ -119,6 +119,21 @@ impl Datum {
                 .iter()
                 .chain(self.members.values().flat_map(Self::origins)),
         )
+    }
+
+    pub(super) fn visit_origins(
+        &self,
+        path: &mut Vec<Coordinate>,
+        visit: &mut impl FnMut(&[Coordinate], &Origin),
+    ) {
+        for origin in &self.roots {
+            visit(path, origin);
+        }
+        for (coordinate, member) in &self.members {
+            path.push(coordinate.clone());
+            member.visit_origins(path, visit);
+            path.pop();
+        }
     }
 
     pub(super) fn transform(&mut self, f: &mut impl FnMut(&mut Origin)) {

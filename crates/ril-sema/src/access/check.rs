@@ -14,7 +14,7 @@ use ril_frontend::{
 };
 
 use super::{
-    Access, Analysis, CleanupAction, Input, Instance, Summary,
+    Access, Analysis, CleanupAction, Input, Instance, ReturnSource, Summary,
     flow::{Coordinate, Datum, Ledger, Slot, conflicts},
     horn::{self, Rule},
 };
@@ -99,8 +99,7 @@ struct DefinitionCheck {
     id: DefinitionId,
     formals: Vec<Option<Span>>,
     declared: Callable,
-    actual_roots: Vec<usize>,
-    actual_contained: Vec<(Access, usize)>,
+    return_sources: Vec<ReturnSource>,
     returns: Vec<Datum>,
     via: BTreeSet<Span>,
     returned_new: bool,
@@ -517,44 +516,47 @@ impl<'a> Analyzer<'a> {
             self.returned(&mut ctx, &mut ledger, value, body_span);
             self.check_results(&ledger, &BTreeSet::new());
         }
-        let mut actual_roots = BTreeSet::new();
-        let mut actual_contained = BTreeSet::new();
+        let mut return_sources = BTreeSet::new();
         for value in &ctx.return_values {
-            for origin in &value.roots {
-                if matches!(ctx.expected, Mode::Ref | Mode::Shared | Mode::Infer)
-                    && let Some(index) = ctx
-                        .formals
-                        .iter()
-                        .position(|param| *param == Some(origin.region.source))
-                {
-                    actual_roots.insert(index);
-                    if ctx.expected == Mode::Shared {
-                        self.seed(&ctx, Obligation::Retain(origin.region.source));
+            value.visit_origins(&mut Vec::new(), &mut |result_path, origin| {
+                let Some(formal) = ctx
+                    .formals
+                    .iter()
+                    .position(|param| *param == Some(origin.region.source))
+                else {
+                    return;
+                };
+                let access = if result_path.is_empty() {
+                    match ctx.expected {
+                        Mode::Ref | Mode::Shared => Access::from_mode(ctx.expected),
+                        Mode::Infer => origin.mode,
+                        _ => return,
                     }
-                }
-            }
-            for origin in value
-                .members
-                .values()
-                .filter(|_| ctx.expected != Mode::Plain)
-                .flat_map(Datum::origins)
-            {
-                if !origin.new
-                    && let Some(index) = ctx
-                        .formals
-                        .iter()
-                        .position(|param| *param == Some(origin.region.source))
-                {
-                    actual_contained.insert((origin.mode, index));
-                }
-            }
+                } else if !origin.new && ctx.expected != Mode::Plain {
+                    origin.mode
+                } else {
+                    return;
+                };
+                return_sources.insert(ReturnSource {
+                    formal,
+                    source_path: origin.region.selection.clone(),
+                    result_path: result_path.to_vec(),
+                    access,
+                });
+            });
         }
         if ctx.runtime && ctx.expected != Mode::Infer && !ctx.return_values.is_empty() {
             let excess = ctx.declared_contained.iter().any(|&(mode, source)| {
                 ctx.formals
                     .iter()
                     .position(|decl| *decl == Some(source))
-                    .is_none_or(|index| !actual_contained.contains(&(mode, index)))
+                    .is_none_or(|index| {
+                        !return_sources.iter().any(|entry| {
+                            entry.formal == index
+                                && entry.access == mode
+                                && !entry.result_path.is_empty()
+                        })
+                    })
             });
             if excess {
                 self.error(Code::E0529, ctx.owner, "unused contained return source");
@@ -566,8 +568,7 @@ impl<'a> Analyzer<'a> {
             formals: ctx.formals,
             declared: (**callable).clone(),
             via: ctx.via,
-            actual_roots: actual_roots.into_iter().collect(),
-            actual_contained: actual_contained.into_iter().collect(),
+            return_sources: return_sources.into_iter().collect(),
             returned_new: !ctx.return_values.is_empty()
                 && ctx.return_values.iter().all(|value| value.requires_new),
             returns: ctx.return_values,
@@ -615,8 +616,7 @@ impl<'a> Analyzer<'a> {
 
     fn finish_function(&mut self, facts: &BTreeSet<Fact>, fun: &DefinitionCheck) -> Summary {
         let mut summary = Summary {
-            roots: fun.actual_roots.clone(),
-            contained: fun.actual_contained.clone(),
+            return_sources: fun.return_sources.clone(),
             constructs: fun.returned_new,
             ..Summary::default()
         };
@@ -716,10 +716,12 @@ impl<'a> Analyzer<'a> {
             return Vec::new();
         }
         let mut rows: Vec<Vec<Input>> = vec![Vec::new()];
+        let mut formals = BTreeMap::new();
         for (index, formal) in fun.formals.iter().enumerate() {
             if formal.is_none_or(|span| !fun.via.contains(&span)) {
                 continue;
             }
+            formals.insert(index, formals.len());
             let domain: &[Input] = if summary.retained.contains(&index) {
                 &[Input::Shared]
             } else if summary.writes.contains(&index) {
@@ -745,9 +747,27 @@ impl<'a> Analyzer<'a> {
                 .collect();
         }
         rows.into_iter()
-            .map(|modes| Instance {
-                modes,
-                summary: summary.clone(),
+            .map(|modes| {
+                let mut summary = summary.clone();
+                if fun.declared.result_mode == Mode::Infer {
+                    for source in &mut summary.return_sources {
+                        let Some(input) = formals
+                            .get(&source.formal)
+                            .and_then(|&index| modes.get(index))
+                        else {
+                            continue;
+                        };
+                        source.access =
+                            if source.source_path.is_empty() && source.result_path.is_empty() {
+                                input.access()
+                            } else {
+                                input.access().project(source.access)
+                            };
+                    }
+                    summary.return_sources.sort_unstable();
+                    summary.return_sources.dedup();
+                }
+                Instance { modes, summary }
             })
             .collect()
     }
