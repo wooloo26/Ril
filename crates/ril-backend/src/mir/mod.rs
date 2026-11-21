@@ -8,37 +8,37 @@ pub fn lower(program: &TypedProgram, analysis: &Analysis) -> Result<Program, Dia
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct FunctionId(pub usize);
+pub(crate) struct FunctionId(pub usize);
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct BlockId(pub usize);
+pub(crate) struct BlockId(pub usize);
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct Register(pub usize);
+pub(crate) struct Register(pub usize);
 
 #[derive(Debug)]
 pub struct Program {
-    pub functions: Vec<Function>,
-    pub entry: FunctionId,
+    pub(crate) functions: Vec<Function>,
+    pub(crate) entry: FunctionId,
 }
 
 #[derive(Debug)]
-pub struct Function {
-    pub name: String,
-    pub arity: usize,
-    pub registers: usize,
-    pub blocks: Vec<Block>,
+pub(crate) struct Function {
+    pub(crate) name: String,
+    pub(crate) arity: usize,
+    pub(crate) registers: usize,
+    pub(crate) blocks: Vec<Block>,
 }
 
 #[derive(Debug, Default)]
-pub struct Block {
-    pub params: Vec<Register>,
-    pub instructions: Vec<(Register, Instruction)>,
-    pub terminator: Option<Terminator>,
+pub(crate) struct Block {
+    pub(crate) params: Vec<Register>,
+    pub(crate) instructions: Vec<(Register, Instruction)>,
+    pub(crate) terminator: Option<Terminator>,
 }
 
 #[derive(Debug)]
-pub enum Instruction {
+pub(crate) enum Instruction {
     Handle(u64),
     Evidence,
     Environment,
@@ -50,13 +50,14 @@ pub enum Instruction {
 }
 
 #[derive(Clone, Debug)]
-pub enum Target {
+pub(crate) enum Target {
     Function(FunctionId),
     FunctionWithEnv {
         function: FunctionId,
         environment: Register,
     },
     Runtime(&'static str),
+    Draft(DraftOp),
     Foreign(String),
     Indirect {
         address: Register,
@@ -66,7 +67,7 @@ pub enum Target {
 }
 
 #[derive(Debug)]
-pub enum Terminator {
+pub(crate) enum Terminator {
     Jump(BlockId, Vec<Register>),
     Branch {
         condition: Register,
@@ -86,7 +87,7 @@ pub enum Terminator {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub enum DraftOp {
+pub(crate) enum DraftOp {
     Begin,
     Read,
     Write,
@@ -95,7 +96,7 @@ pub enum DraftOp {
 }
 
 impl DraftOp {
-    pub const fn symbol(self) -> &'static str {
+    pub(crate) const fn symbol(self) -> &'static str {
         match self {
             Self::Begin => "ril_rt_draft_begin",
             Self::Read => "ril_rt_draft_read",
@@ -111,7 +112,7 @@ pub trait IntLowering {
     fn unary(&self, operator: &str) -> Option<&'static str>;
 }
 
-pub struct ManagedInt;
+pub(crate) struct ManagedInt;
 
 impl IntLowering for ManagedInt {
     fn binary(&self, operator: &str) -> Option<&'static str> {

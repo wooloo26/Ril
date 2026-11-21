@@ -106,7 +106,7 @@ impl Checker<'_> {
         let compatible = match (&signature.result, output) {
             (Ty::Option(inner), Ty::Option(_)) if inner.as_ref() == &Ty::Unit => true,
             (Ty::Result(ok, err), Ty::Result(_, expected)) if ok.as_ref() == &Ty::Unit => {
-                self.fits(env, err, expected) || self.sum_subset(err, expected)
+                self.fits(env, err, expected) || self.sum_subset(env, err, expected)
             }
             (Ty::Option(inner), _) if inner.as_ref() == &Ty::Unit => false,
             (Ty::Result(ok, _), _) if ok.as_ref() == &Ty::Unit => false,
@@ -238,7 +238,7 @@ impl Checker<'_> {
             .obligations
             .effects
             .iter()
-            .map(path_name)
+            .map(|path| self.effect_label(path))
             .collect();
         let state = signature
             .obligations

@@ -190,13 +190,17 @@ impl Analyzer<'_> {
             return self.primitive(ctx, ledger, name, &values, span);
         }
         if let Some(id) = id
-            && let Some(effect) = self.program.hir.effect_of(id)
+            && self.program.hir.operation_effect(id).is_some()
         {
-            self.effect(ctx, effect, span);
+            self.use_effect(ctx, Obligation::Operation(id), span, None);
         }
         if let Some(sig) = sig {
             for effect in &sig.effects {
-                self.effect(ctx, effect, span);
+                if let Some(fun) = syntax.filter(|fun| fun.body.is_some()) {
+                    self.link_effects(ctx, fun.name.span, effect, span);
+                } else {
+                    self.effect(ctx, effect, span);
+                }
             }
             if sig.open_effects
                 && !ctx.shadow
@@ -345,6 +349,15 @@ impl Analyzer<'_> {
     }
 
     pub(super) fn link_invocation(&mut self, ctx: &Context, target: &Datum) {
+        self.link_invocation_if(ctx, target, None);
+    }
+
+    pub(super) fn link_invocation_if(
+        &mut self,
+        ctx: &Context,
+        target: &Datum,
+        if_exercised: Option<&Fact>,
+    ) {
         if !ctx.reachable || ctx.shadow {
             return;
         }
@@ -352,10 +365,12 @@ impl Analyzer<'_> {
             for &source in sources {
                 for obligation in [Obligation::Write(source), Obligation::Replace(source)] {
                     self.rules.push(Rule {
-                        premises: vec![Fact {
+                        premises: std::iter::once(Fact {
                             owner,
                             obligation: obligation.clone(),
-                        }],
+                        })
+                        .chain(if_exercised.cloned())
+                        .collect(),
                         conclusion: Fact {
                             owner: ctx.owner,
                             obligation,
@@ -363,6 +378,26 @@ impl Analyzer<'_> {
                     });
                 }
             }
+        }
+    }
+
+    fn link_effects(&mut self, ctx: &Context, owner: Span, effect: &str, span: Span) {
+        let hir = &self.program.hir;
+        let abstract_effect = Obligation::Effect(effect.into());
+        let effect_id = hir.definitions().find_map(|(id, def)| {
+            (matches!(def.kind, DefinitionKind::Effect(_)) && hir.effect_label(id) == effect)
+                .then_some(id)
+        });
+        let operations = effect_id
+            .into_iter()
+            .flat_map(|id| hir.effect_operations(id))
+            .map(Obligation::Operation);
+        for obligation in std::iter::once(abstract_effect).chain(operations) {
+            let prerequisite = Fact {
+                owner,
+                obligation: obligation.clone(),
+            };
+            self.use_effect(ctx, obligation, span, Some(prerequisite));
         }
     }
 
@@ -738,10 +773,9 @@ impl Analyzer<'_> {
         let mut installed = std::collections::BTreeMap::new();
         for handler in handlers {
             let id = self.definition(handler.operation.span);
-            let effect = id.and_then(|id| self.program.hir.effect_of(id));
             let span = handler.operation.span;
             if let Some(id) = id
-                && effect.is_some()
+                && self.program.hir.operation_effect(id).is_some()
             {
                 if !operations.insert(id) {
                     self.error(Code::E0622, span, "duplicate operation in handler group");
@@ -764,12 +798,11 @@ impl Analyzer<'_> {
             if matches!(handler.mode, Mode::Ref | Mode::Mut | Mode::Shared) {
                 ledger.holds.push(value.clone());
             }
-            if let Some(effect) = effect {
-                installed.insert(effect.to_owned(), value);
+            if let Some(id) = id {
+                installed.insert(id, value);
             }
         }
-        ctx.handlers.extend(installed.keys().cloned());
-        ctx.handler_values.extend(installed);
+        ctx.handlers.extend(installed);
     }
 
     pub(super) fn closure(
@@ -795,7 +828,6 @@ impl Analyzer<'_> {
         inner.shadow = ctx.shadow;
         inner.reachable = ctx.reachable;
         inner.handlers.clone_from(&ctx.handlers);
-        inner.handler_values.clone_from(&ctx.handler_values);
         inner.via.clone_from(&ctx.via);
         inner.formals = params
             .iter()
@@ -907,11 +939,14 @@ impl Analyzer<'_> {
             .rules
             .iter()
             .skip(before)
-            .filter_map(|rule| match &rule.conclusion {
-                Fact {
-                    owner,
-                    obligation: Obligation::Effect(effect),
-                } if *owner == inner.owner => Some(effect.clone()),
+            .filter(|rule| rule.conclusion.owner == inner.owner)
+            .filter_map(|rule| match &rule.conclusion.obligation {
+                Obligation::Effect(effect) => Some(effect.clone()),
+                Obligation::Operation(operation) => self
+                    .program
+                    .hir
+                    .operation_effect(*operation)
+                    .map(|effect| self.program.hir.effect_label(effect)),
                 _ => None,
             })
             .collect();

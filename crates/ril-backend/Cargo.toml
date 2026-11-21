@@ -7,12 +7,16 @@ rust-version.workspace = true
 [lints]
 workspace = true
 
+[features]
+native-runtime = ["dep:ril-rt-core", "dep:cranelift-jit"]
+
 [dependencies]
 ril-base.workspace = true
 ril-sema.workspace = true
+ril-rt-core = { workspace = true, optional = true }
 cranelift-codegen.workspace = true
 cranelift-frontend.workspace = true
 cranelift-module.workspace = true
 cranelift-object.workspace = true
-cranelift-jit.workspace = true
+cranelift-jit = { workspace = true, optional = true }
 cranelift-native.workspace = true

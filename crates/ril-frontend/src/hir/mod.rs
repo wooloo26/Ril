@@ -3,7 +3,7 @@ mod imports;
 mod walk;
 
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
     path::{Path, PathBuf},
 };
 
@@ -106,6 +106,7 @@ pub struct Program {
     scopes: Vec<Scope>,
     definitions: Vec<Definition>,
     resolutions: HashMap<Span, Resolution>,
+    local_effects: BTreeSet<DefinitionId>,
     pub entry: FileId,
     prelude: ScopeId,
 }
@@ -143,12 +144,42 @@ impl Program {
         self.scope(self.definition(id).scope).primitive_module
     }
 
-    pub fn effect_of(&self, operation: DefinitionId) -> Option<&str> {
+    pub fn operation_effect(&self, operation: DefinitionId) -> Option<DefinitionId> {
         let scope = self.definition(operation).scope;
-        self.definitions().find_map(|(_, definition)| {
-            (definition.kind == DefinitionKind::Effect(scope))
-                .then_some(definition.name.value.as_str())
+        self.definitions().find_map(|(id, definition)| {
+            (definition.kind == DefinitionKind::Effect(scope)).then_some(id)
         })
+    }
+
+    pub fn effect_label(&self, effect: DefinitionId) -> String {
+        let export = self.export_name(effect);
+        if self.local_effects.contains(&effect) {
+            format!("{export}#{}", self.definition(effect).name.span.start)
+        } else {
+            export
+        }
+    }
+
+    pub fn operation_label(&self, operation: DefinitionId) -> Option<String> {
+        let effect = self.operation_effect(operation)?;
+        Some(format!(
+            "{}::{}",
+            self.effect_label(effect),
+            self.definition(operation).name.value
+        ))
+    }
+
+    pub fn effect_operations(&self, effect: DefinitionId) -> impl Iterator<Item = DefinitionId> {
+        let DefinitionKind::Effect(scope) = self.definition(effect).kind else {
+            ril_base::ice!("operation lookup for a non-effect declaration");
+        };
+        self.scope(scope)
+            .names
+            .values()
+            .filter_map(|entry| match entry.target {
+                Target::Def(operation) => Some(operation),
+                Target::Module(_) => None,
+            })
     }
 
     pub fn same_package(&self, a: ScopeId, b: ScopeId) -> bool {
@@ -374,6 +405,7 @@ pub fn lower(files: Vec<File>, entry: FileId) -> Result<Program, Vec<Diagnostic>
         scopes: Vec::new(),
         definitions: Vec::new(),
         resolutions: HashMap::new(),
+        local_effects: BTreeSet::new(),
         entry,
         prelude: ScopeId(0),
     };

@@ -32,6 +32,7 @@ enum Obligation {
     Capture,
     StatefulHandler,
     Effect(String),
+    Operation(DefinitionId),
 }
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -46,8 +47,8 @@ struct Context {
     file: FileId,
     formals: Vec<Option<Span>>,
     via: BTreeSet<Span>,
-    handlers: BTreeSet<String>,
-    handler_values: BTreeMap<String, Datum>,
+    handlers: BTreeMap<DefinitionId, Datum>,
+    local_effects: BTreeSet<String>,
     expected: Mode,
     returns: Vec<Span>,
     declared_contained: Vec<(Access, Span)>,
@@ -65,8 +66,8 @@ impl Context {
             file: owner.file,
             formals: Vec::new(),
             via: BTreeSet::new(),
-            handlers: BTreeSet::new(),
-            handler_values: BTreeMap::new(),
+            handlers: BTreeMap::new(),
+            local_effects: BTreeSet::new(),
             expected: Mode::Plain,
             returns: Vec::new(),
             declared_contained: Vec::new(),
@@ -107,6 +108,7 @@ struct Analyzer<'a> {
     diagnostics: Vec<Diagnostic>,
     rules: Vec<Rule<Fact>>,
     requirements: Vec<Requirement>,
+    deferred_effect_errors: Vec<(Fact, Diagnostic)>,
     mode_uses: Vec<ModeUse>,
     functions: Vec<DefinitionCheck>,
     done: BTreeSet<DefinitionId>,
@@ -119,6 +121,7 @@ pub(super) fn check(program: &TypedProgram) -> Result<Analysis, Vec<Diagnostic>>
         diagnostics: Vec::new(),
         rules: Vec::new(),
         requirements: Vec::new(),
+        deferred_effect_errors: Vec::new(),
         mode_uses: Vec::new(),
         functions: Vec::new(),
         done: BTreeSet::new(),
@@ -133,6 +136,15 @@ pub(super) fn check(program: &TypedProgram) -> Result<Analysis, Vec<Diagnostic>>
         analyzer.check_results(&ledger, &BTreeSet::new());
     }
     let facts = horn::solve(&analyzer.rules);
+    for (fact, diagnostic) in std::mem::take(&mut analyzer.deferred_effect_errors) {
+        if facts.contains(&fact)
+            && !analyzer.diagnostics.iter().any(|reported| {
+                reported.code == diagnostic.code && reported.primary == diagnostic.primary
+            })
+        {
+            analyzer.diagnostics.push(diagnostic);
+        }
+    }
     let mut analysis = Analysis {
         horn_rules: horn::oracle_input(&analyzer.rules),
         cleanups: std::mem::take(&mut analyzer.cleanups),
@@ -223,27 +235,84 @@ impl<'a> Analyzer<'a> {
     }
 
     fn effect(&mut self, ctx: &Context, effect: &str, span: Span) {
-        if ctx.shadow {
+        self.use_effect(ctx, Obligation::Effect(effect.into()), span, None);
+    }
+
+    fn use_effect(
+        &mut self,
+        ctx: &Context,
+        obligation: Obligation,
+        span: Span,
+        if_exercised: Option<Fact>,
+    ) {
+        if ctx.shadow || !ctx.reachable {
             return;
         }
-        if let Some(handler) = ctx.handler_values.get(effect) {
-            self.link_invocation(ctx, handler);
-            if handler
-                .origins()
-                .any(|origin| origin.mode != Access::Immutable)
-            {
-                self.seed(ctx, Obligation::StatefulHandler);
+        let hir = &self.program.hir;
+        let (label, operations) = match &obligation {
+            Obligation::Operation(operation) => {
+                let effect = hir.operation_effect(*operation).unwrap_or_else(|| {
+                    ril_base::ice!("operation summary refers to a non-effect function")
+                });
+                (hir.effect_label(effect), vec![*operation])
             }
+            Obligation::Effect(effect) => {
+                let operations = ctx
+                    .handlers
+                    .keys()
+                    .filter_map(|&operation| hir.operation_effect(operation))
+                    .find(|&id| hir.effect_label(id) == *effect)
+                    .map_or_else(Vec::new, |id| hir.effect_operations(id).collect());
+                (effect.clone(), operations)
+            }
+            _ => ril_base::ice!("expected effect obligation"),
+        };
+        if !operations.is_empty() && operations.iter().all(|id| ctx.handlers.contains_key(id)) {
+            for handler in operations.iter().filter_map(|id| ctx.handlers.get(id)) {
+                self.link_invocation_if(ctx, handler, if_exercised.as_ref());
+                if handler
+                    .origins()
+                    .any(|origin| origin.mode != Access::Immutable)
+                {
+                    self.rules.push(Rule {
+                        premises: if_exercised.iter().cloned().collect(),
+                        conclusion: Fact {
+                            owner: ctx.owner,
+                            obligation: Obligation::StatefulHandler,
+                        },
+                    });
+                }
+            }
+            return;
         }
-        if !ctx.handlers.contains(effect) {
-            if !ctx.in_function {
-                self.error(
-                    Code::E0202,
-                    span,
-                    format!("top-level initialization cannot perform @{effect}"),
-                );
+        let error = if ctx.local_effects.contains(&label) {
+            Some((
+                Code::E0618,
+                "effect must be handled in its declaring block".into(),
+            ))
+        } else if !ctx.in_function {
+            Some((
+                Code::E0202,
+                format!("top-level initialization cannot perform @{label}"),
+            ))
+        } else {
+            None
+        };
+        if let Some((code, message)) = error {
+            if let Some(fact) = if_exercised {
+                self.deferred_effect_errors
+                    .push((fact, Diagnostic::error(code, span, message)));
+            } else {
+                self.error(code, span, message);
             }
-            self.seed(ctx, Obligation::Effect(effect.into()));
+        } else {
+            self.rules.push(Rule {
+                premises: if_exercised.into_iter().collect(),
+                conclusion: Fact {
+                    owner: ctx.owner,
+                    obligation,
+                },
+            });
         }
     }
 
@@ -510,12 +579,19 @@ impl<'a> Analyzer<'a> {
                     up.insert(*span);
                 }
                 Obligation::Effect(effect) => summary.effects.push(effect.clone()),
+                Obligation::Operation(operation) => {
+                    if let Some(effect) = self.program.hir.operation_effect(*operation) {
+                        summary.effects.push(self.program.hir.effect_label(effect));
+                    }
+                }
                 Obligation::Capture => summary.captures = true,
                 _ => {}
             }
         }
         summary.writes.sort_unstable();
         summary.retained.sort_unstable();
+        summary.effects.sort();
+        summary.effects.dedup();
         let name = fun.owner;
         let sig = &fun.declared;
         let exercised = |slots: &[usize]| {
@@ -1179,10 +1255,10 @@ impl<'a> Analyzer<'a> {
                     if matches!(op.value.as_str(), "==" | "!=")
                         && (self.result_constructor(ctx, *right)
                             || self.result_constructor(ctx, *left))
-                        {
-                            ledger.inspect(&lhs);
-                            ledger.inspect(&rhs);
-                        }
+                    {
+                        ledger.inspect(&lhs);
+                        ledger.inspect(&rhs);
+                    }
                     Datum::default()
                 }
             }
@@ -1244,6 +1320,15 @@ impl<'a> Analyzer<'a> {
                 helpers,
             } => {
                 let mut local_ctx = ctx.clone();
+                for &helper in helpers {
+                    if let StmtKind::Effect { name, .. } = &ast.stmt(helper).value.kind
+                        && let Some(effect) = self.definition(name.span)
+                    {
+                        local_ctx
+                            .local_effects
+                            .insert(self.program.hir.effect_label(effect));
+                    }
+                }
                 let start_returns = local_ctx.return_values.len();
                 let prior = ledger.slots.keys().copied().collect::<BTreeSet<_>>();
                 let prior_iter = ledger.iteration.len();

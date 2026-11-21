@@ -190,22 +190,7 @@ runtime_functions! {
         Value::UNIT
     }
     fn ril_rt_store(rt, target: Value, key: Value, value: Value) -> Value {
-        let key_text = read_text(rt, key).ok();
-        let index = rt.gc.integer(key).and_then(num_traits::ToPrimitive::to_usize);
-        let target = rt.gc.draft_read(target).unwrap_or(target);
-        match rt.gc.object_mut(target) {
-            Some(Object::Record(fields)) if let Some(key) = key_text => { fields.insert(key, value); }
-            Some(Object::Array(items) | Object::Tuple(items)) => {
-                if let Some(slot) = index.and_then(|i| items.get_mut(i)) { *slot = value; }
-                else { rt.raise("index out of bounds"); }
-            }
-            Some(Object::Map(entries)) => {
-                if let Some((_, slot)) = entries.iter_mut().find(|(k, _)| *k == key) { *slot = value; }
-                else { entries.push((key, value)); }
-            }
-            _ => rt.raise("invalid destination for object update"),
-        }
-        Value::UNIT
+        store(rt, target, key, value)
     }
     fn ril_rt_load(rt, target: Value, key: Value) -> Value {
         let value = load(rt, target, key);
@@ -282,9 +267,11 @@ runtime_functions! {
         let result = rt.gc.draft_read(draft);
         rt.checked(result)
     }
-    fn ril_rt_draft_write(rt, draft: Value, value: Value) -> Value {
-        let result = rt.gc.draft_write(draft, value).map(|()| Value::UNIT);
-        rt.checked(result)
+    fn ril_rt_draft_write(rt, draft: Value, key: Value, value: Value) -> Value {
+        match rt.gc.draft_read(draft) {
+            Ok(copy) => store(rt, copy, key, value),
+            Err(message) => rt.checked(Err(message)),
+        }
     }
     fn ril_rt_draft_commit(rt, draft: Value) -> Value {
         let result = rt.gc.draft_commit(draft);
@@ -351,6 +338,35 @@ fn print(rt: &mut Runtime, value: Value, newline: bool) -> Value {
             }
         }
         Err(error) => rt.raise(error),
+    }
+    Value::UNIT
+}
+
+fn store(rt: &mut Runtime, target: Value, key: Value, value: Value) -> Value {
+    let key_text = read_text(rt, key).ok();
+    let index = rt
+        .gc
+        .integer(key)
+        .and_then(num_traits::ToPrimitive::to_usize);
+    match rt.gc.object_mut(target) {
+        Some(Object::Record(fields)) if let Some(key) = key_text => {
+            fields.insert(key, value);
+        }
+        Some(Object::Array(items) | Object::Tuple(items)) => {
+            if let Some(slot) = index.and_then(|i| items.get_mut(i)) {
+                *slot = value;
+            } else {
+                rt.raise("index out of bounds");
+            }
+        }
+        Some(Object::Map(entries)) => {
+            if let Some((_, slot)) = entries.iter_mut().find(|(k, _)| *k == key) {
+                *slot = value;
+            } else {
+                entries.push((key, value));
+            }
+        }
+        _ => rt.raise("invalid destination for object update"),
     }
     Value::UNIT
 }

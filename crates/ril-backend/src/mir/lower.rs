@@ -460,6 +460,29 @@ impl<'a> Builder<'_, 'a> {
         self.invoke(Target::Runtime(symbol), arguments, false)
     }
 
+    fn draft(&mut self, operation: DraftOp, arguments: Vec<Register>) -> Register {
+        self.invoke(Target::Draft(operation), arguments, false)
+    }
+
+    fn is_draft(&self, expression: ExprId) -> bool {
+        matches!(
+            self.global
+                .typed
+                .types
+                .get(&self.ast().expr(expression).span),
+            Some(Ty::Draft(_))
+        )
+    }
+
+    fn collection(&mut self, expression: ExprId) -> Result<Register> {
+        let handle = self.expr(expression)?;
+        if self.is_draft(expression) {
+            Ok(self.draft(DraftOp::Read, vec![handle]))
+        } else {
+            Ok(handle)
+        }
+    }
+
     fn unwind_pad(&mut self) -> BlockId {
         let &(depth, end) = self
             .traps
@@ -663,7 +686,7 @@ impl<'a> Builder<'_, 'a> {
                 Ok(map)
             }
             Expr::Member { base, member, safe } => {
-                let base = self.expr(*base)?;
+                let base = self.collection(*base)?;
                 let key = self.member_key(member)?;
                 Ok(self.runtime(
                     if *safe {
@@ -675,7 +698,7 @@ impl<'a> Builder<'_, 'a> {
                 ))
             }
             Expr::Index { base, index, safe } => {
-                let base = self.expr(*base)?;
+                let base = self.collection(*base)?;
                 if let Expr::Range {
                     start,
                     end,
@@ -799,7 +822,13 @@ impl<'a> Builder<'_, 'a> {
                         .global
                         .resolve(handler.operation.span)
                         .ok_or_else(|| self.unsupported(node.span, "unresolved handler"))?;
-                    let key = self.string(&self.global.typed.hir.export_name(operation));
+                    let label = self
+                        .global
+                        .typed
+                        .hir
+                        .operation_label(operation)
+                        .ok_or_else(|| self.unsupported(node.span, "invalid handler operation"))?;
+                    let key = self.string(&label);
                     installed.push((key, self.expr(handler.value)?));
                 }
                 for (name, handler) in installed {
@@ -1025,12 +1054,13 @@ impl<'a> Builder<'_, 'a> {
             }
             return self.primitive(name, args, span);
         }
-        if self.global.typed.hir.effect_of(id).is_some() {
-            let args = args
-                .iter()
-                .map(|arg| self.expr(arg.value))
-                .collect::<Result<Vec<_>>>()?;
-            let key = self.string(&self.global.typed.hir.export_name(id));
+        if let Some(label) = self.global.typed.hir.operation_label(id) {
+            let operation = self
+                .global
+                .declaration(id)
+                .ok_or_else(|| self.unsupported(span, "missing effect operation"))?;
+            let args = self.arguments(operation, args, span)?;
+            let key = self.string(&label);
             let handler = self.runtime("ril_rt_evidence_find", vec![self.evidence, key]);
             return Ok(self.invoke_closure(handler, args));
         }
@@ -1065,8 +1095,6 @@ impl<'a> Builder<'_, 'a> {
                 }
             });
             Ok(self.invoke(target, values, false))
-        } else if self.global.typed.hir.effect_of(id).is_some() {
-            Err(self.unsupported(span, "effect operation requiring dynamic evidence"))
         } else {
             Ok(self.invoke(Target::Foreign(name.to_owned()), values, false))
         }
@@ -1314,17 +1342,17 @@ impl<'a> Builder<'_, 'a> {
             && let [base, update] = args
         {
             let base = self.expr(base.value)?;
-            let draft = self.runtime(DraftOp::Begin.symbol(), vec![base]);
+            let draft = self.draft(DraftOp::Begin, vec![base]);
             let abort = self.block(0);
             let done = self.block(1);
             self.traps.push((self.cleanups.len(), abort));
             let callback = self.expr(update.value)?;
             self.invoke_closure(callback, vec![draft]);
             self.traps.pop();
-            let result = self.runtime(DraftOp::Commit.symbol(), vec![draft]);
+            let result = self.draft(DraftOp::Commit, vec![draft]);
             self.terminate(Terminator::Jump(done, vec![result]));
             self.current = Some(abort);
-            self.runtime(DraftOp::Abort.symbol(), vec![draft]);
+            self.draft(DraftOp::Abort, vec![draft]);
             let unreachable_value = self.unit();
             self.terminate(Terminator::Jump(done, vec![unreachable_value]));
             self.current = Some(done);

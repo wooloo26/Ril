@@ -16,11 +16,11 @@ use ril_frontend::{
 
 use super::{
     AdtKind, Callable, LiteralError, Member, Parameter, Ty, Value,
-    check::{Checker, Env, Phase, path_name, substitute, unknown_callable},
+    check::{Checker, Env, ImplicitExits, Phase, substitute, unknown_callable},
     literal,
 };
 
-impl Checker<'_> {
+impl<'a> Checker<'a> {
     pub(super) fn expect(&mut self, env: &mut Env, expr: ExprId, expected: &Ty) -> Ty {
         let found = self.expr(env, expr, Some(expected));
         self.require(env, self.ast(env.file).expr(expr).span, &found, expected);
@@ -85,14 +85,23 @@ impl Checker<'_> {
                         self.function(env, fun);
                     }
                 }
-                result
+                if self.exposes_type(&result, |id| {
+                    let def = self.hir.definition(id);
+                    def.name.span.file == env.file
+                        && def.stmt.is_some_and(|stmt| helpers.contains(&stmt))
+                }) {
+                    self.error(Code::E0315, span, "block result exposes a local type");
+                    Ty::Unknown
+                } else {
+                    result
+                }
             }
             Expr::Unary { op, value } => self.unary(env, op, *value),
             Expr::Binary { op, left, right } => self.binary(env, op, *left, *right, expected),
             Expr::Cast { value, target } => {
                 let actual = self.expr(env, *value, None);
                 let target = self.type_expr(env, *target);
-                if !self.sum_subset(&actual, &target) {
+                if !self.sum_subset(env, &actual, &target) {
                     self.require(env, span, &actual, &target);
                 }
                 target
@@ -317,14 +326,8 @@ impl Checker<'_> {
                 }))
             }
             Expr::Transfer { kind, value } => {
-                if *kind == Transfer::Return
-                    && let Some(target) = env.expected_return.clone()
-                {
-                    if let Some(value) = value {
-                        self.expect(env, *value, &target);
-                    } else {
-                        self.require(env, span, &Ty::Unit, &target);
-                    }
+                if *kind == Transfer::Return {
+                    self.check_return(env, *value, span);
                 }
                 Ty::Never
             }
@@ -698,10 +701,14 @@ impl Checker<'_> {
     }
 
     fn propagate(&mut self, env: &Env, actual: Ty, span: Span) -> Ty {
-        match actual {
+        match self.normalize(&actual) {
             Ty::Result(ok, error) => {
-                if !matches!(&env.expected_return, Some(Ty::Result(_, target))
-                    if self.fits(env, &error, target) || self.sum_subset(&error, target))
+                if let Some(index) = env.inferred_return {
+                    if !env.shadow {
+                        self.closure_exits(index).errors.push(*error);
+                    }
+                } else if !matches!(&env.expected_return, Some(Ty::Result(_, target))
+                    if self.fits(env, &error, target) || self.sum_subset(env, &error, target))
                 {
                     self.error(
                         Code::E0713,
@@ -712,7 +719,11 @@ impl Checker<'_> {
                 *ok
             }
             Ty::Option(ok) => {
-                if !matches!(env.expected_return, Some(Ty::Option(_))) {
+                if let Some(index) = env.inferred_return {
+                    if !env.shadow {
+                        self.closure_exits(index).none = true;
+                    }
+                } else if !matches!(env.expected_return, Some(Ty::Option(_))) {
                     self.error(
                         Code::E0713,
                         span,
@@ -721,7 +732,7 @@ impl Checker<'_> {
                 }
                 *ok
             }
-            Ty::Unknown => Ty::Unknown,
+            Ty::Unknown | Ty::Never => actual,
             _ => {
                 self.error(Code::E0712, span, "propagation requires Result or Option");
                 Ty::Unknown
@@ -729,19 +740,145 @@ impl Checker<'_> {
         }
     }
 
-    pub(super) fn sum_subset(&mut self, actual: &Ty, target: &Ty) -> bool {
-        let (Ty::Adt(actual), Ty::Adt(target)) = (actual, target) else {
+    fn check_return(&mut self, env: &mut Env, value: Option<ExprId>, span: Span) {
+        let target = env.expected_return.clone();
+        let actual = value.map_or(Ty::Unit, |value| self.expr(env, value, target.as_ref()));
+        if env.return_scope.is_some_and(|scope| {
+            self.exposes_type(&actual, |id| {
+                let name = self.hir.definition(id).name.span;
+                name.file == scope.file && scope.start <= name.start && name.end <= scope.end
+            })
+        }) {
+            self.error(
+                Code::E0315,
+                span,
+                "return exposes a type declared inside the callable",
+            );
+        } else if let Some(target) = target {
+            self.require(env, span, &actual, &target);
+        } else if let Some(index) = env.inferred_return
+            && !env.shadow
+        {
+            self.closure_exits(index).returns.push((span, actual));
+        }
+    }
+
+    fn infer_closure_result(
+        &mut self,
+        env: &Env,
+        body: Ty,
+        exits: ImplicitExits,
+        span: Span,
+    ) -> Ty {
+        let result = exits
+            .returns
+            .into_iter()
+            .fold(body, |result, (at, returned)| {
+                self.join(env, at, result, returned)
+            });
+        let result = self.normalize(&result);
+        if exits.errors.is_empty() && !exits.none {
+            return result;
+        }
+        if exits.none {
+            if exits.errors.is_empty() {
+                let target = Ty::Option(Box::new(self.fresh()));
+                if self.fits(env, &result, &target) {
+                    return self.normalize(&target);
+                }
+            }
+        } else {
+            let mut errors = exits
+                .errors
+                .iter()
+                .map(|ty| self.normalize(ty))
+                .collect::<Vec<_>>();
+            let mut greatest = None;
+            // A candidate must dominate every error originating at a propagation site.
+            // Distinct nominal types with equal tag sets are still separate candidates.
+            while let Some(candidate) = errors.pop() {
+                if exits.errors.iter().all(|ty| {
+                    let ty = self.normalize(ty);
+                    ty == candidate || self.sum_subset(env, &ty, &candidate)
+                }) {
+                    if greatest
+                        .as_ref()
+                        .is_some_and(|previous| previous != &candidate)
+                    {
+                        greatest = None;
+                        break;
+                    }
+                    greatest = Some(candidate);
+                }
+            }
+            if let Some(error) = greatest {
+                let target = Ty::Result(Box::new(self.fresh()), Box::new(error));
+                if self.fits(env, &result, &target) {
+                    return self.normalize(&target);
+                }
+            }
+        }
+        self.error(
+            Code::E0344,
+            span,
+            "cannot infer a fallible closure result from these propagation sites",
+        );
+        Ty::Unknown
+    }
+
+    pub(super) fn sum_subset(&mut self, env: &Env, actual: &Ty, target: &Ty) -> bool {
+        let (Ty::Adt(actual), Ty::Adt(target)) = (self.normalize(actual), self.normalize(target))
+        else {
             return false;
         };
+        self.sum_includes(env, &actual, &target, &mut HashSet::new())
+    }
+
+    fn sum_includes(
+        &mut self,
+        env: &Env,
+        actual: &super::Adt,
+        target: &super::Adt,
+        active: &mut HashSet<DefinitionId>,
+    ) -> bool {
+        if !matches!(target.kind, AdtKind::Sum | AdtKind::OpaqueSum) {
+            return false;
+        }
         if actual.definition == target.definition {
             return actual.arguments == target.arguments;
         }
-        let variants = self.sum_variants(actual, &mut HashSet::new());
-        let sup = self.sum_variants(target, &mut HashSet::new());
-        !variants.is_empty()
-            && variants
-                .iter()
-                .all(|(name, payload)| sup.get(name).is_some_and(|other| other == payload))
+        if (target.kind == AdtKind::OpaqueSum && env.scope != target.defining_scope)
+            || !active.insert(target.definition)
+        {
+            return false;
+        }
+        let mut local = self.instantiate_adt(target);
+        let includes = self.sum_declaration(target).is_some_and(|variants| {
+            variants.iter().any(|variant| {
+                let syntax::Variant::Spread(ty) = variant else {
+                    return false;
+                };
+                let Ty::Adt(subset) = self.type_expr(&mut local, *ty) else {
+                    return false;
+                };
+                self.sum_includes(&local, actual, &subset, active)
+            })
+        });
+        active.remove(&target.definition);
+        includes
+    }
+
+    fn sum_declaration(&self, adt: &super::Adt) -> Option<&'a [syntax::Variant]> {
+        let definition = self.hir.definition(adt.definition);
+        let stmt = definition.stmt?;
+        let StmtKind::Type(decl) = &self.ast(definition.name.span.file).stmt(stmt).value.kind
+        else {
+            return None;
+        };
+        match &decl.definition {
+            TypeDefinition::Sum(variants) => Some(variants),
+            _ => None,
+        }
     }
 
     pub(super) fn sum_variants(
@@ -947,6 +1084,9 @@ impl Checker<'_> {
             None
         };
         let mut local = env.clone();
+        local.expected_return = expected_call.map(|sig| sig.result.clone());
+        local.inferred_return = None;
+        local.return_scope = Some(self.ast(env.file).expr(body).span);
         let mut parameters = Vec::new();
         for (index, item) in params.iter().enumerate() {
             let expected_param = expected_call.and_then(|sig| sig.parameters.get(index));
@@ -973,9 +1113,21 @@ impl Checker<'_> {
                 is_meta: item.is_meta,
             });
         }
-        local.expected_return = expected_call.map(|sig| sig.result.clone());
+        let infer_result = local.expected_return.is_none();
+        if infer_result {
+            local.inferred_return = Some(self.implicit_exits.len());
+            self.implicit_exits.push(ImplicitExits::default());
+        }
         let target = local.expected_return.clone();
         let result = self.expr(&mut local, body, target.as_ref());
+        let result = if infer_result {
+            let exits = self.implicit_exits.pop().unwrap_or_else(|| {
+                ril_base::ice!("missing inference state for the current closure")
+            });
+            self.infer_closure_result(&local, result, exits, self.ast(env.file).expr(body).span)
+        } else {
+            result
+        };
         let effects = if obligations.effects.is_empty() {
             let mut used: Vec<_> = local
                 .effects_seen
@@ -985,7 +1137,11 @@ impl Checker<'_> {
             used.sort();
             used
         } else {
-            obligations.effects.iter().map(path_name).collect()
+            obligations
+                .effects
+                .iter()
+                .map(|path| self.effect_label(path))
+                .collect()
         };
         Ty::Callable(Arc::new(Callable {
             parameters,
@@ -1012,9 +1168,9 @@ impl Checker<'_> {
         };
         let def_id = path.and_then(|p| self.resolve(p.span));
         if !env.shadow
-            && let Some(effect) = def_id.and_then(|id| self.hir.effect_of(id))
+            && let Some(effect) = def_id.and_then(|id| self.hir.operation_effect(id))
         {
-            env.effects_seen.insert(effect.to_owned());
+            env.effects_seen.insert(self.hir.effect_label(effect));
         }
         let mut pending_meta = false;
         let (ty, generics) = if let Some(id) = def_id {

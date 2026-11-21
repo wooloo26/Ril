@@ -75,7 +75,7 @@ impl Driver {
         let wire: PackageWire = serde_json::from_reader(file).map_err(failure)?;
         let package = wire.into_package()?;
         let program = self.lower(&package)?;
-        cranelift::jit(&program, &ril_rt_core::symbols()).map_err(|err| vec![err])
+        cranelift::jit(&program).map_err(|err| vec![err])
     }
 }
 

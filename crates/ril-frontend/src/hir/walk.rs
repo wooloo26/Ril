@@ -31,6 +31,7 @@ pub(super) fn check(program: &mut Program, errors: &mut Vec<Diagnostic>) {
             scope,
             frames: Vec::new(),
             refs: HashMap::new(),
+            local_types: HashSet::new(),
             helper: None,
             signature: None,
             exposure: Visibility::Private,
@@ -51,6 +52,7 @@ pub(super) fn check(program: &mut Program, errors: &mut Vec<Diagnostic>) {
 struct Frame {
     bound: BTreeMap<String, DefinitionId>,
     future: BTreeMap<String, DefinitionId>,
+    variants: BTreeMap<String, Vec<DefinitionId>>,
 }
 
 struct SignatureBarrier {
@@ -65,6 +67,7 @@ struct Walk<'a> {
     scope: ScopeId,
     frames: Vec<Frame>,
     refs: HashMap<DefinitionId, HashSet<DefinitionId>>,
+    local_types: HashSet<DefinitionId>,
     helper: Option<DefinitionId>,
     signature: Option<SignatureBarrier>,
     exposure: Visibility,
@@ -395,9 +398,73 @@ impl Walk<'_> {
             if let Some(name) = self.declaration_name(item).cloned() {
                 let kind = match &self.ast.stmt(item).value.kind {
                     StmtKind::Function(_) => DefinitionKind::Function,
+                    StmtKind::Type(declaration) => {
+                        if let TypeDefinition::Sum(variants) = &declaration.definition {
+                            self.hoist_sum(&name, item, variants);
+                            continue;
+                        }
+                        DefinitionKind::Type
+                    }
+                    StmtKind::Effect { operations, .. } => {
+                        let namespace = self.program.child(self.scope, Visibility::Private, false);
+                        let effect = self.declare(
+                            &name,
+                            DefinitionKind::Effect(namespace),
+                            Some(item),
+                            false,
+                        );
+                        self.program.local_effects.insert(effect);
+                        for &operation in operations {
+                            if let StmtKind::Function(function) =
+                                &self.ast.stmt(operation).value.kind
+                                && let Err(error) = self.program.register(
+                                    namespace,
+                                    function.name.clone(),
+                                    DefinitionKind::Function,
+                                    operation,
+                                    Visibility::Public,
+                                )
+                            {
+                                self.errors.push(error);
+                            }
+                        }
+                        continue;
+                    }
                     _ => DefinitionKind::Type,
                 };
-                self.declare(&name, kind, Some(item), false);
+                let id = self.declare(&name, kind, Some(item), false);
+                if kind == DefinitionKind::Type {
+                    self.local_types.insert(id);
+                }
+            }
+        }
+    }
+
+    fn hoist_sum(&mut self, name: &Name, item: StmtId, variants: &[Variant]) {
+        let namespace = self.program.child(self.scope, Visibility::Private, false);
+        let sum = self.declare(name, DefinitionKind::Sum(namespace), Some(item), false);
+        self.local_types.insert(sum);
+        for variant in variants {
+            let Variant::Constructor { name, .. } = variant else {
+                continue;
+            };
+            match self.program.register(
+                namespace,
+                name.clone(),
+                DefinitionKind::Variant(sum),
+                item,
+                Visibility::Public,
+            ) {
+                Ok(id) => {
+                    if let Some(frame) = self.frames.last_mut() {
+                        frame
+                            .variants
+                            .entry(name.value.clone())
+                            .or_default()
+                            .push(id);
+                    }
+                }
+                Err(error) => self.errors.push(error),
             }
         }
     }
@@ -905,6 +972,15 @@ impl Walk<'_> {
                 self.record(name, target);
                 return Some(target);
             }
+            if let Some(variants) = frame.variants.get(&name.value) {
+                if let [id] = variants.as_slice() {
+                    let target = Target::Def(*id);
+                    self.record(name, target);
+                    return Some(target);
+                }
+                self.report(Code::E0206, name.span, "ambiguous local constructor");
+                return None;
+            }
             uninitialized = uninitialized.or_else(|| frame.future.get(&name.value));
         }
         match self
@@ -964,6 +1040,7 @@ impl Walk<'_> {
             let kind = self.program.definition(def).kind;
             if self.exposure > self.program.definition(def).visibility
                 && !matches!(kind, DefinitionKind::Generic | DefinitionKind::Local)
+                && !self.local_types.contains(&def)
             {
                 self.report(
                     Code::E0910,

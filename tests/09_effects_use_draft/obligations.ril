@@ -68,3 +68,37 @@ fn scoped() @fiber -> int {
     -- ^ E0616
     handle.id
 }
+
+-- @case one_handler_cannot_cover_a_different_operation compile-fail E0612
+eff Clock { fn read() -> int; fn reset() -> () }
+fn invalid() -> () {
+    with Clock::read = \-> 1
+    Clock::reset()
+}
+
+-- @case local_effect_must_be_handled_in_declaring_block compile-fail E0618
+fn invalid() -> () {
+    Notice::emit()
+    -- ^ E0618
+where
+    eff Notice { fn emit() -> () }
+}
+-- @forbid E0612, E0204
+
+-- @case handler_must_implement_operation_signature compile-fail E0534 stage=type
+eff Convert { fn digit(input: int) -> int }
+fn invalid() -> () {
+    with Convert::digit = \input -> "wrong result"
+    -- ^ E0534
+}
+
+-- @case named_calls_only_need_handlers_for_reachable_operations compile-pass
+eff Log { fn open() -> (); fn close() -> () }
+fn first(n: int) @Log -> () {
+    if n == 0 { Log::open() } else { second(n - 1) }
+}
+fn second(n: int) @Log -> () { first(n) }
+fn run() -> () {
+    with Log::open = \-> ()
+    second(0)
+}

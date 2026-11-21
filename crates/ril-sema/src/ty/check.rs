@@ -36,6 +36,7 @@ pub(super) fn check(hir: Program, budget: Option<u64>) -> Result<TypedProgram, V
         checked: HashSet::new(),
         schemes: HashSet::new(),
         live: HashSet::new(),
+        implicit_exits: Vec::new(),
         narrowings: HashMap::new(),
         narrow_errors: HashMap::new(),
         constants: HashSet::new(),
@@ -96,6 +97,8 @@ pub(super) struct Env {
     pub(super) generics: HashMap<DefinitionId, GenericValue>,
     pub(super) domains: HashMap<DefinitionId, Vec<Ty>>,
     pub(super) expected_return: Option<Ty>,
+    pub(super) inferred_return: Option<usize>,
+    pub(super) return_scope: Option<Span>,
     pub(super) shadow: bool,
     pub(super) effects_seen: HashSet<String>,
     pub(super) refinements: Refinements,
@@ -112,6 +115,8 @@ impl Env {
             generics: HashMap::new(),
             domains: HashMap::new(),
             expected_return: None,
+            inferred_return: None,
+            return_scope: None,
             shadow: false,
             effects_seen: HashSet::new(),
             refinements: Refinements::default(),
@@ -134,11 +139,19 @@ pub(super) struct Checker<'a> {
     checked: HashSet<DefinitionId>,
     schemes: HashSet<DefinitionId>,
     pub(super) live: HashSet<DefinitionId>,
+    pub(super) implicit_exits: Vec<ImplicitExits>,
     pub(super) narrowings: HashMap<Span, usize>,
     pub(super) narrow_errors: HashMap<Span, Code>,
     constants: HashSet<DefinitionId>,
     pub(super) stack: Vec<DefinitionId>,
     pub(super) budget: u64,
+}
+
+#[derive(Default)]
+pub(super) struct ImplicitExits {
+    pub(super) returns: Vec<(Span, Ty)>,
+    pub(super) errors: Vec<Ty>,
+    pub(super) none: bool,
 }
 
 impl<'a> Checker<'a> {
@@ -160,6 +173,33 @@ impl<'a> Checker<'a> {
             Some(Resolution::Definition(def)) => Some(def),
             _ => None,
         }
+    }
+
+    pub(super) fn effect_label(&self, path: &syntax::Path) -> String {
+        self.resolve(path.span)
+            .filter(|&id| matches!(self.hir.definition(id).kind, DefinitionKind::Effect(_)))
+            .map_or_else(|| path_name(path), |id| self.hir.effect_label(id))
+    }
+
+    pub(super) fn exposes_type(
+        &self,
+        ty: &Ty,
+        mut confined: impl FnMut(DefinitionId) -> bool,
+    ) -> bool {
+        let mut escaped = false;
+        transform(&self.normalize(ty), &mut |part| {
+            if let Ty::Adt(adt) = part {
+                escaped |= confined(adt.definition);
+            }
+            None
+        });
+        escaped
+    }
+
+    pub(super) fn closure_exits(&mut self, index: usize) -> &mut ImplicitExits {
+        self.implicit_exits
+            .get_mut(index)
+            .unwrap_or_else(|| ril_base::ice!("missing inference state for the current closure"))
     }
 
     pub(super) fn fresh(&mut self) -> Ty {
@@ -417,6 +457,19 @@ impl<'a> Checker<'a> {
         }
         self.generic_env(&mut env, &function.generics);
         let call = Arc::new(self.callable(&mut env, &function.signature, true));
+        if self.exposes_type(&Ty::Callable(Arc::clone(&call)), |id| {
+            let def = self.hir.definition(id);
+            def.name.span.file == file
+                && def
+                    .stmt
+                    .is_some_and(|stmt| function.helpers.contains(&stmt))
+        }) {
+            self.error(
+                Code::E0315,
+                function.name.span,
+                "local type escapes in the callable signature",
+            );
+        }
         self.callables.insert(id, Arc::clone(&call));
         self.bindings.insert(id, Ty::Callable(Arc::clone(&call)));
         self.resolving.remove(&id);
@@ -465,6 +518,7 @@ impl<'a> Checker<'a> {
             );
         }
         local.expected_return = Some(call.result.clone());
+        local.inferred_return = None;
         for (index, (p, ty)) in fun
             .signature
             .params
@@ -518,6 +572,7 @@ impl<'a> Checker<'a> {
             self.check_guard(&local, guard, &call.result);
         }
         if let Some(body) = fun.body {
+            local.return_scope = Some(self.ast(local.file).expr(body).span);
             self.expect(&mut local, body, &call.result);
         }
     }
@@ -706,7 +761,19 @@ impl<'a> Checker<'a> {
             }
             StmtKind::With(handlers) => {
                 for handler in handlers {
-                    self.expr(env, handler.value, None);
+                    if let Some(operation) = self.resolve(handler.operation.span)
+                        && self.hir.operation_effect(operation).is_some()
+                    {
+                        let mut expected = (*self.declare_function(operation)).clone();
+                        for parameter in &mut expected.parameters {
+                            parameter.label = None;
+                        }
+                        expected.open_effects = true;
+                        expected.open_state = true;
+                        self.expect(env, handler.value, &Ty::Callable(Arc::new(expected)));
+                    } else {
+                        self.expr(env, handler.value, None);
+                    }
                 }
             }
             StmtKind::Import(_) => {}

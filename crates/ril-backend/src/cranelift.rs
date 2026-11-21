@@ -7,7 +7,6 @@ use cranelift_codegen::{
     verify_function,
 };
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
-use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{DataDescription, FuncId, Linkage, Module, default_libcall_names};
 use cranelift_object::{ObjectBuilder, ObjectModule};
 use ril_base::diag::Diagnostic;
@@ -63,19 +62,38 @@ pub fn emit_clif(program: &mir::Program) -> Result<String> {
     Ok(text)
 }
 
+#[cfg(feature = "native-runtime")]
 #[allow(
     unsafe_code,
     reason = "execute the verified native entry while its JIT module owns the code"
 )]
-pub fn jit(program: &mir::Program, symbols: &[(&str, *const u8)]) -> Result<i32> {
+pub fn jit(program: &mir::Program) -> Result<i32> {
+    use cranelift_jit::{JITBuilder, JITModule};
+
+    // JITModule also searches the process's dynamic symbols for imports. A
+    // Ril foreign declaration alone cannot establish the C ABI of those symbols.
+    for function in &program.functions {
+        for block in &function.blocks {
+            if let Some(Terminator::Invoke {
+                target: Target::Foreign(symbol),
+                ..
+            }) = &block.terminator
+            {
+                return Err(diagnostic(format!(
+                    "unregistered foreign JIT function {symbol}"
+                )));
+            }
+        }
+    }
     let mut builder = JITBuilder::with_isa(target(false)?, default_libcall_names());
-    builder.symbols(symbols.iter().copied());
+    builder.symbols(ril_rt_core::symbols());
     let mut module = JITModule::new(builder);
     let (entry, _) = MirToClifTranslator::compile(&mut module, program)?;
     module.finalize_definitions().map_err(diagnostic)?;
     let address = module.get_finalized_function(entry);
     // SAFETY: the translator defines entry with the platform C signature () -> i32.
-    // The JIT module remains alive and immutable for the duration of execution.
+    // Runtime imports are bound to the linked Ril ABI, and the JIT module
+    // remains alive and immutable for the duration of execution.
     let execute = unsafe { std::mem::transmute::<*const u8, extern "C" fn() -> i32>(address) };
     Ok(execute())
 }
@@ -288,6 +306,10 @@ impl<M: Module> MirToClifTranslator<'_, M> {
                         Target::Runtime(name) => {
                             let args = std::iter::once(rt).chain(args).collect::<Vec<_>>();
                             self.handle(&mut builder, name, &args)?
+                        }
+                        Target::Draft(operation) => {
+                            let args = std::iter::once(rt).chain(args).collect::<Vec<_>>();
+                            self.handle(&mut builder, operation.symbol(), &args)?
                         }
                         Target::Indirect {
                             address,

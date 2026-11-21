@@ -5,7 +5,8 @@ use ril_sema::{
 };
 
 use super::{
-    BlockId, Builder, IntLowering, Loop, ManagedInt, Register, Result, Target, Terminator, Work,
+    BlockId, Builder, DraftOp, IntLowering, Loop, ManagedInt, Register, Result, Target, Terminator,
+    Work,
 };
 
 impl Builder<'_, '_> {
@@ -42,12 +43,18 @@ impl Builder<'_, '_> {
                     base,
                     member,
                     safe: false,
-                } => Destination::Object(self.expr(*base)?, self.member_key(member)?),
+                } => Destination::Object(
+                    self.expr(*base)?,
+                    self.member_key(member)?,
+                    self.is_draft(*base),
+                ),
                 Expr::Index {
                     base,
                     index,
                     safe: false,
-                } => Destination::Object(self.expr(*base)?, self.expr(*index)?),
+                } => {
+                    Destination::Object(self.expr(*base)?, self.expr(*index)?, self.is_draft(*base))
+                }
                 _ => return Err(self.unsupported(node.span, "non-addressable assignment")),
             };
             let current = if token == "=" {
@@ -55,7 +62,14 @@ impl Builder<'_, '_> {
             } else {
                 Some(match target {
                     Destination::Local(slot) => self.read(slot, node.span)?,
-                    Destination::Object(base, key) => self.runtime("ril_rt_load", vec![base, key]),
+                    Destination::Object(base, key, draft) => {
+                        let base = if draft {
+                            self.draft(DraftOp::Read, vec![base])
+                        } else {
+                            base
+                        };
+                        self.runtime("ril_rt_load", vec![base, key])
+                    }
                 })
             };
             let mut right = self.expr(right)?;
@@ -77,7 +91,10 @@ impl Builder<'_, '_> {
                         self.locals.insert(slot, right);
                     }
                 }
-                Destination::Object(base, key) => {
+                Destination::Object(base, key, true) => {
+                    self.draft(DraftOp::Write, vec![base, key, right]);
+                }
+                Destination::Object(base, key, false) => {
                     self.runtime("ril_rt_store", vec![base, key, right]);
                 }
             }
@@ -818,5 +835,5 @@ impl Builder<'_, '_> {
 
 enum Destination {
     Local(ril_sema::hir::DefinitionId),
-    Object(Register, Register),
+    Object(Register, Register, bool),
 }

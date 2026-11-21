@@ -694,6 +694,7 @@ dependencies = [
  "cranelift-native",
  "cranelift-object",
  "ril-base",
+ "ril-rt-core",
  "ril-sema",
 ]
 
@@ -722,7 +723,6 @@ dependencies = [
  "ril-backend",
  "ril-base",
  "ril-frontend",
- "ril-rt-core",
  "ril-sema",
  "ril-test",
  "serde",

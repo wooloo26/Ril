@@ -117,3 +117,40 @@ fn main() @io -> () {
     }
     println("{base.count}:{updated.count}:{len(updated.values)}")
 }
+
+-- @case local_effect_dispatches_through_its_handler run-pass backend=both
+-- @expect-stdout 42
+fn main() @io -> () {
+    with Shift::apply = \left, right -> left - right
+    println("{Shift::apply(right: 1, left: 43)}")
+where
+    eff Shift { fn apply(left: int, right: int) -> int }
+}
+
+-- @case effects_with_same_operation_names_keep_distinct_evidence run-pass backend=both
+-- @expect-stdout 12:34
+eff First { fn read() -> int }
+eff Second { fn read() -> int }
+fn main() @io -> () {
+    with First::read = \-> 12
+    with Second::read = \-> 34
+    println("{First::read()}:{Second::read()}")
+}
+
+-- @case inferred_propagation_returns_widened_error run-pass backend=both
+-- @expect-stdout first
+type Basic { First }
+type Extended { ..Basic; Second }
+fn first() -> new !<int, Basic> { Err(Basic::First) }
+fn second() -> new !<int, Extended> { Ok(3) }
+fn main() @io -> () {
+    let sum = \-> {
+        let a = first()?
+        Ok(a + second()?)
+    }
+    match sum() {
+        Ok(_) -> println("success")
+        Err(First) -> println("first")
+        Err(Second) -> println("second")
+    }
+}

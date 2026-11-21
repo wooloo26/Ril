@@ -187,3 +187,86 @@ fn invalid(x: int = { println("effect"); 1 }) -> int { x }
 -- @case defaults_cannot_read_later_parameter compile-fail E0408
 fn invalid(x: int = y, y: int = 2) -> int { x + y }
 -- ^ E0408
+
+-- @case inferred_propagation_joins_error_sums compile-pass
+type Basic { First }
+type Extended { ..Basic; Second }
+fn first() -> !<int, Basic> { Ok(2) }
+fn second() -> !<int, Extended> { Ok(3) }
+fn combine(condition: bool) -> !<int, Extended> {
+    let sum = \-> {
+        let a = if condition { first()? } else { 0 }
+        let b = second()?
+        Ok(a + b)
+    }
+    sum()
+}
+
+-- @case incomparable_propagation_sums compile-fail E0344
+type Left { LeftError }
+type Right { RightError }
+fn first() -> !<int, Left> { Ok(2) }
+fn second() -> !<int, Right> { Ok(3) }
+fn combine() -> () {
+    let sum = \-> {
+    -- ^ E0344
+        let a = first()?
+        Ok(a + second()?)
+    }
+    let _ = sum
+}
+-- @forbid E0713
+
+-- @case contextual_error_sum_handles_incomparable_sources compile-pass
+type Left { LeftError }
+type Right { RightError }
+type Both { ..Left; ..Right }
+fn first() -> !<int, Left> { Ok(2) }
+fn second() -> !<int, Right> { Ok(3) }
+fn combine() -> !<int, Both> {
+    let sum: fn() -> !<int, Both> = \-> {
+        let a = first()?
+        Ok(a + second()?)
+    }
+    sum()
+}
+
+-- @case local_sum_can_be_used_in_hoisted_function compile-pass
+fn total() -> int {
+    count(Pair(Leaf(3), Leaf(4)))
+where
+    type Tree { Leaf(int); Pair(Tree, Tree) }
+    fn count(tree: Tree) -> int {
+        match tree { Leaf(n) -> n; Pair(a, b) -> count(a) + count(b) }
+    }
+}
+
+-- @case local_nominal_cannot_escape_callable_signature compile-fail E0315
+fn escaped() -> Hidden
+-- ^ E0315
+where
+    nominal type Hidden = int
+{
+    Hidden(1)
+}
+
+-- @case local_nominal_cannot_escape_through_early_return compile-fail E0315
+fn escaped() -> int {
+    return Hidden(1)
+    -- ^ E0315
+where
+    nominal type Hidden = int
+}
+
+-- @case public_signature_can_desugar_a_local_alias compile-pass unit=lib
+pub fn next(value: Counter) -> Counter
+where
+    type Counter = int
+{
+    value + 1
+}
+
+-- @case same_tags_without_spread_do_not_imply_inclusion compile-fail E0301
+type Small { SharedTag }
+type Large { SharedTag; DistinctTag }
+fn widen(value: Small) -> Large { value as Large }
