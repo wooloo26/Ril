@@ -18,6 +18,12 @@ use self::channel::Pipe;
 type Raw = *mut Runtime;
 
 #[derive(Default)]
+struct ScopeTasks {
+    children: Vec<Task>,
+    memoized: BTreeMap<Task, Value>,
+}
+
+#[derive(Default)]
 pub(crate) struct State {
     active: Task,
     next: u64,
@@ -25,7 +31,7 @@ pub(crate) struct State {
     pending: VecDeque<(Task, Job)>,
     completion_order: VecDeque<Task>,
     tasks: BTreeMap<Task, Completion>,
-    scopes: BTreeMap<Scope, Vec<Task>>,
+    scopes: BTreeMap<Scope, ScopeTasks>,
     cancelled: BTreeSet<Task>,
     wake: BTreeSet<Channel>,
     channels: BTreeMap<Channel, Pipe>,
@@ -424,7 +430,7 @@ unsafe fn scope(raw: Raw, action: Value, try_scope: bool) -> Value {
         return error(rt, "scope requires Fiber::run");
     }
     let id = rt.fiber.id();
-    rt.fiber.scopes.insert(id, Vec::new());
+    rt.fiber.scopes.insert(id, ScopeTasks::default());
     let scope = rt.gc.alloc(Object::Scope(id));
     // SAFETY: the action has the one-Scope parameter ABI.
     let output = unsafe { invoke(raw, action, Some(scope)) };
@@ -435,12 +441,15 @@ unsafe fn scope(raw: Raw, action: Value, try_scope: bool) -> Value {
         try_scope && matches!(rt.gc.object(output), Some(Object::Tag(tag, _)) if tag == "Err");
     let tasks = rt.fiber.scopes.remove(&id).unwrap_or_default();
     rt.gc.pin(output);
+    for value in tasks.memoized.into_values() {
+        rt.gc.unpin(value);
+    }
     if failed.is_some() || failed_result {
-        rt.fiber.cancelled.extend(&tasks);
+        rt.fiber.cancelled.extend(&tasks.children);
     }
     let task = rt.fiber.active;
     *rt.fiber.shielded.entry(task).or_default() += 1;
-    for child in tasks.into_iter().rev() {
+    for child in tasks.children.into_iter().rev() {
         match wait_task(raw, child) {
             Some(Completion::Finished(output)) => {
                 // SAFETY: waiting has returned to the scope's stack.
@@ -490,12 +499,19 @@ unsafe extern "C" fn ril_fiber_spawn(raw: Raw, handle: Value, work: Value) -> Va
     }
     let task = start(rt, raw, work, None);
     if let Some(tasks) = rt.fiber.scopes.get_mut(&scope) {
-        tasks.push(task);
+        tasks.children.push(task);
     }
     rt.gc.alloc(Object::Task { task, scope })
 }
 
-fn join(raw: Raw, handle: Value, task: Value, cancel: bool) -> Value {
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum Join {
+    Memoized,
+    Consume,
+    Cancel,
+}
+
+fn join(raw: Raw, handle: Value, task: Value, action: Join) -> Value {
     // SAFETY: read and validate the handles before yielding.
     let rt = unsafe { context(raw) };
     let (Some(Object::Scope(scope)), Some(Object::Task { task, scope: owner })) =
@@ -507,43 +523,67 @@ fn join(raw: Raw, handle: Value, task: Value, cancel: bool) -> Value {
         return error(rt, "task does not belong to this scope");
     }
     let (scope, task) = (*scope, *task);
-    let Some(tasks) = rt.fiber.scopes.get_mut(&scope) else {
+    let Some(tasks) = rt.fiber.scopes.get(&scope) else {
         return error(rt, "task scope is closed");
     };
-    if !tasks.contains(&task) {
+    if let Some(&value) = tasks.memoized.get(&task)
+        && action == Join::Memoized
+    {
+        return value;
+    }
+    if !tasks.children.contains(&task) {
         return error(rt, "task was already joined");
     }
-    tasks.retain(|id| *id != task);
-    if cancel {
+    if action == Join::Cancel {
         rt.fiber.cancelled.insert(task);
     }
-    let result = wait_task(raw, task);
+    let Some(result) = wait_task(raw, task) else {
+        return Value::UNIT;
+    };
     // SAFETY: the joining stack has resumed.
     let rt = unsafe { context(raw) };
-    match result {
-        Some(Completion::Finished(value)) => {
+    let Some(tasks) = rt.fiber.scopes.get_mut(&scope) else {
+        if let Completion::Finished(value) = result {
             rt.gc.unpin(value);
-            if cancel {
-                tag(rt, "Some", Some(value))
-            } else {
+        }
+        return error(rt, "task scope is closed");
+    };
+    tasks.children.retain(|id| *id != task);
+    match result {
+        Completion::Finished(value) => match action {
+            Join::Memoized => {
+                tasks.memoized.insert(task, value);
                 value
             }
-        }
-        Some(Completion::Panicked(message)) => error(rt, message),
-        Some(Completion::Cancelled) if cancel => tag(rt, "None", None),
-        Some(Completion::Cancelled) => error(rt, "child task cancelled"),
-        None => Value::UNIT,
+            Join::Consume => {
+                rt.gc.unpin(value);
+                value
+            }
+            Join::Cancel => {
+                let wrapped = tag(rt, "Some", Some(value));
+                rt.gc.unpin(value);
+                wrapped
+            }
+        },
+        Completion::Panicked(message) => error(rt, message),
+        Completion::Cancelled if action == Join::Cancel => tag(rt, "None", None),
+        Completion::Cancelled => error(rt, "child task cancelled"),
     }
 }
 
 #[unsafe(no_mangle)]
 extern "C" fn ril_fiber_join(raw: Raw, scope: Value, task: Value) -> Value {
-    join(raw, scope, task, false)
+    join(raw, scope, task, Join::Memoized)
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn ril_fiber_join_owned(raw: Raw, scope: Value, task: Value) -> Value {
+    join(raw, scope, task, Join::Consume)
 }
 
 #[unsafe(no_mangle)]
 extern "C" fn ril_fiber_cancel(raw: Raw, scope: Value, task: Value) -> Value {
-    join(raw, scope, task, true)
+    join(raw, scope, task, Join::Cancel)
 }
 
 #[unsafe(no_mangle)]
@@ -554,7 +594,7 @@ unsafe extern "C" fn ril_fiber_cancel_scope(raw: Raw, scope: Value) -> Value {
         return error(rt, "invalid task scope");
     };
     if let Some(tasks) = rt.fiber.scopes.get(scope) {
-        rt.fiber.cancelled.extend(tasks);
+        rt.fiber.cancelled.extend(&tasks.children);
     }
     Value::UNIT
 }
@@ -576,6 +616,7 @@ pub(crate) fn symbols() -> Vec<(&'static str, *const u8)> {
         ril_fiber_cancelled,
         ril_fiber_uncancellable,
         ril_fiber_join,
+        ril_fiber_join_owned,
         ril_fiber_cancel,
         ril_fiber_cancel_scope,
     ];

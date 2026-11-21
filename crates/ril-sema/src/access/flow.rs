@@ -91,6 +91,7 @@ pub(super) struct Datum {
     pub invocations: BTreeMap<Span, BTreeMap<Span, BTreeSet<Span>>>,
     pub stateful_handler: bool,
     pub task_scope: Option<Span>,
+    pub result_fresh: bool,
 }
 
 impl Datum {
@@ -178,6 +179,7 @@ impl Datum {
             }
         }
         self.stateful_handler |= other.stateful_handler;
+        self.result_fresh &= other.result_fresh;
         if self.task_scope != other.task_scope {
             self.task_scope = None;
         }

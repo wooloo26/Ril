@@ -34,6 +34,41 @@ fn run() -> int {
     }
 }
 
+-- @case owned_join_ends_the_task_path compile-fail E0549
+use ril/fiber
+fn invalid() @fiber -> () {
+    Fiber::scope \mut s -> {
+        let mut task = Fiber::spawn(mut s) \-> 1
+        let first = Fiber::join(mut s, new task)
+        let second = Fiber::join(mut s, new task)
+        -- ^ E0549
+    }
+}
+
+-- @case every_memoized_fallible_join_requires_inspection compile-fail E0720
+use ril/fiber
+fn work() -> new !<int, str> { Ok(1) }
+fn invalid() @fiber -> () {
+    Fiber::scope \mut s -> {
+        let task = Fiber::spawn(mut s) \-> work()
+        match Fiber::join(mut s, task) { Ok(_) -> (); Err(_) -> () }
+        let ignored = Fiber::join(mut s, task)
+        -- ^ E0720
+    }
+}
+
+-- @case owned_join_does_not_thaw_existing_snapshot compile-fail E0520
+use ril/fiber
+fn invalid() @fiber -> () {
+    let snapshot = [1]
+    Fiber::scope \mut s -> {
+        let mut task = Fiber::spawn(mut s) \-> snapshot
+        let mut values = Fiber::join(mut s, new task)
+        -- ^ E0520
+        Array::push(mut values, 2)
+    }
+}
+
 -- @case channel_disallows_frozen_shared_payload compile-fail E0548
 use ril/channel
 fn bad() @fiber -> () {

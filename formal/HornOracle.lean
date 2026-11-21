@@ -1,4 +1,5 @@
 import Lean
+import RilAccess.Examples.Concurrency
 import RilAccess.Examples.Summary
 import RilAccess.Signatures
 import RilAccess.Solver
@@ -81,6 +82,18 @@ def callEntryCases : List (String × Bool) :=
    ("call_entry_graph_includes_later_argument_preparation",
      decide (inserted ∈ capturedInstances laterHeap [saved]))]
 
+open RilAccess.CoreConcurrency RilAccess.CoreConcurrency.Examples in
+def taskJoinCases : List (String × Bool) :=
+  let fallible : ScopeState :=
+    ⟨7, [{ id := 1, regionSigma := 7, mode := .sharedImmutable, fallibleResult := true }]⟩
+  let twoJoins := (joinTask fallible 1 7 false).bind (joinTask · 1 7 false)
+  [("plain_task_join_is_memoized_and_rooted",
+    ((joinTask taskScope 1 7 false).bind (joinTask · 1 7 false)).isSome),
+   ("owned_task_join_preserves_fresh_payload", (joinTask taskScope 2 7 true).isSome),
+   ("owned_join_ends_the_task_path", (joinTask afterExclusiveJoin 2 7 true).isSome),
+   ("every_memoized_fallible_join_requires_inspection",
+    ((twoJoins.bind (inspectJoinedResult · 1 7)).bind drainPlainTasks).isSome)]
+
 def main (args : List String) : IO Unit := do
   let stdin ← IO.getStdin
   let source ← stdin.readToEnd
@@ -103,6 +116,8 @@ def main (args : List String) : IO Unit := do
     stdout.putStrLn (toJson answers).compress
   else if args == ["call-entry"] then
     stdout.putStrLn (toJson callEntryCases).compress
+  else if args == ["task-joins"] then
+    stdout.putStrLn (toJson taskJoinCases).compress
   else
     let .ok entries := fromJson? (α := List JsonRule) json
       | throw (IO.userError "expected a JSON array of Horn rules")

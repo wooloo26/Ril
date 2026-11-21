@@ -1,6 +1,35 @@
 -- @suite concurrency_deterministic
 -- @default_stage run
 
+-- @case plain_task_join_is_memoized_and_rooted run-pass backend=both
+-- @expect-stdout once
+-- @expect-stdout 42
+use ril/fiber
+fn main() @io @fiber -> () {
+    Fiber::scope \mut s -> {
+        let task = Fiber::spawn(mut s) \-> {
+            println("once")
+            [20, 22]
+        }
+        assert(Fiber::join(mut s, task)[0] == 20)
+        let other = [1, 2, 3]
+        assert(len(other) == 3)
+        let again = Fiber::join(mut s, task)
+        println("{again[0] + again[1]}")
+    }
+}
+
+-- @case owned_task_join_preserves_fresh_payload run-pass backend=both
+use ril/fiber
+fn main() @fiber -> () {
+    Fiber::scope \mut s -> {
+        let mut task = Fiber::spawn(mut s) \-> [1]
+        let mut output = Fiber::join(mut s, new task)
+        Array::push(mut output, 2)
+        assert(output == [1, 2])
+    }
+}
+
 -- @case bodyless_fiber_module_uses_registered_runtime run-pass backend=both
 -- @expect-stdout 42
 -- @file pkg/main.ril

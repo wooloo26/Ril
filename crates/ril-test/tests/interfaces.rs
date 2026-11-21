@@ -2,6 +2,7 @@
 
 use std::{
     collections::BTreeSet,
+    ffi::OsStr,
     io::Write,
     path::Path,
     process::{Command, Stdio},
@@ -12,7 +13,7 @@ use ril_sema::{
     access::{Access, horn},
     iface::{FORMAT_VERSION, Interface},
 };
-use ril_test::{Stage, TestDriver, parse_suite};
+use ril_test::{CaseMode, Stage, TestDriver, parse_suite, run_worker};
 
 #[test]
 fn interface_roundtrip_is_stable_and_detects_corruption() {
@@ -263,20 +264,78 @@ fn call_entry_examples_agree_with_lean() {
         include_str!("../../../tests/07_access/access.ril"),
     )
     .unwrap();
-    let mut child = Command::new(oracle)
-        .arg("call-entry")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn()
-        .unwrap();
-    child.stdin.take().unwrap().write_all(b"[]").unwrap();
-    let output = child.wait_with_output().unwrap();
-    assert!(output.status.success());
-    let results: Vec<(String, bool)> = serde_json::from_slice(&output.stdout).unwrap();
+    let output = query(&oracle, "call-entry", b"[]").unwrap();
+    let results: Vec<(String, bool)> = serde_json::from_slice(&output).unwrap();
     assert_eq!(results.len(), 4);
     for (name, accepted) in results {
         let case = suite.cases.iter().find(|case| case.id == name).unwrap();
         let diagnostics = Driver.check_stage(&case.pkg, Stage::Access).diagnostics;
         assert_eq!(diagnostics.is_empty(), accepted, "{name}: {diagnostics:?}");
+    }
+}
+
+#[test]
+fn task_join_examples_agree_with_lean() {
+    let Some(oracle) = std::env::var_os("RIL_HORN_ORACLE") else {
+        return;
+    };
+    let compile = parse_suite(
+        Path::new("isolation.ril"),
+        include_str!("../../../tests/12_concurrency_isolation/isolation.ril"),
+    )
+    .unwrap();
+    let runtime = parse_suite(
+        Path::new("fifo.ril"),
+        include_str!("../../../tests/13_concurrency_deterministic/fifo.ril"),
+    )
+    .unwrap();
+    let output = query(&oracle, "task-joins", b"[]").unwrap();
+    let results: Vec<(String, bool)> = serde_json::from_slice(&output).unwrap();
+    assert_eq!(results.len(), 4);
+    let temporary = tempfile::tempdir().unwrap();
+    for (name, accepted) in results {
+        let case = compile
+            .cases
+            .iter()
+            .chain(&runtime.cases)
+            .find(|case| case.id == name)
+            .unwrap();
+        if matches!(case.mode, CaseMode::RunPass) {
+            let executable = temporary.path().join(&name);
+            Driver.build_aot(&case.pkg, &executable).unwrap();
+            let execution = run_worker(&mut Command::new(executable)).unwrap();
+            assert_eq!(
+                execution.status.success(),
+                accepted,
+                "{name}: {:?}",
+                String::from_utf8_lossy(&execution.stderr)
+            );
+        } else {
+            let diagnostics = Driver.check_stage(&case.pkg, Stage::Access).diagnostics;
+            assert_eq!(diagnostics.is_empty(), accepted, "{name}: {diagnostics:?}");
+        }
+    }
+}
+
+fn query(
+    oracle: &OsStr,
+    operation: &str,
+    input: &[u8],
+) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    let mut child = Command::new(oracle)
+        .arg(operation)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()?;
+    child
+        .stdin
+        .take()
+        .ok_or("missing oracle input pipe")?
+        .write_all(input)?;
+    let output = child.wait_with_output()?;
+    if output.status.success() {
+        Ok(output.stdout)
+    } else {
+        Err(format!("Lean oracle failed for {operation}").into())
     }
 }

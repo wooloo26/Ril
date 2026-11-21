@@ -160,9 +160,17 @@ impl Analyzer<'_> {
                 );
             }
             if movable_task {
-                value.transform(&mut |origin| {
-                    origin.confined = None;
-                });
+                if mode == Mode::New {
+                    value.transform(&mut |origin| {
+                        origin.confined = None;
+                    });
+                } else if value.writers() {
+                    self.error(
+                        Code::E0535,
+                        node.span,
+                        "exclusive task handles require a new handoff",
+                    );
+                }
                 ledger.inspect(&value);
             }
             let mode = if channel_payload { Mode::New } else { mode };
@@ -731,6 +739,7 @@ impl Analyzer<'_> {
             .latent_effects
             .extend(template.latent_effects.iter().cloned());
         output.stateful_handler |= template.stateful_handler;
+        output.result_fresh |= template.result_fresh;
         if !template.environments.is_empty() {
             output.environments.insert(span);
         }
@@ -1057,6 +1066,10 @@ impl Analyzer<'_> {
                     .map(|origin| origin.region.source);
                 let mut output = Datum::source(span, Access::Mut, true);
                 output.task_scope = scope;
+                output.result_fresh = second.is_some_and(|work| work.result_fresh)
+                    || syntax.get(1).is_some_and(|argument| {
+                        matches!(self.ty(self.ast(ctx.file).expr(argument.value).span), Ty::Callable(sig) if sig.result_mode == Mode::New)
+                    });
                 output.transform(&mut |origin| {
                     origin.confined = scope;
                 });
@@ -1074,6 +1087,26 @@ impl Analyzer<'_> {
                 }
                 if let Some(value) = second {
                     ledger.inspect(value);
+                }
+                let fresh = second.is_some_and(|task| task.result_fresh);
+                if name == "cancel" {
+                    let mut result = Datum::source(span, Access::Mut, true);
+                    let payload = if fresh {
+                        Datum::source(span, Access::Mut, true)
+                    } else {
+                        self.snapshot_value(span)
+                    };
+                    result
+                        .members
+                        .insert(Coordinate::Index("0".into()), payload);
+                    return result;
+                }
+                if fresh
+                    && values
+                        .iter()
+                        .any(|(index, mode, _)| *index == 1 && *mode == Mode::New)
+                {
+                    return Datum::source(span, Access::Mut, true);
                 }
             }
             return self.snapshot_value(span);
@@ -1243,8 +1276,10 @@ impl Analyzer<'_> {
             return Datum::default();
         };
         let mut locals = ledger.clone();
+        locals.obligations.clear();
         let mut inner = Context::new(node.span);
         inner.in_function = true;
+        inner.expected = Mode::Infer;
         inner.runtime = ctx.runtime;
         inner.shadow = ctx.shadow;
         inner.reachable = ctx.reachable;
@@ -1275,6 +1310,10 @@ impl Analyzer<'_> {
                 let param_ty = self
                     .definition(name.span)
                     .and_then(|id| self.program.bindings.get(&id));
+                if param_ty.is_some_and(Ty::is_result) {
+                    value.results.insert(name.span);
+                    locals.obligations.insert(name.span);
+                }
                 value.transform(&mut |origin| {
                     origin.dependencies.insert(name.span);
                     if matches!(param_ty, Some(Ty::Scope | Ty::Draft(_))) {
@@ -1308,6 +1347,10 @@ impl Analyzer<'_> {
         }
         let before = self.rules.len();
         let output = self.expr(&mut inner, &mut locals, *body);
+        let implicit = self.ty(self.ast(ctx.file).expr(*body).span) != &Ty::Never;
+        if inner.reachable && implicit {
+            self.check_results(&locals, &output.results());
+        }
         if output.origins().any(|origin| origin.draft) {
             self.error(Code::E0607, node.span, "draft escapes update callback");
         } else if output.origins().any(|origin| origin.confined.is_some()) {
@@ -1337,6 +1380,9 @@ impl Analyzer<'_> {
             if new { Access::Mut } else { Access::Immutable },
             new,
         );
+        closure.result_fresh = (implicit || !inner.return_values.is_empty())
+            && (!implicit || output.requires_new)
+            && inner.return_values.iter().all(|value| value.requires_new);
         for (index, slot) in used
             .iter()
             .filter_map(|span| ledger.slots.get(span))

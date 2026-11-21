@@ -1287,6 +1287,13 @@ impl<'a> Builder<'_, 'a> {
             ("Fiber", "scope") => "ril_fiber_scope",
             ("Fiber", "try_scope") => "ril_fiber_try_scope",
             ("Fiber", "spawn") => "ril_fiber_spawn",
+            ("Fiber", "join")
+                if args
+                    .get(1)
+                    .is_some_and(|arg| arg.mode == ril_sema::syntax::Mode::New) =>
+            {
+                "ril_fiber_join_owned"
+            }
             ("Fiber", "join") => "ril_fiber_join",
             ("Fiber", "cancel") => "ril_fiber_cancel",
             ("Fiber", "cancel_scope") => "ril_fiber_cancel_scope",
