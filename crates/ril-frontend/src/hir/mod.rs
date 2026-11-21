@@ -10,11 +10,11 @@ use std::{
 
 use ril_base::{
     diag::{Code, Diagnostic},
-    span::{FileId, Span},
+    span::{FileId, SourceFile, Span},
 };
 
 use crate::{
-    lexer::{Word, word_kind},
+    lexer::{Kind, Token, Word, word_kind},
     parser::FileKind,
     syntax::{Ast, Name, Pattern, StmtId, StmtKind, Type, TypeDefinition, Variant, Visibility},
 };
@@ -159,6 +159,33 @@ pub struct File {
     pub path: PathBuf,
     pub kind: FileKind,
     pub ast: Ast,
+    source: SourceFile,
+    tokens: Vec<Token>,
+}
+
+impl File {
+    pub fn new(source: SourceFile, kind: FileKind, ast: Ast, tokens: Vec<Token>) -> Self {
+        Self {
+            id: source.id(),
+            path: source.path().into(),
+            kind,
+            ast,
+            source,
+            tokens,
+        }
+    }
+
+    pub fn token_text(&self, span: Span) -> impl Iterator<Item = &str> {
+        let start = self
+            .tokens
+            .partition_point(|token| token.span.start < span.start);
+        self.tokens
+            .iter()
+            .skip(start)
+            .take_while(move |token| token.span.end <= span.end)
+            .filter(|token| !matches!(token.kind, Kind::Newline | Kind::Eof))
+            .map(|token| token.text(&self.source))
+    }
 }
 
 struct Scope {
@@ -222,6 +249,14 @@ impl Program {
 
     pub fn export_name(&self, id: DefinitionId) -> String {
         let def = self.definition(id);
+        if let DefinitionKind::Variant(sum) = def.kind {
+            return format!("{}::{}", self.export_name(sum), def.name.value);
+        }
+        if def.kind == DefinitionKind::Function
+            && let Some(effect) = self.operation_effect(id)
+        {
+            return format!("{}::{}", self.export_name(effect), def.name.value);
+        }
         let origin = self.scope(def.scope).file;
         let mut chain = vec![def.name.value.as_str()];
         let mut scope = def.scope;

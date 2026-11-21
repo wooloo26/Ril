@@ -143,12 +143,7 @@ fn frontend(
                 }
             };
             match parser::parse(file, &tokens, kind) {
-                Ok(ast) => parsed.push(hir::File {
-                    id: file.id(),
-                    kind,
-                    path: file.path().into(),
-                    ast,
-                }),
+                Ok(ast) => parsed.push(hir::File::new(file.clone(), kind, ast, tokens)),
                 Err(diagnostic) => diagnostics.push(diagnostic),
             }
         }

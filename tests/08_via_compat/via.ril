@@ -83,6 +83,43 @@ pub fn pack(input: Cell) &return(input) -> new []Cell { [input, Cell.{ count: 0 
 pub fn pack(input: Cell) &return(input) -> new []Cell { [Cell.{ count: 0 }, input] }
 -- ^ E0552
 
+-- @case changed_exported_member_mode_breaks_compatibility compat-fail E0552 no-prelude
+-- @baseline
+pub nominal type Endpoint = .{ port: int }
+-- @revision
+pub nominal type Endpoint = .{ var port: int }
+-- ^ E0552
+
+-- @case narrower_generic_domain_breaks_compatibility compat-fail E0552 no-prelude
+-- @baseline
+pub fn constant<T: int | f64>(_value: T) -> int { 1 }
+-- @revision
+pub fn constant<T: int>(_value: T) -> int { 1 }
+-- ^ E0552
+
+-- @case runtime_definition_cannot_replace_meta_definition compat-fail E0552 no-prelude
+-- @baseline
+pub meta fn double(value: int) -> int { 2 * value }
+-- @revision
+pub fn double(value: int) -> int { 2 * value }
+-- ^ E0552
+
+-- @case removing_argument_default_breaks_compatibility compat-fail E0552 no-prelude
+-- @baseline
+pub fn choose(value: int = 42) -> int { value }
+-- @revision
+pub fn choose(value: int) -> int { value }
+-- ^ E0552
+
+-- @case effect_operation_exports_preserve_their_owner compat-fail E0552 no-prelude
+-- @baseline
+pub eff First { fn lookup() -> int }
+pub eff Second { fn lookup() -> int }
+-- @revision
+pub eff First { fn lookup() -> bool }
+-- ^ E0552
+pub eff Second { fn lookup() -> int }
+
 -- @case multi_input_inference_preserves_selected_sources compile-pass
 fn choose(condition: bool, via left: Cell, via right: Cell) -> infer Cell {
     if condition { left } else { right }
