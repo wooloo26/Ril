@@ -454,7 +454,7 @@ impl<'a> Analyzer<'a> {
         let mut ledger = outer.clone();
         ledger.obligations.clear();
         ledger.inspected.clear();
-        ledger.revoked.clear();
+        ledger.reset_revocations();
         ledger.iteration.clear();
         ledger.holds.clear();
         if callable.open_effects || callable.open_state {
@@ -1859,7 +1859,7 @@ impl<'a> Analyzer<'a> {
             return Datum::default();
         };
         if let Some(slot) = ledger.slots.get(&decl) {
-            if ctx.reachable && (ledger.revoked.contains(&decl) || ledger.dead(&slot.value)) {
+            if ctx.reachable && ledger.dead(&slot.value) {
                 self.error(Code::E0549, span, "source path was ended by new handoff");
             }
             if ctx.in_function
@@ -1947,7 +1947,11 @@ impl<'a> Analyzer<'a> {
             return;
         }
         if ctx.reachable {
-            ledger.revoked.extend(&dependencies);
+            for root in &value.roots {
+                for &dependency in &root.dependencies {
+                    ledger.revoke(dependency, Some(root));
+                }
+            }
         }
         for &id in &dependencies {
             self.seed(ctx, Obligation::Write(id));

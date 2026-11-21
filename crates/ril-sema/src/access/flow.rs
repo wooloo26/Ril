@@ -65,19 +65,23 @@ pub(super) struct Origin {
     pub mode: Access,
     pub new: bool,
     pub dependencies: BTreeSet<Span>,
-    pub branches: BTreeMap<Span, usize>,
+    pub branches: Choices,
     pub confined: Option<Span>,
     pub draft: bool,
 }
 
 impl Origin {
     pub(super) fn overlaps(&self, other: &Self) -> bool {
-        self.region.overlaps(&other.region)
-            && self
-                .branches
-                .iter()
-                .all(|(branch, a)| other.branches.get(branch).is_none_or(|b| a == b))
+        self.region.overlaps(&other.region) && compatible(&self.branches, &other.branches)
     }
+}
+
+type Choices = BTreeMap<Span, usize>;
+const BRANCH_LIMIT: usize = 24;
+
+fn compatible(a: &Choices, b: &Choices) -> bool {
+    a.iter()
+        .all(|(branch, arm)| b.get(branch).is_none_or(|other| arm == other))
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -157,7 +161,7 @@ impl Datum {
         self.roots.sort_unstable();
         self.roots.dedup();
         // Widen branch correlations before fact growth makes nested branches impractical.
-        if self.roots.len() > 24 {
+        if self.roots.len() > BRANCH_LIMIT {
             for root in &mut self.roots {
                 root.branches.clear();
             }
@@ -279,16 +283,37 @@ struct Replacement {
 #[derive(Clone, Default)]
 pub(super) struct Ledger {
     pub slots: BTreeMap<Span, Slot>,
-    pub revoked: BTreeSet<Span>,
+    revoked: BTreeMap<Span, BTreeSet<Choices>>,
     pub obligations: BTreeSet<Span>,
     pub inspected: BTreeSet<Span>,
     pub iteration: Vec<Datum>,
     pub holds: Vec<(Mode, Datum)>,
-    pub choices: BTreeMap<Span, usize>,
+    pub choices: Choices,
     replacements: BTreeMap<Region, Replacement>,
 }
 
 impl Ledger {
+    pub(super) fn reset_revocations(&mut self) {
+        self.revoked.clear();
+    }
+
+    pub(super) fn revoke(&mut self, token: Span, origin: Option<&Origin>) {
+        let mut choices = self.choices.clone();
+        if let Some(origin) = origin {
+            choices.extend(origin.branches.iter().map(|(&branch, &arm)| (branch, arm)));
+        }
+        let alternatives = self.revoked.entry(token).or_default();
+        alternatives.insert(choices);
+        Self::widen_revocations(alternatives);
+    }
+
+    fn widen_revocations(alternatives: &mut BTreeSet<Choices>) {
+        if alternatives.len() > BRANCH_LIMIT {
+            alternatives.clear();
+            alternatives.insert(Choices::new());
+        }
+    }
+
     pub(super) fn hold_conflict(&self, value: &Datum, mode: Mode) -> Option<bool> {
         self.holds
             .iter()
@@ -322,7 +347,11 @@ impl Ledger {
         self.revoked = prior.revoked.clone();
         self.obligations = prior.obligations.clone();
         for branch in alternatives {
-            self.revoked.extend(&branch.revoked);
+            for (&token, revoked) in &branch.revoked {
+                let cases = self.revoked.entry(token).or_default();
+                cases.extend(revoked.iter().cloned());
+                Self::widen_revocations(cases);
+            }
             self.obligations.extend(&branch.obligations);
         }
         self.inspected = if alternatives.is_empty() {
@@ -491,7 +520,11 @@ impl Ledger {
             origin
                 .dependencies
                 .iter()
-                .any(|token| self.revoked.contains(token))
+                .filter_map(|token| self.revoked.get(token))
+                .flatten()
+                .any(|revoked| {
+                    compatible(revoked, &self.choices) && compatible(revoked, &origin.branches)
+                })
         })
     }
 }

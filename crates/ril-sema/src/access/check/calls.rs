@@ -1045,7 +1045,7 @@ impl Analyzer<'_> {
                                 "fiber closure captures a replaceable slot",
                             );
                         } else {
-                            ledger.revoked.insert(decl);
+                            ledger.revoke(decl, None);
                         }
                     }
                 }

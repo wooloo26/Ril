@@ -93,6 +93,28 @@ fn call() -> () {
     -- ^ E0523
 }
 
+-- @case handoff_ends_only_compatible_branch_paths compile-pass
+fn kept(flag: bool) -> int {
+    let mut left = Cell.{ count: 1 }
+    let mut right = Cell.{ count: 2 }
+    let ref view = if flag {
+        let _ = new left
+        ref right
+    } else {
+        let _ = new right
+        ref left
+    }
+    view.count
+}
+
+-- @case possible_handoff_still_ends_original_path compile-fail E0549
+fn lost(flag: bool) -> int {
+    let mut left = Cell.{ count: 1 }
+    if flag { let _ = new left }
+    left.count
+    -- ^ E0549
+}
+
 -- @case overlapping_read_write compile-fail E0524
 fn copy(mut a: Cell, ref b: Cell) &mut -> () { a.count = b.count }
 fn run() -> () {
