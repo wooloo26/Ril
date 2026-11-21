@@ -116,7 +116,7 @@ struct Analyzer<'a> {
     diagnostics: Vec<Diagnostic>,
     rules: Vec<Rule<Fact>>,
     requirements: Vec<Requirement>,
-    deferred_effect_errors: Vec<(Fact, Diagnostic)>,
+    deferred_errors: Vec<(Vec<Fact>, Diagnostic)>,
     mode_uses: Vec<ModeUse>,
     functions: Vec<DefinitionCheck>,
     done: BTreeSet<DefinitionId>,
@@ -129,7 +129,7 @@ pub(super) fn analyze(program: &TypedProgram) -> (Analysis, Vec<Diagnostic>) {
         diagnostics: Vec::new(),
         rules: Vec::new(),
         requirements: Vec::new(),
-        deferred_effect_errors: Vec::new(),
+        deferred_errors: Vec::new(),
         mode_uses: Vec::new(),
         functions: Vec::new(),
         done: BTreeSet::new(),
@@ -144,8 +144,8 @@ pub(super) fn analyze(program: &TypedProgram) -> (Analysis, Vec<Diagnostic>) {
         analyzer.check_results(&ledger, &BTreeSet::new());
     }
     let facts = horn::solve(&analyzer.rules);
-    for (fact, diagnostic) in std::mem::take(&mut analyzer.deferred_effect_errors) {
-        if facts.contains(&fact)
+    for (premises, diagnostic) in std::mem::take(&mut analyzer.deferred_errors) {
+        if premises.iter().all(|fact| facts.contains(fact))
             && !analyzer.diagnostics.iter().any(|reported| {
                 reported.code == diagnostic.code && reported.primary == diagnostic.primary
             })
@@ -238,8 +238,8 @@ impl<'a> Analyzer<'a> {
         }
     }
 
-    fn effect(&mut self, ctx: &Context, effect: &str, span: Span) {
-        self.use_effect(ctx, Obligation::Effect(effect.into()), span, None);
+    fn effect(&mut self, ctx: &Context, ledger: &Ledger, effect: &str, span: Span) {
+        self.use_effect(ctx, ledger, Obligation::Effect(effect.into()), span, None);
     }
 
     fn operation(&self, id: DefinitionId, path: Span) -> Option<Operation> {
@@ -288,6 +288,7 @@ impl<'a> Analyzer<'a> {
     fn use_effect(
         &mut self,
         ctx: &Context,
+        ledger: &Ledger,
         obligation: Obligation,
         span: Span,
         if_exercised: Option<Fact>,
@@ -303,6 +304,7 @@ impl<'a> Analyzer<'a> {
         if !operations.is_empty() && operations.iter().all(|id| ctx.handlers.contains_key(id)) {
             for handler in operations.iter().filter_map(|id| ctx.handlers.get(id)) {
                 self.link_invocation_if(ctx, handler, if_exercised.as_ref());
+                self.check_handler_iteration(ledger, handler, span, if_exercised.as_ref());
                 if handler
                     .origins()
                     .any(|origin| origin.mode != Access::Immutable)
@@ -340,8 +342,8 @@ impl<'a> Analyzer<'a> {
         };
         if let Some((code, message)) = error {
             if let Some(fact) = if_exercised {
-                self.deferred_effect_errors
-                    .push((fact, Diagnostic::error(code, span, message)));
+                self.deferred_errors
+                    .push((vec![fact], Diagnostic::error(code, span, message)));
             } else {
                 self.error(code, span, message);
             }
@@ -353,6 +355,47 @@ impl<'a> Analyzer<'a> {
                     obligation,
                 },
             });
+        }
+    }
+
+    fn check_handler_iteration(
+        &mut self,
+        ledger: &Ledger,
+        handler: &Datum,
+        span: Span,
+        exercised: Option<&Fact>,
+    ) {
+        if ledger.iteration.is_empty() {
+            return;
+        }
+        for (&owner, captures) in &handler.invocations {
+            for (&source, actual) in captures {
+                let overlap = handler.origins().any(|origin| {
+                    origin.mode.writes()
+                        && (actual.contains(&origin.region.source)
+                            || origin.dependencies.contains(&source))
+                        && ledger
+                            .iteration
+                            .iter()
+                            .any(|iterable| iterable.origins().any(|value| value.overlaps(origin)))
+                });
+                if overlap {
+                    let premises = std::iter::once(Fact {
+                        owner,
+                        obligation: Obligation::Write(source),
+                    })
+                    .chain(exercised.cloned())
+                    .collect();
+                    self.deferred_errors.push((
+                        premises,
+                        Diagnostic::error(
+                            Code::E0526,
+                            span,
+                            "effect handler writes to a collection being iterated",
+                        ),
+                    ));
+                }
+            }
         }
     }
 
@@ -826,7 +869,7 @@ impl<'a> Analyzer<'a> {
                     return Datum::default();
                 }
                 if *resource {
-                    self.cleanup(ctx, &mut value, span, node.span, storage.mode);
+                    self.cleanup(ctx, ledger, &mut value, span, node.span, storage.mode);
                 }
                 if let Some(fallback) = fallback {
                     ledger.inspect(&value);
@@ -1088,6 +1131,7 @@ impl<'a> Analyzer<'a> {
     fn cleanup(
         &mut self,
         ctx: &Context,
+        ledger: &Ledger,
         value: &mut Datum,
         value_span: Span,
         binding: Span,
@@ -1167,7 +1211,7 @@ impl<'a> Analyzer<'a> {
             self.error(Code::E0616, binding, "@fiber is prohibited on cleanup");
         }
         for effect in &signature.effects {
-            self.effect(ctx, effect, binding);
+            self.effect(ctx, ledger, effect, binding);
         }
         if parameter.mode == Mode::New && !value.requires_new {
             self.error(
@@ -1845,6 +1889,19 @@ impl<'a> Analyzer<'a> {
     }
 
     fn handoff(&mut self, ctx: &Context, ledger: &mut Ledger, value: &mut Datum, span: Span) {
+        if ledger.holds.iter().any(|(_, held)| {
+            value
+                .roots
+                .iter()
+                .any(|moving| held.origins().any(|active| moving.overlaps(active)))
+        }) {
+            self.error(
+                Code::E0535,
+                span,
+                "new handoff overlaps an active handler hold",
+            );
+            return;
+        }
         if value.origins().any(|origin| origin.confined.is_some()) {
             self.error(Code::E0604, span, "resource or draft cannot be handed off");
             return;
@@ -2053,15 +2110,11 @@ impl<'a> Analyzer<'a> {
         }) {
             self.error(Code::E0526, span, "collection is already being iterated");
         }
-        if ledger
-            .holds
-            .iter()
-            .any(|held| conflicts(value, Mode::Mut, held, Mode::Ref).is_some())
-        {
+        if let Some(writable) = ledger.hold_conflict(value, Mode::Mut) {
             self.error(
-                Code::E0524,
+                if writable { Code::E0523 } else { Code::E0524 },
                 span,
-                "write overlaps the active lexical handler view",
+                "write overlaps an active lexical handler hold",
             );
         }
         for origin in &value.roots {

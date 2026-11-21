@@ -281,12 +281,18 @@ pub(super) struct Ledger {
     pub obligations: BTreeSet<Span>,
     pub inspected: BTreeSet<Span>,
     pub iteration: Vec<Datum>,
-    pub holds: Vec<Datum>,
+    pub holds: Vec<(Mode, Datum)>,
     pub choices: BTreeMap<Span, usize>,
     replacements: BTreeMap<Region, Replacement>,
 }
 
 impl Ledger {
+    pub(super) fn hold_conflict(&self, value: &Datum, mode: Mode) -> Option<bool> {
+        self.holds
+            .iter()
+            .find_map(|(held_mode, held)| conflicts(value, mode, held, *held_mode))
+    }
+
     pub(super) fn stamp(&self, value: &mut Datum) {
         value.transform(&mut |origin| {
             origin

@@ -19,6 +19,33 @@ fn read() -> int {
     Clock::now()
 }
 
+-- @case handler_installation_charges_outward_effects compile-pass
+eff Notify { fn log() -> () }
+fn install() @io -> () {
+    with Notify::log = \-> println("registered")
+}
+
+-- @case active_handler_cannot_lose_captured_authority compile-fail E0535
+eff Grow { fn push() -> () }
+fn blocked() -> () {
+    let mut values = [1, 2]
+    with Grow::push = \-> Array::push(mut values, 3)
+    let snapshot = new values
+    -- ^ E0535
+}
+
+-- @case effect_handler_must_not_write_collection_being_iterated compile-fail E0526
+eff Grow { fn push() -> () }
+fn forward() @Grow -> () { Grow::push() }
+fn invalid() -> () {
+    let mut values = [1, 2]
+    with Grow::push = \-> Array::push(mut values, 3)
+    for ref values as n {
+        forward()
+        -- ^ E0526
+    }
+}
+
 -- @case effect_without_handler compile-fail E0612
 eff Clock { fn now() -> int }
 fn read() -> int { Clock::now() }

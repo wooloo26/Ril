@@ -30,11 +30,11 @@ impl Analyzer<'_> {
         };
         self.link_invocation(ctx, &callable);
         for effect in &callable.latent_effects {
-            self.effect(ctx, effect, span);
+            self.effect(ctx, ledger, effect, span);
         }
         if !inline && let Ty::Callable(signature) = self.ty(node.span) {
             for effect in &signature.effects {
-                self.effect(ctx, effect, span);
+                self.effect(ctx, ledger, effect, span);
             }
         }
         self.snapshot_value(span)
@@ -84,7 +84,7 @@ impl Analyzer<'_> {
                 self.seed(ctx, Obligation::Invoke(source));
             }
             for effect in &target.latent_effects {
-                self.effect(ctx, effect, span);
+                self.effect(ctx, ledger, effect, span);
             }
         }
         let syntax = id.and_then(|id| {
@@ -197,6 +197,13 @@ impl Analyzer<'_> {
             *value = ledger.snapshot(value);
         }
         for (i, ((_, mode, value), argument_span)) in values.iter().zip(value_spans).enumerate() {
+            if let Some(mutating) = ledger.hold_conflict(value, *mode) {
+                self.error(
+                    if mutating { Code::E0523 } else { Code::E0524 },
+                    argument_span,
+                    "argument authority overlaps an active handler hold",
+                );
+            }
             for (_, previous_mode, previous) in values.iter().take(i) {
                 if let Some(mutating) = conflicts(value, *mode, previous, *previous_mode) {
                     self.error(
@@ -235,7 +242,7 @@ impl Analyzer<'_> {
         if let (Some(id), Expr::Path(path)) = (id, &callee.value)
             && let Some(operation) = self.operation(id, path.span)
         {
-            self.use_effect(ctx, Obligation::Operation(operation), span, None);
+            self.use_effect(ctx, ledger, Obligation::Operation(operation), span, None);
         }
         if let Some(sig) = sig {
             for (index, template) in sig.effects.iter().enumerate() {
@@ -246,9 +253,9 @@ impl Analyzer<'_> {
                     .and_then(|effects| effects.get(index))
                     .unwrap_or(template);
                 if let Some(fun) = syntax.filter(|fun| fun.body.is_some()) {
-                    self.link_effects(ctx, fun.name.span, template, applied, span);
+                    self.link_effects(ctx, ledger, fun.name.span, template, applied, span);
                 } else {
-                    self.effect(ctx, applied, span);
+                    self.effect(ctx, ledger, applied, span);
                 }
             }
             if sig.open_effects
@@ -256,7 +263,7 @@ impl Analyzer<'_> {
                 && let Ty::Callable(actual) = self.ty(callee.span)
             {
                 for effect in &actual.effects {
-                    self.effect(ctx, effect, span);
+                    self.effect(ctx, ledger, effect, span);
                 }
             }
         }
@@ -521,6 +528,7 @@ impl Analyzer<'_> {
     fn link_effects(
         &mut self,
         ctx: &Context,
+        ledger: &Ledger,
         owner: Span,
         template: &str,
         applied: &str,
@@ -528,6 +536,7 @@ impl Analyzer<'_> {
     ) {
         self.use_effect(
             ctx,
+            ledger,
             Obligation::Effect(applied.into()),
             span,
             Some(Fact {
@@ -556,6 +565,7 @@ impl Analyzer<'_> {
             {
                 self.use_effect(
                     ctx,
+                    ledger,
                     Obligation::Effect(label.clone()),
                     span,
                     Some(Fact {
@@ -570,6 +580,7 @@ impl Analyzer<'_> {
             if let Some(to) = applied.iter().find(|op| op.id == from.id) {
                 self.use_effect(
                     ctx,
+                    ledger,
                     Obligation::Operation(to.clone()),
                     span,
                     Some(Fact {
@@ -844,7 +855,7 @@ impl Analyzer<'_> {
             .find(|(index, _, _)| *index == 0)
             .map(|(_, _, v)| v);
         match name {
-            "println" | "print" => self.effect(ctx, "io", span),
+            "println" | "print" => self.effect(ctx, ledger, "io", span),
             "push" | "pop" | "insert" | "remove" | "clear" => {
                 if let Some(value) = first {
                     self.mutate(ctx, ledger, value, span);
@@ -870,7 +881,7 @@ impl Analyzer<'_> {
                 if let Some((_, _, callback)) = args.iter().find(|(i, _, _)| *i == 1) {
                     self.link_invocation(ctx, callback);
                     for effect in &callback.latent_effects {
-                        self.effect(ctx, effect, span);
+                        self.effect(ctx, ledger, effect, span);
                     }
                 }
                 if first.is_some_and(|value| {
@@ -905,9 +916,9 @@ impl Analyzer<'_> {
             }
             "Some" | "Ok" | "Err" => return constructor(span, args.iter().cloned()),
             "yield" | "sleep" | "scope" | "spawn" | "join" | "send" | "recv" => {
-                self.effect(ctx, "fiber", span);
+                self.effect(ctx, ledger, "fiber", span);
             }
-            "read" | "open" | "close" | "write" => self.effect(ctx, "io", span),
+            "read" | "open" | "close" | "write" => self.effect(ctx, ledger, "io", span),
             _ => {}
         }
         self.snapshot_value(span)
@@ -950,10 +961,10 @@ impl Analyzer<'_> {
                     | "map"
                     | "try_map"
             ) {
-                self.effect(ctx, "fiber", span);
+                self.effect(ctx, ledger, "fiber", span);
             }
             if matches!(name, "sleep" | "sleep_ms" | "timeout_ms") {
-                self.effect(ctx, "io", span);
+                self.effect(ctx, ledger, "io", span);
             }
             if matches!(name, "spawn" | "join" | "cancel" | "cancel_scope")
                 && let Some(scope) = first
@@ -1036,7 +1047,7 @@ impl Analyzer<'_> {
                 }
                 for effect in &arg.2.latent_effects {
                     if name != "run" || effect != "fiber" {
-                        self.effect(ctx, effect, span);
+                        self.effect(ctx, ledger, effect, span);
                     }
                 }
             }
@@ -1068,7 +1079,7 @@ impl Analyzer<'_> {
             return self.snapshot_value(span);
         }
         if matches!(name, "send" | "recv") {
-            self.effect(ctx, "fiber", span);
+            self.effect(ctx, ledger, "fiber", span);
         }
         if matches!(name, "send" | "try_send" | "recv" | "try_recv")
             && let Some(value) = first
@@ -1118,16 +1129,95 @@ impl Analyzer<'_> {
                     "handler must target a user effect operation",
                 );
             }
-            let value = if matches!(
-                self.ast(ctx.file).expr(handler.value).value,
-                Expr::Closure { .. }
-            ) {
-                self.closure(ctx, ledger, handler.value, true)
+            let rhs = self.ast(ctx.file).expr(handler.value);
+            let inline = matches!(rhs.value, Expr::Closure { .. });
+            let mut value = if inline {
+                let mut local = ctx.clone();
+                if handler.mode == Mode::New {
+                    local.expected = Mode::New;
+                }
+                self.closure(&local, ledger, handler.value, true)
             } else {
                 self.expr(ctx, ledger, handler.value)
             };
-            if matches!(handler.mode, Mode::Ref | Mode::Mut | Mode::Shared) {
-                ledger.holds.push(value.clone());
+            if let Expr::Path(path) = &rhs.value
+                && let Some(id) = self.definition(path.span)
+            {
+                let def = self.program.hir.definition(id);
+                if let Some(stmt) = def.stmt
+                    && let StmtKind::Function(fun) =
+                        &self.ast(def.name.span.file).stmt(stmt).value.kind
+                {
+                    let bindings: BTreeSet<_> = fun
+                        .signature
+                        .obligations
+                        .state
+                        .iter()
+                        .filter(|clause| clause.kind == StateKind::Environment)
+                        .flat_map(|clause| &clause.bindings)
+                        .filter_map(|(_, path)| self.declaration(path.span))
+                        .collect();
+                    for (index, binding) in bindings.into_iter().enumerate() {
+                        if let Some(slot) = ledger.slots.get(&binding) {
+                            value
+                                .members
+                                .insert(Coordinate::Index(index.to_string()), slot.value.clone());
+                            value
+                                .invocations
+                                .entry(fun.name.span)
+                                .or_default()
+                                .insert(binding, BTreeSet::from([binding]));
+                        }
+                    }
+                }
+            }
+            let effects = value
+                .latent_effects
+                .iter()
+                .chain(match self.ty(rhs.span) {
+                    Ty::Callable(signature) if !inline => signature.effects.as_slice(),
+                    _ => &[],
+                })
+                .cloned()
+                .collect::<BTreeSet<_>>();
+            for effect in effects {
+                self.effect(ctx, ledger, &effect, rhs.span);
+            }
+            self.link_invocation(ctx, &value);
+            if ctx.reachable && !ctx.shadow {
+                self.check_handler_iteration(ledger, &value, rhs.span, None);
+            }
+            if handler.mode == Mode::New {
+                self.handoff(ctx, ledger, &mut value, rhs.span);
+            }
+            let capture_mode = value
+                .members
+                .values()
+                .flat_map(Datum::origins)
+                .map(|origin| origin.mode)
+                .max();
+            let held_mode = match handler.mode {
+                specified @ (Mode::Ref | Mode::Mut | Mode::Shared) => Some(specified),
+                _ => match capture_mode {
+                    Some(Access::Shared) => Some(Mode::Shared),
+                    Some(Access::Mut) => Some(Mode::Mut),
+                    Some(Access::Ref) => Some(Mode::Ref),
+                    _ => None,
+                },
+            };
+            if let Some(mode) = held_mode {
+                if handler.mode == Mode::Plain
+                    && !inline
+                    && !value.requires_new
+                    && !matches!(&rhs.value, Expr::Path(path) if self.definition(path.span).is_some_and(|id| self.program.hir.definition(id).kind == DefinitionKind::Function))
+                {
+                    self.error(
+                        Code::E0405,
+                        rhs.span,
+                        "a live handler variable requires an explicit access mode",
+                    );
+                }
+                ledger.holds.push((mode, value.clone()));
             }
             if let Some(operation) = operation {
                 installed.insert(operation, value);
