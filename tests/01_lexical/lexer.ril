@@ -1,0 +1,56 @@
+-- @suite lexer
+-- @default_stage lex
+
+-- @case dialect compile-pass
+let nested = wrapped.0.1
+let raw = ##"a "# closer needs two hashes "##
+let number = 0xFF_00 + 0b1001 + 0o71 + 6.022e23
+let text = "{{bytes}} {number} {f(.{ a: "yes" })}"
+let bytes_value = bytes"\xFF\0"
+let more_bytes = bytes#"first
+second"#
+{- Control and non-ASCII characters are permitted in comments.  {- nested -} -}
+
+-- @case malformed_utf8 compile-fail E0104
+-- @bytes-hex FF
+-- @expect-primary E0104
+
+-- @case forbidden_control compile-fail E0105
+-- @bytes-hex 6C 65 74 20 01
+-- ^ E0105
+
+-- @case bidi_control compile-fail E0105
+-- @bytes-hex E2 80 AE
+
+-- @case unterminated_comment compile-fail E0106 raw-slice
+{- outer {- inner -}
+
+-- @case unterminated_raw_string compile-fail E0107 raw-slice
+let msg = ##"wrong closer"#
+
+-- @case invalid_escape compile-fail E0108
+let msg = "\q"
+-- ^ E0108
+
+-- @case invalid_scalar compile-fail E0109
+let msg = "\u{D800}"
+-- ^ E0109
+
+-- @case non_ascii_bytes compile-fail E0110
+let msg = bytes#"λ"#
+-- ^ E0110
+
+-- @case invalid_num compile-fail E0111
+let x = 0b_100
+-- ^ E0111
+
+-- @case invalid_exponent compile-fail E0111
+let x = 1.0e+
+
+-- @case empty_interp compile-fail E0112
+let msg = "{ {- hidden -} }"
+-- ^ E0112
+
+-- @case malformed_identifier compile-fail E0102
+let user__name = 0
+-- ^ E0102

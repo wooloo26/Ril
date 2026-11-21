@@ -1,0 +1,17 @@
+[package]
+name = "ril-driver"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+ril-base.workspace = true
+ril-frontend.workspace = true
+ril-sema.workspace = true
+ril-backend.workspace = true
+ril-rt-core.workspace = true
+ril-test.workspace = true

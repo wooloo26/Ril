@@ -1,0 +1,32 @@
+name: Ril compiler
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  compiler:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        stage: [m0]
+    env:
+      RIL_TEST_STAGE: ${{ matrix.stage }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup show
+      - uses: taiki-e/install-action@nextest
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - run: cargo nextest run -p ril-test --locked
+
+  runtime:
+    runs-on: ubuntu-latest
+    env:
+      RUSTUP_TOOLCHAIN: nightly
+      RIL_GC_STRESS: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup toolchain install nightly --profile minimal --component miri
+      - run: cargo miri test -p ril-rt-core --locked

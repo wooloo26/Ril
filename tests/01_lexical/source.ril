@@ -1,0 +1,5 @@
+-- @suite source
+-- @default_stage source
+
+-- @case unicode_and_newline compile-pass
+let text = "你好"

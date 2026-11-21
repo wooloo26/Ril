@@ -1,0 +1,33 @@
+-- @suite self_check
+-- @default_stage source
+
+-- @prelude
+let injected = 1
+
+-- @case inherited_prelude compile-pass
+let value = injected
+
+-- @case raw_string_shields_directives compile-pass
+let raw = ##"
+-- @case ignored compile-fail E0120
+-- @file invisible.ril
+"# still inside the string
+"##
+
+-- @case nested_comment_shields_directives compile-pass no-prelude
+{- {- -}
+-- @case ignored compile-fail E0120
+-}
+let independently_valid = 2
+
+-- @case virtual_files compile-pass unit=bin no-prelude
+-- @file pkg/main.ril
+fn main() -> () { () }
+-- @file pkg/detail.ril
+pkg type Value = int
+
+-- @case future_directives compile-fail E0104 stage=lex no-prelude
+-- @bytes-hex EF BB BF 6C 65 74 0A
+-- @expect-primary E0104
+-- ^ E0104
+-- @forbid E0105, E0120

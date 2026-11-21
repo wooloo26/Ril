@@ -1,0 +1,19 @@
+[package]
+name = "ril-rt-static"
+version = "0.2.0"
+edition = "2024"
+rust-version = "1.97"
+publish = false
+
+[lib]
+name = "ril_rt"
+crate-type = ["staticlib"]
+
+[dependencies]
+ril-rt-core = { path = "../../crates/ril-rt-core" }
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"

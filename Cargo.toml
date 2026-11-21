@@ -1,0 +1,45 @@
+[workspace]
+members = ["crates/*"]
+exclude = ["runtime/ril-rt-static"]
+resolver = "3"
+
+[workspace.package]
+version = "0.2.0"
+edition = "2024"
+rust-version = "1.97"
+license = "MIT"
+
+[workspace.dependencies]
+ariadne = "0.6.0"
+clap = { version = "4.6.7", features = ["derive"] }
+libtest-mimic = "0.8.2"
+tempfile = "3.27.0"
+ril-base = { path = "crates/ril-base" }
+ril-frontend = { path = "crates/ril-frontend" }
+ril-sema = { path = "crates/ril-sema" }
+ril-backend = { path = "crates/ril-backend" }
+ril-rt-core = { path = "crates/ril-rt-core" }
+ril-driver = { path = "crates/ril-driver" }
+ril-test = { path = "crates/ril-test" }
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+rust_2018_idioms = { level = "warn", priority = -1 }
+unreachable_pub = "warn"
+trivial_casts = "deny"
+trivial_numeric_casts = "deny"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+undocumented_unsafe_blocks = "deny"
+unwrap_used = "deny"
+todo = "deny"
+unimplemented = "deny"
+dbg_macro = "deny"
+expect_used = "warn"
+panic = "warn"
+indexing_slicing = "warn"
+explicit_iter_loop = "warn"
+semicolon_if_nothing_returned = "warn"
+cloned_instead_of_copied = "warn"
+manual_let_else = "warn"
