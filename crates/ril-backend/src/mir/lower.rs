@@ -746,6 +746,7 @@ impl<'a> Builder<'_, 'a> {
                     let cleanups = self.cleanups.clone();
                     self.current = Some(bad);
                     self.expr(*fallback)?;
+                    self.terminate(Terminator::Unreachable);
                     self.locals = prior;
                     self.cleanups = cleanups;
                     self.current = Some(good);

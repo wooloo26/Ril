@@ -29,6 +29,7 @@ enum Obligation {
     Retain(Span),
     Share(Span),
     ReadUp(Span),
+    Invoke(Span),
     Capture,
     StatefulHandler,
     Effect(String),
@@ -889,7 +890,30 @@ impl<'a> Analyzer<'a> {
         if value.roots.is_empty() {
             return value;
         }
-        if value.requires_new {
+        let inline_closure = value.environments.contains(&span);
+        if value.requires_new || inline_closure {
+            let captures = || value.members.values().flat_map(Datum::origins);
+            match mode {
+                Access::Immutable
+                    if captures().any(|capture| capture.mode != Access::Immutable) =>
+                {
+                    self.error(
+                        Code::E0535,
+                        span,
+                        "a plain member cannot store a live closure environment",
+                    );
+                }
+                Access::Mut
+                    if inline_closure && captures().any(|capture| capture.mode.writes()) =>
+                {
+                    self.error(
+                        Code::E0510,
+                        span,
+                        "a closure retaining a writer needs shared writable storage",
+                    );
+                }
+                _ => {}
+            }
             for root in &mut value.roots {
                 root.mode = mode;
             }

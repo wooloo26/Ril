@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use ril_base::{diag::Code, span::Span};
 use ril_frontend::{
@@ -66,28 +66,22 @@ impl Analyzer<'_> {
                 Ty::Callable(sig) => Some(sig.as_ref()),
                 _ => None,
             });
-        if let Expr::Path(path) = &callee.value
-            && def.is_some_and(|def| def.kind == DefinitionKind::Local)
-        {
-            let target = self.read_span(ctx, ledger, path.span);
-            self.link_invocation(ctx, &target);
-            if let Some(formal) = self.declaration(path.span)
-                && ctx.reachable
-                && !ctx.shadow
-            {
-                for (&owner, sources) in &target.invocations {
-                    for &source in sources {
-                        for obligation in [Obligation::Write(source), Obligation::Replace(source)] {
-                            self.rules.push(Rule {
-                                premises: vec![Fact { owner, obligation }],
-                                conclusion: Fact {
-                                    owner: ctx.owner,
-                                    obligation: Obligation::Write(formal),
-                                },
-                            });
-                        }
-                    }
-                }
+        let target = (id.is_none() || def.is_some_and(|def| def.kind == DefinitionKind::Local))
+            .then(|| self.expr(ctx, ledger, callee_id));
+        if let Some(target) = &target {
+            let requires_writer = sig.is_some_and(|sig| sig.state.iter().any(|s| s == "up"));
+            if requires_writer && target.invocations.is_empty() {
+                self.mutate(ctx, ledger, target, callee.span);
+            } else if requires_writer && !target.writers() {
+                self.error(
+                    Code::E0520,
+                    callee.span,
+                    "callable requires a writable path",
+                );
+            }
+            self.link_invocation(ctx, target);
+            for source in target.root_dependencies() {
+                self.seed(ctx, Obligation::Invoke(source));
             }
             for effect in &target.latent_effects {
                 self.effect(ctx, effect, span);
@@ -209,6 +203,13 @@ impl Analyzer<'_> {
         {
             self.mode_uses.push(ModeUse { callee, choices });
         }
+        if target.as_ref().is_some_and(|target| ledger.dead(target)) {
+            self.error(
+                Code::E0549,
+                callee.span,
+                "argument handoff ended the callable path",
+            );
+        }
         if let Some(module @ ("Fiber" | "Channel")) = module {
             return self.concurrent(ctx, ledger, (module, name), &values, args, span);
         }
@@ -251,7 +252,7 @@ impl Analyzer<'_> {
             }
         }
         if let Some(fun) = syntax {
-            let lexical: BTreeSet<_> = fun
+            let lexical = fun
                 .signature
                 .obligations
                 .state
@@ -259,9 +260,10 @@ impl Analyzer<'_> {
                 .filter(|clause| clause.kind == StateKind::Environment)
                 .flat_map(|clause| &clause.bindings)
                 .filter_map(|(_, path)| self.declaration(path.span))
+                .map(|decl| (decl, BTreeSet::from([decl])))
                 .collect();
             let enclosing = Datum {
-                invocations: std::collections::BTreeMap::from([(fun.name.span, lexical)]),
+                invocations: BTreeMap::from([(fun.name.span, lexical)]),
                 ..Datum::default()
             };
             self.link_invocation(ctx, &enclosing);
@@ -273,18 +275,26 @@ impl Analyzer<'_> {
                     .get(*index)
                     .and_then(|param| param.name.as_ref())
                     .map(|name| name.span);
+                if let Some(formal) = formal.filter(|_| has_body) {
+                    let invocation = Fact {
+                        owner: fun.name.span,
+                        obligation: Obligation::Invoke(formal),
+                    };
+                    self.link_invocation_if(ctx, value, Some(&invocation));
+                    if ctx.reachable && !ctx.shadow {
+                        for source in value.root_dependencies() {
+                            self.rules.push(Rule {
+                                premises: vec![invocation.clone()],
+                                conclusion: Fact {
+                                    owner: ctx.owner,
+                                    obligation: Obligation::Invoke(source),
+                                },
+                            });
+                        }
+                    }
+                }
                 if matches!(mode, Mode::Mut | Mode::Shared | Mode::New) {
-                    let origins: BTreeSet<_> = value
-                        .roots
-                        .iter()
-                        .flat_map(|origin| {
-                            origin
-                                .dependencies
-                                .iter()
-                                .copied()
-                                .chain(std::iter::once(origin.region.source))
-                        })
-                        .collect();
+                    let origins: BTreeSet<_> = value.root_dependencies().collect();
                     for source in origins {
                         if let Some(formal) = formal
                             && has_body
@@ -328,7 +338,10 @@ impl Analyzer<'_> {
             if fun.is_meta {
                 return self.snapshot_value(span);
             }
-            if matches!(fun.signature.result_mode, Mode::New | Mode::Infer) {
+            if matches!(
+                fun.signature.result_mode,
+                Mode::New | Mode::Infer | Mode::Ref | Mode::Shared
+            ) {
                 self.function(fun, ledger);
                 if let Some(result) = self.return_template(fun, &values, span) {
                     return result;
@@ -406,21 +419,49 @@ impl Analyzer<'_> {
         if !ctx.reachable || ctx.shadow {
             return;
         }
-        for (&owner, sources) in &target.invocations {
-            for &source in sources {
-                for obligation in [Obligation::Write(source), Obligation::Replace(source)] {
-                    self.rules.push(Rule {
-                        premises: std::iter::once(Fact {
-                            owner,
-                            obligation: obligation.clone(),
+        let receiver: BTreeSet<_> = if target.writers() {
+            target.root_dependencies().collect()
+        } else {
+            BTreeSet::new()
+        };
+        for (&owner, captures) in &target.invocations {
+            for (&source, writes) in captures {
+                for (obligation, targets) in [
+                    (Obligation::Write(source), writes),
+                    (Obligation::Replace(source), &BTreeSet::from([source])),
+                    (Obligation::Invoke(source), writes),
+                ] {
+                    let premises = std::iter::once(Fact {
+                        owner,
+                        obligation: obligation.clone(),
+                    })
+                    .chain(if_exercised.cloned())
+                    .collect::<Vec<_>>();
+                    let receiver_writes =
+                        matches!(obligation, Obligation::Write(_) | Obligation::Replace(_));
+                    let conclusions = targets
+                        .iter()
+                        .map(|&decl| match obligation {
+                            Obligation::Replace(_) => Obligation::Replace(decl),
+                            Obligation::Write(_) => Obligation::Write(decl),
+                            _ => Obligation::Invoke(decl),
                         })
-                        .chain(if_exercised.cloned())
-                        .collect(),
-                        conclusion: Fact {
-                            owner: ctx.owner,
-                            obligation,
-                        },
-                    });
+                        .chain(
+                            receiver
+                                .iter()
+                                .copied()
+                                .filter(|_| receiver_writes)
+                                .map(Obligation::Write),
+                        );
+                    for obligation in conclusions {
+                        self.rules.push(Rule {
+                            premises: premises.clone(),
+                            conclusion: Fact {
+                                owner: ctx.owner,
+                                obligation,
+                            },
+                        });
+                    }
                 }
             }
         }
@@ -629,12 +670,27 @@ impl Analyzer<'_> {
         if !template.environments.is_empty() {
             output.environments.insert(span);
         }
-        output.invocations.extend(
-            template
-                .invocations
-                .iter()
-                .map(|(&owner, captures)| (owner, captures.clone())),
-        );
+        for (&owner, captures) in &template.invocations {
+            let instance = output.invocations.entry(owner).or_default();
+            for (&source, targets) in captures {
+                let mapped = instance.entry(source).or_default();
+                for &target in targets {
+                    let formal = definition
+                        .formals
+                        .iter()
+                        .position(|formal| *formal == Some(target));
+                    if let Some(index) = formal {
+                        if let Some((_, _, value)) =
+                            arguments.iter().find(|(position, _, _)| *position == index)
+                        {
+                            mapped.extend(value.root_dependencies());
+                        }
+                    } else {
+                        mapped.insert(target);
+                    }
+                }
+            }
+        }
         output
     }
 
@@ -776,8 +832,14 @@ impl Analyzer<'_> {
                 if first.is_some_and(|value| {
                     !value.latent_effects.is_empty()
                         || value.stateful_handler
+                        || value.roots.iter().any(|origin| {
+                            origin.mode != Access::Immutable
+                                && (!origin.new || !origin.dependencies.is_empty())
+                        })
                         || value
-                            .origins()
+                            .members
+                            .values()
+                            .flat_map(Datum::origins)
                             .any(|origin| origin.mode != Access::Immutable)
                 }) {
                     self.error(
@@ -1169,7 +1231,22 @@ impl Analyzer<'_> {
             .collect();
         if !closure.members.is_empty() {
             closure.environments.insert(node.span);
-            closure.invocations.insert(inner.owner, used);
+            let bindings = used
+                .into_iter()
+                .map(|decl| {
+                    let sources = std::iter::once(decl)
+                        .chain(
+                            ledger
+                                .slots
+                                .get(&decl)
+                                .into_iter()
+                                .flat_map(|slot| slot.value.root_dependencies()),
+                        )
+                        .collect();
+                    (decl, sources)
+                })
+                .collect();
+            closure.invocations.insert(inner.owner, bindings);
         }
         closure.stateful_handler = self.rules.iter().skip(before).any(|rule| {
             rule.conclusion.owner == inner.owner

@@ -68,6 +68,7 @@ pub(crate) enum Target {
 
 #[derive(Debug)]
 pub(crate) enum Terminator {
+    Unreachable,
     Jump(BlockId, Vec<Register>),
     Branch {
         condition: Register,

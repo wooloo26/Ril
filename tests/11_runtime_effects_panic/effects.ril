@@ -218,3 +218,42 @@ fn main() -> () {
     assert(read<int>() == 42)
     assert(read<str>() == "value")
 }
+
+-- @case escaping_closure_writes_its_callers_actual_capture run-pass backend=both
+type Counter = .{ var count: int }
+type Tick = fn() &up -> int
+fn counter(^mut state: Counter) &capture &^mut &return(^mut state) -> new Tick {
+    \-> { state.count += 1; state.count }
+}
+fn main() -> () {
+    let mut state = Counter.{ count: 0 }
+    let ^mut tick = counter(^mut state)
+    assert(tick() == 1 && tick() == 2 && state.count == 2)
+}
+
+-- @case invoking_a_stored_closure_exercises_its_container_and_captures run-pass backend=both
+type Counter = .{ var count: int }
+fn main() -> () {
+    let mut state = Counter.{ count: 0 }
+    let ^mut current = state
+    let mut callbacks = .{ ^mut tick: \-> { current.count += 1; current.count } }
+    assert((callbacks.tick)() == 1 && current.count == 1 && state.count == 1)
+}
+
+-- @case abstract_mutable_callable_writes_its_formal run-pass backend=both
+type Tick = fn() &up -> int
+fn tick(mut callback: Tick) &mut -> int { callback() }
+fn main() -> () {
+    var count = 0
+    let ^mut callback = \-> { count += 1; count }
+    assert(tick(mut callback) == 1)
+}
+
+-- @case isolated_closure_in_new_return_handles_its_own_panic run-pass backend=both
+fn protected(values: []int) -> new !<int, PanicError> {
+    absorb_panic \-> values[1]
+}
+fn main() -> () {
+    let Err(PanicError::Panicked(info)) = protected([1]) else { panic("expected error") }
+    assert(len(panic_message(info)) > 0)
+}

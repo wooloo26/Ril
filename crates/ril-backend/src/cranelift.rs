@@ -258,6 +258,11 @@ impl<M: Module> MirToClifTranslator<'_, M> {
                 .as_ref()
                 .ok_or_else(|| diagnostic("unterminated reachable MIR block"))?
             {
+                Terminator::Unreachable => {
+                    builder
+                        .ins()
+                        .trap(cranelift_codegen::ir::TrapCode::unwrap_user(1));
+                }
                 Terminator::Jump(target, args) => {
                     let args = args
                         .iter()
@@ -500,7 +505,7 @@ fn reachable(function: &mir::Function) -> Result<Vec<BlockId>> {
                 .ok_or_else(|| diagnostic("MIR block is unterminated"))?;
             todo.push((id, true));
             match terminator {
-                Terminator::Return(_) => {}
+                Terminator::Return(_) | Terminator::Unreachable => {}
                 Terminator::Jump(target, _) => todo.push((*target, false)),
                 Terminator::Branch { yes, no, .. } => todo.extend([(*yes, false), (*no, false)]),
                 Terminator::Invoke { normal, unwind, .. } => {

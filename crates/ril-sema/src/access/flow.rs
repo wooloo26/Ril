@@ -88,7 +88,7 @@ pub(super) struct Datum {
     pub requires_new: bool,
     pub latent_effects: BTreeSet<String>,
     pub environments: BTreeSet<Span>,
-    pub invocations: BTreeMap<Span, BTreeSet<Span>>,
+    pub invocations: BTreeMap<Span, BTreeMap<Span, BTreeSet<Span>>>,
     pub stateful_handler: bool,
     pub task_scope: Option<Span>,
 }
@@ -157,7 +157,10 @@ impl Datum {
         self.latent_effects.append(&mut other.latent_effects);
         self.environments.append(&mut other.environments);
         for (owner, sources) in other.invocations {
-            self.invocations.entry(owner).or_default().extend(sources);
+            let captures = self.invocations.entry(owner).or_default();
+            for (source, targets) in sources {
+                captures.entry(source).or_default().extend(targets);
+            }
         }
         self.stateful_handler |= other.stateful_handler;
         if self.task_scope != other.task_scope {
@@ -217,6 +220,16 @@ impl Datum {
 
     pub(super) fn writers(&self) -> bool {
         !self.roots.is_empty() && self.roots.iter().all(|root| root.mode.writes())
+    }
+
+    pub(super) fn root_dependencies(&self) -> impl Iterator<Item = Span> + '_ {
+        self.roots.iter().flat_map(|origin| {
+            origin
+                .dependencies
+                .iter()
+                .copied()
+                .chain(std::iter::once(origin.region.source))
+        })
     }
 }
 
