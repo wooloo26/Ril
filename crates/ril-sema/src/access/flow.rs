@@ -67,6 +67,7 @@ pub(super) struct Origin {
     pub dependencies: BTreeSet<Span>,
     pub branches: BTreeMap<Span, usize>,
     pub confined: Option<Span>,
+    pub draft: bool,
 }
 
 impl Origin {
@@ -85,6 +86,11 @@ pub(super) struct Datum {
     pub members: BTreeMap<Coordinate, Datum>,
     pub results: BTreeSet<Span>,
     pub requires_new: bool,
+    pub latent_effects: BTreeSet<String>,
+    pub environments: BTreeSet<Span>,
+    pub invocations: BTreeMap<Span, BTreeSet<Span>>,
+    pub stateful_handler: bool,
+    pub task_scope: Option<Span>,
 }
 
 impl Datum {
@@ -100,6 +106,7 @@ impl Datum {
                 dependencies: BTreeSet::new(),
                 branches: BTreeMap::new(),
                 confined: None,
+                draft: false,
             }],
             requires_new: new,
             ..Self::default()
@@ -147,6 +154,15 @@ impl Datum {
         }
         self.results.append(&mut other.results);
         self.requires_new &= other.requires_new;
+        self.latent_effects.append(&mut other.latent_effects);
+        self.environments.append(&mut other.environments);
+        for (owner, sources) in other.invocations {
+            self.invocations.entry(owner).or_default().extend(sources);
+        }
+        self.stateful_handler |= other.stateful_handler;
+        if self.task_scope != other.task_scope {
+            self.task_scope = None;
+        }
         self
     }
 
@@ -170,7 +186,9 @@ impl Datum {
             .map(|origin| {
                 let mut origin = origin.clone();
                 origin.region.selection.push(coordinate.clone());
-                origin.mode = origin.mode.project(mode);
+                if !origin.draft {
+                    origin.mode = origin.mode.project(mode);
+                }
                 origin
             })
             .collect();
@@ -191,6 +209,10 @@ impl Datum {
             roots,
             ..Self::default()
         }
+    }
+
+    pub(super) fn creates_environment(&self) -> bool {
+        !self.environments.is_empty() || self.members.values().any(Self::creates_environment)
     }
 
     pub(super) fn writers(&self) -> bool {

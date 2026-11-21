@@ -1,19 +1,19 @@
 mod control;
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use ril_base::{
     diag::Diagnostic,
     span::{FileId, Span},
 };
 use ril_sema::{
-    access::Analysis,
+    access::{Analysis, CleanupAction},
     hir::{DefinitionId, DefinitionKind, Resolution},
     syntax::{
         Argument, Ast, Expr, ExprId, Function as SyntaxFunction, Member, Name, Pattern, PatternId,
         StmtId, StmtKind, StringPart, Transfer,
     },
-    ty::{self, TypedProgram, Value},
+    ty::{self, Ty, TypedProgram, Value},
 };
 
 use super::{
@@ -23,6 +23,11 @@ use super::{
 
 type Result<T> = std::result::Result<T, Diagnostic>;
 type Locals = BTreeMap<DefinitionId, Register>;
+
+enum NativeBody<'a> {
+    Expression(ExprId),
+    Accessor(&'a [(bool, Member)]),
+}
 
 pub(super) fn lower(typed: &TypedProgram, analysis: &Analysis) -> Result<Program> {
     let file = typed.hir.entry;
@@ -40,31 +45,112 @@ pub(super) fn lower(typed: &TypedProgram, analysis: &Analysis) -> Result<Program
         typed,
         analysis,
         queued: Vec::new(),
-        ids: BTreeMap::new(),
+        boxed: captured_slots(typed),
     };
-    let entry = lowering.queue(entry);
+    let entry = lowering.queue(Work::Named(entry, BTreeMap::new(), Vec::new()));
     let mut functions = Vec::new();
-    while let Some(&id) = lowering.queued.get(functions.len()) {
-        functions.push(lowering.function(id)?);
+    while let Some(work) = lowering.queued.get(functions.len()).cloned() {
+        functions.push(lowering.function(work)?);
     }
     Ok(Program { entry, functions })
+}
+
+fn captured_slots(typed: &TypedProgram) -> BTreeSet<DefinitionId> {
+    let mut needed = BTreeSet::new();
+    for file in typed.hir.files() {
+        let closure_spans: Vec<_> = file
+            .ast
+            .expressions()
+            .filter(|node| matches!(node.value, Expr::Closure { .. }))
+            .map(|node| node.span)
+            .collect();
+        let mutable: BTreeSet<_> = file
+            .ast
+            .statements()
+            .filter_map(|node| {
+                let StmtKind::Binding {
+                    pattern, storage, ..
+                } = &node.value.kind
+                else {
+                    return None;
+                };
+                if !storage.variable {
+                    return None;
+                }
+                let Pattern::Binding(_, name) = &file.ast.pattern(*pattern).value else {
+                    return None;
+                };
+                match typed.hir.resolve(name.span) {
+                    Some(Resolution::Definition(id)) => Some(id),
+                    _ => None,
+                }
+            })
+            .collect();
+        for node in file.ast.expressions() {
+            if let Expr::Path(path) = &node.value
+                && let Some(Resolution::Definition(id)) = typed.hir.resolve(path.span)
+                && mutable.contains(&id)
+                && closure_spans.iter().any(|closure| {
+                    typed.hir.definition(id).name.span.start < closure.start
+                        && closure.start <= node.span.start
+                        && node.span.end <= closure.end
+                })
+            {
+                needed.insert(id);
+            }
+        }
+        for (_, def) in typed
+            .hir
+            .definitions()
+            .filter(|(_, def)| def.name.span.file == file.id)
+        {
+            if let Some(stmt) = def.stmt
+                && let StmtKind::Function(fun) = &file.ast.stmt(stmt).value.kind
+            {
+                for (storage, path) in fun
+                    .signature
+                    .obligations
+                    .state
+                    .iter()
+                    .flat_map(|clause| &clause.bindings)
+                {
+                    if storage.variable
+                        && let Some(Resolution::Definition(id)) = typed.hir.resolve(path.span)
+                    {
+                        needed.insert(id);
+                    }
+                }
+            }
+        }
+    }
+    needed
 }
 
 struct Lowering<'a> {
     typed: &'a TypedProgram,
     analysis: &'a Analysis,
-    queued: Vec<DefinitionId>,
-    ids: BTreeMap<DefinitionId, FunctionId>,
+    queued: Vec<Work>,
+    boxed: BTreeSet<DefinitionId>,
+}
+
+#[derive(Clone, PartialEq)]
+enum Work {
+    Named(DefinitionId, BTreeMap<DefinitionId, Ty>, Vec<DefinitionId>),
+    Closure {
+        file: FileId,
+        syntax: ExprId,
+        captures: Vec<DefinitionId>,
+        types: BTreeMap<DefinitionId, Ty>,
+    },
 }
 
 impl<'a> Lowering<'a> {
-    fn queue(&mut self, id: DefinitionId) -> FunctionId {
-        if let Some(&function) = self.ids.get(&id) {
-            return function;
+    fn queue(&mut self, work: Work) -> FunctionId {
+        if let Some(id) = self.queued.iter().position(|known| known == &work) {
+            return FunctionId(id);
         }
         let function = FunctionId(self.queued.len());
-        self.ids.insert(id, function);
-        self.queued.push(id);
+        self.queued.push(work);
         function
     }
 
@@ -77,25 +163,71 @@ impl<'a> Lowering<'a> {
 
     fn declaration(&self, id: DefinitionId) -> Option<&'a SyntaxFunction> {
         let def = self.typed.hir.definition(id);
+        let stmt = def.stmt?;
         let ast = &self.typed.hir.file(def.name.span.file).ast;
-        match &ast.stmt(def.stmt?).value.kind {
+        match &ast.stmt(stmt).value.kind {
             StmtKind::Function(func) => Some(func),
             _ => None,
         }
     }
 
-    fn function(&mut self, id: DefinitionId) -> Result<Function> {
-        let func = self
-            .declaration(id)
-            .ok_or_else(|| Diagnostic::unsupported("missing native function definition"))?;
-        let name = self.typed.hir.export_name(id);
-        let body = func
-            .body
-            .ok_or_else(|| Diagnostic::unsupported("missing native function body"))?;
-        let arity = func.signature.params.len();
+    fn function(&mut self, work: Work) -> Result<Function> {
+        let (file, name, body, params, guards, captures, types) = match work {
+            Work::Named(id, types, captures) => {
+                let f = self
+                    .declaration(id)
+                    .ok_or_else(|| Diagnostic::unsupported("missing native function definition"))?;
+                let body = f
+                    .body
+                    .ok_or_else(|| Diagnostic::unsupported("missing native function body"))?;
+                (
+                    f.name.span.file,
+                    self.typed.hir.export_name(id),
+                    NativeBody::Expression(body),
+                    f.signature.params.as_slice(),
+                    f.signature.guards.clone(),
+                    captures,
+                    types,
+                )
+            }
+            Work::Closure {
+                file,
+                syntax,
+                captures,
+                types,
+            } => {
+                let ast = &self.typed.hir.file(file).ast;
+                let node = ast.expr(syntax);
+                let (body, params) = match &node.value {
+                    Expr::Closure { params, body, .. } => {
+                        (NativeBody::Expression(*body), params.as_slice())
+                    }
+                    Expr::Accessor(path) => (NativeBody::Accessor(path), &[][..]),
+                    _ => return Err(Diagnostic::unsupported("invalid closure body")),
+                };
+                (
+                    file,
+                    format!(
+                        "{}:closure@{}",
+                        self.typed.hir.file(file).path.display(),
+                        node.span.start
+                    ),
+                    body,
+                    params,
+                    Vec::new(),
+                    captures,
+                    types,
+                )
+            }
+        };
+        let arity = if matches!(body, NativeBody::Accessor(_)) {
+            1
+        } else {
+            params.len()
+        };
         let mut builder = Builder {
             global: self,
-            file: func.name.span.file,
+            file,
             function: Function {
                 name,
                 arity,
@@ -108,28 +240,48 @@ impl<'a> Lowering<'a> {
             pads: HashMap::new(),
             traps: Vec::new(),
             loops: Vec::new(),
-            handlers: BTreeMap::new(),
+            evidence: Register(0),
+            types,
             capture_return: None,
+            guards,
+            running_guard: false,
         };
         let entry = builder.block(arity);
         builder.current = Some(entry);
-        for (param, value) in func.signature.params.iter().zip(builder.params(entry)) {
-            if let Some(id) = param
-                .name
-                .as_ref()
-                .and_then(|name| builder.global.resolve(name.span))
-            {
-                builder.locals.insert(id, value);
-            }
-        }
+        builder.evidence = builder.instruction(Instruction::Evidence);
         let fail = builder.block(0);
         let fail_value = builder.instruction_at(fail, Instruction::Handle(0));
         builder.term_at(fail, Terminator::Return(fail_value));
         builder.traps.push((0, fail));
-        let result = builder.expr(body)?;
+        if !captures.is_empty() {
+            let environment = builder.instruction(Instruction::Environment);
+            for (index, id) in captures.into_iter().enumerate() {
+                let index = builder.integer(&index.to_string());
+                let value = builder.runtime("ril_rt_load", vec![environment, index]);
+                builder.locals.insert(id, value);
+            }
+        }
+        for (param, value) in params.iter().zip(builder.params(entry)) {
+            if let Some(pattern) = param.pattern {
+                builder.bind(pattern, value)?;
+            } else if let Some(name) = &param.name {
+                builder.bind_name(name, value);
+            }
+        }
+        for (param, value) in params.iter().zip(builder.params(entry)) {
+            for &guard in &param.guards {
+                builder.run_guard(guard, value)?;
+            }
+        }
+        let result = match body {
+            NativeBody::Expression(body) => builder.expr(body)?,
+            NativeBody::Accessor(path) => {
+                let value = builder.result_param(entry);
+                builder.project_path(path, value)?
+            }
+        };
         if builder.current.is_some() {
-            builder.cleanup_to(0);
-            builder.terminate(Terminator::Return(result));
+            builder.return_value(result)?;
         }
         Ok(builder.function)
     }
@@ -137,8 +289,24 @@ impl<'a> Lowering<'a> {
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 struct Cleanup {
-    function: FunctionId,
+    action: Clean,
+    evidence: Register,
     value: Register,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+enum Clean {
+    Function(FunctionId),
+    Sender,
+}
+
+impl Clean {
+    fn target(self) -> Target {
+        match self {
+            Self::Function(id) => Target::Function(id),
+            Self::Sender => Target::Runtime("ril_channel_close"),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -147,13 +315,7 @@ struct Loop {
     exit: BlockId,
     names: Vec<DefinitionId>,
     cleanups: usize,
-}
-
-#[derive(Clone)]
-struct BoundHandler {
-    closure: ExprId,
-    locals: Locals,
-    outer: BTreeMap<DefinitionId, BoundHandler>,
+    counter: Option<Register>,
 }
 
 struct Builder<'b, 'a> {
@@ -166,8 +328,11 @@ struct Builder<'b, 'a> {
     pads: HashMap<(BlockId, Vec<Cleanup>), BlockId>,
     traps: Vec<(usize, BlockId)>,
     loops: Vec<Loop>,
-    handlers: BTreeMap<DefinitionId, BoundHandler>,
+    evidence: Register,
+    types: BTreeMap<DefinitionId, Ty>,
     capture_return: Option<(BlockId, usize)>,
+    guards: Vec<ExprId>,
+    running_guard: bool,
 }
 
 impl<'a> Builder<'_, 'a> {
@@ -257,6 +422,16 @@ impl<'a> Builder<'_, 'a> {
     }
 
     fn invoke(&mut self, target: Target, arguments: Vec<Register>, cleanup: bool) -> Register {
+        self.invoke_with(target, arguments, cleanup, self.evidence)
+    }
+
+    fn invoke_with(
+        &mut self,
+        target: Target,
+        arguments: Vec<Register>,
+        cleanup: bool,
+        evidence: Register,
+    ) -> Register {
         let Some(block) = self.current else {
             return self.register();
         };
@@ -266,6 +441,7 @@ impl<'a> Builder<'_, 'a> {
             block,
             Terminator::Invoke {
                 target,
+                evidence,
                 arguments,
                 normal,
                 unwind,
@@ -299,7 +475,8 @@ impl<'a> Builder<'_, 'a> {
             self.term_at(
                 block,
                 Terminator::Invoke {
-                    target: Target::Function(cleanup.function),
+                    target: cleanup.action.target(),
+                    evidence: cleanup.evidence,
                     arguments: vec![cleanup.value],
                     normal: next,
                     unwind: next,
@@ -316,16 +493,29 @@ impl<'a> Builder<'_, 'a> {
     fn cleanup_to(&mut self, depth: usize) {
         while self.cleanups.len() > depth {
             if let Some(cleanup) = self.cleanups.pop() {
-                self.invoke(
-                    Target::Function(cleanup.function),
-                    vec![cleanup.value],
-                    true,
-                );
+                self.invoke(cleanup.action.target(), vec![cleanup.value], true);
             }
         }
     }
 
     fn expr(&mut self, id: ExprId) -> Result<Register> {
+        let span = self.ast().expr(id).span;
+        let depth = self
+            .global
+            .typed
+            .narrowings
+            .get(&span)
+            .copied()
+            .unwrap_or_default();
+        let mut value = self.expr_impl(id)?;
+        for _ in 0..depth {
+            let zero = self.integer("0");
+            value = self.runtime("ril_rt_load", vec![value, zero]);
+        }
+        Ok(value)
+    }
+
+    fn expr_impl(&mut self, id: ExprId) -> Result<Register> {
         if self.current.is_none() {
             return Ok(self.register());
         }
@@ -338,6 +528,7 @@ impl<'a> Builder<'_, 'a> {
         }
         match &node.value {
             Expr::Unit => Ok(self.unit()),
+            Expr::Closure { .. } | Expr::Accessor(_) => self.lift(id),
             Expr::Literal(literal) => self.constant(
                 &ty::literal(literal).map_err(|_| self.unsupported(span, "malformed literal"))?,
                 span,
@@ -352,7 +543,7 @@ impl<'a> Builder<'_, 'a> {
             Expr::Block { statements, .. } => {
                 let cleanup_depth = self.cleanups.len();
                 let names: Vec<_> = self.locals.keys().copied().collect();
-                let saved_handlers = self.handlers.clone();
+                let saved_evidence = self.evidence;
                 let mut result = self.unit();
                 for &statement in statements {
                     if self.current.is_none() {
@@ -363,7 +554,7 @@ impl<'a> Builder<'_, 'a> {
                 self.cleanup_to(cleanup_depth);
                 self.locals
                     .retain(|&name, _| names.binary_search(&name).is_ok());
-                self.handlers = saved_handlers;
+                self.evidence = saved_evidence;
                 Ok(result)
             }
             Expr::Unary { op, value } => {
@@ -406,6 +597,12 @@ impl<'a> Builder<'_, 'a> {
             Expr::Cast { value, .. } => self.expr(*value),
             Expr::If { condition, yes, no } => self.conditional(condition, *yes, *no),
             Expr::While { condition, body } => self.while_loop(condition, *body),
+            Expr::For {
+                iterable,
+                pattern,
+                body,
+                ..
+            } => self.for_loop(*iterable, *pattern, *body),
             Expr::Match { value, arms, .. } => self.match_expr(*value, arms, span),
             Expr::Transfer { kind, value } => {
                 match kind {
@@ -415,14 +612,15 @@ impl<'a> Builder<'_, 'a> {
                         } else {
                             self.unit()
                         };
-                        self.return_value(value);
+                        self.return_value(value)?;
                     }
                     Transfer::Continue | Transfer::Break => self.loop_transfer(*kind, span)?,
                 }
                 Ok(self.register())
             }
-            Expr::Record { fields, .. } => {
+            Expr::Record { name, fields } => {
                 let record = self.runtime("ril_rt_record", Vec::new());
+                let mut provided = BTreeMap::new();
                 for field in fields {
                     let key = self.string(&field.name.value);
                     let value = if let Some(value) = field.value {
@@ -435,6 +633,10 @@ impl<'a> Builder<'_, 'a> {
                         self.read(def, field.name.span)?
                     };
                     self.runtime("ril_rt_store", vec![record, key, value]);
+                    provided.insert(field.name.value.clone(), value);
+                }
+                if let Some(name) = name {
+                    self.defaults(name, record, &provided)?;
                 }
                 Ok(record)
             }
@@ -463,23 +665,53 @@ impl<'a> Builder<'_, 'a> {
             Expr::Member { base, member, safe } => {
                 let base = self.expr(*base)?;
                 let key = self.member_key(member)?;
-                if *safe {
-                    Err(self.unsupported(span, "safe field projection"))
-                } else {
-                    Ok(self.runtime("ril_rt_load", vec![base, key]))
-                }
-            }
-            Expr::Index { base, index, safe } => {
-                let base = self.expr(*base)?;
-                let key = self.expr(*index)?;
                 Ok(self.runtime(
                     if *safe {
-                        "ril_rt_safe_load"
+                        "ril_rt_safe_member"
                     } else {
                         "ril_rt_load"
                     },
                     vec![base, key],
                 ))
+            }
+            Expr::Index { base, index, safe } => {
+                let base = self.expr(*base)?;
+                if let Expr::Range {
+                    start,
+                    end,
+                    inclusive,
+                } = self.ast().expr(*index).value
+                {
+                    let start = if let Some(start) = start {
+                        self.expr(start)?
+                    } else {
+                        self.unit()
+                    };
+                    let end = if let Some(end) = end {
+                        self.expr(end)?
+                    } else {
+                        self.unit()
+                    };
+                    let inclusive = self.boolean(inclusive);
+                    Ok(self.runtime(
+                        if *safe {
+                            "ril_rt_safe_slice"
+                        } else {
+                            "ril_rt_slice"
+                        },
+                        vec![base, start, end, inclusive],
+                    ))
+                } else {
+                    let key = self.expr(*index)?;
+                    Ok(self.runtime(
+                        if *safe {
+                            "ril_rt_safe_load"
+                        } else {
+                            "ril_rt_load"
+                        },
+                        vec![base, key],
+                    ))
+                }
             }
             Expr::Interpolated(parts) => {
                 let mut accumulated = self.string("");
@@ -544,32 +776,87 @@ impl<'a> Builder<'_, 'a> {
                         .copied()
                         .ok_or_else(|| self.unsupported(node.span, "unresolved cleanup"))?;
                     self.cleanups.push(Cleanup {
-                        function: self.global.queue(function),
+                        action: match function {
+                            CleanupAction::Function(function) => {
+                                Clean::Function(self.global.queue(Work::Named(
+                                    function,
+                                    BTreeMap::new(),
+                                    Vec::new(),
+                                )))
+                            }
+                            CleanupAction::CloseSender => Clean::Sender,
+                        },
+                        evidence: self.evidence,
                         value,
                     });
                 }
                 Ok(self.unit())
             }
             StmtKind::With(handlers) => {
-                let prior = self.handlers.clone();
+                let mut installed = Vec::new();
                 for handler in handlers {
                     let operation = self
                         .global
                         .resolve(handler.operation.span)
                         .ok_or_else(|| self.unsupported(node.span, "unresolved handler"))?;
-                    self.handlers.insert(
-                        operation,
-                        BoundHandler {
-                            closure: handler.value,
-                            locals: self.locals.clone(),
-                            outer: prior.clone(),
-                        },
-                    );
+                    let key = self.string(&self.global.typed.hir.export_name(operation));
+                    installed.push((key, self.expr(handler.value)?));
+                }
+                for (name, handler) in installed {
+                    self.evidence =
+                        self.runtime("ril_rt_evidence_push", vec![self.evidence, name, handler]);
                 }
                 Ok(self.unit())
             }
             _ => Ok(self.unit()),
         }
+    }
+
+    fn defaults(
+        &mut self,
+        name: &ril_sema::syntax::Path,
+        record: Register,
+        fields: &BTreeMap<String, Register>,
+    ) -> Result<()> {
+        use ril_sema::syntax::{Type, TypeDefinition};
+        let Some(id) = self.global.resolve(name.span) else {
+            return Ok(());
+        };
+        let definition = self.global.typed.hir.definition(id);
+        let Some(stmt) = definition.stmt else {
+            return Ok(());
+        };
+        let ast = &self.global.typed.hir.file(definition.name.span.file).ast;
+        let StmtKind::Type(declaration) = &ast.stmt(stmt).value.kind else {
+            return Ok(());
+        };
+        let TypeDefinition::Data(repr) = declaration.definition else {
+            return Ok(());
+        };
+        let Type::Record {
+            fields: declared, ..
+        } = &ast.ty(repr).value
+        else {
+            return Ok(());
+        };
+        let old = self.locals.clone();
+        let file = std::mem::replace(&mut self.file, definition.name.span.file);
+        let result = (|| {
+            for field in declared {
+                if let Some(&value) = fields.get(&field.name.value) {
+                    self.bind_name(&field.name, value);
+                } else if let Some(default) = field.default {
+                    let value = self.expr(default)?;
+                    self.bind_name(&field.name, value);
+                    let key = self.string(&field.name.value);
+                    self.runtime("ril_rt_store", vec![record, key, value]);
+                }
+            }
+            Ok(())
+        })();
+        self.file = file;
+        self.locals = old;
+        result
     }
 
     fn constant(&mut self, value: &Value, span: Span) -> Result<Register> {
@@ -628,6 +915,10 @@ impl<'a> Builder<'_, 'a> {
 
     fn read(&mut self, source: DefinitionId, span: Span) -> Result<Register> {
         if let Some(&value) = self.locals.get(&source) {
+            if self.global.boxed.contains(&source) {
+                let key = self.integer("0");
+                return Ok(self.runtime("ril_rt_load", vec![value, key]));
+            }
             return Ok(value);
         }
         let def = self.global.typed.hir.definition(source);
@@ -657,6 +948,23 @@ impl<'a> Builder<'_, 'a> {
                 Ok(self.boolean(cfg!(unix)))
             }
             DefinitionKind::Variant(_) => Ok(self.tag(&def.name.value, Vec::new())),
+            DefinitionKind::Function
+                if self
+                    .global
+                    .declaration(source)
+                    .is_some_and(|f| f.body.is_some()) =>
+            {
+                let captures = self.named_captures(source);
+                let environment = self.environment(&captures);
+                let id = self
+                    .global
+                    .queue(Work::Named(source, BTreeMap::new(), captures));
+                let arity = self
+                    .global
+                    .declaration(source)
+                    .map_or(0, |f| f.signature.params.len());
+                Ok(self.box_closure(id, arity, environment))
+            }
             _ => Err(self.unsupported(span, "first-class callable or uninitialized local")),
         }
     }
@@ -667,6 +975,23 @@ impl<'a> Builder<'_, 'a> {
             Member::Index(index) => self.integer(&index.value),
             Member::Computed(value) => self.expr(*value)?,
         })
+    }
+
+    fn project_path(&mut self, path: &[(bool, Member)], mut value: Register) -> Result<Register> {
+        let mut optional = false;
+        for (safe, member) in path {
+            optional |= *safe;
+            let key = self.member_key(member)?;
+            value = self.runtime(
+                if optional {
+                    "ril_rt_safe_member"
+                } else {
+                    "ril_rt_load"
+                },
+                vec![value, key],
+            );
+        }
+        Ok(value)
     }
 
     fn tag(&mut self, name: &str, args: Vec<Register>) -> Register {
@@ -680,11 +1005,12 @@ impl<'a> Builder<'_, 'a> {
 
     fn call(&mut self, callee: ExprId, args: &[Argument], span: Span) -> Result<Register> {
         let Expr::Path(path) = &self.ast().expr(callee).value else {
+            let value = self.expr(callee)?;
             let args = args
                 .iter()
                 .map(|arg| self.expr(arg.value))
                 .collect::<Result<Vec<_>>>()?;
-            return self.inline_closure(callee, &args, span);
+            return Ok(self.invoke_closure(value, args));
         };
         let id = self
             .global
@@ -693,19 +1019,28 @@ impl<'a> Builder<'_, 'a> {
         let def = self.global.typed.hir.definition(id);
         let name = def.name.value.as_str();
         if matches!(def.kind, DefinitionKind::Primitive(_)) {
+            if let Some(module @ ("Fiber" | "Channel")) = self.global.typed.hir.primitive_module(id)
+            {
+                return self.concurrent(module, name, args, span);
+            }
             return self.primitive(name, args, span);
         }
-        if let Some(handler) = self.handlers.get(&id).cloned() {
+        if self.global.typed.hir.effect_of(id).is_some() {
             let args = args
                 .iter()
                 .map(|arg| self.expr(arg.value))
                 .collect::<Result<Vec<_>>>()?;
-            let locals = std::mem::replace(&mut self.locals, handler.locals);
-            let handlers = std::mem::replace(&mut self.handlers, handler.outer);
-            let result = self.inline_closure(handler.closure, &args, span);
-            self.handlers = handlers;
-            self.locals = locals;
-            return result;
+            let key = self.string(&self.global.typed.hir.export_name(id));
+            let handler = self.runtime("ril_rt_evidence_find", vec![self.evidence, key]);
+            return Ok(self.invoke_closure(handler, args));
+        }
+        if def.kind == DefinitionKind::Local {
+            let closure = self.read(id, span)?;
+            let args = args
+                .iter()
+                .map(|arg| self.expr(arg.value))
+                .collect::<Result<Vec<_>>>()?;
+            return Ok(self.invoke_closure(closure, args));
         }
         if matches!(def.kind, DefinitionKind::Variant(_) | DefinitionKind::Type) {
             let args = args
@@ -719,13 +1054,155 @@ impl<'a> Builder<'_, 'a> {
         };
         let values = self.arguments(function, args, span)?;
         if function.body.is_some() {
-            let function = self.global.queue(id);
-            Ok(self.invoke(Target::Function(function), values, false))
+            let types = self.specialize(function, path, args);
+            let captures = self.named_captures(id);
+            let environment = (!captures.is_empty()).then(|| self.environment(&captures));
+            let function = self.global.queue(Work::Named(id, types, captures));
+            let target = environment.map_or(Target::Function(function), |environment| {
+                Target::FunctionWithEnv {
+                    function,
+                    environment,
+                }
+            });
+            Ok(self.invoke(target, values, false))
         } else if self.global.typed.hir.effect_of(id).is_some() {
             Err(self.unsupported(span, "effect operation requiring dynamic evidence"))
         } else {
             Ok(self.invoke(Target::Foreign(name.to_owned()), values, false))
         }
+    }
+
+    fn named_captures(&self, id: DefinitionId) -> Vec<DefinitionId> {
+        self.global
+            .declaration(id)
+            .into_iter()
+            .flat_map(|fun| {
+                fun.signature
+                    .obligations
+                    .state
+                    .iter()
+                    .filter(|clause| clause.kind == ril_sema::syntax::StateKind::Environment)
+                    .flat_map(|clause| &clause.bindings)
+            })
+            .filter_map(|(_, path)| self.global.resolve(path.span))
+            .collect()
+    }
+
+    fn environment(&mut self, captures: &[DefinitionId]) -> Register {
+        if captures.is_empty() {
+            return self.unit();
+        }
+        let environment = self.runtime("ril_rt_tuple", Vec::new());
+        for id in captures {
+            if let Some(&value) = self.locals.get(id) {
+                self.runtime("ril_rt_append", vec![environment, value]);
+            }
+        }
+        environment
+    }
+
+    fn box_closure(&mut self, id: FunctionId, arity: usize, environment: Register) -> Register {
+        let address = self.instruction(Instruction::FunctionAddress(id));
+        let arity = self.instruction(Instruction::Handle(
+            u64::try_from(arity).unwrap_or(u64::MAX),
+        ));
+        self.runtime(
+            "ril_rt_closure",
+            vec![address, arity, self.evidence, environment],
+        )
+    }
+
+    fn invoke_closure(&mut self, closure: Register, args: Vec<Register>) -> Register {
+        let arity = self.instruction(Instruction::Handle(
+            u64::try_from(args.len()).unwrap_or(u64::MAX),
+        ));
+        let address = self.runtime("ril_rt_closure_address", vec![closure, arity]);
+        let evidence = self.runtime("ril_rt_closure_evidence", vec![closure]);
+        let environment = self.runtime("ril_rt_closure_environment", vec![closure]);
+        self.invoke(
+            Target::Indirect {
+                address,
+                evidence,
+                environment,
+            },
+            args,
+            false,
+        )
+    }
+
+    fn lift(&mut self, id: ExprId) -> Result<Register> {
+        let span = self.ast().expr(id).span;
+        let capture: std::collections::BTreeSet<_> = self
+            .ast()
+            .expressions()
+            .filter(|node| node.span.start > span.start && node.span.end <= span.end)
+            .filter_map(|node| match &node.value {
+                Expr::Path(path) => self.global.resolve(path.span),
+                _ => None,
+            })
+            .filter(|id| self.locals.contains_key(id))
+            .collect();
+        let capture: Vec<_> = capture.into_iter().collect();
+        let environment = self.environment(&capture);
+        let work = Work::Closure {
+            file: self.file,
+            syntax: id,
+            captures: capture,
+            types: self.types.clone(),
+        };
+        let function = self.global.queue(work);
+        let arity = match &self.ast().expr(id).value {
+            Expr::Closure { params, .. } => params.len(),
+            Expr::Accessor(_) => 1,
+            _ => 0,
+        };
+        Ok(self.box_closure(function, arity, environment))
+    }
+
+    fn specialize(
+        &self,
+        function: &SyntaxFunction,
+        path: &ril_sema::syntax::Path,
+        args: &[Argument],
+    ) -> BTreeMap<DefinitionId, Ty> {
+        use ril_sema::syntax::GenericArg;
+        let mut bindings = BTreeMap::new();
+        let defined = &self.global.typed.hir.file(function.name.span.file).ast;
+        for (param, arg) in function.generics.iter().zip(
+            path.segments
+                .last()
+                .into_iter()
+                .flat_map(|segment| &segment.arguments),
+        ) {
+            if let Some(id) = self.global.resolve(param.name.span)
+                && let GenericArg::Type(ty) = arg
+                && let Some(ty) = self.global.typed.types.get(&self.ast().ty(*ty).span)
+            {
+                bindings.insert(id, self.concrete(ty));
+            }
+        }
+        for (arg, param) in args.iter().zip(&function.signature.params) {
+            if let Some(syntax) = param.ty
+                && let Some(Ty::Param(id)) = self.global.typed.types.get(&defined.ty(syntax).span)
+                && let Some(value) = self
+                    .global
+                    .typed
+                    .types
+                    .get(&self.ast().expr(arg.value).span)
+            {
+                bindings.entry(*id).or_insert_with(|| self.concrete(value));
+            }
+        }
+        bindings
+    }
+
+    fn concrete(&self, ty: &Ty) -> Ty {
+        if let Ty::Param(id) = ty
+            && let Some(concrete) = self.types.get(id)
+        {
+            return concrete.clone();
+        }
+        ty.clone()
     }
 
     fn arguments(
@@ -780,6 +1257,53 @@ impl<'a> Builder<'_, 'a> {
         result
     }
 
+    fn concurrent(
+        &mut self,
+        module: &str,
+        name: &str,
+        args: &[Argument],
+        span: Span,
+    ) -> Result<Register> {
+        let symbol = match (module, name) {
+            ("Fiber", "run") => "ril_fiber_run",
+            ("Fiber", "scope") => "ril_fiber_scope",
+            ("Fiber", "try_scope") => "ril_fiber_try_scope",
+            ("Fiber", "spawn") => "ril_fiber_spawn",
+            ("Fiber", "join") => "ril_fiber_join",
+            ("Fiber", "cancel") => "ril_fiber_cancel",
+            ("Fiber", "cancel_scope") => "ril_fiber_cancel_scope",
+            ("Fiber", "yield" | "yield_now") => "ril_fiber_yield",
+            ("Fiber", "sleep" | "sleep_ms") => "ril_fiber_sleep",
+            ("Fiber", "is_cancelled") => "ril_fiber_cancelled",
+            ("Fiber", "uncancellable") => "ril_fiber_uncancellable",
+            ("Fiber", "supervise") => "ril_fiber_supervise",
+            ("Fiber", "timeout_ms") => "ril_fiber_timeout",
+            ("Fiber", "zip") => "ril_fiber_zip",
+            ("Fiber", "try_zip") => "ril_fiber_try_zip",
+            ("Fiber", "race") => "ril_fiber_race",
+            ("Fiber", "map") => "ril_fiber_map",
+            ("Fiber", "try_map") => "ril_fiber_try_map",
+            ("Channel", "bounded") | ("Channel", "mpsc") if !args.is_empty() => {
+                "ril_channel_bounded"
+            }
+            ("Channel", "unbounded" | "mpsc") => "ril_channel_unbounded",
+            ("Channel", "send") => "ril_channel_send",
+            ("Channel", "recv") => "ril_channel_recv",
+            ("Channel", "try_send") => "ril_channel_try_send",
+            ("Channel", "try_recv") => "ril_channel_try_recv",
+            ("Channel", "clone") => "ril_channel_clone",
+            ("Channel", "close") => "ril_channel_close",
+            ("Channel", "close_recv") => "ril_channel_close_recv",
+            ("Channel", "drain") => "ril_channel_drain",
+            _ => return Err(self.unsupported(span, &format!("{module}::{name}"))),
+        };
+        let args = args
+            .iter()
+            .map(|arg| self.expr(arg.value))
+            .collect::<Result<Vec<_>>>()?;
+        Ok(self.runtime(symbol, args))
+    }
+
     fn primitive(&mut self, name: &str, args: &[Argument], span: Span) -> Result<Register> {
         if name == "absorb_panic"
             && let [action] = args
@@ -791,14 +1315,29 @@ impl<'a> Builder<'_, 'a> {
         {
             let base = self.expr(base.value)?;
             let draft = self.runtime(DraftOp::Begin.symbol(), vec![base]);
-            self.inline_closure(update.value, &[draft], span)?;
-            return Ok(self.runtime(DraftOp::Commit.symbol(), vec![draft]));
+            let abort = self.block(0);
+            let done = self.block(1);
+            self.traps.push((self.cleanups.len(), abort));
+            let callback = self.expr(update.value)?;
+            self.invoke_closure(callback, vec![draft]);
+            self.traps.pop();
+            let result = self.runtime(DraftOp::Commit.symbol(), vec![draft]);
+            self.terminate(Terminator::Jump(done, vec![result]));
+            self.current = Some(abort);
+            self.runtime(DraftOp::Abort.symbol(), vec![draft]);
+            let unreachable_value = self.unit();
+            self.terminate(Terminator::Jump(done, vec![unreachable_value]));
+            self.current = Some(done);
+            return Ok(self.result_param(done));
         }
         let mut args = args
             .iter()
             .map(|arg| self.expr(arg.value))
             .collect::<Result<Vec<_>>>()?;
         if matches!(name, "Ok" | "Err" | "Some") {
+            if name == "Ok" && args.is_empty() {
+                args.push(self.unit());
+            }
             return Ok(self.tag(name, args));
         }
         let symbol = match name {
@@ -812,6 +1351,13 @@ impl<'a> Builder<'_, 'a> {
                 "ril_rt_assert"
             }
             "len" => "ril_rt_len",
+            "read" => "ril_rt_file_read",
+            "write" => "ril_rt_file_write",
+            "to_f64" => "ril_rt_to_f64",
+            "to_int" | "convert" => "ril_rt_to_int",
+            "trunc" => "ril_rt_trunc",
+            "checked_div" => "ril_rt_checked_div",
+            "checked_rem" => "ril_rt_checked_rem",
             "clone" => "ril_rt_clone",
             "inspect" => "ril_rt_inspect",
             "push" => "ril_rt_append",
@@ -881,6 +1427,13 @@ impl<'a> Builder<'_, 'a> {
 
     fn bind_name(&mut self, name: &Name, value: Register) {
         if let Some(id) = self.global.resolve(name.span) {
+            let value = if self.global.boxed.contains(&id) {
+                let cell = self.runtime("ril_rt_tuple", Vec::new());
+                self.runtime("ril_rt_append", vec![cell, value]);
+                cell
+            } else {
+                value
+            };
             self.locals.insert(id, value);
         }
     }

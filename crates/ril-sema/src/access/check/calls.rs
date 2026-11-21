@@ -9,7 +9,8 @@ use ril_frontend::{
 use crate::ty::Ty;
 
 use super::{
-    Access, Analyzer, Context, Coordinate, Datum, Fact, Ledger, Obligation, Rule, Slot, conflicts,
+    Access, Analyzer, Context, Coordinate, Datum, Fact, Input, Ledger, ModeUse, Obligation, Rule,
+    Slot, conflicts,
 };
 
 impl Analyzer<'_> {
@@ -31,12 +32,41 @@ impl Analyzer<'_> {
         let def = id.map(|id| self.program.hir.definition(id));
         let name = def.map_or("", |def| def.name.value.as_str());
         let primitive = def.is_some_and(|def| matches!(def.kind, DefinitionKind::Primitive(_)));
+        let module = id.and_then(|id| self.program.hir.primitive_module(id));
+        let concurrent = matches!(module, Some("Fiber" | "Channel"));
         let sig = id
             .and_then(|id| self.program.callables.get(&id).map(|s| s.as_ref()))
             .or_else(|| match self.ty(callee.span) {
                 Ty::Callable(sig) => Some(sig.as_ref()),
                 _ => None,
             });
+        if let Expr::Path(path) = &callee.value
+            && def.is_some_and(|def| def.kind == DefinitionKind::Local)
+        {
+            let target = self.read_span(ctx, ledger, path.span);
+            self.link_invocation(ctx, &target);
+            if let Some(formal) = self.declaration(path.span)
+                && ctx.reachable
+                && !ctx.shadow
+            {
+                for (&owner, sources) in &target.invocations {
+                    for &source in sources {
+                        for obligation in [Obligation::Write(source), Obligation::Replace(source)] {
+                            self.rules.push(Rule {
+                                premises: vec![Fact { owner, obligation }],
+                                conclusion: Fact {
+                                    owner: ctx.owner,
+                                    obligation: Obligation::Write(formal),
+                                },
+                            });
+                        }
+                    }
+                }
+            }
+            for effect in &target.latent_effects {
+                self.effect(ctx, effect, span);
+            }
+        }
         let syntax = id.and_then(|id| {
             let def = self.program.hir.definition(id);
             let stmt = def.stmt?;
@@ -47,6 +77,7 @@ impl Analyzer<'_> {
         });
         let mut given = vec![false; sig.map_or(args.len(), |signature| signature.parameters.len())];
         let mut values = Vec::new();
+        let mut choices = Vec::new();
         for arg in args {
             let node = ast.expr(arg.value);
             let value = if matches!(node.value, Expr::Closure { .. }) {
@@ -72,16 +103,57 @@ impl Analyzer<'_> {
                 *given = true;
             }
             let parameter = sig.and_then(|sig| sig.parameters.get(index));
-            let mode = if parameter.is_some_and(|p| p.mode == Mode::Via) {
-                arg.mode
+            let inferred = parameter.is_some_and(|p| p.mode == Mode::Via);
+            let mode = if inferred {
+                let mode = if arg.mode == Mode::Plain && value.requires_new {
+                    Mode::New
+                } else {
+                    arg.mode
+                };
+                choices.push((
+                    index,
+                    match mode {
+                        Mode::Ref => Input::Ref,
+                        Mode::Mut => Input::Mut,
+                        Mode::Shared => Input::Shared,
+                        Mode::New => Input::New,
+                        _ => Input::Plain,
+                    },
+                    node.span,
+                ));
+                mode
             } else {
                 parameter.map_or(arg.mode, |p| p.mode)
             };
+            let mut value = value;
+            let movable_task = concurrent && matches!(name, "join" | "cancel") && index == 1;
+            let channel_payload = module == Some("Channel")
+                && matches!(name, "send" | "try_send")
+                && index == 1
+                && !self.ty(node.span).is_value();
+            if channel_payload && value.origins().any(|origin| !origin.new) {
+                self.error(
+                    Code::E0548,
+                    node.span,
+                    "channel payload requires a complete new graph",
+                );
+            }
+            if movable_task {
+                value.transform(&mut |origin| {
+                    origin.confined = None;
+                });
+                ledger.inspect(&value);
+            }
+            let mode = if channel_payload { Mode::New } else { mode };
             let value = self.prepare_argument(ctx, ledger, arg, value, node.span, mode);
             if parameter.is_some_and(|p| p.ty.is_result()) {
                 ledger.inspect(&value);
             } else if !value.results().is_empty()
-                && (!primitive || !matches!(name, "Some" | "Ok" | "Err"))
+                && (!primitive
+                    || !matches!(
+                        name,
+                        "Some" | "Ok" | "Err" | "join" | "cancel" | "send" | "try_send"
+                    ))
             {
                 self.discard(ledger, &value);
             }
@@ -106,6 +178,14 @@ impl Analyzer<'_> {
             }
             values.push((index, mode, value));
         }
+        if !choices.is_empty()
+            && let Some(callee) = id
+        {
+            self.mode_uses.push(ModeUse { callee, choices });
+        }
+        if let Some(module @ ("Fiber" | "Channel")) = module {
+            return self.concurrent(ctx, ledger, (module, name), &values, args, span);
+        }
         if primitive {
             return self.primitive(ctx, ledger, name, &values, span);
         }
@@ -128,6 +208,20 @@ impl Analyzer<'_> {
             }
         }
         if let Some(fun) = syntax {
+            let lexical: BTreeSet<_> = fun
+                .signature
+                .obligations
+                .state
+                .iter()
+                .filter(|clause| clause.kind == StateKind::Environment)
+                .flat_map(|clause| &clause.bindings)
+                .filter_map(|(_, path)| self.declaration(path.span))
+                .collect();
+            let enclosing = Datum {
+                invocations: std::collections::BTreeMap::from([(fun.name.span, lexical)]),
+                ..Datum::default()
+            };
+            self.link_invocation(ctx, &enclosing);
             let has_body = fun.body.is_some();
             for (index, mode, value) in &values {
                 let formal = fun
@@ -250,6 +344,28 @@ impl Analyzer<'_> {
         self.snapshot_value(span)
     }
 
+    pub(super) fn link_invocation(&mut self, ctx: &Context, target: &Datum) {
+        if !ctx.reachable || ctx.shadow {
+            return;
+        }
+        for (&owner, sources) in &target.invocations {
+            for &source in sources {
+                for obligation in [Obligation::Write(source), Obligation::Replace(source)] {
+                    self.rules.push(Rule {
+                        premises: vec![Fact {
+                            owner,
+                            obligation: obligation.clone(),
+                        }],
+                        conclusion: Fact {
+                            owner: ctx.owner,
+                            obligation,
+                        },
+                    });
+                }
+            }
+        }
+    }
+
     fn source_args<'a>(
         &self,
         fun: &'a ril_frontend::syntax::Function,
@@ -322,6 +438,8 @@ impl Analyzer<'_> {
                     self.error(Code::E0604, span, "resource authority cannot be retained");
                 }
             }
+            Mode::Plain
+                if matches!(self.ty(span), Ty::Callable(_)) || value.task_scope.is_some() => {}
             Mode::Plain => {
                 if !value.requires_new
                     && !self.ty(span).is_value()
@@ -373,6 +491,14 @@ impl Analyzer<'_> {
                 }
             }
             "clone" => {
+                if first.is_some_and(|value| {
+                    value.creates_environment()
+                        && value
+                            .origins()
+                            .any(|origin| origin.mode != Access::Immutable)
+                }) {
+                    self.error(Code::E0530, span, "cannot clone live callable authority");
+                }
                 return Datum::source(span, Access::Mut, true);
             }
             "inner" => {
@@ -381,6 +507,12 @@ impl Analyzer<'_> {
                     .unwrap_or_default();
             }
             "derive" => {
+                if let Some((_, _, callback)) = args.iter().find(|(i, _, _)| *i == 1) {
+                    self.link_invocation(ctx, callback);
+                    for effect in &callback.latent_effects {
+                        self.effect(ctx, effect, span);
+                    }
+                }
                 if first.is_some_and(|value| {
                     value
                         .origins()
@@ -391,14 +523,16 @@ impl Analyzer<'_> {
             }
             "absorb_panic" => {
                 if first.is_some_and(|value| {
-                    value
-                        .origins()
-                        .any(|origin| origin.mode != Access::Immutable)
+                    !value.latent_effects.is_empty()
+                        || value.stateful_handler
+                        || value
+                            .origins()
+                            .any(|origin| origin.mode != Access::Immutable)
                 }) {
                     self.error(
                         Code::E0608,
                         span,
-                        "panic containment cannot capture live outer state",
+                        "panic containment cannot capture live state or emit an outward effect",
                     );
                 }
                 return Datum::source(span, Access::Mut, true);
@@ -413,6 +547,187 @@ impl Analyzer<'_> {
         self.snapshot_value(span)
     }
 
+    fn concurrent(
+        &mut self,
+        ctx: &mut Context,
+        ledger: &mut Ledger,
+        (module, name): (&str, &str),
+        values: &[(usize, Mode, Datum)],
+        syntax: &[Argument],
+        span: Span,
+    ) -> Datum {
+        let first = values
+            .iter()
+            .find(|(i, _, _)| *i == 0)
+            .map(|(_, _, datum)| datum);
+        let second = values
+            .iter()
+            .find(|(i, _, _)| *i == 1)
+            .map(|(_, _, datum)| datum);
+        if module == "Fiber" {
+            if matches!(
+                name,
+                "scope"
+                    | "try_scope"
+                    | "join"
+                    | "cancel"
+                    | "yield"
+                    | "yield_now"
+                    | "sleep"
+                    | "sleep_ms"
+                    | "is_cancelled"
+                    | "timeout_ms"
+                    | "supervise"
+                    | "zip"
+                    | "try_zip"
+                    | "race"
+                    | "map"
+                    | "try_map"
+            ) {
+                self.effect(ctx, "fiber", span);
+            }
+            if matches!(name, "sleep" | "sleep_ms" | "timeout_ms") {
+                self.effect(ctx, "io", span);
+            }
+            if matches!(name, "spawn" | "join" | "cancel" | "cancel_scope")
+                && let Some(scope) = first
+            {
+                self.mutate(ctx, ledger, scope, span);
+            }
+            if matches!(
+                name,
+                "run" | "spawn" | "supervise" | "zip" | "try_zip" | "race" | "timeout_ms"
+            ) {
+                for (i, _, callback) in values.iter().filter(|(_, _, v)| {
+                    v.stateful_handler || !v.latent_effects.is_empty() || !v.members.is_empty()
+                }) {
+                    let argument = syntax
+                        .get(*i)
+                        .map(|arg| self.ast(ctx.file).expr(arg.value).span);
+                    let mut moved = BTreeSet::new();
+                    if let Some(argument) = argument {
+                        for expr in self.ast(ctx.file).expressions().filter(|expr| {
+                            expr.span.start >= argument.start && expr.span.end <= argument.end
+                        }) {
+                            if let Expr::Unary { op, value } = &expr.value
+                                && op.value == "new"
+                                && let Expr::Path(path) = &self.ast(ctx.file).expr(*value).value
+                                && let Some(decl) = self.declaration(path.span)
+                            {
+                                moved.insert(decl);
+                            }
+                        }
+                    }
+                    if callback.stateful_handler {
+                        self.error(
+                            Code::E0615,
+                            argument.unwrap_or(span),
+                            "a stateful lexical handler cannot cross the fiber boundary",
+                        );
+                    }
+                    if name == "supervise"
+                        && callback
+                            .latent_effects
+                            .iter()
+                            .any(|effect| effect != "fiber")
+                    {
+                        self.error(
+                            Code::E0608,
+                            argument.unwrap_or(span),
+                            "supervised task has outward effects",
+                        );
+                    }
+                    for origin in callback.members.values().flat_map(Datum::origins) {
+                        if origin.confined.is_some()
+                            || origin.mode != Access::Immutable
+                                && !origin.dependencies.iter().any(|id| moved.contains(id))
+                        {
+                            self.error(
+                                Code::E0601,
+                                argument.unwrap_or(span),
+                                "fiber closure captures live or confined state",
+                            );
+                        }
+                    }
+                    for &decl in &moved {
+                        if let Some(slot) = ledger.slots.get(&decl)
+                            && slot.variable
+                        {
+                            self.error(
+                                Code::E0601,
+                                argument.unwrap_or(span),
+                                "fiber closure captures a replaceable slot",
+                            );
+                        } else {
+                            ledger.revoked.insert(decl);
+                        }
+                    }
+                }
+            }
+            for arg in values {
+                if matches!(name, "scope" | "try_scope" | "uncancellable") {
+                    self.link_invocation(ctx, &arg.2);
+                }
+                for effect in &arg.2.latent_effects {
+                    if name != "run" || effect != "fiber" {
+                        self.effect(ctx, effect, span);
+                    }
+                }
+            }
+            if name == "spawn" {
+                let scope = first
+                    .and_then(|value| value.roots.first())
+                    .map(|origin| origin.region.source);
+                let mut output = Datum::source(span, Access::Mut, true);
+                output.task_scope = scope;
+                output.transform(&mut |origin| {
+                    origin.confined = scope;
+                });
+                return output;
+            }
+            if matches!(name, "join" | "cancel") {
+                if let (Some(scope), Some(task)) = (first, second)
+                    && task.task_scope.is_some()
+                    && scope
+                        .roots
+                        .iter()
+                        .all(|root| task.task_scope != Some(root.region.source))
+                {
+                    self.error(Code::E0604, span, "task does not belong to this scope");
+                }
+                if let Some(value) = second {
+                    ledger.inspect(value);
+                }
+            }
+            return self.snapshot_value(span);
+        }
+        if matches!(name, "send" | "recv") {
+            self.effect(ctx, "fiber", span);
+        }
+        if matches!(name, "send" | "try_send" | "recv" | "try_recv")
+            && let Some(value) = first
+        {
+            self.mutate(ctx, ledger, value, span);
+        }
+        match name {
+            "bounded" | "unbounded" | "mpsc" => {
+                let mut pair = Datum::source(span, Access::Mut, true);
+                for key in ["tx", "rx"] {
+                    pair.members.insert(
+                        Coordinate::Field(key.into()),
+                        Datum::source(span, Access::Mut, true)
+                            .project(Coordinate::Field(key.into()), Access::Mut),
+                    );
+                }
+                pair
+            }
+            "send" | "try_send" | "recv" | "try_recv" | "clone" => {
+                Datum::source(span, Access::Mut, true)
+            }
+            _ => Datum::default(),
+        }
+    }
+
     pub(super) fn handlers(
         &mut self,
         ctx: &mut Context,
@@ -420,7 +735,7 @@ impl Analyzer<'_> {
         handlers: &[Handler],
     ) {
         let mut operations = BTreeSet::new();
-        let mut installed = BTreeSet::new();
+        let mut installed = std::collections::BTreeMap::new();
         for handler in handlers {
             let id = self.definition(handler.operation.span);
             let effect = id.and_then(|id| self.program.hir.effect_of(id));
@@ -447,13 +762,14 @@ impl Analyzer<'_> {
                 self.expr(ctx, ledger, handler.value)
             };
             if matches!(handler.mode, Mode::Ref | Mode::Mut | Mode::Shared) {
-                ledger.holds.push(value);
+                ledger.holds.push(value.clone());
             }
             if let Some(effect) = effect {
-                installed.insert(effect.to_owned());
+                installed.insert(effect.to_owned(), value);
             }
         }
-        ctx.handlers.extend(installed);
+        ctx.handlers.extend(installed.keys().cloned());
+        ctx.handler_values.extend(installed);
     }
 
     pub(super) fn closure(
@@ -479,6 +795,7 @@ impl Analyzer<'_> {
         inner.shadow = ctx.shadow;
         inner.reachable = ctx.reachable;
         inner.handlers.clone_from(&ctx.handlers);
+        inner.handler_values.clone_from(&ctx.handler_values);
         inner.via.clone_from(&ctx.via);
         inner.formals = params
             .iter()
@@ -502,8 +819,15 @@ impl Analyzer<'_> {
             if let Some(name) = &p.name {
                 let mode = Access::from_mode(p.mode);
                 let mut value = Datum::source(name.span, mode, p.mode == Mode::New);
+                let param_ty = self
+                    .definition(name.span)
+                    .and_then(|id| self.program.bindings.get(&id));
                 value.transform(&mut |origin| {
                     origin.dependencies.insert(name.span);
+                    if matches!(param_ty, Some(Ty::Scope | Ty::Draft(_))) {
+                        origin.confined = Some(node.span);
+                        origin.draft = matches!(param_ty, Some(Ty::Draft(_)));
+                    }
                 });
                 locals.slots.insert(
                     name.span,
@@ -530,7 +854,16 @@ impl Analyzer<'_> {
             }
         }
         let before = self.rules.len();
-        self.expr(&mut inner, &mut locals, *body);
+        let output = self.expr(&mut inner, &mut locals, *body);
+        if output.origins().any(|origin| origin.draft) {
+            self.error(Code::E0607, node.span, "draft escapes update callback");
+        } else if output.origins().any(|origin| origin.confined.is_some()) {
+            self.error(
+                Code::E0604,
+                node.span,
+                "closure result escapes its confinement",
+            );
+        }
         let used: BTreeSet<_> = self
             .rules
             .iter()
@@ -558,13 +891,38 @@ impl Analyzer<'_> {
                     "closure cannot capture a scoped resource",
                 );
             }
+            let mut value = slot.value.clone();
+            if slot.variable {
+                let mut origin = Datum::source(slot.decl, Access::Mut, false);
+                origin.transform(&mut |origin| {
+                    origin.dependencies.insert(slot.decl);
+                });
+                value = value.joined(origin);
+            }
             closure
                 .members
-                .insert(Coordinate::Index(index.to_string()), slot.value.clone());
+                .insert(Coordinate::Index(index.to_string()), value);
         }
-        if !contextual && !closure.members.is_empty() {
-            self.seed(ctx, Obligation::Capture);
+        closure.latent_effects = self
+            .rules
+            .iter()
+            .skip(before)
+            .filter_map(|rule| match &rule.conclusion {
+                Fact {
+                    owner,
+                    obligation: Obligation::Effect(effect),
+                } if *owner == inner.owner => Some(effect.clone()),
+                _ => None,
+            })
+            .collect();
+        if !closure.members.is_empty() {
+            closure.environments.insert(node.span);
+            closure.invocations.insert(inner.owner, used);
         }
+        closure.stateful_handler = self.rules.iter().skip(before).any(|rule| {
+            rule.conclusion.owner == inner.owner
+                && rule.conclusion.obligation == Obligation::StatefulHandler
+        });
         closure
     }
 }

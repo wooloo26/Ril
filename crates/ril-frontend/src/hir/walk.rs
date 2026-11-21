@@ -36,6 +36,7 @@ pub(super) fn check(program: &mut Program, errors: &mut Vec<Diagnostic>) {
             exposure: Visibility::Private,
             funcs: 0,
             loops: 0,
+            field_default: false,
         };
         for &item in &ast.items {
             walk.statement(item);
@@ -69,6 +70,7 @@ struct Walk<'a> {
     exposure: Visibility,
     funcs: usize,
     loops: usize,
+    field_default: bool,
 }
 
 impl Walk<'_> {
@@ -347,7 +349,29 @@ impl Walk<'_> {
         for effect in &obligations.effects {
             if !matches!(effect.segments.as_slice(), [seg] if matches!(seg.name.value.as_str(), "io" | "fiber"))
             {
+                let before = self.errors.len();
                 self.path(effect);
+                if let Some(def) = self.definition_at(effect.span) {
+                    if !matches!(self.program.definition(def).kind, DefinitionKind::Effect(_)) {
+                        self.report(
+                            Code::E0620,
+                            effect.span,
+                            "effect label must name a declared effect",
+                        );
+                    }
+                } else if self.errors.len() == before
+                    || self
+                        .errors
+                        .get(before)
+                        .is_some_and(|diag| diag.code == Some(Code::E0204))
+                {
+                    self.errors.truncate(before);
+                    self.report(
+                        Code::E0620,
+                        effect.span,
+                        "effect label must name a declared effect",
+                    );
+                }
             }
         }
         for clause in &obligations.state {
@@ -628,6 +652,19 @@ impl Walk<'_> {
             }
             Type::Option(id) => self.ty(*id),
             Type::Record { fields, tail } => {
+                let defaults = fields.iter().any(|field| field.default.is_some());
+                if defaults {
+                    self.frames.push(Frame::default());
+                    for field in fields {
+                        if !self
+                            .frames
+                            .last()
+                            .is_some_and(|frame| frame.future.contains_key(&field.name.value))
+                        {
+                            self.declare(&field.name, DefinitionKind::Local, None, true);
+                        }
+                    }
+                }
                 let mut names = HashSet::new();
                 for field in fields {
                     self.storage(&field.storage);
@@ -636,8 +673,16 @@ impl Walk<'_> {
                     }
                     self.ty(field.ty);
                     if let Some(value) = field.default {
+                        let previous = std::mem::replace(&mut self.field_default, true);
                         self.expr(value);
+                        self.field_default = previous;
                     }
+                    if defaults {
+                        self.bind_name(&field.name, false);
+                    }
+                }
+                if defaults {
+                    self.frames.pop();
                 }
                 if let Some(FieldTail::Named(name)) = tail {
                     self.resolve_name(name);
@@ -893,7 +938,11 @@ impl Walk<'_> {
             );
         } else if uninitialized.is_some() {
             self.report(
-                Code::E0207,
+                if self.field_default {
+                    Code::E0408
+                } else {
+                    Code::E0207
+                },
                 name.span,
                 format!("{} is used before initialization", name.value),
             );

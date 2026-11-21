@@ -69,3 +69,70 @@ fn main() @io -> () {
     let vector = values(2)
     println("{vector[2]}")
 }
+
+-- @case generic_type_match_specializes_before_codegen run-pass backend=both
+-- @expect-stdout int:7
+-- @expect-stdout true
+fn describe<T>(item: T) -> str {
+    match <T> {
+        <int> -> "int:{item}"
+        _ -> String::inspect(item)
+    }
+}
+fn main() @io -> () {
+    println(describe(7))
+    println(describe(true))
+}
+
+-- @case narrowing_and_generalized_callable run-pass backend=both
+-- @expect-stdout 5:true
+fn unwrap(value: ??int) -> int {
+    if value == None { return 0 }
+    if value == None { return 1 }
+    value + 1
+}
+fn main() @io -> () {
+    let identity = \x -> x
+    let value: int = identity(unwrap(Some(Some(4))))
+    let truth: bool = identity(true)
+    println("{value}:{truth}")
+}
+
+-- @case record_defaults_are_evaluated_in_order run-pass backend=both
+-- @expect-stdout 22
+nominal type Settings = .{ start: int, finish: int = start + 10 }
+fn main() @io -> () {
+    let settings = Settings.{ start: 12 }
+    println("{settings.finish}")
+}
+
+-- @case signature_checks_entry_and_successful_exit run-pass backend=both
+-- @expect-stdout 5
+type Span = .{ low: int, high: int }
+type Problem { OutOfOrder; Empty }
+
+fn create(low |> ordered(high), high: int) -> new !<Span, Problem> |> non_empty
+where
+    fn ordered(low: int, high: int) -> new !<(), Problem> {
+        if low <= high { Ok() } else { Err(Problem::OutOfOrder) }
+    }
+    fn non_empty(x: Span) -> new !<(), Problem> {
+        if x.low < x.high { Ok() } else { Err(Problem::Empty) }
+    }
+{
+    Ok(Span.{ low, high })
+}
+
+fn main() @io -> () {
+    assert(create(2, 1) == Err(Problem::OutOfOrder))
+    assert(create(3, 3) == Err(Problem::Empty))
+    match create(2, 5) { Ok(value) -> println("{value.high}"); Err(_) -> panic("entry unexpectedly failed") }
+}
+
+-- @case text_and_array_slices run-pass backend=both
+-- @expect-stdout βγ
+fn main() @io -> () {
+    assert([0, 1, 2, 3][1..=2] == [1, 2])
+    assert([0, 1]?[4..] == None)
+    println("αβγ"[1..])
+}

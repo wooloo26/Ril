@@ -1,10 +1,12 @@
 use ril_base::span::Span;
 use ril_sema::{
     syntax::{Condition, Expr, ExprId, MatchArm, Name, Pattern, PatternId, Transfer},
-    ty::{self, Value},
+    ty::{self, Ty, Value},
 };
 
-use super::{BlockId, Builder, IntLowering, Loop, ManagedInt, Register, Result, Terminator};
+use super::{
+    BlockId, Builder, IntLowering, Loop, ManagedInt, Register, Result, Target, Terminator, Work,
+};
 
 impl Builder<'_, '_> {
     pub(super) fn binary(
@@ -14,6 +16,12 @@ impl Builder<'_, '_> {
         right: ExprId,
     ) -> Result<Register> {
         let token = operator.value.as_str();
+        if matches!(token, "==" | "!=")
+            && let (Some(Value::Type(left)), Some(Value::Type(right))) =
+                (self.static_expr(left), self.static_expr(right))
+        {
+            return Ok(self.boolean((left == right) == (token == "==")));
+        }
         if matches!(token, "&&" | "||" | "??") {
             return self.short_circuit(left, right, token);
         }
@@ -60,7 +68,14 @@ impl Builder<'_, '_> {
             }
             match target {
                 Destination::Local(slot) => {
-                    self.locals.insert(slot, right);
+                    if self.global.boxed.contains(&slot)
+                        && let Some(&cell) = self.locals.get(&slot)
+                    {
+                        let key = self.integer("0");
+                        self.runtime("ril_rt_store", vec![cell, key, right]);
+                    } else {
+                        self.locals.insert(slot, right);
+                    }
                 }
                 Destination::Object(base, key) => {
                     self.runtime("ril_rt_store", vec![base, key, right]);
@@ -252,7 +267,8 @@ impl Builder<'_, '_> {
         let body_start = self.block(0);
         let exit_source = self.block(0);
         let exit = self.block(names.len());
-        let cleanups = self.cleanups.len();
+        let prior_cleanups = self.cleanups.clone();
+        let cleanups = prior_cleanups.len();
         self.terminate(Terminator::Jump(header, before.values().copied().collect()));
         self.current = Some(header);
         for (&name, param) in names.iter().zip(self.params(header)) {
@@ -269,6 +285,7 @@ impl Builder<'_, '_> {
             exit,
             names: names.clone(),
             cleanups,
+            counter: None,
         });
         self.current = Some(body_start);
         if let Some((pattern, value)) = binding {
@@ -277,10 +294,91 @@ impl Builder<'_, '_> {
         self.expr(body)?;
         self.loop_transfer(Transfer::Continue, self.ast().expr(body).span)?;
         self.loops.pop();
+        self.cleanups = prior_cleanups;
         self.locals = before;
         self.current = Some(exit);
         for (name, param) in names.into_iter().zip(self.params(exit)) {
             self.locals.insert(name, param);
+        }
+        Ok(self.unit())
+    }
+
+    pub(super) fn for_loop(
+        &mut self,
+        iterable: ExprId,
+        pattern: PatternId,
+        body: ExprId,
+    ) -> Result<Register> {
+        let (start, end, collection, inclusive) = match self.ast().expr(iterable).value {
+            Expr::Range {
+                start: Some(start),
+                end: Some(end),
+                inclusive,
+            } => (self.expr(start)?, self.expr(end)?, None, inclusive),
+            _ => {
+                let value = self.expr(iterable)?;
+                let len = self.runtime("ril_rt_len", vec![value]);
+                (self.integer("0"), len, Some(value), false)
+            }
+        };
+        let before = self.locals.clone();
+        let names: Vec<_> = before.keys().copied().collect();
+        let header = self.block(names.len() + 1);
+        let body_start = self.block(0);
+        let exit_source = self.block(0);
+        let exit = self.block(names.len());
+        let prior_cleanups = self.cleanups.clone();
+        let cleanups = prior_cleanups.len();
+        self.terminate(Terminator::Jump(
+            header,
+            std::iter::once(start)
+                .chain(before.values().copied())
+                .collect(),
+        ));
+        self.current = Some(header);
+        let mut incoming = self.params(header).into_iter();
+        let current = incoming
+            .next()
+            .unwrap_or_else(|| ril_base::ice!("missing range counter"));
+        for (&name, value) in names.iter().zip(incoming) {
+            self.locals.insert(name, value);
+        }
+        let exits = names
+            .iter()
+            .filter_map(|id| self.locals.get(id).copied())
+            .collect();
+        self.term_at(exit_source, Terminator::Jump(exit, exits));
+        let cond = self.runtime(
+            if inclusive { "ril_rt_le" } else { "ril_rt_lt" },
+            vec![current, end],
+        );
+        self.terminate(Terminator::Branch {
+            condition: cond,
+            yes: body_start,
+            no: exit_source,
+        });
+        self.loops.push(Loop {
+            header,
+            exit,
+            names: names.clone(),
+            cleanups,
+            counter: Some(current),
+        });
+        self.current = Some(body_start);
+        let element = if let Some(collection) = collection {
+            self.runtime("ril_rt_load", vec![collection, current])
+        } else {
+            current
+        };
+        self.bind(pattern, element)?;
+        self.expr(body)?;
+        self.loop_transfer(Transfer::Continue, self.ast().expr(body).span)?;
+        self.loops.pop();
+        self.cleanups = prior_cleanups;
+        self.locals = before;
+        self.current = Some(exit);
+        for (name, value) in names.into_iter().zip(self.params(exit)) {
+            self.locals.insert(name, value);
         }
         Ok(self.unit())
     }
@@ -295,11 +393,20 @@ impl Builder<'_, '_> {
             .cloned()
             .ok_or_else(|| self.unsupported(span, "loop control outside a loop"))?;
         self.cleanup_to(target.cleanups);
-        let args = target
-            .names
-            .iter()
-            .filter_map(|id| self.locals.get(id).copied())
-            .collect();
+        let mut args = Vec::new();
+        if transfer == Transfer::Continue
+            && let Some(counter) = target.counter
+        {
+            let one = self.integer("1");
+            let next = self.runtime("ril_rt_int_add", vec![counter, one]);
+            args.push(next);
+        }
+        args.extend(
+            target
+                .names
+                .iter()
+                .filter_map(|id| self.locals.get(id).copied()),
+        );
         let label = if transfer == Transfer::Break {
             target.exit
         } else {
@@ -315,6 +422,25 @@ impl Builder<'_, '_> {
         arms: &[MatchArm],
         span: Span,
     ) -> Result<Register> {
+        if let Expr::Quote(id) = self.ast().expr(value).value {
+            let ty = self
+                .global
+                .typed
+                .types
+                .get(&self.ast().ty(id).span)
+                .map(|ty| self.concrete(ty))
+                .unwrap_or(Ty::Unknown);
+            for arm in arms {
+                let old = self.types.clone();
+                if self.static_pattern(arm.pattern, &ty) && arm.guard.is_none() {
+                    let result = self.expr(arm.body);
+                    self.types = old;
+                    return result;
+                }
+                self.types = old;
+            }
+            return Err(self.unsupported(span, "dependent type match without a selected arm"));
+        }
         let value = self.expr(value)?;
         let saved = self.locals.clone();
         let names: Vec<_> = saved.keys().copied().collect();
@@ -347,7 +473,8 @@ impl Builder<'_, '_> {
         let message = self.string("non-exhaustive match reached");
         self.runtime("ril_rt_panic", vec![message]);
         let unit = self.unit();
-        self.return_value(unit);
+        self.return_value(unit)?;
+        self.cleanups = cleanups;
         if active {
             self.current = Some(end);
             for (id, register) in names.into_iter().zip(self.params(end).into_iter().skip(1)) {
@@ -356,6 +483,42 @@ impl Builder<'_, '_> {
             Ok(self.result_param(end))
         } else {
             Err(self.unsupported(span, "no normal match branch"))
+        }
+    }
+
+    fn static_pattern(&mut self, pattern: PatternId, target: &Ty) -> bool {
+        match &self.ast().pattern(pattern).value {
+            Pattern::Wildcard | Pattern::Binding(..) => true,
+            Pattern::Type(ty) => self.static_type_pattern(*ty, target),
+            Pattern::Or(parts) => parts.iter().any(|&part| self.static_pattern(part, target)),
+            _ => false,
+        }
+    }
+
+    fn static_type_pattern(&mut self, ty: ril_sema::syntax::TypeId, target: &Ty) -> bool {
+        use ril_sema::syntax::Type;
+        let node = self.ast().ty(ty);
+        match (&node.value, target) {
+            (Type::PatternWildcard, _) => true,
+            (Type::PatternBinding(name), _) => {
+                if let Some(id) = self.global.resolve(name.span) {
+                    self.types.insert(id, target.clone());
+                }
+                true
+            }
+            (Type::Result(ok, err), Ty::Result(a, b)) => {
+                self.static_type_pattern(*ok, a) && self.static_type_pattern(*err, b)
+            }
+            (Type::Option(item), Ty::Option(expected)) => self.static_type_pattern(*item, expected),
+            (Type::Array(_, item), Ty::Array(expected)) => {
+                self.static_type_pattern(*item, &expected.ty)
+            }
+            _ => self
+                .global
+                .typed
+                .types
+                .get(&node.span)
+                .is_some_and(|ty| self.concrete(ty) == *target),
         }
     }
 
@@ -507,21 +670,97 @@ impl Builder<'_, '_> {
         });
         self.current = Some(fail);
         let prior = self.cleanups.clone();
-        self.return_value(value);
+        self.return_value(value)?;
         self.cleanups = prior;
         self.current = Some(continue_);
         let key = self.integer("0");
         Ok(self.runtime("ril_rt_load", vec![value, key]))
     }
 
-    pub(super) fn return_value(&mut self, value: Register) {
+    pub(super) fn return_value(&mut self, value: Register) -> Result<()> {
         if let Some((target, depth)) = self.capture_return {
             self.cleanup_to(depth);
             self.terminate(Terminator::Jump(target, vec![value]));
         } else {
             self.cleanup_to(0);
+            if !self.running_guard && !self.guards.is_empty() {
+                self.run_exit_guards(value)?;
+            }
             self.terminate(Terminator::Return(value));
         }
+        Ok(())
+    }
+
+    fn run_exit_guards(&mut self, value: Register) -> Result<()> {
+        let check_some = self.block(0);
+        let good = self.block(0);
+        let done = self.block(0);
+        let ok = self.string("Ok");
+        let some = self.string("Some");
+        let ok = self.runtime("ril_rt_is_tag", vec![value, ok]);
+        self.terminate(Terminator::Branch {
+            condition: ok,
+            yes: good,
+            no: check_some,
+        });
+        self.current = Some(check_some);
+        let some = self.runtime("ril_rt_is_tag", vec![value, some]);
+        self.terminate(Terminator::Branch {
+            condition: some,
+            yes: good,
+            no: done,
+        });
+        self.current = Some(good);
+        let zero = self.integer("0");
+        let input = self.runtime("ril_rt_load", vec![value, zero]);
+        for guard in self.guards.clone() {
+            self.run_guard(guard, input)?;
+        }
+        self.terminate(Terminator::Jump(done, Vec::new()));
+        self.current = Some(done);
+        Ok(())
+    }
+
+    pub(super) fn run_guard(&mut self, guard: ExprId, value: Register) -> Result<()> {
+        let ast = self.ast();
+        let mut node = ast.expr(guard);
+        if let Expr::Unary { op, value } = &node.value
+            && op.value == "ref"
+        {
+            node = ast.expr(*value);
+        }
+        let (callee, args) = if let Expr::Call { callee, args } = &node.value {
+            (ast.expr(*callee), args.as_slice())
+        } else {
+            (node, &[][..])
+        };
+        let Expr::Path(path) = &callee.value else {
+            return Err(self.unsupported(node.span, "signature guard expression"));
+        };
+        let id = self
+            .global
+            .resolve(path.span)
+            .ok_or_else(|| self.unsupported(node.span, "signature guard target"))?;
+        let mut arguments = vec![value];
+        for argument in args {
+            arguments.push(self.expr(argument.value)?);
+        }
+        let captures = self.named_captures(id);
+        let environment = (!captures.is_empty()).then(|| self.environment(&captures));
+        let function = self
+            .global
+            .queue(Work::Named(id, Default::default(), captures));
+        let target = environment.map_or(Target::Function(function), |environment| {
+            Target::FunctionWithEnv {
+                function,
+                environment,
+            }
+        });
+        let output = self.invoke(target, arguments, false);
+        let prior = std::mem::replace(&mut self.running_guard, true);
+        self.propagate(output)?;
+        self.running_guard = prior;
+        Ok(())
     }
 
     fn static_expr(&self, expr: ExprId) -> Option<Value> {
@@ -531,6 +770,12 @@ impl Builder<'_, '_> {
         }
         match &node.value {
             Expr::Literal(literal) => ty::literal(literal).ok(),
+            Expr::Quote(id) => self
+                .global
+                .typed
+                .types
+                .get(&self.ast().ty(*id).span)
+                .map(|ty| Value::Type(Box::new(self.concrete(ty)))),
             Expr::Path(path) => {
                 let id = self.global.resolve(path.span)?;
                 let def = self.global.typed.hir.definition(id);
@@ -539,12 +784,13 @@ impl Builder<'_, '_> {
                     "ARCH" => Some(Value::Str(std::env::consts::ARCH.into())),
                     "HAS_OPENAT" => Some(Value::Bool(cfg!(unix))),
                     _ => {
+                        let decl = def.stmt?;
                         let ast = &self.global.typed.hir.file(def.name.span.file).ast;
                         let ril_sema::syntax::StmtKind::Binding {
                             value: Some(value),
                             is_meta: true,
                             ..
-                        } = ast.stmt(def.stmt?).value.kind
+                        } = ast.stmt(decl).value.kind
                         else {
                             return None;
                         };

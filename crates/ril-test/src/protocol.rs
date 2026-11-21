@@ -592,6 +592,16 @@ pub fn parse_suite(path: &Path, source: &str) -> Result<Suite, SuiteError> {
     if cases.is_empty() {
         return Err(error(1, "suite has no cases".into()));
     }
+    if path
+        .ancestors()
+        .filter_map(Path::file_name)
+        .filter_map(std::ffi::OsStr::to_str)
+        .any(|category| category.starts_with("12_") || category.starts_with("13_"))
+    {
+        for case in &mut cases {
+            case.required = Milestone::M5;
+        }
+    }
     Ok(Suite {
         name: name.ok_or_else(|| error(1, "missing @suite".into()))?,
         path: path.into(),

@@ -6,7 +6,7 @@ mod shield;
 mod spec;
 
 pub use protocol::{Activation, Case, CaseMode, Suite, SuiteError, parse_suite};
-pub use runner::{discover, run_case, run_worker, trials};
+pub use runner::{discover, run_case, run_harness, run_worker, trials};
 pub use spec::spec_suite;
 
 use std::{

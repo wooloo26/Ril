@@ -115,7 +115,10 @@ impl Checker<'_> {
                     .last()
                     .map_or("", |part| part.name.value.as_str());
                 let payload = self.pattern_payload(env, name, &normalized, node.span);
-                if payload.len() != items.as_ref().map_or(0, Vec::len) {
+                let unit_payload = name == "Ok"
+                    && payload.as_slice() == [Ty::Unit]
+                    && items.as_ref().is_some_and(Vec::is_empty);
+                if !unit_payload && payload.len() != items.as_ref().map_or(0, Vec::len) {
                     self.error(
                         Code::E0314,
                         node.span,
@@ -193,7 +196,7 @@ impl Checker<'_> {
         }
     }
 
-    fn pattern_names(&self, env: &Env, id: PatternId) -> HashSet<String> {
+    pub(super) fn pattern_names(&self, env: &Env, id: PatternId) -> HashSet<String> {
         let ast = self.ast(env.file);
         match &ast.pattern(id).value {
             Pattern::Binding(_, name) | Pattern::Rest(Some(name)) | Pattern::TypeBinding(name) => {
@@ -292,18 +295,16 @@ impl Checker<'_> {
         expected: Option<&Ty>,
         span: Span,
     ) -> Ty {
-        let tags = self.match_domain(env, input);
+        let mut prior = Vec::new();
         let mut covered = HashSet::new();
-        let mut total = false;
         let mut result = Ty::Never;
         for arm in arms {
             let mut local = env.clone();
             self.pattern(&mut local, arm.pattern, input);
             self.refine_type_arm(&mut local, arm.pattern, input, &covered);
-            let (all, pattern_tags) = self.pattern_tags(env, arm.pattern, input);
-            if total
-                || !pattern_tags.is_empty() && pattern_tags.iter().all(|tag| covered.contains(tag))
-            {
+            let (_, pattern_tags) = self.pattern_tags(env, arm.pattern, input);
+            let shape = self.pattern_shape(env, arm.pattern, input);
+            if !self.useful(env, &prior, shape.clone(), input) {
                 self.error(
                     Code::E0304,
                     self.ast(env.file).pattern(arm.pattern).span,
@@ -313,17 +314,16 @@ impl Checker<'_> {
             if let Some(guard) = arm.guard {
                 self.expect(&mut local, guard, &Ty::Bool);
             } else {
-                total |= all;
                 covered.extend(pattern_tags);
-                total |= tags
-                    .as_ref()
-                    .is_some_and(|tags| tags.iter().all(|tag| covered.contains(tag)));
+                prior.push(shape);
             }
             let found = self.expr(&mut local, arm.body, expected);
             result = self.join(env, span, result, found);
             env.effects_seen.extend(local.effects_seen);
         }
-        if !total && !matches!(input, Ty::Unknown | Ty::Never | Ty::Infer(_)) {
+        if self.useful(env, &prior, super::coverage::Shape::Any, input)
+            && !matches!(input, Ty::Unknown | Ty::Never | Ty::Infer(_))
+        {
             self.error(
                 Code::E0303,
                 span,
@@ -333,7 +333,7 @@ impl Checker<'_> {
         result
     }
 
-    fn match_domain(&mut self, env: &Env, input: &Ty) -> Option<HashSet<String>> {
+    pub(super) fn match_domain(&mut self, env: &Env, input: &Ty) -> Option<HashSet<String>> {
         Some(match input {
             Ty::Bool => ["true", "false"].into_iter().map(str::to_owned).collect(),
             Ty::Option(_) => ["Some", "None"].into_iter().map(str::to_owned).collect(),

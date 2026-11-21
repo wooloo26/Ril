@@ -125,6 +125,16 @@ impl Checker<'_> {
             }
             Expr::Member { base, member, safe } => {
                 let receiver = self.expr(env, *base, None);
+                if !safe
+                    && matches!(receiver, Ty::Option(_))
+                    && let Some(code) = self
+                        .narrow_errors
+                        .get(&self.ast(env.file).expr(*base).span)
+                        .copied()
+                {
+                    self.error(code, span, "projection depends on an invalidated narrowing");
+                    return Ty::Unknown;
+                }
                 if *safe {
                     match self.normalize(&receiver) {
                         Ty::Option(inner) => {
@@ -212,16 +222,28 @@ impl Checker<'_> {
             Expr::If { condition, yes, no } => {
                 let mut yes_env = env.clone();
                 self.condition(&mut yes_env, condition);
+                let mut no_env = env.clone();
+                if let Condition::Expr(_) = condition {
+                    no_env.refinements = yes_env.refinements.clone();
+                }
+                self.assumption(&mut yes_env, condition, true);
+                self.assumption(&mut no_env, condition, false);
                 let yes = self.expr(&mut yes_env, *yes, expected);
                 let no = no
-                    .map(|no| self.expr(env, no, expected))
+                    .map(|no| self.expr(&mut no_env, no, expected))
                     .unwrap_or(Ty::Unit);
+                env.refinements = self.merge_refinements(&yes_env, &no_env, &yes, &no);
+                env.effects_seen.extend(yes_env.effects_seen);
+                env.effects_seen.extend(no_env.effects_seen);
                 self.join(env, span, yes, no)
             }
             Expr::While { condition, body } => {
                 let mut body_env = env.clone();
                 self.condition(&mut body_env, condition);
-                self.expr(&mut body_env, *body, None);
+                self.assumption(&mut body_env, condition, true);
+                let body_result = self.expr(&mut body_env, *body, None);
+                env.refinements = self.merge_refinements(env, &body_env, &Ty::Unit, &body_result);
+                env.effects_seen.extend(body_env.effects_seen);
                 if matches!(condition, Condition::Expr(test) if matches!(&self.ast(env.file).expr(*test).value,
                     Expr::Literal(value) if matches!(literal(value), Ok(Value::Bool(true)))))
                     && !self.has_break(env, *body)
@@ -311,6 +333,7 @@ impl Checker<'_> {
                 Ty::Never
             }
         };
+        let ty = self.apply_refinement(env, id, ty);
         self.types.insert(span, ty.clone());
         ty
     }
@@ -410,6 +433,15 @@ impl Checker<'_> {
         expected: Option<&Ty>,
     ) -> Ty {
         let name = op.value.as_str();
+        let assignment = matches!(
+            name,
+            "=" | "+=" | "-=" | "*=" | "/=" | "%=" | "<<=" | ">>=" | "&=" | "|=" | "^="
+        );
+        let ast = self.ast(env.file);
+        let previous = env.unrefined;
+        if assignment {
+            env.unrefined = Some(ast.expr(left).span);
+        }
         let a = self.expr(
             env,
             left,
@@ -419,6 +451,7 @@ impl Checker<'_> {
                 expected.filter(|_| matches!(name, "+" | "-" | "*" | "/" | "%"))
             },
         );
+        env.unrefined = previous;
         let a = self.normalize(&a);
         let right_expected = match (&a, name) {
             (Ty::Option(item), "??") => Some(item.as_ref()),
@@ -427,6 +460,29 @@ impl Checker<'_> {
         };
         let b = self.expr(env, right, right_expected);
         let b = self.normalize(&b);
+        if !assignment
+            && matches!(
+                name,
+                "+" | "-" | "*" | "/" | "%" | "<<" | ">>" | "&" | "|" | "^"
+            )
+        {
+            for expression in [left, right] {
+                let span = ast.expr(expression).span;
+                if let Some(code) = self.narrow_errors.get(&span).copied() {
+                    self.error(code, span, "operation depends on an invalidated narrowing");
+                    return Ty::Unknown;
+                }
+            }
+        }
+        if matches!(
+            name,
+            "+" | "-" | "*" | "/" | "%" | "==" | "!=" | "<" | ">" | "<=" | ">="
+        ) && matches!(a, Ty::Infer(_))
+            && !matches!(b, Ty::Infer(_) | Ty::Unknown)
+        {
+            self.fits(env, &a, &b);
+        }
+        let a = self.normalize(&a);
         if name == "??" {
             return match &a {
                 Ty::Option(ty) => {
@@ -474,10 +530,21 @@ impl Checker<'_> {
             return Ty::Bool;
         }
         let comparison = matches!(name, "==" | "!=" | "<" | ">" | "<=" | ">=");
-        let assignment = matches!(
-            name,
-            "=" | "+=" | "-=" | "*=" | "/=" | "%=" | "<<=" | ">>=" | "&=" | "|=" | "^="
-        );
+        if matches!(name, "==" | "!=") && [left, right].iter().any(|&expr| self.is_none(env, expr))
+        {
+            for (id, ty) in [(left, &a), (right, &b)] {
+                let span = ast.expr(id).span;
+                if self.narrowings.contains_key(&span) && !matches!(ty, Ty::Option(_) | Ty::Unknown)
+                {
+                    self.error(
+                        Code::E0311,
+                        span,
+                        "None test contradicts the current narrowing",
+                    );
+                    return Ty::Bool;
+                }
+            }
+        }
         let base = if assignment {
             name.strip_suffix('=').unwrap_or_default()
         } else {
@@ -516,6 +583,7 @@ impl Checker<'_> {
             );
         }
         if assignment {
+            self.writes_place(env, left);
             Ty::Unit
         } else if comparison {
             Ty::Bool
@@ -524,13 +592,18 @@ impl Checker<'_> {
         }
     }
 
-    fn is_none(&self, env: &Env, id: ExprId) -> bool {
+    pub(super) fn is_none(&self, env: &Env, id: ExprId) -> bool {
         matches!(&self.ast(env.file).expr(id).value, Expr::Path(path) if path.segments.last().is_some_and(|part| part.name.value == "None"))
     }
 
     fn equatable(&mut self, env: &Env, ty: &Ty, seen: &mut HashSet<DefinitionId>) -> bool {
         match ty {
-            Ty::Callable(_) | Ty::Draft(_) => false,
+            Ty::Callable(_)
+            | Ty::Draft(_)
+            | Ty::Scope
+            | Ty::Task(_)
+            | Ty::Sender(_)
+            | Ty::Receiver(_) => false,
             Ty::Array(item) => self.equatable(env, &item.ty, seen),
             Ty::Tuple(items) => items.iter().all(|item| self.equatable(env, &item.ty, seen)),
             Ty::Record(fields, _) => fields
@@ -656,7 +729,7 @@ impl Checker<'_> {
         }
     }
 
-    fn sum_subset(&mut self, actual: &Ty, target: &Ty) -> bool {
+    pub(super) fn sum_subset(&mut self, actual: &Ty, target: &Ty) -> bool {
         let (Ty::Adt(actual), Ty::Adt(target)) = (actual, target) else {
             return false;
         };
@@ -938,11 +1011,26 @@ impl Checker<'_> {
             _ => None,
         };
         let def_id = path.and_then(|p| self.resolve(p.span));
+        if !env.shadow
+            && let Some(effect) = def_id.and_then(|id| self.hir.effect_of(id))
+        {
+            env.effects_seen.insert(effect.to_owned());
+        }
         let mut pending_meta = false;
         let (ty, generics) = if let Some(id) = def_id {
             let def = self.hir.definition(id);
             match def.kind {
                 DefinitionKind::Primitive(phase) => {
+                    if let Some(module @ ("Fiber" | "Channel")) = self.hir.primitive_module(id) {
+                        return self.concurrent_call(
+                            env,
+                            module,
+                            &def.name.value,
+                            args,
+                            expected,
+                            span,
+                        );
+                    }
                     if !env.shadow
                         && phase == PrimitivePhase::Runtime
                         && env.phase != Phase::Runtime
@@ -1074,8 +1162,25 @@ impl Checker<'_> {
         {
             self.error(Code::E0314, span, "required argument is missing");
         }
+        if call.open_effects || call.open_state {
+            self.invalidate_live(env, Code::E0533);
+        } else if call
+            .state
+            .iter()
+            .any(|clause| clause == "mut" || clause == "^mut")
+        {
+            for argument in args
+                .iter()
+                .filter(|arg| matches!(arg.mode, Mode::Mut | Mode::Shared))
+            {
+                self.writes_place(env, argument.value);
+            }
+        }
         if !env.shadow {
             env.effects_seen.extend(call.effects.iter().cloned());
+        }
+        if let Some(known) = def_id {
+            self.validate_generic_uses(env, known, &generics, span);
         }
         if pending_meta && let Some(id) = def_id {
             self.eval_call_root(env, id, args, span);
@@ -1152,6 +1257,34 @@ impl Checker<'_> {
         expected: Option<&Ty>,
         span: Span,
     ) -> Ty {
+        if name == "derive"
+            && let [base, update] = args
+        {
+            let base = self.expr(env, base.value, expected);
+            if base.is_value() {
+                self.error(
+                    Code::E0536,
+                    span,
+                    "derive requires a shared-object snapshot",
+                );
+            }
+            let callback = Ty::Callable(Arc::new(Callable {
+                parameters: vec![Parameter {
+                    label: None,
+                    mode: Mode::Mut,
+                    ty: Ty::Draft(Box::new(base.clone())),
+                    optional: false,
+                    is_meta: false,
+                }],
+                result: Ty::Unit,
+                result_mode: Mode::Infer,
+                open_state: true,
+                open_effects: true,
+                ..unknown_callable()
+            }));
+            self.expect(env, update.value, &callback);
+            return base;
+        }
         let context_arg = match (name, expected) {
             ("Some", Some(Ty::Option(ty)))
             | ("Ok", Some(Ty::Result(ty, _)))
@@ -1162,11 +1295,16 @@ impl Checker<'_> {
         for arg in args {
             types.push(self.expr(env, arg.value, context_arg));
         }
-        let first = types.first().cloned().unwrap_or(Ty::Unknown);
+        let first =
+            types
+                .first()
+                .cloned()
+                .unwrap_or(if name == "Ok" { Ty::Unit } else { Ty::Unknown });
         let arity = match name {
-            "Some" | "Ok" | "Err" | "panic" | "print" | "println" | "len" | "clone" | "inner"
+            "Some" | "Err" | "panic" | "print" | "println" | "len" | "clone" | "inner"
             | "inspect" | "type_name" | "coords" | "variants" | "to_f64" | "to_int" | "trunc"
             | "absorb_panic" | "panic_message" => Some(1..=1),
+            "Ok" => Some(0..=1),
             "assert" => Some(1..=2),
             "has_default" | "contains" | "push" | "filter" | "map" | "checked_div"
             | "checked_rem" | "derive" => Some(2..=2),
@@ -1180,6 +1318,21 @@ impl Checker<'_> {
             );
         }
         match name {
+            "read" | "write" => {
+                self.require(env, span, &first, &Ty::Str);
+                if name == "write"
+                    && let Some(content) = types.get(1)
+                {
+                    self.require(env, span, content, &Ty::Str);
+                }
+                if !env.shadow {
+                    env.effects_seen.insert("io".into());
+                }
+                Ty::Result(
+                    Box::new(if name == "read" { Ty::Str } else { Ty::Unit }),
+                    Box::new(Ty::Str),
+                )
+            }
             "Some" => Ty::Option(Box::new(first)),
             "Ok" => Ty::Result(
                 Box::new(first),
@@ -1262,7 +1415,7 @@ impl Checker<'_> {
                 self.require(env, span, &first, &Ty::Int);
                 Ty::F64
             }
-            "to_int" | "trunc" => {
+            "to_int" | "trunc" | "convert" => {
                 self.require(env, span, &first, &Ty::F64);
                 Ty::Option(Box::new(Ty::Int))
             }

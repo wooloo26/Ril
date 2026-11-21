@@ -1,7 +1,10 @@
 mod check;
+mod concurrency;
+mod coverage;
 mod eval;
 mod expr;
 mod forms;
+mod narrowing;
 mod pattern;
 mod value;
 
@@ -48,6 +51,10 @@ pub enum Ty {
     TypeValue(Option<Box<Ty>>),
     Mode,
     Draft(Box<Ty>),
+    Scope,
+    Task(Box<Ty>),
+    Sender(Box<Ty>),
+    Receiver(Box<Ty>),
 }
 
 impl Ty {
@@ -58,9 +65,12 @@ impl Ty {
             Self::Map(key, item) => key.contains_type_value() || item.ty.contains_type_value(),
             Self::Tuple(items) => items.iter().any(|m| m.ty.contains_type_value()),
             Self::Record(items, _) => items.values().any(|m| m.ty.contains_type_value()),
-            Self::Set(inner) | Self::Option(inner) | Self::Draft(inner) => {
-                inner.contains_type_value()
-            }
+            Self::Set(inner)
+            | Self::Option(inner)
+            | Self::Draft(inner)
+            | Self::Task(inner)
+            | Self::Sender(inner)
+            | Self::Receiver(inner) => inner.contains_type_value(),
             Self::Result(ok, err) => ok.contains_type_value() || err.contains_type_value(),
             Self::Adt(adt) => adt
                 .arguments
@@ -169,6 +179,7 @@ pub struct TypedProgram {
     pub bindings: HashMap<DefinitionId, Ty>,
     pub callables: BTreeMap<DefinitionId, Arc<Callable>>,
     pub static_values: HashMap<Span, Value>,
+    pub narrowings: HashMap<Span, usize>,
 }
 
 pub struct Display<'a> {
@@ -285,6 +296,10 @@ impl fmt::Display for Display<'_> {
             Ty::TypeValue(Some(ty)) => write!(f, "Type<{}>", show(ty)),
             Ty::TypeValue(None) => f.write_str("Type"),
             Ty::Draft(ty) => write!(f, "Draft<{}>", show(ty)),
+            Ty::Scope => f.write_str("Scope"),
+            Ty::Task(ty) => write!(f, "Task<{}>", show(ty)),
+            Ty::Sender(ty) => write!(f, "Sender<{}>", show(ty)),
+            Ty::Receiver(ty) => write!(f, "Receiver<{}>", show(ty)),
         }
     }
 }

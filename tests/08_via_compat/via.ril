@@ -34,3 +34,18 @@ pub fn relay(via source: Cell) -> infer Cell {
     let via local = source
     local
 }
+
+-- @case call_must_fit_inferred_domain compile-fail E0520
+fn update(via c: Cell) -> () { c.count += 1 }
+fn run() -> () {
+    let snap = Cell.{ count: 1 }
+    update(snap)
+    -- ^ E0520
+}
+
+-- @case via_binding_must_be_dependent compile-fail E0550
+fn invalid(via c: Cell) -> infer Cell {
+    let via local = Cell.{ count: 0 }
+    -- ^ E0550
+    local
+}

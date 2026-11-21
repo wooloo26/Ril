@@ -49,6 +49,16 @@ arenas! {
     (StmtId, Stmt, statements, add_stmt, stmt),
 }
 
+impl Ast {
+    pub fn statements(&self) -> impl Iterator<Item = &Spanned<Stmt>> {
+        self.statements.iter()
+    }
+
+    pub fn expressions(&self) -> impl Iterator<Item = &Spanned<Expr>> {
+        self.exprs.iter()
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Path {
     pub segments: Vec<Segment>,

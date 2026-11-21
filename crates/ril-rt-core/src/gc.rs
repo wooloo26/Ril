@@ -34,6 +34,13 @@ pub struct TypeDesc {
 #[derive(Clone, Debug)]
 pub enum Object {
     Int(BigInt),
+    Scope(u64),
+    Task {
+        task: u64,
+        scope: u64,
+    },
+    Sender(u64),
+    Receiver(u64),
     F64(u64),
     Str(String),
     Bytes(Vec<u8>),
@@ -43,9 +50,15 @@ pub enum Object {
     Map(Vec<(Value, Value)>),
     Tag(String, Vec<Value>),
     Closure {
-        function: usize,
+        function: u64,
+        arity: u64,
         environment: Value,
         evidence: Value,
+    },
+    Evidence {
+        parent: Value,
+        operation: String,
+        handler: Value,
     },
     Draft {
         copy: Value,
@@ -68,6 +81,9 @@ impl Object {
                 ..
             } => vec![*environment, *evidence],
             Self::Draft { copy } => vec![*copy],
+            Self::Evidence {
+                parent, handler, ..
+            } => vec![*parent, *handler],
             Self::Words { layout, words } => words
                 .iter()
                 .enumerate()
@@ -75,7 +91,14 @@ impl Object {
                 .filter(|(i, _)| layout.reference_mask & (1_u64 << i) != 0)
                 .map(|(_, &word)| word)
                 .collect(),
-            Self::Int(_) | Self::F64(_) | Self::Str(_) | Self::Bytes(_) => Vec::new(),
+            Self::Scope(_)
+            | Self::Task { .. }
+            | Self::Sender(_)
+            | Self::Receiver(_)
+            | Self::Int(_)
+            | Self::F64(_)
+            | Self::Str(_)
+            | Self::Bytes(_) => Vec::new(),
         }
     }
 }
@@ -83,6 +106,10 @@ impl Object {
 pub struct GcRuntime {
     objects: BTreeMap<Value, Object>,
     frames: Vec<Vec<Value>>,
+    suspended_frames: BTreeMap<u64, Vec<Vec<Value>>>,
+    roots: BTreeMap<Value, usize>,
+    #[cfg(not(miri))]
+    active: u64,
     next: u64,
     next_collection: usize,
     stress: bool,
@@ -99,9 +126,40 @@ impl GcRuntime {
         Self {
             objects: BTreeMap::new(),
             frames: Vec::new(),
+            suspended_frames: BTreeMap::new(),
+            roots: BTreeMap::new(),
+            #[cfg(not(miri))]
+            active: 0,
             next: 3,
             next_collection: 64,
             stress,
+        }
+    }
+
+    #[cfg(not(miri))]
+    pub(crate) fn switch_fiber(&mut self, fiber: u64) {
+        if fiber != self.active {
+            let frames = self.suspended_frames.remove(&fiber).unwrap_or_default();
+            let suspended = std::mem::replace(&mut self.frames, frames);
+            if !suspended.is_empty() {
+                self.suspended_frames.insert(self.active, suspended);
+            }
+            self.active = fiber;
+        }
+    }
+
+    #[cfg(not(miri))]
+    pub(crate) fn pin(&mut self, value: Value) {
+        *self.roots.entry(value).or_default() += 1;
+    }
+
+    #[cfg(not(miri))]
+    pub(crate) fn unpin(&mut self, value: Value) {
+        if let Some(count) = self.roots.get_mut(&value) {
+            *count -= 1;
+            if *count == 0 {
+                self.roots.remove(&value);
+            }
         }
     }
 
@@ -159,7 +217,9 @@ impl GcRuntime {
             .frames
             .iter()
             .flatten()
+            .chain(self.suspended_frames.values().flatten().flatten())
             .copied()
+            .chain(self.roots.keys().copied())
             .chain(additional)
             .collect();
         while let Some(value) = pending.pop() {

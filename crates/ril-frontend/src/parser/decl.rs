@@ -150,6 +150,16 @@ impl Parser<'_> {
             }
             _ => return Err(self.unexpected("expected a declaration")),
         };
+        if !attrs.is_empty()
+            && (matches!(kind, StmtKind::Binding { .. } | StmtKind::Import(_))
+                || matches!(&kind, StmtKind::Type(decl) if decl.kind == TypeKind::Alias && !matches!(decl.definition, TypeDefinition::Sum(_))))
+        {
+            return Err(self.error(
+                Code::E0708,
+                start,
+                "metadata is prohibited on this declaration",
+            ));
+        }
         Ok(self.ast.add_stmt(
             start.join(self.last),
             Stmt {
@@ -341,10 +351,10 @@ impl Parser<'_> {
             if self.eat("@") {
                 let effect = matches!(
                     self.current().kind,
-                    Kind::Word(Word::Value | Word::Pascal | Word::Constant)
+                    Kind::Word(Word::Value | Word::Pascal | Word::Constant | Word::Primitive)
                 );
                 if effect && self.current().tight_left {
-                    obligations.effects.push(self.path(Angle::Type, false)?);
+                    obligations.effects.push(self.path(Angle::Type, true)?);
                 } else {
                     obligations.open_effects = true;
                 }
@@ -431,6 +441,13 @@ impl Parser<'_> {
                 let mut params = Vec::new();
                 loop {
                     params.push(self.generic_param()?);
+                    if matches!(self.text(), "@" | "&") {
+                        return Err(self.error(
+                            Code::E0335,
+                            self.current().span,
+                            "type functions are pure",
+                        ));
+                    }
                     if !self.eat(",") || self.is("->") {
                         break;
                     }
@@ -439,7 +456,26 @@ impl Parser<'_> {
                 self.skip_lines();
                 TypeDefinition::Function(params, self.expr()?)
             } else {
-                TypeDefinition::Data(self.ty()?)
+                if matches!(self.text(), "@" | "&") {
+                    return Err(self.error(
+                        if self.is("@") {
+                            Code::E0330
+                        } else {
+                            Code::E0331
+                        },
+                        self.current().span,
+                        "effect and state clauses cannot be used as data aliases",
+                    ));
+                }
+                let ty = self.ty()?;
+                if self.is("|") {
+                    return Err(self.error(
+                        Code::E0318,
+                        self.current().span,
+                        "untagged union is not a data type",
+                    ));
+                }
+                TypeDefinition::Data(ty)
             }
         } else if self.is("{") {
             if foreign && kind == TypeKind::Opaque {
@@ -469,6 +505,13 @@ impl Parser<'_> {
                     } else {
                         None
                     };
+                    if matches!(self.text(), "@" | "&") {
+                        return Err(self.error(
+                            Code::E0332,
+                            self.current().span,
+                            "variant payload cannot have effect or state clauses",
+                        ));
+                    }
                     Variant::Constructor {
                         name,
                         payload,
@@ -536,6 +579,13 @@ impl Parser<'_> {
 
     fn binding(&mut self, is_meta: bool, top: bool) -> Result<StmtKind> {
         let resource = self.eat("use");
+        if resource && self.is("var") {
+            return Err(self.error(
+                Code::E0532,
+                self.current().span,
+                "scoped resource binding is pinned",
+            ));
+        }
         let variable = self.eat("var");
         if !resource && !variable {
             self.require("let")?;
@@ -575,6 +625,13 @@ impl Parser<'_> {
         } else {
             None
         };
+        if matches!(self.text(), "@" | "&") {
+            return Err(self.error(
+                Code::E0613,
+                self.current().span,
+                "value binding cannot carry effect or state clauses",
+            ));
+        }
         let value = if self.kind == FileKind::Foreign {
             if self.is("=") {
                 return Err(self.error(

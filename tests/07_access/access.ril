@@ -133,3 +133,27 @@ fn run() -> () {
 fn get() -> new !<int, str> { Ok(1) }
 fn unwrap(input: !<int, str>) -> int { match input { Ok(n) -> n; Err(_) -> 0 } }
 fn run() -> int { unwrap(get()) }
+
+-- @case typeof_cannot_supply_reachable_write compile-fail E0527
+fn test(mut cell: Cell) -> int {
+    let output: typeof { cell.count += 1; 0 } = 0
+    output
+}
+-- @forbid E0510
+
+-- @case typeof_detects_local_handoff_use compile-fail E0549
+fn test() -> int {
+    let mut cell = Cell.{ count: 1 }
+    let output: typeof { let moved = new cell; cell.count } = 2
+    -- ^ E0549
+    cell.count += 1
+    output
+}
+
+-- @case typeof_handoff_does_not_end_caller_path compile-pass
+fn test() -> int {
+    let mut cell = Cell.{ count: 1 }
+    let output: typeof { let moved = new cell; moved.count } = 2
+    cell.count += 1
+    output
+}

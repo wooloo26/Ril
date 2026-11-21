@@ -8,8 +8,8 @@ use ril_frontend::{
     hir::{DefinitionId, DefinitionKind},
     parser::FileKind,
     syntax::{
-        self, GenericArg, GenericParam, Member as Coordinate, Mode, StateKind, StmtKind, Type,
-        TypeDecl, TypeDefinition, TypeId, TypeKind, Variant,
+        self, FieldTail, GenericArg, GenericParam, Member as Coordinate, Mode, StateKind, StmtKind,
+        Type, TypeDecl, TypeDefinition, TypeId, TypeKind, Variant,
     },
 };
 
@@ -20,6 +20,115 @@ use super::{
 };
 
 impl Checker<'_> {
+    pub(super) fn nominal_fields(&self, env: &mut Env, declaration: &TypeDecl) {
+        if declaration.kind != TypeKind::Alias
+            && let TypeDefinition::Data(id) = declaration.definition
+        {
+            let node = self.ast(env.file).ty(id);
+            if matches!(node.value, Type::Record { .. }) {
+                env.nominal_fields = Some(node.span);
+            }
+        }
+    }
+
+    pub(super) fn validate_defaults(&mut self, env: &Env, parameters: &[GenericParam]) {
+        let mut started = false;
+        for (index, parameter) in parameters.iter().enumerate() {
+            if let Some(default) = &parameter.default {
+                started = true;
+                let span = match default {
+                    GenericArg::Type(ty) => self.ast(env.file).ty(*ty).span,
+                    GenericArg::Value(expr) => self.ast(env.file).expr(*expr).span,
+                    GenericArg::Mode(_) => continue,
+                };
+                let refs: HashSet<_> = self.hir.references_within(span).map(|(_, id)| id).collect();
+                if parameters
+                    .iter()
+                    .skip(index)
+                    .filter_map(|param| self.resolve(param.name.span))
+                    .any(|id| refs.contains(&id))
+                {
+                    self.error(
+                        Code::E0320,
+                        span,
+                        "default refers to itself or a subsequent generic parameter",
+                    );
+                }
+            } else if started {
+                self.error(
+                    Code::E0316,
+                    parameter.name.span,
+                    "required generic parameter follows a default",
+                );
+            }
+        }
+    }
+
+    pub(super) fn check_pure_default(&mut self, env: &Env, expr: syntax::ExprId, expected: &Ty) {
+        let mut local = env.clone();
+        local.effects_seen.clear();
+        self.expect(&mut local, expr, expected);
+        if !local.effects_seen.is_empty() {
+            self.error(
+                Code::E0409,
+                self.ast(env.file).expr(expr).span,
+                "default must be pure",
+            );
+        }
+    }
+
+    pub(super) fn check_guard(&mut self, env: &Env, guard: syntax::ExprId, output: &Ty) {
+        let ast = self.ast(env.file);
+        let original = ast.expr(guard);
+        let mut node = original;
+        if let syntax::Expr::Unary { op, value } = &node.value
+            && op.value == "ref"
+        {
+            node = ast.expr(*value);
+        }
+        if let syntax::Expr::Call { callee, .. } = node.value {
+            node = ast.expr(callee);
+        }
+        let syntax::Expr::Path(path) = &node.value else {
+            return;
+        };
+        let Some(id) = self.resolve(path.span) else {
+            return;
+        };
+        let signature = self.declare_function(id);
+        if signature.open_effects
+            || signature.open_state
+            || !signature.effects.is_empty()
+            || !signature.state.is_empty()
+        {
+            self.error(Code::E0409, original.span, "signature guard must be pure");
+        }
+        let compatible = match (&signature.result, output) {
+            (Ty::Option(inner), Ty::Option(_)) if inner.as_ref() == &Ty::Unit => true,
+            (Ty::Result(ok, err), Ty::Result(_, expected)) if ok.as_ref() == &Ty::Unit => {
+                self.fits(env, err, expected) || self.sum_subset(err, expected)
+            }
+            (Ty::Option(inner), _) if inner.as_ref() == &Ty::Unit => false,
+            (Ty::Result(ok, _), _) if ok.as_ref() == &Ty::Unit => false,
+            (Ty::Unknown, _) => return,
+            _ => {
+                self.error(
+                    Code::E0712,
+                    original.span,
+                    "signature guard must return fallible unit",
+                );
+                return;
+            }
+        };
+        if !compatible {
+            self.error(
+                Code::E0713,
+                original.span,
+                "signature guard cannot propagate its failure",
+            );
+        }
+    }
+
     pub(super) fn generic_env(&mut self, env: &mut Env, params: &[GenericParam]) {
         for param in params {
             if let Some(id) = self.resolve(param.name.span) {
@@ -234,21 +343,67 @@ impl Checker<'_> {
             Type::Option(item) => Ty::Option(Box::new(self.type_expr(env, *item))),
             Type::Record { fields, tail } => {
                 let mut map = BTreeMap::new();
+                let nominal = env.nominal_fields == Some(node.span);
                 for field in fields {
                     let member = self.member(env, &field.storage, field.ty);
+                    if !field.attrs.is_empty() && !nominal {
+                        self.error(
+                            Code::E0708,
+                            field.name.span,
+                            "metadata requires a nominal root field",
+                        );
+                    }
                     if let Some(default) = field.default {
-                        if member.mode.mode != Mode::Plain || member.mode.variable {
+                        if !nominal {
+                            self.error(
+                                Code::E0359,
+                                field.name.span,
+                                "default requires a nominal root field",
+                            );
+                        } else if member.mode.mode != Mode::Plain
+                            || field.storage.mode_path.is_some()
+                        {
                             self.error(
                                 Code::E0404,
                                 field.name.span,
-                                "field defaults require immutable storage",
+                                "field defaults require plain access",
                             );
                         }
-                        self.expect(env, default, &member.ty);
+                        self.check_pure_default(env, default, &member.ty);
                     }
+                    self.define_name(&field.name, member.ty.clone());
                     map.insert(field.name.value.clone(), member);
                 }
-                Ty::Record(map, tail.is_some())
+                let mut open = tail.is_some();
+                if let Some(FieldTail::Named(name)) = tail
+                    && let Some(tail) = self.resolve(name.span).and_then(|id| env.generics.get(&id))
+                {
+                    match tail {
+                        GenericValue::Type(Ty::Record(other, remains_open)) => {
+                            open = *remains_open;
+                            for (field, member) in other {
+                                if let std::collections::btree_map::Entry::Vacant(slot) =
+                                    map.entry(field.clone())
+                                {
+                                    slot.insert(member.clone());
+                                } else {
+                                    self.error(
+                                        Code::E0212,
+                                        name.span,
+                                        format!("record tail repeats field {field}"),
+                                    );
+                                }
+                            }
+                        }
+                        GenericValue::Type(Ty::Unknown | Ty::Param(_)) => {}
+                        _ => self.error(
+                            Code::E0306,
+                            name.span,
+                            "row tail requires a structural record type",
+                        ),
+                    }
+                }
+                Ty::Record(map, open)
             }
             Type::Callable(signature) => {
                 Ty::Callable(Arc::new(self.callable(env, signature, false)))
@@ -343,6 +498,25 @@ impl Checker<'_> {
             _ => {}
         }
         let resolved = self.resolve(path.span);
+        if let Some(def) = resolved
+            && matches!(self.hir.primitive_module(def), Some("Fiber" | "Channel"))
+        {
+            if last.name.value == "Scope" {
+                return Ty::Scope;
+            }
+            let parameter = last
+                .arguments
+                .first()
+                .map(|arg| self.type_argument(env, arg))
+                .unwrap_or(Ty::Unknown);
+            return match last.name.value.as_str() {
+                "Task" => Ty::Task(Box::new(parameter)),
+                "Sender" => Ty::Sender(Box::new(parameter)),
+                "Receiver" => Ty::Receiver(Box::new(parameter)),
+                "ChannelPair" => super::concurrency::channel_pair(parameter),
+                _ => Ty::Unknown,
+            };
+        }
         if path.segments.len() == 1
             && resolved.is_none_or(|id| {
                 matches!(self.hir.definition(id).kind, DefinitionKind::Primitive(_))
@@ -609,6 +783,7 @@ impl Checker<'_> {
         };
         match decl.definition {
             TypeDefinition::Data(ty) => {
+                self.nominal_fields(&mut scope, decl);
                 let rep = self.type_expr(&mut scope, ty);
                 (rep != Ty::Adt(Arc::new(adt.clone()))).then_some(rep)
             }
@@ -817,6 +992,75 @@ impl Checker<'_> {
                 .representation(env, adt)
                 .is_none_or(|ty| self.eligible_key(env, &ty, seen)),
             _ => true,
+        }
+    }
+
+    pub(super) fn validate_generic_uses(
+        &mut self,
+        caller: &Env,
+        id: DefinitionId,
+        supplied: &HashMap<DefinitionId, GenericValue>,
+        span: Span,
+    ) {
+        let def = self.hir.definition(id);
+        let Some(stmt) = def.stmt else { return };
+        let StmtKind::Function(function) = &self.ast(def.name.span.file).stmt(stmt).value.kind
+        else {
+            return;
+        };
+        let mut local = Env::new(def.name.span.file, def.scope);
+        local.generics.clone_from(supplied);
+        for param in &function.generics {
+            let Some(definition) = self.resolve(param.name.span) else {
+                continue;
+            };
+            if let Some(GenericValue::Type(actual)) = supplied.get(&definition) {
+                let actual = self.normalize(actual);
+                let domain: Vec<_> = param
+                    .bound
+                    .iter()
+                    .map(|&ty| self.type_expr(&mut local, ty))
+                    .collect();
+                let allowed = domain.is_empty()
+                    || domain
+                        .iter()
+                        .any(|ty| matches!(ty, Ty::Unknown | Ty::Mode | Ty::TypeValue(None)))
+                    || match actual {
+                        Ty::Param(id) => caller.domains.get(&id).is_some_and(|actual_domain| {
+                            actual_domain.iter().all(|actual| {
+                                domain
+                                    .iter()
+                                    .any(|allowed| self.fits(caller, actual, allowed))
+                            })
+                        }),
+                        Ty::Infer(_) => true,
+                        _ => domain
+                            .iter()
+                            .any(|allowed| self.fits(caller, &actual, allowed)),
+                    };
+                if !allowed {
+                    self.error(
+                        Code::E0301,
+                        span,
+                        format!(
+                            "{} does not satisfy the domain of {}",
+                            actual.display(self.hir),
+                            param.name.value
+                        ),
+                    );
+                } else if matches!(actual, Ty::Infer(_))
+                    && !param
+                        .name
+                        .value
+                        .starts_with(|c: char| c.is_ascii_lowercase())
+                {
+                    self.error(
+                        Code::E0344,
+                        span,
+                        format!("could not infer generic parameter {}", param.name.value),
+                    );
+                }
+            }
         }
     }
 

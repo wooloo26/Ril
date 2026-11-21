@@ -1,0 +1,381 @@
+use std::{collections::BTreeMap, sync::Arc};
+
+use ril_base::{diag::Code, span::Span};
+use ril_frontend::syntax::{Argument, Mode};
+
+use super::{
+    Callable, Member, MemberMode, Parameter, Ty,
+    check::{Checker, Env, Phase, unknown_callable},
+};
+
+pub(super) fn channel_pair(item: Ty) -> Ty {
+    let mode = MemberMode {
+        variable: false,
+        mode: Mode::Mut,
+    };
+    Ty::Record(
+        BTreeMap::from([
+            (
+                "tx".into(),
+                Member {
+                    mode,
+                    ty: Ty::Sender(Box::new(item.clone())),
+                },
+            ),
+            (
+                "rx".into(),
+                Member {
+                    mode,
+                    ty: Ty::Receiver(Box::new(item)),
+                },
+            ),
+        ]),
+        false,
+    )
+}
+
+impl Checker<'_> {
+    pub(super) fn concurrent_call(
+        &mut self,
+        env: &mut Env,
+        module: &str,
+        name: &str,
+        args: &[Argument],
+        expected: Option<&Ty>,
+        span: Span,
+    ) -> Ty {
+        if env.phase != Phase::Runtime && !env.shadow {
+            self.error(
+                Code::E0810,
+                span,
+                "structured concurrency is a runtime call family",
+            );
+        }
+        if module == "Fiber" {
+            self.fiber(env, name, args, expected, span)
+        } else {
+            self.channel(env, name, args, expected, span)
+        }
+    }
+
+    fn fiber(
+        &mut self,
+        env: &mut Env,
+        name: &str,
+        args: &[Argument],
+        expected: Option<&Ty>,
+        span: Span,
+    ) -> Ty {
+        match (name, args) {
+            ("run" | "uncancellable" | "supervise", [action]) => {
+                let result = self.callback(env, action, None, expected);
+                if name == "supervise" {
+                    self.reject_nested_result(&result, span);
+                    Ty::Result(Box::new(result), Box::new(Ty::Unknown))
+                } else {
+                    result
+                }
+            }
+            ("scope" | "try_scope", [body]) => {
+                self.callback(env, body, Some((Mode::Mut, Ty::Scope)), expected)
+            }
+            ("spawn", [scope, work]) => {
+                self.require_marker(scope, Mode::Mut, env);
+                self.expect(env, scope.value, &Ty::Scope);
+                let result = self.callback(env, work, None, None);
+                if !sendable(&result) {
+                    self.error(Code::E0301, span, "task result is not Sendable");
+                }
+                Ty::Task(Box::new(result))
+            }
+            ("join" | "cancel", [scope, task]) => {
+                self.require_marker(scope, Mode::Mut, env);
+                self.expect(env, scope.value, &Ty::Scope);
+                if name == "cancel" {
+                    self.require_marker(task, Mode::New, env);
+                }
+                let task = self.expr(env, task.value, None);
+                if let Ty::Task(output) = task {
+                    if name == "cancel" {
+                        Ty::Option(output)
+                    } else {
+                        *output
+                    }
+                } else {
+                    self.error(Code::E0301, span, "expected a task handle");
+                    Ty::Unknown
+                }
+            }
+            ("cancel_scope", [scope]) => {
+                self.require_marker(scope, Mode::Mut, env);
+                self.expect(env, scope.value, &Ty::Scope);
+                Ty::Unit
+            }
+            ("yield" | "yield_now", []) => Ty::Unit,
+            ("is_cancelled", []) => Ty::Bool,
+            ("sleep" | "sleep_ms", [duration]) => {
+                self.expect(env, duration.value, &Ty::Int);
+                Ty::Unit
+            }
+            ("timeout_ms", [duration, work]) => {
+                self.expect(env, duration.value, &Ty::Int);
+                let result = self.callback(env, work, None, None);
+                self.reject_nested_result(&result, span);
+                Ty::Result(Box::new(result), Box::new(Ty::Unknown))
+            }
+            ("zip" | "try_zip" | "race", [left, right]) => {
+                let a = self.callback(env, left, None, None);
+                let b = self.callback(env, right, None, None);
+                if name == "race" {
+                    self.reject_nested_result(&a, span);
+                    self.reject_nested_result(&b, span);
+                    self.join(env, span, a, b)
+                } else {
+                    let record = |a, b| {
+                        Ty::Record(
+                            BTreeMap::from([
+                                ("first".into(), Member::plain(a)),
+                                ("second".into(), Member::plain(b)),
+                            ]),
+                            false,
+                        )
+                    };
+                    if name == "try_zip" {
+                        if let (Ty::Result(a, e), Ty::Result(b, f)) = (a, b) {
+                            self.reject_nested_result(&a, span);
+                            self.reject_nested_result(&b, span);
+                            let err = self.join(env, span, *e, *f);
+                            Ty::Result(Box::new(record(*a, *b)), Box::new(err))
+                        } else {
+                            self.error(Code::E0301, span, "try_zip actions must return Result");
+                            Ty::Unknown
+                        }
+                    } else {
+                        self.reject_nested_result(&a, span);
+                        self.reject_nested_result(&b, span);
+                        record(a, b)
+                    }
+                }
+            }
+            ("map" | "try_map", [items, work]) => {
+                let item = self.fresh();
+                self.expect(
+                    env,
+                    items.value,
+                    &Ty::Array(Box::new(Member::plain(item.clone()))),
+                );
+                let result =
+                    self.callback(env, work, Some((Mode::Plain, self.normalize(&item))), None);
+                let array = |ty| Ty::Array(Box::new(Member::plain(ty)));
+                if name == "try_map" {
+                    if let Ty::Result(ok, err) = result {
+                        self.reject_nested_result(&ok, span);
+                        Ty::Result(Box::new(array(*ok)), err)
+                    } else {
+                        self.error(Code::E0301, span, "try_map action must return Result");
+                        Ty::Unknown
+                    }
+                } else {
+                    self.reject_nested_result(&result, span);
+                    array(result)
+                }
+            }
+            _ => {
+                self.error(
+                    Code::E0314,
+                    span,
+                    format!("incorrect Fiber::{name} arguments"),
+                );
+                Ty::Unknown
+            }
+        }
+    }
+
+    fn channel(
+        &mut self,
+        env: &mut Env,
+        name: &str,
+        args: &[Argument],
+        expected: Option<&Ty>,
+        span: Span,
+    ) -> Ty {
+        let item = |typed: &Ty| match typed {
+            Ty::Sender(t) | Ty::Receiver(t) => (**t).clone(),
+            _ => Ty::Unknown,
+        };
+        match (name, args) {
+            ("bounded" | "mpsc", [capacity]) => {
+                self.expect(env, capacity.value, &Ty::Int);
+                if let Some(value) = self.eval_root(env, capacity.value, false)
+                    && matches!(value, super::Value::Int(n) if num_traits::Signed::is_negative(&n))
+                {
+                    self.error(
+                        Code::E0815,
+                        self.ast(env.file).expr(capacity.value).span,
+                        "negative static channel capacity",
+                    );
+                }
+                self.channel_shape(expected)
+            }
+            ("unbounded" | "mpsc", []) => self.channel_shape(expected),
+            ("clone", [channel]) => {
+                self.require_marker(channel, Mode::Ref, env);
+                let ty = self.expr(env, channel.value, None);
+                if !matches!(ty, Ty::Sender(_)) {
+                    self.error(Code::E0301, span, "only a sender can be cloned");
+                }
+                ty
+            }
+            ("send" | "try_send", [sender, value]) => {
+                self.require_marker(sender, Mode::Mut, env);
+                let sender = self.expr(env, sender.value, None);
+                if !matches!(sender, Ty::Sender(_)) {
+                    self.error(Code::E0301, span, "send requires a channel sender");
+                }
+                let item = self.expect(env, value.value, &item(&sender));
+                if !sendable(&item) {
+                    self.error(Code::E0301, span, "channel item is not Sendable");
+                }
+                Ty::Result(Box::new(Ty::Unit), Box::new(Ty::Unknown))
+            }
+            ("recv" | "try_recv", [receiver]) => {
+                self.require_marker(receiver, Mode::Mut, env);
+                let ty = self.expr(env, receiver.value, None);
+                if !matches!(ty, Ty::Receiver(_)) {
+                    self.error(Code::E0301, span, "recv requires a channel receiver");
+                }
+                if name == "recv" {
+                    Ty::Option(Box::new(item(&ty)))
+                } else {
+                    Ty::Result(Box::new(item(&ty)), Box::new(Ty::Unknown))
+                }
+            }
+            ("close" | "close_recv", [endpoint]) => {
+                self.require_marker(endpoint, Mode::New, env);
+                let ty = self.expr(env, endpoint.value, None);
+                if !matches!(
+                    (name, &ty),
+                    ("close", Ty::Sender(_)) | ("close_recv", Ty::Receiver(_))
+                ) {
+                    self.error(Code::E0301, span, "wrong endpoint for channel close");
+                }
+                if name == "close_recv" {
+                    self.reject_nested_result(&item(&ty), span);
+                }
+                Ty::Unit
+            }
+            ("drain", [endpoint, consumer]) => {
+                self.require_marker(endpoint, Mode::New, env);
+                let ty = self.expr(env, endpoint.value, None);
+                self.callback(env, consumer, Some((Mode::Via, item(&ty))), Some(&Ty::Unit));
+                Ty::Unit
+            }
+            _ => {
+                self.error(
+                    Code::E0314,
+                    span,
+                    format!("incorrect Channel::{name} arguments"),
+                );
+                Ty::Unknown
+            }
+        }
+    }
+
+    fn channel_shape(&mut self, expected: Option<&Ty>) -> Ty {
+        if let Some(expected @ Ty::Record(..)) = expected {
+            expected.clone()
+        } else {
+            channel_pair(self.fresh())
+        }
+    }
+
+    fn callback(
+        &mut self,
+        env: &mut Env,
+        arg: &Argument,
+        param: Option<(Mode, Ty)>,
+        result: Option<&Ty>,
+    ) -> Ty {
+        let expected = Ty::Callable(Arc::new(Callable {
+            open_effects: true,
+            open_state: true,
+            result_mode: Mode::Infer,
+            result: result.cloned().unwrap_or(Ty::Unknown),
+            parameters: param
+                .into_iter()
+                .map(|(mode, ty)| Parameter {
+                    label: None,
+                    mode,
+                    ty,
+                    optional: false,
+                    is_meta: false,
+                })
+                .collect(),
+            ..unknown_callable()
+        }));
+        let ty = self.expr(env, arg.value, Some(&expected));
+        if let Ty::Callable(sig) = ty {
+            let Ty::Callable(expect) = &expected else {
+                ril_base::ice!("callback expected type is not callable");
+            };
+            if sig.parameters.len() != expect.parameters.len() {
+                self.error(
+                    Code::E0314,
+                    self.ast(env.file).expr(arg.value).span,
+                    "incorrect callback arity",
+                );
+            }
+            sig.result.clone()
+        } else {
+            self.error(
+                Code::E0338,
+                self.ast(env.file).expr(arg.value).span,
+                "expected a callable",
+            );
+            Ty::Unknown
+        }
+    }
+
+    fn require_marker(&mut self, arg: &Argument, mode: Mode, env: &Env) {
+        if arg.mode != mode {
+            let code = if arg.mode == Mode::Plain {
+                Code::E0405
+            } else {
+                Code::E0406
+            };
+            self.error(
+                code,
+                self.ast(env.file).expr(arg.value).span,
+                "concurrency endpoint argument has the wrong explicit access mode",
+            );
+        }
+    }
+
+    fn reject_nested_result(&mut self, ty: &Ty, span: Span) {
+        if ty.is_result() {
+            self.error(Code::E0720, span, "operation would hide a fallible payload");
+        }
+    }
+}
+
+fn sendable(ty: &Ty) -> bool {
+    let member = |m: &Member| !matches!(m.mode.mode, Mode::Ref | Mode::Shared) && sendable(&m.ty);
+    match ty {
+        Ty::Scope | Ty::Task(_) | Ty::Draft(_) | Ty::TypeValue(_) => false,
+        Ty::Adt(adt) => adt.kind != super::AdtKind::Foreign,
+        Ty::Record(fields, _) => fields.values().all(member),
+        Ty::Tuple(items) => items.iter().all(member),
+        Ty::Array(item) => member(item),
+        Ty::Map(key, item) => sendable(key) && member(item),
+        Ty::Option(t) | Ty::Set(t) | Ty::Sender(t) | Ty::Receiver(t) => sendable(t),
+        Ty::Result(a, b) => sendable(a) && sendable(b),
+        Ty::Callable(sig) => {
+            sig.effects
+                .iter()
+                .all(|e| matches!(e.as_str(), "io" | "fiber"))
+                && !sig.open_state
+                && sig.state.is_empty()
+        }
+        _ => true,
+    }
+}

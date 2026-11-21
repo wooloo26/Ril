@@ -1,3 +1,5 @@
+use ril_base::diag::Code;
+
 use crate::{
     lexer::{Kind, Word},
     syntax::{
@@ -19,6 +21,19 @@ impl Parser<'_> {
     fn type_inner(&mut self, pattern: bool) -> Result<TypeId> {
         self.layout();
         let start = self.current().span;
+        if !pattern
+            && matches!(
+                self.current().kind,
+                Kind::Int
+                    | Kind::Float
+                    | Kind::StringStart
+                    | Kind::RawString
+                    | Kind::Bytes
+                    | Kind::RawBytes
+            )
+        {
+            return Err(self.error(Code::E0318, start, "literal is not a data type"));
+        }
         let ty = match self.text() {
             "?" | "??" => {
                 self.consume_prefix();
@@ -189,7 +204,21 @@ impl Parser<'_> {
             self.require(":")?;
             let ty = self.type_expr(pattern)?;
             self.skip_lines();
+            if matches!(self.text(), "@" | "&") {
+                return Err(self.error(
+                    Code::E0333,
+                    self.current().span,
+                    "field effect/state belongs on a callable type",
+                ));
+            }
             let default = if !pattern && self.eat("=") {
+                if self.kind == super::FileKind::Foreign {
+                    return Err(self.error(
+                        Code::E0901,
+                        self.last,
+                        "field default in foreign declaration",
+                    ));
+                }
                 Some(self.expr()?)
             } else {
                 None
@@ -327,6 +356,13 @@ impl Parser<'_> {
         let mut bound = Vec::new();
         let mut guards = Vec::new();
         if self.eat(":") {
+            if matches!(self.text(), "@" | "&") {
+                return Err(self.error(
+                    Code::E0334,
+                    self.current().span,
+                    "effect or state cannot be a generic bound",
+                ));
+            }
             loop {
                 bound.push(self.ty()?);
                 self.layout();

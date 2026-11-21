@@ -54,3 +54,66 @@ fn main() @io -> () {
     let outcome = absorb_panic \-> { panic("caught") }
     match outcome { Ok(_) -> (); Err(_) -> println("survived") }
 }
+
+-- @case evidence_passes_through_call run-pass backend=both
+-- @expect-stdout 41
+eff Clock { fn now() -> int }
+fn time() @Clock -> int { Clock::now() }
+fn main() @io -> () {
+    with Clock::now = \-> 41
+    println("{time()}")
+}
+
+-- @case escaping_closure_keeps_lexical_evidence run-pass backend=both
+-- @expect-stdout 3
+eff Clock { fn now() -> int }
+fn factory() -> fn() @Clock -> int {
+    with Clock::now = \-> 3
+    \-> Clock::now()
+}
+fn main() @io -> () {
+    let clock = factory()
+    with Clock::now = \-> 9
+    println("{clock()}")
+}
+
+-- @case first_class_immutable_capture run-pass backend=both
+-- @expect-stdout 16
+fn make(x: int) &capture -> fn(int) -> int { \y: int -> x + y }
+fn main() @io -> () {
+    let f = make(10)
+    println("{f(6)}")
+}
+
+-- @case captured_variable_uses_shared_slot run-pass backend=both
+-- @expect-stdout 2:3:3
+fn main() @io -> () {
+    var count = 1
+    let ^mut next = \-> { count += 1; count }
+    let first = next()
+    let second = next()
+    println("{first}:{second}:{count}")
+}
+
+-- @case local_named_fn_uses_captured_slots run-pass backend=both
+-- @expect-stdout 6
+fn total(n: int) -> int {
+    var sum = 1
+    add(n)
+    sum
+where
+    fn add(value: int) &up(var sum) -> () { sum += value }
+}
+fn main() @io -> () { println("{total(5)}") }
+
+-- @case draft_changes_only_the_copy run-pass backend=both
+-- @expect-stdout 3:5:2
+type Profile = .{ count: int, values: []int }
+fn main() @io -> () {
+    let base = Profile.{ count: 3, values: [1] }
+    let updated = derive(base) \mut draft -> {
+        draft.count = 5
+        Array::push(mut draft.values, 2)
+    }
+    println("{base.count}:{updated.count}:{len(updated.values)}")
+}

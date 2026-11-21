@@ -15,6 +15,7 @@ use ril_frontend::{
     },
 };
 
+use super::narrowing::Refinements;
 use super::{
     AdtKind, Callable, GenericValue, Member, MemberMode, Parameter, Ty, TypedProgram, Value,
 };
@@ -33,6 +34,10 @@ pub(super) fn check(hir: Program, budget: Option<u64>) -> Result<TypedProgram, V
         substitutions: HashMap::new(),
         resolving: HashSet::new(),
         checked: HashSet::new(),
+        schemes: HashSet::new(),
+        live: HashSet::new(),
+        narrowings: HashMap::new(),
+        narrow_errors: HashMap::new(),
         constants: HashSet::new(),
         stack: Vec::new(),
         budget: budget.unwrap_or(DEFAULT_BUDGET),
@@ -63,6 +68,7 @@ pub(super) fn check(hir: Program, budget: Option<u64>) -> Result<TypedProgram, V
     let Checker {
         callables,
         static_values,
+        narrowings,
         ..
     } = ck;
     Ok(TypedProgram {
@@ -71,6 +77,7 @@ pub(super) fn check(hir: Program, budget: Option<u64>) -> Result<TypedProgram, V
         bindings,
         callables,
         static_values,
+        narrowings,
     })
 }
 
@@ -91,6 +98,9 @@ pub(super) struct Env {
     pub(super) expected_return: Option<Ty>,
     pub(super) shadow: bool,
     pub(super) effects_seen: HashSet<String>,
+    pub(super) refinements: Refinements,
+    pub(super) unrefined: Option<Span>,
+    pub(super) nominal_fields: Option<Span>,
 }
 
 impl Env {
@@ -104,6 +114,9 @@ impl Env {
             expected_return: None,
             shadow: false,
             effects_seen: HashSet::new(),
+            refinements: Refinements::default(),
+            unrefined: None,
+            nominal_fields: None,
         }
     }
 }
@@ -119,6 +132,10 @@ pub(super) struct Checker<'a> {
     substitutions: HashMap<u32, Ty>,
     pub(super) resolving: HashSet<DefinitionId>,
     checked: HashSet<DefinitionId>,
+    schemes: HashSet<DefinitionId>,
+    pub(super) live: HashSet<DefinitionId>,
+    pub(super) narrowings: HashMap<Span, usize>,
+    pub(super) narrow_errors: HashMap<Span, Code>,
     constants: HashSet<DefinitionId>,
     pub(super) stack: Vec<DefinitionId>,
     pub(super) budget: u64,
@@ -221,7 +238,10 @@ impl<'a> Checker<'a> {
                 .is_some_and(|found| found != &expected && self.fits(env, &actual, found)),
             (Ty::Option(a), Ty::Option(b))
             | (Ty::Set(a), Ty::Set(b))
-            | (Ty::Draft(a), Ty::Draft(b)) => self.fits(env, a, b),
+            | (Ty::Draft(a), Ty::Draft(b))
+            | (Ty::Task(a), Ty::Task(b))
+            | (Ty::Sender(a), Ty::Sender(b))
+            | (Ty::Receiver(a), Ty::Receiver(b)) => self.fits(env, a, b),
             (Ty::Result(ao, ae), Ty::Result(bo, be)) => {
                 self.fits(env, ao, bo) && self.fits(env, ae, be)
             }
@@ -288,8 +308,32 @@ impl<'a> Checker<'a> {
         if self.fits(env, actual, expected) {
             return true;
         }
+        if let Some(code) = self.narrow_errors.get(&span).copied() {
+            self.error(code, span, "previous narrowing no longer holds");
+            return false;
+        }
         let actual = self.normalize(actual);
         let expected = self.normalize(expected);
+        if let (Ty::Callable(actual), Ty::Callable(expected)) = (&actual, &expected) {
+            let code = if actual.parameters.len() != expected.parameters.len() {
+                Code::E0314
+            } else if actual
+                .parameters
+                .iter()
+                .zip(&expected.parameters)
+                .any(|(a, b)| a.mode != b.mode && b.mode != Mode::Via)
+            {
+                Code::E0407
+            } else {
+                Code::E0534
+            };
+            self.error(
+                code,
+                span,
+                "callable is incompatible with the target signature",
+            );
+            return false;
+        }
         let code = if matches!((&actual, &expected), (Ty::Adt(a), Ty::Adt(b)) if a.definition != b.definition
             && a.kind == AdtKind::Nominal && b.kind == AdtKind::Nominal)
         {
@@ -360,6 +404,17 @@ impl<'a> Checker<'a> {
         if function.is_meta {
             env.phase = Phase::MetaValue;
         }
+        if let Some(parameter) = function
+            .generics
+            .iter()
+            .find(|param| param.default.is_some())
+        {
+            self.error(
+                Code::E0317,
+                parameter.name.span,
+                "function generic parameters cannot have defaults",
+            );
+        }
         self.generic_env(&mut env, &function.generics);
         let call = Arc::new(self.callable(&mut env, &function.signature, true));
         self.callables.insert(id, Arc::clone(&call));
@@ -410,13 +465,57 @@ impl<'a> Checker<'a> {
             );
         }
         local.expected_return = Some(call.result.clone());
-        for (p, ty) in fun.signature.params.iter().zip(&call.parameters) {
+        for (index, (p, ty)) in fun
+            .signature
+            .params
+            .iter()
+            .zip(&call.parameters)
+            .enumerate()
+        {
             if let Some(name) = &p.name {
                 self.define_name(name, ty.ty.clone());
+                if p.mode != Mode::Plain
+                    && let Some(id) = self.resolve(name.span)
+                {
+                    self.live.insert(id);
+                }
             }
             if let Some(default) = p.default {
-                self.expect(&mut local, default, &ty.ty);
+                let span = self.ast(local.file).expr(default).span;
+                let referenced: HashSet<_> =
+                    self.hir.references_within(span).map(|(_, id)| id).collect();
+                for (position, formal) in fun.signature.params.iter().enumerate() {
+                    if formal
+                        .name
+                        .as_ref()
+                        .and_then(|name| self.resolve(name.span))
+                        .is_some_and(|id| referenced.contains(&id))
+                    {
+                        if position >= index {
+                            self.error(
+                                Code::E0408,
+                                span,
+                                "default reads its own or a subsequent parameter",
+                            );
+                        } else if matches!(
+                            formal.mode,
+                            Mode::Mut | Mode::Shared | Mode::New | Mode::Via
+                        ) {
+                            self.error(Code::E0409, span, "default reads live writable state");
+                        }
+                    }
+                }
+                self.check_pure_default(&local, default, &ty.ty);
             }
+        }
+        for &guard in fun
+            .signature
+            .params
+            .iter()
+            .flat_map(|p| &p.guards)
+            .chain(&fun.signature.guards)
+        {
+            self.check_guard(&local, guard, &call.result);
         }
         if let Some(body) = fun.body {
             self.expect(&mut local, body, &call.result);
@@ -452,6 +551,7 @@ impl<'a> Checker<'a> {
                 value,
                 fallback,
                 is_meta,
+                storage,
                 ..
             } => {
                 let mut env_meta;
@@ -480,6 +580,28 @@ impl<'a> Checker<'a> {
                     }
                 }
                 let inferred = expect.unwrap_or(inferred);
+                if fallback.is_none()
+                    && !matches!(
+                        self.ast(local.file).pattern(*pattern).value,
+                        syntax::Pattern::Wildcard
+                    )
+                    && !matches!(inferred, Ty::Unknown | Ty::Never)
+                {
+                    let shape = self.pattern_shape(local, *pattern, &inferred);
+                    if self.useful(local, &[shape], super::coverage::Shape::Any, &inferred) {
+                        self.error(
+                            Code::E0345,
+                            self.ast(local.file).pattern(*pattern).span,
+                            "binding pattern can fail; add let else",
+                        );
+                    } else if self.pattern_names(local, *pattern).is_empty() {
+                        self.error(
+                            Code::E0309,
+                            self.ast(local.file).pattern(*pattern).span,
+                            "binding pattern introduces no names",
+                        );
+                    }
+                }
                 if inferred.contains_type_value() && (*is_meta || local.phase == Phase::Runtime) {
                     self.error(
                         Code::E0816,
@@ -496,6 +618,29 @@ impl<'a> Checker<'a> {
                     self.eval_root(local, *value, true);
                 }
                 self.pattern(local, *pattern, &inferred);
+                if (storage.variable || storage.mode != Mode::Plain)
+                    && let syntax::Pattern::Binding(_, name) =
+                        &self.ast(local.file).pattern(*pattern).value
+                    && let Some(id) = self.resolve(name.span)
+                {
+                    self.live.insert(id);
+                }
+                if !storage.variable
+                    && storage.mode == Mode::Plain
+                    && ty.is_none()
+                    && value.is_some_and(|value| {
+                        matches!(
+                            self.ast(local.file).expr(value).value,
+                            syntax::Expr::Closure { .. }
+                        )
+                    })
+                    && let syntax::Pattern::Binding(_, name) =
+                        &self.ast(local.file).pattern(*pattern).value
+                    && let Some(definition) = self.resolve(name.span)
+                    && self.hir.definition(definition).kind == DefinitionKind::Local
+                {
+                    self.schemes.insert(definition);
+                }
             }
             StmtKind::Expr(expr) => {
                 let ty = self.expr(env, *expr, None);
@@ -517,7 +662,9 @@ impl<'a> Checker<'a> {
             }
             StmtKind::Type(decl) => {
                 let mut local = env.clone();
+                self.validate_defaults(&local, &decl.generics);
                 self.generic_env(&mut local, &decl.generics);
+                self.nominal_fields(&mut local, decl);
                 match &decl.definition {
                     TypeDefinition::Data(ty) => {
                         self.type_expr(&mut local, *ty);
@@ -539,6 +686,7 @@ impl<'a> Checker<'a> {
                     }
                     TypeDefinition::Function(params, body) => {
                         local.phase = Phase::TypeEval;
+                        self.validate_defaults(&local, params);
                         self.generic_env(&mut local, params);
                         let ty = self.expr(&mut local, *body, None);
                         self.require(
@@ -590,7 +738,12 @@ impl<'a> Checker<'a> {
                 if let Some(GenericValue::Type(ty)) = env.generics.get(&id) {
                     return ty.clone();
                 }
-                self.bindings.get(&id).cloned().unwrap_or(Ty::Unknown)
+                let ty = self.bindings.get(&id).cloned().unwrap_or(Ty::Unknown);
+                if self.schemes.contains(&id) {
+                    self.instantiate(&ty)
+                } else {
+                    ty
+                }
             }
             DefinitionKind::Constant => {
                 if let Some(ty) = self.bindings.get(&id) {
@@ -637,6 +790,15 @@ impl<'a> Checker<'a> {
             DefinitionKind::Primitive(_) => self.primitive_type(env, &def.name.value, span, callee),
             _ => Ty::Unknown,
         }
+    }
+
+    fn instantiate(&mut self, ty: &Ty) -> Ty {
+        let mut variables = HashMap::new();
+        let ty = self.normalize(ty);
+        transform(&ty, &mut |value| match value {
+            Ty::Infer(id) => Some(variables.entry(*id).or_insert_with(|| self.fresh()).clone()),
+            _ => None,
+        })
     }
 
     pub(super) fn is_meta_fn(&self, id: DefinitionId) -> bool {
@@ -694,6 +856,9 @@ pub(super) fn transform(ty: &Ty, f: &mut impl FnMut(&Ty) -> Option<Ty>) -> Ty {
         Ty::Option(item) => Ty::Option(wrap(item, f)),
         Ty::Result(ok, err) => Ty::Result(wrap(ok, f), wrap(err, f)),
         Ty::Draft(ty) => Ty::Draft(wrap(ty, f)),
+        Ty::Task(ty) => Ty::Task(wrap(ty, f)),
+        Ty::Sender(ty) => Ty::Sender(wrap(ty, f)),
+        Ty::Receiver(ty) => Ty::Receiver(wrap(ty, f)),
         Ty::TypeValue(Some(ty)) => Ty::TypeValue(Some(wrap(ty, f))),
         Ty::Callable(call) => Ty::Callable(Arc::new(Callable {
             result: transform(&call.result, f),

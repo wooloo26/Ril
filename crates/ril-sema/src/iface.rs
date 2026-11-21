@@ -102,14 +102,14 @@ impl Interface {
             let compatible = revised.is_some_and(|export| {
                 baseline.shape == export.shape
                     && if baseline.domain.is_empty() {
-                        baseline.summary.subsumes(&export.summary)
+                        subsumes_abi(&baseline.summary, &export.summary)
                     } else {
                         baseline.domain.iter().all(|row| {
                             export
                                 .domain
                                 .iter()
                                 .find(|new| row.modes == new.modes)
-                                .is_some_and(|new| row.summary.subsumes(&new.summary))
+                                .is_some_and(|new| subsumes_abi(&row.summary, &new.summary))
                         })
                     }
             });
@@ -123,6 +123,12 @@ impl Interface {
         }
         diagnostics
     }
+}
+
+fn subsumes_abi(baseline: &Summary, revision: &Summary) -> bool {
+    baseline.subsumes(revision)
+        && baseline.roots == revision.roots
+        && baseline.contained == revision.contained
 }
 
 pub fn signatures(program: &TypedProgram) -> BTreeMap<String, String> {

@@ -12,6 +12,26 @@ use ril_frontend::{
 };
 use ril_test::{Unit, VirtualPackage};
 
+pub fn infer_unit(path: &Path) -> Unit {
+    if path.to_string_lossy().ends_with(".d.ril") {
+        return Unit::Decl;
+    }
+    let main = (|| {
+        let bytes = fs::read(path).ok()?;
+        let source = SourceFile::from_bytes(FileId(0), path.to_owned(), &bytes).ok()?;
+        let tokens = lexer::lex(&source).ok()?;
+        let syntax = parser::parse(&source, &tokens, FileKind::Snippet).ok()?;
+        Some(syntax.items.iter().any(|&stmt| {
+            matches!(&syntax.stmt(stmt).value.kind, StmtKind::Function(function) if function.name.value == "main")
+        }))
+    })();
+    if main == Some(true) {
+        Unit::Bin
+    } else {
+        Unit::Lib
+    }
+}
+
 pub fn load_package(entry: &Path, unit: Unit) -> Result<VirtualPackage, String> {
     let entry = entry
         .canonicalize()

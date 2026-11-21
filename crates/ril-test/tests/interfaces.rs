@@ -75,3 +75,103 @@ fn exported_horn_facts_agree_with_lean() {
     }
     assert!(count >= 10);
 }
+
+#[test]
+fn exported_summary_subsumption_agrees_with_lean() {
+    use ril_sema::access::{Access, Summary};
+    use serde_json::{Value, json};
+
+    let Some(oracle) = std::env::var_os("RIL_HORN_ORACLE") else {
+        return;
+    };
+    let source = include_str!("../../../tests/08_via_compat/via.ril");
+    let suite = parse_suite(Path::new("via.ril"), source).unwrap();
+    let mut summaries = vec![
+        Summary::default(),
+        Summary {
+            retained: vec![0],
+            effects: vec!["io".into()],
+            ..Summary::default()
+        },
+        Summary {
+            roots: vec![1],
+            contained: vec![(Access::Ref, 2)],
+            constructs: true,
+            ..Summary::default()
+        },
+    ];
+    for case in suite.cases {
+        if let Ok(interface) = Driver.interface(&case.pkg) {
+            summaries.extend(
+                interface
+                    .functions
+                    .into_values()
+                    .map(|function| function.summary),
+            );
+        }
+    }
+    let wire = |summary: &Summary| -> Value {
+        let effects: Vec<_> = summary
+            .effects
+            .iter()
+            .map(|name| {
+                name.bytes().fold(0_u64, |prior, b| {
+                    prior.wrapping_mul(257).wrapping_add(u64::from(b))
+                })
+            })
+            .collect();
+        let contained: Vec<_> = summary
+            .contained
+            .iter()
+            .map(|&(access, param)| {
+                let mode = match access {
+                    Access::Immutable => 0,
+                    Access::Ref => 1,
+                    Access::Mut => 2,
+                    Access::Shared => 3,
+                };
+                (mode, param)
+            })
+            .collect();
+        json!({
+            "writes": summary.writes,
+            "retained": summary.retained,
+            "roots": summary.roots,
+            "contained": contained,
+            "effects": effects,
+            "captures": summary.captures,
+            "constructs": summary.constructs,
+        })
+    };
+    let cases: Vec<_> = summaries
+        .iter()
+        .flat_map(|baseline| summaries.iter().map(move |revision| (baseline, revision)))
+        .collect();
+    let input: Vec<_> = cases
+        .iter()
+        .map(|(baseline, revision)| json!({"baseline": wire(baseline), "revision": wire(revision)}))
+        .collect();
+    let expected: Vec<_> = cases
+        .iter()
+        .map(|(baseline, revision)| baseline.subsumes(revision))
+        .collect();
+
+    let mut child = Command::new(oracle)
+        .arg("summary")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(&serde_json::to_vec(&input).unwrap())
+        .unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success());
+    assert_eq!(
+        serde_json::from_slice::<Vec<bool>>(&output.stdout).unwrap(),
+        expected
+    );
+}

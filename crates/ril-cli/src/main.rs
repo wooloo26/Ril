@@ -8,7 +8,7 @@ use std::{
 
 use clap::{Parser, Subcommand, ValueEnum};
 use ril_base::diag::Diagnostic;
-use ril_driver::{AVAILABLE, Driver, load_package};
+use ril_driver::{AVAILABLE, Driver, infer_unit, load_package};
 use ril_test::{Activation, Stage, Unit};
 
 #[derive(Parser)]
@@ -37,8 +37,8 @@ enum Action {
         path: PathBuf,
         #[arg(long, default_value = "access")]
         stage: Stage,
-        #[arg(long, default_value = "lib")]
-        unit: Unit,
+        #[arg(long)]
+        unit: Option<Unit>,
         #[arg(long)]
         emit_interface: Option<PathBuf>,
     },
@@ -61,6 +61,8 @@ enum Action {
         path: Option<PathBuf>,
         #[arg(long)]
         sync_spec_md: bool,
+        #[arg(long, requires = "sync_spec_md", default_value = "parse")]
+        stage: Stage,
     },
 }
 
@@ -85,7 +87,7 @@ fn run(action: Action) -> Result<ExitCode, String> {
             unit,
             emit_interface,
         } => {
-            let package = load_package(&path, unit)?;
+            let package = load_package(&path, unit.unwrap_or_else(|| infer_unit(&path)))?;
             let checked = Driver.check(&package, stage);
             for diagnostic in &checked.result.diagnostics {
                 diagnostic
@@ -146,7 +148,11 @@ fn run(action: Action) -> Result<ExitCode, String> {
             };
             println!("{text}");
         }
-        Action::Test { path, sync_spec_md } => return test(path, sync_spec_md),
+        Action::Test {
+            path,
+            sync_spec_md,
+            stage,
+        } => return test(path, sync_spec_md, stage),
     }
     Ok(ExitCode::SUCCESS)
 }
@@ -182,12 +188,12 @@ fn display(diagnostics: Vec<Diagnostic>) -> String {
         .join("\n")
 }
 
-fn test(path: Option<PathBuf>, sync_spec_md: bool) -> Result<ExitCode, String> {
+fn test(path: Option<PathBuf>, sync_spec_md: bool, stage: Stage) -> Result<ExitCode, String> {
     let suites = if sync_spec_md {
         let path = path.unwrap_or_else(|| PathBuf::from("doc/SPEC.md"));
         let source =
             std::fs::read_to_string(&path).map_err(|err| format!("{}: {err}", path.display()))?;
-        vec![ril_test::spec_suite(&path, &source, Stage::Parse)?]
+        vec![ril_test::spec_suite(&path, &source, stage)?]
     } else {
         ril_test::discover(&path.unwrap_or_else(|| PathBuf::from("tests")))?
     };

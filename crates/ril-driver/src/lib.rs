@@ -20,9 +20,9 @@ mod native;
 mod package;
 
 pub use native::worker_entry;
-pub use package::load_package;
+pub use package::{infer_unit, load_package};
 
-pub const AVAILABLE: ril_test::Milestone = ril_test::Milestone::M4;
+pub const AVAILABLE: ril_test::Milestone = ril_test::Milestone::M5;
 
 #[derive(Default)]
 pub struct Driver;

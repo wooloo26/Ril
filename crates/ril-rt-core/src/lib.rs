@@ -1,6 +1,8 @@
 mod draft;
 #[allow(unsafe_code, reason = "the runtime C ABI marshals raw host pointers")]
 mod ffi;
+#[cfg(any(not(miri), test))]
+mod fiber;
 mod gc;
 mod graph;
 mod num;

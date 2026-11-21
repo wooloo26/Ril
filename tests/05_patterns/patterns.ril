@@ -68,3 +68,30 @@ fn describe<T>(x: T) -> str {
         _ -> String::inspect(x)
     }
 }
+
+-- @case nested_constructor_product_coverage compile-pass
+fn decode(x: ?(bool, bool)) -> int {
+    match x {
+        Some((true, _)) -> 1
+        Some((false, true)) -> 2
+        Some((false, false)) -> 3
+        None -> 0
+    }
+}
+
+-- @case nested_arm_already_covered compile-fail E0304
+fn decode(x: ?bool) -> int {
+    match x {
+        Some(_) -> 1
+        Some(true) -> 2
+        -- ^ E0304
+        None -> 0
+    }
+}
+
+-- @case refutable_binding_requires_else compile-fail E0345
+fn get(val: ?int) -> int {
+    let Some(n) = val
+    -- ^ E0345
+    n
+}

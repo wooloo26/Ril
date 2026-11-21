@@ -192,10 +192,10 @@ impl<M: Module> MirToClifTranslator<'_, M> {
         let entry = labels(BlockId(0))?;
         builder.append_block_params_for_function_params(entry);
         let abi = builder.block_params(entry).to_vec();
-        let [rt, evidence, _, rest @ ..] = abi.as_slice() else {
+        let [rt, evidence, environment, rest @ ..] = abi.as_slice() else {
             return Err(diagnostic("missing Ril closure ABI parameters"));
         };
-        let (rt, evidence) = (*rt, *evidence);
+        let (rt, incoming_evidence, incoming_environment) = (*rt, *evidence, *environment);
         let mut registers = BTreeMap::new();
         for &id in &order {
             let block = function
@@ -227,7 +227,11 @@ impl<M: Module> MirToClifTranslator<'_, M> {
                 self.root(&mut builder, rt, parameter, reg(&registers, parameter)?)?;
             }
             for (result, instruction) in &source.instructions {
-                let value = self.instruction(&mut builder, rt, instruction)?;
+                let value = match instruction {
+                    Instruction::Evidence => incoming_evidence,
+                    Instruction::Environment => incoming_environment,
+                    _ => self.instruction(&mut builder, rt, instruction)?,
+                };
                 registers.insert(*result, value);
                 self.root(&mut builder, rt, *result, value)?;
             }
@@ -252,6 +256,7 @@ impl<M: Module> MirToClifTranslator<'_, M> {
                 }
                 Terminator::Invoke {
                     target,
+                    evidence,
                     arguments,
                     normal,
                     unwind,
@@ -266,9 +271,14 @@ impl<M: Module> MirToClifTranslator<'_, M> {
                         self.native(&mut builder, "ril_rt_cleanup_enter", &[rt], None)?;
                     }
                     let output = match target {
-                        Target::Function(id) => {
-                            let environment = builder.ins().iconst(types::I64, 0);
-                            let args = [rt, evidence, environment]
+                        Target::Function(id) | Target::FunctionWithEnv { function: id, .. } => {
+                            let environment =
+                                if let Target::FunctionWithEnv { environment, .. } = target {
+                                    reg(&registers, *environment)?
+                                } else {
+                                    builder.ins().iconst(types::I64, 0)
+                                };
+                            let args = [rt, reg(&registers, *evidence)?, environment]
                                 .into_iter()
                                 .chain(args)
                                 .collect::<Vec<_>>();
@@ -278,6 +288,27 @@ impl<M: Module> MirToClifTranslator<'_, M> {
                         Target::Runtime(name) => {
                             let args = std::iter::once(rt).chain(args).collect::<Vec<_>>();
                             self.handle(&mut builder, name, &args)?
+                        }
+                        Target::Indirect {
+                            address,
+                            evidence,
+                            environment,
+                        } => {
+                            let address = reg(&registers, *address)?;
+                            let args = [
+                                rt,
+                                reg(&registers, *evidence)?,
+                                reg(&registers, *environment)?,
+                            ]
+                            .into_iter()
+                            .chain(args)
+                            .collect::<Vec<_>>();
+                            let sig = builder
+                                .import_signature(self.signature(args.len(), Some(types::I64)));
+                            let inst = builder.ins().call_indirect(sig, address, &args);
+                            builder.inst_results(inst).first().copied().ok_or_else(|| {
+                                diagnostic("indirect call did not produce an output")
+                            })?
                         }
                         Target::Foreign(name) => self.handle(&mut builder, name, &args)?,
                     };
@@ -334,6 +365,15 @@ impl<M: Module> MirToClifTranslator<'_, M> {
         instruction: &Instruction,
     ) -> Result<Value> {
         match instruction {
+            Instruction::Evidence | Instruction::Environment => {
+                Err(diagnostic("missing native incoming parameter"))
+            }
+            Instruction::FunctionAddress(id) => {
+                let fun = self
+                    .module
+                    .declare_func_in_func(self.function_id(*id)?, builder.func);
+                Ok(builder.ins().func_addr(types::I64, fun))
+            }
             Instruction::Handle(value) => Ok(builder
                 .ins()
                 .iconst(types::I64, i64::from_ne_bytes(value.to_ne_bytes()))),

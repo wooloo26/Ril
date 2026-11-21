@@ -40,6 +40,9 @@ pub struct Block {
 #[derive(Debug)]
 pub enum Instruction {
     Handle(u64),
+    Evidence,
+    Environment,
+    FunctionAddress(FunctionId),
     Integer(Box<[u8]>),
     Float(u64),
     Text(Box<[u8]>),
@@ -49,8 +52,17 @@ pub enum Instruction {
 #[derive(Clone, Debug)]
 pub enum Target {
     Function(FunctionId),
+    FunctionWithEnv {
+        function: FunctionId,
+        environment: Register,
+    },
     Runtime(&'static str),
     Foreign(String),
+    Indirect {
+        address: Register,
+        evidence: Register,
+        environment: Register,
+    },
 }
 
 #[derive(Debug)]
@@ -63,6 +75,7 @@ pub enum Terminator {
     },
     Invoke {
         target: Target,
+        evidence: Register,
         arguments: Vec<Register>,
         normal: BlockId,
         unwind: BlockId,

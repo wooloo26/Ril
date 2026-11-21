@@ -14,7 +14,7 @@ use ril_frontend::{
 };
 
 use super::{
-    Access, Analysis, Input, Instance, Summary,
+    Access, Analysis, CleanupAction, Input, Instance, Summary,
     flow::{Coordinate, Datum, Ledger, Slot, conflicts},
     horn::{self, Rule},
 };
@@ -30,6 +30,7 @@ enum Obligation {
     Share(Span),
     ReadUp(Span),
     Capture,
+    StatefulHandler,
     Effect(String),
 }
 
@@ -46,6 +47,7 @@ struct Context {
     formals: Vec<Option<Span>>,
     via: BTreeSet<Span>,
     handlers: BTreeSet<String>,
+    handler_values: BTreeMap<String, Datum>,
     expected: Mode,
     returns: Vec<Span>,
     declared_contained: Vec<(Access, Span)>,
@@ -64,6 +66,7 @@ impl Context {
             formals: Vec::new(),
             via: BTreeSet::new(),
             handlers: BTreeSet::new(),
+            handler_values: BTreeMap::new(),
             expected: Mode::Plain,
             returns: Vec::new(),
             declared_contained: Vec::new(),
@@ -94,14 +97,20 @@ struct DefinitionCheck {
     capture_names: BTreeSet<Span>,
 }
 
+struct ModeUse {
+    callee: DefinitionId,
+    choices: Vec<(usize, Input, Span)>,
+}
+
 struct Analyzer<'a> {
     program: &'a TypedProgram,
     diagnostics: Vec<Diagnostic>,
     rules: Vec<Rule<Fact>>,
     requirements: Vec<Requirement>,
+    mode_uses: Vec<ModeUse>,
     functions: Vec<DefinitionCheck>,
     done: BTreeSet<DefinitionId>,
-    cleanups: BTreeMap<Span, DefinitionId>,
+    cleanups: BTreeMap<Span, CleanupAction>,
 }
 
 pub(super) fn check(program: &TypedProgram) -> Result<Analysis, Vec<Diagnostic>> {
@@ -110,6 +119,7 @@ pub(super) fn check(program: &TypedProgram) -> Result<Analysis, Vec<Diagnostic>>
         diagnostics: Vec::new(),
         rules: Vec::new(),
         requirements: Vec::new(),
+        mode_uses: Vec::new(),
         functions: Vec::new(),
         done: BTreeSet::new(),
         cleanups: BTreeMap::new(),
@@ -140,6 +150,26 @@ pub(super) fn check(program: &TypedProgram) -> Result<Analysis, Vec<Diagnostic>>
             analysis.via.insert(function.id, instances);
         }
         analysis.summaries.insert(function.id, summary);
+    }
+    for use_site in std::mem::take(&mut analyzer.mode_uses) {
+        let Some(summary) = analysis.summaries.get(&use_site.callee) else {
+            continue;
+        };
+        for (index, mode, span) in use_site.choices {
+            if summary.retained.contains(&index) && mode != Input::Shared {
+                analyzer.error(
+                    Code::E0520,
+                    span,
+                    "via application requires shared writable reception",
+                );
+            } else if summary.writes.contains(&index) && matches!(mode, Input::Plain | Input::Ref) {
+                analyzer.error(
+                    Code::E0520,
+                    span,
+                    "via application requires a writable source",
+                );
+            }
+        }
     }
     if analyzer.diagnostics.is_empty() {
         Ok(analysis)
@@ -193,7 +223,19 @@ impl<'a> Analyzer<'a> {
     }
 
     fn effect(&mut self, ctx: &Context, effect: &str, span: Span) {
-        if !ctx.handlers.contains(effect) && !ctx.shadow {
+        if ctx.shadow {
+            return;
+        }
+        if let Some(handler) = ctx.handler_values.get(effect) {
+            self.link_invocation(ctx, handler);
+            if handler
+                .origins()
+                .any(|origin| origin.mode != Access::Immutable)
+            {
+                self.seed(ctx, Obligation::StatefulHandler);
+            }
+        }
+        if !ctx.handlers.contains(effect) {
             if !ctx.in_function {
                 self.error(
                     Code::E0202,
@@ -579,11 +621,15 @@ impl<'a> Analyzer<'a> {
             StmtKind::Binding {
                 pattern,
                 storage,
+                ty,
                 value,
                 fallback,
                 resource,
                 ..
             } => {
+                if let Some(ty) = ty {
+                    self.shadow_type(ctx, ledger, *ty);
+                }
                 let Some(value_id) = value else {
                     return Datum::default();
                 };
@@ -610,17 +656,59 @@ impl<'a> Analyzer<'a> {
                 self.discard(ledger, &value);
             }
             StmtKind::Type(decl) => {
-                if let TypeDefinition::Data(ty) = decl.definition
-                    && let ril_frontend::syntax::Type::TypeOf(expr) = ast.ty(ty).value
-                {
-                    let mut shadow = ctx.clone();
-                    shadow.shadow = true;
-                    self.expr(&mut shadow, &mut ledger.clone(), expr);
+                if let TypeDefinition::Data(ty) = decl.definition {
+                    self.shadow_type(ctx, ledger, ty);
                 }
             }
             StmtKind::Effect { .. } | StmtKind::Import(_) => {}
         }
         Datum::default()
+    }
+
+    fn shadow_type(&mut self, ctx: &Context, ledger: &Ledger, ty: ril_frontend::syntax::TypeId) {
+        use ril_frontend::syntax::{GenericArg, Type};
+        match &self.ast(ctx.file).ty(ty).value {
+            Type::TypeOf(expr) => {
+                let mut shadow = ctx.clone();
+                shadow.shadow = true;
+                let mut slots = ledger.clone();
+                let result = self.expr(&mut shadow, &mut slots, *expr);
+                let mut except = result.results();
+                except.extend(&ledger.obligations);
+                self.check_results(&slots, &except);
+            }
+            Type::Named(path) => {
+                for parameter in path.segments.iter().flat_map(|segment| &segment.arguments) {
+                    if let GenericArg::Type(ty) = parameter {
+                        self.shadow_type(ctx, ledger, *ty);
+                    }
+                }
+            }
+            Type::Array(_, ty) | Type::Option(ty) | Type::Project { base: ty, .. } => {
+                self.shadow_type(ctx, ledger, *ty);
+            }
+            Type::Result(left, right) | Type::Map(left, _, right) => {
+                self.shadow_type(ctx, ledger, *left);
+                self.shadow_type(ctx, ledger, *right);
+            }
+            Type::Tuple(items) => {
+                for (_, ty) in items {
+                    self.shadow_type(ctx, ledger, *ty);
+                }
+            }
+            Type::Record { fields, .. } => {
+                for field in fields {
+                    self.shadow_type(ctx, ledger, field.ty);
+                }
+            }
+            Type::Callable(call) => {
+                for ty in call.params.iter().filter_map(|param| param.ty) {
+                    self.shadow_type(ctx, ledger, ty);
+                }
+                self.shadow_type(ctx, ledger, call.result);
+            }
+            _ => {}
+        }
     }
 
     fn returned(&mut self, ctx: &mut Context, ledger: &mut Ledger, value: Datum, span: Span) {
@@ -630,6 +718,9 @@ impl<'a> Analyzer<'a> {
         }
         if !ctx.runtime || ctx.shadow {
             return;
+        }
+        if value.creates_environment() {
+            self.seed(ctx, Obligation::Capture);
         }
         match ctx.expected {
             Mode::Plain if value.requires_new => self.error(
@@ -715,6 +806,21 @@ impl<'a> Analyzer<'a> {
         binding: Span,
         mode: Mode,
     ) {
+        if matches!(self.ty(value_span), Ty::Sender(_)) {
+            if !value.requires_new {
+                self.error(Code::E0548, binding, "cleanup requires an owned sender");
+            }
+            value.transform(&mut |origin| {
+                origin.confined = Some(binding);
+                origin.mode = if mode == Mode::Mut {
+                    Access::Mut
+                } else {
+                    Access::Ref
+                };
+            });
+            self.cleanups.insert(binding, CleanupAction::CloseSender);
+            return;
+        }
         let Ty::Adt(adt) = self.ty(value_span) else {
             self.error(
                 Code::E0541,
@@ -791,7 +897,8 @@ impl<'a> Analyzer<'a> {
                 Access::Ref
             };
         });
-        self.cleanups.insert(binding, cleanup);
+        self.cleanups
+            .insert(binding, CleanupAction::Function(cleanup));
     }
 
     fn bind(
@@ -833,17 +940,23 @@ impl<'a> Analyzer<'a> {
                         "writable binding requires reachable use",
                     );
                 }
+                let stateful_closure = value.creates_environment()
+                    && value.origins().any(|origin| origin.mode.writes());
                 match mode {
                     Mode::Mut if !value.requires_new && !value.writers() => self.error(
                         Code::E0520,
                         name.span,
                         "binding cannot manufacture write authority",
                     ),
-                    Mode::Shared if !value.writers() || value.requires_new => self.error(
-                        Code::E0527,
-                        name.span,
-                        "shared binding requires a shared writable source",
-                    ),
+                    Mode::Shared
+                        if (!value.writers() || value.requires_new) && !stateful_closure =>
+                    {
+                        self.error(
+                            Code::E0527,
+                            name.span,
+                            "shared binding requires a shared writable source",
+                        );
+                    }
                     Mode::Ref if value.roots.is_empty() && !resource => self.error(
                         Code::E0531,
                         name.span,
@@ -865,6 +978,20 @@ impl<'a> Analyzer<'a> {
                     Mode::Via if ctx.via.is_empty() => {
                         self.error(Code::E0412, name.span, "let via requires a mode template");
                     }
+                    Mode::Via
+                        if !value.origins().any(|origin| {
+                            origin
+                                .dependencies
+                                .iter()
+                                .any(|source| ctx.via.contains(source))
+                        }) =>
+                    {
+                        self.error(
+                            Code::E0550,
+                            name.span,
+                            "let via requires mode-dependent provenance",
+                        );
+                    }
                     _ => {}
                 }
                 if let Some(ty) = self.program.bindings.get(
@@ -877,6 +1004,13 @@ impl<'a> Analyzer<'a> {
                             Code::E0402,
                             name.span,
                             "value-type binding cannot carry live access",
+                        );
+                    } else if matches!(ty, Ty::Adt(adt) if adt.kind == AdtKind::Foreign) && variable
+                    {
+                        self.error(
+                            Code::E0532,
+                            name.span,
+                            "foreign handle cannot be stored in a reassignable slot",
                         );
                     } else if matches!(ty, Ty::Adt(adt) if adt.kind == AdtKind::Foreign)
                         && mode == Mode::Plain
@@ -957,6 +1091,10 @@ impl<'a> Analyzer<'a> {
                     if let Some(pattern) = field.pattern {
                         self.bind(ctx, ledger, pattern, &field.storage, child, resource);
                     } else {
+                        let mut child = child;
+                        child.transform(&mut |origin| {
+                            origin.dependencies.insert(field.name.span);
+                        });
                         ledger.slots.insert(
                             field.name.span,
                             Slot {
@@ -1038,14 +1176,13 @@ impl<'a> Analyzer<'a> {
                     lhs.project(Coordinate::Index("0".into()), Access::Immutable)
                         .joined(rhs)
                 } else {
-                    if matches!(op.value.as_str(), "==" | "!=") {
-                        if self.result_constructor(ctx, *right) {
+                    if matches!(op.value.as_str(), "==" | "!=")
+                        && (self.result_constructor(ctx, *right)
+                            || self.result_constructor(ctx, *left))
+                        {
                             ledger.inspect(&lhs);
-                        }
-                        if self.result_constructor(ctx, *left) {
                             ledger.inspect(&rhs);
                         }
-                    }
                     Datum::default()
                 }
             }
@@ -1317,7 +1454,8 @@ impl<'a> Analyzer<'a> {
             }
         };
         if ctx.reachable
-            && self.ty(span).is_result()
+            && (self.ty(span).is_result()
+                || matches!(self.ty(span), Ty::Task(inner) if inner.is_result()))
             && value.results().is_empty()
             && !matches!(node.value, Expr::Path(_))
         {
@@ -1385,6 +1523,20 @@ impl<'a> Analyzer<'a> {
             );
             return;
         }
+        if ledger.slots.values().any(|slot| {
+            slot.mode == Mode::Shared
+                && value
+                    .roots
+                    .iter()
+                    .any(|root| slot.value.origins().any(|retained| root.overlaps(retained)))
+        }) {
+            self.error(
+                Code::E0548,
+                span,
+                "new handoff has an independently retained shared writer",
+            );
+            return;
+        }
         let dependencies: BTreeSet<_> = value
             .roots
             .iter()
@@ -1417,7 +1569,7 @@ impl<'a> Analyzer<'a> {
                 let value = self.expr(ctx, ledger, *base);
                 let coordinate = self.coordinate(ctx, ledger, member);
                 let (_, variable) = self.member_schema(ast.expr(*base).span, &coordinate);
-                if variable {
+                if variable || value.origins().any(|origin| origin.draft) {
                     value.slot_projection(coordinate)
                 } else {
                     Datum::default()
@@ -1459,6 +1611,18 @@ impl<'a> Analyzer<'a> {
                     return;
                 }
                 self.seed(ctx, Obligation::Replace(slot.decl));
+                for origin in value.origins().filter(|origin| origin.draft) {
+                    if origin
+                        .confined
+                        .is_some_and(|scope| slot.decl.start < scope.start)
+                    {
+                        self.error(
+                            Code::E0607,
+                            span,
+                            "draft cannot be assigned to an outer slot",
+                        );
+                    }
+                }
                 let mut value = value;
                 value.transform(&mut |origin| {
                     origin.dependencies.insert(slot.decl);
@@ -1490,6 +1654,9 @@ impl<'a> Analyzer<'a> {
             .origins()
             .any(|origin| ctx.formals.contains(&Some(origin.region.source)))
         {
+            if value.creates_environment() {
+                self.seed(ctx, Obligation::Capture);
+            }
             for source in value
                 .origins()
                 .filter(|origin| origin.mode == Access::Shared)
@@ -1503,6 +1670,20 @@ impl<'a> Analyzer<'a> {
     fn mutate(&mut self, ctx: &Context, ledger: &Ledger, value: &Datum, span: Span) {
         if !value.writers() {
             self.error(Code::E0520, span, "write requires writable authority");
+        }
+        if ledger.slots.values().any(|slot| {
+            slot.mode == Mode::Ref
+                && slot.value.origins().any(|held| {
+                    held.region.selection.iter().any(|coordinate| {
+                        matches!(coordinate, Coordinate::Index(_) | Coordinate::Dynamic)
+                    }) && value.origins().any(|written| held.overlaps(written))
+                })
+        }) {
+            self.error(
+                Code::E0537,
+                span,
+                "collection mutation overlaps a scoped element view",
+            );
         }
         if ledger.iteration.iter().any(|iterable| {
             value
@@ -1630,6 +1811,9 @@ impl<'a> Analyzer<'a> {
 
     fn member_schema(&self, base: Span, coordinate: &Coordinate) -> (Access, bool) {
         let mut ty = self.ty(base);
+        if let Ty::Draft(inner) = ty {
+            ty = inner;
+        }
         if let Ty::Adt(adt) = ty {
             let def = self.program.hir.definition(adt.definition);
             if let Some(id) = def.stmt

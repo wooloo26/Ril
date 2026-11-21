@@ -7,6 +7,8 @@ pub struct Runtime {
     pub gc: GcRuntime,
     message: Option<String>,
     suspended: Vec<Option<String>>,
+    #[cfg(not(miri))]
+    pub(crate) fiber: crate::fiber::native::State,
 }
 
 impl Runtime {

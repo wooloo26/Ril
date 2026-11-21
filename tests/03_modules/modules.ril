@@ -129,3 +129,16 @@ var value = 1
 -- @case bodyless_normal_fn compile-fail E0902 unit=lib
 fn bodyless() -> ()
 -- ^ E0902
+
+-- @case registered_prelude_primitive_can_be_bodyless compile-pass unit=lib
+-- @file pkg/main.ril
+use ril/prelude
+-- @file ril/prelude.ril
+pub fn panic(message: str) -> never
+
+-- @case registered_prelude_primitive_signature_must_match compile-fail E0909 unit=lib
+-- @file pkg/main.ril
+use ril/prelude
+-- @file ril/prelude.ril
+pub fn panic(message: int) -> never
+-- ^ E0909

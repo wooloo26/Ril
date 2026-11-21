@@ -28,7 +28,7 @@ impl Summary {
         revised
             .writes
             .iter()
-            .all(|formal| self.writes.contains(formal))
+            .all(|formal| self.writes.contains(formal) || self.retained.contains(formal))
             && revised
                 .retained
                 .iter()
@@ -39,8 +39,11 @@ impl Summary {
                 .all(|effect| self.effects.contains(effect))
             && (!revised.captures || self.captures)
             && (!self.constructs || revised.constructs)
-            && self.roots == revised.roots
-            && self.contained == revised.contained
+            && revised.roots.iter().all(|root| self.roots.contains(root))
+            && revised
+                .contained
+                .iter()
+                .all(|source| self.contained.contains(source))
     }
 }
 
@@ -59,12 +62,18 @@ pub struct Instance {
     pub summary: Summary,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub enum CleanupAction {
+    Function(DefinitionId),
+    CloseSender,
+}
+
 #[derive(Default)]
 pub struct Analysis {
     pub summaries: BTreeMap<DefinitionId, Summary>,
     pub via: BTreeMap<DefinitionId, Vec<Instance>>,
     pub horn_rules: Vec<horn::Rule<usize>>,
-    pub cleanups: BTreeMap<Span, DefinitionId>,
+    pub cleanups: BTreeMap<Span, CleanupAction>,
 }
 
 pub fn check(program: &TypedProgram) -> Result<Analysis, Vec<Diagnostic>> {

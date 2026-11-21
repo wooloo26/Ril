@@ -119,6 +119,28 @@ impl Checker<'_> {
         expr: ExprId,
         fuel: &mut Budget,
     ) -> Eval {
+        let mut value = self.eval_expr(env, slots, expr, fuel)?;
+        let span = self.ast(env.file).expr(expr).span;
+        for _ in 0..self.narrowings.get(&span).copied().unwrap_or_default() {
+            if let Value::Tag(tag, mut children) = value
+                && tag == "Some"
+                && let Some(child) = children.pop()
+            {
+                value = child;
+            } else {
+                return Err(defect(span, "invalid narrowed static value"));
+            }
+        }
+        Ok(value)
+    }
+
+    fn eval_expr(
+        &mut self,
+        env: &mut Env,
+        slots: &mut Values,
+        expr: ExprId,
+        fuel: &mut Budget,
+    ) -> Eval {
         let ast = self.ast(env.file);
         let node = ast.expr(expr);
         let span = node.span;

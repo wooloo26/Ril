@@ -1,3 +1,4 @@
+mod builtins;
 mod imports;
 mod walk;
 
@@ -68,6 +69,7 @@ struct Scope {
     cap: Visibility,
     names: BTreeMap<String, Entry>,
     variants: BTreeMap<String, Vec<DefinitionId>>,
+    primitive_module: Option<&'static str>,
 }
 
 #[derive(Clone, Copy)]
@@ -137,6 +139,10 @@ impl Program {
         }
     }
 
+    pub fn primitive_module(&self, id: DefinitionId) -> Option<&'static str> {
+        self.scope(self.definition(id).scope).primitive_module
+    }
+
     pub fn effect_of(&self, operation: DefinitionId) -> Option<&str> {
         let scope = self.definition(operation).scope;
         self.definitions().find_map(|(_, definition)| {
@@ -177,6 +183,22 @@ impl Program {
         self.resolutions.get(&span).copied()
     }
 
+    pub fn references_within(
+        &self,
+        outer: Span,
+    ) -> impl Iterator<Item = (Span, DefinitionId)> + '_ {
+        self.resolutions
+            .iter()
+            .filter_map(move |(&span, &resolved)| {
+                (span.file == outer.file && span.start >= outer.start && span.end <= outer.end)
+                    .then_some(match resolved {
+                        Resolution::Definition(id) => Some((span, id)),
+                        Resolution::Module(_) => None,
+                    })
+                    .flatten()
+            })
+    }
+
     pub fn ast_for(&self, defining: DefinitionId) -> &Ast {
         &self.file(self.definition(defining).name.span.file).ast
     }
@@ -208,6 +230,7 @@ impl Program {
             cap,
             names: BTreeMap::new(),
             variants: BTreeMap::new(),
+            primitive_module: None,
         });
         id
     }
@@ -232,7 +255,7 @@ impl Program {
         visibility: Visibility,
     ) -> DefinitionId {
         let id = DefinitionId(self.definitions.len());
-        if name.value != "_" && !matches!(kind, DefinitionKind::Primitive(_)) {
+        if name.value != "_" && (stmt.is_some() || !matches!(kind, DefinitionKind::Primitive(_))) {
             self.resolutions
                 .insert(name.span, Resolution::Definition(id));
         }
@@ -473,14 +496,20 @@ impl Program {
             let vis = node.value.visibility;
             let declaration = match node.value.kind {
                 StmtKind::Function(function) => {
-                    if function.body.is_none() && self.file(file).kind != FileKind::Foreign {
-                        errors.push(Diagnostic::error(
-                            Code::E0902,
-                            function.name.span,
-                            "function requires a body",
-                        ));
-                    }
-                    self.register(scope, function.name, DefinitionKind::Function, id, vis)
+                    let kind =
+                        if function.body.is_none() && self.file(file).kind != FileKind::Foreign {
+                            let file = self.file(file);
+                            match builtins::bodyless(&file.path, &file.ast, &function) {
+                                Ok(phase) => DefinitionKind::Primitive(phase),
+                                Err(diagnostic) => {
+                                    errors.push(diagnostic);
+                                    DefinitionKind::Function
+                                }
+                            }
+                        } else {
+                            DefinitionKind::Function
+                        };
+                    self.register(scope, function.name, kind, id, vis)
                 }
                 StmtKind::Type(decl) => {
                     if matches!(decl.definition, TypeDefinition::Opaque)
@@ -751,14 +780,56 @@ impl Program {
                 "Fiber",
                 Runtime,
                 &[
-                    "run", "scope", "spawn", "join", "yield", "cancel", "sleep", "Scope", "Task",
+                    "run",
+                    "scope",
+                    "try_scope",
+                    "spawn",
+                    "join",
+                    "yield",
+                    "yield_now",
+                    "cancel",
+                    "cancel_scope",
+                    "sleep",
+                    "sleep_ms",
+                    "is_cancelled",
+                    "uncancellable",
+                    "timeout_ms",
+                    "supervise",
+                    "zip",
+                    "try_zip",
+                    "map",
+                    "try_map",
+                    "race",
+                    "Scope",
+                    "Task",
+                    "Zip",
+                    "TaskFault",
+                    "TimeoutError",
                 ],
             ),
             (
                 "channel",
                 "Channel",
                 Runtime,
-                &["mpsc", "send", "recv", "close", "Sender", "Receiver"],
+                &[
+                    "mpsc",
+                    "bounded",
+                    "unbounded",
+                    "send",
+                    "try_send",
+                    "recv",
+                    "try_recv",
+                    "close",
+                    "close_recv",
+                    "drain",
+                    "clone",
+                    "Sender",
+                    "Receiver",
+                    "ChannelPair",
+                    "SendError",
+                    "TrySendError",
+                    "TryRecvError",
+                ],
             ),
             ("os", "Os", Runtime, &[]),
             ("math", "Math", Both, &[]),
@@ -766,6 +837,7 @@ impl Program {
         ];
         for &(file_name, name, phase, members) in modules {
             let module = self.new_scope(file, "ril".into(), None, Visibility::Public);
+            self.scope_mut(module).primitive_module = Some(name);
             for &member in members {
                 self.primitive(module, member, phase);
             }

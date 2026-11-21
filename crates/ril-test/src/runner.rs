@@ -12,7 +12,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use libtest_mimic::{Failed, Trial};
+use libtest_mimic::{Arguments, Failed, Trial};
 use ril_base::{
     diag::Diagnostic,
     span::{FileId, SourceFile},
@@ -22,6 +22,24 @@ use crate::{
     Activation, Case, CaseMode, CheckResult, ExecOutput, Milestone, Suite, TestDriver,
     VirtualPackage, WorkerError, parse_suite, protocol::Backend,
 };
+
+pub fn run_harness(path: &Path, driver: Arc<dyn TestDriver>, enabled: Milestone) -> ! {
+    let args = Arguments::from_args();
+    let cases = (|| {
+        let milestone = match std::env::var("RIL_TEST_STAGE") {
+            Ok(text) => text.parse::<Milestone>()?,
+            Err(std::env::VarError::NotPresent) => enabled,
+            Err(err) => return Err(err.to_string()),
+        };
+        Ok(trials(discover(path)?, driver, milestone))
+    })()
+    .unwrap_or_else(|error: String| {
+        vec![Trial::test("suite_discovery", move || {
+            Err(Failed::from(error))
+        })]
+    });
+    libtest_mimic::run(&args, cases).exit()
+}
 
 pub fn discover(path: &Path) -> Result<Vec<Suite>, String> {
     let mut paths = Vec::new();
@@ -104,7 +122,17 @@ fn check(case: &Case, result: &CheckResult) -> Result<(), String> {
     };
 
     let fail = |message: String| {
-        let output = display_diagnostics(diagnostics);
+        let output = diagnostics
+            .iter()
+            .map(|diag| {
+                if let Some(line) = diagnostic_line(&case.pkg, diag) {
+                    format!("suite line {line}: {diag}")
+                } else {
+                    diag.to_string()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
         if output.is_empty() {
             message
         } else {

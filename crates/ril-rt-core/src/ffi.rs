@@ -5,7 +5,7 @@
 use std::{collections::BTreeMap, io::Write as _};
 
 use num_bigint::BigInt;
-use num_traits::ToPrimitive as _;
+use num_traits::{FromPrimitive as _, ToPrimitive as _};
 
 use crate::{Object, Runtime, TypeDesc, Value};
 
@@ -99,6 +99,34 @@ runtime_functions! {
     fn ril_rt_neg(rt, a: Value) -> Value { unary(rt, "-", a) }
     fn ril_rt_not(rt, a: Value) -> Value { unary(rt, "!", a) }
     fn ril_rt_bit_not(rt, a: Value) -> Value { unary(rt, "~", a) }
+    fn ril_rt_file_read(rt, path: Value) -> Value {
+        let result = read_text(rt, path).map_err(str::to_owned).and_then(|path|
+            std::fs::read_to_string(path).map_err(|error| error.to_string()));
+        match result {
+            Ok(text) => {
+                let payload = rt.gc.alloc(Object::Str(text));
+                rt.gc.alloc(Object::Tag("Ok".into(), vec![payload]))
+            }
+            Err(error) => file_error(rt, error),
+        }
+    }
+    fn ril_rt_file_write(rt, path: Value, value: Value) -> Value {
+        let result = read_text(rt, path).and_then(|path| read_text(rt, value).map(|value| (path, value)))
+            .map_err(str::to_owned).and_then(|(path, value)| std::fs::write(path, value).map_err(|error| error.to_string()));
+        match result {
+            Ok(()) => rt.gc.alloc(Object::Tag("Ok".into(), vec![Value::UNIT])),
+            Err(error) => file_error(rt, error),
+        }
+    }
+    fn ril_rt_to_f64(rt, value: Value) -> Value {
+        if let Some(number) = rt.gc.integer(value).and_then(num_traits::ToPrimitive::to_f64) {
+            rt.gc.alloc(Object::F64(number.to_bits()))
+        } else { rt.raise("expected int"); Value::UNIT }
+    }
+    fn ril_rt_to_int(rt, value: Value) -> Value { float_to_int(rt, value, false) }
+    fn ril_rt_trunc(rt, value: Value) -> Value { float_to_int(rt, value, true) }
+    fn ril_rt_checked_div(rt, a: Value, b: Value) -> Value { checked_div(rt, "/", a, b) }
+    fn ril_rt_checked_rem(rt, a: Value, b: Value) -> Value { checked_div(rt, "%", a, b) }
     fn ril_rt_print(rt, value: Value) -> Value { print(rt, value, false) }
     fn ril_rt_println(rt, value: Value) -> Value { print(rt, value, true) }
     fn ril_rt_panic(rt, message: Value) -> Value {
@@ -190,10 +218,61 @@ runtime_functions! {
             None => rt.gc.alloc(Object::Tag("None".into(), Vec::new())),
         }
     }
+    fn ril_rt_slice(rt, target: Value, start: Value, end: Value, inclusive: Value) -> Value {
+        let result = slice(rt, target, start, end, inclusive == Value::TRUE).ok_or("slice bounds are outside the collection");
+        rt.checked(result)
+    }
+    fn ril_rt_safe_slice(rt, target: Value, start: Value, end: Value, inclusive: Value) -> Value {
+        match slice(rt, target, start, end, inclusive == Value::TRUE) {
+            Some(result) => rt.gc.alloc(Object::Tag("Some".into(), vec![result])),
+            None => rt.gc.alloc(Object::Tag("None".into(), Vec::new())),
+        }
+    }
+    fn ril_rt_safe_member(rt, target: Value, key: Value) -> Value {
+        let payload = match rt.gc.object(target) {
+            Some(Object::Tag(tag, args)) if tag == "Some" => args.first().copied(),
+            Some(Object::Tag(tag, _)) if tag == "None" => return target,
+            _ => { rt.raise("safe member requires an Option"); return Value::UNIT; }
+        };
+        if let Some(payload) = payload && let Some(value) = load(rt, payload, key) {
+            rt.gc.alloc(Object::Tag("Some".into(), vec![value]))
+        } else { rt.raise("invalid optional member"); Value::UNIT }
+    }
     fn ril_rt_clone(rt, value: Value) -> Value {
         rt.gc.safepoint();
         let result = rt.gc.clone_graph(value);
         rt.checked(result)
+    }
+    fn ril_rt_closure(rt, address: u64, arity: u64, evidence: Value, environment: Value) -> Value {
+        rt.gc.alloc(Object::Closure { function: address, arity, environment, evidence })
+    }
+    fn ril_rt_closure_address(rt, closure: Value, expected: u64) -> Value {
+        if let Some(Object::Closure { function, arity, .. }) = rt.gc.object(closure) && *arity == expected { Value(*function) }
+        else { rt.raise("invalid callable"); Value::UNIT }
+    }
+    fn ril_rt_closure_evidence(rt, closure: Value) -> Value {
+        if let Some(Object::Closure { evidence, .. }) = rt.gc.object(closure) { *evidence }
+        else { rt.raise("invalid callable"); Value::UNIT }
+    }
+    fn ril_rt_closure_environment(rt, closure: Value) -> Value {
+        if let Some(Object::Closure { environment, .. }) = rt.gc.object(closure) { *environment }
+        else { rt.raise("invalid callable"); Value::UNIT }
+    }
+    fn ril_rt_evidence_push(rt, parent: Value, operation: Value, handler: Value) -> Value {
+        if let Ok(operation) = read_text(rt, operation) {
+            rt.gc.alloc(Object::Evidence { parent, operation, handler })
+        } else { rt.raise("invalid effect operation"); Value::UNIT }
+    }
+    fn ril_rt_evidence_find(rt, evidence: Value, key: Value) -> Value {
+        let mut evidence = evidence;
+        if let Ok(key) = read_text(rt, key) {
+            while let Some(Object::Evidence { parent, operation, handler }) = rt.gc.object(evidence) {
+                if operation == &key { return *handler; }
+                evidence = *parent;
+            }
+        }
+        rt.raise("missing lexical effect handler");
+        Value::UNIT
     }
     fn ril_rt_draft_begin(rt, base: Value) -> Value {
         let result = rt.gc.draft_begin(base);
@@ -214,6 +293,36 @@ runtime_functions! {
     fn ril_rt_draft_abort(rt, draft: Value) -> Value {
         let result = rt.gc.draft_abort(draft).map(|()| Value::UNIT);
         rt.checked(result)
+    }
+}
+
+fn file_error(rt: &mut Runtime, error: String) -> Value {
+    let payload = rt.gc.alloc(Object::Str(error));
+    rt.gc.alloc(Object::Tag("Err".into(), vec![payload]))
+}
+
+fn float_to_int(rt: &mut Runtime, value: Value, rounded: bool) -> Value {
+    let number = match rt.gc.object(value) {
+        Some(Object::F64(bits)) => f64::from_bits(*bits),
+        _ => {
+            rt.raise("expected f64");
+            return Value::UNIT;
+        }
+    };
+    if (rounded || number.fract() == 0.0)
+        && let Some(integer) = BigInt::from_f64(number.trunc())
+    {
+        let payload = rt.gc.int(integer).into();
+        rt.gc.alloc(Object::Tag("Some".into(), vec![payload]))
+    } else {
+        rt.gc.alloc(Object::Tag("None".into(), Vec::new()))
+    }
+}
+
+fn checked_div(rt: &mut Runtime, op: &str, a: Value, b: Value) -> Value {
+    match rt.gc.binary(op, a, b) {
+        Ok(value) => rt.gc.alloc(Object::Tag("Some".into(), vec![value])),
+        Err(_) => rt.gc.alloc(Object::Tag("None".into(), Vec::new())),
     }
 }
 
@@ -272,11 +381,54 @@ fn load(rt: &mut Runtime, target: Value, key: Value) -> Option<Value> {
     }
 }
 
+fn slice(
+    rt: &mut Runtime,
+    target: Value,
+    start: Value,
+    end: Value,
+    inclusive: bool,
+) -> Option<Value> {
+    let object = rt.gc.object(target)?;
+    let length = match object {
+        Object::Str(text) => text.chars().count(),
+        Object::Bytes(bytes) => bytes.len(),
+        Object::Array(items) => items.len(),
+        _ => return None,
+    };
+    let start = if start == Value::UNIT {
+        0
+    } else {
+        rt.gc.integer(start)?.to_usize()?
+    };
+    let end = if end == Value::UNIT {
+        length
+    } else {
+        rt.gc
+            .integer(end)?
+            .to_usize()?
+            .checked_add(usize::from(inclusive))?
+    };
+    if start > end || end > length {
+        return None;
+    }
+    let result = match object {
+        Object::Array(items) => Object::Array(items.get(start..end)?.to_vec()),
+        Object::Bytes(bytes) => Object::Bytes(bytes.get(start..end)?.to_vec()),
+        Object::Str(text) => Object::Str(text.chars().skip(start).take(end - start).collect()),
+        _ => return None,
+    };
+    Some(rt.gc.alloc(result))
+}
+
 pub fn symbols() -> Vec<(&'static str, *const u8)> {
     let mut symbols = RUNTIME_FNS.to_vec();
     symbols.extend([
         ("ril_rt_create", ril_rt_create as *const u8),
         ("ril_rt_finish", ril_rt_finish as *const u8),
     ]);
+    #[cfg(not(miri))]
+    {
+        symbols.extend(crate::fiber::native::symbols());
+    }
     symbols
 }

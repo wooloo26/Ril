@@ -1,0 +1,65 @@
+-- @suite concurrency_isolation
+-- @default_stage access
+
+-- @case rejects_replaceable_capture compile-fail E0601
+use ril/fiber
+fn bad() @fiber -> () {
+    var count = 0
+    Fiber::scope \mut s -> {
+        let task = Fiber::spawn(mut s) \-> {
+        -- ^ E0601
+            count += 1
+        }
+        Fiber::join(mut s, task)
+    }
+}
+
+-- @case run_does_not_handle_io compile-fail E0612
+use ril/fiber
+fn bad() -> () {
+-- ^ E0612
+    Fiber::run \-> {
+        Fiber::yield_now()
+        println("observable")
+    }
+}
+
+-- @case correct_scope_effects compile-pass
+use ril/fiber
+fn run() -> int {
+    Fiber::run \-> Fiber::scope \mut s -> {
+        let a = Fiber::spawn(mut s) \-> 19
+        let b = Fiber::spawn(mut s) \-> 23
+        Fiber::join(mut s, a) + Fiber::join(mut s, b)
+    }
+}
+
+-- @case channel_disallows_frozen_shared_payload compile-fail E0548
+use ril/channel
+fn bad() @fiber -> () {
+    let Channel::ChannelPair.{ mut tx, mut rx } = Channel::bounded(2)
+    let xs = [1, 2]
+    match Channel::send(mut tx, xs) { Ok() -> (); Err(_) -> () }
+    -- ^ E0548
+    let _ = Channel::recv(mut rx)
+}
+
+-- @case nested_result_must_be_joined compile-fail E0720
+use ril/fiber
+fn job() -> new !<int, str> { Ok(5) }
+fn bad() @fiber -> () {
+    Fiber::scope \mut s -> {
+        let _ = Fiber::spawn(mut s) \-> job()
+        -- ^ E0720
+    }
+}
+
+-- @case stateful_handler_cannot_cross_fiber_boundary compile-fail E0615
+use ril/fiber
+eff Clock { fn tick() -> int }
+fn bad() -> int {
+    var ticks = 0
+    with Clock::tick = \-> { ticks += 1; ticks }
+    Fiber::run \-> Clock::tick()
+    -- ^ E0615
+}
