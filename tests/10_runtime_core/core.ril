@@ -136,3 +136,53 @@ fn main() @io -> () {
     assert([0, 1]?[4..] == None)
     println("αβγ"[1..])
 }
+
+-- @case navigation_flattens_optional_members_and_keeps_postfix_chain run-pass backend=both
+-- @expect-stdout localhost:db:5432
+type Config = .{ host: ?str }
+type Route = .{ pair: (str, int) }
+fn host(config: ?Config) -> str { config?.host ?? "localhost" }
+fn port(route: ?Route) -> int { route?.pair.1 ?? 80 }
+fn main() @io -> () {
+    println("{host(None)}:{host(Some(Config.{ host: Some("db") }))}:{port(Some(Route.{ pair: ("db", 5432) }))}")
+    assert(host(Some(Config.{ host: None })) == "localhost")
+    assert(port(None) == 80)
+}
+
+-- @case optional_index_skips_index_expression run-pass backend=both
+fn main() -> () {
+    let missing: ?[]int = None
+    let present: ?[]int = Some([2, 7])
+    assert(missing?[panic("index must be skipped")] == None)
+    assert(present?[1] == Some(7))
+    assert(present?[3] == None)
+}
+
+-- @case result_fallback_calls_a_first_class_function_lazily run-pass backend=both
+fn recover(error: str) -> int { len(error) }
+fn main() -> () {
+    let rejected: !<int, str> = Err("failure")
+    let accepted: !<int, str> = Ok(2)
+    assert((rejected ?? recover) == 7)
+    assert((accepted ?? \_ -> panic("fallback must be skipped")) == 2)
+}
+
+-- @case utf8_and_unicode_scalar_helpers_match_static_and_native run-pass backend=both
+meta let ENCODED = String::encode_utf8("A😀")
+meta let DECODED = String::decode_utf8(ENCODED)
+meta let SCALARS = String::scalars("A😀")
+fn main() -> () {
+    let text = "A😀"
+    assert(String::starts_with(text, "A") && String::ends_with(text, "😀"))
+    assert(String::encode_utf8(text) == ENCODED)
+    assert(String::decode_utf8(ENCODED) == DECODED)
+    assert(String::decode_utf8(bytes"\xC0\xAF") == None)
+    assert(String::at(text, 0) == Some(65) && String::at(text, 1) == Some(128512))
+    assert(String::at(text, -1) == None && String::at(text, 2) == None)
+    assert(String::scalars(text) == SCALARS)
+    assert(String::from_scalars(SCALARS) == Some(text))
+    assert(String::from_scalars([55296]) == None)
+    assert(Bytes::at(ENCODED, 1) == Some(240))
+    assert(Bytes::from_array(Bytes::to_array(ENCODED)) == Some(ENCODED))
+    assert(Bytes::from_array([256]) == None)
+}

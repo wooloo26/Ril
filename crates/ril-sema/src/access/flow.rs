@@ -265,10 +265,12 @@ impl Ledger {
             self.revoked.extend(&branch.revoked);
             self.obligations.extend(&branch.obligations);
         }
-        self.inspected = if let Some(first) = alternatives.first() {
-            first
-                .inspected
+        self.inspected = if alternatives.is_empty() {
+            prior.inspected.clone()
+        } else {
+            alternatives
                 .iter()
+                .flat_map(|branch| &branch.inspected)
                 .filter(|item| {
                     alternatives.iter().all(|branch| {
                         branch.inspected.contains(item) || !branch.obligations.contains(item)
@@ -276,8 +278,6 @@ impl Ledger {
                 })
                 .copied()
                 .collect()
-        } else {
-            prior.inspected.clone()
         };
         for (id, slot) in &mut self.slots {
             if let Some(value) = alternatives

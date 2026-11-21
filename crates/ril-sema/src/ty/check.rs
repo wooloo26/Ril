@@ -38,6 +38,7 @@ pub(super) fn check(hir: Program, budget: Option<u64>) -> Result<TypedProgram, V
         live: HashSet::new(),
         implicit_exits: Vec::new(),
         narrowings: HashMap::new(),
+        navigation_values: HashMap::new(),
         narrow_errors: HashMap::new(),
         constants: HashSet::new(),
         stack: Vec::new(),
@@ -66,6 +67,10 @@ pub(super) fn check(hir: Program, budget: Option<u64>) -> Result<TypedProgram, V
         .into_iter()
         .map(|(id, ty)| (id, ck.normalize(&ty)))
         .collect();
+    let navigation_values = std::mem::take(&mut ck.navigation_values)
+        .into_iter()
+        .map(|(span, ty)| (span, ck.normalize(&ty)))
+        .collect();
     let Checker {
         callables,
         static_values,
@@ -79,6 +84,7 @@ pub(super) fn check(hir: Program, budget: Option<u64>) -> Result<TypedProgram, V
         callables,
         static_values,
         narrowings,
+        navigation_values,
     })
 }
 
@@ -141,6 +147,7 @@ pub(super) struct Checker<'a> {
     pub(super) live: HashSet<DefinitionId>,
     pub(super) implicit_exits: Vec<ImplicitExits>,
     pub(super) narrowings: HashMap<Span, usize>,
+    pub(super) navigation_values: HashMap<Span, Ty>,
     pub(super) narrow_errors: HashMap<Span, Code>,
     constants: HashSet<DefinitionId>,
     pub(super) stack: Vec<DefinitionId>,

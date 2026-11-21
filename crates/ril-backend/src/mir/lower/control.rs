@@ -1,5 +1,6 @@
 use ril_base::span::Span;
 use ril_sema::{
+    hir::DefinitionId,
     syntax::{Condition, Expr, ExprId, MatchArm, Name, Pattern, PatternId, Transfer},
     ty::{self, Ty, Value},
 };
@@ -109,79 +110,160 @@ impl Builder<'_, '_> {
     }
 
     fn short_circuit(&mut self, left: ExprId, right: ExprId, op: &str) -> Result<Register> {
+        let left_span = self.ast().expr(left).span;
+        let result_fallback = op == "??"
+            && matches!(
+                self.global.typed.types.get(&left_span),
+                Some(Ty::Result(..))
+            );
         let value = self.expr(left)?;
-        let test = if op == "??" {
-            let none = self.string("None");
-            let err = self.string("Err");
-            let is_none = self.runtime("ril_rt_is_tag", vec![value, none]);
-            let is_err = self.runtime("ril_rt_is_tag", vec![value, err]);
-            let fallback = self.block(0);
-            let payload = self.block(0);
-            let check_error = self.block(0);
-            let join = self.block(1);
-            self.terminate(Terminator::Branch {
-                condition: is_none,
-                yes: fallback,
-                no: check_error,
-            });
-            self.current = Some(check_error);
-            if matches!(
-                self.ast().expr(right).value,
-                Expr::Closure { .. } | Expr::Accessor(_)
-            ) {
-                let err_block = self.block(0);
-                self.terminate(Terminator::Branch {
-                    condition: is_err,
-                    yes: err_block,
-                    no: payload,
-                });
-                self.current = Some(err_block);
-                let zero = self.integer("0");
-                let err = self.runtime("ril_rt_load", vec![value, zero]);
-                let result = self.inline_closure(right, &[err], self.ast().expr(right).span)?;
-                self.terminate(Terminator::Jump(join, vec![result]));
-            } else {
-                self.terminate(Terminator::Jump(payload, Vec::new()));
+        let names: Vec<_> = self.locals.keys().copied().collect();
+        let rhs = self.block(0);
+        let early = self.block(0);
+        let join = self.block(1 + names.len());
+        let (condition, yes, no) = match op {
+            "??" => {
+                let tag = self.string(if result_fallback { "Err" } else { "None" });
+                (self.runtime("ril_rt_is_tag", vec![value, tag]), rhs, early)
             }
-            self.current = Some(fallback);
-            let result = if matches!(
-                self.ast().expr(right).value,
-                Expr::Closure { .. } | Expr::Accessor(_)
-            ) {
-                self.unit()
-            } else {
-                self.expr(right)?
-            };
-            self.terminate(Terminator::Jump(join, vec![result]));
-            self.current = Some(payload);
+            "&&" => (value, rhs, early),
+            _ => (value, early, rhs),
+        };
+        self.terminate(Terminator::Branch { condition, yes, no });
+        self.current = Some(early);
+        let early_value = if op == "??" {
             let zero = self.integer("0");
-            let result = self.runtime("ril_rt_load", vec![value, zero]);
-            self.terminate(Terminator::Jump(join, vec![result]));
-            self.current = Some(join);
-            return Ok(self.result_param(join));
+            self.runtime("ril_rt_load", vec![value, zero])
         } else {
             value
         };
-        let rhs = self.block(0);
-        let early = self.block(0);
-        let join = self.block(1);
-        let (yes, no) = if op == "&&" {
-            (rhs, early)
-        } else {
-            (early, rhs)
-        };
-        self.terminate(Terminator::Branch {
-            condition: test,
-            yes,
-            no,
-        });
-        self.current = Some(early);
-        self.terminate(Terminator::Jump(join, vec![value]));
+        self.join_with(join, &names, early_value);
         self.current = Some(rhs);
-        let rhs = self.expr(right)?;
-        self.terminate(Terminator::Jump(join, vec![rhs]));
+        let mut right = self.expr(right)?;
+        if result_fallback {
+            let zero = self.integer("0");
+            let error = self.runtime("ril_rt_load", vec![value, zero]);
+            right = self.invoke_closure(right, vec![error]);
+        }
+        self.join_with(join, &names, right);
+        Ok(self.join_result(join, &names))
+    }
+
+    pub(super) fn index(&mut self, base: Register, index: ExprId, safe: bool) -> Result<Register> {
+        if let Expr::Range {
+            start,
+            end,
+            inclusive,
+        } = self.ast().expr(index).value
+        {
+            let start = if let Some(start) = start {
+                self.expr(start)?
+            } else {
+                self.unit()
+            };
+            let end = if let Some(end) = end {
+                self.expr(end)?
+            } else {
+                self.unit()
+            };
+            let inclusive = self.boolean(inclusive);
+            Ok(self.runtime(
+                if safe {
+                    "ril_rt_safe_slice"
+                } else {
+                    "ril_rt_slice"
+                },
+                vec![base, start, end, inclusive],
+            ))
+        } else {
+            let key = self.expr(index)?;
+            Ok(self.runtime(
+                if safe {
+                    "ril_rt_safe_load"
+                } else {
+                    "ril_rt_load"
+                },
+                vec![base, key],
+            ))
+        }
+    }
+
+    pub(super) fn navigation(
+        &mut self,
+        base: ExprId,
+        steps: &[ExprId],
+        span: Span,
+    ) -> Result<Register> {
+        let mut receiver = self.global.typed.types.get(&self.ast().expr(base).span);
+        let mut value = self.collection(base)?;
+        let names: Vec<_> = self.locals.keys().copied().collect();
+        let join = self.block(1 + names.len());
+        for &step in steps {
+            let node = self.ast().expr(step);
+            match &node.value {
+                Expr::Member { member, safe, .. } => {
+                    if *safe {
+                        value = self.navigation_payload(value, join, &names);
+                    }
+                    let key = self.member_key(member)?;
+                    value = self.runtime("ril_rt_load", vec![value, key]);
+                }
+                Expr::Index { index, safe, .. } => {
+                    if *safe
+                        && receiver.is_some_and(|ty| matches!(self.concrete(ty), Ty::Option(_)))
+                    {
+                        value = self.navigation_payload(value, join, &names);
+                    }
+                    value = self.index(value, *index, *safe)?;
+                    if *safe {
+                        value = self.navigation_payload(value, join, &names);
+                    }
+                }
+                _ => ril_base::ice!("unexpected navigation step"),
+            }
+            receiver = self.global.typed.navigation_values.get(&node.span);
+        }
+        if !self
+            .global
+            .typed
+            .navigation_values
+            .get(&span)
+            .is_some_and(|ty| matches!(self.concrete(ty), Ty::Option(_)))
+        {
+            value = self.tag("Some", vec![value]);
+        }
+        self.join_with(join, &names, value);
+        Ok(self.join_result(join, &names))
+    }
+
+    fn navigation_payload(
+        &mut self,
+        option: Register,
+        join: BlockId,
+        names: &[DefinitionId],
+    ) -> Register {
+        let none = self.string("None");
+        let condition = self.runtime("ril_rt_is_tag", vec![option, none]);
+        let missing = self.block(0);
+        let present = self.block(0);
+        self.terminate(Terminator::Branch {
+            condition,
+            yes: missing,
+            no: present,
+        });
+        self.current = Some(missing);
+        self.join_with(join, names, option);
+        self.current = Some(present);
+        let zero = self.integer("0");
+        self.runtime("ril_rt_load", vec![option, zero])
+    }
+
+    fn join_result(&mut self, join: BlockId, names: &[DefinitionId]) -> Register {
         self.current = Some(join);
-        Ok(self.result_param(join))
+        for (&name, parameter) in names.iter().zip(self.params(join).into_iter().skip(1)) {
+            self.locals.insert(name, parameter);
+        }
+        self.result_param(join)
     }
 
     pub(super) fn result_param(&self, block: BlockId) -> Register {

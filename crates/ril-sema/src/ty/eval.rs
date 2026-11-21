@@ -4,7 +4,7 @@ use num_bigint::BigInt;
 use num_traits::{FromPrimitive, Signed, ToPrimitive, Zero};
 use ril_base::{diag::Code, span::Span};
 use ril_frontend::{
-    hir::{DefinitionId, DefinitionKind, PrimitivePhase},
+    hir::{DefinitionId, DefinitionKind, PrimitivePhase, TextBuiltin},
     syntax::{
         self, Argument, Condition, Expr, ExprId, Member as Coordinate, Mode, StmtKind, StringPart,
         Transfer,
@@ -41,6 +41,84 @@ impl Budget {
             "compile-time step budget exhausted",
         ))?;
         Ok(())
+    }
+}
+
+fn eval_text(builtin: TextBuiltin, args: &[Value], span: Span) -> Eval {
+    use TextBuiltin::*;
+    let option = |value: Option<Value>| {
+        value.map_or_else(none, |value| Value::Tag("Some".into(), vec![value]))
+    };
+    match (builtin, args) {
+        (StartsWith, [Value::Str(text), Value::Str(pattern)]) => {
+            Ok(Value::Bool(text.starts_with(pattern)))
+        }
+        (EndsWith, [Value::Str(text), Value::Str(pattern)]) => {
+            Ok(Value::Bool(text.ends_with(pattern)))
+        }
+        (ScalarAt, [Value::Str(text), Value::Int(index)]) => Ok(option(
+            index
+                .to_usize()
+                .and_then(|index| text.chars().nth(index))
+                .map(|scalar| Value::Int(u32::from(scalar).into())),
+        )),
+        (ByteAt, [Value::Bytes(bytes), Value::Int(index)]) => Ok(option(
+            index
+                .to_usize()
+                .and_then(|index| bytes.get(index))
+                .copied()
+                .map(|byte| Value::Int(byte.into())),
+        )),
+        (Scalars, [Value::Str(text)]) => Ok(Value::Array(
+            text.chars()
+                .map(|scalar| Value::Int(u32::from(scalar).into()))
+                .collect(),
+        )),
+        (ToArray, [Value::Bytes(bytes)]) => Ok(Value::Array(
+            bytes.iter().map(|&byte| Value::Int(byte.into())).collect(),
+        )),
+        (FromScalars, [Value::Array(items)]) => {
+            let text = items
+                .iter()
+                .map(|value| match value {
+                    Value::Int(value) => value.to_u32().and_then(char::from_u32),
+                    _ => None,
+                })
+                .collect::<Option<String>>();
+            Ok(option(text.map(Value::Str)))
+        }
+        (FromArray, [Value::Array(items)]) => {
+            let bytes = items
+                .iter()
+                .map(|value| match value {
+                    Value::Int(value) => value.to_u8(),
+                    _ => None,
+                })
+                .collect::<Option<Vec<_>>>();
+            Ok(option(bytes.map(Value::Bytes)))
+        }
+        (EncodeUtf8, [Value::Str(text)]) => Ok(Value::Bytes(text.as_bytes().to_vec())),
+        (DecodeUtf8, [Value::Bytes(bytes)]) => Ok(option(
+            std::str::from_utf8(bytes)
+                .ok()
+                .map(|text| Value::Str(text.to_owned())),
+        )),
+        _ => Err(nonstatic(span)),
+    }
+}
+
+fn none() -> Value {
+    Value::Tag("None".into(), Vec::new())
+}
+
+fn optional_payload(value: Value, span: Span) -> Eval<Option<Value>> {
+    match value {
+        Value::Tag(tag, _) if tag == "None" => Ok(None),
+        Value::Tag(tag, mut items) if tag == "Some" => items
+            .pop()
+            .map(Some)
+            .ok_or_else(|| defect(span, "missing static optional payload")),
+        _ => Err(defect(span, "expected a static option")),
     }
 }
 
@@ -144,6 +222,46 @@ impl Checker<'_> {
         let ast = self.ast(env.file);
         let node = ast.expr(expr);
         let span = node.span;
+        if let Some((base, steps)) = ast.navigation_chain(expr) {
+            let mut value = self.evaluate(env, slots, base, fuel)?;
+            for step in steps {
+                let step = ast.expr(step);
+                match &step.value {
+                    Expr::Member { member, safe, .. } => {
+                        if *safe {
+                            let Some(payload) = optional_payload(value, step.span)? else {
+                                return Ok(none());
+                            };
+                            value = payload;
+                        }
+                        value = self.eval_member(env, slots, member, value, step.span, fuel)?;
+                    }
+                    Expr::Index { index, safe, .. } => {
+                        if *safe && matches!(value, Value::Tag(..)) {
+                            let Some(payload) = optional_payload(value, step.span)? else {
+                                return Ok(none());
+                            };
+                            value = payload;
+                        }
+                        value = match self.eval_index(env, slots, value, *index, fuel)? {
+                            Some(found) => found,
+                            None if *safe => return Ok(none()),
+                            None => return Err(defect(step.span, "static index is out of bounds")),
+                        };
+                    }
+                    _ => ril_base::ice!("unexpected static navigation step"),
+                }
+            }
+            return if self
+                .navigation_values
+                .get(&span)
+                .is_some_and(|ty| matches!(self.normalize(ty), Ty::Option(_)))
+            {
+                Ok(value)
+            } else {
+                Ok(Value::Tag("Some".into(), vec![value]))
+            };
+        }
         match &node.value {
             Expr::Literal(value) => {
                 literal(value).map_err(|_| defect(span, "invalid static literal"))
@@ -354,32 +472,14 @@ impl Checker<'_> {
                 }
             }
             Expr::Cast { value, .. } => self.evaluate(env, slots, *value, fuel),
-            Expr::Member { base, member, safe } => {
+            Expr::Member { base, member, .. } => {
                 let base = self.evaluate(env, slots, *base, fuel)?;
-                if *safe && let Value::Tag(tag, mut items) = base {
-                    if tag == "None" {
-                        return Ok(Value::Tag(tag, items));
-                    }
-                    let base = items
-                        .pop()
-                        .ok_or_else(|| defect(span, "invalid optional payload"))?;
-                    let item = self.eval_member(env, slots, member, base, span, fuel)?;
-                    Ok(Value::Tag("Some".into(), vec![item]))
-                } else {
-                    self.eval_member(env, slots, member, base, span, fuel)
-                }
+                self.eval_member(env, slots, member, base, span, fuel)
             }
-            Expr::Index { base, index, safe } => {
+            Expr::Index { base, index, .. } => {
                 let base = self.evaluate(env, slots, *base, fuel)?;
-                let value = self.eval_index(env, slots, base, *index, fuel)?;
-                if *safe {
-                    Ok(value.map_or_else(
-                        || Value::Tag("None".into(), Vec::new()),
-                        |item| Value::Tag("Some".into(), vec![item]),
-                    ))
-                } else {
-                    value.ok_or_else(|| defect(span, "static index is out of bounds"))
-                }
+                self.eval_index(env, slots, base, *index, fuel)?
+                    .ok_or_else(|| defect(span, "static index is out of bounds"))
             }
             Expr::Range { .. } => Err(nonstatic(span)),
             Expr::Tuple(items) => self.eval_list(env, slots, items, fuel).map(Value::Tuple),
@@ -657,12 +757,16 @@ impl Checker<'_> {
                 }
                 DefinitionKind::Primitive(_) => {
                     fuel.step(span)?;
-                    let args = self
+                    let args: Vec<_> = self
                         .eval_args(env, slots, args, fuel)?
                         .into_iter()
                         .map(|(_, value)| value)
                         .collect();
-                    self.eval_primitive(env, name, args, span)
+                    if let Some(builtin) = self.hir.text_builtin(id) {
+                        eval_text(builtin, &args, span)
+                    } else {
+                        self.eval_primitive(env, name, args, span)
+                    }
                 }
                 DefinitionKind::Variant(_) | DefinitionKind::Type => {
                     let values = self

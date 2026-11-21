@@ -14,6 +14,32 @@ use super::{
 };
 
 impl Analyzer<'_> {
+    pub(super) fn fallback_handler(
+        &mut self,
+        ctx: &mut Context,
+        ledger: &mut Ledger,
+        handler: ExprId,
+        span: Span,
+    ) -> Datum {
+        let node = self.ast(ctx.file).expr(handler);
+        let inline = matches!(node.value, Expr::Closure { .. });
+        let callable = if inline {
+            self.closure(ctx, ledger, handler, true)
+        } else {
+            self.expr(ctx, ledger, handler)
+        };
+        self.link_invocation(ctx, &callable);
+        for effect in &callable.latent_effects {
+            self.effect(ctx, effect, span);
+        }
+        if !inline && let Ty::Callable(signature) = self.ty(node.span) {
+            for effect in &signature.effects {
+                self.effect(ctx, effect, span);
+            }
+        }
+        self.snapshot_value(span)
+    }
+
     pub(super) fn call(
         &mut self,
         ctx: &mut Context,
@@ -187,6 +213,13 @@ impl Analyzer<'_> {
             return self.concurrent(ctx, ledger, (module, name), &values, args, span);
         }
         if primitive {
+            if id.is_some_and(|id| self.program.hir.text_builtin(id).is_some()) {
+                return if self.ty(span).is_value() {
+                    Datum::default()
+                } else {
+                    Datum::source(span, Access::Mut, true)
+                };
+            }
             return self.primitive(ctx, ledger, name, &values, span);
         }
         if let Some(id) = id

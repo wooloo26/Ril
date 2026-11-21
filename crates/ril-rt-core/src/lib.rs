@@ -6,6 +6,7 @@ mod fiber;
 mod gc;
 mod graph;
 mod num;
+mod text;
 mod unwind;
 
 pub use ffi::symbols;

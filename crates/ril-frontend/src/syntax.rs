@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use ril_base::span::Span;
 
 #[derive(Clone, Debug)]
@@ -23,6 +25,7 @@ macro_rules! arenas {
         #[derive(Debug, Default)]
         pub struct Ast {
             $( $field: Vec<Spanned<$node>>, )*
+            grouped: HashSet<ExprId>,
             pub items: Vec<StmtId>,
         }
 
@@ -50,6 +53,38 @@ arenas! {
 }
 
 impl Ast {
+    pub(crate) fn add_group(&mut self, span: Span, inner: ExprId) -> ExprId {
+        let id = self.add_expr(span, self.expr(inner).value.clone());
+        self.grouped.insert(id);
+        id
+    }
+
+    pub fn navigation_chain(&self, root: ExprId) -> Option<(ExprId, Vec<ExprId>)> {
+        let mut steps = Vec::new();
+        let mut current = root;
+        let mut safe = false;
+        loop {
+            if current != root && self.grouped.contains(&current) {
+                break;
+            }
+            match self.expr(current).value {
+                Expr::Member {
+                    base, safe: step, ..
+                }
+                | Expr::Index {
+                    base, safe: step, ..
+                } => {
+                    safe |= step;
+                    steps.push(current);
+                    current = base;
+                }
+                _ => break,
+            }
+        }
+        steps.reverse();
+        safe.then_some((current, steps))
+    }
+
     pub fn statements(&self) -> impl Iterator<Item = &Spanned<Stmt>> {
         self.statements.iter()
     }

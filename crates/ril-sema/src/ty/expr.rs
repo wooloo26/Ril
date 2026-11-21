@@ -7,7 +7,7 @@ use num_traits::{Signed, Zero};
 use ril_base::{diag::Code, span::Span};
 
 use ril_frontend::{
-    hir::{DefinitionId, DefinitionKind, PrimitivePhase, Resolution},
+    hir::{DefinitionId, DefinitionKind, PrimitivePhase, Resolution, TextBuiltin},
     syntax::{
         self, Argument, Condition, Expr, ExprId, Mode, StmtKind, Transfer, TypeDefinition,
         ValueField,
@@ -32,6 +32,11 @@ impl<'a> Checker<'a> {
         let known = expected.map(|ty| self.normalize(ty));
         let expected = known.as_ref();
         let span = node.span;
+        if let Some((base, steps)) = self.ast(env.file).navigation_chain(id) {
+            let ty = self.navigation(env, base, &steps);
+            self.types.insert(span, ty.clone());
+            return ty;
+        }
         let ty = match &node.value {
             Expr::Path(path) => self.path_expr(env, path, expected, false),
             Expr::Unit => Ty::Unit,
@@ -132,10 +137,9 @@ impl<'a> Checker<'a> {
                     result
                 }
             }
-            Expr::Member { base, member, safe } => {
+            Expr::Member { base, member, .. } => {
                 let receiver = self.expr(env, *base, None);
-                if !safe
-                    && matches!(receiver, Ty::Option(_))
+                if matches!(receiver, Ty::Option(_))
                     && let Some(code) = self
                         .narrow_errors
                         .get(&self.ast(env.file).expr(*base).span)
@@ -144,22 +148,12 @@ impl<'a> Checker<'a> {
                     self.error(code, span, "projection depends on an invalidated narrowing");
                     return Ty::Unknown;
                 }
-                if *safe {
-                    match self.normalize(&receiver) {
-                        Ty::Option(inner) => {
-                            Ty::Option(Box::new(self.project(env, member, &inner, span, false)))
-                        }
-                        Ty::Unknown | Ty::Never => Ty::Unknown,
-                        _ => {
-                            self.error(Code::E0715, span, "safe member access requires an option");
-                            Ty::Unknown
-                        }
-                    }
-                } else {
-                    self.project(env, member, &receiver, span, false)
-                }
+                self.project(env, member, &receiver, span, false)
             }
-            Expr::Index { base, index, safe } => self.index(env, *base, *index, *safe, span),
+            Expr::Index { base, index, .. } => {
+                let base = self.expr(env, *base, None);
+                self.index(env, base, *index, span)
+            }
             Expr::Range { start, end, .. } => {
                 for &value in start.iter().chain(end) {
                     self.expect(env, value, &Ty::Int);
@@ -456,8 +450,25 @@ impl<'a> Checker<'a> {
         );
         env.unrefined = previous;
         let a = self.normalize(&a);
+        let fallback;
         let right_expected = match (&a, name) {
             (Ty::Option(item), "??") => Some(item.as_ref()),
+            (Ty::Result(ok, error), "??") => {
+                fallback = Ty::Callable(Arc::new(Callable {
+                    parameters: vec![Parameter {
+                        label: None,
+                        mode: Mode::Plain,
+                        ty: (**error).clone(),
+                        optional: false,
+                        is_meta: false,
+                    }],
+                    result: (**ok).clone(),
+                    open_effects: true,
+                    open_state: true,
+                    ..unknown_callable()
+                }));
+                Some(&fallback)
+            }
             (_, "??" | "<<" | ">>") => None,
             _ => Some(&a),
         };
@@ -932,11 +943,56 @@ impl<'a> Checker<'a> {
         all
     }
 
-    fn index(&mut self, env: &mut Env, base: ExprId, index: ExprId, safe: bool, span: Span) -> Ty {
-        let base = self.expr(env, base, None);
-        let (key, value) = match self.normalize(&base) {
-            Ty::Array(item) => (Ty::Int, item.ty),
-            Ty::Map(key, value) => (*key, value.ty),
+    fn navigation(&mut self, env: &mut Env, base: ExprId, steps: &[ExprId]) -> Ty {
+        let mut ty = self.expr(env, base, None);
+        for &step in steps {
+            let node = self.ast(env.file).expr(step);
+            ty = self.normalize(&ty);
+            ty = match &node.value {
+                Expr::Member { member, safe, .. } => {
+                    if *safe {
+                        ty = match ty {
+                            Ty::Option(inner) => *inner,
+                            Ty::Unknown | Ty::Never => Ty::Unknown,
+                            _ => {
+                                self.error(
+                                    Code::E0715,
+                                    node.span,
+                                    "safe member access requires an option",
+                                );
+                                Ty::Unknown
+                            }
+                        };
+                    }
+                    self.project(env, member, &ty, node.span, false)
+                }
+                Expr::Index { index, safe, .. } => {
+                    if *safe && let Ty::Option(inner) = ty {
+                        ty = *inner;
+                    }
+                    self.index(env, ty, *index, node.span)
+                }
+                _ => ril_base::ice!("unexpected navigation step"),
+            };
+            self.types.insert(node.span, ty.clone());
+            self.navigation_values.insert(node.span, ty.clone());
+        }
+        let ty = self.normalize(&ty);
+        if matches!(ty, Ty::Option(_) | Ty::Unknown) {
+            ty
+        } else {
+            Ty::Option(Box::new(ty))
+        }
+    }
+
+    fn index(&mut self, env: &mut Env, base: Ty, index: ExprId, span: Span) -> Ty {
+        let mut base = self.normalize(&base);
+        if let Ty::Draft(inner) = base {
+            base = *inner;
+        }
+        let (key, value) = match &base {
+            Ty::Array(item) => (Ty::Int, item.ty.clone()),
+            Ty::Map(key, value) => ((**key).clone(), value.ty.clone()),
             Ty::Str => (Ty::Int, Ty::Str),
             Ty::Bytes => (Ty::Int, Ty::Int),
             Ty::Unknown => (Ty::Unknown, Ty::Unknown),
@@ -950,13 +1006,12 @@ impl<'a> Checker<'a> {
             }
         };
         let index_ty = self.expr(env, index, Some(&key));
-        let ty = if index_ty == Ty::Range && matches!(base, Ty::Array(_) | Ty::Str | Ty::Bytes) {
+        if index_ty == Ty::Range && matches!(base, Ty::Array(_) | Ty::Str | Ty::Bytes) {
             base
         } else {
             self.require(env, self.ast(env.file).expr(index).span, &index_ty, &key);
             value
-        };
-        if safe { Ty::Option(Box::new(ty)) } else { ty }
+        }
     }
 
     fn record(
@@ -1177,6 +1232,9 @@ impl<'a> Checker<'a> {
             let def = self.hir.definition(id);
             match def.kind {
                 DefinitionKind::Primitive(phase) => {
+                    if let Some(builtin) = self.hir.text_builtin(id) {
+                        return self.text_call(env, builtin, args, span);
+                    }
                     if let Some(module @ ("Fiber" | "Channel")) = self.hir.primitive_module(id) {
                         return self.concurrent_call(
                             env,
@@ -1645,5 +1703,39 @@ impl<'a> Checker<'a> {
             },
             _ => Ty::Unknown,
         }
+    }
+
+    fn text_call(
+        &mut self,
+        env: &mut Env,
+        builtin: TextBuiltin,
+        args: &[Argument],
+        span: Span,
+    ) -> Ty {
+        use TextBuiltin::*;
+        let option = |ty| Ty::Option(Box::new(ty));
+        let int_array = || Ty::Array(Box::new(Member::plain(Ty::Int)));
+        let (inputs, output) = match builtin {
+            StartsWith | EndsWith => (vec![Ty::Str, Ty::Str], Ty::Bool),
+            ScalarAt => (vec![Ty::Str, Ty::Int], option(Ty::Int)),
+            ByteAt => (vec![Ty::Bytes, Ty::Int], option(Ty::Int)),
+            Scalars => (vec![Ty::Str], int_array()),
+            ToArray => (vec![Ty::Bytes], int_array()),
+            FromScalars => (vec![int_array()], option(Ty::Str)),
+            FromArray => (vec![int_array()], option(Ty::Bytes)),
+            EncodeUtf8 => (vec![Ty::Str], Ty::Bytes),
+            DecodeUtf8 => (vec![Ty::Bytes], option(Ty::Str)),
+        };
+        if inputs.len() != args.len() {
+            self.error(
+                Code::E0314,
+                span,
+                "incorrect number of text helper arguments",
+            );
+        }
+        for (arg, expected) in args.iter().zip(inputs) {
+            self.expect(env, arg.value, &expected);
+        }
+        output
     }
 }

@@ -32,6 +32,20 @@ pub enum PrimitivePhase {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TextBuiltin {
+    StartsWith,
+    EndsWith,
+    ScalarAt,
+    Scalars,
+    FromScalars,
+    EncodeUtf8,
+    DecodeUtf8,
+    ByteAt,
+    ToArray,
+    FromArray,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DefinitionKind {
     Function,
     Constant,
@@ -142,6 +156,29 @@ impl Program {
 
     pub fn primitive_module(&self, id: DefinitionId) -> Option<&'static str> {
         self.scope(self.definition(id).scope).primitive_module
+    }
+
+    pub fn text_builtin(&self, id: DefinitionId) -> Option<TextBuiltin> {
+        use TextBuiltin::*;
+        if !matches!(self.definition(id).kind, DefinitionKind::Primitive(_)) {
+            return None;
+        }
+        match (
+            self.primitive_module(id)?,
+            self.definition(id).name.value.as_str(),
+        ) {
+            ("String", "starts_with") => Some(StartsWith),
+            ("String", "ends_with") => Some(EndsWith),
+            ("String", "at") => Some(ScalarAt),
+            ("String", "scalars") => Some(Scalars),
+            ("String", "from_scalars") => Some(FromScalars),
+            ("String", "encode_utf8" | "bytes") | ("Bytes", "from_str") => Some(EncodeUtf8),
+            ("String", "decode_utf8" | "from_bytes") => Some(DecodeUtf8),
+            ("Bytes", "at") => Some(ByteAt),
+            ("Bytes", "to_array") => Some(ToArray),
+            ("Bytes", "from_array") => Some(FromArray),
+            _ => None,
+        }
     }
 
     pub fn operation_effect(&self, operation: DefinitionId) -> Option<DefinitionId> {
@@ -762,9 +799,27 @@ impl Program {
                 "",
                 "String",
                 Both,
-                &["inspect", "len", "bytes", "from_bytes", "split"],
+                &[
+                    "inspect",
+                    "len",
+                    "bytes",
+                    "from_bytes",
+                    "split",
+                    "starts_with",
+                    "ends_with",
+                    "at",
+                    "scalars",
+                    "from_scalars",
+                    "encode_utf8",
+                    "decode_utf8",
+                ],
             ),
-            ("", "Bytes", Both, &["len", "from_str"]),
+            (
+                "",
+                "Bytes",
+                Both,
+                &["len", "from_str", "at", "to_array", "from_array"],
+            ),
             (
                 "",
                 "Numeric",

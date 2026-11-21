@@ -102,3 +102,15 @@ fn run() -> () {
     with Log::open = \-> ()
     second(0)
 }
+
+-- @case inspected_result_stays_inspected_at_loop_join compile-pass
+fn value(ok: bool) -> new !<int, str> {
+    if ok { Ok(1) } else { Err("failure") }
+}
+fn total(ok: bool) -> new !<int, str> {
+    var total = 0
+    for 0..3 as i {
+        total += value(ok)?
+    }
+    Ok(total)
+}

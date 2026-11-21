@@ -180,6 +180,7 @@ pub struct TypedProgram {
     pub callables: BTreeMap<DefinitionId, Arc<Callable>>,
     pub static_values: HashMap<Span, Value>,
     pub narrowings: HashMap<Span, usize>,
+    pub navigation_values: HashMap<Span, Ty>,
 }
 
 pub struct Display<'a> {

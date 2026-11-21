@@ -429,8 +429,7 @@ impl Parser<'_> {
                         let value = elements
                             .pop()
                             .unwrap_or_else(|| ril_base::ice!("missing grouped expression"));
-                        let inner = self.ast.expr(value).value.clone();
-                        return Ok(self.ast.add_expr(start.join(self.last), inner));
+                        return Ok(self.ast.add_group(start.join(self.last), value));
                     }
                     _ => Expr::Tuple(elements),
                 }

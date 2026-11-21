@@ -7,7 +7,7 @@ use std::{collections::BTreeMap, io::Write as _};
 use num_bigint::BigInt;
 use num_traits::{FromPrimitive as _, ToPrimitive as _};
 
-use crate::{Object, Runtime, TypeDesc, Value};
+use crate::{Object, Runtime, TypeDesc, Value, text};
 
 macro_rules! runtime_functions {
     ($(fn $name:ident($ctx:ident $(, $arg:ident: $ty:ty)*) $(-> $ret:ty)? $body:block)*) => {
@@ -169,6 +169,62 @@ runtime_functions! {
             Ok(text) => rt.gc.alloc(Object::Str(text)),
             Err(msg) => { rt.raise(msg); Value::UNIT }
         }
+    }
+    fn ril_rt_str_starts_with(rt, value: Value, prefix: Value) -> Value {
+        let test = read_text(rt, value).and_then(|text| read_text(rt, prefix).map(|prefix| Value::boolean(text.starts_with(&prefix))));
+        rt.checked(test)
+    }
+    fn ril_rt_str_ends_with(rt, value: Value, suffix: Value) -> Value {
+        let test = read_text(rt, value).and_then(|text| read_text(rt, suffix).map(|suffix| Value::boolean(text.ends_with(&suffix))));
+        rt.checked(test)
+    }
+    fn ril_rt_str_at(rt, value: Value, index: Value) -> Value {
+        let item = text::str_at(&rt.gc, value, index).map(|item| rt.gc.int(item.into()).into());
+        text::option(&mut rt.gc, item)
+    }
+    fn ril_rt_bytes_at(rt, value: Value, index: Value) -> Value {
+        let item = text::byte_at(&rt.gc, value, index).map(|item| rt.gc.int(item.into()).into());
+        text::option(&mut rt.gc, item)
+    }
+    fn ril_rt_str_scalars(rt, value: Value) -> Value {
+        match rt.gc.object(value) {
+            Some(Object::Str(text)) => {
+                let values = text.chars().map(u32::from).collect();
+                text::int_array(&mut rt.gc, values)
+            }
+            _ => rt.checked(Err("String::scalars requires str")),
+        }
+    }
+    fn ril_rt_bytes_to_array(rt, value: Value) -> Value {
+        match rt.gc.object(value) {
+            Some(Object::Bytes(bytes)) => {
+                let values = bytes.iter().copied().map(u32::from).collect();
+                text::int_array(&mut rt.gc, values)
+            }
+            _ => rt.checked(Err("Bytes::to_array requires bytes")),
+        }
+    }
+    fn ril_rt_str_from_scalars(rt, values: Value) -> Value {
+        let result = text::scalars(&rt.gc, values).map(|text| rt.gc.alloc(Object::Str(text)));
+        text::option(&mut rt.gc, result)
+    }
+    fn ril_rt_bytes_from_array(rt, values: Value) -> Value {
+        let result = text::bytes(&rt.gc, values).map(|bytes| rt.gc.alloc(Object::Bytes(bytes)));
+        text::option(&mut rt.gc, result)
+    }
+    fn ril_rt_encode_utf8(rt, value: Value) -> Value {
+        match rt.gc.object(value) {
+            Some(Object::Str(text)) => rt.gc.alloc(Object::Bytes(text.as_bytes().to_vec())),
+            _ => rt.checked(Err("String::encode_utf8 requires str")),
+        }
+    }
+    fn ril_rt_decode_utf8(rt, value: Value) -> Value {
+        let result = match rt.gc.object(value) {
+            Some(Object::Bytes(bytes)) => std::str::from_utf8(bytes).ok().map(str::to_owned),
+            _ => return rt.checked(Err("String::decode_utf8 requires bytes")),
+        };
+        let item = result.map(|text| rt.gc.alloc(Object::Str(text)));
+        text::option(&mut rt.gc, item)
     }
     fn ril_rt_array(rt) -> Value { rt.gc.alloc(Object::Array(Vec::new())) }
     fn ril_rt_tuple(rt) -> Value { rt.gc.alloc(Object::Tuple(Vec::new())) }

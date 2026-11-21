@@ -8,7 +8,7 @@ use ril_base::{
 };
 use ril_sema::{
     access::{Analysis, CleanupAction},
-    hir::{DefinitionId, DefinitionKind, Resolution},
+    hir::{DefinitionId, DefinitionKind, Resolution, TextBuiltin},
     syntax::{
         Argument, Ast, Expr, ExprId, Function as SyntaxFunction, Member, Name, Pattern, PatternId,
         StmtId, StmtKind, StringPart, Transfer,
@@ -549,6 +549,9 @@ impl<'a> Builder<'_, 'a> {
         {
             return self.constant(constant, span);
         }
+        if let Some((base, steps)) = self.ast().navigation_chain(id) {
+            return self.navigation(base, &steps, span);
+        }
         match &node.value {
             Expr::Unit => Ok(self.unit()),
             Expr::Closure { .. } | Expr::Accessor(_) => self.lift(id),
@@ -685,56 +688,14 @@ impl<'a> Builder<'_, 'a> {
                 }
                 Ok(map)
             }
-            Expr::Member { base, member, safe } => {
+            Expr::Member { base, member, .. } => {
                 let base = self.collection(*base)?;
                 let key = self.member_key(member)?;
-                Ok(self.runtime(
-                    if *safe {
-                        "ril_rt_safe_member"
-                    } else {
-                        "ril_rt_load"
-                    },
-                    vec![base, key],
-                ))
+                Ok(self.runtime("ril_rt_load", vec![base, key]))
             }
-            Expr::Index { base, index, safe } => {
+            Expr::Index { base, index, .. } => {
                 let base = self.collection(*base)?;
-                if let Expr::Range {
-                    start,
-                    end,
-                    inclusive,
-                } = self.ast().expr(*index).value
-                {
-                    let start = if let Some(start) = start {
-                        self.expr(start)?
-                    } else {
-                        self.unit()
-                    };
-                    let end = if let Some(end) = end {
-                        self.expr(end)?
-                    } else {
-                        self.unit()
-                    };
-                    let inclusive = self.boolean(inclusive);
-                    Ok(self.runtime(
-                        if *safe {
-                            "ril_rt_safe_slice"
-                        } else {
-                            "ril_rt_slice"
-                        },
-                        vec![base, start, end, inclusive],
-                    ))
-                } else {
-                    let key = self.expr(*index)?;
-                    Ok(self.runtime(
-                        if *safe {
-                            "ril_rt_safe_load"
-                        } else {
-                            "ril_rt_load"
-                        },
-                        vec![base, key],
-                    ))
-                }
+                self.index(base, *index, false)
             }
             Expr::Interpolated(parts) => {
                 let mut accumulated = self.string("");
@@ -1048,6 +1009,9 @@ impl<'a> Builder<'_, 'a> {
         let def = self.global.typed.hir.definition(id);
         let name = def.name.value.as_str();
         if matches!(def.kind, DefinitionKind::Primitive(_)) {
+            if let Some(builtin) = self.global.typed.hir.text_builtin(id) {
+                return self.text_builtin(builtin, args);
+            }
             if let Some(module @ ("Fiber" | "Channel")) = self.global.typed.hir.primitive_module(id)
             {
                 return self.concurrent(module, name, args, span);
@@ -1400,6 +1364,27 @@ impl<'a> Builder<'_, 'a> {
             }
             _ => return Err(self.unsupported(span, &format!("primitive {name}"))),
         };
+        Ok(self.runtime(symbol, args))
+    }
+
+    fn text_builtin(&mut self, builtin: TextBuiltin, args: &[Argument]) -> Result<Register> {
+        use TextBuiltin::*;
+        let symbol = match builtin {
+            StartsWith => "ril_rt_str_starts_with",
+            EndsWith => "ril_rt_str_ends_with",
+            ScalarAt => "ril_rt_str_at",
+            Scalars => "ril_rt_str_scalars",
+            FromScalars => "ril_rt_str_from_scalars",
+            EncodeUtf8 => "ril_rt_encode_utf8",
+            DecodeUtf8 => "ril_rt_decode_utf8",
+            ByteAt => "ril_rt_bytes_at",
+            ToArray => "ril_rt_bytes_to_array",
+            FromArray => "ril_rt_bytes_from_array",
+        };
+        let args = args
+            .iter()
+            .map(|arg| self.expr(arg.value))
+            .collect::<Result<Vec<_>>>()?;
         Ok(self.runtime(symbol, args))
     }
 

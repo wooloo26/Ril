@@ -1199,6 +1199,9 @@ impl<'a> Analyzer<'a> {
         let ast = self.ast(ctx.file);
         let node = ast.expr(id);
         let span = node.span;
+        if let Some((base, steps)) = ast.navigation_chain(id) {
+            return self.navigate(ctx, ledger, base, &steps, span);
+        }
         let mut value = match &node.value {
             Expr::Path(path) => self.read(ctx, ledger, path),
             Expr::Unary { op, value } => {
@@ -1236,10 +1239,13 @@ impl<'a> Analyzer<'a> {
                     (op.value.as_str(), literal),
                     ("&&", Some(false)) | ("||", Some(true))
                 );
+                let fallible = op.value == "??" && self.ty(ast.expr(*left).span).is_result();
                 let rhs = if skip {
                     let mut dead = ctx.clone();
                     dead.reachable = false;
                     self.expr(&mut dead, &mut ledger.clone(), *right)
+                } else if fallible {
+                    self.fallback_handler(ctx, ledger, *right, span)
                 } else {
                     self.expr(ctx, ledger, *right)
                 };
@@ -1505,8 +1511,13 @@ impl<'a> Analyzer<'a> {
                 let result = self.call(ctx, ledger, callee, &args, span);
                 if *propagate {
                     ledger.inspect(&result);
+                    let mut payload =
+                        result.project(Coordinate::Index("0".into()), Access::Immutable);
+                    payload.results.clear();
+                    payload
+                } else {
+                    result
                 }
-                result
             }
             Expr::Transfer { kind, value } => {
                 let value = value
@@ -1895,7 +1906,10 @@ impl<'a> Analyzer<'a> {
     }
 
     fn member_schema(&self, base: Span, coordinate: &Coordinate) -> (Access, bool) {
-        let mut ty = self.ty(base);
+        self.schema(self.ty(base), coordinate)
+    }
+
+    fn schema(&self, mut ty: &'a Ty, coordinate: &Coordinate) -> (Access, bool) {
         if let Ty::Draft(inner) = ty {
             ty = inner;
         }
@@ -1923,6 +1937,64 @@ impl<'a> Analyzer<'a> {
         member.map_or((Access::Immutable, false), |member| {
             (Access::from_mode(member.mode.mode), member.mode.variable)
         })
+    }
+
+    fn navigate(
+        &mut self,
+        ctx: &mut Context,
+        ledger: &mut Ledger,
+        base: ExprId,
+        steps: &[ExprId],
+        span: Span,
+    ) -> Datum {
+        let ast = self.ast(ctx.file);
+        let mut value = self.expr(ctx, ledger, base);
+        let entry = ledger.clone();
+        let mut missing = Vec::new();
+        let mut ty = self.ty(ast.expr(base).span);
+        let payload = Coordinate::Index("0".into());
+        for &step in steps {
+            let step = ast.expr(step);
+            let (safe, index) = match &step.value {
+                Expr::Member { safe, .. } => (*safe, None),
+                Expr::Index { safe, index, .. } => (*safe, Some(*index)),
+                _ => ril_base::ice!("unexpected navigation step"),
+            };
+            if safe && let Ty::Option(inner) = ty {
+                let mut absent = ledger.clone();
+                absent.take_choice(step.span, 1);
+                missing.push(absent);
+                ledger.take_choice(step.span, 0);
+                value = value.project(payload.clone(), Access::Immutable);
+                ty = inner;
+            }
+            let coordinate = if let Some(index) = index {
+                self.expr(ctx, ledger, index);
+                self.index_coordinate(ctx, index)
+            } else if let Expr::Member { member, .. } = &step.value {
+                self.coordinate(ctx, ledger, member)
+            } else {
+                ril_base::ice!("unexpected navigation coordinate");
+            };
+            if safe && index.is_some() {
+                missing.push(ledger.clone());
+            }
+            value = value.project(coordinate.clone(), self.schema(ty, &coordinate).0);
+            ty = self
+                .program
+                .navigation_values
+                .get(&step.span)
+                .unwrap_or(&Ty::Unknown);
+        }
+        missing.push(ledger.clone());
+        ledger.merge(&entry, &missing);
+        if matches!(ty, Ty::Option(_)) {
+            value
+        } else {
+            let mut option = Datum::source(span, Access::Mut, true);
+            option.members.insert(payload, value);
+            option
+        }
     }
 }
 
