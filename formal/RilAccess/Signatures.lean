@@ -158,6 +158,26 @@ def viaDomainSubsumes [DecidableEq Mode] (subsumes : Sig → Sig → Bool)
     (revision.find? (fun current => decide (current.1 = old.1))).any (fun current =>
       subsumes old.2 current.2)
 
+inductive InvocationMode where
+  | input (mode : String)
+  | formal (index : Nat)
+  deriving Repr, DecidableEq
+
+structure CallbackInvocation where
+  receiver : Nat
+  parameter : Nat
+  mode : InvocationMode
+  deriving Repr, DecidableEq
+
+/-- Invoking a callback at an extra input mode adds a requirement on callers. -/
+def callbackInvocationsSubsumed (baseline revision : List CallbackInvocation) : Bool :=
+  revision.all (fun call => decide (call ∈ baseline))
+
+theorem callbackInvocationsSubsumed_iff {baseline revision : List CallbackInvocation} :
+    callbackInvocationsSubsumed baseline revision = true ↔
+      ∀ call ∈ revision, call ∈ baseline := by
+  simp [callbackInvocationsSubsumed, List.all_eq_true]
+
 theorem viaDomainSubsumes_preserves_row [DecidableEq Mode] {subsumes : Sig → Sig → Bool}
     {baseline revision : List (Mode × Sig)} {mode : Mode} {old : Sig}
     (h : viaDomainSubsumes subsumes baseline revision = true)

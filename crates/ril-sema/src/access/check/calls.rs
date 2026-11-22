@@ -115,6 +115,15 @@ impl Analyzer<'_> {
                 _ => None,
             }
         });
+        let indirect_template = target.as_ref().is_some_and(|target| {
+            target.roots.iter().any(|root| {
+                root.region.selection.is_empty()
+                    && (ctx.formals.contains(&Some(root.region.source))
+                        || self.definition(root.region.source).is_some_and(|id| {
+                            self.program.hir.definition(id).kind == DefinitionKind::Function
+                        }))
+            })
+        });
         let mut given = vec![false; sig.map_or(args.len(), |signature| signature.parameters.len())];
         let mut values = Vec::new();
         let mut value_spans = Vec::new();
@@ -152,6 +161,13 @@ impl Analyzer<'_> {
                         if (syntax.is_some_and(|fun| fun.body.is_some())
                             || !via_closures.is_empty())
                             && Self::forwards_via(ctx, &value) =>
+                    {
+                        Mode::Via
+                    }
+                    Mode::Plain
+                        if indirect_template
+                            && !value.roots.is_empty()
+                            && value.roots.iter().all(|root| root.inherits_mode) =>
                     {
                         Mode::Via
                     }
@@ -264,7 +280,19 @@ impl Analyzer<'_> {
                 "argument handoff ended the callable path",
             );
         }
+        if let (Some(target), Some(signature)) = (&target, sig) {
+            self.record_indirect_modes(ctx, target, signature, &values, &value_spans);
+        }
         for (&owner, modes) in &via_closures {
+            if let Some(signature) = sig {
+                self.record_callable_arguments(
+                    ctx,
+                    (owner, &modes.formals),
+                    signature,
+                    &values,
+                    &value_spans,
+                );
+            }
             for ((index, mode, argument), &argument_span) in values.iter().zip(&value_spans) {
                 for (_, axis) in modes
                     .member_axes
@@ -349,6 +377,13 @@ impl Analyzer<'_> {
                     .iter()
                     .map(|param| param.name.as_ref().map(|name| name.span))
                     .collect();
+                self.record_callable_arguments(
+                    ctx,
+                    (fun.name.span, &formals),
+                    signature,
+                    &values,
+                    &value_spans,
+                );
                 for (index, axis) in member_axes(signature, &formals) {
                     if let Some(((.., argument), &argument_span)) = values
                         .iter()

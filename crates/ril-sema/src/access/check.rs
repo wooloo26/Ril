@@ -14,13 +14,15 @@ use ril_frontend::{
 };
 
 use super::{
-    Access, Analysis, CleanupAction, Input, Instance, ReturnSource, Summary,
+    Access, Analysis, CleanupAction, Input, Instance, Invocation, InvocationMode, ReturnSource,
+    Summary,
     flow::{Coordinate, Datum, Ledger, Reception, Region, Slot, conflicts},
     horn::{self, Rule},
 };
 use crate::ty::{self, AdtKind, Callable, Ty, TypedProgram, Value, reception};
 
 mod calls;
+mod higher_order;
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 enum Obligation {
@@ -150,6 +152,8 @@ struct Analyzer<'a> {
     mode_uses: Vec<ModeUse>,
     member_schemas: BTreeMap<Span, Vec<Region>>,
     closure_modes: BTreeMap<Span, ClosureModes>,
+    higher_order: higher_order::Calls,
+    invocation_summaries: BTreeMap<Span, BTreeSet<Invocation>>,
     functions: Vec<DefinitionCheck>,
     done: BTreeSet<DefinitionId>,
     cleanups: BTreeMap<Span, CleanupAction>,
@@ -165,6 +169,8 @@ pub(super) fn analyze(program: &TypedProgram) -> (Analysis, Vec<Diagnostic>) {
         mode_uses: Vec::new(),
         member_schemas: BTreeMap::new(),
         closure_modes: BTreeMap::new(),
+        higher_order: higher_order::Calls::default(),
+        invocation_summaries: BTreeMap::new(),
         functions: Vec::new(),
         done: BTreeSet::new(),
         cleanups: BTreeMap::new(),
@@ -177,6 +183,7 @@ pub(super) fn analyze(program: &TypedProgram) -> (Analysis, Vec<Diagnostic>) {
         }
         analyzer.check_results(&ledger, &BTreeSet::new());
     }
+    analyzer.link_higher_order_calls();
     let facts = horn::solve(&analyzer.rules);
     for (premises, diagnostic) in std::mem::take(&mut analyzer.deferred_errors) {
         if premises.iter().all(|fact| facts.contains(fact))
@@ -710,6 +717,12 @@ impl<'a> Analyzer<'a> {
         let mut summary = Summary {
             return_sources: fun.return_sources.clone(),
             constructs: fun.returned_new,
+            invocations: self
+                .invocation_summaries
+                .remove(&fun.owner)
+                .into_iter()
+                .flatten()
+                .collect(),
             ..Summary::default()
         };
         let mut up = BTreeSet::new();
@@ -880,6 +893,15 @@ impl<'a> Analyzer<'a> {
         rows.into_iter()
             .map(|modes| {
                 let mut summary = summary.clone();
+                for invocation in &mut summary.invocations {
+                    if let InvocationMode::Formal(formal) = invocation.mode
+                        && let Some(&input) = formals.get(&formal).and_then(|&axis| modes.get(axis))
+                    {
+                        invocation.mode = InvocationMode::Input(input);
+                    }
+                }
+                summary.invocations.sort_unstable();
+                summary.invocations.dedup();
                 if fun.declared.result_mode == Mode::Infer {
                     summary.constructs = !fun.returns.is_empty()
                         && fun.returns.iter().all(|value| {
@@ -2122,9 +2144,10 @@ impl<'a> Analyzer<'a> {
         {
             Datum::source(span, Access::Mut, true)
         } else if !self.ty(span).is_value()
-            && self.definition(span).is_some_and(|def| {
-                self.program.hir.definition(def).kind == DefinitionKind::Constant
-            })
+            && matches!(
+                self.program.hir.definition(id).kind,
+                DefinitionKind::Constant | DefinitionKind::Function
+            )
         {
             Datum::source(decl, Access::Immutable, false)
         } else {

@@ -107,6 +107,42 @@ fn composite_via_rows_publish_the_attenuated_member_source() {
 }
 
 #[test]
+fn higher_order_via_rows_publish_callback_reception() {
+    use ril_sema::access::{Input, Invocation, InvocationMode};
+
+    let suite = parse_suite(
+        Path::new("via.ril"),
+        include_str!("../../../tests/08_via_compat/via.ril"),
+    )
+    .unwrap();
+    let case = suite
+        .cases
+        .iter()
+        .find(|case| case.id == "forwarding_preserves_higher_order_mode_requirements")
+        .unwrap();
+    let interface = Driver.interface(&case.pkg).unwrap();
+    let decoded = Interface::decode(&interface.encode().unwrap()).unwrap();
+    let export = decoded.functions.values().next().unwrap();
+    let invocation = |mode| Invocation {
+        receiver: 0,
+        parameter: 0,
+        mode,
+    };
+    assert_eq!(
+        export.summary.invocations,
+        [invocation(InvocationMode::Formal(1))]
+    );
+    assert_eq!(export.domain.len(), 25);
+    for row in &export.domain {
+        let [_, input]: [Input; 2] = row.modes.as_slice().try_into().unwrap();
+        assert_eq!(
+            row.summary.invocations,
+            [invocation(InvocationMode::Input(input))]
+        );
+    }
+}
+
+#[test]
 fn exported_horn_facts_agree_with_lean() {
     let Some(oracle) = std::env::var_os("RIL_HORN_ORACLE") else {
         return;
@@ -148,7 +184,7 @@ fn exported_horn_facts_agree_with_lean() {
 
 #[test]
 fn exported_summaries_and_via_domains_agree_with_lean() {
-    use ril_sema::access::{Coordinate, Instance, ReturnSource, Summary};
+    use ril_sema::access::{Coordinate, Instance, InvocationMode, ReturnSource, Summary};
     use serde_json::{Value, json};
 
     let Some(oracle) = std::env::var_os("RIL_HORN_ORACLE") else {
@@ -224,11 +260,28 @@ fn exported_summaries_and_via_domains_agree_with_lean() {
                 })
             })
             .collect();
+        let invocations: Vec<_> = summary
+            .invocations
+            .iter()
+            .map(|invoke| {
+                let (input, formal) = match invoke.mode {
+                    InvocationMode::Input(input) => (Some(input), None),
+                    InvocationMode::Formal(formal) => (None, Some(formal)),
+                };
+                json!({
+                    "receiver": invoke.receiver,
+                    "parameter": invoke.parameter,
+                    "input": input,
+                    "formal": formal,
+                })
+            })
+            .collect();
         json!({
             "writes": summary.writes,
             "retained": summary.retained,
             "return_sources": return_sources,
             "effects": effects,
+            "invocations": invocations,
             "captures": summary.captures,
             "constructs": summary.constructs,
         })

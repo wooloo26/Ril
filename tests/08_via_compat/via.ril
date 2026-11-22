@@ -52,6 +52,52 @@ fn invalid() -> () {
     -- ^ E0407
 }
 
+-- @case higher_order_callback_requires_a_writable_forwarded_argument compile-fail E0520
+fn apply(via action: fn(via Cell) @& -> int, via cell: Cell) -> int { action(cell) }
+fn change(via cell: Cell) -> int { cell.count += 1; cell.count }
+fn invalid() -> int {
+    let snapshot = Cell.{ count: 41 }
+    apply(change, snapshot)
+    -- ^ E0520
+}
+
+-- @case higher_order_writable_and_plain_instantiations_are_independent compile-pass
+fn apply(via action: fn(via Cell) @& -> int, via cell: Cell) -> int { action(cell) }
+fn relay(via action: fn(via Cell) @& -> int, via cell: Cell) -> int { apply(action, cell) }
+fn change(via cell: Cell) -> int { cell.count += 1; cell.count }
+fn read(via cell: Cell) -> int { cell.count }
+fn run() -> int {
+    let snapshot = Cell.{ count: 12 }
+    let mut live = Cell.{ count: 29 }
+    relay(read, snapshot) + relay(change, mut live)
+}
+
+-- @case higher_order_argument_demands_survive_recursion_and_named_values compile-fail E0520
+fn apply(via action: fn(via Cell) @& -> int, via cell: Cell, recur: bool) -> int {
+    if recur { apply(action, cell, false) } else { action(cell) }
+}
+fn change(via cell: Cell) -> int { cell.count += 1; cell.count }
+fn invalid() -> int {
+    let snapshot = Cell.{ count: 41 }
+    let action = change
+    apply(action, snapshot, true)
+    -- ^ E0520
+}
+
+-- @case adding_a_higher_order_mode_requirement_breaks_compatibility compat-fail E0552
+-- @baseline
+pub fn apply(via action: fn(via Cell) @& -> int, via cell: Cell) -> int { cell.count }
+-- @revision
+pub fn apply(via action: fn(via Cell) @& -> int, via cell: Cell) -> int { action(cell) }
+-- ^ E0552
+
+-- @case forwarding_preserves_higher_order_mode_requirements compat-pass
+-- @baseline
+pub fn apply(via action: fn(via Cell) @& -> int, via cell: Cell) -> int { action(cell) }
+-- @revision
+fn relay(via action: fn(via Cell) @& -> int, via cell: Cell) -> int { action(cell) }
+pub fn apply(via action: fn(via Cell) @& -> int, via cell: Cell) -> int { relay(action, cell) }
+
 -- @case higher_order_infer_can_use_an_enclosing_mode_input compile-pass
 fn accept(via callback: fn() @& -> infer Cell) -> () {}
 

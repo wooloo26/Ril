@@ -18,6 +18,7 @@ pub struct Summary {
     pub retained: Vec<usize>,
     pub return_sources: Vec<ReturnSource>,
     pub effects: Vec<String>,
+    pub invocations: Vec<Invocation>,
     pub captures: bool,
     pub constructs: bool,
 }
@@ -39,10 +40,27 @@ impl Summary {
             && (!revised.captures || self.captures)
             && (!self.constructs || revised.constructs)
             && revised
+                .invocations
+                .iter()
+                .all(|invoke| self.invocations.contains(invoke))
+            && revised
                 .return_sources
                 .iter()
                 .all(|source| self.return_sources.contains(source))
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+pub enum InvocationMode {
+    Input(Input),
+    Formal(usize),
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+pub struct Invocation {
+    pub receiver: usize,
+    pub parameter: usize,
+    pub mode: InvocationMode,
 }
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]

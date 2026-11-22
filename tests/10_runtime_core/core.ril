@@ -30,6 +30,20 @@ fn main() -> () {
     assert(moved.count == 42)
 }
 
+-- @case higher_order_via_callbacks_accept_different_modes_at_each_call run-pass backend=both
+type Cell = .{ var count: int }
+fn apply(via action: fn(via Cell) @& -> int, via cell: Cell) -> int { action(cell) }
+fn relay(via action: fn(via Cell) @& -> int, via cell: Cell) -> int { apply(action, cell) }
+fn change(via cell: Cell) -> int { cell.count += 1; cell.count }
+fn read(via cell: Cell) -> int { cell.count }
+fn main() -> () {
+    let snapshot = Cell.{ count: 4 }
+    assert(relay(read, snapshot) == 4)
+    let mut live = Cell.{ count: 41 }
+    assert(relay(change, mut live) == 42)
+    assert(live.count == 42 && snapshot.count == 4)
+}
+
 -- @case alternative_patterns_bind_from_the_selected_side run-pass backend=both
 fn chosen(input: (bool, int, int)) -> int {
     match input { (true, result, _) | (false, _, result) -> result }

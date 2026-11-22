@@ -31,11 +31,23 @@ structure JsonSource where
 
 def JsonSource.parameter (formal : Nat) : JsonSource := ⟨formal, [], [], 0⟩
 
+structure JsonInvocation where
+  receiver : Nat
+  parameter : Nat
+  input : Option String
+  formal : Option Nat
+  deriving FromJson
+
+def JsonInvocation.contract (call : JsonInvocation) : RilAccess.CallbackInvocation :=
+  ⟨call.receiver, call.parameter,
+    call.formal.elim (.input (call.input.getD "")) .formal⟩
+
 structure JsonSummary where
   writes : List Nat
   retained : List Nat
   return_sources : List JsonSource
   effects : List Nat
+  invocations : List JsonInvocation
   captures : Bool
   constructs : Bool
   deriving FromJson
@@ -55,6 +67,8 @@ structure JsonComparison where
 
 def compareSummaries (baseline revision : JsonSummary) : Bool :=
   RilAccess.SummaryOf.subsumesBy (fun _ => false) baseline.formal revision.formal &&
+    RilAccess.callbackInvocationsSubsumed (baseline.invocations.map JsonInvocation.contract)
+      (revision.invocations.map JsonInvocation.contract) &&
     (!baseline.constructs || revision.constructs)
 
 structure JsonInstance where
