@@ -26,6 +26,8 @@ def cases : List (String × List (List Branch)) :=
   [("recursion_can_keep_a_guaranteed_storage_contract", [[.call 0 [0, 1], .store 1]]),
    ("mutual_recursion_publishes_both_replacement_sources",
      [[.call 1 [0, 2, 1], .store 1], [.call 0 [0, 1, 2]]]),
+   ("alias_dispatch_can_write_one_of_two_destinations",
+     [[.call 1 [0, 1], .call 2 [0, 1]], [.store 1], [.unchanged]]),
    ("recursive_store_can_preserve_the_entry_value", [[.call 0 [0, 1], .store 1, .unchanged]]),
    ("propagation_can_exit_before_a_storage_update", [[.store 1, .unchanged]])]
 
@@ -37,7 +39,7 @@ def examples : List (String × Bool) :=
     decide (outcomes 8 [[.call 0 [0, 1]]] 0 = [])) ::
   ("recursive storage: finite examples stabilize", cases.all fun (_, bodies) =>
     decide (observe 8 bodies = observe 9 bodies)) ::
-  (cases.zip [(true, [1]), (true, [1, 2]), (false, [1]), (false, [1])]).map
+  (cases.zip [(true, [1]), (true, [1, 2]), (false, [1]), (false, [1]), (false, [1])]).map
     fun ((name, bodies), expected) => (name, decide (observe 8 bodies = expected))
 
 theorem examples_all_pass : examples.all Prod.snd = true := by decide +kernel

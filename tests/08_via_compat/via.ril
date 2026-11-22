@@ -93,6 +93,31 @@ fn relay(mut shelf: Shelf, ^mut a: Cell, ^mut b: Cell) &mut &^mut -> () {
     store(mut shelf, ^mut a, ^mut b, false)
 }
 
+-- @case alias_dispatch_can_write_one_of_two_destinations compile-pass
+pub type Shelf = .{ var ^mut item: Cell, var ^mut spare: Cell }
+fn first(mut shelf: Shelf, ^mut value: Cell) &mut &^mut -> () {
+    shelf.item = ^mut value
+}
+fn second(mut shelf: Shelf, ^mut value: Cell) &mut &^mut -> () {
+    shelf.spare = ^mut value
+}
+pub fn store(mut shelf: Shelf, ^mut value: Cell, choose_first: bool) &mut &^mut -> () {
+    let write = if choose_first { first } else { second }
+    write(mut shelf, ^mut value)
+}
+
+-- @case alias_call_forwards_a_via_member_reception compile-fail E0520
+fn change(via value: Cell) -> () { value.count += 1 }
+fn relay(mut shelf: .{ via item: Cell }) &mut -> () {
+    let write = change
+    write(shelf.item)
+}
+fn invalid() -> () {
+    let mut shelf = .{ item: Cell.{ count: 42 } }
+    relay(mut shelf)
+    -- ^ E0520
+}
+
 -- @case recursive_store_can_preserve_the_entry_value compile-pass
 pub type Shelf = .{ var ^mut item: Cell }
 pub fn store(mut shelf: Shelf, ^mut value: Cell, n: int) &mut &^mut -> () {

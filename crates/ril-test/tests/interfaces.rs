@@ -141,7 +141,7 @@ fn published_storage_updates_keep_the_destination_and_written_source() {
 }
 
 #[test]
-fn recursive_storage_contracts_agree_with_lean() {
+fn storage_contracts_agree_with_lean() {
     use ril_sema::access::Coordinate;
 
     let Some(oracle) = std::env::var_os("RIL_HORN_ORACLE") else {
@@ -154,7 +154,7 @@ fn recursive_storage_contracts_agree_with_lean() {
     .unwrap();
     let output = query(&oracle, "recursive-storage", b"[]").unwrap();
     let contracts = serde_json::from_slice::<Vec<(String, (bool, Vec<usize>))>>(&output).unwrap();
-    assert_eq!(contracts.len(), 4);
+    assert_eq!(contracts.len(), 5);
     for (case_id, (definite, formals)) in contracts {
         let case = suite.cases.iter().find(|case| case.id == case_id).unwrap();
         let interface = Driver.interface(&case.pkg).unwrap();

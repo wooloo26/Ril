@@ -5,8 +5,8 @@ use ril_base::{
     span::Span,
 };
 use ril_frontend::{
-    hir::DefinitionKind,
-    syntax::{Argument, Expr, ExprId, Handler, Mode, StateKind, StmtKind},
+    hir::{DefinitionId, DefinitionKind},
+    syntax::{Argument, Expr, ExprId, Function, Handler, Mode, StateKind, StmtKind},
 };
 
 use crate::{
@@ -14,7 +14,7 @@ use crate::{
         CallbackArgument, CallbackReturn, InvocationMode, ReturnSource,
         flow::{CallbackOrigin, Handoff, Revocation},
     },
-    ty::Ty,
+    ty::{Callable, Ty},
 };
 
 use super::{
@@ -37,7 +37,16 @@ pub(super) struct CallbackResult {
     spans: Vec<Span>,
 }
 
-impl Analyzer<'_> {
+impl<'program> Analyzer<'program> {
+    fn function_syntax(&self, id: DefinitionId) -> Option<&'program Function> {
+        let def = self.program.hir.definition(id);
+        let stmt = def.stmt?;
+        match &self.ast(def.name.span.file).stmt(stmt).value.kind {
+            StmtKind::Function(fun) => Some(fun),
+            _ => None,
+        }
+    }
+
     pub(super) fn fallback_handler(
         &mut self,
         ctx: &mut Context,
@@ -112,6 +121,37 @@ impl Analyzer<'_> {
                     root.region.selection.is_empty() && closures.contains_key(&root.region.source)
                 })
         });
+        let aliases: BTreeMap<_, _> = target
+            .iter()
+            .flat_map(|target| &target.roots)
+            .filter(|root| root.region.selection.is_empty())
+            .filter_map(|root| {
+                let owner = root.region.source;
+                let id = self.definition(owner)?;
+                if self.program.hir.definition(id).kind != DefinitionKind::Function {
+                    return None;
+                }
+                let fun = self.function_syntax(id)?;
+                // The body can be replayed without resolving a captured environment.
+                (fun.body.is_some()
+                    && !fun.is_meta
+                    && fun
+                        .signature
+                        .obligations
+                        .state
+                        .iter()
+                        .all(|clause| clause.kind != StateKind::Environment))
+                .then_some((owner, (id, fun)))
+            })
+            .collect();
+        let all_aliases_known = !aliases.is_empty()
+            && target.as_ref().is_some_and(|target| {
+                target.roots.iter().all(|root| {
+                    root.region.selection.is_empty()
+                        && (aliases.contains_key(&root.region.source)
+                            || closures.contains_key(&root.region.source))
+                })
+            });
         if let Some(target) = &target {
             let requires_writer = sig.is_some_and(|sig| sig.state.iter().any(|s| s == "up"));
             if requires_writer && target.invocations.is_empty() {
@@ -131,14 +171,7 @@ impl Analyzer<'_> {
                 self.effect(ctx, ledger, effect, span);
             }
         }
-        let syntax = id.and_then(|id| {
-            let def = self.program.hir.definition(id);
-            let stmt = def.stmt?;
-            match &self.ast(def.name.span.file).stmt(stmt).value.kind {
-                StmtKind::Function(fun) => Some(fun.as_ref()),
-                _ => None,
-            }
-        });
+        let syntax = id.and_then(|id| self.function_syntax(id));
         let indirect_template = target.as_ref().is_some_and(|target| {
             target.roots.iter().any(|root| {
                 root.region.selection.is_empty()
@@ -189,7 +222,9 @@ impl Analyzer<'_> {
                 let mode = match arg.mode {
                     Mode::Plain if value.requires_new => Mode::New,
                     Mode::Plain
-                        if (syntax.is_some_and(|fun| fun.body.is_some()) || has_via_closures)
+                        if (syntax.is_some_and(|fun| fun.body.is_some())
+                            || has_via_closures
+                            || all_aliases_known)
                             && Self::forwards_via(ctx, &value) =>
                     {
                         Mode::Via
@@ -301,10 +336,16 @@ impl Analyzer<'_> {
                 }
             }
         }
-        if !choices.is_empty()
-            && let Some(callee) = id
-        {
-            self.mode_uses.push(ModeUse { callee, choices });
+        if !choices.is_empty() {
+            if all_aliases_known {
+                self.mode_uses
+                    .extend(aliases.values().map(|&(callee, _)| ModeUse {
+                        callee,
+                        choices: choices.clone(),
+                    }));
+            } else if let Some(callee) = id {
+                self.mode_uses.push(ModeUse { callee, choices });
+            }
         }
         if let Some(target) = &target {
             self.check_live(
@@ -315,7 +356,7 @@ impl Analyzer<'_> {
                 "argument handoff ended the callable path",
             );
         }
-        if let (Some(target), Some(signature)) = (&target, sig) {
+        if !all_aliases_known && let (Some(target), Some(signature)) = (&target, sig) {
             self.record_indirect_modes(
                 ctx,
                 target,
@@ -354,7 +395,7 @@ impl Analyzer<'_> {
                         (*mode, argument, argument_span),
                         (
                             modes.via.contains(&formal),
-                            all_closures_known && modes.models_publication,
+                            (all_closures_known || all_aliases_known) && modes.models_publication,
                         ),
                     );
                 }
@@ -402,270 +443,66 @@ impl Analyzer<'_> {
             }
         }
         if let Some(fun) = syntax {
-            let lexical = fun
-                .signature
-                .obligations
-                .state
-                .iter()
-                .filter(|clause| clause.kind == StateKind::Environment)
-                .flat_map(|clause| &clause.bindings)
-                .filter_map(|(_, path)| self.declaration(path.span))
-                .map(|decl| (decl, BTreeSet::from([decl])))
-                .collect();
-            let enclosing = Datum {
-                invocations: BTreeMap::from([(fun.name.span, lexical)]),
-                ..Datum::default()
-            };
-            self.link_invocation(ctx, &enclosing);
-            let has_body = fun.body.is_some();
-            let mut before_updates = None;
-            let mut modeled_stores = false;
-            let mut normal_exit = true;
-            if has_body && ctx.reachable && !ctx.shadow {
-                self.function(fun, ledger);
-                let checked = self
-                    .functions
-                    .iter()
-                    .find(|checked| checked.owner == fun.name.span)
-                    .map(CallStorage::updates_of);
-                let storage = checked.or_else(|| {
-                    if !fun.is_meta {
-                        self.recursive_calls.insert(fun.name.span);
-                    }
-                    self.recursive_storage.get(&fun.name.span).cloned()
-                });
-                if let Some(storage) = storage {
-                    normal_exit =
-                        self.recursive_storage.is_empty() || fun.is_meta || storage.normal_exit;
-                    modeled_stores = true;
-                    if !storage.updates.is_empty() {
-                        let frozen = ledger.clone();
-                        modeled_stores = self.apply_storage_updates(
-                            ctx,
-                            storage,
-                            &CallEntry {
-                                arguments: &values,
-                                spans: &value_spans,
-                                ledger: &frozen,
-                                span,
-                            },
-                            ledger,
-                        );
-                        before_updates = Some(frozen);
-                    }
-                }
-            }
-            if has_body && let Some(signature) = sig {
-                let formals: Vec<_> = fun
-                    .signature
-                    .params
-                    .iter()
-                    .map(|param| param.name.as_ref().map(|name| name.span))
-                    .collect();
-                self.record_callable_arguments(
-                    ctx,
-                    (fun.name.span, &formals),
-                    signature,
-                    &values,
-                    &value_spans,
-                    (span, ledger),
-                );
-                for (index, axis) in member_axes(signature, &formals) {
-                    if let Some(((.., argument), &argument_span)) = values
-                        .iter()
-                        .zip(&value_spans)
-                        .find(|((position, ..), _)| *position == index)
-                    {
-                        self.link_schema_argument(
-                            ctx,
-                            fun.name.span,
-                            axis,
-                            argument,
-                            argument_span,
-                        );
-                    }
-                }
-            }
-            for (index, mode, value) in &values {
-                let formal = fun
-                    .signature
-                    .params
-                    .get(*index)
-                    .and_then(|param| param.name.as_ref())
-                    .map(|name| name.span);
-                if let Some(formal) = formal.filter(|_| has_body) {
-                    let invocation = Fact {
-                        owner: fun.name.span,
-                        obligation: Obligation::Invoke(formal),
-                    };
-                    if *mode == Mode::Via {
-                        self.forward_via_input(ctx, ledger, value, (fun.name.span, formal), span);
-                    }
-                    self.link_invocation_if(ctx, value, Some(&invocation));
-                    if ctx.reachable && !ctx.shadow {
-                        for source in value.root_dependencies() {
-                            self.rules.push(Rule {
-                                premises: vec![invocation.clone()],
-                                conclusion: Fact {
-                                    owner: ctx.owner,
-                                    obligation: Obligation::Invoke(source),
-                                },
-                            });
-                        }
-                        if matches!(mode, Mode::Mut | Mode::Shared | Mode::New | Mode::Via) {
-                            let existing: BTreeSet<_> = value
-                                .origins()
-                                .filter(|origin| {
-                                    origin.mode.writes()
-                                        && (!origin.new
-                                            || *mode == Mode::New
-                                                && ctx
-                                                    .formals
-                                                    .contains(&Some(origin.region.source)))
-                                })
-                                .flat_map(|origin| {
-                                    std::iter::once(Obligation::WriteExisting(origin.region.source))
-                                        .chain(
-                                            origin
-                                                .dependencies
-                                                .iter()
-                                                .copied()
-                                                .map(Obligation::Write),
-                                        )
-                                })
-                                .collect();
-                            for obligation in existing {
-                                self.rules.push(Rule {
-                                    premises: vec![Fact {
-                                        owner: fun.name.span,
-                                        obligation: Obligation::WriteExisting(formal),
-                                    }],
-                                    conclusion: Fact {
-                                        owner: ctx.owner,
-                                        obligation,
-                                    },
-                                });
-                            }
-                        }
-                    }
-                }
-                if matches!(mode, Mode::Mut | Mode::Shared | Mode::New | Mode::Via) {
-                    let origins: BTreeSet<_> = value.root_dependencies().collect();
-                    for source in origins {
-                        if let Some(formal) = formal
-                            && has_body
-                            && ctx.reachable
-                            && !ctx.shadow
-                        {
-                            self.rules.push(Rule {
-                                premises: vec![Fact {
-                                    owner: fun.name.span,
-                                    obligation: Obligation::Write(formal),
-                                }],
-                                conclusion: Fact {
-                                    owner: ctx.owner,
-                                    obligation: Obligation::Write(source),
-                                },
-                            });
-                            if matches!(mode, Mode::Shared | Mode::Via) {
-                                let causes = [
-                                    Some(Obligation::Share(formal)),
-                                    (!modeled_stores).then_some(Obligation::StoreShare(formal)),
-                                ];
-                                for cause in causes.into_iter().flatten() {
-                                    for obligation in
-                                        [Obligation::Retain(source), Obligation::Share(source)]
-                                    {
-                                        self.rules.push(Rule {
-                                            premises: vec![Fact {
-                                                owner: fun.name.span,
-                                                obligation: cause.clone(),
-                                            }],
-                                            conclusion: Fact {
-                                                owner: ctx.owner,
-                                                obligation,
-                                            },
-                                        });
-                                    }
-                                }
-                            }
-                        } else if sig
-                            .is_some_and(|sig| sig.state.iter().any(|state| state == "mut"))
-                        {
-                            self.seed(ctx, Obligation::Write(source));
-                        }
-                    }
-                }
-            }
-            ledger.no_continuation |= !normal_exit;
-            if fun.is_meta {
-                return self.snapshot_value(span);
-            }
-            if matches!(
-                fun.signature.result_mode,
-                Mode::New | Mode::Infer | Mode::Ref | Mode::Shared
-            ) {
-                self.function(fun, ledger);
-                let entry = CallEntry {
-                    arguments: &values,
-                    spans: &value_spans,
-                    ledger: before_updates.as_ref().unwrap_or(ledger),
-                    span,
-                };
-                if let Some(mut result) = self.return_template(fun, &entry) {
-                    if matches!(fun.signature.result_mode, Mode::Ref | Mode::Shared) {
-                        result.requires_new = false;
-                        for root in &mut result.roots {
-                            root.fix_mode(Access::from_mode(fun.signature.result_mode));
-                            root.new = false;
-                        }
-                    }
-                    return result;
-                }
-            }
-            let sources = self.declared_sources(&fun.signature);
-            let mut result = match fun.signature.result_mode {
-                Mode::New => Datum::source(span, Access::Mut, true),
-                Mode::Ref | Mode::Shared => {
-                    let selected = fun
-                        .signature
-                        .result_sources
-                        .iter()
-                        .filter_map(|name| self.declaration(name.span));
-                    let mut result = self
-                        .source_args(fun, &values, selected)
-                        .reduce(Datum::joined)
-                        .unwrap_or_default();
-                    result.transform(&mut |origin| {
-                        origin.fix_mode(Access::from_mode(fun.signature.result_mode));
-                        origin.new = false;
-                    });
-                    result.requires_new = false;
-                    result
-                }
-                Mode::Infer => self.inferred_forwarding(fun, &values, span),
-                _ => self.snapshot_value(span),
-            };
-            for (index, (mode, source)) in sources.into_iter().enumerate() {
-                if let Some(mut value) = self
-                    .source_args(fun, &values, std::iter::once(source))
-                    .next()
-                {
-                    value.transform(&mut |origin| {
-                        origin.fix_mode(mode);
-                        origin.new = false;
-                    });
-                    result
-                        .members
-                        .insert(Coordinate::Index(index.to_string()), value);
-                }
-            }
-            return result;
+            return self.named_call(ctx, ledger, fun, sig, (&values, &value_spans), span);
         }
         if let Some(def) = def
             && matches!(def.kind, DefinitionKind::Type | DefinitionKind::Variant(_))
         {
             return constructor(span, values);
+        }
+        if all_aliases_known && let Some(receiver) = &target {
+            let before = ledger.clone();
+            let mut alternatives = Vec::new();
+            let mut outputs = Vec::new();
+            for &(id, fun) in aliases.values() {
+                let mut after = before.clone();
+                let actual = self
+                    .program
+                    .callables
+                    .get(&id)
+                    .map(|signature| signature.as_ref());
+                let mut result =
+                    self.named_call(ctx, &mut after, fun, actual, (&values, &value_spans), span);
+                if !after.no_continuation {
+                    if sig.is_some_and(|signature| signature.result_mode == Mode::Plain)
+                        && fun.signature.result_mode == Mode::New
+                    {
+                        result = self.snapshot_value(span);
+                    }
+                    outputs.push(result);
+                    alternatives.push(after);
+                }
+            }
+            if !closures.is_empty() {
+                let entry = CallEntry {
+                    arguments: &values,
+                    spans: &value_spans,
+                    ledger: &before,
+                    span,
+                };
+                let mut receiver = receiver.clone();
+                receiver
+                    .roots
+                    .retain(|root| closures.contains_key(&root.region.source));
+                let mut result = self
+                    .callback_return(&receiver, &entry)
+                    .unwrap_or_else(|| self.snapshot_value(span));
+                if sig.is_some_and(|signature| signature.result_mode == Mode::Plain)
+                    && result.requires_new
+                {
+                    result = self.snapshot_value(span);
+                }
+                outputs.push(result);
+                alternatives.push(
+                    self.closure_storage(ctx, &closures, &entry)
+                        .unwrap_or_else(|| before.clone()),
+                );
+            }
+            ledger.merge(&before, &alternatives);
+            return outputs
+                .into_iter()
+                .reduce(Datum::joined)
+                .unwrap_or_default();
         }
         let before_updates = if all_closures_known {
             self.closure_storage(
@@ -725,6 +562,262 @@ impl Analyzer<'_> {
             }
         }
         self.snapshot_value(span)
+    }
+
+    fn named_call(
+        &mut self,
+        ctx: &Context,
+        ledger: &mut Ledger,
+        fun: &Function,
+        sig: Option<&Callable>,
+        (values, value_spans): (&[(usize, Mode, Datum)], &[Span]),
+        span: Span,
+    ) -> Datum {
+        let lexical = fun
+            .signature
+            .obligations
+            .state
+            .iter()
+            .filter(|clause| clause.kind == StateKind::Environment)
+            .flat_map(|clause| &clause.bindings)
+            .filter_map(|(_, path)| self.declaration(path.span))
+            .map(|decl| (decl, BTreeSet::from([decl])))
+            .collect();
+        let enclosing = Datum {
+            invocations: BTreeMap::from([(fun.name.span, lexical)]),
+            ..Datum::default()
+        };
+        self.link_invocation(ctx, &enclosing);
+        let has_body = fun.body.is_some();
+        let mut before_updates = None;
+        let mut modeled_stores = false;
+        let mut normal_exit = true;
+        if has_body && ctx.reachable && !ctx.shadow {
+            self.function(fun, ledger);
+            let checked = self
+                .functions
+                .iter()
+                .find(|checked| checked.owner == fun.name.span)
+                .map(CallStorage::updates_of);
+            let storage = checked.or_else(|| {
+                if !fun.is_meta {
+                    self.recursive_calls.insert(fun.name.span);
+                }
+                self.recursive_storage.get(&fun.name.span).cloned()
+            });
+            if let Some(storage) = storage {
+                normal_exit =
+                    self.recursive_storage.is_empty() || fun.is_meta || storage.normal_exit;
+                modeled_stores = true;
+                if !storage.updates.is_empty() {
+                    let frozen = ledger.clone();
+                    modeled_stores = self.apply_storage_updates(
+                        ctx,
+                        storage,
+                        &CallEntry {
+                            arguments: values,
+                            spans: value_spans,
+                            ledger: &frozen,
+                            span,
+                        },
+                        ledger,
+                    );
+                    before_updates = Some(frozen);
+                }
+            }
+        }
+        if has_body && let Some(signature) = sig {
+            let formals: Vec<_> = fun
+                .signature
+                .params
+                .iter()
+                .map(|param| param.name.as_ref().map(|name| name.span))
+                .collect();
+            self.record_callable_arguments(
+                ctx,
+                (fun.name.span, &formals),
+                signature,
+                values,
+                value_spans,
+                (span, ledger),
+            );
+            for (index, axis) in member_axes(signature, &formals) {
+                if let Some(((.., argument), &argument_span)) = values
+                    .iter()
+                    .zip(value_spans)
+                    .find(|((position, ..), _)| *position == index)
+                {
+                    self.link_schema_argument(ctx, fun.name.span, axis, argument, argument_span);
+                }
+            }
+        }
+        for (index, mode, value) in values {
+            let formal = fun
+                .signature
+                .params
+                .get(*index)
+                .and_then(|param| param.name.as_ref())
+                .map(|name| name.span);
+            if let Some(formal) = formal.filter(|_| has_body) {
+                let invocation = Fact {
+                    owner: fun.name.span,
+                    obligation: Obligation::Invoke(formal),
+                };
+                if *mode == Mode::Via {
+                    self.forward_via_input(ctx, ledger, value, (fun.name.span, formal), span);
+                }
+                self.link_invocation_if(ctx, value, Some(&invocation));
+                if ctx.reachable && !ctx.shadow {
+                    for source in value.root_dependencies() {
+                        self.rules.push(Rule {
+                            premises: vec![invocation.clone()],
+                            conclusion: Fact {
+                                owner: ctx.owner,
+                                obligation: Obligation::Invoke(source),
+                            },
+                        });
+                    }
+                    if matches!(mode, Mode::Mut | Mode::Shared | Mode::New | Mode::Via) {
+                        let existing: BTreeSet<_> = value
+                            .origins()
+                            .filter(|origin| {
+                                origin.mode.writes()
+                                    && (!origin.new
+                                        || *mode == Mode::New
+                                            && ctx.formals.contains(&Some(origin.region.source)))
+                            })
+                            .flat_map(|origin| {
+                                std::iter::once(Obligation::WriteExisting(origin.region.source))
+                                    .chain(
+                                        origin.dependencies.iter().copied().map(Obligation::Write),
+                                    )
+                            })
+                            .collect();
+                        for obligation in existing {
+                            self.rules.push(Rule {
+                                premises: vec![Fact {
+                                    owner: fun.name.span,
+                                    obligation: Obligation::WriteExisting(formal),
+                                }],
+                                conclusion: Fact {
+                                    owner: ctx.owner,
+                                    obligation,
+                                },
+                            });
+                        }
+                    }
+                }
+            }
+            if matches!(mode, Mode::Mut | Mode::Shared | Mode::New | Mode::Via) {
+                let origins: BTreeSet<_> = value.root_dependencies().collect();
+                for source in origins {
+                    if let Some(formal) = formal
+                        && has_body
+                        && ctx.reachable
+                        && !ctx.shadow
+                    {
+                        self.rules.push(Rule {
+                            premises: vec![Fact {
+                                owner: fun.name.span,
+                                obligation: Obligation::Write(formal),
+                            }],
+                            conclusion: Fact {
+                                owner: ctx.owner,
+                                obligation: Obligation::Write(source),
+                            },
+                        });
+                        if matches!(mode, Mode::Shared | Mode::Via) {
+                            let causes = [
+                                Some(Obligation::Share(formal)),
+                                (!modeled_stores).then_some(Obligation::StoreShare(formal)),
+                            ];
+                            for cause in causes.into_iter().flatten() {
+                                for obligation in
+                                    [Obligation::Retain(source), Obligation::Share(source)]
+                                {
+                                    self.rules.push(Rule {
+                                        premises: vec![Fact {
+                                            owner: fun.name.span,
+                                            obligation: cause.clone(),
+                                        }],
+                                        conclusion: Fact {
+                                            owner: ctx.owner,
+                                            obligation,
+                                        },
+                                    });
+                                }
+                            }
+                        }
+                    } else if sig.is_some_and(|sig| sig.state.iter().any(|state| state == "mut")) {
+                        self.seed(ctx, Obligation::Write(source));
+                    }
+                }
+            }
+        }
+        ledger.no_continuation |= !normal_exit;
+        if fun.is_meta {
+            return self.snapshot_value(span);
+        }
+        if matches!(
+            fun.signature.result_mode,
+            Mode::New | Mode::Infer | Mode::Ref | Mode::Shared
+        ) {
+            self.function(fun, ledger);
+            let entry = CallEntry {
+                arguments: values,
+                spans: value_spans,
+                ledger: before_updates.as_ref().unwrap_or(ledger),
+                span,
+            };
+            if let Some(mut result) = self.return_template(fun, &entry) {
+                if matches!(fun.signature.result_mode, Mode::Ref | Mode::Shared) {
+                    result.requires_new = false;
+                    for root in &mut result.roots {
+                        root.fix_mode(Access::from_mode(fun.signature.result_mode));
+                        root.new = false;
+                    }
+                }
+                return result;
+            }
+        }
+        let sources = self.declared_sources(&fun.signature);
+        let mut result = match fun.signature.result_mode {
+            Mode::New => Datum::source(span, Access::Mut, true),
+            Mode::Ref | Mode::Shared => {
+                let selected = fun
+                    .signature
+                    .result_sources
+                    .iter()
+                    .filter_map(|name| self.declaration(name.span));
+                let mut result = self
+                    .source_args(fun, values, selected)
+                    .reduce(Datum::joined)
+                    .unwrap_or_default();
+                result.transform(&mut |origin| {
+                    origin.fix_mode(Access::from_mode(fun.signature.result_mode));
+                    origin.new = false;
+                });
+                result.requires_new = false;
+                result
+            }
+            Mode::Infer => self.inferred_forwarding(fun, values, span),
+            _ => self.snapshot_value(span),
+        };
+        for (index, (mode, source)) in sources.into_iter().enumerate() {
+            if let Some(mut value) = self
+                .source_args(fun, values, std::iter::once(source))
+                .next()
+            {
+                value.transform(&mut |origin| {
+                    origin.fix_mode(mode);
+                    origin.new = false;
+                });
+                result
+                    .members
+                    .insert(Coordinate::Index(index.to_string()), value);
+            }
+        }
+        result
     }
 
     pub(super) fn link_invocation(&mut self, ctx: &Context, target: &Datum) {
@@ -1446,14 +1539,11 @@ impl Analyzer<'_> {
                 }
                 continue;
             }
-            let def = self.program.hir.definition(self.definition(span)?);
-            if def.kind != DefinitionKind::Function {
+            let id = self.definition(span)?;
+            if self.program.hir.definition(id).kind != DefinitionKind::Function {
                 return None;
             }
-            let StmtKind::Function(fun) = &self.ast(def.name.span.file).stmt(def.stmt?).value.kind
-            else {
-                return None;
-            };
+            let fun = self.function_syntax(id)?;
             self.function(fun, entry.ledger);
             let mut result = self.return_template(fun, entry)?;
             if matches!(fun.signature.result_mode, Mode::Ref | Mode::Shared) {

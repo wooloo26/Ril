@@ -450,6 +450,70 @@ fn overwrite(
     store(mut shelf, ^mut kept)
 }
 
+-- @case a_named_callable_alias_retains_the_parameter_it_stores compile-pass
+type Shelf = .{ var ^mut item: Cell }
+fn store(mut shelf: Shelf, ^mut value: Cell) &mut &^mut -> () {
+    shelf.item = ^mut value
+}
+fn relay(mut shelf: Shelf, ^mut value: Cell) &mut &^mut -> () {
+    let write = store
+    write(mut shelf, ^mut value)
+}
+
+-- @case selected_named_aliases_can_guarantee_a_storage_update compile-fail E0527
+type Shelf = .{ var ^mut item: Cell }
+fn first(mut shelf: Shelf, ^mut value: Cell) &mut &^mut -> () {
+    shelf.item = ^mut value
+}
+fn second(mut shelf: Shelf, ^mut value: Cell) &mut &^mut -> () {
+    shelf.item = ^mut value
+}
+fn overwrite(
+    mut shelf: Shelf,
+    ^mut discarded: Cell,
+    -- ^ E0527
+    ^mut kept: Cell,
+    flag: bool
+) &mut &^mut -> () {
+    shelf.item = ^mut discarded
+    let write = if flag { first } else { second }
+    write(mut shelf, ^mut kept)
+}
+
+-- @case selected_named_aliases_can_preserve_a_prior_store compile-pass
+type Shelf = .{ var ^mut item: Cell, var ^mut spare: Cell }
+fn first(mut shelf: Shelf, ^mut value: Cell) &mut &^mut -> () {
+    shelf.item = ^mut value
+}
+fn second(mut shelf: Shelf, ^mut value: Cell) &mut &^mut -> () {
+    shelf.spare = ^mut value
+}
+fn overwrite(mut shelf: Shelf, ^mut previous: Cell, ^mut next: Cell, flag: bool) &mut &^mut -> () {
+    shelf.item = ^mut previous
+    let write = if flag { first } else { second }
+    write(mut shelf, ^mut next)
+}
+
+-- @case a_named_function_and_closure_can_guarantee_the_same_store compile-fail E0527
+type Shelf = .{ var ^mut item: Cell }
+fn replace(mut shelf: Shelf, ^mut value: Cell) &mut &^mut -> () {
+    shelf.item = ^mut value
+}
+fn overwrite(
+    mut shelf: Shelf,
+    ^mut discarded: Cell,
+    -- ^ E0527
+    ^mut retained: Cell,
+    choose_named: bool
+) &mut &^mut -> () {
+    shelf.item = ^mut discarded
+    let write: fn(mut Shelf, ^mut Cell) &mut &^mut -> () =
+        if choose_named { replace } else {
+            \mut shelf: Shelf, ^mut value: Cell -> { shelf.item = ^mut value }
+        }
+    write(mut shelf, ^mut retained)
+}
+
 -- @case an_unreachable_loop_break_cannot_ground_a_later_write compile-fail E0527
 fn diverge() -> () {
     while true {

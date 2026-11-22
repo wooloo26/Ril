@@ -167,6 +167,26 @@ fn main() -> () {
     assert(old.count == 1 && next.count == 42)
 }
 
+-- @case named_callable_alias_keeps_the_entry_view_and_writes_the_caller_slot run-pass backend=both
+type Cell = .{ var count: int }
+type Shelf = .{ var ^mut item: Cell }
+fn replace(mut shelf: Shelf, ^mut next: Cell) &mut &^mut -> ref(shelf) Cell {
+    let ref previous = ref shelf.item
+    shelf.item = ^mut next
+    previous
+}
+fn main() -> () {
+    let write = replace
+    let mut old = Cell.{ count: 0 }
+    old.count += 1
+    let mut next = Cell.{ count: 40 }
+    next.count += 1
+    let mut shelf = Shelf.{ item: ^mut old }
+    let ref previous = write(mut shelf, ^mut next)
+    shelf.item.count += 1
+    assert(previous.count == 1 && next.count == 42)
+}
+
 -- @case alternative_patterns_bind_from_the_selected_side run-pass backend=both
 fn chosen(input: (bool, int, int)) -> int {
     match input { (true, result, _) | (false, _, result) -> result }
