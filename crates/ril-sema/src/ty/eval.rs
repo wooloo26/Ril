@@ -14,7 +14,9 @@ use ril_frontend::{
 use super::{
     AdtKind, GenericValue, MemberMode, Ty, Value, arithmetic,
     check::{Checker, Env, Phase},
-    literal, render,
+    literal,
+    pattern::MatchedValues,
+    render,
     value::{decode_text, ieee_equal},
 };
 
@@ -29,6 +31,13 @@ pub(super) enum Signal {
     Continue,
 }
 
+#[derive(Default)]
+struct Frame {
+    locals: Values,
+    draft_places: HashMap<DefinitionId, Place>,
+}
+
+#[derive(Clone)]
 struct Place {
     root: DefinitionId,
     path: Vec<Value>,
@@ -36,8 +45,8 @@ struct Place {
 }
 
 impl Place {
-    fn slot<'a>(&self, slots: &'a mut Values, insert: bool) -> Eval<&'a mut Value> {
-        let mut value = slots.get_mut(&self.root).ok_or(Signal::Error(
+    fn slot<'a>(&self, slots: &'a mut Frame, insert: bool) -> Eval<&'a mut Value> {
+        let mut value = slots.locals.get_mut(&self.root).ok_or(Signal::Error(
             Code::E0813,
             self.span,
             "static assignment cannot update outer runtime storage",
@@ -45,9 +54,10 @@ impl Place {
         for (index, key) in self.path.iter().enumerate() {
             value = match (value, key) {
                 (Value::Record(fields), Value::Str(name)) => fields.get_mut(name),
-                (Value::Array(items) | Value::Tuple(items), Value::Int(key)) => {
-                    key.to_usize().and_then(|index| items.get_mut(index))
-                }
+                (
+                    Value::Array(items) | Value::Tuple(items) | Value::Tag(_, items),
+                    Value::Int(key),
+                ) => key.to_usize().and_then(|index| items.get_mut(index)),
                 (Value::Map(entries), key) => {
                     let existing = entries
                         .iter()
@@ -206,7 +216,13 @@ impl Checker<'_> {
             remaining: self.budget,
             depth: 0,
         };
-        match self.evaluate(&mut env, bindings, expr, &mut fuel) {
+        let mut slots = Frame {
+            locals: std::mem::take(bindings),
+            ..Frame::default()
+        };
+        let result = self.evaluate(&mut env, &mut slots, expr, &mut fuel);
+        *bindings = slots.locals;
+        match result {
             Err(Signal::Return(value)) => Ok(value),
             result => result,
         }
@@ -246,7 +262,7 @@ impl Checker<'_> {
         span: Span,
     ) -> Eval {
         let mut root = env.clone();
-        let mut slots = Values::new();
+        let mut slots = Frame::default();
         let mut fuel = Budget {
             remaining: self.budget,
             depth: 0,
@@ -287,7 +303,7 @@ impl Checker<'_> {
             depth: 0,
         };
         let result = self
-            .eval_args(&mut env, &mut Values::new(), args, &mut fuel)
+            .eval_args(&mut env, &mut Frame::default(), args, &mut fuel)
             .and_then(|values| {
                 let values = values
                     .into_iter()
@@ -332,7 +348,7 @@ impl Checker<'_> {
     fn evaluate(
         &mut self,
         env: &mut Env,
-        slots: &mut Values,
+        slots: &mut Frame,
         expr: ExprId,
         fuel: &mut Budget,
     ) -> Eval {
@@ -354,7 +370,7 @@ impl Checker<'_> {
     fn eval_expr(
         &mut self,
         env: &mut Env,
-        slots: &mut Values,
+        slots: &mut Frame,
         expr: ExprId,
         fuel: &mut Budget,
     ) -> Eval {
@@ -411,6 +427,7 @@ impl Checker<'_> {
                 let mut quoted = env.clone();
                 quoted.generics.extend(
                     slots
+                        .locals
                         .iter()
                         .map(|(&id, value)| (id, GenericValue::Data(value.clone()))),
                 );
@@ -486,22 +503,28 @@ impl Checker<'_> {
                     result = match &node.value.kind {
                         StmtKind::Binding {
                             pattern,
+                            storage,
                             value: Some(value),
                             fallback,
                             resource: false,
                             ..
                         } => {
-                            let value = self.evaluate(env, slots, *value, fuel)?;
-                            let mut bindings = Values::new();
-                            if self.value_pattern(env, *pattern, &value, &mut bindings) {
-                                slots.extend(bindings);
-                            } else if let Some(fallback) = fallback {
-                                self.evaluate(env, slots, *fallback, fuel)?;
-                            } else {
-                                return Err(defect(
-                                    node.span,
-                                    "static binding pattern did not match",
-                                ));
+                            let subject = self.pattern_subject(env, slots, *value, fuel)?;
+                            if !self.bind_pattern_value(
+                                env,
+                                slots,
+                                *pattern,
+                                &subject,
+                                storage.mode,
+                            ) {
+                                if let Some(fallback) = fallback {
+                                    self.evaluate(env, slots, *fallback, fuel)?;
+                                } else {
+                                    return Err(defect(
+                                        node.span,
+                                        "static binding pattern did not match",
+                                    ));
+                                }
                             }
                             Value::Unit
                         }
@@ -578,16 +601,17 @@ impl Checker<'_> {
                 }
                 Ok(Value::Unit)
             }
-            Expr::Match { value, arms, .. } => {
-                let value = self.evaluate(env, slots, *value, fuel)?;
+            Expr::Match { value, arms, mode } => {
+                let mut subject = self.pattern_subject(env, slots, *value, fuel)?;
                 for arm in arms {
                     let mut local = env.clone();
-                    let mut bindings = Values::new();
-                    if self.value_pattern(&mut local, arm.pattern, &value, &mut bindings) {
-                        slots.extend(bindings);
+                    if self.bind_pattern_value(&mut local, slots, arm.pattern, &subject, *mode) {
                         if let Some(guard) = arm.guard
                             && self.evaluate(&mut local, slots, guard, fuel)? != Value::Bool(true)
                         {
+                            if let Some(place) = &subject.1 {
+                                subject.0 = place.slot(slots, false)?.clone();
+                            }
                             continue;
                         }
                         return self.evaluate(&mut local, slots, arm.body, fuel);
@@ -705,7 +729,7 @@ impl Checker<'_> {
     fn eval_list(
         &mut self,
         env: &mut Env,
-        slots: &mut Values,
+        slots: &mut Frame,
         items: &[ExprId],
         fuel: &mut Budget,
     ) -> Eval<Vec<Value>> {
@@ -718,7 +742,7 @@ impl Checker<'_> {
     fn eval_loop(
         &mut self,
         env: &mut Env,
-        slots: &mut Values,
+        slots: &mut Frame,
         pattern: syntax::PatternId,
         value: &Value,
         body: ExprId,
@@ -727,7 +751,7 @@ impl Checker<'_> {
         fuel.step(self.ast(env.file).expr(body).span)?;
         let mut bindings = Values::new();
         if self.value_pattern(env, pattern, value, &mut bindings) {
-            slots.extend(bindings);
+            slots.locals.extend(bindings);
             match self.evaluate(env, slots, body, fuel) {
                 Err(Signal::Break) => return Ok(false),
                 Ok(_) | Err(Signal::Continue) => {}
@@ -740,7 +764,7 @@ impl Checker<'_> {
     fn eval_condition(
         &mut self,
         env: &mut Env,
-        slots: &mut Values,
+        slots: &mut Frame,
         condition: &Condition,
         fuel: &mut Budget,
     ) -> Eval<bool> {
@@ -752,22 +776,155 @@ impl Checker<'_> {
                     "expected bool in static condition",
                 )),
             },
-            Condition::Binding { pattern, value, .. } => {
-                let value = self.evaluate(env, slots, *value, fuel)?;
-                let mut bindings = Values::new();
-                let matched = self.value_pattern(env, *pattern, &value, &mut bindings);
-                if matched {
-                    slots.extend(bindings);
-                }
-                Ok(matched)
+            Condition::Binding {
+                pattern,
+                value,
+                mode,
+            } => {
+                let subject = self.pattern_subject(env, slots, *value, fuel)?;
+                Ok(self.bind_pattern_value(env, slots, *pattern, &subject, *mode))
             }
         }
+    }
+
+    fn pattern_subject(
+        &mut self,
+        env: &mut Env,
+        slots: &mut Frame,
+        expression: ExprId,
+        fuel: &mut Budget,
+    ) -> Eval<(Value, Option<Place>)> {
+        if !self.is_draft_path(env, slots, expression) {
+            return self
+                .evaluate(env, slots, expression, fuel)
+                .map(|value| (value, None));
+        }
+        let place = self.eval_place(env, slots, expression, fuel)?;
+        let value = place.slot(slots, false)?.clone();
+        Ok((value, Some(place)))
+    }
+
+    fn is_draft_path(&self, env: &Env, slots: &Frame, expression: ExprId) -> bool {
+        let mut node = self.ast(env.file).expr(expression);
+        loop {
+            node = match &node.value {
+                Expr::Path(path) => {
+                    return self
+                        .resolve(path.span)
+                        .is_some_and(|id| slots.draft_places.contains_key(&id));
+                }
+                Expr::Member {
+                    base, safe: false, ..
+                } => self.ast(env.file).expr(*base),
+                Expr::Index {
+                    base,
+                    index,
+                    safe: false,
+                } => {
+                    let ast = self.ast(env.file);
+                    if matches!(ast.expr(*index).value, Expr::Range { .. })
+                        || matches!(
+                            self.types.get(&ast.expr(*base).span),
+                            Some(Ty::Str | Ty::Bytes)
+                        )
+                    {
+                        return false;
+                    }
+                    ast.expr(*base)
+                }
+                Expr::Unary { op, value } if op.value == "ref" => self.ast(env.file).expr(*value),
+                expression => {
+                    let Some(base) = self.inner_operand(env.file, expression) else {
+                        return false;
+                    };
+                    if matches!(self.types.get(&node.span), Some(Ty::Tuple(_) | Ty::Unit)) {
+                        return false;
+                    }
+                    self.ast(env.file).expr(base)
+                }
+            };
+        }
+    }
+
+    fn inner_operand(&self, file: ril_base::span::FileId, expression: &Expr) -> Option<ExprId> {
+        let ast = self.ast(file);
+        let (callee, operand) = match expression {
+            Expr::Call { callee, args } => {
+                let [argument] = args.as_slice() else {
+                    return None;
+                };
+                (*callee, argument.value)
+            }
+            Expr::Pipeline {
+                value,
+                target,
+                propagate: false,
+                ..
+            } => match &ast.expr(*target).value {
+                Expr::Call { callee, args } if args.is_empty() => (*callee, *value),
+                Expr::Path(_) => (*target, *value),
+                _ => return None,
+            },
+            _ => return None,
+        };
+        let Expr::Path(path) = &ast.expr(callee).value else {
+            return None;
+        };
+        let definition = self.hir.definition(self.resolve(path.span)?);
+        (matches!(definition.kind, DefinitionKind::Primitive(_))
+            && definition.name.value == "inner")
+            .then_some(operand)
+    }
+
+    fn bind_pattern_value(
+        &mut self,
+        env: &mut Env,
+        slots: &mut Frame,
+        pattern: syntax::PatternId,
+        (value, place): &(Value, Option<Place>),
+        mode: Mode,
+    ) -> bool {
+        let mut matched = MatchedValues::default();
+        if !self.value_pattern_at(
+            env,
+            pattern,
+            value,
+            &mut matched,
+            place.as_ref().map(|_| &[][..]),
+        ) {
+            return false;
+        }
+        for (id, value) in matched.locals {
+            let alias = matched.paths.remove(&id).and_then(|(path, explicit)| {
+                let mode = if explicit == Mode::Plain {
+                    mode
+                } else {
+                    explicit
+                };
+                if matches!(mode, Mode::Mut | Mode::Ref | Mode::Via) {
+                    place.as_ref().map(|base| {
+                        let mut alias = base.clone();
+                        alias.path.extend(path);
+                        alias
+                    })
+                } else {
+                    None
+                }
+            });
+            if let Some(alias) = alias {
+                slots.draft_places.insert(id, alias);
+            } else {
+                slots.draft_places.remove(&id);
+            }
+            slots.locals.insert(id, value);
+        }
+        true
     }
 
     fn eval_path(
         &mut self,
         env: &mut Env,
-        slots: &mut Values,
+        slots: &mut Frame,
         path: &syntax::Path,
         fuel: &mut Budget,
     ) -> Eval {
@@ -780,12 +937,15 @@ impl Checker<'_> {
     fn eval_def(
         &mut self,
         env: &mut Env,
-        slots: &mut Values,
+        slots: &mut Frame,
         id: DefinitionId,
         span: Span,
         fuel: &mut Budget,
     ) -> Eval {
-        if let Some(value) = slots.get(&id) {
+        if let Some(place) = slots.draft_places.get(&id).cloned() {
+            return place.slot(slots, false).cloned();
+        }
+        if let Some(value) = slots.locals.get(&id) {
             return Ok(value.clone());
         }
         if let Some(GenericValue::Data(value)) = env.generics.get(&id) {
@@ -822,7 +982,7 @@ impl Checker<'_> {
                     ));
                 }
                 fuel.depth += 1;
-                let result = self.evaluate(&mut local, &mut Values::new(), value, fuel);
+                let result = self.evaluate(&mut local, &mut Frame::default(), value, fuel);
                 fuel.depth -= 1;
                 result
             }
@@ -861,7 +1021,7 @@ impl Checker<'_> {
     fn eval_args(
         &mut self,
         env: &mut Env,
-        slots: &mut Values,
+        slots: &mut Frame,
         args: &[Argument],
         fuel: &mut Budget,
     ) -> Eval<Vec<(Option<String>, Value)>> {
@@ -878,7 +1038,7 @@ impl Checker<'_> {
     fn eval_call(
         &mut self,
         env: &mut Env,
-        slots: &mut Values,
+        slots: &mut Frame,
         callee: ExprId,
         args: &[Argument],
         span: Span,
@@ -1013,7 +1173,7 @@ impl Checker<'_> {
     fn eval_derive(
         &mut self,
         env: &mut Env,
-        slots: &mut Values,
+        slots: &mut Frame,
         args: &[Argument],
         span: Span,
         fuel: &mut Budget,
@@ -1043,11 +1203,21 @@ impl Checker<'_> {
             self.eval_closure(env, slots, update.value, vec![base.clone()], span, fuel)?;
             return Ok(base);
         };
-        let previous = slots.insert(id, base);
+        let previous = slots.locals.insert(id, base);
+        let outer_places = slots.draft_places.clone();
+        slots.draft_places.insert(
+            id,
+            Place {
+                root: id,
+                path: Vec::new(),
+                span,
+            },
+        );
         let result = self.evaluate(env, slots, *body, fuel);
-        let updated = slots.remove(&id);
+        slots.draft_places = outer_places;
+        let updated = slots.locals.remove(&id);
         if let Some(previous) = previous {
-            slots.insert(id, previous);
+            slots.locals.insert(id, previous);
         }
         match result {
             Ok(_) | Err(Signal::Return(_)) => updated.ok_or_else(|| nonstatic(span)),
@@ -1125,7 +1295,7 @@ impl Checker<'_> {
         }
         fuel.depth += 1;
         let result = (|| {
-            let mut slots = Values::new();
+            let mut slots = Frame::default();
             let mut guards = Vec::new();
             for (param, input) in fun.signature.params.iter().zip(bound) {
                 let input = if let Some(input) = input {
@@ -1139,12 +1309,13 @@ impl Checker<'_> {
                     guards.push((&param.guards, input.clone()));
                 }
                 if let Some(id) = param.name.as_ref().and_then(|name| self.resolve(name.span)) {
-                    slots.insert(id, input);
+                    slots.locals.insert(id, input);
                 }
             }
             if !guards.is_empty() {
                 local.generics.extend(
                     slots
+                        .locals
                         .iter()
                         .map(|(&id, value)| (id, GenericValue::Data(value.clone()))),
                 );
@@ -1164,7 +1335,7 @@ impl Checker<'_> {
     fn eval_closure(
         &mut self,
         env: &mut Env,
-        slots: &mut Values,
+        slots: &mut Frame,
         id: ExprId,
         input: Vec<Value>,
         span: Span,
@@ -1186,7 +1357,7 @@ impl Checker<'_> {
                         bindings.insert(id, value);
                     }
                 }
-                slots.extend(bindings);
+                slots.locals.extend(bindings);
                 match self.evaluate(env, slots, *body, fuel) {
                     Err(Signal::Return(value)) => Ok(value),
                     rest => rest,
@@ -1522,7 +1693,7 @@ impl Checker<'_> {
     fn eval_member(
         &mut self,
         env: &mut Env,
-        slots: &mut Values,
+        slots: &mut Frame,
         member: &Coordinate,
         base: Value,
         span: Span,
@@ -1552,7 +1723,7 @@ impl Checker<'_> {
     fn eval_index(
         &mut self,
         env: &mut Env,
-        slots: &mut Values,
+        slots: &mut Frame,
         base: Value,
         index: ExprId,
         fuel: &mut Budget,
@@ -1624,21 +1795,26 @@ impl Checker<'_> {
     fn eval_place(
         &mut self,
         env: &mut Env,
-        slots: &mut Values,
+        slots: &mut Frame,
         lhs: ExprId,
         fuel: &mut Budget,
     ) -> Eval<Place> {
         let node = self.ast(env.file).expr(lhs);
-        match &node.value {
+        let mut place = match &node.value {
             Expr::Path(path) => {
                 let root = self
                     .resolve(path.span)
                     .ok_or_else(|| nonstatic(node.span))?;
-                Ok(Place {
+                let mut place = slots.draft_places.get(&root).cloned().unwrap_or(Place {
                     root,
                     path: Vec::new(),
                     span: node.span,
-                })
+                });
+                place.span = node.span;
+                Ok(place)
+            }
+            Expr::Unary { op, value } if op.value == "ref" => {
+                self.eval_place(env, slots, *value, fuel)
             }
             Expr::Member {
                 base,
@@ -1670,8 +1846,27 @@ impl Checker<'_> {
                 place.span = node.span;
                 Ok(place)
             }
-            _ => Err(defect(node.span, "invalid static assignment target")),
-        }
+            expression => {
+                let argument = self
+                    .inner_operand(env.file, expression)
+                    .ok_or_else(|| defect(node.span, "invalid static assignment target"))?;
+                let mut place = self.eval_place(env, slots, argument, fuel)?;
+                if !matches!(place.slot(slots, false)?, Value::Tag(_, items) if items.len() == 1) {
+                    return Err(defect(
+                        node.span,
+                        "static inner place requires a single nominal payload",
+                    ));
+                }
+                place.path.push(Value::Int(0.into()));
+                place.span = node.span;
+                Ok(place)
+            }
+        }?;
+        let narrowed = self.narrowings.get(&node.span).copied().unwrap_or_default();
+        place
+            .path
+            .extend(std::iter::repeat_with(|| Value::Int(0.into())).take(narrowed));
+        Ok(place)
     }
 }
 

@@ -255,3 +255,67 @@ opaque type Weight = int
 fn read(meta kind: Type<Weight>) -> int { if kind == <Weight> { 42 } else { 0 } }
 fn invalid() -> int { read(<int>) }
 -- ^ E0301
+
+-- @case static_draft_match_updates_active_variant_path compile-pass stage=access
+type Cell = .{ count: int }
+type Item { Present(Cell); Missing }
+meta fn edit(base: Item) -> Item {
+    derive(base) \mut draft -> {
+        match draft {
+            Present(mut cell) -> { cell.count += 1 }
+            Missing -> ()
+        }
+    }
+}
+meta let CHECK = assert(edit(Present(Cell.{ count: 41 })) == Present(Cell.{ count: 42 }))
+
+-- @case static_draft_alternative_binding_updates_only_selected_tuple_path compile-pass stage=access
+type Cell = .{ count: int }
+meta fn edit(base: (bool, Cell, Cell)) -> (bool, Cell, Cell) {
+    derive(base) \mut draft -> {
+        let (true, mut cell, _) | (false, _, mut cell) = draft
+        cell.count += 10
+    }
+}
+meta let LEFT = assert(edit((true, Cell.{ count: 1 }, Cell.{ count: 2 })) ==
+    (true, Cell.{ count: 11 }, Cell.{ count: 2 }))
+meta let RIGHT = assert(edit((false, Cell.{ count: 1 }, Cell.{ count: 2 })) ==
+    (false, Cell.{ count: 1 }, Cell.{ count: 12 }))
+
+-- @case static_draft_if_let_applies_change_to_nested_array_element compile-pass stage=access
+type Cell = .{ count: int }
+type State = .{ items: []?Cell }
+meta fn edit(base: State, index: int) -> State {
+    var evaluations = 0
+    let updated = derive(base) \mut draft -> {
+        if let Some(mut cell) = draft.items[{ evaluations += 1; index }] { cell.count += 1 }
+    }
+    assert(evaluations == 1)
+    updated
+}
+meta let CHECK = assert(edit(State.{ items: [None, Some(Cell.{ count: 41 })] }, 1) ==
+    State.{ items: [None, Some(Cell.{ count: 42 })] })
+
+-- @case static_draft_inner_updates_nominal_array_payload compile-pass stage=access
+nominal type Bag = []int
+meta fn append(base: Bag) -> Bag {
+    derive(base) \mut draft -> {
+        inner(mut draft) |> mut Array::push(42)
+    }
+}
+meta let CHECK = assert(inner(append(Bag([1]))) == [1, 42])
+
+-- @case static_draft_later_pattern_reads_writes_from_failed_guard compile-pass
+type Cell = .{ count: int }
+type Item { Present(Cell); Missing }
+meta fn edit(base: Item) -> Item {
+    derive(base) \mut draft -> {
+        match draft {
+            Present(mut cell) if { cell.count = 7; false } -> ()
+            Present(.{ count: 7 }) -> ()
+            Present(mut cell) -> { cell.count = 9 }
+            Missing -> ()
+        }
+    }
+}
+meta let CHECK = assert(edit(Present(Cell.{ count: 41 })) == Present(Cell.{ count: 7 }))

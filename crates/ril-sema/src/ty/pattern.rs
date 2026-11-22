@@ -1,9 +1,10 @@
 use std::collections::{HashMap, HashSet};
 
 use ril_base::{diag::Code, span::Span};
+use ril_frontend::hir::DefinitionId;
 use ril_frontend::syntax::{
-    Ast, ExprId, LiteralKind, MatchArm, Pattern, PatternId, StmtKind, Type, TypeDefinition, TypeId,
-    Variant,
+    Ast, ExprId, LiteralKind, MatchArm, Mode, Pattern, PatternId, StmtKind, Type, TypeDefinition,
+    TypeId, Variant,
 };
 
 pub fn text_slice_fragment(ast: &Ast, items: &[PatternId]) -> Option<String> {
@@ -28,6 +29,27 @@ use super::{
     check::{Checker, Env},
     literal,
 };
+
+#[derive(Clone, Default)]
+pub(super) struct MatchedValues {
+    pub locals: HashMap<DefinitionId, Value>,
+    pub paths: HashMap<DefinitionId, (Vec<Value>, Mode)>,
+}
+
+impl MatchedValues {
+    fn bind(&mut self, id: DefinitionId, value: &Value, place: Option<&[Value]>, mode: Mode) {
+        self.locals.insert(id, value.clone());
+        if let Some(place) = place {
+            self.paths.insert(id, (place.to_vec(), mode));
+        }
+    }
+}
+
+fn next_coordinate(place: Option<&[Value]>, key: impl FnOnce() -> Value) -> Option<Vec<Value>> {
+    let mut path = place?.to_vec();
+    path.push(key());
+    Some(path)
+}
 
 impl Checker<'_> {
     pub(super) fn pattern(&mut self, env: &mut Env, id: PatternId, input: &Ty) {
@@ -587,15 +609,38 @@ impl Checker<'_> {
         env: &mut Env,
         pattern: PatternId,
         value: &Value,
-        bindings: &mut HashMap<ril_frontend::hir::DefinitionId, Value>,
+        bindings: &mut HashMap<DefinitionId, Value>,
+    ) -> bool {
+        let mut matched = MatchedValues {
+            locals: std::mem::take(bindings),
+            paths: HashMap::new(),
+        };
+        let result = self.value_pattern_at(env, pattern, value, &mut matched, None);
+        *bindings = matched.locals;
+        result
+    }
+
+    pub(super) fn value_pattern_at(
+        &mut self,
+        env: &mut Env,
+        pattern: PatternId,
+        value: &Value,
+        bindings: &mut MatchedValues,
+        place: Option<&[Value]>,
     ) -> bool {
         let ast = self.ast(env.file);
         let node = ast.pattern(pattern);
         match (&node.value, value) {
             (Pattern::Wildcard | Pattern::Rest(None), _) => true,
-            (Pattern::Binding(_, name) | Pattern::Rest(Some(name)), value) => {
+            (Pattern::Binding(storage, name), value) => {
                 if let Some(id) = self.resolve(name.span) {
-                    bindings.insert(id, value.clone());
+                    bindings.bind(id, value, place, storage.mode);
+                }
+                true
+            }
+            (Pattern::Rest(Some(name)), value) => {
+                if let Some(id) = self.resolve(name.span) {
+                    bindings.bind(id, value, None, Mode::Plain);
                 }
                 true
             }
@@ -608,7 +653,11 @@ impl Checker<'_> {
                     && items
                         .iter()
                         .zip(values)
-                        .all(|(&id, value)| self.value_pattern(env, id, value, bindings))
+                        .enumerate()
+                        .all(|(index, (&id, value))| {
+                            let child = next_coordinate(place, || Value::Int(index.into()));
+                            self.value_pattern_at(env, id, value, bindings, child.as_deref())
+                        })
             }
             (
                 Pattern::Slice {
@@ -629,11 +678,23 @@ impl Checker<'_> {
                 }
                 before
                     .iter()
-                    .zip(values)
-                    .chain(after.iter().zip(values.iter().skip(end)))
-                    .all(|(&id, value)| self.value_pattern(env, id, value, bindings))
+                    .copied()
+                    .zip(0..before.len())
+                    .chain(after.iter().copied().zip(end..values.len()))
+                    .all(|(id, index)| {
+                        let child = next_coordinate(place, || Value::Int(index.into()));
+                        values.get(index).is_some_and(|value| {
+                            self.value_pattern_at(env, id, value, bindings, child.as_deref())
+                        })
+                    })
                     && rest.is_none_or(|id| {
-                        self.value_pattern(env, id, &Value::Array(middle.to_vec()), bindings)
+                        self.value_pattern_at(
+                            env,
+                            id,
+                            &Value::Array(middle.to_vec()),
+                            bindings,
+                            None,
+                        )
                     })
             }
             (
@@ -658,7 +719,7 @@ impl Checker<'_> {
                 };
                 rest.map_or_else(
                     || middle.is_empty(),
-                    |id| self.value_pattern(env, id, &Value::Str(middle.into()), bindings),
+                    |id| self.value_pattern_at(env, id, &Value::Str(middle.into()), bindings, None),
                 )
             }
             (Pattern::Constructor(path, parts), Value::Tag(tag, values)) => {
@@ -666,21 +727,23 @@ impl Checker<'_> {
                     .last()
                     .is_some_and(|segment| segment.name.value == *tag)
                     && parts.as_ref().map_or(0, Vec::len) == values.len()
-                    && parts
-                        .iter()
-                        .flatten()
-                        .zip(values)
-                        .all(|(&id, value)| self.value_pattern(env, id, value, bindings))
+                    && parts.iter().flatten().zip(values).enumerate().all(
+                        |(index, (&id, value))| {
+                            let child = next_coordinate(place, || Value::Int(index.into()));
+                            self.value_pattern_at(env, id, value, bindings, child.as_deref())
+                        },
+                    )
             }
             (Pattern::Subset { binding, .. }, Value::Tag(tag, _)) => {
                 self.subset_tags
                     .get(&node.span)
                     .is_some_and(|tags| tags.contains(tag))
-                    && binding.is_none_or(|id| self.value_pattern(env, id, value, bindings))
+                    && binding
+                        .is_none_or(|id| self.value_pattern_at(env, id, value, bindings, place))
             }
             (Pattern::Or(items), value) => items.iter().any(|&id| {
                 let mut local = bindings.clone();
-                if self.value_pattern(env, id, value, &mut local) {
+                if self.value_pattern_at(env, id, value, &mut local, place) {
                     *bindings = local;
                     true
                 } else {
@@ -689,11 +752,12 @@ impl Checker<'_> {
             }),
             (Pattern::Record { fields, .. }, Value::Record(record)) => fields.iter().all(|field| {
                 record.get(&field.name.value).is_some_and(|value| {
+                    let child = next_coordinate(place, || Value::Str(field.name.value.clone()));
                     if let Some(id) = field.pattern {
-                        self.value_pattern(env, id, value, bindings)
+                        self.value_pattern_at(env, id, value, bindings, child.as_deref())
                     } else {
                         if let Some(id) = self.resolve(field.name.span) {
-                            bindings.insert(id, value.clone());
+                            bindings.bind(id, value, child.as_deref(), field.storage.mode);
                         }
                         true
                     }
