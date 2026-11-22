@@ -310,3 +310,14 @@ fn main() -> () {
     scope(mut handle)
     assert(handle.id == 42)
 }
+
+-- @case draft_inner_writes_nominal_tuple_coordinates run-pass backend=both
+nominal type Pair = (int, int)
+fn main() -> () {
+    let base = Pair(1, 2)
+    let updated = derive(base) \mut draft -> {
+        inner(mut draft).0 = 41
+        (draft |> mut inner).1 += 1
+    }
+    assert(inner(base) == (1, 2) && inner(updated) == (41, 3))
+}

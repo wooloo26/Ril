@@ -815,7 +815,9 @@ impl Checker<'_> {
                 }
                 Expr::Member {
                     base, safe: false, ..
-                } => self.ast(env.file).expr(*base),
+                } => self
+                    .ast(env.file)
+                    .expr(self.tuple_inner_receiver(env, *base).unwrap_or(*base)),
                 Expr::Index {
                     base,
                     index,
@@ -834,7 +836,7 @@ impl Checker<'_> {
                 }
                 Expr::Unary { op, value } if op.value == "ref" => self.ast(env.file).expr(*value),
                 expression => {
-                    let Some(base) = self.inner_operand(env.file, expression) else {
+                    let Some((base, _)) = self.hir.inner_operand(env.file, expression) else {
                         return false;
                     };
                     if matches!(self.types.get(&node.span), Some(Ty::Tuple(_) | Ty::Unit)) {
@@ -846,34 +848,13 @@ impl Checker<'_> {
         }
     }
 
-    fn inner_operand(&self, file: ril_base::span::FileId, expression: &Expr) -> Option<ExprId> {
-        let ast = self.ast(file);
-        let (callee, operand) = match expression {
-            Expr::Call { callee, args } => {
-                let [argument] = args.as_slice() else {
-                    return None;
-                };
-                (*callee, argument.value)
-            }
-            Expr::Pipeline {
-                value,
-                target,
-                propagate: false,
-                ..
-            } => match &ast.expr(*target).value {
-                Expr::Call { callee, args } if args.is_empty() => (*callee, *value),
-                Expr::Path(_) => (*target, *value),
-                _ => return None,
-            },
-            _ => return None,
-        };
-        let Expr::Path(path) = &ast.expr(callee).value else {
+    fn tuple_inner_receiver(&self, env: &Env, base: ExprId) -> Option<ExprId> {
+        let node = self.ast(env.file).expr(base);
+        if !matches!(self.types.get(&node.span), Some(Ty::Tuple(_))) {
             return None;
-        };
-        let definition = self.hir.definition(self.resolve(path.span)?);
-        (matches!(definition.kind, DefinitionKind::Primitive(_))
-            && definition.name.value == "inner")
-            .then_some(operand)
+        }
+        let (argument, mode) = self.hir.inner_operand(env.file, &node.value)?;
+        (mode == Mode::Mut).then_some(argument)
     }
 
     fn bind_pattern_value(
@@ -1821,7 +1802,8 @@ impl Checker<'_> {
                 member,
                 safe: false,
             } => {
-                let mut place = self.eval_place(env, slots, *base, fuel)?;
+                let base = self.tuple_inner_receiver(env, *base).unwrap_or(*base);
+                let mut place = self.eval_place(env, slots, base, fuel)?;
                 let key = match member {
                     Coordinate::Name(name) => Value::Str(name.value.clone()),
                     Coordinate::Index(index) => Value::Int(
@@ -1847,7 +1829,8 @@ impl Checker<'_> {
                 Ok(place)
             }
             expression => {
-                let argument = self
+                let (argument, _) = self
+                    .hir
                     .inner_operand(env.file, expression)
                     .ok_or_else(|| defect(node.span, "invalid static assignment target"))?;
                 let mut place = self.eval_place(env, slots, argument, fuel)?;

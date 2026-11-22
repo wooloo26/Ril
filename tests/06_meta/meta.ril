@@ -319,3 +319,13 @@ meta fn edit(base: Item) -> Item {
     }
 }
 meta let CHECK = assert(edit(Present(Cell.{ count: 41 })) == Present(Cell.{ count: 7 }))
+
+-- @case static_draft_inner_writes_nominal_tuple_coordinates compile-pass stage=access
+nominal type Pair = (int, int)
+meta fn edit(base: Pair) -> Pair {
+    derive(base) \mut draft -> {
+        inner(mut draft).0 = 41
+        (draft |> mut inner).1 += 1
+    }
+}
+meta let CHECK = assert(inner(edit(Pair(1, 2))) == (41, 3))

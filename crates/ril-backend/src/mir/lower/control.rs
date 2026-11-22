@@ -1,7 +1,7 @@
 use ril_base::span::Span;
 use ril_sema::{
     hir::DefinitionId,
-    syntax::{Condition, Expr, ExprId, MatchArm, Name, Pattern, PatternId, Transfer},
+    syntax::{Condition, Expr, ExprId, MatchArm, Mode, Name, Pattern, PatternId, Transfer},
     ty::{self, Ty, Value},
 };
 
@@ -45,7 +45,7 @@ impl Builder<'_, '_> {
                     member,
                     safe: false,
                 } => Destination::Object(
-                    self.expr(*base)?,
+                    self.member_place_base(*base)?,
                     self.member_key(member)?,
                     self.is_draft(*base),
                 ),
@@ -107,6 +107,18 @@ impl Builder<'_, '_> {
             .binary(token)
             .ok_or_else(|| self.unsupported(operator.span, "binary operator"))?;
         Ok(self.runtime(name, vec![left, right]))
+    }
+
+    fn member_place_base(&mut self, base: ExprId) -> Result<Register> {
+        let node = self.ast().expr(base);
+        if matches!(self.global.typed.types.get(&node.span), Some(Ty::Tuple(_)))
+            && let Some((wrapper, Mode::Mut)) =
+                self.global.typed.hir.inner_operand(self.file, &node.value)
+        {
+            // Tuple members of a nominal wrapper occupy the constructor's payload slots.
+            return self.collection(wrapper);
+        }
+        self.expr(base)
     }
 
     fn short_circuit(&mut self, left: ExprId, right: ExprId, op: &str) -> Result<Register> {

@@ -16,7 +16,10 @@ use ril_base::{
 use crate::{
     lexer::{Kind, Token, Word, word_kind},
     parser::FileKind,
-    syntax::{Ast, Name, Pattern, StmtId, StmtKind, Type, TypeDefinition, Variant, Visibility},
+    syntax::{
+        Ast, Expr, ExprId, Mode, Name, Pattern, StmtId, StmtKind, Type, TypeDefinition, Variant,
+        Visibility,
+    },
 };
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -279,6 +282,40 @@ impl Program {
 
     pub fn primitive_module(&self, id: DefinitionId) -> Option<&'static str> {
         self.scope(self.definition(id).scope).primitive_module
+    }
+
+    /// Locate the receiver of a direct or piped call to the registered nominal primitive.
+    pub fn inner_operand(&self, file: FileId, expression: &Expr) -> Option<(ExprId, Mode)> {
+        let ast = &self.file(file).ast;
+        let (callee, operand, mode) = match expression {
+            Expr::Call { callee, args } => {
+                let [argument] = args.as_slice() else {
+                    return None;
+                };
+                (*callee, argument.value, argument.mode)
+            }
+            Expr::Pipeline {
+                value,
+                target,
+                propagate: false,
+                mode,
+            } => match &ast.expr(*target).value {
+                Expr::Call { callee, args } if args.is_empty() => (*callee, *value, *mode),
+                Expr::Path(_) => (*target, *value, *mode),
+                _ => return None,
+            },
+            _ => return None,
+        };
+        let Expr::Path(path) = &ast.expr(callee).value else {
+            return None;
+        };
+        let Some(Resolution::Definition(id)) = self.resolve(path.span) else {
+            return None;
+        };
+        let definition = self.definition(id);
+        (matches!(definition.kind, DefinitionKind::Primitive(_))
+            && definition.name.value == "inner")
+            .then_some((operand, mode))
     }
 
     pub fn unit_constructor(&self, id: DefinitionId) -> bool {
