@@ -224,6 +224,14 @@ pub struct Callable {
     pub open_state: bool,
 }
 
+impl Callable {
+    pub(super) fn has_via_inputs(&self) -> bool {
+        self.parameters
+            .iter()
+            .any(|param| param.mode == Mode::Via || param.ty.has_via_members())
+    }
+}
+
 pub struct TypedProgram {
     pub hir: Program,
     pub types: HashMap<Span, Ty>,

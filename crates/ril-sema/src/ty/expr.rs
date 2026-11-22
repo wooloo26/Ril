@@ -1312,6 +1312,9 @@ impl<'a> Checker<'a> {
             None
         };
         let mut local = env.clone();
+        if params.iter().any(|param| param.mode == Mode::Via) {
+            local.mode_scope = Some(true);
+        }
         if env.phase == Phase::Runtime && params.iter().any(|param| param.is_meta) {
             local.staging_owner = Some(span);
         }
@@ -1346,6 +1349,9 @@ impl<'a> Checker<'a> {
                 optional: item.default.is_some(),
                 is_meta: item.is_meta,
             });
+        }
+        if parameters.iter().any(|param| param.ty.has_via_members()) {
+            local.mode_scope = Some(true);
         }
         let infer_result = local.expected_return.is_none();
         if infer_result {

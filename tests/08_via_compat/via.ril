@@ -29,6 +29,37 @@ fn invalid(x: Cell) -> infer Cell { x }
 fn invalid(via x: int) -> int { x }
 -- ^ E0550
 
+-- @case higher_order_infer_requires_a_lexical_via_input compile-fail E0412
+fn invalid(callback: fn(Cell) -> infer Cell) -> () {}
+-- ^ E0412
+
+-- @case standalone_via_field_cannot_supply_a_callable_input_mode compile-fail E0412
+type Invalid = .{ via callback: fn() -> infer Cell }
+-- ^ E0412
+
+-- @case higher_order_infer_accepts_its_own_mode_input compile-pass
+type Transform = fn(via Cell) @& -> infer Cell
+fn accept(callback: Transform) -> () {}
+
+-- @case higher_order_infer_can_use_an_enclosing_mode_input compile-pass
+fn accept(via callback: fn() @& -> infer Cell) -> () {}
+
+-- @case higher_order_mode_template_rejects_a_value_type_input compile-fail E0550
+type Invalid = fn(via int) -> infer int
+-- ^ E0550
+
+-- @case anonymous_callable_binds_its_own_via_input compile-pass
+fn run() -> int {
+    let relay = \via cell: Cell -> { let via local = cell; local }
+    relay(Cell.{ count: 42 }).count
+}
+
+-- @case anonymous_callable_binds_its_own_via_member compile-pass
+fn run(ref holder: .{ child: Cell }) -> int {
+    let read = \ref item: .{ via child: Cell } -> { let via local = item.child; local.count }
+    read(ref holder)
+}
+
 -- @case via_local_preserves_template compile-pass
 pub fn relay(via source: Cell) -> infer Cell {
     let via local = source

@@ -154,6 +154,7 @@ pub(super) struct Env {
     pub(super) nominal_fields: Option<Span>,
     pub(super) map_store: Option<Span>,
     pub(super) checking_type_template: bool,
+    pub(super) mode_scope: Option<bool>,
     pub(super) staging_owner: Option<Span>,
     pub(super) staging_gates: Vec<super::staging::StaticGate>,
     pub(super) require_concrete_types: bool,
@@ -179,6 +180,7 @@ impl Env {
             nominal_fields: None,
             map_store: None,
             checking_type_template: false,
+            mode_scope: Some(false),
             staging_owner: None,
             staging_gates: Vec::new(),
             require_concrete_types: false,
@@ -644,6 +646,7 @@ impl<'a> Checker<'a> {
         }
         self.generic_env(&mut local, &fun.generics);
         let call = self.declare_function(id);
+        local.mode_scope = Some(call.has_via_inputs() || env.mode_scope == Some(true));
         let span = fun.name.span;
         if fun.is_meta {
             if call.result.contains_type_value() {

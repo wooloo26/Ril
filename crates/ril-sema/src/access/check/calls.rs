@@ -1537,6 +1537,11 @@ impl Analyzer<'_> {
             .iter()
             .map(|param| param.name.as_ref().map(|name| name.span))
             .collect();
+        if let Ty::Callable(signature) = self.ty(node.span) {
+            let axes = member_axes(signature, &inner.formals);
+            inner.member_via |= !axes.is_empty();
+            self.register_member_axes(&axes);
+        }
         if obligations.open_effects || obligations.open_state {
             self.error(
                 Code::E0547,
@@ -1558,12 +1563,23 @@ impl Analyzer<'_> {
                 let param_ty = self
                     .definition(name.span)
                     .and_then(|id| self.program.bindings.get(&id));
+                if p.mode == Mode::Via {
+                    inner.via.insert(name.span);
+                    if param_ty.is_some_and(Ty::is_value) {
+                        self.error(
+                            Code::E0550,
+                            name.span,
+                            "via is redundant on a value-type parameter",
+                        );
+                    }
+                }
                 if param_ty.is_some_and(Ty::is_result) {
                     value.results.insert(name.span);
                     locals.obligations.insert(name.span);
                 }
                 value.transform(&mut |origin| {
                     origin.dependencies.insert(name.span);
+                    origin.inherits_mode = p.mode == Mode::Via;
                     if matches!(param_ty, Some(Ty::Scope | Ty::Draft(_))) {
                         origin.confined = Some(node.span);
                         origin.draft = matches!(param_ty, Some(Ty::Draft(_)));

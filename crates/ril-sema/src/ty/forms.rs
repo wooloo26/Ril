@@ -16,7 +16,7 @@ use ril_frontend::{
 
 use super::{
     Adt, AdtKind, Callable, GenericValue, Member, Parameter, Ty, Value,
-    check::{Checker, Env, Phase, path_name, unknown_callable},
+    check::{Checker, Env, Phase, path_name, transform, unknown_callable},
     value::static_argument,
 };
 
@@ -173,6 +173,9 @@ impl Checker<'_> {
         signature: &syntax::Signature,
         named: bool,
     ) -> Callable {
+        // Read the complete signature before deciding which mode parameters
+        // are in scope for a nested callable type.
+        let enclosing = env.mode_scope.take();
         let params: Vec<_> = signature
             .params
             .iter()
@@ -203,6 +206,17 @@ impl Checker<'_> {
                         Code::E0401,
                         span,
                         "value-type parameter cannot carry live access",
+                    );
+                }
+                if !named && param.mode == Mode::Via && ty.is_value() {
+                    let span = param.ty.map_or_else(
+                        || self.ast(env.file).ty(signature.result).span,
+                        |ty| self.ast(env.file).ty(ty).span,
+                    );
+                    self.error(
+                        Code::E0550,
+                        span,
+                        "via is redundant on a value-type parameter",
                     );
                 }
                 if named
@@ -247,6 +261,7 @@ impl Checker<'_> {
             })
             .collect();
         let result = self.type_expr(env, signature.result);
+        env.mode_scope = enclosing;
         let effects = signature
             .obligations
             .effects
@@ -288,7 +303,7 @@ impl Checker<'_> {
                 }
             })
             .collect();
-        Callable {
+        let callable = Callable {
             parameters: params,
             result,
             result_mode: signature.result_mode,
@@ -296,7 +311,43 @@ impl Checker<'_> {
             open_effects: signature.obligations.open_effects,
             state,
             open_state: signature.obligations.open_state,
+        };
+        if let Some(enclosing) = enclosing {
+            let template = callable.has_via_inputs() || enclosing && !named;
+            let result_span = self.ast(env.file).ty(signature.result).span;
+            if signature.result_mode == Mode::Infer && !template {
+                self.error(
+                    Code::E0412,
+                    result_span,
+                    "infer requires a via input in scope",
+                );
+            }
+            for (syntax, param) in signature.params.iter().zip(&callable.parameters) {
+                let span = syntax
+                    .ty
+                    .map_or(result_span, |ty| self.ast(env.file).ty(ty).span);
+                self.check_nested_callable_modes(&param.ty, template, span);
+            }
+            self.check_nested_callable_modes(&callable.result, template, result_span);
         }
+        callable
+    }
+
+    fn check_nested_callable_modes(&mut self, ty: &Ty, enclosing: bool, span: Span) {
+        transform(ty, &mut |ty| {
+            let Ty::Callable(callable) = ty else {
+                return None;
+            };
+            let template = enclosing || callable.has_via_inputs();
+            if callable.result_mode == Mode::Infer && !template {
+                self.error(Code::E0412, span, "infer requires a via input in scope");
+            }
+            for param in &callable.parameters {
+                self.check_nested_callable_modes(&param.ty, template, span);
+            }
+            self.check_nested_callable_modes(&callable.result, template, span);
+            Some(Ty::Unknown)
+        });
     }
 
     fn guard_parameter(&mut self, env: &Env, guard: syntax::ExprId) -> Ty {

@@ -566,20 +566,8 @@ impl<'a> Analyzer<'a> {
             }
         }
         let member_axes = member_axes(callable, &ctx.formals);
-        for (_, axis) in &member_axes {
-            self.member_schemas
-                .entry(axis.source)
-                .or_default()
-                .push(axis.clone());
-        }
+        self.register_member_axes(&member_axes);
         ctx.member_via = !member_axes.is_empty();
-        if ctx.expected == Mode::Infer && ctx.via.is_empty() && !ctx.member_via {
-            self.error(
-                Code::E0412,
-                ctx.owner,
-                "infer requires via in this callable's parameter list",
-            );
-        }
         let captures = fun
             .signature
             .obligations
@@ -2590,6 +2578,15 @@ impl<'a> Analyzer<'a> {
             .get(&region.source)?
             .iter()
             .find(|axis| axis.matches_axis(region))
+    }
+
+    fn register_member_axes(&mut self, axes: &[(usize, Region)]) {
+        for (_, axis) in axes {
+            let regions = self.member_schemas.entry(axis.source).or_default();
+            if !regions.contains(axis) {
+                regions.push(axis.clone());
+            }
+        }
     }
 
     fn navigate(
