@@ -150,6 +150,32 @@ def SummaryOf.subsumesBy [DecidableEq α] (pure : α → Bool) (expected actual 
   actual.createdEnvironments.all (fun o =>
     pure o || decide (o ∈ expected.createdEnvironments))
 
+/-- A published mode domain keeps all its previous inputs. At each such input,
+the revised signature must still satisfy the baseline's guarantees. -/
+def viaDomainSubsumes [DecidableEq Mode] (subsumes : Sig → Sig → Bool)
+    (baseline revision : List (Mode × Sig)) : Bool :=
+  baseline.all fun old =>
+    (revision.find? (fun current => decide (current.1 = old.1))).any (fun current =>
+      subsumes old.2 current.2)
+
+theorem viaDomainSubsumes_preserves_row [DecidableEq Mode] {subsumes : Sig → Sig → Bool}
+    {baseline revision : List (Mode × Sig)} {mode : Mode} {old : Sig}
+    (h : viaDomainSubsumes subsumes baseline revision = true)
+    (row : (mode, old) ∈ baseline) :
+    ∃ current, (mode, current) ∈ revision ∧ subsumes old current = true := by
+  have admitted := List.all_eq_true.mp h (mode, old) row
+  dsimp at admitted
+  cases found : revision.find? (fun current => decide (current.1 = mode)) with
+  | none => simp [found] at admitted
+  | some actual =>
+    have matched : decide (actual.1 = mode) = true :=
+      List.find?_some (p := fun current : Mode × Sig => decide (current.1 = mode)) found
+    have sameMode : actual.1 = mode := of_decide_eq_true matched
+    obtain ⟨key, current⟩ := actual
+    dsimp at sameMode
+    subst key
+    exact ⟨current, List.mem_of_find?_eq_some found, by simpa [found] using admitted⟩
+
 def Summary.subsumes (pureSources : List Source) (expected actual : Summary) : Bool :=
   SummaryOf.subsumesBy (isPureInstance pureSources) expected actual
 

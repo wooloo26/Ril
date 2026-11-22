@@ -272,13 +272,7 @@ impl Interface {
                     && if baseline.domain.is_empty() {
                         baseline.summary.subsumes(&export.summary)
                     } else {
-                        baseline.domain.iter().all(|row| {
-                            export
-                                .domain
-                                .iter()
-                                .find(|new| row.modes == new.modes)
-                                .is_some_and(|new| row.summary.subsumes(&new.summary))
-                        })
+                        Instance::domain_subsumes(&baseline.domain, &export.domain)
                     }
             });
             if !compatible {

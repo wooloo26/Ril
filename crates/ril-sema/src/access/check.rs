@@ -26,6 +26,7 @@ mod calls;
 enum Obligation {
     Write(Span),
     WriteExisting(Span),
+    Handoff(Span),
     Replace(Span),
     Retain(Span),
     Share(Span),
@@ -163,9 +164,26 @@ pub(super) fn analyze(program: &TypedProgram) -> (Analysis, Vec<Diagnostic>) {
             analyzer.error(Code::E0527, requirement.span, requirement.message);
         }
     }
+    let mut consuming_inputs = BTreeMap::new();
     for function in std::mem::take(&mut analyzer.functions) {
         let summary = analyzer.finish_function(&facts, &function);
-        let instances = analyzer.via_table(&function, &summary);
+        let consumed: BTreeSet<_> = function
+            .formals
+            .iter()
+            .enumerate()
+            .filter_map(|(index, formal)| {
+                formal
+                    .filter(|decl| {
+                        facts.contains(&Fact {
+                            owner: function.owner,
+                            obligation: Obligation::Handoff(*decl),
+                        })
+                    })
+                    .map(|_| index)
+            })
+            .collect();
+        let instances = analyzer.via_table(&function, &summary, &consumed);
+        consuming_inputs.insert(function.id, consumed);
         if !instances.is_empty() {
             analysis.via.insert(function.id, instances);
         }
@@ -176,7 +194,13 @@ pub(super) fn analyze(program: &TypedProgram) -> (Analysis, Vec<Diagnostic>) {
             continue;
         };
         for (index, mode, span) in use_site.choices {
-            if summary.retained.contains(&index) && mode != Input::Shared {
+            if mode != Input::New
+                && consuming_inputs
+                    .get(&use_site.callee)
+                    .is_some_and(|owned| owned.contains(&index))
+            {
+                analyzer.error(Code::E0548, span, "via application requires new ownership");
+            } else if summary.retained.contains(&index) && mode != Input::Shared {
                 analyzer.error(
                     Code::E0520,
                     span,
@@ -486,6 +510,7 @@ impl<'a> Analyzer<'a> {
             };
             value.transform(&mut |origin| {
                 origin.dependencies.insert(span);
+                origin.inherits_mode = param.mode == Mode::Via;
             });
             if param.ty.is_result() {
                 value.results.insert(span);
@@ -754,7 +779,12 @@ impl<'a> Analyzer<'a> {
         summary
     }
 
-    fn via_table(&self, fun: &DefinitionCheck, summary: &Summary) -> Vec<Instance> {
+    fn via_table(
+        &mut self,
+        fun: &DefinitionCheck,
+        summary: &Summary,
+        consumed: &BTreeSet<usize>,
+    ) -> Vec<Instance> {
         if fun.via.is_empty() {
             return Vec::new();
         }
@@ -765,7 +795,17 @@ impl<'a> Analyzer<'a> {
                 continue;
             }
             formals.insert(index, formals.len());
-            let domain: &[Input] = if summary.retained.contains(&index) {
+            let domain: &[Input] = if consumed.contains(&index) {
+                if summary.retained.contains(&index) {
+                    self.error(
+                        Code::E0548,
+                        fun.owner,
+                        "via source cannot be both transferred and retained as shared",
+                    );
+                    return Vec::new();
+                }
+                &[Input::New]
+            } else if summary.retained.contains(&index) {
                 &[Input::Shared]
             } else if summary.writes.contains(&index) {
                 &[Input::Mut, Input::Shared, Input::New]
@@ -793,6 +833,25 @@ impl<'a> Analyzer<'a> {
             .map(|modes| {
                 let mut summary = summary.clone();
                 if fun.declared.result_mode == Mode::Infer {
+                    summary.constructs = !fun.returns.is_empty()
+                        && fun.returns.iter().all(|value| {
+                            value.requires_new
+                                || (!value.roots.is_empty()
+                                    && value.roots.iter().all(|origin| {
+                                        origin.inherits_mode
+                                            && origin.region.selection.is_empty()
+                                            && fun
+                                                .formals
+                                                .iter()
+                                                .position(|formal| {
+                                                    *formal == Some(origin.region.source)
+                                                })
+                                                .and_then(|index| formals.get(&index))
+                                                .is_some_and(|&position| {
+                                                    modes.get(position) == Some(&Input::New)
+                                                })
+                                    }))
+                        });
                     for source in &mut summary.return_sources {
                         let Some(input) = formals
                             .get(&source.formal)
@@ -800,12 +859,14 @@ impl<'a> Analyzer<'a> {
                         else {
                             continue;
                         };
-                        source.access =
-                            if source.source_path.is_empty() && source.result_path.is_empty() {
-                                input.access()
-                            } else {
-                                input.access().project(source.access)
-                            };
+                        source.access = if source.source_path.is_empty()
+                            && source.result_path.is_empty()
+                            && source.access == Access::Mut
+                        {
+                            input.access()
+                        } else {
+                            input.access().project(source.access)
+                        };
                     }
                     summary.return_sources.sort_unstable();
                     summary.return_sources.dedup();
@@ -947,7 +1008,7 @@ impl<'a> Analyzer<'a> {
                 return false;
             }
             for root in &mut value.roots {
-                root.mode = mode;
+                root.fix_mode(mode);
             }
             return true;
         };
@@ -1001,7 +1062,7 @@ impl<'a> Analyzer<'a> {
                 _ => {}
             }
             for root in &mut value.roots {
-                root.mode = mode;
+                root.fix_mode(mode);
             }
             return value;
         }
@@ -1169,11 +1230,11 @@ impl<'a> Analyzer<'a> {
             }
             value.transform(&mut |origin| {
                 origin.confined = Some(binding);
-                origin.mode = if mode == Mode::Mut {
+                origin.fix_mode(if mode == Mode::Mut {
                     Access::Mut
                 } else {
                     Access::Ref
-                };
+                });
             });
             self.cleanups.insert(binding, CleanupAction::CloseSender);
             return;
@@ -1260,11 +1321,11 @@ impl<'a> Analyzer<'a> {
         }
         value.transform(&mut |origin| {
             origin.confined = Some(binding);
-            origin.mode = if mode == Mode::Mut {
+            origin.fix_mode(if mode == Mode::Mut {
                 Access::Mut
             } else {
                 Access::Ref
-            };
+            });
         });
         self.cleanups
             .insert(binding, CleanupAction::Function(cleanup));
@@ -1391,11 +1452,11 @@ impl<'a> Analyzer<'a> {
                 }
                 if mode != Mode::Via {
                     for root in &mut value.roots {
-                        root.mode = access;
+                        root.fix_mode(access);
                     }
                     if mode == Mode::Plain && !resource {
                         value.transform(&mut |origin| {
-                            origin.mode = Access::Immutable;
+                            origin.fix_mode(Access::Immutable);
                             origin.new = false;
                         });
                     }
@@ -1583,7 +1644,7 @@ impl<'a> Analyzer<'a> {
                     "new" => self.handoff(ctx, ledger, &mut value, span),
                     "ref" => {
                         for root in &mut value.roots {
-                            root.mode = Access::Ref;
+                            root.fix_mode(Access::Ref);
                         }
                         value.requires_new = false;
                     }
@@ -1592,7 +1653,7 @@ impl<'a> Analyzer<'a> {
                             self.error(Code::E0520, span, "sharing requires writable authority");
                         }
                         for root in &mut value.roots {
-                            root.mode = Access::Shared;
+                            root.fix_mode(Access::Shared);
                             root.new = false;
                         }
                         value.requires_new = false;
@@ -1963,9 +2024,13 @@ impl<'a> Analyzer<'a> {
         }
         let decl = self.program.hir.definition(id).name.span;
         if let Some(slot) = ledger.slots.get(&decl) {
-            if ctx.reachable && ledger.dead(&slot.value) {
-                self.error(Code::E0549, span, "source path was ended by new handoff");
-            }
+            self.check_live(
+                ctx,
+                ledger,
+                &slot.value,
+                span,
+                "source path was ended by new handoff",
+            );
             if ctx.in_function
                 && decl.start < ctx.owner.start
                 && !ctx.formals.contains(&Some(decl))
@@ -1989,6 +2054,33 @@ impl<'a> Analyzer<'a> {
             Datum::source(decl, Access::Immutable, false)
         } else {
             Datum::default()
+        }
+    }
+
+    fn check_live(
+        &mut self,
+        ctx: &Context,
+        ledger: &Ledger,
+        value: &Datum,
+        span: Span,
+        message: &'static str,
+    ) {
+        if !ctx.reachable {
+            return;
+        }
+        let revocations = ledger.revocations(value);
+        if revocations.contains(&None) {
+            self.error(Code::E0549, span, message);
+        } else {
+            for (owner, formal) in revocations.into_iter().flatten() {
+                self.deferred_errors.push((
+                    vec![Fact {
+                        owner,
+                        obligation: Obligation::Handoff(formal),
+                    }],
+                    Diagnostic::error(Code::E0549, span, message),
+                ));
+            }
         }
     }
 
@@ -2053,22 +2145,21 @@ impl<'a> Analyzer<'a> {
         if ctx.reachable {
             for root in &value.roots {
                 for &dependency in &root.dependencies {
-                    ledger.revoke(dependency, Some(root));
+                    ledger.revoke(dependency, Some(root), None);
                 }
             }
         }
+        for root in &value.roots {
+            if ctx.via.contains(&root.region.source) {
+                self.seed(ctx, Obligation::Handoff(root.region.source));
+            }
+        }
         for &id in &dependencies {
-            self.seed(ctx, Obligation::Write(id));
+            if !ctx.via.contains(&id) {
+                self.seed(ctx, Obligation::Write(id));
+            }
         }
-        value.transform(&mut |origin| {
-            origin
-                .dependencies
-                .retain(|dependency| !dependencies.contains(dependency));
-        });
-        for root in &mut value.roots {
-            root.new = true;
-        }
-        value.requires_new = true;
+        value.detach_handed_off_paths();
     }
 
     fn place(&mut self, ctx: &mut Context, ledger: &mut Ledger, id: ExprId, prior: Datum) -> Datum {
@@ -2142,7 +2233,7 @@ impl<'a> Analyzer<'a> {
                 let mut value = value;
                 value.transform(&mut |origin| {
                     origin.dependencies.insert(slot.decl);
-                    origin.mode = Access::from_mode(slot.mode);
+                    origin.fix_mode(Access::from_mode(slot.mode));
                 });
                 slot.value = value;
                 return;

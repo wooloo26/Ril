@@ -79,6 +79,17 @@ pub struct Instance {
     pub summary: Summary,
 }
 
+impl Instance {
+    pub fn domain_subsumes(baseline: &[Self], revision: &[Self]) -> bool {
+        baseline.iter().all(|old| {
+            revision
+                .iter()
+                .find(|new| old.modes == new.modes)
+                .is_some_and(|new| old.summary.subsumes(&new.summary))
+        })
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub enum CleanupAction {
     Function(DefinitionId),

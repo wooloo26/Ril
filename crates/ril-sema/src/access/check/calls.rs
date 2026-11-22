@@ -6,7 +6,7 @@ use ril_frontend::{
     syntax::{Argument, Expr, ExprId, Handler, Mode, StateKind, StmtKind},
 };
 
-use crate::ty::Ty;
+use crate::{access::flow::Handoff, ty::Ty};
 
 use super::{
     Access, Analyzer, Context, Coordinate, Datum, DefinitionCheck, Fact, Input, Ledger, ModeUse,
@@ -126,22 +126,29 @@ impl Analyzer<'_> {
             let parameter = sig.and_then(|sig| sig.parameters.get(index));
             let inferred = parameter.is_some_and(|p| p.mode == Mode::Via);
             let mode = if inferred {
-                let mode = if arg.mode == Mode::Plain && value.requires_new {
-                    Mode::New
-                } else {
-                    arg.mode
+                let mode = match arg.mode {
+                    Mode::Plain if value.requires_new => Mode::New,
+                    Mode::Plain
+                        if syntax.is_some_and(|fun| fun.body.is_some())
+                            && Self::forwards_via(ctx, &value) =>
+                    {
+                        Mode::Via
+                    }
+                    mode => mode,
                 };
-                choices.push((
-                    index,
-                    match mode {
-                        Mode::Ref => Input::Ref,
-                        Mode::Mut => Input::Mut,
-                        Mode::Shared => Input::Shared,
-                        Mode::New => Input::New,
-                        _ => Input::Plain,
-                    },
-                    node.span,
-                ));
+                if mode != Mode::Via {
+                    choices.push((
+                        index,
+                        match mode {
+                            Mode::Ref => Input::Ref,
+                            Mode::Mut => Input::Mut,
+                            Mode::Shared => Input::Shared,
+                            Mode::New => Input::New,
+                            _ => Input::Plain,
+                        },
+                        node.span,
+                    ));
+                }
                 mode
             } else {
                 parameter.map_or(arg.mode, |p| p.mode)
@@ -190,13 +197,13 @@ impl Analyzer<'_> {
                 ledger.inspect(&value);
             }
             for (_, _, previous) in &values {
-                if ledger.dead(previous) {
-                    self.error(
-                        Code::E0549,
-                        node.span,
-                        "argument handoff ended an earlier argument path",
-                    );
-                }
+                self.check_live(
+                    ctx,
+                    ledger,
+                    previous,
+                    node.span,
+                    "argument handoff ended an earlier argument path",
+                );
             }
             values.push((index, mode, value));
             value_spans.push(node.span);
@@ -227,9 +234,11 @@ impl Analyzer<'_> {
         {
             self.mode_uses.push(ModeUse { callee, choices });
         }
-        if target.as_ref().is_some_and(|target| ledger.dead(target)) {
-            self.error(
-                Code::E0549,
+        if let Some(target) = &target {
+            self.check_live(
+                ctx,
+                ledger,
+                target,
                 callee.span,
                 "argument handoff ended the callable path",
             );
@@ -304,6 +313,9 @@ impl Analyzer<'_> {
                         owner: fun.name.span,
                         obligation: Obligation::Invoke(formal),
                     };
+                    if *mode == Mode::Via {
+                        self.forward_handoff(ctx, ledger, value, (fun.name.span, formal));
+                    }
                     self.link_invocation_if(ctx, value, Some(&invocation));
                     if ctx.reachable && !ctx.shadow {
                         for source in value.root_dependencies() {
@@ -315,7 +327,7 @@ impl Analyzer<'_> {
                                 },
                             });
                         }
-                        if matches!(mode, Mode::Mut | Mode::Shared | Mode::New) {
+                        if matches!(mode, Mode::Mut | Mode::Shared | Mode::New | Mode::Via) {
                             let existing: BTreeSet<_> = value
                                 .origins()
                                 .filter(|origin| {
@@ -352,7 +364,7 @@ impl Analyzer<'_> {
                         }
                     }
                 }
-                if matches!(mode, Mode::Mut | Mode::Shared | Mode::New) {
+                if matches!(mode, Mode::Mut | Mode::Shared | Mode::New | Mode::Via) {
                     let origins: BTreeSet<_> = value.root_dependencies().collect();
                     for source in origins {
                         if let Some(formal) = formal
@@ -370,7 +382,7 @@ impl Analyzer<'_> {
                                     obligation: Obligation::Write(source),
                                 },
                             });
-                            if *mode == Mode::Shared {
+                            if matches!(mode, Mode::Shared | Mode::Via) {
                                 for obligation in
                                     [Obligation::Retain(source), Obligation::Share(source)]
                                 {
@@ -406,7 +418,7 @@ impl Analyzer<'_> {
                     if matches!(fun.signature.result_mode, Mode::Ref | Mode::Shared) {
                         result.requires_new = false;
                         for root in &mut result.roots {
-                            root.mode = Access::from_mode(fun.signature.result_mode);
+                            root.fix_mode(Access::from_mode(fun.signature.result_mode));
                             root.new = false;
                         }
                     }
@@ -427,7 +439,7 @@ impl Analyzer<'_> {
                         .reduce(Datum::joined)
                         .unwrap_or_default();
                     result.transform(&mut |origin| {
-                        origin.mode = Access::from_mode(fun.signature.result_mode);
+                        origin.fix_mode(Access::from_mode(fun.signature.result_mode));
                         origin.new = false;
                     });
                     result.requires_new = false;
@@ -442,7 +454,7 @@ impl Analyzer<'_> {
                     .next()
                 {
                     value.transform(&mut |origin| {
-                        origin.mode = mode;
+                        origin.fix_mode(mode);
                         origin.new = false;
                     });
                     result
@@ -689,9 +701,9 @@ impl Analyzer<'_> {
                     let formal = definition.formals.get(index).copied().flatten()?;
                     let via = definition.via.contains(&formal);
                     let mut actual = actual.clone();
-                    if via {
+                    if via && *receiver != Mode::Via {
                         for root in &mut actual.roots {
-                            root.mode = Access::from_mode(*receiver);
+                            root.fix_mode(Access::from_mode(*receiver));
                         }
                     }
                     for (index, coordinate) in origin.region.selection.iter().enumerate() {
@@ -702,9 +714,20 @@ impl Analyzer<'_> {
                         };
                         actual = entry.project(&actual, coordinate.clone(), cap);
                     }
-                    if !via {
+                    if via && origin.new {
+                        actual.detach_handed_off_paths();
+                    } else if via
+                        && origin.region.selection.is_empty()
+                        && origin.mode != Access::Mut
+                    {
                         actual.transform(&mut |member| {
-                            member.mode = member.mode.project(origin.mode);
+                            member.fix_mode(origin.mode.project(member.mode));
+                            member.new = false;
+                        });
+                        actual.requires_new = false;
+                    } else if !via {
+                        actual.transform(&mut |member| {
+                            member.fix_mode(member.mode.project(origin.mode));
                             member.new &= origin.new;
                         });
                         actual.requires_new &= origin.new;
@@ -767,6 +790,44 @@ impl Analyzer<'_> {
         output
     }
 
+    fn forward_handoff(
+        &mut self,
+        ctx: &Context,
+        ledger: &mut Ledger,
+        value: &Datum,
+        (owner, formal): Handoff,
+    ) {
+        if !ctx.reachable {
+            return;
+        }
+        for root in &value.roots {
+            if !ctx.shadow {
+                self.rules.push(Rule {
+                    premises: vec![Fact {
+                        owner,
+                        obligation: Obligation::Handoff(formal),
+                    }],
+                    conclusion: Fact {
+                        owner: ctx.owner,
+                        obligation: Obligation::Handoff(root.region.source),
+                    },
+                });
+            }
+            for &token in &root.dependencies {
+                ledger.revoke(token, Some(root), Some((owner, formal)));
+            }
+        }
+    }
+
+    fn forwards_via(ctx: &Context, value: &Datum) -> bool {
+        !value.roots.is_empty()
+            && value.roots.iter().all(|origin| {
+                origin.inherits_mode
+                    && origin.region.selection.is_empty()
+                    && ctx.via.contains(&origin.region.source)
+            })
+    }
+
     fn prepare_argument(
         &mut self,
         ctx: &Context,
@@ -776,6 +837,11 @@ impl Analyzer<'_> {
         span: Span,
         mode: Mode,
     ) -> Datum {
+        if mode != Mode::Via {
+            for root in &mut value.roots {
+                root.inherits_mode = false;
+            }
+        }
         match mode {
             Mode::New => self.handoff(ctx, ledger, &mut value, span),
             Mode::Mut | Mode::Shared => {
@@ -793,7 +859,7 @@ impl Analyzer<'_> {
                 }
                 if mode == Mode::Shared {
                     for root in &mut value.roots {
-                        root.mode = Access::Shared;
+                        root.fix_mode(Access::Shared);
                         root.new = false;
                     }
                     value.requires_new = false;
@@ -815,7 +881,7 @@ impl Analyzer<'_> {
                     );
                 }
                 value.transform(&mut |origin| {
-                    origin.mode = Access::Immutable;
+                    origin.fix_mode(Access::Immutable);
                 });
                 value.requires_new = false;
             }
@@ -1045,7 +1111,7 @@ impl Analyzer<'_> {
                                 "fiber closure captures a replaceable slot",
                             );
                         } else {
-                            ledger.revoke(decl, None);
+                            ledger.revoke(decl, None, None);
                         }
                     }
                 }

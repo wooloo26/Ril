@@ -140,3 +140,87 @@ fn use_copy() -> int {
     copy.count += 1
     copy.count
 }
+
+-- @case forwarding_to_writer_restricts_published_via_domain compat-fail E0552
+-- @baseline
+pub fn relay(via cell: Cell) -> int { cell.count }
+-- @revision
+fn bump(via cell: Cell) -> int { cell.count += 1; cell.count }
+pub fn relay(via cell: Cell) -> int { bump(cell) }
+-- ^ E0552
+
+-- @case replacing_inline_via_body_with_forwarding_is_compatible compat-pass
+-- @baseline
+pub fn relay(via cell: Cell) -> infer Cell { cell }
+-- @revision
+fn identity(via cell: Cell) -> infer Cell { cell }
+pub fn relay(via cell: Cell) -> infer Cell {
+    let via local = cell
+    identity(local)
+}
+
+-- @case forwarded_writer_rejects_read_only_instantiation compile-fail E0520
+fn bump(via cell: Cell) -> int { cell.count += 1; cell.count }
+fn relay(via cell: Cell) -> int { bump(cell) }
+fn run() -> int {
+    let mut cell = Cell.{ count: 41 }
+    let value = relay(ref cell)
+    -- ^ E0520
+    cell.count += 1
+    value
+}
+
+-- @case forwarded_via_handoff_requires_new_qualification compile-fail E0548
+fn take(via cell: Cell) -> infer Cell { new cell }
+fn relay(via cell: Cell) -> infer Cell { take(cell) }
+fn read(ref cell: Cell) -> int {
+    let selected = relay(ref cell)
+    -- ^ E0548
+    selected.count
+}
+
+-- @case via_handoff_revokes_path_after_nested_forwarding compile-fail E0549
+fn take(via cell: Cell) -> infer Cell { new cell }
+fn relay(via cell: Cell) -> infer Cell { take(cell) }
+fn invalid(via cell: Cell) -> int {
+    let ref observer = ref cell
+    let selected = relay(cell)
+    selected.count + observer.count
+    -- ^ E0549
+}
+
+-- @case consuming_via_revision_restricts_published_domain compat-fail E0552
+-- @baseline
+pub fn relay(via cell: Cell) -> infer Cell { cell }
+-- @revision
+fn take(via cell: Cell) -> infer Cell { new cell }
+pub fn relay(via cell: Cell) -> infer Cell { take(cell) }
+-- ^ E0552
+
+-- @case explicitly_read_only_via_result_cannot_recover_new_authority compile-fail E0520
+fn observe(via cell: Cell) -> infer Cell { ref cell }
+fn relay(via cell: Cell) -> infer Cell { observe(cell) }
+fn invalid() -> int {
+    let mut original = Cell.{ count: 41 }
+    let mut view = relay(new original)
+    -- ^ E0520
+    view.count += 1
+    view.count
+}
+
+-- @case attenuating_a_published_via_return_breaks_compatibility compat-fail E0552
+-- @baseline
+pub fn relay(via cell: Cell) -> infer Cell { cell }
+-- @revision
+fn observe(via cell: Cell) -> infer Cell { ref cell }
+pub fn relay(via cell: Cell) -> infer Cell { observe(cell) }
+-- ^ E0552
+
+-- @case forwarded_via_retention_requires_a_shared_writer compile-fail E0520
+type Shelf = .{ var ^mut item: Cell }
+fn store(via item: Cell, mut shelf: Shelf) &mut -> () { shelf.item = ^mut item }
+fn relay(via item: Cell, mut shelf: Shelf) &mut -> () { store(item, mut shelf) }
+fn invalid(ref item: Cell, mut shelf: Shelf) &mut -> () {
+    relay(ref item, mut shelf)
+    -- ^ E0520
+}

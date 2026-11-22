@@ -53,9 +53,23 @@ structure JsonComparison where
   revision : JsonSummary
   deriving FromJson
 
-def compare (case : JsonComparison) : Bool :=
-  RilAccess.SummaryOf.subsumesBy (fun _ => false) case.baseline.formal case.revision.formal &&
-    (!case.baseline.constructs || case.revision.constructs)
+def compareSummaries (baseline revision : JsonSummary) : Bool :=
+  RilAccess.SummaryOf.subsumesBy (fun _ => false) baseline.formal revision.formal &&
+    (!baseline.constructs || revision.constructs)
+
+structure JsonInstance where
+  modes : List String
+  summary : JsonSummary
+  deriving FromJson
+
+structure JsonDomainComparison where
+  baseline : List JsonInstance
+  revision : List JsonInstance
+  deriving FromJson
+
+def compareDomains (case : JsonDomainComparison) : Bool :=
+  let domain := fun (rows : List JsonInstance) => rows.map fun row => (row.modes, row.summary)
+  RilAccess.viaDomainSubsumes compareSummaries (domain case.baseline) (domain case.revision)
 
 def solve (entries : List JsonRule) : List Nat :=
   let rules : List (RilAccess.Rule Nat) :=
@@ -186,7 +200,11 @@ def main (args : List String) : IO Unit := do
   if args == ["summary"] then
     let .ok cases := fromJson? (α := List JsonComparison) json
       | throw (IO.userError "expected a JSON array of callable summaries")
-    stdout.putStrLn (toJson (cases.map compare)).compress
+    stdout.putStrLn (toJson (cases.map fun case => compareSummaries case.baseline case.revision)).compress
+  else if args == ["domain"] then
+    let .ok cases := fromJson? (α := List JsonDomainComparison) json
+      | throw (IO.userError "expected a JSON array of via domain comparisons")
+    stdout.putStrLn (toJson (cases.map compareDomains)).compress
   else if args == ["batch"] then
     let .ok cases := fromJson? (α := List (List JsonRule)) json
       | throw (IO.userError "expected a JSON array of Horn programs")

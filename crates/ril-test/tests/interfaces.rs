@@ -39,6 +39,32 @@ fn interface_roundtrip_is_stable_and_detects_corruption() {
 }
 
 #[test]
+fn forwarded_via_identity_publishes_new_guarantee_only_for_owned_input() {
+    use ril_sema::access::Input;
+
+    let suite = parse_suite(
+        Path::new("via.ril"),
+        include_str!("../../../tests/08_via_compat/via.ril"),
+    )
+    .unwrap();
+    let case = suite
+        .cases
+        .iter()
+        .find(|case| case.id == "replacing_inline_via_body_with_forwarding_is_compatible")
+        .unwrap();
+    let interface = Driver.interface(&case.pkg).unwrap();
+    let decoded = Interface::decode(&interface.encode().unwrap()).unwrap();
+    assert_eq!(decoded.functions.len(), 1);
+    let relay = decoded.functions.values().next().unwrap();
+    for input in [Input::Plain, Input::Ref, Input::New] {
+        assert!(relay.domain.iter().any(|row| row.modes == [input]));
+    }
+    for row in &relay.domain {
+        assert_eq!(row.summary.constructs, row.modes == [Input::New]);
+    }
+}
+
+#[test]
 fn exported_horn_facts_agree_with_lean() {
     let Some(oracle) = std::env::var_os("RIL_HORN_ORACLE") else {
         return;
@@ -79,8 +105,8 @@ fn exported_horn_facts_agree_with_lean() {
 }
 
 #[test]
-fn exported_summary_subsumption_agrees_with_lean() {
-    use ril_sema::access::{Coordinate, ReturnSource, Summary};
+fn exported_summaries_and_via_domains_agree_with_lean() {
+    use ril_sema::access::{Coordinate, Instance, ReturnSource, Summary};
     use serde_json::{Value, json};
 
     let Some(oracle) = std::env::var_os("RIL_HORN_ORACLE") else {
@@ -106,15 +132,20 @@ fn exported_summary_subsumption_agrees_with_lean() {
             ..Summary::default()
         },
     ];
+    let mut domains = vec![Vec::new()];
     for case in suite.cases {
         for pkg in case.baseline.iter().chain(std::iter::once(&case.pkg)) {
             if let Ok(interface) = Driver.interface(pkg) {
-                for function in interface.functions.into_values() {
+                let decoded = Interface::decode(&interface.encode().unwrap()).unwrap();
+                for function in decoded.functions.into_values() {
                     summaries.push(function.summary);
-                    for instance in function.domain {
+                    for instance in &function.domain {
                         if !summaries.contains(&instance.summary) {
-                            summaries.push(instance.summary);
+                            summaries.push(instance.summary.clone());
                         }
+                    }
+                    if !domains.contains(&function.domain) {
+                        domains.push(function.domain);
                     }
                 }
             }
@@ -173,22 +204,32 @@ fn exported_summary_subsumption_agrees_with_lean() {
         .map(|(baseline, revision)| baseline.subsumes(revision))
         .collect();
 
-    let mut child = Command::new(oracle)
-        .arg("summary")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn()
-        .unwrap();
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(&serde_json::to_vec(&input).unwrap())
-        .unwrap();
-    let output = child.wait_with_output().unwrap();
-    assert!(output.status.success());
+    let output = query(&oracle, "summary", &serde_json::to_vec(&input).unwrap()).unwrap();
     assert_eq!(
-        serde_json::from_slice::<Vec<bool>>(&output.stdout).unwrap(),
+        serde_json::from_slice::<Vec<bool>>(&output).unwrap(),
+        expected
+    );
+
+    assert!(domains.len() > 4);
+    let domain_wire = |rows: &[Instance]| {
+        rows.iter()
+            .map(|row| json!({"modes": row.modes, "summary": wire(&row.summary)}))
+            .collect::<Vec<_>>()
+    };
+    let cases: Vec<_> = domains
+        .iter()
+        .flat_map(|baseline| domains.iter().map(move |revision| (baseline, revision)))
+        .collect();
+    let input: Vec<_> = cases.iter().map(|(baseline, revision)| {
+        json!({"baseline": domain_wire(baseline), "revision": domain_wire(revision)})
+    }).collect();
+    let actual = query(&oracle, "domain", &serde_json::to_vec(&input).unwrap()).unwrap();
+    let expected: Vec<_> = cases
+        .iter()
+        .map(|(baseline, revision)| Instance::domain_subsumes(baseline, revision))
+        .collect();
+    assert_eq!(
+        serde_json::from_slice::<Vec<bool>>(&actual).unwrap(),
         expected
     );
 }

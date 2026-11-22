@@ -424,10 +424,10 @@ fn main() -> () {
 pub fn unreachable() -> int
 
 -- @case guarded_static_coordinate_keeps_its_dependent_return_through_a_call run-pass backend=both
-fn read<T: .{ .. }>(item: T, meta key: str |> Key<T>) -> T.(key) {
+fn read<T: .{ .. }>(via item: T, meta key: str |> Key<T>) -> infer T.(key) {
     item.(key)
 }
-fn relay<T: .{ .. }>(item: T, meta key: str |> Key<T>) -> T.(key) {
+fn relay<T: .{ .. }>(via item: T, meta key: str |> Key<T>) -> infer T.(key) {
     read(item, key)
 }
 fn main() -> () {
@@ -440,3 +440,56 @@ fn terminates(meta n: int) -> bool {
     n == 0 || terminates(n - 1)
 }
 fn main() -> () { assert(terminates(3)) }
+
+-- @case via_forwarding_preserves_snapshot_ref_and_new_reception run-pass backend=both
+type Cell = .{ var count: int }
+fn identity(via cell: Cell) -> infer Cell { cell }
+fn relay(via cell: Cell) -> infer Cell {
+    identity({ let via local = cell; local })
+}
+fn main() -> () {
+    let frozen = Cell.{ count: 7 }
+    let selected = relay(frozen)
+    let mut live = Cell.{ count: 40 }
+    let ref observer = relay(ref live)
+    live.count += 1
+    assert(selected.count == 7 && observer.count == 41)
+    let mut moved = relay(new live)
+    moved.count += 1
+    assert(moved.count == 42)
+}
+
+-- @case via_handoff_returns_live_owned_path_after_nested_forwarding run-pass backend=both
+type Cell = .{ var count: int }
+fn take(via cell: Cell) -> infer Cell { new cell }
+fn relay(via cell: Cell) -> infer Cell { take(cell) }
+fn adjust(via cell: Cell) -> infer Cell {
+    let mut moved = relay(cell)
+    moved.count += 1
+    new moved
+}
+fn main() -> () {
+    let mut original = Cell.{ count: 41 }
+    let updated = adjust(new original)
+    assert(updated.count == 42)
+}
+
+-- @case via_forwarding_propagates_shared_retention_to_the_caller run-pass backend=both
+type Cell = .{ var count: int }
+type Shelf = .{ var ^mut item: Cell }
+fn store(via value: Cell, mut shelf: Shelf) &mut -> () {
+    shelf.item = ^mut value
+}
+fn relay(via value: Cell, mut shelf: Shelf) &mut -> () {
+    store(value, mut shelf)
+}
+fn main() -> () {
+    let mut previous = Cell.{ count: 0 }
+    previous.count += 1
+    let mut shelf = Shelf.{ item: ^mut previous }
+    let mut selected = Cell.{ count: 41 }
+    relay(^mut selected, mut shelf)
+    selected.count += 1
+    shelf.item.count += 1
+    assert(selected.count == 43 && previous.count == 1)
+}

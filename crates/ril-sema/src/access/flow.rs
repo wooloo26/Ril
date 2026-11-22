@@ -63,6 +63,7 @@ impl Region {
 pub(super) struct Origin {
     pub region: Region,
     pub mode: Access,
+    pub inherits_mode: bool,
     pub new: bool,
     pub dependencies: BTreeSet<Span>,
     pub branches: Choices,
@@ -71,12 +72,19 @@ pub(super) struct Origin {
 }
 
 impl Origin {
+    pub(super) fn fix_mode(&mut self, access: Access) {
+        self.mode = access;
+        self.inherits_mode = false;
+    }
+
     pub(super) fn overlaps(&self, other: &Self) -> bool {
         self.region.overlaps(&other.region) && compatible(&self.branches, &other.branches)
     }
 }
 
 type Choices = BTreeMap<Span, usize>;
+pub(super) type Handoff = (Span, Span);
+type Revocations = BTreeMap<Option<Handoff>, BTreeSet<Choices>>;
 const BRANCH_LIMIT: usize = 24;
 
 fn compatible(a: &Choices, b: &Choices) -> bool {
@@ -107,6 +115,7 @@ impl Datum {
                     selection: Vec::new(),
                 },
                 mode,
+                inherits_mode: false,
                 new,
                 dependencies: BTreeSet::new(),
                 branches: BTreeMap::new(),
@@ -207,7 +216,7 @@ impl Datum {
                 let mut origin = origin.clone();
                 origin.region.selection.push(coordinate.clone());
                 if !origin.draft {
-                    origin.mode = origin.mode.project(mode);
+                    origin.fix_mode(origin.mode.project(mode));
                     // The schema of an opaque member selection can expose authority
                     // which survived the transfer of its enclosing new object.
                     if matches!(mode, Access::Ref | Access::Shared) {
@@ -232,7 +241,7 @@ impl Datum {
             } else {
                 Access::Ref
             };
-            member.transform(&mut |origin| origin.mode = access.project(origin.mode));
+            member.transform(&mut |origin| origin.fix_mode(access.project(origin.mode)));
         }
     }
 
@@ -253,6 +262,22 @@ impl Datum {
 
     pub(super) fn writers(&self) -> bool {
         !self.roots.is_empty() && self.roots.iter().all(|root| root.mode.writes())
+    }
+
+    pub(super) fn detach_handed_off_paths(&mut self) {
+        let ended: BTreeSet<_> = self
+            .roots
+            .iter()
+            .flat_map(|origin| origin.dependencies.iter().copied())
+            .collect();
+        self.transform(&mut |origin| {
+            origin.dependencies.retain(|token| !ended.contains(token));
+        });
+        for root in &mut self.roots {
+            root.new = true;
+            root.inherits_mode = false;
+        }
+        self.requires_new = true;
     }
 
     pub(super) fn root_dependencies(&self) -> impl Iterator<Item = Span> + '_ {
@@ -283,7 +308,7 @@ struct Replacement {
 #[derive(Clone, Default)]
 pub(super) struct Ledger {
     pub slots: BTreeMap<Span, Slot>,
-    revoked: BTreeMap<Span, BTreeSet<Choices>>,
+    revoked: BTreeMap<Span, Revocations>,
     pub obligations: BTreeSet<Span>,
     pub inspected: BTreeSet<Span>,
     pub iteration: Vec<Datum>,
@@ -297,12 +322,22 @@ impl Ledger {
         self.revoked.clear();
     }
 
-    pub(super) fn revoke(&mut self, token: Span, origin: Option<&Origin>) {
+    pub(super) fn revoke(
+        &mut self,
+        token: Span,
+        origin: Option<&Origin>,
+        trigger: Option<Handoff>,
+    ) {
         let mut choices = self.choices.clone();
         if let Some(origin) = origin {
             choices.extend(origin.branches.iter().map(|(&branch, &arm)| (branch, arm)));
         }
-        let alternatives = self.revoked.entry(token).or_default();
+        let alternatives = self
+            .revoked
+            .entry(token)
+            .or_default()
+            .entry(trigger)
+            .or_default();
         alternatives.insert(choices);
         Self::widen_revocations(alternatives);
     }
@@ -348,9 +383,12 @@ impl Ledger {
         self.obligations = prior.obligations.clone();
         for branch in alternatives {
             for (&token, revoked) in &branch.revoked {
-                let cases = self.revoked.entry(token).or_default();
-                cases.extend(revoked.iter().cloned());
-                Self::widen_revocations(cases);
+                let merged = self.revoked.entry(token).or_default();
+                for (&trigger, alternatives) in revoked {
+                    let cases = merged.entry(trigger).or_default();
+                    cases.extend(alternatives.iter().cloned());
+                    Self::widen_revocations(cases);
+                }
             }
             self.obligations.extend(&branch.obligations);
         }
@@ -515,17 +553,24 @@ impl Ledger {
         self.inspected.extend(datum.results());
     }
 
-    pub(super) fn dead(&self, datum: &Datum) -> bool {
-        datum.origins().any(|origin| {
-            origin
-                .dependencies
-                .iter()
-                .filter_map(|token| self.revoked.get(token))
-                .flatten()
-                .any(|revoked| {
-                    compatible(revoked, &self.choices) && compatible(revoked, &origin.branches)
-                })
-        })
+    pub(super) fn revocations(&self, datum: &Datum) -> BTreeSet<Option<Handoff>> {
+        datum
+            .origins()
+            .flat_map(|origin| {
+                origin
+                    .dependencies
+                    .iter()
+                    .filter_map(|token| self.revoked.get(token))
+                    .flatten()
+                    .filter(|(_, branches)| {
+                        branches.iter().any(|branch| {
+                            compatible(branch, &self.choices)
+                                && compatible(branch, &origin.branches)
+                        })
+                    })
+                    .map(|(&trigger, _)| trigger)
+            })
+            .collect()
     }
 }
 
