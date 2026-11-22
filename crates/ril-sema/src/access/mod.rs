@@ -20,6 +20,7 @@ pub struct Summary {
     pub effects: Vec<String>,
     pub invocations: Vec<Invocation>,
     pub callback_returns: Vec<CallbackReturn>,
+    pub storage_updates: Vec<StorageUpdate>,
     pub captures: bool,
     pub constructs: bool,
 }
@@ -72,6 +73,20 @@ impl Summary {
                 .return_sources
                 .iter()
                 .all(|source| self.return_sources.contains(source))
+            && revised
+                .storage_updates
+                .iter()
+                .all(|update| self.storage_updates.iter().any(|old| old.permits(update)))
+            && self
+                .storage_updates
+                .iter()
+                .filter(|old| old.definite)
+                .all(|old| {
+                    revised
+                        .storage_updates
+                        .iter()
+                        .any(|update| old.same_target(update) && update.definite)
+                })
     }
 }
 
@@ -155,6 +170,35 @@ pub struct ReturnSource {
     pub source_path: Vec<Coordinate>,
     pub result_path: Vec<Coordinate>,
     pub access: Access,
+}
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+pub struct StorageUpdate {
+    pub formal: usize,
+    pub path: Vec<Coordinate>,
+    pub sources: Vec<ReturnSource>,
+    pub callback_returns: Vec<CallbackReturn>,
+    pub definite: bool,
+    pub constructs: bool,
+}
+
+impl StorageUpdate {
+    fn same_target(&self, revised: &Self) -> bool {
+        self.formal == revised.formal && self.path == revised.path
+    }
+
+    fn permits(&self, revised: &Self) -> bool {
+        self.same_target(revised)
+            && (!self.constructs || revised.constructs)
+            && revised
+                .sources
+                .iter()
+                .all(|source| self.sources.contains(source))
+            && revised
+                .callback_returns
+                .iter()
+                .all(|result| self.callback_returns.contains(result))
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]

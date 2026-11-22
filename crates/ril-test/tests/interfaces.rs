@@ -107,6 +107,40 @@ fn composite_via_rows_publish_the_attenuated_member_source() {
 }
 
 #[test]
+fn published_storage_updates_keep_the_destination_and_written_source() {
+    use ril_sema::access::{Coordinate, ReturnSource};
+
+    let suite = parse_suite(
+        Path::new("via.ril"),
+        include_str!("../../../tests/08_via_compat/via.ril"),
+    )
+    .unwrap();
+    let case = suite
+        .cases
+        .iter()
+        .find(|case| case.id == "a_helper_can_keep_the_same_published_storage_contract")
+        .unwrap();
+    let interface = Driver.interface(&case.pkg).unwrap();
+    let decoded = Interface::decode(&interface.encode().unwrap()).unwrap();
+    let export = decoded.functions.values().next().unwrap();
+    let [update] = export.summary.storage_updates.as_slice() else {
+        panic!("missing forwarded storage update");
+    };
+    assert!(update.definite);
+    assert_eq!(update.formal, 0);
+    assert_eq!(update.path, [Coordinate::Field("item".into())]);
+    assert_eq!(
+        update.sources,
+        [ReturnSource {
+            formal: 1,
+            source_path: Vec::new(),
+            result_path: Vec::new(),
+            access: Access::Shared,
+        }]
+    );
+}
+
+#[test]
 fn higher_order_via_rows_publish_callback_reception() {
     use ril_sema::access::{Input, Invocation, InvocationMode};
 
@@ -330,24 +364,21 @@ fn exported_summaries_and_via_domains_agree_with_lean() {
         Coordinate::Index(key) => json!({"kind": "index", "key": key}),
         Coordinate::Dynamic => json!({"kind": "dynamic", "key": ""}),
     };
+    let wire_source = |source: &ReturnSource| {
+        json!({
+            "formal": source.formal,
+            "source_path": source.source_path.iter().map(wire_coordinate).collect::<Vec<_>>(),
+            "result_path": source.result_path.iter().map(wire_coordinate).collect::<Vec<_>>(),
+            "access": access_number(source.access),
+        })
+    };
     let wire = |summary: &Summary| -> Value {
         let effects: Vec<_> = summary
             .effects
             .iter()
             .map(|name| effects.get(name).copied().unwrap())
             .collect();
-        let return_sources: Vec<_> = summary
-            .return_sources
-            .iter()
-            .map(|source| {
-                json!({
-                    "formal": source.formal,
-                    "source_path": source.source_path.iter().map(wire_coordinate).collect::<Vec<_>>(),
-                    "result_path": source.result_path.iter().map(wire_coordinate).collect::<Vec<_>>(),
-                    "access": access_number(source.access),
-                })
-            })
-            .collect();
+        let return_sources: Vec<_> = summary.return_sources.iter().map(wire_source).collect();
         let invocations: Vec<_> = summary
             .invocations
             .iter()
@@ -361,7 +392,21 @@ fn exported_summaries_and_via_domains_agree_with_lean() {
                     "parameter": invoke.parameter,
                     "input": input,
                     "formal": formal,
-                "preserves_input": invoke.preserves_input,
+                    "preserves_input": invoke.preserves_input,
+                })
+            })
+            .collect();
+        let storage_updates: Vec<_> = summary
+            .storage_updates
+            .iter()
+            .map(|update| {
+                json!({
+                    "formal": update.formal,
+                    "path": update.path.iter().map(wire_coordinate).collect::<Vec<_>>(),
+                    "sources": update.sources.iter().map(wire_source).collect::<Vec<_>>(),
+                    "callback_returns": update.callback_returns,
+                    "definite": update.definite,
+                    "constructs": update.constructs,
                 })
             })
             .collect();
@@ -372,6 +417,7 @@ fn exported_summaries_and_via_domains_agree_with_lean() {
             "effects": effects,
             "invocations": invocations,
             "callback_returns": summary.callback_returns,
+            "storage_updates": storage_updates,
             "captures": summary.captures,
             "constructs": summary.constructs,
         })

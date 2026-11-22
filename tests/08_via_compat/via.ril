@@ -17,6 +17,43 @@ pub fn read(via c: Cell) -> int { c.count }
 -- @revision
 pub fn read(via c: Cell) -> int { c.count + 0 }
 
+-- @case changing_formal_origins_in_externally_stored_members_breaks_compatibility compat-fail E0552
+-- @baseline
+pub type Shelf = .{ var ^mut left: Cell, var ^mut right: Cell }
+pub fn store(mut shelf: Shelf, ^mut a: Cell, ^mut b: Cell) &mut &^mut -> () {
+    shelf.left = ^mut a
+    shelf.right = ^mut b
+}
+-- @revision
+pub type Shelf = .{ var ^mut left: Cell, var ^mut right: Cell }
+pub fn store(mut shelf: Shelf, ^mut a: Cell, ^mut b: Cell) &mut &^mut -> () {
+-- ^ E0552
+    shelf.left = ^mut b
+    shelf.right = ^mut a
+}
+
+-- @case making_a_guaranteed_store_conditional_breaks_compatibility compat-fail E0552
+-- @baseline
+pub type Shelf = .{ var ^mut item: Cell }
+pub fn store(mut shelf: Shelf, ^mut value: Cell, flag: bool) &mut &^mut -> () {
+    shelf.item = ^mut value
+}
+-- @revision
+pub type Shelf = .{ var ^mut item: Cell }
+pub fn store(mut shelf: Shelf, ^mut value: Cell, flag: bool) &mut &^mut -> () {
+-- ^ E0552
+    if flag { shelf.item = ^mut value }
+}
+
+-- @case a_helper_can_keep_the_same_published_storage_contract compat-pass
+-- @baseline
+pub type Shelf = .{ var ^mut item: Cell }
+pub fn store(mut shelf: Shelf, ^mut source: Cell) &mut &^mut -> () { shelf.item = ^mut source }
+-- @revision
+pub type Shelf = .{ var ^mut item: Cell }
+fn write(mut shelf: Shelf, ^mut source: Cell) &mut &^mut -> () { shelf.item = ^mut source }
+pub fn store(mut shelf: Shelf, ^mut source: Cell) &mut &^mut -> () { write(mut shelf, ^mut source) }
+
 -- @case signature_format compile-pass no-prelude
 -- @expect-sig square "fn square(x: int) -> int"
 fn square(x: int) -> int { x * x }

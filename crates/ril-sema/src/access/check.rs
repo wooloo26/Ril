@@ -15,7 +15,7 @@ use ril_frontend::{
 
 use super::{
     Access, Analysis, CleanupAction, Input, Instance, Invocation, InvocationMode, ReturnSource,
-    Summary,
+    StorageUpdate, Summary,
     flow::{
         Coordinate, Datum, Ledger, Reception, Region, Replacement, Revocation, Slot, conflicts,
     },
@@ -812,6 +812,7 @@ impl<'a> Analyzer<'a> {
                 .collect::<BTreeSet<_>>()
                 .into_iter()
                 .collect(),
+            storage_updates: self.storage_contracts(fun),
             ..Summary::default()
         };
         let mut up = BTreeSet::new();
@@ -904,6 +905,44 @@ impl<'a> Analyzer<'a> {
             self.error(Code::E0529, name, "unused &up dependency");
         }
         summary
+    }
+
+    fn storage_contracts(&self, fun: &DefinitionCheck) -> Vec<StorageUpdate> {
+        let formal_index = |source| {
+            fun.formals
+                .iter()
+                .position(|formal| *formal == Some(source))
+        };
+        let mut updates: Vec<_> = fun
+            .updates
+            .iter()
+            .filter_map(|(region, update)| {
+                let formal = formal_index(region.source)?;
+                let mut sources = BTreeSet::new();
+                update
+                    .value
+                    .visit_origins(&mut Vec::new(), &mut |result_path, origin| {
+                        if let Some(formal) = formal_index(origin.region.source) {
+                            sources.insert(ReturnSource {
+                                formal,
+                                source_path: origin.region.selection.clone(),
+                                result_path: result_path.to_vec(),
+                                access: origin.mode,
+                            });
+                        }
+                    });
+                Some(StorageUpdate {
+                    formal,
+                    path: region.selection.clone(),
+                    sources: sources.into_iter().collect(),
+                    callback_returns: self.callback_return_contracts(&fun.formals, &update.value),
+                    definite: update.definite,
+                    constructs: update.value.requires_new,
+                })
+            })
+            .collect();
+        updates.sort_unstable();
+        updates
     }
 
     fn via_table(
@@ -1007,6 +1046,13 @@ impl<'a> Analyzer<'a> {
                 }
                 summary.callback_returns.sort_unstable();
                 summary.callback_returns.dedup();
+                for update in &mut summary.storage_updates {
+                    for result in &mut update.callback_returns {
+                        result.specialize(&input);
+                    }
+                    update.callback_returns.sort_unstable();
+                    update.callback_returns.dedup();
+                }
                 if fun.declared.result_mode == Mode::Infer {
                     summary.constructs = !fun.returns.is_empty()
                         && fun.returns.iter().all(|value| {

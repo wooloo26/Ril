@@ -44,6 +44,20 @@ def JsonInvocation.contract (call : JsonInvocation) : RilAccess.CallbackInvocati
   ⟨call.receiver, call.parameter,
     call.formal.elim (.input (call.input.getD "")) .formal, call.preserves_input⟩
 
+structure JsonStorageUpdate where
+  formal : Nat
+  path : List JsonCoordinate
+  sources : List JsonSource
+  callback_returns : List Json
+  definite : Bool
+  constructs : Bool
+  deriving FromJson
+
+def JsonStorageUpdate.contract (update : JsonStorageUpdate) :
+    RilAccess.StorageUpdate (Nat × List JsonCoordinate) JsonSource :=
+  ⟨(update.formal, update.path), update.sources, update.callback_returns.map Json.compress,
+    update.definite, update.constructs⟩
+
 structure JsonSummary where
   writes : List Nat
   retained : List Nat
@@ -51,6 +65,7 @@ structure JsonSummary where
   effects : List Nat
   invocations : List JsonInvocation
   callback_returns : List Json
+  storage_updates : List JsonStorageUpdate
   captures : Bool
   constructs : Bool
   deriving FromJson
@@ -74,6 +89,8 @@ def compareSummaries (baseline revision : JsonSummary) : Bool :=
       (revision.invocations.map JsonInvocation.contract) &&
     RilAccess.callbackReturnsSubsumed (baseline.callback_returns.map Json.compress)
       (revision.callback_returns.map Json.compress) &&
+    RilAccess.storageUpdatesSubsumed (baseline.storage_updates.map JsonStorageUpdate.contract)
+      (revision.storage_updates.map JsonStorageUpdate.contract) &&
     (!baseline.constructs || revision.constructs)
 
 structure JsonInstance where

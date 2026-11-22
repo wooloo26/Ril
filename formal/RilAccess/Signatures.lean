@@ -194,6 +194,38 @@ theorem callbackReturnsSubsumed_iff [DecidableEq α] {baseline revision : List �
       ∀ result ∈ revision, result ∈ baseline := by
   simp [callbackReturnsSubsumed, List.all_eq_true]
 
+structure StorageUpdate (Target StoredOrigin : Type) where
+  target : Target
+  sources : List StoredOrigin
+  callbacks : List String
+  definite : Bool
+  constructs : Bool
+
+def StorageUpdate.permits [DecidableEq Target] [DecidableEq StoredOrigin]
+    (baseline revision : StorageUpdate Target StoredOrigin) : Bool :=
+  decide (baseline.target = revision.target) &&
+  (!baseline.constructs || revision.constructs) &&
+  revision.sources.all (fun source => decide (source ∈ baseline.sources)) &&
+  callbackReturnsSubsumed baseline.callbacks revision.callbacks
+
+/-- A published update bounds the written locations and their replacement
+origins. Revisions preserve stores guaranteed at every normal exit. -/
+def storageUpdatesSubsumed [DecidableEq Target] [DecidableEq StoredOrigin]
+    (baseline revision : List (StorageUpdate Target StoredOrigin)) : Bool :=
+  revision.all (fun update => baseline.any (·.permits update)) &&
+  baseline.all (fun old =>
+    !old.definite || revision.any (fun update => decide (update.target = old.target) && update.definite))
+
+theorem storageUpdatesSubsumed_preserves_definite [DecidableEq Target] [DecidableEq StoredOrigin]
+    {baseline revision : List (StorageUpdate Target StoredOrigin)}
+    {old : StorageUpdate Target StoredOrigin}
+    (h : storageUpdatesSubsumed baseline revision = true)
+    (member : old ∈ baseline) (definite : old.definite = true) :
+    ∃ current ∈ revision, current.target = old.target ∧ current.definite = true := by
+  simp only [storageUpdatesSubsumed, Bool.and_eq_true] at h
+  have preserved := List.all_eq_true.mp h.2 old member
+  simpa [definite, List.any_eq_true, Bool.and_eq_true] using preserved
+
 theorem viaDomainSubsumes_preserves_row [DecidableEq Mode] {subsumes : Sig → Sig → Bool}
     {baseline revision : List (Mode × Sig)} {mode : Mode} {old : Sig}
     (h : viaDomainSubsumes subsumes baseline revision = true)
