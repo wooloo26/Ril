@@ -21,7 +21,8 @@ use super::{
 type Values = HashMap<DefinitionId, Value>;
 type Eval<T = Value> = Result<T, Signal>;
 
-enum Signal {
+pub(super) enum Signal {
+    Dependent(Span),
     Error(Code, Span, &'static str),
     Return(Value),
     Break,
@@ -186,33 +187,90 @@ impl Checker<'_> {
             return None;
         }
         let span = self.ast(env.file).expr(expr).span;
+        let result = self.evaluate_static(env, expr);
+        self.finish_eval(span, result, required)
+    }
+
+    pub(super) fn evaluate_static(&mut self, env: &Env, expr: ExprId) -> Eval {
+        self.evaluate_with_bindings(env, expr, &mut Values::new())
+    }
+
+    pub(super) fn evaluate_with_bindings(
+        &mut self,
+        env: &Env,
+        expr: ExprId,
+        bindings: &mut Values,
+    ) -> Eval {
         let mut env = env.clone();
-        let mut slots = Values::new();
         let mut fuel = Budget {
             remaining: self.budget,
             depth: 0,
         };
-        let result = self.evaluate(&mut env, &mut slots, expr, &mut fuel);
-        self.finish_eval(span, result, required)
+        match self.evaluate(&mut env, bindings, expr, &mut fuel) {
+            Err(Signal::Return(value)) => Ok(value),
+            result => result,
+        }
     }
 
-    pub(super) fn eval_call_root(
+    pub(super) fn stage_static_call(
         &mut self,
         env: &Env,
         id: DefinitionId,
         args: &[Argument],
         span: Span,
-    ) -> Option<Value> {
+    ) {
+        let mut concrete = env.clone();
+        concrete.require_concrete_types = true;
+        match self.evaluate_static_call(&concrete, id, args, span) {
+            Err(Signal::Dependent(_)) => {
+                self.static_folds.insert(
+                    span,
+                    super::staging::StaticFold {
+                        caller: env.clone(),
+                        target: id,
+                        args: args.to_vec(),
+                    },
+                );
+            }
+            result => {
+                self.finish_eval(span, result, true);
+            }
+        }
+    }
+
+    pub(super) fn evaluate_static_call(
+        &mut self,
+        env: &Env,
+        id: DefinitionId,
+        args: &[Argument],
+        span: Span,
+    ) -> Eval {
         let mut root = env.clone();
         let mut slots = Values::new();
         let mut fuel = Budget {
             remaining: self.budget,
             depth: 0,
         };
-        let output = self
-            .eval_args(&mut root, &mut slots, args, &mut fuel)
-            .and_then(|args| self.eval_function(&root, id, args, span, &mut fuel));
-        self.finish_eval(span, output, true)
+        let args = self.eval_args(&mut root, &mut slots, args, &mut fuel)?;
+        self.eval_function(&root, id, args, span, &mut fuel)
+    }
+
+    pub(super) fn stage_static_argument(
+        &mut self,
+        env: &Env,
+        expression: ExprId,
+        supplied: bool,
+    ) -> Option<super::staging::StaticInput> {
+        use super::staging::StaticInput;
+        let mut concrete = env.clone();
+        concrete.require_concrete_types = true;
+        match self.evaluate_static(&concrete, expression) {
+            Err(Signal::Dependent(_)) if supplied => Some(StaticInput::Supplied(expression)),
+            Err(Signal::Dependent(_)) => Some(StaticInput::Default(expression)),
+            result => self
+                .finish_eval(self.ast(env.file).expr(expression).span, result, true)
+                .map(StaticInput::Ready),
+        }
     }
 
     pub(super) fn eval_metadata_root(
@@ -245,6 +303,12 @@ impl Checker<'_> {
             Ok(value) | Err(Signal::Return(value)) => {
                 self.static_values.insert(span, value.clone());
                 Some(value)
+            }
+            Err(Signal::Dependent(span)) => {
+                if required {
+                    self.error(Code::E0814, span, "static argument is not known here");
+                }
+                None
             }
             Err(Signal::Error(code, span, message)) => {
                 if required {
@@ -350,7 +414,11 @@ impl Checker<'_> {
                         .iter()
                         .map(|(&id, value)| (id, GenericValue::Data(value.clone()))),
                 );
-                Ok(Value::Type(Box::new(self.type_expr(&mut quoted, *ty))))
+                let represented = self.type_expr(&mut quoted, *ty);
+                if env.require_concrete_types && represented.has_unresolved_static_type() {
+                    return Err(Signal::Dependent(span));
+                }
+                Ok(Value::Type(Box::new(represented)))
             }
             Expr::Unary { op, value } => {
                 let value = self.evaluate(env, slots, *value, fuel)?;
@@ -726,6 +794,9 @@ impl Checker<'_> {
         if let Some(GenericValue::Mode(value)) = env.generics.get(&id) {
             return Ok(Value::Mode(*value));
         }
+        if self.meta_parameters.contains(&id) {
+            return Err(Signal::Dependent(span));
+        }
         let def = self.hir.definition(id);
         match def.kind {
             DefinitionKind::Constant => {
@@ -999,6 +1070,7 @@ impl Checker<'_> {
         } else {
             Phase::MetaValue
         };
+        local.generics.clone_from(&env.generics);
         let ast = self.ast(local.file);
         let stmt = def.stmt.ok_or_else(|| nonstatic(span))?;
         let StmtKind::Function(fun) = &ast.stmt(stmt).value.kind else {
@@ -1013,10 +1085,11 @@ impl Checker<'_> {
         }
         let body = fun.body.ok_or_else(|| nonstatic(span))?;
         self.function(&local, fun);
+        local.require_concrete_types = env.require_concrete_types;
         if let Some(arguments) = self.generic_arguments.get(&span) {
-            local.generics = arguments
-                .iter()
-                .map(|(&id, argument)| {
+            local
+                .generics
+                .extend(arguments.iter().map(|(&id, argument)| {
                     let argument = match argument {
                         GenericValue::Type(ty) => GenericValue::Type(super::check::substitute(
                             &self.normalize(ty),
@@ -1025,8 +1098,7 @@ impl Checker<'_> {
                         value => value.clone(),
                     };
                     (id, argument)
-                })
-                .collect();
+                }));
         }
         fuel.step(span)?;
         if fuel.depth >= 96 {
@@ -1054,6 +1126,7 @@ impl Checker<'_> {
         fuel.depth += 1;
         let result = (|| {
             let mut slots = Values::new();
+            let mut guards = Vec::new();
             for (param, input) in fun.signature.params.iter().zip(bound) {
                 let input = if let Some(input) = input {
                     input
@@ -1062,8 +1135,21 @@ impl Checker<'_> {
                 } else {
                     return Err(nonstatic(span));
                 };
+                if param.is_meta && !param.guards.is_empty() {
+                    guards.push((&param.guards, input.clone()));
+                }
                 if let Some(id) = param.name.as_ref().and_then(|name| self.resolve(name.span)) {
                     slots.insert(id, input);
+                }
+            }
+            if !guards.is_empty() {
+                local.generics.extend(
+                    slots
+                        .iter()
+                        .map(|(&id, value)| (id, GenericValue::Data(value.clone()))),
+                );
+                for (checks, input) in guards {
+                    self.check_meta_input(&mut local, checks, &input, span);
                 }
             }
             match self.evaluate(&mut local, &mut slots, body, fuel) {

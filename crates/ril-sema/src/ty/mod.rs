@@ -9,6 +9,7 @@ mod inspect;
 mod narrowing;
 mod pattern;
 pub(crate) mod reception;
+mod staging;
 mod value;
 
 use std::{
@@ -100,6 +101,17 @@ impl Ty {
 
     pub const fn is_result(&self) -> bool {
         matches!(self, Self::Result(_, _))
+    }
+
+    fn has_unresolved_static_type(&self) -> bool {
+        let mut unresolved = false;
+        check::transform(self, &mut |ty| {
+            if matches!(ty, Self::Param(_) | Self::Projection(..) | Self::Infer(_)) {
+                unresolved = true;
+            }
+            None
+        });
+        unresolved
     }
 
     pub fn specialize(&self, arguments: &BTreeMap<DefinitionId, Ty>) -> Self {
@@ -209,7 +221,12 @@ pub struct TypedProgram {
     pub bindings: HashMap<DefinitionId, Ty>,
     pub callables: BTreeMap<DefinitionId, Arc<Callable>>,
     pub static_values: HashMap<Span, Value>,
-    pub meta_arguments: HashMap<Span, BTreeMap<DefinitionId, Value>>,
+    meta_calls: HashMap<Span, staging::MetaCall>,
+    static_folds: HashMap<Span, staging::StaticFold>,
+    static_conditions: HashMap<Span, staging::StaticCondition>,
+    static_matches: HashMap<Span, staging::StaticMatch>,
+    static_generic_arguments: HashMap<Span, HashMap<DefinitionId, GenericValue>>,
+    static_budget: u64,
     pub(crate) meta_parameters: HashSet<DefinitionId>,
     inspection_scopes: HashMap<Span, ScopeId>,
     pub narrowings: HashMap<Span, usize>,

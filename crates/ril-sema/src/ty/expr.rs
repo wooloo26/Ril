@@ -229,8 +229,19 @@ impl<'a> Checker<'a> {
                 let mut yes_env = env.clone();
                 self.condition(&mut yes_env, condition);
                 let mut no_env = env.clone();
-                if let Condition::Expr(_) = condition {
+                if let Condition::Expr(test) = condition {
                     no_env.refinements = yes_env.refinements.clone();
+                    if let Some(span) = self.stage_condition(env, *test) {
+                        use super::staging::StaticGate::Condition;
+                        yes_env.staging_gates.push(Condition {
+                            span,
+                            expected: true,
+                        });
+                        no_env.staging_gates.push(Condition {
+                            span,
+                            expected: false,
+                        });
+                    }
                 }
                 self.assumption(&mut yes_env, condition, true);
                 self.assumption(&mut no_env, condition, false);
@@ -246,6 +257,16 @@ impl<'a> Checker<'a> {
             Expr::While { condition, body } => {
                 let mut body_env = env.clone();
                 self.condition(&mut body_env, condition);
+                if let Condition::Expr(test) = condition
+                    && let Some(span) = self.stage_condition(env, *test)
+                {
+                    body_env
+                        .staging_gates
+                        .push(super::staging::StaticGate::Condition {
+                            span,
+                            expected: true,
+                        });
+                }
                 self.assumption(&mut body_env, condition, true);
                 let body_result = self.expr(&mut body_env, *body, None);
                 env.refinements = self.merge_refinements(env, &body_env, &Ty::Unit, &body_result);
@@ -289,7 +310,7 @@ impl<'a> Checker<'a> {
             }
             Expr::Match { value, arms, .. } => {
                 let input = self.expr(env, *value, None);
-                self.check_match(env, arms, &input, expected, span)
+                self.check_match(env, arms, (*value, &input), expected, span)
             }
             Expr::Closure {
                 params,
@@ -306,7 +327,7 @@ impl<'a> Checker<'a> {
                         "callables with meta parameters require a direct call",
                     );
                 }
-                self.closure(env, params, obligations, *body, expected)
+                self.closure(env, (span, params), obligations, *body, expected)
             }
             Expr::Accessor(segments) => {
                 let label = match expected {
@@ -492,7 +513,18 @@ impl<'a> Checker<'a> {
             (_, "??" | "<<" | ">>") => None,
             _ => Some(&a),
         };
+        let gate_depth = env.staging_gates.len();
+        if matches!(name, "&&" | "||")
+            && let Some(span) = self.stage_condition(env, left)
+        {
+            env.staging_gates
+                .push(super::staging::StaticGate::Condition {
+                    span,
+                    expected: name == "&&",
+                });
+        }
         let b = self.expr(env, right, right_expected);
+        env.staging_gates.truncate(gate_depth);
         let b = self.normalize(&b);
         if !assignment
             && matches!(
@@ -1234,7 +1266,7 @@ impl<'a> Checker<'a> {
     fn closure(
         &mut self,
         env: &Env,
-        params: &[syntax::Parameter],
+        (span, params): (Span, &[syntax::Parameter]),
         obligations: &syntax::Obligations,
         body: ExprId,
         expected: Option<&Ty>,
@@ -1245,6 +1277,9 @@ impl<'a> Checker<'a> {
             None
         };
         let mut local = env.clone();
+        if env.phase == Phase::Runtime && params.iter().any(|param| param.is_meta) {
+            local.staging_owner = Some(span);
+        }
         local.expected_return = expected_call.map(|sig| sig.result.clone());
         local.inferred_return = None;
         local.return_scope = Some(self.ast(env.file).expr(body).span);
@@ -1447,7 +1482,7 @@ impl<'a> Checker<'a> {
         } = &callee.value
         {
             (
-                self.closure(env, params, obligations, *body, None),
+                self.closure(env, (callee.span, params), obligations, *body, None),
                 Default::default(),
             )
         } else {
@@ -1540,8 +1575,10 @@ impl<'a> Checker<'a> {
                 );
             }
             if parameter.is_meta
+                && !pending_meta
+                && env.phase == Phase::Runtime
                 && !env.shadow
-                && let Some(value) = self.eval_root(env, arg.value, true)
+                && let Some(value) = self.stage_static_argument(env, arg.value, true)
             {
                 metadata.insert(index, value);
             }
@@ -1587,19 +1624,28 @@ impl<'a> Checker<'a> {
             self.generic_arguments.insert(span, generics.clone());
         }
         if pending_meta && let Some(id) = def_id {
-            self.eval_call_root(env, id, args, span);
+            self.stage_static_call(env, id, args, span);
         }
-        let result = if has_meta && !env.shadow {
+        let result = if (has_meta || !generics.is_empty())
+            && !env.shadow
+            && !pending_meta
+            && env.phase == Phase::Runtime
+        {
+            let application = super::staging::Application {
+                span,
+                supplied: &used,
+                inputs: &metadata,
+            };
             if let Some(id) = def_id {
-                self.specialize_meta_call(id, &generics, &used, &metadata, &result, span)
+                self.specialize_meta_call(env, id, &generics, &application, &result)
             } else if let Expr::Closure { params, .. } = &callee.value {
                 self.specialize_meta_parameters(
-                    &mut env.clone(),
+                    env,
+                    env.clone(),
+                    callee.span,
                     params,
-                    &used,
-                    &metadata,
+                    &application,
                     &result,
-                    span,
                 )
             } else {
                 result

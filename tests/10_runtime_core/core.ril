@@ -370,3 +370,73 @@ fn main() @io -> () {
     assert(describe_items(values.sealed) == "[Some(<Token>), None]")
 }
 -- @expect-stdout evaluated
+
+-- @case static_arguments_are_evaluated_with_the_callers_specialization run-pass backend=both
+meta fn square(x: int) -> int { x * x }
+fn selected(meta n: int, meta doubled: int = n * 2, tail: int = doubled) -> int {
+    square(n) + tail
+}
+fn forward(meta n: int) -> int {
+    let direct = selected(n + 1)
+    let anonymous = (\meta n: int, tail: int = n -> tail)(n + 2)
+    direct + anonymous
+}
+fn main() -> () {
+    assert(forward(2) == 19 && forward(3) == 29)
+}
+
+-- @case recursive_static_arguments_stop_at_the_selected_branch run-pass backend=both
+fn accumulate(meta n: int) -> int {
+    if n == 0 { 0 } else { n + accumulate(n - 1) }
+}
+fn main() -> () {
+    assert(accumulate(0) == 0 && accumulate(9) == 45)
+}
+
+-- @case generic_call_forwards_specialized_type_values run-pass backend=both
+fn is_integer<T>(meta witness: Type<T>) -> bool { witness == <int> }
+fn relay<T>() -> bool { is_integer(<T>) }
+fn main() -> () {
+    assert(relay<int>() && !relay<str>())
+}
+
+-- @case static_match_prunes_dependent_recursive_arguments run-pass backend=both
+fn accumulate(meta n: int) -> int {
+    match n {
+        0 -> 0
+        _ -> n + accumulate(n - 1)
+    }
+}
+fn main() -> () { assert(accumulate(5) == 15) }
+
+-- @case meta_constant_match_prunes_unreferenced_foreign_symbols run-pass backend=both
+-- @file pkg/main.ril
+use pkg/host
+meta let READY = Some(42)
+fn main() -> () {
+    let output = match READY {
+        Some(value) if value > 0 -> value
+        Some(_) | None -> Host::unreachable()
+    }
+    assert(output == 42)
+}
+-- @file pkg/host.d.ril
+pub fn unreachable() -> int
+
+-- @case guarded_static_coordinate_keeps_its_dependent_return_through_a_call run-pass backend=both
+fn read<T: .{ .. }>(item: T, meta key: str |> Key<T>) -> T.(key) {
+    item.(key)
+}
+fn relay<T: .{ .. }>(item: T, meta key: str |> Key<T>) -> T.(key) {
+    read(item, key)
+}
+fn main() -> () {
+    let value = .{ number: 42, label: "read" }
+    assert(relay(value, "number") == 42 && relay(value, "label") == "read")
+}
+
+-- @case static_short_circuit_stops_requirements_from_dead_operands run-pass backend=both
+fn terminates(meta n: int) -> bool {
+    n == 0 || terminates(n - 1)
+}
+fn main() -> () { assert(terminates(3)) }

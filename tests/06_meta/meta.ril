@@ -224,3 +224,34 @@ meta fn check_paths() -> bool {
         updated == ([Cell.{ count: 8 }, Cell.{ count: 7 }], [Cell.{ count: 7 }])
 }
 meta let CHECK = assert(check_paths())
+
+-- @case forwarded_static_guard_fails_at_type_checking compile-fail E0323
+type Positive = \n: int -> if n > 0 { <()> } else { <never> }
+fn positive(meta n: int |> Positive) -> int { n }
+fn relay(meta n: int) -> int {
+    positive(n - 1)
+    -- ^ E0323
+}
+fn use_relay() -> int { relay(1) }
+
+-- @case forwarded_static_fault_fails_at_type_checking compile-fail E0830
+meta fn positive(n: int) -> int {
+    assert(n > 0)
+    -- ^ E0830
+    n
+}
+fn relay(meta n: int) -> int { positive(n - 1) }
+fn use_relay() -> int { relay(1) }
+
+-- @case changing_static_recursion_exhausts_compilation_budget compile-fail E0811 budget=12
+fn spin(meta n: int) -> int {
+    spin(n + 1)
+    -- ^ E0811
+}
+fn start() -> int { spin(0) }
+
+-- @case inferred_type_values_keep_opaque_declaration_identity compile-fail E0301
+opaque type Weight = int
+fn read(meta kind: Type<Weight>) -> int { if kind == <Weight> { 42 } else { 0 } }
+fn invalid() -> int { read(<int>) }
+-- ^ E0301

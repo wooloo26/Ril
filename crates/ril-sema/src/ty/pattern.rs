@@ -2,7 +2,8 @@ use std::collections::{HashMap, HashSet};
 
 use ril_base::{diag::Code, span::Span};
 use ril_frontend::syntax::{
-    Ast, LiteralKind, MatchArm, Pattern, PatternId, StmtKind, Type, TypeDefinition, TypeId, Variant,
+    Ast, ExprId, LiteralKind, MatchArm, Pattern, PatternId, StmtKind, Type, TypeDefinition, TypeId,
+    Variant,
 };
 
 pub fn text_slice_fragment(ast: &Ast, items: &[PatternId]) -> Option<String> {
@@ -347,15 +348,22 @@ impl Checker<'_> {
         &mut self,
         env: &mut Env,
         arms: &[MatchArm],
-        input: &Ty,
+        (value, input): (ExprId, &Ty),
         expected: Option<&Ty>,
         span: Span,
     ) -> Ty {
         let mut prior = Vec::new();
         let mut covered = HashSet::new();
         let mut result = Ty::Never;
-        for arm in arms {
+        let staged = self.stage_match(env, span, value, arms);
+        for (index, arm) in arms.iter().enumerate() {
             let mut local = env.clone();
+            if staged {
+                local.staging_gates.push(super::staging::StaticGate::Match {
+                    span,
+                    expected: index,
+                });
+            }
             self.pattern(&mut local, arm.pattern, input);
             self.refine_type_arm(&mut local, arm.pattern, input, &covered);
             let (_, pattern_tags) = self.pattern_tags(env, arm.pattern, input);

@@ -609,10 +609,13 @@ impl<'a> Builder<'_, 'a> {
         }
         let node = self.ast().expr(id);
         let span = node.span;
-        if let Some(constant) = self.global.typed.static_values.get(&span)
+        if let Some(constant) = self
+            .global
+            .typed
+            .static_value(span, &self.statics, &self.types)?
             && !matches!(constant, Value::Type(_) | Value::Mode(_))
         {
-            return self.constant(constant, span);
+            return self.constant(&constant, span);
         }
         if let Some((base, steps)) = self.ast().navigation_chain(id) {
             return self.navigation(base, &steps, span);
@@ -1077,9 +1080,12 @@ impl<'a> Builder<'_, 'a> {
             if let Expr::Closure { params, .. } = callee_expression
                 && params.iter().any(|param| param.is_meta)
             {
-                let metadata = self.global.typed.meta_arguments.get(&span).cloned();
-                let value = self.lift(callee, metadata.as_ref())?;
-                let args = self.arguments(params, self.file, args, span)?;
+                let metadata =
+                    self.global
+                        .typed
+                        .static_arguments(span, &self.statics, &self.types)?;
+                let value = self.lift(callee, Some(&metadata))?;
+                let args = self.arguments(params, self.file, args, &metadata, span)?;
                 return Ok(self.invoke_closure(value, args));
             }
             let value = self.expr(callee)?;
@@ -1118,6 +1124,7 @@ impl<'a> Builder<'_, 'a> {
                 &operation.signature.params,
                 operation.name.span.file,
                 args,
+                &BTreeMap::new(),
                 span,
             )?;
             let key = self.string(&label);
@@ -1153,28 +1160,26 @@ impl<'a> Builder<'_, 'a> {
         let Some(function) = self.global.declaration(id) else {
             return Err(self.unsupported(span, "callable value"));
         };
+        let metadata = self
+            .global
+            .typed
+            .static_arguments(span, &self.statics, &self.types)?;
         let values = self.arguments(
             &function.signature.params,
             function.name.span.file,
             args,
+            &metadata,
             span,
         )?;
         if function.body.is_some() {
-            let types = self
-                .global
-                .typed
-                .type_arguments
-                .get(&span)
-                .into_iter()
-                .flatten()
-                .map(|(&id, ty)| (id, self.concrete(ty)))
-                .collect();
+            let mut types = self.types.clone();
+            if let Some(arguments) = self.global.typed.type_arguments.get(&span) {
+                types.extend(arguments.iter().map(|(&id, ty)| (id, self.concrete(ty))));
+            }
             let captures = self.named_captures(id);
             let environment = (!captures.is_empty()).then(|| self.environment(&captures));
             let mut statics = self.statics.clone();
-            if let Some(metadata) = self.global.typed.meta_arguments.get(&span) {
-                statics.extend(metadata.clone());
-            }
+            statics.extend(metadata);
             let function = self.global.queue(Work::Named(id, types, captures, statics));
             let target = environment.map_or(Target::Function(function), |environment| {
                 Target::FunctionWithEnv {
@@ -1293,6 +1298,7 @@ impl<'a> Builder<'_, 'a> {
         parameters: &[Parameter],
         callee_file: FileId,
         args: &[Argument],
+        metadata: &BTreeMap<DefinitionId, Value>,
         span: Span,
     ) -> Result<Vec<Register>> {
         let mut values = vec![None; parameters.len()];
@@ -1321,9 +1327,7 @@ impl<'a> Builder<'_, 'a> {
         let file = self.file;
         let locals = self.locals.clone();
         let statics = self.statics.clone();
-        if let Some(meta) = self.global.typed.meta_arguments.get(&span) {
-            self.statics.extend(meta.clone());
-        }
+        self.statics.extend(metadata.clone());
         self.file = callee_file;
         let mut ordered = Vec::new();
         let result = (|| {

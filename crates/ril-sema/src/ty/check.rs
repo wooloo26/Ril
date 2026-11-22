@@ -48,13 +48,31 @@ pub(super) fn check(hir: Program, budget: Option<u64>) -> Result<TypedProgram, V
         .into_iter()
         .map(|(span, ty)| (span, ck.normalize(&ty)))
         .collect();
-    let type_arguments = std::mem::take(&mut ck.generic_arguments)
+    let static_generic_arguments = std::mem::take(&mut ck.generic_arguments)
         .into_iter()
-        .map(|(span, args)| {
-            let args = args
+        .map(|(span, arguments)| {
+            let arguments: HashMap<_, _> = arguments
                 .into_iter()
-                .filter_map(|(id, value)| match value {
-                    GenericValue::Type(ty) => Some((id, ck.normalize(&ty))),
+                .map(|(id, arg)| {
+                    (
+                        id,
+                        match arg {
+                            GenericValue::Type(ty) => GenericValue::Type(ck.normalize(&ty)),
+                            value => value,
+                        },
+                    )
+                })
+                .collect();
+            (span, arguments)
+        })
+        .collect::<HashMap<_, _>>();
+    let type_arguments = static_generic_arguments
+        .iter()
+        .map(|(&span, args)| {
+            let args = args
+                .iter()
+                .filter_map(|(&id, value)| match value {
+                    GenericValue::Type(ty) => Some((id, ty.clone())),
                     _ => None,
                 })
                 .collect();
@@ -64,7 +82,11 @@ pub(super) fn check(hir: Program, budget: Option<u64>) -> Result<TypedProgram, V
     let Checker {
         callables,
         static_values,
-        meta_arguments,
+        meta_calls,
+        static_folds,
+        static_conditions,
+        static_matches,
+        budget: static_budget,
         meta_parameters,
         inspection_scopes,
         narrowings,
@@ -77,14 +99,19 @@ pub(super) fn check(hir: Program, budget: Option<u64>) -> Result<TypedProgram, V
         receptions,
         ..
     } = ck;
-    Ok(TypedProgram {
+    let program = TypedProgram {
         hir,
         types,
         type_arguments,
         bindings,
         callables,
         static_values,
-        meta_arguments,
+        meta_calls,
+        static_folds,
+        static_conditions,
+        static_matches,
+        static_generic_arguments,
+        static_budget,
         meta_parameters,
         inspection_scopes,
         narrowings,
@@ -96,7 +123,9 @@ pub(super) fn check(hir: Program, budget: Option<u64>) -> Result<TypedProgram, V
         subset_tags,
         tuple_payloads,
         receptions,
-    })
+    };
+    program.validate_specializations()?;
+    Ok(program)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -125,6 +154,9 @@ pub(super) struct Env {
     pub(super) nominal_fields: Option<Span>,
     pub(super) map_store: Option<Span>,
     pub(super) checking_type_template: bool,
+    pub(super) staging_owner: Option<Span>,
+    pub(super) staging_gates: Vec<super::staging::StaticGate>,
+    pub(super) require_concrete_types: bool,
 }
 
 impl Env {
@@ -147,6 +179,9 @@ impl Env {
             nominal_fields: None,
             map_store: None,
             checking_type_template: false,
+            staging_owner: None,
+            staging_gates: Vec::new(),
+            require_concrete_types: false,
         }
     }
 }
@@ -159,7 +194,10 @@ pub(super) struct Checker<'a> {
     pub(super) bindings: HashMap<DefinitionId, Ty>,
     pub(super) callables: BTreeMap<DefinitionId, Arc<Callable>>,
     pub(super) static_values: HashMap<Span, Value>,
-    pub(super) meta_arguments: HashMap<Span, BTreeMap<DefinitionId, Value>>,
+    pub(super) meta_calls: HashMap<Span, super::staging::MetaCall>,
+    pub(super) static_folds: HashMap<Span, super::staging::StaticFold>,
+    pub(super) static_conditions: HashMap<Span, super::staging::StaticCondition>,
+    pub(super) static_matches: HashMap<Span, super::staging::StaticMatch>,
     pub(super) meta_parameters: HashSet<DefinitionId>,
     pub(super) inspection_scopes: HashMap<Span, ScopeId>,
     next_infer: u32,
@@ -202,7 +240,10 @@ impl<'a> Checker<'a> {
             bindings: HashMap::new(),
             callables: BTreeMap::new(),
             static_values: HashMap::new(),
-            meta_arguments: HashMap::new(),
+            meta_calls: HashMap::new(),
+            static_folds: HashMap::new(),
+            static_conditions: HashMap::new(),
+            static_matches: HashMap::new(),
             meta_parameters: HashSet::new(),
             next_infer: 0,
             substitutions: HashMap::new(),
@@ -227,6 +268,25 @@ impl<'a> Checker<'a> {
             stack: Vec::new(),
             budget: budget.unwrap_or(DEFAULT_BUDGET),
         }
+    }
+
+    pub(super) fn for_static_evaluation(program: &'a TypedProgram) -> Self {
+        let mut checker = Self::new(&program.hir, Some(program.static_budget));
+        checker.types.clone_from(&program.types);
+        checker.bindings.clone_from(&program.bindings);
+        checker.callables.clone_from(&program.callables);
+        checker.checked.extend(program.callables.keys().copied());
+        checker.static_values.clone_from(&program.static_values);
+        checker.meta_parameters.clone_from(&program.meta_parameters);
+        checker
+            .generic_arguments
+            .clone_from(&program.static_generic_arguments);
+        checker.narrowings.clone_from(&program.narrowings);
+        checker
+            .navigation_values
+            .clone_from(&program.navigation_values);
+        checker.tuple_payloads.clone_from(&program.tuple_payloads);
+        checker
     }
 
     pub(super) fn ast(&self, file: FileId) -> &'a Ast {
@@ -353,6 +413,9 @@ impl<'a> Checker<'a> {
             | (Ty::Receiver(a), Ty::Receiver(b)) => self.fits(env, a, b),
             (Ty::Result(ao, ae), Ty::Result(bo, be)) => {
                 self.fits(env, ao, bo) && self.fits(env, ae, be)
+            }
+            (Ty::TypeValue(Some(a)), Ty::TypeValue(Some(b))) => {
+                self.fits(env, a, b) && self.normalize(a) == self.normalize(b)
             }
             (Ty::TypeValue(Some(_)), Ty::TypeValue(None)) => true,
             (Ty::Array(a), Ty::Array(b)) => self.member_fits(env, a, b),
@@ -572,6 +635,11 @@ impl<'a> Checker<'a> {
         } else {
             Phase::Runtime
         };
+        if !fun.is_meta
+            && (!fun.generics.is_empty() || fun.signature.params.iter().any(|param| param.is_meta))
+        {
+            local.staging_owner = Some(fun.name.span);
+        }
         self.generic_env(&mut local, &fun.generics);
         let call = self.declare_function(id);
         let span = fun.name.span;

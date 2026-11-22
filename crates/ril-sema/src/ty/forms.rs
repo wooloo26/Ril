@@ -1309,14 +1309,13 @@ impl Checker<'_> {
 
     pub(super) fn specialize_meta_call(
         &mut self,
-        function: DefinitionId,
+        caller: &Env,
+        target: DefinitionId,
         generics: &HashMap<DefinitionId, GenericValue>,
-        supplied: &[bool],
-        metadata: &BTreeMap<usize, Value>,
+        application: &super::staging::Application<'_>,
         result: &Ty,
-        span: Span,
     ) -> Ty {
-        let def = self.hir.definition(function);
+        let def = self.hir.definition(target);
         let Some(stmt) = def.stmt else {
             return result.clone();
         };
@@ -1325,62 +1324,109 @@ impl Checker<'_> {
             return result.clone();
         };
         let mut local = Env::new(def.name.span.file, def.scope);
-        local.generics.clone_from(generics);
+        local.generics = generics
+            .iter()
+            .map(|(&id, arg)| {
+                let arg = match arg {
+                    GenericValue::Type(ty) => GenericValue::Type(self.normalize(ty)),
+                    value => value.clone(),
+                };
+                (id, arg)
+            })
+            .collect();
         self.specialize_meta_parameters(
-            &mut local,
+            caller,
+            local,
+            def.name.span,
             &function.signature.params,
-            supplied,
-            metadata,
+            application,
             result,
-            span,
         )
     }
 
     pub(super) fn specialize_meta_parameters(
         &mut self,
-        local: &mut Env,
+        caller: &Env,
+        mut local: Env,
+        target: Span,
         parameters: &[syntax::Parameter],
-        supplied: &[bool],
-        metadata: &BTreeMap<usize, Value>,
+        application: &super::staging::Application<'_>,
         result: &Ty,
-        span: Span,
     ) -> Ty {
+        use super::staging::{MetaCall, StaticBinding, StaticInput};
+        let span = application.span;
         local.phase = Phase::TypeEval;
+        let callee = local.clone();
+        let mut bindings = Vec::new();
+        let mut aliases = BTreeMap::new();
         for (index, parameter) in parameters.iter().enumerate().filter(|(_, p)| p.is_meta) {
-            let value = metadata.get(&index).cloned().or_else(|| {
-                if supplied.get(index) != Some(&true)
+            let input = application.inputs.get(&index).cloned().or_else(|| {
+                if application.supplied.get(index) != Some(&true)
                     && let Some(default) = parameter.default
                 {
-                    self.eval_root(local, default, true)
+                    self.stage_static_argument(&local, default, false)
                 } else {
                     None
                 }
             });
-            let Some(value) = value else { continue };
-            if let Some(key) = parameter
+            let Some(input) = input else { continue };
+            let name = parameter
                 .name
                 .as_ref()
-                .and_then(|name| self.resolve(name.span))
+                .and_then(|name| self.resolve(name.span));
+            if let StaticInput::Ready(value) = &input {
+                if let Some(id) = name {
+                    local.generics.insert(id, GenericValue::Data(value.clone()));
+                }
+            } else if let StaticInput::Supplied(expr) = &input
+                && let Some(id) = name
+                && let syntax::Expr::Path(path) = &self.ast(caller.file).expr(*expr).value
+                && let Some(source) = self.resolve(path.span)
+                && caller.meta_keys.contains_key(&source)
             {
-                local
-                    .generics
-                    .insert(key, GenericValue::Data(value.clone()));
-                self.meta_arguments
-                    .entry(span)
-                    .or_default()
-                    .insert(key, value.clone());
+                aliases.insert(id, source);
             }
-            let input = GenericValue::Data(value);
-            for &guard in &parameter.guards {
-                if let syntax::Expr::Path(path) = &self.ast(local.file).expr(guard).value {
-                    self.apply_static_check(local, path, &input, span);
+            bindings.push(StaticBinding {
+                name,
+                guards: parameter.guards.clone(),
+                input,
+            });
+        }
+        let uses_deferred_inputs = bindings
+            .iter()
+            .any(|binding| !matches!(binding.input, StaticInput::Ready(_)));
+        let abstract_types = local.generics.values().any(
+            |value| matches!(value, GenericValue::Type(ty) if ty.has_unresolved_static_type()),
+        );
+        let needs_specialization = uses_deferred_inputs
+            || abstract_types && bindings.iter().any(|binding| !binding.guards.is_empty());
+        if !needs_specialization {
+            for binding in &bindings {
+                if let StaticInput::Ready(value) = &binding.input {
+                    self.check_meta_input(&mut local, &binding.guards, value, span);
                 }
             }
         }
-        self.specialize_projections(local, result, span)
+        self.meta_calls.insert(
+            span,
+            MetaCall {
+                caller: caller.clone(),
+                callee,
+                bindings,
+                target,
+                needs_specialization,
+            },
+        );
+        let result = self.specialize_projections(&mut local, &self.normalize(result), span);
+        super::check::transform(&result, &mut |ty| match ty {
+            Ty::Projection(base, key) => aliases
+                .get(key)
+                .map(|&source| Ty::Projection(base.clone(), source)),
+            _ => None,
+        })
     }
 
-    fn apply_static_check(
+    pub(super) fn apply_static_check(
         &mut self,
         env: &mut Env,
         path: &syntax::Path,

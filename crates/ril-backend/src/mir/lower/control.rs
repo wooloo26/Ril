@@ -110,6 +110,15 @@ impl Builder<'_, '_> {
     }
 
     fn short_circuit(&mut self, left: ExprId, right: ExprId, op: &str) -> Result<Register> {
+        if matches!(op, "&&" | "||")
+            && let Some(Value::Bool(value)) = self.static_expr(left)
+        {
+            return if value == (op == "&&") {
+                self.expr(right)
+            } else {
+                Ok(self.boolean(value))
+            };
+        }
         let left_span = self.ast().expr(left).span;
         let result_fallback = op == "??"
             && matches!(
@@ -360,6 +369,11 @@ impl Builder<'_, '_> {
     }
 
     pub(super) fn while_loop(&mut self, condition: &Condition, body: ExprId) -> Result<Register> {
+        if let Condition::Expr(test) = condition
+            && self.static_expr(*test) == Some(Value::Bool(false))
+        {
+            return Ok(self.unit());
+        }
         let before = self.locals.clone();
         let names: Vec<_> = before.keys().copied().collect();
         let header = self.block(names.len());
@@ -521,17 +535,19 @@ impl Builder<'_, '_> {
         arms: &[MatchArm],
         span: Span,
     ) -> Result<Register> {
-        if let Expr::Quote(id) = self.ast().expr(value).value {
-            let ty = self
-                .global
-                .typed
-                .types
-                .get(&self.ast().ty(id).span)
-                .map(|ty| self.concrete(ty))
-                .unwrap_or(Ty::Unknown);
-            for arm in arms {
+        let selected = self
+            .global
+            .typed
+            .static_selected_arm(span, &self.statics, &self.types);
+        if let Some(Value::Type(ty)) = self.static_expr(value) {
+            for (index, arm) in arms.iter().enumerate() {
+                if selected.is_some_and(|chosen| chosen != index) {
+                    continue;
+                }
                 let old = self.types.clone();
-                if self.static_pattern(arm.pattern, &ty) && arm.guard.is_none() {
+                if self.static_pattern(arm.pattern, &ty)
+                    && (arm.guard.is_none() || selected.is_some())
+                {
                     let result = self.expr(arm.body);
                     self.types = old;
                     return result;
@@ -539,6 +555,14 @@ impl Builder<'_, '_> {
                 self.types = old;
             }
             return Err(self.unsupported(span, "dependent type match without a selected arm"));
+        }
+        if let Some(arm) = selected.and_then(|index| arms.get(index)) {
+            let value = self.expr(value)?;
+            let prior = self.locals.clone();
+            self.bind(arm.pattern, value)?;
+            let result = self.expr(arm.body);
+            self.locals.retain(|name, _| prior.contains_key(name));
+            return result;
         }
         let value = self.expr(value)?;
         let saved = self.locals.clone();
@@ -929,8 +953,12 @@ impl Builder<'_, '_> {
 
     fn static_expr(&self, expr: ExprId) -> Option<Value> {
         let node = self.ast().expr(expr);
-        if let Some(value) = self.global.typed.static_values.get(&node.span) {
-            return Some(value.clone());
+        if let Ok(Some(value)) =
+            self.global
+                .typed
+                .static_value(node.span, &self.statics, &self.types)
+        {
+            return Some(value);
         }
         match &node.value {
             Expr::Literal(literal) => ty::literal(literal).ok(),
