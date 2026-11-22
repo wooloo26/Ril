@@ -36,6 +36,21 @@ fn rooted_cycle_survives_allocations_and_reclaims_after_pop() {
 }
 
 #[test]
+fn deep_graph_clone_and_equality_use_explicit_worklists() {
+    let mut gc = GcRuntime::new(false);
+    let mut root = Value::UNIT;
+    let depth = if cfg!(miri) { 64 } else { 4096 };
+    for _ in 0..depth {
+        root = gc.alloc(Object::Array(vec![root]));
+    }
+    let copy = gc.clone_graph(root).unwrap();
+    assert_ne!(root, copy);
+    assert!(gc.equal(root, copy).unwrap());
+    gc.collect(Vec::new());
+    assert_eq!(gc.live_objects(), 0);
+}
+
+#[test]
 fn descriptors_trace_only_managed_words() {
     let mut gc = GcRuntime::new(true);
     gc.push_frame(2);

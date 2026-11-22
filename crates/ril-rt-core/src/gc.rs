@@ -150,12 +150,10 @@ impl GcRuntime {
         }
     }
 
-    #[cfg(not(miri))]
     pub(crate) fn pin(&mut self, value: Value) {
         *self.roots.entry(value).or_default() += 1;
     }
 
-    #[cfg(not(miri))]
     pub(crate) fn unpin(&mut self, value: Value) {
         if let Some(count) = self.roots.get_mut(&value) {
             *count -= 1;
@@ -189,7 +187,7 @@ impl GcRuntime {
         self.alloc_rooted(object)
     }
 
-    pub(crate) fn alloc_rooted(&mut self, object: Object) -> Value {
+    fn alloc_rooted(&mut self, object: Object) -> Value {
         let value = Value(self.next);
         self.next = self
             .next

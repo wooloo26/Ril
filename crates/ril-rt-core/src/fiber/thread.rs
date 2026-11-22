@@ -129,9 +129,14 @@ fn waiters_wake_in_fifo_order() {
             },
         );
     }
+    ready.add(7);
+    assert_eq!(ready.next(), Some(7));
+    ready.suspend(7, Event::Change(Some(until)));
     ready.signal(|event| event == Event::Channel(1));
     assert_eq!(ready.next(), Some(8));
     ready.complete(8);
+    assert_eq!(ready.next(), Some(7));
+    ready.complete(7);
     assert_eq!(ready.nearest_timer(), Some(until));
     ready.signal(|event| event == Event::Sleep(until));
     assert_eq!(ready.active().collect::<Vec<_>>(), vec![3, 5]);

@@ -3,6 +3,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use crate::Value;
 
 pub(crate) type Task = u64;
+#[cfg(not(miri))]
 pub(crate) type Scope = u64;
 pub(crate) type Channel = u64;
 
