@@ -123,6 +123,201 @@ fn run() -> () {
     -- ^ E0524
 }
 
+-- @case named_callable_capture_overlaps_a_mutable_argument compile-fail E0524
+fn run() -> int {
+    let mut cell = Cell.{ count: 3 }
+    let ref view = ref cell
+    work(mut cell)
+    -- ^ E0524
+    where
+        fn work(mut input: Cell) &mut &up(ref view) -> int {
+            input.count += 1
+            view.count
+        }
+}
+
+-- @case new_argument_cannot_end_a_named_callable_capture compile-fail E0549
+fn run() -> int {
+    let mut cell = Cell.{ count: 3 }
+    let ref view = ref cell
+    work(new cell)
+    -- ^ E0549
+    where
+        fn work(new item: Cell) &up(ref view) -> int { item.count + view.count }
+}
+
+-- @case readonly_closure_capture_overlaps_a_mutable_argument compile-fail E0524
+fn run() -> int {
+    let mut cell = Cell.{ count: 3 }
+    let ref view = ref cell
+    let ref work = \mut input: Cell -> {
+        input.count += 1
+        view.count
+    }
+    work(mut cell)
+    -- ^ E0524
+}
+
+-- @case mutable_closure_capture_overlaps_a_mutable_argument compile-fail E0523
+fn run() -> int {
+    let mut cell = Cell.{ count: 3 }
+    let ^mut work = \mut input: Cell -> {
+        input.count += 1
+        cell.count += 2
+        cell.count
+    }
+    work(mut cell)
+    -- ^ E0523
+}
+
+-- @case independent_capture_and_mutable_argument_can_be_used_together compile-pass
+fn run() -> int {
+    let mut a = Cell.{ count: 1 }
+    let mut b = Cell.{ count: 2 }
+    work(mut a)
+    where
+        fn work(mut input: Cell) &mut &up(mut b) -> int {
+            input.count += 1
+            b.count += 1
+            input.count + b.count
+        }
+}
+
+-- @case a_captured_observer_can_alias_a_read_only_argument compile-pass
+fn run(ref cell: Cell) -> int {
+    let ref view = ref cell
+    observe(ref cell)
+    where
+        fn observe(ref item: Cell) &up(ref view) -> int { item.count + view.count }
+}
+
+-- @case mutable_formal_cannot_supply_a_retained_writer compile-fail E0528
+fn keep(^mut item: Cell) -> ^mut(item) Cell { item }
+fn bad(mut item: Cell) &mut -> ^mut(item) Cell {
+    item.count += 1
+    keep(^mut item)
+    -- ^ E0528
+}
+
+-- @case mutable_formal_cannot_return_new_ownership compile-fail E0528
+fn bad(mut item: Cell) &mut -> new Cell { new item }
+-- ^ E0528
+
+-- @case anonymous_mutable_formal_cannot_return_owned_authority compile-fail E0528
+fn run() -> () {
+    let bad = \mut item: Cell -> new item
+    -- ^ E0528
+}
+
+-- @case mutable_formal_can_forward_an_existing_shared_member compile-pass
+fn keep(^mut item: Cell) -> ^mut(item) Cell { item }
+fn saved(mut holder: .{ var reads: int, ^mut child: Cell }) &mut -> ^mut(holder) Cell {
+    holder.reads += 1
+    keep(^mut holder.child)
+}
+
+-- @case a_ref_argument_can_observe_a_replaceable_binding compile-pass
+fn read(ref item: Cell) -> int { item.count }
+fn run() -> int {
+    var mut item = Cell.{ count: 3 }
+    item.count += 1
+    let previous = read(ref item)
+    item = Cell.{ count: 6 }
+    previous + item.count
+}
+
+-- @case two_ref_arguments_can_observe_the_same_source compile-pass
+fn read(ref a: Cell, ref b: Cell) -> int { a.count + b.count }
+fn run(ref item: Cell) -> int { read(ref item, ref item) }
+
+-- @case two_mutable_arguments_can_use_disjoint_sources compile-pass
+fn update(mut a: Cell, mut b: Cell) &mut -> () {
+    a.count += 1
+    b.count += 2
+}
+fn run() -> int {
+    let mut a = Cell.{ count: 1 }
+    let mut b = Cell.{ count: 2 }
+    update(mut a, mut b)
+    a.count + b.count
+}
+
+-- @case nested_mutable_call_proves_the_outer_use compile-pass
+fn update(mut item: Cell) &mut -> () { item.count += 1 }
+fn relay(mut item: Cell) &mut -> () { update(mut item) }
+fn run() -> int {
+    let mut item = Cell.{ count: 3 }
+    relay(mut item)
+    item.count
+}
+
+-- @case reachable_write_on_one_alternative_satisfies_mutable_use compile-pass
+fn update(mut item: Cell, modify: bool) &mut -> int {
+    if modify { item.count += 1 }
+    item.count
+}
+
+-- @case nested_shared_call_preserves_retained_authority compile-pass
+fn keep(^mut item: Cell) -> ^mut(item) Cell { item }
+fn relay(^mut item: Cell) -> ^mut(item) Cell { keep(^mut item) }
+
+-- @case retaining_a_local_alias_keeps_its_formal_authority compile-pass
+fn keep(^mut source: Cell) &mut -> ^mut(source) Cell {
+    let ^mut alias = source
+    alias.count += 1
+    alias
+}
+
+-- @case retaining_one_shared_formal_does_not_retain_its_sibling compile-fail E0527
+fn keep(^mut a: Cell, ^mut b: Cell) -> ^mut(a) Cell { a }
+-- ^ E0527
+
+-- @case call_markers_must_match_a_mutable_formal compile-fail E0406
+fn update(mut item: Cell) &mut -> () { item.count += 1 }
+fn run(ref item: Cell) -> () {
+    update(ref item)
+    -- ^ E0406
+}
+
+-- @case mutable_formal_is_a_fixed_slot compile-fail E0502
+fn reset(mut item: Cell) &mut -> () {
+    item = Cell.{ count: 0 }
+    -- ^ E0502
+    item.count += 1
+}
+
+-- @case a_new_argument_can_supply_construction_authority compile-pass
+fn update(new owned: Cell) -> int {
+    let mut item = new owned
+    item.count += 1
+    item.count
+}
+fn run() -> int { update(new Cell.{ count: 41 }) }
+
+-- @case a_read_only_argument_cannot_supply_construction_authority compile-fail E0548
+fn consume(new item: Cell) -> int { item.count }
+fn run(ref item: Cell) -> int {
+    consume(new item)
+    -- ^ E0548
+}
+
+-- @case a_plain_argument_requires_a_snapshot compile-fail E0535
+fn read(item: Cell) -> int { item.count }
+fn run(mut item: Cell) &mut -> int {
+    item.count += 1
+    read(item)
+    -- ^ E0535
+}
+
+-- @case a_named_helper_must_declare_its_capture compile-fail E0510
+fn run() -> int {
+    let number = 3
+    read()
+    where
+        fn read() -> int { number }
+        -- ^ E0510
+}
+
 -- @case independent_allocations compile-pass
 fn copy(mut a: Cell, ref b: Cell) &mut -> () { a.count = b.count }
 fn run() -> () {

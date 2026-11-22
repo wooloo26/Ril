@@ -119,6 +119,13 @@ struct Requirement {
     message: &'static str,
 }
 
+struct CaptureConflict {
+    write: Fact,
+    reading: Option<Code>,
+    writing: Option<Code>,
+    span: Span,
+}
+
 struct DefinitionCheck {
     owner: Span,
     id: DefinitionId,
@@ -151,6 +158,7 @@ struct Analyzer<'a> {
     rules: Vec<Rule<Fact>>,
     requirements: Vec<Requirement>,
     deferred_errors: Vec<(Vec<Fact>, Diagnostic)>,
+    capture_conflicts: Vec<CaptureConflict>,
     mode_uses: Vec<ModeUse>,
     member_schemas: BTreeMap<Span, Vec<Region>>,
     closure_modes: BTreeMap<Span, ClosureModes>,
@@ -170,6 +178,7 @@ pub(super) fn analyze(program: &TypedProgram) -> (Analysis, Vec<Diagnostic>) {
         rules: Vec::new(),
         requirements: Vec::new(),
         deferred_errors: Vec::new(),
+        capture_conflicts: Vec::new(),
         mode_uses: Vec::new(),
         member_schemas: BTreeMap::new(),
         closure_modes: BTreeMap::new(),
@@ -191,6 +200,20 @@ pub(super) fn analyze(program: &TypedProgram) -> (Analysis, Vec<Diagnostic>) {
     }
     analyzer.link_higher_order_calls();
     let facts = horn::solve(&analyzer.rules);
+    for conflict in std::mem::take(&mut analyzer.capture_conflicts) {
+        let code = if facts.contains(&conflict.write) {
+            conflict.writing
+        } else {
+            conflict.reading
+        };
+        if let Some(code) = code {
+            analyzer.error(
+                code,
+                conflict.span,
+                "argument authority overlaps a callable capture",
+            );
+        }
+    }
     for (premises, diagnostic) in std::mem::take(&mut analyzer.deferred_errors) {
         if premises.iter().all(|fact| facts.contains(fact))
             && !analyzer.diagnostics.iter().any(|reported| {
@@ -557,6 +580,7 @@ impl<'a> Analyzer<'a> {
             value.transform(&mut |origin| {
                 origin.dependencies.insert(span);
                 origin.inherits_mode = param.mode == Mode::Via;
+                origin.call_borrow = param.mode == Mode::Mut;
             });
             if param.ty.is_result() {
                 value.results.insert(span);
@@ -1221,6 +1245,13 @@ impl<'a> Analyzer<'a> {
         }
         if value.creates_environment() {
             self.seed(ctx, Obligation::Capture);
+        }
+        if value.returns_borrowed_writer(ctx.expected) {
+            self.error(
+                Code::E0528,
+                span,
+                "a call-scoped writer cannot escape in a return",
+            );
         }
         match ctx.expected {
             Mode::Plain if value.requires_new => self.error(
@@ -2398,6 +2429,16 @@ impl<'a> Analyzer<'a> {
         {
             if value.creates_environment() {
                 self.seed(ctx, Obligation::Capture);
+            }
+            if value
+                .origins()
+                .any(|origin| origin.call_borrow && origin.mode.writes())
+            {
+                self.error(
+                    Code::E0528,
+                    span,
+                    "a call-scoped writer cannot be retained in caller storage",
+                );
             }
             for source in value
                 .origins()

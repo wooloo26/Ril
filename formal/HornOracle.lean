@@ -1,5 +1,6 @@
 import Lean
 import RilAccess.Examples.Boundary
+import RilAccess.Examples.Call
 import RilAccess.Examples.Draft
 import RilAccess.Examples.Handoff
 import RilAccess.Examples.ResolvedProvenance
@@ -120,6 +121,31 @@ def callEntryCases : List (String × Bool) :=
    ("call_entry_graph_includes_later_argument_preparation",
      decide (inserted ∈ capturedInstances laterHeap [saved]))]
 
+open RilAccess.Calls.Examples in
+def callAuthorityCases : List (String × Bool) :=
+  [("a_ref_argument_can_observe_a_replaceable_binding", accepted observeVariable),
+   ("two_ref_arguments_can_observe_the_same_source", accepted readAliased),
+   ("two_mutable_arguments_can_use_disjoint_sources", accepted disjointWriters),
+   ("overlapping_mut_writers", accepted aliasedWriters),
+   ("overlapping_read_write", accepted writeReadAlias),
+   ("mutable_formal_cannot_supply_a_retained_writer", accepted ordinaryWriteCannotRetain),
+   ("shared_return_retains", accepted retainedWriter),
+   ("shared_parameter_not_retained", accepted writeAloneNotRetention),
+   ("retaining_a_local_alias_keeps_its_formal_authority", accepted retainedThroughAlias),
+   ("nested_mutable_call_proves_the_outer_use", accepted nestedMutation),
+   ("nested_shared_call_preserves_retained_authority", accepted nestedRetention),
+   ("recursive_forwarding_is_ungrounded", accepted noCircularUse),
+   ("reachable_write_on_one_alternative_satisfies_mutable_use", accepted possibleWrite),
+   ("call_markers_must_match_a_mutable_formal", accepted wrongMarker),
+   ("mutable_formal_is_a_fixed_slot", accepted rebindFormal),
+   ("a_new_argument_can_supply_construction_authority", accepted constructInput),
+   ("a_read_only_argument_cannot_supply_construction_authority", accepted observedInputIsNotConstruction),
+   ("a_plain_argument_requires_a_snapshot", accepted mutablePlainInput),
+   ("a_named_helper_must_declare_its_capture", accepted undeclaredCapture),
+   ("independent_capture_and_mutable_argument_can_be_used_together", accepted declaredCapture),
+   ("named_callable_capture_overlaps_a_mutable_argument", accepted independentCapture),
+   ("retaining_one_shared_formal_does_not_retain_its_sibling", accepted formalAliasIsNotRetention)]
+
 open RilAccess.CoreConcurrency RilAccess.CoreConcurrency.Examples in
 def taskJoinCases : List (String × Bool) :=
   let fallible : ScopeState :=
@@ -236,6 +262,8 @@ def main (args : List String) : IO Unit := do
     stdout.putStrLn (toJson answers).compress
   else if args == ["call-entry"] then
     stdout.putStrLn (toJson callEntryCases).compress
+  else if args == ["call-authority"] then
+    stdout.putStrLn (toJson callAuthorityCases).compress
   else if args == ["task-joins"] then
     stdout.putStrLn (toJson taskJoinCases).compress
   else if args == ["boundary"] then

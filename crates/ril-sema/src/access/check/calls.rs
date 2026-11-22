@@ -18,8 +18,8 @@ use crate::{
 };
 
 use super::{
-    Access, Analyzer, ClosureModes, Context, Coordinate, Datum, Fact, Input, Ledger, ModeUse,
-    Obligation, Region, Rule, SchemaRequirement, Slot, conflicts, member_axes,
+    Access, Analyzer, CaptureConflict, ClosureModes, Context, Coordinate, Datum, Fact, Input,
+    Ledger, ModeUse, Obligation, Region, Rule, SchemaRequirement, Slot, conflicts, member_axes,
 };
 
 struct CallEntry<'a> {
@@ -125,7 +125,7 @@ impl Analyzer<'_> {
             let def = self.program.hir.definition(id);
             let stmt = def.stmt?;
             match &self.ast(def.name.span.file).stmt(stmt).value.kind {
-                StmtKind::Function(fun) => Some(fun),
+                StmtKind::Function(fun) => Some(fun.as_ref()),
                 _ => None,
             }
         });
@@ -256,6 +256,17 @@ impl Analyzer<'_> {
         for (_, _, value) in &mut values {
             *value = ledger.snapshot(value);
         }
+        self.check_capture_overlap(
+            ctx,
+            syntax,
+            target.as_ref(),
+            &CallEntry {
+                arguments: &values,
+                spans: &value_spans,
+                ledger,
+                span,
+            },
+        );
         for (i, ((_, mode, value), &argument_span)) in values.iter().zip(&value_spans).enumerate() {
             if let Some(mutating) = ledger.hold_conflict(value, *mode) {
                 self.error(
@@ -641,6 +652,97 @@ impl Analyzer<'_> {
 
     pub(super) fn link_invocation(&mut self, ctx: &Context, target: &Datum) {
         self.link_invocation_if(ctx, target, None);
+    }
+
+    fn check_capture_overlap(
+        &mut self,
+        ctx: &Context,
+        function: Option<&ril_frontend::syntax::Function>,
+        target: Option<&Datum>,
+        entry: &CallEntry<'_>,
+    ) {
+        let overlap_code = |mutating| if mutating { Code::E0523 } else { Code::E0524 };
+        let declared = function
+            .into_iter()
+            .flat_map(|function| &function.signature.obligations.state)
+            .filter(|clause| clause.kind == StateKind::Environment)
+            .flat_map(|clause| &clause.bindings);
+        for (storage, path) in declared {
+            let Some(slot) = self
+                .declaration(path.span)
+                .and_then(|decl| entry.ledger.slots.get(&decl))
+            else {
+                continue;
+            };
+            let captured = entry.ledger.snapshot(&slot.value);
+            self.check_live(
+                ctx,
+                entry.ledger,
+                &captured,
+                entry.span,
+                "argument handoff ended a captured path",
+            );
+            if captured
+                .origins()
+                .all(|root| root.mode == Access::Immutable)
+            {
+                continue;
+            }
+            let access = if storage.mode == Mode::Plain {
+                Mode::Ref
+            } else {
+                storage.mode
+            };
+            for ((_, mode, argument), &span) in entry.arguments.iter().zip(entry.spans) {
+                if let Some(code) = conflicts(argument, *mode, &captured, access).map(overlap_code)
+                {
+                    self.error(code, span, "argument authority overlaps a callable capture");
+                }
+            }
+        }
+        if let Some(target) = target {
+            for (&owner, captures) in &target.invocations {
+                for (index, &source) in captures.keys().enumerate() {
+                    let Some(captured) = target.members.get(&Coordinate::Index(index.to_string()))
+                    else {
+                        continue;
+                    };
+                    let captured = entry.ledger.snapshot(captured);
+                    if captured
+                        .origins()
+                        .all(|root| root.mode == Access::Immutable)
+                    {
+                        continue;
+                    }
+                    let writable = if captured
+                        .roots
+                        .iter()
+                        .all(|root| root.mode == Access::Shared)
+                    {
+                        Mode::Shared
+                    } else {
+                        Mode::Mut
+                    };
+                    for ((_, mode, argument), &span) in entry.arguments.iter().zip(entry.spans) {
+                        let reading =
+                            conflicts(argument, *mode, &captured, Mode::Ref).map(overlap_code);
+                        let writing =
+                            conflicts(argument, *mode, &captured, writable).map(overlap_code);
+                        if reading.is_some() || writing.is_some() {
+                            self.capture_conflicts.push(CaptureConflict {
+                                write: Fact {
+                                    owner,
+                                    obligation: Obligation::Write(source),
+                                },
+                                reading,
+                                writing,
+                                span,
+                            });
+                        }
+                    }
+                }
+            }
+        }
     }
 
     pub(super) fn link_invocation_if(
@@ -1463,6 +1565,9 @@ impl Analyzer<'_> {
                     self.error(Code::E0604, span, "resource authority cannot be retained");
                 }
                 if mode == Mode::Shared {
+                    if value.roots.iter().any(|origin| origin.call_borrow) {
+                        self.error(Code::E0528, span, "a call-scoped writer cannot be retained");
+                    }
                     for root in &mut value.roots {
                         root.fix_mode(Access::Shared);
                         root.new = false;
@@ -2022,6 +2127,7 @@ impl Analyzer<'_> {
                 value.transform(&mut |origin| {
                     origin.dependencies.insert(name.span);
                     origin.inherits_mode = p.mode == Mode::Via;
+                    origin.call_borrow = p.mode == Mode::Mut;
                     if matches!(param_ty, Some(Ty::Scope | Ty::Draft(_))) {
                         origin.confined = Some(node.span);
                         origin.draft = matches!(param_ty, Some(Ty::Draft(_)));
@@ -2056,6 +2162,13 @@ impl Analyzer<'_> {
         let implicit = self.ty(self.ast(ctx.file).expr(*body).span) != &Ty::Never;
         if inner.reachable && implicit {
             self.check_results(&locals, &output.results());
+            if output.returns_borrowed_writer(Mode::Infer) {
+                self.error(
+                    Code::E0528,
+                    node.span,
+                    "a call-scoped writer cannot escape in a return",
+                );
+            }
         }
         if let Some(closure) = self.closure_modes.get_mut(&node.span) {
             closure.returns.clone_from(&inner.return_values);

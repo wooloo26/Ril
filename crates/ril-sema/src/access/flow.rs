@@ -93,6 +93,7 @@ pub(super) struct Origin {
     pub callback_result: Option<CallbackOrigin>,
     pub reception: Vec<Reception>,
     pub new: bool,
+    pub call_borrow: bool,
     pub dependencies: BTreeSet<Span>,
     pub branches: Choices,
     pub confined: Option<Span>,
@@ -116,6 +117,9 @@ impl Origin {
     }
 
     pub(super) fn project_mode(&mut self, member: Mode) {
+        if member == Mode::Shared {
+            self.call_borrow = false;
+        }
         if member == Mode::Via || self.inherits_mode || !self.reception.is_empty() {
             if self.reception.is_empty() {
                 self.reception.push(if self.inherits_mode {
@@ -189,6 +193,7 @@ impl Datum {
                 callback_result: None,
                 reception: Vec::new(),
                 new,
+                call_borrow: false,
                 dependencies: BTreeSet::new(),
                 branches: BTreeMap::new(),
                 confined: None,
@@ -338,6 +343,17 @@ impl Datum {
 
     pub(super) fn writers(&self) -> bool {
         !self.roots.is_empty() && self.roots.iter().all(|root| root.mode.writes())
+    }
+
+    pub(super) fn returns_borrowed_writer(&self, mode: Mode) -> bool {
+        let writable_loan = |origin: &Origin| origin.call_borrow && origin.mode.writes();
+        (matches!(mode, Mode::Infer | Mode::New | Mode::Shared)
+            && self.roots.iter().any(writable_loan))
+            || self
+                .members
+                .values()
+                .flat_map(Self::origins)
+                .any(writable_loan)
     }
 
     pub(super) fn detach_handed_off_paths(&mut self) {
