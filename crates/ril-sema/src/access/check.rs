@@ -93,6 +93,7 @@ struct Context {
     returns: Vec<Span>,
     declared_contained: Vec<(Access, Span)>,
     return_values: Vec<Datum>,
+    loop_owner: Option<Span>,
     reachable: bool,
     shadow: bool,
     in_function: bool,
@@ -116,6 +117,7 @@ impl Context {
             returns: Vec::new(),
             declared_contained: Vec::new(),
             return_values: Vec::new(),
+            loop_owner: None,
             reachable: true,
             shadow: false,
             in_function: false,
@@ -175,6 +177,12 @@ struct ClosureModes {
     returns: Vec<Datum>,
 }
 
+#[derive(Default)]
+struct LoopTransfers {
+    breaks: Vec<Ledger>,
+    continues: Vec<Ledger>,
+}
+
 struct Analyzer<'a> {
     program: &'a TypedProgram,
     diagnostics: Vec<Diagnostic>,
@@ -188,6 +196,7 @@ struct Analyzer<'a> {
     higher_order: higher_order::Calls,
     invocation_summaries: BTreeMap<Span, BTreeSet<Invocation>>,
     callback_results: Vec<calls::CallbackResult>,
+    loop_transfers: BTreeMap<Span, LoopTransfers>,
     storage_exits: BTreeMap<Span, Vec<BTreeMap<Region, Replacement>>>,
     recursive_storage: BTreeMap<Span, storage::CallStorage>,
     recursive_calls: BTreeSet<Span>,
@@ -214,6 +223,7 @@ fn collect(
         higher_order: higher_order::Calls::default(),
         invocation_summaries: BTreeMap::new(),
         callback_results: Vec::new(),
+        loop_transfers: BTreeMap::new(),
         storage_exits: BTreeMap::new(),
         recursive_storage,
         recursive_calls: BTreeSet::new(),
@@ -1226,6 +1236,7 @@ impl<'a> Analyzer<'a> {
             Type::TypeOf(expr) => {
                 let mut shadow = ctx.clone();
                 shadow.shadow = true;
+                shadow.loop_owner = None;
                 let mut slots = ledger.clone();
                 let result = self.expr(&mut shadow, &mut slots, *expr);
                 let mut except = result.results();
@@ -2244,20 +2255,27 @@ impl<'a> Analyzer<'a> {
                 let before = ledger.clone();
                 let mut inside = before.clone();
                 let mut local = ctx.clone();
-                if matches!(condition, Condition::Expr(test) if self.literal_bool(ctx, *test) == Some(false))
-                {
-                    local.reachable = false;
-                }
+                let literal = match condition {
+                    Condition::Expr(test) => self.literal_bool(ctx, *test),
+                    Condition::Binding { .. } => None,
+                };
                 self.condition(&mut local, &mut inside, condition);
-                let condition_diverges = inside.no_continuation;
-                let body_reachable = local.reachable;
-                self.expr(&mut local, &mut inside, *body);
-                if body_reachable {
-                    // A break leaves the loop even when its arm has no continuation in the body.
-                    inside.no_continuation = false;
-                    ledger.merge(&before, &[before.clone(), inside]);
+                let mut exits = Vec::new();
+                if literal != Some(true) && local.reachable {
+                    exits.push(inside.clone());
                 }
-                ledger.no_continuation |= condition_diverges;
+                local.loop_owner = Some(span);
+                local.reachable &= literal != Some(false);
+                self.expr(&mut local, &mut inside, *body);
+                if local.reachable && self.ty(ast.expr(*body).span) != &Ty::Never {
+                    self.loop_transfers
+                        .entry(span)
+                        .or_default()
+                        .continues
+                        .push(inside);
+                }
+                ctx.return_values = local.return_values;
+                self.merge_loop_exits(span, ledger, &before, exits);
                 Datum::default()
             }
             Expr::For {
@@ -2270,6 +2288,7 @@ impl<'a> Analyzer<'a> {
                 let before = ledger.clone();
                 let mut inside = before.clone();
                 let mut local = ctx.clone();
+                local.loop_owner = Some(span);
                 inside.iteration.push(value.clone());
                 let storage = Storage {
                     mode: *mode,
@@ -2282,9 +2301,15 @@ impl<'a> Analyzer<'a> {
                 let child = inside.project_schema(&value, coordinate, schema);
                 self.bind(&local, &mut inside, *pattern, &storage, child, false);
                 self.expr(&mut local, &mut inside, *body);
+                if local.reachable && self.ty(ast.expr(*body).span) != &Ty::Never {
+                    self.loop_transfers
+                        .entry(span)
+                        .or_default()
+                        .continues
+                        .push(inside);
+                }
                 ctx.return_values = local.return_values;
-                inside.no_continuation = false;
-                ledger.merge(&before, &[before.clone(), inside]);
+                self.merge_loop_exits(span, ledger, &before, vec![before.clone()]);
                 Datum::default()
             }
             Expr::Match { mode, value, arms } => {
@@ -2361,10 +2386,26 @@ impl<'a> Analyzer<'a> {
                 let value = value
                     .map(|value| self.expr(ctx, ledger, value))
                     .unwrap_or_default();
-                if *kind == Transfer::Return && ctx.reachable {
-                    self.returned(ctx, ledger, value, span);
-                    self.check_results(ledger, &BTreeSet::new());
+                if ctx.reachable {
+                    match kind {
+                        Transfer::Return => {
+                            self.returned(ctx, ledger, value, span);
+                            self.check_results(ledger, &BTreeSet::new());
+                        }
+                        Transfer::Break | Transfer::Continue => {
+                            if let Some(owner) = ctx.loop_owner {
+                                let exits = self.loop_transfers.entry(owner).or_default();
+                                let paths = if *kind == Transfer::Break {
+                                    &mut exits.breaks
+                                } else {
+                                    &mut exits.continues
+                                };
+                                paths.push(ledger.clone());
+                            }
+                        }
+                    }
                 }
+                ledger.no_continuation = true;
                 Datum::default()
             }
             Expr::Closure { .. } => self.closure(ctx, ledger, id, false),
@@ -2805,6 +2846,22 @@ impl<'a> Analyzer<'a> {
                 );
             }
         }
+    }
+
+    fn merge_loop_exits(
+        &mut self,
+        owner: Span,
+        ledger: &mut Ledger,
+        before: &Ledger,
+        mut exits: Vec<Ledger>,
+    ) {
+        let transfers = self.loop_transfers.remove(&owner).unwrap_or_default();
+        exits.extend(transfers.breaks);
+        if !exits.is_empty() {
+            // Another iteration can contribute effects only when the loop has an exit.
+            exits.extend(transfers.continues);
+        }
+        ledger.merge(before, &exits);
     }
 
     fn condition_unbound(&mut self, ctx: &mut Context, ledger: &mut Ledger, condition: &Condition) {

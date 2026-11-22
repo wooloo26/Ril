@@ -427,6 +427,35 @@ fn spin(mut item: Cell) -> () {
     item.count += 1
 }
 
+-- @case an_unreachable_loop_break_cannot_ground_a_later_write compile-fail E0527
+fn diverge() -> () {
+    while true {
+        while true { break }
+        diverge()
+        break
+    }
+}
+fn change(mut cell: Cell) &mut -> () {
+-- ^ E0527
+    diverge()
+    cell.count += 1
+}
+
+-- @case each_reachable_loop_break_preserves_its_recursive_store compile-fail E0527
+type Shelf = .{ var ^mut item: Cell }
+fn publish(mut shelf: Shelf, ^mut source: Cell, recur: bool) &mut &^mut -> () {
+    while true {
+        if recur { publish(mut shelf, ^mut source, false) }
+        else { shelf.item = ^mut source }
+        break
+    }
+}
+fn overwrite(mut shelf: Shelf, ^mut discarded: Cell, ^mut retained: Cell, recur: bool) &mut &^mut -> () {
+-- ^ E0527
+    shelf.item = ^mut discarded
+    publish(mut shelf, ^mut retained, recur)
+}
+
 -- @case conditional_callee_update_keeps_the_unmodified_retention_path compile-pass
 type Shelf = .{ var ^mut item: Cell }
 fn publish(mut shelf: Shelf, ^mut source: Cell, enabled: bool) &mut &^mut -> () {
