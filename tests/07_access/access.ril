@@ -961,6 +961,103 @@ fn change(mut frame: Frame) &mut -> () {
     -- ^ E0520
 }
 
+-- @case a_new_wrapper_cannot_freeze_an_existing_writer compile-fail E0535
+type Shelf = .{ ^mut item: Cell }
+fn observe() -> int {
+    let mut state = Cell.{ count: 41 }
+    let snapshot = Shelf.{ item: ^mut state }
+    -- ^ E0535
+    state.count += 1
+    snapshot.item.count
+}
+
+-- @case a_new_wrapper_cannot_freeze_an_existing_ref compile-fail E0535
+type Shelf = .{ ref item: Cell }
+fn observe() -> int {
+    let mut state = Cell.{ count: 41 }
+    let snapshot = Shelf.{ item: ref state }
+    -- ^ E0535
+    state.count += 1
+    snapshot.item.count
+}
+
+-- @case a_plain_argument_cannot_freeze_a_nested_writer compile-fail E0535
+type Shelf = .{ ^mut item: Cell }
+fn read(shelf: Shelf) -> int { shelf.item.count }
+fn observe() -> int {
+    let mut state = Cell.{ count: 41 }
+    state.count += 1
+    read(Shelf.{ item: ^mut state })
+    -- ^ E0535
+}
+
+-- @case a_plain_reassignment_cannot_freeze_a_nested_writer compile-fail E0535
+type Shelf = .{ ^mut item: Cell }
+fn observe() -> int {
+    var saved = Shelf.{ item: ^mut Cell.{ count: 0 } }
+    let mut state = Cell.{ count: 41 }
+    state.count += 1
+    saved = Shelf.{ item: ^mut state }
+    -- ^ E0535
+    saved.item.count
+}
+
+-- @case freezing_a_handoff_observes_prior_member_replacement compile-fail E0535
+type Shelf = .{ var ^mut item: Cell }
+fn observe() -> int {
+    let mut shelf = Shelf.{ item: ^mut Cell.{ count: 0 } }
+    let mut state = Cell.{ count: 41 }
+    state.count += 1
+    shelf.item = ^mut state
+    let snapshot = new shelf
+    -- ^ E0535
+    snapshot.item.count
+}
+
+-- @case a_snapshot_can_freeze_a_completely_new_graph compile-pass
+type Pair = .{ ^mut first: Cell, mut second: Cell }
+fn observe() -> int {
+    let snapshot = Pair.{ first: ^mut Cell.{ count: 20 }, second: Cell.{ count: 22 } }
+    snapshot.first.count + snapshot.second.count
+}
+
+-- @case a_frozen_subgraph_cannot_be_received_as_mutable compile-fail E0520
+fn change() -> int {
+    let snapshot = .{ item: Cell.{ count: 41 } }
+    let mut item = snapshot.item
+    -- ^ E0520
+    item.count += 1
+    item.count
+}
+
+-- @case a_member_reached_through_a_ref_cannot_be_received_as_mutable compile-fail E0520
+fn change() -> int {
+    let mut frame = .{ var calls: 0, mut item: Cell.{ count: 40 } }
+    frame.calls += 1
+    let ref view = ref frame
+    let mut item = view.item
+    -- ^ E0520
+    item.count += 2
+    item.count
+}
+
+-- @case reassigning_a_shared_container_keeps_nested_refs_readonly compile-fail E0520
+type Holder = .{ ref observed: Cell, ^mut writable: Cell }
+fn change() -> int {
+    let mut state = Cell.{ count: 40 }
+    state.count += 1
+    let mut first = Holder.{ observed: ref state, writable: ^mut state }
+    first.writable.count += 1
+    let mut next = Holder.{ observed: ref state, writable: ^mut state }
+    next.writable.count += 1
+    var ^mut saved = ^mut first
+    saved = ^mut next
+    saved.writable.count += 1
+    saved.observed.count += 1
+    -- ^ E0520
+    saved.observed.count
+}
+
 -- @case replacing_a_ref_member_keeps_it_readonly compile-fail E0520
 type Shelf = .{ var ref item: Cell }
 fn replace(mut shelf: Shelf, ref value: Cell) &mut -> () {

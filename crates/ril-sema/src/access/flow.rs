@@ -239,6 +239,41 @@ impl Datum {
         }
     }
 
+    pub(super) fn can_freeze(&self) -> bool {
+        self.freezable_sources(self.requires_new)
+    }
+
+    fn freezable_sources(&self, owned: bool) -> bool {
+        self.roots
+            .iter()
+            .all(|root| root.mode == Access::Immutable || owned && root.new)
+            && self
+                .members
+                .values()
+                .all(|member| member.freezable_sources(owned && self.environments.is_empty()))
+    }
+
+    pub(super) fn freeze(&mut self) {
+        for root in &mut self.roots {
+            root.fix_mode(Access::Immutable);
+            root.new = false;
+        }
+        for member in self.members.values_mut() {
+            member.freeze();
+        }
+        self.requires_new = false;
+    }
+
+    pub(super) fn receive_binding(&mut self, access: Access) {
+        for root in &mut self.roots {
+            root.fix_mode(access);
+            if matches!(access, Access::Ref | Access::Shared) {
+                root.new = false;
+            }
+        }
+        self.requires_new = false;
+    }
+
     pub(super) fn results(&self) -> BTreeSet<Span> {
         self.results
             .iter()
@@ -325,12 +360,15 @@ impl Datum {
 
     fn attenuate(&self, member: &mut Self) {
         if self.roots.iter().all(|root| !root.mode.writes()) {
-            let access = if self.roots.iter().all(|root| root.mode == Access::Immutable) {
-                Access::Immutable
+            if self.roots.iter().all(|root| root.mode == Access::Immutable) {
+                member.freeze();
             } else {
-                Access::Ref
-            };
-            member.transform(&mut |origin| origin.fix_mode(access.project(origin.mode)));
+                member.transform(&mut |origin| {
+                    origin.fix_mode(Access::Ref.project(origin.mode));
+                    origin.new = false;
+                });
+                member.requires_new = false;
+            }
         }
     }
 

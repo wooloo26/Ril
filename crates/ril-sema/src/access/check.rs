@@ -1314,29 +1314,28 @@ impl<'a> Analyzer<'a> {
         if value.roots.is_empty() {
             return value;
         }
+        if mode == Access::Immutable && !value.can_freeze() {
+            self.error(
+                Code::E0535,
+                span,
+                "live authority cannot enter an immutable member",
+            );
+        }
         let inline_closure = value.environments.contains(&span);
         if value.requires_new || inline_closure {
-            let captures = || value.members.values().flat_map(Datum::origins);
-            match mode {
-                Access::Immutable
-                    if captures().any(|capture| capture.mode != Access::Immutable) =>
-                {
-                    self.error(
-                        Code::E0535,
-                        span,
-                        "a plain member cannot store a live closure environment",
-                    );
-                }
-                Access::Mut
-                    if inline_closure && captures().any(|capture| capture.mode.writes()) =>
-                {
-                    self.error(
-                        Code::E0510,
-                        span,
-                        "a closure retaining a writer needs shared writable storage",
-                    );
-                }
-                _ => {}
+            if mode == Access::Mut
+                && inline_closure
+                && value
+                    .members
+                    .values()
+                    .flat_map(Datum::origins)
+                    .any(|capture| capture.mode.writes())
+            {
+                self.error(
+                    Code::E0510,
+                    span,
+                    "a closure retaining a writer needs shared writable storage",
+                );
             }
             for root in &mut value.roots {
                 root.fix_mode(mode);
@@ -1368,6 +1367,18 @@ impl<'a> Analyzer<'a> {
             root.explicit_share = false;
         }
         value
+    }
+
+    fn freeze_value(&mut self, ledger: &Ledger, value: &mut Datum, span: Span) {
+        *value = ledger.snapshot(value);
+        if !value.can_freeze() {
+            self.error(
+                Code::E0535,
+                span,
+                "live authority cannot be frozen as a plain snapshot",
+            );
+        }
+        value.freeze();
     }
 
     fn require_shared_replacement(&mut self, value: &Datum, span: Span, allow_new: bool) {
@@ -1410,12 +1421,7 @@ impl<'a> Analyzer<'a> {
                 ctx.owner,
                 "fresh shared return must declare -> new",
             ),
-            Mode::Plain
-                if value
-                    .roots
-                    .iter()
-                    .any(|root| root.mode != Access::Immutable) =>
-            {
+            Mode::Plain if value.origins().any(|root| root.mode != Access::Immutable) => {
                 self.error(
                     Code::E0528,
                     span,
@@ -1769,19 +1775,6 @@ impl<'a> Analyzer<'a> {
                         name.span,
                         "ref binding has no live object source",
                     ),
-                    Mode::Plain
-                        if !resource
-                            && !value.requires_new
-                            && value
-                                .origins()
-                                .any(|origin| origin.mode != Access::Immutable) =>
-                    {
-                        self.error(
-                            Code::E0535,
-                            name.span,
-                            "live authority cannot be frozen as a plain snapshot",
-                        );
-                    }
                     Mode::Via if ctx.via.is_empty() && !ctx.member_via => {
                         self.error(Code::E0412, name.span, "let via requires a mode template");
                     }
@@ -1823,17 +1816,10 @@ impl<'a> Analyzer<'a> {
                         self.error(Code::E0535, name.span, "foreign handle cannot be frozen");
                     }
                 }
-                if mode != Mode::Via {
-                    for root in &mut value.roots {
-                        root.fix_mode(access);
-                    }
-                    if mode == Mode::Plain && !resource {
-                        value.transform(&mut |origin| {
-                            origin.fix_mode(Access::Immutable);
-                            origin.new = false;
-                        });
-                    }
-                    value.requires_new = false;
+                if mode == Mode::Plain && !resource {
+                    self.freeze_value(ledger, &mut value, name.span);
+                } else if mode != Mode::Via {
+                    value.receive_binding(access);
                 }
                 value.transform(&mut |origin| {
                     origin.dependencies.insert(declaration);
@@ -2036,6 +2022,7 @@ impl<'a> Analyzer<'a> {
                     "ref" => {
                         for root in &mut value.roots {
                             root.fix_mode(Access::Ref);
+                            root.new = false;
                         }
                         value.requires_new = false;
                     }
@@ -2047,7 +2034,7 @@ impl<'a> Analyzer<'a> {
                         for root in &mut value.roots {
                             root.fix_mode(Access::Shared);
                             root.explicit_share = true;
-                            root.new = false;
+                            root.new &= value.requires_new;
                         }
                         value.requires_new = false;
                     }
@@ -2674,11 +2661,14 @@ impl<'a> Analyzer<'a> {
         let node = self.ast(ctx.file).expr(target);
         if let Expr::Path(path) = &node.value {
             if let Some(id) = self.declaration(path.span)
-                && let Some(slot) = ledger.slots.get_mut(&id)
+                && let Some((decl, mode, variable)) = ledger
+                    .slots
+                    .get(&id)
+                    .map(|slot| (slot.decl, slot.mode, slot.variable))
             {
-                if !slot.variable {
+                if !variable {
                     self.error(
-                        if slot.mode == Mode::Plain {
+                        if mode == Mode::Plain {
                             Code::E0501
                         } else {
                             Code::E0502
@@ -2695,11 +2685,11 @@ impl<'a> Analyzer<'a> {
                         "scoped resource cannot be assigned to a slot",
                     );
                 }
-                self.seed(ctx, Obligation::Replace(slot.decl));
+                self.seed(ctx, Obligation::Replace(decl));
                 for origin in value.origins().filter(|origin| origin.draft) {
                     if origin
                         .confined
-                        .is_some_and(|scope| slot.decl.start < scope.start)
+                        .is_some_and(|scope| decl.start < scope.start)
                     {
                         self.error(
                             Code::E0607,
@@ -2709,22 +2699,26 @@ impl<'a> Analyzer<'a> {
                     }
                 }
                 let mut value = value;
-                if slot.mode == Mode::Shared {
+                if mode == Mode::Shared {
                     self.require_shared_replacement(&value, span, false);
                 }
                 let captured = ctx.caller_slots.contains(&id);
                 if captured {
                     self.check_publication_source(ctx, &value, span);
                 }
+                if mode == Mode::Plain {
+                    self.freeze_value(ledger, &mut value, span);
+                } else {
+                    value.receive_binding(Access::from_mode(mode));
+                }
                 value.transform(&mut |origin| {
-                    origin.dependencies.insert(slot.decl);
-                    origin.fix_mode(Access::from_mode(slot.mode));
+                    origin.dependencies.insert(decl);
                 });
                 if captured {
                     value.publications.insert(ctx.owner, true);
                     ledger.replace_slot(id, value, true);
                 } else {
-                    slot.value = value;
+                    ledger.slots.entry(id).and_modify(|slot| slot.value = value);
                 }
                 return;
             }

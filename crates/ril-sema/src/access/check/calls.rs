@@ -1901,24 +1901,7 @@ impl<'program> Analyzer<'program> {
             }
             Mode::Plain
                 if matches!(self.ty(span), Ty::Callable(_)) || value.task_scope.is_some() => {}
-            Mode::Plain => {
-                if !value.requires_new
-                    && !self.ty(span).is_value()
-                    && value
-                        .origins()
-                        .any(|origin| origin.mode != Access::Immutable)
-                {
-                    self.error(
-                        Code::E0535,
-                        span,
-                        "live authority cannot enter a plain argument",
-                    );
-                }
-                value.transform(&mut |origin| {
-                    origin.fix_mode(Access::Immutable);
-                });
-                value.requires_new = false;
-            }
+            Mode::Plain => self.freeze_value(ledger, &mut value, span),
             _ => {}
         }
         value
