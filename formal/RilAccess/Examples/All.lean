@@ -10,6 +10,7 @@ import RilAccess.Examples.Scoped
 import RilAccess.Examples.Visibility
 import RilAccess.Examples.Concurrency
 import RilAccess.Examples.ResolvedProvenance
+import RilAccess.Examples.RecursiveStorage
 import RilAccess.Examples.Composition
 
 namespace RilAccess.Examples
@@ -17,7 +18,7 @@ namespace RilAccess.Examples
 def allExamples : List (String × Bool) :=
   examples ++ Integrated.Examples.examples ++ Calls.Examples.examples ++
     GraphAuthority.Examples.examples ++ CoreBoundary.Examples.examples ++
-    CoreSummary.Examples.examples ++ Draft.Examples.examples ++
+    CoreSummary.Examples.examples ++ RecursiveStorage.Examples.examples ++ Draft.Examples.examples ++
     Integrated.HandoffExamples.examples ++ Draft.Examples.loweringExamples ++
     ScopedExamples.examples ++ VisibilityExamples.examples ++
     CoreConcurrency.Examples.examples ++ Provenance.Examples.examples ++ Provenance.Examples.compositionExamples

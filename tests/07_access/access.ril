@@ -379,6 +379,54 @@ fn overwrite(mut shelf: Shelf, ^mut discarded: Cell, ^mut retained: Cell) &mut &
     publish(mut shelf, ^mut retained)
 }
 
+-- @case a_recursive_callee_can_guarantee_replacement compile-fail E0527
+type Shelf = .{ var ^mut item: Cell }
+fn publish(mut shelf: Shelf, ^mut source: Cell, recur: bool) &mut &^mut -> () {
+    if recur { publish(mut shelf, ^mut source, false) }
+    else { shelf.item = ^mut source }
+}
+fn overwrite(mut shelf: Shelf, ^mut discarded: Cell, ^mut retained: Cell, recur: bool) &mut &^mut -> () {
+-- ^ E0527
+    shelf.item = ^mut discarded
+    publish(mut shelf, ^mut retained, recur)
+}
+
+-- @case mutual_recursion_guarantees_a_store_but_can_change_its_source compile-fail E0527
+type Shelf = .{ var ^mut left: Cell, var ^mut right: Cell }
+fn publish(mut shelf: Shelf, ^mut a: Cell, ^mut b: Cell, recur: bool) &mut &^mut -> () {
+    if recur { relay(mut shelf, ^mut b, ^mut a) }
+    else {
+        shelf.left = ^mut a
+        shelf.right = ^mut b
+    }
+}
+fn relay(mut shelf: Shelf, ^mut a: Cell, ^mut b: Cell) &mut &^mut -> () {
+    publish(mut shelf, ^mut a, ^mut b, false)
+}
+fn overwrite(mut shelf: Shelf, ^mut discarded: Cell, ^mut first: Cell, ^mut second: Cell, recur: bool) &mut &^mut -> () {
+-- ^ E0527
+    shelf.left = ^mut discarded
+    publish(mut shelf, ^mut first, ^mut second, recur)
+}
+
+-- @case recursive_callee_can_return_without_replacing_the_old_source compile-pass
+type Shelf = .{ var ^mut item: Cell }
+fn publish(mut shelf: Shelf, ^mut source: Cell, n: int) &mut &^mut -> () {
+    if n > 0 { publish(mut shelf, ^mut source, n - 1) }
+    else if n == 0 { shelf.item = ^mut source }
+}
+fn relay(mut shelf: Shelf, ^mut original: Cell, ^mut replacement: Cell, n: int) &mut &^mut -> () {
+    shelf.item = ^mut original
+    publish(mut shelf, ^mut replacement, n)
+}
+
+-- @case nonreturning_recursion_cannot_ground_a_later_write compile-fail E0527
+fn spin(mut item: Cell) -> () {
+-- ^ E0527
+    spin(mut item)
+    item.count += 1
+}
+
 -- @case conditional_callee_update_keeps_the_unmodified_retention_path compile-pass
 type Shelf = .{ var ^mut item: Cell }
 fn publish(mut shelf: Shelf, ^mut source: Cell, enabled: bool) &mut &^mut -> () {
@@ -590,6 +638,17 @@ fn run() -> () {
 fn get() -> new !<int, str> { Ok(1) }
 fn unwrap(input: !<int, str>) -> int { match input { Ok(n) -> n; Err(_) -> 0 } }
 fn run() -> int { unwrap(get()) }
+
+-- @case skipped_comparison_does_not_inspect_a_result compile-fail E0720
+fn checked(flag: bool, result: !<int, str>) -> bool {
+-- ^ E0720
+    flag && result == Ok(1)
+}
+
+-- @case a_successful_assertion_inspects_its_required_comparison compile-pass
+fn checked(flag: bool, result: !<int, str>) -> () {
+    assert(flag && result == Ok(1), "expected one")
+}
 
 -- @case typeof_cannot_supply_reachable_write compile-fail E0527
 fn test(mut cell: Cell) -> int {

@@ -141,6 +141,46 @@ fn published_storage_updates_keep_the_destination_and_written_source() {
 }
 
 #[test]
+fn recursive_storage_contracts_agree_with_lean() {
+    use ril_sema::access::Coordinate;
+
+    let Some(oracle) = std::env::var_os("RIL_HORN_ORACLE") else {
+        return;
+    };
+    let suite = parse_suite(
+        Path::new("via.ril"),
+        include_str!("../../../tests/08_via_compat/via.ril"),
+    )
+    .unwrap();
+    let output = query(&oracle, "recursive-storage", b"[]").unwrap();
+    let contracts = serde_json::from_slice::<Vec<(String, (bool, Vec<usize>))>>(&output).unwrap();
+    assert_eq!(contracts.len(), 4);
+    for (case_id, (definite, formals)) in contracts {
+        let case = suite.cases.iter().find(|case| case.id == case_id).unwrap();
+        let interface = Driver.interface(&case.pkg).unwrap();
+        let decoded = Interface::decode(&interface.encode().unwrap()).unwrap();
+        assert_eq!(decoded.functions.len(), 1, "{case_id}");
+        let export = decoded.functions.values().next().unwrap();
+        let update = export
+            .summary
+            .storage_updates
+            .iter()
+            .find(|update| update.formal == 0 && update.path == [Coordinate::Field("item".into())])
+            .unwrap();
+        assert_eq!(update.definite, definite, "{case_id}");
+        assert!(!update.constructs, "{case_id}");
+        assert!(update.callback_returns.is_empty(), "{case_id}");
+        assert_eq!(update.sources.len(), formals.len(), "{case_id}");
+        for (source, formal) in update.sources.iter().zip(formals) {
+            assert_eq!(source.formal, formal, "{case_id}");
+            assert_eq!(source.access, Access::Shared, "{case_id}");
+            assert!(source.source_path.is_empty(), "{case_id}");
+            assert!(source.result_path.is_empty(), "{case_id}");
+        }
+    }
+}
+
+#[test]
 fn higher_order_via_rows_publish_callback_reception() {
     use ril_sema::access::{Input, Invocation, InvocationMode};
 

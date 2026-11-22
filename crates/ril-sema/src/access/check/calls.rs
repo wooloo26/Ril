@@ -20,6 +20,7 @@ use crate::{
 use super::{
     Access, Analyzer, CaptureConflict, ClosureModes, Context, Coordinate, Datum, Fact, Input,
     Ledger, ModeUse, Obligation, Region, Rule, SchemaRequirement, Slot, conflicts, member_axes,
+    storage::CallStorage,
 };
 
 struct CallEntry<'a> {
@@ -142,10 +143,17 @@ impl Analyzer<'_> {
         let mut values = Vec::new();
         let mut value_spans = Vec::new();
         let mut choices = Vec::new();
-        for arg in args {
+        let refining_assert = primitive
+            && name == "assert"
+            && args
+                .get(1)
+                .is_none_or(|arg| matches!(ast.expr(arg.value).value, Expr::Literal(_)));
+        for (position, arg) in args.iter().enumerate() {
             let node = ast.expr(arg.value);
             let value = if matches!(node.value, Expr::Closure { .. }) {
                 self.closure(ctx, ledger, arg.value, true)
+            } else if refining_assert && position == 0 {
+                self.expr_with_truth(ctx, ledger, arg.value, Some(true))
             } else {
                 self.expr(ctx, ledger, arg.value)
             };
@@ -399,19 +407,29 @@ impl Analyzer<'_> {
             let has_body = fun.body.is_some();
             let mut before_updates = None;
             let mut modeled_stores = false;
+            let mut normal_exit = true;
             if has_body && ctx.reachable && !ctx.shadow {
                 self.function(fun, ledger);
-                if let Some(checked) = self
+                let checked = self
                     .functions
                     .iter()
                     .find(|checked| checked.owner == fun.name.span)
-                {
+                    .map(CallStorage::updates_of);
+                let storage = checked.or_else(|| {
+                    if !fun.is_meta {
+                        self.recursive_calls.insert(fun.name.span);
+                    }
+                    self.recursive_storage.get(&fun.name.span).cloned()
+                });
+                if let Some(storage) = storage {
+                    normal_exit =
+                        self.recursive_storage.is_empty() || fun.is_meta || storage.normal_exit;
                     modeled_stores = true;
-                    if !checked.updates.is_empty() {
+                    if !storage.updates.is_empty() {
                         let frozen = ledger.clone();
                         modeled_stores = self.apply_storage_updates(
                             ctx,
-                            fun.name.span,
+                            storage,
                             &CallEntry {
                                 arguments: &values,
                                 spans: &value_spans,
@@ -566,6 +584,7 @@ impl Analyzer<'_> {
                     }
                 }
             }
+            ledger.no_continuation |= !normal_exit;
             if fun.is_meta {
                 return self.snapshot_value(span);
             }
@@ -953,15 +972,24 @@ impl Analyzer<'_> {
         fun: &ril_frontend::syntax::Function,
         entry: &CallEntry<'_>,
     ) -> Option<Datum> {
-        let definition = self
+        let (formals, via, returns) = if let Some(definition) = self
             .functions
             .iter()
-            .find(|definition| definition.owner == fun.name.span)?;
-        let (formals, via, returns) = (
-            definition.formals.clone(),
-            definition.via.clone(),
-            definition.returns.clone(),
-        );
+            .find(|definition| definition.owner == fun.name.span)
+        {
+            (
+                definition.formals.clone(),
+                definition.via.clone(),
+                definition.returns.clone(),
+            )
+        } else {
+            let provisional = self.recursive_storage.get(&fun.name.span)?.clone();
+            (
+                provisional.formals,
+                provisional.via,
+                provisional.result.into_iter().collect(),
+            )
+        };
         returns
             .iter()
             .map(|datum| self.instantiate_return(&formals, &via, entry, datum, &mut Vec::new()))
@@ -971,18 +999,16 @@ impl Analyzer<'_> {
     fn apply_storage_updates(
         &mut self,
         ctx: &Context,
-        owner: Span,
+        storage: CallStorage,
         entry: &CallEntry<'_>,
         ledger: &mut Ledger,
     ) -> bool {
-        let Some(checked) = self.functions.iter().find(|checked| checked.owner == owner) else {
-            return false;
-        };
-        let (formals, via, updates) = (
-            checked.formals.clone(),
-            checked.via.clone(),
-            checked.updates.clone(),
-        );
+        let CallStorage {
+            formals,
+            via,
+            updates,
+            ..
+        } = storage;
         let mut applied = true;
         for (index, (region, update)) in updates.into_iter().enumerate() {
             let mut output_path = vec![Coordinate::Index(index.to_string())];
@@ -2181,6 +2207,7 @@ impl Analyzer<'_> {
         };
         let mut locals = ledger.clone();
         locals.obligations.clear();
+        locals.no_continuation = false;
         let mut inner = Context::new(node.span);
         inner.in_function = true;
         inner.set_caller_storage(ledger);

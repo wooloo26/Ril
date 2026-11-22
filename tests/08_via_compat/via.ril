@@ -54,6 +54,47 @@ pub type Shelf = .{ var ^mut item: Cell }
 fn write(mut shelf: Shelf, ^mut source: Cell) &mut &^mut -> () { shelf.item = ^mut source }
 pub fn store(mut shelf: Shelf, ^mut source: Cell) &mut &^mut -> () { write(mut shelf, ^mut source) }
 
+-- @case recursion_can_keep_a_guaranteed_storage_contract compat-pass
+-- @baseline
+pub type Shelf = .{ var ^mut item: Cell }
+pub fn store(mut shelf: Shelf, ^mut value: Cell, flag: bool) &mut &^mut -> () {
+    shelf.item = ^mut value
+}
+-- @revision
+pub type Shelf = .{ var ^mut item: Cell }
+pub fn store(mut shelf: Shelf, ^mut value: Cell, flag: bool) &mut &^mut -> () {
+    if flag { store(mut shelf, ^mut value, false) }
+    else { shelf.item = ^mut value }
+}
+
+-- @case mutual_recursion_publishes_both_replacement_sources compile-pass
+pub type Shelf = .{ var ^mut item: Cell, var ^mut other: Cell }
+pub fn store(mut shelf: Shelf, ^mut a: Cell, ^mut b: Cell, flag: bool) &mut &^mut -> () {
+    if flag { relay(mut shelf, ^mut b, ^mut a) }
+    else {
+        shelf.item = ^mut a
+        shelf.other = ^mut b
+    }
+}
+fn relay(mut shelf: Shelf, ^mut a: Cell, ^mut b: Cell) &mut &^mut -> () {
+    store(mut shelf, ^mut a, ^mut b, false)
+}
+
+-- @case recursive_store_can_preserve_the_entry_value compile-pass
+pub type Shelf = .{ var ^mut item: Cell }
+pub fn store(mut shelf: Shelf, ^mut value: Cell, n: int) &mut &^mut -> () {
+    if n > 0 { store(mut shelf, ^mut value, n - 1) }
+    else if n == 0 { shelf.item = ^mut value }
+}
+
+-- @case propagation_can_exit_before_a_storage_update compile-pass
+pub type Shelf = .{ var ^mut item: Cell }
+pub fn store(mut shelf: Shelf, ^mut value: Cell, status: !<(), str>) &mut &^mut -> new !<(), str> {
+    status?
+    shelf.item = ^mut value
+    Ok()
+}
+
 -- @case signature_format compile-pass no-prelude
 -- @expect-sig square "fn square(x: int) -> int"
 fn square(x: int) -> int { x * x }

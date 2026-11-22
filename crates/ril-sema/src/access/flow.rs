@@ -415,7 +415,7 @@ pub(super) struct Slot {
     pub value: Datum,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct Replacement {
     pub value: Datum,
     pub definite: bool,
@@ -430,6 +430,7 @@ pub(super) struct Ledger {
     pub iteration: Vec<Datum>,
     pub holds: Vec<(Mode, Datum)>,
     pub choices: Choices,
+    pub no_continuation: bool,
     replacements: BTreeMap<Region, Replacement>,
 }
 
@@ -494,10 +495,15 @@ impl Ledger {
     }
 
     pub(super) fn merge(&mut self, prior: &Self, alternatives: &[Self]) {
+        let alternatives: Vec<_> = alternatives
+            .iter()
+            .filter(|ledger| !ledger.no_continuation)
+            .collect();
+        self.no_continuation = prior.no_continuation || alternatives.is_empty();
         self.slots = prior.slots.clone();
         self.revoked = prior.revoked.clone();
         self.obligations = prior.obligations.clone();
-        for branch in alternatives {
+        for branch in &alternatives {
             for (&token, revoked) in &branch.revoked {
                 let merged = self.revoked.entry(token).or_default();
                 for (&trigger, alternatives) in revoked {
@@ -532,10 +538,10 @@ impl Ledger {
             }
         }
         self.choices = prior.choices.clone();
-        self.merge_replacements(prior, alternatives);
+        self.merge_replacements(prior, &alternatives);
     }
 
-    fn merge_replacements(&mut self, prior: &Self, alternatives: &[Self]) {
+    fn merge_replacements(&mut self, prior: &Self, alternatives: &[&Self]) {
         if alternatives.is_empty() {
             self.replacements.clone_from(&prior.replacements);
             return;

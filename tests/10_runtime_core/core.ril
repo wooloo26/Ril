@@ -130,6 +130,28 @@ fn main() -> () {
         fn publish(^mut source: Cell) &up(var ^mut saved) &^mut -> () { saved = ^mut source }
 }
 
+-- @case recursive_store_preserves_the_call_entry_view run-pass backend=both
+type Cell = .{ var count: int }
+type Shelf = .{ var ^mut item: Cell }
+fn replace(mut shelf: Shelf, ^mut next: Cell, depth: int) &mut &^mut -> ref(shelf) Cell {
+    if depth > 0 { replace(mut shelf, ^mut next, depth - 1) }
+    else {
+        let ref previous = ref shelf.item
+        shelf.item = ^mut next
+        previous
+    }
+}
+fn main() -> () {
+    let mut old = Cell.{ count: 0 }
+    old.count += 1
+    let mut next = Cell.{ count: 40 }
+    next.count += 1
+    let mut shelf = Shelf.{ item: ^mut old }
+    let ref previous = replace(mut shelf, ^mut next, 3)
+    shelf.item.count += 1
+    assert(previous.count == 1 && next.count == 42)
+}
+
 -- @case alternative_patterns_bind_from_the_selected_side run-pass backend=both
 fn chosen(input: (bool, int, int)) -> int {
     match input { (true, result, _) | (false, _, result) -> result }

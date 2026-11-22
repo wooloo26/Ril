@@ -3,6 +3,7 @@ import RilAccess.Examples.Boundary
 import RilAccess.Examples.Call
 import RilAccess.Examples.Draft
 import RilAccess.Examples.Handoff
+import RilAccess.Examples.RecursiveStorage
 import RilAccess.Examples.ResolvedProvenance
 import RilAccess.Examples.Scoped
 import RilAccess.Examples.Concurrency
@@ -282,6 +283,8 @@ def main (args : List String) : IO Unit := do
     stdout.putStrLn (toJson answers).compress
   else if args == ["call-entry"] then
     stdout.putStrLn (toJson callEntryCases).compress
+  else if args == ["recursive-storage"] then
+    stdout.putStrLn (toJson RilAccess.RecursiveStorage.Examples.contracts).compress
   else if args == ["call-authority"] then
     stdout.putStrLn (toJson callAuthorityCases).compress
   else if args == ["task-joins"] then
