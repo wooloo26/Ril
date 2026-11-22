@@ -114,6 +114,22 @@ fn main() -> () {
     assert(previous.count == 1 && next.count == 42)
 }
 
+-- @case local_callee_rebinds_the_captured_slot_and_preserves_the_old_view run-pass backend=both
+type Cell = .{ var count: int }
+fn main() -> () {
+    let mut old = Cell.{ count: 0 }
+    old.count += 1
+    let mut next = Cell.{ count: 41 }
+    var ^mut saved = ^mut old
+    saved.count += 1
+    let ref previous = ref old
+    publish(^mut next)
+    saved.count += 1
+    assert(previous.count == 2 && next.count == 42)
+    where
+        fn publish(^mut source: Cell) &up(var ^mut saved) &^mut -> () { saved = ^mut source }
+}
+
 -- @case alternative_patterns_bind_from_the_selected_side run-pass backend=both
 fn chosen(input: (bool, int, int)) -> int {
     match input { (true, result, _) | (false, _, result) -> result }

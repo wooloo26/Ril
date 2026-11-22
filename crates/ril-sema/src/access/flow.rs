@@ -567,15 +567,17 @@ impl Ledger {
             .collect()
     }
 
-    pub(super) fn formal_updates(
+    pub(super) fn call_updates(
         &self,
         owner: Span,
         formals: &[Option<Span>],
+        captures: &BTreeSet<Span>,
     ) -> BTreeMap<Region, Replacement> {
         self.replacements
             .iter()
             .filter(|(region, update)| {
-                formals.contains(&Some(region.source))
+                (formals.contains(&Some(region.source))
+                    || region.selection.is_empty() && captures.contains(&region.source))
                     && update.value.publications.contains_key(&owner)
             })
             .map(|(region, update)| {
@@ -590,6 +592,36 @@ impl Ledger {
             .collect()
     }
 
+    pub(super) fn replaces_slot(&self, owner: Span, decl: Span) -> bool {
+        self.replacements
+            .get(&Region {
+                source: decl,
+                selection: Vec::new(),
+            })
+            .is_some_and(|update| update.value.publications.contains_key(&owner))
+    }
+
+    pub(super) fn replace_slot(&mut self, decl: Span, mut value: Datum, definite: bool) -> bool {
+        self.stamp(&mut value);
+        let Some(slot) = self.slots.get_mut(&decl) else {
+            return false;
+        };
+        slot.value = if definite {
+            value.clone()
+        } else {
+            std::mem::take(&mut slot.value).joined(value.clone())
+        };
+        self.replace_region(
+            &Region {
+                source: decl,
+                selection: Vec::new(),
+            },
+            &value,
+            definite,
+        );
+        true
+    }
+
     pub(super) fn replace_member(&mut self, slot: &Datum, mut value: Datum, definite: bool) {
         self.stamp(&mut value);
         let single = slot
@@ -599,27 +631,31 @@ impl Ledger {
         for origin in &slot.roots {
             let region = &origin.region;
             let definite = definite && single && !region.selection.contains(&Coordinate::Dynamic);
-            if definite {
-                self.replacements.insert(
-                    region.clone(),
-                    Replacement {
-                        value: value.clone(),
-                        definite,
-                    },
-                );
-            } else {
-                for (key, entry) in &mut self.replacements {
-                    if key.selection.len() == region.selection.len() && key.overlaps(region) {
-                        entry.value = std::mem::take(&mut entry.value).joined(value.clone());
-                    }
+            self.replace_region(region, &value, definite);
+        }
+    }
+
+    fn replace_region(&mut self, region: &Region, value: &Datum, definite: bool) {
+        if definite {
+            self.replacements.insert(
+                region.clone(),
+                Replacement {
+                    value: value.clone(),
+                    definite,
+                },
+            );
+        } else {
+            for (key, entry) in &mut self.replacements {
+                if key.selection.len() == region.selection.len() && key.overlaps(region) {
+                    entry.value = std::mem::take(&mut entry.value).joined(value.clone());
                 }
-                self.replacements
-                    .entry(region.clone())
-                    .or_insert_with(|| Replacement {
-                        value: value.clone(),
-                        definite,
-                    });
             }
+            self.replacements
+                .entry(region.clone())
+                .or_insert_with(|| Replacement {
+                    value: value.clone(),
+                    definite,
+                });
         }
     }
 

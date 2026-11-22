@@ -1351,7 +1351,7 @@ impl<'a> Analyzer<'a> {
         self.storage_exits
             .entry(ctx.owner)
             .or_default()
-            .push(ledger.formal_updates(ctx.owner, &ctx.formals));
+            .push(ledger.call_updates(ctx.owner, &ctx.formals, &ctx.caller_slots));
         if value.creates_environment() {
             self.seed(ctx, Obligation::Capture);
         }
@@ -1451,7 +1451,9 @@ impl<'a> Analyzer<'a> {
                     .filter(|origin| origin.mode == Access::Shared)
                 {
                     self.seed(ctx, Obligation::Retain(origin.region.source));
-                    let effect = if normal && ctx.formals.contains(&Some(slot.decl)) {
+                    let modeled = ctx.formals.contains(&Some(slot.decl))
+                        || ledger.replaces_slot(ctx.owner, slot.decl);
+                    let effect = if normal && modeled {
                         Obligation::StoreShare(origin.region.source)
                     } else {
                         Obligation::Share(origin.region.source)
@@ -1462,7 +1464,17 @@ impl<'a> Analyzer<'a> {
         }
     }
 
-    fn require_shared_source(&mut self, ctx: &Context, value: &Datum) {
+    fn check_publication_source(&mut self, ctx: &Context, value: &Datum, span: Span) {
+        if value
+            .origins()
+            .any(|origin| origin.call_borrow && origin.mode.writes())
+        {
+            self.error(
+                Code::E0528,
+                span,
+                "a call-scoped writer cannot be retained in caller storage",
+            );
+        }
         for origin in value.origins().filter(|origin| {
             origin.mode == Access::Shared
                 && origin.region.selection.is_empty()
@@ -2546,15 +2558,20 @@ impl<'a> Analyzer<'a> {
                     }
                 }
                 let mut value = value;
+                let captured = ctx.caller_slots.contains(&id);
+                if captured {
+                    self.check_publication_source(ctx, &value, span);
+                }
                 value.transform(&mut |origin| {
                     origin.dependencies.insert(slot.decl);
                     origin.fix_mode(Access::from_mode(slot.mode));
                 });
-                if ctx.caller_slots.contains(&id) {
-                    self.require_shared_source(ctx, &value);
+                if captured {
                     value.publications.insert(ctx.owner, true);
+                    ledger.replace_slot(id, value, true);
+                } else {
+                    slot.value = value;
                 }
-                slot.value = value;
                 return;
             }
             self.error(
@@ -2582,17 +2599,7 @@ impl<'a> Analyzer<'a> {
                 || ctx.formals.contains(&Some(source))
                     && (!ctx.owned_formals.contains(&source) || !origin.new)
         }) {
-            self.require_shared_source(ctx, &value);
-            if value
-                .origins()
-                .any(|origin| origin.call_borrow && origin.mode.writes())
-            {
-                self.error(
-                    Code::E0528,
-                    span,
-                    "a call-scoped writer cannot be retained in caller storage",
-                );
-            }
+            self.check_publication_source(ctx, &value, span);
         }
         if ctx.reachable && !value.roots.is_empty() {
             let access = match &node.value {

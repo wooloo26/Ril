@@ -409,7 +409,7 @@ impl Analyzer<'_> {
                     modeled_stores = true;
                     if !checked.updates.is_empty() {
                         let frozen = ledger.clone();
-                        self.apply_storage_updates(
+                        modeled_stores = self.apply_storage_updates(
                             ctx,
                             fun.name.span,
                             &CallEntry {
@@ -974,20 +974,35 @@ impl Analyzer<'_> {
         owner: Span,
         entry: &CallEntry<'_>,
         ledger: &mut Ledger,
-    ) {
+    ) -> bool {
         let Some(checked) = self.functions.iter().find(|checked| checked.owner == owner) else {
-            return;
+            return false;
         };
         let (formals, via, updates) = (
             checked.formals.clone(),
             checked.via.clone(),
             checked.updates.clone(),
         );
-        for (region, update) in updates {
+        let mut applied = true;
+        for (index, (region, update)) in updates.into_iter().enumerate() {
+            let mut output_path = vec![Coordinate::Index(index.to_string())];
+            let Some((member, parent)) = region.selection.split_last() else {
+                let mut stored =
+                    self.instantiate_return(&formals, &via, entry, &update.value, &mut output_path);
+                if ctx.caller_slots.contains(&region.source) {
+                    stored.publications.insert(ctx.owner, true);
+                }
+                stored.transform(&mut |origin| {
+                    origin.dependencies.insert(region.source);
+                });
+                applied &= ledger.replace_slot(region.source, stored, update.definite);
+                continue;
+            };
             let Some(formal) = formals
                 .iter()
                 .position(|formal| *formal == Some(region.source))
             else {
+                applied = false;
                 continue;
             };
             let Some(((_, _, actual), &argument_span)) = entry
@@ -996,9 +1011,7 @@ impl Analyzer<'_> {
                 .zip(entry.spans)
                 .find(|((index, _, _), _)| *index == formal)
             else {
-                continue;
-            };
-            let Some((member, parent)) = region.selection.split_last() else {
+                applied = false;
                 continue;
             };
 
@@ -1013,8 +1026,7 @@ impl Analyzer<'_> {
                 ty = schema.map_or(&Ty::Unknown, |member| &member.ty);
             }
             let place = value.slot_projection(member.clone());
-            let mut output_path = vec![Coordinate::Index(formal.to_string())];
-            output_path.extend(region.selection);
+            applied &= !place.roots.is_empty();
             let mut stored =
                 self.instantiate_return(&formals, &via, entry, &update.value, &mut output_path);
             stored
@@ -1022,6 +1034,7 @@ impl Analyzer<'_> {
                 .insert(ctx.owner, place.roots.iter().any(|origin| !origin.new));
             ledger.replace_member(&place, stored, update.definite);
         }
+        applied
     }
 
     fn instantiate_return(

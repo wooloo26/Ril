@@ -426,8 +426,8 @@ fn overwrite(mut shelf: Shelf, ^mut incoming: Cell, ^mut replacement: Cell, left
 -- @case publication_survives_in_a_replaced_outer_binding compile-pass
 fn run() -> int {
     let mut initial = Cell.{ count: 1 }
+    initial.count += 1
     let mut next = Cell.{ count: 41 }
-    next.count += 1
     var ^mut saved = ^mut initial
     publish(^mut next)
     saved.count += 1
@@ -441,6 +441,7 @@ fn run() -> int {
 -- @case overwritten_outer_binding_does_not_retain_a_parameter compile-fail E0527
 fn run() -> int {
     let mut initial = Cell.{ count: 1 }
+    initial.count += 1
     let mut first = Cell.{ count: 21 }
     let mut second = Cell.{ count: 41 }
     first.count += 1
@@ -454,6 +455,46 @@ fn run() -> int {
         -- ^ E0527
             saved = ^mut discarded
             saved = ^mut retained
+        }
+}
+
+-- @case overwriting_a_forwarded_outer_binding_ends_retention compile-fail E0527
+fn run() -> int {
+    let mut initial = Cell.{ count: 1 }
+    initial.count += 1
+    let mut first = Cell.{ count: 21 }
+    let mut second = Cell.{ count: 41 }
+    first.count += 1
+    second.count += 1
+    var ^mut saved = ^mut initial
+    relay(^mut first, ^mut second)
+    saved.count += 1
+    saved.count
+    where
+        fn publish(^mut source: Cell) &up(var ^mut saved) &^mut -> () {
+            saved = ^mut source
+        }
+        fn relay(^mut discarded: Cell, ^mut retained: Cell) &up(var ^mut saved) &^mut -> () {
+        -- ^ E0527
+            publish(^mut discarded)
+            saved = ^mut retained
+        }
+}
+
+-- @case captured_slot_cannot_retain_a_call_scoped_writer compile-fail E0528
+fn run() -> int {
+    let mut initial = Cell.{ count: 1 }
+    initial.count += 1
+    let mut next = Cell.{ count: 41 }
+    var ^mut saved = ^mut initial
+    publish(mut next)
+    saved.count += 1
+    saved.count
+    where
+        fn publish(mut source: Cell) &up(var ^mut saved) &mut &^mut -> () {
+            source.count += 1
+            saved = ^mut source
+            -- ^ E0528
         }
 }
 
