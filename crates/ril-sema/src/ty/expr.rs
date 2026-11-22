@@ -1719,6 +1719,42 @@ impl<'a> Checker<'a> {
         }
     }
 
+    fn check_derive_root(&mut self, env: &Env, ty: &Ty, span: Span) {
+        let mut ty = self.normalize(ty);
+        let mut opened = HashSet::new();
+        while let Ty::Adt(adt) = &ty {
+            if matches!(adt.kind, AdtKind::Opaque | AdtKind::OpaqueSum)
+                && adt.defining_scope != env.scope
+            {
+                self.error(Code::E0308, span, "opaque representation is sealed");
+                return;
+            }
+            if adt.kind != AdtKind::Opaque || !opened.insert(adt.definition) {
+                break;
+            }
+            let Some(representation) = self.representation(env, adt) else {
+                break;
+            };
+            ty = self.normalize(&representation);
+        }
+        if ty.is_value()
+            || matches!(
+                &ty,
+                Ty::Adt(adt) if adt.kind == AdtKind::Foreign
+            )
+            || matches!(
+                ty,
+                Ty::Draft(_) | Ty::Scope | Ty::Task(_) | Ty::Sender(_) | Ty::Receiver(_)
+            )
+        {
+            self.error(
+                Code::E0536,
+                span,
+                "derive requires a shared-object snapshot",
+            );
+        }
+    }
+
     fn primitive_call(
         &mut self,
         env: &mut Env,
@@ -1731,13 +1767,7 @@ impl<'a> Checker<'a> {
             && let [base, update] = args
         {
             let base = self.expr(env, base.value, expected);
-            if base.is_value() {
-                self.error(
-                    Code::E0536,
-                    span,
-                    "derive requires a shared-object snapshot",
-                );
-            }
+            self.check_derive_root(env, &base, span);
             let callback = Ty::Callable(Arc::new(Callable {
                 parameters: vec![Parameter {
                     label: None,

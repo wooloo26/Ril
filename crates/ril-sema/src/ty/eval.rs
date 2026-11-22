@@ -849,6 +849,24 @@ impl Checker<'_> {
                     }
                     Ok(Value::Array(result))
                 }
+                DefinitionKind::Primitive(_) if name == "derive" => {
+                    self.eval_derive(env, slots, args, span, fuel)
+                }
+                DefinitionKind::Primitive(_)
+                    if name == "push" && self.hir.primitive_module(id) == Some("Array") =>
+                {
+                    let [array, item] = args else {
+                        return Err(nonstatic(span));
+                    };
+                    fuel.step(span)?;
+                    let place = self.eval_place(env, slots, array.value, fuel)?;
+                    let item = self.evaluate(env, slots, item.value, fuel)?;
+                    let Value::Array(items) = place.slot(slots, false)? else {
+                        return Err(defect(span, "static Array::push requires an array"));
+                    };
+                    items.push(item);
+                    Ok(Value::Unit)
+                }
                 DefinitionKind::Primitive(_) if name == "inspect" => {
                     let [argument] = args else {
                         return Err(nonstatic(span));
@@ -918,6 +936,51 @@ impl Checker<'_> {
                 .map(|(_, value)| value)
                 .collect();
             self.eval_closure(env, slots, callee, values, span, fuel)
+        }
+    }
+
+    fn eval_derive(
+        &mut self,
+        env: &mut Env,
+        slots: &mut Values,
+        args: &[Argument],
+        span: Span,
+        fuel: &mut Budget,
+    ) -> Eval {
+        let [base, update] = args else {
+            return Err(nonstatic(span));
+        };
+        let base = self.evaluate(env, slots, base.value, fuel)?;
+        let ast = self.ast(env.file);
+        let Expr::Closure { params, body, .. } = &ast.expr(update.value).value else {
+            return Err(nonstatic(span));
+        };
+        let [parameter] = params.as_slice() else {
+            return Err(nonstatic(span));
+        };
+        let name = if let Some(pattern) = parameter.pattern {
+            match &ast.pattern(pattern).value {
+                syntax::Pattern::Binding(_, name) => Some(name),
+                syntax::Pattern::Wildcard => None,
+                _ => return Err(nonstatic(span)),
+            }
+        } else {
+            parameter.name.as_ref()
+        };
+        fuel.step(span)?;
+        let Some(id) = name.and_then(|name| self.resolve(name.span)) else {
+            self.eval_closure(env, slots, update.value, vec![base.clone()], span, fuel)?;
+            return Ok(base);
+        };
+        let previous = slots.insert(id, base);
+        let result = self.evaluate(env, slots, *body, fuel);
+        let updated = slots.remove(&id);
+        if let Some(previous) = previous {
+            slots.insert(id, previous);
+        }
+        match result {
+            Ok(_) | Err(Signal::Return(_)) => updated.ok_or_else(|| nonstatic(span)),
+            Err(signal) => Err(signal),
         }
     }
 

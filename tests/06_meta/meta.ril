@@ -209,3 +209,18 @@ meta fn describe<T>(value: []?T) -> str { String::inspect(value) }
 meta let CHECK = assert(Secret::inside() == "42" &&
     String::inspect(Secret::token(17)) == "<Token>" &&
     describe([Some(Secret::token(17)), None]) == "[Some(<Token>), None]")
+
+-- @case derive_updates_static_values_by_path compile-pass
+type Cell = .{ count: int }
+meta fn check_paths() -> bool {
+    let cell = Cell.{ count: 7 }
+    let row = [cell]
+    let base = (row, row)
+    let updated = derive(base) \mut draft -> {
+        Array::push(mut draft.0, cell)
+        draft.0[0].count = 8
+    }
+    base == ([Cell.{ count: 7 }], [Cell.{ count: 7 }]) &&
+        updated == ([Cell.{ count: 8 }, Cell.{ count: 7 }], [Cell.{ count: 7 }])
+}
+meta let CHECK = assert(check_paths())

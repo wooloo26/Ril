@@ -227,3 +227,21 @@ fn read() -> int {
     with Notify::stop = \-> ()
     handle.id
 }
+
+-- @case derive_cannot_open_a_sealed_root compile-fail E0308
+-- @file pkg/secret.ril
+pub opaque type Secret = .{ value: int }
+pub let hidden: Secret = Secret.{ value: 42 }
+-- @file pkg/main.ril
+use pkg/secret
+fn update() -> Secret::Secret {
+    derive(Secret::hidden) \mut _ -> ()
+    -- ^ E0308
+}
+
+-- @case derive_rejects_an_opaque_value_representation compile-fail E0536
+opaque type Scalar = int
+fn update(value: Scalar) -> Scalar {
+    derive(value) \mut _ -> ()
+    -- ^ E0536
+}
