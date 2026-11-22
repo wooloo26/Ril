@@ -35,6 +35,7 @@ enum Obligation {
     Replace(Span),
     Retain(Span),
     Share(Span),
+    NeedsSharing(Span),
     ReadUp(Span),
     Invoke(Span),
     Capture,
@@ -77,6 +78,9 @@ struct Context {
     owner: Span,
     file: FileId,
     formals: Vec<Option<Span>>,
+    caller_slots: BTreeSet<Span>,
+    caller_sources: BTreeSet<Span>,
+    owned_formals: BTreeSet<Span>,
     via: BTreeSet<Span>,
     member_via: bool,
     handlers: BTreeMap<Operation, Datum>,
@@ -97,6 +101,9 @@ impl Context {
             owner,
             file: owner.file,
             formals: Vec::new(),
+            caller_slots: BTreeSet::new(),
+            caller_sources: BTreeSet::new(),
+            owned_formals: BTreeSet::new(),
             via: BTreeSet::new(),
             member_via: false,
             handlers: BTreeMap::new(),
@@ -110,6 +117,16 @@ impl Context {
             in_function: false,
             runtime: true,
         }
+    }
+
+    fn set_caller_storage(&mut self, outer: &Ledger) {
+        self.caller_slots.extend(outer.slots.keys().copied());
+        self.caller_sources.extend(
+            outer
+                .slots
+                .values()
+                .flat_map(|slot| slot.value.origins().map(|origin| origin.region.source)),
+        );
     }
 }
 
@@ -234,6 +251,7 @@ pub(super) fn analyze(program: &TypedProgram) -> (Analysis, Vec<Diagnostic>) {
         }
     }
     let mut consuming_inputs = BTreeMap::new();
+    let mut sharing_inputs = BTreeMap::new();
     for function in std::mem::take(&mut analyzer.functions) {
         let summary = analyzer.finish_function(&facts, &function);
         let consumed: BTreeSet<_> = function
@@ -253,6 +271,22 @@ pub(super) fn analyze(program: &TypedProgram) -> (Analysis, Vec<Diagnostic>) {
             .collect();
         let instances = analyzer.via_table(&function, &summary, &consumed, &facts);
         consuming_inputs.insert(function.id, consumed);
+        let sharing: BTreeSet<_> = function
+            .formals
+            .iter()
+            .enumerate()
+            .filter_map(|(index, formal)| {
+                formal
+                    .filter(|&span| {
+                        facts.contains(&Fact {
+                            owner: function.owner,
+                            obligation: Obligation::NeedsSharing(span),
+                        })
+                    })
+                    .map(|_| index)
+            })
+            .collect();
+        sharing_inputs.insert(function.id, sharing);
         if !instances.is_empty() {
             analysis.via.insert(function.id, instances);
         }
@@ -269,7 +303,12 @@ pub(super) fn analyze(program: &TypedProgram) -> (Analysis, Vec<Diagnostic>) {
                     .is_some_and(|owned| owned.contains(&index))
             {
                 analyzer.error(Code::E0548, span, "via application requires new ownership");
-            } else if summary.retained.contains(&index) && mode != Input::Shared {
+            } else if mode != Input::Shared
+                && (summary.retained.contains(&index)
+                    || sharing_inputs
+                        .get(&use_site.callee)
+                        .is_some_and(|indices| indices.contains(&index)))
+            {
                 analyzer.error(
                     Code::E0520,
                     span,
@@ -529,6 +568,7 @@ impl<'a> Analyzer<'a> {
         };
         let mut ctx = Context::new(fun.name.span);
         ctx.in_function = true;
+        ctx.set_caller_storage(outer);
         ctx.runtime = !fun.is_meta;
         ctx.expected = fun.signature.result_mode;
         ctx.formals = fun
@@ -571,6 +611,9 @@ impl<'a> Analyzer<'a> {
             }
             if param.mode == Mode::New && param.ty.is_value() {
                 self.error(Code::E0411, span, "new parameter requires a shared object");
+            }
+            if param.mode == Mode::New {
+                ctx.owned_formals.insert(span);
             }
             let mut value = if param.ty.is_value() {
                 Datum::default()
@@ -876,8 +919,13 @@ impl<'a> Analyzer<'a> {
                 source,
                 selection: Vec::new(),
             });
+            let needs_sharing = summary.retained.contains(&index)
+                || facts.contains(&Fact {
+                    owner: fun.owner,
+                    obligation: Obligation::NeedsSharing(source),
+                });
             let domain: &[Input] = if consumed.contains(&index) {
-                if summary.retained.contains(&index) {
+                if needs_sharing {
                     self.error(
                         Code::E0548,
                         fun.owner,
@@ -886,7 +934,7 @@ impl<'a> Analyzer<'a> {
                     return Vec::new();
                 }
                 &[Input::New]
-            } else if summary.retained.contains(&index) {
+            } else if needs_sharing {
                 &[Input::Shared]
             } else if summary.writes.contains(&index) {
                 &[Input::Mut, Input::Shared, Input::New]
@@ -1236,6 +1284,7 @@ impl<'a> Analyzer<'a> {
     }
 
     fn returned(&mut self, ctx: &mut Context, ledger: &mut Ledger, value: Datum, span: Span) {
+        let value = ledger.snapshot(&value);
         ledger.inspect(&value);
         if value.origins().any(|origin| origin.confined.is_some()) {
             self.error(Code::E0604, span, "confined authority cannot be returned");
@@ -1243,6 +1292,7 @@ impl<'a> Analyzer<'a> {
         if !ctx.runtime || ctx.shadow {
             return;
         }
+        self.publish_at_exit(ctx, ledger);
         if value.creates_environment() {
             self.seed(ctx, Obligation::Capture);
         }
@@ -1321,6 +1371,41 @@ impl<'a> Analyzer<'a> {
             self.seed(ctx, Obligation::Share(source));
         }
         ctx.return_values.push(value);
+    }
+
+    fn publish_at_exit(&mut self, ctx: &Context, ledger: &Ledger) {
+        if !ctx.runtime || ctx.shadow || !ctx.reachable {
+            return;
+        }
+        for &slot in ctx.caller_slots.iter().chain(ctx.formals.iter().flatten()) {
+            let Some(slot) = ledger.slots.get(&slot) else {
+                continue;
+            };
+            let caller_root = !ctx.owned_formals.contains(&slot.decl);
+            let value = ledger.snapshot(&slot.value);
+            value.surviving_publications(ctx.owner, caller_root, &mut |stored| {
+                if stored.creates_environment() {
+                    self.seed(ctx, Obligation::Capture);
+                }
+                for origin in stored
+                    .origins()
+                    .filter(|origin| origin.mode == Access::Shared)
+                {
+                    self.seed(ctx, Obligation::Retain(origin.region.source));
+                    self.seed(ctx, Obligation::Share(origin.region.source));
+                }
+            });
+        }
+    }
+
+    fn require_shared_source(&mut self, ctx: &Context, value: &Datum) {
+        for origin in value.origins().filter(|origin| {
+            origin.mode == Access::Shared
+                && origin.region.selection.is_empty()
+                && ctx.via.contains(&origin.region.source)
+        }) {
+            self.seed(ctx, Obligation::NeedsSharing(origin.region.source));
+        }
     }
 
     fn check_results(&mut self, ledger: &Ledger, except: &BTreeSet<Span>) {
@@ -2401,6 +2486,10 @@ impl<'a> Analyzer<'a> {
                     origin.dependencies.insert(slot.decl);
                     origin.fix_mode(Access::from_mode(slot.mode));
                 });
+                if ctx.caller_slots.contains(&id) {
+                    self.require_shared_source(ctx, &value);
+                    value.publications.insert(ctx.owner, true);
+                }
                 slot.value = value;
                 return;
             }
@@ -2423,13 +2512,13 @@ impl<'a> Analyzer<'a> {
                 "confined value cannot be stored in an outer object",
             );
         }
-        if prior
-            .origins()
-            .any(|origin| ctx.formals.contains(&Some(origin.region.source)))
-        {
-            if value.creates_environment() {
-                self.seed(ctx, Obligation::Capture);
-            }
+        if prior.origins().any(|origin| {
+            let source = origin.region.source;
+            ctx.caller_sources.contains(&source)
+                || ctx.formals.contains(&Some(source))
+                    && (!ctx.owned_formals.contains(&source) || !origin.new)
+        }) {
+            self.require_shared_source(ctx, &value);
             if value
                 .origins()
                 .any(|origin| origin.call_borrow && origin.mode.writes())
@@ -2439,13 +2528,6 @@ impl<'a> Analyzer<'a> {
                     span,
                     "a call-scoped writer cannot be retained in caller storage",
                 );
-            }
-            for source in value
-                .origins()
-                .filter(|origin| origin.mode == Access::Shared)
-            {
-                self.seed(ctx, Obligation::Retain(source.region.source));
-                self.seed(ctx, Obligation::Share(source.region.source));
             }
         }
         if ctx.reachable && !value.roots.is_empty() {
@@ -2461,7 +2543,10 @@ impl<'a> Analyzer<'a> {
                 _ => None,
             };
             if let Some(access) = access {
-                let value = self.receive_member(value, access, span);
+                let mut value = self.receive_member(value, access, span);
+                value
+                    .publications
+                    .insert(ctx.owner, prior.roots.iter().any(|root| !root.new));
                 ledger.replace_member(prior, value);
             }
         }

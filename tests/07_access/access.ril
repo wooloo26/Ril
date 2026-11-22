@@ -333,6 +333,95 @@ fn keep(^mut cell: Cell) -> ^mut(cell) Cell { cell }
 fn edit(^mut cell: Cell) &mut -> () { cell.count = 2 }
 -- ^ E0527
 
+-- @case overwriting_a_publication_ends_retention compile-fail E0527
+type Shelf = .{ var ^mut item: Cell }
+fn overwrite(mut shelf: Shelf, ^mut incoming: Cell, ^mut replacement: Cell) &mut &^mut -> () {
+-- ^ E0527
+    shelf.item = ^mut incoming
+    shelf.item = ^mut replacement
+}
+
+-- @case overwriting_an_ancestor_ends_nested_retention compile-fail E0527
+type Shelf = .{ var ^mut item: Cell }
+type Holder = .{ var mut shelf: Shelf }
+fn overwrite(mut holder: Holder, ^mut incoming: Cell, ^mut replacement: Cell) &mut &^mut -> () {
+-- ^ E0527
+    holder.shelf.item = ^mut incoming
+    holder.shelf = Shelf.{ item: ^mut replacement }
+}
+
+-- @case publication_survives_in_a_caller_member compile-pass
+type Shelf = .{ var ^mut item: Cell }
+type Holder = .{ mut shelf: Shelf }
+fn store(mut holder: Holder, ^mut source: Cell) &mut &^mut -> () {
+    holder.shelf.item = ^mut source
+}
+
+-- @case publication_on_one_return_path_is_retention compile-pass
+type Shelf = .{ var ^mut item: Cell }
+fn store(mut shelf: Shelf, ^mut source: Cell, ^mut replacement: Cell, stop: bool) &mut &^mut -> () {
+    shelf.item = ^mut source
+    if stop { return }
+    shelf.item = ^mut replacement
+}
+
+-- @case publication_on_a_panicking_path_is_retention compile-pass
+type Shelf = .{ var ^mut item: Cell }
+fn store(mut shelf: Shelf, ^mut source: Cell, ^mut replacement: Cell, stop: bool) &mut &^mut -> () {
+    shelf.item = ^mut source
+    if stop { panic("stop") }
+    shelf.item = ^mut replacement
+}
+
+-- @case overwriting_on_every_continuing_arm_ends_retention compile-fail E0527
+type Shelf = .{ var ^mut item: Cell }
+fn overwrite(mut shelf: Shelf, ^mut incoming: Cell, ^mut replacement: Cell, left: bool) &mut &^mut -> () {
+-- ^ E0527
+    shelf.item = ^mut incoming
+    if left { shelf.item = ^mut replacement } else { shelf.item = ^mut replacement }
+}
+
+-- @case publication_survives_in_a_replaced_outer_binding compile-pass
+fn run() -> int {
+    let mut initial = Cell.{ count: 1 }
+    let mut next = Cell.{ count: 41 }
+    next.count += 1
+    var ^mut saved = ^mut initial
+    publish(^mut next)
+    saved.count += 1
+    saved.count
+    where
+        fn publish(^mut source: Cell) &up(var ^mut saved) &^mut -> () {
+            saved = ^mut source
+        }
+}
+
+-- @case overwritten_outer_binding_does_not_retain_a_parameter compile-fail E0527
+fn run() -> int {
+    let mut initial = Cell.{ count: 1 }
+    let mut first = Cell.{ count: 21 }
+    let mut second = Cell.{ count: 41 }
+    first.count += 1
+    second.count += 1
+    var ^mut saved = ^mut initial
+    publish(^mut first, ^mut second)
+    saved.count += 1
+    saved.count
+    where
+        fn publish(^mut discarded: Cell, ^mut retained: Cell) &up(var ^mut saved) &^mut -> () {
+        -- ^ E0527
+            saved = ^mut discarded
+            saved = ^mut retained
+        }
+}
+
+-- @case local_sharing_does_not_retain_a_parameter compile-fail E0527
+fn update(^mut source: Cell) &mut -> () {
+-- ^ E0527
+    let ^mut alias = ^mut source
+    alias.count += 1
+}
+
 -- @case new_container_writes_existing_member compile-pass
 fn update(new cells: [^mut]Cell) &mut -> int {
     let mut local = new cells

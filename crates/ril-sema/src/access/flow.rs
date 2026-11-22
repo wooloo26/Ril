@@ -174,6 +174,7 @@ pub(super) struct Datum {
     pub requires_new: bool,
     pub latent_effects: BTreeSet<String>,
     pub environments: BTreeSet<Span>,
+    pub publications: BTreeMap<Span, bool>,
     pub invocations: BTreeMap<Span, BTreeMap<Span, BTreeSet<Span>>>,
     pub stateful_handler: bool,
     pub task_scope: Option<Span>,
@@ -262,6 +263,9 @@ impl Datum {
         self.requires_new &= other.requires_new;
         self.latent_effects.append(&mut other.latent_effects);
         self.environments.append(&mut other.environments);
+        for (owner, existing_storage) in other.publications {
+            *self.publications.entry(owner).or_default() |= existing_storage;
+        }
         for (owner, sources) in other.invocations {
             let captures = self.invocations.entry(owner).or_default();
             for (source, targets) in sources {
@@ -339,6 +343,25 @@ impl Datum {
 
     pub(super) fn creates_environment(&self) -> bool {
         !self.environments.is_empty() || self.members.values().any(Self::creates_environment)
+    }
+
+    pub(super) fn surviving_publications(
+        &self,
+        owner: Span,
+        caller_root: bool,
+        visit: &mut impl FnMut(&Self),
+    ) {
+        if self
+            .publications
+            .get(&owner)
+            .is_some_and(|&existing| caller_root || existing)
+        {
+            visit(self);
+        } else {
+            for member in self.members.values() {
+                member.surviving_publications(owner, caller_root, visit);
+            }
+        }
     }
 
     pub(super) fn writers(&self) -> bool {
@@ -625,10 +648,7 @@ impl Ledger {
         for key in self.replacements.keys() {
             for region in &regions {
                 if key.overlaps(region)
-                    && let [coordinate] = key
-                        .selection
-                        .get(region.selection.len()..)
-                        .unwrap_or_default()
+                    && let Some(coordinate) = key.selection.get(region.selection.len())
                 {
                     coordinates.insert(coordinate.clone());
                 }

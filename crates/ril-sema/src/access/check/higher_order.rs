@@ -384,6 +384,12 @@ impl Analyzer<'_> {
                 "callback requires a shared writable argument",
             ),
             (
+                Obligation::NeedsSharing(formal),
+                &[Input::Shared],
+                Code::E0520,
+                "callback requires a shared writable argument",
+            ),
+            (
                 Obligation::Write(formal),
                 &[Input::Mut, Input::Shared, Input::New],
                 Code::E0520,
@@ -402,6 +408,7 @@ impl Analyzer<'_> {
                     let obligation = match condition {
                         Obligation::Handoff(_) => Obligation::Handoff(source),
                         Obligation::Share(_) => Obligation::Share(source),
+                        Obligation::NeedsSharing(_) => Obligation::NeedsSharing(source),
                         _ => Obligation::Write(source),
                     };
                     self.rules.push(Rule {

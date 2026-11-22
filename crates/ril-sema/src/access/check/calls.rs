@@ -1359,16 +1359,18 @@ impl Analyzer<'_> {
         }
         for root in &value.roots {
             if !ctx.shadow {
-                self.rules.push(Rule {
-                    premises: vec![Fact {
-                        owner,
-                        obligation: Obligation::Handoff(formal),
-                    }],
-                    conclusion: Fact {
-                        owner: ctx.owner,
-                        obligation: Obligation::Handoff(root.region.source),
-                    },
-                });
+                for obligation in [Obligation::Handoff, Obligation::NeedsSharing] {
+                    self.rules.push(Rule {
+                        premises: vec![Fact {
+                            owner,
+                            obligation: obligation(formal),
+                        }],
+                        conclusion: Fact {
+                            owner: ctx.owner,
+                            obligation: obligation(root.region.source),
+                        },
+                    });
+                }
             }
             for &token in &root.dependencies {
                 ledger.revoke(token, Some(root), Some(Revocation::Formal((owner, formal))));
@@ -1398,6 +1400,7 @@ impl Analyzer<'_> {
         for (obligation, required) in [
             (Obligation::Write(formal), SchemaRequirement::Writable),
             (Obligation::Share(formal), SchemaRequirement::Shared),
+            (Obligation::NeedsSharing(formal), SchemaRequirement::Shared),
         ] {
             let premise = Fact { owner, obligation };
             if !value.writers() {
@@ -1471,6 +1474,15 @@ impl Analyzer<'_> {
                     (
                         mode == Mode::Shared,
                         share.clone(),
+                        Code::E0520,
+                        "via application requires shared writable reception",
+                    ),
+                    (
+                        mode == Mode::Shared,
+                        Fact {
+                            owner,
+                            obligation: Obligation::NeedsSharing(formal),
+                        },
                         Code::E0520,
                         "via application requires shared writable reception",
                     ),
@@ -1641,6 +1653,7 @@ impl Analyzer<'_> {
             .map(|(_, _, v)| v);
         match name {
             "println" | "print" => self.effect(ctx, ledger, "io", span),
+            "panic" => self.publish_at_exit(ctx, ledger),
             "push" | "pop" | "insert" | "remove" | "clear" => {
                 if let Some(value) = first {
                     self.mutate(ctx, ledger, value, span);
@@ -2055,6 +2068,7 @@ impl Analyzer<'_> {
         locals.obligations.clear();
         let mut inner = Context::new(node.span);
         inner.in_function = true;
+        inner.set_caller_storage(ledger);
         inner.expected = Mode::Infer;
         inner.runtime = ctx.runtime;
         inner.shadow = ctx.shadow;
@@ -2105,6 +2119,9 @@ impl Analyzer<'_> {
         }
         for p in params {
             if let Some(name) = &p.name {
+                if p.mode == Mode::New {
+                    inner.owned_formals.insert(name.span);
+                }
                 let mode = Access::from_mode(p.mode);
                 let mut value = Datum::source(name.span, mode, p.mode == Mode::New);
                 let param_ty = self
@@ -2159,9 +2176,11 @@ impl Analyzer<'_> {
         }
         let before = self.rules.len();
         let output = self.expr(&mut inner, &mut locals, *body);
+        let output = locals.snapshot(&output);
         let implicit = self.ty(self.ast(ctx.file).expr(*body).span) != &Ty::Never;
         if inner.reachable && implicit {
             self.check_results(&locals, &output.results());
+            self.publish_at_exit(&inner, &locals);
             if output.returns_borrowed_writer(Mode::Infer) {
                 self.error(
                     Code::E0528,

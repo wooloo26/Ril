@@ -144,7 +144,10 @@ def callAuthorityCases : List (String × Bool) :=
    ("a_named_helper_must_declare_its_capture", accepted undeclaredCapture),
    ("independent_capture_and_mutable_argument_can_be_used_together", accepted declaredCapture),
    ("named_callable_capture_overlaps_a_mutable_argument", accepted independentCapture),
-   ("retaining_one_shared_formal_does_not_retain_its_sibling", accepted formalAliasIsNotRetention)]
+   ("retaining_one_shared_formal_does_not_retain_its_sibling", accepted formalAliasIsNotRetention),
+   ("overwritten_outer_binding_does_not_retain_a_parameter", accepted overwrittenPublication),
+   ("publication_survives_in_a_replaced_outer_binding", accepted survivingPublication),
+   ("local_sharing_does_not_retain_a_parameter", accepted callLocalSharingNotRetention)]
 
 open RilAccess.CoreConcurrency RilAccess.CoreConcurrency.Examples in
 def taskJoinCases : List (String × Bool) :=

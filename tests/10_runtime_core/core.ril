@@ -79,6 +79,22 @@ fn main() -> () {
     assert(owned.count == 42)
 }
 
+-- @case returned_storage_preserves_the_final_shared_member run-pass backend=both
+type Cell = .{ var count: int }
+type Shelf = .{ var ^mut item: Cell }
+fn make(^mut source: Cell) &^mut &return(^mut source) -> new Shelf {
+    let mut shelf = Shelf.{ item: ^mut Cell.{ count: 0 } }
+    shelf.item = ^mut source
+    new shelf
+}
+fn main() -> () {
+    let mut source = Cell.{ count: 40 }
+    source.count += 1
+    let mut shelf = make(^mut source)
+    shelf.item.count += 1
+    assert(source.count == 42)
+}
+
 -- @case alternative_patterns_bind_from_the_selected_side run-pass backend=both
 fn chosen(input: (bool, int, int)) -> int {
     match input { (true, result, _) | (false, _, result) -> result }

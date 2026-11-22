@@ -495,6 +495,20 @@ fn observe(via cell: Cell) -> infer Cell { ref cell }
 pub fn relay(via cell: Cell) -> infer Cell { observe(cell) }
 -- ^ E0552
 
+-- @case transient_via_publication_still_requires_a_shared_writer compile-fail E0520
+type Shelf = .{ var ^mut item: Cell }
+fn overwrite(via item: Cell, mut shelf: Shelf, ^mut replacement: Cell) &mut &^mut -> () {
+    shelf.item = ^mut item
+    shelf.item = ^mut replacement
+}
+fn relay(via item: Cell, mut shelf: Shelf, ^mut replacement: Cell) &mut &^mut -> () {
+    overwrite(item, mut shelf, ^mut replacement)
+}
+fn invalid(ref item: Cell, mut shelf: Shelf, ^mut replacement: Cell) &mut &^mut -> () {
+    relay(ref item, mut shelf, ^mut replacement)
+    -- ^ E0520
+}
+
 -- @case forwarded_via_retention_requires_a_shared_writer compile-fail E0520
 type Shelf = .{ var ^mut item: Cell }
 fn store(via item: Cell, mut shelf: Shelf) &mut -> () { shelf.item = ^mut item }
