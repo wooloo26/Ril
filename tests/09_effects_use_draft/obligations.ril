@@ -75,6 +75,24 @@ fn scoped() @io -> int {
     handle.id
 }
 
+-- @case synchronous_cleanup_may_diverge compile-pass
+opaque type Handle use(close) = .{ id: int }
+fn close(new _resource: Handle) -> () { while true {} }
+fn scoped() -> () {
+    use handle = Handle.{ id: 1 }
+}
+
+-- @case a_cleanup_handler_write_requires_a_caller_state_clause compile-fail E0510
+type Cell = .{ var count: int }
+eff Finalize { fn record(id: int) -> () }
+opaque type Handle use(close) = .{ id: int }
+fn close(new resource: Handle) @Finalize -> () { Finalize::record(resource.id) }
+fn scoped(mut target: Cell) -> () {
+-- ^ E0510
+    with Finalize::record = \id: int -> { target.count += id }
+    use handle = Handle.{ id: 1 }
+}
+
 -- @case resource_does_not_escape compile-fail E0604
 opaque type Handle use(close) = .{ id: int }
 fn close(new resource: Handle) -> () {}

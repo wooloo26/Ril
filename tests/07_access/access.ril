@@ -933,6 +933,50 @@ fn update() -> int {
     pair.read.count
 }
 
+-- @case nested_shared_replacement_keeps_writable_outer_layers compile-pass
+type Layer = .{ var ^mut saved: Cell, ^mut writable: Cell, ref observed: Cell, snapshot: Cell }
+type Frame = .{ mut middle: .{ mut inner: Layer } }
+fn rewrite(mut frame: Frame, ^mut source: Cell) &mut &^mut -> int {
+    frame.middle.inner.saved = ^mut source
+    frame.middle.inner.saved.count += 1
+    frame.middle.inner.writable.count += 1
+    frame.middle.inner.observed.count + frame.middle.inner.snapshot.count
+}
+
+-- @case a_nested_ref_is_readonly_under_writable_layers compile-fail E0520
+type Layer = .{ ^mut writable: Cell, ref observed: Cell }
+type Frame = .{ mut middle: .{ mut inner: Layer } }
+fn change(mut frame: Frame) &mut -> () {
+    frame.middle.inner.writable.count += 1
+    frame.middle.inner.observed.count += 1
+    -- ^ E0520
+}
+
+-- @case a_nested_snapshot_is_readonly_under_writable_layers compile-fail E0520
+type Layer = .{ ^mut writable: Cell, snapshot: Cell }
+type Frame = .{ mut middle: .{ mut inner: Layer } }
+fn change(mut frame: Frame) &mut -> () {
+    frame.middle.inner.writable.count += 1
+    frame.middle.inner.snapshot.count += 1
+    -- ^ E0520
+}
+
+-- @case replacing_a_ref_member_keeps_it_readonly compile-fail E0520
+type Shelf = .{ var ref item: Cell }
+fn replace(mut shelf: Shelf, ref value: Cell) &mut -> () {
+    shelf.item = value
+    shelf.item.count += 1
+    -- ^ E0520
+}
+
+-- @case a_mutable_path_cannot_implicitly_fill_a_ref_member compile-fail E0357
+type Shelf = .{ var ref item: Cell }
+fn replace(mut shelf: Shelf, mut value: Cell) &mut -> () {
+    value.count += 1
+    shelf.item = value
+    -- ^ E0357
+}
+
 -- @case a_fixed_shared_member_cannot_be_replaced compile-fail E0520
 type Shelf = .{ ^mut item: Cell }
 fn update() -> () {

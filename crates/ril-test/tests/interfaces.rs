@@ -684,7 +684,12 @@ fn provenance_examples_agree_with_lean() -> Result<(), Box<dyn std::error::Error
 
 #[test]
 fn graph_authority_examples_agree_with_lean() -> Result<(), Box<dyn std::error::Error>> {
-    check_access_examples("graph", 7)
+    check_access_examples("graph", 12)
+}
+
+#[test]
+fn cleanup_composition_examples_agree_with_lean() -> Result<(), Box<dyn std::error::Error>> {
+    check_access_examples("cleanup-composition", 3)
 }
 
 #[test]

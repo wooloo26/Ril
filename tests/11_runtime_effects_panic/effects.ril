@@ -29,6 +29,19 @@ fn main() @io -> () {
     panic("failure")
 }
 
+-- @case panic_runs_both_cleanups_through_their_installed_handler run-panic "failure" backend=both
+-- @expect-stdout second
+-- @expect-stdout first
+eff Finalize { fn report(message: str) -> () }
+opaque type Resource use(close) = .{ message: str }
+fn close(new resource: Resource) @Finalize -> () { Finalize::report(resource.message) }
+fn main() @io -> () {
+    with Finalize::report = \message: str -> println(message)
+    use first = Resource.{ message: "first" }
+    use second = Resource.{ message: "second" }
+    panic("failure")
+}
+
 -- @case double_panic_aborts run-abort backend=both
 opaque type Bomb use(detonate) = .{ id: int }
 fn detonate(new _b: Bomb) -> () { panic("second") }
