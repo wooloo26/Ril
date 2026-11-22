@@ -3,6 +3,7 @@ import RilAccess.Examples.Boundary
 import RilAccess.Examples.Draft
 import RilAccess.Examples.Handoff
 import RilAccess.Examples.ResolvedProvenance
+import RilAccess.Examples.Scoped
 import RilAccess.Examples.Concurrency
 import RilAccess.Examples.Summary
 import RilAccess.Examples.Visibility
@@ -148,6 +149,19 @@ def provenanceCases : List (String × Bool) :=
    ("new_container_does_not_discharge_existing_member_writes", accepts (writeThroughWrapper false)),
    ("new_container_writes_existing_member", accepts (writeThroughWrapper true))]
 
+open RilAccess.Examples.ScopedExamples in
+def scopedCases : List (String × Bool) :=
+  [("foreign_handle_permits_mutable_call_and_chained_handoff",
+    accepted resourceCallAccessAndHandoff && accepted resourceChainedHandoff),
+   ("foreign_handle_plain_binding_cannot_freeze", accepted resourcePlainSnapshotRejected),
+   ("scoped_resource_can_be_observed_and_mutated_by_helpers", accepted scopedCallRefAndMutAccess),
+   ("scoped_resource_plain_use_can_be_unused", accepted scopedReadOnlyUnusedOk),
+   ("scoped_resource_read_only_view_cannot_write", accepted scopedReadOnlyRejectsWrite),
+   ("scoped_resource_mutable_reception_needs_body_write", accepted scopedIdleMutRejected),
+   ("scoped_resource_cannot_be_aliased_by_let", accepted scopedRebindEscapeRejected),
+   ("scoped_resource_cannot_be_captured_by_closure", accepted scopedClosureCaptureRejected),
+   ("scoped_resource_cannot_be_consumed_before_cleanup", accepted scopedCallNewHandoffRejected)]
+
 open RilAccess.VisibilityModel RilAccess.Examples.VisibilityExamples in
 def visibilityCases : List (String × Bool) :=
   [("package_private", visibleFrom .pubPkg .externalPkg),
@@ -195,6 +209,8 @@ def main (args : List String) : IO Unit := do
     stdout.putStrLn (toJson handoffCases).compress
   else if args == ["provenance"] then
     stdout.putStrLn (toJson provenanceCases).compress
+  else if args == ["scoped"] then
+    stdout.putStrLn (toJson scopedCases).compress
   else if args == ["visibility"] then
     stdout.putStrLn (toJson visibilityCases).compress
   else

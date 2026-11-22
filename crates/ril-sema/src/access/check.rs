@@ -1128,6 +1128,24 @@ impl<'a> Analyzer<'a> {
         }
     }
 
+    fn references_scoped_resource(&self, value: &Datum) -> bool {
+        value.origins().any(|origin| {
+            origin
+                .confined
+                .is_some_and(|scope| self.cleanups.contains_key(&scope))
+        })
+    }
+
+    fn check_resource_binding(&mut self, name: Span, value: &Datum, resource: bool) {
+        let value_type = self
+            .definition(name)
+            .and_then(|id| self.program.bindings.get(&id))
+            .is_some_and(Ty::is_value);
+        if !resource && !value_type && self.references_scoped_resource(value) {
+            self.error(Code::E0604, name, "scoped resource cannot be rebound");
+        }
+    }
+
     fn cleanup(
         &mut self,
         ctx: &Context,
@@ -1137,6 +1155,14 @@ impl<'a> Analyzer<'a> {
         binding: Span,
         mode: Mode,
     ) {
+        if self.references_scoped_resource(value) {
+            self.error(
+                Code::E0604,
+                binding,
+                "scoped resource already has a cleanup binding",
+            );
+            return;
+        }
         if matches!(self.ty(value_span), Ty::Sender(_)) {
             if !value.requires_new {
                 self.error(Code::E0548, binding, "cleanup requires an owned sender");
@@ -1198,7 +1224,8 @@ impl<'a> Analyzer<'a> {
             || signature
                 .state
                 .iter()
-                .any(|clause| matches!(clause.as_str(), "^mut" | "capture"))
+                .any(|clause| matches!(clause.as_str(), "^mut" | "capture" | "up"))
+            || (parameter.mode == Mode::Mut) != signature.state.iter().any(|clause| clause == "mut")
             || !matches!(&parameter.ty, Ty::Adt(owner) if owner.definition == adt.definition)
         {
             self.error(
@@ -1219,6 +1246,17 @@ impl<'a> Analyzer<'a> {
                 binding,
                 "cleanup requires an owned new resource",
             );
+        }
+        if parameter.mode == Mode::Mut || mode == Mode::Mut {
+            if !value.writers() {
+                self.error(
+                    Code::E0520,
+                    binding,
+                    "cleanup requires writable resource authority",
+                );
+            } else if parameter.mode == Mode::Mut {
+                self.mutate(ctx, ledger, value, binding);
+            }
         }
         value.transform(&mut |origin| {
             origin.confined = Some(binding);
@@ -1244,6 +1282,7 @@ impl<'a> Analyzer<'a> {
         let node = self.ast(ctx.file).pattern(id);
         match &node.value {
             Pattern::Binding(own, name) => {
+                self.check_resource_binding(name.span, &value, resource);
                 let binding = self
                     .definition(name.span)
                     .unwrap_or_else(|| ril_base::ice!("unresolved binding pattern"));
@@ -1422,6 +1461,7 @@ impl<'a> Analyzer<'a> {
                         child.transform(&mut |origin| origin.new = false);
                         slice.members.insert(Coordinate::Dynamic, child);
                     }
+                    self.check_resource_binding(name.span, &slice, resource);
                     slice.transform(&mut |origin| {
                         origin.dependencies.insert(decl);
                     });
@@ -1482,6 +1522,7 @@ impl<'a> Analyzer<'a> {
                     } else {
                         let mut child = child;
                         let decl = self.declaration(field.name.span).unwrap_or(field.name.span);
+                        self.check_resource_binding(field.name.span, &child, resource);
                         child.transform(&mut |origin| {
                             origin.dependencies.insert(decl);
                         });
@@ -2077,6 +2118,13 @@ impl<'a> Analyzer<'a> {
                         "binding cannot be reassigned",
                     );
                     return;
+                }
+                if self.references_scoped_resource(&value) {
+                    self.error(
+                        Code::E0604,
+                        span,
+                        "scoped resource cannot be assigned to a slot",
+                    );
                 }
                 self.seed(ctx, Obligation::Replace(slot.decl));
                 for origin in value.origins().filter(|origin| origin.draft) {

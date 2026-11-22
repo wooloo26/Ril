@@ -365,6 +365,11 @@ fn provenance_examples_agree_with_lean() -> Result<(), Box<dyn std::error::Error
     check_access_examples("provenance", 11)
 }
 
+#[test]
+fn scoped_resource_examples_agree_with_lean() -> Result<(), Box<dyn std::error::Error>> {
+    check_access_examples("scoped", 9)
+}
+
 fn check_access_examples(operation: &str, count: usize) -> Result<(), Box<dyn std::error::Error>> {
     let Some(oracle) = std::env::var_os("RIL_HORN_ORACLE") else {
         return Ok(());

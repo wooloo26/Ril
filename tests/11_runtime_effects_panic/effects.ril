@@ -296,3 +296,17 @@ fn main() -> () {
     }
     assert(base == Present(Cell.{ count: 7 }) && updated == Present(Cell.{ count: 8 }))
 }
+
+-- @case mutable_cleanup_changes_the_callers_resource run-pass backend=both
+opaque type Handle use(close) = .{ var id: int }
+fn close(mut handle: Handle) &mut -> () { handle.id = 42 }
+fn scope(mut handle: Handle) &mut -> () {
+    use scoped = handle
+    let before = scoped.id
+    assert(before == 41)
+}
+fn main() -> () {
+    let mut handle = Handle.{ id: 41 }
+    scope(mut handle)
+    assert(handle.id == 42)
+}

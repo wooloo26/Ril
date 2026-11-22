@@ -245,3 +245,84 @@ fn update(value: Scalar) -> Scalar {
     derive(value) \mut _ -> ()
     -- ^ E0536
 }
+
+-- @case scoped_resource_can_be_observed_and_mutated_by_helpers compile-pass
+opaque type Handle use(close) = .{ var id: int }
+fn close(new _handle: Handle) -> () {}
+fn observe(ref handle: Handle) -> int { handle.id }
+fn update(mut handle: Handle) &mut -> () { handle.id += 1 }
+fn work() -> int {
+    use mut handle = Handle.{ id: 41 }
+    update(mut handle)
+    observe(ref handle)
+}
+
+-- @case scoped_resource_plain_use_can_be_unused compile-pass
+opaque type Handle use(close) = .{ id: int }
+fn close(new _handle: Handle) -> () {}
+fn work() -> () { use handle = Handle.{ id: 42 } }
+
+-- @case scoped_resource_read_only_view_cannot_write compile-fail E0520
+opaque type Handle use(close) = .{ var id: int }
+fn close(new _handle: Handle) -> () {}
+fn work() -> () {
+    use handle = Handle.{ id: 42 }
+    handle.id = 43
+    -- ^ E0520
+}
+
+-- @case scoped_resource_mutable_reception_needs_body_write compile-fail E0527
+opaque type Handle use(close) = .{ var id: int }
+fn close(new _handle: Handle) -> () {}
+fn work() -> int {
+    use mut handle = Handle.{ id: 42 }
+    -- ^ E0527
+    handle.id
+}
+
+-- @case scoped_resource_cannot_be_aliased_by_let compile-fail E0604
+opaque type Handle use(close) = .{ id: int }
+fn close(new _handle: Handle) -> () {}
+fn work() -> int {
+    use handle = Handle.{ id: 42 }
+    let ref alias = ref handle
+    -- ^ E0604
+    alias.id
+}
+
+-- @case scoped_resource_cannot_be_captured_by_closure compile-fail E0604
+opaque type Handle use(close) = .{ id: int }
+fn close(new _handle: Handle) -> () {}
+fn work() -> int {
+    use handle = Handle.{ id: 42 }
+    let callback = \-> handle.id
+    -- ^ E0604
+    callback()
+}
+
+-- @case scoped_resource_cannot_be_consumed_before_cleanup compile-fail E0604
+opaque type Handle use(close) = .{ id: int }
+fn close(new _handle: Handle) -> () {}
+fn work() -> () {
+    use handle = Handle.{ id: 42 }
+    close(new handle)
+    -- ^ E0604
+}
+
+-- @case cleanup_mutation_requires_writable_reception compile-fail E0520
+opaque type Handle use(close) = .{ var id: int }
+fn close(mut handle: Handle) &mut -> () { handle.id = 42 }
+fn work() -> () {
+    let frozen = Handle.{ id: 41 }
+    use scoped = frozen
+    -- ^ E0520
+}
+
+-- @case an_observing_resource_cannot_be_registered_twice compile-fail E0604
+opaque type Handle use(close) = .{ id: int }
+fn close(ref handle: Handle) -> () { assert(handle.id == 42) }
+fn work() -> () {
+    use original = Handle.{ id: 42 }
+    use duplicate = original
+    -- ^ E0604
+}
