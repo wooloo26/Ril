@@ -199,3 +199,31 @@ fn run() -> int {
 eff State<T> { fn read() -> T }
 eff Both { ..State<int>; ..State<str> }
 fn invalid() @Both -> int { Both::read() }
+
+-- @case installed_handler_does_not_cover_its_own_arm compile-fail E0612
+eff Clock { fn now() -> int }
+fn read() -> int {
+    with Clock::now = \-> Clock::now() + 1
+    Clock::now()
+}
+
+-- @case outer_handler_covers_inner_arm compile-pass
+eff Clock { fn now() -> int }
+fn read() -> int {
+    with Clock::now = \-> 41
+    {
+        with Clock::now = \-> Clock::now() + 1
+        Clock::now()
+    }
+}
+
+-- @case cleanup_uses_evidence_at_resource_binding compile-fail E0612
+eff Notify { fn stop() -> () }
+opaque type Handle use(close) = .{ id: int }
+fn close(new resource: Handle) @Notify -> () { Notify::stop() }
+fn acquire() -> new Handle { Handle.{ id: 42 } }
+fn read() -> int {
+    use handle = acquire()
+    with Notify::stop = \-> ()
+    handle.id
+}

@@ -341,3 +341,22 @@ fn edit() -> int {
     moved.cells[0].value += 1
     cell.value
 }
+
+-- @case explicit_handoff_keeps_unrelated_path compile-pass
+fn transfer() -> int {
+    let unrelated = Cell.{ count: 40 }
+    let mut original = Cell.{ count: 1 }
+    let mut moved = new original
+    moved.count += 1
+    moved.count + unrelated.count
+}
+
+-- @case handoff_cannot_repeat compile-fail E0549
+fn transfer() -> int {
+    let mut original = Cell.{ count: 1 }
+    let mut moved = new original
+    moved.count += 1
+    let duplicate = new original
+    -- ^ E0549
+    duplicate.count
+}

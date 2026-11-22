@@ -1,4 +1,6 @@
 import Lean
+import RilAccess.Examples.Boundary
+import RilAccess.Examples.Handoff
 import RilAccess.Examples.Concurrency
 import RilAccess.Examples.Summary
 import RilAccess.Examples.Visibility
@@ -95,6 +97,24 @@ def taskJoinCases : List (String × Bool) :=
    ("every_memoized_fallible_join_requires_inspection",
     ((twoJoins.bind (inspectJoinedResult · 1 7)).bind drainPlainTasks).isSome)]
 
+open RilAccess.CoreBoundary RilAccess.CoreBoundary.Examples in
+def boundaryCases : List (String × Bool) :=
+  [("confined_new_container_writes_discharge", (outward privateBoundary 7 9).isEmpty),
+   ("handler_contains_effect", (handled privateBoundary 3).effects.isEmpty),
+   ("installed_handler_does_not_cover_its_own_arm", (handled handlerEffect 3).effects.isEmpty),
+   ("outer_handler_covers_inner_arm", (handled outerHandler 3).effects.isEmpty),
+   ("cleanup_uses_evidence_at_resource_binding", (handled cleanupEffect 3).effects.isEmpty),
+   ("stateful_handler_cannot_cross_fiber_boundary",
+     concurrentShareableFnHandler pureSources [10] { pureFnHandler with writes := [external] } [])]
+
+open RilAccess.Integrated RilAccess.Integrated.HandoffExamples in
+def handoffCases : List (String × Bool) :=
+  [("explicit_handoff_keeps_unrelated_path",
+     (checkAtom (.handoff 0 2) before).isOk && currentLive after 2 && currentLive after 4),
+   ("handoff_ends_binding", currentLive after 0),
+   ("handoff_ends_dependent_view", currentLive after 1),
+   ("handoff_cannot_repeat", (checkAtom (.handoff 0 3) after).isOk)]
+
 open RilAccess.VisibilityModel RilAccess.Examples.VisibilityExamples in
 def visibilityCases : List (String × Bool) :=
   [("package_private", visibleFrom .pubPkg .externalPkg),
@@ -134,6 +154,10 @@ def main (args : List String) : IO Unit := do
     stdout.putStrLn (toJson callEntryCases).compress
   else if args == ["task-joins"] then
     stdout.putStrLn (toJson taskJoinCases).compress
+  else if args == ["boundary"] then
+    stdout.putStrLn (toJson boundaryCases).compress
+  else if args == ["handoff"] then
+    stdout.putStrLn (toJson handoffCases).compress
   else if args == ["visibility"] then
     stdout.putStrLn (toJson visibilityCases).compress
   else
