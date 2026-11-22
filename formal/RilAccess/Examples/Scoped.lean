@@ -103,6 +103,11 @@ def scopedIdleMutRejected : Calls.Syntax :=
 def scopedBodyMutAccepted : Calls.Syntax :=
   Calls.Syntax.access (.block (.sequence (.command (.allocateScoped 0 true [])) (.command (.write (p 0)))))
 
+def refScopeCases : List (String × List (List Nat) × List Nat × Bool) :=
+  [("ref_slot_replacement_requires_an_enclosing_source_scope", [[0, 1]], [0], false),
+   ("a_block_result_keeps_its_ref_source_scope", [[0], [0, 1]], [0], false),
+   ("ref_slot_can_receive_an_enclosing_source_from_a_nested_block", [[0]], [0], true)]
+
 def examples : List (String × Bool) :=
   [("resource: exclusive host handle permits scope exit without mandatory E0721 handoff", accepted resourceImplicitDropOk),
    ("resource: chained new handoff transfers exclusive handle", accepted resourceChainedHandoff),
@@ -140,7 +145,9 @@ def examples : List (String × Bool) :=
       !validScopedCleanupSignature { mode := .observe, writes := true } &&
       !validScopedCleanupSignature { mode := .construction, writes := true } &&
       !validScopedCleanupSignature { mode := .mutable, writes := true, retains := true } &&
-      !validScopedCleanupSignature { mode := .observe, captures := true })]
+      !validScopedCleanupSignature { mode := .observe, captures := true })] ++
+  refScopeCases.map fun (name, anchors, slot, expected) =>
+    (name, refSourcesEnclose anchors slot == expected)
 
 theorem examples_all_pass : examples.all Prod.snd = true := by decide +kernel
 

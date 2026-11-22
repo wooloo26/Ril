@@ -1144,6 +1144,45 @@ fn inspect() -> int {
     view.count
 }
 
+-- @case ref_slot_replacement_requires_an_enclosing_source_scope compile-fail E0604
+fn inspect() -> int {
+    let mut persistent = Cell.{ count: 1 }
+    persistent.count += 1
+    var ref view = persistent
+    {
+        let mut local = Cell.{ count: 40 }
+        local.count += 1
+        view = ref local
+        -- ^ E0604
+    }
+    view.count
+}
+
+-- @case a_block_result_keeps_its_ref_source_scope compile-fail E0604
+fn inspect() -> int {
+    let persistent = Cell.{ count: 1 }
+    var ref view = persistent
+    view = {
+    -- ^ E0604
+        let mut local = .{ var changes: 0, mut item: Cell.{ count: 41 } }
+        local.changes += 1
+        ref local.item
+    }
+    view.count
+}
+
+-- @case ref_slot_can_receive_an_enclosing_source_from_a_nested_block compile-pass
+fn inspect() -> int {
+    let initial = Cell.{ count: 1 }
+    let persistent = {
+        let short = Cell.{ count: 42 }
+        short
+    }
+    var ref view = initial
+    { view = ref persistent }
+    view.count
+}
+
 -- @case replacing_a_shared_member_requires_acknowledgment compile-fail E0510
 type Shelf = .{ var ^mut item: Cell }
 fn replace(mut shelf: Shelf, ^mut value: Cell) &mut &^mut -> () {

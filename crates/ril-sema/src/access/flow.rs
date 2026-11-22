@@ -99,6 +99,7 @@ pub(super) struct Origin {
     pub from_variable: bool,
     pub call_borrow: bool,
     pub dependencies: BTreeSet<Span>,
+    pub anchor_scopes: BTreeSet<Span>,
     pub branches: Choices,
     pub confined: Option<Span>,
     pub draft: bool,
@@ -203,6 +204,7 @@ impl Datum {
                 from_variable: false,
                 call_borrow: false,
                 dependencies: BTreeSet::new(),
+                anchor_scopes: BTreeSet::new(),
                 branches: BTreeMap::new(),
                 confined: None,
                 draft: false,
@@ -365,6 +367,10 @@ impl Datum {
 
     fn attenuate(&self, member: &mut Self) {
         member.requires_new &= self.requires_new;
+        for root in &mut member.roots {
+            root.anchor_scopes
+                .extend(self.roots.iter().flat_map(|parent| &parent.anchor_scopes));
+        }
         if self.roots.iter().all(|root| !root.mode.writes()) {
             if self.roots.iter().all(|root| root.mode == Access::Immutable) {
                 member.freeze();

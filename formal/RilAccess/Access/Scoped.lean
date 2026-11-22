@@ -10,6 +10,11 @@ import RilAccess.Access.Handoff
   (`E0604`), and are deterministically deactivated at lexical `.leaveScope`. -/
 namespace RilAccess.Integrated
 
+/-- A `var ref` may keep only sources whose lexical scopes enclose the slot.
+Scope paths list enclosing declarations and blocks from outermost to innermost. -/
+def refSourcesEnclose (anchors : List (List Nat)) (slot : List Nat) : Bool :=
+  anchors.all fun anchor => anchor.isPrefixOf slot
+
 variable {world next : World} {source destination id : Nat} {resolved : Resolved}
 
 theorem resource_rejects_plain_and_shared_receiving

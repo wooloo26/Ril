@@ -694,7 +694,7 @@ fn cleanup_composition_examples_agree_with_lean() -> Result<(), Box<dyn std::err
 
 #[test]
 fn scoped_resource_examples_agree_with_lean() -> Result<(), Box<dyn std::error::Error>> {
-    check_access_examples("scoped", 9)
+    check_access_examples("scoped", 12)
 }
 
 fn check_access_examples(operation: &str, count: usize) -> Result<(), Box<dyn std::error::Error>> {

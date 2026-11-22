@@ -1320,6 +1320,7 @@ impl<'program> Analyzer<'program> {
                         mapped.region.source = entry.span;
                         mapped.region.selection.clone_from(output_path);
                         mapped.dependencies.clear();
+                        mapped.anchor_scopes.clear();
                         mapped.confined = None;
                     }
                     Some(Datum {
@@ -2417,6 +2418,7 @@ impl<'program> Analyzer<'program> {
         }
         for p in params {
             if let Some(name) = &p.name {
+                self.binding_scopes.insert(name.span, inner.scope);
                 if p.mode == Mode::New {
                     inner.owned_formals.insert(name.span);
                 }

@@ -268,7 +268,7 @@ def provenanceCases : List (String × Bool) :=
    ("new_container_does_not_discharge_existing_member_writes", accepts (writeThroughWrapper false)),
    ("new_container_writes_existing_member", accepts (writeThroughWrapper true))]
 
-open RilAccess.Examples.ScopedExamples in
+open RilAccess.Integrated RilAccess.Examples.ScopedExamples in
 def scopedCases : List (String × Bool) :=
   [("foreign_handle_permits_mutable_call_and_chained_handoff",
     accepted resourceCallAccessAndHandoff && accepted resourceChainedHandoff),
@@ -279,7 +279,8 @@ def scopedCases : List (String × Bool) :=
    ("scoped_resource_mutable_reception_needs_body_write", accepted scopedIdleMutRejected),
    ("scoped_resource_cannot_be_aliased_by_let", accepted scopedRebindEscapeRejected),
    ("scoped_resource_cannot_be_captured_by_closure", accepted scopedClosureCaptureRejected),
-   ("scoped_resource_cannot_be_consumed_before_cleanup", accepted scopedCallNewHandoffRejected)]
+   ("scoped_resource_cannot_be_consumed_before_cleanup", accepted scopedCallNewHandoffRejected)] ++
+  refScopeCases.map fun (name, anchors, slot, _) => (name, refSourcesEnclose anchors slot)
 
 open RilAccess.VisibilityModel RilAccess.Examples.VisibilityExamples in
 def visibilityCases : List (String × Bool) :=

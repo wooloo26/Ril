@@ -81,6 +81,7 @@ struct Fact {
 struct Context {
     owner: Span,
     file: FileId,
+    scope: Span,
     formals: Vec<Option<Span>>,
     caller_slots: BTreeSet<Span>,
     caller_sources: BTreeSet<Span>,
@@ -105,6 +106,7 @@ impl Context {
         Self {
             owner,
             file: owner.file,
+            scope: owner,
             formals: Vec::new(),
             caller_slots: BTreeSet::new(),
             caller_sources: BTreeSet::new(),
@@ -199,6 +201,7 @@ struct Analyzer<'a> {
     invocation_summaries: BTreeMap<Span, BTreeSet<Invocation>>,
     callback_results: Vec<calls::CallbackResult>,
     loop_transfers: BTreeMap<Span, LoopTransfers>,
+    binding_scopes: BTreeMap<Span, Span>,
     storage_exits: BTreeMap<Span, Vec<BTreeMap<Region, Replacement>>>,
     recursive_storage: BTreeMap<Span, storage::CallStorage>,
     recursive_calls: BTreeSet<Span>,
@@ -226,6 +229,7 @@ fn collect(
         invocation_summaries: BTreeMap::new(),
         callback_results: Vec::new(),
         loop_transfers: BTreeMap::new(),
+        binding_scopes: BTreeMap::new(),
         storage_exits: BTreeMap::new(),
         recursive_storage,
         recursive_calls: BTreeSet::new(),
@@ -599,6 +603,9 @@ impl<'a> Analyzer<'a> {
             return;
         };
         let mut ctx = Context::new(fun.name.span);
+        if let Some(statement) = self.program.hir.definition(id).stmt {
+            ctx.scope = self.ast(ctx.file).stmt(statement).span;
+        }
         ctx.in_function = true;
         ctx.set_caller_storage(outer);
         ctx.runtime = !fun.is_meta;
@@ -632,6 +639,7 @@ impl<'a> Analyzer<'a> {
         }
         for (ast_param, param) in fun.signature.params.iter().zip(&callable.parameters) {
             let span = ast_param.name.as_ref().map_or(ctx.owner, |name| name.span);
+            self.binding_scopes.insert(span, ctx.scope);
             if param.mode == Mode::Via {
                 ctx.via.insert(span);
                 if param.ty.is_value() {
@@ -1430,6 +1438,25 @@ impl<'a> Analyzer<'a> {
         }
     }
 
+    fn check_ref_scope(&mut self, span: Span, value: &Datum, destination: Span) {
+        let shorter_scope = value
+            .roots
+            .iter()
+            .flat_map(|root| &root.anchor_scopes)
+            .any(|source| {
+                source.file != destination.file
+                    || source.start > destination.start
+                    || source.end < destination.end
+            });
+        if shorter_scope {
+            self.error(
+                Code::E0604,
+                span,
+                "ref source must outlive the reassignable binding's scope",
+            );
+        }
+    }
+
     fn returned(&mut self, ctx: &mut Context, ledger: &mut Ledger, value: Datum, span: Span) {
         let value = ledger.snapshot(&value);
         ledger.inspect(&value);
@@ -1760,6 +1787,9 @@ impl<'a> Analyzer<'a> {
                     .definition(name.span)
                     .unwrap_or_else(|| ril_base::ice!("unresolved binding pattern"));
                 let declaration = self.program.hir.definition(binding).name.span;
+                if ctx.in_function {
+                    self.binding_scopes.insert(declaration, ctx.scope);
+                }
                 let mode = if own.mode == Mode::Plain {
                     storage.mode
                 } else {
@@ -1805,7 +1835,12 @@ impl<'a> Analyzer<'a> {
                             "shared binding requires a shared writable source",
                         );
                     }
-                    Mode::Ref if !resource => self.check_ref_binding(name.span, &value, variable),
+                    Mode::Ref if !resource => {
+                        self.check_ref_binding(name.span, &value, variable);
+                        if variable {
+                            self.check_ref_scope(name.span, &value, ctx.scope);
+                        }
+                    }
                     Mode::Via if ctx.via.is_empty() && !ctx.member_via => {
                         self.error(Code::E0412, name.span, "let via requires a mode template");
                     }
@@ -1901,6 +1936,9 @@ impl<'a> Analyzer<'a> {
                     && let Pattern::Rest(Some(name)) = &ast.pattern(rest).value
                 {
                     let decl = self.declaration(name.span).unwrap_or(name.span);
+                    if ctx.in_function {
+                        self.binding_scopes.insert(decl, ctx.scope);
+                    }
                     let mut slice = if *text {
                         Datum::default()
                     } else {
@@ -1976,6 +2014,9 @@ impl<'a> Analyzer<'a> {
                     } else {
                         let mut child = child;
                         let decl = self.declaration(field.name.span).unwrap_or(field.name.span);
+                        if ctx.in_function {
+                            self.binding_scopes.insert(decl, ctx.scope);
+                        }
                         self.check_resource_binding(field.name.span, &child, resource);
                         child.transform(&mut |origin| {
                             origin.dependencies.insert(decl);
@@ -2204,6 +2245,7 @@ impl<'a> Analyzer<'a> {
                 helpers,
             } => {
                 let mut local_ctx = ctx.clone();
+                local_ctx.scope = span;
                 for &helper in helpers {
                     if let StmtKind::Effect { name, .. } = &ast.stmt(helper).value.kind
                         && let Some(effect) = self.definition(name.span)
@@ -2253,6 +2295,7 @@ impl<'a> Analyzer<'a> {
                 let mut then_ledger = before.clone();
                 then_ledger.take_choice(span, 0);
                 let mut yes_ctx = ctx.clone();
+                yes_ctx.scope = ast.expr(*yes).span;
                 yes_ctx.reachable &= literal != Some(false);
                 self.condition(&mut yes_ctx, &mut then_ledger, condition);
                 let yes_value = self.expr(&mut yes_ctx, &mut then_ledger, *yes);
@@ -2293,6 +2336,7 @@ impl<'a> Analyzer<'a> {
                 let before = ledger.clone();
                 let mut inside = before.clone();
                 let mut local = ctx.clone();
+                local.scope = ast.expr(*body).span;
                 let literal = match condition {
                     Condition::Expr(test) => self.literal_bool(ctx, *test),
                     Condition::Binding { .. } => None,
@@ -2326,6 +2370,7 @@ impl<'a> Analyzer<'a> {
                 let before = ledger.clone();
                 let mut inside = before.clone();
                 let mut local = ctx.clone();
+                local.scope = ast.expr(*body).span;
                 local.loop_owner = Some(span);
                 inside.iteration.push(value.clone());
                 let storage = Storage {
@@ -2360,6 +2405,7 @@ impl<'a> Analyzer<'a> {
                     let mut inside = before.clone();
                     inside.take_choice(span, index);
                     let mut local_ctx = ctx.clone();
+                    local_ctx.scope = ast.pattern(arm.pattern).span.join(ast.expr(arm.body).span);
                     let storage = Storage {
                         mode: *mode,
                         ..Storage::default()
@@ -2527,6 +2573,8 @@ impl<'a> Analyzer<'a> {
             for root in &mut value.roots {
                 root.explicit_share = false;
                 root.from_variable = slot.variable;
+                root.anchor_scopes.clear();
+                root.anchor_scopes.extend(self.binding_scopes.get(&decl));
             }
             value
         } else if self
@@ -2741,12 +2789,11 @@ impl<'a> Analyzer<'a> {
                             span,
                             "ref slot replacement requires a ref expression",
                         );
-                    } else if value.roots.iter().any(|root| root.from_variable) {
-                        self.error(
-                            Code::E0531,
-                            span,
-                            "a reassignable binding cannot anchor a ref slot",
-                        );
+                    } else {
+                        self.check_ref_binding(span, &value, true);
+                        if let Some(scope) = self.binding_scopes.get(&decl).copied() {
+                            self.check_ref_scope(span, &value, scope);
+                        }
                     }
                 }
                 let captured = ctx.caller_slots.contains(&id);
