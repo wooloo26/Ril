@@ -224,3 +224,114 @@ fn invalid(ref item: Cell, mut shelf: Shelf) &mut -> () {
     relay(ref item, mut shelf)
     -- ^ E0520
 }
+
+-- @case record_member_via_can_be_bound_and_forwarded compile-pass
+fn select(ref holder: .{ via child: Cell }) -> infer Cell {
+    let via child = holder.child
+    child
+}
+pub fn select_again(ref holder: .{ via child: Cell }) -> infer Cell {
+    let via child = select(ref holder)
+    child
+}
+fn inspect() -> int {
+    let holder = .{ child: Cell.{ count: 42 } }
+    let selected = select_again(ref holder)
+    selected.count
+}
+
+-- @case composite_via_infers_the_existing_member_access compile-fail E0520
+fn select(ref holder: .{ via child: Cell }) -> infer Cell {
+    let via child = holder.child
+    child
+}
+fn invalid(ref holder: .{ ref child: Cell }) -> int {
+    let mut selected = select(ref holder)
+    -- ^ E0520
+    selected.count += 1
+    selected.count
+}
+
+-- @case record_member_via_write_rejects_immutable_schema compile-fail E0520
+fn change(mut holder: .{ via child: Cell }) &mut -> () { holder.child.count += 1 }
+fn invalid() -> () {
+    let mut holder = .{ child: Cell.{ count: 42 } }
+    change(mut holder)
+    -- ^ E0520
+}
+
+-- @case different_member_via_axes_have_independent_modes compile-pass
+fn change(mut holder: .{ via left: Cell, via right: Cell }) &mut -> () {
+    holder.right.count += holder.left.count
+}
+fn run() -> int {
+    let mut holder = .{ left: Cell.{ count: 1 }, mut right: Cell.{ count: 41 } }
+    change(mut holder)
+    holder.right.count
+}
+
+-- @case forwarding_records_propagates_member_write_requirements compile-fail E0520
+fn change(mut holder: .{ via child: Cell }) &mut -> () { holder.child.count += 1 }
+fn forward(mut holder: .{ via child: Cell }) &mut -> () { change(mut holder) }
+fn invalid() -> () {
+    let mut holder = .{ child: Cell.{ count: 42 } }
+    forward(mut holder)
+    -- ^ E0520
+}
+
+-- @case forwarding_arrays_propagates_element_write_requirements compile-fail E0520
+fn change(mut items: [via]Cell) &mut -> () { items[0].count += 1 }
+fn forward(mut items: [via]Cell) &mut -> () { change(mut items) }
+fn invalid() -> () {
+    let mut items = [Cell.{ count: 42 }]
+    forward(mut items)
+    -- ^ E0520
+}
+
+-- @case forwarding_a_member_to_a_root_via_writer_restricts_its_schema compile-fail E0520
+fn change(via child: Cell) -> () { child.count += 1 }
+fn forward(mut holder: .{ via child: Cell }) &mut -> () { change(holder.child) }
+fn invalid() -> () {
+    let mut holder = .{ child: Cell.{ count: 42 } }
+    forward(mut holder)
+    -- ^ E0520
+}
+
+-- @case explicit_mut_reception_restricts_the_member_schema compile-fail E0520
+fn change(mut child: Cell) &mut -> () { child.count += 1 }
+fn forward(mut holder: .{ via child: Cell }) &mut -> () { change(mut holder.child) }
+fn invalid() -> () {
+    let mut holder = .{ child: Cell.{ count: 42 } }
+    forward(mut holder)
+    -- ^ E0520
+}
+
+-- @case inline_record_argument_uses_its_written_member_mode compile-pass
+fn change(new holder: .{ via child: Cell }) &mut -> int {
+    holder.child.count += 1
+    holder.child.count
+}
+fn run() -> int { change(new .{ mut child: Cell.{ count: 41 } }) }
+
+-- @case nested_inline_record_keeps_each_received_schema compile-pass
+fn change(new holder: .{ mut nested: .{ via child: Cell } }) &mut -> int {
+    holder.nested.child.count += 1
+    holder.nested.child.count
+}
+fn run() -> int {
+    change(new .{ mut nested: .{ mut child: Cell.{ count: 41 } } })
+}
+
+-- @case tightening_member_via_domain_breaks_compatibility compat-fail E0552
+-- @baseline
+pub fn change(mut holder: .{ var marker: int, via child: Cell }) &mut -> int {
+    holder.marker += 1
+    holder.child.count
+}
+-- @revision
+pub fn change(mut holder: .{ var marker: int, via child: Cell }) &mut -> int {
+-- ^ E0552
+    holder.marker += 1
+    holder.child.count += 1
+    holder.child.count
+}

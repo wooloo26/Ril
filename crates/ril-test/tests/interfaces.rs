@@ -65,6 +65,48 @@ fn forwarded_via_identity_publishes_new_guarantee_only_for_owned_input() {
 }
 
 #[test]
+fn composite_via_rows_publish_the_attenuated_member_source() {
+    use ril_sema::access::{Coordinate, Input, ReturnSource};
+
+    let suite = parse_suite(
+        Path::new("via.ril"),
+        include_str!("../../../tests/08_via_compat/via.ril"),
+    )
+    .unwrap();
+    let case = suite
+        .cases
+        .iter()
+        .find(|case| case.id == "record_member_via_can_be_bound_and_forwarded")
+        .unwrap();
+    let interface = Driver.interface(&case.pkg).unwrap();
+    let decoded = Interface::decode(&interface.encode().unwrap()).unwrap();
+    let export = decoded.functions.values().next().unwrap();
+    assert_eq!(export.domain.len(), 4);
+    for (mode, access) in [
+        (Input::Plain, Access::Immutable),
+        (Input::Ref, Access::Ref),
+        (Input::Mut, Access::Ref),
+        (Input::Shared, Access::Ref),
+    ] {
+        let row = export
+            .domain
+            .iter()
+            .find(|row| row.modes == [mode])
+            .unwrap();
+        assert!(!row.summary.constructs);
+        assert_eq!(
+            row.summary.return_sources,
+            [ReturnSource {
+                formal: 0,
+                source_path: vec![Coordinate::Field("child".into())],
+                result_path: Vec::new(),
+                access,
+            }]
+        );
+    }
+}
+
+#[test]
 fn exported_horn_facts_agree_with_lean() {
     let Some(oracle) = std::env::var_os("RIL_HORN_ORACLE") else {
         return;

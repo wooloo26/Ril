@@ -65,6 +65,16 @@ pub enum Ty {
 }
 
 impl Ty {
+    pub(super) fn has_via_members(&self) -> bool {
+        let has_via = |item: &Member| item.mode.mode == Mode::Via || item.ty.has_via_members();
+        match self {
+            Self::Array(member) | Self::Map(_, member) => has_via(member),
+            Self::Tuple(members) => members.iter().any(has_via),
+            Self::Record(fields, _) => fields.values().any(has_via),
+            _ => false,
+        }
+    }
+
     pub fn contains_type_value(&self) -> bool {
         match self {
             Self::TypeValue(_) => true,

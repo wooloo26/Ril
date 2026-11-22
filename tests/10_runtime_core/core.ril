@@ -1,6 +1,22 @@
 -- @suite runtime_core
 -- @default_stage run
 
+-- @case via_record_schema_changes_the_selected_live_member run-pass backend=both
+type Cell = .{ var count: int }
+fn identity(via value: Cell) -> infer Cell { value }
+fn select(ref holder: .{ via child: Cell }) -> infer Cell {
+    let via child = identity(holder.child)
+    child
+}
+fn change(mut holder: .{ via child: Cell }) &mut -> () { holder.child.count += 1 }
+fn main() -> () {
+    let mut holder = .{ mut child: Cell.{ count: 41 } }
+    let ref selected = select(ref holder)
+    change(mut holder)
+    assert(selected.count == 42)
+    assert(holder.child.count == 42)
+}
+
 -- @case alternative_patterns_bind_from_the_selected_side run-pass backend=both
 fn chosen(input: (bool, int, int)) -> int {
     match input { (true, result, _) | (false, _, result) -> result }

@@ -168,8 +168,8 @@ impl<'a> Checker<'a> {
                 self.record(env, name.as_ref(), fields, expected, span)
             }
             Expr::Array(items) => {
-                let member = if let Some(Ty::Array(member)) = expected {
-                    (**member).clone()
+                let mut member = if let Some(Ty::Array(member)) = expected {
+                    self.literal_element(env, items.first().copied(), member)
                 } else {
                     self.inferred_element(env, items.first().copied())
                 };
@@ -181,7 +181,7 @@ impl<'a> Checker<'a> {
                     );
                 }
                 for &item in items {
-                    self.expect(env, item, &member.ty);
+                    self.receive_literal_element(env, item, &mut member);
                 }
                 Ty::Array(Box::new(member))
             }
@@ -194,15 +194,20 @@ impl<'a> Checker<'a> {
                     };
                     let ty = self.expr(env, item, member.map(|m| &m.ty));
                     members.push(Member {
-                        mode: member.map_or(super::MemberMode::PLAIN, |m| m.mode),
+                        mode: member.map_or(super::MemberMode::PLAIN, |m| {
+                            self.literal_element(env, Some(item), m).mode
+                        }),
                         ty,
                     });
                 }
                 Ty::Tuple(members)
             }
             Expr::Map(items) => {
-                let (key, member) = match expected {
-                    Some(Ty::Map(key, value)) => ((**key).clone(), (**value).clone()),
+                let (key, mut member) = match expected {
+                    Some(Ty::Map(key, value)) => (
+                        (**key).clone(),
+                        self.literal_element(env, items.first().map(|(_, value)| *value), value),
+                    ),
                     _ => (
                         self.fresh(),
                         self.inferred_element(env, items.first().map(|(_, value)| *value)),
@@ -217,7 +222,7 @@ impl<'a> Checker<'a> {
                 }
                 for &(k, v) in items {
                     self.expect(env, k, &key);
-                    self.expect(env, v, &member.ty);
+                    self.receive_literal_element(env, v, &mut member);
                 }
                 if !self.eligible_key(env, &self.normalize(&key), &mut HashSet::new()) {
                     self.error(Code::E0328, span, "invalid map key type");
@@ -1160,22 +1165,30 @@ impl<'a> Checker<'a> {
             }
             raw = self.representation(env, adt);
         }
-        if let Some(Ty::Record(required, open)) = raw {
+        if let Some(Ty::Record(mut required, open)) = raw {
             let mut provided = BTreeMap::new();
             for field in fields {
-                let found = required.get(&field.name.value);
+                let found = required.get_mut(&field.name.value);
                 if found.is_none() && !open {
                     self.error(Code::E0302, field.name.span, "unexpected record field");
                 }
-                let ty = self.field_expr(env, field, found.map(|m| &m.ty));
-                let mode = found.map_or_else(|| self.member_mode(env, &field.storage), |r| r.mode);
+                let ty = self.field_expr(env, field, found.as_ref().map(|m| &m.ty));
                 if let Some(found) = found {
-                    self.require(env, field.name.span, &ty, &found.ty);
+                    let fits = self.require(env, field.name.span, &ty, &found.ty);
+                    if fits && name.is_none() && found.ty.has_via_members() && ty != Ty::Never {
+                        found.ty = ty;
+                    }
                     let written = self.member_mode(env, &field.storage);
-                    if written != super::MemberMode::PLAIN
-                        && written != mode
-                        && mode.mode != Mode::Via
-                    {
+                    if name.is_none() && found.mode.mode == Mode::Via {
+                        if written.variable != found.mode.variable {
+                            self.error(
+                                Code::E0357,
+                                field.name.span,
+                                "incompatible field slot replaceability",
+                            );
+                        }
+                        found.mode = written;
+                    } else if written != super::MemberMode::PLAIN && written != found.mode {
                         self.error(Code::E0357, field.name.span, "incompatible field mode");
                     }
                 }
@@ -1187,7 +1200,10 @@ impl<'a> Checker<'a> {
                     self.error(Code::E0307, span, format!("missing record field {field}"));
                 }
             }
-            data.unwrap_or(Ty::Unknown)
+            match data {
+                Some(Ty::Record(..)) => Ty::Record(required, open),
+                _ => data.unwrap_or(Ty::Unknown),
+            }
         } else if name.is_some() && !matches!(data, Some(Ty::Unknown)) {
             self.error(
                 Code::E0301,
@@ -1249,17 +1265,36 @@ impl<'a> Checker<'a> {
     }
 
     fn inferred_element(&mut self, env: &Env, element: Option<ExprId>) -> Member {
+        Member {
+            mode: self.literal_element_mode(env, element),
+            ty: self.fresh(),
+        }
+    }
+
+    fn literal_element(&self, env: &Env, element: Option<ExprId>, expected: &Member) -> Member {
+        let mut member = expected.clone();
+        if member.mode.mode == Mode::Via {
+            member.mode = self.literal_element_mode(env, element);
+        }
+        member
+    }
+
+    fn receive_literal_element(&mut self, env: &mut Env, element: ExprId, member: &mut Member) {
+        let actual = self.expect(env, element, &member.ty);
+        if member.ty.has_via_members() && actual != Ty::Never {
+            member.ty = actual;
+        }
+    }
+
+    fn literal_element_mode(&self, env: &Env, element: Option<ExprId>) -> super::MemberMode {
         let mode = match element.map(|id| &self.ast(env.file).expr(id).value) {
             Some(Expr::Unary { op, .. }) if op.value == "ref" => Mode::Ref,
             Some(Expr::Unary { op, .. }) if op.value == "^mut" => Mode::Shared,
             _ => Mode::Plain,
         };
-        Member {
-            mode: super::MemberMode {
-                variable: false,
-                mode,
-            },
-            ty: self.fresh(),
+        super::MemberMode {
+            variable: false,
+            mode,
         }
     }
 

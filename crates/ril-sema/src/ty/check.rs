@@ -456,7 +456,9 @@ impl<'a> Checker<'a> {
     }
 
     fn member_fits(&mut self, env: &Env, a: &Member, b: &Member) -> bool {
-        (a.mode == b.mode || b.mode.mode == Mode::Via) && self.fits(env, &a.ty, &b.ty)
+        a.mode.variable == b.mode.variable
+            && (a.mode.mode == b.mode.mode || b.mode.mode == Mode::Via)
+            && self.fits(env, &a.ty, &b.ty)
     }
 
     fn callable_fits(&mut self, env: &Env, actual: &Callable, expected: &Callable) -> bool {

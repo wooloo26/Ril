@@ -15,7 +15,7 @@ use ril_frontend::{
 
 use super::{
     Access, Analysis, CleanupAction, Input, Instance, ReturnSource, Summary,
-    flow::{Coordinate, Datum, Ledger, Slot, conflicts},
+    flow::{Coordinate, Datum, Ledger, Reception, Region, Slot, conflicts},
     horn::{self, Rule},
 };
 use crate::ty::{self, AdtKind, Callable, Ty, TypedProgram, Value, reception};
@@ -27,6 +27,7 @@ enum Obligation {
     Write(Span),
     WriteExisting(Span),
     Handoff(Span),
+    Schema(Region, SchemaRequirement),
     Replace(Span),
     Retain(Span),
     Share(Span),
@@ -36,6 +37,23 @@ enum Obligation {
     StatefulHandler,
     Effect(String),
     Operation(Operation),
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+enum SchemaRequirement {
+    Writable,
+    Exclusive,
+    Shared,
+}
+
+impl SchemaRequirement {
+    fn accepts(self, access: Access) -> bool {
+        match self {
+            Self::Writable => access.writes(),
+            Self::Exclusive => access == Access::Mut,
+            Self::Shared => access == Access::Shared,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -56,6 +74,7 @@ struct Context {
     file: FileId,
     formals: Vec<Option<Span>>,
     via: BTreeSet<Span>,
+    member_via: bool,
     handlers: BTreeMap<Operation, Datum>,
     local_effects: BTreeSet<String>,
     expected: Mode,
@@ -75,6 +94,7 @@ impl Context {
             file: owner.file,
             formals: Vec::new(),
             via: BTreeSet::new(),
+            member_via: false,
             handlers: BTreeMap::new(),
             local_effects: BTreeSet::new(),
             expected: Mode::Plain,
@@ -103,6 +123,7 @@ struct DefinitionCheck {
     return_sources: Vec<ReturnSource>,
     returns: Vec<Datum>,
     via: BTreeSet<Span>,
+    member_axes: Vec<(usize, Region)>,
     returned_new: bool,
     capture_names: BTreeSet<Span>,
 }
@@ -119,6 +140,7 @@ struct Analyzer<'a> {
     requirements: Vec<Requirement>,
     deferred_errors: Vec<(Vec<Fact>, Diagnostic)>,
     mode_uses: Vec<ModeUse>,
+    member_schemas: BTreeMap<Span, Vec<Region>>,
     functions: Vec<DefinitionCheck>,
     done: BTreeSet<DefinitionId>,
     cleanups: BTreeMap<Span, CleanupAction>,
@@ -132,6 +154,7 @@ pub(super) fn analyze(program: &TypedProgram) -> (Analysis, Vec<Diagnostic>) {
         requirements: Vec::new(),
         deferred_errors: Vec::new(),
         mode_uses: Vec::new(),
+        member_schemas: BTreeMap::new(),
         functions: Vec::new(),
         done: BTreeSet::new(),
         cleanups: BTreeMap::new(),
@@ -182,7 +205,7 @@ pub(super) fn analyze(program: &TypedProgram) -> (Analysis, Vec<Diagnostic>) {
                     .map(|_| index)
             })
             .collect();
-        let instances = analyzer.via_table(&function, &summary, &consumed);
+        let instances = analyzer.via_table(&function, &summary, &consumed, &facts);
         consuming_inputs.insert(function.id, consumed);
         if !instances.is_empty() {
             analysis.via.insert(function.id, instances);
@@ -542,13 +565,15 @@ impl<'a> Analyzer<'a> {
                 );
             }
         }
-        if ctx.expected == Mode::Infer
-            && ctx.via.is_empty()
-            && !callable
-                .parameters
-                .iter()
-                .any(|parameter| has_via(&parameter.ty))
-        {
+        let member_axes = member_axes(callable, &ctx.formals);
+        for (_, axis) in &member_axes {
+            self.member_schemas
+                .entry(axis.source)
+                .or_default()
+                .push(axis.clone());
+        }
+        ctx.member_via = !member_axes.is_empty();
+        if ctx.expected == Mode::Infer && ctx.via.is_empty() && !ctx.member_via {
             self.error(
                 Code::E0412,
                 ctx.owner,
@@ -636,6 +661,7 @@ impl<'a> Analyzer<'a> {
             formals: ctx.formals,
             declared: (**callable).clone(),
             via: ctx.via,
+            member_axes,
             return_sources: return_sources.into_iter().collect(),
             returned_new: !ctx.return_values.is_empty()
                 && ctx.return_values.iter().all(|value| value.requires_new),
@@ -784,17 +810,23 @@ impl<'a> Analyzer<'a> {
         fun: &DefinitionCheck,
         summary: &Summary,
         consumed: &BTreeSet<usize>,
+        facts: &BTreeSet<Fact>,
     ) -> Vec<Instance> {
-        if fun.via.is_empty() {
+        if fun.via.is_empty() && fun.member_axes.is_empty() {
             return Vec::new();
         }
         let mut rows: Vec<Vec<Input>> = vec![Vec::new()];
         let mut formals = BTreeMap::new();
+        let mut axes = Vec::new();
         for (index, formal) in fun.formals.iter().enumerate() {
-            if formal.is_none_or(|span| !fun.via.contains(&span)) {
+            let Some(source) = formal.filter(|span| fun.via.contains(span)) else {
                 continue;
-            }
+            };
             formals.insert(index, formals.len());
+            axes.push(Region {
+                source,
+                selection: Vec::new(),
+            });
             let domain: &[Input] = if consumed.contains(&index) {
                 if summary.retained.contains(&index) {
                     self.error(
@@ -818,16 +850,34 @@ impl<'a> Analyzer<'a> {
                     Input::New,
                 ]
             };
-            rows = rows
-                .into_iter()
-                .flat_map(|row| {
-                    domain.iter().map(move |mode| {
-                        let mut result = row.clone();
-                        result.push(*mode);
-                        result
-                    })
+            extend_rows(&mut rows, domain);
+        }
+        for (_, axis) in &fun.member_axes {
+            axes.push(axis.clone());
+            let requirements: Vec<_> = facts
+                .iter()
+                .filter_map(|fact| match &fact.obligation {
+                    Obligation::Schema(path, required)
+                        if fact.owner == fun.owner && axis == path =>
+                    {
+                        Some(*required)
+                    }
+                    _ => None,
                 })
                 .collect();
+            let domain: Vec<_> = [Input::Plain, Input::Ref, Input::Mut, Input::Shared]
+                .into_iter()
+                .filter(|mode| requirements.iter().all(|r| r.accepts(mode.access())))
+                .collect();
+            if domain.is_empty() {
+                self.error(
+                    Code::E0520,
+                    fun.owner,
+                    "member via template has incompatible access requirements",
+                );
+                return Vec::new();
+            }
+            extend_rows(&mut rows, &domain);
         }
         rows.into_iter()
             .map(|modes| {
@@ -852,24 +902,51 @@ impl<'a> Analyzer<'a> {
                                                 })
                                     }))
                         });
-                    for source in &mut summary.return_sources {
-                        let Some(input) = formals
-                            .get(&source.formal)
-                            .and_then(|&index| modes.get(index))
-                        else {
-                            continue;
-                        };
-                        source.access = if source.source_path.is_empty()
-                            && source.result_path.is_empty()
-                            && source.access == Access::Mut
-                        {
-                            input.access()
-                        } else {
-                            input.access().project(source.access)
-                        };
+                    let mut sources = BTreeSet::new();
+                    for value in &fun.returns {
+                        value.visit_origins(&mut Vec::new(), &mut |result_path, origin| {
+                            let Some(formal) = fun
+                                .formals
+                                .iter()
+                                .position(|decl| *decl == Some(origin.region.source))
+                            else {
+                                return;
+                            };
+                            if !result_path.is_empty() && origin.new {
+                                return;
+                            }
+                            let input = |axis: &Region| {
+                                axes.iter()
+                                    .zip(&modes)
+                                    .find(|(decl, _)| decl.matches_axis(axis))
+                                    .map_or(Access::Mut, |(_, mode)| mode.access())
+                            };
+                            let access = if origin.inherits_mode {
+                                input(&origin.region)
+                            } else if origin.reception.is_empty() {
+                                formals
+                                    .get(&formal)
+                                    .and_then(|index| modes.get(*index))
+                                    .map_or(origin.mode, |mode| mode.access().project(origin.mode))
+                            } else {
+                                origin
+                                    .reception
+                                    .iter()
+                                    .map(|step| match step {
+                                        Reception::Fixed(access) => *access,
+                                        Reception::Axis(axis) => input(axis),
+                                    })
+                                    .fold(Access::Mut, Access::project)
+                            };
+                            sources.insert(ReturnSource {
+                                formal,
+                                source_path: origin.region.selection.clone(),
+                                result_path: result_path.to_vec(),
+                                access,
+                            });
+                        });
                     }
-                    summary.return_sources.sort_unstable();
-                    summary.return_sources.dedup();
+                    summary.return_sources = sources.into_iter().collect();
                 }
                 Instance { modes, summary }
             })
@@ -1368,6 +1445,7 @@ impl<'a> Analyzer<'a> {
                     );
                 }
                 if matches!(mode, Mode::Mut | Mode::Shared) {
+                    self.require_schema(ctx, &value, SchemaRequirement::Writable);
                     self.requirement(
                         ctx,
                         name.span,
@@ -1410,16 +1488,13 @@ impl<'a> Analyzer<'a> {
                             "live authority cannot be frozen as a plain snapshot",
                         );
                     }
-                    Mode::Via if ctx.via.is_empty() => {
+                    Mode::Via if ctx.via.is_empty() && !ctx.member_via => {
                         self.error(Code::E0412, name.span, "let via requires a mode template");
                     }
                     Mode::Via
-                        if !value.origins().any(|origin| {
-                            origin
-                                .dependencies
-                                .iter()
-                                .any(|source| ctx.via.contains(source))
-                        }) =>
+                        if !value
+                            .origins()
+                            .any(|origin| origin.inherits_mode || !origin.reception.is_empty()) =>
                     {
                         self.error(
                             Code::E0550,
@@ -1488,21 +1563,23 @@ impl<'a> Analyzer<'a> {
             }
             Pattern::Tuple(items) => {
                 for (i, &item) in items.iter().enumerate() {
-                    let child =
-                        ledger.project(&value, Coordinate::Index(i.to_string()), Access::Immutable);
+                    let coordinate = Coordinate::Index(i.to_string());
+                    let mode = self.schema_mode(self.ty(node.span), &coordinate).0;
+                    let child = ledger.project_schema(&value, coordinate, mode);
                     self.bind(ctx, ledger, item, storage, child, resource);
                 }
             }
             Pattern::Slice { text, elements } => {
                 let ast = self.ast(ctx.file);
                 let (before, rest, after) = ast.slice_parts(elements);
-                let mode = self.member_schema(node.span, &Coordinate::Dynamic).0;
+                let mode = self.schema_mode(self.ty(node.span), &Coordinate::Dynamic).0;
                 for (index, &item) in before.iter().enumerate() {
-                    let child = ledger.project(&value, Coordinate::Index(index.to_string()), mode);
+                    let child =
+                        ledger.project_schema(&value, Coordinate::Index(index.to_string()), mode);
                     self.bind(ctx, ledger, item, storage, child, resource);
                 }
                 for &item in after {
-                    let child = ledger.project(&value, Coordinate::Dynamic, mode);
+                    let child = ledger.project_schema(&value, Coordinate::Dynamic, mode);
                     self.bind(ctx, ledger, item, storage, child, resource);
                 }
                 if let Some(rest) = rest
@@ -1517,7 +1594,7 @@ impl<'a> Analyzer<'a> {
                     if let Ty::Array(element) = self.ty(node.span)
                         && !element.ty.is_value()
                     {
-                        let mut child = ledger.project(&value, Coordinate::Dynamic, mode);
+                        let mut child = ledger.project_schema(&value, Coordinate::Dynamic, mode);
                         child.requires_new = false;
                         child.transform(&mut |origin| origin.new = false);
                         slice.members.insert(Coordinate::Dynamic, child);
@@ -1553,8 +1630,9 @@ impl<'a> Analyzer<'a> {
             Pattern::Record { fields, .. } => {
                 for field in fields {
                     let coordinate = Coordinate::Field(field.name.value.clone());
-                    let member_mode = self.member_schema(node.span, &coordinate).0;
-                    let child = ledger.project(&value, coordinate, member_mode);
+                    let mode = self.schema_mode(self.ty(node.span), &coordinate).0;
+                    let member_mode = Access::from_mode(mode);
+                    let child = ledger.project_schema(&value, coordinate, mode);
                     let mut received = field.storage.clone();
                     if received.mode == Mode::Plain {
                         received.mode = storage.mode;
@@ -1652,6 +1730,7 @@ impl<'a> Analyzer<'a> {
                         if !value.writers() {
                             self.error(Code::E0520, span, "sharing requires writable authority");
                         }
+                        self.require_schema(ctx, &value, SchemaRequirement::Writable);
                         for root in &mut value.roots {
                             root.fix_mode(Access::Shared);
                             root.new = false;
@@ -1750,20 +1829,20 @@ impl<'a> Analyzer<'a> {
             Expr::Member { base, member, .. } => {
                 let value = self.expr(ctx, ledger, *base);
                 let coordinate = self.coordinate(ctx, ledger, member);
-                let (mode, variable) = self.member_schema(ast.expr(*base).span, &coordinate);
+                let (mode, variable) = self.schema_mode(self.ty(ast.expr(*base).span), &coordinate);
                 let mode = if variable && self.ty(span).is_value() {
-                    Access::Mut
+                    Mode::Mut
                 } else {
                     mode
                 };
-                ledger.project(&value, coordinate, mode)
+                ledger.project_schema(&value, coordinate, mode)
             }
             Expr::Index { base, index, .. } => {
                 let value = self.expr(ctx, ledger, *base);
                 self.expr(ctx, ledger, *index);
                 let coordinate = self.index_coordinate(ctx, *index);
-                let (mode, _) = self.member_schema(ast.expr(*base).span, &coordinate);
-                ledger.project(&value, coordinate, mode)
+                let (mode, _) = self.schema_mode(self.ty(ast.expr(*base).span), &coordinate);
+                ledger.project_schema(&value, coordinate, mode)
             }
             Expr::Block {
                 statements,
@@ -1882,14 +1961,12 @@ impl<'a> Analyzer<'a> {
                     mode: *mode,
                     ..Storage::default()
                 };
-                self.bind(
-                    ctx,
-                    &mut inside,
-                    *pattern,
-                    &storage,
-                    value.project(Coordinate::Dynamic, Access::from_mode(*mode)),
-                    false,
-                );
+                let coordinate = Coordinate::Dynamic;
+                let schema = self
+                    .schema_mode(self.ty(ast.expr(*iterable).span), &coordinate)
+                    .0;
+                let child = inside.project_schema(&value, coordinate, schema);
+                self.bind(ctx, &mut inside, *pattern, &storage, child, false);
                 self.expr(ctx, &mut inside, *body);
                 ledger.merge(&before, &[before.clone(), inside]);
                 Datum::default()
@@ -2149,6 +2226,7 @@ impl<'a> Analyzer<'a> {
                 }
             }
         }
+        self.require_schema(ctx, value, SchemaRequirement::Exclusive);
         for root in &value.roots {
             if ctx.via.contains(&root.region.source) {
                 self.seed(ctx, Obligation::Handoff(root.region.source));
@@ -2323,6 +2401,7 @@ impl<'a> Analyzer<'a> {
                 "write overlaps an active lexical handler hold",
             );
         }
+        self.require_schema(ctx, value, SchemaRequirement::Writable);
         for origin in &value.roots {
             if !origin.new {
                 self.seed(ctx, Obligation::WriteExisting(origin.region.source));
@@ -2335,6 +2414,37 @@ impl<'a> Analyzer<'a> {
             {
                 self.seed(ctx, Obligation::Write(id));
             }
+        }
+    }
+
+    fn schema_requirements(&self, value: &Datum, mode: SchemaRequirement) -> BTreeSet<Obligation> {
+        value
+            .roots
+            .iter()
+            .flat_map(|origin| {
+                origin
+                    .reception
+                    .iter()
+                    .enumerate()
+                    .filter_map(move |(index, step)| {
+                        let Reception::Axis(path) = step else {
+                            return None;
+                        };
+                        let axis = self.schema_axis(path)?.clone();
+                        let mode = if index + 1 == origin.reception.len() {
+                            mode
+                        } else {
+                            SchemaRequirement::Writable
+                        };
+                        Some(Obligation::Schema(axis, mode))
+                    })
+            })
+            .collect()
+    }
+
+    fn require_schema(&mut self, ctx: &Context, value: &Datum, mode: SchemaRequirement) {
+        for obligation in self.schema_requirements(value, mode) {
+            self.seed(ctx, obligation);
         }
     }
 
@@ -2436,7 +2546,19 @@ impl<'a> Analyzer<'a> {
         self.schema(self.ty(base), coordinate)
     }
 
-    fn schema(&self, mut ty: &'a Ty, coordinate: &Coordinate) -> (Access, bool) {
+    fn schema(&self, ty: &'a Ty, coordinate: &Coordinate) -> (Access, bool) {
+        let (mode, variable) = self.schema_mode(ty, coordinate);
+        (Access::from_mode(mode), variable)
+    }
+
+    fn schema_mode(&self, ty: &'a Ty, coordinate: &Coordinate) -> (Mode, bool) {
+        self.schema_member(ty, coordinate)
+            .map_or((Mode::Plain, false), |member| {
+                (member.mode.mode, member.mode.variable)
+            })
+    }
+
+    fn schema_member(&self, mut ty: &'a Ty, coordinate: &Coordinate) -> Option<&'a ty::Member> {
         if let Ty::Draft(inner) = ty {
             ty = inner;
         }
@@ -2452,7 +2574,7 @@ impl<'a> Analyzer<'a> {
         if let Ty::Draft(inner) = ty {
             ty = inner;
         }
-        let member = match (ty, coordinate) {
+        match (ty, coordinate) {
             (Ty::Record(fields, _), Coordinate::Field(name)) => fields.get(name),
             (Ty::Tuple(fields), Coordinate::Index(index)) => index
                 .parse::<usize>()
@@ -2460,10 +2582,14 @@ impl<'a> Analyzer<'a> {
                 .and_then(|index| fields.get(index)),
             (Ty::Array(member) | Ty::Map(_, member), _) => Some(member.as_ref()),
             _ => None,
-        };
-        member.map_or((Access::Immutable, false), |member| {
-            (Access::from_mode(member.mode.mode), member.mode.variable)
-        })
+        }
+    }
+
+    fn schema_axis(&self, region: &Region) -> Option<&Region> {
+        self.member_schemas
+            .get(&region.source)?
+            .iter()
+            .find(|axis| axis.matches_axis(region))
     }
 
     fn navigate(
@@ -2506,7 +2632,8 @@ impl<'a> Analyzer<'a> {
             if safe && index.is_some() {
                 missing.push(ledger.clone());
             }
-            value = ledger.project(&value, coordinate.clone(), self.schema(ty, &coordinate).0);
+            let mode = self.schema_mode(ty, &coordinate).0;
+            value = ledger.project_schema(&value, coordinate, mode);
             ty = self
                 .program
                 .navigation_values
@@ -2525,16 +2652,55 @@ impl<'a> Analyzer<'a> {
     }
 }
 
-fn has_via(ty: &Ty) -> bool {
+fn member_axes(callable: &Callable, formals: &[Option<Span>]) -> Vec<(usize, Region)> {
+    let mut axes = Vec::new();
+    for (index, (param, decl)) in callable.parameters.iter().zip(formals).enumerate() {
+        if let Some(source) = decl {
+            let mut region = Region {
+                source: *source,
+                selection: Vec::new(),
+            };
+            collect_axes(index, &param.ty, &mut region, &mut axes);
+        }
+    }
+    axes
+}
+
+fn extend_rows(rows: &mut Vec<Vec<Input>>, domain: &[Input]) {
+    *rows = std::mem::take(rows)
+        .into_iter()
+        .flat_map(|row| {
+            domain.iter().map(move |mode| {
+                let mut result = row.clone();
+                result.push(*mode);
+                result
+            })
+        })
+        .collect();
+}
+
+fn collect_axes(index: usize, ty: &Ty, region: &mut Region, output: &mut Vec<(usize, Region)>) {
+    let mut visit = |coord, member: &ty::Member| {
+        region.selection.push(coord);
+        if member.mode.mode == Mode::Via {
+            output.push((index, region.clone()));
+        }
+        collect_axes(index, &member.ty, region, output);
+        region.selection.pop();
+    };
     match ty {
-        Ty::Array(item) | Ty::Map(_, item) => item.mode.mode == Mode::Via || has_via(&item.ty),
-        Ty::Tuple(items) => items
-            .iter()
-            .any(|item| item.mode.mode == Mode::Via || has_via(&item.ty)),
-        Ty::Record(fields, _) => fields
-            .values()
-            .any(|item| item.mode.mode == Mode::Via || has_via(&item.ty)),
-        _ => false,
+        Ty::Array(item) | Ty::Map(_, item) => visit(Coordinate::Dynamic, item),
+        Ty::Tuple(items) => {
+            for (position, item) in items.iter().enumerate() {
+                visit(Coordinate::Index(position.to_string()), item);
+            }
+        }
+        Ty::Record(fields, _) => {
+            for (name, item) in fields {
+                visit(Coordinate::Field(name.clone()), item);
+            }
+        }
+        _ => {}
     }
 }
 

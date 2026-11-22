@@ -22,6 +22,15 @@ impl Access {
         }
     }
 
+    pub(super) const fn as_mode(self) -> Mode {
+        match self {
+            Self::Immutable => Mode::Plain,
+            Self::Ref => Mode::Ref,
+            Self::Mut => Mode::Mut,
+            Self::Shared => Mode::Shared,
+        }
+    }
+
     pub const fn writes(self) -> bool {
         matches!(self, Self::Mut | Self::Shared)
     }
@@ -57,6 +66,23 @@ impl Region {
                 .zip(&other.selection)
                 .all(|(a, b)| a == b || *a == Coordinate::Dynamic || *b == Coordinate::Dynamic)
     }
+
+    pub(super) fn matches_axis(&self, projection: &Self) -> bool {
+        self.source == projection.source
+            && self.selection.len() == projection.selection.len()
+            && self
+                .selection
+                .iter()
+                .zip(&projection.selection)
+                .all(|(axis, step)| axis == step || *axis == Coordinate::Dynamic)
+    }
+}
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub(super) enum Reception {
+    Fixed(Access),
+    // A mode bound by a formal parameter or one of its member schemas.
+    Axis(Region),
 }
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -64,6 +90,7 @@ pub(super) struct Origin {
     pub region: Region,
     pub mode: Access,
     pub inherits_mode: bool,
+    pub reception: Vec<Reception>,
     pub new: bool,
     pub dependencies: BTreeSet<Span>,
     pub branches: Choices,
@@ -75,6 +102,32 @@ impl Origin {
     pub(super) fn fix_mode(&mut self, access: Access) {
         self.mode = access;
         self.inherits_mode = false;
+        self.reception.clear();
+    }
+
+    pub(super) fn project_mode(&mut self, member: Mode) {
+        if member == Mode::Via || self.inherits_mode || !self.reception.is_empty() {
+            if self.reception.is_empty() {
+                self.reception.push(if self.inherits_mode {
+                    Reception::Axis(Region {
+                        source: self.region.source,
+                        selection: Vec::new(),
+                    })
+                } else {
+                    Reception::Fixed(self.mode)
+                });
+            }
+            self.reception.push(if member == Mode::Via {
+                Reception::Axis(self.region.clone())
+            } else {
+                Reception::Fixed(Access::from_mode(member))
+            });
+        }
+        self.mode = self.mode.project(Access::from_mode(member));
+        self.inherits_mode = false;
+        if self.mode == Access::Immutable {
+            self.reception.clear();
+        }
     }
 
     pub(super) fn overlaps(&self, other: &Self) -> bool {
@@ -116,6 +169,7 @@ impl Datum {
                 },
                 mode,
                 inherits_mode: false,
+                reception: Vec::new(),
                 new,
                 dependencies: BTreeSet::new(),
                 branches: BTreeMap::new(),
@@ -200,6 +254,10 @@ impl Datum {
     }
 
     pub(super) fn project(&self, coordinate: Coordinate, mode: Access) -> Self {
+        self.project_schema(coordinate, mode.as_mode())
+    }
+
+    fn project_schema(&self, coordinate: Coordinate, mode: Mode) -> Self {
         let known = self.members.get(&coordinate).cloned().or_else(|| {
             (coordinate == Coordinate::Dynamic)
                 .then(|| self.members.values().cloned().reduce(Self::joined))
@@ -216,10 +274,10 @@ impl Datum {
                 let mut origin = origin.clone();
                 origin.region.selection.push(coordinate.clone());
                 if !origin.draft {
-                    origin.fix_mode(origin.mode.project(mode));
+                    origin.project_mode(mode);
                     // The schema of an opaque member selection can expose authority
                     // which survived the transfer of its enclosing new object.
-                    if matches!(mode, Access::Ref | Access::Shared) {
+                    if matches!(mode, Mode::Ref | Mode::Shared | Mode::Via) {
                         origin.new = false;
                     }
                 }
@@ -276,6 +334,7 @@ impl Datum {
         for root in &mut self.roots {
             root.new = true;
             root.inherits_mode = false;
+            root.reception.clear();
         }
         self.requires_new = true;
     }
@@ -480,6 +539,10 @@ impl Ledger {
     }
 
     pub(super) fn project(&self, base: &Datum, coordinate: Coordinate, mode: Access) -> Datum {
+        self.project_schema(base, coordinate, mode.as_mode())
+    }
+
+    pub(super) fn project_schema(&self, base: &Datum, coordinate: Coordinate, mode: Mode) -> Datum {
         let slot = base.slot_projection(coordinate.clone());
         let mut always = !slot.roots.is_empty();
         let mut changed = None;
@@ -499,13 +562,13 @@ impl Ledger {
                 .reduce(Datum::joined);
         }
         let Some(mut changed) = changed else {
-            return base.project(coordinate, mode);
+            return base.project_schema(coordinate, mode);
         };
         base.attenuate(&mut changed);
         if always {
             changed
         } else {
-            base.project(coordinate, mode).joined(changed)
+            base.project_schema(coordinate, mode).joined(changed)
         }
     }
 

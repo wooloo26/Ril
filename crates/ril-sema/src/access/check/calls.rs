@@ -1,6 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use ril_base::{diag::Code, span::Span};
+use ril_base::{
+    diag::{Code, Diagnostic},
+    span::Span,
+};
 use ril_frontend::{
     hir::DefinitionKind,
     syntax::{Argument, Expr, ExprId, Handler, Mode, StateKind, StmtKind},
@@ -10,8 +13,15 @@ use crate::{access::flow::Handoff, ty::Ty};
 
 use super::{
     Access, Analyzer, Context, Coordinate, Datum, DefinitionCheck, Fact, Input, Ledger, ModeUse,
-    Obligation, Rule, Slot, conflicts,
+    Obligation, Region, Rule, SchemaRequirement, Slot, conflicts, member_axes,
 };
+
+struct CallEntry<'a> {
+    arguments: &'a [(usize, Mode, Datum)],
+    spans: &'a [Span],
+    ledger: &'a Ledger,
+    span: Span,
+}
 
 impl Analyzer<'_> {
     pub(super) fn fallback_handler(
@@ -211,7 +221,7 @@ impl Analyzer<'_> {
         for (_, _, value) in &mut values {
             *value = ledger.snapshot(value);
         }
-        for (i, ((_, mode, value), argument_span)) in values.iter().zip(value_spans).enumerate() {
+        for (i, ((_, mode, value), &argument_span)) in values.iter().zip(&value_spans).enumerate() {
             if let Some(mutating) = ledger.hold_conflict(value, *mode) {
                 self.error(
                     if mutating { Code::E0523 } else { Code::E0524 },
@@ -301,6 +311,29 @@ impl Analyzer<'_> {
             };
             self.link_invocation(ctx, &enclosing);
             let has_body = fun.body.is_some();
+            if has_body && let Some(signature) = sig {
+                let formals: Vec<_> = fun
+                    .signature
+                    .params
+                    .iter()
+                    .map(|param| param.name.as_ref().map(|name| name.span))
+                    .collect();
+                for (index, axis) in member_axes(signature, &formals) {
+                    if let Some(((.., argument), &argument_span)) = values
+                        .iter()
+                        .zip(&value_spans)
+                        .find(|((position, ..), _)| *position == index)
+                    {
+                        self.link_schema_argument(
+                            ctx,
+                            fun.name.span,
+                            axis,
+                            argument,
+                            argument_span,
+                        );
+                    }
+                }
+            }
             for (index, mode, value) in &values {
                 let formal = fun
                     .signature
@@ -314,7 +347,11 @@ impl Analyzer<'_> {
                         obligation: Obligation::Invoke(formal),
                     };
                     if *mode == Mode::Via {
-                        self.forward_handoff(ctx, ledger, value, (fun.name.span, formal));
+                        if value.roots.iter().all(|origin| origin.inherits_mode) {
+                            self.forward_handoff(ctx, ledger, value, (fun.name.span, formal));
+                        } else {
+                            self.link_via_projection(ctx, value, fun.name.span, formal, span);
+                        }
                     }
                     self.link_invocation_if(ctx, value, Some(&invocation));
                     if ctx.reachable && !ctx.shadow {
@@ -414,7 +451,13 @@ impl Analyzer<'_> {
                 Mode::New | Mode::Infer | Mode::Ref | Mode::Shared
             ) {
                 self.function(fun, ledger);
-                if let Some(mut result) = self.return_template(fun, &values, ledger, span) {
+                let entry = CallEntry {
+                    arguments: &values,
+                    spans: &value_spans,
+                    ledger,
+                    span,
+                };
+                if let Some(mut result) = self.return_template(fun, &entry) {
                     if matches!(fun.signature.result_mode, Mode::Ref | Mode::Shared) {
                         result.requires_new = false;
                         for root in &mut result.roots {
@@ -661,9 +704,7 @@ impl Analyzer<'_> {
     fn return_template(
         &self,
         fun: &ril_frontend::syntax::Function,
-        arguments: &[(usize, Mode, Datum)],
-        entry: &Ledger,
-        span: Span,
+        entry: &CallEntry<'_>,
     ) -> Option<Datum> {
         let definition = self
             .functions
@@ -672,18 +713,15 @@ impl Analyzer<'_> {
         definition
             .returns
             .iter()
-            .map(|datum| {
-                Self::instantiate_return(definition, arguments, entry, datum, span, &mut Vec::new())
-            })
+            .map(|datum| self.instantiate_return(definition, entry, datum, &mut Vec::new()))
             .reduce(Datum::joined)
     }
 
     fn instantiate_return(
+        &self,
         definition: &DefinitionCheck,
-        arguments: &[(usize, Mode, Datum)],
-        entry: &Ledger,
+        entry: &CallEntry<'_>,
         template: &Datum,
-        span: Span,
         output_path: &mut Vec<Coordinate>,
     ) -> Datum {
         let mut output = template
@@ -695,9 +733,11 @@ impl Analyzer<'_> {
                     .iter()
                     .position(|formal| *formal == Some(origin.region.source));
                 if let Some(index) = formal {
-                    let (_, receiver, actual) = arguments
+                    let ((_, receiver, actual), &argument_span) = entry
+                        .arguments
                         .iter()
-                        .find(|(position, _, _)| *position == index)?;
+                        .zip(entry.spans)
+                        .find(|((position, ..), _)| *position == index)?;
                     let formal = definition.formals.get(index).copied().flatten()?;
                     let via = definition.via.contains(&formal);
                     let mut actual = actual.clone();
@@ -706,13 +746,32 @@ impl Analyzer<'_> {
                             root.fix_mode(Access::from_mode(*receiver));
                         }
                     }
-                    for (index, coordinate) in origin.region.selection.iter().enumerate() {
-                        let cap = if index + 1 == origin.region.selection.len() {
-                            origin.mode
-                        } else {
-                            Access::Mut
-                        };
-                        actual = entry.project(&actual, coordinate.clone(), cap);
+                    if origin.reception.is_empty() {
+                        for (index, coordinate) in origin.region.selection.iter().enumerate() {
+                            let cap = if index + 1 == origin.region.selection.len() {
+                                origin.mode
+                            } else {
+                                Access::Mut
+                            };
+                            actual = entry.ledger.project(&actual, coordinate.clone(), cap);
+                        }
+                    } else {
+                        let mut ty = self.ty(argument_span);
+                        for coordinate in &origin.region.selection {
+                            let member = self.schema_member(ty, coordinate);
+                            let mode = member.map_or(Mode::Plain, |member| member.mode.mode);
+                            actual = entry
+                                .ledger
+                                .project_schema(&actual, coordinate.clone(), mode);
+                            ty = member.map_or(&Ty::Unknown, |member| &member.ty);
+                        }
+                        for projected in &mut actual.roots {
+                            if !origin.mode.writes() {
+                                projected.project_mode(origin.mode.as_mode());
+                            }
+                            projected.new &= origin.new;
+                        }
+                        actual.requires_new &= origin.new;
                     }
                     if via && origin.new {
                         actual.detach_handed_off_paths();
@@ -725,7 +784,7 @@ impl Analyzer<'_> {
                             member.new = false;
                         });
                         actual.requires_new = false;
-                    } else if !via {
+                    } else if !via && origin.reception.is_empty() {
                         actual.transform(&mut |member| {
                             member.fix_mode(member.mode.project(origin.mode));
                             member.new &= origin.new;
@@ -737,7 +796,7 @@ impl Analyzer<'_> {
                     let mut mapped = origin.clone();
                     mapped.branches.clear();
                     if mapped.new {
-                        mapped.region.source = span;
+                        mapped.region.source = entry.span;
                         mapped.region.selection.clone_from(output_path);
                         mapped.dependencies.clear();
                         mapped.confined = None;
@@ -753,8 +812,7 @@ impl Analyzer<'_> {
             .unwrap_or_default();
         for (coordinate, member) in &template.members {
             output_path.push(coordinate.clone());
-            let specialized =
-                Self::instantiate_return(definition, arguments, entry, member, span, output_path);
+            let specialized = self.instantiate_return(definition, entry, member, output_path);
             output_path.pop();
             output.members.insert(coordinate.clone(), specialized);
         }
@@ -764,7 +822,7 @@ impl Analyzer<'_> {
         output.stateful_handler |= template.stateful_handler;
         output.result_fresh |= template.result_fresh;
         if !template.environments.is_empty() {
-            output.environments.insert(span);
+            output.environments.insert(entry.span);
         }
         for (&owner, captures) in &template.invocations {
             let instance = output.invocations.entry(owner).or_default();
@@ -776,8 +834,10 @@ impl Analyzer<'_> {
                         .iter()
                         .position(|formal| *formal == Some(target));
                     if let Some(index) = formal {
-                        if let Some((_, _, value)) =
-                            arguments.iter().find(|(position, _, _)| *position == index)
+                        if let Some((_, _, value)) = entry
+                            .arguments
+                            .iter()
+                            .find(|(position, _, _)| *position == index)
                         {
                             mapped.extend(value.root_dependencies());
                         }
@@ -788,6 +848,70 @@ impl Analyzer<'_> {
             }
         }
         output
+    }
+
+    fn link_schema_argument(
+        &mut self,
+        ctx: &Context,
+        owner: Span,
+        axis: Region,
+        argument: &Datum,
+        span: Span,
+    ) {
+        let mut ty = self.ty(span);
+        let mut mode = Mode::Plain;
+        for coordinate in &axis.selection {
+            let Some(member) = self.schema_member(ty, coordinate) else {
+                return;
+            };
+            mode = member.mode.mode;
+            ty = &member.ty;
+        }
+        let forwarded: Option<Vec<_>> = if mode == Mode::Via && !argument.roots.is_empty() {
+            argument
+                .roots
+                .iter()
+                .map(|root| {
+                    let mut actual = root.region.clone();
+                    actual.selection.extend_from_slice(&axis.selection);
+                    self.schema_axis(&actual).cloned()
+                })
+                .collect()
+        } else {
+            None
+        };
+        for required in [
+            SchemaRequirement::Writable,
+            SchemaRequirement::Exclusive,
+            SchemaRequirement::Shared,
+        ] {
+            let premise = Fact {
+                owner,
+                obligation: Obligation::Schema(axis.clone(), required),
+            };
+            if let Some(axes) = &forwarded {
+                if ctx.reachable && !ctx.shadow {
+                    for axis in axes {
+                        self.rules.push(Rule {
+                            premises: vec![premise.clone()],
+                            conclusion: Fact {
+                                owner: ctx.owner,
+                                obligation: Obligation::Schema(axis.clone(), required),
+                            },
+                        });
+                    }
+                }
+            } else if mode == Mode::Via || !required.accepts(Access::from_mode(mode)) {
+                self.deferred_errors.push((
+                    vec![premise],
+                    Diagnostic::error(
+                        Code::E0520,
+                        span,
+                        "via application requires a compatible member schema",
+                    ),
+                ));
+            }
+        }
     }
 
     fn forward_handoff(
@@ -819,12 +943,60 @@ impl Analyzer<'_> {
         }
     }
 
+    fn link_via_projection(
+        &mut self,
+        ctx: &Context,
+        value: &Datum,
+        owner: Span,
+        formal: Span,
+        span: Span,
+    ) {
+        self.deferred_errors.push((
+            vec![Fact {
+                owner,
+                obligation: Obligation::Handoff(formal),
+            }],
+            Diagnostic::error(
+                Code::E0548,
+                span,
+                "via application requires explicit new ownership",
+            ),
+        ));
+        for (obligation, required) in [
+            (Obligation::Write(formal), SchemaRequirement::Writable),
+            (Obligation::Share(formal), SchemaRequirement::Shared),
+        ] {
+            let premise = Fact { owner, obligation };
+            if !value.writers() {
+                self.deferred_errors.push((
+                    vec![premise],
+                    Diagnostic::error(
+                        Code::E0520,
+                        span,
+                        "via application requires a writable projection",
+                    ),
+                ));
+            } else if ctx.reachable && !ctx.shadow {
+                for obligation in self.schema_requirements(value, required) {
+                    self.rules.push(Rule {
+                        premises: vec![premise.clone()],
+                        conclusion: Fact {
+                            owner: ctx.owner,
+                            obligation,
+                        },
+                    });
+                }
+            }
+        }
+    }
+
     fn forwards_via(ctx: &Context, value: &Datum) -> bool {
         !value.roots.is_empty()
             && value.roots.iter().all(|origin| {
-                origin.inherits_mode
+                (origin.inherits_mode
                     && origin.region.selection.is_empty()
-                    && ctx.via.contains(&origin.region.source)
+                    && ctx.via.contains(&origin.region.source))
+                    || (ctx.member_via && !origin.reception.is_empty())
             })
     }
 
@@ -854,6 +1026,15 @@ impl Analyzer<'_> {
                 } else if !value.writers() {
                     self.error(Code::E0520, span, "argument path has no writable authority");
                 }
+                self.require_schema(
+                    ctx,
+                    &value,
+                    if mode == Mode::Mut {
+                        SchemaRequirement::Exclusive
+                    } else {
+                        SchemaRequirement::Writable
+                    },
+                );
                 if mode == Mode::Shared && value.origins().any(|origin| origin.confined.is_some()) {
                     self.error(Code::E0604, span, "resource authority cannot be retained");
                 }
@@ -1351,6 +1532,7 @@ impl Analyzer<'_> {
         inner.reachable = ctx.reachable;
         inner.handlers.clone_from(&ctx.handlers);
         inner.via.clone_from(&ctx.via);
+        inner.member_via = ctx.member_via;
         inner.formals = params
             .iter()
             .map(|param| param.name.as_ref().map(|name| name.span))
