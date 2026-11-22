@@ -152,6 +152,21 @@ fn main() -> () {
     assert(previous.count == 1 && next.count == 42)
 }
 
+-- @case local_closure_replaces_the_caller_member run-pass backend=both
+type Cell = .{ var count: int }
+type Shelf = .{ var ^mut item: Cell }
+fn main() -> () {
+    let store = \mut dst: Shelf, ^mut value: Cell -> { dst.item = ^mut value }
+    let mut old = Cell.{ count: 0 }
+    old.count += 1
+    let mut next = Cell.{ count: 40 }
+    next.count += 1
+    let mut shelf = Shelf.{ item: ^mut old }
+    store(mut shelf, ^mut next)
+    shelf.item.count += 1
+    assert(old.count == 1 && next.count == 42)
+}
+
 -- @case alternative_patterns_bind_from_the_selected_side run-pass backend=both
 fn chosen(input: (bool, int, int)) -> int {
     match input { (true, result, _) | (false, _, result) -> result }

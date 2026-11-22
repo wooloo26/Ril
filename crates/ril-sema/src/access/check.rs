@@ -175,6 +175,8 @@ struct ClosureModes {
     via: BTreeSet<Span>,
     member_axes: Vec<(usize, Region)>,
     returns: Vec<Datum>,
+    updates: BTreeMap<Region, Replacement>,
+    models_publication: bool,
 }
 
 #[derive(Default)]

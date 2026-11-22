@@ -67,6 +67,19 @@ pub fn store(mut shelf: Shelf, ^mut value: Cell, flag: bool) &mut &^mut -> () {
     else { shelf.item = ^mut value }
 }
 
+-- @case local_closure_keeps_the_exported_storage_contract compat-pass
+-- @baseline
+pub type Shelf = .{ var ^mut item: Cell }
+pub fn store(mut shelf: Shelf, ^mut value: Cell) &mut &^mut -> () {
+    shelf.item = ^mut value
+}
+-- @revision
+pub type Shelf = .{ var ^mut item: Cell }
+pub fn store(mut shelf: Shelf, ^mut value: Cell) &mut &^mut -> () {
+    let replace = \mut dst: Shelf, ^mut stored: Cell -> { dst.item = ^mut stored }
+    replace(mut shelf, ^mut value)
+}
+
 -- @case mutual_recursion_publishes_both_replacement_sources compile-pass
 pub type Shelf = .{ var ^mut item: Cell, var ^mut other: Cell }
 pub fn store(mut shelf: Shelf, ^mut a: Cell, ^mut b: Cell, flag: bool) &mut &^mut -> () {

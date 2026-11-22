@@ -427,6 +427,29 @@ fn spin(mut item: Cell) -> () {
     item.count += 1
 }
 
+-- @case a_local_closure_retains_the_parameter_it_stores compile-pass
+type Shelf = .{ var ^mut item: Cell }
+fn overwrite(mut shelf: Shelf, ^mut kept: Cell) &mut &^mut -> () {
+    let store = \mut dst: Shelf, ^mut value: Cell -> { dst.item = ^mut value }
+    store(mut shelf, ^mut kept)
+}
+
+-- @case all_selected_local_closures_replace_the_previous_source compile-fail E0527
+type Shelf = .{ var ^mut item: Cell }
+fn overwrite(
+    mut shelf: Shelf,
+    ^mut discarded: Cell,
+    -- ^ E0527
+    ^mut kept: Cell,
+    flag: bool
+) &mut &^mut -> () {
+    shelf.item = ^mut discarded
+    let first = \mut dst: Shelf, ^mut value: Cell -> { dst.item = ^mut value }
+    let second = \mut dst: Shelf, ^mut value: Cell -> { dst.item = ^mut value }
+    let store = if flag { first } else { second }
+    store(mut shelf, ^mut kept)
+}
+
 -- @case an_unreachable_loop_break_cannot_ground_a_later_write compile-fail E0527
 fn diverge() -> () {
     while true {

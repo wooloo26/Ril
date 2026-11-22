@@ -92,17 +92,26 @@ impl Analyzer<'_> {
             });
         let target = (id.is_none() || def.is_some_and(|def| def.kind == DefinitionKind::Local))
             .then(|| self.expr(ctx, ledger, callee_id));
-        let via_closures: BTreeMap<_, _> = target
+        let closures: BTreeMap<_, _> = target
             .iter()
             .flat_map(|target| &target.roots)
+            .filter(|root| root.region.selection.is_empty())
             .filter_map(|origin| {
                 let owner = origin.region.source;
                 self.closure_modes
                     .get(&owner)
-                    .filter(|modes| !modes.via.is_empty() || !modes.member_axes.is_empty())
                     .map(|modes| (owner, modes.clone()))
             })
             .collect();
+        let has_via_closures = closures
+            .values()
+            .any(|modes| !modes.via.is_empty() || !modes.member_axes.is_empty());
+        let all_closures_known = target.as_ref().is_some_and(|target| {
+            !target.roots.is_empty()
+                && target.roots.iter().all(|root| {
+                    root.region.selection.is_empty() && closures.contains_key(&root.region.source)
+                })
+        });
         if let Some(target) = &target {
             let requires_writer = sig.is_some_and(|sig| sig.state.iter().any(|s| s == "up"));
             if requires_writer && target.invocations.is_empty() {
@@ -180,8 +189,7 @@ impl Analyzer<'_> {
                 let mode = match arg.mode {
                     Mode::Plain if value.requires_new => Mode::New,
                     Mode::Plain
-                        if (syntax.is_some_and(|fun| fun.body.is_some())
-                            || !via_closures.is_empty())
+                        if (syntax.is_some_and(|fun| fun.body.is_some()) || has_via_closures)
                             && Self::forwards_via(ctx, &value) =>
                     {
                         Mode::Via
@@ -317,8 +325,10 @@ impl Analyzer<'_> {
                 (span, ledger),
             );
         }
-        for (&owner, modes) in &via_closures {
-            if let Some(signature) = sig {
+        for (&owner, modes) in &closures {
+            if (!modes.via.is_empty() || !modes.member_axes.is_empty())
+                && let Some(signature) = sig
+            {
                 self.record_callable_arguments(
                     ctx,
                     (owner, &modes.formals),
@@ -342,7 +352,10 @@ impl Analyzer<'_> {
                         ledger,
                         (owner, formal),
                         (*mode, argument, argument_span),
-                        modes.via.contains(&formal),
+                        (
+                            modes.via.contains(&formal),
+                            all_closures_known && modes.models_publication,
+                        ),
                     );
                 }
             }
@@ -654,17 +667,29 @@ impl Analyzer<'_> {
         {
             return constructor(span, values);
         }
-        if let Some(target) = &target
-            && !via_closures.is_empty()
-            && target
-                .roots
-                .iter()
-                .all(|root| via_closures.contains_key(&root.region.source))
+        let before_updates = if all_closures_known {
+            self.closure_storage(
+                ctx,
+                &closures,
+                &CallEntry {
+                    arguments: &values,
+                    spans: &value_spans,
+                    ledger,
+                    span,
+                },
+            )
+        } else {
+            None
+        }
+        .map(|after| std::mem::replace(ledger, after));
+        if has_via_closures
+            && all_closures_known
+            && let Some(target) = &target
         {
             let entry = CallEntry {
                 arguments: &values,
                 spans: &value_spans,
-                ledger,
+                ledger: before_updates.as_ref().unwrap_or(ledger),
                 span,
             };
             if let Some(result) = self.callback_return(target, &entry) {
@@ -690,7 +715,7 @@ impl Analyzer<'_> {
                 let entry = CallEntry {
                     arguments: &values,
                     spans: &value_spans,
-                    ledger,
+                    ledger: before_updates.as_ref().unwrap_or(ledger),
                     span,
                 };
                 if let Some(result) = self.callback_return(&receiver, &entry) {
@@ -1061,6 +1086,38 @@ impl Analyzer<'_> {
             ledger.replace_member(&place, stored, update.definite);
         }
         applied
+    }
+
+    fn closure_storage(
+        &mut self,
+        ctx: &Context,
+        closures: &BTreeMap<Span, ClosureModes>,
+        entry: &CallEntry<'_>,
+    ) -> Option<Ledger> {
+        if !ctx.runtime
+            || ctx.shadow
+            || !ctx.reachable
+            || closures.values().all(|closure| closure.updates.is_empty())
+        {
+            return None;
+        }
+        let alternatives: Vec<_> = closures
+            .values()
+            .map(|closure| {
+                let storage = CallStorage {
+                    formals: closure.formals.clone(),
+                    via: closure.via.clone(),
+                    updates: closure.updates.clone(),
+                    ..CallStorage::default()
+                };
+                let mut after = entry.ledger.clone();
+                self.apply_storage_updates(ctx, storage, entry, &mut after);
+                after
+            })
+            .collect();
+        let mut after = entry.ledger.clone();
+        after.merge(entry.ledger, &alternatives);
+        Some(after)
     }
 
     fn instantiate_return(
@@ -1576,7 +1633,7 @@ impl Analyzer<'_> {
         ledger: &mut Ledger,
         (owner, formal): Handoff,
         (mode, value, span): (Mode, &Datum, Span),
-        via: bool,
+        (via, modeled_stores): (bool, bool),
     ) {
         let write = Fact {
             owner,
@@ -1651,7 +1708,9 @@ impl Analyzer<'_> {
                 },
             });
             if matches!(mode, Mode::Via | Mode::Shared) {
-                for cause in [&share, &store_share] {
+                for cause in
+                    std::iter::once(&share).chain((!modeled_stores).then_some(&store_share))
+                {
                     for obligation in [Obligation::Retain(source), Obligation::Share(source)] {
                         self.rules.push(Rule {
                             premises: vec![cause.clone()],
@@ -1663,6 +1722,28 @@ impl Analyzer<'_> {
                     }
                 }
             }
+        }
+        let existing: BTreeSet<_> = value
+            .roots
+            .iter()
+            .filter(|origin| {
+                origin.mode.writes()
+                    && (!origin.new
+                        || mode == Mode::New && ctx.formals.contains(&Some(origin.region.source)))
+            })
+            .map(|origin| origin.region.source)
+            .collect();
+        for source in existing {
+            self.rules.push(Rule {
+                premises: vec![Fact {
+                    owner,
+                    obligation: Obligation::WriteExisting(formal),
+                }],
+                conclusion: Fact {
+                    owner: ctx.owner,
+                    obligation: Obligation::WriteExisting(source),
+                },
+            });
         }
     }
 
@@ -2242,6 +2323,8 @@ impl Analyzer<'_> {
                     via,
                     member_axes: axes,
                     returns: Vec::new(),
+                    updates: BTreeMap::new(),
+                    models_publication: false,
                 },
             );
         }
@@ -2322,7 +2405,7 @@ impl Analyzer<'_> {
         let implicit = self.ty(self.ast(ctx.file).expr(*body).span) != &Ty::Never;
         if inner.reachable && implicit {
             self.check_results(&locals, &output.results());
-            self.publish_at_exit(&inner, &locals, false);
+            self.storage_exit(&inner, &locals);
             if output.returns_borrowed_writer(Mode::Infer) {
                 self.error(
                     Code::E0528,
@@ -2331,7 +2414,16 @@ impl Analyzer<'_> {
                 );
             }
         }
+        let exits = self.storage_exits.remove(&node.span).unwrap_or_default();
         if let Some(closure) = self.closure_modes.get_mut(&node.span) {
+            closure.updates = Ledger::join_updates(exits.iter().collect());
+            closure.models_publication = closure
+                .updates
+                .keys()
+                .all(|region| closure.formals.contains(&Some(region.source)));
+            closure
+                .updates
+                .retain(|region, _| closure.formals.contains(&Some(region.source)));
             closure.returns.clone_from(&inner.return_values);
             if implicit && inner.reachable {
                 closure.returns.push(output.clone());
