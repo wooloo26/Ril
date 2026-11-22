@@ -347,3 +347,26 @@ fn main() -> () {
     assert(read(item, "size") == 3)
     assert(read(item, "label") == "valid")
 }
+
+-- @case inspection_obeys_opaque_boundaries_in_nested_values run-pass backend=both
+-- @file pkg/secret.ril
+pub opaque type Token = int
+pub opaque type Packet { Hidden(int) }
+pub fn token(value: int) -> Token { value }
+pub fn packet() -> new Packet { Hidden(72) }
+pub fn inside() -> str { String::inspect(token(42)) }
+-- @file pkg/main.ril
+use pkg/secret as Secret
+fn describe<T>(value: T) -> str { String::inspect(value) }
+fn describe_items<T>(items: []?T) -> str { describe(items) }
+fn make() @io -> Secret::Token { println("evaluated"); Secret::token(42) }
+fn main() @io -> () {
+    assert(Secret::inside() == "42")
+    assert(String::inspect(make()) == "<Token>")
+    assert(String::inspect(Secret::packet()) == "<Packet>")
+    let token = Secret::token(17)
+    let values = .{ plain: 17, sealed: [Some(token), None] }
+    assert(describe(values) == ".{{ plain: 17, sealed: [Some(<Token>), None] }}")
+    assert(describe_items(values.sealed) == "[Some(<Token>), None]")
+}
+-- @expect-stdout evaluated

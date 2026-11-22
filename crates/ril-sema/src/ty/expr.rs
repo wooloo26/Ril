@@ -1583,6 +1583,9 @@ impl<'a> Checker<'a> {
         if let Some(known) = def_id {
             self.validate_generic_uses(env, known, &generics, span);
         }
+        if !env.shadow && !generics.is_empty() {
+            self.generic_arguments.insert(span, generics.clone());
+        }
         if pending_meta && let Some(id) = def_id {
             self.eval_call_root(env, id, args, span);
         }
@@ -1933,7 +1936,11 @@ impl<'a> Checker<'a> {
             }
             "variants" => Ty::Array(Box::new(Member::plain(Ty::Str))),
             "contains" | "has_default" => Ty::Bool,
-            "type_name" | "inspect" => Ty::Str,
+            "type_name" => Ty::Str,
+            "inspect" => {
+                self.inspection_scopes.insert(span, env.scope);
+                Ty::Str
+            }
             "panic_message" => {
                 self.require(env, span, &first, &Ty::PanicInfo);
                 Ty::Str

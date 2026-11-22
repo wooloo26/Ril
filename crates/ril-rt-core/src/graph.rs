@@ -1,5 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+use num_traits::ToPrimitive;
+
 use crate::{GcRuntime, Object, Value, text};
 
 impl GcRuntime {
@@ -166,14 +168,49 @@ impl GcRuntime {
     }
 
     pub fn inspect(&self, value: Value) -> String {
-        self.inspect_from(value, &mut BTreeSet::new(), 0)
+        self.inspect_from(value, &[], Value::UNIT, &mut BTreeSet::new(), 0)
     }
 
-    fn inspect_from(&self, value: Value, active: &mut BTreeSet<Value>, depth: usize) -> String {
+    pub(crate) fn inspect_typed(&self, value: Value, plan: Value) -> String {
+        let Some(Object::Array(nodes)) = self.object(plan) else {
+            return self.inspect(value);
+        };
+        let root = nodes.get(1).copied().unwrap_or(Value::UNIT);
+        self.inspect_from(value, nodes, root, &mut BTreeSet::new(), 0)
+    }
+
+    fn inspect_from(
+        &self,
+        value: Value,
+        nodes: &[Value],
+        descriptor: Value,
+        active: &mut BTreeSet<Value>,
+        depth: usize,
+    ) -> String {
+        let descriptor_handle = descriptor;
+        let descriptor = self.object(descriptor_handle);
+        if let Some(Object::Str(text)) = descriptor {
+            return text.clone();
+        }
         if depth > 96 || !active.insert(value) {
             return "...".into();
         }
-        let mut render = |v| self.inspect_from(v, active, depth + 1);
+        let mut render = |value, index: Option<Value>| {
+            let next = index
+                .and_then(|index| self.integer(index))
+                .and_then(ToPrimitive::to_usize)
+                .and_then(|index| nodes.get(index).copied())
+                .unwrap_or(Value::UNIT);
+            self.inspect_from(value, nodes, next, active, depth + 1)
+        };
+        let index_at = |index| match descriptor {
+            Some(Object::Tuple(ids)) => ids.get(index).copied(),
+            _ => None,
+        };
+        let field = |name: &str| match descriptor {
+            Some(Object::Record(fields)) => fields.get(name).copied(),
+            _ => None,
+        };
         let result = match value {
             Value::UNIT => "()".into(),
             Value::TRUE => "true".into(),
@@ -190,21 +227,24 @@ impl GcRuntime {
                 Some(Object::Receiver(_)) => "<Receiver>".into(),
                 Some(Object::Draft { .. }) => "<Draft>".into(),
                 Some(Object::Bytes(bytes)) => text::inspect_bytes(bytes),
-                Some(Object::Array(items)) => format!(
-                    "[{}]",
-                    items
-                        .iter()
-                        .copied()
-                        .map(&mut render)
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                ),
+                Some(Object::Array(items)) => {
+                    let index =
+                        matches!(descriptor, Some(Object::Int(_))).then_some(descriptor_handle);
+                    format!(
+                        "[{}]",
+                        items
+                            .iter()
+                            .map(|&value| render(value, index))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )
+                }
                 Some(Object::Tuple(items)) => format!(
                     "({})",
                     items
                         .iter()
-                        .copied()
-                        .map(&mut render)
+                        .enumerate()
+                        .map(|(index, &value)| render(value, index_at(index)))
                         .collect::<Vec<_>>()
                         .join(", ")
                 ),
@@ -212,7 +252,7 @@ impl GcRuntime {
                     ".{{ {} }}",
                     fields
                         .iter()
-                        .map(|(k, v)| format!("{k}: {}", render(*v)))
+                        .map(|(name, &value)| format!("{name}: {}", render(value, field(name))))
                         .collect::<Vec<_>>()
                         .join(", ")
                 ),
@@ -220,20 +260,30 @@ impl GcRuntime {
                     "[{}]",
                     fields
                         .iter()
-                        .map(|(k, v)| format!("{}: {}", render(*k), render(*v)))
+                        .map(|&(key, value)| format!(
+                            "{}: {}",
+                            render(key, index_at(0)),
+                            render(value, index_at(1))
+                        ))
                         .collect::<Vec<_>>()
                         .join(", ")
                 ),
                 Some(Object::Tag(tag, fields)) if fields.is_empty() => tag.clone(),
-                Some(Object::Tag(tag, fields)) => format!(
-                    "{tag}({})",
-                    fields
-                        .iter()
-                        .copied()
-                        .map(&mut render)
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                ),
+                Some(Object::Tag(tag, fields)) => {
+                    let ids = match field(tag).and_then(|child| self.object(child)) {
+                        Some(Object::Tuple(ids)) => ids.as_slice(),
+                        _ => &[],
+                    };
+                    format!(
+                        "{tag}({})",
+                        fields
+                            .iter()
+                            .enumerate()
+                            .map(|(index, &value)| render(value, ids.get(index).copied()))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )
+                }
                 _ => "<object>".into(),
             },
         };

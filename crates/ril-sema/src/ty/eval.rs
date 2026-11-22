@@ -849,6 +849,22 @@ impl Checker<'_> {
                     }
                     Ok(Value::Array(result))
                 }
+                DefinitionKind::Primitive(_) if name == "inspect" => {
+                    let [argument] = args else {
+                        return Err(nonstatic(span));
+                    };
+                    fuel.step(span)?;
+                    let value = self.evaluate(env, slots, argument.value, fuel)?;
+                    let argument_span = self.ast(env.file).expr(argument.value).span;
+                    let ty = self
+                        .types
+                        .get(&argument_span)
+                        .cloned()
+                        .unwrap_or_else(|| self.expr(env, argument.value, None));
+                    Ok(Value::Str(
+                        super::inspect::Plan::build(self, env, &ty).render(&value),
+                    ))
+                }
                 DefinitionKind::Primitive(_) => {
                     fuel.step(span)?;
                     let args = self.eval_args(env, slots, args, fuel)?;
@@ -933,6 +949,22 @@ impl Checker<'_> {
             ));
         }
         let body = fun.body.ok_or_else(|| nonstatic(span))?;
+        self.function(&local, fun);
+        if let Some(arguments) = self.generic_arguments.get(&span) {
+            local.generics = arguments
+                .iter()
+                .map(|(&id, argument)| {
+                    let argument = match argument {
+                        GenericValue::Type(ty) => GenericValue::Type(super::check::substitute(
+                            &self.normalize(ty),
+                            &env.generics,
+                        )),
+                        value => value.clone(),
+                    };
+                    (id, argument)
+                })
+                .collect();
+        }
         fuel.step(span)?;
         if fuel.depth >= 96 {
             return Err(Signal::Error(
@@ -1057,7 +1089,6 @@ impl Checker<'_> {
             }
             ("inner", [Value::Tag(_, values)]) if values.is_empty() => Ok(Value::Unit),
             ("inner", [Value::Tag(_, values)]) => Ok(Value::Tuple(values.clone())),
-            ("inspect", [value]) => Ok(Value::Str(render(value))),
             ("contains", [Value::Array(values), item]) => {
                 Ok(Value::Bool(values.iter().any(|v| ieee_equal(v, item))))
             }

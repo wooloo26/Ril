@@ -197,3 +197,15 @@ type Invalid = .{ [["where"] as key]: int }
 -- @case duplicate_mapped_record_field_label compile-fail E0210
 type Invalid = .{ [["key", "key"] as key]: int }
 -- ^ E0210
+
+-- @case static_inspection_obeys_opaque_boundaries_in_nested_values compile-pass unit=lib
+-- @file pkg/secret.ril
+pub opaque type Token = int
+pub meta fn token(value: int) -> Token { value }
+pub meta fn inside() -> str { String::inspect(token(42)) }
+-- @file pkg/main.ril
+use pkg/secret as Secret
+meta fn describe<T>(value: []?T) -> str { String::inspect(value) }
+meta let CHECK = assert(Secret::inside() == "42" &&
+    String::inspect(Secret::token(17)) == "<Token>" &&
+    describe([Some(Secret::token(17)), None]) == "[Some(<Token>), None]")

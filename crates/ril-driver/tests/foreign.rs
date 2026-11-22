@@ -66,6 +66,7 @@ fn aot_foreign_functions_support_first_class_calls_and_cleanup() {
             use handle = Sys::host_open()
             let live = Sys::host_live
             assert(Sys::host_answer == 18446744073709551616 && live(ref handle))
+            assert(String::inspect(ref handle) == "<Handle>")
             panic("foreign cleanup")
         }
     "#

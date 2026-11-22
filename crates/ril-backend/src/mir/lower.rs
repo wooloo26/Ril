@@ -1160,7 +1160,15 @@ impl<'a> Builder<'_, 'a> {
             span,
         )?;
         if function.body.is_some() {
-            let types = self.specialize(function, path, args);
+            let types = self
+                .global
+                .typed
+                .type_arguments
+                .get(&span)
+                .into_iter()
+                .flatten()
+                .map(|(&id, ty)| (id, self.concrete(ty)))
+                .collect();
             let captures = self.named_captures(id);
             let environment = (!captures.is_empty()).then(|| self.environment(&captures));
             let mut statics = self.statics.clone();
@@ -1276,50 +1284,8 @@ impl<'a> Builder<'_, 'a> {
         Ok(self.box_closure(function, arity, environment))
     }
 
-    fn specialize(
-        &self,
-        function: &SyntaxFunction,
-        path: &ril_sema::syntax::Path,
-        args: &[Argument],
-    ) -> BTreeMap<DefinitionId, Ty> {
-        use ril_sema::syntax::GenericArg;
-        let mut bindings = BTreeMap::new();
-        let defined = &self.global.typed.hir.file(function.name.span.file).ast;
-        for (param, arg) in function.generics.iter().zip(
-            path.segments
-                .last()
-                .into_iter()
-                .flat_map(|segment| &segment.arguments),
-        ) {
-            if let Some(id) = self.global.resolve(param.name.span)
-                && let GenericArg::Type(ty) = arg
-                && let Some(ty) = self.global.typed.types.get(&self.ast().ty(*ty).span)
-            {
-                bindings.insert(id, self.concrete(ty));
-            }
-        }
-        for (arg, param) in args.iter().zip(&function.signature.params) {
-            if let Some(syntax) = param.ty
-                && let Some(Ty::Param(id)) = self.global.typed.types.get(&defined.ty(syntax).span)
-                && let Some(value) = self
-                    .global
-                    .typed
-                    .types
-                    .get(&self.ast().expr(arg.value).span)
-            {
-                bindings.entry(*id).or_insert_with(|| self.concrete(value));
-            }
-        }
-        bindings
-    }
-
     fn concrete(&self, ty: &Ty) -> Ty {
-        if let Ty::Param(id) = ty
-            && let Some(concrete) = self.types.get(id)
-        {
-            return concrete.clone();
-        }
-        ty.clone()
+        ty.specialize(&self.types)
     }
 
     fn arguments(
@@ -1498,6 +1464,21 @@ impl<'a> Builder<'_, 'a> {
                 },
             );
         }
+        if name == "inspect"
+            && let [argument] = args
+        {
+            let argument_span = self.ast().expr(argument.value).span;
+            let value = self.expr(argument.value)?;
+            if let Some(plan) = self
+                .global
+                .typed
+                .inspection_plan(span, argument_span, &self.types)
+            {
+                let plan = self.constant(&plan, span)?;
+                return Ok(self.runtime("ril_rt_inspect_typed", vec![value, plan]));
+            }
+            return Ok(self.runtime("ril_rt_inspect", vec![value]));
+        }
         let mut args = args
             .iter()
             .map(|arg| self.expr(arg.value))
@@ -1527,7 +1508,6 @@ impl<'a> Builder<'_, 'a> {
             "checked_div" => "ril_rt_checked_div",
             "checked_rem" => "ril_rt_checked_rem",
             "clone" => "ril_rt_clone",
-            "inspect" => "ril_rt_inspect",
             "push" => "ril_rt_append",
             "panic_message" => "ril_rt_panic_message",
             _ => return Err(self.unsupported(span, &format!("primitive {name}"))),

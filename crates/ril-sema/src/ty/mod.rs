@@ -5,6 +5,7 @@ mod effects;
 mod eval;
 mod expr;
 mod forms;
+mod inspect;
 mod narrowing;
 mod pattern;
 pub(crate) mod reception;
@@ -101,6 +102,16 @@ impl Ty {
         matches!(self, Self::Result(_, _))
     }
 
+    pub fn specialize(&self, arguments: &BTreeMap<DefinitionId, Ty>) -> Self {
+        if arguments.is_empty() {
+            return self.clone();
+        }
+        check::transform(self, &mut |ty| match ty {
+            Self::Param(id) => arguments.get(id).cloned(),
+            _ => None,
+        })
+    }
+
     pub fn display<'a>(&'a self, hir: &'a Program) -> Display<'a> {
         Display {
             ty: self,
@@ -194,11 +205,13 @@ pub struct Callable {
 pub struct TypedProgram {
     pub hir: Program,
     pub types: HashMap<Span, Ty>,
+    pub type_arguments: HashMap<Span, BTreeMap<DefinitionId, Ty>>,
     pub bindings: HashMap<DefinitionId, Ty>,
     pub callables: BTreeMap<DefinitionId, Arc<Callable>>,
     pub static_values: HashMap<Span, Value>,
     pub meta_arguments: HashMap<Span, BTreeMap<DefinitionId, Value>>,
     pub(crate) meta_parameters: HashSet<DefinitionId>,
+    inspection_scopes: HashMap<Span, ScopeId>,
     pub narrowings: HashMap<Span, usize>,
     pub navigation_values: HashMap<Span, Ty>,
     pub subset_tags: HashMap<Span, Vec<String>>,

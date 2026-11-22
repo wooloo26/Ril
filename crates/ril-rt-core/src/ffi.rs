@@ -165,6 +165,10 @@ runtime_functions! {
         let text = rt.gc.inspect(value);
         rt.gc.alloc(Object::Str(text))
     }
+    fn ril_rt_inspect_typed(rt, value: Value, plan: Value) -> Value {
+        let text = rt.gc.inspect_typed(value, plan);
+        rt.gc.alloc(Object::Str(text))
+    }
     fn ril_rt_text(rt, value: Value) -> Value {
         if matches!(rt.gc.object(value), Some(Object::Str(_))) { value }
         else { let text = rt.gc.inspect(value); rt.gc.alloc(Object::Str(text)) }

@@ -20,37 +20,7 @@ use super::{
 pub(super) const DEFAULT_BUDGET: u64 = 10_000;
 
 pub(super) fn check(hir: Program, budget: Option<u64>) -> Result<TypedProgram, Vec<Diagnostic>> {
-    let mut ck = Checker {
-        hir: &hir,
-        diagnostics: Vec::new(),
-        types: HashMap::new(),
-        bindings: HashMap::new(),
-        callables: BTreeMap::new(),
-        static_values: HashMap::new(),
-        meta_arguments: HashMap::new(),
-        meta_parameters: HashSet::new(),
-        next_infer: 0,
-        substitutions: HashMap::new(),
-        resolving: HashSet::new(),
-        checked: HashSet::new(),
-        schemes: HashSet::new(),
-        live: HashSet::new(),
-        implicit_exits: Vec::new(),
-        narrowings: HashMap::new(),
-        effect_instances: BTreeMap::new(),
-        operation_effects: HashMap::new(),
-        operation_instances: HashMap::new(),
-        effect_applications: HashMap::new(),
-        navigation_values: HashMap::new(),
-        subset_tags: HashMap::new(),
-        tuple_payloads: HashMap::new(),
-        receptions: HashMap::new(),
-        narrow_errors: HashMap::new(),
-        constants: HashSet::new(),
-        active_metadata: HashSet::new(),
-        stack: Vec::new(),
-        budget: budget.unwrap_or(DEFAULT_BUDGET),
-    };
+    let mut ck = Checker::new(&hir, budget);
     for (id, def) in hir.definitions() {
         if def.kind == DefinitionKind::Function && def.stmt.is_some() {
             ck.declare_function(id);
@@ -78,11 +48,25 @@ pub(super) fn check(hir: Program, budget: Option<u64>) -> Result<TypedProgram, V
         .into_iter()
         .map(|(span, ty)| (span, ck.normalize(&ty)))
         .collect();
+    let type_arguments = std::mem::take(&mut ck.generic_arguments)
+        .into_iter()
+        .map(|(span, args)| {
+            let args = args
+                .into_iter()
+                .filter_map(|(id, value)| match value {
+                    GenericValue::Type(ty) => Some((id, ck.normalize(&ty))),
+                    _ => None,
+                })
+                .collect();
+            (span, args)
+        })
+        .collect();
     let Checker {
         callables,
         static_values,
         meta_arguments,
         meta_parameters,
+        inspection_scopes,
         narrowings,
         effect_instances,
         operation_effects,
@@ -96,11 +80,13 @@ pub(super) fn check(hir: Program, budget: Option<u64>) -> Result<TypedProgram, V
     Ok(TypedProgram {
         hir,
         types,
+        type_arguments,
         bindings,
         callables,
         static_values,
         meta_arguments,
         meta_parameters,
+        inspection_scopes,
         narrowings,
         navigation_values,
         effect_instances,
@@ -169,11 +155,13 @@ pub(super) struct Checker<'a> {
     pub(super) hir: &'a Program,
     pub(super) diagnostics: Vec<Diagnostic>,
     pub(super) types: HashMap<Span, Ty>,
+    pub(super) generic_arguments: HashMap<Span, HashMap<DefinitionId, GenericValue>>,
     pub(super) bindings: HashMap<DefinitionId, Ty>,
     pub(super) callables: BTreeMap<DefinitionId, Arc<Callable>>,
     pub(super) static_values: HashMap<Span, Value>,
     pub(super) meta_arguments: HashMap<Span, BTreeMap<DefinitionId, Value>>,
     pub(super) meta_parameters: HashSet<DefinitionId>,
+    pub(super) inspection_scopes: HashMap<Span, ScopeId>,
     next_infer: u32,
     substitutions: HashMap<u32, Ty>,
     pub(super) resolving: HashSet<DefinitionId>,
@@ -205,6 +193,42 @@ pub(super) struct ImplicitExits {
 }
 
 impl<'a> Checker<'a> {
+    pub(super) fn new(hir: &'a Program, budget: Option<u64>) -> Self {
+        Self {
+            hir,
+            diagnostics: Vec::new(),
+            types: HashMap::new(),
+            generic_arguments: HashMap::new(),
+            bindings: HashMap::new(),
+            callables: BTreeMap::new(),
+            static_values: HashMap::new(),
+            meta_arguments: HashMap::new(),
+            meta_parameters: HashSet::new(),
+            next_infer: 0,
+            substitutions: HashMap::new(),
+            resolving: HashSet::new(),
+            checked: HashSet::new(),
+            schemes: HashSet::new(),
+            live: HashSet::new(),
+            implicit_exits: Vec::new(),
+            inspection_scopes: HashMap::new(),
+            narrowings: HashMap::new(),
+            effect_instances: BTreeMap::new(),
+            operation_effects: HashMap::new(),
+            operation_instances: HashMap::new(),
+            effect_applications: HashMap::new(),
+            navigation_values: HashMap::new(),
+            subset_tags: HashMap::new(),
+            tuple_payloads: HashMap::new(),
+            receptions: HashMap::new(),
+            narrow_errors: HashMap::new(),
+            constants: HashSet::new(),
+            active_metadata: HashSet::new(),
+            stack: Vec::new(),
+            budget: budget.unwrap_or(DEFAULT_BUDGET),
+        }
+    }
+
     pub(super) fn ast(&self, file: FileId) -> &'a Ast {
         &self.hir.file(file).ast
     }
