@@ -727,6 +727,13 @@ impl<'a> Analyzer<'a> {
                 .into_iter()
                 .flatten()
                 .collect(),
+            callback_returns: fun
+                .returns
+                .iter()
+                .flat_map(|value| self.callback_return_contracts(&fun.formals, value))
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect(),
             ..Summary::default()
         };
         let mut up = BTreeSet::new();
@@ -897,15 +904,26 @@ impl<'a> Analyzer<'a> {
         rows.into_iter()
             .map(|modes| {
                 let mut summary = summary.clone();
+                let input = |formal| {
+                    formals
+                        .get(&formal)
+                        .and_then(|&axis| modes.get(axis))
+                        .copied()
+                };
                 for invocation in &mut summary.invocations {
                     if let InvocationMode::Formal(formal) = invocation.mode
-                        && let Some(&input) = formals.get(&formal).and_then(|&axis| modes.get(axis))
+                        && let Some(input) = input(formal)
                     {
                         invocation.mode = InvocationMode::Input(input);
                     }
                 }
                 summary.invocations.sort_unstable();
                 summary.invocations.dedup();
+                for result in &mut summary.callback_returns {
+                    result.specialize(&input);
+                }
+                summary.callback_returns.sort_unstable();
+                summary.callback_returns.dedup();
                 if fun.declared.result_mode == Mode::Infer {
                     summary.constructs = !fun.returns.is_empty()
                         && fun.returns.iter().all(|value| {

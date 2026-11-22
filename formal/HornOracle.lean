@@ -48,6 +48,7 @@ structure JsonSummary where
   return_sources : List JsonSource
   effects : List Nat
   invocations : List JsonInvocation
+  callback_returns : List Json
   captures : Bool
   constructs : Bool
   deriving FromJson
@@ -69,6 +70,8 @@ def compareSummaries (baseline revision : JsonSummary) : Bool :=
   RilAccess.SummaryOf.subsumesBy (fun _ => false) baseline.formal revision.formal &&
     RilAccess.callbackInvocationsSubsumed (baseline.invocations.map JsonInvocation.contract)
       (revision.invocations.map JsonInvocation.contract) &&
+    RilAccess.callbackReturnsSubsumed (baseline.callback_returns.map Json.compress)
+      (revision.callback_returns.map Json.compress) &&
     (!baseline.constructs || revision.constructs)
 
 structure JsonInstance where

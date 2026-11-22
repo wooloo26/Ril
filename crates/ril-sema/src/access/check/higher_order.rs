@@ -54,13 +54,7 @@ impl Offer {
                 .map(|root| Self::Formal(root.region.source))
                 .collect();
         }
-        BTreeSet::from([Self::Input(match mode {
-            Mode::Ref => Input::Ref,
-            Mode::Mut => Input::Mut,
-            Mode::Shared => Input::Shared,
-            Mode::New => Input::New,
-            _ => Input::Plain,
-        })])
+        BTreeSet::from([Self::Input(Input::from_mode(mode).unwrap_or(Input::Plain))])
     }
 }
 

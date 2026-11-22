@@ -146,6 +146,32 @@ pub fn apply(via action: fn(via Cell) @& -> int, via cell: Cell) -> int { action
 fn relay(via action: fn(via Cell) @& -> int, via cell: Cell) -> int { action(cell) }
 pub fn apply(via action: fn(via Cell) @& -> int, via cell: Cell) -> int { relay(action, cell) }
 
+-- @case changing_callback_result_source_breaks_compatibility compat-fail E0552
+-- @baseline
+pub fn pick(via action: fn(via Cell) @& -> infer Cell, via a: Cell, via b: Cell) -> infer Cell {
+    let via left = action(a)
+    let via right = action(b)
+    left
+}
+-- @revision
+pub fn pick(via action: fn(via Cell) @& -> infer Cell, via a: Cell, via b: Cell) -> infer Cell {
+-- ^ E0552
+    let via left = action(a)
+    let via right = action(b)
+    right
+}
+
+-- @case forwarding_preserves_callback_result_sources compat-pass
+-- @baseline
+pub fn apply(via action: fn(via Cell) @& -> infer Cell, via cell: Cell) -> infer Cell {
+    action(cell)
+}
+-- @revision
+fn relay(via action: fn(via Cell) @& -> infer Cell, via cell: Cell) -> infer Cell { action(cell) }
+pub fn apply(via action: fn(via Cell) @& -> infer Cell, via cell: Cell) -> infer Cell {
+    relay(action, cell)
+}
+
 -- @case higher_order_infer_can_use_an_enclosing_mode_input compile-pass
 fn accept(via callback: fn() @& -> infer Cell) -> () {}
 

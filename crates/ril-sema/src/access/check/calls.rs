@@ -10,7 +10,10 @@ use ril_frontend::{
 };
 
 use crate::{
-    access::flow::{CallbackOrigin, Handoff},
+    access::{
+        CallbackArgument, CallbackReturn, InvocationMode, ReturnSource,
+        flow::{CallbackOrigin, Handoff},
+    },
     ty::Ty,
 };
 
@@ -187,13 +190,7 @@ impl Analyzer<'_> {
                 if mode != Mode::Via {
                     choices.push((
                         index,
-                        match mode {
-                            Mode::Ref => Input::Ref,
-                            Mode::Mut => Input::Mut,
-                            Mode::Shared => Input::Shared,
-                            Mode::New => Input::New,
-                            _ => Input::Plain,
-                        },
+                        Input::from_mode(mode).unwrap_or(Input::Plain),
                         node.span,
                     ));
                 }
@@ -1013,6 +1010,75 @@ impl Analyzer<'_> {
             spans,
         });
         result
+    }
+
+    pub(super) fn callback_return_contracts(
+        &self,
+        formals: &[Option<Span>],
+        value: &Datum,
+    ) -> Vec<CallbackReturn> {
+        let formal_index = |source| formals.iter().position(|formal| *formal == Some(source));
+        let mut contracts = BTreeSet::new();
+        value.visit_origins(&mut Vec::new(), &mut |result_path, origin| {
+            let Some(pending) = origin.callback_result else {
+                return;
+            };
+            let Some(template) = self.callback_results.get(pending.template) else {
+                return;
+            };
+            let mut arguments: Vec<_> = template
+                .arguments
+                .iter()
+                .map(|(position, mode, value)| {
+                    let modes = if let Some(input) = Input::from_mode(*mode) {
+                        vec![InvocationMode::Input(input)]
+                    } else {
+                        value
+                            .roots
+                            .iter()
+                            .filter(|root| root.inherits_mode)
+                            .filter_map(|root| {
+                                formal_index(root.region.source).map(InvocationMode::Formal)
+                            })
+                            .collect::<BTreeSet<_>>()
+                            .into_iter()
+                            .collect()
+                    };
+                    let mut sources = BTreeSet::new();
+                    value.visit_origins(&mut Vec::new(), &mut |path, root| {
+                        if let Some(formal) = formal_index(root.region.source) {
+                            sources.insert(ReturnSource {
+                                formal,
+                                source_path: root.region.selection.clone(),
+                                result_path: path.to_vec(),
+                                access: root.mode,
+                            });
+                        }
+                    });
+                    CallbackArgument {
+                        position: *position,
+                        modes,
+                        sources: sources.into_iter().collect(),
+                        callback_returns: self.callback_return_contracts(formals, value),
+                        constructs: value.requires_new,
+                    }
+                })
+                .collect();
+            arguments.sort_unstable();
+            for receiver in &template.receiver.roots {
+                if let Some(formal) = formal_index(receiver.region.source) {
+                    contracts.insert(CallbackReturn {
+                        receiver: formal,
+                        receiver_path: receiver.region.selection.clone(),
+                        source_path: origin.region.selection.clone(),
+                        result_path: result_path.to_vec(),
+                        cap: pending.cap,
+                        arguments: arguments.clone(),
+                    });
+                }
+            }
+        });
+        contracts.into_iter().collect()
     }
 
     fn instantiate_callback_result(

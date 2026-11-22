@@ -143,6 +143,63 @@ fn higher_order_via_rows_publish_callback_reception() {
 }
 
 #[test]
+fn exported_callback_results_retain_their_call_entry_sources() {
+    use ril_sema::access::{Input, InvocationMode, ReturnSource};
+
+    let suite = parse_suite(
+        Path::new("via.ril"),
+        include_str!("../../../tests/08_via_compat/via.ril"),
+    )
+    .unwrap();
+    let case = suite
+        .cases
+        .iter()
+        .find(|case| case.id == "forwarding_preserves_callback_result_sources")
+        .unwrap();
+    let interface = Driver.interface(&case.pkg).unwrap();
+    let decoded = Interface::decode(&interface.encode().unwrap()).unwrap();
+    let export = decoded.functions.values().next().unwrap();
+    let [result] = export.summary.callback_returns.as_slice() else {
+        panic!("missing callback return");
+    };
+    assert_eq!(result.receiver, 0);
+    assert!(result.result_path.is_empty());
+    let [argument] = result.arguments.as_slice() else {
+        panic!("missing forwarded argument");
+    };
+    assert_eq!(argument.modes, [InvocationMode::Formal(1)]);
+    assert_eq!(
+        argument
+            .sources
+            .iter()
+            .map(|source| source.formal)
+            .collect::<Vec<_>>(),
+        [1]
+    );
+    let row = export
+        .domain
+        .iter()
+        .find(|row| row.modes == [Input::Plain, Input::Ref])
+        .unwrap();
+    let [result] = row.summary.callback_returns.as_slice() else {
+        panic!("missing specialized return");
+    };
+    let [argument] = result.arguments.as_slice() else {
+        panic!("missing specialized argument");
+    };
+    assert_eq!(argument.modes, [InvocationMode::Input(Input::Ref)]);
+    assert_eq!(
+        argument.sources,
+        [ReturnSource {
+            formal: 1,
+            source_path: Vec::new(),
+            result_path: Vec::new(),
+            access: Access::Ref,
+        }]
+    );
+}
+
+#[test]
 fn exported_horn_facts_agree_with_lean() {
     let Some(oracle) = std::env::var_os("RIL_HORN_ORACLE") else {
         return;
@@ -282,6 +339,7 @@ fn exported_summaries_and_via_domains_agree_with_lean() {
             "return_sources": return_sources,
             "effects": effects,
             "invocations": invocations,
+            "callback_returns": summary.callback_returns,
             "captures": summary.captures,
             "constructs": summary.constructs,
         })

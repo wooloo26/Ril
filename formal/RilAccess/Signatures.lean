@@ -178,6 +178,16 @@ theorem callbackInvocationsSubsumed_iff {baseline revision : List CallbackInvoca
       ∀ call ∈ revision, call ∈ baseline := by
   simp [callbackInvocationsSubsumed, List.all_eq_true]
 
+/-- Each returned callback expression in the revision must be covered by the
+baseline relation, including the arguments that supply its return sources. -/
+def callbackReturnsSubsumed [DecidableEq α] (baseline revision : List α) : Bool :=
+  revision.all (fun result => decide (result ∈ baseline))
+
+theorem callbackReturnsSubsumed_iff [DecidableEq α] {baseline revision : List α} :
+    callbackReturnsSubsumed baseline revision = true ↔
+      ∀ result ∈ revision, result ∈ baseline := by
+  simp [callbackReturnsSubsumed, List.all_eq_true]
+
 theorem viaDomainSubsumes_preserves_row [DecidableEq Mode] {subsumes : Sig → Sig → Bool}
     {baseline revision : List (Mode × Sig)} {mode : Mode} {old : Sig}
     (h : viaDomainSubsumes subsumes baseline revision = true)

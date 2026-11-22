@@ -7,7 +7,7 @@ pub use flow::{Access, Coordinate};
 use std::collections::BTreeMap;
 
 use ril_base::{diag::Diagnostic, span::Span};
-use ril_frontend::hir::DefinitionId;
+use ril_frontend::{hir::DefinitionId, syntax::Mode};
 use serde::{Deserialize, Serialize};
 
 use crate::ty::TypedProgram;
@@ -19,6 +19,7 @@ pub struct Summary {
     pub return_sources: Vec<ReturnSource>,
     pub effects: Vec<String>,
     pub invocations: Vec<Invocation>,
+    pub callback_returns: Vec<CallbackReturn>,
     pub captures: bool,
     pub constructs: bool,
 }
@@ -44,6 +45,10 @@ impl Summary {
                 .iter()
                 .all(|invoke| self.invocations.contains(invoke))
             && revised
+                .callback_returns
+                .iter()
+                .all(|result| self.callback_returns.contains(result))
+            && revised
                 .return_sources
                 .iter()
                 .all(|source| self.return_sources.contains(source))
@@ -64,6 +69,57 @@ pub struct Invocation {
 }
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+pub struct CallbackReturn {
+    pub receiver: usize,
+    pub receiver_path: Vec<Coordinate>,
+    pub source_path: Vec<Coordinate>,
+    pub result_path: Vec<Coordinate>,
+    pub cap: Option<Access>,
+    pub arguments: Vec<CallbackArgument>,
+}
+
+impl CallbackReturn {
+    fn specialize(&mut self, input: &impl Fn(usize) -> Option<Input>) {
+        for argument in &mut self.arguments {
+            for mode in &mut argument.modes {
+                if let InvocationMode::Formal(formal) = *mode
+                    && let Some(input) = input(formal)
+                {
+                    for source in &mut argument.sources {
+                        if source.formal == formal
+                            && source.source_path.is_empty()
+                            && source.result_path.is_empty()
+                        {
+                            source.access = input.access();
+                        }
+                    }
+                    *mode = InvocationMode::Input(input);
+                }
+            }
+            argument.modes.sort_unstable();
+            argument.modes.dedup();
+            argument.sources.sort_unstable();
+            argument.sources.dedup();
+            argument.constructs |= argument.modes == [InvocationMode::Input(Input::New)];
+            for result in &mut argument.callback_returns {
+                result.specialize(input);
+            }
+            argument.callback_returns.sort_unstable();
+            argument.callback_returns.dedup();
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+pub struct CallbackArgument {
+    pub position: usize,
+    pub modes: Vec<InvocationMode>,
+    pub sources: Vec<ReturnSource>,
+    pub callback_returns: Vec<CallbackReturn>,
+    pub constructs: bool,
+}
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 pub struct ReturnSource {
     pub formal: usize,
     pub source_path: Vec<Coordinate>,
@@ -81,6 +137,17 @@ pub enum Input {
 }
 
 impl Input {
+    const fn from_mode(mode: Mode) -> Option<Self> {
+        Some(match mode {
+            Mode::Plain => Self::Plain,
+            Mode::Ref => Self::Ref,
+            Mode::Mut => Self::Mut,
+            Mode::Shared => Self::Shared,
+            Mode::New => Self::New,
+            Mode::Via | Mode::Infer => return None,
+        })
+    }
+
     const fn access(self) -> Access {
         match self {
             Self::Plain => Access::Immutable,
