@@ -397,6 +397,33 @@ impl Analyzer<'_> {
             };
             self.link_invocation(ctx, &enclosing);
             let has_body = fun.body.is_some();
+            let mut before_updates = None;
+            let mut modeled_stores = false;
+            if has_body && ctx.reachable && !ctx.shadow {
+                self.function(fun, ledger);
+                if let Some(checked) = self
+                    .functions
+                    .iter()
+                    .find(|checked| checked.owner == fun.name.span)
+                {
+                    modeled_stores = true;
+                    if !checked.updates.is_empty() {
+                        let frozen = ledger.clone();
+                        self.apply_storage_updates(
+                            ctx,
+                            fun.name.span,
+                            &CallEntry {
+                                arguments: &values,
+                                spans: &value_spans,
+                                ledger: &frozen,
+                                span,
+                            },
+                            ledger,
+                        );
+                        before_updates = Some(frozen);
+                    }
+                }
+            }
             if has_body && let Some(signature) = sig {
                 let formals: Vec<_> = fun
                     .signature
@@ -510,19 +537,25 @@ impl Analyzer<'_> {
                                 },
                             });
                             if matches!(mode, Mode::Shared | Mode::Via) {
-                                for obligation in
-                                    [Obligation::Retain(source), Obligation::Share(source)]
-                                {
-                                    self.rules.push(Rule {
-                                        premises: vec![Fact {
-                                            owner: fun.name.span,
-                                            obligation: Obligation::Share(formal),
-                                        }],
-                                        conclusion: Fact {
-                                            owner: ctx.owner,
-                                            obligation,
-                                        },
-                                    });
+                                let causes = [
+                                    Some(Obligation::Share(formal)),
+                                    (!modeled_stores).then_some(Obligation::StoreShare(formal)),
+                                ];
+                                for cause in causes.into_iter().flatten() {
+                                    for obligation in
+                                        [Obligation::Retain(source), Obligation::Share(source)]
+                                    {
+                                        self.rules.push(Rule {
+                                            premises: vec![Fact {
+                                                owner: fun.name.span,
+                                                obligation: cause.clone(),
+                                            }],
+                                            conclusion: Fact {
+                                                owner: ctx.owner,
+                                                obligation,
+                                            },
+                                        });
+                                    }
                                 }
                             }
                         } else if sig
@@ -544,7 +577,7 @@ impl Analyzer<'_> {
                 let entry = CallEntry {
                     arguments: &values,
                     spans: &value_spans,
-                    ledger,
+                    ledger: before_updates.as_ref().unwrap_or(ledger),
                     span,
                 };
                 if let Some(mut result) = self.return_template(fun, &entry) {
@@ -933,6 +966,62 @@ impl Analyzer<'_> {
             .iter()
             .map(|datum| self.instantiate_return(&formals, &via, entry, datum, &mut Vec::new()))
             .reduce(Datum::joined)
+    }
+
+    fn apply_storage_updates(
+        &mut self,
+        ctx: &Context,
+        owner: Span,
+        entry: &CallEntry<'_>,
+        ledger: &mut Ledger,
+    ) {
+        let Some(checked) = self.functions.iter().find(|checked| checked.owner == owner) else {
+            return;
+        };
+        let (formals, via, updates) = (
+            checked.formals.clone(),
+            checked.via.clone(),
+            checked.updates.clone(),
+        );
+        for (region, update) in updates {
+            let Some(formal) = formals
+                .iter()
+                .position(|formal| *formal == Some(region.source))
+            else {
+                continue;
+            };
+            let Some(((_, _, actual), &argument_span)) = entry
+                .arguments
+                .iter()
+                .zip(entry.spans)
+                .find(|((index, _, _), _)| *index == formal)
+            else {
+                continue;
+            };
+            let Some((member, parent)) = region.selection.split_last() else {
+                continue;
+            };
+
+            let mut value = actual.clone();
+            let mut ty = self.ty(argument_span);
+            for coordinate in parent {
+                let schema = self.schema_member(ty, coordinate);
+                let mode = schema.map_or(Mode::Plain, |member| member.mode.mode);
+                value = entry
+                    .ledger
+                    .project_schema(&value, coordinate.clone(), mode);
+                ty = schema.map_or(&Ty::Unknown, |member| &member.ty);
+            }
+            let place = value.slot_projection(member.clone());
+            let mut output_path = vec![Coordinate::Index(formal.to_string())];
+            output_path.extend(region.selection);
+            let mut stored =
+                self.instantiate_return(&formals, &via, entry, &update.value, &mut output_path);
+            stored
+                .publications
+                .insert(ctx.owner, place.roots.iter().any(|origin| !origin.new));
+            ledger.replace_member(&place, stored, update.definite);
+        }
     }
 
     fn instantiate_return(
@@ -1400,6 +1489,7 @@ impl Analyzer<'_> {
         for (obligation, required) in [
             (Obligation::Write(formal), SchemaRequirement::Writable),
             (Obligation::Share(formal), SchemaRequirement::Shared),
+            (Obligation::StoreShare(formal), SchemaRequirement::Shared),
             (Obligation::NeedsSharing(formal), SchemaRequirement::Shared),
         ] {
             let premise = Fact { owner, obligation };
@@ -1457,6 +1547,10 @@ impl Analyzer<'_> {
             owner,
             obligation: Obligation::Share(formal),
         };
+        let store_share = Fact {
+            owner,
+            obligation: Obligation::StoreShare(formal),
+        };
         if via {
             if mode == Mode::Via {
                 self.forward_via_input(ctx, ledger, value, (owner, formal), span);
@@ -1474,6 +1568,12 @@ impl Analyzer<'_> {
                     (
                         mode == Mode::Shared,
                         share.clone(),
+                        Code::E0520,
+                        "via application requires shared writable reception",
+                    ),
+                    (
+                        mode == Mode::Shared,
+                        store_share.clone(),
                         Code::E0520,
                         "via application requires shared writable reception",
                     ),
@@ -1512,14 +1612,16 @@ impl Analyzer<'_> {
                 },
             });
             if matches!(mode, Mode::Via | Mode::Shared) {
-                for obligation in [Obligation::Retain(source), Obligation::Share(source)] {
-                    self.rules.push(Rule {
-                        premises: vec![share.clone()],
-                        conclusion: Fact {
-                            owner: ctx.owner,
-                            obligation,
-                        },
-                    });
+                for cause in [&share, &store_share] {
+                    for obligation in [Obligation::Retain(source), Obligation::Share(source)] {
+                        self.rules.push(Rule {
+                            premises: vec![cause.clone()],
+                            conclusion: Fact {
+                                owner: ctx.owner,
+                                obligation,
+                            },
+                        });
+                    }
                 }
             }
         }
@@ -1653,7 +1755,7 @@ impl Analyzer<'_> {
             .map(|(_, _, v)| v);
         match name {
             "println" | "print" => self.effect(ctx, ledger, "io", span),
-            "panic" => self.publish_at_exit(ctx, ledger),
+            "panic" => self.publish_at_exit(ctx, ledger, false),
             "push" | "pop" | "insert" | "remove" | "clear" => {
                 if let Some(value) = first {
                     self.mutate(ctx, ledger, value, span);
@@ -2180,7 +2282,7 @@ impl Analyzer<'_> {
         let implicit = self.ty(self.ast(ctx.file).expr(*body).span) != &Ty::Never;
         if inner.reachable && implicit {
             self.check_results(&locals, &output.results());
-            self.publish_at_exit(&inner, &locals);
+            self.publish_at_exit(&inner, &locals, false);
             if output.returns_borrowed_writer(Mode::Infer) {
                 self.error(
                     Code::E0528,

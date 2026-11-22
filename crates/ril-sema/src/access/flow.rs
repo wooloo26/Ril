@@ -416,9 +416,9 @@ pub(super) struct Slot {
 }
 
 #[derive(Clone)]
-struct Replacement {
-    value: Datum,
-    definite: bool,
+pub(super) struct Replacement {
+    pub value: Datum,
+    pub definite: bool,
 }
 
 #[derive(Clone, Default)]
@@ -540,29 +540,57 @@ impl Ledger {
             self.replacements.clone_from(&prior.replacements);
             return;
         }
-        let regions: BTreeSet<_> = alternatives
-            .iter()
-            .flat_map(|branch| branch.replacements.keys())
-            .collect();
-        self.replacements = regions
+        self.replacements = Self::join_updates(
+            alternatives
+                .iter()
+                .map(|branch| &branch.replacements)
+                .collect(),
+        );
+    }
+
+    pub(super) fn join_updates(
+        paths: Vec<&BTreeMap<Region, Replacement>>,
+    ) -> BTreeMap<Region, Replacement> {
+        let regions: BTreeSet<_> = paths.iter().flat_map(|path| path.keys()).collect();
+        regions
             .into_iter()
             .filter_map(|region| {
-                let entries: Vec<_> = alternatives
-                    .iter()
-                    .filter_map(|branch| branch.replacements.get(region))
-                    .collect();
-                let definite = entries.len() == alternatives.len()
-                    && entries.iter().all(|entry| entry.definite);
+                let entries: Vec<_> = paths.iter().filter_map(|path| path.get(region)).collect();
+                let definite =
+                    entries.len() == paths.len() && entries.iter().all(|entry| entry.definite);
                 let value = entries
                     .into_iter()
                     .map(|entry| entry.value.clone())
                     .reduce(Datum::joined)?;
                 Some((region.clone(), Replacement { value, definite }))
             })
-            .collect();
+            .collect()
     }
 
-    pub(super) fn replace_member(&mut self, slot: &Datum, mut value: Datum) {
+    pub(super) fn formal_updates(
+        &self,
+        owner: Span,
+        formals: &[Option<Span>],
+    ) -> BTreeMap<Region, Replacement> {
+        self.replacements
+            .iter()
+            .filter(|(region, update)| {
+                formals.contains(&Some(region.source))
+                    && update.value.publications.contains_key(&owner)
+            })
+            .map(|(region, update)| {
+                (
+                    region.clone(),
+                    Replacement {
+                        value: self.snapshot(&update.value),
+                        definite: update.definite,
+                    },
+                )
+            })
+            .collect()
+    }
+
+    pub(super) fn replace_member(&mut self, slot: &Datum, mut value: Datum, definite: bool) {
         self.stamp(&mut value);
         let single = slot
             .roots
@@ -570,7 +598,7 @@ impl Ledger {
             .is_some_and(|first| slot.roots.iter().all(|root| root.region == first.region));
         for origin in &slot.roots {
             let region = &origin.region;
-            let definite = single && !region.selection.contains(&Coordinate::Dynamic);
+            let definite = definite && single && !region.selection.contains(&Coordinate::Dynamic);
             if definite {
                 self.replacements.insert(
                     region.clone(),

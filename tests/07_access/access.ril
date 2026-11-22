@@ -357,6 +357,48 @@ fn store(mut holder: Holder, ^mut source: Cell) &mut &^mut -> () {
     holder.shelf.item = ^mut source
 }
 
+-- @case a_caller_can_overwrite_retention_from_a_callee compile-fail E0527
+type Shelf = .{ var ^mut item: Cell }
+fn publish(mut shelf: Shelf, ^mut source: Cell) &mut &^mut -> () {
+    shelf.item = ^mut source
+}
+fn overwrite(mut shelf: Shelf, ^mut discarded: Cell, ^mut retained: Cell) &mut &^mut -> () {
+-- ^ E0527
+    publish(mut shelf, ^mut discarded)
+    shelf.item = ^mut retained
+}
+
+-- @case a_callee_can_overwrite_retention_from_its_caller compile-fail E0527
+type Shelf = .{ var ^mut item: Cell }
+fn publish(mut shelf: Shelf, ^mut source: Cell) &mut &^mut -> () {
+    shelf.item = ^mut source
+}
+fn overwrite(mut shelf: Shelf, ^mut discarded: Cell, ^mut retained: Cell) &mut &^mut -> () {
+-- ^ E0527
+    shelf.item = ^mut discarded
+    publish(mut shelf, ^mut retained)
+}
+
+-- @case conditional_callee_update_keeps_the_unmodified_retention_path compile-pass
+type Shelf = .{ var ^mut item: Cell }
+fn publish(mut shelf: Shelf, ^mut source: Cell, enabled: bool) &mut &^mut -> () {
+    if enabled { shelf.item = ^mut source }
+}
+fn relay(mut shelf: Shelf, ^mut original: Cell, ^mut replacement: Cell, enabled: bool) &mut &^mut -> () {
+    shelf.item = ^mut original
+    publish(mut shelf, ^mut replacement, enabled)
+}
+
+-- @case named_relay_preserves_the_destination_of_a_publication compile-pass
+type Shelf = .{ var ^mut item: Cell }
+type Holder = .{ mut shelf: Shelf }
+fn publish(mut shelf: Shelf, ^mut source: Cell) &mut &^mut -> () {
+    shelf.item = ^mut source
+}
+fn relay(mut holder: Holder, ^mut source: Cell) &mut &^mut -> () {
+    publish(mut holder.shelf, ^mut source)
+}
+
 -- @case publication_on_one_return_path_is_retention compile-pass
 type Shelf = .{ var ^mut item: Cell }
 fn store(mut shelf: Shelf, ^mut source: Cell, ^mut replacement: Cell, stop: bool) &mut &^mut -> () {

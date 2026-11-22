@@ -16,7 +16,9 @@ use ril_frontend::{
 use super::{
     Access, Analysis, CleanupAction, Input, Instance, Invocation, InvocationMode, ReturnSource,
     Summary,
-    flow::{Coordinate, Datum, Ledger, Reception, Region, Revocation, Slot, conflicts},
+    flow::{
+        Coordinate, Datum, Ledger, Reception, Region, Replacement, Revocation, Slot, conflicts,
+    },
     horn::{self, Rule},
 };
 use crate::ty::{self, AdtKind, Callable, Ty, TypedProgram, Value, reception};
@@ -35,6 +37,7 @@ enum Obligation {
     Replace(Span),
     Retain(Span),
     Share(Span),
+    StoreShare(Span),
     NeedsSharing(Span),
     ReadUp(Span),
     Invoke(Span),
@@ -150,6 +153,7 @@ struct DefinitionCheck {
     declared: Callable,
     return_sources: Vec<ReturnSource>,
     returns: Vec<Datum>,
+    updates: BTreeMap<Region, Replacement>,
     via: BTreeSet<Span>,
     member_axes: Vec<(usize, Region)>,
     returned_new: bool,
@@ -182,6 +186,7 @@ struct Analyzer<'a> {
     higher_order: higher_order::Calls,
     invocation_summaries: BTreeMap<Span, BTreeSet<Invocation>>,
     callback_results: Vec<calls::CallbackResult>,
+    storage_exits: BTreeMap<Span, Vec<BTreeMap<Region, Replacement>>>,
     resolving_callback_results: BTreeSet<usize>,
     functions: Vec<DefinitionCheck>,
     done: BTreeSet<DefinitionId>,
@@ -202,6 +207,7 @@ pub(super) fn analyze(program: &TypedProgram) -> (Analysis, Vec<Diagnostic>) {
         higher_order: higher_order::Calls::default(),
         invocation_summaries: BTreeMap::new(),
         callback_results: Vec::new(),
+        storage_exits: BTreeMap::new(),
         resolving_callback_results: BTreeSet::new(),
         functions: Vec::new(),
         done: BTreeSet::new(),
@@ -733,6 +739,8 @@ impl<'a> Analyzer<'a> {
                 self.error(Code::E0529, ctx.owner, "unused contained return source");
             }
         }
+        let exits = self.storage_exits.remove(&ctx.owner).unwrap_or_default();
+        let updates = Ledger::join_updates(exits.iter().collect());
         self.functions.push(DefinitionCheck {
             owner: ctx.owner,
             id,
@@ -744,6 +752,7 @@ impl<'a> Analyzer<'a> {
             returned_new: !ctx.return_values.is_empty()
                 && ctx.return_values.iter().all(|value| value.requires_new),
             returns: ctx.return_values,
+            updates,
             capture_names: captures,
         });
     }
@@ -824,7 +833,7 @@ impl<'a> Analyzer<'a> {
                         summary.writes.push(param);
                     }
                 }
-                Obligation::Share(span) => {
+                Obligation::Share(span) | Obligation::StoreShare(span) => {
                     if let Some(param) = fun.formals.iter().position(|decl| *decl == Some(*span)) {
                         summary.retained.push(param);
                     }
@@ -1292,7 +1301,11 @@ impl<'a> Analyzer<'a> {
         if !ctx.runtime || ctx.shadow {
             return;
         }
-        self.publish_at_exit(ctx, ledger);
+        self.publish_at_exit(ctx, ledger, true);
+        self.storage_exits
+            .entry(ctx.owner)
+            .or_default()
+            .push(ledger.formal_updates(ctx.owner, &ctx.formals));
         if value.creates_environment() {
             self.seed(ctx, Obligation::Capture);
         }
@@ -1373,7 +1386,7 @@ impl<'a> Analyzer<'a> {
         ctx.return_values.push(value);
     }
 
-    fn publish_at_exit(&mut self, ctx: &Context, ledger: &Ledger) {
+    fn publish_at_exit(&mut self, ctx: &Context, ledger: &Ledger, normal: bool) {
         if !ctx.runtime || ctx.shadow || !ctx.reachable {
             return;
         }
@@ -1392,7 +1405,12 @@ impl<'a> Analyzer<'a> {
                     .filter(|origin| origin.mode == Access::Shared)
                 {
                     self.seed(ctx, Obligation::Retain(origin.region.source));
-                    self.seed(ctx, Obligation::Share(origin.region.source));
+                    let effect = if normal && ctx.formals.contains(&Some(slot.decl)) {
+                        Obligation::StoreShare(origin.region.source)
+                    } else {
+                        Obligation::Share(origin.region.source)
+                    };
+                    self.seed(ctx, effect);
                 }
             });
         }
@@ -2547,7 +2565,7 @@ impl<'a> Analyzer<'a> {
                 value
                     .publications
                     .insert(ctx.owner, prior.roots.iter().any(|root| !root.new));
-                ledger.replace_member(prior, value);
+                ledger.replace_member(prior, value, true);
             }
         }
     }

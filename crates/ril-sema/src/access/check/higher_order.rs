@@ -384,6 +384,12 @@ impl Analyzer<'_> {
                 "callback requires a shared writable argument",
             ),
             (
+                Obligation::StoreShare(formal),
+                &[Input::Shared],
+                Code::E0520,
+                "callback requires a shared writable argument",
+            ),
+            (
                 Obligation::NeedsSharing(formal),
                 &[Input::Shared],
                 Code::E0520,
@@ -407,7 +413,9 @@ impl Analyzer<'_> {
                 Offer::Formal(source) => {
                     let obligation = match condition {
                         Obligation::Handoff(_) => Obligation::Handoff(source),
-                        Obligation::Share(_) => Obligation::Share(source),
+                        Obligation::Share(_) | Obligation::StoreShare(_) => {
+                            Obligation::Share(source)
+                        }
                         Obligation::NeedsSharing(_) => Obligation::NeedsSharing(source),
                         _ => Obligation::Write(source),
                     };
