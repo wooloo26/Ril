@@ -12,7 +12,7 @@ use ril_frontend::{
 use crate::{access::flow::Handoff, ty::Ty};
 
 use super::{
-    Access, Analyzer, Context, Coordinate, Datum, DefinitionCheck, Fact, Input, Ledger, ModeUse,
+    Access, Analyzer, ClosureModes, Context, Coordinate, Datum, Fact, Input, Ledger, ModeUse,
     Obligation, Region, Rule, SchemaRequirement, Slot, conflicts, member_axes,
 };
 
@@ -78,6 +78,16 @@ impl Analyzer<'_> {
             });
         let target = (id.is_none() || def.is_some_and(|def| def.kind == DefinitionKind::Local))
             .then(|| self.expr(ctx, ledger, callee_id));
+        let via_closures: BTreeMap<_, _> = target
+            .iter()
+            .flat_map(|target| &target.roots)
+            .filter_map(|origin| {
+                let owner = origin.region.source;
+                self.closure_modes
+                    .get(&owner)
+                    .map(|modes| (owner, modes.clone()))
+            })
+            .collect();
         if let Some(target) = &target {
             let requires_writer = sig.is_some_and(|sig| sig.state.iter().any(|s| s == "up"));
             if requires_writer && target.invocations.is_empty() {
@@ -139,7 +149,8 @@ impl Analyzer<'_> {
                 let mode = match arg.mode {
                     Mode::Plain if value.requires_new => Mode::New,
                     Mode::Plain
-                        if syntax.is_some_and(|fun| fun.body.is_some())
+                        if (syntax.is_some_and(|fun| fun.body.is_some())
+                            || !via_closures.is_empty())
                             && Self::forwards_via(ctx, &value) =>
                     {
                         Mode::Via
@@ -253,6 +264,26 @@ impl Analyzer<'_> {
                 "argument handoff ended the callable path",
             );
         }
+        for (&owner, modes) in &via_closures {
+            for ((index, mode, argument), &argument_span) in values.iter().zip(&value_spans) {
+                for (_, axis) in modes
+                    .member_axes
+                    .iter()
+                    .filter(|(position, _)| position == index)
+                {
+                    self.link_schema_argument(ctx, owner, axis.clone(), argument, argument_span);
+                }
+                if let Some(formal) = modes.formals.get(*index).copied().flatten() {
+                    self.apply_closure_input(
+                        ctx,
+                        ledger,
+                        (owner, formal),
+                        (*mode, argument, argument_span),
+                        modes.via.contains(&formal),
+                    );
+                }
+            }
+        }
         if let Some(module @ ("Fiber" | "Channel")) = module {
             return self.concurrent(ctx, ledger, (module, name), &values, args, span);
         }
@@ -347,11 +378,7 @@ impl Analyzer<'_> {
                         obligation: Obligation::Invoke(formal),
                     };
                     if *mode == Mode::Via {
-                        if value.roots.iter().all(|origin| origin.inherits_mode) {
-                            self.forward_handoff(ctx, ledger, value, (fun.name.span, formal));
-                        } else {
-                            self.link_via_projection(ctx, value, fun.name.span, formal, span);
-                        }
+                        self.forward_via_input(ctx, ledger, value, (fun.name.span, formal), span);
                     }
                     self.link_invocation_if(ctx, value, Some(&invocation));
                     if ctx.reachable && !ctx.shadow {
@@ -511,6 +538,37 @@ impl Analyzer<'_> {
             && matches!(def.kind, DefinitionKind::Type | DefinitionKind::Variant(_))
         {
             return constructor(span, values);
+        }
+        if let Some(target) = &target
+            && !via_closures.is_empty()
+            && target
+                .roots
+                .iter()
+                .all(|root| via_closures.contains_key(&root.region.source))
+        {
+            let entry = CallEntry {
+                arguments: &values,
+                spans: &value_spans,
+                ledger,
+                span,
+            };
+            if let Some(result) = via_closures
+                .values()
+                .flat_map(|closure| {
+                    closure.returns.iter().map(|output| {
+                        self.instantiate_return(
+                            &closure.formals,
+                            &closure.via,
+                            &entry,
+                            output,
+                            &mut Vec::new(),
+                        )
+                    })
+                })
+                .reduce(Datum::joined)
+            {
+                return result;
+            }
         }
         if let Some(sig) = sig {
             if sig.state.iter().any(|state| state == "mut") {
@@ -713,13 +771,22 @@ impl Analyzer<'_> {
         definition
             .returns
             .iter()
-            .map(|datum| self.instantiate_return(definition, entry, datum, &mut Vec::new()))
+            .map(|datum| {
+                self.instantiate_return(
+                    &definition.formals,
+                    &definition.via,
+                    entry,
+                    datum,
+                    &mut Vec::new(),
+                )
+            })
             .reduce(Datum::joined)
     }
 
     fn instantiate_return(
         &self,
-        definition: &DefinitionCheck,
+        formals: &[Option<Span>],
+        via_formals: &BTreeSet<Span>,
         entry: &CallEntry<'_>,
         template: &Datum,
         output_path: &mut Vec<Coordinate>,
@@ -728,8 +795,7 @@ impl Analyzer<'_> {
             .roots
             .iter()
             .filter_map(|origin| {
-                let formal = definition
-                    .formals
+                let formal = formals
                     .iter()
                     .position(|formal| *formal == Some(origin.region.source));
                 if let Some(index) = formal {
@@ -738,8 +804,7 @@ impl Analyzer<'_> {
                         .iter()
                         .zip(entry.spans)
                         .find(|((position, ..), _)| *position == index)?;
-                    let formal = definition.formals.get(index).copied().flatten()?;
-                    let via = definition.via.contains(&formal);
+                    let via = via_formals.contains(&origin.region.source);
                     let mut actual = actual.clone();
                     if via && *receiver != Mode::Via {
                         for root in &mut actual.roots {
@@ -812,7 +877,8 @@ impl Analyzer<'_> {
             .unwrap_or_default();
         for (coordinate, member) in &template.members {
             output_path.push(coordinate.clone());
-            let specialized = self.instantiate_return(definition, entry, member, output_path);
+            let specialized =
+                self.instantiate_return(formals, via_formals, entry, member, output_path);
             output_path.pop();
             output.members.insert(coordinate.clone(), specialized);
         }
@@ -829,10 +895,7 @@ impl Analyzer<'_> {
             for (&source, targets) in captures {
                 let mapped = instance.entry(source).or_default();
                 for &target in targets {
-                    let formal = definition
-                        .formals
-                        .iter()
-                        .position(|formal| *formal == Some(target));
+                    let formal = formals.iter().position(|formal| *formal == Some(target));
                     if let Some(index) = formal {
                         if let Some((_, _, value)) = entry
                             .arguments
@@ -980,6 +1043,96 @@ impl Analyzer<'_> {
                 for obligation in self.schema_requirements(value, required) {
                     self.rules.push(Rule {
                         premises: vec![premise.clone()],
+                        conclusion: Fact {
+                            owner: ctx.owner,
+                            obligation,
+                        },
+                    });
+                }
+            }
+        }
+    }
+
+    fn forward_via_input(
+        &mut self,
+        ctx: &Context,
+        ledger: &mut Ledger,
+        value: &Datum,
+        (owner, formal): Handoff,
+        span: Span,
+    ) {
+        if value.roots.iter().all(|origin| origin.inherits_mode) {
+            self.forward_handoff(ctx, ledger, value, (owner, formal));
+        } else {
+            self.link_via_projection(ctx, value, owner, formal, span);
+        }
+    }
+
+    fn apply_closure_input(
+        &mut self,
+        ctx: &Context,
+        ledger: &mut Ledger,
+        (owner, formal): Handoff,
+        (mode, value, span): (Mode, &Datum, Span),
+        via: bool,
+    ) {
+        let write = Fact {
+            owner,
+            obligation: Obligation::Write(formal),
+        };
+        let share = Fact {
+            owner,
+            obligation: Obligation::Share(formal),
+        };
+        if via {
+            if mode == Mode::Via {
+                self.forward_via_input(ctx, ledger, value, (owner, formal), span);
+            } else {
+                for (allowed, cause, code, message) in [
+                    (
+                        mode == Mode::New,
+                        Fact {
+                            owner,
+                            obligation: Obligation::Handoff(formal),
+                        },
+                        Code::E0548,
+                        "via application requires new ownership",
+                    ),
+                    (
+                        mode == Mode::Shared,
+                        share.clone(),
+                        Code::E0520,
+                        "via application requires shared writable reception",
+                    ),
+                    (
+                        Access::from_mode(mode).writes(),
+                        write.clone(),
+                        Code::E0520,
+                        "via application requires a writable source",
+                    ),
+                ] {
+                    if !allowed {
+                        self.deferred_errors
+                            .push((vec![cause], Diagnostic::error(code, span, message)));
+                    }
+                }
+            }
+        }
+        if !ctx.reachable || ctx.shadow || !Access::from_mode(mode).writes() {
+            return;
+        }
+        for source in value.root_dependencies().collect::<BTreeSet<_>>() {
+            self.rules.push(Rule {
+                premises: vec![write.clone()],
+                conclusion: Fact {
+                    owner: ctx.owner,
+                    obligation: Obligation::Write(source),
+                },
+            });
+            if matches!(mode, Mode::Via | Mode::Shared) {
+                for obligation in [Obligation::Retain(source), Obligation::Share(source)] {
+                    self.rules.push(Rule {
+                        premises: vec![share.clone()],
                         conclusion: Fact {
                             owner: ctx.owner,
                             obligation,
@@ -1541,6 +1694,26 @@ impl Analyzer<'_> {
             let axes = member_axes(signature, &inner.formals);
             inner.member_via |= !axes.is_empty();
             self.register_member_axes(&axes);
+            if signature.has_via_inputs() {
+                let via = params
+                    .iter()
+                    .filter_map(|p| {
+                        p.name
+                            .as_ref()
+                            .filter(|_| p.mode == Mode::Via)
+                            .map(|name| name.span)
+                    })
+                    .collect();
+                self.closure_modes.insert(
+                    node.span,
+                    ClosureModes {
+                        formals: inner.formals.clone(),
+                        via,
+                        member_axes: axes,
+                        returns: Vec::new(),
+                    },
+                );
+            }
         }
         if obligations.open_effects || obligations.open_state {
             self.error(
@@ -1614,6 +1787,12 @@ impl Analyzer<'_> {
         let implicit = self.ty(self.ast(ctx.file).expr(*body).span) != &Ty::Never;
         if inner.reachable && implicit {
             self.check_results(&locals, &output.results());
+        }
+        if let Some(closure) = self.closure_modes.get_mut(&node.span) {
+            closure.returns.clone_from(&inner.return_values);
+            if implicit && inner.reachable {
+                closure.returns.push(output.clone());
+            }
         }
         if output.origins().any(|origin| origin.draft) {
             self.error(Code::E0607, node.span, "draft escapes update callback");

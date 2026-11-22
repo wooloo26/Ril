@@ -213,6 +213,16 @@ pub struct Parameter {
     pub is_meta: bool,
 }
 
+impl Parameter {
+    pub(super) fn callable_mode(&self) -> Mode {
+        if self.mode == Mode::Via && self.ty.is_value() {
+            Mode::Plain
+        } else {
+            self.mode
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Callable {
     pub parameters: Vec<Parameter>,

@@ -41,6 +41,17 @@ type Invalid = .{ via callback: fn() -> infer Cell }
 type Transform = fn(via Cell) @& -> infer Cell
 fn accept(callback: Transform) -> () {}
 
+-- @case higher_order_mode_family_rejects_a_fixed_writer compile-fail E0407
+fn use_snapshot(via action: fn(via Cell) @& -> ()) -> () {
+    let snapshot = Cell.{ count: 41 }
+    action(snapshot)
+}
+fn change(mut cell: Cell) &mut -> () { cell.count += 1 }
+fn invalid() -> () {
+    use_snapshot(change)
+    -- ^ E0407
+}
+
 -- @case higher_order_infer_can_use_an_enclosing_mode_input compile-pass
 fn accept(via callback: fn() @& -> infer Cell) -> () {}
 
@@ -58,6 +69,40 @@ fn run() -> int {
 fn run(ref holder: .{ child: Cell }) -> int {
     let read = \ref item: .{ via child: Cell } -> { let via local = item.child; local.count }
     read(ref holder)
+}
+
+-- @case local_via_closure_rejects_read_only_input compile-fail E0520
+fn invalid() -> () {
+    let change = \via cell: Cell -> { let via local = cell; local.count += 1 }
+    let cell = Cell.{ count: 42 }
+    change(cell)
+    -- ^ E0520
+}
+
+-- @case local_composite_via_closure_rejects_read_only_input compile-fail E0520
+fn invalid() -> () {
+    let change = \mut holder: .{ via child: Cell } -> { holder.child.count += 1 }
+    let mut holder = .{ child: Cell.{ count: 42 } }
+    change(mut holder)
+    -- ^ E0520
+}
+
+-- @case local_composite_via_closure_receives_and_uses_writable_member compile-pass
+fn run() -> int {
+    let change = \mut holder: .{ via child: Cell } -> { holder.child.count += 1 }
+    let mut holder = .{ mut child: Cell.{ count: 41 } }
+    change(mut holder)
+    holder.child.count
+}
+
+-- @case local_via_closure_return_preserves_the_handoff_dependency compile-fail E0549
+fn invalid() -> int {
+    let relay = \via cell: Cell -> { let via alias = cell; alias }
+    let mut cell = Cell.{ count: 41 }
+    let ref view = relay(ref cell)
+    let moved = new cell
+    moved.count + view.count
+    -- ^ E0549
 }
 
 -- @case via_local_preserves_template compile-pass

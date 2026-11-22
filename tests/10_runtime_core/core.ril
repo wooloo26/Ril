@@ -17,6 +17,19 @@ fn main() -> () {
     assert(holder.child.count == 42)
 }
 
+-- @case local_callable_specializes_via_reference_and_owned_results run-pass backend=both
+type Cell = .{ var count: int }
+fn main() -> () {
+    let relay = \via cell: Cell -> { let via alias = cell; alias }
+    let mut cell = Cell.{ count: 40 }
+    let ref view = relay(ref cell)
+    cell.count += 1
+    assert(view.count == 41)
+    let mut moved = relay(new cell)
+    moved.count += 1
+    assert(moved.count == 42)
+}
+
 -- @case alternative_patterns_bind_from_the_selected_side run-pass backend=both
 fn chosen(input: (bool, int, int)) -> int {
     match input { (true, result, _) | (false, _, result) -> result }

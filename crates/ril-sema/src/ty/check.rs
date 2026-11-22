@@ -485,7 +485,7 @@ impl<'a> Checker<'a> {
                 .iter()
                 .zip(&expected.parameters)
                 .all(|(a, b)| {
-                    (a.mode == b.mode || b.mode == Mode::Via)
+                    a.callable_mode() == b.callable_mode()
                         && b.label
                             .as_ref()
                             .is_none_or(|name| a.label.as_ref() == Some(name))
@@ -511,7 +511,7 @@ impl<'a> Checker<'a> {
                 .parameters
                 .iter()
                 .zip(&expected.parameters)
-                .any(|(a, b)| a.mode != b.mode && b.mode != Mode::Via)
+                .any(|(a, b)| a.callable_mode() != b.callable_mode())
             {
                 Code::E0407
             } else {

@@ -133,6 +133,14 @@ struct ModeUse {
     choices: Vec<(usize, Input, Span)>,
 }
 
+#[derive(Clone)]
+struct ClosureModes {
+    formals: Vec<Option<Span>>,
+    via: BTreeSet<Span>,
+    member_axes: Vec<(usize, Region)>,
+    returns: Vec<Datum>,
+}
+
 struct Analyzer<'a> {
     program: &'a TypedProgram,
     diagnostics: Vec<Diagnostic>,
@@ -141,6 +149,7 @@ struct Analyzer<'a> {
     deferred_errors: Vec<(Vec<Fact>, Diagnostic)>,
     mode_uses: Vec<ModeUse>,
     member_schemas: BTreeMap<Span, Vec<Region>>,
+    closure_modes: BTreeMap<Span, ClosureModes>,
     functions: Vec<DefinitionCheck>,
     done: BTreeSet<DefinitionId>,
     cleanups: BTreeMap<Span, CleanupAction>,
@@ -155,6 +164,7 @@ pub(super) fn analyze(program: &TypedProgram) -> (Analysis, Vec<Diagnostic>) {
         deferred_errors: Vec::new(),
         mode_uses: Vec::new(),
         member_schemas: BTreeMap::new(),
+        closure_modes: BTreeMap::new(),
         functions: Vec::new(),
         done: BTreeSet::new(),
         cleanups: BTreeMap::new(),
