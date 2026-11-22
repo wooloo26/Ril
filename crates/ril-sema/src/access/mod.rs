@@ -25,6 +25,26 @@ pub struct Summary {
 }
 
 impl Summary {
+    fn normalize_invocations(&mut self) {
+        let mut inputs = BTreeMap::new();
+        for invocation in &self.invocations {
+            let key = (invocation.receiver, invocation.parameter, invocation.mode);
+            *inputs.entry(key).or_insert(false) |= invocation.preserves_input
+                && !matches!(invocation.mode, InvocationMode::Input(input) if input != Input::New);
+        }
+        self.invocations = inputs
+            .into_iter()
+            .map(
+                |((receiver, parameter, mode), preserves_input)| Invocation {
+                    receiver,
+                    parameter,
+                    mode,
+                    preserves_input,
+                },
+            )
+            .collect();
+    }
+
     pub fn subsumes(&self, revised: &Self) -> bool {
         revised
             .writes
@@ -43,7 +63,7 @@ impl Summary {
             && revised
                 .invocations
                 .iter()
-                .all(|invoke| self.invocations.contains(invoke))
+                .all(|invoke| self.invocations.iter().any(|old| old.permits(invoke)))
             && revised
                 .callback_returns
                 .iter()
@@ -66,6 +86,16 @@ pub struct Invocation {
     pub receiver: usize,
     pub parameter: usize,
     pub mode: InvocationMode,
+    pub preserves_input: bool,
+}
+
+impl Invocation {
+    fn permits(&self, revised: &Self) -> bool {
+        self.receiver == revised.receiver
+            && self.parameter == revised.parameter
+            && self.mode == revised.mode
+            && (!revised.preserves_input || self.preserves_input)
+    }
 }
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]

@@ -84,6 +84,89 @@ fn invalid() -> int {
     -- ^ E0520
 }
 
+-- @case consuming_callback_revokes_the_forwarded_argument_in_the_invoker compile-fail E0549
+fn use_twice(via action: fn(via Cell) @& -> int, via cell: Cell) -> int {
+    let result = action(cell)
+    result + cell.count
+    -- ^ E0549
+}
+fn take(via cell: Cell) -> int {
+    let moved = new cell
+    moved.count
+}
+fn invalid() -> int { use_twice(take, Cell.{ count: 21 }) }
+
+-- @case consuming_callback_revokes_old_views_across_wrappers compile-fail E0549
+fn apply(via action: fn(via Cell) @& -> int, via cell: Cell) -> int { action(cell) }
+fn relay(via action: fn(via Cell) @& -> int, via cell: Cell) -> int { apply(action, cell) }
+fn observe(via action: fn(via Cell) @& -> int, via cell: Cell) -> int {
+    let ref view = ref cell
+    let result = relay(action, cell)
+    result + view.count
+    -- ^ E0549
+}
+fn take(via cell: Cell) -> int {
+    let moved = new cell
+    moved.count
+}
+fn invalid() -> int { observe(take, Cell.{ count: 21 }) }
+
+-- @case callback_handoffs_from_separate_calls_do_not_revoke_a_readers_path compile-pass
+fn apply(via action: fn(via Cell) @& -> int, via cell: Cell) -> int { action(cell) }
+fn take(via cell: Cell) -> int {
+    let moved = new cell
+    moved.count
+}
+fn read(via cell: Cell) -> int { cell.count }
+fn sum(via cell: Cell) -> int {
+    let initial = apply(read, cell)
+    let consumed = apply(take, Cell.{ count: 21 })
+    initial + cell.count + consumed
+}
+fn run() -> int { sum(Cell.{ count: 10 }) }
+
+-- @case consuming_callback_may_return_the_new_path compile-pass
+fn apply(via action: fn(via Cell) @& -> infer Cell, via cell: Cell) -> infer Cell {
+    let via value = action(cell)
+    assert(value.count == 41)
+    value
+}
+fn take(via cell: Cell) -> infer Cell { new cell }
+fn run() -> int {
+    let mut value = apply(take, Cell.{ count: 41 })
+    value.count += 1
+    value.count
+}
+
+-- @case callback_explicit_handoff_result_survives_the_argument_path compile-pass
+fn apply(via action: fn(via Cell) @& -> infer Cell, via cell: Cell) -> infer Cell {
+    let via value = action(new cell)
+    assert(value.count == 41)
+    value
+}
+fn take(via cell: Cell) -> infer Cell { new cell }
+fn run() -> int { apply(take, Cell.{ count: 41 }).count }
+
+-- @case requiring_a_callback_to_preserve_ownership_breaks_compatibility compat-fail E0552
+-- @baseline
+pub fn apply(via action: fn(via Cell) @& -> int, via cell: Cell) -> int { action(cell) }
+-- @revision
+fn relay(via action: fn(via Cell) @& -> int, via cell: Cell) -> int { action(cell) }
+pub fn apply(via action: fn(via Cell) @& -> int, via cell: Cell) -> int {
+-- ^ E0552
+    let result = relay(action, cell)
+    result + cell.count
+}
+
+-- @case dropping_the_preservation_requirement_is_compatible compat-pass
+-- @baseline
+pub fn apply(via action: fn(via Cell) @& -> int, via cell: Cell) -> int {
+    let result = action(cell)
+    result + cell.count
+}
+-- @revision
+pub fn apply(via action: fn(via Cell) @& -> int, via cell: Cell) -> int { action(cell) }
+
 -- @case higher_order_inferred_return_cannot_freeze_a_borrowed_argument compile-fail E0535
 fn through(via cell: Cell) -> infer Cell { cell }
 fn apply(via action: fn(via Cell) @& -> infer Cell, via cell: Cell) -> infer Cell {

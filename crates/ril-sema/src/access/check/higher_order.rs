@@ -6,7 +6,7 @@ use ril_base::{
 };
 use ril_frontend::syntax::Mode;
 
-use super::{Analyzer, Context, Datum, Fact, Input, Obligation, Rule};
+use super::{Analyzer, Context, Datum, Fact, Input, Ledger, Obligation, Revocation, Rule};
 use crate::{
     access::{Invocation as PublishedInvocation, InvocationMode},
     ty::{Callable, Ty},
@@ -19,13 +19,23 @@ enum Offer {
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-struct Invocation {
+pub(super) struct Invocation {
     receiver: Span,
     position: usize,
     offer: Offer,
 }
 
+impl Invocation {
+    fn consumption(self, owner: Span) -> Fact {
+        Fact {
+            owner,
+            obligation: Obligation::CallbackConsumes(self),
+        }
+    }
+}
+
 struct Argument {
+    position: usize,
     offers: BTreeSet<Offer>,
     targets: BTreeSet<Span>,
     dependencies: BTreeSet<Span>,
@@ -35,13 +45,40 @@ struct Argument {
 
 struct Call {
     owner: Span,
+    site: Span,
     arguments: BTreeMap<Span, Argument>,
 }
 
 #[derive(Default)]
 pub(super) struct Calls {
     calls: BTreeMap<Span, Vec<Call>>,
-    invocations: BTreeSet<(Span, Invocation, Span)>,
+    invocations: BTreeSet<(Span, Invocation, Span, Span)>,
+    protected: BTreeSet<(Span, usize)>,
+}
+
+impl Calls {
+    pub(super) fn protect_input(&mut self, site: Span, position: usize) {
+        self.protected.insert((site, position));
+    }
+}
+
+fn track_handoff(ledger: &mut Ledger, value: &Datum, (site, position): (Span, usize)) {
+    for root in value.roots.iter().filter(|root| root.inherits_mode) {
+        for &token in &root.dependencies {
+            ledger.revoke(
+                token,
+                Some(root),
+                Some(Revocation::Callback { site, position }),
+            );
+        }
+    }
+}
+
+fn callback_handoff(site: Span, position: usize) -> Fact {
+    Fact {
+        owner: site,
+        obligation: Obligation::CallbackHandoff(position),
+    }
 }
 
 impl Offer {
@@ -66,6 +103,7 @@ impl Analyzer<'_> {
         signature: &Callable,
         values: &[(usize, Mode, Datum)],
         spans: &[Span],
+        (site, ledger): (Span, &mut Ledger),
     ) {
         if !ctx.reachable || ctx.shadow {
             return;
@@ -83,6 +121,9 @@ impl Analyzer<'_> {
                 {
                     continue;
                 }
+                if *mode == Mode::Via {
+                    track_handoff(ledger, value, (site, *position));
+                }
                 for offer in Offer::of(*mode, value) {
                     self.higher_order.invocations.insert((
                         ctx.owner,
@@ -92,6 +133,7 @@ impl Analyzer<'_> {
                             offer,
                         },
                         span,
+                        site,
                     ));
                 }
             }
@@ -105,6 +147,7 @@ impl Analyzer<'_> {
         signature: &Callable,
         values: &[(usize, Mode, Datum)],
         spans: &[Span],
+        (site, ledger): (Span, &mut Ledger),
     ) {
         if !ctx.reachable || ctx.shadow || !signature.parameters.iter().any(|param| {
             matches!(&param.ty, Ty::Callable(call) if call.parameters.iter().any(|input| input.callable_mode() == Mode::Via))
@@ -127,6 +170,7 @@ impl Analyzer<'_> {
                     BTreeSet::new()
                 };
                 let argument = Argument {
+                    position: *index,
                     offers: Offer::of(*mode, value),
                     targets,
                     dependencies: value.root_dependencies().collect(),
@@ -138,6 +182,9 @@ impl Analyzer<'_> {
                         .collect(),
                     span,
                 };
+                if *mode == Mode::Via {
+                    track_handoff(ledger, value, (site, *index));
+                }
                 Some((formal, argument))
             })
             .collect();
@@ -147,12 +194,17 @@ impl Analyzer<'_> {
             .or_default()
             .push(Call {
                 owner: ctx.owner,
+                site,
                 arguments,
             });
     }
 
     pub(super) fn link_higher_order_calls(&mut self) {
-        let Calls { calls, invocations } = std::mem::take(&mut self.higher_order);
+        let Calls {
+            calls,
+            invocations,
+            protected,
+        } = std::mem::take(&mut self.higher_order);
         let providers: BTreeMap<_, _> = self
             .functions
             .iter()
@@ -169,10 +221,24 @@ impl Analyzer<'_> {
                 formals.iter().flatten().map(move |&formal| (formal, owner))
             })
             .collect();
-        let mut pending: VecDeque<_> = invocations.into_iter().collect();
+        let mut pending = VecDeque::new();
+        for (owner, invocation, span, site) in invocations {
+            if matches!(invocation.offer, Offer::Formal(_)) {
+                self.rules.push(Rule {
+                    premises: vec![invocation.consumption(owner)],
+                    conclusion: callback_handoff(site, invocation.position),
+                });
+            }
+            pending.push_back((
+                owner,
+                invocation,
+                span,
+                protected.contains(&(site, invocation.position)),
+            ));
+        }
         let mut visited = BTreeSet::new();
-        while let Some((owner, invocation, span)) = pending.pop_front() {
-            if !visited.insert((owner, invocation, span)) {
+        while let Some((owner, invocation, span, preserves_input)) = pending.pop_front() {
+            if !visited.insert((owner, invocation, span, preserves_input)) {
                 continue;
             }
             if let Some(formals) = providers.get(&owner)
@@ -193,6 +259,7 @@ impl Analyzer<'_> {
                             receiver,
                             parameter: invocation.position,
                             mode,
+                            preserves_input,
                         },
                     );
                 }
@@ -205,6 +272,18 @@ impl Analyzer<'_> {
                     .flatten()
             };
             if let Some(formal) = formal_of(invocation.receiver) {
+                if matches!(
+                    invocation.offer,
+                    Offer::Formal(_) | Offer::Input(Input::New)
+                ) {
+                    self.rules.push(Rule {
+                        premises: vec![Fact {
+                            owner: invocation.receiver,
+                            obligation: Obligation::Handoff(formal),
+                        }],
+                        conclusion: invocation.consumption(owner),
+                    });
+                }
                 self.check_callback_offer(
                     owner,
                     (invocation.receiver, formal),
@@ -229,6 +308,31 @@ impl Analyzer<'_> {
                 );
                 for &target in &callback.targets {
                     for &offer in &offers {
+                        let forwarded = Invocation {
+                            receiver: target,
+                            offer,
+                            ..invocation
+                        };
+                        let consumption = if let Some(formal) = formal_of(target) {
+                            Fact {
+                                owner: target,
+                                obligation: Obligation::Handoff(formal),
+                            }
+                        } else {
+                            forwarded.consumption(call.owner)
+                        };
+                        if matches!(offer, Offer::Formal(_) | Offer::Input(Input::New)) {
+                            self.rules.push(Rule {
+                                premises: vec![consumption.clone()],
+                                conclusion: invocation.consumption(owner),
+                            });
+                            if let Some(arg) = argument {
+                                self.rules.push(Rule {
+                                    premises: vec![consumption],
+                                    conclusion: callback_handoff(call.site, arg.position),
+                                });
+                            }
+                        }
                         if let Some(formal) = formal_of(target) {
                             self.check_callback_offer(
                                 call.owner,
@@ -240,12 +344,12 @@ impl Analyzer<'_> {
                         } else if formal_owners.get(&target) == Some(&call.owner) {
                             pending.push_back((
                                 call.owner,
-                                Invocation {
-                                    receiver: target,
-                                    offer,
-                                    ..invocation
-                                },
+                                forwarded,
                                 callback.span,
+                                preserves_input
+                                    || argument.is_some_and(|arg| {
+                                        protected.contains(&(call.site, arg.position))
+                                    }),
                             ));
                         }
                     }

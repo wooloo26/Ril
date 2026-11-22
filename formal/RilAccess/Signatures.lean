@@ -167,16 +167,22 @@ structure CallbackInvocation where
   receiver : Nat
   parameter : Nat
   mode : InvocationMode
+  preservesInput : Bool
   deriving Repr, DecidableEq
 
-/-- Invoking a callback at an extra input mode adds a requirement on callers. -/
+def CallbackInvocation.permits (baseline revision : CallbackInvocation) : Bool :=
+  decide (baseline.receiver = revision.receiver ∧ baseline.parameter = revision.parameter ∧
+    baseline.mode = revision.mode) && (!revision.preservesInput || baseline.preservesInput)
+
+/-- A revision may relax a callback requirement. Requiring another input mode
+or newly demanding that its source survive the call narrows the caller domain. -/
 def callbackInvocationsSubsumed (baseline revision : List CallbackInvocation) : Bool :=
-  revision.all (fun call => decide (call ∈ baseline))
+  revision.all (fun call => baseline.any (·.permits call))
 
 theorem callbackInvocationsSubsumed_iff {baseline revision : List CallbackInvocation} :
     callbackInvocationsSubsumed baseline revision = true ↔
-      ∀ call ∈ revision, call ∈ baseline := by
-  simp [callbackInvocationsSubsumed, List.all_eq_true]
+      ∀ call ∈ revision, ∃ old ∈ baseline, old.permits call = true := by
+  simp [callbackInvocationsSubsumed, List.all_eq_true, List.any_eq_true]
 
 /-- Each returned callback expression in the revision must be covered by the
 baseline relation, including the arguments that supply its return sources. -/

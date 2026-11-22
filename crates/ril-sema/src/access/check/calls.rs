@@ -12,7 +12,7 @@ use ril_frontend::{
 use crate::{
     access::{
         CallbackArgument, CallbackReturn, InvocationMode, ReturnSource,
-        flow::{CallbackOrigin, Handoff},
+        flow::{CallbackOrigin, Handoff, Revocation},
     },
     ty::Ty,
 };
@@ -289,7 +289,14 @@ impl Analyzer<'_> {
             );
         }
         if let (Some(target), Some(signature)) = (&target, sig) {
-            self.record_indirect_modes(ctx, target, signature, &values, &value_spans);
+            self.record_indirect_modes(
+                ctx,
+                target,
+                signature,
+                &values,
+                &value_spans,
+                (span, ledger),
+            );
         }
         for (&owner, modes) in &via_closures {
             if let Some(signature) = sig {
@@ -299,6 +306,7 @@ impl Analyzer<'_> {
                     signature,
                     &values,
                     &value_spans,
+                    (span, ledger),
                 );
             }
             for ((index, mode, argument), &argument_span) in values.iter().zip(&value_spans) {
@@ -391,6 +399,7 @@ impl Analyzer<'_> {
                     signature,
                     &values,
                     &value_spans,
+                    (span, ledger),
                 );
                 for (index, axis) in member_axes(signature, &formals) {
                     if let Some(((.., argument), &argument_span)) = values
@@ -990,12 +999,9 @@ impl Analyzer<'_> {
         let mut result = Datum::source(span, Access::Ref, false);
         let template = self.callback_results.len();
         let dependencies: BTreeSet<_> = receiver
-            .root_dependencies()
-            .chain(
-                arguments
-                    .iter()
-                    .flat_map(|(_, _, arg)| arg.root_dependencies()),
-            )
+            .origins()
+            .chain(arguments.iter().flat_map(|(_, _, arg)| arg.origins()))
+            .flat_map(|origin| origin.dependencies.iter().copied())
             .collect();
         for origin in &mut result.roots {
             origin.callback_result = Some(CallbackOrigin {
@@ -1263,7 +1269,7 @@ impl Analyzer<'_> {
                 });
             }
             for &token in &root.dependencies {
-                ledger.revoke(token, Some(root), Some((owner, formal)));
+                ledger.revoke(token, Some(root), Some(Revocation::Formal((owner, formal))));
             }
         }
     }

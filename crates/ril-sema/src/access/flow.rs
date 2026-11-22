@@ -147,7 +147,14 @@ impl Origin {
 
 type Choices = BTreeMap<Span, usize>;
 pub(super) type Handoff = (Span, Span);
-type Revocations = BTreeMap<Option<Handoff>, BTreeSet<Choices>>;
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub(super) enum Revocation {
+    Formal(Handoff),
+    Callback { site: Span, position: usize },
+}
+
+type Revocations = BTreeMap<Option<Revocation>, BTreeSet<Choices>>;
 const BRANCH_LIMIT: usize = 24;
 
 fn compatible(a: &Choices, b: &Choices) -> bool {
@@ -396,7 +403,7 @@ impl Ledger {
         &mut self,
         token: Span,
         origin: Option<&Origin>,
-        trigger: Option<Handoff>,
+        trigger: Option<Revocation>,
     ) {
         let mut choices = self.choices.clone();
         if let Some(origin) = origin {
@@ -627,7 +634,7 @@ impl Ledger {
         self.inspected.extend(datum.results());
     }
 
-    pub(super) fn revocations(&self, datum: &Datum) -> BTreeSet<Option<Handoff>> {
+    pub(super) fn revocations(&self, datum: &Datum) -> BTreeSet<Option<Revocation>> {
         datum
             .origins()
             .flat_map(|origin| {
@@ -636,11 +643,15 @@ impl Ledger {
                     .iter()
                     .filter_map(|token| self.revoked.get(token))
                     .flatten()
-                    .filter(|(_, branches)| {
-                        branches.iter().any(|branch| {
-                            compatible(branch, &self.choices)
-                                && compatible(branch, &origin.branches)
-                        })
+                    .filter(|(trigger, branches)| {
+                        let received_here = origin.callback_result.is_some()
+                            && matches!(trigger, Some(Revocation::Callback { site, .. })
+                                if *site == origin.region.source);
+                        !received_here
+                            && branches.iter().any(|branch| {
+                                compatible(branch, &self.choices)
+                                    && compatible(branch, &origin.branches)
+                            })
                     })
                     .map(|(&trigger, _)| trigger)
             })

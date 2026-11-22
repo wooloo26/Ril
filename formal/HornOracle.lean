@@ -36,11 +36,12 @@ structure JsonInvocation where
   parameter : Nat
   input : Option String
   formal : Option Nat
+  preserves_input : Bool
   deriving FromJson
 
 def JsonInvocation.contract (call : JsonInvocation) : RilAccess.CallbackInvocation :=
   ⟨call.receiver, call.parameter,
-    call.formal.elim (.input (call.input.getD "")) .formal⟩
+    call.formal.elim (.input (call.input.getD "")) .formal, call.preserves_input⟩
 
 structure JsonSummary where
   writes : List Nat
@@ -164,7 +165,8 @@ def handoffCases : List (String × Bool) :=
      (checkAtom (.handoff 0 2) before).isOk && currentLive after 2 && currentLive after 4),
    ("handoff_ends_binding", currentLive after 0),
    ("handoff_ends_dependent_view", currentLive after 1),
-   ("handoff_cannot_repeat", (checkAtom (.handoff 0 3) after).isOk)]
+   ("handoff_cannot_repeat", (checkAtom (.handoff 0 3) after).isOk)] ++
+   callbackChecks.map (fun (name, accepted, _) => (name, accepted))
 
 open RilAccess.Provenance RilAccess.Provenance.Examples in
 def provenanceCases : List (String × Bool) :=

@@ -16,7 +16,7 @@ use ril_frontend::{
 use super::{
     Access, Analysis, CleanupAction, Input, Instance, Invocation, InvocationMode, ReturnSource,
     Summary,
-    flow::{Coordinate, Datum, Ledger, Reception, Region, Slot, conflicts},
+    flow::{Coordinate, Datum, Ledger, Reception, Region, Revocation, Slot, conflicts},
     horn::{self, Rule},
 };
 use crate::ty::{self, AdtKind, Callable, Ty, TypedProgram, Value, reception};
@@ -29,6 +29,8 @@ enum Obligation {
     Write(Span),
     WriteExisting(Span),
     Handoff(Span),
+    CallbackHandoff(usize),
+    CallbackConsumes(higher_order::Invocation),
     Schema(Region, SchemaRequirement),
     Replace(Span),
     Retain(Span),
@@ -774,6 +776,7 @@ impl<'a> Analyzer<'a> {
         summary.retained.sort_unstable();
         summary.effects.sort();
         summary.effects.dedup();
+        summary.normalize_invocations();
         let name = fun.owner;
         let sig = &fun.declared;
         let exercised = |slots: &[usize]| {
@@ -917,8 +920,7 @@ impl<'a> Analyzer<'a> {
                         invocation.mode = InvocationMode::Input(input);
                     }
                 }
-                summary.invocations.sort_unstable();
-                summary.invocations.dedup();
+                summary.normalize_invocations();
                 for result in &mut summary.callback_returns {
                     result.specialize(&input);
                 }
@@ -2196,14 +2198,22 @@ impl<'a> Analyzer<'a> {
         if revocations.contains(&None) {
             self.error(Code::E0549, span, message);
         } else {
-            for (owner, formal) in revocations.into_iter().flatten() {
-                self.deferred_errors.push((
-                    vec![Fact {
+            for trigger in revocations.into_iter().flatten() {
+                let premise = match trigger {
+                    Revocation::Formal((owner, formal)) => Fact {
                         owner,
                         obligation: Obligation::Handoff(formal),
-                    }],
-                    Diagnostic::error(Code::E0549, span, message),
-                ));
+                    },
+                    Revocation::Callback { site, position } => {
+                        self.higher_order.protect_input(site, position);
+                        Fact {
+                            owner: site,
+                            obligation: Obligation::CallbackHandoff(position),
+                        }
+                    }
+                };
+                self.deferred_errors
+                    .push((vec![premise], Diagnostic::error(Code::E0549, span, message)));
             }
         }
     }

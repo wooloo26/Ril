@@ -127,6 +127,7 @@ fn higher_order_via_rows_publish_callback_reception() {
         receiver: 0,
         parameter: 0,
         mode,
+        preserves_input: false,
     };
     assert_eq!(
         export.summary.invocations,
@@ -139,6 +140,36 @@ fn higher_order_via_rows_publish_callback_reception() {
             row.summary.invocations,
             [invocation(InvocationMode::Input(input))]
         );
+    }
+}
+
+#[test]
+fn exported_callback_preservation_is_required_only_for_new_reception() {
+    use ril_sema::access::Input;
+
+    let suite = parse_suite(
+        Path::new("via.ril"),
+        include_str!("../../../tests/08_via_compat/via.ril"),
+    )
+    .unwrap();
+    let case = suite
+        .cases
+        .iter()
+        .find(|case| case.id == "requiring_a_callback_to_preserve_ownership_breaks_compatibility")
+        .unwrap();
+    let interface = Driver.interface(&case.pkg).unwrap();
+    let decoded = Interface::decode(&interface.encode().unwrap()).unwrap();
+    let export = decoded.functions.values().next().unwrap();
+    let [contract] = export.summary.invocations.as_slice() else {
+        panic!("missing callback contract");
+    };
+    assert!(contract.preserves_input);
+    for row in &export.domain {
+        let [_, input]: [Input; 2] = row.modes.as_slice().try_into().unwrap();
+        let [contract] = row.summary.invocations.as_slice() else {
+            panic!("missing specialized callback contract");
+        };
+        assert_eq!(contract.preserves_input, input == Input::New);
     }
 }
 
@@ -330,6 +361,7 @@ fn exported_summaries_and_via_domains_agree_with_lean() {
                     "parameter": invoke.parameter,
                     "input": input,
                     "formal": formal,
+                "preserves_input": invoke.preserves_input,
                 })
             })
             .collect();
@@ -551,7 +583,7 @@ fn boundary_examples_agree_with_lean() -> Result<(), Box<dyn std::error::Error>>
 
 #[test]
 fn handoff_examples_agree_with_lean() -> Result<(), Box<dyn std::error::Error>> {
-    check_access_examples("handoff", 4)
+    check_access_examples("handoff", 9)
 }
 
 #[test]
@@ -581,6 +613,12 @@ fn check_access_examples(operation: &str, count: usize) -> Result<(), Box<dyn st
             .ok_or_else(|| format!("no Ril case named {name} for Lean operation {operation}"))?;
         let diagnostics = Driver.check_stage(&case.pkg, Stage::Access).diagnostics;
         assert_eq!(diagnostics.is_empty(), accepted, "{name}: {diagnostics:?}");
+        if let CaseMode::CompileFail(code) = case.mode {
+            assert!(
+                diagnostics.iter().any(|diag| diag.code == Some(code)),
+                "{name}: {diagnostics:?}"
+            );
+        }
     }
     Ok(())
 }

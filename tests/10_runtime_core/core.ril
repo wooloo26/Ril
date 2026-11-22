@@ -60,6 +60,25 @@ fn main() -> () {
     assert(owned.count == 42)
 }
 
+-- @case higher_order_callbacks_keep_the_returned_handoff_path_live run-pass backend=both
+type Cell = .{ var count: int }
+fn apply(via action: fn(via Cell) @& -> infer Cell, via cell: Cell) -> infer Cell {
+    let via result = action(cell)
+    assert(result.count == 41)
+    result
+}
+fn take(via cell: Cell) -> infer Cell { new cell }
+fn read(via cell: Cell) -> infer Cell { cell }
+fn main() -> () {
+    let mut original = Cell.{ count: 41 }
+    let ref observer = apply(read, ref original)
+    original.count += 1
+    assert(observer.count == 42)
+    let mut owned = apply(take, Cell.{ count: 41 })
+    owned.count += 1
+    assert(owned.count == 42)
+}
+
 -- @case alternative_patterns_bind_from_the_selected_side run-pass backend=both
 fn chosen(input: (bool, int, int)) -> int {
     match input { (true, result, _) | (false, _, result) -> result }
