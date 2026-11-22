@@ -44,6 +44,22 @@ fn main() -> () {
     assert(live.count == 42 && snapshot.count == 4)
 }
 
+-- @case higher_order_inferred_results_preserve_live_and_owned_values run-pass backend=both
+type Cell = .{ var count: int }
+fn apply(via action: fn(via Cell) @& -> infer Cell, via cell: Cell) -> infer Cell { action(cell) }
+fn relay(via action: fn(via Cell) @& -> infer Cell, via cell: Cell) -> infer Cell { apply(action, cell) }
+fn make(via action: fn() @& -> infer Cell) -> infer Cell { action() }
+fn main() -> () {
+    let identity = \via value: Cell -> value
+    let mut original = make(\-> Cell.{ count: 40 })
+    let ref view = relay(identity, ref original)
+    original.count += 1
+    assert(view.count == 41)
+    let mut owned = relay(identity, new original)
+    owned.count += 1
+    assert(owned.count == 42)
+}
+
 -- @case alternative_patterns_bind_from_the_selected_side run-pass backend=both
 fn chosen(input: (bool, int, int)) -> int {
     match input { (true, result, _) | (false, _, result) -> result }

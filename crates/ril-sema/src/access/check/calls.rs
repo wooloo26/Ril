@@ -9,7 +9,10 @@ use ril_frontend::{
     syntax::{Argument, Expr, ExprId, Handler, Mode, StateKind, StmtKind},
 };
 
-use crate::{access::flow::Handoff, ty::Ty};
+use crate::{
+    access::flow::{CallbackOrigin, Handoff},
+    ty::Ty,
+};
 
 use super::{
     Access, Analyzer, ClosureModes, Context, Coordinate, Datum, Fact, Input, Ledger, ModeUse,
@@ -21,6 +24,13 @@ struct CallEntry<'a> {
     spans: &'a [Span],
     ledger: &'a Ledger,
     span: Span,
+}
+
+#[derive(Clone)]
+pub(super) struct CallbackResult {
+    receiver: Datum,
+    arguments: Vec<(usize, Mode, Datum)>,
+    spans: Vec<Span>,
 }
 
 impl Analyzer<'_> {
@@ -85,6 +95,7 @@ impl Analyzer<'_> {
                 let owner = origin.region.source;
                 self.closure_modes
                     .get(&owner)
+                    .filter(|modes| !modes.via.is_empty() || !modes.member_axes.is_empty())
                     .map(|modes| (owner, modes.clone()))
             })
             .collect();
@@ -587,21 +598,7 @@ impl Analyzer<'_> {
                 ledger,
                 span,
             };
-            if let Some(result) = via_closures
-                .values()
-                .flat_map(|closure| {
-                    closure.returns.iter().map(|output| {
-                        self.instantiate_return(
-                            &closure.formals,
-                            &closure.via,
-                            &entry,
-                            output,
-                            &mut Vec::new(),
-                        )
-                    })
-                })
-                .reduce(Datum::joined)
-            {
+            if let Some(result) = self.callback_return(target, &entry) {
                 return result;
             }
         }
@@ -615,6 +612,22 @@ impl Analyzer<'_> {
             }
             if sig.result_mode == Mode::New {
                 return Datum::source(span, Access::Mut, true);
+            }
+            if sig.result_mode == Mode::Infer
+                && let Some(receiver) = target
+                && !receiver.roots.is_empty()
+                && !self.ty(span).is_value()
+            {
+                let entry = CallEntry {
+                    arguments: &values,
+                    spans: &value_spans,
+                    ledger,
+                    span,
+                };
+                if let Some(result) = self.callback_return(&receiver, &entry) {
+                    return result;
+                }
+                return self.defer_callback_result(receiver, values, value_spans, span);
             }
         }
         self.snapshot_value(span)
@@ -795,7 +808,7 @@ impl Analyzer<'_> {
     }
 
     fn return_template(
-        &self,
+        &mut self,
         fun: &ril_frontend::syntax::Function,
         entry: &CallEntry<'_>,
     ) -> Option<Datum> {
@@ -803,23 +816,19 @@ impl Analyzer<'_> {
             .functions
             .iter()
             .find(|definition| definition.owner == fun.name.span)?;
-        definition
-            .returns
+        let (formals, via, returns) = (
+            definition.formals.clone(),
+            definition.via.clone(),
+            definition.returns.clone(),
+        );
+        returns
             .iter()
-            .map(|datum| {
-                self.instantiate_return(
-                    &definition.formals,
-                    &definition.via,
-                    entry,
-                    datum,
-                    &mut Vec::new(),
-                )
-            })
+            .map(|datum| self.instantiate_return(&formals, &via, entry, datum, &mut Vec::new()))
             .reduce(Datum::joined)
     }
 
     fn instantiate_return(
-        &self,
+        &mut self,
         formals: &[Option<Span>],
         via_formals: &BTreeSet<Span>,
         entry: &CallEntry<'_>,
@@ -830,6 +839,32 @@ impl Analyzer<'_> {
             .roots
             .iter()
             .filter_map(|origin| {
+                if let Some(result) = origin.callback_result
+                    && self.resolving_callback_results.insert(result.template)
+                {
+                    let mut value = self.instantiate_callback_result(
+                        result.template,
+                        formals,
+                        via_formals,
+                        entry,
+                    );
+                    self.resolving_callback_results.remove(&result.template);
+                    let mut ty = self.ty(origin.region.source);
+                    for step in &origin.region.selection {
+                        let member = self.schema_member(ty, step);
+                        let mode = member.map_or(Mode::Plain, |member| member.mode.mode);
+                        value = entry.ledger.project_schema(&value, step.clone(), mode);
+                        ty = member.map_or(&Ty::Unknown, |member| &member.ty);
+                    }
+                    if let Some(cap) = result.cap {
+                        for root in &mut value.roots {
+                            root.fix_mode(cap.project(root.mode));
+                            root.new = false;
+                        }
+                        value.requires_new = false;
+                    }
+                    return Some(value);
+                }
                 let formal = formals
                     .iter()
                     .position(|formal| *formal == Some(origin.region.source));
@@ -946,6 +981,132 @@ impl Analyzer<'_> {
             }
         }
         output
+    }
+
+    fn defer_callback_result(
+        &mut self,
+        receiver: Datum,
+        arguments: Vec<(usize, Mode, Datum)>,
+        spans: Vec<Span>,
+        span: Span,
+    ) -> Datum {
+        let mut result = Datum::source(span, Access::Ref, false);
+        let template = self.callback_results.len();
+        let dependencies: BTreeSet<_> = receiver
+            .root_dependencies()
+            .chain(
+                arguments
+                    .iter()
+                    .flat_map(|(_, _, arg)| arg.root_dependencies()),
+            )
+            .collect();
+        for origin in &mut result.roots {
+            origin.callback_result = Some(CallbackOrigin {
+                template,
+                cap: None,
+            });
+            origin.dependencies.clone_from(&dependencies);
+        }
+        self.callback_results.push(CallbackResult {
+            receiver,
+            arguments,
+            spans,
+        });
+        result
+    }
+
+    fn instantiate_callback_result(
+        &mut self,
+        template: usize,
+        formals: &[Option<Span>],
+        via: &BTreeSet<Span>,
+        entry: &CallEntry<'_>,
+    ) -> Datum {
+        let CallbackResult {
+            receiver,
+            mut arguments,
+            mut spans,
+        } = self
+            .callback_results
+            .get(template)
+            .cloned()
+            .unwrap_or_else(|| ril_base::ice!("missing callback return template"));
+        let receiver = self.instantiate_return(formals, via, entry, &receiver, &mut Vec::new());
+        for ((_, mode, argument), span) in arguments.iter_mut().zip(&mut spans) {
+            if let [origin] = argument.roots.as_slice()
+                && origin.region.selection.is_empty()
+                && let Some(index) = formals
+                    .iter()
+                    .position(|formal| *formal == Some(origin.region.source))
+                && let Some(((_, received, _), received_span)) = entry
+                    .arguments
+                    .iter()
+                    .zip(entry.spans)
+                    .find(|((position, _, _), _)| *position == index)
+            {
+                *span = *received_span;
+                if *mode == Mode::Via && origin.inherits_mode {
+                    *mode = *received;
+                }
+            }
+            *argument = self.instantiate_return(formals, via, entry, argument, &mut Vec::new());
+            if matches!(mode, Mode::Ref | Mode::Shared) {
+                for root in &mut argument.roots {
+                    root.fix_mode(root.mode.project(Access::from_mode(*mode)));
+                    root.new = false;
+                }
+                argument.requires_new = false;
+            }
+        }
+        let invocation = CallEntry {
+            arguments: &arguments,
+            spans: &spans,
+            ledger: entry.ledger,
+            span: entry.span,
+        };
+        self.callback_return(&receiver, &invocation)
+            .unwrap_or_else(|| self.defer_callback_result(receiver, arguments, spans, entry.span))
+    }
+
+    fn callback_return(&mut self, receiver: &Datum, entry: &CallEntry<'_>) -> Option<Datum> {
+        let mut outputs = Vec::new();
+        for target in &receiver.roots {
+            if !target.region.selection.is_empty() {
+                return None;
+            }
+            let span = target.region.source;
+            if let Some(closure) = self.closure_modes.get(&span).cloned() {
+                for value in &closure.returns {
+                    outputs.push(self.instantiate_return(
+                        &closure.formals,
+                        &closure.via,
+                        entry,
+                        value,
+                        &mut Vec::new(),
+                    ));
+                }
+                continue;
+            }
+            let def = self.program.hir.definition(self.definition(span)?);
+            if def.kind != DefinitionKind::Function {
+                return None;
+            }
+            let StmtKind::Function(fun) = &self.ast(def.name.span.file).stmt(def.stmt?).value.kind
+            else {
+                return None;
+            };
+            self.function(fun, entry.ledger);
+            let mut result = self.return_template(fun, entry)?;
+            if matches!(fun.signature.result_mode, Mode::Ref | Mode::Shared) {
+                result.requires_new = false;
+                for root in &mut result.roots {
+                    root.fix_mode(Access::from_mode(fun.signature.result_mode));
+                    root.new = false;
+                }
+            }
+            outputs.push(result);
+        }
+        outputs.into_iter().reduce(Datum::joined)
     }
 
     fn link_schema_argument(
@@ -1185,6 +1346,9 @@ impl Analyzer<'_> {
                     && origin.region.selection.is_empty()
                     && ctx.via.contains(&origin.region.source))
                     || (ctx.member_via && !origin.reception.is_empty())
+                    || origin
+                        .callback_result
+                        .is_some_and(|result| result.cap.is_none())
             })
     }
 
@@ -1729,26 +1893,24 @@ impl Analyzer<'_> {
             let axes = member_axes(signature, &inner.formals);
             inner.member_via |= !axes.is_empty();
             self.register_member_axes(&axes);
-            if signature.has_via_inputs() {
-                let via = params
-                    .iter()
-                    .filter_map(|p| {
-                        p.name
-                            .as_ref()
-                            .filter(|_| p.mode == Mode::Via)
-                            .map(|name| name.span)
-                    })
-                    .collect();
-                self.closure_modes.insert(
-                    node.span,
-                    ClosureModes {
-                        formals: inner.formals.clone(),
-                        via,
-                        member_axes: axes,
-                        returns: Vec::new(),
-                    },
-                );
-            }
+            let via = params
+                .iter()
+                .filter_map(|p| {
+                    p.name
+                        .as_ref()
+                        .filter(|_| p.mode == Mode::Via)
+                        .map(|name| name.span)
+                })
+                .collect();
+            self.closure_modes.insert(
+                node.span,
+                ClosureModes {
+                    formals: inner.formals.clone(),
+                    via,
+                    member_axes: axes,
+                    returns: Vec::new(),
+                },
+            );
         }
         if obligations.open_effects || obligations.open_state {
             self.error(

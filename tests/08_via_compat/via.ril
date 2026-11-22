@@ -84,6 +84,54 @@ fn invalid() -> int {
     -- ^ E0520
 }
 
+-- @case higher_order_inferred_return_cannot_freeze_a_borrowed_argument compile-fail E0535
+fn through(via cell: Cell) -> infer Cell { cell }
+fn apply(via action: fn(via Cell) @& -> infer Cell, via cell: Cell) -> infer Cell {
+    let via value = action(cell)
+    through(value)
+}
+fn identity(via cell: Cell) -> infer Cell { cell }
+fn invalid(ref cell: Cell) -> int {
+    let value = apply(identity, ref cell)
+    -- ^ E0535
+    value.count
+}
+
+-- @case higher_order_inferred_return_keeps_the_original_handoff_dependency compile-fail E0549
+fn apply(via action: fn(via Cell) @& -> infer Cell, via cell: Cell) -> infer Cell { action(cell) }
+fn relay(via action: fn(via Cell) @& -> infer Cell, via cell: Cell) -> infer Cell { apply(action, cell) }
+fn invalid() -> int {
+    let mut cell = Cell.{ count: 41 }
+    let relay_identity = \via value: Cell -> value
+    let ref view = relay(relay_identity, ref cell)
+    let moved = new cell
+    moved.count + view.count
+    -- ^ E0549
+}
+
+-- @case higher_order_return_distinguishes_reference_snapshot_and_new_arguments compile-pass
+fn apply(via action: fn(via Cell) @& -> infer Cell, via cell: Cell) -> infer Cell { action(cell) }
+fn identity(via cell: Cell) -> infer Cell { cell }
+fn run() -> int {
+    let plain = Cell.{ count: 1 }
+    let snapshot = apply(identity, plain)
+    let mut cell = Cell.{ count: 40 }
+    let ref view = apply(identity, ref cell)
+    let count = view.count
+    let mut moved = apply(identity, new cell)
+    moved.count += 1
+    snapshot.count + count + moved.count
+}
+
+-- @case higher_order_return_cannot_recover_ownership_after_attenuation compile-fail E0520
+fn observe(via action: fn() @& -> infer Cell) -> infer Cell { ref action() }
+fn invalid() -> int {
+    let mut view = observe(\-> Cell.{ count: 41 })
+    -- ^ E0520
+    view.count += 1
+    view.count
+}
+
 -- @case adding_a_higher_order_mode_requirement_breaks_compatibility compat-fail E0552
 -- @baseline
 pub fn apply(via action: fn(via Cell) @& -> int, via cell: Cell) -> int { cell.count }

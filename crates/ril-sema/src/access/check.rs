@@ -154,6 +154,8 @@ struct Analyzer<'a> {
     closure_modes: BTreeMap<Span, ClosureModes>,
     higher_order: higher_order::Calls,
     invocation_summaries: BTreeMap<Span, BTreeSet<Invocation>>,
+    callback_results: Vec<calls::CallbackResult>,
+    resolving_callback_results: BTreeSet<usize>,
     functions: Vec<DefinitionCheck>,
     done: BTreeSet<DefinitionId>,
     cleanups: BTreeMap<Span, CleanupAction>,
@@ -171,6 +173,8 @@ pub(super) fn analyze(program: &TypedProgram) -> (Analysis, Vec<Diagnostic>) {
         closure_modes: BTreeMap::new(),
         higher_order: higher_order::Calls::default(),
         invocation_summaries: BTreeMap::new(),
+        callback_results: Vec::new(),
+        resolving_callback_results: BTreeSet::new(),
         functions: Vec::new(),
         done: BTreeSet::new(),
         cleanups: BTreeMap::new(),
@@ -1512,9 +1516,13 @@ impl<'a> Analyzer<'a> {
                         self.error(Code::E0412, name.span, "let via requires a mode template");
                     }
                     Mode::Via
-                        if !value
-                            .origins()
-                            .any(|origin| origin.inherits_mode || !origin.reception.is_empty()) =>
+                        if !value.origins().any(|origin| {
+                            origin.inherits_mode
+                                || origin
+                                    .callback_result
+                                    .is_some_and(|result| result.cap.is_none())
+                                || !origin.reception.is_empty()
+                        }) =>
                     {
                         self.error(
                             Code::E0550,

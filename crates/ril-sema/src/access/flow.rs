@@ -90,6 +90,7 @@ pub(super) struct Origin {
     pub region: Region,
     pub mode: Access,
     pub inherits_mode: bool,
+    pub callback_result: Option<CallbackOrigin>,
     pub reception: Vec<Reception>,
     pub new: bool,
     pub dependencies: BTreeSet<Span>,
@@ -98,11 +99,20 @@ pub(super) struct Origin {
     pub draft: bool,
 }
 
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub(super) struct CallbackOrigin {
+    pub template: usize,
+    pub cap: Option<Access>,
+}
+
 impl Origin {
     pub(super) fn fix_mode(&mut self, access: Access) {
         self.mode = access;
         self.inherits_mode = false;
         self.reception.clear();
+        if let Some(result) = &mut self.callback_result {
+            result.cap = Some(access);
+        }
     }
 
     pub(super) fn project_mode(&mut self, member: Mode) {
@@ -169,6 +179,7 @@ impl Datum {
                 },
                 mode,
                 inherits_mode: false,
+                callback_result: None,
                 reception: Vec::new(),
                 new,
                 dependencies: BTreeSet::new(),
