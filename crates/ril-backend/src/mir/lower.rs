@@ -1612,6 +1612,7 @@ impl<'a> Builder<'_, 'a> {
             Pattern::Binding(_, name) => self.bind_name(name, value),
             Pattern::Rest(Some(name)) => self.bind_name(name, value),
             Pattern::Slice { text, elements } => self.bind_slice(*text, elements, value)?,
+            Pattern::Or(items) => self.bind_alternatives(node.span, items, value)?,
             Pattern::Tuple(items) => {
                 for (index, &item) in items.iter().enumerate() {
                     let key = self.integer(&index.to_string());

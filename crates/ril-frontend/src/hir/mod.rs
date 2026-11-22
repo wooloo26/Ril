@@ -451,6 +451,15 @@ impl Program {
             })
     }
 
+    pub fn bindings_within(&self, outer: Span) -> BTreeSet<DefinitionId> {
+        self.references_within(outer)
+            .filter_map(|(span, id)| {
+                let def = self.definition(id);
+                (def.kind == DefinitionKind::Local && def.name.span == span).then_some(id)
+            })
+            .collect()
+    }
+
     pub fn ast_for(&self, defining: DefinitionId) -> &Ast {
         &self.file(self.definition(defining).name.span.file).ast
     }

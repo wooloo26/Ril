@@ -777,6 +777,44 @@ impl Builder<'_, '_> {
         Ok(())
     }
 
+    pub(super) fn bind_alternatives(
+        &mut self,
+        span: Span,
+        items: &[PatternId],
+        value: Register,
+    ) -> Result<()> {
+        let names = self.global.typed.hir.bindings_within(span);
+        if names.is_empty() {
+            return Ok(());
+        }
+        let prior = self.locals.clone();
+        let merge = self.block(names.len());
+        for &item in items {
+            let selected = self.block(0);
+            let retry = self.block(0);
+            self.test_pattern(item, value, selected, retry)?;
+            self.current = Some(selected);
+            self.bind(item, value)?;
+            let arguments = names
+                .iter()
+                .map(|id| {
+                    self.locals
+                        .get(id)
+                        .copied()
+                        .ok_or_else(|| self.unsupported(span, "missing alternative binding"))
+                })
+                .collect::<Result<Vec<_>>>()?;
+            self.terminate(Terminator::Jump(merge, arguments));
+            self.current = Some(retry);
+            self.locals.clone_from(&prior);
+        }
+        self.terminate(Terminator::Unreachable);
+        self.current = Some(merge);
+        self.locals
+            .extend(names.into_iter().zip(self.params(merge)));
+        Ok(())
+    }
+
     pub(super) fn propagate(&mut self, value: Register) -> Result<Register> {
         let err = self.string("Err");
         let none = self.string("None");

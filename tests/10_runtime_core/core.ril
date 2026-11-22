@@ -1,6 +1,15 @@
 -- @suite runtime_core
 -- @default_stage run
 
+-- @case alternative_patterns_bind_from_the_selected_side run-pass backend=both
+fn chosen(input: (bool, int, int)) -> int {
+    match input { (true, result, _) | (false, _, result) -> result }
+}
+fn main() -> () {
+    assert(chosen((true, 9, 10)) == 9)
+    assert(chosen((false, 12, 42)) == 42)
+}
+
 -- @case static_parameters_do_not_create_runtime_capture_obligations run-pass backend=both
 fn factory(meta offset: int) -> fn(int) -> int { \value: int -> value + offset }
 fn main() -> () {

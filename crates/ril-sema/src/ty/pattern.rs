@@ -72,6 +72,8 @@ impl Checker<'_> {
             }
             Pattern::Or(items) => {
                 let mut domain = None;
+                let binders = self.hir.bindings_within(node.span);
+                let mut types = HashMap::new();
                 for &item in items {
                     let names = self.pattern_names(env, item);
                     if domain.as_ref().is_some_and(|expected| expected != &names) {
@@ -83,6 +85,17 @@ impl Checker<'_> {
                     }
                     domain = Some(names);
                     self.pattern(env, item, input);
+                    for &binder in &binders {
+                        let Some(ty) = self.bindings.get(&binder).cloned() else {
+                            continue;
+                        };
+                        if let Some(prior) = types.get(&binder) {
+                            self.require(env, ast.pattern(item).span, &ty, prior);
+                            self.bindings.insert(binder, prior.clone());
+                        } else {
+                            types.insert(binder, ty);
+                        }
+                    }
                 }
             }
             Pattern::Tuple(items) => {

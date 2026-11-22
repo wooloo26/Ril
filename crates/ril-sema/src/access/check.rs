@@ -1244,6 +1244,10 @@ impl<'a> Analyzer<'a> {
         let node = self.ast(ctx.file).pattern(id);
         match &node.value {
             Pattern::Binding(own, name) => {
+                let binding = self
+                    .definition(name.span)
+                    .unwrap_or_else(|| ril_base::ice!("unresolved binding pattern"));
+                let declaration = self.program.hir.definition(binding).name.span;
                 let mode = if own.mode == Mode::Plain {
                     storage.mode
                 } else {
@@ -1259,7 +1263,7 @@ impl<'a> Analyzer<'a> {
                     self.requirement(
                         ctx,
                         name.span,
-                        Obligation::Replace(name.span),
+                        Obligation::Replace(declaration),
                         "var requires reachable slot replacement",
                     );
                 }
@@ -1267,7 +1271,7 @@ impl<'a> Analyzer<'a> {
                     self.requirement(
                         ctx,
                         name.span,
-                        Obligation::Write(name.span),
+                        Obligation::Write(declaration),
                         "writable binding requires reachable use",
                     );
                 }
@@ -1325,11 +1329,7 @@ impl<'a> Analyzer<'a> {
                     }
                     _ => {}
                 }
-                if let Some(ty) = self.program.bindings.get(
-                    &self
-                        .definition(name.span)
-                        .unwrap_or_else(|| ril_base::ice!("unresolved binding pattern")),
-                ) {
+                if let Some(ty) = self.program.bindings.get(&binding) {
                     if ty.is_value() && matches!(mode, Mode::Mut | Mode::Shared | Mode::Ref) {
                         self.error(
                             Code::E0402,
@@ -1363,13 +1363,13 @@ impl<'a> Analyzer<'a> {
                     value.requires_new = false;
                 }
                 value.transform(&mut |origin| {
-                    origin.dependencies.insert(name.span);
+                    origin.dependencies.insert(declaration);
                 });
                 ledger.stamp(&mut value);
                 ledger.slots.insert(
-                    name.span,
+                    declaration,
                     Slot {
-                        decl: name.span,
+                        decl: declaration,
                         variable,
                         mode,
                         value,
@@ -1408,6 +1408,7 @@ impl<'a> Analyzer<'a> {
                 if let Some(rest) = rest
                     && let Pattern::Rest(Some(name)) = &ast.pattern(rest).value
                 {
+                    let decl = self.declaration(name.span).unwrap_or(name.span);
                     let mut slice = if *text {
                         Datum::default()
                     } else {
@@ -1422,12 +1423,12 @@ impl<'a> Analyzer<'a> {
                         slice.members.insert(Coordinate::Dynamic, child);
                     }
                     slice.transform(&mut |origin| {
-                        origin.dependencies.insert(name.span);
+                        origin.dependencies.insert(decl);
                     });
                     ledger.slots.insert(
-                        name.span,
+                        decl,
                         Slot {
-                            decl: name.span,
+                            decl,
                             variable: false,
                             mode: if *text { Mode::Plain } else { Mode::New },
                             value: slice,
@@ -1480,13 +1481,14 @@ impl<'a> Analyzer<'a> {
                         self.bind(ctx, ledger, pattern, &received, child, resource);
                     } else {
                         let mut child = child;
+                        let decl = self.declaration(field.name.span).unwrap_or(field.name.span);
                         child.transform(&mut |origin| {
-                            origin.dependencies.insert(field.name.span);
+                            origin.dependencies.insert(decl);
                         });
                         ledger.slots.insert(
-                            field.name.span,
+                            decl,
                             Slot {
-                                decl: field.name.span,
+                                decl,
                                 variable: received.variable,
                                 mode: requested,
                                 value: child,
@@ -1496,8 +1498,26 @@ impl<'a> Analyzer<'a> {
                 }
             }
             Pattern::Or(items) => {
-                if let Some(&first) = items.first() {
-                    self.bind(ctx, ledger, first, storage, value, resource);
+                let mut alternatives = Vec::new();
+                for (index, &item) in items.iter().enumerate() {
+                    let mut branch = ledger.clone();
+                    branch.take_choice(node.span, index);
+                    let mut value = value.clone();
+                    branch.stamp(&mut value);
+                    self.bind(ctx, &mut branch, item, storage, value, resource);
+                    alternatives.push(branch);
+                }
+                if let Some(first) = alternatives.first() {
+                    let mut prior = ledger.clone();
+                    for (&decl, slot) in &first.slots {
+                        if alternatives
+                            .iter()
+                            .all(|branch| branch.slots.contains_key(&decl))
+                        {
+                            prior.slots.entry(decl).or_insert_with(|| slot.clone());
+                        }
+                    }
+                    ledger.merge(&prior, &alternatives);
                 }
             }
             Pattern::Subset {

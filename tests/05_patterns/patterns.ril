@@ -1,6 +1,13 @@
 -- @suite patterns
 -- @default_stage type
 
+-- @case alternative_patterns_require_consistent_binding_types compile-fail E0301
+type Value { Number(int); Text(str) }
+fn bad(input: Value) -> () {
+    match input { Number(item) | Text(item) -> () }
+    -- ^ E0301
+}
+
 -- @case string_slice_fragment_cannot_be_empty compile-fail E0349
 fn f(value: str) -> bool { match value { str["", ..] -> true; _ -> false } }
 -- ^ E0349
