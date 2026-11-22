@@ -143,7 +143,12 @@ def callEntryCases : List (String × Bool) :=
 
 open RilAccess.GraphAuthority RilAccess.GraphAuthority.Examples in
 def graphCases : List (String × Bool) :=
-  [("a_readonly_member_cannot_use_its_sibling_writer", canWritePath readonlySibling 0 [0]),
+  [("a_cyclic_graph_can_be_cloned_compared_and_inspected",
+     decide (Fact.mk 0 1 .mut ∈ analyze cycle) &&
+     decide (resolvePath cycle.edges 0 .mut [0, 0] = some (0, .mut))),
+   ("cloning_preserves_repeated_paths_to_one_object",
+     decide (resolvePath repeated.edges 0 .mut [0] = resolvePath repeated.edges 0 .mut [1])),
+   ("a_readonly_member_cannot_use_its_sibling_writer", canWritePath readonlySibling 0 [0]),
    ("a_writable_member_can_coexist_with_its_readonly_alias", canWritePath readonlySibling 0 [1]),
    ("nested_shared_replacement_keeps_writable_outer_layers",
      (nestedSharedStored.map fun graph =>
@@ -159,6 +164,7 @@ def graphCases : List (String × Bool) :=
    ("replacing_a_ref_member_keeps_it_readonly",
      (checkedRef.map fun graph => canWritePath graph 0 [0]).getD false),
    ("a_mutable_path_cannot_implicitly_fill_a_ref_member", (receiveStored .ref .mut false).isSome),
+   ("a_shared_marker_requires_a_shared_binding", (receiveStored .ref .mut true).isSome),
    ("a_fixed_shared_member_cannot_be_replaced", (checkedReplace fixedSlot 0 [] 0 1 [] true).isSome),
    ("replacing_a_shared_member_requires_acknowledgment", (checkedReplace sharedSlot 0 [] 0 1 [] false).isSome),
    ("publication_survives_in_a_caller_member", checkedShared.isSome),

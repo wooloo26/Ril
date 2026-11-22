@@ -1083,6 +1083,67 @@ fn update() -> () {
     -- ^ E0520
 }
 
+-- @case a_shared_marker_requires_a_shared_binding compile-fail E0527
+fn inspect() -> int {
+    let mut state = Cell.{ count: 41 }
+    state.count += 1
+    let ref view = ^mut state
+    -- ^ E0527
+    view.count
+}
+
+-- @case a_ref_view_cannot_anchor_a_variable_slot compile-fail E0531
+fn inspect() -> int {
+    var slot = Cell.{ count: 41 }
+    slot = Cell.{ count: 42 }
+    let ref view = ref slot
+    -- ^ E0531
+    view.count
+}
+
+-- @case a_ref_view_can_anchor_a_pinned_copy_of_a_variable_value compile-pass
+fn inspect() -> int {
+    var slot = Cell.{ count: 41 }
+    slot = Cell.{ count: 42 }
+    let pinned = slot
+    let ref view = ref pinned
+    view.count
+}
+
+-- @case a_ref_marker_cannot_anchor_a_fresh_temporary compile-fail E0543
+fn inspect() -> int {
+    let ref view = ref Cell.{ count: 42 }
+    -- ^ E0543
+    view.count
+}
+
+-- @case a_ref_view_can_anchor_an_element_of_a_pinned_container compile-pass
+fn inspect() -> int {
+    let mut cells = [Cell.{ count: 40 }]
+    let ref view = cells[0]
+    let count = view.count
+    Array::push(mut cells, Cell.{ count: 2 })
+    count + cells[1].count
+}
+
+-- @case a_ref_binding_can_anchor_a_composite_with_a_live_ref compile-pass
+type Holder = .{ ref item: Cell }
+fn inspect() -> int {
+    let mut state = Cell.{ count: 41 }
+    let ref view = Holder.{ item: ref state }
+    state.count += 1
+    view.item.count
+}
+
+-- @case ref_slot_replacement_requires_a_ref_expression compile-fail E0357
+fn inspect() -> int {
+    let snapshot = Cell.{ count: 42 }
+    var ref view = snapshot
+    view = snapshot
+    -- ^ E0357
+    view.count
+}
+
 -- @case replacing_a_shared_member_requires_acknowledgment compile-fail E0510
 type Shelf = .{ var ^mut item: Cell }
 fn replace(mut shelf: Shelf, ^mut value: Cell) &mut &^mut -> () {

@@ -1,6 +1,36 @@
 -- @suite runtime_core
 -- @default_stage run
 
+-- @case a_cyclic_graph_can_be_cloned_compared_and_inspected run-pass backend=both
+nominal type Node = .{ var value: int, var ^mut next: ?Node }
+fn main() -> () {
+    let mut first = Node.{ value: 20, next: None }
+    let mut second = Node.{ value: 22, next: None }
+    first.next = ^mut Some(^mut second)
+    second.next = ^mut Some(^mut first)
+    let snapshot = clone(ref first)
+    let another = clone(ref first)
+    assert(snapshot == another)
+    assert(String::inspect(snapshot) == #".{ next: Some(.{ next: Some(...), value: 22 }), value: 20 }"#)
+    first.value += 1
+    let changed = clone(ref first)
+    assert(snapshot != changed)
+}
+
+-- @case cloning_preserves_repeated_paths_to_one_object run-pass backend=both
+type Cell = .{ var count: int }
+type Pair = .{ ^mut first: Cell, ^mut second: Cell }
+fn main() -> () {
+    let mut state = Cell.{ count: 40 }
+    state.count += 1
+    let mut pair = Pair.{ first: ^mut state, second: ^mut state }
+    pair.first.count += 1
+    let mut copied = clone(ref pair)
+    copied.first.count += 1
+    assert(copied.second.count == 43)
+    assert(state.count == 42)
+}
+
 -- @case via_record_schema_changes_the_selected_live_member run-pass backend=both
 type Cell = .{ var count: int }
 fn identity(via value: Cell) -> infer Cell { value }

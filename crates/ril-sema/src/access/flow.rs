@@ -95,6 +95,8 @@ pub(super) struct Origin {
     pub new: bool,
     // A marker on this expression, independent of the source's existing access.
     pub explicit_share: bool,
+    // A direct read of a replaceable slot cannot anchor a ref binding.
+    pub from_variable: bool,
     pub call_borrow: bool,
     pub dependencies: BTreeSet<Span>,
     pub branches: Choices,
@@ -198,6 +200,7 @@ impl Datum {
                 reception: Vec::new(),
                 new,
                 explicit_share: false,
+                from_variable: false,
                 call_borrow: false,
                 dependencies: BTreeSet::new(),
                 branches: BTreeMap::new(),
@@ -257,6 +260,7 @@ impl Datum {
         for root in &mut self.roots {
             root.fix_mode(Access::Immutable);
             root.new = false;
+            root.from_variable = false;
         }
         for member in self.members.values_mut() {
             member.freeze();
@@ -267,6 +271,7 @@ impl Datum {
     pub(super) fn receive_binding(&mut self, access: Access) {
         for root in &mut self.roots {
             root.fix_mode(access);
+            root.from_variable = false;
             if matches!(access, Access::Ref | Access::Shared) {
                 root.new = false;
             }
@@ -359,6 +364,7 @@ impl Datum {
     }
 
     fn attenuate(&self, member: &mut Self) {
+        member.requires_new &= self.requires_new;
         if self.roots.iter().all(|root| !root.mode.writes()) {
             if self.roots.iter().all(|root| root.mode == Access::Immutable) {
                 member.freeze();

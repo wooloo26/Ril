@@ -1395,6 +1395,41 @@ impl<'a> Analyzer<'a> {
         }
     }
 
+    fn check_ref_binding(&mut self, span: Span, value: &Datum, variable: bool) {
+        if value.roots.iter().any(|root| root.explicit_share) {
+            self.error(
+                Code::E0527,
+                span,
+                "a ref binding does not use a '^mut' marker",
+            );
+        } else if value.roots.iter().any(|root| root.from_variable) {
+            self.error(
+                Code::E0531,
+                span,
+                "a reassignable binding cannot anchor a ref view",
+            );
+        } else if value.roots.is_empty() {
+            self.error(Code::E0531, span, "ref binding has no live object source");
+        } else if (value.requires_new
+            || value
+                .roots
+                .iter()
+                .any(|root| root.new && root.dependencies.is_empty()))
+            && (variable
+                || !value
+                    .members
+                    .values()
+                    .flat_map(Datum::origins)
+                    .any(|source| source.mode == Access::Ref && !source.new))
+        {
+            self.error(
+                Code::E0543,
+                span,
+                "temporary has no live ref source to anchor the binding",
+            );
+        }
+    }
+
     fn returned(&mut self, ctx: &mut Context, ledger: &mut Ledger, value: Datum, span: Span) {
         let value = ledger.snapshot(&value);
         ledger.inspect(&value);
@@ -1770,11 +1805,7 @@ impl<'a> Analyzer<'a> {
                             "shared binding requires a shared writable source",
                         );
                     }
-                    Mode::Ref if value.roots.is_empty() && !resource => self.error(
-                        Code::E0531,
-                        name.span,
-                        "ref binding has no live object source",
-                    ),
+                    Mode::Ref if !resource => self.check_ref_binding(name.span, &value, variable),
                     Mode::Via if ctx.via.is_empty() && !ctx.member_via => {
                         self.error(Code::E0412, name.span, "let via requires a mode template");
                     }
@@ -2022,7 +2053,7 @@ impl<'a> Analyzer<'a> {
                     "ref" => {
                         for root in &mut value.roots {
                             root.fix_mode(Access::Ref);
-                            root.new = false;
+                            root.new &= value.requires_new;
                         }
                         value.requires_new = false;
                     }
@@ -2452,14 +2483,11 @@ impl<'a> Analyzer<'a> {
         }
         if matches!(
             node.value,
-            Expr::Path(_)
-                | Expr::Member { .. }
-                | Expr::Index { .. }
-                | Expr::Call { .. }
-                | Expr::Pipeline { .. }
+            Expr::Member { .. } | Expr::Index { .. } | Expr::Call { .. } | Expr::Pipeline { .. }
         ) {
             for root in &mut value.roots {
                 root.explicit_share = false;
+                root.from_variable = false;
             }
         }
         ledger.stamp(&mut value);
@@ -2495,7 +2523,12 @@ impl<'a> Analyzer<'a> {
             {
                 self.seed(ctx, Obligation::ReadUp(decl));
             }
-            slot.value.clone()
+            let mut value = slot.value.clone();
+            for root in &mut value.roots {
+                root.explicit_share = false;
+                root.from_variable = slot.variable;
+            }
+            value
         } else if self
             .definition(span)
             .is_some_and(|id| self.program.hir.unit_constructor(id))
@@ -2701,6 +2734,20 @@ impl<'a> Analyzer<'a> {
                 let mut value = value;
                 if mode == Mode::Shared {
                     self.require_shared_replacement(&value, span, false);
+                } else if mode == Mode::Ref {
+                    if value.roots.iter().any(|root| root.mode != Access::Ref) {
+                        self.error(
+                            Code::E0357,
+                            span,
+                            "ref slot replacement requires a ref expression",
+                        );
+                    } else if value.roots.iter().any(|root| root.from_variable) {
+                        self.error(
+                            Code::E0531,
+                            span,
+                            "a reassignable binding cannot anchor a ref slot",
+                        );
+                    }
                 }
                 let captured = ctx.caller_slots.contains(&id);
                 if captured {
