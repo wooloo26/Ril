@@ -40,6 +40,18 @@ fn main() -> () {}
 -- @file dep/info.ril
 pkg let value = 1
 
+-- @case package_item_visible_to_other_module_in_package compile-pass unit=lib
+-- @file pkg/main.ril
+use pkg/info::answer
+fn read() -> int { answer }
+-- @file pkg/info.ril
+pkg let answer = 42
+
+-- @case public_cleanup_cannot_expose_package_item compile-fail E0910 unit=lib
+pub opaque type Handle use(cleanup) = .{ id: int }
+-- ^ E0910
+pkg fn cleanup(new _handle: Handle) -> () {}
+
 -- @case private_selection compile-fail E0201 unit=bin
 -- @file pkg/main.ril
 use pkg/math::number

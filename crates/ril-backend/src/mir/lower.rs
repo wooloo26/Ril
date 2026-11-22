@@ -1,4 +1,5 @@
 mod control;
+mod slice;
 
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
@@ -570,6 +571,16 @@ impl<'a> Builder<'_, 'a> {
             .copied()
             .unwrap_or_default();
         let mut value = self.expr_impl(id)?;
+        if self
+            .global
+            .typed
+            .types
+            .get(&span)
+            .is_some_and(|ty| self.concrete(ty) == Ty::Never)
+        {
+            self.terminate(Terminator::Unreachable);
+            return Ok(value);
+        }
         for _ in 0..depth {
             let zero = self.integer("0");
             value = self.runtime("ril_rt_load", vec![value, zero]);
@@ -1530,6 +1541,8 @@ impl<'a> Builder<'_, 'a> {
         let node = self.ast().pattern(id);
         match &node.value {
             Pattern::Binding(_, name) => self.bind_name(name, value),
+            Pattern::Rest(Some(name)) => self.bind_name(name, value),
+            Pattern::Slice { text, elements } => self.bind_slice(*text, elements, value)?,
             Pattern::Tuple(items) => {
                 for (index, &item) in items.iter().enumerate() {
                     let key = self.integer(&index.to_string());
@@ -1561,6 +1574,7 @@ impl<'a> Builder<'_, 'a> {
                 }
             }
             Pattern::Wildcard
+            | Pattern::Rest(None)
             | Pattern::Unit
             | Pattern::Literal(_)
             | Pattern::Constructor(_, None)

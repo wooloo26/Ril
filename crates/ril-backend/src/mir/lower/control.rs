@@ -571,8 +571,7 @@ impl Builder<'_, '_> {
         }
         let message = self.string("non-exhaustive match reached");
         self.runtime("ril_rt_panic", vec![message]);
-        let unit = self.unit();
-        self.return_value(unit)?;
+        self.terminate(Terminator::Unreachable);
         self.cleanups = cleanups;
         if active {
             self.current = Some(end);
@@ -581,7 +580,7 @@ impl Builder<'_, '_> {
             }
             Ok(self.result_param(end))
         } else {
-            Err(self.unsupported(span, "no normal match branch"))
+            Ok(self.register())
         }
     }
 
@@ -670,6 +669,9 @@ impl Builder<'_, '_> {
                 self.test_parts(items, value, yes, no)?;
             }
             Pattern::Tuple(items) => self.test_parts(items, value, yes, no)?,
+            Pattern::Slice { text, elements } => {
+                self.test_slice(*text, elements, value, yes, no)?;
+            }
             Pattern::Record { fields, .. } => {
                 for item in fields.iter().filter(|item| item.pattern.is_some()) {
                     if let Some(pattern) = item.pattern {

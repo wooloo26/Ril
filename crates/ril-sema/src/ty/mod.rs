@@ -22,6 +22,7 @@ use ril_frontend::{
     syntax::{Mode, Visibility},
 };
 
+pub use pattern::text_slice_fragment;
 pub use value::{LiteralError, Value, arithmetic, literal, render};
 
 pub fn check(hir: Program, budget: Option<u64>) -> Result<TypedProgram, Vec<Diagnostic>> {

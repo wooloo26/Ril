@@ -1,6 +1,52 @@
 -- @suite patterns
 -- @default_stage type
 
+-- @case string_slice_fragment_cannot_be_empty compile-fail E0349
+fn f(value: str) -> bool { match value { str["", ..] -> true; _ -> false } }
+-- ^ E0349
+
+-- @case array_slice_cannot_have_multiple_rests compile-fail E0349
+fn f(value: []int) -> bool { match value { [..left, ..right] -> true; _ -> false } }
+-- ^ E0349
+
+-- @case extensible_sum_closes_inside_package compile-pass unit=lib
+-- @file pkg/main.ril
+use pkg/domain::Color
+fn color(value: Color) -> int { match value { Color::Amber -> 0; Color::Green -> 1 } }
+-- @file pkg/domain.ril
+pub type Color { Amber; Green; .. }
+
+-- @case extensible_sum_redundant_wildcard_inside_package compile-fail E0304 unit=lib
+-- @file pkg/main.ril
+use pkg/domain::Color
+fn color(value: Color) -> int {
+    match value {
+        Color::Amber -> 0
+        Color::Green -> 1
+        _ -> 2
+        -- ^ E0304
+    }
+}
+-- @file pkg/domain.ril
+pub type Color { Amber; Green; .. }
+
+-- @case extensible_sum_needs_wildcard_across_packages compile-fail E0303 unit=lib
+-- @file pkg/main.ril
+use dep/domain::Color
+fn color(value: Color) -> int { match value { Color::Amber -> 0; Color::Green -> 1 } }
+-- ^ E0303
+-- @file dep/domain.ril
+pub type Color { Amber; Green; .. }
+
+-- @case extensible_sum_wildcard_covers_other_packages compile-pass unit=lib
+-- @file pkg/main.ril
+use dep/domain::Color
+fn color(value: Color) -> int {
+    match value { Color::Amber -> 0; Color::Green -> 1; _ -> 2 }
+}
+-- @file dep/domain.d.ril
+pub type Color { Amber; Green; .. }
+
 -- @case option_pattern compile-pass
 fn describe(value: ?str) -> str {
     match value {

@@ -1,6 +1,7 @@
 import Lean
 import RilAccess.Examples.Concurrency
 import RilAccess.Examples.Summary
+import RilAccess.Examples.Visibility
 import RilAccess.Signatures
 import RilAccess.Solver
 
@@ -94,6 +95,21 @@ def taskJoinCases : List (String × Bool) :=
    ("every_memoized_fallible_join_requires_inspection",
     ((twoJoins.bind (inspectJoinedResult · 1 7)).bind drainPlainTasks).isSome)]
 
+open RilAccess.VisibilityModel RilAccess.Examples.VisibilityExamples in
+def visibilityCases : List (String × Bool) :=
+  [("package_private", visibleFrom .pubPkg .externalPkg),
+   ("package_item_visible_to_other_module_in_package", visibleFrom .pubPkg .samePkg),
+   ("private_selection", visibleFrom .priv .samePkg),
+   ("visibility_leak", signatureWellFormed publicRoot [⟨true, [], .priv⟩]),
+   ("public_cleanup_cannot_expose_package_item", signatureWellFormed publicRoot [packageRoot]),
+   ("opaque_converts_inside_scope", representationTransparent .priv .opaqueScope .sameScope),
+   ("opaque_member_outside_scope", representationTransparent .pubExport .opaqueScope .samePkg),
+   ("no_top_level_var", validTopLevelBinding .mutableOrLiveState),
+   ("extensible_sum_closes_inside_package", exhaustiveMatch rilExtIoError .samePkg [0, 1] false),
+   ("extensible_sum_redundant_wildcard_inside_package", exhaustiveMatch rilExtIoError .samePkg [0, 1] true),
+   ("extensible_sum_needs_wildcard_across_packages", exhaustiveMatch rilExtIoError .externalPkg [0, 1] false),
+   ("extensible_sum_wildcard_covers_other_packages", exhaustiveMatch foreignErrno .externalPkg [1, 2, 3] true)]
+
 def main (args : List String) : IO Unit := do
   let stdin ← IO.getStdin
   let source ← stdin.readToEnd
@@ -118,6 +134,8 @@ def main (args : List String) : IO Unit := do
     stdout.putStrLn (toJson callEntryCases).compress
   else if args == ["task-joins"] then
     stdout.putStrLn (toJson taskJoinCases).compress
+  else if args == ["visibility"] then
+    stdout.putStrLn (toJson visibilityCases).compress
   else
     let .ok entries := fromJson? (α := List JsonRule) json
       | throw (IO.userError "expected a JSON array of Horn rules")

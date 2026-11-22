@@ -92,6 +92,23 @@ impl Ast {
     pub fn expressions(&self) -> impl Iterator<Item = &Spanned<Expr>> {
         self.exprs.iter()
     }
+
+    pub fn slice_parts<'a>(
+        &self,
+        items: &'a [PatternId],
+    ) -> (&'a [PatternId], Option<PatternId>, &'a [PatternId]) {
+        let Some(index) = items
+            .iter()
+            .position(|&id| matches!(self.pattern(id).value, Pattern::Rest(_)))
+        else {
+            return (items, None, &[]);
+        };
+        let (before, remainder) = items.split_at(index);
+        let Some((&rest, after)) = remainder.split_first() else {
+            ril_base::ice!("missing slice rest pattern");
+        };
+        (before, Some(rest), after)
+    }
 }
 
 #[derive(Clone, Debug)]

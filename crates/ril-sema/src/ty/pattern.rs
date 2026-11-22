@@ -2,8 +2,25 @@ use std::collections::{HashMap, HashSet};
 
 use ril_base::{diag::Code, span::Span};
 use ril_frontend::syntax::{
-    LiteralKind, MatchArm, Pattern, PatternId, StmtKind, Type, TypeDefinition, TypeId, Variant,
+    Ast, LiteralKind, MatchArm, Pattern, PatternId, StmtKind, Type, TypeDefinition, TypeId, Variant,
 };
+
+pub fn text_slice_fragment(ast: &Ast, items: &[PatternId]) -> Option<String> {
+    let mut fragment = String::new();
+    for &item in items {
+        let Pattern::Literal(literal) = &ast.pattern(item).value else {
+            return None;
+        };
+        let Value::Str(value) = super::literal(literal).ok()? else {
+            return None;
+        };
+        if value.is_empty() {
+            return None;
+        }
+        fragment.push_str(&value);
+    }
+    Some(fragment)
+}
 
 use super::{
     AdtKind, GenericValue, Member, Ty, Value,
@@ -103,13 +120,21 @@ impl Checker<'_> {
                     if matches!(ast.pattern(item).value, Pattern::Rest(_)) {
                         if rest {
                             self.error(
-                                Code::E0551,
+                                Code::E0349,
                                 ast.pattern(item).span,
                                 "only one rest element is allowed",
                             );
                         }
                         rest = true;
                         self.pattern(env, item, &normalized);
+                    } else if *text
+                        && text_slice_fragment(ast, std::slice::from_ref(&item)).is_none()
+                    {
+                        self.error(
+                            Code::E0349,
+                            ast.pattern(item).span,
+                            "string slice fragments require nonempty string literals",
+                        );
                     } else {
                         self.pattern(env, item, &element);
                     }
@@ -563,6 +588,57 @@ impl Checker<'_> {
                         .iter()
                         .zip(values)
                         .all(|(&id, value)| self.value_pattern(env, id, value, bindings))
+            }
+            (
+                Pattern::Slice {
+                    text: false,
+                    elements,
+                },
+                Value::Array(values),
+            ) => {
+                let (before, rest, after) = ast.slice_parts(elements);
+                let Some(end) = values.len().checked_sub(after.len()) else {
+                    return false;
+                };
+                let Some(middle) = values.get(before.len()..end) else {
+                    return false;
+                };
+                if rest.is_none() && !middle.is_empty() {
+                    return false;
+                }
+                before
+                    .iter()
+                    .zip(values)
+                    .chain(after.iter().zip(values.iter().skip(end)))
+                    .all(|(&id, value)| self.value_pattern(env, id, value, bindings))
+                    && rest.is_none_or(|id| {
+                        self.value_pattern(env, id, &Value::Array(middle.to_vec()), bindings)
+                    })
+            }
+            (
+                Pattern::Slice {
+                    text: true,
+                    elements,
+                },
+                Value::Str(text),
+            ) => {
+                let (before, rest, after) = ast.slice_parts(elements);
+                let Some(prefix) = text_slice_fragment(ast, before) else {
+                    return false;
+                };
+                let Some(suffix) = text_slice_fragment(ast, after) else {
+                    return false;
+                };
+                let Some(middle) = text
+                    .strip_prefix(&prefix)
+                    .and_then(|tail| tail.strip_suffix(&suffix))
+                else {
+                    return false;
+                };
+                rest.map_or_else(
+                    || middle.is_empty(),
+                    |id| self.value_pattern(env, id, &Value::Str(middle.into()), bindings),
+                )
             }
             (Pattern::Constructor(path, parts), Value::Tag(tag, values)) => {
                 path.segments

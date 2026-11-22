@@ -1,6 +1,15 @@
 -- @suite meta
 -- @default_stage type
 
+-- @case static_slice_patterns_match_and_bind_the_middle compile-pass
+meta fn slices() -> bool {
+    let values = [0, 3, 7, 9]
+    let [0, ..middle, 9] = values else { return false }
+    let str["é", ..body, "終"] = "éλ終" else { return false }
+    middle == [3, 7] && body == "λ"
+}
+meta let SLICES = assert(slices())
+
 -- @case dual_phase_text_literals_and_labeled_join compile-pass
 meta fn assemble(parts: []str) -> str { String::join(separator: "/", parts: parts) }
 meta let JOIN_CHECK = assert(assemble(["a", "β"]) == "a/β")

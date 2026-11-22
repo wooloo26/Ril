@@ -1386,14 +1386,53 @@ impl<'a> Analyzer<'a> {
                 }
                 self.discard(ledger, &value);
             }
-            Pattern::Tuple(items)
-            | Pattern::Slice {
-                elements: items, ..
-            } => {
+            Pattern::Tuple(items) => {
                 for (i, &item) in items.iter().enumerate() {
                     let child =
                         ledger.project(&value, Coordinate::Index(i.to_string()), Access::Immutable);
                     self.bind(ctx, ledger, item, storage, child, resource);
+                }
+            }
+            Pattern::Slice { text, elements } => {
+                let ast = self.ast(ctx.file);
+                let (before, rest, after) = ast.slice_parts(elements);
+                let mode = self.member_schema(node.span, &Coordinate::Dynamic).0;
+                for (index, &item) in before.iter().enumerate() {
+                    let child = ledger.project(&value, Coordinate::Index(index.to_string()), mode);
+                    self.bind(ctx, ledger, item, storage, child, resource);
+                }
+                for &item in after {
+                    let child = ledger.project(&value, Coordinate::Dynamic, mode);
+                    self.bind(ctx, ledger, item, storage, child, resource);
+                }
+                if let Some(rest) = rest
+                    && let Pattern::Rest(Some(name)) = &ast.pattern(rest).value
+                {
+                    let mut slice = if *text {
+                        Datum::default()
+                    } else {
+                        Datum::source(ast.pattern(rest).span, Access::Mut, true)
+                    };
+                    if let Ty::Array(element) = self.ty(node.span)
+                        && !element.ty.is_value()
+                    {
+                        let mut child = ledger.project(&value, Coordinate::Dynamic, mode);
+                        child.requires_new = false;
+                        child.transform(&mut |origin| origin.new = false);
+                        slice.members.insert(Coordinate::Dynamic, child);
+                    }
+                    slice.transform(&mut |origin| {
+                        origin.dependencies.insert(name.span);
+                    });
+                    ledger.slots.insert(
+                        name.span,
+                        Slot {
+                            decl: name.span,
+                            variable: false,
+                            mode: if *text { Mode::Plain } else { Mode::New },
+                            value: slice,
+                        },
+                    );
                 }
             }
             Pattern::Constructor(_, payload) => {

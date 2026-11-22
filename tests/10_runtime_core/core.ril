@@ -1,6 +1,37 @@
 -- @suite runtime_core
 -- @default_stage run
 
+-- @case match_with_only_explicit_returns_has_no_normal_join run-pass backend=both
+fn pick(flag: bool) -> int {
+    match flag {
+        true -> return 1
+        false -> return 2
+    }
+}
+fn main() -> () { assert(pick(true) == 1 && pick(false) == 2) }
+
+-- @case native_slice_patterns_bind_rest_and_check_non_overlap run-pass backend=both
+fn interior(values: []int) -> new []int {
+    match values {
+        [0, ..middle, 9] -> new middle
+        _ -> []
+    }
+}
+fn label(value: ?str) -> str {
+    let Some(str["é", "λ", ..middle, "終"]) = value else { return "none" }
+    middle
+}
+fn overlap(value: str) -> bool {
+    match value { str["a", .., "a"] -> true; _ -> false }
+}
+fn main() -> () {
+    let mut middle = interior([0, 6, 9])
+    Array::push(mut middle, 7)
+    assert(middle == [6, 7] && interior([0]) == [] && interior([0, 9]) == [])
+    assert(label(Some("éλ中終")) == "中" && label(Some("éλ")) == "none" && label(None) == "none")
+    assert(!overlap("a") && overlap("aa"))
+}
+
 -- @case text_helpers_keep_written_evaluation_order_and_literal_escapes run-pass backend=both
 -- @expect-stdout separator
 -- @expect-stdout parts

@@ -317,6 +317,27 @@ fn task_join_examples_agree_with_lean() {
     }
 }
 
+#[test]
+fn visibility_examples_agree_with_lean() {
+    let Some(oracle) = std::env::var_os("RIL_HORN_ORACLE") else {
+        return;
+    };
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests");
+    let suites = ril_test::discover(&root).unwrap();
+    let output = query(&oracle, "visibility", b"[]").unwrap();
+    let results: Vec<(String, bool)> = serde_json::from_slice(&output).unwrap();
+    assert_eq!(results.len(), 12);
+    for (name, accepted) in results {
+        let case = suites
+            .iter()
+            .flat_map(|suite| &suite.cases)
+            .find(|case| case.id == name)
+            .unwrap();
+        let diagnostics = Driver.check_stage(&case.pkg, Stage::Access).diagnostics;
+        assert_eq!(diagnostics.is_empty(), accepted, "{name}: {diagnostics:?}");
+    }
+}
+
 fn query(
     oracle: &OsStr,
     operation: &str,

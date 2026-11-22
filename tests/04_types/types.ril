@@ -51,7 +51,7 @@ fn invalid() -> new Left { Right(1) }
 
 -- @case opaque_converts_inside_scope compile-pass
 opaque type Weight = int
-fn wrap(n: int) -> new Weight { n }
+fn wrap(n: int) -> Weight { n }
 fn unwrap(w: Weight) -> int { w }
 
 -- @case opaque_member_outside_scope compile-fail E0308 unit=bin
