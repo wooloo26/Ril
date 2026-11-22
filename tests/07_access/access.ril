@@ -360,3 +360,33 @@ fn transfer() -> int {
     -- ^ E0549
     duplicate.count
 }
+
+-- @case exact_fields_are_separate_mutable_arguments compile-pass
+type Pair = .{ mut first: Cell, mut second: Cell }
+fn edit(mut a: Cell, mut b: Cell) &mut -> () { a.count += 1; b.count += 1 }
+fn update() -> () {
+    let mut pair = Pair.{ first: Cell.{ count: 1 }, second: Cell.{ count: 2 } }
+    edit(mut pair.first, mut pair.second)
+}
+
+-- @case unknown_index_cannot_prove_separation compile-fail E0523
+fn edit(mut a: Cell, mut b: Cell) &mut -> () { a.count += 1; b.count += 1 }
+fn update(index: int) -> () {
+    let mut cells: [mut]Cell = [Cell.{ count: 1 }, Cell.{ count: 2 }]
+    edit(mut cells[0], mut cells[index])
+    -- ^ E0523
+}
+
+-- @case new_argument_ends_path_before_later_arguments compile-fail E0549
+fn consume(new first: Cell, ref view: Cell) -> int { view.count }
+fn transfer() -> int {
+    let mut cell = Cell.{ count: 1 }
+    consume(new cell, ref cell)
+    -- ^ E0549
+}
+
+-- @case aborting_write_still_requires_write_clause compile-fail E0510
+fn edit(mut cell: Cell) -> never {
+    cell.count += 1
+    panic("stop")
+}

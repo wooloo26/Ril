@@ -2,6 +2,7 @@ import Lean
 import RilAccess.Examples.Boundary
 import RilAccess.Examples.Draft
 import RilAccess.Examples.Handoff
+import RilAccess.Examples.ResolvedProvenance
 import RilAccess.Examples.Concurrency
 import RilAccess.Examples.Summary
 import RilAccess.Examples.Visibility
@@ -133,6 +134,20 @@ def handoffCases : List (String × Bool) :=
    ("handoff_ends_dependent_view", currentLive after 1),
    ("handoff_cannot_repeat", (checkAtom (.handoff 0 3) after).isOk)]
 
+open RilAccess.Provenance RilAccess.Provenance.Examples in
+def provenanceCases : List (String × Bool) :=
+  [("dead_branch_is_not_write_authority", accepts (recursiveWriter false)),
+   ("recursive_forwarding_is_ungrounded", accepts (recursiveWriter false)),
+   ("mutual_recursion_has_grounded_writer", accepts (recursiveWriter true)),
+   ("exact_fields_are_separate_mutable_arguments", accepts (fields false)),
+   ("unknown_index_cannot_prove_separation", accepts (fields true)),
+   ("replaced_member_is_not_from_old_formal_entry", accepts (entryReturn true)),
+   ("new_reception_can_select_mutable_element_mode", accepts (completeNewGraph .mut)),
+   ("new_argument_ends_path_before_later_arguments", accepts endedArgument),
+   ("aborting_write_still_requires_write_clause", accepts (abortingWriter false)),
+   ("new_container_does_not_discharge_existing_member_writes", accepts (writeThroughWrapper false)),
+   ("new_container_writes_existing_member", accepts (writeThroughWrapper true))]
+
 open RilAccess.VisibilityModel RilAccess.Examples.VisibilityExamples in
 def visibilityCases : List (String × Bool) :=
   [("package_private", visibleFrom .pubPkg .externalPkg),
@@ -178,6 +193,8 @@ def main (args : List String) : IO Unit := do
     stdout.putStrLn (toJson draftCases).compress
   else if args == ["handoff"] then
     stdout.putStrLn (toJson handoffCases).compress
+  else if args == ["provenance"] then
+    stdout.putStrLn (toJson provenanceCases).compress
   else if args == ["visibility"] then
     stdout.putStrLn (toJson visibilityCases).compress
   else
