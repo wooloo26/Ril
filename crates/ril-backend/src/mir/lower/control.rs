@@ -870,9 +870,12 @@ impl Builder<'_, '_> {
         }
         let captures = self.named_captures(id);
         let environment = (!captures.is_empty()).then(|| self.environment(&captures));
-        let function = self
-            .global
-            .queue(Work::Named(id, Default::default(), captures));
+        let function = self.global.queue(Work::Named(
+            id,
+            Default::default(),
+            captures,
+            self.statics.clone(),
+        ));
         let target = environment.map_or(Target::Function(function), |environment| {
             Target::FunctionWithEnv {
                 function,
@@ -893,6 +896,14 @@ impl Builder<'_, '_> {
         }
         match &node.value {
             Expr::Literal(literal) => ty::literal(literal).ok(),
+            Expr::Binary { op, left, right } if matches!(op.value.as_str(), "==" | "!=") => {
+                let (Value::Type(left), Value::Type(right)) =
+                    (self.static_expr(*left)?, self.static_expr(*right)?)
+                else {
+                    return None;
+                };
+                Some(Value::Bool((left == right) == (op.value == "==")))
+            }
             Expr::Quote(id) => self
                 .global
                 .typed
@@ -901,6 +912,9 @@ impl Builder<'_, '_> {
                 .map(|ty| Value::Type(Box::new(self.concrete(ty)))),
             Expr::Path(path) => {
                 let id = self.global.resolve(path.span)?;
+                if let Some(value) = self.statics.get(&id) {
+                    return Some(value.clone());
+                }
                 let def = self.global.typed.hir.definition(id);
                 match def.name.value.as_str() {
                     "OS" => Some(Value::Str(std::env::consts::OS.into())),

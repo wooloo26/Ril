@@ -14,8 +14,8 @@ use ril_sema::{
     access::{Analysis, CleanupAction},
     hir::{DefinitionId, DefinitionKind, Resolution, TextBuiltin},
     syntax::{
-        Argument, Ast, Expr, ExprId, Function as SyntaxFunction, Member, Name, Pattern, PatternId,
-        StmtId, StmtKind, StringPart, Transfer,
+        Argument, Ast, Expr, ExprId, Function as SyntaxFunction, Member, Name, Parameter, Pattern,
+        PatternId, StmtId, StmtKind, StringPart, Transfer,
     },
     ty::{self, Ty, TypedProgram, Value},
 };
@@ -56,7 +56,12 @@ pub(super) fn lower(typed: &TypedProgram, analysis: &Analysis) -> Result<Program
         .callables
         .get(&entry)
         .is_some_and(|callable| callable.effects.iter().any(|effect| effect == "fiber"));
-    let entry = lowering.queue(Work::Named(entry, BTreeMap::new(), Vec::new()));
+    let entry = lowering.queue(Work::Named(
+        entry,
+        BTreeMap::new(),
+        Vec::new(),
+        BTreeMap::new(),
+    ));
     let mut functions = Vec::new();
     while let Some(work) = lowering.queued.get(functions.len()).cloned() {
         functions.push(lowering.function(work)?);
@@ -148,12 +153,18 @@ struct Lowering<'a> {
 
 #[derive(Clone, PartialEq)]
 enum Work {
-    Named(DefinitionId, BTreeMap<DefinitionId, Ty>, Vec<DefinitionId>),
+    Named(
+        DefinitionId,
+        BTreeMap<DefinitionId, Ty>,
+        Vec<DefinitionId>,
+        BTreeMap<DefinitionId, Value>,
+    ),
     Closure {
         file: FileId,
         syntax: ExprId,
         captures: Vec<DefinitionId>,
         types: BTreeMap<DefinitionId, Ty>,
+        statics: BTreeMap<DefinitionId, Value>,
     },
 }
 
@@ -208,8 +219,8 @@ impl<'a> Lowering<'a> {
     }
 
     fn function(&mut self, work: Work) -> Result<Function> {
-        let (file, name, body, params, guards, captures, types) = match work {
-            Work::Named(id, types, captures) => {
+        let (file, name, body, params, guards, captures, types, statics) = match work {
+            Work::Named(id, types, captures, statics) => {
                 let f = self
                     .declaration(id)
                     .ok_or_else(|| Diagnostic::unsupported("missing native function definition"))?;
@@ -225,6 +236,7 @@ impl<'a> Lowering<'a> {
                     f.signature.guards.clone(),
                     captures,
                     types,
+                    statics,
                 )
             }
             Work::Closure {
@@ -232,6 +244,7 @@ impl<'a> Lowering<'a> {
                 syntax,
                 captures,
                 types,
+                statics,
             } => {
                 let ast = &self.typed.hir.file(file).ast;
                 let node = ast.expr(syntax);
@@ -254,9 +267,11 @@ impl<'a> Lowering<'a> {
                     Vec::new(),
                     captures,
                     types,
+                    statics,
                 )
             }
         };
+        let params: Vec<_> = params.iter().filter(|param| !param.is_meta).collect();
         let arity = if matches!(body, NativeBody::Accessor(_)) {
             1
         } else {
@@ -279,6 +294,7 @@ impl<'a> Lowering<'a> {
             loops: Vec::new(),
             evidence: Register(0),
             types,
+            statics,
             guards,
             running_guard: false,
         };
@@ -305,10 +321,8 @@ impl<'a> Lowering<'a> {
             }
         }
         for (param, value) in params.iter().zip(builder.params(entry)) {
-            if !param.is_meta {
-                for &guard in &param.guards {
-                    builder.run_guard(guard, value)?;
-                }
+            for &guard in &param.guards {
+                builder.run_guard(guard, value)?;
             }
         }
         let result = match body {
@@ -371,6 +385,7 @@ struct Builder<'b, 'a> {
     loops: Vec<Loop>,
     evidence: Register,
     types: BTreeMap<DefinitionId, Ty>,
+    statics: BTreeMap<DefinitionId, Value>,
     guards: Vec<ExprId>,
     running_guard: bool,
 }
@@ -604,7 +619,7 @@ impl<'a> Builder<'_, 'a> {
         }
         match &node.value {
             Expr::Unit => Ok(self.unit()),
-            Expr::Closure { .. } | Expr::Accessor(_) => self.lift(id),
+            Expr::Closure { .. } | Expr::Accessor(_) => self.lift(id, None),
             Expr::Literal(literal) => self.constant(
                 &ty::literal(literal).map_err(|_| self.unsupported(span, "malformed literal"))?,
                 span,
@@ -817,6 +832,7 @@ impl<'a> Builder<'_, 'a> {
                                     function,
                                     BTreeMap::new(),
                                     Vec::new(),
+                                    self.statics.clone(),
                                 )))
                             }
                             CleanupAction::CloseSender => Clean::Sender,
@@ -954,6 +970,9 @@ impl<'a> Builder<'_, 'a> {
     }
 
     fn read(&mut self, source: DefinitionId, span: Span) -> Result<Register> {
+        if let Some(value) = self.statics.get(&source).cloned() {
+            return self.constant(&value, span);
+        }
         if let Some(&value) = self.locals.get(&source) {
             if self.global.boxed.contains(&source) {
                 let key = self.integer("0");
@@ -1002,9 +1021,12 @@ impl<'a> Builder<'_, 'a> {
             DefinitionKind::Function if self.global.declaration(source).is_some() => {
                 let captures = self.named_captures(source);
                 let environment = self.environment(&captures);
-                let id = self
-                    .global
-                    .queue(Work::Named(source, BTreeMap::new(), captures));
+                let id = self.global.queue(Work::Named(
+                    source,
+                    BTreeMap::new(),
+                    captures,
+                    self.statics.clone(),
+                ));
                 let arity = self
                     .global
                     .declaration(source)
@@ -1050,7 +1072,16 @@ impl<'a> Builder<'_, 'a> {
     }
 
     fn call(&mut self, callee: ExprId, args: &[Argument], span: Span) -> Result<Register> {
-        let Expr::Path(path) = &self.ast().expr(callee).value else {
+        let callee_expression = &self.ast().expr(callee).value;
+        let Expr::Path(path) = callee_expression else {
+            if let Expr::Closure { params, .. } = callee_expression
+                && params.iter().any(|param| param.is_meta)
+            {
+                let metadata = self.global.typed.meta_arguments.get(&span).cloned();
+                let value = self.lift(callee, metadata.as_ref())?;
+                let args = self.arguments(params, self.file, args, span)?;
+                return Ok(self.invoke_closure(value, args));
+            }
             let value = self.expr(callee)?;
             let args = args
                 .iter()
@@ -1083,7 +1114,12 @@ impl<'a> Builder<'_, 'a> {
                 .global
                 .declaration(id)
                 .ok_or_else(|| self.unsupported(span, "missing effect operation"))?;
-            let args = self.arguments(operation, args, span)?;
+            let args = self.arguments(
+                &operation.signature.params,
+                operation.name.span.file,
+                args,
+                span,
+            )?;
             let key = self.string(&label);
             let handler = self.runtime("ril_rt_evidence_find", vec![self.evidence, key]);
             return Ok(self.invoke_closure(handler, args));
@@ -1117,12 +1153,21 @@ impl<'a> Builder<'_, 'a> {
         let Some(function) = self.global.declaration(id) else {
             return Err(self.unsupported(span, "callable value"));
         };
-        let values = self.arguments(function, args, span)?;
+        let values = self.arguments(
+            &function.signature.params,
+            function.name.span.file,
+            args,
+            span,
+        )?;
         if function.body.is_some() {
             let types = self.specialize(function, path, args);
             let captures = self.named_captures(id);
             let environment = (!captures.is_empty()).then(|| self.environment(&captures));
-            let function = self.global.queue(Work::Named(id, types, captures));
+            let mut statics = self.statics.clone();
+            if let Some(metadata) = self.global.typed.meta_arguments.get(&span) {
+                statics.extend(metadata.clone());
+            }
+            let function = self.global.queue(Work::Named(id, types, captures, statics));
             let target = environment.map_or(Target::Function(function), |environment| {
                 Target::FunctionWithEnv {
                     function,
@@ -1193,7 +1238,11 @@ impl<'a> Builder<'_, 'a> {
         )
     }
 
-    fn lift(&mut self, id: ExprId) -> Result<Register> {
+    fn lift(
+        &mut self,
+        id: ExprId,
+        arguments: Option<&BTreeMap<DefinitionId, Value>>,
+    ) -> Result<Register> {
         let span = self.ast().expr(id).span;
         let capture: std::collections::BTreeSet<_> = self
             .ast()
@@ -1207,15 +1256,20 @@ impl<'a> Builder<'_, 'a> {
             .collect();
         let capture: Vec<_> = capture.into_iter().collect();
         let environment = self.environment(&capture);
+        let mut statics = self.statics.clone();
+        if let Some(arguments) = arguments {
+            statics.extend(arguments.clone());
+        }
         let work = Work::Closure {
             file: self.file,
             syntax: id,
             captures: capture,
             types: self.types.clone(),
+            statics,
         };
         let function = self.global.queue(work);
         let arity = match &self.ast().expr(id).value {
-            Expr::Closure { params, .. } => params.len(),
+            Expr::Closure { params, .. } => params.iter().filter(|param| !param.is_meta).count(),
             Expr::Accessor(_) => 1,
             _ => 0,
         };
@@ -1270,33 +1324,47 @@ impl<'a> Builder<'_, 'a> {
 
     fn arguments(
         &mut self,
-        function: &SyntaxFunction,
+        parameters: &[Parameter],
+        callee_file: FileId,
         args: &[Argument],
         span: Span,
     ) -> Result<Vec<Register>> {
-        let mut values = vec![None; function.signature.params.len()];
+        let mut values = vec![None; parameters.len()];
+        let mut provided = vec![false; values.len()];
         for arg in args {
             let index = if let Some(name) = &arg.name {
-                function.signature.params.iter().position(|p| {
+                parameters.iter().position(|p| {
                     p.name
                         .as_ref()
                         .is_some_and(|param| param.value == name.value)
                 })
             } else {
-                values.iter().position(Option::is_none)
+                provided.iter().position(|present| !present)
             }
             .ok_or_else(|| self.unsupported(span, "argument binding"))?;
-            let value = self.expr(arg.value)?;
-            if let Some(slot) = values.get_mut(index) {
-                *slot = Some(value);
+            if let Some(provided) = provided.get_mut(index) {
+                *provided = true;
+            }
+            if parameters.get(index).is_some_and(|param| !param.is_meta) {
+                let value = self.expr(arg.value)?;
+                if let Some(slot) = values.get_mut(index) {
+                    *slot = Some(value);
+                }
             }
         }
         let file = self.file;
         let locals = self.locals.clone();
-        self.file = function.name.span.file;
+        let statics = self.statics.clone();
+        if let Some(meta) = self.global.typed.meta_arguments.get(&span) {
+            self.statics.extend(meta.clone());
+        }
+        self.file = callee_file;
         let mut ordered = Vec::new();
         let result = (|| {
-            for (param, value) in function.signature.params.iter().zip(values) {
+            for (param, value) in parameters.iter().zip(values) {
+                if param.is_meta {
+                    continue;
+                }
                 let value = if let Some(value) = value {
                     value
                 } else if let Some(default) = param.default {
@@ -1317,6 +1385,7 @@ impl<'a> Builder<'_, 'a> {
         })();
         self.file = file;
         self.locals = locals;
+        self.statics = statics;
         result
     }
 

@@ -1894,9 +1894,13 @@ impl<'a> Analyzer<'a> {
     }
 
     fn read_span(&mut self, ctx: &Context, ledger: &Ledger, span: Span) -> Datum {
-        let Some(decl) = self.declaration(span) else {
+        let Some(id) = self.definition(span) else {
             return Datum::default();
         };
+        if self.program.meta_parameters.contains(&id) {
+            return Datum::default();
+        }
+        let decl = self.program.hir.definition(id).name.span;
         if let Some(slot) = ledger.slots.get(&decl) {
             if ctx.reachable && ledger.dead(&slot.value) {
                 self.error(Code::E0549, span, "source path was ended by new handoff");

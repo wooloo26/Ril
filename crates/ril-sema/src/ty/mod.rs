@@ -11,7 +11,7 @@ pub(crate) mod reception;
 mod value;
 
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, HashSet},
     fmt,
     sync::Arc,
 };
@@ -197,6 +197,8 @@ pub struct TypedProgram {
     pub bindings: HashMap<DefinitionId, Ty>,
     pub callables: BTreeMap<DefinitionId, Arc<Callable>>,
     pub static_values: HashMap<Span, Value>,
+    pub meta_arguments: HashMap<Span, BTreeMap<DefinitionId, Value>>,
+    pub(crate) meta_parameters: HashSet<DefinitionId>,
     pub narrowings: HashMap<Span, usize>,
     pub navigation_values: HashMap<Span, Ty>,
     pub subset_tags: HashMap<Span, Vec<String>>,

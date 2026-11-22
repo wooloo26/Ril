@@ -295,7 +295,19 @@ impl<'a> Checker<'a> {
                 params,
                 obligations,
                 body,
-            } => self.closure(env, params, obligations, *body, expected),
+            } => {
+                if env.phase == Phase::Runtime
+                    && !env.shadow
+                    && params.iter().any(|param| param.is_meta)
+                {
+                    self.error(
+                        Code::E0810,
+                        span,
+                        "callables with meta parameters require a direct call",
+                    );
+                }
+                self.closure(env, params, obligations, *body, expected)
+            }
             Expr::Accessor(segments) => {
                 let label = match expected {
                     Some(Ty::Callable(call)) => call.parameters.first().map(|p| p.ty.clone()),
@@ -1238,6 +1250,9 @@ impl<'a> Checker<'a> {
         local.return_scope = Some(self.ast(env.file).expr(body).span);
         let mut parameters = Vec::new();
         for (index, item) in params.iter().enumerate() {
+            if item.is_meta {
+                self.declare_meta_key(&mut local, item);
+            }
             let expected_param = expected_call.and_then(|sig| sig.parameters.get(index));
             let ty = if let Some(ty) = item.ty {
                 self.type_expr(&mut local, ty)
@@ -1425,6 +1440,16 @@ impl<'a> Checker<'a> {
                     Default::default(),
                 ),
             }
+        } else if let Expr::Closure {
+            params,
+            obligations,
+            body,
+        } = &callee.value
+        {
+            (
+                self.closure(env, params, obligations, *body, None),
+                Default::default(),
+            )
         } else {
             (self.expr(env, callee_id, None), Default::default())
         };
@@ -1561,11 +1586,21 @@ impl<'a> Checker<'a> {
         if pending_meta && let Some(id) = def_id {
             self.eval_call_root(env, id, args, span);
         }
-        let result = if has_meta
-            && !env.shadow
-            && let Some(id) = def_id
-        {
-            self.specialize_meta_call(id, &generics, &used, &metadata, &result, span)
+        let result = if has_meta && !env.shadow {
+            if let Some(id) = def_id {
+                self.specialize_meta_call(id, &generics, &used, &metadata, &result, span)
+            } else if let Expr::Closure { params, .. } = &callee.value {
+                self.specialize_meta_parameters(
+                    &mut env.clone(),
+                    params,
+                    &used,
+                    &metadata,
+                    &result,
+                    span,
+                )
+            } else {
+                result
+            }
         } else {
             result
         };

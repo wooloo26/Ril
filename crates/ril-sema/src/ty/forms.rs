@@ -1112,6 +1112,7 @@ impl Checker<'_> {
         else {
             return;
         };
+        self.meta_parameters.insert(key);
         for &guard in &parameter.guards {
             if let syntax::Expr::Path(path) = &self.ast(env.file).expr(guard).value
                 && self.prelude_key(path)
@@ -1325,39 +1326,58 @@ impl Checker<'_> {
         };
         let mut local = Env::new(def.name.span.file, def.scope);
         local.generics.clone_from(generics);
+        self.specialize_meta_parameters(
+            &mut local,
+            &function.signature.params,
+            supplied,
+            metadata,
+            result,
+            span,
+        )
+    }
+
+    pub(super) fn specialize_meta_parameters(
+        &mut self,
+        local: &mut Env,
+        parameters: &[syntax::Parameter],
+        supplied: &[bool],
+        metadata: &BTreeMap<usize, Value>,
+        result: &Ty,
+        span: Span,
+    ) -> Ty {
         local.phase = Phase::TypeEval;
-        for (index, parameter) in function
-            .signature
-            .params
-            .iter()
-            .enumerate()
-            .filter(|(_, p)| p.is_meta)
-        {
+        for (index, parameter) in parameters.iter().enumerate().filter(|(_, p)| p.is_meta) {
             let value = metadata.get(&index).cloned().or_else(|| {
                 if supplied.get(index) != Some(&true)
                     && let Some(default) = parameter.default
                 {
-                    self.eval_root(&local, default, true)
+                    self.eval_root(local, default, true)
                 } else {
                     None
                 }
             });
             let Some(value) = value else { continue };
-            let value = GenericValue::Data(value);
             if let Some(key) = parameter
                 .name
                 .as_ref()
                 .and_then(|name| self.resolve(name.span))
             {
-                local.generics.insert(key, value.clone());
+                local
+                    .generics
+                    .insert(key, GenericValue::Data(value.clone()));
+                self.meta_arguments
+                    .entry(span)
+                    .or_default()
+                    .insert(key, value.clone());
             }
+            let input = GenericValue::Data(value);
             for &guard in &parameter.guards {
                 if let syntax::Expr::Path(path) = &self.ast(local.file).expr(guard).value {
-                    self.apply_static_check(&mut local, path, &value, span);
+                    self.apply_static_check(local, path, &input, span);
                 }
             }
         }
-        self.specialize_projections(&mut local, result, span)
+        self.specialize_projections(local, result, span)
     }
 
     fn apply_static_check(

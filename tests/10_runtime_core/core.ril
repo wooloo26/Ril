@@ -1,6 +1,39 @@
 -- @suite runtime_core
 -- @default_stage run
 
+-- @case static_parameters_do_not_create_runtime_capture_obligations run-pass backend=both
+fn factory(meta offset: int) -> fn(int) -> int { \value: int -> value + offset }
+fn main() -> () {
+    let add = factory(2)
+    assert(add(40) == 42)
+}
+
+-- @case direct_anonymous_meta_parameters_specialize_the_closure run-pass backend=both
+fn main() -> () {
+    let from_type = (\meta witness: Type<int> -> if witness == <int> { 20 } else { 0 })(<int>)
+    let from_value = (\meta offset: int = 3, value: int = 19 -> value + offset)()
+    assert(from_type + from_value == 42)
+}
+
+-- @case static_named_parameter_specializes_before_foreign_linking run-pass backend=both
+-- @file pkg/main.ril
+use pkg/host
+fn choose(meta enabled: bool = true) -> int {
+    if enabled { 42 } else { Host::unreachable() }
+}
+fn main() -> () { assert(choose() == 42 && choose(true) == 42) }
+-- @file pkg/host.d.ril
+pub fn unreachable() -> int
+
+-- @case meta_type_values_do_not_enter_native_argument_lists run-pass backend=both
+fn classify<T>(meta witness: Type<T>) -> int {
+    if witness == <int> { 42 } else { 0 }
+}
+fn main() -> () {
+    assert(classify<int>(<int>) == 42)
+    assert(classify<str>(<str>) == 0)
+}
+
 -- @case match_with_only_explicit_returns_has_no_normal_join run-pass backend=both
 fn pick(flag: bool) -> int {
     match flag {

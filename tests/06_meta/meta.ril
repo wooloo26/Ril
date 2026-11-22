@@ -1,6 +1,12 @@
 -- @suite meta
 -- @default_stage type
 
+-- @case anonymous_meta_callable_cannot_decay_to_runtime_value compile-fail E0810
+fn invalid() -> () {
+    let callback = \meta value: int -> value + 1
+    -- ^ E0810
+}
+
 -- @case static_slice_patterns_match_and_bind_the_middle compile-pass
 meta fn slices() -> bool {
     let values = [0, 3, 7, 9]
