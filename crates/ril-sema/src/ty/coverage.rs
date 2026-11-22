@@ -15,6 +15,10 @@ pub(super) enum Shape {
 impl Checker<'_> {
     pub(super) fn pattern_shape(&mut self, env: &Env, id: PatternId, input: &Ty) -> Shape {
         use Shape::{Any, Constructor, Or};
+        let input = match input {
+            Ty::Draft(inner) => inner,
+            ty => ty,
+        };
         match &self.ast(env.file).pattern(id).value {
             Pattern::Binding(..) | Pattern::Wildcard | Pattern::Rest(_) => Any,
             Pattern::Unit => Constructor("()".into(), Vec::new()),
@@ -187,6 +191,7 @@ impl Checker<'_> {
 
     fn constructors(&mut self, env: &Env, ty: &Ty) -> Option<Vec<(String, Vec<Ty>)>> {
         Some(match ty {
+            Ty::Draft(inner) => return self.constructors(env, inner),
             Ty::Never => Vec::new(),
             Ty::Bool => vec![("true".into(), vec![]), ("false".into(), vec![])],
             Ty::Unit => vec![("()".into(), vec![])],

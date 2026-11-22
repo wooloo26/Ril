@@ -90,6 +90,49 @@ fn drafts_update_an_isolated_graph() {
 }
 
 #[test]
+fn draft_copy_through_a_cycle_keeps_the_original_suffix() {
+    use crate::draft::DraftSlot;
+
+    let mut gc = GcRuntime::new(true);
+    gc.push_frame(3);
+    let base = gc.alloc(Object::Tuple(vec![Value::UNIT, Value::FALSE]));
+    assert!(gc.set_root(0, base));
+    let Some(Object::Tuple(slots)) = gc.object_mut(base) else {
+        panic!("base is not a tuple");
+    };
+    slots[0] = base;
+
+    let draft = gc.draft_begin(base).unwrap();
+    assert!(gc.set_root(1, draft));
+    let root = gc.draft_read(draft).unwrap();
+    let nested = gc.draft_child(root, DraftSlot::Element(0), base).unwrap();
+    assert_ne!(root, nested);
+    assert_ne!(base, nested);
+    assert_eq!(
+        gc.draft_child(root, DraftSlot::Element(0), nested),
+        Some(nested)
+    );
+    let Some(Object::Tuple(slots)) = gc.object_mut(nested) else {
+        panic!("updated occurrence is not a tuple");
+    };
+    slots[1] = Value::TRUE;
+
+    let published = gc.draft_commit(draft).unwrap();
+    assert!(gc.set_root(2, published));
+    gc.safepoint();
+    assert!(
+        matches!(gc.object(base), Some(Object::Tuple(slots)) if slots == &[base, Value::FALSE])
+    );
+    assert!(
+        matches!(gc.object(nested), Some(Object::Tuple(slots)) if slots == &[base, Value::TRUE])
+    );
+    assert!(
+        matches!(gc.object(published), Some(Object::Tuple(slots)) if slots == &[nested, Value::FALSE])
+    );
+    assert!(gc.draft_nodes.is_empty());
+}
+
+#[test]
 fn cleanup_can_run_with_a_suspended_unwind() {
     let mut runtime = Runtime::default();
     runtime.raise("first");

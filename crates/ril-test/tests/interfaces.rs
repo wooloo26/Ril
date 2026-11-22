@@ -318,6 +318,34 @@ fn task_join_examples_agree_with_lean() {
 }
 
 #[test]
+fn draft_path_updates_agree_with_lean() {
+    let Some(oracle) = std::env::var_os("RIL_HORN_ORACLE") else {
+        return;
+    };
+    let runtime = parse_suite(
+        Path::new("effects.ril"),
+        include_str!("../../../tests/11_runtime_effects_panic/effects.ril"),
+    )
+    .unwrap();
+    let output = query(&oracle, "draft", b"[]").unwrap();
+    let results: Vec<(String, bool)> = serde_json::from_slice(&output).unwrap();
+    assert_eq!(results.len(), 2);
+    let temporary = tempfile::tempdir().unwrap();
+    for (name, valid) in results {
+        let case = runtime.cases.iter().find(|case| case.id == name).unwrap();
+        let executable = temporary.path().join(&name);
+        Driver.build_aot(&case.pkg, &executable).unwrap();
+        let execution = run_worker(&mut Command::new(executable)).unwrap();
+        assert_eq!(
+            execution.status.success(),
+            valid,
+            "{name}: {:?}",
+            String::from_utf8_lossy(&execution.stderr)
+        );
+    }
+}
+
+#[test]
 fn visibility_examples_agree_with_lean() -> Result<(), Box<dyn std::error::Error>> {
     check_access_examples("visibility", 12)
 }

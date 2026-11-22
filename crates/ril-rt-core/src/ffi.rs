@@ -7,7 +7,7 @@ use std::{collections::BTreeMap, io::Write as _};
 use num_bigint::BigInt;
 use num_traits::{FromPrimitive as _, ToPrimitive as _};
 
-use crate::{Object, Runtime, TypeDesc, Value, text};
+use crate::{Object, Runtime, TypeDesc, Value, draft::DraftSlot, text};
 
 macro_rules! runtime_functions {
     ($(fn $name:ident($ctx:ident $(, $arg:ident: $ty:ty)*) $(-> $ret:ty)? $body:block)*) => {
@@ -152,6 +152,7 @@ runtime_functions! {
         Value::UNIT
     }
     fn ril_rt_len(rt, value: Value) -> Value {
+        let value = rt.gc.draft_read(value).unwrap_or(value);
         let len = match rt.gc.object(value) {
             Some(Object::Str(s)) => s.chars().count(),
             Some(Object::Bytes(bytes)) => bytes.len(),
@@ -251,10 +252,16 @@ runtime_functions! {
         else { rt.raise("constructor requires a tag"); Value::UNIT }
     }
     fn ril_rt_is_tag(rt, object: Value, expected: Value) -> Value {
+        let object = rt.gc.draft_read(object).unwrap_or(object);
         let name = read_text(rt, expected);
         Value::boolean(matches!((rt.gc.object(object), name), (Some(Object::Tag(a, _)), Ok(b)) if *a == b))
     }
     fn ril_rt_append(rt, target: Value, value: Value) -> Value {
+        let target = rt.gc.draft_read(target).unwrap_or(target);
+        let value = match rt.gc.draft_insertion(target, value) {
+            Ok(value) => value,
+            Err(message) => return rt.checked(Err(message)),
+        };
         match rt.gc.object_mut(target) {
             Some(Object::Array(values) | Object::Tuple(values) | Object::Tag(_, values)) => values.push(value),
             _ => rt.raise("append destination is not a sequence"),
@@ -286,12 +293,16 @@ runtime_functions! {
         }
     }
     fn ril_rt_safe_member(rt, target: Value, key: Value) -> Value {
+        let target = rt.gc.draft_read(target).unwrap_or(target);
         let payload = match rt.gc.object(target) {
             Some(Object::Tag(tag, args)) if tag == "Some" => args.first().copied(),
             Some(Object::Tag(tag, _)) if tag == "None" => return target,
             _ => { rt.raise("safe member requires an Option"); return Value::UNIT; }
         };
-        if let Some(payload) = payload && let Some(value) = load(rt, payload, key) {
+        if let Some(raw) = payload
+            && let Some(payload) = rt.gc.draft_child(target, DraftSlot::Element(0), raw)
+            && let Some(value) = load(rt, payload, key)
+        {
             rt.gc.alloc(Object::Tag("Some".into(), vec![value]))
         } else { rt.raise("invalid optional member"); Value::UNIT }
     }
@@ -415,6 +426,10 @@ fn print(rt: &mut Runtime, value: Value, newline: bool) -> Value {
 }
 
 fn store(rt: &mut Runtime, target: Value, key: Value, value: Value) -> Value {
+    let value = match rt.gc.draft_insertion(target, value) {
+        Ok(value) => value,
+        Err(message) => return rt.checked(Err(message)),
+    };
     let key_text = read_text(rt, key).ok();
     let index = rt
         .gc
@@ -430,7 +445,7 @@ fn store(rt: &mut Runtime, target: Value, key: Value, value: Value) -> Value {
         Some(Object::Record(fields)) if let Some(key) = key_text => {
             fields.insert(key, value);
         }
-        Some(Object::Array(items) | Object::Tuple(items)) => {
+        Some(Object::Array(items) | Object::Tuple(items) | Object::Tag(_, items)) => {
             if let Some(slot) = index.and_then(|i| items.get_mut(i)) {
                 *slot = value;
             } else {
@@ -451,28 +466,37 @@ fn store(rt: &mut Runtime, target: Value, key: Value, value: Value) -> Value {
 
 fn load(rt: &mut Runtime, target: Value, key: Value) -> Option<Value> {
     let target = rt.gc.draft_read(target).unwrap_or(target);
-    match rt.gc.object(target)? {
-        Object::Record(fields) => fields.get(&read_text(rt, key).ok()?).copied(),
-        Object::Array(values) | Object::Tuple(values) | Object::Tag(_, values) => {
-            values.get(rt.gc.integer(key)?.to_usize()?).copied()
+    let (slot, value) = match rt.gc.object(target)? {
+        Object::Record(fields) => {
+            let key = read_text(rt, key).ok()?;
+            let value = fields.get(&key).copied()?;
+            (DraftSlot::Field(key), value)
         }
-        Object::Map(entries) => entries
-            .iter()
-            .find(|(k, _)| rt.gc.equal(*k, key).unwrap_or(false))
-            .map(|(_, v)| *v),
+        Object::Array(values) | Object::Tuple(values) | Object::Tag(_, values) => {
+            let index = rt.gc.integer(key)?.to_usize()?;
+            (DraftSlot::Element(index), values.get(index).copied()?)
+        }
+        Object::Map(entries) => {
+            let (index, &(_, value)) = entries
+                .iter()
+                .enumerate()
+                .find(|(_, entry)| rt.gc.equal(entry.0, key).unwrap_or(false))?;
+            (DraftSlot::MapValue(index), value)
+        }
         Object::Str(text) => {
             let item = text
                 .chars()
                 .nth(rt.gc.integer(key)?.to_usize()?)?
                 .to_string();
-            Some(rt.gc.alloc(Object::Str(item)))
+            return Some(rt.gc.alloc(Object::Str(item)));
         }
         Object::Bytes(bytes) => {
             let byte = *bytes.get(rt.gc.integer(key)?.to_usize()?)?;
-            Some(rt.gc.int(byte.into()).into())
+            return Some(rt.gc.int(byte.into()).into());
         }
-        _ => None,
-    }
+        _ => return None,
+    };
+    rt.gc.draft_child(target, slot, value)
 }
 
 fn slice(
@@ -482,6 +506,7 @@ fn slice(
     end: Value,
     inclusive: bool,
 ) -> Option<Value> {
+    let target = rt.gc.draft_read(target).unwrap_or(target);
     let object = rt.gc.object(target)?;
     let length = match object {
         Object::Str(text) => text.chars().count(),
@@ -506,7 +531,15 @@ fn slice(
         return None;
     }
     let result = match object {
-        Object::Array(items) => Object::Array(items.get(start..end)?.to_vec()),
+        Object::Array(items) => {
+            let mut values = items.get(start..end)?.to_vec();
+            for (index, value) in values.iter_mut().enumerate() {
+                *value = rt
+                    .gc
+                    .draft_child(target, DraftSlot::Element(start + index), *value)?;
+            }
+            Object::Array(values)
+        }
         Object::Bytes(bytes) => Object::Bytes(bytes.get(start..end)?.to_vec()),
         Object::Str(text) => Object::Str(text.chars().skip(start).take(end - start).collect()),
         _ => return None,

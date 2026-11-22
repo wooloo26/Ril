@@ -2,6 +2,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use num_bigint::BigInt;
 
+use crate::draft::DraftNode;
+
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
 #[repr(transparent)]
 pub struct Value(pub u64);
@@ -107,6 +109,7 @@ impl Object {
 
 pub struct GcRuntime {
     objects: BTreeMap<Value, Object>,
+    pub(crate) draft_nodes: BTreeMap<Value, DraftNode>,
     frames: Vec<Vec<Value>>,
     suspended_frames: BTreeMap<u64, Vec<Vec<Value>>>,
     roots: BTreeMap<Value, usize>,
@@ -127,6 +130,7 @@ impl GcRuntime {
     pub fn new(stress: bool) -> Self {
         Self {
             objects: BTreeMap::new(),
+            draft_nodes: BTreeMap::new(),
             frames: Vec::new(),
             suspended_frames: BTreeMap::new(),
             roots: BTreeMap::new(),
@@ -230,6 +234,8 @@ impl GcRuntime {
             }
         }
         self.objects.retain(|value, _| visited.contains(value));
+        self.draft_nodes
+            .retain(|value, node| visited.contains(value) && visited.contains(&node.draft));
         self.next_collection = self.objects.len().saturating_mul(2).max(64);
     }
 

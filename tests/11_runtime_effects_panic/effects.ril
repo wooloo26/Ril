@@ -257,3 +257,42 @@ fn main() -> () {
     let Err(PanicError::Panicked(info)) = protected([1]) else { panic("expected error") }
     assert(len(panic_message(info)) > 0)
 }
+
+-- @case draft_updates_only_the_selected_occurrence run-pass backend=both
+type Cell = .{ count: int }
+fn main() -> () {
+    let first = Cell.{ count: 1 }
+    let outside = Cell.{ count: 7 }
+    let row = [first]
+    let base = (row, row)
+    let updated = derive(base) \mut draft -> {
+        Array::push(mut draft.0, outside)
+        Array::push(mut draft.0, outside)
+        draft.0[1].count = 8
+    }
+    assert(len(base.0) == 1 && len(base.1) == 1)
+    assert(len(updated.0) == 3 && len(updated.1) == 1)
+    assert(updated.0[1].count == 8 && updated.0[2].count == 7 && outside.count == 7)
+}
+
+-- @case draft_inserts_map_entry_without_changing_base run-pass backend=both
+fn main() -> () {
+    let base = [1: 10]
+    let updated = derive(base) \mut draft -> { draft[2] = 20 }
+    assert(len(base) == 1 && base?[2] == None)
+    assert(len(updated) == 2 && updated?[1] == Some(10) && updated?[2] == Some(20))
+}
+
+-- @case draft_matches_and_updates_active_variant_payload run-pass backend=both
+type Cell = .{ count: int }
+type Kind { Present(Cell); Empty }
+fn main() -> () {
+    let base = Present(Cell.{ count: 7 })
+    let updated = derive(base) \mut draft -> {
+        match draft {
+            Present(mut payload) -> { payload.count = 8 }
+            Empty -> ()
+        }
+    }
+    assert(base == Present(Cell.{ count: 7 }) && updated == Present(Cell.{ count: 8 }))
+}
