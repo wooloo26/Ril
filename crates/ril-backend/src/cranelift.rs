@@ -11,7 +11,9 @@ use cranelift_module::{DataDescription, FuncId, Linkage, Module, default_libcall
 use cranelift_object::{ObjectBuilder, ObjectModule};
 use ril_base::diag::Diagnostic;
 
-use crate::mir::{self, BlockId, FunctionId, Instruction, Register, Target, Terminator};
+use crate::mir::{
+    self, BlockId, ForeignAbi, ForeignImport, FunctionId, Instruction, Register, Target, Terminator,
+};
 
 type Result<T> = std::result::Result<T, Diagnostic>;
 
@@ -50,7 +52,7 @@ pub fn object(program: &mir::Program) -> Result<Vec<u8>> {
     let object = ObjectBuilder::new(target(true)?, "ril.program", default_libcall_names())
         .map_err(diagnostic)?;
     let mut module = ObjectModule::new(object);
-    MirToClifTranslator::compile(&mut module, program)?;
+    MirToClifTranslator::compile(&mut module, program, None)?;
     module.finish().emit().map_err(diagnostic)
 }
 
@@ -58,7 +60,7 @@ pub fn emit_clif(program: &mir::Program) -> Result<String> {
     let object = ObjectBuilder::new(target(true)?, "ril.program", default_libcall_names())
         .map_err(diagnostic)?;
     let mut module = ObjectModule::new(object);
-    let (_, text) = MirToClifTranslator::compile(&mut module, program)?;
+    let (_, text) = MirToClifTranslator::compile(&mut module, program, None)?;
     Ok(text)
 }
 
@@ -68,32 +70,71 @@ pub fn emit_clif(program: &mir::Program) -> Result<String> {
     reason = "execute the verified native entry while its JIT module owns the code"
 )]
 pub fn jit(program: &mir::Program) -> Result<i32> {
+    // SAFETY: the resolver supplies no host functions. Every reachable import
+    // outside the runtime must resolve explicitly before generated code is run.
+    unsafe { jit_with_imports(program, |_| None) }
+}
+
+/// Execute native code with an embedding application's host bindings.
+///
+/// # Safety
+/// Each resolved address must remain executable throughout the call and point
+/// to a C-ABI function that takes the runtime context pointer followed by the
+/// declared number of Ril value words (`u64`), and returns one Ril value word.
+/// A constant uses an accessor that takes only the context pointer. Each
+/// binding must honor the value, resource, and effect contracts of its
+/// declaration and must never unwind across the C ABI.
+#[cfg(feature = "native-runtime")]
+#[allow(
+    unsafe_code,
+    reason = "verify imports before entering generated native code"
+)]
+pub unsafe fn jit_with_imports(
+    program: &mir::Program,
+    mut resolve: impl FnMut(&ForeignImport) -> Option<*const u8>,
+) -> Result<i32> {
     use cranelift_jit::{JITBuilder, JITModule};
 
-    // JITModule also searches the process's dynamic symbols for imports. A
-    // Ril foreign declaration alone cannot establish the C ABI of those symbols.
+    let mut builder = JITBuilder::with_isa(target(false)?, default_libcall_names());
+    builder.symbols(ril_rt_core::symbols());
+    let mut imports = BTreeSet::new();
     for function in &program.functions {
-        for block in &function.blocks {
+        for id in reachable(function)? {
+            let block = function
+                .blocks
+                .get(id.0)
+                .ok_or_else(|| diagnostic("invalid foreign import block"))?;
             if let Some(Terminator::Invoke {
-                target: Target::Foreign(symbol),
+                target: Target::Foreign(import),
                 ..
             }) = &block.terminator
             {
-                return Err(diagnostic(format!(
-                    "unregistered foreign JIT function {symbol}"
-                )));
+                imports.insert(import.as_ref());
             }
         }
     }
-    let mut builder = JITBuilder::with_isa(target(false)?, default_libcall_names());
-    builder.symbols(ril_rt_core::symbols());
+    let mut foreign_names = BTreeMap::new();
+    for (ordinal, import) in imports.into_iter().enumerate() {
+        let address = resolve(import)
+            .filter(|address| !address.is_null())
+            .ok_or_else(|| {
+                diagnostic(format!(
+                    "unregistered foreign JIT import {}",
+                    import.declaration
+                ))
+            })?;
+        // Use a private alias outside the runtime's symbol namespace.
+        let alias = format!("ril_host_{ordinal}");
+        builder.symbol(&alias, address);
+        foreign_names.insert(import.clone(), alias);
+    }
     let mut module = JITModule::new(builder);
-    let (entry, _) = MirToClifTranslator::compile(&mut module, program)?;
+    let (entry, _) = MirToClifTranslator::compile(&mut module, program, Some(&foreign_names))?;
     module.finalize_definitions().map_err(diagnostic)?;
     let address = module.get_finalized_function(entry);
     // SAFETY: the translator defines entry with the platform C signature () -> i32.
-    // Runtime imports are bound to the linked Ril ABI, and the JIT module
-    // remains alive and immutable for the duration of execution.
+    // Runtime imports are bound to the linked Ril ABI, the caller vouches for
+    // each host import, and the JIT module stays alive during execution.
     let execute = unsafe { std::mem::transmute::<*const u8, extern "C" fn() -> i32>(address) };
     Ok(execute())
 }
@@ -101,15 +142,32 @@ pub fn jit(program: &mir::Program) -> Result<i32> {
 struct MirToClifTranslator<'a, M> {
     module: &'a mut M,
     functions: Vec<FuncId>,
-    imports: BTreeMap<String, FuncId>,
+    foreign_names: Option<&'a BTreeMap<ForeignImport, String>>,
 }
 
-impl<M: Module> MirToClifTranslator<'_, M> {
-    fn compile(module: &mut M, program: &mir::Program) -> Result<(FuncId, String)> {
+fn foreign_symbol<'a>(
+    names: Option<&'a BTreeMap<ForeignImport, String>>,
+    import: &'a ForeignImport,
+) -> Result<&'a str> {
+    match names {
+        Some(names) => names
+            .get(import)
+            .map(String::as_str)
+            .ok_or_else(|| diagnostic("missing checked foreign JIT binding")),
+        None => Ok(&import.symbol),
+    }
+}
+
+impl<'a, M: Module> MirToClifTranslator<'a, M> {
+    fn compile(
+        module: &'a mut M,
+        program: &mir::Program,
+        foreign_names: Option<&'a BTreeMap<ForeignImport, String>>,
+    ) -> Result<(FuncId, String)> {
         let mut compiler = MirToClifTranslator {
             module,
             functions: Vec::new(),
-            imports: BTreeMap::new(),
+            foreign_names,
         };
         for (index, function) in program.functions.iter().enumerate() {
             let signature = compiler.signature(function.arity + 3, Some(types::I64));
@@ -149,16 +207,10 @@ impl<M: Module> MirToClifTranslator<'_, M> {
     }
 
     fn import(&mut self, name: &str, count: usize, output: Option<ir::Type>) -> Result<FuncId> {
-        if let Some(&id) = self.imports.get(name) {
-            return Ok(id);
-        }
         let signature = self.signature(count, output);
-        let id = self
-            .module
+        self.module
             .declare_function(name, Linkage::Import, &signature)
-            .map_err(diagnostic)?;
-        self.imports.insert(name.to_owned(), id);
-        Ok(id)
+            .map_err(diagnostic)
     }
 
     fn call(
@@ -339,7 +391,20 @@ impl<M: Module> MirToClifTranslator<'_, M> {
                                 diagnostic("indirect call did not produce an output")
                             })?
                         }
-                        Target::Foreign(name) => self.handle(&mut builder, name, &args)?,
+                        Target::Foreign(import) => {
+                            let arity = match import.abi {
+                                ForeignAbi::Function { arity } => arity,
+                                ForeignAbi::Constant => 0,
+                            };
+                            if arity != args.len() {
+                                return Err(diagnostic(
+                                    "foreign call arity differs from its declaration",
+                                ));
+                            }
+                            let symbol = foreign_symbol(self.foreign_names, import)?;
+                            let args = std::iter::once(rt).chain(args).collect::<Vec<_>>();
+                            self.handle(&mut builder, symbol, &args)?
+                        }
                     };
                     if *cleanup {
                         self.native(&mut builder, "ril_rt_cleanup_leave", &[rt], None)?;
@@ -528,4 +593,103 @@ fn reachable(function: &mir::Function) -> Result<Vec<BlockId>> {
     }
     order.reverse();
     Ok(order)
+}
+
+#[cfg(all(test, feature = "native-runtime"))]
+mod tests {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    };
+
+    use super::*;
+
+    #[test]
+    #[allow(unsafe_code, reason = "exercise a host function with a known C ABI")]
+    fn explicitly_bound_host_import_executes_without_process_symbol_lookup() {
+        static OBSERVED: AtomicU64 = AtomicU64::new(0);
+        extern "C" fn enabled(_context: *mut std::ffi::c_void) -> u64 {
+            2
+        }
+        extern "C" fn host(_context: *mut std::ffi::c_void, value: u64) -> u64 {
+            OBSERVED.store(value, Ordering::Relaxed);
+            0
+        }
+        let import = Arc::new(ForeignImport {
+            declaration: "pkg/host.d.ril::record".into(),
+            symbol: "record".into(),
+            signature: "fn(value: bool) @io -> ()".into(),
+            abi: ForeignAbi::Function { arity: 1 },
+        });
+        let constant = Arc::new(ForeignImport {
+            declaration: "pkg/host.d.ril::enabled".into(),
+            symbol: "enabled".into(),
+            signature: "bool".into(),
+            abi: ForeignAbi::Constant,
+        });
+        let program = mir::Program {
+            entry: FunctionId(0),
+            suspend_at_entry: false,
+            functions: vec![mir::Function {
+                name: "main".into(),
+                arity: 0,
+                registers: 4,
+                blocks: vec![
+                    mir::Block {
+                        params: Vec::new(),
+                        instructions: vec![
+                            (Register(0), Instruction::Evidence),
+                            (Register(2), Instruction::Handle(0)),
+                        ],
+                        terminator: Some(Terminator::Invoke {
+                            target: Target::Foreign(Arc::clone(&constant)),
+                            evidence: Register(0),
+                            arguments: Vec::new(),
+                            normal: BlockId(1),
+                            unwind: BlockId(3),
+                            cleanup: false,
+                            keep_result: true,
+                        }),
+                    },
+                    mir::Block {
+                        params: vec![Register(1)],
+                        terminator: Some(Terminator::Invoke {
+                            target: Target::Foreign(Arc::clone(&import)),
+                            evidence: Register(0),
+                            arguments: vec![Register(1)],
+                            normal: BlockId(2),
+                            unwind: BlockId(3),
+                            cleanup: false,
+                            keep_result: true,
+                        }),
+                        ..mir::Block::default()
+                    },
+                    mir::Block {
+                        params: vec![Register(3)],
+                        terminator: Some(Terminator::Return(Register(3))),
+                        ..mir::Block::default()
+                    },
+                    mir::Block {
+                        terminator: Some(Terminator::Return(Register(2))),
+                        ..mir::Block::default()
+                    },
+                ],
+            }],
+        };
+        assert!(jit(&program).is_err());
+        // SAFETY: host has the declared null-unwind C ABI, accepts a packed bool,
+        // and returns the unit word. enabled always returns the Ril true word.
+        let exit = unsafe {
+            jit_with_imports(&program, |request| {
+                if request == import.as_ref() {
+                    Some(host as *const u8)
+                } else {
+                    (request == constant.as_ref()).then_some(enabled as *const u8)
+                }
+            })
+        }
+        .unwrap();
+        assert_eq!(exit, 0);
+        assert_eq!(OBSERVED.load(Ordering::Relaxed), 2);
+    }
 }

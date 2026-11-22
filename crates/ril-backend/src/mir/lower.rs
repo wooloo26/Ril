@@ -1,6 +1,9 @@
 mod control;
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::{
+    collections::{BTreeMap, BTreeSet, HashMap},
+    sync::Arc,
+};
 
 use ril_base::{
     diag::Diagnostic,
@@ -17,8 +20,8 @@ use ril_sema::{
 };
 
 use super::{
-    Block, BlockId, DraftOp, Function, FunctionId, Instruction, IntLowering, ManagedInt, Program,
-    Register, Target, Terminator,
+    Block, BlockId, DraftOp, ForeignAbi, ForeignImport, Function, FunctionId, Instruction,
+    IntLowering, ManagedInt, Program, Register, Target, Terminator,
 };
 
 type Result<T> = std::result::Result<T, Diagnostic>;
@@ -27,6 +30,7 @@ type Locals = BTreeMap<DefinitionId, Register>;
 enum NativeBody<'a> {
     Expression(ExprId),
     Accessor(&'a [(bool, Member)]),
+    Foreign(Arc<ForeignImport>),
 }
 
 pub(super) fn lower(typed: &TypedProgram, analysis: &Analysis) -> Result<Program> {
@@ -179,19 +183,43 @@ impl<'a> Lowering<'a> {
         }
     }
 
+    fn foreign(&self, id: DefinitionId) -> Arc<ForeignImport> {
+        let callable =
+            self.typed.callables.get(&id).unwrap_or_else(|| {
+                ril_base::ice!("foreign declaration requires a checked signature")
+            });
+        self.foreign_import(
+            id,
+            &Ty::Callable(callable.clone()),
+            ForeignAbi::Function {
+                arity: callable.parameters.len(),
+            },
+        )
+    }
+
+    fn foreign_import(&self, id: DefinitionId, ty: &Ty, abi: ForeignAbi) -> Arc<ForeignImport> {
+        Arc::new(ForeignImport {
+            declaration: self.typed.hir.export_name(id),
+            signature: ty.qualified_display(&self.typed.hir).to_string(),
+            symbol: self.typed.hir.definition(id).name.value.clone(),
+            abi,
+        })
+    }
+
     fn function(&mut self, work: Work) -> Result<Function> {
         let (file, name, body, params, guards, captures, types) = match work {
             Work::Named(id, types, captures) => {
                 let f = self
                     .declaration(id)
                     .ok_or_else(|| Diagnostic::unsupported("missing native function definition"))?;
-                let body = f
-                    .body
-                    .ok_or_else(|| Diagnostic::unsupported("missing native function body"))?;
+                let body = f.body.map_or_else(
+                    || NativeBody::Foreign(self.foreign(id)),
+                    NativeBody::Expression,
+                );
                 (
                     f.name.span.file,
                     self.typed.hir.export_name(id),
-                    NativeBody::Expression(body),
+                    body,
                     f.signature.params.as_slice(),
                     f.signature.guards.clone(),
                     captures,
@@ -284,6 +312,9 @@ impl<'a> Lowering<'a> {
         }
         let result = match body {
             NativeBody::Expression(body) => builder.expr(body)?,
+            NativeBody::Foreign(import) => {
+                builder.invoke(Target::Foreign(import), builder.params(entry), false)
+            }
             NativeBody::Accessor(path) => {
                 let value = builder.result_param(entry);
                 builder.project_path(path, value)?
@@ -928,7 +959,15 @@ impl<'a> Builder<'_, 'a> {
                     Some(StmtKind::Binding {
                         value: Some(expr), ..
                     }) => self.expr(*expr),
-                    _ => Err(self.unsupported(span, "foreign constant")),
+                    Some(StmtKind::Binding { value: None, .. }) => {
+                        let ty =
+                            self.global.typed.bindings.get(&source).ok_or_else(|| {
+                                self.unsupported(span, "unchecked foreign constant")
+                            })?;
+                        let import = self.global.foreign_import(source, ty, ForeignAbi::Constant);
+                        Ok(self.invoke(Target::Foreign(import), Vec::new(), false))
+                    }
+                    _ => Err(self.unsupported(span, "uninitialized constant")),
                 };
                 self.file = prev_file;
                 result
@@ -949,12 +988,7 @@ impl<'a> Builder<'_, 'a> {
             DefinitionKind::Type if self.global.typed.hir.unit_constructor(source) => {
                 Ok(self.tag(&def.name.value, Vec::new()))
             }
-            DefinitionKind::Function
-                if self
-                    .global
-                    .declaration(source)
-                    .is_some_and(|f| f.body.is_some()) =>
-            {
+            DefinitionKind::Function if self.global.declaration(source).is_some() => {
                 let captures = self.named_captures(source);
                 let environment = self.environment(&captures);
                 let id = self
@@ -1086,7 +1120,7 @@ impl<'a> Builder<'_, 'a> {
             });
             Ok(self.invoke(target, values, false))
         } else {
-            Ok(self.invoke(Target::Foreign(name.to_owned()), values, false))
+            Ok(self.invoke(Target::Foreign(self.global.foreign(id)), values, false))
         }
     }
 

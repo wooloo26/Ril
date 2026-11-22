@@ -33,6 +33,22 @@ impl Driver {
     }
 
     pub fn compile_aot(&self, package: &VirtualPackage, output: &Path) -> Result<()> {
+        self.compile_aot_with_links(package, output, &[])
+    }
+
+    pub fn compile_aot_with_links(
+        &self,
+        package: &VirtualPackage,
+        output: &Path,
+        links: &[PathBuf],
+    ) -> Result<()> {
+        let links = links
+            .iter()
+            .map(|path| {
+                path.canonicalize()
+                    .map_err(|err| failure(format!("{}: {err}", path.display())))
+            })
+            .collect::<Result<Vec<_>>>()?;
         let compiled = self.lower(package)?;
         let object = cranelift::object(&compiled).map_err(|err| vec![err])?;
         let tmp = tempfile::tempdir().map_err(failure)?;
@@ -40,7 +56,7 @@ impl Driver {
         fs::write(&object_path, object).map_err(failure)?;
         let runtime = runtime_archive()?;
         let mut command = Command::new(std::env::var_os("CC").unwrap_or_else(|| "cc".into()));
-        command.arg(&object_path).arg(runtime);
+        command.arg(&object_path).args(links).arg(runtime);
         if cfg!(target_os = "linux") {
             command.args(["-ldl", "-lpthread", "-lm"]);
         }

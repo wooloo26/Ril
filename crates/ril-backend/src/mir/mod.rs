@@ -1,5 +1,7 @@
 mod lower;
 
+use std::sync::Arc;
+
 use ril_base::diag::Diagnostic;
 use ril_sema::{access::Analysis, ty::TypedProgram};
 
@@ -21,6 +23,21 @@ pub struct Program {
     pub(crate) functions: Vec<Function>,
     pub(crate) entry: FunctionId,
     pub(crate) suspend_at_entry: bool,
+}
+
+/// The source declaration and ABI of a host callback used by native code.
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct ForeignImport {
+    pub declaration: String,
+    pub signature: String,
+    pub symbol: String,
+    pub abi: ForeignAbi,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum ForeignAbi {
+    Function { arity: usize },
+    Constant,
 }
 
 #[derive(Debug)]
@@ -59,7 +76,7 @@ pub(crate) enum Target {
     },
     Runtime(&'static str),
     Draft(DraftOp),
-    Foreign(String),
+    Foreign(Arc<ForeignImport>),
     Indirect {
         address: Register,
         evidence: Register,

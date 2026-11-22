@@ -46,11 +46,15 @@ enum Action {
         path: PathBuf,
         #[arg(short, long)]
         output: Option<PathBuf>,
+        #[arg(long, value_name = "OBJECT_OR_LIBRARY")]
+        link: Vec<PathBuf>,
     },
     Run {
         path: PathBuf,
         #[arg(long, value_enum, default_value = "jit")]
         backend: Backend,
+        #[arg(long, value_name = "OBJECT_OR_LIBRARY")]
+        link: Vec<PathBuf>,
     },
     EmitIr {
         path: PathBuf,
@@ -103,16 +107,25 @@ fn run(action: Action) -> Result<ExitCode, String> {
                 std::fs::write(path, bytes).map_err(|err| err.to_string())?;
             }
         }
-        Action::Build { path, output } => {
+        Action::Build { path, output, link } => {
             let package = load_package(&path, Unit::Bin)?;
             let output =
                 output.unwrap_or_else(|| path.with_extension(std::env::consts::EXE_EXTENSION));
             if same_file(&path, &output) {
                 return Err("output would overwrite the source file".into());
             }
-            Driver.compile_aot(&package, &output).map_err(display)?;
+            Driver
+                .compile_aot_with_links(&package, &output, &link)
+                .map_err(display)?;
         }
-        Action::Run { path, backend } => {
+        Action::Run {
+            path,
+            backend,
+            link,
+        } => {
+            if matches!(backend, Backend::Jit) && !link.is_empty() {
+                return Err("select --backend aot to use --link".into());
+            }
             let package = load_package(&path, Unit::Bin)?;
             let output = match backend {
                 Backend::Jit => Driver.execute_jit(&package).map_err(display)?,
@@ -121,7 +134,9 @@ fn run(action: Action) -> Result<ExitCode, String> {
                     let output = dir
                         .path()
                         .join(format!("ril_program{}", std::env::consts::EXE_SUFFIX));
-                    Driver.compile_aot(&package, &output).map_err(display)?;
+                    Driver
+                        .compile_aot_with_links(&package, &output, &link)
+                        .map_err(display)?;
                     ril_test::run_worker(&mut Command::new(output))
                         .map_err(|err| err.to_string())?
                 }

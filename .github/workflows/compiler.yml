@@ -21,6 +21,8 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo nextest run -p ril-test --locked
+      - if: matrix.stage == 'm4'
+        run: cargo nextest run -p ril-backend -p ril-driver --locked
       - if: matrix.stage == 'm1'
         run: cargo run -p ril-cli --locked -- test --sync-spec-md
       - if: matrix.stage == 'm5'

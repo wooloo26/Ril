@@ -108,7 +108,7 @@ impl Ty {
         }
     }
 
-    pub(crate) fn qualified_display<'a>(&'a self, hir: &'a Program) -> Display<'a> {
+    pub fn qualified_display<'a>(&'a self, hir: &'a Program) -> Display<'a> {
         Display {
             ty: self,
             hir,
