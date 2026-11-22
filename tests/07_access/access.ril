@@ -911,6 +911,78 @@ fn update() -> () {
     edit(mut pair.first, mut pair.second)
 }
 
+-- @case a_writable_member_can_coexist_with_its_readonly_alias compile-pass
+type Pair = .{ ref read: Cell, ^mut write: Cell }
+fn update() -> int {
+    let mut cell = Cell.{ count: 41 }
+    cell.count += 1
+    let mut pair = Pair.{ read: ref cell, write: ^mut cell }
+    pair.write.count += 1
+    pair.read.count
+}
+
+-- @case a_readonly_member_cannot_use_its_sibling_writer compile-fail E0520
+type Pair = .{ ref read: Cell, ^mut write: Cell }
+fn update() -> int {
+    let mut cell = Cell.{ count: 40 }
+    cell.count += 1
+    let mut pair = Pair.{ read: ref cell, write: ^mut cell }
+    pair.write.count += 1
+    pair.read.count += 1
+    -- ^ E0520
+    pair.read.count
+}
+
+-- @case a_fixed_shared_member_cannot_be_replaced compile-fail E0520
+type Shelf = .{ ^mut item: Cell }
+fn update() -> () {
+    let mut shelf = Shelf.{ item: ^mut Cell.{ count: 40 } }
+    shelf.item.count += 1
+    shelf.item = ^mut Cell.{ count: 42 }
+    -- ^ E0520
+}
+
+-- @case replacing_a_shared_member_requires_acknowledgment compile-fail E0510
+type Shelf = .{ var ^mut item: Cell }
+fn replace(mut shelf: Shelf, ^mut value: Cell) &mut &^mut -> () {
+    shelf.item = value
+    -- ^ E0510
+}
+
+-- @case replacing_a_shared_slot_requires_acknowledgment compile-fail E0510
+fn replace() -> int {
+    let mut old = Cell.{ count: 1 }
+    old.count += 1
+    let mut value = Cell.{ count: 40 }
+    value.count += 1
+    let ^mut writer = ^mut value
+    var ^mut saved = ^mut old
+    saved = writer
+    -- ^ E0510
+    writer.count += 1
+    saved.count += 1
+    saved.count
+}
+
+-- @case replacing_a_shared_element_requires_acknowledgment compile-fail E0510
+fn replace(mut items: [^mut]Cell, ^mut value: Cell) &mut &^mut -> () {
+    items[0] = value
+    -- ^ E0510
+}
+
+-- @case each_shared_replacement_branch_can_acknowledge_the_same_source compile-pass
+type Shelf = .{ var ^mut item: Cell }
+fn replace(mut shelf: Shelf, ^mut value: Cell, flag: bool) &mut &^mut -> () {
+    shelf.item = if flag { ^mut value } else { (^mut value) }
+}
+
+-- @case one_shared_replacement_branch_cannot_acknowledge_another compile-fail E0510
+type Shelf = .{ var ^mut item: Cell }
+fn replace(mut shelf: Shelf, ^mut value: Cell, flag: bool) &mut &^mut -> () {
+    shelf.item = if flag { ^mut value } else { value }
+    -- ^ E0510
+}
+
 -- @case unknown_index_cannot_prove_separation compile-fail E0523
 fn edit(mut a: Cell, mut b: Cell) &mut -> () { a.count += 1; b.count += 1 }
 fn update(index: int) -> () {

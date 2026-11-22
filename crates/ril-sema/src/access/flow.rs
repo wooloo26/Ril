@@ -93,6 +93,8 @@ pub(super) struct Origin {
     pub callback_result: Option<CallbackOrigin>,
     pub reception: Vec<Reception>,
     pub new: bool,
+    // A marker on this expression, independent of the source's existing access.
+    pub explicit_share: bool,
     pub call_borrow: bool,
     pub dependencies: BTreeSet<Span>,
     pub branches: Choices,
@@ -109,6 +111,7 @@ pub(super) struct CallbackOrigin {
 impl Origin {
     pub(super) fn fix_mode(&mut self, access: Access) {
         self.mode = access;
+        self.explicit_share = false;
         self.inherits_mode = false;
         self.reception.clear();
         if let Some(result) = &mut self.callback_result {
@@ -194,6 +197,7 @@ impl Datum {
                 callback_result: None,
                 reception: Vec::new(),
                 new,
+                explicit_share: false,
                 call_borrow: false,
                 dependencies: BTreeSet::new(),
                 branches: BTreeMap::new(),

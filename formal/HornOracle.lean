@@ -2,6 +2,7 @@ import Lean
 import RilAccess.Examples.Boundary
 import RilAccess.Examples.Call
 import RilAccess.Examples.Draft
+import RilAccess.Examples.Graph
 import RilAccess.Examples.Handoff
 import RilAccess.Examples.RecursiveStorage
 import RilAccess.Examples.ResolvedProvenance
@@ -138,6 +139,17 @@ def callEntryCases : List (String × Bool) :=
      RilAccess.CoreEntry.separated laterHeap [saved] [inserted]),
    ("call_entry_graph_includes_later_argument_preparation",
      decide (inserted ∈ capturedInstances laterHeap [saved]))]
+
+open RilAccess.GraphAuthority RilAccess.GraphAuthority.Examples in
+def graphCases : List (String × Bool) :=
+  [("a_readonly_member_cannot_use_its_sibling_writer", canWritePath readonlySibling 0 [0]),
+   ("a_writable_member_can_coexist_with_its_readonly_alias", canWritePath readonlySibling 0 [1]),
+   ("a_fixed_shared_member_cannot_be_replaced", (checkedReplace fixedSlot 0 [] 0 1 [] true).isSome),
+   ("replacing_a_shared_member_requires_acknowledgment", (checkedReplace sharedSlot 0 [] 0 1 [] false).isSome),
+   ("publication_survives_in_a_caller_member", checkedShared.isSome),
+   ("replaced_member_is_not_from_old_formal_entry", decide (2 ∈ entryObjects mutableSlot 0)),
+   ("replaced_member_is_in_new_call_entry", (checkedShared.map fun graph =>
+      decide (2 ∈ entryObjects graph 0)).getD false)]
 
 open RilAccess.Calls.Examples in
 def callAuthorityCases : List (String × Bool) :=
@@ -283,6 +295,8 @@ def main (args : List String) : IO Unit := do
     stdout.putStrLn (toJson answers).compress
   else if args == ["call-entry"] then
     stdout.putStrLn (toJson callEntryCases).compress
+  else if args == ["graph"] then
+    stdout.putStrLn (toJson graphCases).compress
   else if args == ["recursive-storage"] then
     stdout.putStrLn (toJson RilAccess.RecursiveStorage.Examples.contracts).compress
   else if args == ["call-authority"] then

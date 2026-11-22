@@ -683,6 +683,11 @@ fn provenance_examples_agree_with_lean() -> Result<(), Box<dyn std::error::Error
 }
 
 #[test]
+fn graph_authority_examples_agree_with_lean() -> Result<(), Box<dyn std::error::Error>> {
+    check_access_examples("graph", 7)
+}
+
+#[test]
 fn scoped_resource_examples_agree_with_lean() -> Result<(), Box<dyn std::error::Error>> {
     check_access_examples("scoped", 9)
 }

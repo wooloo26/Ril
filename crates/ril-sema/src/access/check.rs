@@ -1364,7 +1364,24 @@ impl<'a> Analyzer<'a> {
                 "mutable member requires an exclusive handoff",
             );
         }
+        for root in &mut value.roots {
+            root.explicit_share = false;
+        }
         value
+    }
+
+    fn require_shared_replacement(&mut self, value: &Datum, span: Span, allow_new: bool) {
+        if value
+            .roots
+            .iter()
+            .any(|root| !(root.explicit_share || allow_new && root.new))
+        {
+            self.error(
+                Code::E0510,
+                span,
+                "shared replacement requires a '^mut' expression",
+            );
+        }
     }
 
     fn returned(&mut self, ctx: &mut Context, ledger: &mut Ledger, value: Datum, span: Span) {
@@ -2029,6 +2046,7 @@ impl<'a> Analyzer<'a> {
                         self.require_schema(ctx, &value, SchemaRequirement::Writable);
                         for root in &mut value.roots {
                             root.fix_mode(Access::Shared);
+                            root.explicit_share = true;
                             root.new = false;
                         }
                         value.requires_new = false;
@@ -2445,6 +2463,18 @@ impl<'a> Analyzer<'a> {
             value.members.clear();
             value.requires_new = false;
         }
+        if matches!(
+            node.value,
+            Expr::Path(_)
+                | Expr::Member { .. }
+                | Expr::Index { .. }
+                | Expr::Call { .. }
+                | Expr::Pipeline { .. }
+        ) {
+            for root in &mut value.roots {
+                root.explicit_share = false;
+            }
+        }
         ledger.stamp(&mut value);
         value
     }
@@ -2679,6 +2709,9 @@ impl<'a> Analyzer<'a> {
                     }
                 }
                 let mut value = value;
+                if slot.mode == Mode::Shared {
+                    self.require_shared_replacement(&value, span, false);
+                }
                 let captured = ctx.caller_slots.contains(&id);
                 if captured {
                     self.check_publication_source(ctx, &value, span);
@@ -2735,6 +2768,9 @@ impl<'a> Analyzer<'a> {
                 _ => None,
             };
             if let Some(access) = access {
+                if access == Access::Shared {
+                    self.require_shared_replacement(&value, span, true);
+                }
                 let mut value = self.receive_member(value, access, span);
                 value
                     .publications
