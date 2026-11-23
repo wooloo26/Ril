@@ -38,6 +38,7 @@ enum Obligation {
     CallbackConsumes(higher_order::Invocation),
     Schema(Region, SchemaRequirement),
     Replace(Span),
+    SharedReception(Span),
     Retain(Span),
     Share(Span),
     StoreShare(Span),
@@ -61,6 +62,13 @@ enum SchemaRequirement {
 enum LoopExtent {
     Exact(usize),
     Repeat,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum BindingSite {
+    Declaration,
+    ScopedPattern,
+    Resource,
 }
 
 impl SchemaRequirement {
@@ -1295,6 +1303,11 @@ impl<'a> Analyzer<'a> {
                 if *resource {
                     self.cleanup(ctx, ledger, &mut value, span, node.span, storage.mode);
                 }
+                let site = if *resource {
+                    BindingSite::Resource
+                } else {
+                    BindingSite::Declaration
+                };
                 if let Some(fallback) = fallback {
                     for (mut failed, _) in self.pattern_paths(ctx, ledger, *pattern, &value, false)
                     {
@@ -1302,14 +1315,14 @@ impl<'a> Analyzer<'a> {
                         self.expr(&mut failure, &mut failed, *fallback);
                         ctx.return_values = failure.return_values;
                     }
-                    if !self.bind_on_match(ctx, ledger, *pattern, storage, &value, *resource) {
+                    if !self.bind_on_match(ctx, ledger, *pattern, storage, &value, site) {
                         ledger.no_continuation = true;
                         ctx.reachable = false;
                     }
                 } else {
                     self.pattern_tests(ctx, ledger, *pattern, &value)
                         .inspect(ledger, true);
-                    self.bind(ctx, ledger, *pattern, storage, value, *resource);
+                    self.bind(ctx, ledger, *pattern, storage, value, site);
                 }
             }
             StmtKind::With(handlers) => self.handlers(ctx, ledger, handlers),
@@ -1414,6 +1427,9 @@ impl<'a> Analyzer<'a> {
         if value.roots.is_empty() {
             return value;
         }
+        if mode == Access::Shared {
+            self.check_shared_reception(&value, span);
+        }
         if mode == Access::Immutable && !value.can_freeze() {
             self.error(
                 Code::E0535,
@@ -1493,6 +1509,66 @@ impl<'a> Analyzer<'a> {
                 "shared replacement requires a '^mut' expression",
             );
         }
+    }
+
+    fn check_exclusive_reception(&mut self, value: &Datum, span: Span) {
+        // A Draft projection remains confined to the derive callback.
+        if value.requires_new || value.writers() && value.roots.iter().all(|root| root.draft) {
+            return;
+        }
+        if value.writers() {
+            self.error(
+                Code::E0510,
+                span,
+                "a persistent mutable binding requires an exclusive handoff",
+            );
+        } else {
+            self.error(
+                Code::E0520,
+                span,
+                "binding cannot manufacture write authority",
+            );
+        }
+    }
+
+    fn check_shared_reception(&mut self, value: &Datum, span: Span) {
+        if value
+            .roots
+            .iter()
+            .any(|root| root.call_borrow && root.mode.writes())
+        {
+            self.error(Code::E0528, span, "a call-scoped writer cannot be shared");
+        }
+    }
+
+    fn shared_local_input(&mut self, ctx: &Context, declaration: Span, value: &Datum, span: Span) {
+        let closure_with_writer =
+            value.creates_environment() && value.origins().any(|origin| origin.mode.writes());
+        if !value.writers() && !closure_with_writer {
+            self.error(
+                Code::E0527,
+                span,
+                "shared binding requires a writable source",
+            );
+            return;
+        }
+        self.check_shared_reception(value, span);
+        let existing_writer = value.roots.iter().any(|root| {
+            root.mode.writes() && !(root.new && (value.requires_new || root.explicit_share))
+        });
+        if existing_writer || closure_with_writer {
+            self.seed(ctx, Obligation::SharedReception(declaration));
+        }
+    }
+
+    fn require_shared_local(&mut self, ctx: &Context, declaration: Span, value: &Datum) {
+        self.requirement(
+            ctx,
+            declaration,
+            Obligation::SharedReception(declaration),
+            "shared binding requires reachable reception of a shared writer",
+        );
+        self.shared_local_input(ctx, declaration, value, declaration);
     }
 
     fn check_ref_binding(&mut self, span: Span, value: &Datum, variable: bool) {
@@ -1904,8 +1980,9 @@ impl<'a> Analyzer<'a> {
         id: PatternId,
         storage: &Storage,
         mut value: Datum,
-        resource: bool,
+        site: BindingSite,
     ) {
+        let resource = site == BindingSite::Resource;
         let node = self.ast(ctx.file).pattern(id);
         match &node.value {
             Pattern::Binding(own, name) => {
@@ -1945,23 +2022,16 @@ impl<'a> Analyzer<'a> {
                         "writable binding requires reachable use",
                     );
                 }
-                let stateful_closure = value.creates_environment()
-                    && value.origins().any(|origin| origin.mode.writes());
                 match mode {
+                    Mode::Mut if site == BindingSite::Declaration => {
+                        self.check_exclusive_reception(&value, name.span);
+                    }
                     Mode::Mut if !value.requires_new && !value.writers() => self.error(
                         Code::E0520,
                         name.span,
                         "binding cannot manufacture write authority",
                     ),
-                    Mode::Shared
-                        if (!value.writers() || value.requires_new) && !stateful_closure =>
-                    {
-                        self.error(
-                            Code::E0527,
-                            name.span,
-                            "shared binding requires a shared writable source",
-                        );
-                    }
+                    Mode::Shared => self.require_shared_local(ctx, declaration, &value),
                     Mode::Ref if !resource => {
                         self.check_ref_binding(name.span, &value, variable);
                         if variable {
@@ -2045,7 +2115,7 @@ impl<'a> Analyzer<'a> {
                     let coordinate = Coordinate::Index(i.to_string());
                     let mode = self.schema_mode(self.ty(node.span), &coordinate).0;
                     let child = ledger.project_schema(&value, coordinate, mode);
-                    self.bind(ctx, ledger, item, storage, child, resource);
+                    self.bind(ctx, ledger, item, storage, child, site);
                 }
             }
             Pattern::Slice { text, elements } => {
@@ -2055,11 +2125,11 @@ impl<'a> Analyzer<'a> {
                 for (index, &item) in before.iter().enumerate() {
                     let child =
                         ledger.project_schema(&value, Coordinate::Index(index.to_string()), mode);
-                    self.bind(ctx, ledger, item, storage, child, resource);
+                    self.bind(ctx, ledger, item, storage, child, site);
                 }
                 for &item in after {
                     let child = ledger.project_schema(&value, Coordinate::Dynamic, mode);
-                    self.bind(ctx, ledger, item, storage, child, resource);
+                    self.bind(ctx, ledger, item, storage, child, site);
                 }
                 if let Some(rest) = rest
                     && let Pattern::Rest(Some(name)) = &ast.pattern(rest).value
@@ -2100,7 +2170,7 @@ impl<'a> Analyzer<'a> {
                 for (i, &item) in payload.iter().flatten().enumerate() {
                     let child =
                         ledger.project(&value, Coordinate::Index(i.to_string()), Access::Immutable);
-                    self.bind(ctx, ledger, item, storage, child, resource);
+                    self.bind(ctx, ledger, item, storage, child, site);
                 }
             }
             Pattern::Record { fields, .. } => {
@@ -2133,10 +2203,19 @@ impl<'a> Analyzer<'a> {
                         );
                     }
                     if let Some(pattern) = field.pattern {
-                        self.bind(ctx, ledger, pattern, &received, child, resource);
+                        self.bind(ctx, ledger, pattern, &received, child, site);
                     } else {
                         let mut child = child;
                         let decl = self.declaration(field.name.span).unwrap_or(field.name.span);
+                        if child.writers() {
+                            match requested {
+                                Mode::Mut if site == BindingSite::Declaration => {
+                                    self.check_exclusive_reception(&child, decl);
+                                }
+                                Mode::Shared => self.require_shared_local(ctx, decl, &child),
+                                _ => {}
+                            }
+                        }
                         if ctx.in_function {
                             self.binding_scopes.insert(decl, ctx.scope);
                         }
@@ -2163,14 +2242,14 @@ impl<'a> Analyzer<'a> {
                     branch.take_choice(node.span, index);
                     let mut value = value.clone();
                     branch.stamp(&mut value);
-                    self.bind(ctx, &mut branch, item, storage, value, resource);
+                    self.bind(ctx, &mut branch, item, storage, value, site);
                     alternatives.push(branch);
                 }
                 ledger.merge_bindings(&alternatives);
             }
             Pattern::Subset {
                 binding: Some(id), ..
-            } => self.bind(ctx, ledger, *id, storage, value, resource),
+            } => self.bind(ctx, ledger, *id, storage, value, site),
             _ => {}
         }
     }
@@ -2216,9 +2295,9 @@ impl<'a> Analyzer<'a> {
                         }
                         self.require_schema(ctx, &value, SchemaRequirement::Writable);
                         for root in &mut value.roots {
+                            root.new &= value.requires_new || root.explicit_share;
                             root.fix_mode(Access::Shared);
                             root.explicit_share = true;
-                            root.new &= value.requires_new;
                         }
                         value.requires_new = false;
                     }
@@ -2601,7 +2680,14 @@ impl<'a> Analyzer<'a> {
                                 };
                             this.pattern_tests(local, inside, *pattern, &child)
                                 .inspect(inside, true);
-                            this.bind(local, inside, *pattern, &storage, child, false);
+                            this.bind(
+                                local,
+                                inside,
+                                *pattern,
+                                &storage,
+                                child,
+                                BindingSite::ScopedPattern,
+                            );
                             (exit, traversal)
                         },
                     );
@@ -3008,6 +3094,9 @@ impl<'a> Analyzer<'a> {
                 let mut value = value;
                 if mode == Mode::Shared {
                     self.require_shared_replacement(&value, span, false);
+                    self.shared_local_input(ctx, decl, &value, span);
+                } else if mode == Mode::Mut {
+                    self.check_exclusive_reception(&value, span);
                 } else if mode == Mode::Ref {
                     if value.roots.iter().any(|root| root.mode != Access::Ref) {
                         self.error(
@@ -3219,7 +3308,7 @@ impl<'a> Analyzer<'a> {
                 arm.pattern,
                 &storage,
                 value.clone(),
-                false,
+                BindingSite::ScopedPattern,
             );
             if let Some(guard) = arm.guard {
                 self.expr(&mut local_ctx, &mut inside, guard);
@@ -3253,13 +3342,13 @@ impl<'a> Analyzer<'a> {
         pattern: PatternId,
         storage: &Storage,
         value: &Datum,
-        resource: bool,
+        site: BindingSite,
     ) -> bool {
         let paths = self.pattern_paths(ctx, ledger, pattern, value, true);
         let alternatives = paths
             .into_iter()
             .map(|(mut path, selected)| {
-                self.bind(ctx, &mut path, pattern, storage, selected, resource);
+                self.bind(ctx, &mut path, pattern, storage, selected, site);
                 path
             })
             .collect();
@@ -3293,7 +3382,7 @@ impl<'a> Analyzer<'a> {
                             ..Storage::default()
                         },
                         &value,
-                        false,
+                        BindingSite::ScopedPattern,
                     );
                 }
                 let alternatives = self

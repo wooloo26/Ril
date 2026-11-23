@@ -1152,6 +1152,10 @@ impl<'program> Analyzer<'program> {
                 for (obligation, targets) in [
                     (Obligation::Write(source), writes),
                     (Obligation::Replace(source), &BTreeSet::from([source])),
+                    (
+                        Obligation::SharedReception(source),
+                        &BTreeSet::from([source]),
+                    ),
                     (Obligation::Invoke(source), writes),
                 ] {
                     let premises = std::iter::once(Fact {
@@ -1166,6 +1170,7 @@ impl<'program> Analyzer<'program> {
                         .iter()
                         .map(|&decl| match obligation {
                             Obligation::Replace(_) => Obligation::Replace(decl),
+                            Obligation::SharedReception(_) => Obligation::SharedReception(decl),
                             Obligation::Write(_) => Obligation::Write(decl),
                             _ => Obligation::Invoke(decl),
                         })

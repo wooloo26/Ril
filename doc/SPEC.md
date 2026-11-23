@@ -1113,7 +1113,7 @@ assert(sample(1) == 20 && <SampleOut> == <int>)
 | `let mut x = e` | Pinned (`E0502`) | Writable; existing root sharing requires acknowledgment | `new`-qualified / constructor or unshared writable source; contained shared sources remain shared |
 | `var mut x = e` | Reassignable | Writable; existing root sharing requires acknowledgment | Non-foreign `new`-qualified / constructor (`E0532` on `.d.ril` handles; cannot anchor `let ref`, `E0531`) |
 | `let ^mut x = e` | Pinned (`E0502`) | Shared writable | Existing writable binding (bare or `^mut` result) or `new` `&up` closure retaining a `^mut`/shared local source |
-| `var ^mut x = e` | Reassignable | Shared writable | Writable binding (bare on init; `^mut` marker on replacement) |
+| `var ^mut x = e` | Reassignable | Shared writable | Writable binding (bare on init; `^mut` marker on replacement). A fresh initial object requires later shared reception. |
 | `let ref x = e` | Pinned (`E0502`) | Read-only live view (`E0520`) | Pinned `let mut`, non-`var` `ref` view, immutable shared object, or `new`-qualified composite / `&up(ref)` closure carrying live `ref` sources (`E0531` on `var` / `var ref`, `E0543` on pure/immutable temporary) |
 | `var ref x = e` | Reassignable | Read-only live view (`E0520`) | Eligible source whose scope encloses `x` (`ref expr` or `ref` view on replacement; `E0357`, `E0531`, `E0543`, `E0604`) |
 | `use [mut] x = e` | Pinned & confined (`E0502`, `E0604`) | `ref` (`use x`) or `mut` (`use mut x`) | Satisfies $\max(M_{\text{body}}, M_{\text{clean}})$ for type's `use(<fn>)` cleanup (`E0541`) |
@@ -1174,6 +1174,10 @@ assert(c.count == 6)
 A pinned `let mut` (fixed binding slot, independent of physical object relocation) initialized by construction, `clone`, or a `new`-qualified result retains `new` qualification while its `new` subgraphs have no independent surviving outside aliases.
 
 Contained existing sources keep their own provenance; `new x` preserves identity, ends `x` and dependent paths (`E0549`), and leaves independent existing-source paths valid. Handing off or freezing a `new`-qualified local always requires explicit `new x`—including at return boundaries (`new b`, `Ok(new out)`), never implicitly transferring on scope exit. On a named `fn`, returning a `new`-qualified `SharedObject` requires declaring `-> new T` (`E0544`); whether to freeze or mutate it is decided by the caller.
+
+Receiving an existing writer in a persistent `let mut` or `var mut` binding requires an explicit `new` handoff (`E0510`). A `mut` parameter can yield another call-scoped `mut` borrow. Creating shared writable storage from that borrow fails with `E0528`. An existing `^mut` member keeps its shared authority when reached through a `mut` parameter.
+
+A `var ^mut` slot initialized with a fresh object must receive an existing writer in a reachable replacement (`E0527`). Applying `^mut` to a fresh object sets its mode and leaves the requirement for shared reception outstanding.
 
 ```ril
 type Buffer = .{ mut items: []int }

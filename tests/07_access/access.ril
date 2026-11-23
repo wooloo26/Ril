@@ -4,6 +4,389 @@
 -- @prelude
 type Cell = .{ var count: int }
 
+-- @case immutable_record_can_be_read compile-pass
+fn observe() -> int {
+    let cell = Cell.{ count: 1 }
+    cell.count
+}
+
+-- @case immutable_record_suppresses_replaceable_member compile-fail E0520
+fn update() -> () {
+    let cell = Cell.{ count: 1 }
+    cell.count = 2
+    -- ^ E0520
+}
+
+-- @case immutable_root_cannot_supply_a_mutable_argument compile-fail E0520
+fn edit(mut cell: Cell) &mut -> () { cell.count += 1 }
+fn update() -> () {
+    let cell = Cell.{ count: 1 }
+    edit(mut cell)
+    -- ^ E0520
+}
+
+-- @case idle_local_writer_requires_writable_use compile-fail E0527
+fn observe() -> int {
+    let mut cell = Cell.{ count: 1 }
+    -- ^ E0527
+    cell.count
+}
+
+-- @case live_observer_sees_an_existing_writer compile-pass
+fn observe() -> int {
+    let mut cell = Cell.{ count: 1 }
+    let ref view = ref cell
+    cell.count = 2
+    view.count
+}
+
+-- @case live_observer_cannot_replace_a_member compile-fail E0520
+fn update() -> () {
+    let mut cell = Cell.{ count: 1 }
+    let ref view = ref cell
+    cell.count = 2
+    view.count = 3
+    -- ^ E0520
+}
+
+-- @case observer_root_cannot_supply_a_mutable_argument compile-fail E0520
+fn edit(mut cell: Cell) &mut -> () { cell.count += 1 }
+fn update() -> () {
+    let mut cell = Cell.{ count: 1 }
+    let ref view = ref cell
+    cell.count = 2
+    edit(mut view)
+    -- ^ E0520
+}
+
+-- @case explicit_local_shared_alias_can_write compile-pass
+fn update() -> int {
+    let mut cell = Cell.{ count: 1 }
+    let ^mut alias = cell
+    alias.count += 1
+    cell.count
+}
+
+-- @case persistent_mutable_alias_requires_acknowledgment compile-fail E0510
+fn update() -> int {
+    let mut cell = Cell.{ count: 1 }
+    let mut other = cell
+    -- ^ E0510
+    other.count += 1
+    cell.count
+}
+
+-- @case mutable_slot_replacement_cannot_duplicate_a_writer compile-fail E0510
+fn update() -> int {
+    let mut source = Cell.{ count: 1 }
+    var mut target = Cell.{ count: 2 }
+    target.count += 1
+    target = source
+    -- ^ E0510
+    target.count += 1
+    source.count
+}
+
+-- @case mutable_slot_replacement_cannot_upgrade_a_snapshot compile-fail E0520
+fn update() -> int {
+    let source = Cell.{ count: 1 }
+    var mut target = Cell.{ count: 2 }
+    target.count += 1
+    target = source
+    -- ^ E0520
+    target.count += 1
+    target.count
+}
+
+-- @case local_snapshot_cannot_publish_a_live_writer compile-fail E0535
+fn observe() -> int {
+    let mut cell = Cell.{ count: 1 }
+    cell.count += 1
+    let snapshot = cell
+    -- ^ E0535
+    snapshot.count
+}
+
+-- @case immutable_object_slot_rejects_replacement compile-fail E0501
+fn update() -> () {
+    let cell = Cell.{ count: 1 }
+    cell = Cell.{ count: 2 }
+    -- ^ E0501
+}
+
+-- @case immutable_var_slot_can_receive_another_snapshot compile-pass
+fn update() -> int {
+    var cell = Cell.{ count: 1 }
+    let snapshot = Cell.{ count: 2 }
+    cell = snapshot
+    cell.count
+}
+
+-- @case mutable_var_slot_can_receive_a_new_object compile-pass
+fn update() -> int {
+    var mut cell = Cell.{ count: 1 }
+    cell = Cell.{ count: 2 }
+    cell.count += 1
+    cell.count
+}
+
+-- @case mutable_var_slot_cannot_supply_handoff_qualification compile-fail E0548
+fn update() -> int {
+    var mut cell = Cell.{ count: 1 }
+    cell.count += 1
+    cell = Cell.{ count: 2 }
+    let mut moved = new cell
+    -- ^ E0548
+    moved.count += 1
+    moved.count
+}
+
+-- @case shared_alias_survives_replacement_of_its_original_slot compile-pass
+fn update() -> int {
+    var mut cell = Cell.{ count: 1 }
+    let ^mut alias = cell
+    cell = Cell.{ count: 2 }
+    cell.count += 1
+    alias.count += 1
+    alias.count + cell.count
+}
+
+-- @case live_shared_writer_prevents_exclusive_handoff compile-fail E0548
+fn update() -> () {
+    let mut cell = Cell.{ count: 1 }
+    let ^mut alias = cell
+    alias.count += 1
+    let _ = new cell
+    -- ^ E0548
+}
+
+-- @case temporary_mutable_parameter_cannot_form_shared_alias compile-fail E0528
+fn update(mut cell: Cell) &mut -> () {
+    let ^mut alias = cell
+    -- ^ E0528
+    alias.count += 1
+}
+
+-- @case an_existing_shared_member_can_be_received_from_a_mutable_parameter compile-pass
+type Holder = .{ ^mut child: Cell }
+fn update(mut holder: Holder) &mut -> () {
+    let ^mut alias = holder.child
+    alias.count += 1
+}
+
+-- @case mutable_receiver_resumes_after_scoped_call compile-pass
+fn edit(mut cell: Cell) &mut -> () { cell.count += 1 }
+fn update() -> int {
+    let mut cell = Cell.{ count: 1 }
+    edit(mut cell)
+    cell.count += 1
+    cell.count
+}
+
+-- @case mutable_argument_blocks_overlapping_captured_slot_replacement compile-fail E0523
+fn update() -> int {
+    var mut cell = Cell.{ count: 1 }
+    edit(mut cell)
+    -- ^ E0523
+    cell.count
+    where
+        fn edit(mut borrowed: Cell) &up(var mut cell) &mut -> () {
+            cell = Cell.{ count: 2 }
+            borrowed.count += 1
+        }
+}
+
+-- @case a_view_of_a_mutable_argument_is_unavailable_after_its_call compile-fail E0204
+fn edit(mut cell: Cell) &mut -> () {
+    let ref observer = ref cell
+    cell.count += 1
+    assert(observer.count > 1)
+}
+fn update() -> int {
+    let mut cell = Cell.{ count: 1 }
+    edit(mut cell)
+    observer.count
+    -- ^ E0204
+}
+
+-- @case mutable_record_can_replace_a_scalar_slot compile-pass
+fn update() -> int {
+    let mut cell = Cell.{ count: 1 }
+    cell.count = 2
+    cell.count
+}
+
+-- @case fixed_scalar_member_cannot_be_replaced compile-fail E0520
+type Entry = .{ fixed: int, var changed: int }
+fn update() -> () {
+    let mut entry = Entry.{ fixed: 1, changed: 2 }
+    entry.changed = 3
+    entry.fixed = 4
+    -- ^ E0520
+}
+
+-- @case scalar_member_cannot_anchor_a_ref_view compile-fail E0402
+fn observe() -> () {
+    let mut cell = Cell.{ count: 1 }
+    cell.count += 1
+    let ref view = ref cell.count
+    -- ^ E0402
+}
+
+-- @case nested_writable_member_can_replace_a_scalar_slot compile-pass
+fn update() -> int {
+    let mut record = .{ mut child: Cell.{ count: 1 } }
+    record.child.count = 2
+    record.child.count
+}
+
+-- @case scoped_local_is_unavailable_after_its_block compile-fail E0204
+fn observe() -> int {
+    { let mut cell = Cell.{ count: 1 }; cell.count += 1 }
+    cell.count
+    -- ^ E0204
+}
+
+-- @case shared_alias_can_leave_a_block compile-pass
+fn update() -> int {
+    let mut cell = Cell.{ count: 1 }
+    let ^mut saved = {
+        let ^mut alias = cell
+        alias.count += 1
+        ^mut alias
+    }
+    saved.count += 1
+    saved.count
+}
+
+-- @case shared_alias_leaving_a_block_prevents_handoff compile-fail E0548
+fn update() -> () {
+    let mut cell = Cell.{ count: 1 }
+    let ^mut saved = {
+        let ^mut alias = cell
+        alias.count += 1
+        ^mut alias
+    }
+    saved.count += 1
+    let _ = new cell
+    -- ^ E0548
+}
+
+-- @case exclusive_handoff_can_continue_from_the_new_binding compile-pass
+fn update() -> int {
+    let mut cell = Cell.{ count: 1 }
+    let ref view = ref cell
+    let previous = view.count
+    let mut next = new cell
+    let mut last = new next
+    last.count += 1
+    previous + last.count
+}
+
+-- @case scalar_member_cannot_supply_a_mutable_object compile-fail E0402
+fn update() -> () {
+    let mut cell = Cell.{ count: 1 }
+    cell.count += 1
+    let mut item = cell.count
+    -- ^ E0402
+}
+
+-- @case immutable_member_cannot_supply_a_shared_writer compile-fail E0527
+type Container = .{ var active: bool, child: Cell }
+fn update() -> () {
+    let mut container = Container.{ active: true, child: Cell.{ count: 1 } }
+    container.active = false
+    let ^mut alias = container.child
+    -- ^ E0527
+    alias.count += 1
+}
+
+-- @case writes_require_a_declared_member compile-fail E0336
+fn update() -> () {
+    let mut cell = Cell.{ count: 1 }
+    cell.missing = 2
+    -- ^ E0336
+}
+
+-- @case writes_require_a_declared_root compile-fail E0204
+fn update() -> () {
+    missing.count = 2
+    -- ^ E0204
+}
+
+-- @case a_conditional_overlapping_pair_cannot_receive_exclusive_borrows compile-fail E0523
+fn pair(mut left: Cell, mut right: Cell) &mut -> () {
+    left.count += 1
+    right.count += 1
+}
+fn update(overlap: bool) -> () {
+    let mut first = Cell.{ count: 1 }
+    let mut second = Cell.{ count: 2 }
+    var ^mut left = first
+    var ^mut right = second
+    if overlap {
+        left = ^mut first
+        right = ^mut first
+    } else {
+        left = ^mut first
+        right = ^mut second
+    }
+    pair(mut left, mut right)
+    -- ^ E0523
+}
+
+-- @case record_schema_cannot_repeat_a_member compile-fail E0210
+type Entry = .{ child: Cell, mut child: Cell }
+-- ^ E0210
+
+-- @case captured_writer_prevents_handoff compile-fail E0548
+fn update() -> () {
+    let mut cell = Cell.{ count: 1 }
+    let ^mut edit = \-> { cell.count += 1 }
+    edit()
+    let _ = new cell
+    -- ^ E0548
+}
+
+-- @case writing_a_fresh_shared_local_does_not_satisfy_reception compile-fail E0527
+fn update() -> () {
+    let ^mut cell = ^mut Cell.{ count: 1 }
+    -- ^ E0527
+    cell.count += 1
+}
+
+-- @case shared_var_can_receive_its_existing_writer_on_replacement compile-pass
+fn update() -> int {
+    var ^mut cell = Cell.{ count: 1 }
+    cell.count += 1
+    let mut source = Cell.{ count: 2 }
+    cell = ^mut source
+    cell.count += 1
+    cell.count
+}
+
+-- @case reachable_helper_can_supply_shared_slot_reception compile-pass
+fn update() -> int {
+    var ^mut cell = Cell.{ count: 1 }
+    let mut source = Cell.{ count: 2 }
+    replace()
+    cell.count += 1
+    cell.count
+    where
+        fn replace() &up(var ^mut cell, mut source) -> () {
+            cell = ^mut source
+        }
+}
+
+-- @case fresh_shared_replacement_does_not_supply_reachable_reception compile-fail E0527
+fn update() -> () {
+    var ^mut cell = Cell.{ count: 1 }
+    -- ^ E0527
+    cell.count += 1
+    cell = ^mut Cell.{ count: 2 }
+    cell.count += 1
+}
+
 -- @case local_mutates_record compile-pass
 fn increment() -> int {
     let mut cell = Cell.{ count: 0 }

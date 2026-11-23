@@ -1315,6 +1315,11 @@ fn draft_path_updates_agree_with_lean() {
 }
 
 #[test]
+fn access_ledger_examples_agree_with_lean() -> Result<(), Box<dyn std::error::Error>> {
+    check_access_examples("access-ledger", 53)
+}
+
+#[test]
 fn visibility_examples_agree_with_lean() -> Result<(), Box<dyn std::error::Error>> {
     check_access_examples("visibility", 12)
 }

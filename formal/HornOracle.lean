@@ -1,4 +1,5 @@
 import Lean
+import RilAccess.Examples.Access
 import RilAccess.Examples.Boundary
 import RilAccess.Examples.Call
 import RilAccess.Examples.Composition
@@ -362,6 +363,8 @@ def main (args : List String) : IO Unit := do
     let some answers := paths.mapM checkPath
       | throw (IO.userError "access paths require a root and mode numbers 0 to 3")
     stdout.putStrLn (toJson answers).compress
+  else if args == ["access-ledger"] then
+    stdout.putStrLn (toJson RilAccess.Integrated.Examples.sourceChecks).compress
   else if args == ["call-entry"] then
     stdout.putStrLn (toJson callEntryCases).compress
   else if args == ["graph"] then
