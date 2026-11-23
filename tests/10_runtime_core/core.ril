@@ -1,6 +1,21 @@
 -- @suite runtime_core
 -- @default_stage run
 
+-- @case exhausting_a_variable_batch_inspects_every_result run-pass backend=both
+fn batch(flag: bool) -> new []!<int, str> {
+    if flag { [Ok(2), Err("skip"), Ok(3)] } else { [] }
+}
+fn total(flag: bool) -> int {
+    var sum = 0
+    for batch(flag) as item {
+        match item { Ok(n) -> { sum += n }; Err(_) -> continue }
+    }
+    sum
+}
+fn main() -> () {
+    assert(total(true) == 5 && total(false) == 0)
+}
+
 -- @case nominal_inner_preserves_record_payloads run-pass backend=both
 nominal type Packet<T> = .{ payload: T }
 nominal type Parcel<T> = T

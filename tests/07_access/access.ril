@@ -980,6 +980,131 @@ fn run() -> () {
     assert(len(values) == 0)
 }
 
+-- @case variable_length_array_keeps_its_element_result_obligation compile-fail E0720
+fn batch(flag: bool) -> new []!<int, str> {
+    if flag { [Ok(1), Err("failed")] } else { [] }
+}
+fn run(flag: bool) -> () {
+    let values = batch(flag)
+    -- ^ E0720
+    assert(len(values) <= 2)
+}
+
+-- @case variable_length_array_can_be_inspected_by_exhaustive_iteration compile-pass
+fn batch(flag: bool) -> new []!<int, str> {
+    if flag { [Ok(1), Err("failed")] } else { [] }
+}
+fn run(flag: bool) -> () {
+    for batch(flag) as item {
+        match item { Ok(_) -> (); Err(_) -> () }
+    }
+}
+
+-- @case a_break_cannot_inspect_the_rest_of_a_variable_length_array compile-fail E0720
+fn run(values: []!<int, str>) -> () {
+-- ^ E0720
+    for values as item {
+        match item { Ok(_) -> (); Err(_) -> () }
+        break
+    }
+}
+
+-- @case continuing_before_inspection_leaves_a_variable_array_pending compile-fail E0720
+fn run(values: []!<int, str>, skip: bool) -> () {
+-- ^ E0720
+    for values as item {
+        if skip { continue }
+        match item { Ok(_) -> (); Err(_) -> () }
+    }
+}
+
+-- @case continuing_after_inspection_preserves_array_coverage compile-pass
+fn run(values: []!<int, str>) -> () {
+    for values as item {
+        match item { Ok(_) -> continue; Err(_) -> () }
+    }
+}
+
+-- @case returning_from_array_iteration_requires_the_unvisited_results compile-fail E0720
+fn run(values: []!<int, str>) -> () {
+-- ^ E0720
+    for values as item {
+        match item { Ok(_) -> (); Err(_) -> () }
+        return
+    }
+}
+
+-- @case returning_the_array_transfers_its_unvisited_results compile-pass
+fn run(values: []!<int, str>) -> []!<int, str> {
+    for values as item { return values }
+    values
+}
+
+-- @case nested_variable_arrays_can_be_inspected_by_nested_traversals compile-pass
+fn run(rows: [][]!<int, str>) -> () {
+    for rows as row {
+        for row as item {
+            match item { Ok(_) -> (); Err(_) -> () }
+        }
+    }
+}
+
+-- @case traversing_one_selected_array_does_not_inspect_the_other_array compile-fail E0720
+fn run(first: []!<int, str>, second: []!<int, str>, flag: bool) -> () {
+-- ^ E0720
+    let chosen = if flag { first } else { second }
+    for chosen as item {
+        match item { Ok(_) -> (); Err(_) -> () }
+    }
+}
+
+-- @case returning_one_selected_array_does_not_transfer_the_other_array compile-fail E0720
+fn run(first: []!<int, str>, second: []!<int, str>, flag: bool) -> []!<int, str> {
+-- ^ E0720
+    if flag { first } else { second }
+}
+
+-- @case wrapping_one_selected_array_still_leaves_the_other_array_pending compile-fail E0720
+fn run(first: []!<int, str>, second: []!<int, str>, flag: bool) &return(first, second) -> new ([]!<int, str>, int) {
+-- ^ E0720
+    (if flag { first } else { second }, 0)
+}
+
+-- @case returning_both_arrays_in_either_order_transfers_both_obligations compile-pass
+fn run(first: []!<int, str>, second: []!<int, str>, flag: bool) &return(first, second) -> new ([]!<int, str>, []!<int, str>) {
+    if flag { (first, second) } else { (second, first) }
+}
+
+-- @case traversing_a_possible_empty_alternative_keeps_the_array_pending compile-fail E0720
+fn run(values: []!<int, str>, flag: bool) -> () {
+-- ^ E0720
+    let chosen: []!<int, str> = if flag { values } else { [] }
+    for chosen as item {
+        match item { Ok(_) -> (); Err(_) -> () }
+    }
+}
+
+-- @case every_created_array_is_inspected_on_its_own_path compile-pass
+fn batch(flag: bool) -> new []!<int, str> {
+    if flag { [Ok(1), Err("failed")] } else { [] }
+}
+fn run(flag: bool) -> () {
+    let chosen = if flag { batch(true) } else { batch(false) }
+    for chosen as item {
+        match item { Ok(_) -> (); Err(_) -> () }
+    }
+}
+
+-- @case replacing_an_uninspected_array_element_cannot_be_hidden_by_iteration compile-fail E0720
+fn run(new values: []!<int, str>) -> () {
+-- ^ E0720
+    let mut items = new values
+    items[0] = Ok(1)
+    for items as item {
+        match item { Ok(_) -> (); Err(_) -> () }
+    }
+}
+
 -- @case independent_results_in_returned_fields_require_separate_inspection compile-fail E0720
 fn get(value: int) -> new !<int, str> { Ok(value) }
 fn pair() -> new (!<int, str>, !<int, str>) { (get(1), get(2)) }

@@ -2771,7 +2771,8 @@ impl<'program> Analyzer<'program> {
         let output = locals.snapshot(&output);
         let implicit = self.ty(self.ast(ctx.file).expr(*body).span) != &Ty::Never;
         if inner.reachable && implicit {
-            self.check_results(&locals, &output.results());
+            locals.inspect(&output);
+            self.check_results(&locals, &BTreeSet::new());
             self.storage_exit(&inner, &locals);
             if output.returns_borrowed_writer(Mode::Infer) {
                 self.error(

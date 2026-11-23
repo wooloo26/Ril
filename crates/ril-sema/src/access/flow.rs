@@ -265,6 +265,7 @@ impl Occurrence {
 pub(super) struct ResultOccurrence {
     pub span: Span,
     part: usize,
+    array_elements: bool,
     places: BTreeSet<(ResultHolder, Vec<Coordinate>)>,
     created_in: Choices,
 }
@@ -609,6 +610,61 @@ impl Datum {
             .collect()
     }
 
+    pub(super) fn array_results(&self) -> BTreeSet<ResultOccurrence> {
+        self.results
+            .iter()
+            .filter(|item| item.occurrence.array_elements)
+            .map(|item| item.occurrence.clone())
+            .collect()
+    }
+
+    pub(super) fn guaranteed_array_result(&self, active: &Choices) -> Option<ResultOccurrence> {
+        let mut collections = self.array_results().into_iter();
+        let item = collections.next()?;
+        if collections.next().is_some() || self.roots.is_empty() {
+            return None;
+        }
+        self.roots
+            .iter()
+            .all(|root| self.references_collection(root, &item, active))
+            .then_some(item)
+    }
+
+    fn references_collection(
+        &self,
+        root: &Origin,
+        collection: &ResultOccurrence,
+        choices: &Choices,
+    ) -> bool {
+        self.results.iter().any(|reference| {
+            &reference.occurrence == collection
+                && reference.branches.iter().all(|(key, arm)| {
+                    choices.get(key).or_else(|| root.branches.get(key)) == Some(arm)
+                })
+        })
+    }
+
+    fn contains_collection(&self, collection: &ResultOccurrence, choices: &Choices) -> bool {
+        let roots: Vec<_> = self
+            .roots
+            .iter()
+            .filter(|root| compatible(&root.branches, choices))
+            .collect();
+        // A nested collection can be absent altogether on some paths, for
+        // example inside the payload of a sum's other variant.
+        (roots.iter().any(|root| {
+            root.branches
+                .iter()
+                .all(|(key, arm)| choices.get(key) == Some(arm))
+        }) && roots
+            .iter()
+            .all(|root| self.references_collection(root, collection, choices)))
+            || self
+                .members
+                .values()
+                .any(|member| member.contains_collection(collection, choices))
+    }
+
     pub(super) fn has_root_result(&self) -> bool {
         !self.results.is_empty()
     }
@@ -946,6 +1002,7 @@ pub(super) struct Ledger {
     revoked: BTreeMap<Occurrence, Revocations>,
     pub obligations: BTreeSet<ResultOccurrence>,
     pub inspected: BTreeSet<ResultOccurrence>,
+    result_samples: BTreeMap<ResultOccurrence, BTreeSet<ResultOccurrence>>,
     pub lost_results: BTreeSet<Span>,
     pub iteration: Vec<Datum>,
     pub holds: Vec<(Mode, Datum)>,
@@ -1029,7 +1086,7 @@ impl Ledger {
     }
 
     pub(super) fn record_result(&mut self, value: &mut Datum, span: Span) {
-        self.record_result_part(value, span, 0, &self.choices.clone());
+        self.record_result_part(value, span, 0, &self.choices.clone(), false);
     }
 
     pub(super) fn record_result_part(
@@ -1038,10 +1095,12 @@ impl Ledger {
         span: Span,
         part: usize,
         choices: &Choices,
+        array_elements: bool,
     ) {
         let occurrence = ResultOccurrence {
             span,
             part,
+            array_elements,
             places: BTreeSet::new(),
             created_in: choices.clone(),
         };
@@ -1050,6 +1109,80 @@ impl Ledger {
             occurrence,
             branches: choices.clone(),
         });
+    }
+
+    pub(super) fn register_result_samples(
+        &mut self,
+        samples: &BTreeSet<ResultOccurrence>,
+        collections: &BTreeSet<ResultOccurrence>,
+    ) {
+        for sample in samples {
+            self.result_samples
+                .insert(sample.clone(), collections.clone());
+        }
+    }
+
+    pub(super) fn lose_array_elements_at(&mut self, place: &Datum) {
+        let mut lost = BTreeSet::new();
+        for value in self
+            .slots
+            .values()
+            .map(|slot| &slot.value)
+            .chain(self.replacements.values().map(|update| &update.value))
+            .chain(self.loop_members.values())
+        {
+            value.visit_nodes(&mut Vec::new(), &mut |_, node| {
+                if node.roots.iter().any(|array| {
+                    place.roots.iter().any(|slot| {
+                        slot.region.selection.len() > array.region.selection.len()
+                            && slot.overlaps(array)
+                    })
+                }) {
+                    lost.extend(
+                        node.array_results()
+                            .into_iter()
+                            .filter(|item| {
+                                self.obligations.contains(item) && !self.inspected.contains(item)
+                            })
+                            .map(|item| item.span),
+                    );
+                }
+            });
+        }
+        self.lost_results.extend(lost);
+    }
+
+    pub(super) fn covers_result_samples(&self, samples: &BTreeSet<ResultOccurrence>) -> bool {
+        samples.iter().all(|item| {
+            !self.lost_results.contains(&item.span)
+                && (!self.obligations.contains(item) || self.inspected.contains(item))
+        })
+    }
+
+    pub(super) fn forget_result_samples(&mut self, samples: &BTreeSet<ResultOccurrence>) {
+        if samples.is_empty() {
+            return;
+        }
+        self.obligations.retain(|item| !samples.contains(item));
+        self.inspected.retain(|item| !samples.contains(item));
+        self.result_samples
+            .retain(|item, _| !samples.contains(item));
+        for value in self
+            .slots
+            .values_mut()
+            .map(|slot| &mut slot.value)
+            .chain(
+                self.replacements
+                    .values_mut()
+                    .map(|update| &mut update.value),
+            )
+            .chain(self.loop_members.values_mut())
+            .chain(&mut self.iteration)
+            .chain(self.holds.iter_mut().map(|(_, value)| value))
+        {
+            value
+                .rewrite_results(&mut |item| (!samples.contains(&item.occurrence)).then_some(item));
+        }
     }
 
     pub(super) fn variant_paths(&self, value: &Datum) -> Vec<(Self, Datum)> {
@@ -1077,10 +1210,20 @@ impl Ledger {
                 }
             }
         });
-        // Independent nested sums each contribute their own choice. A bound
-        // keeps disjunctions finite when a product contains many such sums.
-        for (axis, arms) in discriminants {
-            if arms.len() < 2 {
+        let paths = Self::extend_result_paths(paths, discriminants);
+        if paths.len() == 1 && paths.first().is_some_and(Choices::is_empty) {
+            return Vec::new();
+        }
+        self.select_result_paths(value, paths)
+    }
+
+    fn extend_result_paths(
+        mut paths: BTreeSet<Choices>,
+        axes: BTreeMap<Occurrence, BTreeSet<usize>>,
+    ) -> BTreeSet<Choices> {
+        // Independent choices can multiply when combined in a product.
+        for (axis, arms) in axes {
+            if arms.len() < 2 || paths.iter().all(|path| path.contains_key(&axis)) {
                 continue;
             }
             let selected: BTreeSet<_> = paths
@@ -1100,9 +1243,25 @@ impl Ledger {
                 paths = selected;
             }
         }
-        if paths.len() == 1 && paths.first().is_some_and(Choices::is_empty) {
+        paths
+    }
+
+    pub(super) fn array_paths(&self, value: &Datum) -> Vec<(Self, Datum)> {
+        if value.array_results().is_empty() {
             return Vec::new();
         }
+        let paths: BTreeSet<_> = value
+            .roots
+            .iter()
+            .map(|root| root.branches.clone())
+            .collect();
+        if paths.len() < 2 || paths.len() > BRANCH_LIMIT {
+            return Vec::new();
+        }
+        self.select_result_paths(value, paths)
+    }
+
+    fn select_result_paths(&self, value: &Datum, paths: BTreeSet<Choices>) -> Vec<(Self, Datum)> {
         paths
             .into_iter()
             .filter(|path| compatible(path, &self.choices))
@@ -1330,6 +1489,7 @@ impl Ledger {
             .collect();
         self.no_continuation = prior.no_continuation || alternatives.is_empty();
         self.slots = prior.slots.clone();
+        self.result_samples.clone_from(&prior.result_samples);
         self.revoked = prior.revoked.clone();
         self.obligations.clear();
         if alternatives.is_empty() {
@@ -1630,8 +1790,56 @@ impl Ledger {
     }
 
     pub(super) fn inspect(&mut self, datum: &Datum) {
-        let results = self.loop_snapshot(datum).results();
+        let snapshot = self.loop_snapshot(datum);
+        let mut results = snapshot.results();
+        if results.iter().any(|item| item.array_elements) {
+            let mut axes: BTreeMap<_, BTreeSet<_>> = BTreeMap::new();
+            snapshot.visit_origins(&mut Vec::new(), &mut |_, origin| {
+                for (&key, &arm) in &origin.branches {
+                    axes.entry(key).or_default().insert(arm);
+                }
+            });
+            let paths = Self::extend_result_paths(BTreeSet::from([self.choices.clone()]), axes);
+            results.retain(|item| {
+                !item.array_elements
+                    || paths.iter().all(|path| {
+                        if !compatible(path, &item.created_in) {
+                            return true;
+                        }
+                        let choices = path
+                            .iter()
+                            .chain(item.created_in.iter())
+                            .map(|(&key, &arm)| (key, arm))
+                            .collect();
+                        snapshot.contains_collection(item, &choices)
+                    })
+            });
+        }
+        self.mark_inspected(results);
+    }
+
+    pub(super) fn mark_inspected(&mut self, results: impl IntoIterator<Item = ResultOccurrence>) {
         self.inspected.extend(results);
+        // Transferring an entire collection also transfers its current
+        // iteration's element. The converse does not discharge the collection.
+        loop {
+            let covered: Vec<_> = self
+                .result_samples
+                .iter()
+                .filter(|(sample, collections)| {
+                    self.obligations.contains(sample)
+                        && !self.inspected.contains(sample)
+                        && collections.iter().all(|item| {
+                            !self.obligations.contains(item) || self.inspected.contains(item)
+                        })
+                })
+                .map(|(sample, _)| sample.clone())
+                .collect();
+            if covered.is_empty() {
+                break;
+            }
+            self.inspected.extend(covered);
+        }
     }
 
     pub(super) fn inspect_root(&mut self, datum: &Datum) {

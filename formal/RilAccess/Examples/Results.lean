@@ -28,6 +28,18 @@ def recordOption (tag : String) : World :=
   receive <| if tag == "None" then [⟨[0], "None", Option.none⟩] else
     [⟨[0], "Some", Option.none⟩, ⟨[0, 0], tag, Option.some 1⟩]
 
+def array (size : Nat) : World :=
+  receive ((List.range size).map fun index =>
+    ⟨[index], if index % 2 == 0 then "Ok" else "Err", Option.some index⟩)
+
+def twoArrays : World :=
+  receive [⟨[0, 0], "Ok", Option.some 0⟩, ⟨[1, 0], "Err", Option.some 1⟩]
+
+def overwrittenElement : World :=
+  { (array 2) with
+    constructors := [⟨[0], "Ok", Option.some 2⟩, ⟨[1], "Err", Option.some 1⟩]
+    pending := [0, 1, 2] }
+
 def cases : List (String × Bool × Bool) :=
   [("matching_only_the_outer_option_does_not_inspect_its_result",
     canExit (some "Ok") [outer, fallback], false),
@@ -75,6 +87,36 @@ def cases : List (String × Bool × Bool) :=
     [0, 1].all (fun index => canExitAfterTraversal (pair 2) [index]), false),
    ("empty_returned_array_has_no_element_result_obligation",
     canExitAfterTraversal (receive []) [], true),
+   ("variable_length_array_keeps_its_element_result_obligation",
+    [0, 2].all (fun size => canExitAfterTraversal (array size) []), false),
+   ("variable_length_array_can_be_inspected_by_exhaustive_iteration",
+    [0, 2].all (fun size => canExitAfterTraversal (array size) (List.range size)), true),
+   ("a_break_cannot_inspect_the_rest_of_a_variable_length_array",
+    canExitAfterTraversal (array 2) [0], false),
+   ("continuing_before_inspection_leaves_a_variable_array_pending",
+    canExitAfterTraversal (array 2) [1], false),
+   ("continuing_after_inspection_preserves_array_coverage",
+    canExitAfterTraversal (array 2) [0, 1], true),
+   ("returning_from_array_iteration_requires_the_unvisited_results",
+    canExitAfterCoverage (array 2) [[0]] [], false),
+   ("returning_the_array_transfers_its_unvisited_results",
+    canExitAfterCoverage (array 2) [] [[]], true),
+   ("nested_variable_arrays_can_be_inspected_by_nested_traversals",
+    canExitAfterCoverage twoArrays [[0, 0], [1, 0]] [], true),
+   ("traversing_one_selected_array_does_not_inspect_the_other_array",
+    [0, 1].all (fun selected => canExitAfterCoverage twoArrays [[selected, 0]] []), false),
+   ("returning_one_selected_array_does_not_transfer_the_other_array",
+    [0, 1].all (fun selected => canExitAfterCoverage twoArrays [] [[selected]]), false),
+   ("wrapping_one_selected_array_still_leaves_the_other_array_pending",
+    [0, 1].all (fun selected => canExitAfterCoverage twoArrays [] [[selected]]), false),
+   ("returning_both_arrays_in_either_order_transfers_both_obligations",
+    [[[0], [1]], [[1], [0]]].all (canExitAfterCoverage twoArrays []), true),
+   ("traversing_a_possible_empty_alternative_keeps_the_array_pending",
+    [[], [0, 1]].all (canExitAfterTraversal (array 2)), false),
+   ("every_created_array_is_inspected_on_its_own_path",
+    [0, 2].all (fun size => canExitAfterTraversal (array size) (List.range size)), true),
+   ("replacing_an_uninspected_array_element_cannot_be_hidden_by_iteration",
+    canExitAfterTraversal overwrittenElement [0, 1], false),
    ("independent_results_in_returned_fields_require_separate_inspection",
     canExit (pair 2) [⟨[([0], "Ok")], true⟩], false),
    ("returned_fields_can_share_one_result_obligation",

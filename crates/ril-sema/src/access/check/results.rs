@@ -90,7 +90,7 @@ impl BoundaryResults<'_> {
                         .entry((object.clone(), choices.clone()))
                         .or_insert(next)
                 });
-                ledger.record_result_part(&mut value, self.span, part, choices);
+                ledger.record_result_part(&mut value, self.span, part, choices, false);
                 if carries_result(self.program, ok) || carries_result(self.program, error) {
                     return self.sum(
                         ledger,
@@ -133,7 +133,14 @@ impl BoundaryResults<'_> {
                 }
             }
             Ty::Array(member) => {
-                for index in 0..value.array_len.unwrap_or_default() {
+                let Some(length) = value.array_len else {
+                    if carries_result(self.program, &member.ty) {
+                        let part = self.part();
+                        ledger.record_result_part(&mut value, self.span, part, choices, true);
+                    }
+                    return value;
+                };
+                for index in 0..length {
                     self.member(
                         ledger,
                         &mut value,
@@ -224,6 +231,55 @@ impl BoundaryResults<'_> {
                 .unwrap_or_else(|| ledger.project_schema(value, coordinate.clone(), mode));
             let member = self.receive(ledger, ty, member, choices);
             value.members.insert(coordinate, member);
+        }
+    }
+}
+
+pub(super) struct ArrayTraversal {
+    covered: Option<ResultOccurrence>,
+    samples: Inspections,
+}
+
+impl ArrayTraversal {
+    pub(super) fn enter(
+        program: &TypedProgram,
+        ledger: &mut Ledger,
+        element: &Ty,
+        array: &Datum,
+        child: &mut Datum,
+        binder: Span,
+    ) -> Option<Self> {
+        let collections = array.array_results();
+        if !collections
+            .iter()
+            .any(|item| ledger.obligations.contains(item) && !ledger.inspected.contains(item))
+        {
+            return None;
+        }
+        *child = receive_results(program, ledger, element, std::mem::take(child), binder);
+        let samples = child.results();
+        ledger.register_result_samples(&samples, &collections);
+        let covered = array.guaranteed_array_result(&ledger.choices);
+        Some(Self { covered, samples })
+    }
+
+    pub(super) fn finish(
+        &self,
+        exit: &mut Option<Ledger>,
+        breaks: &mut [Ledger],
+        continues: &mut [Ledger],
+    ) {
+        if let Some(exit) = exit
+            && let Some(array) = &self.covered
+            && !self.samples.is_empty()
+            && continues
+                .iter()
+                .all(|path| path.covers_result_samples(&self.samples))
+        {
+            exit.mark_inspected([array.clone()]);
+        }
+        for path in breaks.iter_mut().chain(continues) {
+            path.forget_result_samples(&self.samples);
         }
     }
 }

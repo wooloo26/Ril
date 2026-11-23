@@ -25,6 +25,9 @@ fn get(value: int) -> new !<int, str> { Ok(value) }
 pub nominal type Packet<T> = .{ payload: T }
 pub fn packet() -> new Packet<!<int, str>> { Packet.{ payload: get(1) } }
 pub fn batch() -> new []!<int, str> { [get(1), get(2)] }
+pub fn varying_batch(flag: bool) -> new []!<int, str> {
+    if flag { [get(1), Err("failed")] } else { [] }
+}
 pub fn snapshot_batch() -> []!<int, str> {
     let snapshot = [get(1), get(2)]
     snapshot
@@ -65,6 +68,15 @@ pub fn snapshot_aliases() -> (!<int, str>, !<int, str>) {
             ),
             (
                 "for Fallible::batch() as item { match item { Ok(_) -> (); Err(_) -> () }; break }",
+                false,
+            ),
+            ("let _ = Fallible::varying_batch(flag)", false),
+            (
+                "for Fallible::varying_batch(flag) as item { match item { Ok(_) -> (); Err(_) -> () } }",
+                true,
+            ),
+            (
+                "for Fallible::varying_batch(flag) as item { match item { Ok(_) -> (); Err(_) -> () }; break }",
                 false,
             ),
             (
@@ -1312,7 +1324,7 @@ fn scoped_resource_examples_agree_with_lean() -> Result<(), Box<dyn std::error::
 
 #[test]
 fn result_patterns_agree_with_lean() -> Result<(), Box<dyn std::error::Error>> {
-    check_access_examples("result-patterns", 26)
+    check_access_examples("result-patterns", 41)
 }
 
 fn check_access_examples(operation: &str, count: usize) -> Result<(), Box<dyn std::error::Error>> {
