@@ -43,6 +43,12 @@ def canExit (world : World) (arms : List Arm) : Bool :=
   let inspected := inspections world arms
   world.pending.all (inspected.contains ·)
 
+/-- Each visited element is tested independently. Stopping traversal leaves
+the obligations at unvisited positions pending. -/
+def canExitAfterTraversal (world : World) (indices : List Nat) : Bool :=
+  let inspected := indices.flatMap (fun index => (test world [([index], "Ok")]).2)
+  world.pending.all (inspected.contains ·)
+
 /-- Propagation either continues or transfers the failed value to a normal
 exit. Any remaining obligation must be among that value's constructors. -/
 def canPropagate (world : World) : Bool :=

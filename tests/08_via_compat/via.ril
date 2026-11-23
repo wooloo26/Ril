@@ -4,6 +4,19 @@
 -- @prelude
 pub type Cell = .{ var count: int }
 
+-- @case changing_published_result_array_length_breaks_compatibility compat-fail E0552
+-- @baseline
+pub fn batch() -> new []!<int, str> { [Ok(1), Ok(2)] }
+-- @revision
+pub fn batch() -> new []!<int, str> { [Ok(1), Ok(2), Ok(3)] }
+-- ^ E0552
+
+-- @case changing_array_values_preserves_the_result_layout compat-pass
+-- @baseline
+pub fn batch() -> new []!<int, str> { [Ok(1), Ok(2)] }
+-- @revision
+pub fn batch() -> new []!<int, str> { [Ok(3), Err("failed")] }
+
 -- @case domain_tightened compat-fail E0552
 -- @baseline
 pub fn read(via c: Cell) -> int { c.count }

@@ -39,6 +39,7 @@ pub(super) fn carries_result(program: &TypedProgram, ty: &Ty) -> bool {
         match ty {
             Ty::Result(..) => true,
             Ty::Option(inner) => visit(program, inner, active),
+            Ty::Array(member) => visit(program, &member.ty, active),
             Ty::Tuple(members) => members
                 .iter()
                 .any(|member| visit(program, &member.ty, active)),
@@ -125,6 +126,18 @@ impl BoundaryResults<'_> {
                         ledger,
                         &mut value,
                         Coordinate::Field(field.clone()),
+                        &member.ty,
+                        member.mode.mode,
+                        choices,
+                    );
+                }
+            }
+            Ty::Array(member) => {
+                for index in 0..value.array_len.unwrap_or_default() {
+                    self.member(
+                        ledger,
+                        &mut value,
+                        Coordinate::Index(index.to_string()),
                         &member.ty,
                         member.mode.mode,
                         choices,

@@ -212,6 +212,8 @@ pub struct ReturnAllocation {
     pub new: bool,
     pub qualified: bool,
     pub summarized: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub array_len: Option<usize>,
 }
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]

@@ -420,7 +420,10 @@ impl<'program> Analyzer<'program> {
                     ledger.inspect(&value);
                 } else if !value.results().is_empty()
                     && (!primitive
-                        || !matches!(name, "inner" | "join" | "cancel" | "send" | "try_send"))
+                        || !matches!(
+                            name,
+                            "inner" | "len" | "join" | "cancel" | "send" | "try_send"
+                        ))
                 {
                     self.discard(ledger, &value);
                 }
@@ -1567,6 +1570,7 @@ impl<'program> Analyzer<'program> {
             output_path.pop();
             output.members.insert(coordinate.clone(), specialized);
         }
+        output.array_len = template.array_len;
         output
             .latent_effects
             .extend(template.latent_effects.iter().cloned());

@@ -505,6 +505,7 @@ impl<'program> Analyzer<'program> {
                 .extend(results);
         }
         let mut qualification = BTreeMap::new();
+        let mut array_layouts = BTreeMap::new();
         for allocation in allocations {
             let mut source = Datum::source(owner, allocation.access, allocation.new);
             for root in &mut source.roots {
@@ -519,10 +520,38 @@ impl<'program> Analyzer<'program> {
             if !allocation.path.is_empty() {
                 *qualification.entry(&allocation.path).or_insert(true) &= allocation.qualified;
             }
+            array_layouts
+                .entry(&allocation.path)
+                .and_modify(|len| {
+                    if *len != allocation.array_len {
+                        *len = None;
+                    }
+                })
+                .or_insert(allocation.array_len);
         }
         for (path, qualified) in qualification {
             let node = self.exported_path(&mut value, path, ty, owner, false);
             node.requires_new = qualified && node.roots.iter().all(|root| root.new);
+        }
+        for (path, len) in array_layouts {
+            if let Some(len) = len
+                && !sources
+                    .iter()
+                    .any(|source| path.starts_with(&source.result_path))
+                && !callbacks
+                    .iter()
+                    .any(|callback| path.starts_with(&callback.result_path))
+            {
+                let node = self.exported_path(&mut value, path, ty, owner, false);
+                if len <= node.members.len()
+                    && (0..len).all(|index| {
+                        node.members
+                            .contains_key(&Coordinate::Index(index.to_string()))
+                    })
+                {
+                    node.array_len = Some(len);
+                }
+            }
         }
         value
     }

@@ -933,6 +933,53 @@ fn run(flag: bool) -> int {
     }
 }
 
+-- @case returned_array_keeps_each_result_obligation compile-fail E0720
+fn get(value: int) -> new !<int, str> { Ok(value) }
+fn batch() -> new []!<int, str> { [get(1), get(2)] }
+fn run() -> () {
+    let values = batch()
+    -- ^ E0720
+    assert(len(values) == 2)
+}
+
+-- @case exhaustive_array_iteration_inspects_all_returned_results compile-pass
+fn get(value: int) -> new !<int, str> { Ok(value) }
+fn batch() -> new []!<int, str> { [get(1), get(2)] }
+fn run() -> () {
+    let values = batch()
+    for values as item {
+        match item { Ok(_) -> (); Err(_) -> () }
+    }
+}
+
+-- @case breaking_array_iteration_leaves_a_later_result_pending compile-fail E0720
+fn get(value: int) -> new !<int, str> { Ok(value) }
+fn batch() -> new []!<int, str> { [get(1), get(2)] }
+fn run() -> () {
+    let values = batch()
+    -- ^ E0720
+    for values as item {
+        match item { Ok(_) -> (); Err(_) -> () }
+        break
+    }
+}
+
+-- @case an_unknown_array_index_cannot_inspect_both_results compile-fail E0720
+fn get(value: int) -> new !<int, str> { Ok(value) }
+fn batch() -> new []!<int, str> { [get(1), get(2)] }
+fn run(index: int) -> () {
+    let values = batch()
+    -- ^ E0720
+    match values[index] { Ok(_) -> (); Err(_) -> () }
+}
+
+-- @case empty_returned_array_has_no_element_result_obligation compile-pass
+fn batch() -> new []!<int, str> { [] }
+fn run() -> () {
+    let values = batch()
+    assert(len(values) == 0)
+}
+
 -- @case independent_results_in_returned_fields_require_separate_inspection compile-fail E0720
 fn get(value: int) -> new !<int, str> { Ok(value) }
 fn pair() -> new (!<int, str>, !<int, str>) { (get(1), get(2)) }

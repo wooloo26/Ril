@@ -300,6 +300,7 @@ fn compatible(a: &Choices, b: &Choices) -> bool {
 pub(super) struct Datum {
     pub roots: Vec<Origin>,
     pub members: BTreeMap<Coordinate, Datum>,
+    pub array_len: Option<usize>,
     pub(super) results: BTreeSet<ResultReference>,
     pub requires_new: bool,
     pub latent_effects: BTreeSet<String>,
@@ -404,13 +405,15 @@ impl Datum {
                 }
             });
         }
-        if !regions.iter().any(|(region, occurrences)| {
-            region.summarized()
-                || region.returned.is_some()
-                || occurrences.first().is_some_and(|(_, first, ..)| {
-                    occurrences.iter().any(|(_, path, ..)| path != first)
-                })
-        }) {
+        if !values.iter().any(|value| value.has_array_layout())
+            && !regions.iter().any(|(region, occurrences)| {
+                region.summarized()
+                    || region.returned.is_some()
+                    || occurrences.first().is_some_and(|(_, first, ..)| {
+                        occurrences.iter().any(|(_, path, ..)| path != first)
+                    })
+            })
+        {
             return;
         }
         // Published indices are ordered by the shape visible to the caller.
@@ -449,6 +452,7 @@ impl Datum {
                         new: origin.new,
                         qualified: node.requires_new,
                         summarized,
+                        array_len: node.array_len,
                     });
                 }
             });
@@ -567,6 +571,9 @@ impl Datum {
     }
 
     pub(super) fn receive_binding(&mut self, access: Access) {
+        if access != Access::Immutable {
+            self.forget_array_layout();
+        }
         for root in &mut self.roots {
             root.fix_mode(access);
             root.from_variable = false;
@@ -575,6 +582,17 @@ impl Datum {
             }
         }
         self.requires_new = false;
+    }
+
+    pub(super) fn has_array_layout(&self) -> bool {
+        self.array_len.is_some() || self.members.values().any(Self::has_array_layout)
+    }
+
+    pub(super) fn forget_array_layout(&mut self) {
+        self.array_len = None;
+        for member in self.members.values_mut() {
+            member.forget_array_layout();
+        }
     }
 
     pub(super) fn results(&self) -> BTreeSet<ResultOccurrence> {
@@ -724,6 +742,9 @@ impl Datum {
             *slot = std::mem::take(slot).joined(value);
         }
         self.results.append(&mut other.results);
+        if self.array_len != other.array_len {
+            self.array_len = None;
+        }
         self.requires_new &= other.requires_new;
         self.latent_effects.append(&mut other.latent_effects);
         self.environments.append(&mut other.environments);
@@ -1485,7 +1506,13 @@ impl Ledger {
     }
 
     pub(super) fn project_schema(&self, base: &Datum, coordinate: Coordinate, mode: Mode) -> Datum {
-        self.project_members(base, coordinate, mode, |_| true, |_| true)
+        let arbitrary_element = coordinate == Coordinate::Dynamic && base.array_len != Some(1);
+        let mut value = self.project_members(base, coordinate, mode, |_| true, |_| true);
+        if arbitrary_element {
+            // A single unknown index cannot inspect the union of its possible values.
+            value.forget_results();
+        }
+        value
     }
 
     fn project_members(

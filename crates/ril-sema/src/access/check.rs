@@ -202,6 +202,7 @@ struct LoopSyntax {
     repeated: Span,
     body: ExprId,
     extent: LoopExtent,
+    exact_elements: bool,
 }
 
 struct Analyzer<'a> {
@@ -806,7 +807,11 @@ impl<'a> Analyzer<'a> {
             &mut self.callback_results,
             ctx.return_values
                 .iter_mut()
-                .filter(|value| ctx.expected != Mode::Plain || !value.results().is_empty())
+                .filter(|value| {
+                    ctx.expected != Mode::Plain
+                        || !value.results().is_empty()
+                        || value.has_array_layout()
+                })
                 .chain(updates.values_mut().map(|update| &mut update.value)),
             body_span,
         );
@@ -1405,6 +1410,9 @@ impl<'a> Analyzer<'a> {
     }
 
     fn receive_member(&mut self, mut value: Datum, mode: Access, span: Span) -> Datum {
+        if mode != Access::Immutable {
+            value.forget_array_layout();
+        }
         if value.roots.is_empty() {
             return value;
         }
@@ -2004,6 +2012,8 @@ impl<'a> Analyzer<'a> {
                     self.freeze_value(ledger, &mut value, name.span);
                 } else if mode != Mode::Via {
                     value.receive_binding(access);
+                } else {
+                    value.forget_array_layout();
                 }
                 value.transform(&mut |origin| {
                     origin.dependencies.insert(declaration.into());
@@ -2300,6 +2310,10 @@ impl<'a> Analyzer<'a> {
             }
             Expr::Tuple(items) | Expr::Array(items) => {
                 let mut sequence = Datum::source(span, Access::Mut, true);
+                if matches!(self.ty(span), Ty::Array(member) if results::carries_result(self.program, &member.ty))
+                {
+                    sequence.array_len = Some(items.len());
+                }
                 for (i, &item) in items.iter().enumerate() {
                     let coordinate = Coordinate::Index(i.to_string());
                     let value = self.expr(ctx, ledger, item);
@@ -2451,8 +2465,9 @@ impl<'a> Analyzer<'a> {
                         repeated: span,
                         body: *body,
                         extent: LoopExtent::Repeat,
+                        exact_elements: false,
                     },
-                    |this, local, inside| {
+                    |this, local, inside, _| {
                         if matches!(condition, Condition::Binding { .. }) {
                             let mut failed = inside.clone();
                             let mut failed_ctx = local.clone();
@@ -2483,11 +2498,12 @@ impl<'a> Analyzer<'a> {
                     mode: *mode,
                     ..Storage::default()
                 };
-                let coordinate = Coordinate::Dynamic;
                 let schema = self
-                    .schema_mode(self.ty(ast.expr(*iterable).span), &coordinate)
+                    .schema_mode(self.ty(ast.expr(*iterable).span), &Coordinate::Dynamic)
                     .0;
-                let extent = self.iterable_extent(ctx, *iterable);
+                let extent = value
+                    .array_len
+                    .map_or_else(|| self.iterable_extent(ctx, *iterable), LoopExtent::Exact);
                 self.check_loop(
                     ctx,
                     ledger,
@@ -2496,12 +2512,16 @@ impl<'a> Analyzer<'a> {
                         repeated: ast.pattern(*pattern).span.join(ast.expr(*body).span),
                         body: *body,
                         extent,
+                        exact_elements: value.array_len.is_some(),
                     },
-                    |this, local, inside| {
+                    |this, local, inside, index| {
                         let exit = (extent != LoopExtent::Exact(1)).then(|| inside.clone());
                         local.reachable &= extent != LoopExtent::Exact(0);
                         inside.iteration.push(value.clone());
-                        let child = inside.project_schema(&value, coordinate.clone(), schema);
+                        let coordinate = index.map_or(Coordinate::Dynamic, |index| {
+                            Coordinate::Index(index.to_string())
+                        });
+                        let child = inside.project_schema(&value, coordinate, schema);
                         this.pattern_tests(local, inside, *pattern, &child)
                             .inspect(inside, true);
                         this.bind(local, inside, *pattern, &storage, child, false);
@@ -3196,13 +3216,14 @@ impl<'a> Analyzer<'a> {
         ctx: &mut Context,
         ledger: &mut Ledger,
         syntax: LoopSyntax,
-        prepare: impl Fn(&mut Self, &mut Context, &mut Ledger) -> Option<Ledger>,
+        prepare: impl Fn(&mut Self, &mut Context, &mut Ledger, Option<usize>) -> Option<Ledger>,
     ) {
         let LoopSyntax {
             owner,
             repeated,
             body,
             extent,
+            exact_elements,
         } = syntax;
         let entry = ledger.clone();
         let body_span = self.ast(ctx.file).expr(body).span;
@@ -3224,7 +3245,9 @@ impl<'a> Analyzer<'a> {
         // deeper access paths or callback compositions instead of diverging here.
         let max_passes = 64 + entry.slots.len();
         let exact = match extent {
-            LoopExtent::Exact(length) if length > 0 && length <= max_passes => Some(length),
+            LoopExtent::Exact(length) if length > 0 && (exact_elements || length <= max_passes) => {
+                Some(length)
+            }
             _ => None,
         };
         let mut head = entry.clone();
@@ -3233,11 +3256,12 @@ impl<'a> Analyzer<'a> {
         }
         let mut exact_exits = Vec::new();
         let mut size_limit = None;
-        for iteration in 1..=max_passes {
+        for iteration in 1..=exact.unwrap_or(max_passes) {
             let mut inside = head.clone();
             let mut local = ctx.clone();
             local.scope = body_span;
-            let exit = prepare(self, &mut local, &mut inside);
+            let index = (exact.is_some() && exact_elements).then_some(iteration - 1);
+            let exit = prepare(self, &mut local, &mut inside, index);
             local.loop_owner = Some(owner);
             if local.reachable {
                 self.expr(&mut local, &mut inside, body);
@@ -3269,7 +3293,7 @@ impl<'a> Analyzer<'a> {
                 if let Some(final_iteration) = final_iteration {
                     let mut next = head.clone();
                     next.merge(&entry, &continues);
-                    if next == head {
+                    if next == head && !exact_elements {
                         // The remaining iterations have the same incoming
                         // ledger and produce the same transfers.
                         exact_exits.extend(final_iteration);

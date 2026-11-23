@@ -24,6 +24,11 @@ fn compound_result_obligations_survive_an_interface_only_boundary() {
 fn get(value: int) -> new !<int, str> { Ok(value) }
 pub nominal type Packet<T> = .{ payload: T }
 pub fn packet() -> new Packet<!<int, str>> { Packet.{ payload: get(1) } }
+pub fn batch() -> new []!<int, str> { [get(1), get(2)] }
+pub fn snapshot_batch() -> []!<int, str> {
+    let snapshot = [get(1), get(2)]
+    snapshot
+}
 pub fn wrapped(flag: bool) -> new ?!<int, str> {
     if flag { Some(get(1)) } else { None }
 }
@@ -49,6 +54,19 @@ pub fn snapshot_aliases() -> (!<int, str>, !<int, str>) {
         for (body, accepted) in [
             ("let _ = Fallible::packet()", false),
             ("assert(inner(Fallible::packet()).payload == Ok(1))", true),
+            ("let _ = Fallible::batch()", false),
+            (
+                "for Fallible::batch() as item { match item { Ok(_) -> (); Err(_) -> () } }",
+                true,
+            ),
+            (
+                "for Fallible::snapshot_batch() as item { match item { Ok(_) -> (); Err(_) -> () } }",
+                true,
+            ),
+            (
+                "for Fallible::batch() as item { match item { Ok(_) -> (); Err(_) -> () }; break }",
+                false,
+            ),
             (
                 "match Fallible::wrapped(flag) { Some(_) -> (); None -> () }",
                 false,
@@ -549,7 +567,12 @@ fn interface_roundtrip_is_stable_and_detects_corruption() {
         include_str!("../../../tests/08_via_compat/via.ril"),
     )
     .unwrap();
-    let baseline = suite.cases[0].baseline.as_ref().unwrap();
+    let baseline = suite
+        .cases
+        .iter()
+        .find(|case| case.id == "changing_published_result_array_length_breaks_compatibility")
+        .and_then(|case| case.baseline.as_ref())
+        .unwrap();
     let interface = Driver.interface(baseline).unwrap();
     let encoded = interface.encode().unwrap();
     let readback = Interface::decode(&encoded).unwrap();
@@ -560,7 +583,7 @@ fn interface_roundtrip_is_stable_and_detects_corruption() {
         "\"format_version\": 0",
     );
     assert!(Interface::decode(other_version.as_bytes()).is_err());
-    let corrupted = text.replace("c.count", "c.other").replace("read", "other");
+    let corrupted = text.replace("\"array_len\": 2", "\"array_len\": 3");
     assert_ne!(text, corrupted);
     assert!(Interface::decode(corrupted.as_bytes()).is_err());
 }
@@ -909,6 +932,7 @@ fn exported_summaries_and_via_domains_agree_with_lean() {
         new: false,
         qualified: false,
         summarized: true,
+        array_len: None,
     };
     for index in [0, 1] {
         let allocations = vec![
@@ -1288,7 +1312,7 @@ fn scoped_resource_examples_agree_with_lean() -> Result<(), Box<dyn std::error::
 
 #[test]
 fn result_patterns_agree_with_lean() -> Result<(), Box<dyn std::error::Error>> {
-    check_access_examples("result-patterns", 21)
+    check_access_examples("result-patterns", 26)
 }
 
 fn check_access_examples(operation: &str, count: usize) -> Result<(), Box<dyn std::error::Error>> {
