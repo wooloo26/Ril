@@ -49,6 +49,42 @@ def JsonInvocation.contract (call : JsonInvocation) : RilAccess.CallbackInvocati
   ⟨call.receiver, call.parameter,
     call.formal.elim (.input (call.input.getD "")) .formal, call.preserves_input⟩
 
+structure JsonModeAxis where
+  parameter : Nat
+  path : List Json
+  deriving FromJson
+
+structure JsonModeCall where
+  receiver : JsonModeAxis
+  arguments : List (JsonModeAxis × Json)
+  recursive_path : Option (List Json)
+  deriving FromJson
+
+def JsonModeCall.contract (call : JsonModeCall) :
+    RilAccess.CallbackModeCall (Nat × List String) String :=
+  ⟨(call.receiver.parameter, call.receiver.path.map Json.compress),
+   (call.arguments.map fun (axis, mode) =>
+    ((axis.parameter, axis.path.map Json.compress),
+     match mode with
+     | .str "Unknown" => none
+     | other => some other.compress)),
+   call.recursive_path.map (·.map Json.compress)⟩
+
+def legacyModeCalls (invocations : List JsonInvocation) : List JsonModeCall :=
+  (invocations.map (·.receiver)).eraseDups.flatMap fun receiver =>
+    let calls := invocations.filter (·.receiver == receiver)
+    let parameters := (calls.map (·.parameter)).eraseDups.mergeSort (· ≤ ·)
+    let offers := parameters.map fun parameter =>
+      (calls.filter (·.parameter == parameter)).map fun call =>
+        let mode := match call.formal with
+          | some formal => Json.mkObj [("Axis", Json.mkObj [
+              ("parameter", toJson formal), ("path", .arr #[])])]
+          | none => Json.mkObj [("Input", toJson (call.input.getD ""))]
+        (⟨parameter, []⟩, mode)
+    let combinations := offers.foldr
+      (fun modes suffixes => modes.flatMap fun mode => suffixes.map (mode :: ·)) [[]]
+    combinations.map fun arguments => ⟨⟨receiver, []⟩, arguments, none⟩
+
 structure JsonStorageUpdate where
   formal : Nat
   path : List JsonCoordinate
@@ -78,6 +114,7 @@ structure JsonSummary where
   effects : List Nat
   effect_uses : List JsonEffectUse
   invocations : List JsonInvocation
+  mode_calls : Option (List JsonModeCall)
   invoked : List Nat
   callback_returns : List Json
   storage_updates : List JsonStorageUpdate
@@ -107,6 +144,9 @@ def compareSummaries (baseline revision : JsonSummary) : Bool :=
       old.effect == effect.effect && (old.operation.isNone || old.operation == effect.operation)) &&
     RilAccess.callbackInvocationsSubsumed (baseline.invocations.map JsonInvocation.contract)
       (revision.invocations.map JsonInvocation.contract) &&
+    RilAccess.callbackModeCallsSubsumed
+      ((baseline.mode_calls.getD (legacyModeCalls baseline.invocations)).map JsonModeCall.contract)
+      ((revision.mode_calls.getD (legacyModeCalls revision.invocations)).map JsonModeCall.contract) &&
     revision.invoked.all baseline.invoked.contains &&
     RilAccess.callbackReturnsSubsumed (baseline.callback_returns.map Json.compress)
       (revision.callback_returns.map Json.compress) &&

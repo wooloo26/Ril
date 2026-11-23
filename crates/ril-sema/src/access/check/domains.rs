@@ -5,9 +5,12 @@ use ril_frontend::{hir::DefinitionId, syntax::Mode};
 
 use super::{
     Analysis, Analyzer, Callable, Context, Datum, DefinitionCheck, Fact, Input, Instance,
-    Obligation, Region, SchemaRequirement, extend_rows, member_axes,
+    Obligation, Region, SchemaRequirement, collect_axes, extend_rows,
 };
-use crate::access::flow::{Choices, ForwardedMode, ViaConflict, compatible};
+use crate::access::{
+    ModeAxis, ModeExpression,
+    flow::{Choices, ViaConflict, compatible},
+};
 
 pub(super) struct ModeConflict {
     pub owner: Span,
@@ -17,36 +20,78 @@ pub(super) struct ModeConflict {
     pub message: &'static str,
 }
 
-enum Selector {
-    Fixed(Input),
-    Forwarded(Option<ForwardedMode>),
-    Member(Region),
-}
+pub(super) type Expression = ModeExpression<Region>;
 
-struct Offer {
-    selector: Selector,
+pub(super) struct Offer {
+    expression: Expression,
     branches: Choices,
     owner: Option<Span>,
 }
 
+impl Offer {
+    fn fixed(expression: Expression) -> Self {
+        Self {
+            expression,
+            branches: Choices::new(),
+            owner: None,
+        }
+    }
+}
+
+pub(super) type Arguments = BTreeMap<ModeAxis, Expression>;
+
 pub(super) struct Application {
-    owner: Span,
-    target: Span,
-    site: Span,
-    offers: Vec<Vec<Offer>>,
+    pub owner: Span,
+    pub target: Span,
+    pub site: Span,
+    pub arguments: Arguments,
+}
+
+/// Only combine alternatives that can originate from the same branch.
+pub(super) fn mode_patterns<'a, K: Clone + Ord>(
+    offers: impl IntoIterator<Item = (K, &'a [Offer])>,
+    branches: &Choices,
+) -> Vec<BTreeMap<K, Expression>> {
+    let mut patterns = vec![(BTreeMap::new(), branches.clone())];
+    for (axis, offers) in offers {
+        if offers.is_empty() {
+            for (pattern, _) in &mut patterns {
+                pattern.insert(axis.clone(), ModeExpression::Unknown);
+            }
+            continue;
+        }
+        let mut next = Vec::new();
+        for (pattern, branches) in patterns {
+            for offer in offers {
+                if compatible(&branches, &offer.branches) {
+                    let mut pattern = pattern.clone();
+                    let mut branches = branches.clone();
+                    branches.extend(offer.branches.iter().map(|(&key, &value)| (key, value)));
+                    pattern.insert(axis.clone(), offer.expression.clone());
+                    next.push((pattern, branches));
+                }
+            }
+        }
+        patterns = next;
+    }
+    patterns.into_iter().map(|(pattern, _)| pattern).collect()
 }
 
 type Row = Vec<Input>;
 
 struct Domain {
-    axes: Vec<Region>,
+    axes: Vec<(ModeAxis, Region)>,
     initial: Option<BTreeSet<Row>>,
     allowed: BTreeSet<Row>,
     export: Option<DefinitionId>,
 }
 
 impl Domain {
-    fn local(axes: Vec<Region>, rows: BTreeSet<Row>, export: Option<DefinitionId>) -> Self {
+    fn local(
+        axes: Vec<(ModeAxis, Region)>,
+        rows: BTreeSet<Row>,
+        export: Option<DefinitionId>,
+    ) -> Self {
         Self {
             axes,
             initial: Some(rows.clone()),
@@ -59,7 +104,7 @@ impl Domain {
         self.axes
             .iter()
             .zip(row)
-            .find_map(|(known, &input)| known.matches_axis(axis).then_some(input))
+            .find_map(|(known, &input)| known.1.matches_axis(axis).then_some(input))
     }
 }
 
@@ -72,14 +117,8 @@ impl Domains {
     pub(super) fn register_function(&mut self, function: &DefinitionCheck, instances: &[Instance]) {
         let axes = axes(&function.declared, &function.formals);
         let rows = instances.iter().map(|row| row.modes.clone()).collect();
-        self.tables.insert(
-            function.owner,
-            Domain::local(
-                axes.into_iter().map(|(_, region)| region).collect(),
-                rows,
-                Some(function.id),
-            ),
-        );
+        self.tables
+            .insert(function.owner, Domain::local(axes, rows, Some(function.id)));
     }
 
     fn exclusions(&self, application: &Application, mut reject: impl FnMut(Option<&Row>)) {
@@ -105,139 +144,195 @@ impl Domains {
     }
 }
 
-fn axes(callable: &Callable, formals: &[Option<Span>]) -> Vec<(usize, Region)> {
-    callable
+pub(super) fn mode_axes(callable: &Callable) -> Vec<ModeAxis> {
+    let mut axes: Vec<_> = callable
         .parameters
         .iter()
-        .zip(formals)
         .enumerate()
-        .filter_map(|(index, (parameter, formal))| {
-            formal
-                .filter(|_| parameter.mode == Mode::Via)
-                .map(|span| (index, Region::root(span)))
+        .filter(|(_, param)| param.callable_mode() == Mode::Via)
+        .map(|(parameter, _)| ModeAxis {
+            parameter,
+            path: Vec::new(),
         })
-        .chain(member_axes(callable, formals))
+        .collect();
+    for (parameter, param) in callable.parameters.iter().enumerate() {
+        collect_axes(&param.ty, &mut Vec::new(), &mut |path| {
+            axes.push(ModeAxis {
+                parameter,
+                path: path.to_vec(),
+            });
+        });
+    }
+    axes
+}
+
+pub(super) fn axis_region(axis: &ModeAxis, formals: &[Option<Span>]) -> Option<Region> {
+    let source = formals.get(axis.parameter).copied().flatten()?;
+    let mut region = Region::root(source);
+    region.selection.clone_from(&axis.path);
+    Some(region)
+}
+
+pub(super) fn axes(callable: &Callable, formals: &[Option<Span>]) -> Vec<(ModeAxis, Region)> {
+    mode_axes(callable)
+        .into_iter()
+        .filter_map(|axis| {
+            let region = axis_region(&axis, formals)?;
+            Some((axis, region))
+        })
         .collect()
 }
 
 impl Application {
     fn excludes(&self, target: &Domain, input: impl Fn(&Region) -> Option<Input>) -> bool {
-        let mut patterns = vec![(Vec::new(), Choices::new())];
-        for offers in &self.offers {
-            let mut next = Vec::new();
-            for (pattern, branches) in patterns {
-                for offer in offers {
-                    if !compatible(&branches, &offer.branches) {
-                        continue;
-                    }
-                    let mut pattern = pattern.clone();
-                    let mut branches = branches.clone();
-                    branches.extend(offer.branches.iter().map(|(&key, &value)| (key, value)));
-                    pattern.push(match &offer.selector {
-                        Selector::Fixed(input) => Some(*input),
-                        Selector::Forwarded(mode) => {
-                            mode.as_ref().and_then(|mode| mode.select(&input))
-                        }
-                        Selector::Member(axis) => input(axis),
-                    });
-                    next.push((pattern, branches));
-                }
-            }
-            patterns = next;
-        }
-        patterns.into_iter().any(|(pattern, _)| {
-            let matches = |row: &Row| {
-                row.len() == pattern.len()
-                    && row
-                        .iter()
-                        .zip(&pattern)
-                        .all(|(mode, expect)| expect.is_none_or(|expected| *mode == expected))
-            };
+        let pattern: Vec<_> = target
+            .axes
+            .iter()
+            .map(|(axis, _)| {
+                self.arguments
+                    .get(axis)
+                    .and_then(|mode| mode.select(&input))
+            })
+            .collect();
+        let matches = |row: &Row| {
+            row.len() == pattern.len()
+                && row
+                    .iter()
+                    .zip(&pattern)
+                    .all(|(mode, expect)| expect.is_none_or(|expected| *mode == expected))
+        };
+        if let Some(initial) = &target.initial {
             // Existing unary checks report incompatible individual inputs.
-            target
-                .initial
-                .as_ref()
-                .is_none_or(|rows| rows.iter().any(matches))
-                && !target.allowed.iter().any(matches)
-        })
+            initial
+                .iter()
+                .any(|row| matches(row) && !target.allowed.contains(row))
+        } else {
+            // Published rows include the original unary restrictions. If
+            // some modes cannot be resolved, check their combinations using
+            // the published marginal domains.
+            let allowed = target.allowed.iter().filter(|row| matches(row)).count();
+            let count = pattern
+                .iter()
+                .enumerate()
+                .fold(1usize, |size, (position, mode)| {
+                    let choices = if mode.is_some() {
+                        1
+                    } else {
+                        target
+                            .allowed
+                            .iter()
+                            .filter_map(|row| row.get(position))
+                            .collect::<BTreeSet<_>>()
+                            .len()
+                    };
+                    size.saturating_mul(choices)
+                });
+            allowed == 0 || allowed < count
+        }
     }
 }
 
 impl Analyzer<'_> {
+    pub(super) fn mode_offers(
+        &self,
+        axes: impl IntoIterator<Item = ModeAxis>,
+        (values, spans): (&[(usize, Mode, Datum)], &[Span]),
+    ) -> BTreeMap<ModeAxis, Vec<Offer>> {
+        axes.into_iter()
+            .map(|axis| {
+                let offers = self
+                    .offers_for_axis(&axis, values, spans)
+                    .unwrap_or_default();
+                (axis, offers)
+            })
+            .collect()
+    }
+
+    fn offers_for_axis(
+        &self,
+        axis: &ModeAxis,
+        values: &[(usize, Mode, Datum)],
+        spans: &[Span],
+    ) -> Option<Vec<Offer>> {
+        let ((_, actual, value), &span) = values
+            .iter()
+            .zip(spans)
+            .find(|((position, ..), _)| *position == axis.parameter)?;
+        let mode = if axis.path.is_empty() {
+            *actual
+        } else {
+            let mut ty = self.ty(span);
+            let mut mode = Mode::Plain;
+            for coordinate in &axis.path {
+                let member = self.schema_member(ty, coordinate)?;
+                ty = &member.ty;
+                mode = member.mode.mode;
+            }
+            mode
+        };
+        if let Some(input) = Input::from_mode(mode) {
+            return Some(vec![Offer::fixed(ModeExpression::Input(input))]);
+        }
+        Some(
+            value
+                .roots
+                .iter()
+                .map(|root| {
+                    let expression = if axis.path.is_empty() {
+                        root.forwarded_mode().unwrap_or(ModeExpression::Unknown)
+                    } else {
+                        let mut region = root.region.clone();
+                        region.selection.extend_from_slice(&axis.path);
+                        ModeExpression::Axis(region)
+                    };
+                    Offer {
+                        expression,
+                        branches: root.branches.clone(),
+                        owner: root.entry_callable(),
+                    }
+                })
+                .collect(),
+        )
+    }
+
     pub(super) fn record_mode_application(
         &mut self,
         ctx: &Context,
         (target, formals): (Span, &[Option<Span>]),
         signature: &Callable,
-        (values, spans): (&[(usize, Mode, Datum)], &[Span]),
+        values: (&[(usize, Mode, Datum)], &[Span]),
         site: Span,
     ) {
         if !ctx.reachable || ctx.shadow {
             return;
         }
-        let axes = axes(signature, formals);
-        if axes.is_empty() {
+        let offers = self.mode_offers(
+            mode_axes(signature)
+                .into_iter()
+                .filter(|axis| axis_region(axis, formals).is_some()),
+            values,
+        );
+        if offers.is_empty() {
             return;
         }
-        let offers: Option<Vec<Vec<Offer>>> = axes
-            .into_iter()
-            .map(|(index, axis)| {
-                let ((_, actual, value), &span) = values
-                    .iter()
-                    .zip(spans)
-                    .find(|((position, ..), _)| *position == index)?;
-                let mode = if axis.selection.is_empty() {
-                    *actual
-                } else {
-                    let mut ty = self.ty(span);
-                    let mut mode = Mode::Plain;
-                    for coordinate in &axis.selection {
-                        let member = self.schema_member(ty, coordinate)?;
-                        ty = &member.ty;
-                        mode = member.mode.mode;
-                    }
-                    mode
-                };
-                if let Some(input) = Input::from_mode(mode) {
-                    return Some(vec![Offer {
-                        selector: Selector::Fixed(input),
-                        branches: Choices::new(),
-                        owner: None,
-                    }]);
-                }
-                let matching = value
-                    .roots
-                    .iter()
-                    .map(|root| {
-                        let selector = if axis.selection.is_empty() {
-                            Selector::Forwarded(root.forwarded_mode())
-                        } else {
-                            let mut region = root.region.clone();
-                            region.selection.extend_from_slice(&axis.selection);
-                            Selector::Member(region)
-                        };
-                        Offer {
-                            selector,
-                            branches: root.branches.clone(),
-                            owner: root.entry_callable(),
-                        }
-                    })
-                    .collect();
-                Some(matching)
-            })
-            .collect::<Option<_>>();
-        if let Some(offers) = offers {
-            let mut owners = offers.iter().flatten().filter_map(|offer| offer.owner);
-            let owner = owners
-                .next()
-                .filter(|first| owners.all(|owner| owner == *first));
-            self.mode_applications.push(Application {
-                owner: owner.unwrap_or(ctx.owner),
+        let mut owners = offers.values().flatten().filter_map(|offer| offer.owner);
+        let owner = owners
+            .next()
+            .filter(|first| owners.all(|other| *first == other))
+            .unwrap_or(ctx.owner);
+        let patterns = mode_patterns(
+            offers
+                .iter()
+                .map(|(axis, offers)| (axis.clone(), offers.as_slice())),
+            &Choices::new(),
+        );
+        self.mode_applications
+            .extend(patterns.into_iter().map(|arguments| Application {
+                owner,
                 target,
                 site,
-                offers,
-            });
-        }
+                arguments,
+            }));
     }
 
     pub(super) fn restrict_mode_domains(
@@ -262,10 +357,7 @@ impl Analyzer<'_> {
                 domains.tables.insert(
                     function.name.span,
                     Domain {
-                        axes: axes(signature, &formals)
-                            .into_iter()
-                            .map(|(_, region)| region)
-                            .collect(),
+                        axes: axes(signature, &formals),
                         initial: None,
                         allowed: export.domain.iter().map(|row| row.modes.clone()).collect(),
                         export: None,
@@ -360,18 +452,28 @@ impl Analyzer<'_> {
         for (&owner, closure) in &self.closure_modes {
             let mut rows = vec![Vec::new()];
             let mut axes = Vec::new();
-            for &formal in closure
-                .formals
-                .iter()
-                .flatten()
-                .filter(|formal| closure.via.contains(formal))
-            {
+            for (parameter, formal) in closure.formals.iter().enumerate() {
+                let Some(formal) = formal.filter(|formal| closure.via.contains(formal)) else {
+                    continue;
+                };
                 let allowed = root_modes(facts, owner, formal);
-                axes.push(Region::root(formal));
+                axes.push((
+                    ModeAxis {
+                        parameter,
+                        path: Vec::new(),
+                    },
+                    Region::root(formal),
+                ));
                 extend_rows(&mut rows, allowed);
             }
-            for (_, axis) in &closure.member_axes {
-                axes.push(axis.clone());
+            for (parameter, axis) in &closure.member_axes {
+                axes.push((
+                    ModeAxis {
+                        parameter: *parameter,
+                        path: axis.selection.clone(),
+                    },
+                    axis.clone(),
+                ));
                 let allowed = member_modes(facts, owner, axis);
                 extend_rows(&mut rows, &allowed);
             }

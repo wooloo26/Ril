@@ -14,8 +14,8 @@ use ril_frontend::{
 };
 
 use super::{
-    Access, Analysis, CleanupAction, EffectUse, Input, Instance, Invocation, InvocationMode,
-    ReturnSource, StorageUpdate, Summary,
+    Access, Analysis, CallbackModeCall, CleanupAction, EffectUse, Input, Instance, Invocation,
+    InvocationMode, ReturnSource, StorageUpdate, Summary,
     flow::{
         AccessConflict, ConflictKind, Coordinate, Datum, Ledger, Origin, Reception, Region,
         Replacement, ResultOccurrence, Revocation, Slot, conflicts,
@@ -249,6 +249,7 @@ struct Analyzer<'a> {
     closure_modes: BTreeMap<Span, ClosureModes>,
     higher_order: higher_order::Calls,
     invocation_summaries: BTreeMap<Span, BTreeSet<Invocation>>,
+    mode_call_summaries: BTreeMap<Span, BTreeSet<CallbackModeCall>>,
     callback_results: Vec<calls::CallbackResult>,
     loop_transfers: BTreeMap<Span, LoopTransfers>,
     binding_scopes: BTreeMap<Span, Span>,
@@ -280,6 +281,7 @@ fn collect(
         closure_modes: BTreeMap::new(),
         higher_order: higher_order::Calls::default(),
         invocation_summaries: BTreeMap::new(),
+        mode_call_summaries: BTreeMap::new(),
         callback_results: Vec::new(),
         loop_transfers: BTreeMap::new(),
         binding_scopes: BTreeMap::new(),
@@ -969,6 +971,13 @@ impl<'a> Analyzer<'a> {
                 .into_iter()
                 .flatten()
                 .collect(),
+            mode_calls: Some(
+                self.mode_call_summaries
+                    .remove(&fun.owner)
+                    .into_iter()
+                    .flatten()
+                    .collect(),
+            ),
             callback_returns: fun
                 .returns
                 .iter()
@@ -1210,6 +1219,26 @@ impl<'a> Analyzer<'a> {
                     }
                 }
                 summary.normalize_invocations();
+                let axis_input = |axis: &super::ModeAxis| {
+                    if axis.path.is_empty() {
+                        input(axis.parameter)
+                    } else {
+                        fun.member_axes
+                            .iter()
+                            .position(|(parameter, region)| {
+                                *parameter == axis.parameter && region.selection == axis.path
+                            })
+                            .and_then(|index| modes.get(formals.len() + index))
+                            .copied()
+                    }
+                };
+                if let Some(calls) = &mut summary.mode_calls {
+                    for call in &mut *calls {
+                        call.specialize(&axis_input);
+                    }
+                    calls.sort_unstable();
+                    calls.dedup();
+                }
                 for result in &mut summary.callback_returns {
                     result.specialize(&input);
                 }
@@ -3808,10 +3837,13 @@ impl<'a> Analyzer<'a> {
 
 fn member_axes(callable: &Callable, formals: &[Option<Span>]) -> Vec<(usize, Region)> {
     let mut axes = Vec::new();
-    for (index, (param, decl)) in callable.parameters.iter().zip(formals).enumerate() {
+    for (index, (parameter, decl)) in callable.parameters.iter().zip(formals).enumerate() {
         if let Some(source) = decl {
-            let mut region = Region::root(*source);
-            collect_axes(index, &param.ty, &mut region, &mut axes);
+            collect_axes(&parameter.ty, &mut Vec::new(), &mut |selection| {
+                let mut region = Region::root(*source);
+                region.selection.extend_from_slice(selection);
+                axes.push((index, region));
+            });
         }
     }
     axes
@@ -3830,14 +3862,14 @@ fn extend_rows(rows: &mut Vec<Vec<Input>>, domain: &[Input]) {
         .collect();
 }
 
-fn collect_axes(index: usize, ty: &Ty, region: &mut Region, output: &mut Vec<(usize, Region)>) {
+fn collect_axes(ty: &Ty, path: &mut Vec<Coordinate>, output: &mut impl FnMut(&[Coordinate])) {
     let mut visit = |coord, member: &ty::Member| {
-        region.selection.push(coord);
+        path.push(coord);
         if member.mode.mode == Mode::Via {
-            output.push((index, region.clone()));
+            output(path);
         }
-        collect_axes(index, &member.ty, region, output);
-        region.selection.pop();
+        collect_axes(&member.ty, path, output);
+        path.pop();
     };
     match ty {
         Ty::Array(item) | Ty::Map(_, item) => visit(Coordinate::Dynamic, item),

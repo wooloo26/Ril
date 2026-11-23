@@ -7,7 +7,7 @@ use ril_base::span::Span;
 use ril_frontend::syntax::Mode;
 use serde::{Deserialize, Serialize};
 
-use super::{Input, ReturnAllocation};
+use super::{Input, ModeExpression, ModeStep, ReturnAllocation};
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 pub enum Access {
@@ -163,12 +163,7 @@ impl Region {
     }
 }
 
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub(super) enum Reception {
-    Fixed(Access),
-    // A mode bound by a formal parameter or one of its member schemas.
-    Axis(Region),
-}
+pub(super) type Reception = ModeStep<Region>;
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub(super) struct Origin {
@@ -307,9 +302,9 @@ impl Origin {
 
     pub(super) fn forwarded_mode(&self) -> Option<ForwardedMode> {
         if self.inherits_mode {
-            Some(ForwardedMode::Root(Region::root(self.region.source)))
+            Some(ForwardedMode::Axis(Region::root(self.region.source)))
         } else {
-            (!self.reception.is_empty()).then(|| ForwardedMode::Projection(self.reception.clone()))
+            (!self.reception.is_empty()).then(|| ForwardedMode::projection(self.reception.clone()))
         }
     }
 
@@ -2226,28 +2221,7 @@ pub(super) enum ConflictKind {
     Via(Box<ViaConflict>),
 }
 
-pub(super) enum ForwardedMode {
-    Root(Region),
-    Projection(Vec<Reception>),
-}
-
-impl ForwardedMode {
-    pub(super) fn select(&self, input: &impl Fn(&Region) -> Option<Input>) -> Option<Input> {
-        match self {
-            Self::Root(axis) => input(axis),
-            Self::Projection(steps) => {
-                let access = steps.iter().try_fold(Access::Mut, |base, step| {
-                    let member = match step {
-                        Reception::Fixed(access) => *access,
-                        Reception::Axis(axis) => input(axis)?.access(),
-                    };
-                    Some(base.project(member))
-                })?;
-                Input::from_mode(access.as_mode())
-            }
-        }
-    }
-}
+pub(super) type ForwardedMode = ModeExpression<Region>;
 
 #[derive(Clone, Copy)]
 enum Overlap {

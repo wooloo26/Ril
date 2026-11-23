@@ -301,11 +301,11 @@ impl<'program> Analyzer<'program> {
         let syntax = id.and_then(|id| self.function_syntax(id));
         let indirect_template = target.as_ref().is_some_and(|target| {
             target.roots.iter().any(|root| {
-                root.region.selection.is_empty()
-                    && (ctx.formals.contains(&Some(root.region.source))
-                        || self.definition(root.region.source).is_some_and(|id| {
+                ctx.formals.contains(&Some(root.region.source))
+                    || root.region.selection.is_empty()
+                        && self.definition(root.region.source).is_some_and(|id| {
                             self.program.hir.definition(id).kind == DefinitionKind::Function
-                        }))
+                        })
             })
         });
         let is_constructor = def.is_some_and(data_constructor);
@@ -355,7 +355,8 @@ impl<'program> Analyzer<'program> {
                                 self.program.imported_functions.contains_key(&id)
                             })
                             || has_via_closures
-                            || all_aliases_known)
+                            || all_aliases_known
+                            || indirect_template)
                             && Self::forwards_via(ctx, &value) =>
                     {
                         Mode::Via
@@ -514,9 +515,7 @@ impl<'program> Analyzer<'program> {
             );
         }
         for (&owner, modes) in &closures {
-            if (!modes.via.is_empty() || !modes.member_axes.is_empty())
-                && let Some(signature) = sig
-            {
+            if let Some(signature) = sig {
                 self.record_callable_arguments(
                     ctx,
                     (owner, &modes.formals),

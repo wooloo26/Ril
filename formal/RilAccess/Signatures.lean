@@ -184,6 +184,32 @@ theorem callbackInvocationsSubsumed_iff {baseline revision : List CallbackInvoca
       ∀ call ∈ revision, ∃ old ∈ baseline, old.permits call = true := by
   simp [callbackInvocationsSubsumed, List.all_eq_true, List.any_eq_true]
 
+structure CallbackModeCall (Axis Mode : Type) where
+  receiver : Axis
+  arguments : List (Axis × Option Mode)
+  recursivePath : Option (List String)
+  deriving Repr, DecidableEq
+
+def CallbackModeCall.permits [DecidableEq Axis] [DecidableEq Mode]
+    (baseline revision : CallbackModeCall Axis Mode) : Bool :=
+  decide (baseline.receiver = revision.receiver) &&
+    decide (baseline.recursivePath = revision.recursivePath) &&
+    baseline.arguments.length == revision.arguments.length &&
+    (baseline.arguments.zip revision.arguments).all fun (old, current) =>
+      decide (old.1 = current.1) && (old.2.isNone || decide (old.2 = current.2))
+
+/-- Every offered mode assignment in the revision must have been permitted
+by one baseline invocation, including the correlation among its arguments. -/
+def callbackModeCallsSubsumed [DecidableEq Axis] [DecidableEq Mode]
+    (baseline revision : List (CallbackModeCall Axis Mode)) : Bool :=
+  revision.all (fun call => baseline.any (·.permits call))
+
+theorem callbackModeCallsSubsumed_iff [DecidableEq Axis] [DecidableEq Mode]
+    {baseline revision : List (CallbackModeCall Axis Mode)} :
+    callbackModeCallsSubsumed baseline revision = true ↔
+      ∀ call ∈ revision, ∃ old ∈ baseline, old.permits call = true := by
+  simp [callbackModeCallsSubsumed, List.all_eq_true, List.any_eq_true]
+
 /-- Each returned callback expression in the revision must be covered by the
 baseline relation, including the arguments that supply its return sources. -/
 def callbackReturnsSubsumed [DecidableEq α] (baseline revision : List α) : Bool :=

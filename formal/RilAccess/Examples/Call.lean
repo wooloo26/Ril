@@ -179,6 +179,8 @@ def programs : List ProgramExample :=
    ⟨"call: a nested mutable borrow can observe a disjoint capture", "read_only_capture_is_disjoint_from_shared_formal", nestedBorrowWithCapture false, true⟩,
    ⟨"call: a nested mutable borrow excludes an aliased shared via instance", "exclusive_borrow_of_via_aliased_arguments_excludes_the_shared_pair", nestedBorrowOfAliasedSharedParticipantsOverlaps, false⟩,
    ⟨"call: mixed via modes permit a disjoint writer and observer", "exclusive_borrow_of_via_arguments_allows_forwarding_mixed_modes", nestedBorrowFromMixedParticipants, true⟩,
+   ⟨"call: callback cannot use an aliased shared via instance", "higher_order_callback_requires_a_compatible_pair_of_root_modes", nestedBorrowOfAliasedSharedParticipantsOverlaps, false⟩,
+   ⟨"call: callback selected from a record checks its via instance", "higher_order_callback_selected_from_a_record_checks_the_mode_pair", nestedBorrowOfAliasedSharedParticipantsOverlaps, false⟩,
    ⟨"call: coincident shared arguments do not merge their formal obligations", "retaining_one_shared_argument_cannot_satisfy_an_aliased_formal", coincidentRetainedWritersNeedIndependentUse, false⟩]
 
 def sourceChecks : List (String × Bool) :=

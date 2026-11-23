@@ -1,4 +1,7 @@
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::{
+    borrow::Cow,
+    collections::{BTreeMap, BTreeSet, VecDeque},
+};
 
 use ril_base::{
     diag::{Code, Diagnostic},
@@ -6,9 +9,15 @@ use ril_base::{
 };
 use ril_frontend::syntax::Mode;
 
-use super::{Analyzer, Context, Datum, Fact, Input, Ledger, Obligation, Revocation, Rule};
+use super::{
+    Analyzer, Context, Datum, Fact, Input, Ledger, Obligation, Region, Revocation, Rule,
+    domains::{self, Application, Arguments, axis_region, mode_axes, mode_patterns},
+};
 use crate::{
-    access::{Invocation as PublishedInvocation, InvocationMode},
+    access::{
+        Access, CallbackModeCall, Coordinate, Invocation as PublishedInvocation, InvocationMode,
+        ModeAxis, ModeExpression, Summary, flow::Choices,
+    },
     ty::{Callable, Ty},
 };
 
@@ -38,16 +47,108 @@ struct Argument {
     position: usize,
     offers: BTreeSet<Offer>,
     targets: BTreeSet<Span>,
+    callback_graph: Option<Datum>,
     dependencies: BTreeSet<Span>,
     existing: BTreeSet<Span>,
     span: Span,
+}
+
+impl Argument {
+    fn mode_receivers(&self, invocation: &ModeInvocation) -> Vec<(ModeReceiver, Choices)> {
+        let Some(graph) = &self.callback_graph else {
+            return Vec::new();
+        };
+        let selected = receiver_path(graph, &invocation.receiver.region.selection);
+        let mut receivers = Vec::new();
+        match &invocation.receiver.recursive_path {
+            Some(path) => nested_mode_receivers(&selected, path, &mut receivers),
+            None => collect_mode_receivers(&selected, None, &mut receivers),
+        }
+        receivers
+    }
+}
+
+fn receiver_path<'a>(graph: &'a Datum, path: &[Coordinate]) -> Cow<'a, Datum> {
+    path.iter().fold(Cow::Borrowed(graph), |base, coordinate| {
+        Cow::Owned(base.project(coordinate.clone(), Access::Immutable))
+    })
+}
+
+fn collect_mode_receivers(
+    value: &Datum,
+    recursive_path: Option<&[Coordinate]>,
+    out: &mut Vec<(ModeReceiver, Choices)>,
+) {
+    out.extend(value.roots.iter().map(|origin| {
+        (
+            ModeReceiver {
+                region: origin.region.clone(),
+                recursive_path: recursive_path.map(<[Coordinate]>::to_vec),
+            },
+            origin.branches.clone(),
+        )
+    }));
+}
+
+fn nested_mode_receivers(
+    value: &Datum,
+    path: &[Coordinate],
+    out: &mut Vec<(ModeReceiver, Choices)>,
+) {
+    collect_mode_receivers(value, Some(path), out);
+    collect_mode_receivers(&receiver_path(value, path), None, out);
+    for member in value.members.values() {
+        nested_mode_receivers(member, path, out);
+    }
 }
 
 struct Call {
     owner: Span,
     site: Span,
     arguments: BTreeMap<Span, Argument>,
+    modes: BTreeMap<Region, Vec<domains::Offer>>,
 }
+
+#[derive(Clone, Eq, Ord, PartialEq, PartialOrd)]
+struct ModeInvocation {
+    receiver: ModeReceiver,
+    arguments: Arguments,
+}
+
+#[derive(Clone, Eq, Ord, PartialEq, PartialOrd)]
+struct ModeReceiver {
+    region: Region,
+    recursive_path: Option<Vec<Coordinate>>,
+}
+
+impl ModeReceiver {
+    fn widen_recursive_path(&mut self, previous: &[Coordinate]) {
+        let path = &mut self.region.selection;
+        if path.len() <= previous.len() {
+            return;
+        }
+        // A repeated formal can be reached through a longer projection on
+        // every recursive call. Keep the common prefix and the final member
+        // selection, and look for that selection inside the reachable graph.
+        if self.recursive_path.is_none() {
+            let suffix = path
+                .iter()
+                .rev()
+                .zip(previous.iter().rev())
+                .take_while(|(left, right)| left == right)
+                .count();
+            self.recursive_path = Some(path.iter().skip(path.len() - suffix).cloned().collect());
+        }
+        let prefix = path
+            .iter()
+            .zip(previous)
+            .take_while(|(left, right)| left == right)
+            .count();
+        path.truncate(prefix);
+    }
+}
+
+type ReceiverTrail = BTreeMap<Span, Vec<Coordinate>>;
 
 #[derive(Default)]
 pub(super) struct Calls {
@@ -55,6 +156,7 @@ pub(super) struct Calls {
     interface_formals: BTreeMap<Span, Vec<Option<Span>>>,
     interface_protected: BTreeSet<(Span, Invocation)>,
     invocations: BTreeSet<(Span, Invocation, Span, Span)>,
+    mode_calls: BTreeSet<(Span, ModeInvocation, Span)>,
     protected: BTreeSet<(Span, usize)>,
 }
 
@@ -67,9 +169,9 @@ impl Calls {
         &mut self,
         owner: Span,
         formals: Vec<Option<Span>>,
-        invocations: &[PublishedInvocation],
+        summary: &Summary,
     ) {
-        for invocation in invocations {
+        for invocation in &summary.invocations {
             let Some(receiver) = formals.get(invocation.receiver).copied().flatten() else {
                 continue;
             };
@@ -90,6 +192,32 @@ impl Calls {
             self.invocations.insert((owner, at, owner, owner));
             if invocation.preserves_input {
                 self.interface_protected.insert((owner, at));
+            }
+        }
+        for call in summary.offered_mode_calls().iter() {
+            if let Some(receiver) = axis_region(&call.receiver, &formals) {
+                let arguments = call
+                    .arguments
+                    .iter()
+                    .map(|(axis, expression)| {
+                        let expression = expression.substitute(&|axis| {
+                            axis_region(axis, &formals)
+                                .map_or(ModeExpression::Unknown, ModeExpression::Axis)
+                        });
+                        (axis.clone(), expression)
+                    })
+                    .collect();
+                self.mode_calls.insert((
+                    owner,
+                    ModeInvocation {
+                        receiver: ModeReceiver {
+                            region: receiver,
+                            recursive_path: call.recursive_path.clone(),
+                        },
+                        arguments,
+                    },
+                    owner,
+                ));
             }
         }
         self.interface_formals.insert(owner, formals);
@@ -129,6 +257,30 @@ impl Offer {
     }
 }
 
+fn can_supply_mode_callback(ty: &Ty) -> bool {
+    match ty {
+        Ty::Callable(signature) => !mode_axes(signature).is_empty(),
+        Ty::Record(fields, open) => {
+            *open
+                || fields
+                    .values()
+                    .any(|field| can_supply_mode_callback(&field.ty))
+        }
+        Ty::Tuple(fields) => fields
+            .iter()
+            .any(|field| can_supply_mode_callback(&field.ty)),
+        Ty::Array(item) => can_supply_mode_callback(&item.ty),
+        Ty::Map(key, item) => can_supply_mode_callback(key) || can_supply_mode_callback(&item.ty),
+        Ty::Set(item) | Ty::Option(item) | Ty::Draft(item) | Ty::Task(item) => {
+            can_supply_mode_callback(item)
+        }
+        Ty::Result(ok, error) => can_supply_mode_callback(ok) || can_supply_mode_callback(error),
+        Ty::Adt(adt) => adt.kind != crate::ty::AdtKind::Foreign,
+        Ty::Param(_) | Ty::Infer(_) | Ty::Projection(..) | Ty::Unknown => true,
+        _ => false,
+    }
+}
+
 impl Analyzer<'_> {
     pub(super) fn record_indirect_modes(
         &mut self,
@@ -142,9 +294,33 @@ impl Analyzer<'_> {
         if !ctx.reachable || ctx.shadow {
             return;
         }
+        let offers = self.mode_offers(mode_axes(signature), (values, spans));
         for root in &target.roots {
             let receiver = root.region.source;
-            if !root.region.selection.is_empty() || self.closure_modes.contains_key(&receiver) {
+            if root.region.selection.is_empty() && self.closure_modes.contains_key(&receiver) {
+                continue;
+            }
+            if !offers.is_empty() {
+                for arguments in mode_patterns(
+                    offers
+                        .iter()
+                        .map(|(axis, offers)| (axis.clone(), offers.as_slice())),
+                    &root.branches,
+                ) {
+                    self.higher_order.mode_calls.insert((
+                        ctx.owner,
+                        ModeInvocation {
+                            receiver: ModeReceiver {
+                                region: root.region.clone(),
+                                recursive_path: None,
+                            },
+                            arguments,
+                        },
+                        site,
+                    ));
+                }
+            }
+            if !root.region.selection.is_empty() {
                 continue;
             }
             for ((position, mode, value), &span) in values.iter().zip(spans) {
@@ -184,9 +360,13 @@ impl Analyzer<'_> {
         (site, ledger): (Span, &mut Ledger),
     ) {
         self.record_mode_application(ctx, (callee, formals), signature, (values, spans), site);
-        if !ctx.reachable || ctx.shadow || !signature.parameters.iter().any(|param| {
-            matches!(&param.ty, Ty::Callable(call) if call.parameters.iter().any(|input| input.callable_mode() == Mode::Via))
-        }) {
+        if !ctx.reachable
+            || ctx.shadow
+            || !signature
+                .parameters
+                .iter()
+                .any(|param| can_supply_mode_callback(&param.ty))
+        {
             return;
         }
         let arguments = values
@@ -194,7 +374,8 @@ impl Analyzer<'_> {
             .zip(spans)
             .filter_map(|((index, mode, value), &span)| {
                 let formal = formals.get(*index).copied().flatten()?;
-                let targets = if matches!(self.ty(span), Ty::Callable(_)) {
+                let ty = self.ty(span);
+                let targets = if matches!(ty, Ty::Callable(_)) {
                     value
                         .roots
                         .iter()
@@ -208,6 +389,7 @@ impl Analyzer<'_> {
                     position: *index,
                     offers: Offer::of(*mode, value),
                     targets,
+                    callback_graph: can_supply_mode_callback(ty).then(|| value.clone()),
                     dependencies: value.root_dependencies().collect(),
                     existing: value
                         .roots
@@ -223,6 +405,11 @@ impl Analyzer<'_> {
                 Some((formal, argument))
             })
             .collect();
+        let modes = self
+            .mode_offers(mode_axes(signature), (values, spans))
+            .into_iter()
+            .filter_map(|(axis, offers)| Some((axis_region(&axis, formals)?, offers)))
+            .collect();
         self.higher_order
             .calls
             .entry(callee)
@@ -231,6 +418,7 @@ impl Analyzer<'_> {
                 owner: ctx.owner,
                 site,
                 arguments,
+                modes,
             });
     }
 
@@ -240,6 +428,7 @@ impl Analyzer<'_> {
             interface_formals,
             interface_protected,
             invocations,
+            mode_calls,
             protected,
         } = std::mem::take(&mut self.higher_order);
         let providers: BTreeMap<_, _> = self
@@ -259,6 +448,7 @@ impl Analyzer<'_> {
                 formals.iter().flatten().map(move |&formal| (formal, owner))
             })
             .collect();
+        self.link_mode_calls(mode_calls, &providers, &formal_owners, &calls);
         let mut pending = VecDeque::new();
         for (owner, invocation, span, site) in invocations {
             if matches!(invocation.offer, Offer::Formal(_)) {
@@ -411,6 +601,136 @@ impl Analyzer<'_> {
                                 published_preservation,
                             ));
                         }
+                    }
+                }
+            }
+        }
+    }
+
+    fn link_mode_calls(
+        &mut self,
+        pending: BTreeSet<(Span, ModeInvocation, Span)>,
+        providers: &BTreeMap<Span, Vec<Option<Span>>>,
+        formal_owners: &BTreeMap<Span, Span>,
+        calls: &BTreeMap<Span, Vec<Call>>,
+    ) {
+        let published_axes: BTreeMap<_, _> = providers
+            .iter()
+            .filter_map(|(&owner, formals)| {
+                let signature = if let Ty::Callable(signature) = self.ty(owner) {
+                    signature
+                } else {
+                    self.program.callables.get(&self.definition(owner)?)?
+                };
+                Some((owner, domains::axes(signature, formals)))
+            })
+            .collect();
+        let mut pending: VecDeque<_> = pending
+            .into_iter()
+            .map(|(owner, invocation, site)| (owner, invocation, site, ReceiverTrail::default()))
+            .collect();
+        let mut seen = BTreeSet::new();
+        while let Some((call_owner, mut invocation, site, mut trail)) = pending.pop_front() {
+            let source = invocation.receiver.region.source;
+            let owner = formal_owners.get(&source).copied().unwrap_or(call_owner);
+            if let Some(previous) = trail.get(&source) {
+                invocation.receiver.widen_recursive_path(previous);
+            }
+            trail.insert(source, invocation.receiver.region.selection.clone());
+            if !seen.insert((owner, invocation.clone(), site)) {
+                continue;
+            }
+            if invocation.receiver.region.selection.is_empty()
+                && invocation.receiver.recursive_path.is_none()
+                && providers.contains_key(&source)
+            {
+                self.mode_applications.push(Application {
+                    owner,
+                    target: source,
+                    site,
+                    arguments: invocation.arguments,
+                });
+                continue;
+            }
+            let Some(receiver) = providers
+                .get(&owner)
+                .and_then(|formals| formals.iter().position(|formal| *formal == Some(source)))
+            else {
+                continue;
+            };
+            let arguments = invocation
+                .arguments
+                .iter()
+                .map(|(axis, mode)| {
+                    let mode = mode.substitute(&|source| {
+                        published_axes
+                            .get(&owner)
+                            .into_iter()
+                            .flatten()
+                            .find(|(_, region)| region.matches_axis(source))
+                            .map_or(ModeExpression::Unknown, |(axis, _)| {
+                                ModeExpression::Axis(axis.clone())
+                            })
+                    });
+                    (axis.clone(), mode)
+                })
+                .collect();
+            self.mode_call_summaries
+                .entry(owner)
+                .or_default()
+                .insert(CallbackModeCall {
+                    receiver: ModeAxis {
+                        parameter: receiver,
+                        path: invocation.receiver.region.selection.clone(),
+                    },
+                    recursive_path: invocation.receiver.recursive_path.clone(),
+                    arguments,
+                });
+
+            let sources: BTreeSet<_> = invocation
+                .arguments
+                .values()
+                .flat_map(ModeExpression::axes)
+                .collect();
+            for call in calls.get(&owner).into_iter().flatten() {
+                let Some(callback) = call.arguments.get(&source) else {
+                    continue;
+                };
+                let offers: Vec<_> = sources
+                    .iter()
+                    .map(|&source| {
+                        let offers = call
+                            .modes
+                            .iter()
+                            .find(|(axis, _)| axis.matches_axis(source))
+                            .map_or(&[][..], |(_, offers)| offers.as_slice());
+                        (source.clone(), offers)
+                    })
+                    .collect();
+                for (target, branches) in callback.mode_receivers(&invocation) {
+                    for bindings in mode_patterns(offers.iter().cloned(), &branches) {
+                        let arguments = invocation
+                            .arguments
+                            .iter()
+                            .map(|(axis, mode)| {
+                                let translated = mode.substitute(&|source| {
+                                    bindings
+                                        .get(source)
+                                        .cloned()
+                                        .unwrap_or(ModeExpression::Unknown)
+                                });
+                                (axis.clone(), translated)
+                            })
+                            .collect();
+                        pending.push_back((
+                            call.owner,
+                            ModeInvocation {
+                                receiver: target.clone(),
+                                arguments,
+                            },
+                            callback.span,
+                            trail.clone(),
+                        ));
                     }
                 }
             }

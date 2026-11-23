@@ -103,7 +103,7 @@ impl<'program> Analyzer<'program> {
                 }
             }
             self.higher_order
-                .add_interface(owner, formals, &export.summary.invocations);
+                .add_interface(owner, formals, &export.summary);
         }
     }
 

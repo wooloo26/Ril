@@ -53,6 +53,14 @@ def retainedSummary : Summary := { emptySummary with retained := [liveVar], effe
 def pureReadTemplate : Template := { namedReads := [.concrete pureConst] }
 def upperEffectTemplate : Template := { effects := [6, 7] }
 
+def callbackModePairs : List (CallbackModeCall Nat String) :=
+  [⟨0, [(0, some "Shared"), (1, some "Ref")], none⟩,
+   ⟨0, [(0, some "Mut"), (1, some "Shared")], none⟩]
+
+def crossedCallbackModePairs : List (CallbackModeCall Nat String) :=
+  [⟨0, [(0, some "Shared"), (1, some "Shared")], none⟩,
+   ⟨0, [(0, some "Mut"), (1, some "Ref")], none⟩]
+
 def signatureCases : List (String × Bool × Bool) :=
   let writes := { emptySummary with writes := [liveVar] }
   let retains := { emptySummary with retained := [liveVar], contained := [liveVar] }
@@ -83,7 +91,9 @@ def signatureCases : List (String × Bool × Bool) :=
    ("narrower_inferred_root_relation_is_compatible", subsumes widerRoot narrowerRoot, true),
    ("additional_inferred_root_breaks_compatibility", subsumes narrowerRoot widerRoot, false),
    ("a_smaller_published_effect_set_is_compatible", subsumes effects emptySummary, true),
-   ("a_larger_published_effect_set_breaks_compatibility", subsumes emptySummary effects, false)]
+   ("a_larger_published_effect_set_breaks_compatibility", subsumes emptySummary effects, false),
+   ("changing_callback_mode_pairs_breaks_compatibility",
+     callbackModeCallsSubsumed callbackModePairs crossedCallbackModePairs, false)]
 
 def examples : List (String × Bool) :=
   [("core entry: cyclic graph closure includes exactly both entry objects",

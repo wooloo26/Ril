@@ -297,6 +297,120 @@ fn invalid() -> int {
     -- ^ E0520
 }
 
+-- @case higher_order_callback_requires_a_compatible_pair_of_root_modes compile-fail E0520
+fn edit(mut writer: Cell, ref reader: Cell) &mut -> () { writer.count += reader.count }
+fn combine(via left: Cell, via right: Cell) -> () { edit(mut left, ref right) }
+fn apply(action: fn(via Cell, via Cell) -> ()) -> int {
+    let mut cell = Cell.{ count: 1 }
+    let ^mut alias = cell
+    alias.count += 1
+    action(^mut cell, ^mut alias)
+    cell.count
+}
+fn run() -> int {
+    apply(combine)
+    -- ^ E0520
+}
+
+-- @case higher_order_callback_mode_pairs_are_checked_per_call_site compile-pass
+fn edit(mut writer: Cell, ref reader: Cell) &mut -> () { writer.count += reader.count }
+fn combine(via left: Cell, via right: Cell) -> () { edit(mut left, ref right) }
+fn apply(action: fn(via Cell, via Cell) -> (), flag: bool) -> int {
+    let mut left = Cell.{ count: 1 }
+    let mut right = Cell.{ count: 2 }
+    left.count += 1
+    right.count += 1
+    if flag { action(^mut left, ref right) }
+    else { action(mut left, ^mut right) }
+    left.count
+}
+fn run(flag: bool) -> int { apply(combine, flag) }
+
+-- @case higher_order_member_via_callback_modes_are_checked_together compile-fail E0520
+fn edit(mut writer: Cell, ref reader: Cell) &mut -> () { writer.count += reader.count }
+fn combine(mut frame: .{ via left: Cell, via right: Cell }) &mut -> () {
+    edit(mut frame.left, ref frame.right)
+}
+fn apply(action: fn(mut frame: .{ via left: Cell, via right: Cell }) &mut -> ()) -> int {
+    let mut frame = .{ mut left: Cell.{ count: 1 }, ^mut right: Cell.{ count: 2 } }
+    action(mut frame)
+    frame.left.count
+}
+fn run() -> int {
+    apply(combine)
+    -- ^ E0520
+}
+
+-- @case higher_order_callback_selected_from_a_record_checks_the_mode_pair compile-fail E0520
+fn edit(mut writer: Cell, ref reader: Cell) &mut -> () { writer.count += reader.count }
+fn combine(via left: Cell, via right: Cell) -> () { edit(mut left, ref right) }
+fn apply(env: .{ action: fn(via Cell, via Cell) -> () }) -> int {
+    let mut cell = Cell.{ count: 1 }
+    let ^mut alias = cell
+    alias.count += 1
+    env.action(^mut cell, ^mut alias)
+    cell.count
+}
+fn run() -> int {
+    apply(.{ action: combine })
+    -- ^ E0520
+}
+
+-- @case higher_order_callback_in_a_recursive_member_checks_the_mode_pair compile-fail E0520
+nominal type Node = .{ action: fn(via Cell, via Cell) -> (), next: ?Node }
+fn edit(mut writer: Cell, ref reader: Cell) &mut -> () { writer.count += reader.count }
+fn combine(via left: Cell, via right: Cell) -> () { edit(mut left, ref right) }
+fn observe(via left: Cell, via right: Cell) -> () { assert(left.count == right.count) }
+fn apply(node: Node) -> int {
+    let mut cell = Cell.{ count: 1 }
+    let ^mut alias = cell
+    alias.count += 1
+    node.action(^mut cell, ^mut alias)
+    match node.next { Some(tail) -> apply(tail); None -> cell.count }
+}
+fn run() -> int {
+    apply(Node.{ action: observe, next: Some(Node.{ action: combine, next: None }) })
+    -- ^ E0520
+}
+
+-- @case higher_order_callback_receives_projected_member_via_modes compile-fail E0520
+fn edit(mut writer: Cell, ref reader: Cell) &mut -> () { writer.count += reader.count }
+fn combine(via left: Cell, via right: Cell) -> () { edit(mut left, ref right) }
+fn apply(action: fn(via Cell, via Cell) -> (), mut frame: .{ via left: Cell, via right: Cell }) -> () {
+    action(frame.left, frame.right)
+}
+fn run() -> int {
+    let mut cell = Cell.{ count: 1 }
+    cell.count += 1
+    let mut frame = .{ ^mut left: ^mut cell, ^mut right: ^mut cell }
+    apply(combine, mut frame)
+    -- ^ E0520
+    cell.count
+}
+
+-- @case changing_callback_mode_pairs_breaks_compatibility compat-fail E0552
+-- @baseline
+pub fn apply(action: fn(via Cell, via Cell) -> (), flag: bool) -> int {
+    let mut left = Cell.{ count: 1 }
+    let mut right = Cell.{ count: 2 }
+    left.count += 1
+    right.count += 1
+    if flag { action(^mut left, ref right) }
+    else { action(mut left, ^mut right) }
+    left.count
+}
+-- @revision
+pub fn apply(action: fn(via Cell, via Cell) -> (), flag: bool) -> int {
+-- ^ E0552
+    let mut left = Cell.{ count: 1 }
+    let mut right = Cell.{ count: 2 }
+    left.count += 1
+    right.count += 1
+    if flag { action(^mut left, ^mut right) }
+    else { action(mut left, ref right) }
+    left.count
+}
+
 -- @case higher_order_writable_and_plain_instantiations_are_independent compile-pass
 fn apply(via action: fn(via Cell) @& -> int, via cell: Cell) -> int { action(cell) }
 fn relay(via action: fn(via Cell) @& -> int, via cell: Cell) -> int { apply(action, cell) }

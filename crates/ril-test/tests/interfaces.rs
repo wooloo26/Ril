@@ -17,6 +17,112 @@ use ril_sema::{
 use ril_test::{CaseMode, Stage, TestDriver, Unit, VirtualPackage, parse_suite, run_worker};
 
 #[test]
+fn correlated_callback_mode_offers_survive_interface_only_calls() {
+    use ril_base::diag::Code;
+
+    let nested_callback_call = |callback| {
+        format!(
+            "Adapter::visit(Adapter::Node.{{
+            action: Adapter::observe,
+            next: Some(Adapter::Node.{{ action: Adapter::{callback}, next: None }})
+        }})"
+        )
+    };
+    let provider_source = br#"
+pub type Cell = .{ var count: int }
+fn edit(mut writer: Cell, ref reader: Cell) &mut -> () { writer.count += reader.count }
+pub fn combine(via left: Cell, via right: Cell) -> () { edit(mut left, ref right) }
+pub fn dispatch(action: fn(via Cell, via Cell) -> (), flag: bool) -> int {
+    let mut left = Cell.{ count: 1 }
+    let mut right = Cell.{ count: 2 }
+    left.count += 1
+    right.count += 1
+    if flag { action(^mut left, ref right) }
+    else { action(mut left, ^mut right) }
+    left.count
+}
+fn forward(action: fn(via Cell, via Cell) -> (), via left: Cell, via right: Cell) -> () {
+    action(left, right)
+}
+pub fn relay(action: fn(via Cell, via Cell) -> (), via left: Cell, via right: Cell, recur: bool) -> () {
+    if recur { relay(action, left, right, false) }
+    else { forward(action, left, right) }
+}
+pub nominal type Node = .{ action: fn(via Cell, via Cell) -> (), next: ?Node }
+pub fn observe(via left: Cell, via right: Cell) -> () { assert(left.count == right.count) }
+pub fn visit(node: Node) -> int {
+    let mut cell = Cell.{ count: 1 }
+    let ^mut alias = cell
+    alias.count += 1
+    node.action(^mut cell, ^mut alias)
+    match node.next { Some(tail) -> visit(tail); None -> cell.count }
+}
+"#;
+    let mut provider = VirtualPackage::new(Unit::Lib);
+    provider.entry = "pkg/adapter.ril".into();
+    provider.insert(provider.entry.clone(), provider_source.to_vec());
+    let interface = Driver.interface(&provider).unwrap().encode().unwrap();
+    let decoded = Interface::decode(&interface).unwrap();
+    assert!(decoded.functions.values().any(|export| {
+        export
+            .summary
+            .mode_calls
+            .as_ref()
+            .is_some_and(|calls| calls.len() == 2)
+    }));
+    assert!(decoded.functions.values().any(|export| {
+        export
+            .summary
+            .offered_mode_calls()
+            .iter()
+            .any(|call| call.recursive_path.is_some())
+    }));
+    for (mount, bytes) in [
+        ("library/adapter.ril", provider_source.as_slice()),
+        ("library/adapter.rili", interface.as_slice()),
+    ] {
+        for (call, accepted) in [
+            (
+                "Adapter::relay(Adapter::combine, mut left, ^mut right, flag); 0".to_owned(),
+                true,
+            ),
+            (
+                "Adapter::relay(Adapter::combine, ^mut left, ^mut right, flag); 0".to_owned(),
+                false,
+            ),
+            (nested_callback_call("observe"), true),
+            (nested_callback_call("combine"), false),
+        ] {
+            let source = format!(
+                "use library/adapter
+fn run(flag: bool) -> int {{
+    let value = Adapter::dispatch(Adapter::combine, flag)
+    let mut left = Adapter::Cell.{{ count: 1 }}
+    let mut right = Adapter::Cell.{{ count: 2 }}
+    left.count += 1
+    right.count += 1
+    let checked = {{ {call} }}
+    value + left.count + right.count + checked
+}}"
+            );
+            let mut client = VirtualPackage::new(Unit::Lib);
+            client.insert(mount.into(), bytes.to_vec());
+            client.insert(client.entry.clone(), source.into_bytes());
+            let result = Driver.analyze(&client);
+            match (accepted, result) {
+                (true, Err(diagnostics)) => panic!("{mount} {call}: {diagnostics:?}"),
+                (false, Err(diagnostics)) => {
+                    assert_eq!(diagnostics.len(), 1, "{mount} {call}: {diagnostics:?}");
+                    assert_eq!(diagnostics[0].code, Some(Code::E0520));
+                }
+                (false, Ok(_)) => panic!("{mount} unexpectedly accepted {call}"),
+                (true, Ok(_)) => {}
+            }
+        }
+    }
+}
+
+#[test]
 fn joint_via_restrictions_survive_interface_only_forwarding() {
     use ril_base::diag::Code;
     use ril_sema::access::Input;
@@ -1183,6 +1289,7 @@ fn exported_summaries_and_via_domains_agree_with_lean() {
             "effects": effects,
             "effect_uses": summary.effect_uses,
             "invocations": invocations,
+            "mode_calls": summary.mode_calls,
             "invoked": summary.invoked,
             "callback_returns": summary.callback_returns,
             "storage_updates": storage_updates,
@@ -1403,7 +1510,7 @@ fn boundary_examples_agree_with_lean() -> Result<(), Box<dyn std::error::Error>>
 
 #[test]
 fn call_authority_examples_agree_with_lean() -> Result<(), Box<dyn std::error::Error>> {
-    check_access_examples("call-authority", 38)
+    check_access_examples("call-authority", 40)
 }
 
 #[test]
@@ -1470,7 +1577,7 @@ fn scoped_resource_examples_agree_with_lean() -> Result<(), Box<dyn std::error::
 
 #[test]
 fn summary_signatures_agree_with_lean() -> Result<(), Box<dyn std::error::Error>> {
-    check_access_examples("summary-signatures", 20)
+    check_access_examples("summary-signatures", 21)
 }
 
 #[test]
