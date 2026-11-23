@@ -839,6 +839,8 @@ A `via x: T` parameter admits modes from `{plain, ref, mut, ^mut, new}` compatib
 
 With several mode parameters, a callable's domain consists of complete mode assignments. A call inside its body can exclude a combination even when each individual mode is accepted in other combinations. For example, if the body passes two `via` parameters to the same call using `mut` and `ref`, the combination with two `^mut` inputs would allow an overlapping writer and observer. Forwarding to a callable with a restricted domain must satisfy that domain.
 
+A mode-dependent path used as an immutable snapshot restricts the domain to assignments that permit that reception. An existing projected member's access depends on both the enclosing path and the received member schema, including when the member is passed to `derive`.
+
 When a callable invokes a callback with `via` parameters or members, its interface records which mode offers occur together. A supplied callback must accept every offered assignment. A revision that offers a new combination can break compatibility even when each individual mode was already offered.
 
 Inside a `via` function, concrete `&mut` / `&^mut` / `&return` clauses implied solely by `via` instantiations are recorded in the inferred template interface automatically without redundant header annotations.

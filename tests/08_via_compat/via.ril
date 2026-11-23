@@ -30,6 +30,39 @@ pub fn read(via c: Cell) -> int { c.count }
 -- @revision
 pub fn read(via c: Cell) -> int { c.count + 0 }
 
+-- @case plain_reception_restricts_a_via_mode_in_each_snapshot_context compile-pass
+fn plain(value: Cell) -> Cell { value }
+fn forward(via source: Cell) -> Cell { plain(source) }
+fn freeze(via source: Cell) -> Cell { let fixed = source; fixed }
+fn pack(via source: Cell) -> .{ item: Cell } {
+    let packed = .{ item: source }
+    packed
+}
+fn returned(via source: Cell) -> Cell { source }
+fn run() -> int {
+    let item = Cell.{ count: 1 }
+    forward(item).count + freeze(item).count + pack(item).item.count + returned(item).count
+}
+
+-- @case plain_reception_does_not_implicitly_handoff_a_via_new_local compile-fail E0520
+fn read(via source: Cell) -> Cell { source }
+fn run() -> int {
+    read(Cell.{ count: 1 }).count
+    -- ^ E0520
+}
+
+-- @case adding_derive_can_tighten_a_published_via_domain compat-fail E0552
+-- @baseline
+pub fn update(via base: Cell) -> Cell {
+    let copy = Cell.{ count: base.count + 1 }
+    copy
+}
+-- @revision
+pub fn update(via base: Cell) -> Cell {
+-- ^ E0552
+    derive(base) \mut draft -> { draft.count += 1 }
+}
+
 -- @case exclusive_borrow_of_via_aliased_arguments_excludes_the_shared_pair compile-fail E0520
 fn edit(mut writer: Cell, ref reader: Cell) &mut -> () { writer.count += reader.count }
 fn combine(via left: Cell, via right: Cell) -> () { edit(mut left, ref right) }

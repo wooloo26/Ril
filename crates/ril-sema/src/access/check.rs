@@ -242,7 +242,7 @@ struct Analyzer<'a> {
     requirements: Vec<Requirement>,
     deferred_errors: Vec<(Vec<Fact>, Diagnostic)>,
     capture_conflicts: Vec<CaptureConflict>,
-    mode_conflicts: Vec<domains::ModeConflict>,
+    mode_constraints: Vec<domains::ModeConstraint>,
     mode_applications: Vec<domains::Application>,
     mode_uses: Vec<ModeUse>,
     member_schemas: BTreeMap<Span, Vec<Region>>,
@@ -274,7 +274,7 @@ fn collect(
         requirements: Vec::new(),
         deferred_errors: Vec::new(),
         capture_conflicts: Vec::new(),
-        mode_conflicts: Vec::new(),
+        mode_constraints: Vec::new(),
         mode_applications: Vec::new(),
         mode_uses: Vec::new(),
         member_schemas: BTreeMap::new(),
@@ -487,10 +487,10 @@ impl<'a> Analyzer<'a> {
                 if !ctx.reachable || ctx.shadow {
                     return;
                 }
-                self.mode_conflicts.push(domains::ModeConflict {
+                self.mode_constraints.push(domains::ModeConstraint {
                     owner: via.mode_owner().unwrap_or(ctx.owner),
                     conditions,
-                    via: *via,
+                    test: domains::ModeTest::Overlap(via),
                     span,
                     message,
                 });
@@ -1495,7 +1495,13 @@ impl<'a> Analyzer<'a> {
         }
     }
 
-    fn receive_member(&mut self, mut value: Datum, mode: Access, span: Span) -> Datum {
+    fn receive_member(
+        &mut self,
+        ctx: &Context,
+        mut value: Datum,
+        mode: Access,
+        span: Span,
+    ) -> Datum {
         if mode != Access::Immutable {
             value.forget_collection_layout();
         }
@@ -1505,12 +1511,17 @@ impl<'a> Analyzer<'a> {
         if mode == Access::Shared {
             self.check_shared_reception(&value, span);
         }
-        if mode == Access::Immutable && !value.can_freeze() {
-            self.error(
+        if mode == Access::Immutable
+            && !value.can_freeze()
+            && self.require_snapshot(
+                ctx,
+                &value,
                 Code::E0535,
                 span,
                 "live authority cannot enter an immutable member",
-            );
+            )
+        {
+            value.specialize_snapshot_sources();
         }
         let inline_closure = value.environments.contains(&span);
         if value.requires_new || inline_closure {
@@ -1560,15 +1571,52 @@ impl<'a> Analyzer<'a> {
         value
     }
 
-    fn freeze_value(&mut self, ledger: &Ledger, value: &mut Datum, span: Span) {
-        *value = ledger.snapshot(value);
-        if !value.can_freeze() {
-            self.error(
-                Code::E0535,
-                span,
-                "live authority cannot be frozen as a plain snapshot",
-            );
+    fn require_snapshot(
+        &mut self,
+        ctx: &Context,
+        value: &Datum,
+        code: Code,
+        span: Span,
+        message: &'static str,
+    ) -> bool {
+        let mut conditions = BTreeMap::<_, BTreeSet<_>>::new();
+        if !value.accepts_snapshot_sources(&mut |origin| {
+            let Some(expression) = origin.forwarded_mode() else {
+                return false;
+            };
+            let owner = origin.entry_callable().unwrap_or(ctx.owner);
+            conditions.entry(owner).or_default().insert(expression);
+            true
+        }) {
+            self.error(code, span, message);
+            return false;
         }
+        // A symbolic path can be treated as immutable after this reception.
+        // Keep only the mode assignments for which all such paths are plain.
+        if ctx.reachable && !ctx.shadow {
+            self.mode_constraints
+                .extend(conditions.into_iter().map(|(owner, expressions)| {
+                    domains::ModeConstraint {
+                        owner,
+                        conditions: Vec::new(),
+                        test: domains::ModeTest::Immutable(expressions, code),
+                        span,
+                        message,
+                    }
+                }));
+        }
+        true
+    }
+
+    fn freeze_value(&mut self, ctx: &Context, ledger: &Ledger, value: &mut Datum, span: Span) {
+        *value = ledger.snapshot(value);
+        self.require_snapshot(
+            ctx,
+            value,
+            Code::E0535,
+            span,
+            "live authority cannot be frozen as a plain snapshot",
+        );
         value.freeze();
     }
 
@@ -1701,7 +1749,7 @@ impl<'a> Analyzer<'a> {
     }
 
     fn returned(&mut self, ctx: &mut Context, ledger: &mut Ledger, value: Datum, span: Span) {
-        let value = ledger.snapshot(&value);
+        let mut value = ledger.snapshot(&value);
         ledger.inspect(&value);
         if value.origins().any(|origin| origin.confined.is_some()) {
             self.error(Code::E0604, span, "confined authority cannot be returned");
@@ -1726,12 +1774,16 @@ impl<'a> Analyzer<'a> {
                 ctx.owner,
                 "fresh shared return must declare -> new",
             ),
-            Mode::Plain if value.origins().any(|root| root.mode != Access::Immutable) => {
-                self.error(
+            Mode::Plain => {
+                if self.require_snapshot(
+                    ctx,
+                    &value,
                     Code::E0528,
                     span,
                     "plain return cannot expose live authority",
-                );
+                ) {
+                    value.specialize_snapshot_sources();
+                }
             }
             Mode::New if !value.requires_new => {
                 self.error(Code::E0546, span, "return does not have new qualification");
@@ -2155,7 +2207,7 @@ impl<'a> Analyzer<'a> {
                     }
                 }
                 if mode == Mode::Plain && !resource {
-                    self.freeze_value(ledger, &mut value, name.span);
+                    self.freeze_value(ctx, ledger, &mut value, name.span);
                 } else if mode != Mode::Via {
                     value.receive_binding(access);
                 } else {
@@ -2455,6 +2507,7 @@ impl<'a> Analyzer<'a> {
                     };
                     let access = self.member_schema(span, &coordinate).0;
                     let value = self.receive_member(
+                        ctx,
                         value,
                         access,
                         field.value.map_or(field.name.span, |id| ast.expr(id).span),
@@ -2473,7 +2526,7 @@ impl<'a> Analyzer<'a> {
                     let coordinate = Coordinate::Index(i.to_string());
                     let value = self.expr(ctx, ledger, item);
                     let access = self.member_schema(span, &coordinate).0;
-                    let value = self.receive_member(value, access, ast.expr(item).span);
+                    let value = self.receive_member(ctx, value, access, ast.expr(item).span);
                     sequence.members.insert(coordinate, value);
                 }
                 sequence
@@ -2493,8 +2546,12 @@ impl<'a> Analyzer<'a> {
                         if index > 0 {
                             key_value.forget_results();
                         }
-                        let key_value =
-                            self.receive_member(key_value, Access::Immutable, ast.expr(key).span);
+                        let key_value = self.receive_member(
+                            ctx,
+                            key_value,
+                            Access::Immutable,
+                            ast.expr(key).span,
+                        );
                         let slot = map.members.entry(Coordinate::MapKey).or_default();
                         *slot = std::mem::take(slot).joined(key_value);
                     }
@@ -2509,7 +2566,7 @@ impl<'a> Analyzer<'a> {
                         // An unknown later key may replace this occurrence.
                         datum.forget_results();
                     }
-                    let datum = self.receive_member(datum, access, ast.expr(value).span);
+                    let datum = self.receive_member(ctx, datum, access, ast.expr(value).span);
                     if keys.is_some() {
                         if map.members.insert(coordinate.clone(), datum).is_none() {
                             ordered_keys.push(coordinate);
@@ -3192,7 +3249,7 @@ impl<'a> Analyzer<'a> {
                     self.check_publication_source(ctx, ledger, &value, span);
                 }
                 if mode == Mode::Plain {
-                    self.freeze_value(ledger, &mut value, span);
+                    self.freeze_value(ctx, ledger, &mut value, span);
                 } else {
                     value.receive_binding(Access::from_mode(mode));
                 }
@@ -3261,7 +3318,7 @@ impl<'a> Analyzer<'a> {
                 if access == Access::Shared {
                     self.require_shared_replacement(&value, span, true);
                 }
-                let mut value = self.receive_member(value, access, span);
+                let mut value = self.receive_member(ctx, value, access, span);
                 value
                     .publications
                     .insert(ctx.owner, prior.roots.iter().any(|root| !root.new));
@@ -3280,17 +3337,16 @@ impl<'a> Analyzer<'a> {
     ) {
         if target.roots.iter().any(|root| root.draft) {
             let snapshot = ledger.loop_snapshot(value);
-            if !snapshot.can_freeze()
-                || snapshot.origins().any(|origin| {
-                    origin.mode != Access::Immutable
-                        && ctx.caller_sources.contains(&origin.region.source)
-                })
-            {
-                self.error(
-                    Code::E0535,
-                    span,
-                    "draft insertion requires an immutable snapshot or an isolated local value",
-                );
+            let message =
+                "draft insertion requires an immutable snapshot or an isolated local value";
+            if snapshot.origins().any(|origin| {
+                origin.new
+                    && origin.mode != Access::Immutable
+                    && ctx.caller_sources.contains(&origin.region.source)
+            }) {
+                self.error(Code::E0535, span, message);
+            } else {
+                self.require_snapshot(ctx, &snapshot, Code::E0535, span, message);
             }
         }
     }

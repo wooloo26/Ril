@@ -12,12 +12,31 @@ use crate::access::{
     flow::{Choices, ViaConflict, compatible},
 };
 
-pub(super) struct ModeConflict {
+pub(super) struct ModeConstraint {
     pub owner: Span,
     pub conditions: Vec<(Fact, bool)>,
-    pub via: ViaConflict,
+    pub test: ModeTest,
     pub span: Span,
     pub message: &'static str,
+}
+
+pub(super) enum ModeTest {
+    Overlap(Box<ViaConflict>),
+    Immutable(BTreeSet<Expression>, Code),
+}
+
+impl ModeTest {
+    fn violation(&self, input: impl Fn(&Region) -> Option<Input>) -> Option<Code> {
+        match self {
+            Self::Overlap(overlap) => overlap
+                .classify(input)
+                .map(|writable| if writable { Code::E0523 } else { Code::E0524 }),
+            Self::Immutable(expressions, code) => expressions
+                .iter()
+                .any(|expression| expression.select(&input) != Some(Input::Plain))
+                .then_some(*code),
+        }
+    }
 }
 
 pub(super) type Expression = ModeExpression<Region>;
@@ -366,23 +385,23 @@ impl Analyzer<'_> {
             }
         }
         self.register_closure_domains(facts, domains);
-        for conflict in std::mem::take(&mut self.mode_conflicts) {
-            if !conflict
+        for constraint in std::mem::take(&mut self.mode_constraints) {
+            if !constraint
                 .conditions
                 .iter()
                 .all(|(fact, expected)| facts.contains(fact) == *expected)
             {
                 continue;
             }
-            let bad = if let Some(domain) = domains.tables.get_mut(&conflict.owner) {
+            let bad = if let Some(domain) = domains.tables.get_mut(&constraint.owner) {
                 let rejected: Vec<_> = domain
                     .allowed
                     .iter()
                     .filter_map(|row| {
-                        conflict
-                            .via
-                            .classify(|axis| domain.input(row, axis))
-                            .map(|kind| (row.clone(), kind))
+                        constraint
+                            .test
+                            .violation(|axis| domain.input(row, axis))
+                            .map(|code| (row.clone(), code))
                     })
                     .collect();
                 for (row, _) in &rejected {
@@ -394,11 +413,10 @@ impl Analyzer<'_> {
                     .then(|| rejected.first().map(|(_, kind)| *kind))
                     .flatten()
             } else {
-                conflict.via.classify(|_| None)
+                constraint.test.violation(|_| None)
             };
-            if let Some(writable) = bad {
-                let code = if writable { Code::E0523 } else { Code::E0524 };
-                self.error(code, conflict.span, conflict.message);
+            if let Some(code) = bad {
+                self.error(code, constraint.span, constraint.message);
             }
         }
         let applications = std::mem::take(&mut self.mode_applications);

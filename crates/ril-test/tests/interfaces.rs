@@ -123,6 +123,111 @@ fn run(flag: bool) -> int {{
 }
 
 #[test]
+fn derive_snapshot_domains_survive_interface_only_forwarding() {
+    use ril_base::diag::Code;
+    use ril_sema::access::Input;
+
+    let provider_source = br#"
+pub type Cell = .{ var count: int }
+pub fn root(via base: Cell) -> Cell {
+    derive(base) \mut draft -> { draft.count += 1 }
+}
+pub fn member(via box: .{ via item: Cell, var stamp: int }) -> Cell {
+    derive(box.item) \mut draft -> { draft.count += 1 }
+}
+"#;
+    let mut provider = VirtualPackage::new(Unit::Lib);
+    provider.entry = "pkg/update.ril".into();
+    provider.insert(provider.entry.clone(), provider_source.to_vec());
+    let published = Driver.interface(&provider).unwrap();
+    let domains = |interface: &Interface| {
+        ["root", "member"].map(|name| {
+            let export = interface
+                .functions
+                .iter()
+                .find(|(path, _)| path.rsplit("::").next() == Some(name))
+                .unwrap()
+                .1;
+            export
+                .domain
+                .iter()
+                .map(|row| row.modes.clone())
+                .collect::<BTreeSet<_>>()
+        })
+    };
+    let observed = domains(&published);
+    assert_eq!(observed[0], BTreeSet::from([vec![Input::Plain]]));
+    assert_eq!(observed[1].len(), 8);
+    if let Some(oracle) = std::env::var_os("RIL_HORN_ORACLE") {
+        let reply = query(&oracle, "draft-via-domains", b"[]").unwrap();
+        let formal: Vec<(String, BTreeSet<Vec<Input>>)> = serde_json::from_slice(&reply).unwrap();
+        assert_eq!(
+            formal,
+            vec![
+                ("root".into(), observed[0].clone()),
+                ("member".into(), observed[1].clone()),
+            ]
+        );
+    }
+    let encoded = published.encode().unwrap();
+    for (mount, bytes) in [
+        ("library/update.ril", provider_source.as_slice()),
+        ("library/update.rili", encoded.as_slice()),
+    ] {
+        let forwarding = r#"
+use library/update
+pub fn root(via base: Update::Cell) -> Update::Cell {
+    let apply = Update::root
+    apply(base)
+}
+pub fn member(via box: .{ via item: Update::Cell, var stamp: int }) -> Update::Cell {
+    Update::member(box)
+}
+"#;
+        let mut client = VirtualPackage::new(Unit::Lib);
+        client.insert(mount.into(), bytes.to_vec());
+        client.insert(client.entry.clone(), forwarding.as_bytes().to_vec());
+        assert_eq!(
+            domains(&Driver.interface(&client).unwrap()),
+            observed,
+            "{mount}"
+        );
+        for (call, accepted) in [
+            ("root(snapshot)", true),
+            ("root(ref live.item)", false),
+            ("member(fixed)", true),
+            ("member(mut copy)", true),
+            ("member(mut live)", false),
+        ] {
+            let source = format!(
+                "{forwarding}
+fn run() -> int {{
+    let snapshot = Update::Cell.{{ count: 1 }}
+    let fixed = .{{ mut item: Update::Cell.{{ count: 2 }}, var stamp: 0 }}
+    let mut copy = .{{ item: snapshot, var stamp: 0 }}
+    let mut live = .{{ mut item: Update::Cell.{{ count: 3 }}, var stamp: 0 }}
+    copy.stamp += 1
+    live.stamp += 1
+    {call}.count
+}}"
+            );
+            client.insert(client.entry.clone(), source.into_bytes());
+            let result = Driver.analyze(&client);
+            match (accepted, result) {
+                (true, Ok(_)) => {}
+                (false, Err(diagnostics)) => {
+                    assert!(
+                        diagnostics.iter().any(|d| d.code == Some(Code::E0520)),
+                        "{mount} {call}: {diagnostics:?}"
+                    );
+                }
+                (_, result) => panic!("{mount} {call}: {:?}", result.err()),
+            }
+        }
+    }
+}
+
+#[test]
 fn joint_via_restrictions_survive_interface_only_forwarding() {
     use ril_base::diag::Code;
     use ril_sema::access::Input;

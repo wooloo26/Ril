@@ -388,6 +388,8 @@ def main (args : List String) : IO Unit := do
     stdout.putStrLn (toJson RilAccess.Draft.Examples.runtimeObservations).compress
   else if args == ["draft-roots"] then
     stdout.putStrLn (toJson RilAccess.Draft.Examples.sourceChecks).compress
+  else if args == ["draft-via-domains"] then
+    stdout.putStrLn (toJson RilAccess.Draft.Examples.viaSnapshotDomains).compress
   else if args == ["handoff"] then
     stdout.putStrLn (toJson handoffCases).compress
   else if args == ["provenance"] then

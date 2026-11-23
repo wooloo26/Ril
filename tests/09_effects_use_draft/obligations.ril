@@ -274,6 +274,53 @@ fn update() -> () {
     -- ^ E0536
 }
 
+-- @case derive_rejects_a_live_via_argument_after_forwarding compile-fail E0520
+type Cell = .{ var count: int }
+fn update(via base: Cell) -> Cell {
+    derive(base) \mut draft -> { draft.count += 1 }
+}
+fn relay(via base: Cell) -> Cell { update(base) }
+fn read() -> int {
+    let mut cell = Cell.{ count: 1 }
+    cell.count += 1
+    relay(ref cell).count
+    -- ^ E0520
+}
+
+-- @case derive_rejects_joint_live_root_and_member_modes compile-fail E0520
+type Cell = .{ count: int }
+fn update(via box: .{ via item: Cell, var stamp: int }) -> Cell {
+    derive(box.item) \mut draft -> { draft.count += 1 }
+}
+fn read() -> int {
+    let mut writer = .{ mut item: Cell.{ count: 1 }, var stamp: 0 }
+    writer.stamp += 1
+    update(mut writer).count
+    -- ^ E0520
+}
+
+-- @case derive_rejects_a_via_parameter_required_to_write compile-fail E0536
+type Cell = .{ var count: int }
+fn update(via base: Cell) -> Cell {
+    base.count += 1
+    derive(base) \mut draft -> { draft.count += 1 }
+    -- ^ E0536
+}
+
+-- @case derive_requires_a_plain_input_to_a_forwarded_callback compile-fail E0520
+type Cell = .{ var count: int }
+fn update(via base: Cell) -> Cell {
+    let apply = \ -> derive(base) \mut draft -> { draft.count += 1 }
+    apply()
+}
+fn forward(action: fn(via Cell) -> Cell, via base: Cell) -> Cell { action(base) }
+fn read() -> int {
+    let mut cell = Cell.{ count: 1 }
+    cell.count += 1
+    forward(update, ref cell).count
+    -- ^ E0520
+}
+
 -- @case derive_requires_immutable_reception_compile_ref compile-fail E0536
 -- @forbid E0535
 type Cell = .{ var count: int }

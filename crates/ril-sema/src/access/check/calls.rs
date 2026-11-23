@@ -416,12 +416,11 @@ impl<'program> Analyzer<'program> {
             let mode = if channel_payload { Mode::New } else { mode };
             let value = if primitive && name == "derive" && index == 0 {
                 let mut snapshot = ledger.snapshot(&value);
-                if mode != Mode::Plain || !snapshot.can_freeze() {
-                    self.error(
-                        Code::E0536,
-                        node.span,
-                        "derive requires an immutable snapshot",
-                    );
+                let message = "derive requires an immutable snapshot";
+                if mode != Mode::Plain {
+                    self.error(Code::E0536, node.span, message);
+                } else {
+                    self.require_snapshot(ctx, &snapshot, Code::E0536, node.span, message);
                 }
                 snapshot.freeze();
                 snapshot
@@ -2159,7 +2158,7 @@ impl<'program> Analyzer<'program> {
         span: Span,
         mode: Mode,
     ) -> Datum {
-        if mode != Mode::Via {
+        if !matches!(mode, Mode::Via | Mode::Plain) {
             for root in &mut value.roots {
                 root.inherits_mode = false;
             }
@@ -2200,8 +2199,13 @@ impl<'program> Analyzer<'program> {
                 }
             }
             Mode::Plain
-                if matches!(self.ty(span), Ty::Callable(_)) || value.task_scope.is_some() => {}
-            Mode::Plain => self.freeze_value(ledger, &mut value, span),
+                if matches!(self.ty(span), Ty::Callable(_)) || value.task_scope.is_some() =>
+            {
+                for root in &mut value.roots {
+                    root.inherits_mode = false;
+                }
+            }
+            Mode::Plain => self.freeze_value(ctx, ledger, &mut value, span),
             _ => {}
         }
         value

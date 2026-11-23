@@ -131,6 +131,31 @@ fn main() @io -> () {
     println("{base.count}:{updated.count}:{len(updated.values)}")
 }
 
+-- @case derive_receives_via_snapshots_through_projections_and_callbacks run-pass backend=both
+type Cell = .{ count: int }
+fn update(via base: Cell) -> Cell {
+    let apply = \ -> derive(base) \mut draft -> { draft.count += 1 }
+    apply()
+}
+fn forward(action: fn(via Cell) -> Cell, via base: Cell) -> Cell { action(base) }
+fn member(via box: .{ via item: Cell, var stamp: int }) -> Cell {
+    derive(box.item) \mut draft -> { draft.count += 1 }
+}
+fn replace(via item: Cell) -> []Cell {
+    let base = [Cell.{ count: 1 }]
+    derive(base) \mut draft -> { draft[0] = item }
+}
+fn main() -> () {
+    let item = Cell.{ count: 4 }
+    let fixed = .{ mut item: Cell.{ count: 6 }, var stamp: 0 }
+    let mut writer = .{ item, var stamp: 0 }
+    writer.stamp += 1
+    assert(forward(update, item).count == 5 && item.count == 4)
+    assert(member(fixed).count == 7 && fixed.item.count == 6)
+    assert(member(mut writer).count == 5 && writer.item.count == 4)
+    assert(replace(item)[0].count == 4)
+}
+
 -- @case local_effect_dispatches_through_its_handler run-pass backend=both
 -- @expect-stdout 42
 fn main() @io -> () {

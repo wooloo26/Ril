@@ -211,6 +211,10 @@ pub(super) struct CallbackOrigin {
 }
 
 impl Origin {
+    fn can_freeze(&self, owned: bool) -> bool {
+        self.mode == Access::Immutable || owned && self.new
+    }
+
     pub(super) fn enter_formal(&mut self, callable: Span, mode: Mode) {
         self.inherits_mode = mode == Mode::Via;
         self.call_borrow = mode == Mode::Mut;
@@ -680,17 +684,39 @@ impl Datum {
     }
 
     pub(super) fn can_freeze(&self) -> bool {
-        self.freezable_sources(self.requires_new)
+        self.accepts_snapshot_sources(&mut |_| false)
     }
 
-    fn freezable_sources(&self, owned: bool) -> bool {
+    pub(super) fn accepts_snapshot_sources(
+        &self,
+        symbolic: &mut impl FnMut(&Origin) -> bool,
+    ) -> bool {
+        self.freezable_sources(self.requires_new, symbolic)
+    }
+
+    fn freezable_sources(&self, owned: bool, symbolic: &mut impl FnMut(&Origin) -> bool) -> bool {
         self.roots
             .iter()
-            .all(|root| root.mode == Access::Immutable || owned && root.new)
-            && self
-                .members
-                .values()
-                .all(|member| member.freezable_sources(owned && self.environments.is_empty()))
+            .all(|root| root.can_freeze(owned) || symbolic(root))
+            && self.members.values().all(|member| {
+                member.freezable_sources(owned && self.environments.is_empty(), symbolic)
+            })
+    }
+
+    pub(super) fn specialize_snapshot_sources(&mut self) {
+        self.specialize_freezable_sources(self.requires_new);
+    }
+
+    fn specialize_freezable_sources(&mut self, owned: bool) {
+        for root in &mut self.roots {
+            if !root.can_freeze(owned) {
+                root.fix_mode(Access::Immutable);
+                root.new = false;
+            }
+        }
+        for member in self.members.values_mut() {
+            member.specialize_freezable_sources(owned && self.environments.is_empty());
+        }
     }
 
     pub(super) fn freeze(&mut self) {

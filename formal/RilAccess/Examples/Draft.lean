@@ -120,6 +120,26 @@ def rejectsRoot (shape : RootShape) (value : Value) (source : Input) : Bool :=
   | .error .invalidDeriveInput => true
   | .ok _ => false
 
+def viaSnapshotDomains : List (String × List (List String)) :=
+  let memberModes : List (String × Access) :=
+    [("Plain", .immutable), ("Ref", .ref), ("Mut", .mut), ("Shared", .shared)]
+  -- An owned parameter still needs explicit handoff before it is frozen.
+  let rootModes := memberModes ++ [("New", .mut)]
+  let admits := fun access =>
+    let candidate := { emptyRecordInput with
+      admissions := emptyRecordInput.admissions.map fun (object, current) =>
+        (object, if object == 4 then access else current) }
+    (prepareRoot (.record 800) (.reference 4) candidate).isOk
+  let roots := rootModes.filterMap fun (name, access) =>
+    if admits access then some [name] else none
+  let projected := rootModes.flatMap fun (root, rootAccess) =>
+    memberModes.filterMap fun (member, memberAccess) =>
+      if admits (attenuate rootAccess memberAccess) then some [root, member] else none
+  [("root", roots), ("member", projected)]
+
+theorem via_snapshot_domains_include_immutable_projection :
+    viaSnapshotDomains.map (fun (_, rows) => rows.length) = [1, 8] := by decide +kernel
+
 def sourceChecks : List (String × Bool) :=
   let record := { input with root := 0 }
   let sources (access : Access) : Input := { input with
