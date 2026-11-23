@@ -81,6 +81,19 @@ impl<'program> Analyzer<'program> {
         &mut self,
         ctx: &mut Context,
         ledger: &mut Ledger,
+        callee: ExprId,
+        args: &[Argument],
+        span: Span,
+    ) -> Datum {
+        let result = self.call_value(ctx, ledger, callee, args, span);
+        ledger.remember_return_graph(&result, span);
+        result
+    }
+
+    fn call_value(
+        &mut self,
+        ctx: &mut Context,
+        ledger: &mut Ledger,
         callee_id: ExprId,
         args: &[Argument],
         span: Span,
@@ -316,6 +329,13 @@ impl<'program> Analyzer<'program> {
             values.push((index, mode, value));
             value_spans.push(node.span);
         }
+        let is_constructor = primitive && matches!(name, "Some" | "Ok" | "Err")
+            || def.is_some_and(|def| {
+                matches!(def.kind, DefinitionKind::Type | DefinitionKind::Variant(_))
+            });
+        // Constructors store identities. Materialize the argument graph for
+        // overlap checks, but keep the original edges in the constructed value.
+        let fields = is_constructor.then(|| values.clone());
         for (_, _, value) in &mut values {
             *value = ledger.snapshot(value);
         }
@@ -413,6 +433,9 @@ impl<'program> Analyzer<'program> {
                 }
             }
         }
+        if let Some(fields) = fields {
+            return constructor(span, fields);
+        }
         if let Some(module @ ("Fiber" | "Channel")) = module {
             return self.concurrent(ctx, ledger, (module, name), &values, args, span);
         }
@@ -460,11 +483,6 @@ impl<'program> Analyzer<'program> {
         }
         if let Some(fun) = syntax {
             return self.named_call(ctx, ledger, fun, sig, (&values, &value_spans), span);
-        }
-        if let Some(def) = def
-            && matches!(def.kind, DefinitionKind::Type | DefinitionKind::Variant(_))
-        {
-            return constructor(span, values);
         }
         if all_aliases_known && let Some(receiver) = &target {
             let before = ledger.clone();
@@ -1200,6 +1218,7 @@ impl<'program> Analyzer<'program> {
             let Some((member, parent)) = region.selection.split_last() else {
                 let mut stored =
                     self.instantiate_return(&formals, &via, entry, &update.value, &mut output_path);
+                ledger.remember_return_graph(&stored, entry.span);
                 self.check_stored_views(&stored, false, entry.span);
                 if ctx.caller_slots.contains(&region.source) {
                     stored.publications.insert(ctx.owner, true);
@@ -1241,6 +1260,7 @@ impl<'program> Analyzer<'program> {
             applied &= !place.roots.is_empty();
             let mut stored =
                 self.instantiate_return(&formals, &via, entry, &update.value, &mut output_path);
+            ledger.remember_return_graph(&stored, entry.span);
             self.check_stored_views(&stored, false, entry.span);
             stored
                 .publications
@@ -1385,9 +1405,14 @@ impl<'program> Analyzer<'program> {
                 } else {
                     let mut mapped = origin.clone();
                     mapped.branches.clear();
-                    if mapped.new {
-                        mapped.region = Region::allocation(entry.span);
-                        mapped.region.selection.clone_from(output_path);
+                    if mapped.new || mapped.return_allocation.is_some() {
+                        mapped.region = if let Some(identity) = mapped.return_allocation.take() {
+                            Region::returned(entry.span, identity)
+                        } else {
+                            let mut region = Region::allocation(entry.span);
+                            region.selection.clone_from(output_path);
+                            region
+                        };
                         mapped.dependencies.clear();
                         mapped.anchor_scopes.clear();
                         mapped.confined = None;
@@ -2096,7 +2121,6 @@ impl<'program> Analyzer<'program> {
                 }
                 return Datum::source(span, Access::Mut, true);
             }
-            "Some" | "Ok" | "Err" => return constructor(span, args.iter().cloned()),
             "yield" | "sleep" | "scope" | "spawn" | "join" | "send" | "recv" => {
                 self.effect(ctx, ledger, "fiber", span);
             }
@@ -2578,6 +2602,7 @@ impl<'program> Analyzer<'program> {
             }
         }
         let exits = self.storage_exits.remove(&node.span).unwrap_or_default();
+        let body_span = self.ast(ctx.file).expr(*body).span;
         if let Some(closure) = self.closure_modes.get_mut(&node.span) {
             closure.updates = Ledger::join_updates(exits.iter().collect());
             closure.models_publication = closure
@@ -2591,6 +2616,13 @@ impl<'program> Analyzer<'program> {
             if implicit && inner.reachable {
                 closure.returns.push(output.clone());
             }
+            Datum::mark_call_allocations(
+                closure
+                    .returns
+                    .iter_mut()
+                    .chain(closure.updates.values_mut().map(|update| &mut update.value)),
+                body_span,
+            );
         }
         if output.origins().any(|origin| origin.draft) {
             self.error(Code::E0607, node.span, "draft escapes update callback");

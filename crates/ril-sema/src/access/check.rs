@@ -803,7 +803,14 @@ impl<'a> Analyzer<'a> {
             }
         }
         let exits = self.storage_exits.remove(&ctx.owner).unwrap_or_default();
-        let updates = Ledger::join_updates(exits.iter().collect());
+        let mut updates = Ledger::join_updates(exits.iter().collect());
+        Datum::mark_call_allocations(
+            ctx.return_values
+                .iter_mut()
+                .filter(|_| ctx.expected != Mode::Plain)
+                .chain(updates.values_mut().map(|update| &mut update.value)),
+            body_span,
+        );
         self.functions.push(DefinitionCheck {
             owner: ctx.owner,
             id,
@@ -862,6 +869,7 @@ impl<'a> Analyzer<'a> {
     fn finish_function(&mut self, facts: &BTreeSet<Fact>, fun: &DefinitionCheck) -> Summary {
         let mut summary = Summary {
             return_sources: fun.return_sources.clone(),
+            return_allocations: Datum::return_allocations(&fun.returns),
             constructs: fun.returned_new,
             nonreturning: !fun.normal_exit,
             invocations: self
@@ -1042,6 +1050,7 @@ impl<'a> Analyzer<'a> {
                     path: region.selection.clone(),
                     sources: sources.into_iter().collect(),
                     callback_returns: self.callback_return_contracts(&fun.formals, &update.value),
+                    allocations: Datum::return_allocations(std::slice::from_ref(&update.value)),
                     definite: update.definite,
                     constructs: update.value.requires_new,
                 })

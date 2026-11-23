@@ -7,6 +7,8 @@ use ril_base::span::Span;
 use ril_frontend::syntax::Mode;
 use serde::{Deserialize, Serialize};
 
+use super::ReturnAllocation;
+
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 pub enum Access {
     Immutable,
@@ -59,6 +61,13 @@ pub(super) struct Region {
     pub source: Span,
     pub selection: Vec<Coordinate>,
     instance: RegionInstance,
+    returned: Option<AllocationIdentity>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub(super) struct AllocationIdentity {
+    pub index: usize,
+    pub summarized: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -74,6 +83,7 @@ impl Region {
             source,
             selection: Vec::new(),
             instance: RegionInstance::Source,
+            returned: None,
         }
     }
 
@@ -84,6 +94,18 @@ impl Region {
         }
     }
 
+    pub(super) fn returned(source: Span, identity: AllocationIdentity) -> Self {
+        Self {
+            returned: Some(identity),
+            ..Self::allocation(source)
+        }
+    }
+
+    fn summarized(&self) -> bool {
+        self.instance == RegionInstance::PriorAllocations
+            || self.returned.is_some_and(|identity| identity.summarized)
+    }
+
     fn age_allocation(&mut self, inside_loop: bool) {
         if inside_loop && self.instance == RegionInstance::Allocation {
             self.instance = RegionInstance::PriorAllocations;
@@ -92,6 +114,10 @@ impl Region {
 
     pub(super) fn overlaps(&self, other: &Self) -> bool {
         self.source == other.source
+            && self
+                .returned
+                .zip(other.returned)
+                .is_none_or(|(left, right)| left.index == right.index)
             && (self.instance == other.instance
                 || self.instance == RegionInstance::Source
                 || other.instance == RegionInstance::Source)
@@ -126,6 +152,7 @@ pub(super) struct Origin {
     pub mode: Access,
     pub inherits_mode: bool,
     pub callback_result: Option<CallbackOrigin>,
+    pub return_allocation: Option<AllocationIdentity>,
     pub reception: Vec<Reception>,
     pub new: bool,
     // A marker on this expression, independent of the source's existing access.
@@ -250,6 +277,7 @@ impl Datum {
                 mode,
                 inherits_mode: false,
                 callback_result: None,
+                return_allocation: None,
                 reception: Vec::new(),
                 new,
                 explicit_share: false,
@@ -279,12 +307,22 @@ impl Datum {
         path: &mut Vec<Coordinate>,
         visit: &mut impl FnMut(&[Coordinate], &Origin),
     ) {
-        for origin in &self.roots {
-            visit(path, origin);
-        }
+        self.visit_nodes(path, &mut |path, node| {
+            for origin in &node.roots {
+                visit(path, origin);
+            }
+        });
+    }
+
+    fn visit_nodes(
+        &self,
+        path: &mut Vec<Coordinate>,
+        visit: &mut impl FnMut(&[Coordinate], &Self),
+    ) {
+        visit(path, self);
         for (coordinate, member) in &self.members {
             path.push(coordinate.clone());
-            member.visit_origins(path, visit);
+            member.visit_nodes(path, visit);
             path.pop();
         }
     }
@@ -294,6 +332,78 @@ impl Datum {
         for member in self.members.values_mut() {
             member.transform(f);
         }
+    }
+
+    pub(super) fn mark_call_allocations<'d>(
+        values: impl Iterator<Item = &'d mut Self>,
+        body: Span,
+    ) {
+        let values: Vec<_> = values.collect();
+        let mut regions = BTreeMap::<Region, BTreeSet<_>>::new();
+        for (output, value) in values.iter().enumerate() {
+            value.visit_origins(&mut Vec::new(), &mut |path, origin| {
+                let source = origin.region.source;
+                if origin.region.instance != RegionInstance::Source
+                    && source.file == body.file
+                    && source.start >= body.start
+                    && source.end <= body.end
+                {
+                    regions.entry(origin.region.clone()).or_default().insert((
+                        output,
+                        path.to_vec(),
+                        origin.mode,
+                        origin.new,
+                    ));
+                }
+            });
+        }
+        if !regions
+            .keys()
+            .any(|region| region.summarized() || region.returned.is_some())
+        {
+            return;
+        }
+        // Published indices are ordered by the shape visible to the caller.
+        let mut by_shape: Vec<_> = regions
+            .into_iter()
+            .map(|(region, paths)| (paths, region.summarized(), region))
+            .collect();
+        by_shape.sort_unstable();
+        let identities: BTreeMap<_, _> = by_shape
+            .into_iter()
+            .enumerate()
+            .map(|(index, (_, summarized, region))| {
+                (region, AllocationIdentity { index, summarized })
+            })
+            .collect();
+        for value in values {
+            value.transform(&mut |origin| {
+                origin.return_allocation = identities.get(&origin.region).copied();
+            });
+        }
+    }
+
+    pub(super) fn return_allocations(values: &[Self]) -> Vec<ReturnAllocation> {
+        let mut allocations = BTreeSet::new();
+        for value in values {
+            value.visit_nodes(&mut Vec::new(), &mut |path, node| {
+                for origin in &node.roots {
+                    let Some(AllocationIdentity { index, summarized }) = origin.return_allocation
+                    else {
+                        continue;
+                    };
+                    allocations.insert(ReturnAllocation {
+                        path: path.to_vec(),
+                        index,
+                        access: origin.mode,
+                        new: origin.new,
+                        qualified: node.requires_new,
+                        summarized,
+                    });
+                }
+            });
+        }
+        allocations.into_iter().collect()
     }
 
     fn compact_snapshot(&mut self, local_data: impl Fn(Span) -> bool + Copy) -> bool {
@@ -355,6 +465,23 @@ impl Datum {
                 slot.selection.push(coordinate.clone());
                 merge_member(members, slot, member.clone());
             }
+        }
+    }
+
+    fn remember_return_graph(&self, members: &mut BTreeMap<Region, Self>, call: Span) {
+        let parents: BTreeSet<_> = self
+            .roots
+            .iter()
+            .map(|origin| &origin.region)
+            .filter(|region| region.source == call && region.returned.is_some())
+            .collect();
+        for (coordinate, member) in &self.members {
+            for parent in &parents {
+                let mut slot = (*parent).clone();
+                slot.selection.push(coordinate.clone());
+                merge_member(members, slot, member.clone());
+            }
+            member.remember_return_graph(members, call);
         }
     }
 
@@ -630,6 +757,10 @@ pub(super) struct Ledger {
 }
 
 impl Ledger {
+    pub(super) fn remember_return_graph(&mut self, value: &Datum, call: Span) {
+        value.remember_return_graph(&mut self.loop_members, call);
+    }
+
     pub(super) fn reset_revocations(&mut self) {
         self.revoked.clear();
     }
@@ -750,7 +881,7 @@ impl Ledger {
         }
         for (mut region, mut update) in std::mem::take(&mut self.replacements) {
             region.age_allocation(local(region.source));
-            update.definite &= region.instance != RegionInstance::PriorAllocations;
+            update.definite &= !region.summarized();
             age_value(&mut update.value);
             update.value.fold_old_allocations(&mut self.loop_members);
             self.replacements
@@ -926,7 +1057,7 @@ impl Ledger {
             let region = &origin.region;
             let definite = definite
                 && single
-                && region.instance != RegionInstance::PriorAllocations
+                && !region.summarized()
                 && !region.selection.contains(&Coordinate::Dynamic);
             self.replace_region(region, &value, definite);
         }
@@ -961,7 +1092,7 @@ impl Ledger {
     }
 
     pub(super) fn project_schema(&self, base: &Datum, coordinate: Coordinate, mode: Mode) -> Datum {
-        self.project_members(base, coordinate, mode, |_| true)
+        self.project_members(base, coordinate, mode, |_| true, |_| true)
     }
 
     fn project_members(
@@ -970,6 +1101,7 @@ impl Ledger {
         coordinate: Coordinate,
         mode: Mode,
         follow: impl Fn(&Origin) -> bool,
+        include_opaque: impl Fn(&Region) -> bool,
     ) -> Datum {
         if base.roots.is_empty() || self.replacements.is_empty() && self.loop_members.is_empty() {
             return base.project_schema(coordinate, mode);
@@ -1006,7 +1138,7 @@ impl Ledger {
                     projected = join_member(projected, update.value.clone());
                 }
             }
-            if !folded && initial.is_none() {
+            if !folded && initial.is_none() && include_opaque(region) {
                 missing.push(root.clone());
             }
         }
@@ -1055,9 +1187,19 @@ impl Ledger {
             }
         }
         for coordinate in coordinates {
-            let member = self.project_members(value, coordinate.clone(), Mode::Mut, |root| {
-                regions.contains(&(root.region.clone(), root.mode))
-            });
+            let member = self.project_members(
+                value,
+                coordinate.clone(),
+                Mode::Mut,
+                |root| regions.contains(&(root.region.clone(), root.mode)),
+                // A symbolic root already represents its entry graph. During
+                // a snapshot, invent a path only to reach a tracked store.
+                |region| {
+                    self.replacements.keys().any(|target| {
+                        region.selection.len() <= target.selection.len() && region.overlaps(target)
+                    })
+                },
+            );
             snapshot
                 .members
                 .insert(coordinate, self.snapshot_members(&member, ancestors));

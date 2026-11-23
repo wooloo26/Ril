@@ -17,6 +17,145 @@ use ril_sema::{
 use ril_test::{CaseMode, Stage, TestDriver, Unit, VirtualPackage, parse_suite, run_worker};
 
 #[test]
+fn recursive_allocation_graphs_survive_interface_replay() {
+    use ril_base::diag::Code;
+
+    let provider_source = br#"
+pub nominal type Node = .{ var value: int, var ^mut next: ?Node }
+pub type Shelf = .{ var mut head: Node }
+pub type Pair = .{ var ^mut left: Node, var ^mut right: Node }
+pub fn build(^mut tail: Node, count: int) &mut &^mut &return(^mut tail) -> new Node {
+    var ^mut head = tail
+    for 0..count as i {
+        let mut node = Node.{ value: i, next: Some(^mut head) }
+        node.value += 1
+        head = ^mut node
+    }
+    head.value += 1
+    Node.{ value: 0, next: Some(^mut head) }
+}
+pub fn store(mut shelf: Shelf, ^mut tail: Node, count: int) &mut &^mut -> () {
+    shelf.head = build(^mut tail, count)
+}
+pub fn publish(mut pair: Pair, ^mut tail: Node, count: int) &mut &^mut -> () {
+    let mut head = build(^mut tail, count)
+    head.value += 1
+    pair.left = ^mut head
+    pair.right = ^mut head
+}
+"#;
+    let mut provider = VirtualPackage::new(Unit::Lib);
+    provider.entry = "pkg/chain.ril".into();
+    provider.insert(provider.entry.clone(), provider_source.to_vec());
+    let interface = Driver.interface(&provider).unwrap().encode().unwrap();
+    let decoded = Interface::decode(&interface).unwrap();
+    let allocations = &decoded.functions["pkg/chain.ril::build"]
+        .summary
+        .return_allocations;
+    assert!(allocations.iter().any(|allocation| {
+        allocation.summarized
+            && allocations
+                .iter()
+                .any(|other| allocation.index == other.index && allocation.path != other.path)
+    }));
+    let updates = &decoded.functions["pkg/chain.ril::publish"]
+        .summary
+        .storage_updates;
+    let [left, right] = updates.as_slice() else {
+        panic!("expected both member updates: {updates:?}");
+    };
+    let root_index = |update: &ril_sema::access::StorageUpdate| {
+        update
+            .allocations
+            .iter()
+            .find(|allocation| allocation.path.is_empty())
+            .unwrap()
+            .index
+    };
+    assert_eq!(root_index(left), root_index(right));
+
+    for (path, bytes) in [
+        ("library/chain.ril", provider_source.as_slice()),
+        ("library/chain.rili", interface.as_slice()),
+    ] {
+        for (setup, head) in [
+            (
+                "let mut head = Chain::build(^mut tail, count)\nhead.value += 1",
+                "head",
+            ),
+            (
+                "let mut shelf = Chain::Shelf.{ head: Chain::Node.{ value: 0, next: None } }\nChain::store(mut shelf, ^mut tail, count)",
+                "shelf.head",
+            ),
+        ] {
+            for (target, spare, expected) in [
+                ("tail", "", vec![Some(Code::E0524)]),
+                (
+                    "spare",
+                    "let mut spare = Chain::Node.{ value: 0, next: None }",
+                    Vec::new(),
+                ),
+            ] {
+                let mut read = format!("copy(mut {target}, ref link9)");
+                for depth in (1..=9).rev() {
+                    let parent = if depth == 1 {
+                        head.to_owned()
+                    } else {
+                        format!("link{}", depth - 1)
+                    };
+                    read = format!(
+                        "match ref {parent}.next {{ Some(link{depth}) -> {read}; None -> () }}"
+                    );
+                }
+                let source = format!(
+                    "use library/chain\n\
+                     fn copy(mut target: Chain::Node, ref reader: Chain::Node) &mut -> () {{ target.value = reader.value }}\n\
+                     fn run(count: int) -> () {{\n\
+                        let mut tail = Chain::Node.{{ value: 1, next: None }}\n\
+                        {setup}\n{spare}\n{read}\n\
+                     }}"
+                );
+                let mut client = VirtualPackage::new(Unit::Lib);
+                client.insert(client.entry.clone(), source.into_bytes());
+                client.insert(path.into(), bytes.to_vec());
+                let diagnostics = Driver.check_stage(&client, Stage::Access).diagnostics;
+                let codes: Vec<_> = diagnostics
+                    .iter()
+                    .map(|diagnostic| diagnostic.code)
+                    .collect();
+                assert_eq!(codes, expected, "{path}, {head}, {target}: {diagnostics:?}");
+            }
+        }
+        let mut client = VirtualPackage::new(Unit::Lib);
+        client.insert(
+            client.entry.clone(),
+            br#"
+use library/chain
+fn copy(mut target: Chain::Node, ref reader: Chain::Node) &mut -> () { target.value = reader.value }
+fn run(count: int) -> () {
+    let mut tail = Chain::Node.{ value: 1, next: None }
+    let mut first = Chain::Node.{ value: 2, next: None }
+    let mut second = Chain::Node.{ value: 3, next: None }
+    first.value += 1
+    second.value += 1
+    let mut pair = Chain::Pair.{ left: ^mut first, right: ^mut second }
+    Chain::publish(mut pair, ^mut tail, count)
+    copy(mut pair.left, ref pair.right)
+}
+"#
+            .to_vec(),
+        );
+        client.insert(path.into(), bytes.to_vec());
+        let diagnostics = Driver.check_stage(&client, Stage::Access).diagnostics;
+        let codes: Vec<_> = diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.code)
+            .collect();
+        assert_eq!(codes, [Some(Code::E0524)], "{path}: {diagnostics:?}");
+    }
+}
+
+#[test]
 fn a_dependency_can_be_checked_using_only_its_published_interface() {
     use ril_base::diag::Code;
 
@@ -573,7 +712,10 @@ fn exported_horn_facts_agree_with_lean() {
 
 #[test]
 fn exported_summaries_and_via_domains_agree_with_lean() {
-    use ril_sema::access::{Coordinate, Instance, InvocationMode, ReturnSource, Summary};
+    use ril_sema::access::{
+        Coordinate, Instance, InvocationMode, ReturnAllocation, ReturnSource, StorageUpdate,
+        Summary,
+    };
     use serde_json::{Value, json};
 
     let Some(oracle) = std::env::var_os("RIL_HORN_ORACLE") else {
@@ -599,6 +741,40 @@ fn exported_summaries_and_via_domains_agree_with_lean() {
             ..Summary::default()
         },
     ];
+    let shared = ReturnAllocation {
+        path: vec![Coordinate::Field("next".into())],
+        index: 0,
+        access: Access::Shared,
+        new: false,
+        qualified: false,
+        summarized: true,
+    };
+    for index in [0, 1] {
+        let allocations = vec![
+            shared.clone(),
+            ReturnAllocation {
+                path: vec![
+                    Coordinate::Field("next".into()),
+                    Coordinate::Field("next".into()),
+                ],
+                index,
+                ..shared.clone()
+            },
+        ];
+        summaries.push(Summary {
+            return_allocations: allocations.clone(),
+            storage_updates: vec![StorageUpdate {
+                formal: 0,
+                path: vec![Coordinate::Field("head".into())],
+                sources: Vec::new(),
+                callback_returns: Vec::new(),
+                allocations,
+                definite: true,
+                constructs: false,
+            }],
+            ..Summary::default()
+        });
+    }
     let mut domains = vec![Vec::new()];
     for case in suite.cases {
         for pkg in case.baseline.iter().chain(std::iter::once(&case.pkg)) {
@@ -672,6 +848,7 @@ fn exported_summaries_and_via_domains_agree_with_lean() {
                     "path": update.path.iter().map(wire_coordinate).collect::<Vec<_>>(),
                     "sources": update.sources.iter().map(wire_source).collect::<Vec<_>>(),
                     "callback_returns": update.callback_returns,
+                    "allocations": update.allocations,
                     "definite": update.definite,
                     "constructs": update.constructs,
                 })
@@ -682,6 +859,7 @@ fn exported_summaries_and_via_domains_agree_with_lean() {
             "retained": summary.retained,
             "independent_retention": summary.independent_retention,
             "return_sources": return_sources,
+            "return_allocations": summary.return_allocations,
             "effects": effects,
             "effect_uses": summary.effect_uses,
             "invocations": invocations,

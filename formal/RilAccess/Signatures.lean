@@ -198,6 +198,7 @@ structure StorageUpdate (Target StoredOrigin : Type) where
   target : Target
   sources : List StoredOrigin
   callbacks : List String
+  allocations : List String
   definite : Bool
   constructs : Bool
 
@@ -206,7 +207,8 @@ def StorageUpdate.permits [DecidableEq Target] [DecidableEq StoredOrigin]
   decide (baseline.target = revision.target) &&
   (!baseline.constructs || revision.constructs) &&
   revision.sources.all (fun source => decide (source ∈ baseline.sources)) &&
-  callbackReturnsSubsumed baseline.callbacks revision.callbacks
+  callbackReturnsSubsumed baseline.callbacks revision.callbacks &&
+  decide (baseline.allocations = revision.allocations)
 
 /-- A published update bounds the written locations and their replacement
 origins. Revisions preserve stores guaranteed at every normal exit. -/

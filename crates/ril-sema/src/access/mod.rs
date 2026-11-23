@@ -18,6 +18,7 @@ pub struct Summary {
     pub retained: Vec<usize>,
     pub independent_retention: Vec<usize>,
     pub return_sources: Vec<ReturnSource>,
+    pub return_allocations: Vec<ReturnAllocation>,
     pub effects: Vec<String>,
     pub effect_uses: Vec<EffectUse>,
     pub invocations: Vec<Invocation>,
@@ -92,6 +93,7 @@ impl Summary {
                 .return_sources
                 .iter()
                 .all(|source| self.return_sources.contains(source))
+            && self.return_allocations == revised.return_allocations
             && revised
                 .storage_updates
                 .iter()
@@ -198,12 +200,25 @@ pub struct ReturnSource {
     pub access: Access,
 }
 
+/// An occurrence of an allocation in a returned object graph. Occurrences
+/// with the same index denote the same abstract object, even at different paths.
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+pub struct ReturnAllocation {
+    pub path: Vec<Coordinate>,
+    pub index: usize,
+    pub access: Access,
+    pub new: bool,
+    pub qualified: bool,
+    pub summarized: bool,
+}
+
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 pub struct StorageUpdate {
     pub formal: usize,
     pub path: Vec<Coordinate>,
     pub sources: Vec<ReturnSource>,
     pub callback_returns: Vec<CallbackReturn>,
+    pub allocations: Vec<ReturnAllocation>,
     pub definite: bool,
     pub constructs: bool,
 }
@@ -224,6 +239,7 @@ impl StorageUpdate {
                 .callback_returns
                 .iter()
                 .all(|result| self.callback_returns.contains(result))
+            && self.allocations == revised.allocations
     }
 }
 

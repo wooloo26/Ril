@@ -6,9 +6,10 @@ use ril_frontend::syntax::{Function, Mode};
 use super::{Analyzer, CallArgument, CallEntry, CallbackResult, Context, Datum, Ledger, Rule};
 use crate::{
     access::{
-        Access, CallbackReturn, Coordinate, Input, InvocationMode, ReturnSource, Summary,
+        Access, CallbackReturn, Coordinate, Input, InvocationMode, ReturnAllocation, ReturnSource,
+        Summary,
         check::{Fact, Obligation, SchemaRequirement, member_axes, storage::CallStorage},
-        flow::{CallbackOrigin, Origin, Region, Replacement},
+        flow::{AllocationIdentity, CallbackOrigin, Origin, Region, Replacement},
     },
     iface::Export,
     ty::{Callable, Ty},
@@ -17,6 +18,7 @@ use crate::{
 struct PublishedValue<'a> {
     sources: &'a [ReturnSource],
     callbacks: &'a [CallbackReturn],
+    allocations: &'a [ReturnAllocation],
     constructs: bool,
 }
 
@@ -248,6 +250,7 @@ impl<'program> Analyzer<'program> {
                         PublishedValue {
                             sources: &update.sources,
                             callbacks: &update.callback_returns,
+                            allocations: &update.allocations,
                             constructs: update.constructs,
                         },
                         ty,
@@ -335,6 +338,7 @@ impl<'program> Analyzer<'program> {
     ) -> Datum {
         if summary.return_sources.is_empty()
             && summary.callback_returns.is_empty()
+            && summary.return_allocations.is_empty()
             && !summary.constructs
         {
             return if ty.is_value() {
@@ -349,6 +353,7 @@ impl<'program> Analyzer<'program> {
             PublishedValue {
                 sources: &summary.return_sources,
                 callbacks: &summary.callback_returns,
+                allocations: &summary.return_allocations,
                 constructs: summary.constructs,
             },
             ty,
@@ -457,11 +462,13 @@ impl<'program> Analyzer<'program> {
         PublishedValue {
             sources,
             callbacks,
+            allocations,
             constructs,
         }: PublishedValue<'_>,
         ty: &'program Ty,
     ) -> Datum {
-        let mut value = if constructs
+        let implicit = constructs && allocations.is_empty();
+        let mut value = if implicit
             && sources.iter().all(|source| !source.result_path.is_empty())
             && callbacks
                 .iter()
@@ -486,15 +493,35 @@ impl<'program> Analyzer<'program> {
             for root in &mut origin.roots {
                 root.region.selection.clone_from(&source.source_path);
             }
-            self.exported_path(&mut value, &source.result_path, ty, owner, constructs)
+            self.exported_path(&mut value, &source.result_path, ty, owner, implicit)
                 .roots
                 .extend(origin.roots);
         }
         for callback in callbacks {
             let results = self.exported_callback(owner, formals, callback);
-            self.exported_path(&mut value, &callback.result_path, ty, owner, constructs)
+            self.exported_path(&mut value, &callback.result_path, ty, owner, implicit)
                 .roots
                 .extend(results);
+        }
+        let mut qualification = BTreeMap::new();
+        for allocation in allocations {
+            let mut source = Datum::source(owner, allocation.access, allocation.new);
+            for root in &mut source.roots {
+                root.return_allocation = Some(AllocationIdentity {
+                    index: allocation.index,
+                    summarized: allocation.summarized,
+                });
+            }
+            self.exported_path(&mut value, &allocation.path, ty, owner, false)
+                .roots
+                .extend(source.roots);
+            if !allocation.path.is_empty() {
+                *qualification.entry(&allocation.path).or_insert(true) &= allocation.qualified;
+            }
+        }
+        for (path, qualified) in qualification {
+            let node = self.exported_path(&mut value, path, ty, owner, false);
+            node.requires_new = qualified && node.roots.iter().all(|root| root.new);
         }
         value
     }
@@ -543,6 +570,7 @@ impl<'program> Analyzer<'program> {
                 PublishedValue {
                     sources: &argument.sources,
                     callbacks: &argument.callback_returns,
+                    allocations: &[],
                     constructs: argument.constructs,
                 },
                 &Ty::Unknown,
