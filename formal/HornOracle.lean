@@ -280,6 +280,8 @@ def provenanceCases : List (String × Bool) :=
    ("for_continue_carries_aliases_to_the_next_iteration", accepts (loopAlias true false)),
    ("a_single_iteration_for_does_not_revisit_the_body", accepts (loopAlias false false)),
    ("loop_aliases_can_take_multiple_iterations_to_reach_the_call", accepts (loopAlias true true)),
+   ("shared_chain_keeps_deep_aliases_after_the_loop", sharedLoopSeparated 0),
+   ("loops_can_grow_shared_recursive_data", sharedLoopSeparated 3),
    ("recursive_forwarding_is_ungrounded", accepts (recursiveWriter false)),
    ("mutual_recursion_has_grounded_writer", accepts (recursiveWriter true)),
    ("exact_fields_are_separate_mutable_arguments", accepts (fields false)),

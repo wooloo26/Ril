@@ -262,7 +262,12 @@ impl<'program> Analyzer<'program> {
                 && matches!(name, "send" | "try_send")
                 && index == 1
                 && !self.ty(node.span).is_value();
-            if channel_payload && value.origins().any(|origin| !origin.new) {
+            if channel_payload
+                && ledger
+                    .loop_snapshot(&value)
+                    .origins()
+                    .any(|origin| !origin.new)
+            {
                 self.error(
                     Code::E0548,
                     node.span,
@@ -2051,7 +2056,7 @@ impl<'program> Analyzer<'program> {
             }
             "inner" => {
                 return first
-                    .map(|value| value.project(Coordinate::Index("0".into()), Access::Mut))
+                    .map(|value| ledger.project(value, Coordinate::Index("0".into()), Access::Mut))
                     .unwrap_or_default();
             }
             "derive" => {
@@ -2624,14 +2629,14 @@ impl<'program> Analyzer<'program> {
             .filter_map(|span| ledger.slots.get(span))
             .enumerate()
         {
-            if slot.value.origins().any(|origin| origin.confined.is_some()) {
+            let mut value = ledger.loop_snapshot(&slot.value).into_owned();
+            if value.origins().any(|origin| origin.confined.is_some()) {
                 self.error(
                     Code::E0604,
                     node.span,
                     "closure cannot capture a scoped resource",
                 );
             }
-            let mut value = slot.value.clone();
             if slot.variable {
                 let mut origin = Datum::source(slot.decl, Access::Mut, false);
                 origin.transform(&mut |origin| {

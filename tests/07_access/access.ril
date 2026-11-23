@@ -1473,3 +1473,33 @@ fn update(again: bool, swap: bool) -> () {
     }
     add(mut left, mut right)
 }
+
+-- @case shared_chain_keeps_deep_aliases_after_the_loop compile-fail E0524
+-- @forbid E0531
+nominal type Node = .{ var value: int, var ^mut next: ?Node }
+fn copy(mut target: Node, ref reader: Node) &mut -> () {
+    target.value = reader.value
+}
+fn run(count: int) -> int {
+    let mut tail = Node.{ value: 4, next: None }
+    let mut initial = Node.{ value: 7, next: Some(^mut tail) }
+    initial.value += 1
+    var ^mut head = initial
+    for 0..count as i {
+        let mut node = Node.{ value: i, next: Some(^mut head) }
+        node.value += 1
+        head = ^mut node
+    }
+    head.value += 1
+    match ref head.next {
+        Some(first) -> match ref first.next {
+            Some(second) -> {
+                copy(mut tail, ref second)
+                -- ^ E0524
+                second.value
+            }
+            None -> 0
+        }
+        None -> 0
+    }
+}

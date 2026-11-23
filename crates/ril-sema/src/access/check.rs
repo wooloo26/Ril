@@ -137,12 +137,14 @@ impl Context {
 
     fn set_caller_storage(&mut self, outer: &Ledger) {
         self.caller_slots.extend(outer.slots.keys().copied());
-        self.caller_sources.extend(
-            outer
-                .slots
-                .values()
-                .flat_map(|slot| slot.value.origins().map(|origin| origin.region.source)),
-        );
+        for slot in outer.slots.values() {
+            self.caller_sources.extend(
+                outer
+                    .loop_snapshot(&slot.value)
+                    .origins()
+                    .map(|origin| origin.region.source),
+            );
+        }
     }
 }
 
@@ -1655,8 +1657,15 @@ impl<'a> Analyzer<'a> {
         }
     }
 
-    fn check_publication_source(&mut self, ctx: &Context, value: &Datum, span: Span) {
-        self.check_stored_views(value, false, span);
+    fn check_publication_source(
+        &mut self,
+        ctx: &Context,
+        ledger: &Ledger,
+        value: &Datum,
+        span: Span,
+    ) {
+        let value = ledger.loop_snapshot(value);
+        self.check_stored_views(&value, false, span);
         if value
             .origins()
             .any(|origin| origin.call_borrow && origin.mode.writes())
@@ -2055,14 +2064,9 @@ impl<'a> Analyzer<'a> {
             Pattern::Constructor(_, payload) => {
                 ledger.inspect(&value);
                 for (i, &item) in payload.iter().flatten().enumerate() {
-                    self.bind(
-                        ctx,
-                        ledger,
-                        item,
-                        storage,
-                        value.project(Coordinate::Index(i.to_string()), Access::Immutable),
-                        resource,
-                    );
+                    let child =
+                        ledger.project(&value, Coordinate::Index(i.to_string()), Access::Immutable);
+                    self.bind(ctx, ledger, item, storage, child, resource);
                 }
             }
             Pattern::Record { fields, .. } => {
@@ -2198,7 +2202,11 @@ impl<'a> Analyzer<'a> {
                     "?" => {
                         ledger.inspect(&value);
                         self.storage_exit(ctx, ledger);
-                        value = value.project(Coordinate::Index("0".into()), Access::Immutable);
+                        value = ledger.project(
+                            &value,
+                            Coordinate::Index("0".into()),
+                            Access::Immutable,
+                        );
                         value.results.clear();
                     }
                     _ => value = Datum::default(),
@@ -2250,7 +2258,8 @@ impl<'a> Analyzer<'a> {
                     Datum::default()
                 } else if op.value == "??" {
                     ledger.inspect(&lhs);
-                    lhs.project(Coordinate::Index("0".into()), Access::Immutable)
+                    ledger
+                        .project(&lhs, Coordinate::Index("0".into()), Access::Immutable)
                         .joined(rhs)
                 } else {
                     if matches!(op.value.as_str(), "==" | "!=")
@@ -2541,7 +2550,7 @@ impl<'a> Analyzer<'a> {
                     ledger.inspect(&result);
                     self.storage_exit(ctx, ledger);
                     let mut payload =
-                        result.project(Coordinate::Index("0".into()), Access::Immutable);
+                        ledger.project(&result, Coordinate::Index("0".into()), Access::Immutable);
                     payload.results.clear();
                     payload
                 } else {
@@ -2713,6 +2722,7 @@ impl<'a> Analyzer<'a> {
 
     fn handoff(&mut self, ctx: &Context, ledger: &mut Ledger, value: &mut Datum, span: Span) {
         if ledger.holds.iter().any(|(_, held)| {
+            let held = ledger.loop_snapshot(held);
             value
                 .roots
                 .iter()
@@ -2725,7 +2735,11 @@ impl<'a> Analyzer<'a> {
             );
             return;
         }
-        if value.origins().any(|origin| origin.confined.is_some()) {
+        if ledger
+            .loop_snapshot(value)
+            .origins()
+            .any(|origin| origin.confined.is_some())
+        {
             self.error(Code::E0604, span, "resource or draft cannot be handed off");
             return;
         }
@@ -2745,10 +2759,12 @@ impl<'a> Analyzer<'a> {
         }
         if ledger.slots.values().any(|slot| {
             slot.mode == Mode::Shared
-                && value
-                    .roots
-                    .iter()
-                    .any(|root| slot.value.origins().any(|retained| root.overlaps(retained)))
+                && value.roots.iter().any(|root| {
+                    ledger
+                        .loop_snapshot(&slot.value)
+                        .origins()
+                        .any(|retained| root.overlaps(retained))
+                })
         }) {
             self.error(
                 Code::E0548,
@@ -2888,7 +2904,7 @@ impl<'a> Analyzer<'a> {
                 }
                 let captured = ctx.caller_slots.contains(&id);
                 if captured {
-                    self.check_publication_source(ctx, &value, span);
+                    self.check_publication_source(ctx, ledger, &value, span);
                 }
                 if mode == Mode::Plain {
                     self.freeze_value(ledger, &mut value, span);
@@ -2918,7 +2934,11 @@ impl<'a> Analyzer<'a> {
             return;
         }
         self.mutate(ctx, ledger, prior, span);
-        if value.origins().any(|origin| origin.confined.is_some()) {
+        if ledger
+            .loop_snapshot(&value)
+            .origins()
+            .any(|origin| origin.confined.is_some())
+        {
             self.error(
                 Code::E0604,
                 span,
@@ -2931,7 +2951,7 @@ impl<'a> Analyzer<'a> {
                 || ctx.formals.contains(&Some(source))
                     && (!ctx.owned_formals.contains(&source) || !origin.new)
         }) {
-            self.check_publication_source(ctx, &value, span);
+            self.check_publication_source(ctx, ledger, &value, span);
         }
         if ctx.reachable && !value.roots.is_empty() {
             let access = match &node.value {
@@ -2947,7 +2967,7 @@ impl<'a> Analyzer<'a> {
             };
             if let Some(access) = access {
                 if access == Access::Ref {
-                    self.check_stored_views(&value, true, span);
+                    self.check_stored_views(&ledger.loop_snapshot(&value), true, span);
                 }
                 if access == Access::Shared {
                     self.require_shared_replacement(&value, span, true);
@@ -3342,7 +3362,7 @@ impl<'a> Analyzer<'a> {
                 absent.take_choice(step.span, 1);
                 missing.push(absent);
                 ledger.take_choice(step.span, 0);
-                value = value.project(payload.clone(), Access::Immutable);
+                value = ledger.project(&value, payload.clone(), Access::Immutable);
                 ty = inner;
             }
             let coordinate = if let Some(index) = index {

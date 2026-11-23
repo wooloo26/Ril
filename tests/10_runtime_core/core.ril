@@ -32,6 +32,33 @@ fn main() -> () {
     }
 }
 
+-- @case loops_can_grow_shared_recursive_data run-pass backend=both
+nominal type Node = .{ var value: int, var ^mut next: ?Node }
+fn copy(mut target: Node, ref reader: Node) &mut -> () { target.value = reader.value }
+fn read(count: int) -> int {
+    let mut tail = Node.{ value: 4, next: None }
+    tail.value += 1
+    let mut initial = Node.{ value: 7, next: Some(^mut tail) }
+    initial.value += 1
+    var ^mut head = initial
+    for 0..count as i {
+        let mut node = Node.{ value: i, next: Some(^mut head) }
+        node.value += 1
+        head = ^mut node
+    }
+    head.value += 1
+    let mut spare = Node.{ value: 0, next: None }
+    match ref head.next {
+        Some(first) -> match ref first.next {
+            Some(second) -> copy(mut spare, ref second)
+            None -> panic("missing second link")
+        }
+        None -> panic("missing first link")
+    }
+    spare.value
+}
+fn main() -> () { assert(read(80) == 78) }
+
 -- @case a_cyclic_graph_can_be_cloned_compared_and_inspected run-pass backend=both
 nominal type Node = .{ var value: int, var ^mut next: ?Node }
 fn main() -> () {

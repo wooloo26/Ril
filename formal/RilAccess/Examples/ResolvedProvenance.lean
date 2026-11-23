@@ -47,6 +47,22 @@ def loopAlias (repeats staged : Bool) : Program :=
     ⟨[.mutable, .observe], { writes := true }, localCode [.write 0, .read 1] ++ [.ret none]⟩
   ⟨[caller, worker], []⟩
 
+def sharedLoopHeap : List (HeapLink Nat) :=
+  [⟨2, 0, 2⟩, ⟨2, 0, 1⟩, ⟨1, 0, 0⟩]
+
+theorem sharedLoop_edge_preserved (previous : Nat) :
+    HeapLink.mk (min (previous + 1) 2) 0 (min previous 2) ∈ sharedLoopHeap := by
+  match previous with
+  | 0 => decide
+  | 1 => decide
+  | n + 2 =>
+    have old : min (n + 2) 2 = 2 := Nat.min_eq_right (by omega)
+    have fresh : min (n + 2 + 1) 2 = 2 := Nat.min_eq_right (by omega)
+    simp [old, fresh, sharedLoopHeap]
+
+def sharedLoopSeparated (outside : Nat) : Bool :=
+  Heap.separated sharedLoopHeap [outside] [2]
+
 def sameSite (summarizedPair : Bool) : Program :=
   let caller : Function := ⟨[], {}, localCode [.alloc 0 10, .alloc 1 10, .alloc 2 10] ++ [
     .invoke 1 [⟨if summarizedPair then 2 else 0, .mutable⟩, ⟨1, .mutable⟩] none 4, .ret none]⟩
@@ -190,6 +206,10 @@ def examples : List (String × Bool) :=
     diagnoses (loopAlias true true) .overlap),
    ("resolved provenance: the call stays disjoint when the backedge is absent",
     accepts (loopAlias false false)),
+   ("resolved provenance: summarized loop allocations still reach the original tail",
+    !sharedLoopSeparated 0),
+   ("resolved provenance: a separate object stays disjoint from the summarized chain",
+    sharedLoopSeparated 3),
    ("resolved provenance: the first object at a site is distinct from later allocations", accepts (sameSite false)),
    ("resolved provenance: summarized objects at a site do not establish separation", diagnoses (sameSite true) .overlap),
    ("resolved provenance: exact fields support disjoint mutable calls", accepts (fields false)),
