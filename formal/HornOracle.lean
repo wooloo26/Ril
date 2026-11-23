@@ -74,6 +74,7 @@ structure JsonSummary where
   effects : List Nat
   effect_uses : List JsonEffectUse
   invocations : List JsonInvocation
+  invoked : List Nat
   callback_returns : List Json
   storage_updates : List JsonStorageUpdate
   captures : Bool
@@ -101,6 +102,7 @@ def compareSummaries (baseline revision : JsonSummary) : Bool :=
       old.effect == effect.effect && (old.operation.isNone || old.operation == effect.operation)) &&
     RilAccess.callbackInvocationsSubsumed (baseline.invocations.map JsonInvocation.contract)
       (revision.invocations.map JsonInvocation.contract) &&
+    revision.invoked.all baseline.invoked.contains &&
     RilAccess.callbackReturnsSubsumed (baseline.callback_returns.map Json.compress)
       (revision.callback_returns.map Json.compress) &&
     RilAccess.storageUpdatesSubsumed (baseline.storage_updates.map JsonStorageUpdate.contract)

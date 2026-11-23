@@ -227,6 +227,9 @@ impl<'program> Analyzer<'program> {
                     Mode::Plain if value.requires_new => Mode::New,
                     Mode::Plain
                         if (syntax.is_some_and(|fun| fun.body.is_some())
+                            || id.is_some_and(|id| {
+                                self.program.imported_functions.contains_key(&id)
+                            })
                             || has_via_closures
                             || all_aliases_known)
                             && Self::forwards_via(ctx, &value) =>
@@ -564,7 +567,7 @@ impl<'program> Analyzer<'program> {
         ctx: &Context,
         ledger: &mut Ledger,
         fun: &Function,
-        sig: Option<&Callable>,
+        sig: Option<&'program Callable>,
         (values, value_spans): (&[(usize, Mode, Datum)], &[Span]),
         span: Span,
     ) -> Datum {
@@ -1593,6 +1596,13 @@ impl<'program> Analyzer<'program> {
                 return None;
             }
             let fun = self.function_syntax(id)?;
+            if fun.body.is_none()
+                && let Some(export) = self.program.imported_functions.get(&id)
+            {
+                let signature = self.program.callables.get(&id)?;
+                outputs.push(self.imported_callback_result(fun, signature, export, entry)?);
+                continue;
+            }
             self.function(fun, entry.ledger);
             let mut result = self.return_template(fun, entry)?;
             if matches!(fun.signature.result_mode, Mode::Ref | Mode::Shared) {

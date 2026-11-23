@@ -21,6 +21,7 @@ pub struct Summary {
     pub effects: Vec<String>,
     pub effect_uses: Vec<EffectUse>,
     pub invocations: Vec<Invocation>,
+    pub invoked: Vec<usize>,
     pub callback_returns: Vec<CallbackReturn>,
     pub storage_updates: Vec<StorageUpdate>,
     pub captures: bool,
@@ -79,6 +80,10 @@ impl Summary {
                 .invocations
                 .iter()
                 .all(|invoke| self.invocations.iter().any(|old| old.permits(invoke)))
+            && revised
+                .invoked
+                .iter()
+                .all(|position| self.invoked.contains(position))
             && revised
                 .callback_returns
                 .iter()
@@ -249,6 +254,16 @@ impl Input {
             Self::Ref => Access::Ref,
             Self::Mut | Self::New => Access::Mut,
             Self::Shared => Access::Shared,
+        }
+    }
+
+    const fn mode(self) -> Mode {
+        match self {
+            Self::Plain => Mode::Plain,
+            Self::Ref => Mode::Ref,
+            Self::Mut => Mode::Mut,
+            Self::Shared => Mode::Shared,
+            Self::New => Mode::New,
         }
     }
 }

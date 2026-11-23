@@ -52,6 +52,8 @@ struct Call {
 #[derive(Default)]
 pub(super) struct Calls {
     calls: BTreeMap<Span, Vec<Call>>,
+    interface_formals: BTreeMap<Span, Vec<Option<Span>>>,
+    interface_protected: BTreeSet<(Span, Invocation)>,
     invocations: BTreeSet<(Span, Invocation, Span, Span)>,
     protected: BTreeSet<(Span, usize)>,
 }
@@ -59,6 +61,38 @@ pub(super) struct Calls {
 impl Calls {
     pub(super) fn protect_input(&mut self, site: Span, position: usize) {
         self.protected.insert((site, position));
+    }
+
+    pub(super) fn add_interface(
+        &mut self,
+        owner: Span,
+        formals: Vec<Option<Span>>,
+        invocations: &[PublishedInvocation],
+    ) {
+        for invocation in invocations {
+            let Some(receiver) = formals.get(invocation.receiver).copied().flatten() else {
+                continue;
+            };
+            let offer = match invocation.mode {
+                InvocationMode::Input(input) => Offer::Input(input),
+                InvocationMode::Formal(index) => {
+                    let Some(source) = formals.get(index).copied().flatten() else {
+                        continue;
+                    };
+                    Offer::Formal(source)
+                }
+            };
+            let at = Invocation {
+                receiver,
+                position: invocation.parameter,
+                offer,
+            };
+            self.invocations.insert((owner, at, owner, owner));
+            if invocation.preserves_input {
+                self.interface_protected.insert((owner, at));
+            }
+        }
+        self.interface_formals.insert(owner, formals);
     }
 }
 
@@ -202,6 +236,8 @@ impl Analyzer<'_> {
     pub(super) fn link_higher_order_calls(&mut self) {
         let Calls {
             calls,
+            interface_formals,
+            interface_protected,
             invocations,
             protected,
         } = std::mem::take(&mut self.higher_order);
@@ -214,6 +250,7 @@ impl Analyzer<'_> {
                     .iter()
                     .map(|(&owner, closure)| (owner, closure.formals.clone())),
             )
+            .chain(interface_formals)
             .collect();
         let formal_owners: BTreeMap<_, _> = providers
             .iter()
@@ -229,16 +266,26 @@ impl Analyzer<'_> {
                     conclusion: callback_handoff(site, invocation.position),
                 });
             }
+            let published_preservation = interface_protected.contains(&(owner, invocation));
             pending.push_back((
                 owner,
                 invocation,
                 span,
-                protected.contains(&(site, invocation.position)),
+                published_preservation || protected.contains(&(site, invocation.position)),
+                published_preservation,
             ));
         }
         let mut visited = BTreeSet::new();
-        while let Some((owner, invocation, span, preserves_input)) = pending.pop_front() {
-            if !visited.insert((owner, invocation, span, preserves_input)) {
+        while let Some((owner, invocation, span, preserves_input, published_preservation)) =
+            pending.pop_front()
+        {
+            if !visited.insert((
+                owner,
+                invocation,
+                span,
+                preserves_input,
+                published_preservation,
+            )) {
                 continue;
             }
             if let Some(formals) = providers.get(&owner)
@@ -321,6 +368,16 @@ impl Analyzer<'_> {
                         } else {
                             forwarded.consumption(call.owner)
                         };
+                        if published_preservation && offer == Offer::Input(Input::New) {
+                            self.deferred_errors.push((
+                                vec![consumption.clone()],
+                                Diagnostic::error(
+                                    Code::E0549,
+                                    callback.span,
+                                    "callback consumes an input the published call still uses",
+                                ),
+                            ));
+                        }
                         if matches!(offer, Offer::Formal(_) | Offer::Input(Input::New)) {
                             self.rules.push(Rule {
                                 premises: vec![consumption.clone()],
@@ -350,6 +407,7 @@ impl Analyzer<'_> {
                                     || argument.is_some_and(|arg| {
                                         protected.contains(&(call.site, arg.position))
                                     }),
+                                published_preservation,
                             ));
                         }
                     }

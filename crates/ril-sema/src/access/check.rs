@@ -206,6 +206,7 @@ struct Analyzer<'a> {
     recursive_storage: BTreeMap<Span, storage::CallStorage>,
     recursive_calls: BTreeSet<Span>,
     resolving_callback_results: BTreeSet<usize>,
+    resolving_interface_results: BTreeSet<Span>,
     functions: Vec<DefinitionCheck>,
     done: BTreeSet<DefinitionId>,
     cleanups: BTreeMap<Span, CleanupAction>,
@@ -234,10 +235,12 @@ fn collect(
         recursive_storage,
         recursive_calls: BTreeSet::new(),
         resolving_callback_results: BTreeSet::new(),
+        resolving_interface_results: BTreeSet::new(),
         functions: Vec::new(),
         done: BTreeSet::new(),
         cleanups: BTreeMap::new(),
     };
+    analyzer.load_interface_calls();
     for file in program.hir.files() {
         let mut ledger = Ledger::default();
         let mut context = Context::new(Span::new(file.id, 0, 0));
@@ -890,6 +893,11 @@ impl<'a> Analyzer<'a> {
                 Obligation::ReadUp(span) => {
                     up.insert(*span);
                 }
+                Obligation::Invoke(span) => {
+                    if let Some(formal) = fun.formals.iter().position(|decl| *decl == Some(*span)) {
+                        summary.invoked.push(formal);
+                    }
+                }
                 Obligation::Effect(effect) => {
                     self.record_effect_use(fun, &mut summary, effect, None);
                 }
@@ -910,6 +918,7 @@ impl<'a> Analyzer<'a> {
         summary.retained.sort_unstable();
         summary.retained.dedup();
         summary.independent_retention.sort_unstable();
+        summary.invoked.sort_unstable();
         summary.effects.sort();
         summary.effects.dedup();
         summary.effect_uses.sort_unstable();

@@ -51,6 +51,12 @@ pub fn read_extended() @Extended -> int { Meter::read() }
 pub opaque type Handle use(close) = .{ id: int }
 pub fn open() -> new Handle { Handle.{ id: 1 } }
 pub fn close(new handle: Handle) @Meter -> () { let _ = Meter::read() }
+pub fn apply(via action: fn(via Cell) @& -> infer Cell, via cell: Cell) -> infer Cell { action(cell) }
+pub fn observe_after(via action: fn(via Cell) @& -> int, via cell: Cell) -> int {
+    let result = action(cell)
+    result + cell.count
+}
+pub fn change_member(mut shelf: .{ via item: Cell }) &mut -> () { shelf.item.count += 1 }
 "#
         .to_vec(),
     );
@@ -138,6 +144,60 @@ fn read() -> int {
 }
 "#,
             Some(Code::E0612),
+        ),
+        (
+            r#"
+fn relay(via action: fn(via Store::Cell) @& -> infer Store::Cell, via cell: Store::Cell) -> infer Store::Cell {
+    Store::apply(action, cell)
+}
+fn run() -> int {
+    let identity = \via value: Store::Cell -> value
+    let mut cell = Store::Cell.{ count: 40 }
+    let ref view = relay(identity, ref cell)
+    cell.count += 1
+    assert(view.count == 41)
+    let mut owned = Store::apply(identity, new cell)
+    owned.count += 1
+    let mut again = Store::apply(Store::identity, new owned)
+    again.count += 1
+    again.count
+}
+"#,
+            None,
+        ),
+        (
+            r#"
+fn change(via cell: Store::Cell) -> infer Store::Cell { cell.count += 1; cell }
+fn invalid(ref cell: Store::Cell) -> int { Store::apply(change, ref cell).count }
+"#,
+            Some(Code::E0520),
+        ),
+        (
+            r#"
+fn take(via cell: Store::Cell) -> int { let moved = new cell; moved.count }
+fn invalid() -> int { Store::observe_after(take, Store::Cell.{ count: 21 }) }
+"#,
+            Some(Code::E0549),
+        ),
+        (
+            r#"
+fn relay(via action: fn(via Store::Cell) @& -> int, via cell: Store::Cell) -> int {
+    Store::observe_after(action, cell)
+}
+fn take(via cell: Store::Cell) -> int { let moved = new cell; moved.count }
+fn invalid() -> int { relay(take, Store::Cell.{ count: 21 }) }
+"#,
+            Some(Code::E0549),
+        ),
+        (
+            r#"
+fn relay(mut shelf: .{ via item: Store::Cell }) &mut -> () { Store::change_member(mut shelf) }
+fn invalid() -> () {
+    let mut shelf = .{ item: Store::Cell.{ count: 42 } }
+    relay(mut shelf)
+}
+"#,
+            Some(Code::E0520),
         ),
     ] {
         fs::write(&entry, format!("use library/store\n{source}")).unwrap();
@@ -605,6 +665,7 @@ fn exported_summaries_and_via_domains_agree_with_lean() {
             "effects": effects,
             "effect_uses": summary.effect_uses,
             "invocations": invocations,
+            "invoked": summary.invoked,
             "callback_returns": summary.callback_returns,
             "storage_updates": storage_updates,
             "captures": summary.captures,
