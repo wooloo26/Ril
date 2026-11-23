@@ -1,44 +1,72 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use ril_base::span::Span;
-use ril_frontend::syntax::{Mode, Pattern, PatternId};
+use ril_frontend::{
+    hir::DefinitionId,
+    syntax::{Mode, Pattern, PatternId},
+};
 
 use super::{Access, Analyzer, Context, Coordinate, Datum, Ledger, Ty};
 use crate::access::flow::{Choices, Occurrence, Region, ResultOccurrence};
+use crate::ty::TypedProgram;
 
 type Inspections = BTreeSet<ResultOccurrence>;
 
-pub(super) fn receive_results(ledger: &mut Ledger, ty: &Ty, mut value: Datum, span: Span) -> Datum {
-    if carries_result(ty) {
+pub(super) fn receive_results(
+    program: &TypedProgram,
+    ledger: &mut Ledger,
+    ty: &Ty,
+    mut value: Datum,
+    span: Span,
+) -> Datum {
+    if carries_result(program, ty) {
         value.forget_results();
         let choices = ledger.choices.clone();
         value = BoundaryResults {
+            program,
             span,
             next_part: 0,
             objects: BTreeMap::new(),
+            active: Vec::new(),
         }
         .receive(ledger, ty, value, &choices);
     }
     value
 }
 
-pub(super) fn carries_result(ty: &Ty) -> bool {
-    match ty {
-        Ty::Result(..) => true,
-        Ty::Option(inner) => carries_result(inner),
-        Ty::Tuple(members) => members.iter().any(|member| carries_result(&member.ty)),
-        Ty::Record(fields, _) => fields.values().any(|member| carries_result(&member.ty)),
-        _ => false,
+pub(super) fn carries_result(program: &TypedProgram, ty: &Ty) -> bool {
+    fn visit(program: &TypedProgram, ty: &Ty, active: &mut BTreeSet<DefinitionId>) -> bool {
+        match ty {
+            Ty::Result(..) => true,
+            Ty::Option(inner) => visit(program, inner, active),
+            Ty::Tuple(members) => members
+                .iter()
+                .any(|member| visit(program, &member.ty, active)),
+            Ty::Record(fields, _) => fields
+                .values()
+                .any(|member| visit(program, &member.ty, active)),
+            Ty::Adt(adt) if active.insert(adt.definition) => {
+                let result = program
+                    .nominal_layout(adt)
+                    .is_some_and(|layout| visit(program, &layout, active));
+                active.remove(&adt.definition);
+                result
+            }
+            _ => false,
+        }
     }
+    visit(program, ty, &mut BTreeSet::new())
 }
 
-struct BoundaryResults {
+struct BoundaryResults<'a> {
+    program: &'a TypedProgram,
     span: Span,
     next_part: usize,
     objects: BTreeMap<(Region, Choices), usize>,
+    active: Vec<(DefinitionId, BTreeSet<Region>)>,
 }
 
-impl BoundaryResults {
+impl BoundaryResults<'_> {
     fn part(&mut self) -> usize {
         let part = self.next_part;
         self.next_part += 1;
@@ -62,7 +90,7 @@ impl BoundaryResults {
                         .or_insert(next)
                 });
                 ledger.record_result_part(&mut value, self.span, part, choices);
-                if carries_result(ok) || carries_result(error) {
+                if carries_result(self.program, ok) || carries_result(self.program, error) {
                     return self.sum(
                         ledger,
                         value,
@@ -71,7 +99,7 @@ impl BoundaryResults {
                     );
                 }
             }
-            Ty::Option(inner) if carries_result(inner) => {
+            Ty::Option(inner) if carries_result(self.program, inner) => {
                 return self.sum(
                     ledger,
                     value,
@@ -102,6 +130,33 @@ impl BoundaryResults {
                         choices,
                     );
                 }
+            }
+            Ty::Adt(adt) => {
+                let Some(layout) = self.program.nominal_layout(adt) else {
+                    return value;
+                };
+                let roots = value.roots.iter().map(|root| root.region.clone()).collect();
+                // Follow materialized recursive edges without unfolding an
+                // unknown tail or walking the same object through a cycle.
+                if self.active.iter().any(|(definition, prior)| {
+                    *definition == adt.definition && (value.members.is_empty() || prior == &roots)
+                }) {
+                    return value;
+                }
+                self.active.push((adt.definition, roots));
+                if matches!(layout, Ty::Record(..) | Ty::Tuple(_)) {
+                    value = self.receive(ledger, &layout, value, choices);
+                } else {
+                    self.member(
+                        ledger,
+                        &mut value,
+                        Coordinate::Index("0".into()),
+                        &layout,
+                        Mode::Plain,
+                        choices,
+                    );
+                }
+                self.active.pop();
             }
             _ => {}
         }
@@ -149,7 +204,7 @@ impl BoundaryResults {
         mode: Mode,
         choices: &Choices,
     ) {
-        if carries_result(ty) {
+        if carries_result(self.program, ty) {
             let member = value
                 .members
                 .remove(&coordinate)

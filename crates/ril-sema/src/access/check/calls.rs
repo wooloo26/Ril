@@ -183,7 +183,12 @@ impl<'program> Analyzer<'program> {
             _ => None,
         };
         let mut result = self.call_value(ctx, ledger, callee, args, span, id);
-        if !id.is_some_and(|id| data_constructor(self.program.hir.definition(id))) {
+        if !id.is_some_and(|id| {
+            let definition = self.program.hir.definition(id);
+            data_constructor(definition)
+                || matches!(definition.kind, DefinitionKind::Primitive(_))
+                    && definition.name.value == "inner"
+        }) {
             // The signature specifies the possible tags at a call boundary.
             result.forget_variants();
             if ctx.reachable && !ledger.no_continuation {
@@ -192,7 +197,7 @@ impl<'program> Analyzer<'program> {
                     .propagation_inputs
                     .get(&span)
                     .unwrap_or_else(|| self.ty(span));
-                result = super::results::receive_results(ledger, ty, result, span);
+                result = super::results::receive_results(self.program, ledger, ty, result, span);
             }
         }
         ledger.remember_return_graph(&result, span);
@@ -414,7 +419,8 @@ impl<'program> Analyzer<'program> {
                 if parameter.is_some_and(|p| p.ty.is_result()) {
                     ledger.inspect(&value);
                 } else if !value.results().is_empty()
-                    && (!primitive || !matches!(name, "join" | "cancel" | "send" | "try_send"))
+                    && (!primitive
+                        || !matches!(name, "inner" | "join" | "cancel" | "send" | "try_send"))
                 {
                     self.discard(ledger, &value);
                 }
@@ -942,7 +948,7 @@ impl<'program> Analyzer<'program> {
         if matches!(
             fun.signature.result_mode,
             Mode::New | Mode::Infer | Mode::Ref | Mode::Shared
-        ) || super::results::carries_result(self.ty(span))
+        ) || super::results::carries_result(self.program, self.ty(span))
         {
             self.function(fun, ledger);
             let entry = CallEntry {
@@ -2225,9 +2231,28 @@ impl<'program> Analyzer<'program> {
                 return Datum::source(span, Access::Mut, true);
             }
             "inner" => {
-                return first
-                    .map(|value| ledger.project(value, Coordinate::Index("0".into()), Access::Mut))
-                    .unwrap_or_default();
+                let Some(value) = first else {
+                    return Datum::default();
+                };
+                if matches!(self.ty(span), Ty::Record(..)) {
+                    return value.clone();
+                }
+                if let Ty::Tuple(parts) = self.ty(span) {
+                    if args
+                        .iter()
+                        .any(|(index, mode, _)| *index == 0 && *mode == Mode::Mut)
+                    {
+                        return value.clone();
+                    }
+                    let mut tuple = Datum::source(span, Access::Mut, true);
+                    for index in 0..parts.len() {
+                        let coordinate = Coordinate::Index(index.to_string());
+                        let member = ledger.project(value, coordinate.clone(), Access::Immutable);
+                        tuple.members.insert(coordinate, member);
+                    }
+                    return tuple;
+                }
+                return ledger.project(value, Coordinate::Index("0".into()), Access::Mut);
             }
             "derive" => {
                 if let Some((_, _, callback)) = args.iter().find(|(i, _, _)| *i == 1) {
@@ -2696,7 +2721,13 @@ impl<'program> Analyzer<'program> {
                     }
                 }
                 if let Some(ty) = param_ty {
-                    value = super::results::receive_results(&mut locals, ty, value, name.span);
+                    value = super::results::receive_results(
+                        self.program,
+                        &mut locals,
+                        ty,
+                        value,
+                        name.span,
+                    );
                 }
                 value.transform(&mut |origin| {
                     origin.dependencies.insert(name.span.into());

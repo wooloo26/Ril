@@ -22,6 +22,8 @@ fn compound_result_obligations_survive_an_interface_only_boundary() {
 
     let provider_source = br#"
 fn get(value: int) -> new !<int, str> { Ok(value) }
+pub nominal type Packet<T> = .{ payload: T }
+pub fn packet() -> new Packet<!<int, str>> { Packet.{ payload: get(1) } }
 pub fn wrapped(flag: bool) -> new ?!<int, str> {
     if flag { Some(get(1)) } else { None }
 }
@@ -45,6 +47,8 @@ pub fn snapshot_aliases() -> (!<int, str>, !<int, str>) {
         ("library/fallible.rili", interface.as_slice()),
     ] {
         for (body, accepted) in [
+            ("let _ = Fallible::packet()", false),
+            ("assert(inner(Fallible::packet()).payload == Ok(1))", true),
             (
                 "match Fallible::wrapped(flag) { Some(_) -> (); None -> () }",
                 false,
@@ -1284,7 +1288,7 @@ fn scoped_resource_examples_agree_with_lean() -> Result<(), Box<dyn std::error::
 
 #[test]
 fn result_patterns_agree_with_lean() -> Result<(), Box<dyn std::error::Error>> {
-    check_access_examples("result-patterns", 19)
+    check_access_examples("result-patterns", 21)
 }
 
 fn check_access_examples(operation: &str, count: usize) -> Result<(), Box<dyn std::error::Error>> {

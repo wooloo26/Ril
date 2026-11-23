@@ -695,7 +695,7 @@ impl<'a> Analyzer<'a> {
                 origin.inherits_mode = param.mode == Mode::Via;
                 origin.call_borrow = param.mode == Mode::Mut;
             });
-            value = results::receive_results(&mut ledger, &param.ty, value, span);
+            value = results::receive_results(self.program, &mut ledger, &param.ty, value, span);
             ledger.slots.insert(
                 span,
                 Slot {

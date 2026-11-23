@@ -1,6 +1,17 @@
 -- @suite runtime_core
 -- @default_stage run
 
+-- @case nominal_inner_preserves_record_payloads run-pass backend=both
+nominal type Packet<T> = .{ payload: T }
+nominal type Parcel<T> = T
+fn get() -> new !<int, str> { Ok(42) }
+fn packet() -> new Packet<!<int, str>> { Packet.{ payload: get() } }
+fn parcel() -> new Parcel<!<int, str>> { Parcel(get()) }
+fn main() -> () {
+    assert(inner(packet()).payload == Ok(42))
+    assert(inner(parcel()) == Ok(42))
+}
+
 -- @case loop_allocations_are_fresh_and_bindings_can_be_handed_off_each_iteration run-pass backend=both
 type Cell = .{ var count: int }
 fn copy(mut target: Cell, ref reader: Cell) &mut -> () { target.count = reader.count }

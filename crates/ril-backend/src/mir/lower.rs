@@ -1465,6 +1465,8 @@ impl<'a> Builder<'_, 'a> {
                     .map(|ty| self.concrete(ty))
                 {
                     Some(Ty::Unit) => self.unit(),
+                    Some(Ty::Record(..)) => wrapper,
+                    Some(Ty::Tuple(_)) if arg.mode == ril_sema::syntax::Mode::Mut => wrapper,
                     Some(Ty::Tuple(parts)) => {
                         let tuple = self.runtime("ril_rt_tuple", Vec::new());
                         for index in 0..parts.len() {

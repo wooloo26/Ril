@@ -891,6 +891,27 @@ fn run() -> () {
     match value { Some(_) -> (); None -> () }
 }
 
+-- @case returned_nominal_field_keeps_its_result_obligation compile-fail E0720
+nominal type Packet = .{ payload: !<int, str> }
+fn get() -> new !<int, str> { Ok(1) }
+fn packet() -> new Packet { Packet.{ payload: get() } }
+fn run() -> () {
+    let value = packet()
+    -- ^ E0720
+    let _ = value
+}
+
+-- @case specialized_nominal_layout_exposes_the_result_to_inner compile-pass
+nominal type Packet<T> = .{ payload: T }
+nominal type Parcel<T> = T
+fn get() -> new !<int, str> { Ok(1) }
+fn packet() -> new Packet<!<int, str>> { Packet.{ payload: get() } }
+fn parcel() -> new Parcel<!<int, str>> { Parcel(get()) }
+fn run() -> () {
+    assert(inner(packet()).payload == Ok(1))
+    assert(inner(parcel()) == Ok(1))
+}
+
 -- @case returned_option_can_be_inspected_in_both_variants compile-pass
 fn get() -> new !<int, str> { Ok(1) }
 fn wrapped(flag: bool) -> new ?!<int, str> { if flag { Some(get()) } else { None } }

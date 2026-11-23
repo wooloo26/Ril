@@ -52,6 +52,10 @@ pub(super) fn check(hir: Program, budget: Option<u64>) -> Result<TypedProgram, V
         .into_iter()
         .map(|(span, ty)| (span, ck.normalize(&ty)))
         .collect();
+    let nominal_layouts = std::mem::take(&mut ck.nominal_layouts)
+        .into_iter()
+        .map(|(id, ty)| (id, ck.normalize(&ty)))
+        .collect();
     let static_generic_arguments = std::mem::take(&mut ck.generic_arguments)
         .into_iter()
         .map(|(span, arguments)| {
@@ -122,6 +126,7 @@ pub(super) fn check(hir: Program, budget: Option<u64>) -> Result<TypedProgram, V
         narrowings,
         navigation_values,
         propagation_inputs,
+        nominal_layouts,
         effect_instances,
         operation_effects,
         operation_instances,
@@ -218,6 +223,7 @@ pub(super) struct Checker<'a> {
     pub(super) narrowings: HashMap<Span, usize>,
     pub(super) navigation_values: HashMap<Span, Ty>,
     pub(super) propagation_inputs: HashMap<Span, Ty>,
+    nominal_layouts: HashMap<DefinitionId, Ty>,
     pub(super) effect_instances: BTreeMap<String, super::effects::Instance>,
     pub(super) operation_effects: HashMap<Span, String>,
     pub(super) operation_instances: HashMap<Span, super::effects::Instance>,
@@ -264,6 +270,7 @@ impl<'a> Checker<'a> {
             inspection_scopes: HashMap::new(),
             narrowings: HashMap::new(),
             propagation_inputs: HashMap::new(),
+            nominal_layouts: HashMap::new(),
             effect_instances: BTreeMap::new(),
             operation_effects: HashMap::new(),
             operation_instances: HashMap::new(),
@@ -873,7 +880,12 @@ impl<'a> Checker<'a> {
                 self.nominal_fields(&mut local, decl);
                 match &decl.definition {
                     TypeDefinition::Data(ty) => {
-                        self.type_expr(&mut local, *ty);
+                        let representation = self.type_expr(&mut local, *ty);
+                        if decl.kind == ril_frontend::syntax::TypeKind::Nominal
+                            && let Some(id) = self.resolve(decl.name.span)
+                        {
+                            self.nominal_layouts.insert(id, representation);
+                        }
                     }
                     TypeDefinition::Sum(_) if decl.generics.is_empty() => {
                         if let Some(id) = self.resolve(decl.name.span)

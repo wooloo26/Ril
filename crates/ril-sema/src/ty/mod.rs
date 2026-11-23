@@ -261,6 +261,7 @@ pub struct TypedProgram {
     pub narrowings: HashMap<Span, usize>,
     pub navigation_values: HashMap<Span, Ty>,
     pub(crate) propagation_inputs: HashMap<Span, Ty>,
+    nominal_layouts: HashMap<DefinitionId, Ty>,
     pub subset_tags: HashMap<Span, Vec<String>>,
     pub tuple_payloads: HashMap<Span, usize>,
     pub(crate) receptions: HashMap<Span, Vec<reception::Adjustment>>,
@@ -271,6 +272,31 @@ pub struct TypedProgram {
 }
 
 impl TypedProgram {
+    pub(crate) fn nominal_layout(&self, adt: &Adt) -> Option<Ty> {
+        let layout = self.nominal_layouts.get(&adt.definition)?;
+        let definition = self.hir.definition(adt.definition);
+        let ast = &self.hir.file(definition.name.span.file).ast;
+        let ril_frontend::syntax::StmtKind::Type(decl) = &ast.stmt(definition.stmt?).value.kind
+        else {
+            return None;
+        };
+        let arguments = decl
+            .generics
+            .iter()
+            .zip(&adt.arguments)
+            .filter_map(|(parameter, argument)| {
+                match (self.hir.resolve(parameter.name.span), argument) {
+                    (
+                        Some(ril_frontend::hir::Resolution::Definition(id)),
+                        GenericValue::Type(ty),
+                    ) => Some((id, ty.clone())),
+                    _ => None,
+                }
+            })
+            .collect();
+        Some(layout.specialize(&arguments))
+    }
+
     pub(crate) fn effect_definition(&self, label: &str) -> Option<DefinitionId> {
         self.effect_instances
             .get(label)

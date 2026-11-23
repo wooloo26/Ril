@@ -54,6 +54,11 @@ def cases : List (String × Bool × Bool) :=
    ("error_propagation_transfers_the_nested_error_result", canPropagate errorWithResult, true),
    ("returned_option_keeps_its_nested_result_obligation",
     [some "Ok", none []].all (canExit · [outer, fallback]), false),
+   ("returned_nominal_field_keeps_its_result_obligation",
+    canExit (receive [⟨[0], "Ok", Option.some 1⟩]) [fallback], false),
+   ("specialized_nominal_layout_exposes_the_result_to_inner",
+    canExit (receive [⟨[0], "Ok", Option.some 1⟩, ⟨[1, 0], "Ok", Option.some 2⟩])
+      [⟨[([0], "Ok"), ([1, 0], "Ok")], true⟩], true),
    ("returned_option_can_be_inspected_in_both_variants",
     [some "Ok", some "Err", none []].all (canExit · handlers), true),
    ("returned_fields_can_contain_discriminated_results",
