@@ -272,8 +272,9 @@ fn main() -> () {
 }
 
 -- @case draft_updates_only_the_selected_occurrence run-pass backend=both
+-- @expect-stdout 1:1:3:1:8:7:7
 type Cell = .{ count: int }
-fn main() -> () {
+fn main() @io -> () {
     let first = Cell.{ count: 1 }
     let outside = Cell.{ count: 7 }
     let row = [first]
@@ -286,14 +287,93 @@ fn main() -> () {
     assert(len(base.0) == 1 && len(base.1) == 1)
     assert(len(updated.0) == 3 && len(updated.1) == 1)
     assert(updated.0[1].count == 8 && updated.0[2].count == 7 && outside.count == 7)
+    println("{len(base.0)}:{len(base.1)}:{len(updated.0)}:{len(updated.1)}:{updated.0[1].count}:{updated.0[2].count}:{outside.count}")
 }
 
 -- @case draft_inserts_map_entry_without_changing_base run-pass backend=both
-fn main() -> () {
+-- @expect-stdout 1:2:10:20
+fn main() @io -> () {
     let base = [1: 10]
     let updated = derive(base) \mut draft -> { draft[2] = 20 }
     assert(len(base) == 1 && base?[2] == None)
     assert(len(updated) == 2 && updated?[1] == Some(10) && updated?[2] == Some(20))
+    let Some(first) = updated?[1] else { panic("missing original entry") }
+    let Some(second) = updated?[2] else { panic("missing inserted entry") }
+    println("{len(base)}:{len(updated)}:{first}:{second}")
+}
+
+-- @case draft_can_replace_a_fixed_tuple_member_with_a_shorter_array run-pass backend=both
+-- @expect-stdout 2:1:2:7
+type Cell = .{ count: int }
+fn main() @io -> () {
+    let row = [Cell.{ count: 1 }, Cell.{ count: 7 }]
+    let base = (row, row)
+    let updated = derive(base) \mut draft -> { draft.0 = [row[1]] }
+    println("{len(base.0)}:{len(updated.0)}:{len(updated.1)}:{updated.0[0].count}")
+}
+
+-- @case draft_writes_to_the_current_path_after_reordering run-pass backend=both
+-- @expect-stdout 1:7:7:2:1:7
+type Cell = .{ count: int }
+fn main() @io -> () {
+    let row = [Cell.{ count: 1 }, Cell.{ count: 7 }]
+    let base = (row, row)
+    let updated = derive(base) \mut draft -> {
+        draft.0 = [row[1], row[0]]
+        draft.0[1].count = 2
+    }
+    println("{base.0[0].count}:{base.0[1].count}:{updated.0[0].count}:{updated.0[1].count}:{updated.1[0].count}:{updated.1[1].count}")
+}
+
+-- @case aborted_draft_preserves_the_base_and_inserted_source run-pass backend=both
+-- @expect-stdout 2:1:7:7
+type Cell = .{ count: int }
+fn main() @io -> () {
+    let outside = Cell.{ count: 7 }
+    let row = [Cell.{ count: 1 }, outside]
+    let base = (row, row)
+    let caught = absorb_panic \-> {
+        let _ = derive(base) \mut draft -> {
+            Array::push(mut draft.0, outside)
+            draft.0[1].count = 8
+            panic("aborted draft")
+        }
+    }
+    let Err(PanicError::Panicked(_)) = caught else { panic("draft unexpectedly published") }
+    println("{len(base.0)}:{base.0[0].count}:{base.0[1].count}:{outside.count}")
+}
+
+-- @case empty_record_and_unit_payload_sums_are_draft_roots run-pass backend=both
+type Kind { Present(); Empty }
+fn main() -> () {
+    let empty = derive(.{}) \mut _ -> ()
+    let some = derive(Some()) \mut _ -> ()
+    let tagged = derive(Present()) \mut _ -> ()
+    assert(empty == .{} && some == Some(()) && tagged == Present(()))
+    let option = Some
+    let variant = Present
+    assert(option(()) == some && variant(()) == tagged)
+    let Some() = some else { panic("unit payload was lost") }
+    let Present() = tagged else { panic("unit payload was lost") }
+}
+
+-- @case aborted_draft_dispatches_body_and_cleanup_effects run-panic "aborted draft" backend=both
+-- @expect-stdout 5:8
+eff Report { fn emit(value: int) -> () }
+opaque type Event use(record) = .{ value: int }
+fn record(new event: Event) @Report -> () { Report::emit(event.value) }
+fn main() @io -> () {
+    with Report::emit = \value: int -> {
+        if value == 5 { print("5:") } else { println("{value}") }
+    }
+    let shared = [1, 7]
+    let base = (shared, shared)
+    let _ = derive(base) \mut draft -> {
+        use _finish = Event.{ value: 8 }
+        Report::emit(5)
+        Array::push(mut draft.0, 7)
+        panic("aborted draft")
+    }
 }
 
 -- @case draft_matches_and_updates_active_variant_payload run-pass backend=both

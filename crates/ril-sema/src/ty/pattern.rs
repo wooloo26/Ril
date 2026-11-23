@@ -182,9 +182,8 @@ impl Checker<'_> {
                     .last()
                     .map_or("", |part| part.name.value.as_str());
                 let payload = self.pattern_payload(env, name, &normalized, node.span);
-                let unit_payload = name == "Ok"
-                    && payload.as_slice() == [Ty::Unit]
-                    && items.as_ref().is_some_and(Vec::is_empty);
+                let unit_payload =
+                    payload.as_slice() == [Ty::Unit] && items.as_ref().is_some_and(Vec::is_empty);
                 if !unit_payload && payload.len() != items.as_ref().map_or(0, Vec::len) {
                     self.error(
                         Code::E0314,

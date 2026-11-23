@@ -969,10 +969,22 @@ impl Datum {
 
     fn project_schema(&self, coordinate: Coordinate, mode: Mode) -> Self {
         if let Some(mut member) = self.known_member(&coordinate) {
-            self.attenuate(&mut member);
+            self.project_known(&mut member, &coordinate, mode);
             return member;
         }
         self.project_opaque(coordinate, mode)
+    }
+
+    fn project_known(&self, member: &mut Self, coordinate: &Coordinate, mode: Mode) {
+        if !self.roots.is_empty() && self.roots.iter().all(|root| root.draft) {
+            // Access is to the draft path. The stored value may have come
+            // from an immutable source that the update does not mutate.
+            let path = self.project_opaque(coordinate.clone(), mode);
+            member.roots = path.roots;
+            member.requires_new = path.requires_new;
+        } else {
+            self.attenuate(member);
+        }
     }
 
     fn known_member(&self, coordinate: &Coordinate) -> Option<Self> {
@@ -1999,7 +2011,7 @@ impl Ledger {
             projected = join_member(projected, initial);
         }
         if let Some(value) = &mut projected {
-            base.attenuate(value);
+            base.project_known(value, &coordinate, mode);
         }
         if !missing.is_empty() {
             let fallback = Datum {

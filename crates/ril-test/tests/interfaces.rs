@@ -1476,21 +1476,44 @@ fn draft_path_updates_agree_with_lean() {
     )
     .unwrap();
     let output = query(&oracle, "draft", b"[]").unwrap();
-    let results: Vec<(String, bool)> = serde_json::from_slice(&output).unwrap();
-    assert_eq!(results.len(), 2);
+    let results: Vec<(String, Option<Vec<u64>>)> = serde_json::from_slice(&output).unwrap();
+    assert_eq!(results.len(), 6);
     let temporary = tempfile::tempdir().unwrap();
-    for (name, valid) in results {
+    for (name, observation) in results {
+        let values = observation.unwrap_or_else(|| panic!("{name}: Lean produced no observation"));
+        let expected = format!(
+            "{}\n",
+            values
+                .iter()
+                .map(u64::to_string)
+                .collect::<Vec<_>>()
+                .join(":")
+        );
         let case = runtime.cases.iter().find(|case| case.id == name).unwrap();
         let executable = temporary.path().join(&name);
         Driver.build_aot(&case.pkg, &executable).unwrap();
-        let execution = run_worker(&mut Command::new(executable)).unwrap();
-        assert_eq!(
-            execution.status.success(),
-            valid,
-            "{name}: {:?}",
-            String::from_utf8_lossy(&execution.stderr)
-        );
+        // Each source case also checks identical AOT and JIT results in the
+        // main suite, whose executable serves as the JIT worker.
+        let output = run_worker(&mut Command::new(executable)).unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if let CaseMode::RunPanic(Some(message)) = &case.mode {
+            assert_eq!(output.status.code(), Some(1), "{name}: {stderr}");
+            assert!(
+                stderr.lines().any(|line| {
+                    line.strip_prefix("[RIL_RT_PANIC]").map(str::trim) == Some(message)
+                }),
+                "{name}: {stderr}"
+            );
+        } else {
+            assert!(output.status.success(), "{name}: {stderr}");
+        }
+        assert_eq!(output.stdout, expected.as_bytes(), "{name}");
     }
+}
+
+#[test]
+fn draft_root_and_constructor_checks_agree_with_lean() -> Result<(), Box<dyn std::error::Error>> {
+    check_access_examples("draft-roots", 9)
 }
 
 #[test]

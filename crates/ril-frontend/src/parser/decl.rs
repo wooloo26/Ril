@@ -500,8 +500,15 @@ impl Parser<'_> {
                 } else {
                     let name = self.name(Some(Word::Pascal), false)?;
                     let payload = if self.tight("(") {
-                        self.open("(", ")", Layout::List)?;
-                        Some(self.list(")", Self::ty)?)
+                        let opening = self.open("(", ")", Layout::List)?;
+                        let mut fields = self.list(")", Self::ty)?;
+                        if fields.is_empty() {
+                            fields.push(
+                                self.ast
+                                    .add_ty(opening.join(self.last), crate::syntax::Type::Unit),
+                            );
+                        }
+                        Some(fields)
                     } else {
                         None
                     };

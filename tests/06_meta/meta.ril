@@ -225,6 +225,15 @@ meta fn check_paths() -> bool {
 }
 meta let CHECK = assert(check_paths())
 
+-- @case static_derive_preserves_unit_payloads compile-pass
+type Kind { Present(); Empty }
+meta fn check_payloads() -> bool {
+    let some = derive(Some()) \mut _ -> ()
+    let tagged = derive(Present()) \mut _ -> ()
+    some == Some(()) && tagged == Present(())
+}
+meta let CHECK = assert(check_payloads())
+
 -- @case forwarded_static_guard_fails_at_type_checking compile-fail E0323
 type Positive = \n: int -> if n > 0 { <()> } else { <never> }
 fn positive(meta n: int |> Positive) -> int { n }

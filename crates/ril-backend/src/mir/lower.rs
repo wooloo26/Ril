@@ -32,6 +32,7 @@ enum NativeBody<'a> {
     Expression(ExprId),
     Accessor(&'a [(bool, Member)]),
     Foreign(Arc<ForeignImport>),
+    Constructor(&'a str, usize),
 }
 
 pub(super) fn lower(typed: &TypedProgram, analysis: &Analysis) -> Result<Program> {
@@ -153,6 +154,7 @@ struct Lowering<'a> {
 
 #[derive(Clone, PartialEq)]
 enum Work {
+    Constructor(DefinitionId, usize),
     Named(
         DefinitionId,
         BTreeMap<DefinitionId, Ty>,
@@ -232,6 +234,19 @@ impl<'a> Lowering<'a> {
 
     fn function(&mut self, work: Work) -> Result<Function> {
         let (file, name, body, params, guards, captures, types, statics) = match work {
+            Work::Constructor(id, arity) => {
+                let def = self.typed.hir.definition(id);
+                (
+                    def.name.span.file,
+                    self.typed.hir.export_name(id),
+                    NativeBody::Constructor(&def.name.value, arity),
+                    &[][..],
+                    Vec::new(),
+                    Vec::new(),
+                    BTreeMap::new(),
+                    BTreeMap::new(),
+                )
+            }
             Work::Named(id, types, captures, statics) => {
                 let f = self
                     .declaration(id)
@@ -285,10 +300,10 @@ impl<'a> Lowering<'a> {
             }
         };
         let params: Vec<_> = params.iter().filter(|param| !param.is_meta).collect();
-        let arity = if matches!(body, NativeBody::Accessor(_)) {
-            1
-        } else {
-            params.len()
+        let arity = match body {
+            NativeBody::Accessor(_) => 1,
+            NativeBody::Constructor(_, arity) => arity,
+            _ => params.len(),
         };
         let mut builder = Builder {
             global: self,
@@ -347,6 +362,7 @@ impl<'a> Lowering<'a> {
                 let value = builder.result_param(entry);
                 builder.project_path(path, value)?
             }
+            NativeBody::Constructor(tag, _) => builder.tag(tag, builder.params(entry)),
         };
         if builder.current.is_some() {
             builder.return_value(result)?;
@@ -997,6 +1013,16 @@ impl<'a> Builder<'_, 'a> {
             return Ok(value);
         }
         let def = self.global.typed.hir.definition(source);
+        if (matches!(def.kind, DefinitionKind::Variant(_))
+            || matches!(def.kind, DefinitionKind::Primitive(_))
+                && matches!(def.name.value.as_str(), "Some" | "Ok" | "Err"))
+            && let Some(Ty::Callable(signature)) = self.global.typed.types.get(&span)
+        {
+            let arity = signature.parameters.len();
+            let function = self.global.queue(Work::Constructor(source, arity));
+            let environment = self.unit();
+            return Ok(self.box_closure(function, arity, environment));
+        }
         match def.kind {
             DefinitionKind::Constant => {
                 let prev_file = self.file;
@@ -1153,10 +1179,16 @@ impl<'a> Builder<'_, 'a> {
             return Ok(self.invoke_closure(closure, args));
         }
         if matches!(def.kind, DefinitionKind::Variant(_) | DefinitionKind::Type) {
+            let unit_payload = args.is_empty()
+                && matches!(self.global.typed.types.get(&self.ast().expr(callee).span),
+                    Some(Ty::Callable(call)) if matches!(call.parameters.as_slice(), [parameter] if self.concrete(&parameter.ty) == Ty::Unit));
             let mut args = args
                 .iter()
                 .map(|arg| self.expr(arg.value))
                 .collect::<Result<Vec<_>>>()?;
+            if unit_payload {
+                args.push(self.unit());
+            }
             if let Some(&arity) = self.global.typed.tuple_payloads.get(&span)
                 && let [tuple] = args.as_slice()
             {
@@ -1503,7 +1535,7 @@ impl<'a> Builder<'_, 'a> {
             .map(|arg| self.expr(arg.value))
             .collect::<Result<Vec<_>>>()?;
         if matches!(name, "Ok" | "Err" | "Some" | "Panicked") {
-            if name == "Ok" && args.is_empty() {
+            if args.is_empty() && matches!(name, "Some" | "Ok" | "Err") {
                 args.push(self.unit());
             }
             return Ok(self.tag(name, args));

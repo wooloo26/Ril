@@ -268,6 +268,86 @@ fn update(value: Scalar) -> Scalar {
     -- ^ E0536
 }
 
+-- @case derive_rejects_unit_as_a_root compile-fail E0536
+fn update() -> () {
+    derive(()) \mut _ -> ()
+    -- ^ E0536
+}
+
+-- @case derive_requires_immutable_reception_compile_ref compile-fail E0536
+-- @forbid E0535
+type Cell = .{ var count: int }
+fn update(ref base: Cell) -> Cell {
+    derive(base) \mut _ -> ()
+    -- ^ E0536
+}
+
+-- @case derive_requires_immutable_reception_compile_mut compile-fail E0536
+-- @forbid E0535
+type Cell = .{ var count: int }
+fn update() -> Cell {
+    let mut base = Cell.{ count: 1 }
+    base.count += 1
+    derive(base) \mut _ -> ()
+    -- ^ E0536
+}
+
+-- @case derive_rejects_a_callable_root compile-fail E0536
+fn create() -> () {
+    let _ = derive(Some) \mut _ -> ()
+    -- ^ E0536
+}
+
+-- @case derive_rejects_inserting_a_live_value compile-fail E0535
+type Cell = .{ var count: int }
+fn insert(ref live: Cell) -> []Cell {
+    let base = [Cell.{ count: 1 }]
+    derive(base) \mut draft -> {
+        draft[0] = live
+        -- ^ E0535
+    }
+}
+
+-- @case calling_a_unit_constructor_is_not_unit_payload_syntax compile-fail E0338
+fn make() -> ?() {
+    None()
+    -- ^ E0338
+}
+
+-- @case derive_rejects_live_shared_field_replacement compile-fail E0535
+type Cell = .{ var count: int }
+type Root = .{ ^mut item: Cell }
+fn invalid() -> Root {
+    let mut live = Cell.{ count: 1 }
+    live.count += 1
+    let base = Root.{ item: ^mut Cell.{ count: 3 } }
+    derive(base) \mut draft -> {
+        draft.item = ^mut live
+        -- ^ E0535
+    }
+}
+
+-- @case derive_rejects_live_shared_array_insertion compile-fail E0535
+type Cell = .{ var count: int }
+fn invalid() -> [^mut]Cell {
+    let mut live = Cell.{ count: 1 }
+    live.count += 1
+    let base: [^mut]Cell = [^mut Cell.{ count: 3 }]
+    derive(base) \mut draft -> {
+        Array::push(mut draft, ^mut live)
+        -- ^ E0535
+    }
+}
+
+-- @case derive_preserves_the_array_element_type compile-fail E0301
+fn update() -> []int {
+    let base = [1]
+    derive(base) \mut draft -> {
+        Array::push(mut draft, "text")
+        -- ^ E0301
+    }
+}
+
 -- @case scoped_resource_can_be_observed_and_mutated_by_helpers compile-pass
 opaque type Handle use(close) = .{ var id: int }
 fn close(new _handle: Handle) -> () {}

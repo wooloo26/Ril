@@ -861,6 +861,8 @@ In higher-order parameter types, `fn(via T) @& -> infer R` opens mode polymorphi
 
 `derive(base, \mut draft -> { ... })` (typically piped as `base |> derive \mut draft -> { ... }`) performs path-targeted updates on a deeply immutable `SharedObject` snapshot, returning a new deeply immutable `T` while leaving `base` unchanged (implementations may structurally share unchanged immutable subgraphs).
 
+Draft paths follow the current working value, including after a field or an array entry has been replaced. Updating an inserted snapshot through a draft path leaves its original source and its other occurrences unchanged.
+
 ```ril
 type Profile = .{ email: str, tags: []str }
 type Account = .{ id: int, profile: Profile }

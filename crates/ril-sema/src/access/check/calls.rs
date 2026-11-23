@@ -414,7 +414,20 @@ impl<'program> Analyzer<'program> {
                 ledger.inspect(&value);
             }
             let mode = if channel_payload { Mode::New } else { mode };
-            let value = self.prepare_argument(ctx, ledger, arg, value, node.span, mode);
+            let value = if primitive && name == "derive" && index == 0 {
+                let mut snapshot = ledger.snapshot(&value);
+                if mode != Mode::Plain || !snapshot.can_freeze() {
+                    self.error(
+                        Code::E0536,
+                        node.span,
+                        "derive requires an immutable snapshot",
+                    );
+                }
+                snapshot.freeze();
+                snapshot
+            } else {
+                self.prepare_argument(ctx, ledger, arg, value, node.span, mode)
+            };
             // Packing preserves inspection obligations in the payload.
             if !is_constructor {
                 if parameter.is_some_and(|p| p.ty.is_result()) {
@@ -568,8 +581,8 @@ impl<'program> Analyzer<'program> {
                 };
             }
             let inserted = match (module, name) {
-                (Some("Array"), "push") => Some(1),
-                (Some("Map"), "insert") => Some(2),
+                (Some("Array"), "push") | (Some("Set"), "insert") => Some(1),
+                (Some("Array" | "Map"), "insert") => Some(2),
                 _ => None,
             };
             if let Some(inserted) = inserted
@@ -579,6 +592,9 @@ impl<'program> Analyzer<'program> {
                     .find(|((index, _, _), _)| *index == inserted)
             {
                 self.check_stored_views(value, *mode == Mode::Ref, value_span);
+                if let Some((_, _, target)) = values.iter().find(|(index, _, _)| *index == 0) {
+                    self.check_draft_insertion(ctx, ledger, target, value, value_span);
+                }
             }
             return self.primitive(ctx, ledger, name, &values, span);
         }
@@ -2279,13 +2295,6 @@ impl<'program> Analyzer<'program> {
                     for effect in &callback.latent_effects {
                         self.effect(ctx, ledger, effect, span);
                     }
-                }
-                if first.is_some_and(|value| {
-                    value
-                        .origins()
-                        .any(|origin| origin.mode != Access::Immutable)
-                }) {
-                    self.error(Code::E0536, span, "derive requires an immutable snapshot");
                 }
             }
             "absorb_panic" => {

@@ -1549,16 +1549,18 @@ impl<'a> Checker<'a> {
         }
         if def_id
             .is_some_and(|id| matches!(self.hir.definition(id).kind, DefinitionKind::Variant(_)))
-            && self.check_tuple_payload(
-                env,
-                args,
-                &call
-                    .parameters
-                    .iter()
-                    .map(|p| p.ty.clone())
-                    .collect::<Vec<_>>(),
-                span,
-            )
+            && (args.is_empty()
+                && matches!(call.parameters.as_slice(), [parameter] if self.normalize(&parameter.ty) == Ty::Unit)
+                || self.check_tuple_payload(
+                    env,
+                    args,
+                    &call
+                        .parameters
+                        .iter()
+                        .map(|p| p.ty.clone())
+                        .collect::<Vec<_>>(),
+                    span,
+                ))
         {
             return self.normalize(&result);
         }
@@ -1796,6 +1798,26 @@ impl<'a> Checker<'a> {
         callee: bool,
     ) -> Ty {
         match name {
+            "Some" | "Ok" | "Err" => {
+                let payload = self.fresh();
+                let result = match name {
+                    "Some" => Ty::Option(Box::new(payload.clone())),
+                    "Ok" => Ty::Result(Box::new(payload.clone()), Box::new(self.fresh())),
+                    _ => Ty::Result(Box::new(self.fresh()), Box::new(payload.clone())),
+                };
+                Ty::Callable(Arc::new(Callable {
+                    parameters: vec![Parameter {
+                        label: None,
+                        mode: Mode::Plain,
+                        ty: payload,
+                        optional: false,
+                        is_meta: false,
+                    }],
+                    result,
+                    result_mode: Mode::New,
+                    ..unknown_callable()
+                }))
+            }
             "Let" => Ty::Mode,
             "Var" | "Mut" | "Ref" | "SharedMut" | "VarMut" | "VarRef" | "VarSharedMut" => Ty::Mode,
             "bool" | "int" | "f64" | "str" | "bytes" | "never" | "Type" | "PanicInfo"
@@ -1833,7 +1855,13 @@ impl<'a> Checker<'a> {
             )
             || matches!(
                 ty,
-                Ty::Draft(_) | Ty::Scope | Ty::Task(_) | Ty::Sender(_) | Ty::Receiver(_)
+                Ty::Callable(_)
+                    | Ty::PanicInfo
+                    | Ty::Draft(_)
+                    | Ty::Scope
+                    | Ty::Task(_)
+                    | Ty::Sender(_)
+                    | Ty::Receiver(_)
             )
         {
             self.error(
@@ -1874,6 +1902,10 @@ impl<'a> Checker<'a> {
             self.expect(env, update.value, &callback);
             return base;
         }
+        if name == "None" {
+            self.error(Code::E0338, span, "unit constructor is not callable");
+            return Ty::Unknown;
+        }
         let context_arg = match (name, expected) {
             ("Some", Some(Ty::Option(ty)))
             | ("Ok", Some(Ty::Result(ty, _)))
@@ -1884,16 +1916,19 @@ impl<'a> Checker<'a> {
         for arg in args {
             types.push(self.expr(env, arg.value, context_arg));
         }
-        let first =
-            types
-                .first()
-                .cloned()
-                .unwrap_or(if name == "Ok" { Ty::Unit } else { Ty::Unknown });
+        let first = types
+            .first()
+            .cloned()
+            .unwrap_or(if matches!(name, "Some" | "Ok" | "Err") {
+                Ty::Unit
+            } else {
+                Ty::Unknown
+            });
         let arity = match name {
-            "Some" | "Err" | "panic" | "print" | "println" | "len" | "clone" | "inner"
-            | "inspect" | "type_name" | "coords" | "variants" | "to_f64" | "to_int" | "trunc"
-            | "absorb_panic" | "panic_message" => Some(1..=1),
-            "Ok" => Some(0..=1),
+            "panic" | "print" | "println" | "len" | "clone" | "inner" | "inspect" | "type_name"
+            | "coords" | "variants" | "to_f64" | "to_int" | "trunc" | "absorb_panic"
+            | "panic_message" => Some(1..=1),
+            "Some" | "Ok" | "Err" => Some(0..=1),
             "assert" => Some(1..=2),
             "has_default" | "contains" | "push" | "filter" | "map" | "checked_div"
             | "checked_rem" | "derive" => Some(2..=2),
@@ -2069,8 +2104,19 @@ impl<'a> Checker<'a> {
                 Ty::Unknown
             }
             "push" => {
-                if let (Ty::Array(member), Some(item)) = (&first, types.get(1)) {
-                    self.require(env, span, item, &member.ty);
+                let target = if let Ty::Draft(inner) = &first {
+                    inner.as_ref()
+                } else {
+                    &first
+                };
+                match self.normalize(target) {
+                    Ty::Array(member) => {
+                        if let Some(item) = types.get(1) {
+                            self.require(env, span, item, &member.ty);
+                        }
+                    }
+                    Ty::Unknown | Ty::Infer(_) | Ty::Param(_) => {}
+                    _ => self.error(Code::E0301, span, "Array::push requires an array"),
                 }
                 Ty::Unit
             }

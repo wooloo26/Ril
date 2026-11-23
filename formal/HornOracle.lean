@@ -257,23 +257,6 @@ def boundaryCases : List (String × Bool) :=
    ("stateful_handler_cannot_cross_fiber_boundary",
      concurrentShareableFnHandler pureSources [10] { pureFnHandler with writes := [external] } [])]
 
-open RilAccess.Draft RilAccess.Draft.Examples in
-def draftCases : List (String × Bool) :=
-  let original := { input with pool := input.pool.map fun cell =>
-    if cell.srcInst.object == 1 then { cell with contents := [.reference 0] } else cell }
-  let update := [grow, mutateInserted, done]
-  [("draft_updates_only_the_selected_occurrence",
-     contents update 1 original == some [.reference 0] &&
-     (publishedContents update [0] original).any (fun values => values.length == 3) &&
-     publishedContents update [1] original == some [.reference 0] &&
-     publishedContents update [0, 1] original == some [.scalar 0 8] &&
-     publishedContents update [0, 2] original == some [.scalar 0 7] &&
-     contents update 3 original == some [.scalar 0 7]),
-   ("draft_inserts_map_entry_without_changing_base",
-     contents mapInsert 7 mapInput == some [.reference 6] &&
-     publishedContents mapInsert [] mapInput == some [.reference 6, .reference 11] &&
-     publishedContents mapInsert [1] mapInput == some [.scalar 0 2, .scalar 0 20])]
-
 open RilAccess.Integrated RilAccess.Integrated.HandoffExamples in
 def handoffCases : List (String × Bool) :=
   [("explicit_handoff_keeps_unrelated_path",
@@ -402,7 +385,9 @@ def main (args : List String) : IO Unit := do
   else if args == ["boundary"] then
     stdout.putStrLn (toJson boundaryCases).compress
   else if args == ["draft"] then
-    stdout.putStrLn (toJson draftCases).compress
+    stdout.putStrLn (toJson RilAccess.Draft.Examples.runtimeObservations).compress
+  else if args == ["draft-roots"] then
+    stdout.putStrLn (toJson RilAccess.Draft.Examples.sourceChecks).compress
   else if args == ["handoff"] then
     stdout.putStrLn (toJson handoffCases).compress
   else if args == ["provenance"] then

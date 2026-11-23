@@ -120,6 +120,104 @@ def rejectsRoot (shape : RootShape) (value : Value) (source : Input) : Bool :=
   | .error .invalidDeriveInput => true
   | .ok _ => false
 
+def sourceChecks : List (String × Bool) :=
+  let record := { input with root := 0 }
+  let sources (access : Access) : Input := { input with
+    admissions := [0, 1, 2, 3].map (fun object => (object, Access.immutable)) ++ [(5, access)]
+    outside := ⟨[⟨1, 5, access⟩], []⟩ }
+  let wrapper := { sources .shared with
+    root := 6
+    pool := ⟨existingInstance 6, .fixed 900 [cellSlot], [.reference 0]⟩ :: input.pool
+    reserved := 6 :: input.reserved
+    schemas := .fixed 900 [cellSlot] :: input.schemas
+    admissions := (6, .immutable) :: (sources .shared).admissions }
+  [("derive_rejects_unit_as_a_root",
+      (prepareRoot .unit (unitValue 4) emptyRecordInput).isOk),
+   ("derive_rejects_a_callable_root",
+      (prepareRoot .ineligible (.reference 4) emptyRecordInput).isOk),
+   ("derive_requires_immutable_reception_compile_ref",
+      (prepareRoot (.record 100) (.reference 0)
+        { record with admissions := record.admissions.map (fun (object, access) =>
+          (object, if object == 0 then .ref else access)) }).isOk),
+   ("derive_requires_immutable_reception_compile_mut",
+      (prepareRoot (.record 100) (.reference 0)
+        { record with outside := ⟨[⟨0, 0, .mut⟩], []⟩ }).isOk),
+   ("derive_rejects_inserting_a_live_value",
+      accepted [.rewrite [] [.reference 5, .reference 3], done]
+        { sources .ref with root := 1 }),
+   ("derive_rejects_live_shared_field_replacement",
+      accepted [.rewrite [] [.reference 5], done] wrapper),
+   ("derive_rejects_live_shared_array_insertion",
+      accepted [.rewrite [] [.reference 0, .reference 3, .reference 5], done]
+        { sources .shared with root := 1 }),
+   ("calling_a_unit_constructor_is_not_unit_payload_syntax",
+      (lowerUnitVariant 4 (existingInstance 5) (.tag 802) .unitCall).isOk),
+   ("derive_preserves_the_array_element_type",
+      accepted [.rewrite [] [.scalar 0 1, .scalar 1 2], done] setInput)]
+
+def scalarMember (values : List Value) (index : Nat) : Option Nat := do
+  let .scalar _ payload ← values[index]? | none
+  return payload
+
+def arrayCounts (heap : Heap) (object : Nat) (path : List Nat) : Option (List Nat) := do
+  let entries ← valuesAt heap object path
+  entries.mapM fun entry => do
+    let .reference id ← some entry | none
+    scalarMember (← valuesAt heap id []) 0
+
+def runtimeObservations : List (String × Option (List Nat)) :=
+  let original := { input with pool := input.pool.map fun cell =>
+    if cell.srcInst.object == 1 then { cell with contents := [.reference 0] } else cell }
+  [("draft_updates_only_the_selected_occurrence", do
+      let analysis ← checkRecipe original [grow, mutateInserted, done]
+      let output ← analysis.result.output
+      let memory := analysis.result.memory
+      let base0 ← arrayCounts memory 2 [0]
+      let base1 ← arrayCounts memory 2 [1]
+      let updated0 ← arrayCounts memory output.object [0]
+      let updated1 ← arrayCounts memory output.object [1]
+      let outside ← scalarMember (← valuesAt memory 3 []) 0
+      return [base0.length, base1.length, updated0.length, updated1.length,
+        ← updated0[1]?, ← updated0[2]?, outside]),
+   ("draft_inserts_map_entry_without_changing_base", do
+      let analysis ← checkRecipe mapInput mapInsert
+      let output ← analysis.result.output
+      let memory := analysis.result.memory
+      return [(← valuesAt memory 7 []).length, (← valuesAt memory output.object []).length,
+        ← scalarMember (← valuesAt memory output.object [0]) 1,
+        ← scalarMember (← valuesAt memory output.object [1]) 1]),
+   ("draft_can_replace_a_fixed_tuple_member_with_a_shorter_array", do
+      let analysis ← checkRecipe input [.rewrite [0] [.reference 3], done]
+      let output ← analysis.result.output
+      let memory := analysis.result.memory
+      let base ← arrayCounts memory 2 [0]
+      let updated0 ← arrayCounts memory output.object [0]
+      let updated1 ← arrayCounts memory output.object [1]
+      return [base.length, updated0.length, updated1.length, ← updated0[0]?]),
+   ("draft_writes_to_the_current_path_after_reordering", do
+      let analysis ← checkRecipe input [.rewrite [0] [.reference 3, .reference 0],
+        .rewrite [0, 1] [.scalar 0 2], done]
+      let output ← analysis.result.output
+      let memory := analysis.result.memory
+      return (← arrayCounts memory 2 [0]) ++
+        (← arrayCounts memory output.object [0]) ++ (← arrayCounts memory output.object [1])),
+   ("aborted_draft_preserves_the_base_and_inserted_source", do
+      let analysis ← checkRecipe input [grow, mutateInserted, aborted]
+      if analysis.result.output.isSome then none else
+        let memory := analysis.result.memory
+        let base ← arrayCounts memory 2 [0]
+        let outside ← scalarMember (← valuesAt memory 3 []) 0
+        return base.length :: base ++ [outside]),
+   ("aborted_draft_dispatches_body_and_cleanup_effects", do
+      let cleanup : OutsideObservation := ⟨[], [8], .known ⟨[], [], []⟩⟩
+      let analysis ← checkRecipe input [.effect 5, grow, .outsideOp cleanup, aborted]
+      if analysis.result.output.isSome then none else
+        -- The summary records an effect set. The runtime suite checks the order.
+        some (analysis.result.effects.mergeSort (· ≤ ·)))]
+
+theorem source_checks_all_reject : sourceChecks.all (fun (_, ok) => !ok) = true := by decide +kernel
+theorem runtime_observations_all_available : runtimeObservations.all (·.2.isSome) = true := by decide +kernel
+
 def loweringExamples : List (String × Bool) :=
   let unit := unitValue 4
   let someUnit := lowerUnitVariant 4 (existingInstance 4) (.payload 801) .unitCall

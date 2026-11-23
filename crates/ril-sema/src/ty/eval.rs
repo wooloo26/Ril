@@ -1122,11 +1122,17 @@ impl Checker<'_> {
                     }
                 }
                 DefinitionKind::Variant(_) | DefinitionKind::Type => {
-                    let values: Vec<_> = self
+                    let mut values: Vec<_> = self
                         .eval_args(env, slots, args, fuel)?
                         .into_iter()
                         .map(|(_, value)| value)
                         .collect();
+                    if values.is_empty()
+                        && matches!(self.types.get(&self.ast(env.file).expr(callee).span),
+                            Some(Ty::Callable(call)) if matches!(call.parameters.as_slice(), [parameter] if self.normalize(&parameter.ty) == Ty::Unit))
+                    {
+                        values.push(Value::Unit);
+                    }
                     if self.tuple_payloads.contains_key(&span)
                         && let [Value::Tuple(items)] = values.as_slice()
                     {
@@ -1379,6 +1385,7 @@ impl Checker<'_> {
                 Err(Signal::Error(Code::E0830, span, "static assertion failed"))
             }
             ("panic", _) => Err(defect(span, "static evaluation panicked")),
+            ("Some" | "Ok" | "Err", []) => Ok(Value::Tag(name.into(), vec![Value::Unit])),
             ("Some" | "Ok" | "Err", [_]) => Ok(Value::Tag(name.into(), args)),
             ("len", [Value::Array(items)]) => Ok(integer(items.len())),
             ("len", [Value::Map(items)]) => Ok(integer(items.len())),

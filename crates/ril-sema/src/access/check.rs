@@ -3219,6 +3219,7 @@ impl<'a> Analyzer<'a> {
             return;
         }
         self.mutate(ctx, ledger, prior, span);
+        self.check_draft_insertion(ctx, ledger, prior, &value, span);
         if ledger
             .loop_snapshot(&value)
             .origins()
@@ -3265,6 +3266,31 @@ impl<'a> Analyzer<'a> {
                     .publications
                     .insert(ctx.owner, prior.roots.iter().any(|root| !root.new));
                 ledger.replace_member(prior, value, true);
+            }
+        }
+    }
+
+    fn check_draft_insertion(
+        &mut self,
+        ctx: &Context,
+        ledger: &Ledger,
+        target: &Datum,
+        value: &Datum,
+        span: Span,
+    ) {
+        if target.roots.iter().any(|root| root.draft) {
+            let snapshot = ledger.loop_snapshot(value);
+            if !snapshot.can_freeze()
+                || snapshot.origins().any(|origin| {
+                    origin.mode != Access::Immutable
+                        && ctx.caller_sources.contains(&origin.region.source)
+                })
+            {
+                self.error(
+                    Code::E0535,
+                    span,
+                    "draft insertion requires an immutable snapshot or an isolated local value",
+                );
             }
         }
     }
