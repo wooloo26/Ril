@@ -12,20 +12,23 @@ struct Requirement {
     replaced: Vec<Path>,
 }
 
-struct Argument {
-    value: Datum,
-    span: Span,
-}
+pub(super) type Arguments = (Vec<(usize, Mode, Datum)>, Vec<Span>);
 
-struct Call {
-    entry: Ledger,
-    arguments: BTreeMap<Formal, Argument>,
+#[derive(Clone, Eq, PartialEq)]
+pub(super) struct Call {
+    pub owner: Span,
+    pub site: Span,
+    pub callee: Span,
+    pub formals: Vec<Option<Span>>,
+    pub entry: Ledger,
+    pub arguments: Arguments,
+    pub whole_graphs: BTreeSet<usize>,
 }
 
 #[derive(Default)]
 pub(super) struct Checks {
     requirements: BTreeMap<Formal, BTreeSet<Requirement>>,
-    calls: Vec<Call>,
+    pub calls: Vec<Call>,
 }
 
 impl Requirement {
@@ -115,48 +118,45 @@ impl Analyzer<'_> {
     pub(super) fn record_snapshot_call(
         &mut self,
         ctx: &Context,
-        ledger: &Ledger,
-        owner: Span,
-        formals: &[Option<Span>],
+        (callee, formals): (Span, &[Option<Span>]),
+        (site, ledger): (Span, &Ledger),
         (values, spans): (&[(usize, Mode, Datum)], &[Span]),
     ) {
         if !ctx.reachable || ctx.shadow || !ctx.runtime {
             return;
         }
-        let arguments: BTreeMap<_, _> = values
-            .iter()
-            .zip(spans)
-            .filter_map(|((index, mode, value), &span)| {
-                let formal = formals.get(*index).copied().flatten()?;
-                if !matches!(mode, Mode::New | Mode::Via) || value.roots.is_empty() {
-                    return None;
-                }
-                let mut value = value.clone();
-                if *mode == Mode::Via {
-                    // A freeze of a transferred via input is reachable only in a
-                    // specialization that hands off ownership at this boundary.
-                    value.detach_handed_off_paths();
-                }
-                Some(((owner, formal), Argument { value, span }))
-            })
-            .collect();
-        if !arguments.is_empty() {
+        if values.iter().any(|(_, _, value)| !value.roots.is_empty()) {
             self.snapshots.calls.push(Call {
+                owner: ctx.owner,
+                site,
+                callee,
+                formals: formals.to_vec(),
                 entry: ledger.clone(),
-                arguments,
+                arguments: (values.to_vec(), spans.to_vec()),
+                whole_graphs: BTreeSet::new(),
             });
         }
     }
 
     pub(super) fn check_snapshot_calls(&mut self) {
-        let calls = std::mem::take(&mut self.snapshots.calls);
+        let mut calls = std::mem::take(&mut self.snapshots.calls);
+        self.link_snapshot_invocations(&mut calls);
         let mut callers = BTreeMap::<_, Vec<_>>::new();
         for call in &calls {
-            for (formal, argument) in &call.arguments {
-                callers
-                    .entry(*formal)
-                    .or_default()
-                    .push((&call.entry, argument));
+            for ((index, mode, value), &span) in call.arguments.0.iter().zip(&call.arguments.1) {
+                let Some(formal) = call.formals.get(*index).copied().flatten() else {
+                    continue;
+                };
+                if !matches!(mode, Mode::New | Mode::Via) || value.roots.is_empty() {
+                    continue;
+                }
+                callers.entry((call.callee, formal)).or_default().push((
+                    &call.entry,
+                    *mode,
+                    value,
+                    span,
+                    call.whole_graphs.contains(index),
+                ));
             }
         }
         let mut pending = VecDeque::new();
@@ -167,10 +167,22 @@ impl Analyzer<'_> {
         }
         while let Some((formal, requirement, mut visited)) = pending.pop_front() {
             visited.insert(formal, requirement.path.clone());
-            for &(ledger, argument) in callers.get(&formal).into_iter().flatten() {
-                let mut selected = argument.value.clone();
-                let mut ty = self.ty(argument.span);
-                for coordinate in &requirement.path {
+            for &(ledger, mode, value, span, whole_graph) in
+                callers.get(&formal).into_iter().flatten()
+            {
+                let mut selected = value.clone();
+                if mode == Mode::Via && !whole_graph {
+                    // A transferred via input freezes only in a specialization
+                    // that takes ownership at this boundary.
+                    selected.detach_handed_off_paths();
+                }
+                let mut ty = self.ty(span);
+                let (path, replaced) = if whole_graph {
+                    (&[][..], &[][..])
+                } else {
+                    (requirement.path.as_slice(), requirement.replaced.as_slice())
+                };
+                for coordinate in path {
                     let member = self.schema_member(ty, coordinate);
                     selected = ledger.project_schema(
                         &selected,
@@ -180,44 +192,39 @@ impl Analyzer<'_> {
                     ty = member.map_or(&crate::ty::Ty::Unknown, |member| &member.ty);
                 }
                 let selected = ledger.snapshot(&selected);
-                let valid = selected.snapshot_graph(
-                    &requirement.replaced,
-                    &mut |origin, owned, replaced| {
-                        if let Some((caller, mut propagated)) =
-                            Requirement::from_origin(ledger, origin, owned, replaced)
+                let valid = selected.snapshot_graph(replaced, &mut |origin, owned, replaced| {
+                    if let Some((caller, mut propagated)) =
+                        Requirement::from_origin(ledger, origin, owned, replaced)
+                    {
+                        if let Some(prior) = visited.get(&caller)
+                            && propagated.path.len() > prior.len()
                         {
-                            if let Some(prior) = visited.get(&caller)
-                                && propagated.path.len() > prior.len()
-                            {
-                                // A recursive projection can add unbounded steps.
-                                // Require the shared ancestor to be freezable.
-                                let prefix = prior
-                                    .iter()
-                                    .zip(&propagated.path)
-                                    .take_while(|(a, b)| a == b)
-                                    .count();
-                                propagated.path.truncate(prefix);
-                                propagated.replaced.clear();
-                            }
-                            let requirements =
-                                self.snapshots.requirements.entry(caller).or_default();
-                            if !requirements
+                            // A recursive projection can add unbounded steps.
+                            // Require the shared ancestor to be freezable.
+                            let prefix = prior
                                 .iter()
-                                .any(|old| old.input(0).permits(&propagated.input(0)))
-                            {
-                                pending.push_back((caller, propagated.clone(), visited.clone()));
-                                requirements
-                                    .retain(|old| !propagated.input(0).permits(&old.input(0)));
-                                requirements.insert(propagated);
-                            }
+                                .zip(&propagated.path)
+                                .take_while(|(a, b)| a == b)
+                                .count();
+                            propagated.path.truncate(prefix);
+                            propagated.replaced.clear();
                         }
-                        origin.can_freeze(owned)
-                    },
-                );
+                        let requirements = self.snapshots.requirements.entry(caller).or_default();
+                        if !requirements
+                            .iter()
+                            .any(|old| old.input(0).permits(&propagated.input(0)))
+                        {
+                            pending.push_back((caller, propagated.clone(), visited.clone()));
+                            requirements.retain(|old| !propagated.input(0).permits(&old.input(0)));
+                            requirements.insert(propagated);
+                        }
+                    }
+                    origin.can_freeze(owned)
+                });
                 if !valid {
                     self.error(
                         Code::E0535,
-                        argument.span,
+                        span,
                         "snapshot requires a transferred graph without retained live authority",
                     );
                 }

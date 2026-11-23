@@ -912,3 +912,22 @@ fn main() -> () {
     live.count += 2
     assert(selected.count == 24 && replaced.item.count == 14 && fresh.item.count == 36 && live.count == 15)
 }
+
+-- @case recursively_wrapping_a_complete_new_graph_preserves_snapshot_reception run-pass backend=both no-prelude
+type Cell = .{ var count: int }
+nominal type Node = .{ ^mut value: Cell, mut next: ?Node }
+fn freeze(new source: Node) -> int { let snapshot = new source; snapshot.value.count }
+fn visit(action: fn(new Node) -> int, new input: Node, depth: int) -> int {
+    if depth == 0 { action(new input) }
+    else {
+        let outer = Cell.{ count: 5 }
+        visit(action, new Node.{ value: ^mut Cell.{ count: outer.count }, next: Some(new input) }, depth - 1)
+    }
+}
+fn main() -> () {
+    let mut live = Cell.{ count: 1 }
+    live.count += 1
+    let observed = visit(freeze, new Node.{ value: ^mut Cell.{ count: 2 }, next: None }, 1)
+    live.count += 8
+    assert(observed == 5)
+}

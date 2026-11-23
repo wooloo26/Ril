@@ -94,6 +94,100 @@ fn run() -> int {{
 }
 
 #[test]
+fn snapshot_callback_arguments_survive_separate_compilation() {
+    use ril_base::diag::Code;
+
+    let source = br#"
+pub type Cell = .{ var count: int }
+pub type Shelf = .{ var ^mut item: Cell }
+type Action = fn(new Shelf) -> int
+fn dispatch(action: Action, new source: Shelf) -> int { action(new source); 0 }
+pub fn apply(action: fn(new Shelf) -> int, new source: Shelf) -> int {
+    dispatch(action, new source)
+}
+pub fn replace_then_apply(action: fn(new Shelf) -> int, new source: Shelf) -> int {
+    let mut shelf = new source
+    shelf.item = ^mut Cell.{ count: 42 }
+    dispatch(action, new shelf)
+}
+pub fn apply_via(action: fn(via Shelf) -> int, via source: Shelf) -> int {
+    action(source)
+}
+"#;
+    let mut provider = VirtualPackage::new(Unit::Lib);
+    provider.entry = "pkg/snapshot.ril".into();
+    provider.insert(provider.entry.clone(), source.to_vec());
+    let interface = Driver.interface(&provider).unwrap().encode().unwrap();
+    let decoded = Interface::decode(&interface).unwrap();
+    let [invocation] = decoded.functions["pkg/snapshot.ril::apply"]
+        .summary
+        .snapshot_calls
+        .as_slice()
+    else {
+        panic!("the callback invocation must be published");
+    };
+    assert_eq!(invocation.receiver.parameter, 0);
+    assert_eq!(
+        invocation.arguments[0].graph.roots[0]
+            .source
+            .as_ref()
+            .unwrap()
+            .parameter,
+        1
+    );
+
+    for (mount, bytes) in [
+        ("library/snapshot.ril", source.as_slice()),
+        ("library/snapshot.rili", interface.as_slice()),
+    ] {
+        for (method, callback, item, accepted) in [
+            ("apply", "count", "live", true),
+            ("apply", "freeze", "live", false),
+            ("apply", "freeze", "Snapshot::Cell.{ count: 42 }", true),
+            ("replace_then_apply", "freeze", "live", true),
+            ("apply_via", "freeze_via", "live", false),
+            (
+                "apply_via",
+                "freeze_via",
+                "Snapshot::Cell.{ count: 42 }",
+                true,
+            ),
+        ] {
+            let client_source = format!(
+                "use library/snapshot
+fn count(new source: Snapshot::Shelf) -> int {{ source.item.count }}
+fn freeze(new source: Snapshot::Shelf) -> int {{ let snapshot = new source; snapshot.item.count }}
+fn freeze_via(via source: Snapshot::Shelf) -> int {{ let snapshot = new source; snapshot.item.count }}
+fn relay(new input: Snapshot::Shelf) -> int {{ Snapshot::{method}({callback}, new input) }}
+fn run() -> int {{
+    let mut live = Snapshot::Cell.{{ count: 1 }}
+    live.count += 1
+    let count = relay(new Snapshot::Shelf.{{ item: ^mut {item} }})
+    live.count += 8
+    count + live.count
+}}"
+            );
+            let mut client = VirtualPackage::new(Unit::Lib);
+            client.insert(mount.into(), bytes.to_vec());
+            client.insert(client.entry.clone(), client_source.into_bytes());
+            match (accepted, Driver.analyze(&client)) {
+                (true, Ok(_)) => {}
+                (false, Err(diagnostics)) => {
+                    assert_eq!(
+                        diagnostics.len(),
+                        1,
+                        "{mount} {callback} {item}: {diagnostics:?}"
+                    );
+                    assert_eq!(diagnostics[0].code, Some(Code::E0535));
+                }
+                (true, Err(diagnostics)) => panic!("{mount} {callback} {item}: {diagnostics:?}"),
+                (false, Ok(_)) => panic!("{mount} accepted {callback} with {item}"),
+            }
+        }
+    }
+}
+
+#[test]
 fn correlated_callback_mode_offers_survive_interface_only_calls() {
     use ril_base::diag::Code;
 
@@ -1480,6 +1574,7 @@ fn exported_summaries_and_via_domains_agree_with_lean() {
             "retained": summary.retained,
             "independent_retention": summary.independent_retention,
             "snapshot_inputs": snapshot_inputs,
+            "snapshot_calls": summary.snapshot_calls,
             "return_sources": return_sources,
             "return_allocations": summary.return_allocations,
             "effects": effects,
@@ -1781,7 +1876,7 @@ fn provenance_examples_agree_with_lean() -> Result<(), Box<dyn std::error::Error
 
 #[test]
 fn graph_authority_examples_agree_with_lean() -> Result<(), Box<dyn std::error::Error>> {
-    check_access_examples("graph", 21)
+    check_access_examples("graph", 25)
 }
 
 #[test]

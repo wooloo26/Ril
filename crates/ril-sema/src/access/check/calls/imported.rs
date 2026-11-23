@@ -104,6 +104,7 @@ impl<'program> Analyzer<'program> {
             }
             self.snapshots
                 .import(owner, &formals, &export.summary.snapshot_inputs);
+            self.import_snapshot_invocations(owner, &formals, &export.summary.snapshot_calls);
             self.higher_order
                 .add_interface(owner, formals, &export.summary);
         }
@@ -158,9 +159,8 @@ impl<'program> Analyzer<'program> {
         };
         self.record_snapshot_call(
             ctx,
-            &frozen,
-            function.name.span,
-            &formals,
+            (function.name.span, &formals),
+            (span, &frozen),
             (arguments, spans),
         );
         if let Some(signature) = signature {

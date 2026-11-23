@@ -250,6 +250,8 @@ struct Analyzer<'a> {
     closure_modes: BTreeMap<Span, ClosureModes>,
     higher_order: higher_order::Calls,
     snapshots: snapshots::Checks,
+    snapshot_invocations: Vec<calls::SnapshotInvocation>,
+    snapshot_call_summaries: BTreeMap<Span, BTreeSet<super::SnapshotCall>>,
     invocation_summaries: BTreeMap<Span, BTreeSet<Invocation>>,
     mode_call_summaries: BTreeMap<Span, BTreeSet<CallbackModeCall>>,
     callback_results: Vec<calls::CallbackResult>,
@@ -283,6 +285,8 @@ fn collect(
         closure_modes: BTreeMap::new(),
         higher_order: higher_order::Calls::default(),
         snapshots: snapshots::Checks::default(),
+        snapshot_invocations: Vec::new(),
+        snapshot_call_summaries: BTreeMap::new(),
         invocation_summaries: BTreeMap::new(),
         mode_call_summaries: BTreeMap::new(),
         callback_results: Vec::new(),
@@ -991,6 +995,12 @@ impl<'a> Analyzer<'a> {
                 .collect(),
             storage_updates: self.storage_contracts(fun),
             snapshot_inputs: self.snapshots.inputs(fun.owner, &fun.formals),
+            snapshot_calls: self
+                .snapshot_call_summaries
+                .remove(&fun.owner)
+                .into_iter()
+                .flatten()
+                .collect(),
             ..Summary::default()
         };
         let mut up = BTreeSet::new();

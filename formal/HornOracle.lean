@@ -120,6 +120,7 @@ structure JsonSummary where
   retained : List Nat
   independent_retention : List Nat
   snapshot_inputs : List JsonSnapshotInput
+  snapshot_calls : List Json
   return_sources : List JsonSource
   return_allocations : List Json
   effects : List Nat
@@ -153,6 +154,7 @@ def compareSummaries (baseline revision : JsonSummary) : Bool :=
     revision.independent_retention.all baseline.independent_retention.contains &&
     RilAccess.snapshotInputsSubsumed (baseline.snapshot_inputs.map JsonSnapshotInput.contract)
       (revision.snapshot_inputs.map JsonSnapshotInput.contract) &&
+    revision.snapshot_calls.all (fun call => (baseline.snapshot_calls.map Json.compress).contains call.compress) &&
     revision.effect_uses.all (fun effect => baseline.effect_uses.any fun old =>
       old.effect == effect.effect && (old.operation.isNone || old.operation == effect.operation)) &&
     RilAccess.callbackInvocationsSubsumed (baseline.invocations.map JsonInvocation.contract)
@@ -231,6 +233,14 @@ def graphCases : List (String × Bool) :=
    ("a_new_wrapper_cannot_freeze_an_existing_writer", immutableConsistent frozenNestedSources),
    ("snapshot_of_transferred_new_parameter_checks_call_entry_sources",
      immutableConsistent transferredBeforeStore),
+   ("an_indirect_freeze_checks_retained_authority_in_the_actual_argument",
+     immutableConsistent transferredBeforeStore),
+   ("passing_a_freezing_callback_accepts_a_completely_owned_argument",
+     immutableConsistent transferredAfterStore),
+   ("snapshot_checks_follow_callback_receivers_in_recursive_data",
+     immutableConsistent transferredBeforeStore),
+   ("snapshot_checks_converge_when_recursive_calls_wrap_an_argument",
+     immutableConsistent frozenNestedSources),
    ("a_call_scoped_writer_cannot_be_frozen_by_handoff", immutableConsistent immutableAndWriter),
    ("conditional_store_keeps_the_original_snapshot_requirement",
      immutableConsistent transferredBeforeStore && immutableConsistent transferredAfterStore),

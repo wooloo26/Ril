@@ -28,6 +28,8 @@ use super::{
 use crate::access::flow::InvocationSite;
 
 mod imported;
+mod snapshot_invocations;
+pub(super) use snapshot_invocations::SnapshotInvocation;
 
 type CallArgument = (usize, Mode, Datum);
 
@@ -523,6 +525,7 @@ impl<'program> Analyzer<'program> {
             );
         }
         if !all_aliases_known && let (Some(target), Some(signature)) = (&target, sig) {
+            self.record_snapshot_invocation(ctx, ledger, target, (&values, &value_spans), span);
             self.record_indirect_modes(
                 ctx,
                 target,
@@ -533,7 +536,12 @@ impl<'program> Analyzer<'program> {
             );
         }
         for (&owner, modes) in &closures {
-            self.record_snapshot_call(ctx, ledger, owner, &modes.formals, (&values, &value_spans));
+            self.record_snapshot_call(
+                ctx,
+                (owner, &modes.formals),
+                (span, ledger),
+                (&values, &value_spans),
+            );
             if let Some(signature) = sig {
                 self.record_callable_arguments(
                     ctx,
@@ -812,7 +820,12 @@ impl<'program> Analyzer<'program> {
             .map(|param| param.name.as_ref().map(|name| name.span))
             .collect();
         if has_body {
-            self.record_snapshot_call(ctx, ledger, fun.name.span, &formals, (values, value_spans));
+            self.record_snapshot_call(
+                ctx,
+                (fun.name.span, &formals),
+                (span, ledger),
+                (values, value_spans),
+            );
         }
         let mut before_updates = None;
         let mut modeled_stores = false;
@@ -1577,6 +1590,11 @@ impl<'program> Analyzer<'program> {
                         });
                         actual.requires_new &= origin.new;
                     }
+                    if origin.call_borrow {
+                        for root in &mut actual.roots {
+                            root.call_borrow |= root.mode.writes();
+                        }
+                    }
                     Some(actual)
                 } else {
                     let mut mapped = origin.clone();
@@ -1754,32 +1772,7 @@ impl<'program> Analyzer<'program> {
             .cloned()
             .unwrap_or_else(|| ril_base::ice!("missing callback return template"));
         let receiver = self.instantiate_return(formals, via, entry, &receiver, &mut Vec::new());
-        for ((_, mode, argument), span) in arguments.iter_mut().zip(&mut spans) {
-            if let [origin] = argument.roots.as_slice()
-                && origin.region.selection.is_empty()
-                && let Some(index) = formals
-                    .iter()
-                    .position(|formal| *formal == Some(origin.region.source))
-                && let Some(((_, received, _), received_span)) = entry
-                    .arguments
-                    .iter()
-                    .zip(entry.spans)
-                    .find(|((position, _, _), _)| *position == index)
-            {
-                *span = *received_span;
-                if *mode == Mode::Via && origin.inherits_mode {
-                    *mode = *received;
-                }
-            }
-            *argument = self.instantiate_return(formals, via, entry, argument, &mut Vec::new());
-            if matches!(mode, Mode::Ref | Mode::Shared) {
-                for root in &mut argument.roots {
-                    root.fix_mode(root.mode.project(Access::from_mode(*mode)));
-                    root.new = false;
-                }
-                argument.requires_new = false;
-            }
-        }
+        self.specialize_callback_arguments(formals, via, entry, (&mut arguments, &mut spans));
         let mut ledger = Cow::Borrowed(entry.ledger);
         for (_, _, argument) in &arguments {
             if argument.has_call_graph(entry.span) {
@@ -1820,6 +1813,41 @@ impl<'program> Analyzer<'program> {
             ledger.to_mut().remember_return_graph(&result, entry.span);
         }
         (result, ledger)
+    }
+
+    fn specialize_callback_arguments(
+        &mut self,
+        formals: &[Option<Span>],
+        via: &BTreeSet<Span>,
+        entry: &CallEntry<'_>,
+        (arguments, spans): (&mut [CallArgument], &mut [Span]),
+    ) {
+        for ((_, mode, argument), span) in arguments.iter_mut().zip(spans) {
+            if let [origin] = argument.roots.as_slice()
+                && origin.region.selection.is_empty()
+                && let Some(index) = formals
+                    .iter()
+                    .position(|formal| *formal == Some(origin.region.source))
+                && let Some(((_, received, _), received_span)) = entry
+                    .arguments
+                    .iter()
+                    .zip(entry.spans)
+                    .find(|((position, _, _), _)| *position == index)
+            {
+                *span = *received_span;
+                if *mode == Mode::Via && origin.inherits_mode {
+                    *mode = *received;
+                }
+            }
+            *argument = self.instantiate_return(formals, via, entry, argument, &mut Vec::new());
+            if matches!(mode, Mode::Ref | Mode::Shared) {
+                for root in &mut argument.roots {
+                    root.fix_mode(root.mode.project(Access::from_mode(*mode)));
+                    root.new = false;
+                }
+                argument.requires_new = false;
+            }
+        }
     }
 
     fn callback_return(&mut self, receiver: &Datum, entry: &CallEntry<'_>) -> Option<Datum> {

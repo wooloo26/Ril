@@ -16,7 +16,8 @@ use super::{
 use crate::{
     access::{
         Access, CallbackModeCall, Coordinate, Invocation as PublishedInvocation, InvocationMode,
-        ModeAxis, ModeExpression, Summary, flow::Choices,
+        ModeAxis, ModeExpression, Summary,
+        flow::{Choices, widen_recursive_projection},
     },
     ty::{Callable, Ty},
 };
@@ -123,28 +124,11 @@ struct ModeReceiver {
 
 impl ModeReceiver {
     fn widen_recursive_path(&mut self, previous: &[Coordinate]) {
-        let path = &mut self.region.selection;
-        if path.len() <= previous.len() {
-            return;
-        }
-        // A repeated formal can be reached through a longer projection on
-        // every recursive call. Keep the common prefix and the final member
-        // selection, and look for that selection inside the reachable graph.
-        if self.recursive_path.is_none() {
-            let suffix = path
-                .iter()
-                .rev()
-                .zip(previous.iter().rev())
-                .take_while(|(left, right)| left == right)
-                .count();
-            self.recursive_path = Some(path.iter().skip(path.len() - suffix).cloned().collect());
-        }
-        let prefix = path
-            .iter()
-            .zip(previous)
-            .take_while(|(left, right)| left == right)
-            .count();
-        path.truncate(prefix);
+        widen_recursive_projection(
+            &mut self.region.selection,
+            previous,
+            &mut self.recursive_path,
+        );
     }
 }
 

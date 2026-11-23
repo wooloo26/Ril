@@ -2337,6 +2337,32 @@ fn freeze(mut source: Cell) &mut -> Cell {
     snapshot
 }
 
+-- @case an_indirect_freeze_checks_retained_authority_in_the_actual_argument compile-fail E0535
+type Shelf = .{ ^mut item: Cell }
+fn freeze(new source: Shelf) -> Shelf { let snapshot = new source; snapshot }
+fn apply(action: fn(new Shelf) -> Shelf, new source: Shelf) -> Shelf {
+    action(new source)
+}
+fn observe() -> int {
+    let mut live = Cell.{ count: 1 }
+    let mut shelf = Shelf.{ item: ^mut live }
+    shelf.item.count += 1
+    let before = apply(freeze, new shelf)
+    -- ^ E0535
+    live.count += 8
+    before.item.count
+}
+
+-- @case passing_a_freezing_callback_accepts_a_completely_owned_argument compile-pass
+type Shelf = .{ ^mut item: Cell }
+fn freeze(new source: Shelf) -> Shelf { let snapshot = new source; snapshot }
+fn apply(action: fn(new Shelf) -> Shelf, new source: Shelf) -> Shelf {
+    action(new source)
+}
+fn observe() -> int {
+    apply(freeze, new Shelf.{ item: ^mut Cell.{ count: 42 } }).item.count
+}
+
 -- @case conditional_store_keeps_the_original_snapshot_requirement compile-fail E0535
 type Shelf = .{ var ^mut item: Cell }
 fn freeze(new input: Shelf, replace: bool) -> Shelf {
@@ -2836,4 +2862,46 @@ fn run(count: int) -> int {
         }
         None -> 0
     }
+}
+
+-- @case snapshot_checks_follow_callback_receivers_in_recursive_data compile-fail E0535 no-prelude
+type Cell = .{ var count: int }
+type Shelf = .{ ^mut item: Cell }
+nominal type Node = .{ action: fn(new Shelf) -> int, next: ?Node }
+fn freeze(new source: Shelf) -> int { let snapshot = new source; snapshot.item.count }
+fn count(new source: Shelf) -> int { source.item.count }
+fn visit(node: Node, new input: Shelf) -> int {
+    match node.next {
+        Some(tail) -> visit(tail, new input)
+        None -> node.action(new input)
+    }
+}
+fn observe() -> () {
+    let mut live = Cell.{ count: 1 }
+    live.count += 1
+    let head = Node.{ action: count, next: Some(Node.{ action: freeze, next: None }) }
+    let observed = visit(head, new Shelf.{ item: ^mut live })
+    -- ^ E0535
+    live.count += 8
+    assert(observed == 2)
+}
+
+-- @case snapshot_checks_converge_when_recursive_calls_wrap_an_argument compile-fail E0535 no-prelude
+type Cell = .{ var count: int }
+nominal type Node = .{ ^mut value: Cell, mut next: ?Node }
+fn freeze(new source: Node) -> int { let snapshot = new source; snapshot.value.count }
+fn visit(action: fn(new Node) -> int, new input: Node, depth: int) -> int {
+    if depth == 0 { action(new input) }
+    else {
+        let outer = Cell.{ count: 5 }
+        visit(action, new Node.{ value: ^mut Cell.{ count: outer.count }, next: Some(new input) }, depth - 1)
+    }
+}
+fn observe() -> () {
+    let mut live = Cell.{ count: 1 }
+    live.count += 1
+    let observed = visit(freeze, new Node.{ value: ^mut live, next: None }, 1)
+    -- ^ E0535
+    live.count += 8
+    assert(observed == 5)
 }

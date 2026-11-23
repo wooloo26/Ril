@@ -20,6 +20,8 @@ pub struct Summary {
     pub retained: Vec<usize>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub snapshot_inputs: Vec<SnapshotInput>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub snapshot_calls: Vec<SnapshotCall>,
     pub independent_retention: Vec<usize>,
     pub return_sources: Vec<ReturnSource>,
     pub return_allocations: Vec<ReturnAllocation>,
@@ -82,6 +84,10 @@ impl Summary {
                 .iter()
                 .all(|required| self.snapshot_inputs.iter().any(|old| old.permits(required)))
             && revised
+                .snapshot_calls
+                .iter()
+                .all(|call| self.snapshot_calls.contains(call))
+            && revised
                 .effects
                 .iter()
                 .all(|effect| self.effects.contains(effect))
@@ -142,6 +148,46 @@ pub struct SnapshotInput {
     pub formal: usize,
     pub path: Vec<Coordinate>,
     pub replaced: Vec<Vec<Coordinate>>,
+}
+
+/// Invocation of a callable obtained through a formal's call-entry graph.
+/// Its argument graphs are needed to discharge the chosen callback's
+/// snapshot input requirements even if its return value is discarded.
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+pub struct SnapshotCall {
+    pub receiver: ModeAxis,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recursive_path: Option<Vec<Coordinate>>,
+    pub arguments: Vec<SnapshotArgument>,
+}
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+pub struct SnapshotArgument {
+    pub position: usize,
+    /// A forwarded `via` argument has no fixed input mode.
+    pub mode: Option<Input>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub whole_graph: bool,
+    pub graph: SnapshotGraph,
+}
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+pub struct SnapshotGraph {
+    pub owned: bool,
+    pub environment: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub replaced: Vec<Vec<Coordinate>>,
+    pub roots: Vec<SnapshotOrigin>,
+    pub members: Vec<(Coordinate, SnapshotGraph)>,
+}
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+pub struct SnapshotOrigin {
+    pub source: Option<ModeAxis>,
+    pub access: Access,
+    pub new: bool,
+    pub borrowed: bool,
+    pub forwarded: bool,
 }
 
 impl SnapshotInput {

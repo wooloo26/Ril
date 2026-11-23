@@ -89,6 +89,17 @@ pub fn read(new input: .{ mut item: Cell, ^mut other: Cell }) -> int {
     read_cell(new held.item)
 }
 
+-- @case passing_new_live_boundaries_to_an_existing_callback_breaks_compatibility compat-fail E0552
+-- @baseline
+pub fn apply(action: fn(new .{ item: Cell }) -> int, new input: .{ item: Cell }) -> int {
+    action(new .{ item: input.item })
+}
+-- @revision
+pub fn apply(action: fn(new .{ item: Cell }) -> int, new input: .{ item: Cell }) -> int {
+-- ^ E0552
+    action(new input)
+}
+
 -- @case freezing_through_nested_via_calls_preserves_existing_sources compile-fail E0535
 type Shelf = .{ ^mut item: Cell }
 fn freeze(via input: Shelf) -> Shelf {

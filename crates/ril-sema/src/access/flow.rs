@@ -67,6 +67,33 @@ impl Coordinate {
     }
 }
 
+pub(super) fn widen_recursive_projection(
+    path: &mut Vec<Coordinate>,
+    previous: &[Coordinate],
+    recursive: &mut Option<Vec<Coordinate>>,
+) {
+    if path.len() <= previous.len() {
+        return;
+    }
+    // A recursive traversal can extend a selection on every call. Keep the
+    // common prefix and look for the final selection within the reachable graph.
+    if recursive.is_none() {
+        let suffix = path
+            .iter()
+            .rev()
+            .zip(previous.iter().rev())
+            .take_while(|(left, right)| left == right)
+            .count();
+        *recursive = Some(path.iter().skip(path.len() - suffix).cloned().collect());
+    }
+    let prefix = path
+        .iter()
+        .zip(previous)
+        .take_while(|(left, right)| left == right)
+        .count();
+    path.truncate(prefix);
+}
+
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub(super) struct Region {
     pub source: Span,
@@ -530,6 +557,14 @@ impl Datum {
         }
     }
 
+    pub(super) fn retain_compatible_origins(&mut self, choices: &Choices) {
+        self.roots
+            .retain(|root| compatible(&root.branches, choices));
+        for member in self.members.values_mut() {
+            member.retain_compatible_origins(choices);
+        }
+    }
+
     pub(super) fn mark_call_allocations<'d>(
         values: impl Iterator<Item = &'d mut Self>,
         body: Span,
@@ -707,6 +742,44 @@ impl Datum {
         inspect: &mut impl FnMut(&Origin, bool, &[Vec<Coordinate>]) -> bool,
     ) -> bool {
         self.visit_snapshot_graph(self.requires_new, replaced, inspect)
+    }
+
+    pub(super) fn snapshot_shape_depth(&self) -> usize {
+        self.roots
+            .iter()
+            .map(|root| root.region.selection.len())
+            .chain(
+                self.members
+                    .values()
+                    .map(|member| 1 + member.snapshot_shape_depth()),
+            )
+            .max()
+            .unwrap_or_default()
+    }
+
+    pub(super) fn widen_snapshot_graph(&mut self) {
+        let mut roots = BTreeSet::new();
+        self.snapshot_graph(&[], &mut |origin, owned, _| {
+            if !origin.can_freeze(owned) || origin.transferred_entry(owned).is_some() {
+                let new = owned && origin.new;
+                let mut source = Self::source(origin.region.source, origin.mode, new);
+                for root in &mut source.roots {
+                    root.call_borrow = origin.call_borrow;
+                    root.inherits_mode = origin.inherits_mode;
+                    root.entry_graph = origin.entry_graph.as_ref().map(|entry| EntryGraph {
+                        callable: entry.callable,
+                        ownership: entry.ownership,
+                        shared_at: None,
+                        via_at: Vec::new(),
+                    });
+                    roots.insert(root.clone());
+                }
+            }
+            true
+        });
+        self.roots = roots.into_iter().collect();
+        self.members.clear();
+        self.environments.clear();
     }
 
     fn visit_snapshot_graph(
@@ -1041,7 +1114,7 @@ impl Datum {
         }
     }
 
-    fn known_member(&self, coordinate: &Coordinate) -> Option<Self> {
+    pub(super) fn known_member(&self, coordinate: &Coordinate) -> Option<Self> {
         if let Some(value) = self.members.get(coordinate) {
             Some(value.clone())
         } else if *coordinate == Coordinate::Dynamic {
@@ -1242,6 +1315,47 @@ impl Ledger {
                 .then(|| tail.to_vec())
             })
             .collect()
+    }
+
+    pub(super) fn snapshot_overwrites(&self, value: &Datum) -> Vec<Vec<Coordinate>> {
+        let alternatives: Vec<_> = value
+            .roots
+            .iter()
+            .map(|root| self.overwritten_paths(&root.region))
+            .collect();
+        let candidates: BTreeSet<_> = alternatives.iter().flatten().collect();
+        candidates
+            .into_iter()
+            .filter(|path| {
+                alternatives
+                    .iter()
+                    .all(|writes| writes.iter().any(|written| path.starts_with(written)))
+            })
+            .cloned()
+            .collect()
+    }
+
+    pub(super) fn restore_snapshot_overwrites(&mut self, value: &Datum, paths: &[Vec<Coordinate>]) {
+        for path in paths {
+            let Some((step, parent_path)) = path.split_last() else {
+                continue;
+            };
+            let Some(parent) = parent_path
+                .iter()
+                .try_fold(value, |node, coordinate| node.members.get(coordinate))
+            else {
+                continue;
+            };
+            if let Some(stored) = parent.members.get(step) {
+                for origin in parent.slot_projection(step.clone()).roots {
+                    if !origin.region.summarized()
+                        && !origin.region.selection.contains(&Coordinate::Dynamic)
+                    {
+                        self.replace_region(&origin.region, stored, true);
+                    }
+                }
+            }
+        }
     }
 
     pub(super) fn clear_result_obligations(&mut self) {
