@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, path::Path};
 
 use ril_base::{
     diag::{Code, Diagnostic},
@@ -6,9 +6,10 @@ use ril_base::{
 };
 use ril_frontend::{
     hir::{DefinitionKind, Program, Resolution},
+    parser::FileKind,
     syntax::{
-        Ast, GenericArg, GenericParam, StmtKind, Type, TypeDefinition, TypeId, TypeKind, Variant,
-        Visibility,
+        Ast, GenericArg, GenericParam, StmtId, StmtKind, Type, TypeDefinition, TypeId, TypeKind,
+        Variant, Visibility,
     },
 };
 use serde::{Deserialize, Serialize};
@@ -19,7 +20,7 @@ use crate::{
     ty::{Ty, TypedProgram},
 };
 
-pub const FORMAT_VERSION: u32 = 7;
+pub const FORMAT_VERSION: u32 = 8;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Interface {
@@ -27,6 +28,7 @@ pub struct Interface {
     pub abi_hash: String,
     pub functions: BTreeMap<String, Export>,
     pub declarations: BTreeMap<String, Declaration>,
+    pub modules: BTreeMap<String, String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -79,7 +81,7 @@ impl Interface {
             let key = program.hir.export_name(id);
             let signature = format!("{}", Ty::Callable(callable.clone()).display(&program.hir));
             let mut shape = (**callable).clone();
-            if function.body.is_some() {
+            if function.body.is_some() || program.imported_functions.contains_key(&id) {
                 shape.effects.clear();
                 shape.state.clear();
             }
@@ -225,14 +227,28 @@ impl Interface {
             abi_hash: String::new(),
             functions,
             declarations,
+            modules: program
+                .hir
+                .files()
+                .filter(|file| {
+                    matches!(file.kind, FileKind::Module | FileKind::Interface)
+                        && file.path.starts_with("pkg")
+                })
+                .map(|file| (file.path.display().to_string(), declaration_source(file)))
+                .collect(),
         };
         result.abi_hash = result.compute_hash();
         result
     }
 
     fn compute_hash(&self) -> String {
-        let data = serde_json::to_vec(&(self.format_version, &self.functions, &self.declarations))
-            .unwrap_or_else(|err| ril_base::ice!("interface export serialization failed: {err}"));
+        let data = serde_json::to_vec(&(
+            self.format_version,
+            &self.functions,
+            &self.declarations,
+            &self.modules,
+        ))
+        .unwrap_or_else(|err| ril_base::ice!("interface export serialization failed: {err}"));
         format!("{:x}", Sha256::digest(data))
     }
 
@@ -241,17 +257,29 @@ impl Interface {
     }
 
     pub fn decode(bytes: &[u8]) -> Result<Self, String> {
-        let value: Self = serde_json::from_slice(bytes).map_err(|err| err.to_string())?;
-        if value.format_version != FORMAT_VERSION {
-            return Err(format!(
-                "unsupported .rili format version {}",
-                value.format_version
-            ));
+        #[derive(Deserialize)]
+        struct Version {
+            format_version: u32,
         }
+        let Version { format_version } =
+            serde_json::from_slice(bytes).map_err(|err| err.to_string())?;
+        if format_version != FORMAT_VERSION {
+            return Err(format!("unsupported .rili format version {format_version}"));
+        }
+        let value: Self = serde_json::from_slice(bytes).map_err(|err| err.to_string())?;
         if value.compute_hash() != value.abi_hash {
             return Err(".rili ABI hash does not match its contents".into());
         }
         Ok(value)
+    }
+
+    /// Look up a module under its original name and return its bodyless declarations.
+    pub fn module(&self, mounted: &Path) -> Option<(&str, &str)> {
+        let relative = mounted.iter().skip(1).collect::<std::path::PathBuf>();
+        let original = Path::new("pkg").join(relative);
+        self.modules
+            .get_key_value(original.to_str()?)
+            .map(|(key, declarations)| (key.as_str(), declarations.as_str()))
     }
 
     pub fn compare(&self, revision: &Self) -> Vec<Diagnostic> {
@@ -299,6 +327,31 @@ impl Interface {
         }
         diagnostics
     }
+}
+
+fn declaration_source(file: &ril_frontend::hir::File) -> String {
+    fn omit_bodies(ast: &Ast, items: &[StmtId], spans: &mut Vec<Span>) {
+        for &item in items {
+            match &ast.stmt(item).value.kind {
+                StmtKind::Function(function) if !function.is_meta => {
+                    omit_bodies(ast, &function.helpers, spans);
+                    if let Some(body) = function.body {
+                        spans.push(ast.expr(body).span);
+                    }
+                }
+                StmtKind::Sub { items, .. } => omit_bodies(ast, items, spans),
+                _ => {}
+            }
+        }
+    }
+    let mut spans = Vec::new();
+    omit_bodies(&file.ast, &file.ast.items, &mut spans);
+    let mut source = file.source_text().to_owned();
+    spans.sort_unstable();
+    for span in spans.into_iter().rev() {
+        source.replace_range(span.start..span.end, "");
+    }
+    source
 }
 
 fn type_shape(program: &TypedProgram, ast: &Ast, id: TypeId) -> String {

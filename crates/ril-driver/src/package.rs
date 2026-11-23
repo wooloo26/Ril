@@ -10,6 +10,7 @@ use ril_frontend::{
     parser::{self, FileKind},
     syntax::{Ast, StmtId, StmtKind},
 };
+use ril_sema::iface::Interface;
 use ril_test::{Unit, VirtualPackage};
 
 pub fn infer_unit(path: &Path) -> Unit {
@@ -48,6 +49,7 @@ pub fn load_package(entry: &Path, unit: Unit) -> Result<VirtualPackage, String> 
     let mut package = VirtualPackage::new(unit);
     package.entry = Path::new("pkg").join(local);
     let mut mounts = BTreeMap::from([("pkg".to_owned(), package_dir.to_owned())]);
+    let mut bundled = BTreeMap::new();
     let parent = package_dir.parent().unwrap_or(package_dir).to_owned();
     let mut pending = vec![(package.entry.clone(), entry)];
     let mut visited = BTreeSet::new();
@@ -57,7 +59,51 @@ pub fn load_package(entry: &Path, unit: Unit) -> Result<VirtualPackage, String> 
         }
         let data =
             fs::read(&source_path).map_err(|err| format!("{}: {err}", source_path.display()))?;
-        let kind = if source_path.to_string_lossy().ends_with(".d.ril") {
+        let mut module = path.clone();
+        let current_mount = path
+            .iter()
+            .next()
+            .and_then(std::ffi::OsStr::to_str)
+            .unwrap_or("pkg");
+        let interface = if path
+            .extension()
+            .is_some_and(|extension| extension == "rili")
+        {
+            module.set_extension("ril");
+            let interface = Interface::decode(&data)
+                .map_err(|error| format!("{}: {error}", source_path.display()))?;
+            for name in interface.modules.keys() {
+                let Ok(relative) = Path::new(name).strip_prefix("pkg") else {
+                    continue;
+                };
+                let mut logical = Path::new(current_mount).join(relative);
+                logical.set_extension("rili");
+                bundled
+                    .entry(logical)
+                    .or_insert_with(|| source_path.clone());
+            }
+            Some(interface)
+        } else {
+            None
+        };
+        let declaration = if let Some(interface) = &interface {
+            interface
+                .module(&module)
+                .ok_or_else(|| {
+                    format!(
+                        "{}: no declarations for {}",
+                        source_path.display(),
+                        module.display()
+                    )
+                })?
+                .1
+                .as_bytes()
+        } else {
+            &data
+        };
+        let kind = if interface.is_some() {
+            FileKind::Interface
+        } else if source_path.to_string_lossy().ends_with(".d.ril") {
             FileKind::Foreign
         } else if path == package.entry {
             match unit {
@@ -69,17 +115,12 @@ pub fn load_package(entry: &Path, unit: Unit) -> Result<VirtualPackage, String> 
         } else {
             FileKind::Module
         };
-        if let Ok(src) = SourceFile::from_bytes(FileId(0), path.clone(), &data)
+        if let Ok(src) = SourceFile::from_bytes(FileId(0), module, declaration)
             && let Ok(tokens) = lexer::lex(&src)
             && let Ok(ast) = parser::parse(&src, &tokens, kind)
         {
             let mut imports = Vec::new();
             collect(&ast, &ast.items, &mut imports);
-            let current_mount = path
-                .iter()
-                .next()
-                .and_then(std::ffi::OsStr::to_str)
-                .unwrap_or("pkg");
             for parts in imports {
                 let Some(anchor) = parts.first() else {
                     continue;
@@ -93,13 +134,26 @@ pub fn load_package(entry: &Path, unit: Unit) -> Result<VirtualPackage, String> 
                     .entry(anchor.to_owned())
                     .or_insert_with(|| parent.join(anchor));
                 let tail: PathBuf = parts.iter().skip(1).collect();
+                let mut source_available = false;
                 for extension in ["ril", "d.ril"] {
                     let mut candidate = mount.join(&tail);
                     candidate.set_extension(extension);
                     if candidate.is_file() {
+                        source_available = true;
                         let mut vpath = Path::new(anchor).join(&tail);
                         vpath.set_extension(extension);
                         pending.push((vpath, candidate));
+                    }
+                }
+                if !source_available {
+                    let mut candidate = mount.join(&tail);
+                    candidate.set_extension("rili");
+                    let mut vpath = Path::new(anchor).join(&tail);
+                    vpath.set_extension("rili");
+                    if candidate.is_file() {
+                        pending.push((vpath, candidate));
+                    } else if let Some(artifact) = bundled.get(&vpath) {
+                        pending.push((vpath, artifact.clone()));
                     }
                 }
             }

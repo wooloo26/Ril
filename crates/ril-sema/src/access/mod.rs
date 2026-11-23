@@ -16,6 +16,7 @@ use crate::ty::TypedProgram;
 pub struct Summary {
     pub writes: Vec<usize>,
     pub retained: Vec<usize>,
+    pub independent_retention: Vec<usize>,
     pub return_sources: Vec<ReturnSource>,
     pub effects: Vec<String>,
     pub invocations: Vec<Invocation>,
@@ -23,6 +24,7 @@ pub struct Summary {
     pub storage_updates: Vec<StorageUpdate>,
     pub captures: bool,
     pub constructs: bool,
+    pub nonreturning: bool,
 }
 
 impl Summary {
@@ -56,11 +58,16 @@ impl Summary {
                 .iter()
                 .all(|formal| self.retained.contains(formal))
             && revised
+                .independent_retention
+                .iter()
+                .all(|formal| self.independent_retention.contains(formal))
+            && revised
                 .effects
                 .iter()
                 .all(|effect| self.effects.contains(effect))
             && (!revised.captures || self.captures)
             && (!self.constructs || revised.constructs)
+            && (!self.nonreturning || revised.nonreturning)
             && revised
                 .invocations
                 .iter()

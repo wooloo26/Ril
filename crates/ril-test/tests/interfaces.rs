@@ -3,6 +3,7 @@
 use std::{
     collections::BTreeSet,
     ffi::OsStr,
+    fs,
     io::Write,
     path::Path,
     process::{Command, Stdio},
@@ -13,7 +14,123 @@ use ril_sema::{
     access::{Access, horn},
     iface::{FORMAT_VERSION, Interface},
 };
-use ril_test::{CaseMode, Stage, TestDriver, parse_suite, run_worker};
+use ril_test::{CaseMode, Stage, TestDriver, Unit, VirtualPackage, parse_suite, run_worker};
+
+#[test]
+fn a_dependency_can_be_checked_using_only_its_published_interface() {
+    use ril_base::diag::Code;
+
+    let mut provider = VirtualPackage::new(Unit::Lib);
+    provider.entry = "pkg/store.ril".into();
+    provider.insert(
+        "pkg/model.ril".into(),
+        br#"
+pub type Cell = .{ var count: int }
+pub type Shelf = .{ var ^mut item: Cell }
+"#
+        .to_vec(),
+    );
+    provider.insert(
+        provider.entry.clone(),
+        br#"
+use pkg/model
+pub type Cell = Model::Cell
+pub type Shelf = Model::Shelf
+pub fn replace(mut shelf: Shelf, ^mut next: Cell) &mut &^mut -> ref(shelf) Cell {
+    let ref previous = ref shelf.item
+    shelf.item = ^mut next
+    previous
+}
+pub fn change(via cell: Cell) -> () { cell.count += 1 }
+pub fn identity(via cell: Cell) -> infer Cell { cell }
+pub fn never_returns() -> () { panic("ended") }
+"#
+        .to_vec(),
+    );
+    let artifact = Driver.interface(&provider).unwrap().encode().unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let module = directory.path().join("library");
+    let package = directory.path().join("pkg");
+    fs::create_dir(&module).unwrap();
+    fs::create_dir(&package).unwrap();
+    fs::write(module.join("store.rili"), artifact).unwrap();
+    let entry = package.join("client.ril");
+    let oracle_accepts = std::env::var_os("RIL_HORN_ORACLE").map(|oracle| {
+        serde_json::from_slice::<bool>(&query(&oracle, "summary-reuse", b"[]").unwrap()).unwrap()
+    });
+    for (source, expected) in [
+        (
+            r#"
+fn replace_and_read(mut shelf: Store::Shelf, ^mut next: Store::Cell) &mut &^mut -> ref(next) Store::Cell {
+    let replace = Store::replace
+    let ref previous = replace(mut shelf, ^mut next)
+    assert(previous.count >= 0)
+    ref shelf.item
+}
+fn check_new() -> int {
+    let mut cell = Store::Cell.{ count: 41 }
+    Store::change(mut cell)
+    let mut received = Store::identity(new cell)
+    received.count += 1
+    received.count
+}
+"#,
+            None,
+        ),
+        (
+            r#"
+fn after_call(mut shelf: Store::Shelf, ^mut next: Store::Cell) &mut &^mut -> ref(next) Store::Cell {
+    Store::replace(mut shelf, ^mut next)
+}
+"#,
+            Some(Code::E0545),
+        ),
+        (
+            r#"
+fn replace_twice(mut shelf: Store::Shelf, ^mut discarded: Store::Cell, ^mut next: Store::Cell) &mut &^mut -> () {
+    shelf.item = ^mut discarded
+    let _ = Store::replace(mut shelf, ^mut next)
+}
+"#,
+            Some(Code::E0527),
+        ),
+        (
+            r#"
+fn incompatible(ref cell: Store::Cell) -> () { Store::change(ref cell) }
+"#,
+            Some(Code::E0520),
+        ),
+        (
+            r#"
+fn unreachable_write(mut cell: Store::Cell) &mut -> () {
+    Store::never_returns()
+    cell.count += 1
+}
+"#,
+            Some(Code::E0527),
+        ),
+    ] {
+        fs::write(&entry, format!("use library/store\n{source}")).unwrap();
+        let consumer = ril_driver::load_package(&entry, Unit::Lib).unwrap();
+        assert!(!consumer.files.contains_key(Path::new("library/store.ril")));
+        assert!(consumer.files.contains_key(Path::new("library/store.rili")));
+        assert!(consumer.files.contains_key(Path::new("library/model.rili")));
+        let diagnostics = Driver.check_stage(&consumer, Stage::Access).diagnostics;
+        if let Some(code) = expected {
+            assert!(
+                diagnostics
+                    .iter()
+                    .any(|diagnostic| diagnostic.code == Some(code)),
+                "{diagnostics:?}"
+            );
+        } else {
+            assert!(diagnostics.is_empty(), "{diagnostics:?}");
+            if let Some(accepted) = oracle_accepts {
+                assert_eq!(diagnostics.is_empty(), accepted);
+            }
+        }
+    }
+}
 
 #[test]
 fn interface_roundtrip_is_stable_and_detects_corruption() {
@@ -453,6 +570,7 @@ fn exported_summaries_and_via_domains_agree_with_lean() {
         json!({
             "writes": summary.writes,
             "retained": summary.retained,
+            "independent_retention": summary.independent_retention,
             "return_sources": return_sources,
             "effects": effects,
             "invocations": invocations,
@@ -460,6 +578,7 @@ fn exported_summaries_and_via_domains_agree_with_lean() {
             "storage_updates": storage_updates,
             "captures": summary.captures,
             "constructs": summary.constructs,
+            "nonreturning": summary.nonreturning,
         })
     };
     let cases: Vec<_> = summaries

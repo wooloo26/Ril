@@ -189,6 +189,14 @@ impl File {
             .filter(|token| !matches!(token.kind, Kind::Newline | Kind::Eof))
             .map(|token| token.text(&self.source))
     }
+
+    pub fn source_text(&self) -> &str {
+        self.source.text()
+    }
+
+    pub fn is_interface(&self) -> bool {
+        self.kind == FileKind::Interface
+    }
 }
 
 struct Scope {
@@ -801,23 +809,26 @@ impl Program {
             let vis = node.value.visibility;
             let declaration = match node.value.kind {
                 StmtKind::Function(function) => {
-                    let kind =
-                        if function.body.is_none() && self.file(file).kind != FileKind::Foreign {
-                            let registered = if module_root {
-                                builtins::bodyless(self.file(file), node.span, &function)
-                            } else {
-                                Err(builtins::missing_body(function.name.span))
-                            };
-                            match registered {
-                                Ok(phase) => DefinitionKind::Primitive(phase),
-                                Err(diagnostic) => {
-                                    errors.push(diagnostic);
-                                    DefinitionKind::Function
-                                }
-                            }
+                    let kind = if function.body.is_none()
+                        && !matches!(
+                            self.file(file).kind,
+                            FileKind::Foreign | FileKind::Interface
+                        ) {
+                        let registered = if module_root {
+                            builtins::bodyless(self.file(file), node.span, &function)
                         } else {
-                            DefinitionKind::Function
+                            Err(builtins::missing_body(function.name.span))
                         };
+                        match registered {
+                            Ok(phase) => DefinitionKind::Primitive(phase),
+                            Err(diagnostic) => {
+                                errors.push(diagnostic);
+                                DefinitionKind::Function
+                            }
+                        }
+                    } else {
+                        DefinitionKind::Function
+                    };
                     self.register(scope, function.name, kind, id, vis)
                 }
                 StmtKind::Type(decl) => {

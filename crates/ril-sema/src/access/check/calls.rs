@@ -23,8 +23,12 @@ use super::{
     storage::CallStorage,
 };
 
+mod imported;
+
+type CallArgument = (usize, Mode, Datum);
+
 struct CallEntry<'a> {
-    arguments: &'a [(usize, Mode, Datum)],
+    arguments: &'a [CallArgument],
     spans: &'a [Span],
     ledger: &'a Ledger,
     span: Span,
@@ -133,7 +137,7 @@ impl<'program> Analyzer<'program> {
                 }
                 let fun = self.function_syntax(id)?;
                 // The body can be replayed without resolving a captured environment.
-                (fun.body.is_some()
+                ((fun.body.is_some() || self.program.imported_functions.contains_key(&id))
                     && !fun.is_meta
                     && fun
                         .signature
@@ -573,6 +577,30 @@ impl<'program> Analyzer<'program> {
         (values, value_spans): (&[(usize, Mode, Datum)], &[Span]),
         span: Span,
     ) -> Datum {
+        if fun.body.is_none()
+            && let Some(id) = self.definition(fun.name.span)
+        {
+            if let Some(export) = self.program.imported_functions.get(&id) {
+                return self.imported_call(
+                    ctx,
+                    ledger,
+                    fun,
+                    sig,
+                    export,
+                    (values, value_spans, span),
+                );
+            }
+            if self.program.hir.file(fun.name.span.file).is_interface()
+                && self.program.hir.operation_effect(id).is_none()
+            {
+                self.error(
+                    Code::E0552,
+                    span,
+                    "imported function has no published call summary",
+                );
+                return self.snapshot_value(span);
+            }
+        }
         let lexical = fun
             .signature
             .obligations

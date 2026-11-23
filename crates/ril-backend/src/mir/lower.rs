@@ -195,18 +195,30 @@ impl<'a> Lowering<'a> {
         }
     }
 
-    fn foreign(&self, id: DefinitionId) -> Arc<ForeignImport> {
+    fn foreign(&self, id: DefinitionId) -> Result<Arc<ForeignImport>> {
+        let definition = self.typed.hir.definition(id);
+        if self
+            .typed
+            .hir
+            .file(definition.name.span.file)
+            .is_interface()
+        {
+            return Err(Diagnostic::unsupported(format!(
+                "native code for {} is required",
+                self.typed.hir.export_name(id)
+            )));
+        }
         let callable =
             self.typed.callables.get(&id).unwrap_or_else(|| {
                 ril_base::ice!("foreign declaration requires a checked signature")
             });
-        self.foreign_import(
+        Ok(self.foreign_import(
             id,
             &Ty::Callable(callable.clone()),
             ForeignAbi::Function {
                 arity: callable.parameters.len(),
             },
-        )
+        ))
     }
 
     fn foreign_import(&self, id: DefinitionId, ty: &Ty, abi: ForeignAbi) -> Arc<ForeignImport> {
@@ -224,10 +236,11 @@ impl<'a> Lowering<'a> {
                 let f = self
                     .declaration(id)
                     .ok_or_else(|| Diagnostic::unsupported("missing native function definition"))?;
-                let body = f.body.map_or_else(
-                    || NativeBody::Foreign(self.foreign(id)),
-                    NativeBody::Expression,
-                );
+                let body = if let Some(body) = f.body {
+                    NativeBody::Expression(body)
+                } else {
+                    NativeBody::Foreign(self.foreign(id)?)
+                };
                 (
                     f.name.span.file,
                     self.typed.hir.export_name(id),
@@ -1189,7 +1202,7 @@ impl<'a> Builder<'_, 'a> {
             });
             Ok(self.invoke(target, values, false))
         } else {
-            Ok(self.invoke(Target::Foreign(self.global.foreign(id)), values, false))
+            Ok(self.invoke(Target::Foreign(self.global.foreign(id)?), values, false))
         }
     }
 

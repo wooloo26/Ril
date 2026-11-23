@@ -16,6 +16,7 @@ use crate::{
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FileKind {
     Module,
+    Interface,
     Executable,
     Foreign,
     Snippet,

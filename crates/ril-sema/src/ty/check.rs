@@ -105,6 +105,7 @@ pub(super) fn check(hir: Program, budget: Option<u64>) -> Result<TypedProgram, V
         type_arguments,
         bindings,
         callables,
+        imported_functions: BTreeMap::new(),
         static_values,
         meta_calls,
         static_folds,

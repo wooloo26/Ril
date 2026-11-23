@@ -248,6 +248,7 @@ pub struct TypedProgram {
     pub type_arguments: HashMap<Span, BTreeMap<DefinitionId, Ty>>,
     pub bindings: HashMap<DefinitionId, Ty>,
     pub callables: BTreeMap<DefinitionId, Arc<Callable>>,
+    pub imported_functions: BTreeMap<DefinitionId, crate::iface::Export>,
     pub static_values: HashMap<Span, Value>,
     meta_calls: HashMap<Span, staging::MetaCall>,
     static_folds: HashMap<Span, staging::StaticFold>,

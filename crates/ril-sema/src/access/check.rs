@@ -281,6 +281,14 @@ pub(super) fn analyze(program: &TypedProgram) -> (Analysis, Vec<Diagnostic>) {
         cleanups: std::mem::take(&mut analyzer.cleanups),
         ..Analysis::default()
     };
+    for (&definition, import) in &program.imported_functions {
+        analysis
+            .summaries
+            .insert(definition, import.summary.clone());
+        if !import.domain.is_empty() {
+            analysis.via.insert(definition, import.domain.clone());
+        }
+    }
     for requirement in std::mem::take(&mut analyzer.requirements) {
         if !facts.contains(&requirement.fact) {
             analyzer.error(Code::E0527, requirement.span, requirement.message);
@@ -835,6 +843,7 @@ impl<'a> Analyzer<'a> {
         let mut summary = Summary {
             return_sources: fun.return_sources.clone(),
             constructs: fun.returned_new,
+            nonreturning: !fun.normal_exit,
             invocations: self
                 .invocation_summaries
                 .remove(&fun.owner)
@@ -873,6 +882,9 @@ impl<'a> Analyzer<'a> {
                 Obligation::Share(span) | Obligation::StoreShare(span) => {
                     if let Some(param) = fun.formals.iter().position(|decl| *decl == Some(*span)) {
                         summary.retained.push(param);
+                        if matches!(fact.obligation, Obligation::Share(_)) {
+                            summary.independent_retention.push(param);
+                        }
                     }
                 }
                 Obligation::ReadUp(span) => {
@@ -887,6 +899,8 @@ impl<'a> Analyzer<'a> {
         summary.writes.sort_unstable();
         summary.writes.dedup();
         summary.retained.sort_unstable();
+        summary.retained.dedup();
+        summary.independent_retention.sort_unstable();
         summary.effects.sort();
         summary.effects.dedup();
         summary.normalize_invocations();

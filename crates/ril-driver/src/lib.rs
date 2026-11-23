@@ -1,8 +1,10 @@
 #![forbid(unsafe_code)]
 
+use std::collections::BTreeMap;
+
 use ril_base::{
-    diag::Diagnostic,
-    span::{FileId, SourceMap},
+    diag::{Code, Diagnostic},
+    span::{FileId, SourceMap, Span},
 };
 use ril_frontend::{
     hir::{self, Program},
@@ -11,7 +13,7 @@ use ril_frontend::{
 };
 use ril_sema::{
     access::{self, Analysis},
-    iface::{self, Interface},
+    iface::{self, Export, Interface},
     ty::{self, TypedProgram},
 };
 use ril_test::{CheckResult, ExecOutput, Stage, TestDriver, Unit, VirtualPackage};
@@ -34,7 +36,7 @@ pub struct Checked {
 
 impl Driver {
     pub fn check(&self, pkg: &VirtualPackage, stage: Stage) -> Checked {
-        let (sources, program) = frontend(pkg, stage);
+        let (sources, program, imports) = frontend(pkg, stage);
         let result = (|| {
             let Some(program) = program? else {
                 return Ok(CheckResult::default());
@@ -42,7 +44,7 @@ impl Driver {
             if stage < Stage::Type {
                 return Ok(CheckResult::default());
             }
-            let typed = ty::check(program, pkg.budget)?;
+            let typed = check_types(program, pkg.budget, imports)?;
             if stage == Stage::Access {
                 access::check(&typed)?;
             }
@@ -72,10 +74,10 @@ impl Driver {
     }
 
     fn typed(&self, pkg: &VirtualPackage) -> Result<TypedProgram, Vec<Diagnostic>> {
-        let (_, program) = frontend(pkg, Stage::Hir);
+        let (_, program, imports) = frontend(pkg, Stage::Hir);
         let program =
             program?.ok_or_else(|| vec![Diagnostic::unsupported("missing frontend program")])?;
-        ty::check(program, pkg.budget)
+        check_types(program, pkg.budget, imports)
     }
 
     pub fn horn_rules(
@@ -90,21 +92,83 @@ impl Driver {
     }
 }
 
-fn frontend(
-    pkg: &VirtualPackage,
-    stage: Stage,
-) -> (SourceMap, Result<Option<Program>, Vec<Diagnostic>>) {
+fn check_types(
+    program: Program,
+    budget: Option<u64>,
+    imports: BTreeMap<String, Export>,
+) -> Result<TypedProgram, Vec<Diagnostic>> {
+    let mut typed = ty::check(program, budget)?;
+    if !imports.is_empty() {
+        let mut imports = imports;
+        typed.imported_functions = typed
+            .callables
+            .keys()
+            .filter(|&&id| typed.hir.operation_effect(id).is_none())
+            .filter_map(|&id| {
+                imports
+                    .remove(&typed.hir.export_name(id))
+                    .map(|export| (id, export))
+            })
+            .collect();
+    }
+    Ok(typed)
+}
+
+type Frontend = (
+    SourceMap,
+    Result<Option<Program>, Vec<Diagnostic>>,
+    BTreeMap<String, Export>,
+);
+
+fn frontend(pkg: &VirtualPackage, stage: Stage) -> Frontend {
     let mut sources = SourceMap::default();
     let mut diagnostics = Vec::new();
     let mut valid = Vec::new();
     let mut entry = None;
+    let mut imports = BTreeMap::new();
     for (path, file) in &pkg.files {
-        match sources.add(path.clone(), &file.bytes) {
+        let mut logical = path.clone();
+        let from_interface = path
+            .extension()
+            .is_some_and(|extension| extension == "rili");
+        let declarations;
+        let data = if from_interface {
+            logical.set_extension("ril");
+            if pkg.files.contains_key(&logical) {
+                continue;
+            }
+            match Interface::decode(&file.bytes).and_then(|interface| {
+                let (module, source) = interface
+                    .module(&logical)
+                    .ok_or_else(|| format!("no declarations for {}", logical.display()))?;
+                let prefix = format!("{module}::");
+                imports.extend(interface.functions.iter().filter_map(|(name, export)| {
+                    name.strip_prefix(&prefix)
+                        .map(|local| (format!("{}::{local}", logical.display()), export.clone()))
+                }));
+                Ok(source.as_bytes().to_vec())
+            }) {
+                Ok(data) => {
+                    declarations = data;
+                    &declarations
+                }
+                Err(error) => {
+                    diagnostics.push(Diagnostic::unsupported(format!(
+                        "{}: {error}",
+                        path.display()
+                    )));
+                    continue;
+                }
+            }
+        } else {
+            &file.bytes
+        };
+        match sources.add(logical, data) {
             Ok(id) => {
                 if path == &pkg.entry {
                     entry = Some(id);
                 }
-                valid.push(id);
+                valid.push((id, from_interface));
             }
             Err(diagnostic) => diagnostics.push(*diagnostic),
         }
@@ -115,20 +179,25 @@ fn frontend(
         } else {
             Err(diagnostics)
         };
-        return (sources, result);
+        return (sources, result, imports);
     }
 
     let mut tokenized = Vec::new();
-    for file in valid.into_iter().filter_map(|id| sources.get(id)) {
+    for (file, from_interface) in valid
+        .into_iter()
+        .filter_map(|(id, interface)| sources.get(id).map(|file| (file, interface)))
+    {
         match lexer::lex(file) {
-            Ok(tokens) => tokenized.push((file, tokens)),
+            Ok(tokens) => tokenized.push((file, tokens, from_interface)),
             Err(diagnostic) => diagnostics.push(diagnostic),
         }
     }
     let mut parsed = Vec::new();
     if stage >= Stage::Parse && diagnostics.is_empty() {
-        for (file, tokens) in tokenized {
-            let kind = if file.path().to_string_lossy().ends_with(".d.ril")
+        for (file, tokens, from_interface) in tokenized {
+            let kind = if from_interface {
+                FileKind::Interface
+            } else if file.path().to_string_lossy().ends_with(".d.ril")
                 || Some(file.id()) == entry && pkg.unit == Unit::Decl
             {
                 FileKind::Foreign
@@ -157,15 +226,16 @@ fn frontend(
             return (
                 sources,
                 Err(vec![Diagnostic::error(
-                    ril_base::diag::Code::E0208,
-                    ril_base::span::Span::new(FileId(0), 0, 0),
+                    Code::E0208,
+                    Span::new(FileId(0), 0, 0),
                     format!("missing entry {}", pkg.entry.display()),
                 )]),
+                imports,
             );
         };
         hir::lower(parsed, entry).map(Some)
     };
-    (sources, result)
+    (sources, result, imports)
 }
 
 impl TestDriver for Driver {

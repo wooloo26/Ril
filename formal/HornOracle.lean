@@ -64,6 +64,7 @@ def JsonStorageUpdate.contract (update : JsonStorageUpdate) :
 structure JsonSummary where
   writes : List Nat
   retained : List Nat
+  independent_retention : List Nat
   return_sources : List JsonSource
   effects : List Nat
   invocations : List JsonInvocation
@@ -71,6 +72,7 @@ structure JsonSummary where
   storage_updates : List JsonStorageUpdate
   captures : Bool
   constructs : Bool
+  nonreturning : Bool
   deriving FromJson
 
 def JsonSummary.formal (summary : JsonSummary) : RilAccess.SummaryOf JsonSource :=
@@ -88,13 +90,15 @@ structure JsonComparison where
 
 def compareSummaries (baseline revision : JsonSummary) : Bool :=
   RilAccess.SummaryOf.subsumesBy (fun _ => false) baseline.formal revision.formal &&
+    revision.independent_retention.all baseline.independent_retention.contains &&
     RilAccess.callbackInvocationsSubsumed (baseline.invocations.map JsonInvocation.contract)
       (revision.invocations.map JsonInvocation.contract) &&
     RilAccess.callbackReturnsSubsumed (baseline.callback_returns.map Json.compress)
       (revision.callback_returns.map Json.compress) &&
     RilAccess.storageUpdatesSubsumed (baseline.storage_updates.map JsonStorageUpdate.contract)
       (revision.storage_updates.map JsonStorageUpdate.contract) &&
-    (!baseline.constructs || revision.constructs)
+    (!baseline.constructs || revision.constructs) &&
+    (!baseline.nonreturning || revision.nonreturning)
 
 structure JsonInstance where
   modes : List String
@@ -327,6 +331,8 @@ def main (args : List String) : IO Unit := do
     stdout.putStrLn (toJson graphCases).compress
   else if args == ["cleanup-composition"] then
     stdout.putStrLn (toJson cleanupCompositionCases).compress
+  else if args == ["summary-reuse"] then
+    stdout.putStrLn (toJson (RilAccess.Provenance.Examples.summaryReuse false)).compress
   else if args == ["recursive-storage"] then
     stdout.putStrLn (toJson RilAccess.RecursiveStorage.Examples.contracts).compress
   else if args == ["call-authority"] then
