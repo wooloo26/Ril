@@ -291,6 +291,10 @@ impl<'program> Analyzer<'program> {
                         }))
             })
         });
+        let is_constructor = primitive && matches!(name, "Some" | "Ok" | "Err")
+            || def.is_some_and(|def| {
+                matches!(def.kind, DefinitionKind::Type | DefinitionKind::Variant(_))
+            });
         let mut given = vec![false; sig.map_or(args.len(), |signature| signature.parameters.len())];
         let mut values = Vec::new();
         let mut value_spans = Vec::new();
@@ -396,16 +400,15 @@ impl<'program> Analyzer<'program> {
             }
             let mode = if channel_payload { Mode::New } else { mode };
             let value = self.prepare_argument(ctx, ledger, arg, value, node.span, mode);
-            if parameter.is_some_and(|p| p.ty.is_result()) {
-                ledger.inspect(&value);
-            } else if !value.results().is_empty()
-                && (!primitive
-                    || !matches!(
-                        name,
-                        "Some" | "Ok" | "Err" | "join" | "cancel" | "send" | "try_send"
-                    ))
-            {
-                self.discard(ledger, &value);
+            // Packing preserves inspection obligations in the payload.
+            if !is_constructor {
+                if parameter.is_some_and(|p| p.ty.is_result()) {
+                    ledger.inspect(&value);
+                } else if !value.results().is_empty()
+                    && (!primitive || !matches!(name, "join" | "cancel" | "send" | "try_send"))
+                {
+                    self.discard(ledger, &value);
+                }
             }
             if parameter.is_some_and(|p| p.is_meta) && !ctx.shadow {
                 ledger.inspect(&value);
@@ -422,10 +425,6 @@ impl<'program> Analyzer<'program> {
             values.push((index, mode, value));
             value_spans.push(node.span);
         }
-        let is_constructor = primitive && matches!(name, "Some" | "Ok" | "Err")
-            || def.is_some_and(|def| {
-                matches!(def.kind, DefinitionKind::Type | DefinitionKind::Variant(_))
-            });
         // Constructors store identities. Materialize the argument graph for
         // overlap checks, but keep the original edges in the constructed value.
         let fields = is_constructor.then(|| values.clone());
@@ -528,7 +527,13 @@ impl<'program> Analyzer<'program> {
             }
         }
         if let Some(fields) = fields {
-            return constructor(span, fields);
+            let mut result = constructor(span, fields);
+            if matches!(self.ty(span), Ty::Option(_) | Ty::Result(_, _))
+                || def.is_some_and(|def| matches!(def.kind, DefinitionKind::Variant(_)))
+            {
+                result.set_variant(name);
+            }
+            return result;
         }
         if let Some(module @ ("Fiber" | "Channel")) = module {
             return self.concurrent(ctx, ledger, (module, name), &values, args, span);
@@ -2681,8 +2686,7 @@ impl<'program> Analyzer<'program> {
                     }
                 }
                 if param_ty.is_some_and(Ty::is_result) {
-                    value.results.insert(name.span.into());
-                    locals.obligations.insert(name.span.into());
+                    locals.record_result(&mut value, name.span);
                 }
                 value.transform(&mut |origin| {
                     origin.dependencies.insert(name.span.into());

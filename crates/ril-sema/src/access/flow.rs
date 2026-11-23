@@ -176,6 +176,7 @@ pub(super) struct Origin {
     pub dependencies: BTreeSet<Occurrence>,
     pub anchor_scopes: BTreeSet<Span>,
     pub branches: Choices,
+    variant: Option<String>,
     pub confined: Option<Span>,
     pub draft: bool,
 }
@@ -231,7 +232,7 @@ impl Origin {
     }
 }
 
-type Choices = BTreeMap<Occurrence, usize>;
+pub(super) type Choices = BTreeMap<Occurrence, usize>;
 pub(super) type Handoff = (Span, Span);
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -253,6 +254,7 @@ impl From<Span> for Occurrence {
 pub(super) struct ResultOccurrence {
     pub span: Span,
     places: BTreeSet<(ResultHolder, Vec<Coordinate>)>,
+    created_in: Choices,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -262,13 +264,10 @@ enum ResultHolder {
     Handler(usize),
 }
 
-impl From<Span> for ResultOccurrence {
-    fn from(span: Span) -> Self {
-        Self {
-            span,
-            places: BTreeSet::new(),
-        }
-    }
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub(super) struct ResultReference {
+    occurrence: ResultOccurrence,
+    branches: Choices,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -289,7 +288,7 @@ fn compatible(a: &Choices, b: &Choices) -> bool {
 pub(super) struct Datum {
     pub roots: Vec<Origin>,
     pub members: BTreeMap<Coordinate, Datum>,
-    pub results: BTreeSet<ResultOccurrence>,
+    pub(super) results: BTreeSet<ResultReference>,
     pub requires_new: bool,
     pub latent_effects: BTreeSet<String>,
     pub environments: BTreeSet<Span>,
@@ -321,6 +320,7 @@ impl Datum {
                 dependencies: BTreeSet::new(),
                 anchor_scopes: BTreeSet::new(),
                 branches: BTreeMap::new(),
+                variant: None,
                 confined: None,
                 draft: false,
             }],
@@ -563,28 +563,83 @@ impl Datum {
     }
 
     pub(super) fn results(&self) -> BTreeSet<ResultOccurrence> {
-        self.results
-            .iter()
-            .cloned()
+        self.root_results()
+            .into_iter()
             .chain(self.members.values().flat_map(Self::results))
             .collect()
     }
 
-    fn remap_results(&mut self, carried: &BTreeMap<ResultOccurrence, ResultOccurrence>) {
-        if carried.is_empty() {
+    pub(super) fn root_results(&self) -> BTreeSet<ResultOccurrence> {
+        self.results
+            .iter()
+            .map(|item| item.occurrence.clone())
+            .collect()
+    }
+
+    pub(super) fn has_root_result(&self) -> bool {
+        !self.results.is_empty()
+    }
+
+    pub(super) fn set_variant(&mut self, variant: &str) {
+        for root in &mut self.roots {
+            root.variant = Some(variant.into());
+        }
+    }
+
+    pub(super) fn known_variant(&self) -> Option<&str> {
+        let variant = self.roots.first()?.variant.as_deref()?;
+        self.roots
+            .iter()
+            .all(|root| root.variant.as_deref() == Some(variant))
+            .then_some(variant)
+    }
+
+    fn stamp_results(&mut self, choices: &Choices) {
+        if choices.is_empty() {
             return;
         }
+        self.rewrite_results(&mut |mut item| {
+            item.branches
+                .extend(choices.iter().map(|(&key, &arm)| (key, arm)));
+            Some(item)
+        });
+    }
+
+    fn select_results(&mut self, choices: &Choices) {
+        self.rewrite_results(&mut |item| compatible(&item.branches, choices).then_some(item));
+    }
+
+    fn rewrite_results(
+        &mut self,
+        transform: &mut impl FnMut(ResultReference) -> Option<ResultReference>,
+    ) {
         self.results = std::mem::take(&mut self.results)
             .into_iter()
-            .filter_map(|item| match carried.get(&item) {
-                Some(target) if target.places.is_empty() => None,
-                Some(target) => Some(target.clone()),
-                None => Some(item),
-            })
+            .filter_map(&mut *transform)
             .collect();
         for member in self.members.values_mut() {
-            member.remap_results(carried);
+            member.rewrite_results(transform);
         }
+    }
+
+    fn remap_results(
+        &mut self,
+        carried: &BTreeMap<ResultOccurrence, ResultOccurrence>,
+        age_choices: impl Fn(&mut Choices),
+    ) {
+        if carried.is_empty() && self.results().is_empty() {
+            return;
+        }
+        self.rewrite_results(&mut |mut item| {
+            if let Some(target) = carried.get(&item.occurrence) {
+                if target.places.is_empty() {
+                    return None;
+                }
+                item.occurrence = target.clone();
+            }
+            age_choices(&mut item.branches);
+            Some(item)
+        });
     }
 
     fn result_places(
@@ -594,7 +649,7 @@ impl Datum {
         results: &mut BTreeMap<ResultOccurrence, ResultOccurrence>,
     ) {
         for item in &self.results {
-            if let Some(carried) = results.get_mut(item) {
+            if let Some(carried) = results.get_mut(&item.occurrence) {
                 carried.places.insert((holder, path.clone()));
             }
         }
@@ -669,6 +724,7 @@ impl Datum {
             .map(|origin| {
                 let mut origin = origin.clone();
                 origin.region.selection.push(coordinate.clone());
+                origin.variant = None;
                 origin.from_variable = false;
                 if !origin.draft {
                     origin.project_mode(mode);
@@ -684,7 +740,6 @@ impl Datum {
         Self {
             requires_new: self.requires_new && roots.iter().all(|root| root.new),
             roots,
-            results: self.results.clone(),
             ..Self::default()
         }
     }
@@ -884,21 +939,80 @@ impl Ledger {
                 .branches
                 .extend(self.choices.iter().map(|(&k, &v)| (k, v)));
         });
+        value.stamp_results(&self.choices);
     }
 
     pub(super) fn take_choice(&mut self, span: Span, arm: usize) {
         let key = span.into();
         self.choices.insert(key, arm);
+        let selected = Choices::from([(key, arm)]);
         for slot in self.slots.values_mut() {
             slot.value.transform(&mut |origin| {
                 origin.branches.insert(key, arm);
             });
+            slot.value.stamp_results(&selected);
         }
         for replacement in self.replacements.values_mut() {
             replacement.value.transform(&mut |origin| {
                 origin.branches.insert(key, arm);
             });
+            replacement.value.stamp_results(&selected);
         }
+    }
+
+    pub(super) fn record_result(&mut self, value: &mut Datum, span: Span) {
+        let occurrence = ResultOccurrence {
+            span,
+            places: BTreeSet::new(),
+            created_in: self.choices.clone(),
+        };
+        self.obligations.insert(occurrence.clone());
+        value.results.insert(ResultReference {
+            occurrence,
+            branches: self.choices.clone(),
+        });
+    }
+
+    pub(super) fn variant_paths(&self, value: &Datum) -> Vec<(Self, Datum)> {
+        let paths: BTreeSet<_> = value.roots.iter().map(|root| &root.branches).collect();
+        if paths.len() < 2
+            || paths.len() > BRANCH_LIMIT
+            || value.roots.iter().any(|root| root.variant.is_none())
+            || value.results().is_empty()
+        {
+            return Vec::new();
+        }
+        paths
+            .into_iter()
+            .filter(|path| compatible(path, &self.choices))
+            .map(|path| {
+                let mut ledger = self.clone();
+                ledger
+                    .choices
+                    .extend(path.iter().map(|(&key, &arm)| (key, arm)));
+                ledger
+                    .obligations
+                    .retain(|item| compatible(&item.created_in, path));
+                ledger
+                    .inspected
+                    .retain(|item| compatible(&item.created_in, path));
+                for slot in ledger.slots.values_mut() {
+                    slot.value.select_results(path);
+                }
+                for replacement in ledger.replacements.values_mut() {
+                    replacement.value.select_results(path);
+                }
+                for member in ledger.loop_members.values_mut() {
+                    member.select_results(path);
+                }
+                let mut selected = value.clone();
+                selected
+                    .roots
+                    .retain(|root| compatible(&root.branches, path));
+                selected.select_results(path);
+                (ledger, selected)
+            })
+            .collect()
     }
 
     pub(super) fn loop_backedge(
@@ -929,17 +1043,17 @@ impl Ledger {
         self.iteration.truncate(entry.iteration.len());
         self.holds.truncate(entry.holds.len());
         self.slots.retain(|id, _| entry.slots.contains_key(id));
-        let carried = self.rebase_results(local);
+        let carried = self.rebase_results(local, age_choices);
         for value in self
             .iteration
             .iter_mut()
             .chain(self.holds.iter_mut().map(|(_, value)| value))
         {
-            value.remap_results(&carried);
+            value.remap_results(&carried, age_choices);
         }
         let age_value = |value: &mut Datum| {
             value.compact_snapshot(local_data);
-            value.remap_results(&carried);
+            value.remap_results(&carried, age_choices);
             value.transform(&mut |origin| {
                 origin.region.age_allocation(local(origin.region.source));
                 origin.dependencies = std::mem::take(&mut origin.dependencies)
@@ -989,12 +1103,18 @@ impl Ledger {
     fn rebase_results(
         &mut self,
         local: impl Fn(Span) -> bool,
+        age_choices: impl Fn(&mut Choices),
     ) -> BTreeMap<ResultOccurrence, ResultOccurrence> {
         let mut carried: BTreeMap<_, _> = self
             .obligations
             .iter()
             .filter(|item| local(item.span))
-            .map(|item| (item.clone(), ResultOccurrence::from(item.span)))
+            .map(|item| {
+                let mut target = item.clone();
+                target.places.clear();
+                age_choices(&mut target.created_in);
+                (item.clone(), target)
+            })
             .collect();
         if carried.is_empty() {
             return carried;
@@ -1055,6 +1175,35 @@ impl Ledger {
             .sum()
     }
 
+    pub(super) fn merge_bindings(&mut self, alternatives: &[Self]) {
+        let mut prior = self.clone();
+        if let Some(first) = alternatives.first() {
+            for (&decl, slot) in &first.slots {
+                if alternatives
+                    .iter()
+                    .all(|branch| branch.slots.contains_key(&decl))
+                {
+                    prior.slots.entry(decl).or_insert_with(|| slot.clone());
+                }
+            }
+        }
+        self.merge(&prior, alternatives);
+    }
+
+    pub(super) fn continue_at_pattern(&mut self, mut paths: Vec<Self>) -> bool {
+        if let Some(last) = paths.pop() {
+            if paths.is_empty() {
+                *self = last;
+            } else {
+                paths.push(last);
+                self.merge_bindings(&paths);
+            }
+            true
+        } else {
+            false
+        }
+    }
+
     pub(super) fn merge(&mut self, prior: &Self, alternatives: &[Self]) {
         let alternatives: Vec<_> = alternatives
             .iter()
@@ -1063,7 +1212,10 @@ impl Ledger {
         self.no_continuation = prior.no_continuation || alternatives.is_empty();
         self.slots = prior.slots.clone();
         self.revoked = prior.revoked.clone();
-        self.obligations = prior.obligations.clone();
+        self.obligations.clear();
+        if alternatives.is_empty() {
+            self.obligations.clone_from(&prior.obligations);
+        }
         self.lost_results = prior.lost_results.clone();
         for branch in &alternatives {
             for (&token, revoked) in &branch.revoked {
@@ -1295,7 +1447,6 @@ impl Ledger {
             let fallback = Datum {
                 roots: missing,
                 requires_new: base.requires_new,
-                results: base.results.clone(),
                 ..Datum::default()
             };
             projected = join_member(projected, fallback.project_opaque(coordinate, mode));
@@ -1356,6 +1507,10 @@ impl Ledger {
     pub(super) fn inspect(&mut self, datum: &Datum) {
         let results = self.loop_snapshot(datum).results();
         self.inspected.extend(results);
+    }
+
+    pub(super) fn inspect_root(&mut self, datum: &Datum) {
+        self.inspected.extend(datum.root_results());
     }
 
     pub(super) fn loop_snapshot<'d>(&self, datum: &'d Datum) -> Cow<'d, Datum> {

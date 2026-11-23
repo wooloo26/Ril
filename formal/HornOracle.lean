@@ -7,6 +7,7 @@ import RilAccess.Examples.Graph
 import RilAccess.Examples.Handoff
 import RilAccess.Examples.RecursiveStorage
 import RilAccess.Examples.ResolvedProvenance
+import RilAccess.Examples.Results
 import RilAccess.Examples.Scoped
 import RilAccess.Examples.Concurrency
 import RilAccess.Examples.Summary
@@ -375,6 +376,9 @@ def main (args : List String) : IO Unit := do
     stdout.putStrLn (toJson callAuthorityCases).compress
   else if args == ["task-joins"] then
     stdout.putStrLn (toJson taskJoinCases).compress
+  else if args == ["result-patterns"] then
+    stdout.putStrLn (toJson (RilAccess.ResultInspection.Examples.cases.map
+      fun (name, accepted, _) => (name, accepted))).compress
   else if args == ["boundary"] then
     stdout.putStrLn (toJson boundaryCases).compress
   else if args == ["draft"] then

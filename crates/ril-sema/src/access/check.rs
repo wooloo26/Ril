@@ -8,7 +8,7 @@ use ril_frontend::{
     hir::{DefinitionId, DefinitionKind, Resolution},
     parser::FileKind,
     syntax::{
-        Ast, Condition, Expr, ExprId, Function, LiteralKind, Member, Mode, Path, Pattern,
+        Ast, Condition, Expr, ExprId, Function, LiteralKind, MatchArm, Member, Mode, Path, Pattern,
         PatternId, Signature, StateKind, StmtId, StmtKind, Storage, Transfer, TypeDefinition,
     },
 };
@@ -26,6 +26,7 @@ use crate::ty::{self, AdtKind, Callable, Ty, TypedProgram, Value, reception};
 
 mod calls;
 mod higher_order;
+mod results;
 mod storage;
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -695,8 +696,7 @@ impl<'a> Analyzer<'a> {
                 origin.call_borrow = param.mode == Mode::Mut;
             });
             if param.ty.is_result() {
-                value.results.insert(span.into());
-                ledger.obligations.insert(span.into());
+                ledger.record_result(&mut value, span);
             }
             ledger.slots.insert(
                 span,
@@ -1294,10 +1294,21 @@ impl<'a> Analyzer<'a> {
                     self.cleanup(ctx, ledger, &mut value, span, node.span, storage.mode);
                 }
                 if let Some(fallback) = fallback {
-                    ledger.inspect(&value);
-                    self.expr(&mut ctx.clone(), &mut ledger.clone(), *fallback);
+                    for (mut failed, _) in self.pattern_paths(ctx, ledger, *pattern, &value, false)
+                    {
+                        let mut failure = ctx.clone();
+                        self.expr(&mut failure, &mut failed, *fallback);
+                        ctx.return_values = failure.return_values;
+                    }
+                    if !self.bind_on_match(ctx, ledger, *pattern, storage, &value, *resource) {
+                        ledger.no_continuation = true;
+                        ctx.reachable = false;
+                    }
+                } else {
+                    self.pattern_tests(ctx, ledger, *pattern, &value)
+                        .inspect(ledger, true);
+                    self.bind(ctx, ledger, *pattern, storage, value, *resource);
                 }
-                self.bind(ctx, ledger, *pattern, storage, value, *resource);
             }
             StmtKind::With(handlers) => self.handlers(ctx, ledger, handlers),
             StmtKind::Expr(expr) => {
@@ -1327,7 +1338,7 @@ impl<'a> Analyzer<'a> {
                 let mut slots = ledger.clone();
                 slots.lost_results.clear();
                 let result = self.expr(&mut shadow, &mut slots, *expr);
-                let mut except = result.results();
+                let mut except = result.root_results();
                 except.extend(ledger.obligations.iter().cloned());
                 self.check_results(&slots, &except);
             }
@@ -2078,7 +2089,6 @@ impl<'a> Analyzer<'a> {
                 }
             }
             Pattern::Constructor(_, payload) => {
-                ledger.inspect(&value);
                 for (i, &item) in payload.iter().flatten().enumerate() {
                     let child =
                         ledger.project(&value, Coordinate::Index(i.to_string()), Access::Immutable);
@@ -2148,18 +2158,7 @@ impl<'a> Analyzer<'a> {
                     self.bind(ctx, &mut branch, item, storage, value, resource);
                     alternatives.push(branch);
                 }
-                if let Some(first) = alternatives.first() {
-                    let mut prior = ledger.clone();
-                    for (&decl, slot) in &first.slots {
-                        if alternatives
-                            .iter()
-                            .all(|branch| branch.slots.contains_key(&decl))
-                        {
-                            prior.slots.entry(decl).or_insert_with(|| slot.clone());
-                        }
-                    }
-                    ledger.merge(&prior, &alternatives);
-                }
+                ledger.merge_bindings(&alternatives);
             }
             Pattern::Subset {
                 binding: Some(id), ..
@@ -2216,14 +2215,13 @@ impl<'a> Analyzer<'a> {
                         value.requires_new = false;
                     }
                     "?" => {
-                        ledger.inspect(&value);
+                        ledger.inspect_root(&value);
                         self.storage_exit(ctx, ledger);
                         value = ledger.project(
                             &value,
                             Coordinate::Index("0".into()),
                             Access::Immutable,
                         );
-                        value.results.clear();
                     }
                     _ => value = Datum::default(),
                 }
@@ -2243,6 +2241,9 @@ impl<'a> Analyzer<'a> {
                     ("&&", Some(false)) | ("||", Some(true))
                 );
                 let fallible = op.value == "??" && self.ty(ast.expr(*left).span).is_result();
+                if fallible {
+                    ledger.inspect_root(&lhs);
+                }
                 let optional_rhs = op.value == "??"
                     || !both && matches!((op.value.as_str(), literal), ("&&" | "||", None));
                 let rhs = if skip {
@@ -2273,7 +2274,6 @@ impl<'a> Analyzer<'a> {
                     self.write(ctx, ledger, *left, &place, rhs, span);
                     Datum::default()
                 } else if op.value == "??" {
-                    ledger.inspect(&lhs);
                     ledger
                         .project(&lhs, Coordinate::Index("0".into()), Access::Immutable)
                         .joined(rhs)
@@ -2282,8 +2282,8 @@ impl<'a> Analyzer<'a> {
                         && (self.result_constructor(ctx, *right)
                             || self.result_constructor(ctx, *left))
                     {
-                        ledger.inspect(&lhs);
-                        ledger.inspect(&rhs);
+                        ledger.inspect_root(&lhs);
+                        ledger.inspect_root(&rhs);
                     }
                     Datum::default()
                 }
@@ -2407,14 +2407,19 @@ impl<'a> Analyzer<'a> {
                 let mut yes_ctx = ctx.clone();
                 yes_ctx.scope = ast.expr(*yes).span;
                 yes_ctx.reachable &= literal != Some(false);
-                self.condition(&mut yes_ctx, &mut then_ledger, condition);
-                let yes_value = self.expr(&mut yes_ctx, &mut then_ledger, *yes);
+                let takes_yes = self.condition(&mut yes_ctx, &mut then_ledger, condition, true);
+                let yes_value = if takes_yes {
+                    self.expr(&mut yes_ctx, &mut then_ledger, *yes)
+                } else {
+                    Datum::default()
+                };
                 let mut else_ledger = before.clone();
                 else_ledger.take_choice(span, 1);
                 let mut no_ctx = ctx.clone();
                 no_ctx.reachable &= literal != Some(true);
-                self.condition_unbound(&mut no_ctx, &mut else_ledger, condition);
+                let takes_no = self.condition(&mut no_ctx, &mut else_ledger, condition, false);
                 let no_value = no
+                    .filter(|_| takes_no)
                     .map(|expr| self.expr(&mut no_ctx, &mut else_ledger, expr))
                     .unwrap_or_default();
                 let count = ctx.return_values.len();
@@ -2426,8 +2431,8 @@ impl<'a> Analyzer<'a> {
                 let can_no = literal != Some(true)
                     && no.is_none_or(|no| self.ty(ast.expr(no).span) != &Ty::Never);
                 let mut alternatives = Vec::new();
-                let can_yes_continue = can_yes && !then_ledger.no_continuation;
-                let can_no_continue = can_no && !else_ledger.no_continuation;
+                let can_yes_continue = can_yes && takes_yes && !then_ledger.no_continuation;
+                let can_no_continue = can_no && takes_no && !else_ledger.no_continuation;
                 if can_yes_continue {
                     alternatives.push(then_ledger);
                 }
@@ -2457,11 +2462,21 @@ impl<'a> Analyzer<'a> {
                         extent: LoopExtent::Repeat,
                     },
                     |this, local, inside| {
-                        this.condition(local, inside, condition);
-                        let exit =
-                            (literal != Some(true) && local.reachable).then(|| inside.clone());
-                        local.reachable &= literal != Some(false);
-                        exit
+                        if matches!(condition, Condition::Binding { .. }) {
+                            let mut failed = inside.clone();
+                            let mut failed_ctx = local.clone();
+                            let exits =
+                                this.condition(&mut failed_ctx, &mut failed, condition, false)
+                                    && failed_ctx.reachable;
+                            local.reachable &= this.condition(local, inside, condition, true);
+                            exits.then_some(failed)
+                        } else {
+                            this.condition(local, inside, condition, true);
+                            let exit =
+                                (literal != Some(true) && local.reachable).then(|| inside.clone());
+                            local.reachable &= literal != Some(false);
+                            exit
+                        }
                     },
                 );
                 Datum::default()
@@ -2496,6 +2511,8 @@ impl<'a> Analyzer<'a> {
                         local.reachable &= extent != LoopExtent::Exact(0);
                         inside.iteration.push(value.clone());
                         let child = inside.project_schema(&value, coordinate.clone(), schema);
+                        this.pattern_tests(local, inside, *pattern, &child)
+                            .inspect(inside, true);
                         this.bind(local, inside, *pattern, &storage, child, false);
                         exit
                     },
@@ -2504,44 +2521,27 @@ impl<'a> Analyzer<'a> {
             }
             Expr::Match { mode, value, arms } => {
                 let value = self.expr(ctx, ledger, *value);
-                ledger.inspect(&value);
-                let before = ledger.clone();
-                let mut alternatives = Vec::new();
-                let mut output = None;
-                for (index, arm) in arms.iter().enumerate() {
-                    let mut inside = before.clone();
-                    inside.take_choice(span, index);
-                    let mut local_ctx = ctx.clone();
-                    local_ctx.scope = ast.pattern(arm.pattern).span.join(ast.expr(arm.body).span);
-                    let storage = Storage {
-                        mode: *mode,
-                        ..Storage::default()
-                    };
-                    self.bind(
-                        &local_ctx,
-                        &mut inside,
-                        arm.pattern,
-                        &storage,
-                        value.clone(),
-                        false,
-                    );
-                    if let Some(guard) = arm.guard {
-                        self.expr(&mut local_ctx, &mut inside, guard);
+                let paths = ledger.variant_paths(&value);
+                if paths.is_empty() {
+                    self.match_value(ctx, ledger, *mode, &value, arms, span)
+                } else {
+                    let before = ledger.clone();
+                    let mut alternatives = Vec::with_capacity(paths.len());
+                    let mut output = None;
+                    for (mut branch, selected) in paths {
+                        let value =
+                            self.match_value(ctx, &mut branch, *mode, &selected, arms, span);
+                        if !branch.no_continuation {
+                            output = Some(match output {
+                                Some(previous) => value.joined(previous),
+                                None => value,
+                            });
+                            alternatives.push(branch);
+                        }
                     }
-                    let body = self.expr(&mut local_ctx, &mut inside, arm.body);
-                    let prior = ctx.return_values.len();
-                    ctx.return_values
-                        .extend(local_ctx.return_values.into_iter().skip(prior));
-                    if self.ty(ast.expr(arm.body).span) != &Ty::Never && !inside.no_continuation {
-                        output = Some(output.map_or_else(
-                            || body.clone(),
-                            |value: Datum| value.joined(body.clone()),
-                        ));
-                        alternatives.push(inside);
-                    }
+                    ledger.merge(&before, &alternatives);
+                    output.unwrap_or_default()
                 }
-                ledger.merge(&before, &alternatives);
-                output.unwrap_or_default()
             }
             Expr::Call { callee, args } => self.call(ctx, ledger, *callee, args, span),
             Expr::Pipeline {
@@ -2563,12 +2563,9 @@ impl<'a> Analyzer<'a> {
                 };
                 let result = self.call(ctx, ledger, callee, &args, span);
                 if *propagate {
-                    ledger.inspect(&result);
+                    ledger.inspect_root(&result);
                     self.storage_exit(ctx, ledger);
-                    let mut payload =
-                        ledger.project(&result, Coordinate::Index("0".into()), Access::Immutable);
-                    payload.results.clear();
-                    payload
+                    ledger.project(&result, Coordinate::Index("0".into()), Access::Immutable)
                 } else {
                     result
                 }
@@ -2623,11 +2620,10 @@ impl<'a> Analyzer<'a> {
         if ctx.reachable
             && (self.ty(span).is_result()
                 || matches!(self.ty(span), Ty::Task(inner) if inner.is_result()))
-            && value.results().is_empty()
+            && !value.has_root_result()
             && !matches!(node.value, Expr::Path(_))
         {
-            value.results.insert(span.into());
-            ledger.obligations.insert(span.into());
+            ledger.record_result(&mut value, span);
         }
         if self.ty(span).is_value() {
             value.roots.clear();
@@ -2658,7 +2654,8 @@ impl<'a> Analyzer<'a> {
         if self.program.meta_parameters.contains(&id) {
             return Datum::default();
         }
-        let decl = self.program.hir.definition(id).name.span;
+        let definition = self.program.hir.definition(id);
+        let decl = definition.name.span;
         if let Some(slot) = ledger.slots.get(&decl) {
             self.check_live(
                 ctx,
@@ -2684,11 +2681,16 @@ impl<'a> Analyzer<'a> {
                 root.anchor_scopes.extend(self.binding_scopes.get(&decl));
             }
             value
-        } else if self
-            .definition(span)
-            .is_some_and(|id| self.program.hir.unit_constructor(id))
+        } else if self.program.hir.unit_constructor(id)
+            || matches!(definition.kind, DefinitionKind::Primitive(_))
+                && definition.name.value == "None"
+                && matches!(self.ty(span), Ty::Option(_))
+            || matches!(definition.kind, DefinitionKind::Variant(_))
+                && matches!(self.ty(span), Ty::Adt(adt) if matches!(adt.kind, AdtKind::Sum | AdtKind::OpaqueSum))
         {
-            Datum::source(span, Access::Mut, true)
+            let mut value = Datum::source(span, Access::Mut, true);
+            value.set_variant(&definition.name.value);
+            value
         } else if !self.ty(span).is_value()
             && matches!(
                 self.program.hir.definition(id).kind,
@@ -3074,7 +3076,98 @@ impl<'a> Analyzer<'a> {
         }
     }
 
-    fn condition(&mut self, ctx: &mut Context, ledger: &mut Ledger, condition: &Condition) {
+    fn match_value(
+        &mut self,
+        ctx: &mut Context,
+        ledger: &mut Ledger,
+        mode: Mode,
+        value: &Datum,
+        arms: &[MatchArm],
+        span: Span,
+    ) -> Datum {
+        let ast = self.ast(ctx.file);
+        let before = ledger.clone();
+        let mut missed = Some(BTreeSet::new());
+        let mut alternatives = Vec::new();
+        let mut output = None;
+        for (index, arm) in arms.iter().enumerate() {
+            let Some(prefix) = missed else { break };
+            let tests = self
+                .pattern_tests(ctx, &before, arm.pattern, value)
+                .after(&prefix);
+            missed = tests.missed;
+            let Some(inspected) = tests.matched else {
+                continue;
+            };
+            let mut inside = before.clone();
+            inside.inspected.extend(inspected);
+            inside.take_choice(span, index);
+            let mut local_ctx = ctx.clone();
+            local_ctx.scope = ast.pattern(arm.pattern).span.join(ast.expr(arm.body).span);
+            let storage = Storage {
+                mode,
+                ..Storage::default()
+            };
+            self.bind(
+                &local_ctx,
+                &mut inside,
+                arm.pattern,
+                &storage,
+                value.clone(),
+                false,
+            );
+            if let Some(guard) = arm.guard {
+                self.expr(&mut local_ctx, &mut inside, guard);
+                let truth = self.literal_bool(&local_ctx, guard);
+                if truth != Some(true) && !inside.no_continuation {
+                    missed = results::alternatives(missed, Some(inside.inspected.clone()));
+                }
+                if truth == Some(false) {
+                    continue;
+                }
+            }
+            let body = self.expr(&mut local_ctx, &mut inside, arm.body);
+            let prior = ctx.return_values.len();
+            ctx.return_values
+                .extend(local_ctx.return_values.into_iter().skip(prior));
+            if self.ty(ast.expr(arm.body).span) != &Ty::Never && !inside.no_continuation {
+                output = Some(
+                    output.map_or_else(|| body.clone(), |value: Datum| value.joined(body.clone())),
+                );
+                alternatives.push(inside);
+            }
+        }
+        ledger.merge(&before, &alternatives);
+        output.unwrap_or_default()
+    }
+
+    fn bind_on_match(
+        &mut self,
+        ctx: &Context,
+        ledger: &mut Ledger,
+        pattern: PatternId,
+        storage: &Storage,
+        value: &Datum,
+        resource: bool,
+    ) -> bool {
+        let paths = self.pattern_paths(ctx, ledger, pattern, value, true);
+        let alternatives = paths
+            .into_iter()
+            .map(|(mut path, selected)| {
+                self.bind(ctx, &mut path, pattern, storage, selected, resource);
+                path
+            })
+            .collect();
+        ledger.continue_at_pattern(alternatives)
+    }
+
+    fn condition(
+        &mut self,
+        ctx: &mut Context,
+        ledger: &mut Ledger,
+        condition: &Condition,
+        matched: bool,
+    ) -> bool {
         match condition {
             Condition::Expr(value) => {
                 self.expr(ctx, ledger, *value);
@@ -3085,20 +3178,28 @@ impl<'a> Analyzer<'a> {
                 value,
             } => {
                 let value = self.expr(ctx, ledger, *value);
-                ledger.inspect(&value);
-                self.bind(
-                    ctx,
-                    ledger,
-                    *pattern,
-                    &Storage {
-                        mode: *mode,
-                        ..Storage::default()
-                    },
-                    value,
-                    false,
-                );
+                if matched {
+                    return self.bind_on_match(
+                        ctx,
+                        ledger,
+                        *pattern,
+                        &Storage {
+                            mode: *mode,
+                            ..Storage::default()
+                        },
+                        &value,
+                        false,
+                    );
+                }
+                let alternatives = self
+                    .pattern_paths(ctx, ledger, *pattern, &value, false)
+                    .into_iter()
+                    .map(|(ledger, _)| ledger)
+                    .collect();
+                return ledger.continue_at_pattern(alternatives);
             }
         }
+        true
     }
 
     fn check_loop(
@@ -3149,7 +3250,9 @@ impl<'a> Analyzer<'a> {
             local.scope = body_span;
             let exit = prepare(self, &mut local, &mut inside);
             local.loop_owner = Some(owner);
-            self.expr(&mut local, &mut inside, body);
+            if local.reachable {
+                self.expr(&mut local, &mut inside, body);
+            }
             let LoopTransfers {
                 mut breaks,
                 mut continues,
@@ -3243,18 +3346,6 @@ impl<'a> Analyzer<'a> {
                 }
             }
             _ => LoopExtent::Repeat,
-        }
-    }
-
-    fn condition_unbound(&mut self, ctx: &mut Context, ledger: &mut Ledger, condition: &Condition) {
-        match condition {
-            Condition::Expr(value) => {
-                self.expr(ctx, ledger, *value);
-            }
-            Condition::Binding { value, .. } => {
-                let value = self.expr(ctx, ledger, *value);
-                ledger.inspect(&value);
-            }
         }
     }
 

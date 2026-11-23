@@ -3039,8 +3039,10 @@ fn handle_log() @io -> new !<(), str> {
 -- let a = write_entry("x"); let b = write_entry("y"); let _ = (a == b) -- Error [E0720]: non-constructor comparison
 ```
 
-- **Satisfies inspection**: Matching (`match`, `if let`, `let ... else`), comparing in a reached `==` / `!=` directly against `Ok(...)` or `Err(...)`, propagating (`?`), handling (`??`), passing to an explicitly `!<T, E>`-typed parameter, or returning.
+- **Satisfies inspection**: Testing the Result's constructor in a reached pattern (`match`, `if let`, `while let`, `let ... else`), comparing in a reached `==` / `!=` directly against `Ok(...)` or `Err(...)`, propagating (`?`), handling (`??`), passing to an explicitly `!<T, E>`-typed parameter, or returning.
 - **Rejected (`E0720`)**: Discarding a `Result`, binding to `_`, passing to an unconstrained generic parameter `T`, wrapping in an uninspected composite value, comparing two non-constructor `Result` variables, or overwriting its last binding.
+
+In a composite, each Result has its own obligation. Testing `Some(_)` examines the option tag. Testing `Some(Ok(_))` also examines the contained Result tag when the option is `Some`.
 
 ---
 

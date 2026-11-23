@@ -750,6 +750,90 @@ fn run() -> () {
     -- ^ E0720
 }
 
+-- @case matching_only_the_outer_option_does_not_inspect_its_result compile-fail E0720
+fn get() -> new !<int, str> { Ok(1) }
+fn run() -> () {
+    let wrapped = Some(get())
+    -- ^ E0720
+    match wrapped { Some(_) -> (); None -> () }
+}
+
+-- @case nested_constructor_test_inspects_a_result_on_match_and_miss compile-pass
+fn get(flag: bool) -> new !<int, str> { if flag { Ok(1) } else { Err("failed") } }
+fn run(flag: bool) -> int {
+    let wrapped = Some(get(flag))
+    match wrapped { Some(Ok(value)) -> value; _ -> 0 }
+}
+
+-- @case a_missing_payload_has_no_inspection_obligation compile-pass
+fn get() -> new !<int, str> { Ok(1) }
+fn run(flag: bool) -> int {
+    match (if flag { Some(get()) } else { None }) {
+        Some(Ok(value)) -> value
+        Some(Err(_)) -> 0
+        None -> 0
+    }
+}
+
+-- @case a_missing_payload_does_not_inspect_an_existing_result compile-fail E0720
+fn get() -> new !<int, str> { Ok(1) }
+fn run(flag: bool) -> int {
+    let pending = get()
+    -- ^ E0720
+    match (if flag { Some(pending) } else { None }) {
+        Some(Ok(value)) -> value
+        Some(Err(_)) -> 0
+        None -> 0
+    }
+}
+
+-- @case a_wildcard_arm_cannot_skip_the_result_test compile-fail E0720
+fn get() -> new !<int, str> { Ok(1) }
+fn run(flag: bool) -> () {
+    let wrapped = Some(get())
+    -- ^ E0720
+    match wrapped { Some(_) if flag -> (); Some(Ok(_)) -> (); _ -> () }
+}
+
+-- @case nested_result_test_covers_a_conditional_binding_failure compile-pass
+fn get(flag: bool) -> new !<int, str> { if flag { Ok(1) } else { Err("failed") } }
+fn run(flag: bool) -> int {
+    let Some(Ok(value)) = Some(get(flag)) else { return 0 }
+    if let Some(Ok(next)) = Some(get(flag)) { next + value } else { 0 }
+}
+
+-- @case conditional_bindings_only_inspect_a_present_result compile-pass
+fn get() -> new !<int, str> { Ok(1) }
+fn run(flag: bool) -> int {
+    let wrapped = if flag { Some(get()) } else { None }
+    let Some(Ok(value)) = wrapped else { return 0 }
+    let next = if flag { Some(get()) } else { None }
+    if let Some(Ok(next_value)) = next { value + next_value } else { 0 }
+}
+
+-- @case while_let_inspects_a_nested_result_before_exiting compile-pass
+fn get(flag: bool) -> new !<int, str> { if flag { Ok(1) } else { Err("failed") } }
+fn run(flag: bool) -> () {
+    while let Some(Ok(_)) = Some(get(flag)) { break }
+}
+
+-- @case matching_the_outer_result_does_not_inspect_its_payload compile-fail E0720
+fn get() -> new !<int, str> { Ok(1) }
+fn run() -> () {
+    let wrapped: !<!<int, str>, str> = Ok(get())
+    -- ^ E0720
+    match wrapped { Ok(_) -> (); Err(_) -> () }
+}
+
+-- @case propagation_carries_the_inner_result_obligation compile-fail E0720
+fn get() -> new !<int, str> { Ok(1) }
+fn run() -> new !<(), str> {
+    let wrapped: !<!<int, str>, str> = Ok(get())
+    -- ^ E0720
+    let _ = wrapped?
+    Ok()
+}
+
 -- @case explicit_result_parameter_and_match compile-pass
 fn get() -> new !<int, str> { Ok(1) }
 fn unwrap(input: !<int, str>) -> int { match input { Ok(n) -> n; Err(_) -> 0 } }
