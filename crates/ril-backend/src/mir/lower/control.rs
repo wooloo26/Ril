@@ -491,7 +491,7 @@ impl Builder<'_, '_> {
         });
         self.current = Some(body_start);
         let element = if let Some(collection) = collection {
-            self.runtime("ril_rt_load", vec![collection, current])
+            self.runtime("ril_rt_iter_at", vec![collection, current])
         } else {
             current
         };

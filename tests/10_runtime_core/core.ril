@@ -671,6 +671,20 @@ fn main() -> () {
     assert(table == [(2, "b"): 30, (1, "a"): 20])
 }
 
+-- @case map_iteration_yields_key_value_pairs run-pass backend=both
+fn main() -> () {
+    let table = [(3, "x"): 10, (4, "y"): 20, (3, "x"): 30]
+    var weighted = 0
+    for table as ((i, label), amount) {
+        assert((i == 3 && label == "x") || (i == 4 && label == "y"))
+        weighted += i * amount
+    }
+    assert(weighted == 170)
+    for [4: 5] as (key, value) {
+        assert(key == 4 && value == 5)
+    }
+}
+
 -- @case static_coordinate_specializes_generic_getter run-pass backend=both
 fn read<T: .{ .. }>(via item: T, meta key: str |> Key<T>) -> infer T.(key) {
     item.(key)

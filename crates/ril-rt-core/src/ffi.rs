@@ -275,6 +275,10 @@ runtime_functions! {
         let value = load(rt, target, key);
         rt.checked(value.ok_or("index or member is missing"))
     }
+    fn ril_rt_iter_at(rt, target: Value, position: Value) -> Value {
+        let value = iter_at(rt, target, position);
+        rt.checked(value.ok_or("iteration position is outside the collection"))
+    }
     fn ril_rt_safe_load(rt, target: Value, key: Value) -> Value {
         let value = load(rt, target, key);
         match value {
@@ -497,6 +501,19 @@ fn load(rt: &mut Runtime, target: Value, key: Value) -> Option<Value> {
         _ => return None,
     };
     rt.gc.draft_child(target, slot, value)
+}
+
+fn iter_at(rt: &mut Runtime, target: Value, position: Value) -> Option<Value> {
+    let target = rt.gc.draft_read(target).unwrap_or(target);
+    let Some(Object::Map(entries)) = rt.gc.object(target) else {
+        return load(rt, target, position);
+    };
+    let index = rt.gc.integer(position)?.to_usize()?;
+    let &(key, value) = entries.get(index)?;
+    let value = rt
+        .gc
+        .draft_child(target, DraftSlot::MapValue(index), value)?;
+    Some(rt.gc.alloc(Object::Tuple(vec![key, value])))
 }
 
 fn slice(
