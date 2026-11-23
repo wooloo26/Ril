@@ -1336,11 +1336,10 @@ impl<'a> Analyzer<'a> {
                 shadow.shadow = true;
                 shadow.loop_owner = None;
                 let mut slots = ledger.clone();
+                slots.obligations.clear();
                 slots.lost_results.clear();
                 let result = self.expr(&mut shadow, &mut slots, *expr);
-                let mut except = result.root_results();
-                except.extend(ledger.obligations.iter().cloned());
-                self.check_results(&slots, &except);
+                self.check_results(&slots, &result.root_results());
             }
             Type::Named(path) => {
                 for parameter in path.segments.iter().flat_map(|segment| &segment.arguments) {
@@ -2215,13 +2214,7 @@ impl<'a> Analyzer<'a> {
                         value.requires_new = false;
                     }
                     "?" => {
-                        ledger.inspect_root(&value);
-                        self.storage_exit(ctx, ledger);
-                        value = ledger.project(
-                            &value,
-                            Coordinate::Index("0".into()),
-                            Access::Immutable,
-                        );
+                        value = self.propagated(ctx, ledger, value, op.span);
                     }
                     _ => value = Datum::default(),
                 }
@@ -2563,9 +2556,7 @@ impl<'a> Analyzer<'a> {
                 };
                 let result = self.call(ctx, ledger, callee, &args, span);
                 if *propagate {
-                    ledger.inspect_root(&result);
-                    self.storage_exit(ctx, ledger);
-                    ledger.project(&result, Coordinate::Index("0".into()), Access::Immutable)
+                    self.propagated(ctx, ledger, result, span)
                 } else {
                     result
                 }

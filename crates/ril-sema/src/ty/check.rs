@@ -48,6 +48,10 @@ pub(super) fn check(hir: Program, budget: Option<u64>) -> Result<TypedProgram, V
         .into_iter()
         .map(|(span, ty)| (span, ck.normalize(&ty)))
         .collect();
+    let propagation_inputs = std::mem::take(&mut ck.propagation_inputs)
+        .into_iter()
+        .map(|(span, ty)| (span, ck.normalize(&ty)))
+        .collect();
     let static_generic_arguments = std::mem::take(&mut ck.generic_arguments)
         .into_iter()
         .map(|(span, arguments)| {
@@ -117,6 +121,7 @@ pub(super) fn check(hir: Program, budget: Option<u64>) -> Result<TypedProgram, V
         inspection_scopes,
         narrowings,
         navigation_values,
+        propagation_inputs,
         effect_instances,
         operation_effects,
         operation_instances,
@@ -212,6 +217,7 @@ pub(super) struct Checker<'a> {
     pub(super) implicit_exits: Vec<ImplicitExits>,
     pub(super) narrowings: HashMap<Span, usize>,
     pub(super) navigation_values: HashMap<Span, Ty>,
+    pub(super) propagation_inputs: HashMap<Span, Ty>,
     pub(super) effect_instances: BTreeMap<String, super::effects::Instance>,
     pub(super) operation_effects: HashMap<Span, String>,
     pub(super) operation_instances: HashMap<Span, super::effects::Instance>,
@@ -257,6 +263,7 @@ impl<'a> Checker<'a> {
             implicit_exits: Vec::new(),
             inspection_scopes: HashMap::new(),
             narrowings: HashMap::new(),
+            propagation_inputs: HashMap::new(),
             effect_instances: BTreeMap::new(),
             operation_effects: HashMap::new(),
             operation_instances: HashMap::new(),

@@ -1,8 +1,9 @@
 use std::collections::BTreeSet;
 
+use ril_base::span::Span;
 use ril_frontend::syntax::{Pattern, PatternId};
 
-use super::{Access, Analyzer, Context, Coordinate, Datum, Ledger};
+use super::{Access, Analyzer, Context, Coordinate, Datum, Ledger, Ty};
 use crate::access::flow::ResultOccurrence;
 
 type Inspections = BTreeSet<ResultOccurrence>;
@@ -73,6 +74,62 @@ pub(super) fn alternatives(
 }
 
 impl Analyzer<'_> {
+    pub(super) fn propagated(
+        &mut self,
+        ctx: &mut Context,
+        ledger: &mut Ledger,
+        value: Datum,
+        site: Span,
+    ) -> Datum {
+        let Some(ty) = self.program.propagation_inputs.get(&site) else {
+            return Datum::default();
+        };
+        let success = if ty.is_result() { "Ok" } else { "Some" };
+        let member = Coordinate::Index("0".into());
+        if !ctx.reachable {
+            return ledger.project(&value, member, Access::Immutable);
+        }
+        let mut paths = ledger.variant_paths(&value);
+        if paths.is_empty() {
+            paths.push((ledger.clone(), value));
+        }
+        let mut continuing = Vec::new();
+        let mut output = None;
+        for (mut path, value) in paths {
+            path.inspect_root(&value);
+            let tag = value.known_variant();
+            if tag != Some(success) {
+                if tag.is_some() {
+                    path.inspect(&value);
+                    self.check_results(&path, &Inspections::new());
+                    self.storage_exit(ctx, &path);
+                    if ctx.runtime && !ctx.shadow {
+                        ctx.return_values.push(path.snapshot(&value));
+                    }
+                    continue;
+                }
+                // An unknown Result can stop here. A payload known to occur
+                // only in Err leaves with the returned error.
+                let transfer = match ty {
+                    Ty::Result(ok, _) if ok.is_value() => path.snapshot(&value).results(),
+                    _ => Inspections::new(),
+                };
+                self.check_results(&path, &transfer);
+                self.storage_exit(ctx, &path);
+            }
+            let payload = path.project(&value, member.clone(), Access::Immutable);
+            output = Some(match output {
+                Some(prior) => payload.joined(prior),
+                None => payload,
+            });
+            continuing.push(path);
+        }
+        if !ledger.continue_at_pattern(continuing) {
+            ledger.no_continuation = true;
+        }
+        output.unwrap_or_default()
+    }
+
     pub(super) fn pattern_paths(
         &self,
         ctx: &Context,

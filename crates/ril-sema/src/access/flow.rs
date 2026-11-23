@@ -586,6 +586,10 @@ impl Datum {
         }
     }
 
+    pub(super) fn forget_variants(&mut self) {
+        self.transform(&mut |origin| origin.variant = None);
+    }
+
     pub(super) fn known_variant(&self) -> Option<&str> {
         let variant = self.roots.first()?.variant.as_deref()?;
         self.roots
@@ -978,7 +982,7 @@ impl Ledger {
         if paths.len() < 2
             || paths.len() > BRANCH_LIMIT
             || value.roots.iter().any(|root| root.variant.is_none())
-            || value.results().is_empty()
+            || (self.obligations.is_empty() && value.results().is_empty())
         {
             return Vec::new();
         }

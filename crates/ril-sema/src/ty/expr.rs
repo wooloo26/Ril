@@ -769,7 +769,9 @@ impl<'a> Checker<'a> {
     }
 
     fn propagate(&mut self, env: &Env, actual: Ty, span: Span) -> Ty {
-        match self.normalize(&actual) {
+        let actual = self.normalize(&actual);
+        self.propagation_inputs.insert(span, actual.clone());
+        match actual {
             Ty::Result(ok, error) => {
                 if let Some(index) = env.inferred_return {
                     if !env.shadow {

@@ -40,4 +40,15 @@ def canExit (world : World) (arms : List Arm) : Bool :=
   let inspected := inspections world arms
   world.pending.all (inspected.contains ·)
 
+/-- Propagation either continues or transfers the failed value to a normal
+exit. Any remaining obligation must be among that value's constructors. -/
+def canPropagate (world : World) : Bool :=
+  match world.constructors.find? (·.path.isEmpty) with
+  | some root =>
+    if root.tag == "Err" || root.tag == "None" then
+      let returned := world.constructors.filterMap Constructor.obligation
+      world.pending.all (returned.contains ·)
+    else true
+  | none => false
+
 end RilAccess.ResultInspection

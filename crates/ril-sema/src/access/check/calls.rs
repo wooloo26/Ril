@@ -8,7 +8,7 @@ use ril_base::{
     span::Span,
 };
 use ril_frontend::{
-    hir::{DefinitionId, DefinitionKind},
+    hir::{Definition, DefinitionId, DefinitionKind},
     syntax::{Argument, Expr, ExprId, Function, Handler, Mode, StateKind, StmtKind},
 };
 
@@ -178,7 +178,15 @@ impl<'program> Analyzer<'program> {
         args: &[Argument],
         span: Span,
     ) -> Datum {
-        let result = self.call_value(ctx, ledger, callee, args, span);
+        let id = match &self.ast(ctx.file).expr(callee).value {
+            Expr::Path(path) => self.definition(path.span),
+            _ => None,
+        };
+        let mut result = self.call_value(ctx, ledger, callee, args, span, id);
+        if !id.is_some_and(|id| data_constructor(self.program.hir.definition(id))) {
+            // The signature specifies the possible tags at a call boundary.
+            result.forget_variants();
+        }
         ledger.remember_return_graph(&result, span);
         result
     }
@@ -190,14 +198,10 @@ impl<'program> Analyzer<'program> {
         callee_id: ExprId,
         args: &[Argument],
         span: Span,
+        id: Option<DefinitionId>,
     ) -> Datum {
         let ast = self.ast(ctx.file);
         let callee = ast.expr(callee_id);
-        let id = if let Expr::Path(path) = &callee.value {
-            self.definition(path.span)
-        } else {
-            None
-        };
         let def = id.map(|id| self.program.hir.definition(id));
         let name = def.map_or("", |def| def.name.value.as_str());
         let primitive = def.is_some_and(|def| matches!(def.kind, DefinitionKind::Primitive(_)));
@@ -291,10 +295,7 @@ impl<'program> Analyzer<'program> {
                         }))
             })
         });
-        let is_constructor = primitive && matches!(name, "Some" | "Ok" | "Err")
-            || def.is_some_and(|def| {
-                matches!(def.kind, DefinitionKind::Type | DefinitionKind::Variant(_))
-            });
+        let is_constructor = def.is_some_and(data_constructor);
         let mut given = vec![false; sig.map_or(args.len(), |signature| signature.parameters.len())];
         let mut values = Vec::new();
         let mut value_spans = Vec::new();
@@ -2862,4 +2863,14 @@ fn constructor(span: Span, values: impl IntoIterator<Item = (usize, Mode, Datum)
             .insert(Coordinate::Index(index.to_string()), value);
     }
     result
+}
+
+fn data_constructor(definition: &Definition) -> bool {
+    match definition.kind {
+        DefinitionKind::Type | DefinitionKind::Variant(_) => true,
+        DefinitionKind::Primitive(_) => {
+            matches!(definition.name.value.as_str(), "Some" | "Ok" | "Err")
+        }
+        _ => false,
+    }
 }

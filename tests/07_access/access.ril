@@ -834,6 +834,54 @@ fn run() -> new !<(), str> {
     Ok()
 }
 
+-- @case propagation_checks_pending_results_on_early_return compile-fail E0720
+fn get(flag: bool) -> new !<int, str> { if flag { Ok(1) } else { Err("failed") } }
+fn run(flag: bool) -> new !<(), str> {
+    let pending = get(true)
+    -- ^ E0720
+    get(flag)?
+    assert(pending == Ok(1))
+    Ok()
+}
+
+-- @case a_propagating_pipeline_checks_pending_results_on_early_return compile-fail E0720
+fn get(flag: bool) -> new !<int, str> { if flag { Ok(1) } else { Err("failed") } }
+fn run(flag: bool) -> new !<(), str> {
+    let pending = get(true)
+    -- ^ E0720
+    flag |> get?
+    assert(pending == Ok(1))
+    Ok()
+}
+
+-- @case successful_propagation_can_leave_an_existing_result_to_the_continuation compile-pass
+fn get() -> new !<int, str> { Ok(1) }
+fn run() -> new !<(), str> {
+    let pending = get()
+    (Ok(1) as !<int, str>)?
+    assert(pending == Ok(1))
+    Ok()
+}
+
+-- @case optional_propagation_checks_only_results_present_on_its_exit_path compile-pass
+fn get() -> new !<int, str> { Ok(1) }
+fn run(flag: bool) -> new ?int {
+    var pending = get()
+    assert(pending == Ok(1))
+    let decision = if flag { pending = get(); Some(1) } else { None }
+    let value = decision?
+    assert(pending == Ok(1))
+    Some(value)
+}
+
+-- @case error_propagation_transfers_the_nested_error_result compile-pass
+fn get() -> new !<int, str> { Ok(1) }
+fn run() -> new !<(), !<int, str>> {
+    let failure: !<(), !<int, str>> = Err(get())
+    failure?
+    Ok()
+}
+
 -- @case explicit_result_parameter_and_match compile-pass
 fn get() -> new !<int, str> { Ok(1) }
 fn unwrap(input: !<int, str>) -> int { match input { Ok(n) -> n; Err(_) -> 0 } }

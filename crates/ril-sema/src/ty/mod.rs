@@ -260,6 +260,7 @@ pub struct TypedProgram {
     inspection_scopes: HashMap<Span, ScopeId>,
     pub narrowings: HashMap<Span, usize>,
     pub navigation_values: HashMap<Span, Ty>,
+    pub(crate) propagation_inputs: HashMap<Span, Ty>,
     pub subset_tags: HashMap<Span, Vec<String>>,
     pub tuple_payloads: HashMap<Span, usize>,
     pub(crate) receptions: HashMap<Span, Vec<reception::Adjustment>>,
