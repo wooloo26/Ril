@@ -1331,7 +1331,7 @@ fn boundary_examples_agree_with_lean() -> Result<(), Box<dyn std::error::Error>>
 
 #[test]
 fn call_authority_examples_agree_with_lean() -> Result<(), Box<dyn std::error::Error>> {
-    check_access_examples("call-authority", 34)
+    check_access_examples("call-authority", 36)
 }
 
 #[test]

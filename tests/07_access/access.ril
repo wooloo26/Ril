@@ -664,6 +664,74 @@ fn run() -> int {
     cell.count
 }
 
+-- @case shared_formal_and_capture_may_alias_during_a_nested_borrow compile-fail E0524
+fn edit(mut writer: Cell, ref reader: Cell) &mut -> () { writer.count += reader.count }
+fn run() -> int {
+    let mut cell = Cell.{ count: 1 }
+    let ^mut alias = cell
+    let ^mut saved = retain(^mut cell)
+    saved.count += 1
+    cell.count
+    where
+        fn retain(^mut input: Cell) &mut &up(^mut alias) -> ^mut(input) Cell {
+            alias.count += 1
+            edit(mut input, ref alias)
+            -- ^ E0524
+            input
+        }
+}
+
+-- @case read_only_capture_is_disjoint_from_shared_formal compile-pass
+fn edit(mut writer: Cell, ref reader: Cell) &mut -> () { writer.count += reader.count }
+fn run() -> int {
+    let mut cell = Cell.{ count: 1 }
+    let mut other = Cell.{ count: 2 }
+    let ^mut alias = other
+    alias.count += 1
+    let ^mut saved = retain(^mut cell)
+    saved.count += 1
+    cell.count
+    where
+        fn retain(^mut input: Cell) &mut &up(ref alias) -> ^mut(input) Cell {
+            edit(mut input, ref alias)
+            input
+        }
+}
+
+-- @case inferred_writable_capture_may_alias_a_shared_formal compile-fail E0524
+type Shelf = .{ var ^mut value: Cell }
+fn edit(mut writer: Cell, ref reader: Cell) &mut -> () { writer.count += reader.count }
+fn run() -> int {
+    let mut cell = Cell.{ count: 1 }
+    let ^mut alias = cell
+    let mut shelf = Shelf.{ value: ^mut Cell.{ count: 2 } }
+    let ^mut retain = \^mut input: Cell -> {
+        alias.count += 1
+        edit(mut input, ref alias)
+        -- ^ E0524
+        shelf.value = ^mut input
+    }
+    retain(^mut cell)
+    shelf.value.count
+}
+
+-- @case inferred_read_only_capture_is_disjoint_from_shared_formal compile-pass
+type Shelf = .{ var ^mut value: Cell }
+fn edit(mut writer: Cell, ref reader: Cell) &mut -> () { writer.count += reader.count }
+fn run() -> int {
+    let mut cell = Cell.{ count: 1 }
+    let mut other = Cell.{ count: 2 }
+    let ^mut alias = other
+    alias.count += 1
+    let mut shelf = Shelf.{ value: ^mut Cell.{ count: 3 } }
+    let ^mut retain = \^mut input: Cell -> {
+        edit(mut input, ref alias)
+        shelf.value = ^mut input
+    }
+    retain(^mut cell)
+    shelf.value.count
+}
+
 -- @case distinct_shared_formals_do_not_prove_independence_for_a_nested_call compile-fail E0524
 type Pair = .{ ^mut left: Cell, ^mut right: Cell }
 fn edit(mut writer: Cell, ref reader: Cell) &mut -> () { writer.count += reader.count }

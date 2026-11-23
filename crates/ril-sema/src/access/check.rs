@@ -17,8 +17,8 @@ use super::{
     Access, Analysis, CleanupAction, EffectUse, Input, Instance, Invocation, InvocationMode,
     ReturnSource, StorageUpdate, Summary,
     flow::{
-        Coordinate, Datum, Ledger, Origin, Reception, Region, Replacement, ResultOccurrence,
-        Revocation, Slot, conflicts,
+        AccessConflict, Coordinate, Datum, Ledger, Origin, Reception, Region, Replacement,
+        ResultOccurrence, Revocation, Slot, conflicts,
     },
     horn::{self, Rule},
 };
@@ -101,6 +101,7 @@ struct Context {
     formals: Vec<Option<Span>>,
     caller_slots: BTreeSet<Span>,
     caller_sources: BTreeSet<Span>,
+    capture_modes: Option<BTreeMap<Span, Mode>>,
     owned_formals: BTreeSet<Span>,
     via: BTreeSet<Span>,
     member_via: bool,
@@ -126,6 +127,7 @@ impl Context {
             formals: Vec::new(),
             caller_slots: BTreeSet::new(),
             caller_sources: BTreeSet::new(),
+            capture_modes: None,
             owned_formals: BTreeSet::new(),
             via: BTreeSet::new(),
             member_via: false,
@@ -154,6 +156,25 @@ impl Context {
             );
         }
     }
+
+    fn mark_capture(&self, slot: &Slot, value: &mut Datum) {
+        if !self.caller_slots.contains(&slot.decl) {
+            return;
+        }
+        let mode = match &self.capture_modes {
+            Some(modes) => modes.get(&slot.decl).copied(),
+            None => Some(slot.mode),
+        };
+        if let Some(mode @ (Mode::Mut | Mode::Shared)) = mode {
+            value.enter_capture(
+                self.owner,
+                slot.decl,
+                mode,
+                self.capture_modes.is_none(),
+                &self.caller_sources,
+            );
+        }
+    }
 }
 
 struct Requirement {
@@ -163,10 +184,10 @@ struct Requirement {
 }
 
 struct CaptureConflict {
-    write: Fact,
-    reading: Option<Code>,
-    writing: Option<Code>,
+    conditions: Vec<(Fact, bool)>,
+    code: Code,
     span: Span,
+    message: &'static str,
 }
 
 struct DefinitionCheck {
@@ -283,17 +304,12 @@ pub(super) fn analyze(program: &TypedProgram) -> (Analysis, Vec<Diagnostic>) {
     analyzer.link_higher_order_calls();
     let facts = horn::solve(&analyzer.rules);
     for conflict in std::mem::take(&mut analyzer.capture_conflicts) {
-        let code = if facts.contains(&conflict.write) {
-            conflict.writing
-        } else {
-            conflict.reading
-        };
-        if let Some(code) = code {
-            analyzer.error(
-                code,
-                conflict.span,
-                "argument authority overlaps a callable capture",
-            );
+        if conflict
+            .conditions
+            .iter()
+            .all(|(fact, expected)| facts.contains(fact) == *expected)
+        {
+            analyzer.error(conflict.code, conflict.span, conflict.message);
         }
     }
     for (premises, diagnostic) in std::mem::take(&mut analyzer.deferred_errors) {
@@ -428,6 +444,40 @@ impl<'a> Analyzer<'a> {
         {
             self.diagnostics
                 .push(Diagnostic::error(code, span, message));
+        }
+    }
+
+    fn check_conflict(
+        &mut self,
+        conflict: AccessConflict,
+        condition: Option<(Fact, bool)>,
+        span: Span,
+        message: &'static str,
+    ) {
+        let code = if conflict.writable {
+            Code::E0523
+        } else {
+            Code::E0524
+        };
+        let mut conditions: Vec<_> = condition.into_iter().collect();
+        if let Some(capture) = conflict.capture.filter(|capture| capture.inferred) {
+            conditions.push((
+                Fact {
+                    owner: capture.callable,
+                    obligation: Obligation::Write(capture.binding),
+                },
+                true,
+            ));
+        }
+        if conditions.is_empty() {
+            self.error(code, span, message);
+        } else {
+            self.capture_conflicts.push(CaptureConflict {
+                conditions,
+                code,
+                span,
+                message,
+            });
         }
     }
 
@@ -660,6 +710,20 @@ impl<'a> Analyzer<'a> {
             .filter_map(|name| self.declaration(name.span))
             .collect();
         ctx.declared_contained = self.declared_sources(&fun.signature);
+        let capture_modes: BTreeMap<_, _> = fun
+            .signature
+            .obligations
+            .state
+            .iter()
+            .filter(|clause| clause.kind == StateKind::Environment)
+            .flat_map(|clause| &clause.bindings)
+            .filter_map(|(storage, path)| {
+                self.declaration(path.span)
+                    .map(|binding| (binding, storage.mode))
+            })
+            .collect();
+        let captures = capture_modes.keys().copied().collect();
+        ctx.capture_modes = Some(capture_modes);
         let mut ledger = outer.clone();
         ledger.clear_result_obligations();
         ledger.inspected.clear();
@@ -732,15 +796,6 @@ impl<'a> Analyzer<'a> {
         let member_axes = member_axes(callable, &ctx.formals);
         self.register_member_axes(&member_axes);
         ctx.member_via = !member_axes.is_empty();
-        let captures = fun
-            .signature
-            .obligations
-            .state
-            .iter()
-            .filter(|clause| clause.kind == StateKind::Environment)
-            .flat_map(|clause| &clause.bindings)
-            .filter_map(|(_, path)| self.declaration(path.span))
-            .collect();
         for clause in &fun.signature.obligations.state {
             if matches!(clause.kind, StateKind::Environment | StateKind::Return)
                 && clause.bindings.is_empty()
@@ -2860,6 +2915,7 @@ impl<'a> Analyzer<'a> {
                 self.seed(ctx, Obligation::ReadUp(decl));
             }
             let mut value = slot.value.clone();
+            ctx.mark_capture(slot, &mut value);
             for root in &mut value.roots {
                 root.explicit_share = false;
                 root.from_variable = slot.variable;
@@ -3217,9 +3273,10 @@ impl<'a> Analyzer<'a> {
         }) {
             self.error(Code::E0526, span, "collection is already being iterated");
         }
-        if let Some(writable) = ledger.hold_conflict(value, Mode::Mut) {
-            self.error(
-                if writable { Code::E0523 } else { Code::E0524 },
+        for conflict in ledger.hold_conflicts(value, Mode::Mut) {
+            self.check_conflict(
+                conflict,
+                None,
                 span,
                 "write overlaps an active lexical handler hold",
             );

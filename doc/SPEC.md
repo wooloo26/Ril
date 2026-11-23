@@ -2398,6 +2398,8 @@ At every call and assignment, Ril checks potentially overlapping mutable/live so
 
 Two explicitly shared `^mut` parameters may receive the same object. Each parameter still requires surviving retention through its own provenance. A nested `mut` borrow can use one of these parameters when the nested call has no overlapping participants.
 
+Shared writable captures and shared parameters may also refer to the same entry object. A nested call must account for that possibility when it borrows one participant as `mut` and passes the other as a live argument or capture. A read-only capture is checked for overlap with writable parameters at the enclosing call boundary.
+
 Borrowing a container as `mut` preserves the mode of an existing `^mut` member. Borrowing that member directly as a `mut` argument requires exclusive access to the member's reachable writers during the call.
 
 | Violation | Diagnostic |

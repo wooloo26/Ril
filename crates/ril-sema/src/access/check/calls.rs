@@ -21,8 +21,8 @@ use crate::{
 };
 
 use super::{
-    Access, Analyzer, CaptureConflict, ClosureModes, Context, Coordinate, Datum, Fact, Input,
-    Ledger, ModeUse, Obligation, Region, Rule, SchemaRequirement, Slot, conflicts, member_axes,
+    Access, Analyzer, ClosureModes, Context, Coordinate, Datum, Fact, Input, Ledger, ModeUse,
+    Obligation, Region, Rule, SchemaRequirement, Slot, conflicts, member_axes,
     storage::CallStorage,
 };
 use crate::access::flow::InvocationSite;
@@ -462,17 +462,19 @@ impl<'program> Analyzer<'program> {
             },
         );
         for (i, ((_, mode, value), &argument_span)) in values.iter().zip(&value_spans).enumerate() {
-            if let Some(mutating) = ledger.hold_conflict(value, *mode) {
-                self.error(
-                    if mutating { Code::E0523 } else { Code::E0524 },
+            for conflict in ledger.hold_conflicts(value, *mode) {
+                self.check_conflict(
+                    conflict,
+                    None,
                     argument_span,
                     "argument authority overlaps an active handler hold",
                 );
             }
             for (_, previous_mode, previous) in values.iter().take(i) {
-                if let Some(mutating) = conflicts(value, *mode, previous, *previous_mode) {
-                    self.error(
-                        if mutating { Code::E0523 } else { Code::E0524 },
+                for conflict in conflicts(value, *mode, previous, *previous_mode) {
+                    self.check_conflict(
+                        conflict,
+                        None,
                         argument_span,
                         "argument source overlaps incompatible live authority",
                     );
@@ -1049,7 +1051,6 @@ impl<'program> Analyzer<'program> {
         target: Option<&Datum>,
         entry: &CallEntry<'_>,
     ) {
-        let overlap_code = |mutating| if mutating { Code::E0523 } else { Code::E0524 };
         let declared = function
             .into_iter()
             .flat_map(|function| &function.signature.obligations.state)
@@ -1062,7 +1063,8 @@ impl<'program> Analyzer<'program> {
             else {
                 continue;
             };
-            let captured = entry.ledger.snapshot(&slot.value);
+            let mut captured = entry.ledger.snapshot(&slot.value);
+            ctx.mark_capture(slot, &mut captured);
             self.check_live(
                 ctx,
                 entry.ledger,
@@ -1082,9 +1084,13 @@ impl<'program> Analyzer<'program> {
                 storage.mode
             };
             for ((_, mode, argument), &span) in entry.arguments.iter().zip(entry.spans) {
-                if let Some(code) = conflicts(argument, *mode, &captured, access).map(overlap_code)
-                {
-                    self.error(code, span, "argument authority overlaps a callable capture");
+                for conflict in conflicts(argument, *mode, &captured, access) {
+                    self.check_conflict(
+                        conflict,
+                        None,
+                        span,
+                        "argument authority overlaps a callable capture",
+                    );
                 }
             }
         }
@@ -1112,20 +1118,21 @@ impl<'program> Analyzer<'program> {
                         Mode::Mut
                     };
                     for ((_, mode, argument), &span) in entry.arguments.iter().zip(entry.spans) {
-                        let reading =
-                            conflicts(argument, *mode, &captured, Mode::Ref).map(overlap_code);
-                        let writing =
-                            conflicts(argument, *mode, &captured, writable).map(overlap_code);
-                        if reading.is_some() || writing.is_some() {
-                            self.capture_conflicts.push(CaptureConflict {
-                                write: Fact {
-                                    owner,
-                                    obligation: Obligation::Write(source),
-                                },
-                                reading,
-                                writing,
-                                span,
-                            });
+                        for (access, written) in [(Mode::Ref, false), (writable, true)] {
+                            for conflict in conflicts(argument, *mode, &captured, access) {
+                                self.check_conflict(
+                                    conflict,
+                                    Some((
+                                        Fact {
+                                            owner,
+                                            obligation: Obligation::Write(source),
+                                        },
+                                        written,
+                                    )),
+                                    span,
+                                    "argument authority overlaps a callable capture",
+                                );
+                            }
                         }
                     }
                 }

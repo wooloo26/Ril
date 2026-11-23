@@ -185,6 +185,7 @@ pub(super) struct Origin {
     pub from_variable: bool,
     pub call_borrow: bool,
     entry_graph: Option<EntryGraph>,
+    capture: Option<CaptureEntry>,
     pub dependencies: BTreeSet<Occurrence>,
     pub anchor_scopes: BTreeSet<Span>,
     pub branches: Choices,
@@ -197,6 +198,14 @@ pub(super) struct Origin {
 struct EntryGraph {
     callable: Span,
     shared_at: Option<usize>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub(super) struct CaptureEntry {
+    pub callable: Span,
+    pub binding: Span,
+    pub inferred: bool,
+    shared: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -231,6 +240,9 @@ impl Origin {
             self.call_borrow = false;
             if let Some(entry) = &mut self.entry_graph {
                 entry.shared_at = Some(self.region.selection.len());
+            }
+            if let Some(capture) = &mut self.capture {
+                capture.shared |= self.mode.writes();
             }
         }
         if member == Mode::Via || self.inherits_mode || !self.reception.is_empty() {
@@ -282,6 +294,13 @@ impl Origin {
         } else {
             left_path.is_some() && right_path.is_some()
         }
+    }
+
+    fn may_share_capture(&self, other: &Self) -> Option<CaptureEntry> {
+        let entry = self.entry_graph?;
+        let capture = other.capture?;
+        (entry.callable == capture.callable && entry.shared_at.is_some() && capture.shared)
+            .then_some(capture)
     }
 
     pub(super) fn dependency_spans(&self) -> impl Iterator<Item = Span> + '_ {
@@ -390,6 +409,7 @@ impl Datum {
                 from_variable: false,
                 call_borrow: false,
                 entry_graph: None,
+                capture: None,
                 dependencies: BTreeSet::new(),
                 anchor_scopes: BTreeSet::new(),
                 branches: BTreeMap::new(),
@@ -408,6 +428,38 @@ impl Datum {
                 .iter()
                 .chain(self.members.values().flat_map(Self::origins)),
         )
+    }
+
+    pub(super) fn enter_capture(
+        &mut self,
+        callable: Span,
+        binding: Span,
+        mode: Mode,
+        inferred: bool,
+        sources: &BTreeSet<Span>,
+    ) {
+        for root in &mut self.roots {
+            if sources.contains(&root.region.source) {
+                root.capture = Some(CaptureEntry {
+                    callable,
+                    binding,
+                    inferred,
+                    shared: mode == Mode::Shared,
+                });
+            }
+        }
+        for member in self.members.values_mut() {
+            member.transform(&mut |origin| {
+                if sources.contains(&origin.region.source) {
+                    origin.capture = Some(CaptureEntry {
+                        callable,
+                        binding,
+                        inferred,
+                        shared: origin.mode == Access::Shared,
+                    });
+                }
+            });
+        }
     }
 
     fn call_participants(&self, mode: Mode) -> impl Iterator<Item = (&Origin, Mode)> {
@@ -1191,14 +1243,21 @@ impl Ledger {
         }
     }
 
-    pub(super) fn hold_conflict(&self, value: &Datum, mode: Mode) -> Option<bool> {
+    pub(super) fn hold_conflicts(&self, value: &Datum, mode: Mode) -> Vec<AccessConflict> {
         if self.holds.is_empty() {
-            return None;
+            return Vec::new();
         }
         let value = self.loop_snapshot(value);
-        self.holds.iter().find_map(|(held_mode, held)| {
-            conflicts(&value, mode, &self.loop_snapshot(held), *held_mode)
-        })
+        let mut result = Vec::new();
+        for (held_mode, held) in &self.holds {
+            result.extend(conflicts(
+                &value,
+                mode,
+                &self.loop_snapshot(held),
+                *held_mode,
+            ));
+        }
+        result
     }
 
     pub(super) fn stamp(&self, value: &mut Datum) {
@@ -2147,24 +2206,48 @@ impl Ledger {
     }
 }
 
-pub(super) fn conflicts(left: &Datum, lmode: Mode, right: &Datum, rmode: Mode) -> Option<bool> {
-    left.call_participants(lmode).find_map(|(a, lmode)| {
-        right.call_participants(rmode).find_map(|(b, rmode)| {
-            let left_writable = a.mode.writes()
-                && matches!(lmode, Mode::Mut | Mode::Shared | Mode::New | Mode::Via);
-            let right_writable = b.mode.writes()
-                && matches!(rmode, Mode::Mut | Mode::Shared | Mode::New | Mode::Via);
-            let left_ref = lmode == Mode::Ref || lmode == Mode::New && a.mode == Access::Ref;
-            let right_ref = rmode == Mode::Ref || rmode == Mode::New && b.mode == Access::Ref;
-            if a.may_conflict(b) && !(lmode == Mode::Shared && rmode == Mode::Shared) {
-                if left_writable && right_writable {
-                    return Some(true);
+pub(super) struct AccessConflict {
+    pub writable: bool,
+    pub capture: Option<CaptureEntry>,
+}
+
+pub(super) fn conflicts<'a>(
+    left: &'a Datum,
+    lmode: Mode,
+    right: &'a Datum,
+    rmode: Mode,
+) -> impl Iterator<Item = AccessConflict> + 'a {
+    left.call_participants(lmode).flat_map(move |(a, lmode)| {
+        right
+            .call_participants(rmode)
+            .filter_map(move |(b, rmode)| {
+                let left_writable = a.mode.writes()
+                    && matches!(lmode, Mode::Mut | Mode::Shared | Mode::New | Mode::Via);
+                let right_writable = b.mode.writes()
+                    && matches!(rmode, Mode::Mut | Mode::Shared | Mode::New | Mode::Via);
+                let left_ref = lmode == Mode::Ref || lmode == Mode::New && a.mode == Access::Ref;
+                let right_ref = rmode == Mode::Ref || rmode == Mode::New && b.mode == Access::Ref;
+                if lmode == Mode::Shared && rmode == Mode::Shared {
+                    return None;
                 }
-                if left_writable && right_ref || right_writable && left_ref {
-                    return Some(false);
+                let writable = left_writable && right_writable;
+                if !(writable || left_writable && right_ref || right_writable && left_ref) {
+                    return None;
                 }
-            }
-            None
-        })
+                if a.may_conflict(b) {
+                    Some(AccessConflict {
+                        writable,
+                        capture: None,
+                    })
+                } else if compatible(&a.branches, &b.branches) {
+                    let capture = a.may_share_capture(b).or_else(|| b.may_share_capture(a))?;
+                    Some(AccessConflict {
+                        writable,
+                        capture: Some(capture),
+                    })
+                } else {
+                    None
+                }
+            })
     })
 }

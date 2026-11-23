@@ -107,6 +107,15 @@ def nestedBorrowOfAliasedSharedParticipantsOverlaps := sequence [access [.alloca
     (sequence [.invoke [arg 10 20 .mutable, arg 11 21 .observe] []
         (access [.write (p 20), .read (p 21)]),
       access [.retain (p 10), .retain (p 11)]])]
+def nestedBorrowWithCapture (aliased : Bool) := sequence
+  [access [.allocate 0 (fixed .mut) [],
+    if aliased then .bind (p 0) 1 (fixed .shared) else .allocate 1 (fixed .mut) []],
+  access (if aliased then [] else [.write (p 1)]),
+  .invoke [arg 0 10 .retained] [1]
+    (sequence [access (if aliased then [.write (p 1)] else []),
+      .invoke [arg 10 20 .mutable, arg 1 21 .observe] []
+        (access [.write (p 20), .read (p 21)]),
+      access [.retain (p 10)]])]
 def coincidentRetainedWritersNeedIndependentUse := sequence [access [.allocate 0 (fixed .mut) []],
   .invoke [arg 0 10 .retained, arg 0 11 .retained] [] (access [.retain (p 10)])]
 def formalAliasIsNotRetention := sequence [access [.allocate 0 (fixed .mut) [], .allocate 1 (fixed .mut) []],
@@ -160,6 +169,8 @@ def programs : List ProgramExample :=
    ⟨"call: an aliased shared participant can yield a nested mutable reborrow", "shared_participant_can_yield_a_nested_scoped_mutable_borrow", nestedBorrowFromAliasedSharedParticipants, true⟩,
    ⟨"call: exclusive and shared participants cannot overlap", "exclusive_argument_cannot_overlap_a_shared_argument", exclusiveAndSharedParticipantsOverlap, false⟩,
    ⟨"call: a nested mutable borrow conflicts with an aliased observation", "distinct_shared_formals_do_not_prove_independence_for_a_nested_call", nestedBorrowOfAliasedSharedParticipantsOverlaps, false⟩,
+   ⟨"call: a nested mutable borrow conflicts with a shared captured alias", "shared_formal_and_capture_may_alias_during_a_nested_borrow", nestedBorrowWithCapture true, false⟩,
+   ⟨"call: a nested mutable borrow can observe a disjoint capture", "read_only_capture_is_disjoint_from_shared_formal", nestedBorrowWithCapture false, true⟩,
    ⟨"call: coincident shared arguments do not merge their formal obligations", "retaining_one_shared_argument_cannot_satisfy_an_aliased_formal", coincidentRetainedWritersNeedIndependentUse, false⟩]
 
 def sourceChecks : List (String × Bool) :=
