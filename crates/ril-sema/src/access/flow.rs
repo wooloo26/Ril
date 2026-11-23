@@ -62,6 +62,13 @@ pub(super) struct Region {
     pub selection: Vec<Coordinate>,
     instance: RegionInstance,
     returned: Option<AllocationIdentity>,
+    invocation: Vec<InvocationSite>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub(super) struct InvocationSite {
+    pub span: Span,
+    pub ordinal: usize,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -84,6 +91,7 @@ impl Region {
             selection: Vec::new(),
             instance: RegionInstance::Source,
             returned: None,
+            invocation: Vec::new(),
         }
     }
 
@@ -101,6 +109,10 @@ impl Region {
         }
     }
 
+    pub(super) fn set_invocation(&mut self, invocation: &[InvocationSite]) {
+        self.invocation.extend_from_slice(invocation);
+    }
+
     fn summarized(&self) -> bool {
         self.instance == RegionInstance::PriorAllocations
             || self.returned.is_some_and(|identity| identity.summarized)
@@ -113,14 +125,15 @@ impl Region {
     }
 
     pub(super) fn overlaps(&self, other: &Self) -> bool {
+        let symbolic =
+            self.instance == RegionInstance::Source || other.instance == RegionInstance::Source;
         self.source == other.source
+            && (symbolic || self.invocation == other.invocation)
             && self
                 .returned
                 .zip(other.returned)
                 .is_none_or(|(left, right)| left.index == right.index)
-            && (self.instance == other.instance
-                || self.instance == RegionInstance::Source
-                || other.instance == RegionInstance::Source)
+            && (symbolic || self.instance == other.instance)
             && self
                 .selection
                 .iter()
@@ -483,6 +496,11 @@ impl Datum {
             }
             member.remember_return_graph(members, call);
         }
+    }
+
+    pub(super) fn has_call_graph(&self, call: Span) -> bool {
+        self.origins()
+            .any(|origin| origin.region.source == call && origin.region.returned.is_some())
     }
 
     pub(super) fn can_freeze(&self) -> bool {

@@ -59,7 +59,7 @@ fn read(count: int) -> int {
 }
 fn main() -> () { assert(read(80) == 78) }
 
--- @case returned_shared_chain_keeps_the_callers_tail run-pass backend=both
+-- @case callback_forwarded_chain_keeps_the_callers_tail run-pass backend=both
 nominal type Link = .{ var value: int, var ^mut next: ?Link }
 fn build(^mut tail: Link, count: int) &mut &^mut &return(^mut tail) -> new Link {
     var ^mut head = tail
@@ -71,6 +71,11 @@ fn build(^mut tail: Link, count: int) &mut &^mut &return(^mut tail) -> new Link 
     head.value += 1
     Link.{ value: 0, next: Some(^mut head) }
 }
+fn forward(via action: fn(via Link) @& -> infer Link, ^mut tail: Link, count: int) &mut &^mut -> infer Link {
+    let mut chain = build(^mut tail, count)
+    action(new chain)
+}
+fn identity(via chain: Link) -> infer Link { chain }
 fn read(ref head: Link, depth: int) -> int {
     if depth == 0 { head.value } else {
         match ref head.next {
@@ -81,7 +86,7 @@ fn read(ref head: Link, depth: int) -> int {
 }
 fn main() -> () {
     let mut tail = Link.{ value: 41, next: None }
-    let mut head = build(^mut tail, 8)
+    let mut head = forward(identity, ^mut tail, 8)
     head.value += 1
     tail.value += 1
     assert(read(ref head, 9) == 42)

@@ -143,6 +143,7 @@ impl Invocation {
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 pub struct CallbackReturn {
+    pub invocation: usize,
     pub receiver: usize,
     pub receiver_path: Vec<Coordinate>,
     pub source_path: Vec<Coordinate>,
@@ -189,6 +190,7 @@ pub struct CallbackArgument {
     pub modes: Vec<InvocationMode>,
     pub sources: Vec<ReturnSource>,
     pub callback_returns: Vec<CallbackReturn>,
+    pub allocations: Vec<ReturnAllocation>,
     pub constructs: bool,
 }
 

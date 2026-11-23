@@ -9,7 +9,7 @@ use crate::{
         Access, CallbackReturn, Coordinate, Input, InvocationMode, ReturnAllocation, ReturnSource,
         Summary,
         check::{Fact, Obligation, SchemaRequirement, member_axes, storage::CallStorage},
-        flow::{AllocationIdentity, CallbackOrigin, Origin, Region, Replacement},
+        flow::{AllocationIdentity, CallbackOrigin, InvocationSite, Origin, Region, Replacement},
     },
     iface::Export,
     ty::{Callable, Ty},
@@ -134,6 +134,7 @@ impl<'program> Analyzer<'program> {
             arguments,
             spans,
             span,
+            invocation: &[],
             ledger: &frozen,
         };
         let summary = if export.domain.is_empty() {
@@ -570,7 +571,7 @@ impl<'program> Analyzer<'program> {
                 PublishedValue {
                     sources: &argument.sources,
                     callbacks: &argument.callback_returns,
-                    allocations: &[],
+                    allocations: &argument.allocations,
                     constructs: argument.constructs,
                 },
                 &Ty::Unknown,
@@ -611,6 +612,11 @@ impl<'program> Analyzer<'program> {
                 receiver: receiver.clone(),
                 arguments,
                 spans,
+                site: vec![InvocationSite {
+                    span: owner,
+                    ordinal: callback.invocation,
+                }],
+                ordinal: callback.invocation,
             });
             let mut placeholder = Datum::source(owner, Access::Ref, false);
             for root in &mut placeholder.roots {

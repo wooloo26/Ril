@@ -63,6 +63,16 @@ theorem sharedLoop_edge_preserved (previous : Nat) :
 def sharedLoopSeparated (outside : Nat) : Bool :=
   Heap.separated sharedLoopHeap [outside] [2]
 
+def sharedLoopProjection : Nat → List Nat
+  | 0 => [2]
+  | depth + 1 =>
+    let parents := sharedLoopProjection depth
+    sharedLoopHeap.filterMap fun edge =>
+      if parents.contains edge.parent then some edge.child else none
+
+def callbackProjectionSeparated (depth outside : Nat) : Bool :=
+  Heap.separated sharedLoopHeap [outside] (sharedLoopProjection depth)
+
 def sameSite (summarizedPair : Bool) : Program :=
   let caller : Function := ⟨[], {}, localCode [.alloc 0 10, .alloc 1 10, .alloc 2 10] ++ [
     .invoke 1 [⟨if summarizedPair then 2 else 0, .mutable⟩, ⟨1, .mutable⟩] none 4, .ret none]⟩
@@ -210,6 +220,10 @@ def examples : List (String × Bool) :=
     !sharedLoopSeparated 0),
    ("resolved provenance: a separate object stays disjoint from the summarized chain",
     sharedLoopSeparated 3),
+   ("resolved provenance: a deep callback projection still reaches the shared tail",
+    !callbackProjectionSeparated 9 0),
+   ("resolved provenance: a deep callback projection is disjoint from an unrelated object",
+    callbackProjectionSeparated 9 3),
    ("resolved provenance: the first object at a site is distinct from later allocations", accepts (sameSite false)),
    ("resolved provenance: summarized objects at a site do not establish separation", diagnoses (sameSite true) .overlap),
    ("resolved provenance: exact fields support disjoint mutable calls", accepts (fields false)),

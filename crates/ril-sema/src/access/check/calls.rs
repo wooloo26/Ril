@@ -1,4 +1,7 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    borrow::Cow,
+    collections::{BTreeMap, BTreeSet},
+};
 
 use ril_base::{
     diag::{Code, Diagnostic},
@@ -22,6 +25,7 @@ use super::{
     Ledger, ModeUse, Obligation, Region, Rule, SchemaRequirement, Slot, conflicts, member_axes,
     storage::CallStorage,
 };
+use crate::access::flow::InvocationSite;
 
 mod imported;
 
@@ -32,6 +36,7 @@ struct CallEntry<'a> {
     spans: &'a [Span],
     ledger: &'a Ledger,
     span: Span,
+    invocation: &'a [InvocationSite],
 }
 
 #[derive(Clone, Eq, PartialEq)]
@@ -39,6 +44,94 @@ pub(super) struct CallbackResult {
     receiver: Datum,
     arguments: Vec<(usize, Mode, Datum)>,
     spans: Vec<Span>,
+    site: Vec<InvocationSite>,
+    ordinal: usize,
+}
+
+impl CallbackResult {
+    fn values(&self) -> impl Iterator<Item = &Datum> {
+        std::iter::once(&self.receiver).chain(self.arguments.iter().map(|(_, _, value)| value))
+    }
+
+    fn values_mut(&mut self) -> impl Iterator<Item = &mut Datum> {
+        std::iter::once(&mut self.receiver)
+            .chain(self.arguments.iter_mut().map(|(_, _, value)| value))
+    }
+}
+
+/// A call's return, stores and deferred invocations can expose the same
+/// allocation. Number their identities together before publishing any of them.
+pub(super) fn seal_call_allocations<'d>(
+    pool: &mut Vec<CallbackResult>,
+    outputs: impl Iterator<Item = &'d mut Datum>,
+    body: Span,
+) {
+    let mut outputs: Vec<_> = outputs.collect();
+    let references = |value: &Datum| {
+        value
+            .origins()
+            .filter_map(|origin| origin.callback_result.map(|result| result.template))
+            .collect::<BTreeSet<_>>()
+    };
+    let mut remaining: BTreeSet<_> = outputs.iter().flat_map(|value| references(value)).collect();
+    let mut callbacks = BTreeMap::new();
+    while let Some(index) = remaining.pop_first() {
+        if callbacks.contains_key(&index) {
+            continue;
+        }
+        let Some(callback) = pool.get(index) else {
+            continue;
+        };
+        remaining.extend(callback.values().flat_map(references));
+        callbacks.insert(index, callback.clone());
+    }
+    Datum::mark_call_allocations(
+        outputs
+            .iter_mut()
+            .map(|value| &mut **value)
+            .chain(callbacks.values_mut().flat_map(CallbackResult::values_mut)),
+        body,
+    );
+    let ordinals: BTreeMap<_, _> = callbacks
+        .values()
+        .map(|callback| callback.site.clone())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .enumerate()
+        .map(|(ordinal, site)| (site, ordinal))
+        .collect();
+    let mut mapped = BTreeMap::new();
+    let remap = |value: &mut Datum, mapped: &BTreeMap<usize, usize>| {
+        value.transform(&mut |origin| {
+            if let Some(result) = &mut origin.callback_result
+                && let Some(&index) = mapped.get(&result.template)
+            {
+                result.template = index;
+            }
+        });
+    };
+    // A template refers only to templates already present when it was interned.
+    for (old, mut callback) in callbacks {
+        for value in callback.values_mut() {
+            remap(value, &mapped);
+        }
+        if let Some(&ordinal) = ordinals.get(&callback.site) {
+            callback.ordinal = ordinal;
+        }
+        mapped.insert(old, intern_callback(pool, callback));
+    }
+    for output in outputs {
+        remap(output, &mapped);
+    }
+}
+
+fn intern_callback(pool: &mut Vec<CallbackResult>, template: CallbackResult) -> usize {
+    if let Some(index) = pool.iter().position(|known| *known == template) {
+        return index;
+    }
+    let index = pool.len();
+    pool.push(template);
+    index
 }
 
 impl<'program> Analyzer<'program> {
@@ -348,6 +441,7 @@ impl<'program> Analyzer<'program> {
                 spans: &value_spans,
                 ledger,
                 span,
+                invocation: &[],
             },
         );
         for (i, ((_, mode, value), &argument_span)) in values.iter().zip(&value_spans).enumerate() {
@@ -513,6 +607,7 @@ impl<'program> Analyzer<'program> {
                     spans: &value_spans,
                     ledger: &before,
                     span,
+                    invocation: &[],
                 };
                 let mut receiver = receiver.clone();
                 receiver
@@ -547,6 +642,7 @@ impl<'program> Analyzer<'program> {
                     spans: &value_spans,
                     ledger,
                     span,
+                    invocation: &[],
                 },
             )
         } else {
@@ -562,6 +658,7 @@ impl<'program> Analyzer<'program> {
                 spans: &value_spans,
                 ledger: before_updates.as_ref().unwrap_or(ledger),
                 span,
+                invocation: &[],
             };
             if let Some(result) = self.callback_return(target, &entry) {
                 return result;
@@ -588,11 +685,21 @@ impl<'program> Analyzer<'program> {
                     spans: &value_spans,
                     ledger: before_updates.as_ref().unwrap_or(ledger),
                     span,
+                    invocation: &[],
                 };
                 if let Some(result) = self.callback_return(&receiver, &entry) {
                     return result;
                 }
-                return self.defer_callback_result(receiver, values, value_spans, span);
+                return self.defer_callback_result(
+                    CallbackResult {
+                        receiver,
+                        arguments: values,
+                        spans: value_spans,
+                        site: vec![InvocationSite { span, ordinal: 0 }],
+                        ordinal: 0,
+                    },
+                    span,
+                );
             }
         }
         self.snapshot_value(span)
@@ -680,6 +787,7 @@ impl<'program> Analyzer<'program> {
                             spans: value_spans,
                             ledger: &frozen,
                             span,
+                            invocation: &[],
                         },
                         ledger,
                     );
@@ -827,6 +935,7 @@ impl<'program> Analyzer<'program> {
                 spans: value_spans,
                 ledger: before_updates.as_ref().unwrap_or(ledger),
                 span,
+                invocation: &[],
             };
             if let Some(mut result) = self.return_template(fun, &entry) {
                 if matches!(fun.signature.result_mode, Mode::Ref | Mode::Shared) {
@@ -1317,7 +1426,7 @@ impl<'program> Analyzer<'program> {
                 if let Some(result) = origin.callback_result
                     && self.resolving_callback_results.insert(result.template)
                 {
-                    let mut value = self.instantiate_callback_result(
+                    let (mut value, callback_ledger) = self.instantiate_callback_result(
                         result.template,
                         formals,
                         via_formals,
@@ -1328,7 +1437,7 @@ impl<'program> Analyzer<'program> {
                     for step in &origin.region.selection {
                         let member = self.schema_member(ty, step);
                         let mode = member.map_or(Mode::Plain, |member| member.mode.mode);
-                        value = entry.ledger.project_schema(&value, step.clone(), mode);
+                        value = callback_ledger.project_schema(&value, step.clone(), mode);
                         ty = member.map_or(&Ty::Unknown, |member| &member.ty);
                     }
                     if let Some(cap) = result.cap {
@@ -1338,7 +1447,10 @@ impl<'program> Analyzer<'program> {
                         }
                         value.requires_new = false;
                     }
-                    return Some(value);
+                    return Some(match callback_ledger {
+                        Cow::Owned(ledger) => ledger.snapshot(&value),
+                        Cow::Borrowed(_) => value,
+                    });
                 }
                 let formal = formals
                     .iter()
@@ -1413,6 +1525,7 @@ impl<'program> Analyzer<'program> {
                             region.selection.clone_from(output_path);
                             region
                         };
+                        mapped.region.set_invocation(entry.invocation);
                         mapped.dependencies.clear();
                         mapped.anchor_scopes.clear();
                         mapped.confined = None;
@@ -1464,24 +1577,14 @@ impl<'program> Analyzer<'program> {
         output
     }
 
-    fn defer_callback_result(
-        &mut self,
-        receiver: Datum,
-        arguments: Vec<(usize, Mode, Datum)>,
-        spans: Vec<Span>,
-        span: Span,
-    ) -> Datum {
+    fn defer_callback_result(&mut self, callback: CallbackResult, span: Span) -> Datum {
         let mut result = Datum::source(span, Access::Ref, false);
-        let dependencies: BTreeSet<_> = receiver
-            .origins()
-            .chain(arguments.iter().flat_map(|(_, _, arg)| arg.origins()))
+        let dependencies: BTreeSet<_> = callback
+            .values()
+            .flat_map(Datum::origins)
             .flat_map(|origin| origin.dependencies.iter().copied())
             .collect();
-        let template = self.callback_template(CallbackResult {
-            receiver,
-            arguments,
-            spans,
-        });
+        let template = self.callback_template(callback);
         for origin in &mut result.roots {
             origin.callback_result = Some(CallbackOrigin {
                 template,
@@ -1493,16 +1596,7 @@ impl<'program> Analyzer<'program> {
     }
 
     fn callback_template(&mut self, template: CallbackResult) -> usize {
-        if let Some(index) = self
-            .callback_results
-            .iter()
-            .position(|known| *known == template)
-        {
-            return index;
-        }
-        let index = self.callback_results.len();
-        self.callback_results.push(template);
-        index
+        intern_callback(&mut self.callback_results, template)
     }
 
     pub(super) fn callback_return_contracts(
@@ -1553,6 +1647,7 @@ impl<'program> Analyzer<'program> {
                         modes,
                         sources: sources.into_iter().collect(),
                         callback_returns: self.callback_return_contracts(formals, value),
+                        allocations: Datum::return_allocations(std::slice::from_ref(value)),
                         constructs: value.requires_new,
                     }
                 })
@@ -1561,6 +1656,7 @@ impl<'program> Analyzer<'program> {
             for receiver in &template.receiver.roots {
                 if let Some(formal) = formal_index(receiver.region.source) {
                     contracts.insert(CallbackReturn {
+                        invocation: template.ordinal,
                         receiver: formal,
                         receiver_path: receiver.region.selection.clone(),
                         source_path: origin.region.selection.clone(),
@@ -1574,17 +1670,19 @@ impl<'program> Analyzer<'program> {
         contracts.into_iter().collect()
     }
 
-    fn instantiate_callback_result(
+    fn instantiate_callback_result<'e>(
         &mut self,
         template: usize,
         formals: &[Option<Span>],
         via: &BTreeSet<Span>,
-        entry: &CallEntry<'_>,
-    ) -> Datum {
+        entry: &CallEntry<'e>,
+    ) -> (Datum, Cow<'e, Ledger>) {
         let CallbackResult {
             receiver,
             mut arguments,
             mut spans,
+            site,
+            ..
         } = self
             .callback_results
             .get(template)
@@ -1617,14 +1715,46 @@ impl<'program> Analyzer<'program> {
                 argument.requires_new = false;
             }
         }
+        let mut ledger = Cow::Borrowed(entry.ledger);
+        for (_, _, argument) in &arguments {
+            if argument.has_call_graph(entry.span) {
+                ledger.to_mut().remember_return_graph(argument, entry.span);
+            }
+        }
+        let mut trace = entry.invocation.to_vec();
+        trace.extend(site);
         let invocation = CallEntry {
             arguments: &arguments,
             spans: &spans,
-            ledger: entry.ledger,
+            ledger: &ledger,
             span: entry.span,
+            invocation: &trace,
         };
-        self.callback_return(&receiver, &invocation)
-            .unwrap_or_else(|| self.defer_callback_result(receiver, arguments, spans, entry.span))
+        let result = self
+            .callback_return(&receiver, &invocation)
+            .unwrap_or_else(|| {
+                trace.insert(
+                    0,
+                    InvocationSite {
+                        span: entry.span,
+                        ordinal: 0,
+                    },
+                );
+                self.defer_callback_result(
+                    CallbackResult {
+                        receiver,
+                        arguments,
+                        spans,
+                        site: trace,
+                        ordinal: 0,
+                    },
+                    entry.span,
+                )
+            });
+        if result.has_call_graph(entry.span) {
+            ledger.to_mut().remember_return_graph(&result, entry.span);
+        }
+        (result, ledger)
     }
 
     fn callback_return(&mut self, receiver: &Datum, entry: &CallEntry<'_>) -> Option<Datum> {
@@ -2616,7 +2746,8 @@ impl<'program> Analyzer<'program> {
             if implicit && inner.reachable {
                 closure.returns.push(output.clone());
             }
-            Datum::mark_call_allocations(
+            seal_call_allocations(
+                &mut self.callback_results,
                 closure
                     .returns
                     .iter_mut()

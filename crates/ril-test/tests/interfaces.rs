@@ -43,6 +43,17 @@ pub fn publish(mut pair: Pair, ^mut tail: Node, count: int) &mut &^mut -> () {
     pair.left = ^mut head
     pair.right = ^mut head
 }
+pub fn through(via action: fn(via Node) @& -> infer Node, ^mut tail: Node, count: int) &mut &^mut -> infer Node {
+    let mut chain = build(^mut tail, count)
+    action(new chain)
+}
+pub fn relay(via action: fn(via Node) @& -> infer Node, ^mut tail: Node, count: int) &mut &^mut -> infer Node {
+    through(action, ^mut tail, count)
+}
+pub fn choose(via action: fn(via Node) @& -> infer Node, ^mut tail: Node, count: int, first: bool) &mut &^mut -> infer Node {
+    let mut chain = build(^mut tail, count)
+    if first { action(new chain) } else { action(new chain) }
+}
 "#;
     let mut provider = VirtualPackage::new(Unit::Lib);
     provider.entry = "pkg/chain.ril".into();
@@ -74,6 +85,49 @@ pub fn publish(mut pair: Pair, ^mut tail: Node, count: int) &mut &^mut -> () {
     };
     assert_eq!(root_index(left), root_index(right));
 
+    for name in ["through", "relay"] {
+        let export = &decoded.functions[&format!("pkg/chain.ril::{name}")];
+        assert!(!export.domain.is_empty(), "{name}");
+        for row in &export.domain {
+            let [callback] = row.summary.callback_returns.as_slice() else {
+                panic!("missing callback for {name}: {:?}", row.summary);
+            };
+            let allocations = &callback.arguments[0].allocations;
+            assert!(allocations.iter().any(|allocation| {
+                allocation.summarized
+                    && allocations.iter().any(|other| {
+                        allocation.index == other.index && allocation.path != other.path
+                    })
+            }));
+        }
+    }
+    for row in &decoded.functions["pkg/chain.ril::choose"].domain {
+        let [first, second] = row.summary.callback_returns.as_slice() else {
+            panic!("expected two syntactic invocations: {:?}", row.summary);
+        };
+        assert_ne!(first.invocation, second.invocation);
+        assert_eq!(
+            first.arguments[0].allocations,
+            second.arguments[0].allocations
+        );
+    }
+
+    let read_chain = |head: &str, mut read: String, end: &str| {
+        for depth in (1..=9).rev() {
+            let parent = if depth == 1 {
+                head.to_owned()
+            } else {
+                format!("link{}", depth - 1)
+            };
+            read =
+                format!("match ref {parent}.next {{ Some(link{depth}) -> {read}; None -> {end} }}");
+        }
+        read
+    };
+    let callback_oracle = std::env::var_os("RIL_HORN_ORACLE").map(|oracle| {
+        let output = query(&oracle, "callback-graph", b"[[9,0],[9,3]]").unwrap();
+        serde_json::from_slice::<[bool; 2]>(&output).unwrap()
+    });
     for (path, bytes) in [
         ("library/chain.ril", provider_source.as_slice()),
         ("library/chain.rili", interface.as_slice()),
@@ -87,6 +141,10 @@ pub fn publish(mut pair: Pair, ^mut tail: Node, count: int) &mut &^mut -> () {
                 "let mut shelf = Chain::Shelf.{ head: Chain::Node.{ value: 0, next: None } }\nChain::store(mut shelf, ^mut tail, count)",
                 "shelf.head",
             ),
+            (
+                "let mut head = Chain::relay(identity, ^mut tail, count)\nhead.value += 1",
+                "head",
+            ),
         ] {
             for (target, spare, expected) in [
                 ("tail", "", vec![Some(Code::E0524)]),
@@ -96,19 +154,10 @@ pub fn publish(mut pair: Pair, ^mut tail: Node, count: int) &mut &^mut -> () {
                     Vec::new(),
                 ),
             ] {
-                let mut read = format!("copy(mut {target}, ref link9)");
-                for depth in (1..=9).rev() {
-                    let parent = if depth == 1 {
-                        head.to_owned()
-                    } else {
-                        format!("link{}", depth - 1)
-                    };
-                    read = format!(
-                        "match ref {parent}.next {{ Some(link{depth}) -> {read}; None -> () }}"
-                    );
-                }
+                let read = read_chain(head, format!("copy(mut {target}, ref link9)"), "()");
                 let source = format!(
                     "use library/chain\n\
+                     fn identity(via node: Chain::Node) -> infer Chain::Node {{ node }}\n\
                      fn copy(mut target: Chain::Node, ref reader: Chain::Node) &mut -> () {{ target.value = reader.value }}\n\
                      fn run(count: int) -> () {{\n\
                         let mut tail = Chain::Node.{{ value: 1, next: None }}\n\
@@ -124,6 +173,45 @@ pub fn publish(mut pair: Pair, ^mut tail: Node, count: int) &mut &^mut -> () {
                     .map(|diagnostic| diagnostic.code)
                     .collect();
                 assert_eq!(codes, expected, "{path}, {head}, {target}: {diagnostics:?}");
+            }
+        }
+        let projection = read_chain("head", "link9".into(), "panic(\"short chain\")");
+        for (case, (target, spare, expected)) in [
+            ("tail", "", vec![Some(Code::E0524)]),
+            (
+                "spare",
+                "let mut spare = Chain::Node.{ value: 0, next: None }",
+                Vec::new(),
+            ),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let source = format!(
+                "use library/chain\n\
+                 fn project(via head: Chain::Node) -> infer Chain::Node {{ {projection} }}\n\
+                 fn copy(mut target: Chain::Node, ref reader: Chain::Node) &mut -> () {{ target.value = reader.value }}\n\
+                 fn run(count: int) -> () {{\n\
+                    let mut tail = Chain::Node.{{ value: 1, next: None }}\n\
+                    let ref found = ref Chain::relay(project, ^mut tail, count)\n\
+                    {spare}\n\
+                    copy(mut {target}, ref found)\n\
+                 }}"
+            );
+            let mut client = VirtualPackage::new(Unit::Lib);
+            client.insert(client.entry.clone(), source.into_bytes());
+            client.insert(path.into(), bytes.to_vec());
+            let diagnostics = Driver.check_stage(&client, Stage::Access).diagnostics;
+            let codes: Vec<_> = diagnostics
+                .iter()
+                .map(|diagnostic| diagnostic.code)
+                .collect();
+            assert_eq!(
+                codes, expected,
+                "{path}, callback, {target}: {diagnostics:?}"
+            );
+            if let Some(oracle) = callback_oracle {
+                assert_eq!(diagnostics.is_empty(), oracle[case], "{path}, {target}");
             }
         }
         let mut client = VirtualPackage::new(Unit::Lib);
@@ -713,8 +801,8 @@ fn exported_horn_facts_agree_with_lean() {
 #[test]
 fn exported_summaries_and_via_domains_agree_with_lean() {
     use ril_sema::access::{
-        Coordinate, Instance, InvocationMode, ReturnAllocation, ReturnSource, StorageUpdate,
-        Summary,
+        CallbackArgument, CallbackReturn, Coordinate, Input, Instance, InvocationMode,
+        ReturnAllocation, ReturnSource, StorageUpdate, Summary,
     };
     use serde_json::{Value, json};
 
@@ -768,9 +856,28 @@ fn exported_summaries_and_via_domains_agree_with_lean() {
                 path: vec![Coordinate::Field("head".into())],
                 sources: Vec::new(),
                 callback_returns: Vec::new(),
-                allocations,
+                allocations: allocations.clone(),
                 definite: true,
                 constructs: false,
+            }],
+            ..Summary::default()
+        });
+        summaries.push(Summary {
+            callback_returns: vec![CallbackReturn {
+                invocation: 0,
+                receiver: 0,
+                receiver_path: Vec::new(),
+                source_path: Vec::new(),
+                result_path: Vec::new(),
+                cap: None,
+                arguments: vec![CallbackArgument {
+                    position: 0,
+                    modes: vec![InvocationMode::Input(Input::Shared)],
+                    sources: Vec::new(),
+                    callback_returns: Vec::new(),
+                    allocations,
+                    constructs: false,
+                }],
             }],
             ..Summary::default()
         });

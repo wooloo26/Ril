@@ -804,7 +804,8 @@ impl<'a> Analyzer<'a> {
         }
         let exits = self.storage_exits.remove(&ctx.owner).unwrap_or_default();
         let mut updates = Ledger::join_updates(exits.iter().collect());
-        Datum::mark_call_allocations(
+        calls::seal_call_allocations(
+            &mut self.callback_results,
             ctx.return_values
                 .iter_mut()
                 .filter(|_| ctx.expected != Mode::Plain)

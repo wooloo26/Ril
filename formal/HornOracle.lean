@@ -385,6 +385,11 @@ def main (args : List String) : IO Unit := do
     stdout.putStrLn (toJson handoffCases).compress
   else if args == ["provenance"] then
     stdout.putStrLn (toJson provenanceCases).compress
+  else if args == ["callback-graph"] then
+    let .ok cases := fromJson? (α := List (Nat × Nat)) json
+      | throw (IO.userError "expected a JSON array of projection depths and outside objects")
+    stdout.putStrLn (toJson (cases.map fun (depth, outside) =>
+      RilAccess.Provenance.Examples.callbackProjectionSeparated depth outside)).compress
   else if args == ["scoped"] then
     stdout.putStrLn (toJson scopedCases).compress
   else if args == ["visibility"] then
