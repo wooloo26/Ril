@@ -225,15 +225,13 @@ def callAuthorityCases : List (String × Bool) :=
 
 open RilAccess.CoreConcurrency RilAccess.CoreConcurrency.Examples in
 def taskJoinCases : List (String × Bool) :=
-  let fallible : ScopeState :=
-    ⟨7, [{ id := 1, regionSigma := 7, mode := .sharedImmutable, fallibleResult := true }]⟩
-  let twoJoins := (joinTask fallible 1 7 false).bind (joinTask · 1 7 false)
   [("plain_task_join_is_memoized_and_rooted",
     ((joinTask taskScope 1 7 false).bind (joinTask · 1 7 false)).isSome),
    ("owned_task_join_preserves_fresh_payload", (joinTask taskScope 2 7 true).isSome),
    ("owned_join_ends_the_task_path", (joinTask afterExclusiveJoin 2 7 true).isSome),
-   ("every_memoized_fallible_join_requires_inspection",
-    ((twoJoins.bind (inspectJoinedResult · 1 7)).bind drainPlainTasks).isSome)]
+   ("every_memoized_fallible_join_requires_inspection", memoizedJoinLoop false),
+   ("memoized_join_loop_cannot_discard_an_earlier_result", memoizedJoinLoop false),
+   ("memoized_join_loop_can_inspect_each_result", memoizedJoinLoop true)]
 
 open RilAccess.CoreBoundary RilAccess.CoreBoundary.Examples in
 def boundaryCases : List (String × Bool) :=

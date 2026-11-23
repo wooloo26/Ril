@@ -1119,7 +1119,7 @@ fn task_join_examples_agree_with_lean() {
     .unwrap();
     let output = query(&oracle, "task-joins", b"[]").unwrap();
     let results: Vec<(String, bool)> = serde_json::from_slice(&output).unwrap();
-    assert_eq!(results.len(), 4);
+    assert_eq!(results.len(), 6);
     let temporary = tempfile::tempdir().unwrap();
     for (name, accepted) in results {
         let case = compile

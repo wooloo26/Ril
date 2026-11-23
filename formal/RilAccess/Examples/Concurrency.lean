@@ -33,6 +33,17 @@ def afterPlainJoin : ScopeState := (joinTask taskScope 1 7 false).getD taskScope
 def afterExclusiveJoin : ScopeState := (joinTask taskScope 2 7 true).getD taskScope
 def afterFallibleJoined : ScopeState := (joinTask taskScope 3 7 true).getD taskScope
 
+def memoizedFallible : ScopeState :=
+  ⟨7, [{ id := 1, regionSigma := 7, mode := .sharedImmutable, fallibleResult := true }]⟩
+
+def memoizedJoinLoop (inspectEach : Bool) : Bool :=
+  let join (state : ScopeState) := joinTask state 1 7 false
+  let inspect (state : ScopeState) := inspectJoinedResult state 1 7
+  let ready := (join memoizedFallible).bind inspect
+  let first := ready.bind join
+  let next := if inspectEach then first.bind inspect else first
+  ((next.bind join).bind inspect |>.bind drainPlainTasks).isSome
+
 def examples : List (String × Bool) :=
   [("concurrency: base ledger with immutable, mut, shared, resource, and scoped bindings is valid",
       ledgerValid baseWorld),
@@ -90,15 +101,15 @@ def examples : List (String × Bool) :=
       ((inspectJoinedResult afterFallibleJoined 3 7).bind drainPlainTasks).any canExitScope &&
       ((cancelTask taskScope 3 7).bind drainPlainTasks).any canExitScope),
    ("concurrency: each memoized join returning a Result requires inspection",
-      let state : ScopeState :=
-        ⟨7, [{ id := 1, regionSigma := 7, mode := .sharedImmutable, fallibleResult := true }]⟩
-      let twice := (joinTask state 1 7 false).bind fun once => joinTask once 1 7 false
+      let twice := (joinTask memoizedFallible 1 7 false).bind fun once => joinTask once 1 7 false
       match twice.bind (inspectJoinedResult · 1 7) with
       | none => false
       | some inspectedOnce =>
         !canExitScope inspectedOnce &&
           (drainPlainTasks inspectedOnce).isNone &&
-          (inspectJoinedResult inspectedOnce 1 7).any canExitScope)]
+          (inspectJoinedResult inspectedOnce 1 7).any canExitScope),
+   ("concurrency: a loop cannot discard an earlier join Result", !memoizedJoinLoop false),
+   ("concurrency: a loop can inspect each join Result before replacement", memoizedJoinLoop true)]
 
 theorem examples_all_pass : examples.all Prod.snd = true := by decide +kernel
 

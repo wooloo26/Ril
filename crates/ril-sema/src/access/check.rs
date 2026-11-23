@@ -17,8 +17,8 @@ use super::{
     Access, Analysis, CleanupAction, EffectUse, Input, Instance, Invocation, InvocationMode,
     ReturnSource, StorageUpdate, Summary,
     flow::{
-        Coordinate, Datum, Ledger, Origin, Reception, Region, Replacement, Revocation, Slot,
-        conflicts,
+        Coordinate, Datum, Ledger, Occurrence, Origin, Reception, Region, Replacement, Revocation,
+        Slot, conflicts,
     },
     horn::{self, Rule},
 };
@@ -654,6 +654,7 @@ impl<'a> Analyzer<'a> {
         let mut ledger = outer.clone();
         ledger.obligations.clear();
         ledger.inspected.clear();
+        ledger.lost_results.clear();
         ledger.reset_revocations();
         ledger.no_continuation = false;
         ledger.iteration.clear();
@@ -695,8 +696,8 @@ impl<'a> Analyzer<'a> {
                 origin.call_borrow = param.mode == Mode::Mut;
             });
             if param.ty.is_result() {
-                value.results.insert(span);
-                ledger.obligations.insert(span);
+                value.results.insert(span.into());
+                ledger.obligations.insert(span.into());
             }
             ledger.slots.insert(
                 span,
@@ -1325,6 +1326,7 @@ impl<'a> Analyzer<'a> {
                 shadow.shadow = true;
                 shadow.loop_owner = None;
                 let mut slots = ledger.clone();
+                slots.lost_results.clear();
                 let result = self.expr(&mut shadow, &mut slots, *expr);
                 let mut except = result.results();
                 except.extend(&ledger.obligations);
@@ -1709,21 +1711,26 @@ impl<'a> Analyzer<'a> {
         }
     }
 
-    fn check_results(&mut self, ledger: &Ledger, except: &BTreeSet<Span>) {
-        for span in ledger.obligations.difference(&ledger.inspected) {
-            if !except.contains(span) {
-                self.error(
-                    Code::E0720,
-                    *span,
-                    "fallible result has not been inspected on normal exit",
-                );
-            }
+    fn check_results(&mut self, ledger: &Ledger, except: &BTreeSet<Occurrence>) {
+        let pending: BTreeSet<_> = ledger
+            .obligations
+            .difference(&ledger.inspected)
+            .filter(|item| !except.contains(item))
+            .map(|item| item.span)
+            .chain(ledger.lost_results.iter().copied())
+            .collect();
+        for span in pending {
+            self.error(
+                Code::E0720,
+                span,
+                "fallible result has not been inspected on normal exit",
+            );
         }
     }
 
     fn discard(&mut self, ledger: &Ledger, value: &Datum) {
-        for span in value.results().difference(&ledger.inspected) {
-            self.error(Code::E0720, *span, "discarded fallible result");
+        for item in value.results().difference(&ledger.inspected) {
+            self.error(Code::E0720, item.span, "discarded fallible result");
         }
     }
 
@@ -2620,8 +2627,8 @@ impl<'a> Analyzer<'a> {
             && value.results().is_empty()
             && !matches!(node.value, Expr::Path(_))
         {
-            value.results.insert(span);
-            ledger.obligations.insert(span);
+            value.results.insert(span.into());
+            ledger.obligations.insert(span.into());
         }
         if self.ty(span).is_value() {
             value.roots.clear();

@@ -267,7 +267,7 @@ fn compatible(a: &Choices, b: &Choices) -> bool {
 pub(super) struct Datum {
     pub roots: Vec<Origin>,
     pub members: BTreeMap<Coordinate, Datum>,
-    pub results: BTreeSet<Span>,
+    pub results: BTreeSet<Occurrence>,
     pub requires_new: bool,
     pub latent_effects: BTreeSet<String>,
     pub environments: BTreeSet<Span>,
@@ -540,12 +540,22 @@ impl Datum {
         self.requires_new = false;
     }
 
-    pub(super) fn results(&self) -> BTreeSet<Span> {
+    pub(super) fn results(&self) -> BTreeSet<Occurrence> {
         self.results
             .iter()
             .copied()
             .chain(self.members.values().flat_map(Self::results))
             .collect()
+    }
+
+    fn age_results(&mut self, age: impl Fn(Occurrence) -> Occurrence + Copy) {
+        self.results = std::mem::take(&mut self.results)
+            .into_iter()
+            .map(age)
+            .collect();
+        for member in self.members.values_mut() {
+            member.age_results(age);
+        }
     }
 
     pub(super) fn joined(mut self, mut other: Self) -> Self {
@@ -764,8 +774,9 @@ pub(super) struct Replacement {
 pub(super) struct Ledger {
     pub slots: BTreeMap<Span, Slot>,
     revoked: BTreeMap<Occurrence, Revocations>,
-    pub obligations: BTreeSet<Span>,
-    pub inspected: BTreeSet<Span>,
+    pub obligations: BTreeSet<Occurrence>,
+    pub inspected: BTreeSet<Occurrence>,
+    pub lost_results: BTreeSet<Span>,
     pub iteration: Vec<Datum>,
     pub holds: Vec<(Mode, Datum)>,
     pub choices: Choices,
@@ -868,6 +879,7 @@ impl Ledger {
         };
         let age_value = |value: &mut Datum| {
             value.compact_snapshot(local_data);
+            value.age_results(age);
             value.transform(&mut |origin| {
                 origin.region.age_allocation(local(origin.region.source));
                 origin.dependencies = std::mem::take(&mut origin.dependencies)
@@ -882,15 +894,12 @@ impl Ledger {
             .retain(|key, _| key.span != owner && !local(key.span));
         self.iteration.truncate(entry.iteration.len());
         self.holds.truncate(entry.holds.len());
-        self.slots.retain(|id, slot| {
-            if entry.slots.contains_key(id) {
-                age_value(&mut slot.value);
-                slot.value.fold_old_allocations(&mut self.loop_members);
-                true
-            } else {
-                false
-            }
-        });
+        self.slots.retain(|id, _| entry.slots.contains_key(id));
+        self.age_result_obligations(local, age);
+        for slot in self.slots.values_mut() {
+            age_value(&mut slot.value);
+            slot.value.fold_old_allocations(&mut self.loop_members);
+        }
         for (mut slot, mut member) in std::mem::take(&mut self.loop_members) {
             slot.age_allocation(local(slot.source));
             age_value(&mut member);
@@ -923,6 +932,48 @@ impl Ledger {
         }
     }
 
+    fn age_result_obligations(
+        &mut self,
+        local: impl Fn(Span) -> bool,
+        age: impl Fn(Occurrence) -> Occurrence + Copy,
+    ) {
+        if !self.obligations.iter().any(|item| local(item.span)) {
+            return;
+        }
+        let pending: BTreeSet<_> = self
+            .obligations
+            .difference(&self.inspected)
+            .copied()
+            .collect();
+        if pending.iter().any(|item| local(item.span)) {
+            let live: BTreeSet<_> = self
+                .slots
+                .values()
+                .map(|slot| &slot.value)
+                .chain(&self.iteration)
+                .flat_map(|value| self.snapshot(value).results())
+                .collect();
+            // Once the last path to a result disappears, an inspection in a
+            // later iteration at the same source site cannot discharge it.
+            self.lost_results.extend(
+                pending
+                    .difference(&live)
+                    .filter(|item| local(item.span))
+                    .map(|item| item.span),
+            );
+        }
+        let pending: BTreeSet<_> = pending.into_iter().map(age).collect();
+        self.obligations = std::mem::take(&mut self.obligations)
+            .into_iter()
+            .map(age)
+            .collect();
+        self.inspected = std::mem::take(&mut self.inspected)
+            .into_iter()
+            .map(age)
+            .filter(|item| !pending.contains(item))
+            .collect();
+    }
+
     pub(super) fn size(&self) -> usize {
         self.slots
             .values()
@@ -941,6 +992,7 @@ impl Ledger {
         self.slots = prior.slots.clone();
         self.revoked = prior.revoked.clone();
         self.obligations = prior.obligations.clone();
+        self.lost_results = prior.lost_results.clone();
         for branch in &alternatives {
             for (&token, revoked) in &branch.revoked {
                 let merged = self.revoked.entry(token).or_default();
@@ -951,6 +1003,7 @@ impl Ledger {
                 }
             }
             self.obligations.extend(&branch.obligations);
+            self.lost_results.extend(&branch.lost_results);
         }
         self.inspected = if alternatives.is_empty() {
             prior.inspected.clone()

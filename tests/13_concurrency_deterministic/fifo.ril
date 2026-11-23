@@ -19,6 +19,21 @@ fn main() @io @fiber -> () {
     }
 }
 
+-- @case memoized_join_loop_can_inspect_each_result run-pass backend=both
+use ril/fiber
+fn work() -> new !<int, str> { Ok(1) }
+fn main() @fiber -> () {
+    Fiber::scope \mut s -> {
+        let task = Fiber::spawn(mut s) \-> work()
+        var pending = Fiber::join(mut s, task)
+        for 0..2 as _index {
+            assert(pending == Ok(1))
+            pending = Fiber::join(mut s, task)
+        }
+        assert(pending == Ok(1))
+    }
+}
+
 -- @case owned_task_join_preserves_fresh_payload run-pass backend=both
 use ril/fiber
 fn main() @fiber -> () {

@@ -2680,8 +2680,8 @@ impl<'program> Analyzer<'program> {
                     }
                 }
                 if param_ty.is_some_and(Ty::is_result) {
-                    value.results.insert(name.span);
-                    locals.obligations.insert(name.span);
+                    value.results.insert(name.span.into());
+                    locals.obligations.insert(name.span.into());
                 }
                 value.transform(&mut |origin| {
                     origin.dependencies.insert(name.span.into());
