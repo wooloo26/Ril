@@ -837,6 +837,8 @@ Ordinary access and replacement use the received schema; concrete member/element
 
 A `via x: T` parameter admits modes from `{plain, ref, mut, ^mut, new}` compatible with `T` and all body uses. Writing `via` on a concrete value type (`via n: int`, `via s: str`) fails `E0550`.
 
+With several mode parameters, a callable's domain consists of complete mode assignments. A call inside its body can exclude a combination even when each individual mode is accepted in other combinations. For example, if the body passes two `via` parameters to the same call using `mut` and `ref`, the combination with two `^mut` inputs would allow an overlapping writer and observer. Forwarding to a callable with a restricted domain must satisfy that domain.
+
 Inside a `via` function, concrete `&mut` / `&^mut` / `&return` clauses implied solely by `via` instantiations are recorded in the inferred template interface automatically without redundant header annotations.
 
 #### Preserving Reception and Forwarding

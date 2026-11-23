@@ -183,6 +183,7 @@ impl Analyzer<'_> {
         spans: &[Span],
         (site, ledger): (Span, &mut Ledger),
     ) {
+        self.record_mode_application(ctx, (callee, formals), signature, (values, spans), site);
         if !ctx.reachable || ctx.shadow || !signature.parameters.iter().any(|param| {
             matches!(&param.ty, Ty::Callable(call) if call.parameters.iter().any(|input| input.callable_mode() == Mode::Via))
         }) {

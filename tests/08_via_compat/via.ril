@@ -30,6 +30,104 @@ pub fn read(via c: Cell) -> int { c.count }
 -- @revision
 pub fn read(via c: Cell) -> int { c.count + 0 }
 
+-- @case exclusive_borrow_of_via_aliased_arguments_excludes_the_shared_pair compile-fail E0520
+fn edit(mut writer: Cell, ref reader: Cell) &mut -> () { writer.count += reader.count }
+fn combine(via left: Cell, via right: Cell) -> () { edit(mut left, ref right) }
+fn run() -> int {
+    let mut cell = Cell.{ count: 1 }
+    let ^mut alias = cell
+    alias.count += 1
+    combine(^mut cell, ^mut alias)
+    -- ^ E0520
+    cell.count
+}
+
+-- @case exclusive_borrow_of_via_arguments_allows_forwarding_mixed_modes compile-pass
+fn edit(mut writer: Cell, ref reader: Cell) &mut -> () { writer.count += reader.count }
+fn combine(via left: Cell, via right: Cell) -> () { edit(mut left, ref right) }
+fn relay(via left: Cell, via right: Cell) -> () { combine(left, right) }
+fn run() -> int {
+    let mut cell = Cell.{ count: 1 }
+    let mut other = Cell.{ count: 2 }
+    let ^mut alias = other
+    alias.count += 1
+    relay(mut cell, ^mut alias)
+    cell.count
+}
+
+-- @case forwarding_via_through_a_known_closure_preserves_joint_restrictions compile-fail E0520
+fn edit(mut writer: Cell, ref reader: Cell) &mut -> () { writer.count += reader.count }
+fn relay(via left: Cell, via right: Cell) -> () {
+    let combine = \via writer: Cell, via reader: Cell -> edit(mut writer, ref reader)
+    combine(left, right)
+}
+fn run() -> int {
+    let mut cell = Cell.{ count: 1 }
+    let ^mut alias = cell
+    alias.count += 1
+    relay(^mut cell, ^mut alias)
+    -- ^ E0520
+    cell.count
+}
+
+-- @case repeated_via_forwarding_allows_shared_or_readonly_arguments compile-pass
+fn read(via left: Cell, via right: Cell) -> int { left.count + right.count }
+fn twice(via input: Cell) -> int { read(input, input) }
+fn run() -> int {
+    let mut cell = Cell.{ count: 1 }
+    cell.count += 2
+    twice(^mut cell) + twice(ref cell)
+}
+
+-- @case a_closure_borrowing_captured_via_inputs_restricts_their_enclosing_domain compile-fail E0520
+fn edit(mut writer: Cell, ref reader: Cell) &mut -> () { writer.count += reader.count }
+fn combine(via left: Cell, via right: Cell) -> () {
+    let ^mut action = \ -> edit(mut left, ref right)
+    action()
+}
+fn run() -> int {
+    let mut cell = Cell.{ count: 1 }
+    let ^mut alias = cell
+    alias.count += 1
+    combine(^mut cell, ^mut alias)
+    -- ^ E0520
+    cell.count
+}
+
+-- @case forwarding_captured_via_inputs_preserves_the_joint_domain compile-fail E0520
+fn edit(mut writer: Cell, ref reader: Cell) &mut -> () { writer.count += reader.count }
+fn combine(via left: Cell, via right: Cell) -> () { edit(mut left, ref right) }
+fn relay(via left: Cell, via right: Cell) -> () {
+    let ^mut action = \ -> combine(left, right)
+    action()
+}
+fn run() -> int {
+    let mut cell = Cell.{ count: 1 }
+    let ^mut alias = cell
+    alias.count += 1
+    relay(^mut cell, ^mut alias)
+    -- ^ E0520
+    cell.count
+}
+
+-- @case repeated_via_forwarding_rejects_exclusive_overlaps compile-fail E0520
+fn read(via left: Cell, via right: Cell) -> int { left.count + right.count }
+fn twice(via input: Cell) -> int { read(input, input) }
+fn run() -> int {
+    let mut cell = Cell.{ count: 1 }
+    cell.count += 2
+    twice(mut cell)
+    -- ^ E0520
+}
+
+-- @case excluding_a_joint_via_row_breaks_compatibility compat-fail E0552
+-- @baseline
+pub fn combine(via left: Cell, via right: Cell) -> () { left.count += right.count }
+-- @revision
+fn edit(mut writer: Cell, ref reader: Cell) &mut -> () { writer.count += reader.count }
+pub fn combine(via left: Cell, via right: Cell) -> () { edit(mut left, ref right) }
+-- ^ E0552
+
 -- @case changing_formal_origins_in_externally_stored_members_breaks_compatibility compat-fail E0552
 -- @baseline
 pub type Shelf = .{ var ^mut left: Cell, var ^mut right: Cell }

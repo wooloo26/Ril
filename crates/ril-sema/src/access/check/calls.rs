@@ -135,7 +135,7 @@ fn intern_callback(pool: &mut Vec<CallbackResult>, template: CallbackResult) -> 
 }
 
 impl<'program> Analyzer<'program> {
-    fn function_syntax(&self, id: DefinitionId) -> Option<&'program Function> {
+    pub(super) fn function_syntax(&self, id: DefinitionId) -> Option<&'program Function> {
         let def = self.program.hir.definition(id);
         let stmt = def.stmt?;
         match &self.ast(def.name.span.file).stmt(stmt).value.kind {
@@ -464,6 +464,7 @@ impl<'program> Analyzer<'program> {
         for (i, ((_, mode, value), &argument_span)) in values.iter().zip(&value_spans).enumerate() {
             for conflict in ledger.hold_conflicts(value, *mode) {
                 self.check_conflict(
+                    ctx,
                     conflict,
                     None,
                     argument_span,
@@ -473,6 +474,7 @@ impl<'program> Analyzer<'program> {
             for (_, previous_mode, previous) in values.iter().take(i) {
                 for conflict in conflicts(value, *mode, previous, *previous_mode) {
                     self.check_conflict(
+                        ctx,
                         conflict,
                         None,
                         argument_span,
@@ -1086,6 +1088,7 @@ impl<'program> Analyzer<'program> {
             for ((_, mode, argument), &span) in entry.arguments.iter().zip(entry.spans) {
                 for conflict in conflicts(argument, *mode, &captured, access) {
                     self.check_conflict(
+                        ctx,
                         conflict,
                         None,
                         span,
@@ -1121,6 +1124,7 @@ impl<'program> Analyzer<'program> {
                         for (access, written) in [(Mode::Ref, false), (writable, true)] {
                             for conflict in conflicts(argument, *mode, &captured, access) {
                                 self.check_conflict(
+                                    ctx,
                                     conflict,
                                     Some((
                                         Fact {

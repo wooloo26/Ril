@@ -17,14 +17,15 @@ use super::{
     Access, Analysis, CleanupAction, EffectUse, Input, Instance, Invocation, InvocationMode,
     ReturnSource, StorageUpdate, Summary,
     flow::{
-        AccessConflict, Coordinate, Datum, Ledger, Origin, Reception, Region, Replacement,
-        ResultOccurrence, Revocation, Slot, conflicts,
+        AccessConflict, ConflictKind, Coordinate, Datum, Ledger, Origin, Reception, Region,
+        Replacement, ResultOccurrence, Revocation, Slot, conflicts,
     },
     horn::{self, Rule},
 };
 use crate::ty::{self, AdtKind, Callable, Ty, TypedProgram, Value, reception};
 
 mod calls;
+mod domains;
 mod higher_order;
 mod results;
 mod storage;
@@ -241,6 +242,8 @@ struct Analyzer<'a> {
     requirements: Vec<Requirement>,
     deferred_errors: Vec<(Vec<Fact>, Diagnostic)>,
     capture_conflicts: Vec<CaptureConflict>,
+    mode_conflicts: Vec<domains::ModeConflict>,
+    mode_applications: Vec<domains::Application>,
     mode_uses: Vec<ModeUse>,
     member_schemas: BTreeMap<Span, Vec<Region>>,
     closure_modes: BTreeMap<Span, ClosureModes>,
@@ -270,6 +273,8 @@ fn collect(
         requirements: Vec::new(),
         deferred_errors: Vec::new(),
         capture_conflicts: Vec::new(),
+        mode_conflicts: Vec::new(),
+        mode_applications: Vec::new(),
         mode_uses: Vec::new(),
         member_schemas: BTreeMap::new(),
         closure_modes: BTreeMap::new(),
@@ -341,6 +346,7 @@ pub(super) fn analyze(program: &TypedProgram) -> (Analysis, Vec<Diagnostic>) {
     }
     let mut consuming_inputs = BTreeMap::new();
     let mut sharing_inputs = BTreeMap::new();
+    let mut domains = domains::Domains::default();
     for function in std::mem::take(&mut analyzer.functions) {
         let summary = analyzer.finish_function(&facts, &function);
         let consumed: BTreeSet<_> = function
@@ -358,7 +364,7 @@ pub(super) fn analyze(program: &TypedProgram) -> (Analysis, Vec<Diagnostic>) {
                     .map(|_| index)
             })
             .collect();
-        let instances = analyzer.via_table(&function, &summary, &consumed, &facts);
+        let instances = analyzer.via_table(&function, &summary, &facts);
         consuming_inputs.insert(function.id, consumed);
         let sharing: BTreeSet<_> = function
             .formals
@@ -377,6 +383,7 @@ pub(super) fn analyze(program: &TypedProgram) -> (Analysis, Vec<Diagnostic>) {
             .collect();
         sharing_inputs.insert(function.id, sharing);
         if !instances.is_empty() {
+            domains.register_function(&function, &instances);
             analysis.via.insert(function.id, instances);
         }
         analysis.summaries.insert(function.id, summary);
@@ -412,6 +419,7 @@ pub(super) fn analyze(program: &TypedProgram) -> (Analysis, Vec<Diagnostic>) {
             }
         }
     }
+    analyzer.restrict_mode_domains(&facts, &mut domains, &mut analysis);
     (analysis, analyzer.diagnostics)
 }
 
@@ -449,16 +457,12 @@ impl<'a> Analyzer<'a> {
 
     fn check_conflict(
         &mut self,
+        ctx: &Context,
         conflict: AccessConflict,
         condition: Option<(Fact, bool)>,
         span: Span,
         message: &'static str,
     ) {
-        let code = if conflict.writable {
-            Code::E0523
-        } else {
-            Code::E0524
-        };
         let mut conditions: Vec<_> = condition.into_iter().collect();
         if let Some(capture) = conflict.capture.filter(|capture| capture.inferred) {
             conditions.push((
@@ -469,6 +473,28 @@ impl<'a> Analyzer<'a> {
                 true,
             ));
         }
+        let code = match conflict.kind {
+            ConflictKind::Direct { writable } => {
+                if writable {
+                    Code::E0523
+                } else {
+                    Code::E0524
+                }
+            }
+            ConflictKind::Via(via) => {
+                if !ctx.reachable || ctx.shadow {
+                    return;
+                }
+                self.mode_conflicts.push(domains::ModeConflict {
+                    owner: via.mode_owner().unwrap_or(ctx.owner),
+                    conditions,
+                    via: *via,
+                    span,
+                    message,
+                });
+                return;
+            }
+        };
         if conditions.is_empty() {
             self.error(code, span, message);
         } else {
@@ -1129,7 +1155,6 @@ impl<'a> Analyzer<'a> {
         &mut self,
         fun: &DefinitionCheck,
         summary: &Summary,
-        consumed: &BTreeSet<usize>,
         facts: &BTreeSet<Fact>,
     ) -> Vec<Instance> {
         if fun.via.is_empty() && fun.member_axes.is_empty() {
@@ -1144,53 +1169,20 @@ impl<'a> Analyzer<'a> {
             };
             formals.insert(index, formals.len());
             axes.push(Region::root(source));
-            let needs_sharing = summary.retained.contains(&index)
-                || facts.contains(&Fact {
-                    owner: fun.owner,
-                    obligation: Obligation::NeedsSharing(source),
-                });
-            let domain: &[Input] = if consumed.contains(&index) {
-                if needs_sharing {
-                    self.error(
-                        Code::E0548,
-                        fun.owner,
-                        "via source cannot be both transferred and retained as shared",
-                    );
-                    return Vec::new();
-                }
-                &[Input::New]
-            } else if needs_sharing {
-                &[Input::Shared]
-            } else if summary.writes.contains(&index) {
-                &[Input::Mut, Input::Shared, Input::New]
-            } else {
-                &[
-                    Input::Plain,
-                    Input::Ref,
-                    Input::Mut,
-                    Input::Shared,
-                    Input::New,
-                ]
-            };
+            let domain = domains::root_modes(facts, fun.owner, source);
+            if domain.is_empty() {
+                self.error(
+                    Code::E0548,
+                    fun.owner,
+                    "via source cannot be both transferred and retained as shared",
+                );
+                return Vec::new();
+            }
             extend_rows(&mut rows, domain);
         }
         for (_, axis) in &fun.member_axes {
             axes.push(axis.clone());
-            let requirements: Vec<_> = facts
-                .iter()
-                .filter_map(|fact| match &fact.obligation {
-                    Obligation::Schema(path, required)
-                        if fact.owner == fun.owner && axis == path =>
-                    {
-                        Some(*required)
-                    }
-                    _ => None,
-                })
-                .collect();
-            let domain: Vec<_> = [Input::Plain, Input::Ref, Input::Mut, Input::Shared]
-                .into_iter()
-                .filter(|mode| requirements.iter().all(|r| r.accepts(mode.access())))
-                .collect();
+            let domain = domains::member_modes(facts, fun.owner, axis);
             if domain.is_empty() {
                 self.error(
                     Code::E0520,
@@ -3275,6 +3267,7 @@ impl<'a> Analyzer<'a> {
         }
         for conflict in ledger.hold_conflicts(value, Mode::Mut) {
             self.check_conflict(
+                ctx,
                 conflict,
                 None,
                 span,

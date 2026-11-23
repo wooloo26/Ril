@@ -107,6 +107,12 @@ def nestedBorrowOfAliasedSharedParticipantsOverlaps := sequence [access [.alloca
     (sequence [.invoke [arg 10 20 .mutable, arg 11 21 .observe] []
         (access [.write (p 20), .read (p 21)]),
       access [.retain (p 10), .retain (p 11)]])]
+def nestedBorrowFromMixedParticipants := sequence
+  [access [.allocate 0 (fixed .mut) [], .allocate 1 (fixed .mut) []],
+  .invoke [arg 0 10 .mutable, arg 1 11 .retained] []
+    (sequence [.invoke [arg 10 20 .mutable, arg 11 21 .observe] []
+        (access [.write (p 20), .read (p 21)]),
+      access [.retain (p 11)]])]
 def nestedBorrowWithCapture (aliased : Bool) := sequence
   [access [.allocate 0 (fixed .mut) [],
     if aliased then .bind (p 0) 1 (fixed .shared) else .allocate 1 (fixed .mut) []],
@@ -171,6 +177,8 @@ def programs : List ProgramExample :=
    ⟨"call: a nested mutable borrow conflicts with an aliased observation", "distinct_shared_formals_do_not_prove_independence_for_a_nested_call", nestedBorrowOfAliasedSharedParticipantsOverlaps, false⟩,
    ⟨"call: a nested mutable borrow conflicts with a shared captured alias", "shared_formal_and_capture_may_alias_during_a_nested_borrow", nestedBorrowWithCapture true, false⟩,
    ⟨"call: a nested mutable borrow can observe a disjoint capture", "read_only_capture_is_disjoint_from_shared_formal", nestedBorrowWithCapture false, true⟩,
+   ⟨"call: a nested mutable borrow excludes an aliased shared via instance", "exclusive_borrow_of_via_aliased_arguments_excludes_the_shared_pair", nestedBorrowOfAliasedSharedParticipantsOverlaps, false⟩,
+   ⟨"call: mixed via modes permit a disjoint writer and observer", "exclusive_borrow_of_via_arguments_allows_forwarding_mixed_modes", nestedBorrowFromMixedParticipants, true⟩,
    ⟨"call: coincident shared arguments do not merge their formal obligations", "retaining_one_shared_argument_cannot_satisfy_an_aliased_formal", coincidentRetainedWritersNeedIndependentUse, false⟩]
 
 def sourceChecks : List (String × Bool) :=

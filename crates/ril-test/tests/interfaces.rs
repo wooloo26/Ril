@@ -17,6 +17,78 @@ use ril_sema::{
 use ril_test::{CaseMode, Stage, TestDriver, Unit, VirtualPackage, parse_suite, run_worker};
 
 #[test]
+fn joint_via_restrictions_survive_interface_only_forwarding() {
+    use ril_base::diag::Code;
+    use ril_sema::access::Input;
+
+    let provider_source = br#"
+pub type Cell = .{ var count: int }
+fn edit(mut writer: Cell, ref reader: Cell) &mut -> () { writer.count += reader.count }
+pub fn combine(via left: Cell, via right: Cell) -> () { edit(mut left, ref right) }
+"#;
+    let mut provider = VirtualPackage::new(Unit::Lib);
+    provider.entry = "pkg/provider.ril".into();
+    provider.insert(provider.entry.clone(), provider_source.to_vec());
+    let interface = Driver.interface(&provider).unwrap().encode().unwrap();
+    for (mount, bytes) in [
+        ("library/provider.ril", provider_source.as_slice()),
+        ("library/provider.rili", interface.as_slice()),
+    ] {
+        let relay = r#"
+use library/provider
+pub fn relay(via left: Provider::Cell, via right: Provider::Cell) -> () {
+    let combine = Provider::combine
+    combine(left, right)
+}
+"#;
+        let mut client = VirtualPackage::new(Unit::Lib);
+        client.insert(mount.into(), bytes.to_vec());
+        client.insert(client.entry.clone(), relay.as_bytes().to_vec());
+        let published = Driver.interface(&client).unwrap();
+        let domain = &published.functions.values().next().unwrap().domain;
+        assert_eq!(domain.len(), 14);
+        for (pair, allowed) in [
+            ([Input::Shared, Input::Shared], false),
+            ([Input::Mut, Input::Shared], true),
+            ([Input::Shared, Input::Ref], true),
+        ] {
+            assert_eq!(
+                domain.iter().any(|row| row.modes == pair),
+                allowed,
+                "{mount}"
+            );
+        }
+        for (call, allowed) in [
+            ("relay(^mut left, ^mut right)", false),
+            ("relay(mut left, ^mut right)", true),
+        ] {
+            let source = format!(
+                "{relay}
+fn run() -> int {{
+    let mut left = Provider::Cell.{{ count: 1 }}
+    let mut other = Provider::Cell.{{ count: 2 }}
+    let ^mut right = other
+    right.count += 1
+    {call}
+    left.count
+}}"
+            );
+            client.insert(client.entry.clone(), source.into_bytes());
+            let result = Driver.analyze(&client);
+            if allowed {
+                assert!(result.is_ok(), "{mount} {call}: {:?}", result.err());
+            } else {
+                let diagnostics = result.err().expect("shared pair must be rejected");
+                assert!(
+                    diagnostics.iter().any(|d| d.code == Some(Code::E0520)),
+                    "{mount} {call}: {diagnostics:?}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn compound_result_obligations_survive_an_interface_only_boundary() {
     use ril_base::diag::Code;
 
@@ -1331,7 +1403,7 @@ fn boundary_examples_agree_with_lean() -> Result<(), Box<dyn std::error::Error>>
 
 #[test]
 fn call_authority_examples_agree_with_lean() -> Result<(), Box<dyn std::error::Error>> {
-    check_access_examples("call-authority", 36)
+    check_access_examples("call-authority", 38)
 }
 
 #[test]

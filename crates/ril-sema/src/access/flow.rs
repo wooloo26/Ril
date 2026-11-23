@@ -7,7 +7,7 @@ use ril_base::span::Span;
 use ril_frontend::syntax::Mode;
 use serde::{Deserialize, Serialize};
 
-use super::ReturnAllocation;
+use super::{Input, ReturnAllocation};
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 pub enum Access {
@@ -194,10 +194,11 @@ pub(super) struct Origin {
     pub draft: bool,
 }
 
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 struct EntryGraph {
     callable: Span,
     shared_at: Option<usize>,
+    via_at: Vec<Region>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -219,9 +220,14 @@ impl Origin {
         self.inherits_mode = mode == Mode::Via;
         self.call_borrow = mode == Mode::Mut;
         self.entry_graph =
-            matches!(mode, Mode::Mut | Mode::Shared | Mode::New).then_some(EntryGraph {
+            matches!(mode, Mode::Mut | Mode::Shared | Mode::New | Mode::Via).then(|| EntryGraph {
                 callable,
                 shared_at: (mode == Mode::Shared).then_some(0),
+                via_at: if mode == Mode::Via {
+                    vec![Region::root(self.region.source)]
+                } else {
+                    Vec::new()
+                },
             });
     }
 
@@ -240,10 +246,17 @@ impl Origin {
             self.call_borrow = false;
             if let Some(entry) = &mut self.entry_graph {
                 entry.shared_at = Some(self.region.selection.len());
+                entry.via_at.clear();
             }
             if let Some(capture) = &mut self.capture {
                 capture.shared |= self.mode.writes();
             }
+        }
+        if member == Mode::Via
+            && self.mode.writes()
+            && let Some(entry) = &mut self.entry_graph
+        {
+            entry.via_at.push(self.region.clone());
         }
         if member == Mode::Via || self.inherits_mode || !self.reception.is_empty() {
             if self.reception.is_empty() {
@@ -270,37 +283,34 @@ impl Origin {
         self.region.overlaps(&other.region) && compatible(&self.branches, &other.branches)
     }
 
-    fn may_conflict(&self, other: &Self) -> bool {
-        (self.region.overlaps(&other.region) || self.may_share_entry_object(other))
-            && compatible(&self.branches, &other.branches)
+    fn shared_boundary(&self, input: &impl Fn(&Region) -> Option<Input>) -> Option<&[Coordinate]> {
+        let entry = self.entry_graph.as_ref()?;
+        let depth = entry
+            .via_at
+            .iter()
+            .rev()
+            .find(|axis| input(axis) == Some(Input::Shared))
+            .map(|axis| axis.selection.len())
+            .or(entry.shared_at)?;
+        self.region.selection.get(..depth)
     }
 
-    fn may_share_entry_object(&self, other: &Self) -> bool {
-        let Some((left, right)) = self.entry_graph.zip(other.entry_graph) else {
-            return false;
-        };
-        if left.callable != right.callable {
-            return false;
-        }
-        let left_path = left
-            .shared_at
-            .and_then(|depth| self.region.selection.get(..depth));
-        let right_path = right
-            .shared_at
-            .and_then(|depth| other.region.selection.get(..depth));
-        // Distinct shared boundaries can refer to the same entry object.
-        if self.region.source == other.region.source {
-            left_path != right_path
+    fn has_shared_boundary(&self) -> bool {
+        self.entry_graph
+            .as_ref()
+            .is_some_and(|entry| entry.shared_at.is_some() || !entry.via_at.is_empty())
+    }
+
+    pub(super) fn entry_callable(&self) -> Option<Span> {
+        self.entry_graph.as_ref().map(|entry| entry.callable)
+    }
+
+    pub(super) fn forwarded_mode(&self) -> Option<ForwardedMode> {
+        if self.inherits_mode {
+            Some(ForwardedMode::Root(Region::root(self.region.source)))
         } else {
-            left_path.is_some() && right_path.is_some()
+            (!self.reception.is_empty()).then(|| ForwardedMode::Projection(self.reception.clone()))
         }
-    }
-
-    fn may_share_capture(&self, other: &Self) -> Option<CaptureEntry> {
-        let entry = self.entry_graph?;
-        let capture = other.capture?;
-        (entry.callable == capture.callable && entry.shared_at.is_some() && capture.shared)
-            .then_some(capture)
     }
 
     pub(super) fn dependency_spans(&self) -> impl Iterator<Item = Span> + '_ {
@@ -368,7 +378,7 @@ pub(super) enum Revocation {
 type Revocations = BTreeMap<Option<Revocation>, BTreeSet<Choices>>;
 const BRANCH_LIMIT: usize = 24;
 
-fn compatible(a: &Choices, b: &Choices) -> bool {
+pub(super) fn compatible(a: &Choices, b: &Choices) -> bool {
     a.iter()
         .all(|(branch, arm)| b.get(branch).is_none_or(|other| arm == other))
 }
@@ -2207,8 +2217,194 @@ impl Ledger {
 }
 
 pub(super) struct AccessConflict {
-    pub writable: bool,
     pub capture: Option<CaptureEntry>,
+    pub kind: ConflictKind,
+}
+
+pub(super) enum ConflictKind {
+    Direct { writable: bool },
+    Via(Box<ViaConflict>),
+}
+
+pub(super) enum ForwardedMode {
+    Root(Region),
+    Projection(Vec<Reception>),
+}
+
+impl ForwardedMode {
+    pub(super) fn select(&self, input: &impl Fn(&Region) -> Option<Input>) -> Option<Input> {
+        match self {
+            Self::Root(axis) => input(axis),
+            Self::Projection(steps) => {
+                let access = steps.iter().try_fold(Access::Mut, |base, step| {
+                    let member = match step {
+                        Reception::Fixed(access) => *access,
+                        Reception::Axis(axis) => input(axis)?.access(),
+                    };
+                    Some(base.project(member))
+                })?;
+                Input::from_mode(access.as_mode())
+            }
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum Overlap {
+    Region,
+    Entry,
+    Capture {
+        formal_on_left: bool,
+        capture: CaptureEntry,
+    },
+}
+
+impl Overlap {
+    fn potential(left: &Origin, right: &Origin) -> Option<Self> {
+        if left.region.overlaps(&right.region) {
+            return Some(Self::Region);
+        }
+        if let Some((a, b)) = left.entry_graph.as_ref().zip(right.entry_graph.as_ref())
+            && a.callable == b.callable
+            && if left.region.source == right.region.source {
+                left.has_shared_boundary() || right.has_shared_boundary()
+            } else {
+                left.has_shared_boundary() && right.has_shared_boundary()
+            }
+        {
+            return Some(Self::Entry);
+        }
+        for (formal_on_left, formal, captured) in [(true, left, right), (false, right, left)] {
+            if let Some((entry, capture)) = formal.entry_graph.as_ref().zip(captured.capture)
+                && entry.callable == capture.callable
+                && formal.has_shared_boundary()
+                && capture.shared
+            {
+                return Some(Self::Capture {
+                    formal_on_left,
+                    capture,
+                });
+            }
+        }
+        None
+    }
+
+    fn depends_on_modes(self, left: &Origin, right: &Origin) -> bool {
+        let varies = |origin: &Origin| {
+            origin
+                .entry_graph
+                .as_ref()
+                .is_some_and(|entry| !entry.via_at.is_empty())
+        };
+        match self {
+            Self::Region => false,
+            Self::Entry => varies(left) || varies(right),
+            Self::Capture { formal_on_left, .. } => {
+                varies(if formal_on_left { left } else { right })
+            }
+        }
+    }
+
+    fn occurs(
+        self,
+        left: &Origin,
+        right: &Origin,
+        input: &impl Fn(&Region) -> Option<Input>,
+    ) -> bool {
+        match self {
+            Self::Region => true,
+            Self::Entry => {
+                let a = left.shared_boundary(input);
+                let b = right.shared_boundary(input);
+                // Distinct shared boundaries can refer to the same entry object.
+                if left.region.source == right.region.source {
+                    a != b
+                } else {
+                    a.is_some() && b.is_some()
+                }
+            }
+            Self::Capture { formal_on_left, .. } => (if formal_on_left { left } else { right })
+                .shared_boundary(input)
+                .is_some(),
+        }
+    }
+
+    fn capture(self) -> Option<CaptureEntry> {
+        match self {
+            Self::Capture { capture, .. } => Some(capture),
+            _ => None,
+        }
+    }
+}
+
+pub(super) struct ViaConflict {
+    overlap: Overlap,
+    left: (Origin, Mode, Option<ForwardedMode>),
+    right: (Origin, Mode, Option<ForwardedMode>),
+}
+
+impl ViaConflict {
+    pub(super) fn mode_owner(&self) -> Option<Span> {
+        let (left, _, lrecipe) = &self.left;
+        let (right, _, rrecipe) = &self.right;
+        let overlap_owner = if self.overlap.depends_on_modes(left, right) {
+            match self.overlap {
+                Overlap::Entry => left.entry_callable(),
+                Overlap::Capture { capture, .. } => Some(capture.callable),
+                Overlap::Region => None,
+            }
+        } else {
+            None
+        };
+        let mut owners = [
+            overlap_owner,
+            lrecipe.as_ref().and_then(|_| left.entry_callable()),
+            rrecipe.as_ref().and_then(|_| right.entry_callable()),
+        ]
+        .into_iter()
+        .flatten();
+        let owner = owners.next()?;
+        owners.all(|other| other == owner).then_some(owner)
+    }
+
+    pub(super) fn classify(&self, input: impl Fn(&Region) -> Option<Input>) -> Option<bool> {
+        let (left, lmode, lrecipe) = &self.left;
+        let (right, rmode, rrecipe) = &self.right;
+        let select = |mode, recipe: &Option<ForwardedMode>| {
+            recipe
+                .as_ref()
+                .and_then(|recipe| recipe.select(&input))
+                .map_or(mode, Input::mode)
+        };
+        self.overlap
+            .occurs(left, right, &input)
+            .then(|| {
+                conflict_kind(
+                    left,
+                    select(*lmode, lrecipe),
+                    right,
+                    select(*rmode, rrecipe),
+                )
+            })
+            .flatten()
+    }
+}
+
+fn conflict_kind(left: &Origin, lmode: Mode, right: &Origin, rmode: Mode) -> Option<bool> {
+    if lmode == Mode::Shared && rmode == Mode::Shared {
+        return None;
+    }
+    let writes = |origin: &Origin, mode| {
+        origin.mode.writes() && matches!(mode, Mode::Mut | Mode::Shared | Mode::New | Mode::Via)
+    };
+    let observes = |origin: &Origin, mode| {
+        mode == Mode::Ref || mode == Mode::New && origin.mode == Access::Ref
+    };
+    let left_writable = writes(left, lmode);
+    let right_writable = writes(right, rmode);
+    let writable = left_writable && right_writable;
+    (writable || left_writable && observes(right, rmode) || right_writable && observes(left, lmode))
+        .then_some(writable)
 }
 
 pub(super) fn conflicts<'a>(
@@ -2221,33 +2417,32 @@ pub(super) fn conflicts<'a>(
         right
             .call_participants(rmode)
             .filter_map(move |(b, rmode)| {
-                let left_writable = a.mode.writes()
-                    && matches!(lmode, Mode::Mut | Mode::Shared | Mode::New | Mode::Via);
-                let right_writable = b.mode.writes()
-                    && matches!(rmode, Mode::Mut | Mode::Shared | Mode::New | Mode::Via);
-                let left_ref = lmode == Mode::Ref || lmode == Mode::New && a.mode == Access::Ref;
-                let right_ref = rmode == Mode::Ref || rmode == Mode::New && b.mode == Access::Ref;
-                if lmode == Mode::Shared && rmode == Mode::Shared {
+                if !compatible(&a.branches, &b.branches) {
                     return None;
                 }
-                let writable = left_writable && right_writable;
-                if !(writable || left_writable && right_ref || right_writable && left_ref) {
-                    return None;
+                let overlap = Overlap::potential(a, b)?;
+                let capture = overlap.capture();
+                let lrecipe = (lmode == Mode::Via).then(|| a.forwarded_mode()).flatten();
+                let rrecipe = (rmode == Mode::Via).then(|| b.forwarded_mode()).flatten();
+                let direct = conflict_kind(a, lmode, b, rmode);
+                if lrecipe.is_some()
+                    || rrecipe.is_some()
+                    || direct.is_some() && overlap.depends_on_modes(a, b)
+                {
+                    return Some(AccessConflict {
+                        capture,
+                        kind: ConflictKind::Via(Box::new(ViaConflict {
+                            overlap,
+                            left: (a.clone(), lmode, lrecipe),
+                            right: (b.clone(), rmode, rrecipe),
+                        })),
+                    });
                 }
-                if a.may_conflict(b) {
-                    Some(AccessConflict {
-                        writable,
-                        capture: None,
-                    })
-                } else if compatible(&a.branches, &b.branches) {
-                    let capture = a.may_share_capture(b).or_else(|| b.may_share_capture(a))?;
-                    Some(AccessConflict {
-                        writable,
-                        capture: Some(capture),
-                    })
-                } else {
-                    None
-                }
+                let writable = direct?;
+                overlap.occurs(a, b, &|_| None).then_some(AccessConflict {
+                    kind: ConflictKind::Direct { writable },
+                    capture,
+                })
             })
     })
 }
