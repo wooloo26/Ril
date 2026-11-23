@@ -625,6 +625,104 @@ fn run() -> int {
     a.count + b.count
 }
 
+-- @case coincident_shared_arguments_can_both_be_retained compile-pass
+type SharedPair = .{ ^mut left: Cell, ^mut right: Cell }
+fn retain_pair(^mut left: Cell, ^mut right: Cell) &^mut &return(^mut left, ^mut right) -> new SharedPair {
+    SharedPair.{ left: ^mut left, right: ^mut right }
+}
+fn run() -> int {
+    let mut cell = Cell.{ count: 1 }
+    let mut pair = retain_pair(^mut cell, ^mut cell)
+    pair.left.count += 1
+    pair.right.count
+}
+
+-- @case shared_participant_can_yield_a_nested_scoped_mutable_borrow compile-pass
+type SharedPair = .{ ^mut left: Cell, ^mut right: Cell }
+fn edit(mut cell: Cell) &mut -> () { cell.count += 1 }
+fn retain_pair(^mut left: Cell, ^mut right: Cell) &mut &^mut &return(^mut left, ^mut right) -> new SharedPair {
+    edit(mut left)
+    SharedPair.{ left: ^mut left, right: ^mut right }
+}
+fn run() -> int {
+    let mut cell = Cell.{ count: 1 }
+    let mut pair = retain_pair(^mut cell, ^mut cell)
+    pair.left.count += 1
+    pair.right.count
+}
+
+-- @case exclusive_argument_cannot_overlap_a_shared_argument compile-fail E0523
+fn edit_and_retain(mut writer: Cell, ^mut retained: Cell) &mut -> ^mut(retained) Cell {
+    writer.count += 1
+    retained
+}
+fn run() -> int {
+    let mut cell = Cell.{ count: 1 }
+    let ^mut kept = edit_and_retain(mut cell, ^mut cell)
+    -- ^ E0523
+    kept.count += 1
+    cell.count
+}
+
+-- @case distinct_shared_formals_do_not_prove_independence_for_a_nested_call compile-fail E0524
+type Pair = .{ ^mut left: Cell, ^mut right: Cell }
+fn edit(mut writer: Cell, ref reader: Cell) &mut -> () { writer.count += reader.count }
+fn retain(^mut left: Cell, ^mut right: Cell) &mut &^mut &return(^mut left, ^mut right) -> new Pair {
+    edit(mut left, ref right)
+    -- ^ E0524
+    Pair.{ left: ^mut left, right: ^mut right }
+}
+
+-- @case separate_exclusive_fields_of_one_shared_formal_can_be_reborrowed compile-pass
+type Pair = .{ mut left: Cell, mut right: Cell }
+fn edit(mut writer: Cell, ref reader: Cell) &mut -> () { writer.count += reader.count }
+fn retain(^mut pair: Pair) &mut -> ^mut(pair) Pair {
+    edit(mut pair.left, ref pair.right)
+    pair
+}
+
+-- @case borrowing_separate_containers_preserves_their_shared_member_mode compile-pass
+type Holder = .{ ^mut item: Cell }
+fn update(mut first: Holder, mut second: Holder) &mut -> () {
+    first.item.count += 1
+    second.item.count += 1
+}
+fn run() -> () {
+    let mut cell = Cell.{ count: 1 }
+    let mut first = Holder.{ item: ^mut cell }
+    let mut second = Holder.{ item: ^mut cell }
+    update(mut first, mut second)
+}
+
+-- @case separate_container_borrows_do_not_prove_their_shared_members_independent compile-fail E0524
+type Holder = .{ ^mut item: Cell }
+fn edit(mut writer: Cell, ref reader: Cell) &mut -> () { writer.count += reader.count }
+fn update(mut first: Holder, mut second: Holder) &mut -> () {
+    second.item.count += 1
+    edit(mut first.item, ref second.item)
+    -- ^ E0524
+}
+
+-- @case separate_shared_members_of_one_formal_may_alias compile-fail E0524
+type Pair = .{ ^mut left: Cell, ^mut right: Cell }
+fn edit(mut writer: Cell, ref reader: Cell) &mut -> () { writer.count += reader.count }
+fn update(mut pair: Pair) &mut -> () {
+    edit(mut pair.left, ref pair.right)
+    -- ^ E0524
+}
+
+-- @case retaining_one_shared_argument_cannot_satisfy_an_aliased_formal compile-fail E0527
+fn retain_one(^mut retained: Cell, ^mut unretained: Cell) -> ^mut(retained) Cell {
+-- ^ E0527
+    retained
+}
+fn run() -> int {
+    let mut cell = Cell.{ count: 1 }
+    let ^mut kept = retain_one(^mut cell, ^mut cell)
+    kept.count += 1
+    cell.count
+}
+
 -- @case nested_mutable_call_proves_the_outer_use compile-pass
 fn update(mut item: Cell) &mut -> () { item.count += 1 }
 fn relay(mut item: Cell) &mut -> () { update(mut item) }
@@ -643,6 +741,22 @@ fn update(mut item: Cell, modify: bool) &mut -> int {
 -- @case nested_shared_call_preserves_retained_authority compile-pass
 fn keep(^mut item: Cell) -> ^mut(item) Cell { item }
 fn relay(^mut item: Cell) -> ^mut(item) Cell { keep(^mut item) }
+
+-- @case nested_shared_forwarding_cannot_retain_a_scoped_writer compile-fail E0528
+fn retain(^mut cell: Cell) -> ^mut(cell) Cell { cell }
+fn relay(^mut cell: Cell) -> ^mut(cell) Cell { retain(^mut cell) }
+fn invalid(mut cell: Cell) &mut -> () {
+    cell.count += 1
+    let ^mut kept = relay(^mut cell)
+    -- ^ E0528
+    kept.count += 1
+}
+
+-- @case forwarding_to_a_reader_does_not_exercise_writable_authority compile-fail E0527
+fn leaf(mut cell: Cell) -> int { cell.count }
+-- ^ E0527
+fn relay(mut cell: Cell) -> int { leaf(mut cell) }
+-- ^ E0527
 
 -- @case retaining_a_local_alias_keeps_its_formal_authority compile-pass
 fn keep(^mut source: Cell) &mut -> ^mut(source) Cell {
@@ -692,6 +806,46 @@ fn run(mut item: Cell) &mut -> int {
     -- ^ E0535
 }
 
+-- @case immutable_snapshot_can_be_passed_as_a_plain_argument compile-pass
+fn read(item: Cell) -> int { item.count }
+fn run() -> int {
+    let cell = Cell.{ count: 1 }
+    read(cell)
+}
+
+-- @case a_mutable_formal_cannot_be_read_from_its_caller compile-fail E0204
+fn edit(mut borrowed: Cell) &mut -> () { borrowed.count += 1 }
+fn run() -> int {
+    let mut cell = Cell.{ count: 1 }
+    edit(mut cell)
+    borrowed.count
+    -- ^ E0204
+}
+
+-- @case published_mutation_has_no_retention compile-pass unit=lib no-prelude
+pub type Cell = .{ var count: int }
+pub fn edit(mut cell: Cell) &mut -> () { cell.count += 1 }
+
+-- @case published_root_retention_does_not_write compile-pass unit=lib no-prelude
+pub type Cell = .{ var count: int }
+pub fn retain(^mut cell: Cell) -> ^mut(cell) Cell { cell }
+
+-- @case published_shared_pair_retains_both_formals compile-pass unit=lib no-prelude
+pub type Cell = .{ var count: int }
+pub type Pair = .{ ^mut left: Cell, ^mut right: Cell }
+pub fn retain(^mut left: Cell, ^mut right: Cell) &^mut &return(^mut left, ^mut right) -> new Pair {
+    Pair.{ left: ^mut left, right: ^mut right }
+}
+
+-- @case published_nested_borrow_writes_only_its_formal compile-pass unit=lib no-prelude
+pub type Cell = .{ var count: int }
+pub type Pair = .{ ^mut left: Cell, ^mut right: Cell }
+fn edit(mut cell: Cell) &mut -> () { cell.count += 1 }
+pub fn retain(^mut left: Cell, ^mut right: Cell) &mut &^mut &return(^mut left, ^mut right) -> new Pair {
+    edit(mut left)
+    Pair.{ left: ^mut left, right: ^mut right }
+}
+
 -- @case a_named_helper_must_declare_its_capture compile-fail E0510
 fn run() -> int {
     let number = 3
@@ -700,6 +854,52 @@ fn run() -> int {
         fn read() -> int { number }
         -- ^ E0510
 }
+
+-- @case a_named_helper_can_declare_a_pure_capture compile-pass
+fn run() -> int {
+    let number = 3
+    read()
+    where
+        fn read() &up(number) -> int { number }
+}
+
+-- @case a_named_helper_cannot_declare_an_unused_pure_capture compile-fail E0529
+fn run() -> int {
+    let number = 3
+    read()
+    where
+        fn read() &up(number) -> int { 0 }
+        -- ^ E0529
+}
+
+-- @case a_module_constant_needs_no_captured_state_clause compile-pass unit=lib
+let offset = 3
+fn run(number: int) -> int { number + offset }
+
+-- @case a_pure_factory_declares_its_immutable_capture compile-pass
+fn make(offset: int) &capture -> fn(int) -> int { \number -> number + offset }
+
+-- @case a_pure_factory_cannot_omit_its_immutable_capture compile-fail E0510
+fn make(offset: int) -> fn(int) -> int { \number -> number + offset }
+-- ^ E0510
+
+-- @case an_environment_free_factory_cannot_declare_capture compile-fail E0529
+fn make() &capture -> fn(int) -> int { \number -> number + 1 }
+-- ^ E0529
+
+-- @case immutable_return_source_requires_a_contained_dependency compile-fail E0510
+fn pack(source: Cell) -> new (Cell, int) { (source, 0) }
+-- ^ E0510
+
+-- @case retaining_a_writer_does_not_exercise_a_write_clause compile-fail E0529
+type Box = .{ ^mut item: Cell }
+fn pack(^mut item: Cell) &mut &^mut &return(^mut item) -> new Box { Box.{ item: ^mut item } }
+-- ^ E0529
+
+-- @case retaining_a_contained_writer_requires_its_state_clause compile-fail E0510
+type Box = .{ ^mut item: Cell }
+fn pack(^mut item: Cell) &return(^mut item) -> new Box { Box.{ item: ^mut item } }
+-- ^ E0510
 
 -- @case independent_allocations compile-pass
 fn copy(mut a: Cell, ref b: Cell) &mut -> () { a.count = b.count }

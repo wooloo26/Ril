@@ -184,6 +184,7 @@ pub(super) struct Origin {
     // A direct read of a replaceable slot cannot anchor a ref binding.
     pub from_variable: bool,
     pub call_borrow: bool,
+    entry_graph: Option<EntryGraph>,
     pub dependencies: BTreeSet<Occurrence>,
     pub anchor_scopes: BTreeSet<Span>,
     pub branches: Choices,
@@ -193,12 +194,28 @@ pub(super) struct Origin {
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct EntryGraph {
+    callable: Span,
+    shared_at: Option<usize>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub(super) struct CallbackOrigin {
     pub template: usize,
     pub cap: Option<Access>,
 }
 
 impl Origin {
+    pub(super) fn enter_formal(&mut self, callable: Span, mode: Mode) {
+        self.inherits_mode = mode == Mode::Via;
+        self.call_borrow = mode == Mode::Mut;
+        self.entry_graph =
+            matches!(mode, Mode::Mut | Mode::Shared | Mode::New).then_some(EntryGraph {
+                callable,
+                shared_at: (mode == Mode::Shared).then_some(0),
+            });
+    }
+
     pub(super) fn fix_mode(&mut self, access: Access) {
         self.mode = access;
         self.explicit_share = false;
@@ -212,6 +229,9 @@ impl Origin {
     pub(super) fn project_mode(&mut self, member: Mode) {
         if member == Mode::Shared {
             self.call_borrow = false;
+            if let Some(entry) = &mut self.entry_graph {
+                entry.shared_at = Some(self.region.selection.len());
+            }
         }
         if member == Mode::Via || self.inherits_mode || !self.reception.is_empty() {
             if self.reception.is_empty() {
@@ -236,6 +256,32 @@ impl Origin {
 
     pub(super) fn overlaps(&self, other: &Self) -> bool {
         self.region.overlaps(&other.region) && compatible(&self.branches, &other.branches)
+    }
+
+    fn may_conflict(&self, other: &Self) -> bool {
+        (self.region.overlaps(&other.region) || self.may_share_entry_object(other))
+            && compatible(&self.branches, &other.branches)
+    }
+
+    fn may_share_entry_object(&self, other: &Self) -> bool {
+        let Some((left, right)) = self.entry_graph.zip(other.entry_graph) else {
+            return false;
+        };
+        if left.callable != right.callable {
+            return false;
+        }
+        let left_path = left
+            .shared_at
+            .and_then(|depth| self.region.selection.get(..depth));
+        let right_path = right
+            .shared_at
+            .and_then(|depth| other.region.selection.get(..depth));
+        // Distinct shared boundaries can refer to the same entry object.
+        if self.region.source == other.region.source {
+            left_path != right_path
+        } else {
+            left_path.is_some() && right_path.is_some()
+        }
     }
 
     pub(super) fn dependency_spans(&self) -> impl Iterator<Item = Span> + '_ {
@@ -343,6 +389,7 @@ impl Datum {
                 explicit_share: false,
                 from_variable: false,
                 call_borrow: false,
+                entry_graph: None,
                 dependencies: BTreeSet::new(),
                 anchor_scopes: BTreeSet::new(),
                 branches: BTreeMap::new(),
@@ -360,6 +407,24 @@ impl Datum {
             self.roots
                 .iter()
                 .chain(self.members.values().flat_map(Self::origins)),
+        )
+    }
+
+    fn call_participants(&self, mode: Mode) -> impl Iterator<Item = (&Origin, Mode)> {
+        self.roots.iter().map(move |origin| (origin, mode)).chain(
+            self.members
+                .values()
+                .flat_map(Self::origins)
+                .map(move |origin| {
+                    let mode = if matches!(mode, Mode::Mut | Mode::New | Mode::Via)
+                        && origin.mode == Access::Shared
+                    {
+                        Mode::Shared
+                    } else {
+                        mode
+                    };
+                    (origin, mode)
+                }),
         )
     }
 
@@ -2083,15 +2148,15 @@ impl Ledger {
 }
 
 pub(super) fn conflicts(left: &Datum, lmode: Mode, right: &Datum, rmode: Mode) -> Option<bool> {
-    left.origins().find_map(|a| {
-        right.origins().find_map(|b| {
+    left.call_participants(lmode).find_map(|(a, lmode)| {
+        right.call_participants(rmode).find_map(|(b, rmode)| {
             let left_writable = a.mode.writes()
                 && matches!(lmode, Mode::Mut | Mode::Shared | Mode::New | Mode::Via);
             let right_writable = b.mode.writes()
                 && matches!(rmode, Mode::Mut | Mode::Shared | Mode::New | Mode::Via);
             let left_ref = lmode == Mode::Ref || lmode == Mode::New && a.mode == Access::Ref;
             let right_ref = rmode == Mode::Ref || rmode == Mode::New && b.mode == Access::Ref;
-            if a.overlaps(b) && !(lmode == Mode::Shared && rmode == Mode::Shared) {
+            if a.may_conflict(b) && !(lmode == Mode::Shared && rmode == Mode::Shared) {
                 if left_writable && right_writable {
                     return Some(true);
                 }

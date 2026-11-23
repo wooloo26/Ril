@@ -766,3 +766,16 @@ pub fn change(mut holder: .{ var marker: int, via child: Cell }) &mut -> int {
     holder.child.count += 1
     holder.child.count
 }
+
+-- @case a_smaller_published_effect_set_is_compatible compat-pass
+-- @baseline
+pub fn report() @io -> () { println("message") }
+-- @revision
+pub fn report() -> () { () }
+
+-- @case a_larger_published_effect_set_breaks_compatibility compat-fail E0552
+-- @baseline
+pub fn report() -> () { () }
+-- @revision
+pub fn report() @io -> () { println("message") }
+-- ^ E0552

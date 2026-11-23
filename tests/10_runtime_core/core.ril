@@ -1,6 +1,21 @@
 -- @suite runtime_core
 -- @default_stage run
 
+-- @case aliased_shared_formals_preserve_identity_through_a_nested_borrow run-pass backend=both
+type Cell = .{ var count: int }
+type Pair = .{ ^mut left: Cell, ^mut right: Cell }
+fn edit(mut cell: Cell) &mut -> () { cell.count += 1 }
+fn retain(^mut left: Cell, ^mut right: Cell) &mut &^mut &return(^mut left, ^mut right) -> new Pair {
+    edit(mut left)
+    Pair.{ left: ^mut left, right: ^mut right }
+}
+fn main() -> () {
+    let mut cell = Cell.{ count: 40 }
+    let mut pair = retain(^mut cell, ^mut cell)
+    pair.right.count += 1
+    assert(pair.left.count == 42 && cell.count == 42)
+}
+
 -- @case exhausting_a_variable_batch_inspects_every_result run-pass backend=both
 fn batch(flag: bool) -> new []!<int, str> {
     if flag { [Ok(2), Err("skip"), Ok(3)] } else { [] }

@@ -160,7 +160,8 @@ structure BindingAccess where
 structure Hold where
   token : Nat
   region : Pointer
-  writes : Bool
+  access : Access
+  scope : Nat
   active : Bool
   deriving Repr, DecidableEq
 
@@ -208,10 +209,18 @@ def live (r : Resolved) : Bool :=
     r.tokens.all (fun token => token.active && contains token.region r.pointer) &&
     decide (r.grant.object = r.pointer.object ∧ r.grant.source = r.pointer.source)
 
+/-- Independent shared participants can alias. A scoped reborrow of a shared
+participant keeps this compatibility with the shared holds of its outer call. -/
+def compatibleSharedHold (r : Resolved) (holds : List Hold) (hold : Hold) : Bool :=
+  decide (hold.access = .shared) && (decide (r.effective = .shared) ||
+    holds.any fun ancestor => ancestor.active && decide (ancestor.access = .shared ∧
+      hold.scope ≤ ancestor.scope ∧ ancestor.token ∈ r.authorityAncestors))
+
 def noHoldConflict (r : Resolved) (holds : List Hold) (writing : Bool := true) : Bool :=
   holds.all fun hold => !hold.active || !overlaps hold.region r.pointer ||
     decide (hold.token ∈ r.authorityAncestors) ||
-    (!writing && (!hold.writes || r.binding.immutableSource || decide (r.effective = .immutable)))
+    compatibleSharedHold r holds hold ||
+    (!writing && (!hold.access.writes || r.binding.immutableSource || decide (r.effective = .immutable)))
 
 def noScopedHold (r : Resolved) : Bool := r.tokens.all (fun token => !token.scopedHold)
 
@@ -502,7 +511,7 @@ def transfer (w : World) (atom : Atom) : Option World := do
       let next := addToken w r.pointer true false false scope r.binding.dependencies
       let next := { next with
         raw, scope, frames := ⟨w.scope, some w.nextToken⟩ :: w.frames,
-        holds := ⟨w.nextToken, r.pointer, true, true⟩ :: w.holds }
+        holds := ⟨w.nextToken, r.pointer, .mut, scope, true⟩ :: w.holds }
       pure (install (markUse next source.register .writable) destination ⟨false, .mut⟩
         (w.nextToken :: r.binding.dependencies) scope false)
     else none
@@ -521,7 +530,7 @@ def transfer (w : World) (atom : Atom) : Option World := do
         let next := addToken w r.pointer true false false w.scope r.binding.dependencies
         pure (putBinding { next with
           raw,
-          holds := ⟨w.nextToken, r.pointer, false, false⟩ :: w.holds }
+          holds := ⟨w.nextToken, r.pointer, .ref, w.scope, false⟩ :: w.holds }
           ⟨destination, ⟨false, .ref⟩, w.nextToken :: r.binding.dependencies,
             true, w.scope, deepImmutable r, false⟩)
       | .mutable =>
@@ -529,7 +538,7 @@ def transfer (w : World) (atom : Atom) : Option World := do
           let next := addToken w r.pointer true false false w.scope r.binding.dependencies
           pure (putBinding (markUse { next with
             raw,
-            holds := ⟨w.nextToken, r.pointer, true, false⟩ :: w.holds } source.register .writable)
+            holds := ⟨w.nextToken, r.pointer, .mut, w.scope, false⟩ :: w.holds } source.register .writable)
             ⟨destination, ⟨false, .mut⟩, w.nextToken :: r.binding.dependencies, true, w.scope, false, false⟩)
         else none
       | .retained =>
@@ -538,7 +547,7 @@ def transfer (w : World) (atom : Atom) : Option World := do
             r.binding.dependencies
           pure (putBinding (markUse { next with
             raw,
-            holds := ⟨w.nextToken, r.pointer, true, false⟩ :: w.holds } source.register .writable)
+            holds := ⟨w.nextToken, r.pointer, .shared, w.scope, false⟩ :: w.holds } source.register .writable)
             ⟨destination, ⟨false, .shared⟩, [w.nextToken], true, w.scope, false, false⟩)
         else none
       | .construction =>
@@ -581,7 +590,7 @@ def ledgerValid (w : World) : Bool :=
     token.dependencies.all (fun id => decide (id < token.id) && (lookupToken w id).isSome)) &&
   w.bindings.all (fun binding => binding.dependencies.all (fun id =>
     (lookupToken w id).any (fun token => token.dependencies.all (fun parent => decide (parent ∈ binding.dependencies))))) &&
-  w.holds.all (fun hold => (lookupToken w hold.token).isSome)
+  w.holds.all (fun hold => (lookupToken w hold.token).any (fun token => decide (hold.scope = token.scope)))
 
 def checkAtom (atom : Atom) (w : World) : Except Error World :=
   match transfer w atom with

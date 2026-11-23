@@ -36,7 +36,7 @@ def scopedWrites (world : World) (scope : Nat) : List Nat :=
     match lookupToken world hold.token with
     | none => none
     | some token =>
-      if hold.writes && token.scopedHold && !token.retained && decide (token.scope = scope)
+      if hold.access.writes && token.scopedHold && !token.retained && decide (token.scope = scope)
       then some hold.token else none
 
 theorem lookup_token (h : lookupToken world id = some token) :

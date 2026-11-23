@@ -48,10 +48,12 @@ structure WorldInvariant (world : World) : Prop where
   dependenciesClosed : ∀ binding ∈ world.bindings, ∀ id ∈ binding.dependencies,
     ∀ token, lookupToken world id = some token → ∀ parent ∈ token.dependencies, parent ∈ binding.dependencies
   holdsKnown : ∀ hold ∈ world.holds, (lookupToken world hold.token).isSome = true
+  holdScopes : ∀ hold ∈ world.holds, ∀ token,
+    lookupToken world hold.token = some token → hold.scope = token.scope
 
 theorem ledger_facts (h : ledgerValid w = true) : WorldInvariant w := by
   simp only [ledgerValid, Bool.and_eq_true, decide_eq_true_eq] at h
-  refine ⟨h.1.1.1, ?_, ?_, ?_, ?_, ?_, List.all_eq_true.mp h.2⟩
+  refine ⟨h.1.1.1, ?_, ?_, ?_, ?_, ?_, ?_, ?_⟩
   · intro token ht
     have checked := List.all_eq_true.mp h.1.1.2 token ht
     simp only [Bool.and_eq_true, decide_eq_true_eq] at checked
@@ -73,6 +75,13 @@ theorem ledger_facts (h : ledgerValid w = true) : WorldInvariant w := by
     have checked := List.all_eq_true.mp (List.all_eq_true.mp h.1.2 binding hp) id hi
     simp only [found, Option.any_some] at checked
     exact of_decide_eq_true (List.all_eq_true.mp checked parent hc)
+  · intro hold hh
+    have checked := List.all_eq_true.mp h.2 hold hh
+    cases found : lookupToken w hold.token with
+    | none => simp [found] at checked
+    | some token => rfl
+  · intro hold hh token found
+    simpa [found] using List.all_eq_true.mp h.2 hold hh
 
 structure StepFacts (before : World) (atom : Atom) (after : World) : Prop where
   executed : transfer before atom = some after
@@ -354,9 +363,10 @@ theorem active_dependency_required (h : live r = true) (ht : token ∈ r.tokens)
 theorem independent_hold_blocks (h : noHoldConflict r holds = true) (hl : hold ∈ holds)
     (hoverlap : overlaps hold.region r.pointer = true)
     (hactive : hold.active = true)
-    (hindependent : hold.token ∉ r.authorityAncestors) : False := by
+    (hindependent : hold.token ∉ r.authorityAncestors)
+    (hincompatible : compatibleSharedHold r holds hold = false) : False := by
   have hall := List.all_eq_true.mp h hold hl
-  simp [hoverlap, hactive, hindependent] at hall
+  simp [hoverlap, hactive, hindependent, hincompatible] at hall
 
 theorem simultaneous_participants_separated (h : authorized accessCheck = true)
     (hp : peer ∈ accessCheck.peers) : overlaps peer accessCheck.resolved.pointer = false := by

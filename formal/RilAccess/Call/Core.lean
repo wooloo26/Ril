@@ -85,6 +85,10 @@ def accessCheckUses (token : Nat) (accessCheck : AccessCheck) : Bool :=
     (decide (accessCheck.rule = .write) || decide (accessCheck.rule = .replaceScalar) ||
       decide (accessCheck.rule = .retain))
 
+def accessCheckMutates (token : Nat) (accessCheck : AccessCheck) : Bool :=
+  decide (token ∈ accessCheck.resolved.authorityAncestors) &&
+    (decide (accessCheck.rule = .write) || decide (accessCheck.rule = .replaceScalar))
+
 /-- This checks surviving authority (`&^mut`), not writes or object equality. The parent
 relation preserves the distinction between independent aliased participants. -/
 def rootedWriter (world : World) (token : Token) : Bool :=
@@ -105,7 +109,7 @@ def retainedBeyond (formalToken : Nat) (world : World) : Bool :=
 def formalMutated (entry : World) (frontier : List World) (formal : Nat) : Bool :=
   match parameterToken entry formal with
   | none => false
-  | some token => frontier.any (fun world => world.accessChecks.any (accessCheckUses token))
+  | some token => frontier.any (fun world => world.accessChecks.any (accessCheckMutates token))
 
 def formalRetained (entry : World) (frontier : List World) (formal : Nat) : Bool :=
   match parameterToken entry formal with

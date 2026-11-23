@@ -96,6 +96,19 @@ def independentCapture := sequence [access [.allocate 0 (fixed .mut) []],
   .invoke [arg 0 10 .mutable] [0] (access [.write (p 10), .read (p 0)])]
 def aliasedRetainedWriters := sequence [access [.allocate 0 (fixed .mut) []],
   .invoke [arg 0 10 .retained, arg 0 11 .retained] [] (access [.retain (p 10), .retain (p 11)])]
+def nestedBorrowFromAliasedSharedParticipants := sequence [access [.allocate 0 (fixed .mut) []],
+  .invoke [arg 0 10 .retained, arg 0 11 .retained] []
+    (sequence [.invoke [arg 10 20 .mutable] [] (access [.write (p 20)]),
+      access [.retain (p 10), .retain (p 11)]])]
+def exclusiveAndSharedParticipantsOverlap := sequence [access [.allocate 0 (fixed .mut) []],
+  .invoke [arg 0 10 .mutable, arg 0 11 .retained] [] (access [.write (p 10), .retain (p 11)])]
+def nestedBorrowOfAliasedSharedParticipantsOverlaps := sequence [access [.allocate 0 (fixed .mut) []],
+  .invoke [arg 0 10 .retained, arg 0 11 .retained] []
+    (sequence [.invoke [arg 10 20 .mutable, arg 11 21 .observe] []
+        (access [.write (p 20), .read (p 21)]),
+      access [.retain (p 10), .retain (p 11)]])]
+def coincidentRetainedWritersNeedIndependentUse := sequence [access [.allocate 0 (fixed .mut) []],
+  .invoke [arg 0 10 .retained, arg 0 11 .retained] [] (access [.retain (p 10)])]
 def formalAliasIsNotRetention := sequence [access [.allocate 0 (fixed .mut) [], .allocate 1 (fixed .mut) []],
   .invoke [arg 0 10 .retained, arg 1 11 .retained] [] (access [.retain (p 10)])]
 def overwrittenPublication := sequence [access [.allocate 0 (fixed .mut) [],
@@ -107,42 +120,79 @@ def survivingPublication := sequence [access [.allocate 0 (fixed .mut) [],
   .invoke [arg 2 10 .retained] [1]
     (access [.assign (p 10) 1]), access [.write (p 1)]]
 
+structure ProgramExample where
+  name : String
+  sourceCase : String
+  program : Syntax
+  expected : Bool
+
+def programs : List ProgramExample :=
+  [⟨"call: mutable argument", "mutable_receiver_resumes_after_scoped_call", mutate, true⟩,
+   ⟨"call: temporary observation pins current var target", "a_ref_argument_can_observe_a_replaceable_binding", observeVariable, true⟩,
+   ⟨"call: read/read aliasing", "two_ref_arguments_can_observe_the_same_source", readAliased, true⟩,
+   ⟨"call: disjoint mutable participants", "two_mutable_arguments_can_use_disjoint_sources", disjointWriters, true⟩,
+   ⟨"call: aliased writers rejected", "overlapping_mut_writers", aliasedWriters, false⟩,
+   ⟨"call: write/read conflict rejected", "overlapping_read_write", writeReadAlias, false⟩,
+   ⟨"call: ordinary mut cannot retain", "mutable_formal_cannot_supply_a_retained_writer", ordinaryWriteCannotRetain, false⟩,
+   ⟨"call: retained writer survives", "shared_return_retains", retainedWriter, true⟩,
+   ⟨"call: write alone is not retention", "shared_parameter_not_retained", writeAloneNotRetention, false⟩,
+   ⟨"call: local sharing is not outward retention", "local_sharing_does_not_retain_a_parameter", callLocalSharingNotRetention, false⟩,
+   ⟨"call: retained alias keeps formal authority origin", "retaining_a_local_alias_keeps_its_formal_authority", retainedThroughAlias, true⟩,
+   ⟨"call: nested mut forwarding", "nested_mutable_call_proves_the_outer_use", nestedMutation, true⟩,
+   ⟨"call: nested retained forwarding", "nested_shared_call_preserves_retained_authority", nestedRetention, true⟩,
+   ⟨"call: temporary forwarding cannot retain", "nested_shared_forwarding_cannot_retain_a_scoped_writer", nestedRetentionFromTemporary, false⟩,
+   ⟨"call: forwarding cannot invent writable use", "forwarding_to_a_reader_does_not_exercise_writable_authority", noCircularUse, false⟩,
+   ⟨"call: use on a retained alternative", "reachable_write_on_one_alternative_satisfies_mutable_use", possibleWrite, true⟩,
+   ⟨"call: argument markers match exactly", "call_markers_must_match_a_mutable_formal", wrongMarker, false⟩,
+   ⟨"call: formal slots are fixed", "mutable_formal_is_a_fixed_slot", rebindFormal, false⟩,
+   ⟨"call: construction input", "a_new_argument_can_supply_construction_authority", constructInput, true⟩,
+   ⟨"call: observed input has no construction authority", "a_read_only_argument_cannot_supply_construction_authority", observedInputIsNotConstruction, false⟩,
+   ⟨"call: formal valid scope ends", "a_mutable_formal_cannot_be_read_from_its_caller", formalCannotEscape, false⟩,
+   ⟨"call: immutable input", "immutable_snapshot_can_be_passed_as_a_plain_argument", immutableInput, true⟩,
+   ⟨"call: plain input cannot publish a live writer", "a_plain_argument_requires_a_snapshot", mutablePlainInput, false⟩,
+   ⟨"call: undeclared capture rejected", "a_named_helper_must_declare_its_capture", undeclaredCapture, false⟩,
+   ⟨"call: declared independent capture", "independent_capture_and_mutable_argument_can_be_used_together", declaredCapture, true⟩,
+   ⟨"call: captured alias is a separate participant", "named_callable_capture_overlaps_a_mutable_argument", independentCapture, false⟩,
+   ⟨"call: aliased shared participants can both be retained", "coincident_shared_arguments_can_both_be_retained", aliasedRetainedWriters, true⟩,
+   ⟨"call: unretained sibling ^mut formal rejected (E0527)", "retaining_one_shared_formal_does_not_retain_its_sibling", formalAliasIsNotRetention, false⟩,
+   ⟨"call: overwritten publication is not surviving retention", "overwritten_outer_binding_does_not_retain_a_parameter", overwrittenPublication, false⟩,
+   ⟨"call: outer binding roots surviving publication", "publication_survives_in_a_replaced_outer_binding", survivingPublication, true⟩,
+   ⟨"call: an aliased shared participant can yield a nested mutable reborrow", "shared_participant_can_yield_a_nested_scoped_mutable_borrow", nestedBorrowFromAliasedSharedParticipants, true⟩,
+   ⟨"call: exclusive and shared participants cannot overlap", "exclusive_argument_cannot_overlap_a_shared_argument", exclusiveAndSharedParticipantsOverlap, false⟩,
+   ⟨"call: a nested mutable borrow conflicts with an aliased observation", "distinct_shared_formals_do_not_prove_independence_for_a_nested_call", nestedBorrowOfAliasedSharedParticipantsOverlaps, false⟩,
+   ⟨"call: coincident shared arguments do not merge their formal obligations", "retaining_one_shared_argument_cannot_satisfy_an_aliased_formal", coincidentRetainedWritersNeedIndependentUse, false⟩]
+
+def sourceChecks : List (String × Bool) :=
+  programs.map fun testCase => (testCase.sourceCase, accepted testCase.program)
+
+/-- The interface records formal positions, even when actual arguments alias. -/
+def publishedObligations : List (String × (List Nat × List Nat)) :=
+  let setup := [.allocate 0 (fixed .mut) []]
+  let sharedPair := [arg 0 10 .retained, arg 0 11 .retained]
+  let retainPair := access [.retain (p 10), .retain (p 11)]
+  let contracts : List (String × List Argument × Syntax) :=
+    [("published_mutation_has_no_retention", [arg 0 10 .mutable], access [.write (p 10)]),
+     ("published_root_retention_does_not_write", [arg 0 10 .retained], access [.retain (p 10)]),
+     ("published_shared_pair_retains_both_formals", sharedPair, retainPair),
+     ("published_nested_borrow_writes_only_its_formal", sharedPair,
+       sequence [.invoke [arg 10 20 .mutable] [] (access [.write (p 20)]), retainPair])]
+  contracts.map fun (name, arguments, body) =>
+    let collect := fun predicate =>
+      (List.range arguments.length).filter fun position =>
+        arguments[position]?.any fun argument =>
+          inspectCall setup arguments body (fun entry front => predicate entry front argument.formal)
+    (name, (collect formalMutated, collect formalRetained))
+
 def examples : List (String × Bool) :=
-  [("call: mutable argument", accepted mutate),
-   ("call: temporary observation pins current var target", accepted observeVariable),
-   ("call: read/read aliasing", accepted readAliased),
-   ("call: disjoint mutable participants", accepted disjointWriters),
-   ("call: aliased writers rejected", !accepted aliasedWriters),
-   ("call: write/read conflict rejected", !accepted writeReadAlias),
-   ("call: ordinary mut cannot retain", !accepted ordinaryWriteCannotRetain),
-   ("call: retained writer survives", accepted retainedWriter),
-   ("call: write alone is not retention", !accepted writeAloneNotRetention),
-   ("call: local sharing is not outward retention", !accepted callLocalSharingNotRetention),
-   ("call: retained alias keeps formal authority origin",
-      accepted retainedThroughAlias &&
-      inspectCall [.allocate 0 (fixed .mut) []] [arg 0 10 .retained]
-        (access [.bind (p 10) 12 (fixed .shared), .retain (p 12)])
-        (fun entry front => formalRetained entry front 10)),
-   ("call: nested mut forwarding", accepted nestedMutation),
-   ("call: nested retained forwarding", accepted nestedRetention),
-   ("call: temporary forwarding cannot retain", !accepted nestedRetentionFromTemporary),
-   ("call: forwarding cannot invent writable use", !accepted noCircularUse),
-   ("call: use on a retained alternative", accepted possibleWrite),
-   ("call: argument markers match exactly", !accepted wrongMarker),
-   ("call: formal slots are fixed", !accepted rebindFormal),
-   ("call: construction input", accepted constructInput),
-   ("call: observed input has no construction authority", !accepted observedInputIsNotConstruction),
-   ("call: formal valid scope ends", !accepted formalCannotEscape),
-   ("call: immutable input", accepted immutableInput),
-   ("call: plain input cannot publish a live writer", !accepted mutablePlainInput),
-   ("call: undeclared capture rejected", !accepted undeclaredCapture),
-   ("call: declared independent capture", accepted declaredCapture),
-   ("call: captured alias is a separate participant", !accepted independentCapture),
-   ("call: aliased ^mut writers rejected at call boundary", !accepted aliasedRetainedWriters),
-   ("call: unretained sibling ^mut formal rejected (E0527)", !accepted formalAliasIsNotRetention),
-   ("call: overwritten publication is not surviving retention", !accepted overwrittenPublication),
-   ("call: outer binding roots surviving publication", accepted survivingPublication)]
+  programs.map fun testCase => (testCase.name, accepted testCase.program == testCase.expected)
 
 theorem examples_all_pass : examples.all Prod.snd = true := by decide +kernel
+
+theorem source_cases_unique : (programs.map ProgramExample.sourceCase).Nodup := by decide
+
+theorem retained_alias_keeps_formal_origin :
+    inspectCall [.allocate 0 (fixed .mut) []] [arg 0 10 .retained]
+      (access [.bind (p 10) 12 (fixed .shared), .retain (p 12)])
+      (fun entry front => formalRetained entry front 10) = true := by decide +kernel
 
 end RilAccess.Calls.Examples

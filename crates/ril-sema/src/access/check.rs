@@ -700,8 +700,7 @@ impl<'a> Analyzer<'a> {
             };
             value.transform(&mut |origin| {
                 origin.dependencies.insert(span.into());
-                origin.inherits_mode = param.mode == Mode::Via;
-                origin.call_borrow = param.mode == Mode::Mut;
+                origin.enter_formal(ctx.owner, param.mode);
             });
             value = results::receive_results(self.program, &mut ledger, &param.ty, value, span);
             ledger.slots.insert(

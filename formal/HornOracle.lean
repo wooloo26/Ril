@@ -197,34 +197,6 @@ def cleanupCompositionCases : List (String × Bool) :=
    ("synchronous_cleanup_may_diverge", (check divergingCleanupProgram).isOk),
    ("a_cleanup_handler_write_requires_a_caller_state_clause", (check (cleanupProgram false)).isOk)]
 
-open RilAccess.Calls.Examples in
-def callAuthorityCases : List (String × Bool) :=
-  [("a_ref_argument_can_observe_a_replaceable_binding", accepted observeVariable),
-   ("two_ref_arguments_can_observe_the_same_source", accepted readAliased),
-   ("two_mutable_arguments_can_use_disjoint_sources", accepted disjointWriters),
-   ("overlapping_mut_writers", accepted aliasedWriters),
-   ("overlapping_read_write", accepted writeReadAlias),
-   ("mutable_formal_cannot_supply_a_retained_writer", accepted ordinaryWriteCannotRetain),
-   ("shared_return_retains", accepted retainedWriter),
-   ("shared_parameter_not_retained", accepted writeAloneNotRetention),
-   ("retaining_a_local_alias_keeps_its_formal_authority", accepted retainedThroughAlias),
-   ("nested_mutable_call_proves_the_outer_use", accepted nestedMutation),
-   ("nested_shared_call_preserves_retained_authority", accepted nestedRetention),
-   ("recursive_forwarding_is_ungrounded", accepted noCircularUse),
-   ("reachable_write_on_one_alternative_satisfies_mutable_use", accepted possibleWrite),
-   ("call_markers_must_match_a_mutable_formal", accepted wrongMarker),
-   ("mutable_formal_is_a_fixed_slot", accepted rebindFormal),
-   ("a_new_argument_can_supply_construction_authority", accepted constructInput),
-   ("a_read_only_argument_cannot_supply_construction_authority", accepted observedInputIsNotConstruction),
-   ("a_plain_argument_requires_a_snapshot", accepted mutablePlainInput),
-   ("a_named_helper_must_declare_its_capture", accepted undeclaredCapture),
-   ("independent_capture_and_mutable_argument_can_be_used_together", accepted declaredCapture),
-   ("named_callable_capture_overlaps_a_mutable_argument", accepted independentCapture),
-   ("retaining_one_shared_formal_does_not_retain_its_sibling", accepted formalAliasIsNotRetention),
-   ("overwritten_outer_binding_does_not_retain_a_parameter", accepted overwrittenPublication),
-   ("publication_survives_in_a_replaced_outer_binding", accepted survivingPublication),
-   ("local_sharing_does_not_retain_a_parameter", accepted callLocalSharingNotRetention)]
-
 open RilAccess.CoreConcurrency RilAccess.CoreConcurrency.Examples in
 def taskJoinCases : List (String × Bool) :=
   [("plain_task_join_is_memoized_and_rooted",
@@ -376,7 +348,12 @@ def main (args : List String) : IO Unit := do
   else if args == ["recursive-storage"] then
     stdout.putStrLn (toJson RilAccess.RecursiveStorage.Examples.contracts).compress
   else if args == ["call-authority"] then
-    stdout.putStrLn (toJson callAuthorityCases).compress
+    stdout.putStrLn (toJson RilAccess.Calls.Examples.sourceChecks).compress
+  else if args == ["call-obligations"] then
+    stdout.putStrLn (toJson RilAccess.Calls.Examples.publishedObligations).compress
+  else if args == ["summary-signatures"] then
+    stdout.putStrLn (toJson (RilAccess.CoreSummary.Examples.signatureCases.map
+      fun (name, verdict, _) => (name, verdict))).compress
   else if args == ["task-joins"] then
     stdout.putStrLn (toJson taskJoinCases).compress
   else if args == ["result-patterns"] then

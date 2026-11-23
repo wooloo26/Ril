@@ -2396,6 +2396,10 @@ ReturnDependency      ::= [ "ref" | "^mut" ] QualifiedName
 
 At every call and assignment, Ril checks potentially overlapping mutable/live source sets (immutable snapshots carry zero mutable/live sources). Concrete access modes match exactly; `^mut` arguments and stored elements require `^mut` targets. Source-overlap checking does not relax mode matching.
 
+Two explicitly shared `^mut` parameters may receive the same object. Each parameter still requires surviving retention through its own provenance. A nested `mut` borrow can use one of these parameters when the nested call has no overlapping participants.
+
+Borrowing a container as `mut` preserves the mode of an existing `^mut` member. Borrowing that member directly as a `mut` argument requires exclusive access to the member's reachable writers during the call.
+
 | Violation | Diagnostic |
 | :--- | :---: |
 | Writing through plain immutable or `ref` access, or binding immutable/`ref` data as `mut`/`^mut` | `E0520` |

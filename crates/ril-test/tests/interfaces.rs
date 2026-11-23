@@ -1331,7 +1331,44 @@ fn boundary_examples_agree_with_lean() -> Result<(), Box<dyn std::error::Error>>
 
 #[test]
 fn call_authority_examples_agree_with_lean() -> Result<(), Box<dyn std::error::Error>> {
-    check_access_examples("call-authority", 25)
+    check_access_examples("call-authority", 34)
+}
+
+#[test]
+fn published_call_obligations_agree_with_lean() -> Result<(), Box<dyn std::error::Error>> {
+    let Some(oracle) = std::env::var_os("RIL_HORN_ORACLE") else {
+        return Ok(());
+    };
+    let suite = parse_suite(
+        Path::new("access.ril"),
+        include_str!("../../../tests/07_access/access.ril"),
+    )?;
+    let output = query(&oracle, "call-obligations", b"[]")?;
+    type Obligations = (Vec<usize>, Vec<usize>);
+    let expected: Vec<(String, Obligations)> = serde_json::from_slice(&output)?;
+    assert_eq!(expected.len(), 4);
+    for (case_id, (writes, retained)) in expected {
+        let case = suite.cases.iter().find(|case| case.id == case_id).unwrap();
+        let interface = Driver.interface(&case.pkg).unwrap();
+        let decoded = Interface::decode(&interface.encode()?)?;
+        assert_eq!(decoded.functions.len(), 1, "{case_id}");
+        let summary = &decoded.functions.values().next().unwrap().summary;
+        assert_eq!(summary.writes, writes, "{case_id}");
+        let returned: BTreeSet<_> = summary
+            .return_sources
+            .iter()
+            .filter(|source| source.access == Access::Shared)
+            .map(|source| source.formal)
+            .collect();
+        let retained: BTreeSet<_> = retained.into_iter().collect();
+        assert_eq!(returned, retained, "{case_id}: returned writers");
+        let all_retained: BTreeSet<_> = returned
+            .into_iter()
+            .chain(summary.retained.iter().copied())
+            .collect();
+        assert_eq!(all_retained, retained, "{case_id}: retained writers");
+    }
+    Ok(())
 }
 
 #[test]
@@ -1360,6 +1397,11 @@ fn scoped_resource_examples_agree_with_lean() -> Result<(), Box<dyn std::error::
 }
 
 #[test]
+fn summary_signatures_agree_with_lean() -> Result<(), Box<dyn std::error::Error>> {
+    check_access_examples("summary-signatures", 20)
+}
+
+#[test]
 fn result_patterns_agree_with_lean() -> Result<(), Box<dyn std::error::Error>> {
     check_access_examples("result-patterns", 62)
 }
@@ -1379,9 +1421,12 @@ fn check_access_examples(operation: &str, count: usize) -> Result<(), Box<dyn st
             .flat_map(|suite| &suite.cases)
             .find(|case| case.id == name)
             .ok_or_else(|| format!("no Ril case named {name} for Lean operation {operation}"))?;
-        let diagnostics = Driver.check_stage(&case.pkg, Stage::Access).diagnostics;
+        let diagnostics = match &case.baseline {
+            Some(baseline) => Driver.check_compat(baseline, &case.pkg).diagnostics,
+            None => Driver.check_stage(&case.pkg, Stage::Access).diagnostics,
+        };
         assert_eq!(diagnostics.is_empty(), accepted, "{name}: {diagnostics:?}");
-        if let CaseMode::CompileFail(code) = case.mode {
+        if let CaseMode::CompileFail(code) | CaseMode::CompatFail(code) = case.mode {
             assert!(
                 diagnostics.iter().any(|diag| diag.code == Some(code)),
                 "{name}: {diagnostics:?}"

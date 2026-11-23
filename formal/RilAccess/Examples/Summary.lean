@@ -53,6 +53,38 @@ def retainedSummary : Summary := { emptySummary with retained := [liveVar], effe
 def pureReadTemplate : Template := { namedReads := [.concrete pureConst] }
 def upperEffectTemplate : Template := { effects := [6, 7] }
 
+def signatureCases : List (String × Bool × Bool) :=
+  let writes := { emptySummary with writes := [liveVar] }
+  let retains := { emptySummary with retained := [liveVar], contained := [liveVar] }
+  let effects := { emptySummary with effects := [6] }
+  let exact := Summary.exactSignature pureTable
+  let subsumes := Summary.subsumes pureTable
+  let widerRoot := { emptySummary with rootReturn := [saved, child] }
+  let narrowerRoot := { emptySummary with rootReturn := [saved] }
+  [("writable_parameter_compile_pass", exact writes writes, true),
+   ("missing_write_clause", exact emptySummary writes, false),
+   ("excessive_write_clause", exact writes emptySummary, false),
+   ("retaining_a_writer_does_not_exercise_a_write_clause",
+      exact { retains with writes := [liveVar] } retains, false),
+   ("retaining_a_contained_writer_requires_its_state_clause",
+      exact { retains with retained := [] } retains, false),
+   ("a_pure_factory_declares_its_immutable_capture", exact factorySummary pureReadSummary, true),
+   ("a_pure_factory_cannot_omit_its_immutable_capture", exact emptySummary pureReadSummary, false),
+   ("an_environment_free_factory_cannot_declare_capture", exact factorySummary emptySummary, false),
+   ("a_named_helper_can_declare_a_pure_capture", exact pureLocalReadSummary pureLocalReadSummary, true),
+   ("a_named_helper_must_declare_its_capture", exact emptySummary pureLocalReadSummary, false),
+   ("a_named_helper_cannot_declare_an_unused_pure_capture", exact pureLocalReadSummary emptySummary, false),
+   ("a_module_constant_needs_no_captured_state_clause", exact emptySummary moduleReadSummary, true),
+   ("immutable_return_source_requires_a_contained_dependency",
+      exact emptySummary { emptySummary with contained := [parameterCapture] }, false),
+   ("exact_io_asserted", exact effects effects, true),
+   ("missing_io", exact emptySummary effects, false),
+   ("a_named_function_cannot_declare_an_unused_effect", exact effects emptySummary, false),
+   ("narrower_inferred_root_relation_is_compatible", subsumes widerRoot narrowerRoot, true),
+   ("additional_inferred_root_breaks_compatibility", subsumes narrowerRoot widerRoot, false),
+   ("a_smaller_published_effect_set_is_compatible", subsumes effects emptySummary, true),
+   ("a_larger_published_effect_set_breaks_compatibility", subsumes emptySummary effects, false)]
+
 def examples : List (String × Bool) :=
   [("core entry: cyclic graph closure includes exactly both entry objects",
       decide ((capturedInstances heap [saved]).length = 2 ∧
@@ -155,7 +187,8 @@ def examples : List (String × Bool) :=
    ("named fn signature: return and effect rows remain exact",
       !Summary.exactSignature pureTable emptySummary { emptySummary with rootReturn := [saved] } &&
       !Summary.exactSignature pureTable emptySummary { emptySummary with contained := [pureConst] } &&
-      !Summary.exactSignature pureTable emptySummary { emptySummary with effects := [6] })]
+      !Summary.exactSignature pureTable emptySummary { emptySummary with effects := [6] })] ++
+  (signatureCases.map fun (name, verdict, expected) => (name, verdict == expected))
 
 theorem examples_all_pass : examples.all Prod.snd = true := by decide +kernel
 

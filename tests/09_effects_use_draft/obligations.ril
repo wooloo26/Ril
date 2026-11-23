@@ -4,6 +4,10 @@
 -- @case exact_io_asserted compile-pass
 fn emit() @io -> () { println("message") }
 
+-- @case a_named_function_cannot_declare_an_unused_effect compile-fail E0612
+fn silent() @io -> () { () }
+-- ^ E0612
+
 -- @case missing_io compile-fail E0612
 fn emit() -> () { println("message") }
 -- ^ E0612

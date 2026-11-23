@@ -2739,8 +2739,7 @@ impl<'program> Analyzer<'program> {
                 }
                 value.transform(&mut |origin| {
                     origin.dependencies.insert(name.span.into());
-                    origin.inherits_mode = p.mode == Mode::Via;
-                    origin.call_borrow = p.mode == Mode::Mut;
+                    origin.enter_formal(inner.owner, p.mode);
                     if matches!(param_ty, Some(Ty::Scope | Ty::Draft(_))) {
                         origin.confined = Some(node.span);
                         origin.draft = matches!(param_ty, Some(Ty::Draft(_)));
