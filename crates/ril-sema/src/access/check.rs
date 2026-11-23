@@ -1644,6 +1644,7 @@ impl<'a> Analyzer<'a> {
     }
 
     fn check_publication_source(&mut self, ctx: &Context, value: &Datum, span: Span) {
+        self.check_stored_views(value, false, span);
         if value
             .origins()
             .any(|origin| origin.call_borrow && origin.mode.writes())
@@ -1660,6 +1661,20 @@ impl<'a> Analyzer<'a> {
                 && ctx.via.contains(&origin.region.source)
         }) {
             self.seed(ctx, Obligation::NeedsSharing(origin.region.source));
+        }
+    }
+
+    fn check_stored_views(&mut self, value: &Datum, root_as_ref: bool, span: Span) {
+        if value
+            .origins()
+            .any(|origin| origin.mode == Access::Ref && origin.call_borrow)
+            || root_as_ref && value.roots.iter().any(|origin| origin.call_borrow)
+        {
+            self.error(
+                Code::E0604,
+                span,
+                "a ref view of a call-scoped writer cannot be stored in existing storage",
+            );
         }
     }
 
@@ -2914,6 +2929,9 @@ impl<'a> Analyzer<'a> {
                 _ => None,
             };
             if let Some(access) = access {
+                if access == Access::Ref {
+                    self.check_stored_views(&value, true, span);
+                }
                 if access == Access::Shared {
                     self.require_shared_replacement(&value, span, true);
                 }

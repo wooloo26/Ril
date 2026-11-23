@@ -1245,3 +1245,131 @@ fn edit(mut cell: Cell) -> never {
     cell.count += 1
     panic("stop")
 }
+
+-- @case aborting_writer_declares_the_write compile-pass
+fn edit(mut cell: Cell) &mut -> never {
+    cell.count += 1
+    panic("stop")
+}
+
+-- @case call_scoped_writer_cannot_be_stored_as_a_ref compile-fail E0604
+type Shelf = .{ var ref item: Cell }
+fn edit_and_save(mut source: Cell, mut shelf: Shelf) &mut -> () {
+    source.count += 1
+    shelf.item = ref source
+    -- ^ E0604
+}
+
+-- @case forwarded_call_scoped_ref_cannot_be_published compile-fail E0604
+type Shelf = .{ var ref item: Cell }
+fn save(ref source: Cell, mut shelf: Shelf) &mut -> () { shelf.item = source }
+fn relay(mut source: Cell, mut shelf: Shelf) &mut -> () {
+    source.count += 1
+    save(ref source, mut shelf)
+    -- ^ E0604
+}
+
+-- @case collection_insertion_cannot_store_a_call_scoped_ref compile-fail E0604
+fn store(mut source: Cell, mut readers: [ref]Cell, mut entries: [str: ref Cell]) &mut -> () {
+    source.count += 1
+    Array::push(mut readers, ref source)
+    -- ^ E0604
+    Map::insert(mut entries, "source", ref source)
+    -- ^ E0604
+}
+
+-- @case collection_insertion_accepts_an_existing_ref compile-pass
+fn store(ref source: Cell, mut readers: [ref]Cell, mut entries: [str: ref Cell]) &mut -> () {
+    Array::push(mut readers, ref source)
+    Map::insert(mut entries, "source", ref source)
+}
+
+-- @case replacing_a_reference_slot_removes_its_old_origin compile-pass
+fn copy(mut target: Cell, ref source: Cell) &mut -> () { target.count = source.count }
+fn update() -> () {
+    let mut previous = Cell.{ count: 1 }
+    let mut current = Cell.{ count: 2 }
+    var ref reader = ref previous
+    reader = ref current
+    copy(mut previous, ref reader)
+    current.count += 1
+}
+
+-- @case loops_and_recursion_with_no_exit_typecheck_as_never compile-pass
+fn loop_forever() -> never { while true {} }
+fn recurse_forever() -> never { recurse_forever() }
+
+-- @case exclusive_arguments_remain_disjoint_when_branches_swap_them compile-pass
+fn edit(mut left: Cell, mut right: Cell) &mut -> () {
+    left.count += 1
+    right.count += 1
+}
+fn update(swap: bool) -> () {
+    let mut first = Cell.{ count: 1 }
+    let mut second = Cell.{ count: 2 }
+    var ^mut left = first
+    var ^mut right = second
+    if swap {
+        left = ^mut second
+        right = ^mut first
+    }
+    edit(mut left, mut right)
+}
+
+-- @case cyclic_arguments_share_a_reachable_descendant compile-fail E0523
+nominal type Node = .{ var count: int, var ^mut next: ?Node }
+fn edit(mut left: Node, mut right: Node) &mut -> () {
+    left.count += 1
+    right.count += 1
+}
+fn update() -> () {
+    let mut first = Node.{ count: 20, next: None }
+    let mut second = Node.{ count: 22, next: None }
+    first.next = ^mut Some(^mut second)
+    second.next = ^mut Some(^mut first)
+    edit(mut first, mut second)
+    -- ^ E0523
+}
+
+-- @case handing_off_a_wrapper_keeps_its_independent_ref_source compile-pass
+type Shelf = .{ ref item: Cell }
+fn wrap(ref source: Cell) &return(ref source) -> new Shelf { Shelf.{ item: ref source } }
+fn read() -> int {
+    let mut cell = Cell.{ count: 1 }
+    cell.count += 1
+    let ref independent = ref cell
+    let mut shelf = wrap(ref cell)
+    let ref moved = new shelf
+    independent.count + moved.item.count
+}
+
+-- @case handing_off_a_wrapper_ends_views_of_its_members compile-fail E0549
+type Shelf = .{ ref item: Cell }
+fn wrap(ref source: Cell) &return(ref source) -> new Shelf { Shelf.{ item: ref source } }
+fn read() -> int {
+    let mut cell = Cell.{ count: 1 }
+    cell.count += 1
+    let mut shelf = wrap(ref cell)
+    let ref view = ref shelf.item
+    let ref moved = new shelf
+    view.count + moved.item.count
+    -- ^ E0549
+}
+
+-- @case factory_writes_to_a_later_instance_are_local compile-pass
+fn make() -> new Cell { Cell.{ count: 1 } }
+fn edit(new original: Cell) -> int {
+    let mut fresh = make()
+    fresh.count += 1
+    original.count + fresh.count
+}
+fn run() -> int { edit(new make()) }
+
+-- @case factory_writes_to_a_later_instance_cannot_justify_state compile-fail E0529
+fn make() -> new Cell { Cell.{ count: 1 } }
+fn edit(new original: Cell) &mut -> int {
+    let mut fresh = make()
+    fresh.count += 1
+    original.count + fresh.count
+}
+fn run() -> int { edit(new make()) }

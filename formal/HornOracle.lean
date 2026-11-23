@@ -270,17 +270,36 @@ def handoffCases : List (String × Bool) :=
 
 open RilAccess.Provenance RilAccess.Provenance.Examples in
 def provenanceCases : List (String × Bool) :=
-  [("dead_branch_is_not_write_authority", accepts (recursiveWriter false)),
+  [("replacing_a_reference_slot_removes_its_old_origin",
+    decide (beforeWrites overwrite 2 0 = [⟨20, none⟩])),
+   ("helper_capture_before_initialization", accepts future),
+   ("dead_branch_is_not_write_authority", accepts (recursiveWriter false)),
+   ("loops_and_recursion_with_no_exit_typecheck_as_never",
+    accepts divergentLoop && accepts divergentRecursion),
    ("recursive_forwarding_is_ungrounded", accepts (recursiveWriter false)),
    ("mutual_recursion_has_grounded_writer", accepts (recursiveWriter true)),
    ("exact_fields_are_separate_mutable_arguments", accepts (fields false)),
+   ("exclusive_arguments_remain_disjoint_when_branches_swap_them", accepts permutedFields),
    ("unknown_index_cannot_prove_separation", accepts (fields true)),
+   ("cyclic_arguments_share_a_reachable_descendant", accepts cycle),
+   ("replaced_member_is_in_new_call_entry", accepts (entryReturn false)),
    ("replaced_member_is_not_from_old_formal_entry", accepts (entryReturn true)),
+   ("handing_off_a_wrapper_keeps_its_independent_ref_source", accepts (wrapOld (.read 0))),
+   ("handing_off_a_wrapper_ends_views_of_its_members", accepts (wrapOld (.read 2))),
+   ("a_nested_ref_is_readonly_under_writable_layers", accepts upgradeOld),
+   ("a_new_wrapper_cannot_freeze_an_existing_ref", accepts freezeOldView),
+   ("a_snapshot_can_freeze_a_completely_new_graph", accepts (completeNewGraph .immutable)),
    ("new_reception_can_select_mutable_element_mode", accepts (completeNewGraph .mut)),
    ("new_argument_ends_path_before_later_arguments", accepts endedArgument),
+   ("publication_survives_in_a_caller_member", accepts (retention false)),
+   ("overwriting_a_publication_ends_retention", accepts (retention true)),
+   ("forwarded_call_scoped_ref_cannot_be_published", accepts temporaryForward),
    ("aborting_write_still_requires_write_clause", accepts (abortingWriter false)),
+   ("aborting_writer_declares_the_write", accepts (abortingWriter true)),
    ("new_container_does_not_discharge_existing_member_writes", accepts (writeThroughWrapper false)),
-   ("new_container_writes_existing_member", accepts (writeThroughWrapper true))]
+   ("new_container_writes_existing_member", accepts (writeThroughWrapper true)),
+   ("factory_writes_to_a_later_instance_are_local", accepts (localFactoryWrite false)),
+   ("factory_writes_to_a_later_instance_cannot_justify_state", accepts (localFactoryWrite true))]
 
 open RilAccess.Integrated RilAccess.Examples.ScopedExamples in
 def scopedCases : List (String × Bool) :=

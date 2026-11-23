@@ -36,6 +36,8 @@ pub type Shelf = .{ var ^mut item: Cell }
 use pkg/model
 pub type Cell = Model::Cell
 pub type Shelf = Model::Shelf
+pub type ReadShelf = .{ var ref item: Cell }
+pub fn store_ref(ref source: Cell, mut shelf: ReadShelf) &mut -> () { shelf.item = source }
 pub fn replace(mut shelf: Shelf, ^mut next: Cell) &mut &^mut -> ref(shelf) Cell {
     let ref previous = ref shelf.item
     shelf.item = ^mut next
@@ -89,6 +91,24 @@ fn check_new() -> int {
 }
 "#,
             None,
+        ),
+        (
+            r#"
+fn relay(ref source: Store::Cell, mut shelf: Store::ReadShelf) &mut -> () {
+    Store::store_ref(ref source, mut shelf)
+}
+"#,
+            None,
+        ),
+        (
+            r#"
+fn relay(mut source: Store::Cell, mut shelf: Store::ReadShelf) &mut -> () {
+    source.count += 1
+    let store = Store::store_ref
+    store(ref source, mut shelf)
+}
+"#,
+            Some(Code::E0604),
         ),
         (
             r#"
@@ -890,7 +910,7 @@ fn handoff_examples_agree_with_lean() -> Result<(), Box<dyn std::error::Error>> 
 
 #[test]
 fn provenance_examples_agree_with_lean() -> Result<(), Box<dyn std::error::Error>> {
-    check_access_examples("provenance", 11)
+    check_access_examples("provenance", 28)
 }
 
 #[test]

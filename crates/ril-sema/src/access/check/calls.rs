@@ -419,6 +419,19 @@ impl<'program> Analyzer<'program> {
                     Datum::source(span, Access::Mut, true)
                 };
             }
+            let inserted = match (module, name) {
+                (Some("Array"), "push") => Some(1),
+                (Some("Map"), "insert") => Some(2),
+                _ => None,
+            };
+            if let Some(inserted) = inserted
+                && let Some(((.., mode, value), &value_span)) = values
+                    .iter()
+                    .zip(&value_spans)
+                    .find(|((index, _, _), _)| *index == inserted)
+            {
+                self.check_stored_views(value, *mode == Mode::Ref, value_span);
+            }
             return self.primitive(ctx, ledger, name, &values, span);
         }
         if let (Some(id), Expr::Path(path)) = (id, &callee.value)
@@ -1184,6 +1197,7 @@ impl<'program> Analyzer<'program> {
             let Some((member, parent)) = region.selection.split_last() else {
                 let mut stored =
                     self.instantiate_return(&formals, &via, entry, &update.value, &mut output_path);
+                self.check_stored_views(&stored, false, entry.span);
                 if ctx.caller_slots.contains(&region.source) {
                     stored.publications.insert(ctx.owner, true);
                 }
@@ -1224,6 +1238,7 @@ impl<'program> Analyzer<'program> {
             applied &= !place.roots.is_empty();
             let mut stored =
                 self.instantiate_return(&formals, &via, entry, &update.value, &mut output_path);
+            self.check_stored_views(&stored, false, entry.span);
             stored
                 .publications
                 .insert(ctx.owner, place.roots.iter().any(|origin| !origin.new));
