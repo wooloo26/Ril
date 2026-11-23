@@ -44,6 +44,13 @@ pub fn replace(mut shelf: Shelf, ^mut next: Cell) &mut &^mut -> ref(shelf) Cell 
 pub fn change(via cell: Cell) -> () { cell.count += 1 }
 pub fn identity(via cell: Cell) -> infer Cell { cell }
 pub fn never_returns() -> () { panic("ended") }
+pub eff Meter { fn read() -> int; fn reset() -> () }
+pub fn read_meter() @Meter -> int { Meter::read() }
+pub eff Extended { ..Meter; fn record() -> () }
+pub fn read_extended() @Extended -> int { Meter::read() }
+pub opaque type Handle use(close) = .{ id: int }
+pub fn open() -> new Handle { Handle.{ id: 1 } }
+pub fn close(new handle: Handle) @Meter -> () { let _ = Meter::read() }
 "#
         .to_vec(),
     );
@@ -108,6 +115,29 @@ fn unreachable_write(mut cell: Store::Cell) &mut -> () {
 }
 "#,
             Some(Code::E0527),
+        ),
+        (
+            r#"
+fn read() -> int {
+    with Store::Meter::read = \-> 42
+    let call = Store::read_meter
+    call() + Store::read_extended()
+}
+fn clean() -> () {
+    with Store::Meter::read = \-> 42
+    use handle = Store::open()
+}
+"#,
+            None,
+        ),
+        (
+            r#"
+fn read() -> int {
+    with Store::Meter::reset = \-> ()
+    Store::read_meter()
+}
+"#,
+            Some(Code::E0612),
         ),
     ] {
         fs::write(&entry, format!("use library/store\n{source}")).unwrap();
@@ -573,6 +603,7 @@ fn exported_summaries_and_via_domains_agree_with_lean() {
             "independent_retention": summary.independent_retention,
             "return_sources": return_sources,
             "effects": effects,
+            "effect_uses": summary.effect_uses,
             "invocations": invocations,
             "callback_returns": summary.callback_returns,
             "storage_updates": storage_updates,

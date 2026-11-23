@@ -14,8 +14,8 @@ use ril_frontend::{
 };
 
 use super::{
-    Access, Analysis, CleanupAction, Input, Instance, Invocation, InvocationMode, ReturnSource,
-    StorageUpdate, Summary,
+    Access, Analysis, CleanupAction, EffectUse, Input, Instance, Invocation, InvocationMode,
+    ReturnSource, StorageUpdate, Summary,
     flow::{
         Coordinate, Datum, Ledger, Reception, Region, Replacement, Revocation, Slot, conflicts,
     },
@@ -890,8 +890,17 @@ impl<'a> Analyzer<'a> {
                 Obligation::ReadUp(span) => {
                     up.insert(*span);
                 }
-                Obligation::Effect(effect) => summary.effects.push(effect.clone()),
-                Obligation::Operation(operation) => summary.effects.push(operation.effect.clone()),
+                Obligation::Effect(effect) => {
+                    self.record_effect_use(fun, &mut summary, effect, None);
+                }
+                Obligation::Operation(operation) => {
+                    self.record_effect_use(
+                        fun,
+                        &mut summary,
+                        &operation.effect,
+                        Some(operation.id),
+                    );
+                }
                 Obligation::Capture => summary.captures = true,
                 _ => {}
             }
@@ -903,6 +912,8 @@ impl<'a> Analyzer<'a> {
         summary.independent_retention.sort_unstable();
         summary.effects.sort();
         summary.effects.dedup();
+        summary.effect_uses.sort_unstable();
+        summary.effect_uses.dedup();
         summary.normalize_invocations();
         let name = fun.owner;
         let sig = &fun.declared;
@@ -955,6 +966,25 @@ impl<'a> Analyzer<'a> {
             self.error(Code::E0529, name, "unused &up dependency");
         }
         summary
+    }
+
+    fn record_effect_use(
+        &self,
+        function: &DefinitionCheck,
+        summary: &mut Summary,
+        effect: &str,
+        operation: Option<DefinitionId>,
+    ) {
+        summary.effects.push(effect.to_owned());
+        for (declaration, declared) in function.declared.effects.iter().enumerate() {
+            if self.program.effect_covers(declared, effect) {
+                summary.effect_uses.push(EffectUse {
+                    declaration,
+                    effect: effect.to_owned(),
+                    operation: operation.map(|operation| self.program.hir.export_name(operation)),
+                });
+            }
+        }
     }
 
     fn storage_contracts(&self, fun: &DefinitionCheck) -> Vec<StorageUpdate> {
@@ -1751,8 +1781,13 @@ impl<'a> Analyzer<'a> {
         if signature.effects.iter().any(|effect| effect == "fiber") {
             self.error(Code::E0616, binding, "@fiber is prohibited on cleanup");
         }
-        for effect in &signature.effects {
-            self.effect(ctx, ledger, effect, binding);
+        if let Some(export) = self.program.imported_functions.get(&cleanup) {
+            let owner = self.program.hir.definition(cleanup).name.span;
+            self.charge_imported_effects(ctx, ledger, owner, signature, &export.summary, binding);
+        } else {
+            for effect in &signature.effects {
+                self.effect(ctx, ledger, effect, binding);
+            }
         }
         if parameter.mode == Mode::New && !value.requires_new {
             self.error(

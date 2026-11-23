@@ -54,6 +54,16 @@ impl Analyzer<'_> {
             }
             return self.snapshot_value(span);
         };
+        if let Some(signature) = signature {
+            self.charge_imported_effects(
+                ctx,
+                &frozen,
+                function.name.span,
+                signature,
+                summary,
+                span,
+            );
+        }
         if ctx.reachable && !ctx.shadow {
             for ((position, mode, argument), &argument_span) in arguments.iter().zip(spans) {
                 if summary.writes.contains(position) {
@@ -151,6 +161,53 @@ impl Analyzer<'_> {
             &template,
             &mut Vec::new(),
         )
+    }
+
+    pub(in crate::access::check) fn charge_imported_effects(
+        &mut self,
+        ctx: &Context,
+        ledger: &Ledger,
+        owner: Span,
+        signature: &Callable,
+        summary: &Summary,
+        span: Span,
+    ) {
+        let mount = self
+            .program
+            .hir
+            .file(owner.file)
+            .path
+            .iter()
+            .next()
+            .and_then(std::ffi::OsStr::to_str)
+            .unwrap_or("pkg");
+        for (index, template) in signature.effects.iter().enumerate() {
+            let applied = self.applied_effect(index, template, span).to_owned();
+            let mut uses = summary
+                .effect_uses
+                .iter()
+                .filter(|term| term.declaration == index)
+                .peekable();
+            if uses.peek().is_none() {
+                self.effect(ctx, ledger, &applied, span);
+            }
+            for term in uses {
+                if let Some(name) = &term.operation {
+                    let actual = name
+                        .strip_prefix("pkg/")
+                        .map_or_else(|| name.clone(), |relative| format!("{mount}/{relative}"));
+                    if let Some(operation) = self
+                        .effect_operations(&applied)
+                        .into_iter()
+                        .find(|operation| self.program.hir.export_name(operation.id) == actual)
+                    {
+                        self.use_effect(ctx, ledger, Obligation::Operation(operation), span, None);
+                        continue;
+                    }
+                }
+                self.effect(ctx, ledger, &applied, span);
+            }
+        }
     }
 
     fn select_imported_summary<'a>(

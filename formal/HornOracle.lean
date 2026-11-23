@@ -61,12 +61,18 @@ def JsonStorageUpdate.contract (update : JsonStorageUpdate) :
   ⟨(update.formal, update.path), update.sources, update.callback_returns.map Json.compress,
     update.definite, update.constructs⟩
 
+structure JsonEffectUse where
+  effect : String
+  operation : Option String
+  deriving FromJson, DecidableEq
+
 structure JsonSummary where
   writes : List Nat
   retained : List Nat
   independent_retention : List Nat
   return_sources : List JsonSource
   effects : List Nat
+  effect_uses : List JsonEffectUse
   invocations : List JsonInvocation
   callback_returns : List Json
   storage_updates : List JsonStorageUpdate
@@ -91,6 +97,8 @@ structure JsonComparison where
 def compareSummaries (baseline revision : JsonSummary) : Bool :=
   RilAccess.SummaryOf.subsumesBy (fun _ => false) baseline.formal revision.formal &&
     revision.independent_retention.all baseline.independent_retention.contains &&
+    revision.effect_uses.all (fun effect => baseline.effect_uses.any fun old =>
+      old.effect == effect.effect && (old.operation.isNone || old.operation == effect.operation)) &&
     RilAccess.callbackInvocationsSubsumed (baseline.invocations.map JsonInvocation.contract)
       (revision.invocations.map JsonInvocation.contract) &&
     RilAccess.callbackReturnsSubsumed (baseline.callback_returns.map Json.compress)

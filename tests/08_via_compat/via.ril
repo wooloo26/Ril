@@ -93,6 +93,15 @@ fn relay(mut shelf: Shelf, ^mut a: Cell, ^mut b: Cell) &mut &^mut -> () {
     store(mut shelf, ^mut a, ^mut b, false)
 }
 
+-- @case adding_an_operation_to_a_published_effect_breaks_compatibility compat-fail E0552
+-- @baseline
+pub eff Meter { fn read() -> int; fn reset() -> () }
+pub fn report() @Meter -> int { Meter::read() }
+-- @revision
+pub eff Meter { fn read() -> int; fn reset() -> () }
+pub fn report() @Meter -> int { Meter::reset(); Meter::read() }
+-- ^ E0552
+
 -- @case alias_dispatch_can_write_one_of_two_destinations compile-pass
 pub type Shelf = .{ var ^mut item: Cell, var ^mut spare: Cell }
 fn first(mut shelf: Shelf, ^mut value: Cell) &mut &^mut -> () {

@@ -423,20 +423,11 @@ impl<'program> Analyzer<'program> {
         {
             self.use_effect(ctx, ledger, Obligation::Operation(operation), span, None);
         }
-        if let Some(sig) = sig {
-            for (index, template) in sig.effects.iter().enumerate() {
-                let applied = self
-                    .program
-                    .effect_applications
-                    .get(&span)
-                    .and_then(|effects| effects.get(index))
-                    .unwrap_or(template);
-                if let Some(fun) = syntax.filter(|fun| fun.body.is_some()) {
-                    self.link_effects(ctx, ledger, fun.name.span, template, applied, span);
-                } else {
-                    self.effect(ctx, ledger, applied, span);
-                }
-            }
+        if syntax.is_none()
+            && !all_aliases_known
+            && let Some(sig) = sig
+        {
+            self.charge_call_effects(ctx, ledger, sig, None, span);
             if sig.open_effects
                 && !ctx.shadow
                 && let Ty::Callable(actual) = self.ty(callee.span)
@@ -600,6 +591,9 @@ impl<'program> Analyzer<'program> {
                 );
                 return self.snapshot_value(span);
             }
+        }
+        if let Some(sig) = sig {
+            self.charge_call_effects(ctx, ledger, sig, fun.body.map(|_| fun.name.span), span);
         }
         let lexical = fun
             .signature
@@ -846,6 +840,32 @@ impl<'program> Analyzer<'program> {
             }
         }
         result
+    }
+
+    fn applied_effect<'p>(&'p self, declaration: usize, template: &'p str, span: Span) -> &'p str {
+        self.program
+            .effect_applications
+            .get(&span)
+            .and_then(|effects| effects.get(declaration))
+            .map_or(template, String::as_str)
+    }
+
+    fn charge_call_effects(
+        &mut self,
+        ctx: &Context,
+        ledger: &Ledger,
+        signature: &Callable,
+        owner: Option<Span>,
+        span: Span,
+    ) {
+        for (index, template) in signature.effects.iter().enumerate() {
+            let applied = self.applied_effect(index, template, span).to_owned();
+            if let Some(owner) = owner {
+                self.link_effects(ctx, ledger, owner, template, &applied, span);
+            } else {
+                self.effect(ctx, ledger, &applied, span);
+            }
+        }
     }
 
     pub(super) fn link_invocation(&mut self, ctx: &Context, target: &Datum) {

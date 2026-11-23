@@ -20,7 +20,7 @@ use crate::{
     ty::{Ty, TypedProgram},
 };
 
-pub const FORMAT_VERSION: u32 = 8;
+pub const FORMAT_VERSION: u32 = 9;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Interface {

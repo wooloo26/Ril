@@ -19,6 +19,7 @@ pub struct Summary {
     pub independent_retention: Vec<usize>,
     pub return_sources: Vec<ReturnSource>,
     pub effects: Vec<String>,
+    pub effect_uses: Vec<EffectUse>,
     pub invocations: Vec<Invocation>,
     pub callback_returns: Vec<CallbackReturn>,
     pub storage_updates: Vec<StorageUpdate>,
@@ -65,6 +66,12 @@ impl Summary {
                 .effects
                 .iter()
                 .all(|effect| self.effects.contains(effect))
+            && revised.effect_uses.iter().all(|effect| {
+                self.effect_uses.iter().any(|old| {
+                    old.effect == effect.effect
+                        && (old.operation.is_none() || old.operation == effect.operation)
+                })
+            })
             && (!revised.captures || self.captures)
             && (!self.constructs || revised.constructs)
             && (!self.nonreturning || revised.nonreturning)
@@ -95,6 +102,13 @@ impl Summary {
                         .any(|update| old.same_target(update) && update.definite)
                 })
     }
+}
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+pub struct EffectUse {
+    pub declaration: usize,
+    pub effect: String,
+    pub operation: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
