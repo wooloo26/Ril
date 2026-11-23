@@ -188,6 +188,141 @@ fn run() -> int {{
 }
 
 #[test]
+fn private_snapshot_providers_survive_nested_callbacks_across_an_interface() {
+    use ril_base::diag::Code;
+
+    let source = br#"
+pub type Cell = .{ var count: int }
+pub type Shelf = .{ ^mut item: Cell }
+pub type Leaf = fn(new Shelf) -> int
+pub type Relay = fn(Leaf, new Shelf) -> int
+fn freeze_impl(new shelf: Shelf) -> int { let fixed = new shelf; fixed.item.count }
+fn freeze(new shelf: Shelf) -> int { freeze_impl(new shelf) }
+fn relay(action: Leaf, new shelf: Shelf) -> int { action(new shelf) }
+pub fn supply(action: fn(Relay, Leaf, new Shelf) -> int, new shelf: Shelf) -> int {
+    action(relay, freeze, new shelf)
+}
+pub fn supply_closure(action: fn(Leaf, new Shelf) -> int, new shelf: Shelf) -> int {
+    action(\new input: Shelf -> { let fixed = new input; fixed.item.count }, new shelf)
+}
+"#;
+    let mut provider = VirtualPackage::new(Unit::Lib);
+    provider.entry = "pkg/snapshot.ril".into();
+    provider.insert(provider.entry.clone(), source.to_vec());
+    let interface = Driver.interface(&provider).unwrap();
+    assert_eq!(interface.functions.len(), 2);
+    let contracts = &interface.functions["pkg/snapshot.ril::supply"]
+        .summary
+        .snapshot_providers;
+    assert_eq!(contracts.len(), 2);
+    assert!(contracts.iter().any(|provider| provider.inputs.len() == 1));
+    assert!(contracts.iter().any(|provider| provider.calls.len() == 1));
+    let interface = interface.encode().unwrap();
+
+    for (mount, bytes) in [
+        ("library/snapshot.ril", source.as_slice()),
+        ("library/snapshot.rili", interface.as_slice()),
+    ] {
+        let mut client = VirtualPackage::new(Unit::Lib);
+        client.insert(mount.into(), bytes.to_vec());
+        client.insert(client.entry.clone(), br#"
+use library/snapshot
+fn test() -> int { Snapshot::freeze(new Snapshot::Shelf.{ item: ^mut Snapshot::Cell.{ count: 42 } }) }
+"#.to_vec());
+        let diagnostics = Driver.analyze(&client).err().unwrap();
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == Some(Code::E0201))
+        );
+        for (method, callable) in [("supply", "forward"), ("supply_closure", "dispatch")] {
+            for (item, accepted) in [("live", false), ("Snapshot::Cell.{ count: 42 }", true)] {
+                let source = format!(
+                    "use library/snapshot
+type Leaf = fn(new Snapshot::Shelf) -> int
+fn dispatch(action: Leaf, new shelf: Snapshot::Shelf) -> int {{ action(new shelf) }}
+fn forward(relay: fn(Leaf, new Snapshot::Shelf) -> int, action: Leaf, new shelf: Snapshot::Shelf) -> int {{
+    relay(action, new shelf)
+}}
+fn test() -> int {{
+    let mut live = Snapshot::Cell.{{ count: 1 }}
+    live.count += 1
+    let count = Snapshot::{method}({callable}, new Snapshot::Shelf.{{ item: ^mut {item} }})
+    live.count += 8
+    count + live.count
+}}"
+                );
+                let mut client = VirtualPackage::new(Unit::Lib);
+                client.insert(mount.into(), bytes.to_vec());
+                client.insert(client.entry.clone(), source.into_bytes());
+                match (accepted, Driver.analyze(&client)) {
+                    (true, Ok(_)) => {}
+                    (false, Err(diagnostics)) => {
+                        assert_eq!(
+                            diagnostics.len(),
+                            1,
+                            "{mount} {method} {item}: {diagnostics:?}"
+                        );
+                        assert_eq!(diagnostics[0].code, Some(Code::E0535));
+                    }
+                    (true, Err(diagnostics)) => panic!("{mount} {method} {item}: {diagnostics:?}"),
+                    (false, Ok(_)) => panic!("{mount} accepted {method} with {item}"),
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn callback_snapshot_contracts_can_take_live_inputs_before_constructing_a_graph() {
+    use ril_base::diag::Code;
+
+    let source = br#"
+pub type Cell = .{ var count: int }
+pub type View = .{ ref item: Cell }
+pub type Leaf = fn(new View) -> int
+fn freeze(new view: View) -> int { let fixed = new view; fixed.item.count }
+fn count(new view: View) -> int { view.item.count }
+pub fn check(action: fn(Leaf, ref Cell) -> int, ref cell: Cell) -> int { action(freeze, ref cell) }
+pub fn read(action: fn(Leaf, ref Cell) -> int, ref cell: Cell) -> int { action(count, ref cell) }
+"#;
+    let mut provider = VirtualPackage::new(Unit::Lib);
+    provider.entry = "pkg/snapshot.ril".into();
+    provider.insert(provider.entry.clone(), source.to_vec());
+    let interface = Driver.interface(&provider).unwrap().encode().unwrap();
+    for (mount, bytes) in [
+        ("library/snapshot.ril", source.as_slice()),
+        ("library/snapshot.rili", interface.as_slice()),
+    ] {
+        for (method, accepted) in [("read", true), ("check", false)] {
+            let source = format!(
+                "use library/snapshot
+fn dispatch(action: Snapshot::Leaf, ref live: Snapshot::Cell) -> int {{
+    action(new Snapshot::View.{{ item: ref live }})
+}}
+fn run() -> int {{
+    let mut live = Snapshot::Cell.{{ count: 1 }}
+    live.count += 1
+    Snapshot::{method}(dispatch, ref live)
+}}"
+            );
+            let mut client = VirtualPackage::new(Unit::Lib);
+            client.insert(mount.into(), bytes.to_vec());
+            client.insert(client.entry.clone(), source.into_bytes());
+            match (accepted, Driver.analyze(&client)) {
+                (true, Ok(_)) => {}
+                (false, Err(diagnostics)) => {
+                    assert_eq!(diagnostics.len(), 1, "{mount} {method}: {diagnostics:?}");
+                    assert_eq!(diagnostics[0].code, Some(Code::E0535));
+                }
+                (true, Err(diagnostics)) => panic!("{mount} {method}: {diagnostics:?}"),
+                (false, Ok(_)) => panic!("{mount} accepted {method} with a live view"),
+            }
+        }
+    }
+}
+
+#[test]
 fn correlated_callback_mode_offers_survive_interface_only_calls() {
     use ril_base::diag::Code;
 
@@ -1394,8 +1529,9 @@ fn exported_horn_facts_agree_with_lean() {
 #[test]
 fn exported_summaries_and_via_domains_agree_with_lean() {
     use ril_sema::access::{
-        CallbackArgument, CallbackReturn, Coordinate, Input, Instance, InvocationMode,
-        ReturnAllocation, ReturnSource, StorageUpdate, Summary,
+        CallbackArgument, CallbackReturn, Coordinate, Input, Instance, InvocationMode, ModeAxis,
+        ReturnAllocation, ReturnSource, SnapshotArgument, SnapshotCall, SnapshotGraph,
+        SnapshotInput, SnapshotOrigin, SnapshotProvider, StorageUpdate, Summary,
     };
     use serde_json::{Value, json};
 
@@ -1422,6 +1558,69 @@ fn exported_summaries_and_via_domains_agree_with_lean() {
             ..Summary::default()
         },
     ];
+    let calls_provider = |provider| SnapshotCall {
+        receiver: ModeAxis {
+            parameter: 0,
+            path: Vec::new(),
+        },
+        recursive_path: None,
+        arguments: vec![SnapshotArgument {
+            position: 0,
+            mode: Some(Input::Plain),
+            whole_graph: false,
+            graph: SnapshotGraph {
+                owned: false,
+                environment: false,
+                replaced: Vec::new(),
+                members: Vec::new(),
+                roots: vec![SnapshotOrigin {
+                    source: None,
+                    access: Access::Immutable,
+                    new: false,
+                    borrowed: false,
+                    forwarded: false,
+                    provider: Some(provider),
+                }],
+            },
+        }],
+    };
+    let cyclic_summary = |root, constrained| {
+        let inputs = if constrained {
+            vec![SnapshotInput {
+                formal: 1,
+                path: Vec::new(),
+                replaced: Vec::new(),
+            }]
+        } else {
+            Vec::new()
+        };
+        let mut snapshot_providers = vec![
+            SnapshotProvider {
+                via_parameters: vec![false, false],
+                inputs: Vec::new(),
+                calls: vec![calls_provider(1 - root)],
+            },
+            SnapshotProvider {
+                via_parameters: vec![false, false],
+                inputs,
+                calls: vec![calls_provider(root)],
+            },
+        ];
+        if root == 1 {
+            snapshot_providers.swap(0, 1);
+        }
+        Summary {
+            snapshot_providers,
+            snapshot_calls: vec![calls_provider(root)],
+            ..Summary::default()
+        }
+    };
+    let old = cyclic_summary(0, false);
+    let renumbered = cyclic_summary(1, false);
+    let tightened = cyclic_summary(1, true);
+    assert!(old.subsumes(&renumbered) && renumbered.subsumes(&old));
+    assert!(!old.subsumes(&tightened) && tightened.subsumes(&old));
+    summaries.extend([old, renumbered, tightened]);
     let shared = ReturnAllocation {
         path: vec![Coordinate::Field("next".into())],
         index: 0,
@@ -1517,6 +1716,45 @@ fn exported_summaries_and_via_domains_agree_with_lean() {
             "access": access_number(source.access),
         })
     };
+    let wire_snapshot_input = |input: &SnapshotInput| {
+        json!({
+            "formal": input.formal,
+            "path": input.path.iter().map(wire_coordinate).collect::<Vec<_>>(),
+            "replaced": input.replaced.iter()
+                .map(|path| path.iter().map(wire_coordinate).collect::<Vec<_>>())
+                .collect::<Vec<_>>(),
+        })
+    };
+    fn wire_snapshot_nodes(
+        graph: &SnapshotGraph,
+        path: &mut Vec<Coordinate>,
+        nodes: &mut Vec<Value>,
+    ) {
+        let roots: Vec<_> = graph.roots.iter().map(|root| json!({
+            "shape": [&json!(root.source), &json!(root.access), &json!(root.new), &json!(root.borrowed), &json!(root.forwarded)],
+            "provider": root.provider,
+        })).collect();
+        nodes.push(json!({
+            "shape": [&json!(path), &json!(graph.owned), &json!(graph.environment), &json!(graph.replaced)],
+            "roots": roots,
+        }));
+        for (key, child) in &graph.members {
+            path.push(key.clone());
+            wire_snapshot_nodes(child, path, nodes);
+            path.pop();
+        }
+    }
+    let wire_snapshot_call = |call: &SnapshotCall| {
+        let arguments: Vec<_> = call.arguments.iter().map(|argument| {
+            let mut graph = Vec::new();
+            wire_snapshot_nodes(&argument.graph, &mut Vec::new(), &mut graph);
+            json!({
+                "shape": [&json!(argument.position), &json!(argument.mode), &json!(argument.whole_graph)],
+                "graph": graph,
+            })
+        }).collect();
+        json!({"shape": [&json!(call.receiver), &json!(call.recursive_path)], "arguments": arguments})
+    };
     let wire = |summary: &Summary| -> Value {
         let effects: Vec<_> = summary
             .effects
@@ -1527,13 +1765,21 @@ fn exported_summaries_and_via_domains_agree_with_lean() {
         let snapshot_inputs: Vec<_> = summary
             .snapshot_inputs
             .iter()
-            .map(|input| {
+            .map(wire_snapshot_input)
+            .collect();
+        let snapshot_calls: Vec<_> = summary
+            .snapshot_calls
+            .iter()
+            .map(wire_snapshot_call)
+            .collect();
+        let snapshot_providers: Vec<_> = summary
+            .snapshot_providers
+            .iter()
+            .map(|provider| {
                 json!({
-                    "formal": input.formal,
-                    "path": input.path.iter().map(wire_coordinate).collect::<Vec<_>>(),
-                    "replaced": input.replaced.iter()
-                        .map(|path| path.iter().map(wire_coordinate).collect::<Vec<_>>())
-                        .collect::<Vec<_>>(),
+                    "via_parameters": provider.via_parameters,
+                    "inputs": provider.inputs.iter().map(wire_snapshot_input).collect::<Vec<_>>(),
+                    "calls": provider.calls.iter().map(wire_snapshot_call).collect::<Vec<_>>(),
                 })
             })
             .collect();
@@ -1574,7 +1820,8 @@ fn exported_summaries_and_via_domains_agree_with_lean() {
             "retained": summary.retained,
             "independent_retention": summary.independent_retention,
             "snapshot_inputs": snapshot_inputs,
-            "snapshot_calls": summary.snapshot_calls,
+            "snapshot_calls": snapshot_calls,
+            "snapshot_providers": snapshot_providers,
             "return_sources": return_sources,
             "return_allocations": summary.return_allocations,
             "effects": effects,

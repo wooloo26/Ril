@@ -2,6 +2,7 @@ mod check;
 mod flow;
 pub mod horn;
 mod modes;
+mod snapshot_contracts;
 
 pub use flow::{Access, Coordinate};
 pub use modes::{CallbackModeCall, ModeAxis, ModeExpression, ModeStep};
@@ -22,6 +23,8 @@ pub struct Summary {
     pub snapshot_inputs: Vec<SnapshotInput>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub snapshot_calls: Vec<SnapshotCall>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub snapshot_providers: Vec<SnapshotProvider>,
     pub independent_retention: Vec<usize>,
     pub return_sources: Vec<ReturnSource>,
     pub return_allocations: Vec<ReturnAllocation>,
@@ -79,14 +82,7 @@ impl Summary {
                 .independent_retention
                 .iter()
                 .all(|formal| self.independent_retention.contains(formal))
-            && revised
-                .snapshot_inputs
-                .iter()
-                .all(|required| self.snapshot_inputs.iter().any(|old| old.permits(required)))
-            && revised
-                .snapshot_calls
-                .iter()
-                .all(|call| self.snapshot_calls.contains(call))
+            && snapshot_contracts::subsumes(self, revised)
             && revised
                 .effects
                 .iter()
@@ -188,6 +184,17 @@ pub struct SnapshotOrigin {
     pub new: bool,
     pub borrowed: bool,
     pub forwarded: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<usize>,
+}
+
+/// The snapshot contract of a callable supplied by this export. Provider
+/// indices refer to the enclosing summary, independently of name visibility.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct SnapshotProvider {
+    pub via_parameters: Vec<bool>,
+    pub inputs: Vec<SnapshotInput>,
+    pub calls: Vec<SnapshotCall>,
 }
 
 impl SnapshotInput {

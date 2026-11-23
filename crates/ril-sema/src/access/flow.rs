@@ -198,6 +198,7 @@ pub(super) struct Origin {
     pub mode: Access,
     pub inherits_mode: bool,
     pub callback_result: Option<CallbackOrigin>,
+    pub snapshot_provider: Option<Span>,
     pub return_allocation: Option<AllocationIdentity>,
     pub reception: Vec<Reception>,
     pub new: bool,
@@ -447,6 +448,7 @@ impl Datum {
                 mode,
                 inherits_mode: false,
                 callback_result: None,
+                snapshot_provider: None,
                 return_allocation: None,
                 reception: Vec::new(),
                 new,
@@ -760,26 +762,27 @@ impl Datum {
     pub(super) fn widen_snapshot_graph(&mut self) {
         let mut roots = BTreeSet::new();
         self.snapshot_graph(&[], &mut |origin, owned, _| {
-            if !origin.can_freeze(owned) || origin.transferred_entry(owned).is_some() {
-                let new = owned && origin.new;
-                let mut source = Self::source(origin.region.source, origin.mode, new);
-                for root in &mut source.roots {
-                    root.call_borrow = origin.call_borrow;
-                    root.inherits_mode = origin.inherits_mode;
-                    root.entry_graph = origin.entry_graph.as_ref().map(|entry| EntryGraph {
-                        callable: entry.callable,
-                        ownership: entry.ownership,
-                        shared_at: None,
-                        via_at: Vec::new(),
-                    });
-                    roots.insert(root.clone());
-                }
+            let new = owned && origin.new;
+            let mut source = Self::source(origin.region.source, origin.mode, new);
+            for root in &mut source.roots {
+                root.call_borrow = origin.call_borrow;
+                root.snapshot_provider = origin.snapshot_provider;
+                root.inherits_mode = origin.inherits_mode;
+                root.entry_graph = origin.entry_graph.as_ref().map(|entry| EntryGraph {
+                    callable: entry.callable,
+                    ownership: entry.ownership,
+                    shared_at: None,
+                    via_at: Vec::new(),
+                });
+                roots.insert(root.clone());
             }
             true
         });
-        self.roots = roots.into_iter().collect();
-        self.members.clear();
-        self.environments.clear();
+        *self = Self {
+            roots: roots.into_iter().collect(),
+            requires_new: self.requires_new,
+            ..Self::default()
+        };
     }
 
     fn visit_snapshot_graph(
@@ -1135,6 +1138,7 @@ impl Datum {
             .map(|origin| {
                 let mut origin = origin.clone();
                 origin.region.selection.push(coordinate.clone());
+                origin.snapshot_provider = None;
                 origin.variant = None;
                 origin.from_variable = false;
                 if !origin.draft {

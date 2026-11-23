@@ -29,7 +29,7 @@ use crate::access::flow::InvocationSite;
 
 mod imported;
 mod snapshot_invocations;
-pub(super) use snapshot_invocations::SnapshotInvocation;
+pub(super) use snapshot_invocations::{SnapshotInvocation, SnapshotProviders};
 
 type CallArgument = (usize, Mode, Datum);
 
@@ -2899,6 +2899,9 @@ impl<'program> Analyzer<'program> {
             if new { Access::Mut } else { Access::Immutable },
             new,
         );
+        for root in &mut closure.roots {
+            root.snapshot_provider = Some(node.span);
+        }
         closure.result_fresh = (implicit || !inner.return_values.is_empty())
             && (!implicit || output.requires_new)
             && inner.return_values.iter().all(|value| value.requires_new);

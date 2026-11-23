@@ -115,12 +115,75 @@ def JsonSnapshotInput.contract (input : JsonSnapshotInput) :
     RilAccess.SnapshotInput JsonCoordinate :=
   ⟨input.formal, input.path, input.replaced⟩
 
+structure JsonSnapshotOrigin where
+  shape : Json
+  provider : Option Nat
+  deriving FromJson
+
+structure JsonSnapshotNode where
+  shape : Json
+  roots : List JsonSnapshotOrigin
+  deriving FromJson
+
+structure JsonSnapshotArgument where
+  shape : Json
+  graph : List JsonSnapshotNode
+  deriving FromJson
+
+structure JsonSnapshotCall where
+  shape : Json
+  arguments : List JsonSnapshotArgument
+  deriving FromJson
+
+structure JsonSnapshotProvider where
+  via_parameters : List Bool
+  inputs : List JsonSnapshotInput
+  calls : List JsonSnapshotCall
+  deriving FromJson
+
+abbrev ProviderPairs := List (Nat × Nat)
+
+def snapshotOriginsSubsumed (pairs : ProviderPairs) (old new : List JsonSnapshotOrigin) : Bool :=
+  new.all fun required => old.any fun offered => offered.shape.compress == required.shape.compress &&
+    match offered.provider, required.provider with
+    | none, none => true
+    | some i, some j => pairs.contains (i, j)
+    | _, _ => false
+
+def snapshotArgsSubsumed (pairs : ProviderPairs) (old new : List JsonSnapshotArgument) : Bool :=
+  old.length == new.length && (old.zip new).all fun (offered, required) =>
+    offered.shape.compress == required.shape.compress && offered.graph.length == required.graph.length &&
+    (offered.graph.zip required.graph).all fun (left, right) =>
+      left.shape.compress == right.shape.compress && snapshotOriginsSubsumed pairs left.roots right.roots
+
+def snapshotCallsSubsumed (pairs : ProviderPairs) (old new : List JsonSnapshotCall) : Bool :=
+  new.all fun required => old.any fun offered =>
+    offered.shape.compress == required.shape.compress && snapshotArgsSubsumed pairs offered.arguments required.arguments
+
+def pruneSnapshotProviders (old new : Array JsonSnapshotProvider) : Nat → ProviderPairs → ProviderPairs
+  | 0, pairs => pairs
+  | fuel + 1, pairs =>
+    let next := pairs.filter fun (i, j) =>
+      match old[i]?, new[j]? with
+      | some left, some right => snapshotCallsSubsumed pairs left.calls right.calls
+      | _, _ => false
+    if next.length == pairs.length then pairs else pruneSnapshotProviders old new fuel next
+
+def compareSnapshotProviders (old new : List JsonSnapshotProvider) : ProviderPairs :=
+  let seed := old.zipIdx.flatMap fun (left, i) => new.zipIdx.filterMap fun (right, j) =>
+    if left.via_parameters == right.via_parameters &&
+       RilAccess.snapshotInputsSubsumed (left.inputs.map JsonSnapshotInput.contract)
+         (right.inputs.map JsonSnapshotInput.contract)
+    then some (i, j) else none
+  pruneSnapshotProviders old.toArray new.toArray seed.length seed
+
 structure JsonSummary where
   writes : List Nat
   retained : List Nat
   independent_retention : List Nat
   snapshot_inputs : List JsonSnapshotInput
-  snapshot_calls : List Json
+  snapshot_calls : List JsonSnapshotCall
+  snapshot_providers : List JsonSnapshotProvider
   return_sources : List JsonSource
   return_allocations : List Json
   effects : List Nat
@@ -154,7 +217,8 @@ def compareSummaries (baseline revision : JsonSummary) : Bool :=
     revision.independent_retention.all baseline.independent_retention.contains &&
     RilAccess.snapshotInputsSubsumed (baseline.snapshot_inputs.map JsonSnapshotInput.contract)
       (revision.snapshot_inputs.map JsonSnapshotInput.contract) &&
-    revision.snapshot_calls.all (fun call => (baseline.snapshot_calls.map Json.compress).contains call.compress) &&
+    snapshotCallsSubsumed (compareSnapshotProviders baseline.snapshot_providers revision.snapshot_providers)
+      baseline.snapshot_calls revision.snapshot_calls &&
     revision.effect_uses.all (fun effect => baseline.effect_uses.any fun old =>
       old.effect == effect.effect && (old.operation.isNone || old.operation == effect.operation)) &&
     RilAccess.callbackInvocationsSubsumed (baseline.invocations.map JsonInvocation.contract)

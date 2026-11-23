@@ -2905,3 +2905,19 @@ fn observe() -> () {
     live.count += 8
     assert(observed == 5)
 }
+
+-- @case recursively_wrapping_a_callback_in_plain_data_preserves_reception compile-pass no-prelude
+type Cell = .{ var count: int }
+type Shelf = .{ ^mut item: Cell }
+type Leaf = fn(new Shelf) -> int
+nominal type Node = .{ action: Leaf, next: ?Node }
+fn count(new input: Shelf) -> int { input.item.count }
+fn apply(action: fn(Node) -> int, node: Node, depth: int) -> int {
+    if depth == 0 { action(node) } else { apply(action, Node.{ action: count, next: Some(node) }, depth - 1) }
+}
+fn dispatch(node: Node) -> int {
+    node.action(new Shelf.{ item: ^mut Cell.{ count: 1 } })
+}
+fn run() -> int {
+    apply(dispatch, Node.{ action: count, next: None }, 2)
+}

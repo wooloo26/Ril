@@ -4,9 +4,13 @@ use std::{
 };
 
 use super::{Analyzer, CallArgument, CallEntry, Context, Coordinate, Datum, Ledger, Mode};
-use crate::access::check::snapshots::{Arguments, Call};
+use crate::access::check::{
+    higher_order::can_supply_snapshot_callback,
+    snapshots::{Arguments, Call},
+};
 use crate::access::{
-    ModeAxis, SnapshotArgument, SnapshotCall, SnapshotGraph, SnapshotOrigin,
+    ModeAxis, SnapshotArgument, SnapshotCall, SnapshotGraph, SnapshotOrigin, SnapshotProvider,
+    Summary,
     flow::{AllocationIdentity, Region, widen_recursive_projection},
 };
 use ril_base::span::Span;
@@ -27,6 +31,33 @@ struct Provider {
     via: BTreeSet<Span>,
 }
 
+#[derive(Default)]
+pub(in crate::access::check) struct SnapshotProviders {
+    signatures: BTreeMap<Span, Provider>,
+    sources: Vec<Span>,
+    synthetic: usize,
+}
+
+impl SnapshotProviders {
+    fn fresh_identity(&mut self, site: Span) -> Span {
+        // The replayed declaration has no source location. Keep these keys
+        // distinct from source spans and use the export span for diagnostics.
+        let offset = usize::MAX - self.synthetic;
+        self.synthetic += 1;
+        Span::new(site.file, offset, offset)
+    }
+}
+
+fn known_provider(origin: &crate::access::flow::Origin) -> Option<Span> {
+    origin.snapshot_provider.or_else(|| {
+        origin
+            .region
+            .selection
+            .is_empty()
+            .then_some(origin.region.source)
+    })
+}
+
 #[derive(Clone, Default)]
 struct InvocationTrail {
     receivers: BTreeMap<Span, Vec<Coordinate>>,
@@ -36,9 +67,6 @@ struct InvocationTrail {
 impl InvocationTrail {
     fn bound_argument_graphs(&mut self, invocation: &mut SnapshotInvocation, receiver: Span) {
         for (position, mode, value) in &mut invocation.arguments.0 {
-            if !matches!(mode, Mode::New | Mode::Via) {
-                continue;
-            }
             let depth = value.snapshot_shape_depth();
             let previous = self
                 .argument_depths
@@ -67,7 +95,12 @@ fn axis(formals: &[Option<Span>], origin: &crate::access::flow::Origin) -> Optio
     })
 }
 
-fn describe_graph(formals: &[Option<Span>], value: &Datum, ledger: &Ledger) -> SnapshotGraph {
+fn describe_graph(
+    formals: &[Option<Span>],
+    value: &Datum,
+    ledger: &Ledger,
+    providers: &BTreeMap<Span, usize>,
+) -> SnapshotGraph {
     let roots: BTreeSet<_> = value
         .roots
         .iter()
@@ -77,6 +110,7 @@ fn describe_graph(formals: &[Option<Span>], value: &Datum, ledger: &Ledger) -> S
             new: origin.new,
             borrowed: origin.call_borrow,
             forwarded: origin.inherits_mode,
+            provider: known_provider(origin).and_then(|owner| providers.get(&owner).copied()),
         })
         .collect();
     SnapshotGraph {
@@ -88,7 +122,10 @@ fn describe_graph(formals: &[Option<Span>], value: &Datum, ledger: &Ledger) -> S
             .members
             .iter()
             .map(|(coordinate, member)| {
-                (coordinate.clone(), describe_graph(formals, member, ledger))
+                (
+                    coordinate.clone(),
+                    describe_graph(formals, member, ledger, providers),
+                )
             })
             .collect(),
     }
@@ -97,6 +134,7 @@ fn describe_graph(formals: &[Option<Span>], value: &Datum, ledger: &Ledger) -> S
 fn describe_invocation(
     formals: &[Option<Span>],
     invocation: &SnapshotInvocation,
+    providers: &BTreeMap<Span, usize>,
 ) -> Option<SnapshotCall> {
     let receiver = axis(formals, invocation.receiver.roots.first()?)?;
     let mut arguments: Vec<_> = invocation
@@ -107,7 +145,7 @@ fn describe_invocation(
             position: *position,
             mode: crate::access::Input::from_mode(*mode),
             whole_graph: invocation.whole_graphs.contains(position),
-            graph: describe_graph(formals, value, &invocation.entry),
+            graph: describe_graph(formals, value, &invocation.entry, providers),
         })
         .collect();
     arguments.sort_unstable();
@@ -121,6 +159,7 @@ fn describe_invocation(
 fn import_graph(
     owner: Span,
     formals: &[Option<Span>],
+    providers: &[Span],
     graph: &SnapshotGraph,
     (ledger, next_identity): (&mut Ledger, &mut usize),
 ) -> Datum {
@@ -140,6 +179,9 @@ fn import_graph(
                 }
                 origin.call_borrow = root.borrowed;
                 origin.inherits_mode = root.forwarded;
+                origin.snapshot_provider = root
+                    .provider
+                    .and_then(|index| providers.get(index).copied());
                 if source.is_none() {
                     let identity = AllocationIdentity {
                         index: *next_identity,
@@ -161,7 +203,7 @@ fn import_graph(
             .map(|(coordinate, member)| {
                 (
                     coordinate.clone(),
-                    import_graph(owner, formals, member, (ledger, next_identity)),
+                    import_graph(owner, formals, providers, member, (ledger, next_identity)),
                 )
             })
             .collect(),
@@ -174,10 +216,105 @@ fn import_graph(
 }
 
 impl Analyzer<'_> {
-    pub(in crate::access::check) fn import_snapshot_invocations(
+    pub(in crate::access::check) fn import_snapshot_contract(
         &mut self,
         owner: Span,
         formals: &[Option<Span>],
+        summary: &Summary,
+    ) {
+        let providers: Vec<_> = summary
+            .snapshot_providers
+            .iter()
+            .map(|_| self.snapshot_providers.fresh_identity(owner))
+            .collect();
+        for (&provider, contract) in providers.iter().zip(&summary.snapshot_providers) {
+            let formals: Vec<_> = contract
+                .via_parameters
+                .iter()
+                .map(|_| Some(self.snapshot_providers.fresh_identity(owner)))
+                .collect();
+            let via = formals
+                .iter()
+                .zip(&contract.via_parameters)
+                .filter_map(|(&formal, &is_via)| if is_via { formal } else { None })
+                .collect();
+            self.snapshots.import(provider, &formals, &contract.inputs);
+            self.import_snapshot_invocations(
+                (provider, owner),
+                &formals,
+                &providers,
+                &contract.calls,
+            );
+            self.snapshot_providers
+                .signatures
+                .insert(provider, Provider { formals, via });
+        }
+        self.snapshots
+            .import(owner, formals, &summary.snapshot_inputs);
+        self.import_snapshot_invocations(
+            (owner, owner),
+            formals,
+            &providers,
+            &summary.snapshot_calls,
+        );
+    }
+
+    pub(in crate::access::check) fn publish_snapshot_contract(
+        &self,
+        owner: Span,
+    ) -> (Vec<SnapshotCall>, Vec<SnapshotProvider>) {
+        let mut references = ProviderReferences::default();
+        let calls = self.publish_snapshot_calls(owner, &mut references);
+        let mut providers = Vec::new();
+        while let Some(source) = references.pending.pop_front() {
+            let owner = *self
+                .snapshot_providers
+                .sources
+                .get(source)
+                .unwrap_or_else(|| ril_base::ice!("missing snapshot provider index {source}"));
+            let signature = self
+                .snapshot_providers
+                .signatures
+                .get(&owner)
+                .unwrap_or_else(|| ril_base::ice!("missing snapshot provider signature"));
+            let via_parameters = signature
+                .formals
+                .iter()
+                .map(|formal| formal.is_some_and(|formal| signature.via.contains(&formal)))
+                .collect();
+            providers.push(SnapshotProvider {
+                via_parameters,
+                inputs: self.snapshots.inputs(owner, &signature.formals),
+                calls: self.publish_snapshot_calls(owner, &mut references),
+            });
+        }
+        (calls, providers)
+    }
+
+    fn publish_snapshot_calls(
+        &self,
+        owner: Span,
+        references: &mut ProviderReferences,
+    ) -> Vec<SnapshotCall> {
+        self.snapshot_call_summaries
+            .get(&owner)
+            .into_iter()
+            .flatten()
+            .cloned()
+            .map(|mut call| {
+                for argument in &mut call.arguments {
+                    references.rebase_graph(&mut argument.graph);
+                }
+                call
+            })
+            .collect()
+    }
+
+    fn import_snapshot_invocations(
+        &mut self,
+        (owner, site): (Span, Span),
+        formals: &[Option<Span>],
+        providers: &[Span],
         calls: &[SnapshotCall],
     ) {
         for call in calls {
@@ -198,18 +335,19 @@ impl Analyzer<'_> {
                         argument.position,
                         argument.mode.map_or(Mode::Via, crate::access::Input::mode),
                         import_graph(
-                            owner,
+                            site,
                             formals,
+                            providers,
                             &argument.graph,
                             (&mut ledger, &mut next_identity),
                         ),
                     )
                 })
                 .collect();
-            let spans = vec![owner; arguments.len()];
+            let spans = vec![site; arguments.len()];
             self.snapshot_invocations.push(SnapshotInvocation {
                 owner,
-                site: owner,
+                site,
                 receiver,
                 recursive_path: call.recursive_path.clone(),
                 arguments: (arguments, spans),
@@ -234,9 +372,15 @@ impl Analyzer<'_> {
         if !ctx.reachable || ctx.shadow || !ctx.runtime || receiver.roots.is_empty() {
             return;
         }
-        if arguments.iter().any(|(_, mode, value)| {
-            matches!(mode, Mode::New | Mode::Via) && !value.roots.is_empty()
-        }) {
+        if arguments
+            .iter()
+            .zip(spans)
+            .any(|((_, mode, value), &span)| {
+                !value.roots.is_empty()
+                    && (matches!(mode, Mode::New | Mode::Via)
+                        || can_supply_snapshot_callback(self.ty(span)))
+            })
+        {
             let mut receiver = ledger.snapshot(receiver);
             receiver.roots.retain(|root| {
                 !root.region.selection.is_empty()
@@ -260,49 +404,56 @@ impl Analyzer<'_> {
         if self.snapshot_invocations.is_empty() {
             return;
         }
-        let providers: BTreeMap<_, _> = self
-            .functions
-            .iter()
-            .map(|function| {
-                (
-                    function.owner,
-                    Provider {
-                        formals: function.formals.clone(),
-                        via: function.via.clone(),
-                    },
-                )
-            })
-            .chain(self.closure_modes.iter().map(|(&owner, closure)| {
-                (
-                    owner,
-                    Provider {
-                        formals: closure.formals.clone(),
-                        via: closure.via.clone(),
-                    },
-                )
-            }))
-            .chain(
-                self.program
-                    .imported_functions
-                    .keys()
-                    .filter_map(|&definition| {
-                        let function = self.function_syntax(definition)?;
-                        let formals = function
-                            .signature
-                            .params
-                            .iter()
-                            .map(|param| param.name.as_ref().map(|name| name.span))
-                            .collect();
-                        let via = function
-                            .signature
-                            .params
-                            .iter()
-                            .filter(|param| param.mode == Mode::Via)
-                            .filter_map(|param| param.name.as_ref().map(|name| name.span))
-                            .collect();
-                        Some((function.name.span, Provider { formals, via }))
-                    }),
-            )
+        let mut providers = std::mem::take(&mut self.snapshot_providers.signatures);
+        providers.extend(
+            self.functions
+                .iter()
+                .map(|function| {
+                    (
+                        function.owner,
+                        Provider {
+                            formals: function.formals.clone(),
+                            via: function.via.clone(),
+                        },
+                    )
+                })
+                .chain(self.closure_modes.iter().map(|(&owner, closure)| {
+                    (
+                        owner,
+                        Provider {
+                            formals: closure.formals.clone(),
+                            via: closure.via.clone(),
+                        },
+                    )
+                }))
+                .chain(
+                    self.program
+                        .imported_functions
+                        .keys()
+                        .filter_map(|&definition| {
+                            let function = self.function_syntax(definition)?;
+                            let formals = function
+                                .signature
+                                .params
+                                .iter()
+                                .map(|param| param.name.as_ref().map(|name| name.span))
+                                .collect();
+                            let via = function
+                                .signature
+                                .params
+                                .iter()
+                                .filter(|param| param.mode == Mode::Via)
+                                .filter_map(|param| param.name.as_ref().map(|name| name.span))
+                                .collect();
+                            Some((function.name.span, Provider { formals, via }))
+                        }),
+                ),
+        );
+        let provider_ids: BTreeMap<_, _> = providers
+            .keys()
+            .copied()
+            .enumerate()
+            .map(|(index, owner)| (owner, index))
             .collect();
         let mut by_callee = BTreeMap::<_, Vec<_>>::new();
         for (index, call) in calls.iter().enumerate() {
@@ -324,24 +475,24 @@ impl Analyzer<'_> {
                 }
                 trail.bound_argument_graphs(&mut invocation, source);
                 if invocation.recursive_path.is_none()
-                    && receiver.region.selection.is_empty()
-                    && let Some(provider) = providers.get(&source)
+                    && let Some(callee) = known_provider(receiver)
+                    && let Some(provider) = providers.get(&callee)
                 {
                     let call = Call {
                         owner: invocation.owner,
                         site: invocation.site,
-                        callee: source,
+                        callee,
                         formals: provider.formals.clone(),
                         entry: invocation.entry,
                         arguments: invocation.arguments,
                         whole_graphs: invocation.whole_graphs,
                     };
-                    let contexts = by_callee.entry(source).or_default();
+                    let contexts = by_callee.entry(callee).or_default();
                     if !contexts
                         .iter()
                         .any(|&index| calls.get(index) == Some(&call))
                     {
-                        for (template, trail) in templates.get(&source).into_iter().flatten() {
+                        for (template, trail) in templates.get(&callee).into_iter().flatten() {
                             pending.extend(
                                 self.specialize_snapshot_invocation(provider, &call, template)
                                     .into_iter()
@@ -372,7 +523,8 @@ impl Analyzer<'_> {
                         .iter()
                         .any(|(previous, _)| previous == &invocation)
                     {
-                        if let Some(contract) = describe_invocation(&provider.formals, &invocation)
+                        if let Some(contract) =
+                            describe_invocation(&provider.formals, &invocation, &provider_ids)
                         {
                             self.snapshot_call_summaries
                                 .entry(owner)
@@ -396,6 +548,8 @@ impl Analyzer<'_> {
                 }
             }
         }
+        self.snapshot_providers.sources = providers.keys().copied().collect();
+        self.snapshot_providers.signatures = providers;
     }
 
     fn specialize_snapshot_invocation(
@@ -419,6 +573,20 @@ impl Analyzer<'_> {
             &mut Vec::new(),
         );
         let mut arguments = captured.arguments.clone();
+        let mut whole_graphs = captured.whole_graphs.clone();
+        let widened_formals: BTreeSet<_> = call
+            .whole_graphs
+            .iter()
+            .filter_map(|&position| provider.formals.get(position).copied().flatten())
+            .collect();
+        for (position, _, value) in &mut arguments.0 {
+            value.transform(&mut |origin| {
+                if widened_formals.contains(&origin.region.source) {
+                    origin.region.selection.clear();
+                    whole_graphs.insert(*position);
+                }
+            });
+        }
         self.specialize_callback_arguments(
             &provider.formals,
             &provider.via,
@@ -430,7 +598,25 @@ impl Analyzer<'_> {
             restore_projected_overwrites(original, actual, &captured.entry, &mut ledger);
         }
         let mut targets = Vec::new();
-        if let Some(path) = &captured.recursive_path {
+        let widened_receiver = captured.receiver.roots.iter().find_map(|root| {
+            if !widened_formals.contains(&root.region.source) {
+                return None;
+            }
+            let position = provider
+                .formals
+                .iter()
+                .position(|formal| *formal == Some(root.region.source))?;
+            call.arguments
+                .0
+                .iter()
+                .find(|(index, ..)| *index == position)
+                .map(|(.., value)| value)
+        });
+        if let Some(graph) = widened_receiver {
+            // The argument retains its possible providers after losing exact
+            // member paths. Replay any provider reachable in that graph.
+            nested_snapshot_receivers(graph, &[], &mut targets);
+        } else if let Some(path) = &captured.recursive_path {
             nested_snapshot_receivers(&receiver, path, &mut targets);
         } else {
             targets.push((receiver, None));
@@ -443,10 +629,33 @@ impl Analyzer<'_> {
                 receiver,
                 recursive_path,
                 arguments: arguments.clone(),
-                whole_graphs: captured.whole_graphs.clone(),
+                whole_graphs: whole_graphs.clone(),
                 entry: ledger.clone(),
             })
             .collect()
+    }
+}
+
+#[derive(Default)]
+struct ProviderReferences {
+    indices: BTreeMap<usize, usize>,
+    pending: VecDeque<usize>,
+}
+
+impl ProviderReferences {
+    fn rebase_graph(&mut self, graph: &mut SnapshotGraph) {
+        for root in &mut graph.roots {
+            if let Some(provider) = &mut root.provider {
+                let next = self.indices.len();
+                *provider = *self.indices.entry(*provider).or_insert_with(|| {
+                    self.pending.push_back(*provider);
+                    next
+                });
+            }
+        }
+        for (_, member) in &mut graph.members {
+            self.rebase_graph(member);
+        }
     }
 }
 

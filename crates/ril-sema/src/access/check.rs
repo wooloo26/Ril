@@ -252,6 +252,7 @@ struct Analyzer<'a> {
     snapshots: snapshots::Checks,
     snapshot_invocations: Vec<calls::SnapshotInvocation>,
     snapshot_call_summaries: BTreeMap<Span, BTreeSet<super::SnapshotCall>>,
+    snapshot_providers: calls::SnapshotProviders,
     invocation_summaries: BTreeMap<Span, BTreeSet<Invocation>>,
     mode_call_summaries: BTreeMap<Span, BTreeSet<CallbackModeCall>>,
     callback_results: Vec<calls::CallbackResult>,
@@ -287,6 +288,7 @@ fn collect(
         snapshots: snapshots::Checks::default(),
         snapshot_invocations: Vec::new(),
         snapshot_call_summaries: BTreeMap::new(),
+        snapshot_providers: calls::SnapshotProviders::default(),
         invocation_summaries: BTreeMap::new(),
         mode_call_summaries: BTreeMap::new(),
         callback_results: Vec::new(),
@@ -968,6 +970,7 @@ impl<'a> Analyzer<'a> {
     }
 
     fn finish_function(&mut self, facts: &BTreeSet<Fact>, fun: &DefinitionCheck) -> Summary {
+        let (snapshot_calls, snapshot_providers) = self.publish_snapshot_contract(fun.owner);
         let mut summary = Summary {
             return_sources: fun.return_sources.clone(),
             return_allocations: Datum::return_allocations(&fun.returns),
@@ -995,12 +998,8 @@ impl<'a> Analyzer<'a> {
                 .collect(),
             storage_updates: self.storage_contracts(fun),
             snapshot_inputs: self.snapshots.inputs(fun.owner, &fun.formals),
-            snapshot_calls: self
-                .snapshot_call_summaries
-                .remove(&fun.owner)
-                .into_iter()
-                .flatten()
-                .collect(),
+            snapshot_calls,
+            snapshot_providers,
             ..Summary::default()
         };
         let mut up = BTreeSet::new();
@@ -3037,7 +3036,13 @@ impl<'a> Analyzer<'a> {
                 DefinitionKind::Constant | DefinitionKind::Function
             )
         {
-            Datum::source(decl, Access::Immutable, false)
+            let mut value = Datum::source(decl, Access::Immutable, false);
+            if definition.kind == DefinitionKind::Function {
+                for root in &mut value.roots {
+                    root.snapshot_provider = Some(decl);
+                }
+            }
+            value
         } else {
             Datum::default()
         }

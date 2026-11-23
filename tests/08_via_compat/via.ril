@@ -100,6 +100,40 @@ pub fn apply(action: fn(new .{ item: Cell }) -> int, new input: .{ item: Cell })
     action(new input)
 }
 
+-- @case strengthening_a_private_callback_snapshot_contract_breaks_compatibility compat-fail E0552
+-- @baseline
+pub type Shelf = .{ ^mut item: Cell }
+pub type Leaf = fn(new Shelf) -> int
+fn selected(new shelf: Shelf) -> int { shelf.item.count }
+pub fn supply(action: fn(Leaf, new Shelf) -> int, new shelf: Shelf) -> int {
+    action(selected, new shelf)
+}
+-- @revision
+pub type Shelf = .{ ^mut item: Cell }
+pub type Leaf = fn(new Shelf) -> int
+fn selected(new shelf: Shelf) -> int { let fixed = new shelf; fixed.item.count }
+pub fn supply(action: fn(Leaf, new Shelf) -> int, new shelf: Shelf) -> int {
+-- ^ E0552
+    action(selected, new shelf)
+}
+
+-- @case relaxing_a_renamed_private_callback_snapshot_contract_preserves_compatibility compat-pass
+-- @baseline
+pub type Shelf = .{ ^mut item: Cell }
+pub type Leaf = fn(new Shelf) -> int
+fn selected(new shelf: Shelf) -> int { let fixed = new shelf; fixed.item.count }
+pub fn supply(action: fn(Leaf, new Shelf) -> int, new shelf: Shelf) -> int {
+    action(selected, new shelf)
+}
+-- @revision
+pub type Shelf = .{ ^mut item: Cell }
+pub type Leaf = fn(new Shelf) -> int
+fn unrelated() -> int { 0 }
+fn count(new shelf: Shelf) -> int { shelf.item.count }
+pub fn supply(action: fn(Leaf, new Shelf) -> int, new shelf: Shelf) -> int {
+    action(count, new shelf)
+}
+
 -- @case freezing_through_nested_via_calls_preserves_existing_sources compile-fail E0535
 type Shelf = .{ ^mut item: Cell }
 fn freeze(via input: Shelf) -> Shelf {

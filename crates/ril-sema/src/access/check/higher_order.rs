@@ -242,23 +242,40 @@ impl Offer {
 }
 
 fn can_supply_mode_callback(ty: &Ty) -> bool {
+    can_supply_callback(ty, |signature| !mode_axes(signature).is_empty())
+}
+
+pub(super) fn can_supply_snapshot_callback(ty: &Ty) -> bool {
+    can_supply_callback(ty, |signature| {
+        signature.parameters.iter().any(|parameter| {
+            matches!(parameter.callable_mode(), Mode::New | Mode::Via)
+                || can_supply_snapshot_callback(&parameter.ty)
+        })
+    })
+}
+
+fn can_supply_callback(ty: &Ty, accepts: fn(&Callable) -> bool) -> bool {
     match ty {
-        Ty::Callable(signature) => !mode_axes(signature).is_empty(),
+        Ty::Callable(signature) => accepts(signature),
         Ty::Record(fields, open) => {
             *open
                 || fields
                     .values()
-                    .any(|field| can_supply_mode_callback(&field.ty))
+                    .any(|field| can_supply_callback(&field.ty, accepts))
         }
         Ty::Tuple(fields) => fields
             .iter()
-            .any(|field| can_supply_mode_callback(&field.ty)),
-        Ty::Array(item) => can_supply_mode_callback(&item.ty),
-        Ty::Map(key, item) => can_supply_mode_callback(key) || can_supply_mode_callback(&item.ty),
-        Ty::Set(item) | Ty::Option(item) | Ty::Draft(item) | Ty::Task(item) => {
-            can_supply_mode_callback(item)
+            .any(|field| can_supply_callback(&field.ty, accepts)),
+        Ty::Array(item) => can_supply_callback(&item.ty, accepts),
+        Ty::Map(key, item) => {
+            can_supply_callback(key, accepts) || can_supply_callback(&item.ty, accepts)
         }
-        Ty::Result(ok, error) => can_supply_mode_callback(ok) || can_supply_mode_callback(error),
+        Ty::Set(item) | Ty::Option(item) | Ty::Draft(item) | Ty::Task(item) => {
+            can_supply_callback(item, accepts)
+        }
+        Ty::Result(ok, error) => {
+            can_supply_callback(ok, accepts) || can_supply_callback(error, accepts)
+        }
         Ty::Adt(adt) => adt.kind != crate::ty::AdtKind::Foreign,
         Ty::Param(_) | Ty::Infer(_) | Ty::Projection(..) | Ty::Unknown => true,
         _ => false,

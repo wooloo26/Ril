@@ -102,9 +102,7 @@ impl<'program> Analyzer<'program> {
                     }
                 }
             }
-            self.snapshots
-                .import(owner, &formals, &export.summary.snapshot_inputs);
-            self.import_snapshot_invocations(owner, &formals, &export.summary.snapshot_calls);
+            self.import_snapshot_contract(owner, &formals, &export.summary);
             self.higher_order
                 .add_interface(owner, formals, &export.summary);
         }
