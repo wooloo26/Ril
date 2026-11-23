@@ -20,8 +20,8 @@ use crate::{
     ty::{Ty, TypedProgram},
 };
 
-pub const FORMAT_VERSION: u32 = 13;
-const PREVIOUS_FORMAT_VERSION: u32 = 12;
+pub const FORMAT_VERSION: u32 = 14;
+const OLDEST_FORMAT_VERSION: u32 = 12;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Interface {
@@ -264,7 +264,7 @@ impl Interface {
         }
         let Version { format_version } =
             serde_json::from_slice(bytes).map_err(|err| err.to_string())?;
-        if !matches!(format_version, FORMAT_VERSION | PREVIOUS_FORMAT_VERSION) {
+        if !(OLDEST_FORMAT_VERSION..=FORMAT_VERSION).contains(&format_version) {
             return Err(format!("unsupported .rili format version {format_version}"));
         }
         let value: Self = serde_json::from_slice(bytes).map_err(|err| err.to_string())?;

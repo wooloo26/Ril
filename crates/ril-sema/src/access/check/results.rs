@@ -38,8 +38,11 @@ pub(super) fn carries_result(program: &TypedProgram, ty: &Ty) -> bool {
     fn visit(program: &TypedProgram, ty: &Ty, active: &mut BTreeSet<DefinitionId>) -> bool {
         match ty {
             Ty::Result(..) => true,
-            Ty::Option(inner) => visit(program, inner, active),
+            Ty::Option(inner) | Ty::Set(inner) => visit(program, inner, active),
             Ty::Array(member) => visit(program, &member.ty, active),
+            Ty::Map(key, member) => {
+                visit(program, key, active) || visit(program, &member.ty, active)
+            }
             Ty::Tuple(members) => members
                 .iter()
                 .any(|member| visit(program, &member.ty, active)),
@@ -151,6 +154,10 @@ impl BoundaryResults<'_> {
                     );
                 }
             }
+            Ty::Map(..) | Ty::Set(_) if carries_result(self.program, ty) => {
+                let part = self.part();
+                ledger.record_result_part(&mut value, self.span, part, choices, true);
+            }
             Ty::Adt(adt) => {
                 let Some(layout) = self.program.nominal_layout(adt) else {
                     return value;
@@ -235,21 +242,21 @@ impl BoundaryResults<'_> {
     }
 }
 
-pub(super) struct ArrayTraversal {
+pub(super) struct CollectionTraversal {
     covered: Option<ResultOccurrence>,
     samples: Inspections,
 }
 
-impl ArrayTraversal {
+impl CollectionTraversal {
     pub(super) fn enter(
         program: &TypedProgram,
         ledger: &mut Ledger,
         element: &Ty,
-        array: &Datum,
+        collection: &Datum,
         child: &mut Datum,
         binder: Span,
     ) -> Option<Self> {
-        let collections = array.array_results();
+        let collections = collection.collection_results();
         if !collections
             .iter()
             .any(|item| ledger.obligations.contains(item) && !ledger.inspected.contains(item))
@@ -259,7 +266,7 @@ impl ArrayTraversal {
         *child = receive_results(program, ledger, element, std::mem::take(child), binder);
         let samples = child.results();
         ledger.register_result_samples(&samples, &collections);
-        let covered = array.guaranteed_array_result(&ledger.choices);
+        let covered = collection.guaranteed_collection_result(&ledger.choices);
         Some(Self { covered, samples })
     }
 
@@ -270,13 +277,13 @@ impl ArrayTraversal {
         continues: &mut [Ledger],
     ) {
         if let Some(exit) = exit
-            && let Some(array) = &self.covered
+            && let Some(collection) = &self.covered
             && !self.samples.is_empty()
             && continues
                 .iter()
                 .all(|path| path.covers_result_samples(&self.samples))
         {
-            exit.mark_inspected([array.clone()]);
+            exit.mark_inspected([collection.clone()]);
         }
         for path in breaks.iter_mut().chain(continues) {
             path.forget_result_samples(&self.samples);

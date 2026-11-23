@@ -566,7 +566,10 @@ impl<'program> Analyzer<'program> {
     ) -> &'value mut Datum {
         for (depth, coord) in path.iter().enumerate() {
             let schema = self.schema_member(ty, coord);
-            ty = schema.map_or(&Ty::Unknown, |member| &member.ty);
+            ty = match (ty, coord) {
+                (Ty::Map(key, _), Coordinate::MapKey) => key,
+                _ => schema.map_or(&Ty::Unknown, |member| &member.ty),
+            };
             node = node.members.entry(coord.clone()).or_insert_with(|| {
                 if constructs && depth + 1 < path.len() {
                     let mode = schema.map_or(Mode::Mut, |member| member.mode.mode);

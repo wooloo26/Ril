@@ -54,6 +54,17 @@ pub enum Coordinate {
     Field(String),
     Index(String),
     Dynamic,
+    MapKey,
+}
+
+impl Coordinate {
+    fn covers(&self, step: &Self) -> bool {
+        match (self, step) {
+            (Self::MapKey, _) | (_, Self::MapKey) => self == step,
+            (Self::Dynamic, _) => true,
+            _ => self == step,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -138,7 +149,7 @@ impl Region {
                 .selection
                 .iter()
                 .zip(&other.selection)
-                .all(|(a, b)| a == b || *a == Coordinate::Dynamic || *b == Coordinate::Dynamic)
+                .all(|(a, b)| a.covers(b) || b.covers(a))
     }
 
     pub(super) fn matches_axis(&self, projection: &Self) -> bool {
@@ -148,7 +159,7 @@ impl Region {
                 .selection
                 .iter()
                 .zip(&projection.selection)
-                .all(|(axis, step)| axis == step || *axis == Coordinate::Dynamic)
+                .all(|(axis, step)| axis.covers(step))
     }
 }
 
@@ -265,7 +276,7 @@ impl Occurrence {
 pub(super) struct ResultOccurrence {
     pub span: Span,
     part: usize,
-    array_elements: bool,
+    collection_elements: bool,
     places: BTreeSet<(ResultHolder, Vec<Coordinate>)>,
     created_in: Choices,
 }
@@ -302,6 +313,7 @@ pub(super) struct Datum {
     pub roots: Vec<Origin>,
     pub members: BTreeMap<Coordinate, Datum>,
     pub array_len: Option<usize>,
+    pub map_keys: Option<Vec<Coordinate>>,
     pub(super) results: BTreeSet<ResultReference>,
     pub requires_new: bool,
     pub latent_effects: BTreeSet<String>,
@@ -573,7 +585,7 @@ impl Datum {
 
     pub(super) fn receive_binding(&mut self, access: Access) {
         if access != Access::Immutable {
-            self.forget_array_layout();
+            self.forget_collection_layout();
         }
         for root in &mut self.roots {
             root.fix_mode(access);
@@ -589,10 +601,11 @@ impl Datum {
         self.array_len.is_some() || self.members.values().any(Self::has_array_layout)
     }
 
-    pub(super) fn forget_array_layout(&mut self) {
+    pub(super) fn forget_collection_layout(&mut self) {
         self.array_len = None;
+        self.map_keys = None;
         for member in self.members.values_mut() {
-            member.forget_array_layout();
+            member.forget_collection_layout();
         }
     }
 
@@ -610,16 +623,19 @@ impl Datum {
             .collect()
     }
 
-    pub(super) fn array_results(&self) -> BTreeSet<ResultOccurrence> {
+    pub(super) fn collection_results(&self) -> BTreeSet<ResultOccurrence> {
         self.results
             .iter()
-            .filter(|item| item.occurrence.array_elements)
+            .filter(|item| item.occurrence.collection_elements)
             .map(|item| item.occurrence.clone())
             .collect()
     }
 
-    pub(super) fn guaranteed_array_result(&self, active: &Choices) -> Option<ResultOccurrence> {
-        let mut collections = self.array_results().into_iter();
+    pub(super) fn guaranteed_collection_result(
+        &self,
+        active: &Choices,
+    ) -> Option<ResultOccurrence> {
+        let mut collections = self.collection_results().into_iter();
         let item = collections.next()?;
         if collections.next().is_some() || self.roots.is_empty() {
             return None;
@@ -801,6 +817,9 @@ impl Datum {
         if self.array_len != other.array_len {
             self.array_len = None;
         }
+        if self.map_keys != other.map_keys {
+            self.map_keys = None;
+        }
         self.requires_new &= other.requires_new;
         self.latent_effects.append(&mut other.latent_effects);
         self.environments.append(&mut other.environments);
@@ -834,11 +853,17 @@ impl Datum {
     }
 
     fn known_member(&self, coordinate: &Coordinate) -> Option<Self> {
-        self.members.get(coordinate).cloned().or_else(|| {
-            (*coordinate == Coordinate::Dynamic)
-                .then(|| self.members.values().cloned().reduce(Self::joined))
-                .flatten()
-        })
+        if let Some(value) = self.members.get(coordinate) {
+            Some(value.clone())
+        } else if *coordinate == Coordinate::Dynamic {
+            self.members
+                .iter()
+                .filter(|(key, _)| coordinate.covers(key))
+                .map(|(_, value)| value.clone())
+                .reduce(Self::joined)
+        } else {
+            None
+        }
     }
 
     fn project_opaque(&self, coordinate: Coordinate, mode: Mode) -> Self {
@@ -1095,12 +1120,12 @@ impl Ledger {
         span: Span,
         part: usize,
         choices: &Choices,
-        array_elements: bool,
+        collection_elements: bool,
     ) {
         let occurrence = ResultOccurrence {
             span,
             part,
-            array_elements,
+            collection_elements,
             places: BTreeSet::new(),
             created_in: choices.clone(),
         };
@@ -1122,7 +1147,7 @@ impl Ledger {
         }
     }
 
-    pub(super) fn lose_array_elements_at(&mut self, place: &Datum) {
+    pub(super) fn lose_collection_elements_at(&mut self, place: &Datum) {
         let mut lost = BTreeSet::new();
         for value in self
             .slots
@@ -1139,7 +1164,7 @@ impl Ledger {
                     })
                 }) {
                     lost.extend(
-                        node.array_results()
+                        node.collection_results()
                             .into_iter()
                             .filter(|item| {
                                 self.obligations.contains(item) && !self.inspected.contains(item)
@@ -1246,8 +1271,8 @@ impl Ledger {
         paths
     }
 
-    pub(super) fn array_paths(&self, value: &Datum) -> Vec<(Self, Datum)> {
-        if value.array_results().is_empty() {
+    pub(super) fn collection_paths(&self, value: &Datum) -> Vec<(Self, Datum)> {
+        if value.collection_results().is_empty() {
             return Vec::new();
         }
         let paths: BTreeSet<_> = value
@@ -1666,7 +1691,10 @@ impl Ledger {
     }
 
     pub(super) fn project_schema(&self, base: &Datum, coordinate: Coordinate, mode: Mode) -> Datum {
-        let arbitrary_element = coordinate == Coordinate::Dynamic && base.array_len != Some(1);
+        let singleton =
+            base.array_len == Some(1) || base.map_keys.as_ref().is_some_and(|keys| keys.len() == 1);
+        let arbitrary_element =
+            matches!(coordinate, Coordinate::Dynamic | Coordinate::MapKey) && !singleton;
         let mut value = self.project_members(base, coordinate, mode, |_| true, |_| true);
         if arbitrary_element {
             // A single unknown index cannot inspect the union of its possible values.
@@ -1792,7 +1820,7 @@ impl Ledger {
     pub(super) fn inspect(&mut self, datum: &Datum) {
         let snapshot = self.loop_snapshot(datum);
         let mut results = snapshot.results();
-        if results.iter().any(|item| item.array_elements) {
+        if results.iter().any(|item| item.collection_elements) {
             let mut axes: BTreeMap<_, BTreeSet<_>> = BTreeMap::new();
             snapshot.visit_origins(&mut Vec::new(), &mut |_, origin| {
                 for (&key, &arm) in &origin.branches {
@@ -1801,7 +1829,7 @@ impl Ledger {
             });
             let paths = Self::extend_result_paths(BTreeSet::from([self.choices.clone()]), axes);
             results.retain(|item| {
-                !item.array_elements
+                !item.collection_elements
                     || paths.iter().all(|path| {
                         if !compatible(path, &item.created_in) {
                             return true;

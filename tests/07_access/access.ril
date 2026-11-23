@@ -1075,6 +1075,79 @@ fn run(first: []!<int, str>, second: []!<int, str>, flag: bool) &return(first, s
     if flag { (first, second) } else { (second, first) }
 }
 
+-- @case discarding_a_returned_map_of_results_is_rejected compile-fail E0720
+fn batch() -> new [str: !<int, str>] { ["one": Ok(1)] }
+fn run() -> () {
+    let _ = batch()
+    -- ^ E0720
+}
+
+-- @case exhausting_map_entries_discharges_received_results compile-pass
+fn run(batch: [str: !<int, str>]) -> int {
+    var sum = 0
+    for batch as (_, value) {
+        match value { Ok(n) -> { sum += n }; Err(_) -> continue }
+    }
+    sum
+}
+
+-- @case exhausting_a_local_map_checks_each_stored_result compile-pass
+fn run() -> () {
+    let table: [str: !<int, str>] = ["one": Ok(1), "two": Err("failed")]
+    for table as (_, value) {
+        match value { Ok(_) -> (); Err(_) -> () }
+    }
+}
+
+-- @case replacing_a_duplicate_map_value_leaves_the_old_result_uninspected compile-fail E0720
+fn run() -> () {
+    let table: [str: !<int, str>] = ["one": Ok(1), "one": Ok(2)]
+    -- ^ E0720
+    for table as (_, value) {
+        match value { Ok(_) -> (); Err(_) -> () }
+    }
+}
+
+-- @case exhausting_a_local_map_with_one_fallible_key_checks_the_key compile-pass
+fn run() -> () {
+    let key: !<int, str> = Ok(1)
+    let table = [key: 3]
+    for table as (item, _) {
+        match item { Ok(_) -> (); Err(_) -> () }
+    }
+}
+
+-- @case breaking_map_iteration_leaves_unvisited_results_pending compile-fail E0720
+fn run(batch: [str: !<int, str>]) -> () {
+-- ^ E0720
+    for batch as (_, value) {
+        match value { Ok(_) -> (); Err(_) -> () }
+        break
+    }
+}
+
+-- @case exhausting_a_map_requires_inspection_of_its_keys_and_values compile-fail E0720
+fn run(batch: [!<int, str>: !<bool, str>]) -> () {
+    for batch as (_key, value) {
+        match value { Ok(_) -> (); Err(_) -> () }
+    }
+}
+
+-- @case inspecting_both_halves_of_every_map_entry_discharges_its_results compile-pass
+fn run(batch: [!<int, str>: !<bool, str>]) -> () {
+    for batch as (key, value) {
+        match key { Ok(_) -> (); Err(_) -> () }
+        match value { Ok(_) -> (); Err(_) -> () }
+    }
+}
+
+-- @case exhausting_a_received_set_discharges_its_results compile-pass
+fn run(batch: Set<!<int, str>>) -> () {
+    for batch as value {
+        match value { Ok(_) -> (); Err(_) -> () }
+    }
+}
+
 -- @case traversing_a_possible_empty_alternative_keeps_the_array_pending compile-fail E0720
 fn run(values: []!<int, str>, flag: bool) -> () {
 -- ^ E0720

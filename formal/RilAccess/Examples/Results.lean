@@ -35,6 +35,10 @@ def array (size : Nat) : World :=
 def twoArrays : World :=
   receive [⟨[0, 0], "Ok", Option.some 0⟩, ⟨[1, 0], "Err", Option.some 1⟩]
 
+def mapEntries : World :=
+  receive [⟨[0, 0], "Ok", Option.some 0⟩, ⟨[0, 1], "Err", Option.some 1⟩,
+    ⟨[1, 0], "Err", Option.some 2⟩, ⟨[1, 1], "Ok", Option.some 3⟩]
+
 def overwrittenElement : World :=
   { (array 2) with
     constructors := [⟨[0], "Ok", Option.some 2⟩, ⟨[1], "Err", Option.some 1⟩]
@@ -111,6 +115,24 @@ def cases : List (String × Bool × Bool) :=
     [0, 1].all (fun selected => canExitAfterCoverage twoArrays [] [[selected]]), false),
    ("returning_both_arrays_in_either_order_transfers_both_obligations",
     [[[0], [1]], [[1], [0]]].all (canExitAfterCoverage twoArrays []), true),
+   ("discarding_a_returned_map_of_results_is_rejected",
+    canExitAfterCoverage mapEntries [] [], false),
+   ("exhausting_map_entries_discharges_received_results",
+    canExitAfterCoverage twoArrays [[0, 0], [1, 0]] [], true),
+   ("exhausting_a_local_map_checks_each_stored_result",
+    canExitAfterCoverage twoArrays [[0, 0], [1, 0]] [], true),
+   ("replacing_a_duplicate_map_value_leaves_the_old_result_uninspected",
+    canExitAfterTraversal overwrittenElement [0, 1], false),
+   ("exhausting_a_local_map_with_one_fallible_key_checks_the_key",
+    canExitAfterCoverage (receive [⟨[0, 0], "Ok", Option.some 0⟩]) [[0, 0]] [], true),
+   ("breaking_map_iteration_leaves_unvisited_results_pending",
+    canExitAfterCoverage twoArrays [[0, 0]] [], false),
+   ("exhausting_a_map_requires_inspection_of_its_keys_and_values",
+    canExitAfterCoverage mapEntries [[0, 1], [1, 1]] [], false),
+   ("inspecting_both_halves_of_every_map_entry_discharges_its_results",
+    canExitAfterCoverage mapEntries [[0, 0], [0, 1], [1, 0], [1, 1]] [], true),
+   ("exhausting_a_received_set_discharges_its_results",
+    canExitAfterTraversal (array 2) [0, 1], true),
    ("traversing_a_possible_empty_alternative_keeps_the_array_pending",
     [[], [0, 1]].all (canExitAfterTraversal (array 2)), false),
    ("every_created_array_is_inspected_on_its_own_path",

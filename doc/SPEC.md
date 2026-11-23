@@ -3044,7 +3044,7 @@ fn handle_log() @io -> new !<(), str> {
 
 In a composite, each Result has its own obligation. Testing `Some(_)` examines the option tag. Testing `Some(Ok(_))` also examines the contained Result tag when the option is `Some`.
 
-Traversing an array to exhaustion discharges its element obligations when each visited Result is inspected. A `break` leaves unvisited Results pending, and a `continue` preserves the obligation for any Result skipped in that iteration.
+Traversing a collection to exhaustion discharges its element obligations when each visited Result is inspected, including Results in both halves of a map entry. A `break` leaves unvisited Results pending, and a `continue` preserves the obligation for any Result skipped in that iteration.
 
 An early return through `?` exits normally with `Err` or `None`. An outstanding Result on that path must already have been inspected or be part of the returned value.
 

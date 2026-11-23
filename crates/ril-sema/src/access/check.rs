@@ -1411,7 +1411,7 @@ impl<'a> Analyzer<'a> {
 
     fn receive_member(&mut self, mut value: Datum, mode: Access, span: Span) -> Datum {
         if mode != Access::Immutable {
-            value.forget_array_layout();
+            value.forget_collection_layout();
         }
         if value.roots.is_empty() {
             return value;
@@ -2013,7 +2013,7 @@ impl<'a> Analyzer<'a> {
                 } else if mode != Mode::Via {
                     value.receive_binding(access);
                 } else {
-                    value.forget_array_layout();
+                    value.forget_collection_layout();
                 }
                 value.transform(&mut |origin| {
                     origin.dependencies.insert(declaration.into());
@@ -2325,15 +2325,47 @@ impl<'a> Analyzer<'a> {
             }
             Expr::Map(entries) => {
                 let mut map = Datum::source(span, Access::Mut, true);
-                for (i, &(key, value)) in entries.iter().enumerate() {
-                    self.expr(ctx, ledger, key);
-                    let coordinate = Coordinate::Index(i.to_string());
+                let keys: Option<Vec<_>> = entries
+                    .iter()
+                    .map(|&(id, _)| self.constant_map_key(ctx, id))
+                    .collect();
+                let keys = keys.or_else(|| (entries.len() == 1).then(|| vec![Coordinate::Dynamic]));
+                let mut ordered_keys = Vec::new();
+                for (index, &(key, value)) in entries.iter().enumerate() {
+                    let mut key_value = self.expr(ctx, ledger, key);
+                    if !key_value.roots.is_empty() {
+                        // A later duplicate replaces the value while retaining the first key.
+                        if index > 0 {
+                            key_value.forget_results();
+                        }
+                        let key_value =
+                            self.receive_member(key_value, Access::Immutable, ast.expr(key).span);
+                        let slot = map.members.entry(Coordinate::MapKey).or_default();
+                        *slot = std::mem::take(slot).joined(key_value);
+                    }
+                    let coordinate = keys
+                        .as_ref()
+                        .and_then(|keys| keys.get(index))
+                        .cloned()
+                        .unwrap_or(Coordinate::Dynamic);
                     let access = self.member_schema(span, &coordinate).0;
-                    let datum = self.expr(ctx, ledger, value);
-                    map.members.insert(
-                        coordinate,
-                        self.receive_member(datum, access, ast.expr(value).span),
-                    );
+                    let mut datum = self.expr(ctx, ledger, value);
+                    if keys.is_none() && index + 1 < entries.len() {
+                        // An unknown later key may replace this occurrence.
+                        datum.forget_results();
+                    }
+                    let datum = self.receive_member(datum, access, ast.expr(value).span);
+                    if keys.is_some() {
+                        if map.members.insert(coordinate.clone(), datum).is_none() {
+                            ordered_keys.push(coordinate);
+                        }
+                    } else {
+                        let slot = map.members.entry(coordinate).or_default();
+                        *slot = std::mem::take(slot).joined(datum);
+                    }
+                }
+                if results::carries_result(self.program, self.ty(span)) {
+                    map.map_keys = keys.map(|_| ordered_keys);
                 }
                 map
             }
@@ -2351,8 +2383,9 @@ impl<'a> Analyzer<'a> {
             Expr::Index { base, index, .. } => {
                 let value = self.expr(ctx, ledger, *base);
                 self.expr(ctx, ledger, *index);
-                let coordinate = self.index_coordinate(ctx, *index);
-                let (mode, _) = self.schema_mode(self.ty(ast.expr(*base).span), &coordinate);
+                let ty = self.ty(ast.expr(*base).span);
+                let coordinate = self.collection_coordinate(ctx, ty, *index);
+                let (mode, _) = self.schema_mode(ty, &coordinate);
                 ledger.project_schema(&value, coordinate, mode)
             }
             Expr::Block {
@@ -2500,52 +2533,79 @@ impl<'a> Analyzer<'a> {
                 };
                 let iterable_type = self.ty(ast.expr(*iterable).span);
                 let schema = self.schema_mode(iterable_type, &Coordinate::Dynamic).0;
-                let traverse =
-                    |this: &mut Self, ctx: &mut Context, ledger: &mut Ledger, value: Datum| {
-                        let extent = value.array_len.map_or_else(
-                            || this.iterable_extent(ctx, *iterable),
-                            LoopExtent::Exact,
-                        );
-                        this.check_loop(
-                            ctx,
-                            ledger,
-                            LoopSyntax {
-                                owner: span,
-                                repeated: ast.pattern(*pattern).span.join(ast.expr(*body).span),
-                                body: *body,
-                                extent,
-                                exact_elements: value.array_len.is_some(),
-                            },
-                            |this, local, inside, index| {
-                                let exit = (extent != LoopExtent::Exact(1)).then(|| inside.clone());
-                                local.reachable &= extent != LoopExtent::Exact(0);
-                                inside.iteration.push(value.clone());
-                                let coordinate = index.map_or(Coordinate::Dynamic, |index| {
-                                    Coordinate::Index(index.to_string())
-                                });
-                                let mut child = inside.project_schema(&value, coordinate, schema);
-                                let traversal = if let Ty::Array(member) = iterable_type
+                let traverse = |this: &mut Self,
+                                ctx: &mut Context,
+                                ledger: &mut Ledger,
+                                value: Datum| {
+                    let length = value
+                        .array_len
+                        .or_else(|| value.map_keys.as_ref().map(Vec::len));
+                    let extent = length
+                        .map_or_else(|| this.iterable_extent(ctx, *iterable), LoopExtent::Exact);
+                    this.check_loop(
+                        ctx,
+                        ledger,
+                        LoopSyntax {
+                            owner: span,
+                            repeated: ast.pattern(*pattern).span.join(ast.expr(*body).span),
+                            body: *body,
+                            extent,
+                            exact_elements: length.is_some(),
+                        },
+                        |this, local, inside, index| {
+                            let exit = (extent != LoopExtent::Exact(1)).then(|| inside.clone());
+                            local.reachable &= extent != LoopExtent::Exact(0);
+                            inside.iteration.push(value.clone());
+                            let coordinate = match (&value.map_keys, index) {
+                                (Some(keys), Some(index)) => {
+                                    keys.get(index).cloned().unwrap_or(Coordinate::Dynamic)
+                                }
+                                (None, Some(index)) => Coordinate::Index(index.to_string()),
+                                (_, None) => Coordinate::Dynamic,
+                            };
+                            let mut child = inside.project_schema(&value, coordinate, schema);
+                            let pattern_span = ast.pattern(*pattern).span;
+                            if let Ty::Map(key_ty, value_ty) = iterable_type {
+                                let key = if key_ty.is_value() {
+                                    Datum::default()
+                                } else {
+                                    inside.project_schema(&value, Coordinate::MapKey, Mode::Plain)
+                                };
+                                let mut pair = Datum::source(pattern_span, Access::Mut, true);
+                                pair.members.insert(Coordinate::Index("0".into()), key);
+                                pair.members.insert(
+                                    Coordinate::Index("1".into()),
+                                    if value_ty.ty.is_value() {
+                                        Datum::default()
+                                    } else {
+                                        child
+                                    },
+                                );
+                                child = pair;
+                            }
+                            let traversal =
+                                if matches!(iterable_type, Ty::Array(_) | Ty::Map(..) | Ty::Set(_))
                                     && local.reachable
                                 {
-                                    results::ArrayTraversal::enter(
+                                    results::CollectionTraversal::enter(
                                         this.program,
                                         inside,
-                                        &member.ty,
+                                        this.ty(pattern_span),
                                         &value,
                                         &mut child,
-                                        ast.pattern(*pattern).span,
+                                        pattern_span,
                                     )
                                 } else {
                                     None
                                 };
-                                this.pattern_tests(local, inside, *pattern, &child)
-                                    .inspect(inside, true);
-                                this.bind(local, inside, *pattern, &storage, child, false);
-                                (exit, traversal)
-                            },
-                        );
-                    };
-                let paths = ledger.array_paths(&value);
+                            this.pattern_tests(local, inside, *pattern, &child)
+                                .inspect(inside, true);
+                            this.bind(local, inside, *pattern, &storage, child, false);
+                            (exit, traversal)
+                        },
+                    );
+                };
+                let paths = ledger.collection_paths(&value);
                 if paths.is_empty() {
                     traverse(self, ctx, ledger, value);
                 } else {
@@ -2887,7 +2947,8 @@ impl<'a> Analyzer<'a> {
             }
             Expr::Index { base, index, .. } => {
                 let value = self.expr(ctx, ledger, *base);
-                let coordinate = self.index_coordinate(ctx, *index);
+                let coordinate =
+                    self.collection_coordinate(ctx, self.ty(ast.expr(*base).span), *index);
                 value.slot_projection(coordinate)
             }
             _ => prior,
@@ -3025,7 +3086,7 @@ impl<'a> Analyzer<'a> {
             };
             if let Some(access) = access {
                 if results::carries_result(self.program, self.ty(node.span)) {
-                    ledger.lose_array_elements_at(prior);
+                    ledger.lose_collection_elements_at(prior);
                 }
                 if access == Access::Ref {
                     self.check_stored_views(&ledger.loop_snapshot(&value), true, span);
@@ -3255,7 +3316,7 @@ impl<'a> Analyzer<'a> {
             &mut Context,
             &mut Ledger,
             Option<usize>,
-        ) -> (Option<Ledger>, Option<results::ArrayTraversal>),
+        ) -> (Option<Ledger>, Option<results::CollectionTraversal>),
     ) {
         let LoopSyntax {
             owner,
@@ -3459,6 +3520,30 @@ impl<'a> Analyzer<'a> {
         }
     }
 
+    fn collection_coordinate(&self, ctx: &Context, ty: &Ty, id: ExprId) -> Coordinate {
+        let ty = if let Ty::Draft(inner) = ty { inner } else { ty };
+        if matches!(ty, Ty::Map(..)) {
+            self.constant_map_key(ctx, id)
+                .unwrap_or(Coordinate::Dynamic)
+        } else {
+            self.index_coordinate(ctx, id)
+        }
+    }
+
+    fn constant_map_key(&self, ctx: &Context, id: ExprId) -> Option<Coordinate> {
+        let node = self.ast(ctx.file).expr(id);
+        let value = if let Expr::Literal(literal) = &node.value {
+            ty::literal(literal).ok()?
+        } else {
+            self.program.static_values.get(&node.span)?.clone()
+        };
+        matches!(
+            value,
+            Value::Unit | Value::Bool(_) | Value::Int(_) | Value::Str(_) | Value::Bytes(_)
+        )
+        .then(|| Coordinate::Index(ty::render(&value)))
+    }
+
     fn member_schema(&self, base: Span, coordinate: &Coordinate) -> (Access, bool) {
         self.schema(self.ty(base), coordinate)
     }
@@ -3497,6 +3582,7 @@ impl<'a> Analyzer<'a> {
                 .parse::<usize>()
                 .ok()
                 .and_then(|index| fields.get(index)),
+            (Ty::Map(..), Coordinate::MapKey) => None,
             (Ty::Array(member) | Ty::Map(_, member), _) => Some(member.as_ref()),
             _ => None,
         }
@@ -3550,7 +3636,7 @@ impl<'a> Analyzer<'a> {
             }
             let coordinate = if let Some(index) = index {
                 self.expr(&mut present_ctx, ledger, index);
-                self.index_coordinate(&present_ctx, index)
+                self.collection_coordinate(&present_ctx, ty, index)
             } else if let Expr::Member { member, .. } = &step.value {
                 self.coordinate(&mut present_ctx, ledger, member)
             } else {

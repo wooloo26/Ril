@@ -685,6 +685,19 @@ fn main() -> () {
     }
 }
 
+-- @case exhaustive_map_iteration_inspects_returned_results run-pass backend=both
+fn batch(flag: bool) -> new [str: !<int, str>] {
+    if flag { ["one": Ok(1), "skip": Err("bad"), "two": Ok(2)] } else { [:] }
+}
+fn total(flag: bool) -> int {
+    var total = 0
+    for batch(flag) as (_, value) {
+        match value { Ok(n) -> { total += n }; Err(_) -> continue }
+    }
+    total
+}
+fn main() -> () { assert(total(true) == 3 && total(false) == 0) }
+
 -- @case static_coordinate_specializes_generic_getter run-pass backend=both
 fn read<T: .{ .. }>(via item: T, meta key: str |> Key<T>) -> infer T.(key) {
     item.(key)

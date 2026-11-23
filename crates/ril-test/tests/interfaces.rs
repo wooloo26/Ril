@@ -28,6 +28,12 @@ pub fn batch() -> new []!<int, str> { [get(1), get(2)] }
 pub fn varying_batch(flag: bool) -> new []!<int, str> {
     if flag { [get(1), Err("failed")] } else { [] }
 }
+pub fn lookup_table() -> new [str: !<int, str>] { ["first": get(1), "second": get(2)] }
+pub type Key = .{ id: int }
+pub fn first_key(table: [Key: int]) &return(table) -> new ?Key {
+    for table as (key, _) { return Some(key) }
+    None
+}
 pub fn snapshot_batch() -> []!<int, str> {
     let snapshot = [get(1), get(2)]
     snapshot
@@ -49,7 +55,19 @@ pub fn snapshot_aliases() -> (!<int, str>, !<int, str>) {
     let mut provider = VirtualPackage::new(Unit::Lib);
     provider.entry = "pkg/fallible.ril".into();
     provider.insert(provider.entry.clone(), provider_source.to_vec());
-    let interface = Driver.interface(&provider).unwrap().encode().unwrap();
+    let published = Driver.interface(&provider).unwrap();
+    assert!(published.functions.values().any(|export| {
+        export.summary.return_sources.iter().any(|source| {
+            source
+                .source_path
+                .contains(&ril_sema::access::Coordinate::MapKey)
+        })
+    }));
+    let interface = published.encode().unwrap();
+    assert_eq!(
+        Interface::decode(&interface).unwrap().format_version,
+        FORMAT_VERSION
+    );
     for (mount, bytes) in [
         ("library/fallible.ril", provider_source.as_slice()),
         ("library/fallible.rili", interface.as_slice()),
@@ -78,6 +96,19 @@ pub fn snapshot_aliases() -> (!<int, str>, !<int, str>) {
             (
                 "for Fallible::varying_batch(flag) as item { match item { Ok(_) -> (); Err(_) -> () }; break }",
                 false,
+            ),
+            ("let _ = Fallible::lookup_table()", false),
+            (
+                "for Fallible::lookup_table() as (_, item) { match item { Ok(_) -> (); Err(_) -> () } }",
+                true,
+            ),
+            (
+                "for Fallible::lookup_table() as (_, item) { match item { Ok(_) -> (); Err(_) -> () }; break }",
+                false,
+            ),
+            (
+                "let _ = Fallible::first_key([Fallible::Key.{ id: 1 }: 3])",
+                true,
             ),
             (
                 "match Fallible::wrapped(flag) { Some(_) -> (); None -> () }",
@@ -1022,6 +1053,7 @@ fn exported_summaries_and_via_domains_agree_with_lean() {
         Coordinate::Field(key) => json!({"kind": "field", "key": key}),
         Coordinate::Index(key) => json!({"kind": "index", "key": key}),
         Coordinate::Dynamic => json!({"kind": "dynamic", "key": ""}),
+        Coordinate::MapKey => json!({"kind": "map-key", "key": ""}),
     };
     let wire_source = |source: &ReturnSource| {
         json!({
@@ -1324,7 +1356,7 @@ fn scoped_resource_examples_agree_with_lean() -> Result<(), Box<dyn std::error::
 
 #[test]
 fn result_patterns_agree_with_lean() -> Result<(), Box<dyn std::error::Error>> {
-    check_access_examples("result-patterns", 41)
+    check_access_examples("result-patterns", 50)
 }
 
 fn check_access_examples(operation: &str, count: usize) -> Result<(), Box<dyn std::error::Error>> {
