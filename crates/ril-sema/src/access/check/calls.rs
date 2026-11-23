@@ -2604,6 +2604,7 @@ impl<'program> Analyzer<'program> {
         };
         let mut locals = ledger.clone();
         locals.obligations.clear();
+        locals.lost_results.clear();
         locals.no_continuation = false;
         let mut inner = Context::new(node.span);
         inner.in_function = true;

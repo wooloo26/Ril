@@ -17,8 +17,8 @@ use super::{
     Access, Analysis, CleanupAction, EffectUse, Input, Instance, Invocation, InvocationMode,
     ReturnSource, StorageUpdate, Summary,
     flow::{
-        Coordinate, Datum, Ledger, Occurrence, Origin, Reception, Region, Replacement, Revocation,
-        Slot, conflicts,
+        Coordinate, Datum, Ledger, Origin, Reception, Region, Replacement, ResultOccurrence,
+        Revocation, Slot, conflicts,
     },
     horn::{self, Rule},
 };
@@ -58,8 +58,7 @@ enum SchemaRequirement {
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum LoopExtent {
-    Empty,
-    Single,
+    Exact(usize),
     Repeat,
 }
 
@@ -1329,7 +1328,7 @@ impl<'a> Analyzer<'a> {
                 slots.lost_results.clear();
                 let result = self.expr(&mut shadow, &mut slots, *expr);
                 let mut except = result.results();
-                except.extend(&ledger.obligations);
+                except.extend(ledger.obligations.iter().cloned());
                 self.check_results(&slots, &except);
             }
             Type::Named(path) => {
@@ -1711,7 +1710,7 @@ impl<'a> Analyzer<'a> {
         }
     }
 
-    fn check_results(&mut self, ledger: &Ledger, except: &BTreeSet<Occurrence>) {
+    fn check_results(&mut self, ledger: &Ledger, except: &BTreeSet<ResultOccurrence>) {
         let pending: BTreeSet<_> = ledger
             .obligations
             .difference(&ledger.inspected)
@@ -2493,8 +2492,8 @@ impl<'a> Analyzer<'a> {
                         extent,
                     },
                     |this, local, inside| {
-                        let exit = (extent != LoopExtent::Single).then(|| inside.clone());
-                        local.reachable &= extent != LoopExtent::Empty;
+                        let exit = (extent != LoopExtent::Exact(1)).then(|| inside.clone());
+                        local.reachable &= extent != LoopExtent::Exact(0);
                         inside.iteration.push(value.clone());
                         let child = inside.project_schema(&value, coordinate.clone(), schema);
                         this.bind(local, inside, *pattern, &storage, child, false);
@@ -3131,15 +3130,20 @@ impl<'a> Analyzer<'a> {
                     )
                 })
         };
-        let mut head = entry.clone();
-        if extent == LoopExtent::Repeat {
-            head.take_choice(owner, 0);
-        }
         // The ledger expands paths structurally. Bound loops that keep creating
         // deeper access paths or callback compositions instead of diverging here.
         let max_passes = 64 + entry.slots.len();
+        let exact = match extent {
+            LoopExtent::Exact(length) if length > 0 && length <= max_passes => Some(length),
+            _ => None,
+        };
+        let mut head = entry.clone();
+        if exact.is_none() && extent != LoopExtent::Exact(0) {
+            head.take_choice(owner, 0);
+        }
+        let mut exact_exits = Vec::new();
         let mut size_limit = None;
-        for _ in 0..max_passes {
+        for iteration in 1..=max_passes {
             let mut inside = head.clone();
             let mut local = ctx.clone();
             local.scope = body_span;
@@ -3153,13 +3157,35 @@ impl<'a> Analyzer<'a> {
             if local.reachable && falls_through {
                 continues.push(inside);
             }
-            breaks.extend(exit);
-            if extent == LoopExtent::Single {
-                breaks.extend(continues);
-            } else if !continues.is_empty() {
+            if let Some(length) = exact {
+                ctx.return_values = std::mem::take(&mut local.return_values);
+                exact_exits.append(&mut breaks);
+                if iteration == length || continues.is_empty() {
+                    exact_exits.extend(continues);
+                    ledger.merge(&entry, &exact_exits);
+                    return;
+                }
+            } else {
+                breaks.extend(exit);
+            }
+            if !continues.is_empty() {
+                let final_iteration = exact.map(|_| continues.clone());
                 for backedge in &mut continues {
                     backedge.loop_backedge(owner, repeated, &entry, local_data);
                     backedge.take_choice(owner, 1);
+                }
+                if let Some(final_iteration) = final_iteration {
+                    let mut next = head.clone();
+                    next.merge(&entry, &continues);
+                    if next == head {
+                        // The remaining iterations have the same incoming
+                        // ledger and produce the same transfers.
+                        exact_exits.extend(final_iteration);
+                        ledger.merge(&entry, &exact_exits);
+                        return;
+                    }
+                    head = next;
+                    continue;
                 }
                 continues.push(head.clone());
                 let mut next = head.clone();
@@ -3187,16 +3213,11 @@ impl<'a> Analyzer<'a> {
 
     fn iterable_extent(&self, ctx: &Context, id: ExprId) -> LoopExtent {
         let ast = self.ast(ctx.file);
-        let classify = |len| match len {
-            0 => LoopExtent::Empty,
-            1 => LoopExtent::Single,
-            _ => LoopExtent::Repeat,
-        };
         match &ast.expr(id).value {
-            Expr::Array(items) => classify(items.len()),
+            Expr::Array(items) => LoopExtent::Exact(items.len()),
             Expr::Literal(value) => match ty::literal(value) {
-                Ok(Value::Bytes(bytes)) => classify(bytes.len()),
-                Ok(Value::Str(text)) => classify(text.chars().take(2).count()),
+                Ok(Value::Bytes(bytes)) => LoopExtent::Exact(bytes.len()),
+                Ok(Value::Str(text)) => LoopExtent::Exact(text.chars().count()),
                 _ => LoopExtent::Repeat,
             },
             Expr::Range {
@@ -3214,12 +3235,11 @@ impl<'a> Analyzer<'a> {
                 let (Some(start), Some(end)) = (int(*start), int(*end)) else {
                     return LoopExtent::Repeat;
                 };
-                if start > end || start == end && !inclusive {
-                    LoopExtent::Empty
-                } else if start == end || !inclusive && start + 1 == end {
-                    LoopExtent::Single
+                if start > end {
+                    LoopExtent::Exact(0)
                 } else {
-                    LoopExtent::Repeat
+                    let distance = end - start + u8::from(*inclusive);
+                    usize::try_from(distance).map_or(LoopExtent::Repeat, LoopExtent::Exact)
                 }
             }
             _ => LoopExtent::Repeat,

@@ -249,6 +249,28 @@ impl From<Span> for Occurrence {
     }
 }
 
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub(super) struct ResultOccurrence {
+    pub span: Span,
+    places: BTreeSet<(ResultHolder, Vec<Coordinate>)>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+enum ResultHolder {
+    Binding(Span),
+    Iterable(usize),
+    Handler(usize),
+}
+
+impl From<Span> for ResultOccurrence {
+    fn from(span: Span) -> Self {
+        Self {
+            span,
+            places: BTreeSet::new(),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub(super) enum Revocation {
     Formal(Handoff),
@@ -267,7 +289,7 @@ fn compatible(a: &Choices, b: &Choices) -> bool {
 pub(super) struct Datum {
     pub roots: Vec<Origin>,
     pub members: BTreeMap<Coordinate, Datum>,
-    pub results: BTreeSet<Occurrence>,
+    pub results: BTreeSet<ResultOccurrence>,
     pub requires_new: bool,
     pub latent_effects: BTreeSet<String>,
     pub environments: BTreeSet<Span>,
@@ -540,21 +562,46 @@ impl Datum {
         self.requires_new = false;
     }
 
-    pub(super) fn results(&self) -> BTreeSet<Occurrence> {
+    pub(super) fn results(&self) -> BTreeSet<ResultOccurrence> {
         self.results
             .iter()
-            .copied()
+            .cloned()
             .chain(self.members.values().flat_map(Self::results))
             .collect()
     }
 
-    fn age_results(&mut self, age: impl Fn(Occurrence) -> Occurrence + Copy) {
+    fn remap_results(&mut self, carried: &BTreeMap<ResultOccurrence, ResultOccurrence>) {
+        if carried.is_empty() {
+            return;
+        }
         self.results = std::mem::take(&mut self.results)
             .into_iter()
-            .map(age)
+            .filter_map(|item| match carried.get(&item) {
+                Some(target) if target.places.is_empty() => None,
+                Some(target) => Some(target.clone()),
+                None => Some(item),
+            })
             .collect();
         for member in self.members.values_mut() {
-            member.age_results(age);
+            member.remap_results(carried);
+        }
+    }
+
+    fn result_places(
+        &self,
+        holder: ResultHolder,
+        path: &mut Vec<Coordinate>,
+        results: &mut BTreeMap<ResultOccurrence, ResultOccurrence>,
+    ) {
+        for item in &self.results {
+            if let Some(carried) = results.get_mut(item) {
+                carried.places.insert((holder, path.clone()));
+            }
+        }
+        for (step, member) in &self.members {
+            path.push(step.clone());
+            member.result_places(holder, path, results);
+            path.pop();
         }
     }
 
@@ -774,8 +821,8 @@ pub(super) struct Replacement {
 pub(super) struct Ledger {
     pub slots: BTreeMap<Span, Slot>,
     revoked: BTreeMap<Occurrence, Revocations>,
-    pub obligations: BTreeSet<Occurrence>,
-    pub inspected: BTreeSet<Occurrence>,
+    pub obligations: BTreeSet<ResultOccurrence>,
+    pub inspected: BTreeSet<ResultOccurrence>,
     pub lost_results: BTreeSet<Span>,
     pub iteration: Vec<Datum>,
     pub holds: Vec<(Mode, Datum)>,
@@ -877,9 +924,22 @@ impl Ledger {
                 .map(|(key, arm)| (age(key), arm))
                 .collect();
         };
+        self.choices
+            .retain(|key, _| key.span != owner && !local(key.span));
+        self.iteration.truncate(entry.iteration.len());
+        self.holds.truncate(entry.holds.len());
+        self.slots.retain(|id, _| entry.slots.contains_key(id));
+        let carried = self.rebase_results(local);
+        for value in self
+            .iteration
+            .iter_mut()
+            .chain(self.holds.iter_mut().map(|(_, value)| value))
+        {
+            value.remap_results(&carried);
+        }
         let age_value = |value: &mut Datum| {
             value.compact_snapshot(local_data);
-            value.age_results(age);
+            value.remap_results(&carried);
             value.transform(&mut |origin| {
                 origin.region.age_allocation(local(origin.region.source));
                 origin.dependencies = std::mem::take(&mut origin.dependencies)
@@ -890,12 +950,6 @@ impl Ledger {
             });
         };
 
-        self.choices
-            .retain(|key, _| key.span != owner && !local(key.span));
-        self.iteration.truncate(entry.iteration.len());
-        self.holds.truncate(entry.holds.len());
-        self.slots.retain(|id, _| entry.slots.contains_key(id));
-        self.age_result_obligations(local, age);
         for slot in self.slots.values_mut() {
             age_value(&mut slot.value);
             slot.value.fold_old_allocations(&mut self.loop_members);
@@ -932,46 +986,64 @@ impl Ledger {
         }
     }
 
-    fn age_result_obligations(
+    fn rebase_results(
         &mut self,
         local: impl Fn(Span) -> bool,
-        age: impl Fn(Occurrence) -> Occurrence + Copy,
-    ) {
-        if !self.obligations.iter().any(|item| local(item.span)) {
-            return;
-        }
-        let pending: BTreeSet<_> = self
+    ) -> BTreeMap<ResultOccurrence, ResultOccurrence> {
+        let mut carried: BTreeMap<_, _> = self
             .obligations
-            .difference(&self.inspected)
-            .copied()
+            .iter()
+            .filter(|item| local(item.span))
+            .map(|item| (item.clone(), ResultOccurrence::from(item.span)))
             .collect();
-        if pending.iter().any(|item| local(item.span)) {
-            let live: BTreeSet<_> = self
-                .slots
-                .values()
-                .map(|slot| &slot.value)
-                .chain(&self.iteration)
-                .flat_map(|value| self.snapshot(value).results())
-                .collect();
-            // Once the last path to a result disappears, an inspection in a
-            // later iteration at the same source site cannot discharge it.
-            self.lost_results.extend(
-                pending
-                    .difference(&live)
-                    .filter(|item| local(item.span))
-                    .map(|item| item.span),
-            );
+        if carried.is_empty() {
+            return carried;
         }
-        let pending: BTreeSet<_> = pending.into_iter().map(age).collect();
-        self.obligations = std::mem::take(&mut self.obligations)
-            .into_iter()
-            .map(age)
-            .collect();
-        self.inspected = std::mem::take(&mut self.inspected)
-            .into_iter()
-            .map(age)
+        let bindings = self
+            .slots
+            .iter()
+            .map(|(&id, slot)| (ResultHolder::Binding(id), &slot.value));
+        let iterables = self
+            .iteration
+            .iter()
+            .enumerate()
+            .map(|(id, value)| (ResultHolder::Iterable(id), value));
+        let handlers = self
+            .holds
+            .iter()
+            .enumerate()
+            .map(|(id, (_, value))| (ResultHolder::Handler(id), value));
+        // A carried identity is determined by its surviving paths. Different
+        // evaluations of one site remain distinct when held in different slots.
+        for (holder, value) in bindings.chain(iterables).chain(handlers) {
+            self.snapshot(value)
+                .result_places(holder, &mut Vec::new(), &mut carried);
+        }
+        let rebase = |item: &ResultOccurrence| match carried.get(item) {
+            Some(target) if target.places.is_empty() => None,
+            Some(target) => Some(target.clone()),
+            None => Some(item.clone()),
+        };
+        let pending = self.obligations.difference(&self.inspected);
+        self.lost_results.extend(
+            pending
+                .clone()
+                .filter(|item| {
+                    carried
+                        .get(*item)
+                        .is_some_and(|result| result.places.is_empty())
+                })
+                .map(|item| item.span),
+        );
+        let pending: BTreeSet<_> = pending.filter_map(rebase).collect();
+        self.obligations = self.obligations.iter().filter_map(rebase).collect();
+        self.inspected = self
+            .inspected
+            .iter()
+            .filter_map(rebase)
             .filter(|item| !pending.contains(item))
             .collect();
+        carried
     }
 
     pub(super) fn size(&self) -> usize {
@@ -1002,7 +1074,7 @@ impl Ledger {
                     Self::widen_revocations(cases);
                 }
             }
-            self.obligations.extend(&branch.obligations);
+            self.obligations.extend(branch.obligations.iter().cloned());
             self.lost_results.extend(&branch.lost_results);
         }
         self.inspected = if alternatives.is_empty() {
@@ -1016,7 +1088,7 @@ impl Ledger {
                         branch.inspected.contains(item) || !branch.obligations.contains(item)
                     })
                 })
-                .copied()
+                .cloned()
                 .collect()
         };
         for (id, slot) in &mut self.slots {
