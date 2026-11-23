@@ -252,11 +252,10 @@ impl<'program> Analyzer<'program> {
                         },
                         ty,
                     );
+                    let mut region = Region::root(source);
+                    region.selection.clone_from(&update.path);
                     Some((
-                        Region {
-                            source,
-                            selection: update.path.clone(),
-                        },
+                        region,
                         Replacement {
                             value,
                             definite: update.definite,
@@ -579,9 +578,8 @@ impl<'program> Analyzer<'program> {
         }
         let mut origins = Vec::new();
         for arguments in inputs {
-            let template = self.callback_results.len();
             let spans = vec![owner; arguments.len()];
-            self.callback_results.push(CallbackResult {
+            let template = self.callback_template(CallbackResult {
                 receiver: receiver.clone(),
                 arguments,
                 spans,

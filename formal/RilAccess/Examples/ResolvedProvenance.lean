@@ -37,6 +37,16 @@ def beforeWrites (program : Program) (pc : Nat) (register : Register) : List Obj
 def mutWorker : Function :=
   ⟨[.mutable, .mutable], { writes := true }, localCode [.write 0, .write 1] ++ [.ret none]⟩
 
+def loopAlias (repeats staged : Bool) : Program :=
+  let setup := localCode [.alloc 0 10, .alloc 1 11, .bind 2 1 .ref, .bind 3 1 .ref]
+  let caller : Function := ⟨[], {}, setup ++ [
+    .invoke 1 [⟨0, .mutable⟩, ⟨2, .observe⟩] none 5,
+    .step [.bind 2 (if staged then 3 else 0) .ref, .bind 3 0 .ref] 6,
+    .branch (if repeats then [4, 7] else [7]), .ret none]⟩
+  let worker : Function :=
+    ⟨[.mutable, .observe], { writes := true }, localCode [.write 0, .read 1] ++ [.ret none]⟩
+  ⟨[caller, worker], []⟩
+
 def sameSite (summarizedPair : Bool) : Program :=
   let caller : Function := ⟨[], {}, localCode [.alloc 0 10, .alloc 1 10, .alloc 2 10] ++ [
     .invoke 1 [⟨if summarizedPair then 2 else 0, .mutable⟩, ⟨1, .mutable⟩] none 4, .ret none]⟩
@@ -174,6 +184,12 @@ def examples : List (String × Bool) :=
     accepts divergentLoop && accepts divergentRecursion),
    ("resolved provenance: repeated allocation at one site converges",
     agrees (beforeWrites looping 1 0) [⟨10, none⟩, ⟨10, some 0⟩]),
+   ("resolved provenance: a backedge can create an overlapping call",
+    diagnoses (loopAlias true false) .overlap),
+   ("resolved provenance: propagation may need several trips through a backedge",
+    diagnoses (loopAlias true true) .overlap),
+   ("resolved provenance: the call stays disjoint when the backedge is absent",
+    accepts (loopAlias false false)),
    ("resolved provenance: the first object at a site is distinct from later allocations", accepts (sameSite false)),
    ("resolved provenance: summarized objects at a site do not establish separation", diagnoses (sameSite true) .overlap),
    ("resolved provenance: exact fields support disjoint mutable calls", accepts (fields false)),

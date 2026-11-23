@@ -17,7 +17,8 @@ use super::{
     Access, Analysis, CleanupAction, EffectUse, Input, Instance, Invocation, InvocationMode,
     ReturnSource, StorageUpdate, Summary,
     flow::{
-        Coordinate, Datum, Ledger, Reception, Region, Replacement, Revocation, Slot, conflicts,
+        Coordinate, Datum, Ledger, Origin, Reception, Region, Replacement, Revocation, Slot,
+        conflicts,
     },
     horn::{self, Rule},
 };
@@ -53,6 +54,13 @@ enum SchemaRequirement {
     Writable,
     Exclusive,
     Shared,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum LoopExtent {
+    Empty,
+    Single,
+    Repeat,
 }
 
 impl SchemaRequirement {
@@ -185,6 +193,13 @@ struct ClosureModes {
 struct LoopTransfers {
     breaks: Vec<Ledger>,
     continues: Vec<Ledger>,
+}
+
+struct LoopSyntax {
+    owner: Span,
+    repeated: Span,
+    body: ExprId,
+    extent: LoopExtent,
 }
 
 struct Analyzer<'a> {
@@ -552,7 +567,7 @@ impl<'a> Analyzer<'a> {
                 let overlap = handler.origins().any(|origin| {
                     origin.mode.writes()
                         && (actual.contains(&origin.region.source)
-                            || origin.dependencies.contains(&source))
+                            || origin.dependency_spans().any(|span| span == source))
                         && ledger
                             .iteration
                             .iter()
@@ -673,7 +688,7 @@ impl<'a> Analyzer<'a> {
                 Datum::source(span, Access::from_mode(param.mode), param.mode == Mode::New)
             };
             value.transform(&mut |origin| {
-                origin.dependencies.insert(span);
+                origin.dependencies.insert(span.into());
                 origin.inherits_mode = param.mode == Mode::Via;
                 origin.call_borrow = param.mode == Mode::Mut;
             });
@@ -1052,10 +1067,7 @@ impl<'a> Analyzer<'a> {
                 continue;
             };
             formals.insert(index, formals.len());
-            axes.push(Region {
-                source,
-                selection: Vec::new(),
-            });
+            axes.push(Region::root(source));
             let needs_sharing = summary.retained.contains(&index)
                 || facts.contains(&Fact {
                     owner: fun.owner,
@@ -1961,7 +1973,7 @@ impl<'a> Analyzer<'a> {
                     value.receive_binding(access);
                 }
                 value.transform(&mut |origin| {
-                    origin.dependencies.insert(declaration);
+                    origin.dependencies.insert(declaration.into());
                 });
                 ledger.stamp(&mut value);
                 ledger.slots.insert(
@@ -2027,7 +2039,7 @@ impl<'a> Analyzer<'a> {
                     }
                     self.check_resource_binding(name.span, &slice, resource);
                     slice.transform(&mut |origin| {
-                        origin.dependencies.insert(decl);
+                        origin.dependencies.insert(decl.into());
                     });
                     ledger.slots.insert(
                         decl,
@@ -2092,7 +2104,7 @@ impl<'a> Analyzer<'a> {
                         }
                         self.check_resource_binding(field.name.span, &child, resource);
                         child.transform(&mut |origin| {
-                            origin.dependencies.insert(decl);
+                            origin.dependencies.insert(decl.into());
                         });
                         ledger.slots.insert(
                             decl,
@@ -2406,31 +2418,27 @@ impl<'a> Analyzer<'a> {
                 }
             }
             Expr::While { condition, body } => {
-                let before = ledger.clone();
-                let mut inside = before.clone();
-                let mut local = ctx.clone();
-                local.scope = ast.expr(*body).span;
                 let literal = match condition {
                     Condition::Expr(test) => self.literal_bool(ctx, *test),
                     Condition::Binding { .. } => None,
                 };
-                self.condition(&mut local, &mut inside, condition);
-                let mut exits = Vec::new();
-                if literal != Some(true) && local.reachable {
-                    exits.push(inside.clone());
-                }
-                local.loop_owner = Some(span);
-                local.reachable &= literal != Some(false);
-                self.expr(&mut local, &mut inside, *body);
-                if local.reachable && self.ty(ast.expr(*body).span) != &Ty::Never {
-                    self.loop_transfers
-                        .entry(span)
-                        .or_default()
-                        .continues
-                        .push(inside);
-                }
-                ctx.return_values = local.return_values;
-                self.merge_loop_exits(span, ledger, &before, exits);
+                self.check_loop(
+                    ctx,
+                    ledger,
+                    LoopSyntax {
+                        owner: span,
+                        repeated: span,
+                        body: *body,
+                        extent: LoopExtent::Repeat,
+                    },
+                    |this, local, inside| {
+                        this.condition(local, inside, condition);
+                        let exit =
+                            (literal != Some(true) && local.reachable).then(|| inside.clone());
+                        local.reachable &= literal != Some(false);
+                        exit
+                    },
+                );
                 Datum::default()
             }
             Expr::For {
@@ -2440,12 +2448,6 @@ impl<'a> Analyzer<'a> {
                 mode,
             } => {
                 let value = self.expr(ctx, ledger, *iterable);
-                let before = ledger.clone();
-                let mut inside = before.clone();
-                let mut local = ctx.clone();
-                local.scope = ast.expr(*body).span;
-                local.loop_owner = Some(span);
-                inside.iteration.push(value.clone());
                 let storage = Storage {
                     mode: *mode,
                     ..Storage::default()
@@ -2454,18 +2456,25 @@ impl<'a> Analyzer<'a> {
                 let schema = self
                     .schema_mode(self.ty(ast.expr(*iterable).span), &coordinate)
                     .0;
-                let child = inside.project_schema(&value, coordinate, schema);
-                self.bind(&local, &mut inside, *pattern, &storage, child, false);
-                self.expr(&mut local, &mut inside, *body);
-                if local.reachable && self.ty(ast.expr(*body).span) != &Ty::Never {
-                    self.loop_transfers
-                        .entry(span)
-                        .or_default()
-                        .continues
-                        .push(inside);
-                }
-                ctx.return_values = local.return_values;
-                self.merge_loop_exits(span, ledger, &before, vec![before.clone()]);
+                let extent = self.iterable_extent(ctx, *iterable);
+                self.check_loop(
+                    ctx,
+                    ledger,
+                    LoopSyntax {
+                        owner: span,
+                        repeated: ast.pattern(*pattern).span.join(ast.expr(*body).span),
+                        body: *body,
+                        extent,
+                    },
+                    |this, local, inside| {
+                        let exit = (extent != LoopExtent::Single).then(|| inside.clone());
+                        local.reachable &= extent != LoopExtent::Empty;
+                        inside.iteration.push(value.clone());
+                        let child = inside.project_schema(&value, coordinate.clone(), schema);
+                        this.bind(local, inside, *pattern, &storage, child, false);
+                        exit
+                    },
+                );
                 Datum::default()
             }
             Expr::Match { mode, value, arms } => {
@@ -2751,11 +2760,19 @@ impl<'a> Analyzer<'a> {
         let dependencies: BTreeSet<_> = value
             .roots
             .iter()
-            .flat_map(|origin| origin.dependencies.iter().copied())
+            .flat_map(Origin::dependency_spans)
             .collect();
-        if dependencies
+        if value
+            .roots
             .iter()
-            .any(|id| ledger.slots.get(id).is_some_and(|slot| slot.variable))
+            .flat_map(|origin| &origin.dependencies)
+            .any(|dependency| {
+                !dependency.prior_iteration
+                    && ledger
+                        .slots
+                        .get(&dependency.span)
+                        .is_some_and(|slot| slot.variable)
+            })
         {
             self.error(Code::E0548, span, "reassignable slots cannot be handed off");
             return;
@@ -2879,7 +2896,7 @@ impl<'a> Analyzer<'a> {
                     value.receive_binding(Access::from_mode(mode));
                 }
                 value.transform(&mut |origin| {
-                    origin.dependencies.insert(decl);
+                    origin.dependencies.insert(decl.into());
                 });
                 if captured {
                     value.publications.insert(ctx.owner, true);
@@ -2982,9 +2999,7 @@ impl<'a> Analyzer<'a> {
                 self.seed(ctx, Obligation::WriteExisting(origin.region.source));
             }
             for id in origin
-                .dependencies
-                .iter()
-                .copied()
+                .dependency_spans()
                 .chain(std::iter::once(origin.region.source))
             {
                 self.seed(ctx, Obligation::Write(id));
@@ -3050,20 +3065,128 @@ impl<'a> Analyzer<'a> {
         }
     }
 
-    fn merge_loop_exits(
+    fn check_loop(
         &mut self,
-        owner: Span,
+        ctx: &mut Context,
         ledger: &mut Ledger,
-        before: &Ledger,
-        mut exits: Vec<Ledger>,
+        syntax: LoopSyntax,
+        prepare: impl Fn(&mut Self, &mut Context, &mut Ledger) -> Option<Ledger>,
     ) {
-        let transfers = self.loop_transfers.remove(&owner).unwrap_or_default();
-        exits.extend(transfers.breaks);
-        if !exits.is_empty() {
-            // Another iteration can contribute effects only when the loop has an exit.
-            exits.extend(transfers.continues);
+        let LoopSyntax {
+            owner,
+            repeated,
+            body,
+            extent,
+        } = syntax;
+        let entry = ledger.clone();
+        let body_span = self.ast(ctx.file).expr(body).span;
+        let falls_through = self.ty(body_span) != &Ty::Never;
+        let scope = ctx.scope;
+        let program = self.program;
+        let local_data = |span: Span| {
+            span.file == scope.file
+                && span.start >= scope.start
+                && span.end <= scope.end
+                && program.types.get(&span).is_some_and(|ty| {
+                    !matches!(
+                        ty,
+                        Ty::Callable(_) | Ty::Unknown | Ty::Param(_) | Ty::Infer(_)
+                    )
+                })
+        };
+        let mut head = entry.clone();
+        if extent == LoopExtent::Repeat {
+            head.take_choice(owner, 0);
         }
-        ledger.merge(before, &exits);
+        // The ledger expands paths structurally. Bound loops that keep creating
+        // deeper access paths or callback compositions instead of diverging here.
+        let max_passes = 64 + entry.slots.len();
+        let mut size_limit = None;
+        for _ in 0..max_passes {
+            let mut inside = head.clone();
+            let mut local = ctx.clone();
+            local.scope = body_span;
+            let exit = prepare(self, &mut local, &mut inside);
+            local.loop_owner = Some(owner);
+            self.expr(&mut local, &mut inside, body);
+            let LoopTransfers {
+                mut breaks,
+                mut continues,
+            } = self.loop_transfers.remove(&owner).unwrap_or_default();
+            if local.reachable && falls_through {
+                continues.push(inside);
+            }
+            breaks.extend(exit);
+            if extent == LoopExtent::Single {
+                breaks.extend(continues);
+            } else if !continues.is_empty() {
+                for backedge in &mut continues {
+                    backedge.loop_backedge(owner, repeated, &entry, local_data);
+                    backedge.take_choice(owner, 1);
+                }
+                continues.push(head.clone());
+                let mut next = head.clone();
+                next.merge(&entry, &continues);
+                if next != head {
+                    let size = next.size();
+                    let limit = *size_limit
+                        .get_or_insert_with(|| (entry.size() + size).saturating_mul(8).max(4096));
+                    if size > limit {
+                        break;
+                    }
+                    head = next;
+                    continue;
+                }
+            }
+            ctx.return_values = local.return_values;
+            ledger.merge(&entry, &breaks);
+            return;
+        }
+        self.diagnostics.push(Diagnostic {
+            primary: Some(owner),
+            ..Diagnostic::unsupported("could not stabilize loop provenance")
+        });
+    }
+
+    fn iterable_extent(&self, ctx: &Context, id: ExprId) -> LoopExtent {
+        let ast = self.ast(ctx.file);
+        let classify = |len| match len {
+            0 => LoopExtent::Empty,
+            1 => LoopExtent::Single,
+            _ => LoopExtent::Repeat,
+        };
+        match &ast.expr(id).value {
+            Expr::Array(items) => classify(items.len()),
+            Expr::Literal(value) => match ty::literal(value) {
+                Ok(Value::Bytes(bytes)) => classify(bytes.len()),
+                Ok(Value::Str(text)) => classify(text.chars().take(2).count()),
+                _ => LoopExtent::Repeat,
+            },
+            Expr::Range {
+                start: Some(start),
+                end: Some(end),
+                inclusive,
+            } => {
+                let int = |id| match &ast.expr(id).value {
+                    Expr::Literal(value) => match ty::literal(value) {
+                        Ok(Value::Int(number)) => Some(number),
+                        _ => None,
+                    },
+                    _ => None,
+                };
+                let (Some(start), Some(end)) = (int(*start), int(*end)) else {
+                    return LoopExtent::Repeat;
+                };
+                if start > end || start == end && !inclusive {
+                    LoopExtent::Empty
+                } else if start == end || !inclusive && start + 1 == end {
+                    LoopExtent::Single
+                } else {
+                    LoopExtent::Repeat
+                }
+            }
+            _ => LoopExtent::Repeat,
+        }
     }
 
     fn condition_unbound(&mut self, ctx: &mut Context, ledger: &mut Ledger, condition: &Condition) {
@@ -3259,10 +3382,7 @@ fn member_axes(callable: &Callable, formals: &[Option<Span>]) -> Vec<(usize, Reg
     let mut axes = Vec::new();
     for (index, (param, decl)) in callable.parameters.iter().zip(formals).enumerate() {
         if let Some(source) = decl {
-            let mut region = Region {
-                source: *source,
-                selection: Vec::new(),
-            };
+            let mut region = Region::root(*source);
             collect_axes(index, &param.ty, &mut region, &mut axes);
         }
     }

@@ -55,11 +55,43 @@ pub enum Coordinate {
 pub(super) struct Region {
     pub source: Span,
     pub selection: Vec<Coordinate>,
+    instance: RegionInstance,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+enum RegionInstance {
+    Source,
+    Allocation,
+    PriorAllocations,
 }
 
 impl Region {
+    pub(super) fn root(source: Span) -> Self {
+        Self {
+            source,
+            selection: Vec::new(),
+            instance: RegionInstance::Source,
+        }
+    }
+
+    pub(super) fn allocation(source: Span) -> Self {
+        Self {
+            instance: RegionInstance::Allocation,
+            ..Self::root(source)
+        }
+    }
+
+    fn age_allocation(&mut self, inside_loop: bool) {
+        if inside_loop && self.instance == RegionInstance::Allocation {
+            self.instance = RegionInstance::PriorAllocations;
+        }
+    }
+
     pub(super) fn overlaps(&self, other: &Self) -> bool {
         self.source == other.source
+            && (self.instance == other.instance
+                || self.instance == RegionInstance::Source
+                || other.instance == RegionInstance::Source)
             && self
                 .selection
                 .iter()
@@ -98,7 +130,7 @@ pub(super) struct Origin {
     // A direct read of a replaceable slot cannot anchor a ref binding.
     pub from_variable: bool,
     pub call_borrow: bool,
-    pub dependencies: BTreeSet<Span>,
+    pub dependencies: BTreeSet<Occurrence>,
     pub anchor_scopes: BTreeSet<Span>,
     pub branches: Choices,
     pub confined: Option<Span>,
@@ -129,10 +161,7 @@ impl Origin {
         if member == Mode::Via || self.inherits_mode || !self.reception.is_empty() {
             if self.reception.is_empty() {
                 self.reception.push(if self.inherits_mode {
-                    Reception::Axis(Region {
-                        source: self.region.source,
-                        selection: Vec::new(),
-                    })
+                    Reception::Axis(Region::root(self.region.source))
                 } else {
                     Reception::Fixed(self.mode)
                 });
@@ -153,10 +182,29 @@ impl Origin {
     pub(super) fn overlaps(&self, other: &Self) -> bool {
         self.region.overlaps(&other.region) && compatible(&self.branches, &other.branches)
     }
+
+    pub(super) fn dependency_spans(&self) -> impl Iterator<Item = Span> + '_ {
+        self.dependencies.iter().map(|dependency| dependency.span)
+    }
 }
 
-type Choices = BTreeMap<Span, usize>;
+type Choices = BTreeMap<Occurrence, usize>;
 pub(super) type Handoff = (Span, Span);
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub(super) struct Occurrence {
+    pub span: Span,
+    pub prior_iteration: bool,
+}
+
+impl From<Span> for Occurrence {
+    fn from(span: Span) -> Self {
+        Self {
+            span,
+            prior_iteration: false,
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub(super) enum Revocation {
@@ -191,9 +239,10 @@ impl Datum {
     pub(super) fn source(span: Span, mode: Access, new: bool) -> Self {
         Self {
             roots: vec![Origin {
-                region: Region {
-                    source: span,
-                    selection: Vec::new(),
+                region: if new {
+                    Region::allocation(span)
+                } else {
+                    Region::root(span)
                 },
                 mode,
                 inherits_mode: false,
@@ -242,6 +291,39 @@ impl Datum {
         for member in self.members.values_mut() {
             member.transform(f);
         }
+    }
+
+    fn compact_snapshot(&mut self, local_data: impl Fn(Span) -> bool + Copy) -> bool {
+        let mut plain = true;
+        for member in self.members.values_mut() {
+            plain &= member.compact_snapshot(local_data);
+        }
+        plain &= !self.requires_new
+            && !self.result_fresh
+            && !self.stateful_handler
+            && self.task_scope.is_none()
+            && self.results.is_empty()
+            && self.latent_effects.is_empty()
+            && self.environments.is_empty()
+            && self.publications.is_empty()
+            && self.invocations.is_empty()
+            && self.roots.iter().all(|origin| {
+                origin.mode == Access::Immutable
+                    && origin.region.instance != RegionInstance::Source
+                    && local_data(origin.region.source)
+                    && origin.callback_result.is_none()
+                    && origin.confined.is_none()
+            });
+        if plain && !self.roots.is_empty() {
+            // A frozen, locally allocated graph cannot carry caller sources
+            // or writable edges. Its root suffices for later projections.
+            self.members.clear();
+        }
+        plain
+    }
+
+    fn size(&self) -> usize {
+        1 + self.roots.len() + self.members.values().map(Self::size).sum::<usize>()
     }
 
     pub(super) fn can_freeze(&self) -> bool {
@@ -453,15 +535,13 @@ impl Datum {
     pub(super) fn root_dependencies(&self) -> impl Iterator<Item = Span> + '_ {
         self.roots.iter().flat_map(|origin| {
             origin
-                .dependencies
-                .iter()
-                .copied()
+                .dependency_spans()
                 .chain(std::iter::once(origin.region.source))
         })
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Eq, PartialEq)]
 pub(super) struct Slot {
     pub decl: Span,
     pub variable: bool,
@@ -475,10 +555,10 @@ pub(super) struct Replacement {
     pub definite: bool,
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone, Default, Eq, PartialEq)]
 pub(super) struct Ledger {
     pub slots: BTreeMap<Span, Slot>,
-    revoked: BTreeMap<Span, Revocations>,
+    revoked: BTreeMap<Occurrence, Revocations>,
     pub obligations: BTreeSet<Span>,
     pub inspected: BTreeSet<Span>,
     pub iteration: Vec<Datum>,
@@ -495,7 +575,7 @@ impl Ledger {
 
     pub(super) fn revoke(
         &mut self,
-        token: Span,
+        token: Occurrence,
         origin: Option<&Origin>,
         trigger: Option<Revocation>,
     ) {
@@ -535,17 +615,94 @@ impl Ledger {
     }
 
     pub(super) fn take_choice(&mut self, span: Span, arm: usize) {
-        self.choices.insert(span, arm);
+        let key = span.into();
+        self.choices.insert(key, arm);
         for slot in self.slots.values_mut() {
             slot.value.transform(&mut |origin| {
-                origin.branches.insert(span, arm);
+                origin.branches.insert(key, arm);
             });
         }
         for replacement in self.replacements.values_mut() {
             replacement.value.transform(&mut |origin| {
-                origin.branches.insert(span, arm);
+                origin.branches.insert(key, arm);
             });
         }
+    }
+
+    pub(super) fn loop_backedge(
+        &mut self,
+        owner: Span,
+        repeated: Span,
+        entry: &Self,
+        local_data: impl Fn(Span) -> bool + Copy,
+    ) {
+        let local = |span: Span| {
+            span.file == repeated.file && span.start >= repeated.start && span.end <= repeated.end
+        };
+        let age = |mut occurrence: Occurrence| {
+            occurrence.prior_iteration |= local(occurrence.span);
+            occurrence
+        };
+        // Correlations within the last iteration survive the backedge. Older
+        // decisions can vary independently of the branch that is about to run.
+        let age_choices = |choices: &mut Choices| {
+            *choices = std::mem::take(choices)
+                .into_iter()
+                .filter(|(key, _)| key.span != owner && (!key.prior_iteration || !local(key.span)))
+                .map(|(key, arm)| (age(key), arm))
+                .collect();
+        };
+        let age_value = |value: &mut Datum| {
+            value.compact_snapshot(local_data);
+            value.transform(&mut |origin| {
+                origin.region.age_allocation(local(origin.region.source));
+                origin.dependencies = std::mem::take(&mut origin.dependencies)
+                    .into_iter()
+                    .map(age)
+                    .collect();
+                age_choices(&mut origin.branches);
+            });
+        };
+
+        self.choices
+            .retain(|key, _| key.span != owner && !local(key.span));
+        self.iteration.truncate(entry.iteration.len());
+        self.holds.truncate(entry.holds.len());
+        self.slots.retain(|id, slot| {
+            age_value(&mut slot.value);
+            entry.slots.contains_key(id)
+        });
+        for (mut region, mut update) in std::mem::take(&mut self.replacements) {
+            region.age_allocation(local(region.source));
+            update.definite &= region.instance != RegionInstance::PriorAllocations;
+            age_value(&mut update.value);
+            self.replacements
+                .entry(region)
+                .and_modify(|prior| {
+                    prior.value = std::mem::take(&mut prior.value).joined(update.value.clone());
+                    prior.definite &= update.definite;
+                })
+                .or_insert(update);
+        }
+        for (token, triggers) in std::mem::take(&mut self.revoked) {
+            let archived = self.revoked.entry(age(token)).or_default();
+            for (trigger, choices) in triggers {
+                let combined = archived.entry(trigger).or_default();
+                combined.extend(choices.into_iter().map(|mut branch| {
+                    age_choices(&mut branch);
+                    branch
+                }));
+                Self::widen_revocations(combined);
+            }
+        }
+    }
+
+    pub(super) fn size(&self) -> usize {
+        self.slots
+            .values()
+            .map(|slot| slot.value.size())
+            .chain(self.replacements.values().map(|update| update.value.size()))
+            .sum()
     }
 
     pub(super) fn merge(&mut self, prior: &Self, alternatives: &[Self]) {
@@ -654,10 +811,7 @@ impl Ledger {
 
     pub(super) fn replaces_slot(&self, owner: Span, decl: Span) -> bool {
         self.replacements
-            .get(&Region {
-                source: decl,
-                selection: Vec::new(),
-            })
+            .get(&Region::root(decl))
             .is_some_and(|update| update.value.publications.contains_key(&owner))
     }
 
@@ -671,14 +825,7 @@ impl Ledger {
         } else {
             std::mem::take(&mut slot.value).joined(value.clone())
         };
-        self.replace_region(
-            &Region {
-                source: decl,
-                selection: Vec::new(),
-            },
-            &value,
-            definite,
-        );
+        self.replace_region(&Region::root(decl), &value, definite);
         true
     }
 
@@ -690,7 +837,10 @@ impl Ledger {
             .is_some_and(|first| slot.roots.iter().all(|root| root.region == first.region));
         for origin in &slot.roots {
             let region = &origin.region;
-            let definite = definite && single && !region.selection.contains(&Coordinate::Dynamic);
+            let definite = definite
+                && single
+                && region.instance != RegionInstance::PriorAllocations
+                && !region.selection.contains(&Coordinate::Dynamic);
             self.replace_region(region, &value, definite);
         }
     }

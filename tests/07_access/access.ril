@@ -1373,3 +1373,103 @@ fn edit(new original: Cell) &mut -> int {
     original.count + fresh.count
 }
 fn run() -> int { edit(new make()) }
+
+-- @case while_backedge_can_make_arguments_overlap compile-fail E0524
+fn copy(mut target: Cell, ref reader: Cell) &mut -> () { target.count = reader.count }
+fn update(again: bool) -> int {
+    let mut target = Cell.{ count: 0 }
+    let other = Cell.{ count: 1 }
+    var ref reader = other
+    while again {
+        copy(mut target, ref reader)
+        -- ^ E0524
+        reader = ref target
+    }
+    target.count
+}
+
+-- @case for_continue_carries_aliases_to_the_next_iteration compile-fail E0524
+fn copy(mut target: Cell, ref reader: Cell) &mut -> () { target.count = reader.count }
+fn update() -> int {
+    let mut target = Cell.{ count: 0 }
+    let other = Cell.{ count: 1 }
+    var ref reader = other
+    for 0..4 as _ {
+        copy(mut target, ref reader)
+        -- ^ E0524
+        reader = ref target
+        continue
+    }
+    target.count
+}
+
+-- @case a_single_iteration_for_does_not_revisit_the_body compile-pass
+fn copy(mut target: Cell, ref reader: Cell) &mut -> () { target.count = reader.count }
+fn update() -> int {
+    let mut target = Cell.{ count: 0 }
+    let other = Cell.{ count: 1 }
+    var ref reader = other
+    for 0..1 as _ {
+        copy(mut target, ref reader)
+        reader = ref target
+        continue
+    }
+    target.count + reader.count
+}
+
+-- @case loop_aliases_can_take_multiple_iterations_to_reach_the_call compile-fail E0524
+fn copy(mut target: Cell, ref reader: Cell) &mut -> () { target.count = reader.count }
+fn update(again: bool) -> int {
+    let mut target = Cell.{ count: 0 }
+    let mut other = Cell.{ count: 0 }
+    other.count += 1
+    var ^mut reader = other
+    var ^mut queued = other
+    while again {
+        copy(mut target, ref reader)
+        -- ^ E0524
+        reader = ^mut queued
+        reader.count += 1
+        queued = ^mut target
+        queued.count += 1
+    }
+    target.count
+}
+
+-- @case only_break_paths_contribute_to_normal_loop_storage compile-fail E0527
+type Shelf = .{ var ^mut item: Cell }
+fn replace(mut shelf: Shelf, ^mut replacement: Cell, again: bool) &mut &^mut -> () {
+    while true {
+        if again { continue }
+        shelf.item = ^mut replacement
+        break
+    }
+}
+fn update(mut shelf: Shelf, ^mut discarded: Cell, ^mut replacement: Cell, again: bool) &mut &^mut -> () {
+-- ^ E0527
+    shelf.item = ^mut discarded
+    replace(mut shelf, ^mut replacement, again)
+}
+
+-- @case the_previous_iterations_branch_keeps_carried_arguments_disjoint compile-pass
+fn add(mut left: Cell, mut right: Cell) &mut -> () {
+    left.count += 1
+    right.count += 1
+}
+fn update(again: bool, swap: bool) -> () {
+    let mut first = Cell.{ count: 1 }
+    let mut second = Cell.{ count: 2 }
+    var ^mut left = first
+    var ^mut right = second
+    while again {
+        add(mut left, mut right)
+        if swap {
+            left = ^mut second
+            right = ^mut first
+        } else {
+            left = ^mut first
+            right = ^mut second
+        }
+    }
+    add(mut left, mut right)
+}

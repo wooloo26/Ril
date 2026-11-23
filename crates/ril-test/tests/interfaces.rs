@@ -910,7 +910,7 @@ fn handoff_examples_agree_with_lean() -> Result<(), Box<dyn std::error::Error>> 
 
 #[test]
 fn provenance_examples_agree_with_lean() -> Result<(), Box<dyn std::error::Error>> {
-    check_access_examples("provenance", 28)
+    check_access_examples("provenance", 32)
 }
 
 #[test]

@@ -34,7 +34,7 @@ struct CallEntry<'a> {
     span: Span,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Eq, PartialEq)]
 pub(super) struct CallbackResult {
     receiver: Datum,
     arguments: Vec<(usize, Mode, Datum)>,
@@ -726,9 +726,7 @@ impl<'program> Analyzer<'program> {
                             })
                             .flat_map(|origin| {
                                 std::iter::once(Obligation::WriteExisting(origin.region.source))
-                                    .chain(
-                                        origin.dependencies.iter().copied().map(Obligation::Write),
-                                    )
+                                    .chain(origin.dependency_spans().map(Obligation::Write))
                             })
                             .collect();
                         for obligation in existing {
@@ -1202,7 +1200,7 @@ impl<'program> Analyzer<'program> {
                     stored.publications.insert(ctx.owner, true);
                 }
                 stored.transform(&mut |origin| {
-                    origin.dependencies.insert(region.source);
+                    origin.dependencies.insert(region.source.into());
                 });
                 applied &= ledger.replace_slot(region.source, stored, update.definite);
                 continue;
@@ -1383,7 +1381,7 @@ impl<'program> Analyzer<'program> {
                     let mut mapped = origin.clone();
                     mapped.branches.clear();
                     if mapped.new {
-                        mapped.region.source = entry.span;
+                        mapped.region = Region::allocation(entry.span);
                         mapped.region.selection.clone_from(output_path);
                         mapped.dependencies.clear();
                         mapped.anchor_scopes.clear();
@@ -1444,12 +1442,16 @@ impl<'program> Analyzer<'program> {
         span: Span,
     ) -> Datum {
         let mut result = Datum::source(span, Access::Ref, false);
-        let template = self.callback_results.len();
         let dependencies: BTreeSet<_> = receiver
             .origins()
             .chain(arguments.iter().flat_map(|(_, _, arg)| arg.origins()))
             .flat_map(|origin| origin.dependencies.iter().copied())
             .collect();
+        let template = self.callback_template(CallbackResult {
+            receiver,
+            arguments,
+            spans,
+        });
         for origin in &mut result.roots {
             origin.callback_result = Some(CallbackOrigin {
                 template,
@@ -1457,12 +1459,20 @@ impl<'program> Analyzer<'program> {
             });
             origin.dependencies.clone_from(&dependencies);
         }
-        self.callback_results.push(CallbackResult {
-            receiver,
-            arguments,
-            spans,
-        });
         result
+    }
+
+    fn callback_template(&mut self, template: CallbackResult) -> usize {
+        if let Some(index) = self
+            .callback_results
+            .iter()
+            .position(|known| *known == template)
+        {
+            return index;
+        }
+        let index = self.callback_results.len();
+        self.callback_results.push(template);
+        index
     }
 
     pub(super) fn callback_return_contracts(
@@ -2184,7 +2194,7 @@ impl<'program> Analyzer<'program> {
                     for origin in callback.members.values().flat_map(Datum::origins) {
                         if origin.confined.is_some()
                             || origin.mode != Access::Immutable
-                                && !origin.dependencies.iter().any(|id| moved.contains(id))
+                                && !origin.dependency_spans().any(|id| moved.contains(&id))
                         {
                             self.error(
                                 Code::E0601,
@@ -2203,7 +2213,7 @@ impl<'program> Analyzer<'program> {
                                 "fiber closure captures a replaceable slot",
                             );
                         } else {
-                            ledger.revoke(decl, None, None);
+                            ledger.revoke(decl.into(), None, None);
                         }
                     }
                 }
@@ -2515,7 +2525,7 @@ impl<'program> Analyzer<'program> {
                     locals.obligations.insert(name.span);
                 }
                 value.transform(&mut |origin| {
-                    origin.dependencies.insert(name.span);
+                    origin.dependencies.insert(name.span.into());
                     origin.inherits_mode = p.mode == Mode::Via;
                     origin.call_borrow = p.mode == Mode::Mut;
                     if matches!(param_ty, Some(Ty::Scope | Ty::Draft(_))) {
@@ -2625,7 +2635,7 @@ impl<'program> Analyzer<'program> {
             if slot.variable {
                 let mut origin = Datum::source(slot.decl, Access::Mut, false);
                 origin.transform(&mut |origin| {
-                    origin.dependencies.insert(slot.decl);
+                    origin.dependencies.insert(slot.decl.into());
                 });
                 value = value.joined(origin);
             }

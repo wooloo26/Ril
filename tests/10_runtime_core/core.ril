@@ -1,6 +1,37 @@
 -- @suite runtime_core
 -- @default_stage run
 
+-- @case loop_allocations_are_fresh_and_bindings_can_be_handed_off_each_iteration run-pass backend=both
+type Cell = .{ var count: int }
+fn copy(mut target: Cell, ref reader: Cell) &mut -> () { target.count = reader.count }
+fn main() -> () {
+    let mut initial = Cell.{ count: 0 }
+    initial.count += 1
+    var ^mut previous = initial
+    for 0..4 as i {
+        let mut fresh = Cell.{ count: i }
+        let mut moved = new fresh
+        copy(mut moved, ref previous)
+        previous = ^mut moved
+        previous.count += 1
+    }
+    assert(previous.count == 5 && initial.count == 1)
+}
+
+-- @case loops_can_grow_recursive_immutable_data run-pass backend=both
+type Tree { Leaf(int); Fork(Tree, Tree) }
+fn grow(count: int) -> Tree {
+    var tree = Leaf(1)
+    for 0..count as _ { tree = Fork(tree, tree) }
+    tree
+}
+fn main() -> () {
+    match grow(80) {
+        Fork(left, right) -> assert(left == right)
+        Leaf(_) -> panic("growth did not occur")
+    }
+}
+
 -- @case a_cyclic_graph_can_be_cloned_compared_and_inspected run-pass backend=both
 nominal type Node = .{ var value: int, var ^mut next: ?Node }
 fn main() -> () {
