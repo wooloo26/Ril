@@ -257,10 +257,7 @@ impl CollectionTraversal {
         binder: Span,
     ) -> Option<Self> {
         let collections = collection.collection_results();
-        if !collections
-            .iter()
-            .any(|item| ledger.obligations.contains(item) && !ledger.inspected.contains(item))
-        {
+        if !collections.iter().any(|item| ledger.result_pending(item)) {
             return None;
         }
         *child = receive_results(program, ledger, element, std::mem::take(child), binder);
@@ -307,7 +304,7 @@ impl PatternTests {
     pub(super) fn inspect(&self, ledger: &mut Ledger, matched: bool) -> bool {
         let selected = if matched { &self.matched } else { &self.missed };
         if let Some(inspected) = selected {
-            ledger.inspected.extend(inspected.iter().cloned());
+            ledger.mark_inspected(inspected.iter().cloned());
             true
         } else {
             false
@@ -459,7 +456,7 @@ impl Analyzer<'_> {
                 let input = self.ty(node.span);
                 let tag = value.known_variant().map(|variant| variant == name);
                 let tests = if input.is_result() {
-                    PatternTests::test(tag, value.root_results())
+                    PatternTests::test(tag, ledger.tested_results(value))
                 } else {
                     PatternTests::test(tag, Inspections::new())
                 };

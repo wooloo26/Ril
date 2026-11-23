@@ -642,43 +642,44 @@ impl Datum {
         }
         self.roots
             .iter()
-            .all(|root| self.references_collection(root, &item, active))
+            .all(|root| self.references_result(root, &item, active))
             .then_some(item)
     }
 
-    fn references_collection(
-        &self,
-        root: &Origin,
-        collection: &ResultOccurrence,
-        choices: &Choices,
-    ) -> bool {
+    fn references_result(&self, root: &Origin, item: &ResultOccurrence, choices: &Choices) -> bool {
         self.results.iter().any(|reference| {
-            &reference.occurrence == collection
+            &reference.occurrence == item
                 && reference.branches.iter().all(|(key, arm)| {
                     choices.get(key).or_else(|| root.branches.get(key)) == Some(arm)
                 })
         })
     }
 
-    fn contains_collection(&self, collection: &ResultOccurrence, choices: &Choices) -> bool {
-        let roots: Vec<_> = self
-            .roots
-            .iter()
-            .filter(|root| compatible(&root.branches, choices))
-            .collect();
-        // A nested collection can be absent altogether on some paths, for
+    fn contains_root_result(&self, item: &ResultOccurrence, choices: &Choices) -> bool {
+        // A nested result can be absent altogether on some paths, for
         // example inside the payload of a sum's other variant.
-        (roots.iter().any(|root| {
+        self.roots.iter().any(|root| {
             root.branches
                 .iter()
                 .all(|(key, arm)| choices.get(key) == Some(arm))
-        }) && roots
+        }) && self.tests_root_result(item, choices)
+    }
+
+    fn tests_root_result(&self, item: &ResultOccurrence, choices: &Choices) -> bool {
+        let mut roots = self
+            .roots
             .iter()
-            .all(|root| self.references_collection(root, collection, choices)))
+            .filter(|root| compatible(&root.branches, choices))
+            .peekable();
+        roots.peek().is_some() && roots.all(|root| self.references_result(root, item, choices))
+    }
+
+    fn contains_result(&self, item: &ResultOccurrence, choices: &Choices) -> bool {
+        self.contains_root_result(item, choices)
             || self
                 .members
                 .values()
-                .any(|member| member.contains_collection(collection, choices))
+                .any(|member| member.contains_result(item, choices))
     }
 
     pub(super) fn has_root_result(&self) -> bool {
@@ -1025,8 +1026,11 @@ pub(super) struct Replacement {
 pub(super) struct Ledger {
     pub slots: BTreeMap<Span, Slot>,
     revoked: BTreeMap<Occurrence, Revocations>,
-    pub obligations: BTreeSet<ResultOccurrence>,
+    obligations: BTreeSet<ResultOccurrence>,
     pub inspected: BTreeSet<ResultOccurrence>,
+    // Only obligations outstanding on a subset of the incoming paths need
+    // a disjunction. An absent entry leaves the ordinary obligation in force.
+    pending_result_paths: BTreeMap<ResultOccurrence, BTreeSet<Choices>>,
     result_samples: BTreeMap<ResultOccurrence, BTreeSet<ResultOccurrence>>,
     pub lost_results: BTreeSet<Span>,
     pub iteration: Vec<Datum>,
@@ -1038,6 +1042,55 @@ pub(super) struct Ledger {
 }
 
 impl Ledger {
+    pub(super) fn clear_result_obligations(&mut self) {
+        self.obligations.clear();
+        self.pending_result_paths.clear();
+        self.result_samples.clear();
+        self.lost_results.clear();
+    }
+
+    pub(super) fn pending_results(&self) -> impl Iterator<Item = &ResultOccurrence> {
+        self.obligations
+            .difference(&self.inspected)
+            .filter(|item| self.result_may_be_pending(item, &self.choices))
+    }
+
+    pub(super) fn result_pending(&self, item: &ResultOccurrence) -> bool {
+        self.result_pending_on(item, &self.choices)
+    }
+
+    fn result_pending_on(&self, item: &ResultOccurrence, choices: &Choices) -> bool {
+        self.obligations.contains(item)
+            && !self.inspected.contains(item)
+            && self.result_may_be_pending(item, choices)
+    }
+
+    fn result_may_be_pending(&self, item: &ResultOccurrence, choices: &Choices) -> bool {
+        compatible(&item.created_in, choices)
+            && self
+                .pending_result_paths
+                .get(item)
+                .is_none_or(|paths| paths.iter().any(|branch| compatible(branch, choices)))
+    }
+
+    pub(super) fn result_inspected(&self, item: &ResultOccurrence) -> bool {
+        self.inspected.contains(item) || !self.result_may_be_pending(item, &self.choices)
+    }
+
+    fn pending_paths(
+        &self,
+        item: &ResultOccurrence,
+        choices: &Choices,
+    ) -> impl Iterator<Item = Choices> {
+        let paths = self.pending_result_paths.get(item);
+        paths
+            .into_iter()
+            .flatten()
+            .filter(|path| compatible(path, choices))
+            .cloned()
+            .chain(paths.is_none().then(Choices::new))
+    }
+
     pub(super) fn remember_return_graph(&mut self, value: &Datum, call: Span) {
         value.remember_return_graph(&mut self.loop_members, call);
     }
@@ -1063,10 +1116,10 @@ impl Ledger {
             .entry(trigger)
             .or_default();
         alternatives.insert(choices);
-        Self::widen_revocations(alternatives);
+        Self::widen_choices(alternatives);
     }
 
-    fn widen_revocations(alternatives: &mut BTreeSet<Choices>) {
+    fn widen_choices(alternatives: &mut BTreeSet<Choices>) {
         if alternatives.len() > BRANCH_LIMIT {
             alternatives.clear();
             alternatives.insert(Choices::new());
@@ -1166,9 +1219,7 @@ impl Ledger {
                     lost.extend(
                         node.collection_results()
                             .into_iter()
-                            .filter(|item| {
-                                self.obligations.contains(item) && !self.inspected.contains(item)
-                            })
+                            .filter(|item| self.result_pending(item))
                             .map(|item| item.span),
                     );
                 }
@@ -1178,10 +1229,9 @@ impl Ledger {
     }
 
     pub(super) fn covers_result_samples(&self, samples: &BTreeSet<ResultOccurrence>) -> bool {
-        samples.iter().all(|item| {
-            !self.lost_results.contains(&item.span)
-                && (!self.obligations.contains(item) || self.inspected.contains(item))
-        })
+        samples
+            .iter()
+            .all(|item| !self.lost_results.contains(&item.span) && !self.result_pending(item))
     }
 
     pub(super) fn forget_result_samples(&mut self, samples: &BTreeSet<ResultOccurrence>) {
@@ -1190,6 +1240,8 @@ impl Ledger {
         }
         self.obligations.retain(|item| !samples.contains(item));
         self.inspected.retain(|item| !samples.contains(item));
+        self.pending_result_paths
+            .retain(|item, _| !samples.contains(item));
         self.result_samples
             .retain(|item, _| !samples.contains(item));
         for value in self
@@ -1219,17 +1271,14 @@ impl Ledger {
             .iter()
             .map(|root| root.branches.clone())
             .collect();
-        if paths.len() < 2
-            || paths.len() > BRANCH_LIMIT
-            || value.roots.iter().any(|root| root.variant.is_none())
-        {
+        if paths.is_empty() || paths.len() > BRANCH_LIMIT {
             paths = BTreeSet::from([Choices::new()]);
         }
         let mut discriminants: BTreeMap<_, BTreeSet<_>> = BTreeMap::new();
         value.visit_nodes(&mut Vec::new(), &mut |_, node| {
             for root in &node.roots {
                 for (&axis, &arm) in &root.branches {
-                    if axis.discriminant.is_some() {
+                    if axis.discriminant.is_some() || node.has_root_result() {
                         discriminants.entry(axis).or_default().insert(arm);
                     }
                 }
@@ -1251,28 +1300,27 @@ impl Ledger {
             if arms.len() < 2 || paths.iter().all(|path| path.contains_key(&axis)) {
                 continue;
             }
-            let selected: BTreeSet<_> = paths
-                .iter()
-                .flat_map(|path| {
-                    arms.iter().filter_map(move |&arm| {
-                        if path.get(&axis).is_some_and(|&existing| existing != arm) {
-                            return None;
-                        }
+            let mut selected_paths = BTreeSet::new();
+            for path in &paths {
+                if path.contains_key(&axis) {
+                    selected_paths.insert(path.clone());
+                } else {
+                    for &arm in &arms {
                         let mut selected = path.clone();
                         selected.insert(axis, arm);
-                        Some(selected)
-                    })
-                })
-                .collect();
-            if selected.len() <= BRANCH_LIMIT {
-                paths = selected;
+                        selected_paths.insert(selected);
+                    }
+                }
+            }
+            if selected_paths.len() <= BRANCH_LIMIT {
+                paths = selected_paths;
             }
         }
         paths
     }
 
-    pub(super) fn collection_paths(&self, value: &Datum) -> Vec<(Self, Datum)> {
-        if value.collection_results().is_empty() {
+    pub(super) fn iterable_result_paths(&self, value: &Datum) -> Vec<(Self, Datum)> {
+        if value.results().is_empty() {
             return Vec::new();
         }
         let paths: BTreeSet<_> = value
@@ -1280,7 +1328,9 @@ impl Ledger {
             .iter()
             .map(|root| root.branches.clone())
             .collect();
-        if paths.len() < 2 || paths.len() > BRANCH_LIMIT {
+        if paths.len() > BRANCH_LIMIT
+            || (paths.len() == 1 && paths.first().is_some_and(Choices::is_empty))
+        {
             return Vec::new();
         }
         self.select_result_paths(value, paths)
@@ -1301,6 +1351,9 @@ impl Ledger {
                 ledger
                     .inspected
                     .retain(|item| compatible(&item.created_in, &path));
+                ledger
+                    .pending_result_paths
+                    .retain(|item, _| ledger.obligations.contains(item));
                 for slot in ledger.slots.values_mut() {
                     slot.value.select_results(&path);
                 }
@@ -1341,12 +1394,12 @@ impl Ledger {
                 .map(|(key, arm)| (age(key), arm))
                 .collect();
         };
-        self.choices
-            .retain(|key, _| key.span != owner && !local(key.span));
         self.iteration.truncate(entry.iteration.len());
         self.holds.truncate(entry.holds.len());
         self.slots.retain(|id, _| entry.slots.contains_key(id));
         let carried = self.rebase_results(local, age_choices);
+        self.choices
+            .retain(|key, _| key.span != owner && !local(key.span));
         for value in self
             .iteration
             .iter_mut()
@@ -1398,7 +1451,7 @@ impl Ledger {
                     age_choices(&mut branch);
                     branch
                 }));
-                Self::widen_revocations(combined);
+                Self::widen_choices(combined);
             }
         }
     }
@@ -1419,9 +1472,6 @@ impl Ledger {
                 (item.clone(), target)
             })
             .collect();
-        if carried.is_empty() {
-            return carried;
-        }
         let bindings = self
             .slots
             .iter()
@@ -1438,34 +1488,53 @@ impl Ledger {
             .map(|(id, (_, value))| (ResultHolder::Handler(id), value));
         // A carried identity is determined by its surviving paths. Different
         // evaluations of one site remain distinct when held in different slots.
-        for (holder, value) in bindings.chain(iterables).chain(handlers) {
-            self.snapshot(value)
-                .result_places(holder, &mut Vec::new(), &mut carried);
+        if !carried.is_empty() {
+            for (holder, value) in bindings.chain(iterables).chain(handlers) {
+                self.snapshot(value)
+                    .result_places(holder, &mut Vec::new(), &mut carried);
+            }
         }
         let rebase = |item: &ResultOccurrence| match carried.get(item) {
             Some(target) if target.places.is_empty() => None,
             Some(target) => Some(target.clone()),
             None => Some(item.clone()),
         };
-        let pending = self.obligations.difference(&self.inspected);
-        self.lost_results.extend(
-            pending
-                .clone()
-                .filter(|item| {
-                    carried
-                        .get(*item)
-                        .is_some_and(|result| result.places.is_empty())
-                })
-                .map(|item| item.span),
-        );
-        let pending: BTreeSet<_> = pending.filter_map(rebase).collect();
-        self.obligations = self.obligations.iter().filter_map(rebase).collect();
-        self.inspected = self
+        let lost: Vec<_> = self
+            .pending_results()
+            .filter(|item| {
+                carried
+                    .get(*item)
+                    .is_some_and(|result| result.places.is_empty())
+            })
+            .map(|item| item.span)
+            .collect();
+        self.lost_results.extend(lost);
+        let pending: BTreeSet<_> = self.pending_results().filter_map(rebase).collect();
+        let mut pending_result_paths: BTreeMap<_, BTreeSet<Choices>> = BTreeMap::new();
+        for item in self.pending_results() {
+            let Some(target) = rebase(item) else { continue };
+            let paths = pending_result_paths.entry(target).or_default();
+            paths.extend(self.pending_paths(item, &self.choices).map(|mut path| {
+                age_choices(&mut path);
+                path
+            }));
+            Self::widen_choices(paths);
+        }
+        pending_result_paths.retain(|_, paths| !paths.contains(&Choices::new()));
+        let inspected = self
             .inspected
             .iter()
+            .chain(
+                self.obligations
+                    .iter()
+                    .filter(|item| self.result_inspected(item)),
+            )
             .filter_map(rebase)
             .filter(|item| !pending.contains(item))
             .collect();
+        self.pending_result_paths = pending_result_paths;
+        self.obligations = self.obligations.iter().filter_map(rebase).collect();
+        self.inspected = inspected;
         carried
     }
 
@@ -1527,7 +1596,7 @@ impl Ledger {
                 for (&trigger, alternatives) in revoked {
                     let cases = merged.entry(trigger).or_default();
                     cases.extend(alternatives.iter().cloned());
-                    Self::widen_revocations(cases);
+                    Self::widen_choices(cases);
                 }
             }
             self.obligations.extend(branch.obligations.iter().cloned());
@@ -1547,6 +1616,7 @@ impl Ledger {
                 .cloned()
                 .collect()
         };
+        self.merge_pending_paths(prior, &alternatives);
         for (id, slot) in &mut self.slots {
             if let Some(value) = alternatives
                 .iter()
@@ -1567,6 +1637,52 @@ impl Ledger {
             }
             members
         };
+    }
+
+    fn merge_pending_paths(&mut self, prior: &Self, alternatives: &[&Self]) {
+        let Some(first) = alternatives.first() else {
+            self.pending_result_paths
+                .clone_from(&prior.pending_result_paths);
+            return;
+        };
+        self.pending_result_paths.clear();
+        for item in &self.obligations {
+            if self.inspected.contains(item) {
+                continue;
+            }
+            let prior_paths = first.pending_result_paths.get(item);
+            if alternatives.iter().all(|branch| {
+                branch.result_pending(item) && branch.pending_result_paths.get(item) == prior_paths
+            }) {
+                // Nothing narrows the pending paths when every branch keeps
+                // the same obligation. This also avoids adding loop axes to it.
+                if let Some(paths) = prior_paths {
+                    self.pending_result_paths
+                        .insert(item.clone(), paths.clone());
+                }
+                continue;
+            }
+            let mut paths = BTreeSet::new();
+            for branch in alternatives
+                .iter()
+                .filter(|branch| branch.result_pending(item))
+            {
+                paths.extend(branch.pending_paths(item, &branch.choices).map(|mut path| {
+                    path.extend(branch.choices.iter().map(|(&key, &arm)| (key, arm)));
+                    path.retain(|key, arm| prior.choices.get(key) != Some(arm));
+                    path
+                }));
+                Self::widen_choices(&mut paths);
+                if paths.contains(&Choices::new()) {
+                    break;
+                }
+            }
+            if paths.is_empty() {
+                self.inspected.insert(item.clone());
+            } else if !paths.contains(&Choices::new()) {
+                self.pending_result_paths.insert(item.clone(), paths);
+            }
+        }
     }
 
     fn merge_replacements(&mut self, prior: &Self, alternatives: &[&Self]) {
@@ -1818,36 +1934,92 @@ impl Ledger {
     }
 
     pub(super) fn inspect(&mut self, datum: &Datum) {
+        self.inspect_paths(datum, false);
+    }
+
+    pub(super) fn tested_results(&self, datum: &Datum) -> BTreeSet<ResultOccurrence> {
+        datum
+            .root_results()
+            .into_iter()
+            .filter(|item| {
+                let path = self
+                    .choices
+                    .iter()
+                    .chain(&item.created_in)
+                    .map(|(&key, &arm)| (key, arm))
+                    .collect();
+                datum.tests_root_result(item, &path)
+            })
+            .collect()
+    }
+
+    fn inspect_paths(&mut self, datum: &Datum, root_only: bool) {
         let snapshot = self.loop_snapshot(datum);
-        let mut results = snapshot.results();
-        if results.iter().any(|item| item.collection_elements) {
-            let mut axes: BTreeMap<_, BTreeSet<_>> = BTreeMap::new();
-            snapshot.visit_origins(&mut Vec::new(), &mut |_, origin| {
-                for (&key, &arm) in &origin.branches {
-                    axes.entry(key).or_default().insert(arm);
-                }
-            });
-            let paths = Self::extend_result_paths(BTreeSet::from([self.choices.clone()]), axes);
-            results.retain(|item| {
-                !item.collection_elements
-                    || paths.iter().all(|path| {
-                        if !compatible(path, &item.created_in) {
-                            return true;
-                        }
-                        let choices = path
-                            .iter()
-                            .chain(item.created_in.iter())
-                            .map(|(&key, &arm)| (key, arm))
-                            .collect();
-                        snapshot.contains_collection(item, &choices)
-                    })
-            });
+        let results = if root_only {
+            snapshot.root_results()
+        } else {
+            snapshot.results()
+        };
+        if results.is_empty() {
+            return;
         }
-        self.mark_inspected(results);
+        let mut axes: BTreeMap<_, BTreeSet<_>> = BTreeMap::new();
+        snapshot.visit_origins(&mut Vec::new(), &mut |_, origin| {
+            for (&key, &arm) in &origin.branches {
+                axes.entry(key).or_default().insert(arm);
+            }
+        });
+        let paths = Self::extend_result_paths(BTreeSet::from([self.choices.clone()]), axes);
+        let mut inspected = Vec::new();
+        let mut narrowed = Vec::new();
+        for item in results {
+            if self.inspected.contains(&item) {
+                continue;
+            }
+            let mut remaining = BTreeSet::new();
+            let mut covered = false;
+            for path in &paths {
+                if !self.result_may_be_pending(&item, path) {
+                    continue;
+                }
+                let choices = path
+                    .iter()
+                    .chain(&item.created_in)
+                    .map(|(&key, &arm)| (key, arm))
+                    .collect();
+                if snapshot.tests_root_result(&item, &choices)
+                    || !root_only && snapshot.contains_result(&item, &choices)
+                {
+                    covered = true;
+                } else {
+                    remaining.extend(self.pending_paths(&item, path).map(|mut pending| {
+                        pending.extend(path.iter().map(|(&key, &arm)| (key, arm)));
+                        pending
+                    }));
+                    Self::widen_choices(&mut remaining);
+                    if remaining.contains(&Choices::new()) {
+                        break;
+                    }
+                }
+            }
+            if remaining.is_empty() && covered {
+                inspected.push(item);
+            } else if covered
+                && self.obligations.contains(&item)
+                && !remaining.contains(&Choices::new())
+            {
+                narrowed.push((item, remaining));
+            }
+        }
+        self.pending_result_paths.extend(narrowed);
+        self.mark_inspected(inspected);
     }
 
     pub(super) fn mark_inspected(&mut self, results: impl IntoIterator<Item = ResultOccurrence>) {
-        self.inspected.extend(results);
+        for item in results {
+            self.pending_result_paths.remove(&item);
+            self.inspected.insert(item);
+        }
         // Transferring an entire collection also transfers its current
         // iteration's element. The converse does not discharge the collection.
         loop {
@@ -1855,23 +2027,23 @@ impl Ledger {
                 .result_samples
                 .iter()
                 .filter(|(sample, collections)| {
-                    self.obligations.contains(sample)
-                        && !self.inspected.contains(sample)
-                        && collections.iter().all(|item| {
-                            !self.obligations.contains(item) || self.inspected.contains(item)
-                        })
+                    self.result_pending(sample)
+                        && collections.iter().all(|item| !self.result_pending(item))
                 })
                 .map(|(sample, _)| sample.clone())
                 .collect();
             if covered.is_empty() {
                 break;
             }
-            self.inspected.extend(covered);
+            for item in covered {
+                self.pending_result_paths.remove(&item);
+                self.inspected.insert(item);
+            }
         }
     }
 
     pub(super) fn inspect_root(&mut self, datum: &Datum) {
-        self.inspected.extend(datum.root_results());
+        self.inspect_paths(datum, true);
     }
 
     pub(super) fn loop_snapshot<'d>(&self, datum: &'d Datum) -> Cow<'d, Datum> {

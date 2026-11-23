@@ -1058,6 +1058,117 @@ fn run(first: []!<int, str>, second: []!<int, str>, flag: bool) -> () {
     }
 }
 
+-- @case traversing_both_arrays_after_a_conditional_swap_inspects_both compile-pass
+fn run(first: []!<int, str>, second: []!<int, str>, swap: bool) -> () {
+    let (left, right) = if swap { (first, second) } else { (second, first) }
+    for left as item { match item { Ok(_) -> (); Err(_) -> () } }
+    for right as item { match item { Ok(_) -> (); Err(_) -> () } }
+}
+
+-- @case traversing_one_selected_fixed_array_leaves_the_other_pending compile-fail E0720
+fn get(x: int) -> new !<int, str> { Ok(x) }
+fn run(swap: bool) -> () {
+    let first = [get(1)]
+    -- ^ E0720
+    let second = [get(2)]
+    -- ^ E0720
+    let selected = if swap { first } else { second }
+    for selected as item { match item { Ok(_) -> (); Err(_) -> () } }
+}
+
+-- @case traversing_both_fixed_arrays_after_a_conditional_swap_inspects_both compile-pass
+fn get(x: int) -> new !<int, str> { Ok(x) }
+fn run(swap: bool) -> () {
+    let first = [get(1)]
+    let second = [get(2)]
+    let (left, right) = if swap { (first, second) } else { (second, first) }
+    for left as item { match item { Ok(_) -> (); Err(_) -> () } }
+    for right as item { match item { Ok(_) -> (); Err(_) -> () } }
+}
+
+-- @case matching_one_selected_result_leaves_the_other_pending compile-fail E0720
+fn get(x: int) -> new !<int, str> { Ok(x) }
+fn run(swap: bool) -> () {
+    let first = get(1)
+    -- ^ E0720
+    let second = get(2)
+    -- ^ E0720
+    let selected = if swap { first } else { second }
+    match selected { Ok(_) -> (); Err(_) -> () }
+}
+
+-- @case comparing_swapped_results_to_constructors_inspects_both compile-pass
+fn get(x: int) -> new !<int, str> { Ok(x) }
+fn run(swap: bool) -> () {
+    let first = get(1)
+    let second = get(2)
+    let (left, right) = if swap { (first, second) } else { (second, first) }
+    let _ = left == Ok(1)
+    let _ = right == Ok(2)
+}
+
+-- @case comparing_one_selected_result_leaves_the_other_pending compile-fail E0720
+fn get(x: int) -> new !<int, str> { Ok(x) }
+fn run(swap: bool) -> () {
+    let first = get(1)
+    -- ^ E0720
+    let second = get(2)
+    -- ^ E0720
+    let selected = if swap { first } else { second }
+    let _ = selected == Ok(1)
+}
+
+-- @case passing_both_swapped_results_to_explicit_parameters_inspects_both compile-pass
+fn handle(item: !<int, str>) -> () {
+    match item { Ok(_) -> (); Err(_) -> () }
+}
+fn run(first: !<int, str>, second: !<int, str>, swap: bool) -> () {
+    let (left, right) = if swap { (first, second) } else { (second, first) }
+    handle(left)
+    handle(right)
+}
+
+-- @case a_loop_backedge_preserves_a_pending_result_selected_outside_the_loop compile-pass
+fn run(first: !<int, str>, second: !<int, str>, swap: bool, repeat: bool) -> () {
+    let (left, right) = if swap { (first, second) } else { (second, first) }
+    match left { Ok(_) -> (); Err(_) -> () }
+    var again = repeat
+    while again { again = false }
+    match right { Ok(_) -> (); Err(_) -> () }
+}
+
+-- @case returning_one_selected_result_leaves_the_other_pending compile-fail E0720
+fn run(first: !<int, str>, second: !<int, str>, swap: bool) -> !<int, str> {
+-- ^ E0720
+    if swap { first } else { second }
+}
+
+-- @case traversing_the_same_selected_array_twice_leaves_the_other_pending compile-fail E0720
+fn run(first: []!<int, str>, second: []!<int, str>, swap: bool) -> () {
+-- ^ E0720
+    let selected = if swap { first } else { second }
+    for selected as item { match item { Ok(_) -> (); Err(_) -> () } }
+    for selected as item { match item { Ok(_) -> (); Err(_) -> () } }
+}
+
+-- @case breaking_the_second_swapped_array_traversal_leaves_results_pending compile-fail E0720
+fn run(first: []!<int, str>, second: []!<int, str>, swap: bool) -> () {
+-- ^ E0720
+    let (left, right) = if swap { (first, second) } else { (second, first) }
+    for left as item { match item { Ok(_) -> (); Err(_) -> () } }
+    for right as item {
+        match item { Ok(_) -> (); Err(_) -> () }
+        break
+    }
+}
+
+-- @case returning_the_other_swapped_array_transfers_the_remaining_obligation compile-pass
+fn run(first: []!<int, str>, second: []!<int, str>, swap: bool) -> []!<int, str> {
+    let (left, right) = if swap { (first, second) } else { (second, first) }
+    for left as item { match item { Ok(_) -> (); Err(_) -> () } }
+    right
+}
+
 -- @case returning_one_selected_array_does_not_transfer_the_other_array compile-fail E0720
 fn run(first: []!<int, str>, second: []!<int, str>, flag: bool) -> []!<int, str> {
 -- ^ E0720

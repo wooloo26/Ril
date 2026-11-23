@@ -653,9 +653,8 @@ impl<'a> Analyzer<'a> {
             .collect();
         ctx.declared_contained = self.declared_sources(&fun.signature);
         let mut ledger = outer.clone();
-        ledger.obligations.clear();
+        ledger.clear_result_obligations();
         ledger.inspected.clear();
-        ledger.lost_results.clear();
         ledger.reset_revocations();
         ledger.no_continuation = false;
         ledger.iteration.clear();
@@ -1339,8 +1338,7 @@ impl<'a> Analyzer<'a> {
                 shadow.shadow = true;
                 shadow.loop_owner = None;
                 let mut slots = ledger.clone();
-                slots.obligations.clear();
-                slots.lost_results.clear();
+                slots.clear_result_obligations();
                 let result = self.expr(&mut shadow, &mut slots, *expr);
                 self.check_results(&slots, &result.root_results());
             }
@@ -1728,8 +1726,7 @@ impl<'a> Analyzer<'a> {
 
     fn check_results(&mut self, ledger: &Ledger, except: &BTreeSet<ResultOccurrence>) {
         let pending: BTreeSet<_> = ledger
-            .obligations
-            .difference(&ledger.inspected)
+            .pending_results()
             .filter(|item| !except.contains(item))
             .map(|item| item.span)
             .chain(ledger.lost_results.iter().copied())
@@ -1744,7 +1741,11 @@ impl<'a> Analyzer<'a> {
     }
 
     fn discard(&mut self, ledger: &Ledger, value: &Datum) {
-        for item in value.results().difference(&ledger.inspected) {
+        for item in value
+            .results()
+            .iter()
+            .filter(|item| !ledger.result_inspected(item))
+        {
             self.error(Code::E0720, item.span, "discarded fallible result");
         }
     }
@@ -2605,7 +2606,7 @@ impl<'a> Analyzer<'a> {
                         },
                     );
                 };
-                let paths = ledger.collection_paths(&value);
+                let paths = ledger.iterable_result_paths(&value);
                 if paths.is_empty() {
                     traverse(self, ctx, ledger, value);
                 } else {
@@ -3204,7 +3205,7 @@ impl<'a> Analyzer<'a> {
                 continue;
             };
             let mut inside = before.clone();
-            inside.inspected.extend(inspected);
+            inside.mark_inspected(inspected);
             inside.take_choice(span, index);
             let mut local_ctx = ctx.clone();
             local_ctx.scope = ast.pattern(arm.pattern).span.join(ast.expr(arm.body).span);

@@ -1356,7 +1356,7 @@ fn scoped_resource_examples_agree_with_lean() -> Result<(), Box<dyn std::error::
 
 #[test]
 fn result_patterns_agree_with_lean() -> Result<(), Box<dyn std::error::Error>> {
-    check_access_examples("result-patterns", 50)
+    check_access_examples("result-patterns", 62)
 }
 
 fn check_access_examples(operation: &str, count: usize) -> Result<(), Box<dyn std::error::Error>> {

@@ -2647,8 +2647,7 @@ impl<'program> Analyzer<'program> {
             return Datum::default();
         };
         let mut locals = ledger.clone();
-        locals.obligations.clear();
-        locals.lost_results.clear();
+        locals.clear_result_obligations();
         locals.no_continuation = false;
         let mut inner = Context::new(node.span);
         inner.in_function = true;

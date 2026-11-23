@@ -43,13 +43,17 @@ def canExit (world : World) (arms : List Arm) : Bool :=
   let inspected := inspections world arms
   world.pending.all (inspected.contains ·)
 
-/-- A tag test reaches one position. Returning a collection transfers all
-obligations still in its graph, including unvisited positions. -/
-def canExitAfterCoverage (world : World) (visited returned : List Path) : Bool :=
+/-- Testing visited positions removes their obligations from the world. -/
+def inspectVisited (world : World) (visited : List Path) : World :=
   let inspected := visited.flatMap (fun path => (test world [(path, "Ok")]).2)
+  { world with pending := world.pending.filter (!inspected.contains ·) }
+
+/-- Returning a collection transfers all obligations still in its graph,
+including unvisited positions. -/
+def canExitAfterCoverage (world : World) (visited returned : List Path) : Bool :=
   let moved := world.constructors.filterMap fun node =>
     if returned.any (fun rootPath => rootPath.isPrefixOf node.path) then node.obligation else none
-  world.pending.all ((inspected ++ moved).contains ·)
+  (inspectVisited world visited).pending.all (moved.contains ·)
 
 def canExitAfterTraversal (world : World) (indices : List Nat) : Bool :=
   canExitAfterCoverage world (indices.map fun index => [index]) []
