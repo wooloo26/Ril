@@ -695,9 +695,7 @@ impl<'a> Analyzer<'a> {
                 origin.inherits_mode = param.mode == Mode::Via;
                 origin.call_borrow = param.mode == Mode::Mut;
             });
-            if param.ty.is_result() {
-                ledger.record_result(&mut value, span);
-            }
+            value = results::receive_results(&mut ledger, &param.ty, value, span);
             ledger.slots.insert(
                 span,
                 Slot {
@@ -808,7 +806,7 @@ impl<'a> Analyzer<'a> {
             &mut self.callback_results,
             ctx.return_values
                 .iter_mut()
-                .filter(|_| ctx.expected != Mode::Plain)
+                .filter(|value| ctx.expected != Mode::Plain || !value.results().is_empty())
                 .chain(updates.values_mut().map(|update| &mut update.value)),
             body_span,
         );

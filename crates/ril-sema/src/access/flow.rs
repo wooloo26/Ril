@@ -239,6 +239,7 @@ pub(super) type Handoff = (Span, Span);
 pub(super) struct Occurrence {
     pub span: Span,
     pub prior_iteration: bool,
+    discriminant: Option<usize>,
 }
 
 impl From<Span> for Occurrence {
@@ -246,6 +247,16 @@ impl From<Span> for Occurrence {
         Self {
             span,
             prior_iteration: false,
+            discriminant: None,
+        }
+    }
+}
+
+impl Occurrence {
+    pub(super) fn discriminant(span: Span, index: usize) -> Self {
+        Self {
+            discriminant: Some(index),
+            ..Self::from(span)
         }
     }
 }
@@ -253,6 +264,7 @@ impl From<Span> for Occurrence {
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub(super) struct ResultOccurrence {
     pub span: Span,
+    part: usize,
     places: BTreeSet<(ResultHolder, Vec<Coordinate>)>,
     created_in: Choices,
 }
@@ -392,10 +404,13 @@ impl Datum {
                 }
             });
         }
-        if !regions
-            .keys()
-            .any(|region| region.summarized() || region.returned.is_some())
-        {
+        if !regions.iter().any(|(region, occurrences)| {
+            region.summarized()
+                || region.returned.is_some()
+                || occurrences.first().is_some_and(|(_, first, ..)| {
+                    occurrences.iter().any(|(_, path, ..)| path != first)
+                })
+        }) {
             return;
         }
         // Published indices are ordered by the shape visible to the caller.
@@ -590,6 +605,26 @@ impl Datum {
         self.transform(&mut |origin| origin.variant = None);
     }
 
+    pub(super) fn forget_results(&mut self) {
+        self.rewrite_results(&mut |_| None);
+    }
+
+    pub(super) fn choose_variant(&mut self, variant: &str, key: Occurrence, arm: usize) {
+        self.set_variant(variant);
+        self.transform(&mut |origin| {
+            origin.branches.insert(key, arm);
+        });
+        self.stamp_results(&Choices::from([(key, arm)]));
+    }
+
+    pub(super) fn result_object(&self) -> Option<&Region> {
+        let region = &self.roots.first()?.region;
+        (region.instance == RegionInstance::Allocation
+            && !region.summarized()
+            && self.roots.iter().all(|root| root.region == *region))
+        .then_some(region)
+    }
+
     pub(super) fn known_variant(&self) -> Option<&str> {
         let variant = self.roots.first()?.variant.as_deref()?;
         self.roots
@@ -611,6 +646,14 @@ impl Datum {
 
     fn select_results(&mut self, choices: &Choices) {
         self.rewrite_results(&mut |item| compatible(&item.branches, choices).then_some(item));
+    }
+
+    fn select_variants(&mut self, choices: &Choices) {
+        self.roots
+            .retain(|root| compatible(&root.branches, choices));
+        for member in self.members.values_mut() {
+            member.select_variants(choices);
+        }
     }
 
     fn rewrite_results(
@@ -965,25 +1008,78 @@ impl Ledger {
     }
 
     pub(super) fn record_result(&mut self, value: &mut Datum, span: Span) {
+        self.record_result_part(value, span, 0, &self.choices.clone());
+    }
+
+    pub(super) fn record_result_part(
+        &mut self,
+        value: &mut Datum,
+        span: Span,
+        part: usize,
+        choices: &Choices,
+    ) {
         let occurrence = ResultOccurrence {
             span,
+            part,
             places: BTreeSet::new(),
-            created_in: self.choices.clone(),
+            created_in: choices.clone(),
         };
         self.obligations.insert(occurrence.clone());
         value.results.insert(ResultReference {
             occurrence,
-            branches: self.choices.clone(),
+            branches: choices.clone(),
         });
     }
 
     pub(super) fn variant_paths(&self, value: &Datum) -> Vec<(Self, Datum)> {
-        let paths: BTreeSet<_> = value.roots.iter().map(|root| &root.branches).collect();
+        if self.obligations.is_empty() && value.results().is_empty() {
+            return Vec::new();
+        }
+        let mut paths: BTreeSet<_> = value
+            .roots
+            .iter()
+            .map(|root| root.branches.clone())
+            .collect();
         if paths.len() < 2
             || paths.len() > BRANCH_LIMIT
             || value.roots.iter().any(|root| root.variant.is_none())
-            || (self.obligations.is_empty() && value.results().is_empty())
         {
+            paths = BTreeSet::from([Choices::new()]);
+        }
+        let mut discriminants: BTreeMap<_, BTreeSet<_>> = BTreeMap::new();
+        value.visit_nodes(&mut Vec::new(), &mut |_, node| {
+            for root in &node.roots {
+                for (&axis, &arm) in &root.branches {
+                    if axis.discriminant.is_some() {
+                        discriminants.entry(axis).or_default().insert(arm);
+                    }
+                }
+            }
+        });
+        // Independent nested sums each contribute their own choice. A bound
+        // keeps disjunctions finite when a product contains many such sums.
+        for (axis, arms) in discriminants {
+            if arms.len() < 2 {
+                continue;
+            }
+            let selected: BTreeSet<_> = paths
+                .iter()
+                .flat_map(|path| {
+                    arms.iter().filter_map(move |&arm| {
+                        if path.get(&axis).is_some_and(|&existing| existing != arm) {
+                            return None;
+                        }
+                        let mut selected = path.clone();
+                        selected.insert(axis, arm);
+                        Some(selected)
+                    })
+                })
+                .collect();
+            if selected.len() <= BRANCH_LIMIT {
+                paths = selected;
+            }
+        }
+        if paths.len() == 1 && paths.first().is_some_and(Choices::is_empty) {
             return Vec::new();
         }
         paths
@@ -996,24 +1092,22 @@ impl Ledger {
                     .extend(path.iter().map(|(&key, &arm)| (key, arm)));
                 ledger
                     .obligations
-                    .retain(|item| compatible(&item.created_in, path));
+                    .retain(|item| compatible(&item.created_in, &path));
                 ledger
                     .inspected
-                    .retain(|item| compatible(&item.created_in, path));
+                    .retain(|item| compatible(&item.created_in, &path));
                 for slot in ledger.slots.values_mut() {
-                    slot.value.select_results(path);
+                    slot.value.select_results(&path);
                 }
                 for replacement in ledger.replacements.values_mut() {
-                    replacement.value.select_results(path);
+                    replacement.value.select_results(&path);
                 }
                 for member in ledger.loop_members.values_mut() {
-                    member.select_results(path);
+                    member.select_results(&path);
                 }
                 let mut selected = value.clone();
-                selected
-                    .roots
-                    .retain(|root| compatible(&root.branches, path));
-                selected.select_results(path);
+                selected.select_variants(&path);
+                selected.select_results(&path);
                 (ledger, selected)
             })
             .collect()

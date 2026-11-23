@@ -186,6 +186,14 @@ impl<'program> Analyzer<'program> {
         if !id.is_some_and(|id| data_constructor(self.program.hir.definition(id))) {
             // The signature specifies the possible tags at a call boundary.
             result.forget_variants();
+            if ctx.reachable && !ledger.no_continuation {
+                let ty = self
+                    .program
+                    .propagation_inputs
+                    .get(&span)
+                    .unwrap_or_else(|| self.ty(span));
+                result = super::results::receive_results(ledger, ty, result, span);
+            }
         }
         ledger.remember_return_graph(&result, span);
         result
@@ -934,7 +942,8 @@ impl<'program> Analyzer<'program> {
         if matches!(
             fun.signature.result_mode,
             Mode::New | Mode::Infer | Mode::Ref | Mode::Shared
-        ) {
+        ) || super::results::carries_result(self.ty(span))
+        {
             self.function(fun, ledger);
             let entry = CallEntry {
                 arguments: values,
@@ -2686,8 +2695,8 @@ impl<'program> Analyzer<'program> {
                         );
                     }
                 }
-                if param_ty.is_some_and(Ty::is_result) {
-                    locals.record_result(&mut value, name.span);
+                if let Some(ty) = param_ty {
+                    value = super::results::receive_results(&mut locals, ty, value, name.span);
                 }
                 value.transform(&mut |origin| {
                     origin.dependencies.insert(name.span.into());

@@ -882,6 +882,70 @@ fn run() -> new !<(), !<int, str>> {
     Ok()
 }
 
+-- @case returned_option_keeps_its_nested_result_obligation compile-fail E0720
+fn get() -> new !<int, str> { Ok(1) }
+fn wrapped() -> new ?!<int, str> { Some(get()) }
+fn run() -> () {
+    let value = wrapped()
+    -- ^ E0720
+    match value { Some(_) -> (); None -> () }
+}
+
+-- @case returned_option_can_be_inspected_in_both_variants compile-pass
+fn get() -> new !<int, str> { Ok(1) }
+fn wrapped(flag: bool) -> new ?!<int, str> { if flag { Some(get()) } else { None } }
+fn run(flag: bool) -> int {
+    match wrapped(flag) { Some(Ok(v)) -> v; Some(Err(_)) -> 0; None -> 0 }
+}
+
+-- @case returned_fields_can_contain_discriminated_results compile-pass
+fn get() -> new !<int, str> { Ok(1) }
+fn wrapped(flag: bool) -> new (?!<int, str>, int) {
+    let value = if flag { Some(get()) } else { None }
+    (value, 0)
+}
+fn run(flag: bool) -> int {
+    match wrapped(flag) {
+        (Some(Ok(v)), _) -> v
+        (Some(Err(_)), _) -> 0
+        (None, _) -> 0
+    }
+}
+
+-- @case independent_results_in_returned_fields_require_separate_inspection compile-fail E0720
+fn get(value: int) -> new !<int, str> { Ok(value) }
+fn pair() -> new (!<int, str>, !<int, str>) { (get(1), get(2)) }
+fn run() -> () {
+    let (first, second) = pair()
+    -- ^ E0720
+    assert(first == Ok(1))
+}
+
+-- @case returned_fields_can_share_one_result_obligation compile-pass
+fn get() -> new !<int, str> { Ok(1) }
+fn pair() -> new (!<int, str>, !<int, str>) {
+    let shared = get()
+    (shared, shared)
+}
+fn run() -> () {
+    let (first, second) = pair()
+    assert(first == Ok(1))
+}
+
+-- @case explicit_result_input_keeps_its_nested_result_obligation compile-fail E0720
+fn run(value: !<!<int, str>, str>) -> () {
+-- ^ E0720
+    match value { Ok(_) -> (); Err(_) -> () }
+}
+
+-- @case returning_a_previously_inspected_result_creates_a_caller_obligation compile-fail E0720
+fn identity(value: !<int, str>) -> !<int, str> { value }
+fn get() -> new !<int, str> { Ok(1) }
+fn run() -> () {
+    let _ = identity(get())
+    -- ^ E0720
+}
+
 -- @case explicit_result_parameter_and_match compile-pass
 fn get() -> new !<int, str> { Ok(1) }
 fn unwrap(input: !<int, str>) -> int { match input { Ok(n) -> n; Err(_) -> 0 } }

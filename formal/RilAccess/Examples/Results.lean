@@ -21,6 +21,13 @@ def fallibleExit (tag : String) : World :=
 def errorWithResult : World :=
   ⟨[⟨[], "Err", Option.some 0⟩, ⟨[0], "Ok", Option.some 1⟩], [0, 1]⟩
 
+def pair (second : Nat) : World :=
+  receive [⟨[0], "Ok", Option.some 1⟩, ⟨[1], "Ok", Option.some second⟩]
+
+def recordOption (tag : String) : World :=
+  receive <| if tag == "None" then [⟨[0], "None", Option.none⟩] else
+    [⟨[0], "Some", Option.none⟩, ⟨[0, 0], tag, Option.some 1⟩]
+
 def cases : List (String × Bool × Bool) :=
   [("matching_only_the_outer_option_does_not_inspect_its_result",
     canExit (some "Ok") [outer, fallback], false),
@@ -44,7 +51,24 @@ def cases : List (String × Bool × Bool) :=
     canPropagate (fallibleExit "Ok"), true),
    ("optional_propagation_checks_only_results_present_on_its_exit_path",
     [some "Ok", none []].all canPropagate, true),
-   ("error_propagation_transfers_the_nested_error_result", canPropagate errorWithResult, true)]
+   ("error_propagation_transfers_the_nested_error_result", canPropagate errorWithResult, true),
+   ("returned_option_keeps_its_nested_result_obligation",
+    [some "Ok", none []].all (canExit · [outer, fallback]), false),
+   ("returned_option_can_be_inspected_in_both_variants",
+    [some "Ok", some "Err", none []].all (canExit · handlers), true),
+   ("returned_fields_can_contain_discriminated_results",
+    ["Ok", "Err", "None"].all (fun tag => canExit (recordOption tag)
+      [⟨[([0], "Some"), ([0, 0], "Ok")], true⟩,
+       ⟨[([0], "Some"), ([0, 0], "Err")], true⟩, ⟨[([0], "None")], true⟩]), true),
+   ("independent_results_in_returned_fields_require_separate_inspection",
+    canExit (pair 2) [⟨[([0], "Ok")], true⟩], false),
+   ("returned_fields_can_share_one_result_obligation",
+    canExit (pair 1) [⟨[([0], "Ok")], true⟩], true),
+   ("explicit_result_input_keeps_its_nested_result_obligation",
+    canExit (receive nestedResult.constructors) [⟨[([], "Ok")], true⟩, fallback], false),
+   ("returning_a_previously_inspected_result_creates_a_caller_obligation",
+    let caller := receive [⟨[], "Ok", Option.some 0⟩]
+    canExit caller [fallback], false)]
 
 def examples : List (String × Bool) :=
   cases.map fun (name, actual, expected) => (name, actual == expected)

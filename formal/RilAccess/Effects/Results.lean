@@ -11,6 +11,9 @@ structure World where
   constructors : List Constructor
   pending : List Nat
 
+def receive (constructors : List Constructor) : World :=
+  ⟨constructors, constructors.filterMap Constructor.obligation⟩
+
 structure Arm where
   tests : List (Path × String)
   guard : Bool := true

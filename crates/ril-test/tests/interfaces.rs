@@ -17,6 +17,75 @@ use ril_sema::{
 use ril_test::{CaseMode, Stage, TestDriver, Unit, VirtualPackage, parse_suite, run_worker};
 
 #[test]
+fn compound_result_obligations_survive_an_interface_only_boundary() {
+    use ril_base::diag::Code;
+
+    let provider_source = br#"
+fn get(value: int) -> new !<int, str> { Ok(value) }
+pub fn wrapped(flag: bool) -> new ?!<int, str> {
+    if flag { Some(get(1)) } else { None }
+}
+pub fn pair() -> new (!<int, str>, !<int, str>) { (get(1), get(2)) }
+pub fn aliases() -> new (!<int, str>, !<int, str>) {
+    let shared = get(1)
+    (shared, shared)
+}
+pub fn snapshot_aliases() -> (!<int, str>, !<int, str>) {
+    let shared = get(1)
+    let snapshot = (shared, shared)
+    snapshot
+}
+"#;
+    let mut provider = VirtualPackage::new(Unit::Lib);
+    provider.entry = "pkg/fallible.ril".into();
+    provider.insert(provider.entry.clone(), provider_source.to_vec());
+    let interface = Driver.interface(&provider).unwrap().encode().unwrap();
+    for (mount, bytes) in [
+        ("library/fallible.ril", provider_source.as_slice()),
+        ("library/fallible.rili", interface.as_slice()),
+    ] {
+        for (body, accepted) in [
+            (
+                "match Fallible::wrapped(flag) { Some(_) -> (); None -> () }",
+                false,
+            ),
+            (
+                "match Fallible::wrapped(flag) { Some(Ok(_)) -> (); Some(Err(_)) -> (); None -> () }",
+                true,
+            ),
+            (
+                "let (first, second) = Fallible::pair(); assert(first == Ok(1))",
+                false,
+            ),
+            (
+                "let (first, second) = Fallible::aliases(); assert(first == Ok(1))",
+                true,
+            ),
+            (
+                "let (first, second) = Fallible::snapshot_aliases(); assert(first == Ok(1))",
+                true,
+            ),
+        ] {
+            let mut client = VirtualPackage::new(Unit::Lib);
+            let source = format!("use library/fallible\nfn run(flag: bool) -> () {{ {body} }}");
+            client.insert(client.entry.clone(), source.into_bytes());
+            client.insert(mount.into(), bytes.to_vec());
+            let diagnostics = Driver.check_stage(&client, Stage::Access).diagnostics;
+            let seen: BTreeSet<_> = diagnostics
+                .iter()
+                .map(|diagnostic| diagnostic.code)
+                .collect();
+            let expected = if accepted {
+                BTreeSet::new()
+            } else {
+                BTreeSet::from([Some(Code::E0720)])
+            };
+            assert_eq!(seen, expected, "{mount}, {body}: {diagnostics:?}");
+        }
+    }
+}
+
+#[test]
 fn recursive_allocation_graphs_survive_interface_replay() {
     use ril_base::diag::Code;
 
@@ -1215,7 +1284,7 @@ fn scoped_resource_examples_agree_with_lean() -> Result<(), Box<dyn std::error::
 
 #[test]
 fn result_patterns_agree_with_lean() -> Result<(), Box<dyn std::error::Error>> {
-    check_access_examples("result-patterns", 12)
+    check_access_examples("result-patterns", 19)
 }
 
 fn check_access_examples(operation: &str, count: usize) -> Result<(), Box<dyn std::error::Error>> {

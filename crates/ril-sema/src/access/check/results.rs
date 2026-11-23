@@ -1,12 +1,164 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use ril_base::span::Span;
-use ril_frontend::syntax::{Pattern, PatternId};
+use ril_frontend::syntax::{Mode, Pattern, PatternId};
 
 use super::{Access, Analyzer, Context, Coordinate, Datum, Ledger, Ty};
-use crate::access::flow::ResultOccurrence;
+use crate::access::flow::{Choices, Occurrence, Region, ResultOccurrence};
 
 type Inspections = BTreeSet<ResultOccurrence>;
+
+pub(super) fn receive_results(ledger: &mut Ledger, ty: &Ty, mut value: Datum, span: Span) -> Datum {
+    if carries_result(ty) {
+        value.forget_results();
+        let choices = ledger.choices.clone();
+        value = BoundaryResults {
+            span,
+            next_part: 0,
+            objects: BTreeMap::new(),
+        }
+        .receive(ledger, ty, value, &choices);
+    }
+    value
+}
+
+pub(super) fn carries_result(ty: &Ty) -> bool {
+    match ty {
+        Ty::Result(..) => true,
+        Ty::Option(inner) => carries_result(inner),
+        Ty::Tuple(members) => members.iter().any(|member| carries_result(&member.ty)),
+        Ty::Record(fields, _) => fields.values().any(|member| carries_result(&member.ty)),
+        _ => false,
+    }
+}
+
+struct BoundaryResults {
+    span: Span,
+    next_part: usize,
+    objects: BTreeMap<(Region, Choices), usize>,
+}
+
+impl BoundaryResults {
+    fn part(&mut self) -> usize {
+        let part = self.next_part;
+        self.next_part += 1;
+        part
+    }
+
+    fn receive(
+        &mut self,
+        ledger: &mut Ledger,
+        ty: &Ty,
+        mut value: Datum,
+        choices: &Choices,
+    ) -> Datum {
+        match ty {
+            Ty::Result(ok, error) => {
+                let next = self.part();
+                let part = value.result_object().map_or(next, |object| {
+                    *self
+                        .objects
+                        .entry((object.clone(), choices.clone()))
+                        .or_insert(next)
+                });
+                ledger.record_result_part(&mut value, self.span, part, choices);
+                if carries_result(ok) || carries_result(error) {
+                    return self.sum(
+                        ledger,
+                        value,
+                        [("Ok", Some(ok)), ("Err", Some(error))],
+                        choices,
+                    );
+                }
+            }
+            Ty::Option(inner) if carries_result(inner) => {
+                return self.sum(
+                    ledger,
+                    value,
+                    [("Some", Some(inner)), ("None", None)],
+                    choices,
+                );
+            }
+            Ty::Tuple(items) => {
+                for (index, member) in items.iter().enumerate() {
+                    self.member(
+                        ledger,
+                        &mut value,
+                        Coordinate::Index(index.to_string()),
+                        &member.ty,
+                        member.mode.mode,
+                        choices,
+                    );
+                }
+            }
+            Ty::Record(fields, _) => {
+                for (field, member) in fields {
+                    self.member(
+                        ledger,
+                        &mut value,
+                        Coordinate::Field(field.clone()),
+                        &member.ty,
+                        member.mode.mode,
+                        choices,
+                    );
+                }
+            }
+            _ => {}
+        }
+        value
+    }
+
+    fn sum(
+        &mut self,
+        ledger: &mut Ledger,
+        value: Datum,
+        variants: [(&str, Option<&Ty>); 2],
+        choices: &Choices,
+    ) -> Datum {
+        let key = Occurrence::discriminant(self.span, self.part());
+        variants
+            .into_iter()
+            .enumerate()
+            .map(|(arm, (tag, ty))| {
+                let mut selected = value.clone();
+                selected.choose_variant(tag, key, arm);
+                if let Some(ty) = ty {
+                    let mut choices = choices.clone();
+                    choices.insert(key, arm);
+                    self.member(
+                        ledger,
+                        &mut selected,
+                        Coordinate::Index("0".into()),
+                        ty,
+                        Mode::Plain,
+                        &choices,
+                    );
+                }
+                selected
+            })
+            .reduce(Datum::joined)
+            .unwrap_or(value)
+    }
+
+    fn member(
+        &mut self,
+        ledger: &mut Ledger,
+        value: &mut Datum,
+        coordinate: Coordinate,
+        ty: &Ty,
+        mode: Mode,
+        choices: &Choices,
+    ) {
+        if carries_result(ty) {
+            let member = value
+                .members
+                .remove(&coordinate)
+                .unwrap_or_else(|| ledger.project_schema(value, coordinate.clone(), mode));
+            let member = self.receive(ledger, ty, member, choices);
+            value.members.insert(coordinate, member);
+        }
+    }
+}
 
 pub(super) struct PatternTests {
     pub matched: Option<Inspections>,
