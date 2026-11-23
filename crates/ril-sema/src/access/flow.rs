@@ -192,6 +192,7 @@ pub(super) struct Origin {
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 struct EntryGraph {
     callable: Span,
+    ownership: bool,
     shared_at: Option<usize>,
     via_at: Vec<Region>,
 }
@@ -211,8 +212,8 @@ pub(super) struct CallbackOrigin {
 }
 
 impl Origin {
-    fn can_freeze(&self, owned: bool) -> bool {
-        self.mode == Access::Immutable || owned && self.new
+    pub(super) fn can_freeze(&self, owned: bool) -> bool {
+        self.mode == Access::Immutable || owned && self.new && !self.call_borrow
     }
 
     pub(super) fn enter_formal(&mut self, callable: Span, mode: Mode) {
@@ -221,6 +222,7 @@ impl Origin {
         self.entry_graph =
             matches!(mode, Mode::Mut | Mode::Shared | Mode::New | Mode::Via).then(|| EntryGraph {
                 callable,
+                ownership: matches!(mode, Mode::New | Mode::Via),
                 shared_at: (mode == Mode::Shared).then_some(0),
                 via_at: if mode == Mode::Via {
                     vec![Region::root(self.region.source)]
@@ -302,6 +304,13 @@ impl Origin {
 
     pub(super) fn entry_callable(&self) -> Option<Span> {
         self.entry_graph.as_ref().map(|entry| entry.callable)
+    }
+
+    pub(super) fn transferred_entry(&self, owned: bool) -> Option<Span> {
+        self.entry_graph
+            .as_ref()
+            .filter(|entry| entry.ownership && owned && self.new && self.mode != Access::Immutable)
+            .map(|entry| entry.callable)
     }
 
     pub(super) fn forwarded_mode(&self) -> Option<ForwardedMode> {
@@ -683,23 +692,42 @@ impl Datum {
             .any(|origin| origin.region.source == call && origin.region.returned.is_some())
     }
 
-    pub(super) fn can_freeze(&self) -> bool {
-        self.accepts_snapshot_sources(&mut |_| false)
-    }
-
     pub(super) fn accepts_snapshot_sources(
         &self,
         symbolic: &mut impl FnMut(&Origin) -> bool,
     ) -> bool {
-        self.freezable_sources(self.requires_new, symbolic)
+        self.snapshot_graph(&[], &mut |root, owned, _| {
+            root.can_freeze(owned) || symbolic(root)
+        })
     }
 
-    fn freezable_sources(&self, owned: bool, symbolic: &mut impl FnMut(&Origin) -> bool) -> bool {
-        self.roots
-            .iter()
-            .all(|root| root.can_freeze(owned) || symbolic(root))
-            && self.members.values().all(|member| {
-                member.freezable_sources(owned && self.environments.is_empty(), symbolic)
+    pub(super) fn snapshot_graph(
+        &self,
+        replaced: &[Vec<Coordinate>],
+        inspect: &mut impl FnMut(&Origin, bool, &[Vec<Coordinate>]) -> bool,
+    ) -> bool {
+        self.visit_snapshot_graph(self.requires_new, replaced, inspect)
+    }
+
+    fn visit_snapshot_graph(
+        &self,
+        owned: bool,
+        replaced: &[Vec<Coordinate>],
+        inspect: &mut impl FnMut(&Origin, bool, &[Vec<Coordinate>]) -> bool,
+    ) -> bool {
+        self.roots.iter().all(|root| inspect(root, owned, replaced))
+            && self.members.iter().all(|(coordinate, member)| {
+                let replaced: Vec<_> = replaced
+                    .iter()
+                    .filter_map(|path| path.strip_prefix(std::slice::from_ref(coordinate)))
+                    .map(<[_]>::to_vec)
+                    .collect();
+                replaced.iter().any(Vec::is_empty)
+                    || member.visit_snapshot_graph(
+                        owned && self.environments.is_empty(),
+                        &replaced,
+                        inspect,
+                    )
             })
     }
 
@@ -1202,6 +1230,20 @@ pub(super) struct Ledger {
 }
 
 impl Ledger {
+    pub(super) fn overwritten_paths(&self, root: &Region) -> Vec<Vec<Coordinate>> {
+        self.replacements
+            .iter()
+            .filter_map(|(path, update)| {
+                let tail = path.selection.strip_prefix(&root.selection[..])?;
+                (update.definite
+                    && !tail.is_empty()
+                    && path.overlaps(root)
+                    && !path.selection.contains(&Coordinate::Dynamic))
+                .then(|| tail.to_vec())
+            })
+            .collect()
+    }
+
     pub(super) fn clear_result_obligations(&mut self) {
         self.obligations.clear();
         self.pending_result_paths.clear();

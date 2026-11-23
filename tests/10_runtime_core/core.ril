@@ -868,3 +868,47 @@ fn main() -> () {
     shelf.item.count += 1
     assert(selected.count == 43 && previous.count == 1)
 }
+
+-- @case freezing_the_selected_entry_graph_preserves_unrelated_aliases run-pass backend=both no-prelude
+type Cell = .{ var count: int }
+type Branch = .{ mut owned: Cell, ^mut external: Cell }
+type Holder = .{ var ^mut item: Cell }
+
+fn freeze_cell(new input: Cell) -> Cell {
+    let snapshot = new input
+    snapshot
+}
+
+fn select(via root: Branch) -> Cell {
+    let mut current = new root
+    freeze_cell(new current.owned)
+}
+
+fn replace(new input: Holder) -> Holder {
+    let mut held = new input
+    held.item = ^mut Cell.{ count: 14 }
+    let snapshot = new held
+    snapshot
+}
+
+fn freeze(via input: Holder) -> Holder {
+    let snapshot = new input
+    snapshot
+}
+
+fn relay(via input: Holder) -> Holder {
+    freeze(input)
+}
+
+fn main() -> () {
+    let mut live = Cell.{ count: 12 }
+    let mut branch = Branch.{ owned: Cell.{ count: 23 }, external: ^mut live }
+    branch.owned.count += 1
+    let selected = select(new branch)
+    let mut holder = Holder.{ item: ^mut live }
+    holder.item.count += 1
+    let replaced = replace(new holder)
+    let fresh = relay(new Holder.{ item: ^mut Cell.{ count: 36 } })
+    live.count += 2
+    assert(selected.count == 24 && replaced.item.count == 14 && fresh.item.count == 36 && live.count == 15)
+}

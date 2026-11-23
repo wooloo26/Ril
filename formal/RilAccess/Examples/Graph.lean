@@ -62,6 +62,16 @@ def frozenNestedSources : Graph :=
     roots := nestedSources.roots.map fun root =>
       if root.view = 0 then { root with access := .immutable } else root }
 
+def frozenSelected : Graph :=
+  ⟨[⟨0, 1, .immutable⟩, ⟨1, 2, .shared⟩],
+   [⟨0, 0, 1, fixed .mut, .mut⟩, ⟨0, 1, 2, fixed .shared, .shared⟩]⟩
+
+def transferredBeforeStore : Graph :=
+  ⟨[⟨0, 0, .immutable⟩, ⟨1, 2, .shared⟩], [⟨0, 0, 2, variableMode .shared, .shared⟩]⟩
+
+def transferredAfterStore : Graph :=
+  { transferredBeforeStore with edges := [⟨0, 0, 3, variableMode .shared, .shared⟩] }
+
 def examples : List (String × Bool) :=
   [("graph: cyclic authority closure", decide (Fact.mk 0 1 .mut ∈ analyze cycle)),
    ("graph: cycle returns to original identity", decide (resolvePath cycle.edges 0 .mut [0, 0] = some (0, .mut))),
@@ -125,7 +135,12 @@ def examples : List (String × Bool) :=
           resolveView graph 0 [0, 0, 1] = some (3, .shared))) = some true)),
    ("graph: freezing the outer root cannot coexist with an outside nested writer",
       !canWritePath frozenNestedSources 0 [0, 0, 1] &&
-      hasWriter frozenNestedSources 3 && !immutableConsistent frozenNestedSources)]
+      hasWriter frozenNestedSources 3 && !immutableConsistent frozenNestedSources),
+   ("graph: freezing a selected child preserves a writer to its sibling",
+      immutableConsistent frozenSelected && hasWriter frozenSelected 2),
+   ("graph: freezing after replacement no longer reaches the previous writer",
+      !immutableConsistent transferredBeforeStore && immutableConsistent transferredAfterStore &&
+      hasWriter transferredAfterStore 2)]
 
 theorem examples_all_pass : examples.all Prod.snd = true := by decide +kernel
 

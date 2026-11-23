@@ -2314,6 +2314,47 @@ fn observe() -> int {
     snapshot.first.count + snapshot.second.count
 }
 
+-- @case snapshot_of_transferred_new_parameter_checks_call_entry_sources compile-fail E0535
+type Shelf = .{ ^mut item: Cell }
+fn freeze(new input: Shelf) -> Shelf {
+    let snapshot = new input
+    snapshot
+}
+fn observe() -> int {
+    let mut live = Cell.{ count: 1 }
+    let mut shelf = Shelf.{ item: ^mut live }
+    shelf.item.count += 1
+    let before = freeze(new shelf)
+    -- ^ E0535
+    live.count += 8
+    before.item.count
+}
+
+-- @case a_call_scoped_writer_cannot_be_frozen_by_handoff compile-fail E0535
+fn freeze(mut source: Cell) &mut -> Cell {
+    let snapshot = new source
+    -- ^ E0535
+    snapshot
+}
+
+-- @case conditional_store_keeps_the_original_snapshot_requirement compile-fail E0535
+type Shelf = .{ var ^mut item: Cell }
+fn freeze(new input: Shelf, replace: bool) -> Shelf {
+    let mut held = new input
+    if replace { held.item = ^mut Cell.{ count: 7 } }
+    let snapshot = new held
+    snapshot
+}
+fn observe(replace: bool) -> int {
+    let mut live = Cell.{ count: 1 }
+    let mut shelf = Shelf.{ item: ^mut live }
+    shelf.item.count += 1
+    let before = freeze(new shelf, replace)
+    -- ^ E0535
+    live.count += 8
+    before.item.count
+}
+
 -- @case a_frozen_subgraph_cannot_be_received_as_mutable compile-fail E0520
 fn change() -> int {
     let snapshot = .{ item: Cell.{ count: 41 } }

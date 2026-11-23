@@ -18,6 +18,8 @@ use crate::ty::TypedProgram;
 pub struct Summary {
     pub writes: Vec<usize>,
     pub retained: Vec<usize>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub snapshot_inputs: Vec<SnapshotInput>,
     pub independent_retention: Vec<usize>,
     pub return_sources: Vec<ReturnSource>,
     pub return_allocations: Vec<ReturnAllocation>,
@@ -76,6 +78,10 @@ impl Summary {
                 .iter()
                 .all(|formal| self.independent_retention.contains(formal))
             && revised
+                .snapshot_inputs
+                .iter()
+                .all(|required| self.snapshot_inputs.iter().any(|old| old.permits(required)))
+            && revised
                 .effects
                 .iter()
                 .all(|effect| self.effects.contains(effect))
@@ -126,6 +132,35 @@ impl Summary {
                         .iter()
                         .any(|update| old.same_target(update) && update.definite)
                 })
+    }
+}
+
+/// Entry graph region that must be freezable, excluding edges that the
+/// callee definitely replaces before freezing.
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+pub struct SnapshotInput {
+    pub formal: usize,
+    pub path: Vec<Coordinate>,
+    pub replaced: Vec<Vec<Coordinate>>,
+}
+
+impl SnapshotInput {
+    fn permits(&self, required: &Self) -> bool {
+        if self.formal != required.formal {
+            return false;
+        }
+        let Some(tail) = required.path.strip_prefix(&self.path[..]) else {
+            return false;
+        };
+        self.replaced.iter().all(|old| {
+            !tail.starts_with(old)
+                && old.strip_prefix(tail).is_none_or(|relative| {
+                    required
+                        .replaced
+                        .iter()
+                        .any(|replacement| relative.starts_with(replacement))
+                })
+        })
     }
 }
 

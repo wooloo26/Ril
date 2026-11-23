@@ -28,6 +28,7 @@ mod calls;
 mod domains;
 mod higher_order;
 mod results;
+mod snapshots;
 mod storage;
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -248,6 +249,7 @@ struct Analyzer<'a> {
     member_schemas: BTreeMap<Span, Vec<Region>>,
     closure_modes: BTreeMap<Span, ClosureModes>,
     higher_order: higher_order::Calls,
+    snapshots: snapshots::Checks,
     invocation_summaries: BTreeMap<Span, BTreeSet<Invocation>>,
     mode_call_summaries: BTreeMap<Span, BTreeSet<CallbackModeCall>>,
     callback_results: Vec<calls::CallbackResult>,
@@ -280,6 +282,7 @@ fn collect(
         member_schemas: BTreeMap::new(),
         closure_modes: BTreeMap::new(),
         higher_order: higher_order::Calls::default(),
+        snapshots: snapshots::Checks::default(),
         invocation_summaries: BTreeMap::new(),
         mode_call_summaries: BTreeMap::new(),
         callback_results: Vec::new(),
@@ -309,6 +312,7 @@ fn collect(
 pub(super) fn analyze(program: &TypedProgram) -> (Analysis, Vec<Diagnostic>) {
     let mut analyzer = storage::solve_recursive_storage(program);
     analyzer.link_higher_order_calls();
+    analyzer.check_snapshot_calls();
     let facts = horn::solve(&analyzer.rules);
     for conflict in std::mem::take(&mut analyzer.capture_conflicts) {
         if conflict
@@ -986,6 +990,7 @@ impl<'a> Analyzer<'a> {
                 .into_iter()
                 .collect(),
             storage_updates: self.storage_contracts(fun),
+            snapshot_inputs: self.snapshots.inputs(fun.owner, &fun.formals),
             ..Summary::default()
         };
         let mut up = BTreeSet::new();
@@ -1498,6 +1503,7 @@ impl<'a> Analyzer<'a> {
     fn receive_member(
         &mut self,
         ctx: &Context,
+        ledger: &Ledger,
         mut value: Datum,
         mode: Access,
         span: Span,
@@ -1512,10 +1518,9 @@ impl<'a> Analyzer<'a> {
             self.check_shared_reception(&value, span);
         }
         if mode == Access::Immutable
-            && !value.can_freeze()
             && self.require_snapshot(
-                ctx,
-                &value,
+                (ctx, ledger),
+                &ledger.snapshot(&value),
                 Code::E0535,
                 span,
                 "live authority cannot enter an immutable member",
@@ -1573,7 +1578,7 @@ impl<'a> Analyzer<'a> {
 
     fn require_snapshot(
         &mut self,
-        ctx: &Context,
+        (ctx, ledger): (&Context, &Ledger),
         value: &Datum,
         code: Code,
         span: Span,
@@ -1594,6 +1599,7 @@ impl<'a> Analyzer<'a> {
         // A symbolic path can be treated as immutable after this reception.
         // Keep only the mode assignments for which all such paths are plain.
         if ctx.reachable && !ctx.shadow {
+            self.snapshots.freeze(ledger, value);
             self.mode_constraints
                 .extend(conditions.into_iter().map(|(owner, expressions)| {
                     domains::ModeConstraint {
@@ -1611,7 +1617,7 @@ impl<'a> Analyzer<'a> {
     fn freeze_value(&mut self, ctx: &Context, ledger: &Ledger, value: &mut Datum, span: Span) {
         *value = ledger.snapshot(value);
         self.require_snapshot(
-            ctx,
+            (ctx, ledger),
             value,
             Code::E0535,
             span,
@@ -1776,7 +1782,7 @@ impl<'a> Analyzer<'a> {
             ),
             Mode::Plain => {
                 if self.require_snapshot(
-                    ctx,
+                    (ctx, ledger),
                     &value,
                     Code::E0528,
                     span,
@@ -2508,6 +2514,7 @@ impl<'a> Analyzer<'a> {
                     let access = self.member_schema(span, &coordinate).0;
                     let value = self.receive_member(
                         ctx,
+                        ledger,
                         value,
                         access,
                         field.value.map_or(field.name.span, |id| ast.expr(id).span),
@@ -2526,7 +2533,8 @@ impl<'a> Analyzer<'a> {
                     let coordinate = Coordinate::Index(i.to_string());
                     let value = self.expr(ctx, ledger, item);
                     let access = self.member_schema(span, &coordinate).0;
-                    let value = self.receive_member(ctx, value, access, ast.expr(item).span);
+                    let value =
+                        self.receive_member(ctx, ledger, value, access, ast.expr(item).span);
                     sequence.members.insert(coordinate, value);
                 }
                 sequence
@@ -2548,6 +2556,7 @@ impl<'a> Analyzer<'a> {
                         }
                         let key_value = self.receive_member(
                             ctx,
+                            ledger,
                             key_value,
                             Access::Immutable,
                             ast.expr(key).span,
@@ -2566,7 +2575,8 @@ impl<'a> Analyzer<'a> {
                         // An unknown later key may replace this occurrence.
                         datum.forget_results();
                     }
-                    let datum = self.receive_member(ctx, datum, access, ast.expr(value).span);
+                    let datum =
+                        self.receive_member(ctx, ledger, datum, access, ast.expr(value).span);
                     if keys.is_some() {
                         if map.members.insert(coordinate.clone(), datum).is_none() {
                             ordered_keys.push(coordinate);
@@ -3318,7 +3328,7 @@ impl<'a> Analyzer<'a> {
                 if access == Access::Shared {
                     self.require_shared_replacement(&value, span, true);
                 }
-                let mut value = self.receive_member(ctx, value, access, span);
+                let mut value = self.receive_member(ctx, ledger, value, access, span);
                 value
                     .publications
                     .insert(ctx.owner, prior.roots.iter().any(|root| !root.new));
@@ -3346,7 +3356,7 @@ impl<'a> Analyzer<'a> {
             }) {
                 self.error(Code::E0535, span, message);
             } else {
-                self.require_snapshot(ctx, &snapshot, Code::E0535, span, message);
+                self.require_snapshot((ctx, ledger), &snapshot, Code::E0535, span, message);
             }
         }
     }

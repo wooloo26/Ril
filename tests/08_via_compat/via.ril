@@ -63,6 +63,61 @@ pub fn update(via base: Cell) -> Cell {
     derive(base) \mut draft -> { draft.count += 1 }
 }
 
+-- @case adding_a_snapshot_requirement_on_new_input_breaks_compatibility compat-fail E0552
+-- @baseline
+pub fn read(new input: .{ ^mut item: Cell }) -> int { input.item.count }
+-- @revision
+pub fn read(new input: .{ ^mut item: Cell }) -> int {
+-- ^ E0552
+    let snapshot = new input
+    snapshot.item.count
+}
+
+-- @case freezing_only_a_child_relaxes_the_snapshot_contract compat-pass
+-- @baseline
+pub fn read(new input: .{ mut item: Cell, ^mut other: Cell }) -> int {
+    let snapshot = new input
+    snapshot.item.count
+}
+-- @revision
+fn read_cell(new input: Cell) -> int {
+    let snapshot = new input
+    snapshot.count
+}
+pub fn read(new input: .{ mut item: Cell, ^mut other: Cell }) -> int {
+    let mut held = new input
+    read_cell(new held.item)
+}
+
+-- @case freezing_through_nested_via_calls_preserves_existing_sources compile-fail E0535
+type Shelf = .{ ^mut item: Cell }
+fn freeze(via input: Shelf) -> Shelf {
+    let snapshot = new input
+    snapshot
+}
+fn relay(via input: Shelf) -> Shelf { freeze(input) }
+fn observe() -> int {
+    let mut live = Cell.{ count: 1 }
+    let mut shelf = Shelf.{ item: ^mut live }
+    shelf.item.count += 1
+    let before = relay(new shelf)
+    -- ^ E0535
+    live.count += 8
+    before.item.count
+}
+
+-- @case freezing_through_a_local_via_closure_checks_live_sources compile-fail E0535
+type Shelf = .{ ref item: Cell }
+fn observe() -> int {
+    let freeze = \via input: Shelf -> { let snapshot = new input; snapshot }
+    let mut live = Cell.{ count: 1 }
+    let mut shelf = Shelf.{ item: ref live }
+    let before = freeze(new shelf)
+    -- ^ E0535
+    live.count += 8
+    before.item.count
+}
+
 -- @case exclusive_borrow_of_via_aliased_arguments_excludes_the_shared_pair compile-fail E0520
 fn edit(mut writer: Cell, ref reader: Cell) &mut -> () { writer.count += reader.count }
 fn combine(via left: Cell, via right: Cell) -> () { edit(mut left, ref right) }

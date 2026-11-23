@@ -1107,6 +1107,7 @@ assert(sample(1) == 20 && <SampleOut> == <int>)
 
 - **K-IFACE**: Module semantic interfaces retain normalized parameter/return schemas, labels and defaults, `via` mode correlations, `use` cleanup declarations, `Sendable`/`SharedObject` facts across `opaque` boundaries, effect sets, and minimal provenance relations across compilation-unit boundaries.
   - Return and storage metadata maps `new`/existing subgraphs and concrete effects/state of open `@`/`&`/`@&` callables to nested member/element paths and branch alternatives, preserved across generic substitution, aliases, record/collection storage, and module export.
+  - A callable that freezes a transferred input records which call-entry subgraphs must be freezable. An edge definitely replaced before the freeze is excluded from this requirement, and the replacement is checked where the freeze occurs.
 
 ---
 

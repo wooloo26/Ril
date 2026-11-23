@@ -102,6 +102,8 @@ impl<'program> Analyzer<'program> {
                     }
                 }
             }
+            self.snapshots
+                .import(owner, &formals, &export.summary.snapshot_inputs);
             self.higher_order
                 .add_interface(owner, formals, &export.summary);
         }
@@ -154,6 +156,13 @@ impl<'program> Analyzer<'program> {
             }
             return self.snapshot_value(span);
         };
+        self.record_snapshot_call(
+            ctx,
+            &frozen,
+            function.name.span,
+            &formals,
+            (arguments, spans),
+        );
         if let Some(signature) = signature {
             self.charge_imported_effects(
                 ctx,

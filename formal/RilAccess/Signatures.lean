@@ -212,6 +212,22 @@ theorem callbackModeCallsSubsumed_iff [DecidableEq Axis] [DecidableEq Mode]
 
 /-- Each returned callback expression in the revision must be covered by the
 baseline relation, including the arguments that supply its return sources. -/
+structure SnapshotInput (Coordinate : Type) where
+  formal : Nat
+  path : List Coordinate
+  replaced : List (List Coordinate)
+
+def snapshotInputsSubsumed [DecidableEq Coordinate]
+    (baseline revision : List (SnapshotInput Coordinate)) : Bool :=
+  let startsWith := fun (right left : List Coordinate) => decide (right.take left.length = left)
+  revision.all fun required => baseline.any fun old =>
+    if old.formal != required.formal || !startsWith required.path old.path then false else
+    let relative := required.path.drop old.path.length
+    old.replaced.all fun hole =>
+      !startsWith relative hole &&
+        (!startsWith hole relative || required.replaced.any fun replacement =>
+          startsWith (hole.drop relative.length) replacement)
+
 def callbackReturnsSubsumed [DecidableEq α] (baseline revision : List α) : Bool :=
   revision.all (fun result => decide (result ∈ baseline))
 

@@ -420,7 +420,13 @@ impl<'program> Analyzer<'program> {
                 if mode != Mode::Plain {
                     self.error(Code::E0536, node.span, message);
                 } else {
-                    self.require_snapshot(ctx, &snapshot, Code::E0536, node.span, message);
+                    self.require_snapshot(
+                        (ctx, ledger),
+                        &snapshot,
+                        Code::E0536,
+                        node.span,
+                        message,
+                    );
                 }
                 snapshot.freeze();
                 snapshot
@@ -527,6 +533,7 @@ impl<'program> Analyzer<'program> {
             );
         }
         for (&owner, modes) in &closures {
+            self.record_snapshot_call(ctx, ledger, owner, &modes.formals, (&values, &value_spans));
             if let Some(signature) = sig {
                 self.record_callable_arguments(
                     ctx,
@@ -798,6 +805,15 @@ impl<'program> Analyzer<'program> {
         };
         self.link_invocation(ctx, &enclosing);
         let has_body = fun.body.is_some();
+        let formals: Vec<_> = fun
+            .signature
+            .params
+            .iter()
+            .map(|param| param.name.as_ref().map(|name| name.span))
+            .collect();
+        if has_body {
+            self.record_snapshot_call(ctx, ledger, fun.name.span, &formals, (values, value_spans));
+        }
         let mut before_updates = None;
         let mut modeled_stores = false;
         let mut normal_exit = true;
@@ -837,12 +853,6 @@ impl<'program> Analyzer<'program> {
             }
         }
         if has_body && let Some(signature) = sig {
-            let formals: Vec<_> = fun
-                .signature
-                .params
-                .iter()
-                .map(|param| param.name.as_ref().map(|name| name.span))
-                .collect();
             self.record_callable_arguments(
                 ctx,
                 (fun.name.span, &formals),

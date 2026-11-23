@@ -105,10 +105,21 @@ structure JsonEffectUse where
   operation : Option String
   deriving FromJson, DecidableEq
 
+structure JsonSnapshotInput where
+  formal : Nat
+  path : List JsonCoordinate
+  replaced : List (List JsonCoordinate)
+  deriving FromJson
+
+def JsonSnapshotInput.contract (input : JsonSnapshotInput) :
+    RilAccess.SnapshotInput JsonCoordinate :=
+  ⟨input.formal, input.path, input.replaced⟩
+
 structure JsonSummary where
   writes : List Nat
   retained : List Nat
   independent_retention : List Nat
+  snapshot_inputs : List JsonSnapshotInput
   return_sources : List JsonSource
   return_allocations : List Json
   effects : List Nat
@@ -140,6 +151,8 @@ def compareSummaries (baseline revision : JsonSummary) : Bool :=
   RilAccess.SummaryOf.subsumesBy (fun _ => false) baseline.formal revision.formal &&
     decide (baseline.return_allocations.map Json.compress = revision.return_allocations.map Json.compress) &&
     revision.independent_retention.all baseline.independent_retention.contains &&
+    RilAccess.snapshotInputsSubsumed (baseline.snapshot_inputs.map JsonSnapshotInput.contract)
+      (revision.snapshot_inputs.map JsonSnapshotInput.contract) &&
     revision.effect_uses.all (fun effect => baseline.effect_uses.any fun old =>
       old.effect == effect.effect && (old.operation.isNone || old.operation == effect.operation)) &&
     RilAccess.callbackInvocationsSubsumed (baseline.invocations.map JsonInvocation.contract)
@@ -216,6 +229,11 @@ def graphCases : List (String × Bool) :=
    ("a_nested_ref_is_readonly_under_writable_layers", canWritePath nestedSources 0 [0, 0, 2]),
    ("a_nested_snapshot_is_readonly_under_writable_layers", canWritePath nestedSources 0 [0, 0, 3]),
    ("a_new_wrapper_cannot_freeze_an_existing_writer", immutableConsistent frozenNestedSources),
+   ("snapshot_of_transferred_new_parameter_checks_call_entry_sources",
+     immutableConsistent transferredBeforeStore),
+   ("a_call_scoped_writer_cannot_be_frozen_by_handoff", immutableConsistent immutableAndWriter),
+   ("conditional_store_keeps_the_original_snapshot_requirement",
+     immutableConsistent transferredBeforeStore && immutableConsistent transferredAfterStore),
    ("a_snapshot_can_freeze_a_completely_new_graph",
      immutableConsistent frozenRoot && !hasWriter frozenRoot 1),
    ("a_member_reached_through_a_ref_cannot_be_received_as_mutable",

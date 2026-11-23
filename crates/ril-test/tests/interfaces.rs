@@ -17,6 +17,83 @@ use ril_sema::{
 use ril_test::{CaseMode, Stage, TestDriver, Unit, VirtualPackage, parse_suite, run_worker};
 
 #[test]
+fn transferred_snapshot_requirements_survive_separate_compilation() {
+    use ril_base::diag::Code;
+    use ril_sema::access::{Coordinate, SnapshotInput};
+
+    let source = br#"
+pub type Cell = .{ var count: int }
+pub type Shelf = .{ var ^mut item: Cell }
+pub fn freeze(via input: Shelf) -> Shelf { let snapshot = new input; snapshot }
+pub fn replace(new input: Shelf) -> Shelf {
+    let mut shelf = new input
+    shelf.item = ^mut Cell.{ count: 42 }
+    let snapshot = new shelf
+    snapshot
+}
+"#;
+    let mut provider = VirtualPackage::new(Unit::Lib);
+    provider.entry = "pkg/snapshot.ril".into();
+    provider.insert(provider.entry.clone(), source.to_vec());
+    let interface = Driver.interface(&provider).unwrap().encode().unwrap();
+    let decoded = Interface::decode(&interface).unwrap();
+    for (name, replaced) in [
+        ("freeze", Vec::new()),
+        ("replace", vec![vec![Coordinate::Field("item".into())]]),
+    ] {
+        let export = &decoded.functions[&format!("pkg/snapshot.ril::{name}")];
+        let expected = [SnapshotInput {
+            formal: 0,
+            path: Vec::new(),
+            replaced,
+        }];
+        assert_eq!(export.summary.snapshot_inputs, expected);
+        for row in &export.domain {
+            assert_eq!(row.summary.snapshot_inputs, expected);
+        }
+    }
+    for (mount, bytes) in [
+        ("library/snapshot.ril", source.as_slice()),
+        ("library/snapshot.rili", interface.as_slice()),
+    ] {
+        for (name, alias, accepted) in [
+            ("freeze", "live", false),
+            ("freeze", "Snapshot::Cell.{ count: 1 }", true),
+            ("replace", "live", true),
+        ] {
+            let client_source = format!(
+                "use library/snapshot
+fn relay(new input: Snapshot::Shelf) -> Snapshot::Shelf {{
+    let transform = Snapshot::{name}
+    transform(new input)
+}}
+fn run() -> int {{
+    let mut live = Snapshot::Cell.{{ count: 1 }}
+    live.count += 1
+    let frozen = relay(new Snapshot::Shelf.{{ item: ^mut {alias} }})
+    live.count += 8
+    frozen.item.count + live.count
+}}"
+            );
+            let mut client = VirtualPackage::new(Unit::Lib);
+            client.insert(mount.into(), bytes.to_vec());
+            client.insert(client.entry.clone(), client_source.into_bytes());
+            if accepted {
+                assert!(Driver.analyze(&client).is_ok(), "{mount} {name} {alias}");
+            } else {
+                let diagnostics = Driver.analyze(&client).err().unwrap();
+                assert_eq!(
+                    diagnostics.len(),
+                    1,
+                    "{mount} {name} {alias}: {diagnostics:?}"
+                );
+                assert_eq!(diagnostics[0].code, Some(Code::E0535));
+            }
+        }
+    }
+}
+
+#[test]
 fn correlated_callback_mode_offers_survive_interface_only_calls() {
     use ril_base::diag::Code;
 
@@ -1353,6 +1430,19 @@ fn exported_summaries_and_via_domains_agree_with_lean() {
             .map(|name| effects.get(name).copied().unwrap())
             .collect();
         let return_sources: Vec<_> = summary.return_sources.iter().map(wire_source).collect();
+        let snapshot_inputs: Vec<_> = summary
+            .snapshot_inputs
+            .iter()
+            .map(|input| {
+                json!({
+                    "formal": input.formal,
+                    "path": input.path.iter().map(wire_coordinate).collect::<Vec<_>>(),
+                    "replaced": input.replaced.iter()
+                        .map(|path| path.iter().map(wire_coordinate).collect::<Vec<_>>())
+                        .collect::<Vec<_>>(),
+                })
+            })
+            .collect();
         let invocations: Vec<_> = summary
             .invocations
             .iter()
@@ -1389,6 +1479,7 @@ fn exported_summaries_and_via_domains_agree_with_lean() {
             "writes": summary.writes,
             "retained": summary.retained,
             "independent_retention": summary.independent_retention,
+            "snapshot_inputs": snapshot_inputs,
             "return_sources": return_sources,
             "return_allocations": summary.return_allocations,
             "effects": effects,
@@ -1690,7 +1781,7 @@ fn provenance_examples_agree_with_lean() -> Result<(), Box<dyn std::error::Error
 
 #[test]
 fn graph_authority_examples_agree_with_lean() -> Result<(), Box<dyn std::error::Error>> {
-    check_access_examples("graph", 18)
+    check_access_examples("graph", 21)
 }
 
 #[test]
