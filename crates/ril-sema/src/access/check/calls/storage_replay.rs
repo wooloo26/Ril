@@ -7,7 +7,10 @@ use super::{
     Analyzer, CallEntry, CallStorage, Context, DeferredStorageCall, InvocationSite, Ledger,
     StorageAction, StorageFlow, StorageTarget, snapshot_invocations::known_provider,
 };
-use crate::access::{Coordinate, check::storage::ReadSite};
+use crate::access::{
+    Coordinate,
+    check::storage::{ReadSite, ReplaySite},
+};
 
 impl Analyzer<'_> {
     pub(super) fn apply_callable_storage(
@@ -133,6 +136,53 @@ impl Analyzer<'_> {
             StorageAction::Invoke(call) => {
                 self.replay_deferred_storage(ctx, storage, entry, after, call)
             }
+            StorageAction::Derive {
+                index,
+                base,
+                updater,
+            } => {
+                let key = (entry.span, ReplaySite::Derive(*index));
+                if !self.replaying_storage.insert(key) {
+                    self.diagnostics.push(Diagnostic {
+                        primary: Some(entry.span),
+                        ..Diagnostic::unsupported("could not stabilize recursive draft updates")
+                    });
+                    return false;
+                }
+                let base = self.instantiate_return(
+                    &storage.formals,
+                    &storage.via,
+                    entry,
+                    base,
+                    &mut Vec::new(),
+                );
+                let updater = self.instantiate_return(
+                    &storage.formals,
+                    &storage.via,
+                    entry,
+                    updater,
+                    &mut Vec::new(),
+                );
+                let forwarded = self.storage_read_index(ReadSite::Forwarded(
+                    entry.span,
+                    entry.invocation.to_vec(),
+                    *index,
+                ));
+                let mut trace = entry.invocation.to_vec();
+                trace.push(InvocationSite {
+                    span: entry.span,
+                    ordinal: *index,
+                });
+                let result = self.derive_storage(
+                    ctx,
+                    after,
+                    (&base, &updater),
+                    (entry.span, &trace, forwarded),
+                );
+                after.sample_storage((entry.span, entry.invocation.to_vec(), *index), result);
+                self.replaying_storage.remove(&key);
+                true
+            }
             StorageAction::Read {
                 index,
                 base,
@@ -181,7 +231,7 @@ impl Analyzer<'_> {
         after: &mut Ledger,
         call: &DeferredStorageCall,
     ) -> bool {
-        let key = (entry.span, call.site);
+        let key = (entry.span, ReplaySite::Callback(call.site));
         if !self.replaying_storage.insert(key) {
             self.diagnostics.push(Diagnostic {
                 primary: Some(entry.span),

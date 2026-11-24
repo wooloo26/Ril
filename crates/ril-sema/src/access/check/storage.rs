@@ -9,8 +9,15 @@ use crate::ty::TypedProgram;
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub(super) enum ReadSite {
     Source(Span, Coordinate),
+    Derive(Span),
     Imported(Span, usize),
     Forwarded(Span, Vec<InvocationSite>, usize),
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub(super) enum ReplaySite {
+    Callback(Span),
+    Derive(usize),
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]

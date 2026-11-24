@@ -965,7 +965,7 @@ impl Datum {
         })
     }
 
-    fn join_draft_results(mut self, mut other: Self) -> Self {
+    pub(super) fn join_draft_results(mut self, mut other: Self) -> Self {
         let fields: BTreeSet<_> = self
             .members
             .keys()
@@ -1562,21 +1562,38 @@ pub(super) struct Ledger {
 }
 
 impl Ledger {
-    pub(super) fn begin_draft(&mut self, span: Span, base: &Datum) -> Datum {
+    pub(super) fn begin_draft(
+        &mut self,
+        (span, invocation): (Span, &[InvocationSite]),
+        base: &Datum,
+    ) -> Datum {
         let working = self.snapshot_for_draft(base);
-        self.drafts.insert(Region::allocation(span), working);
+        let mut region = Region::allocation(span);
+        region.set_invocation(invocation);
+        self.drafts.insert(region.clone(), working);
         let mut cursor = Datum::source(span, Access::Mut, true);
         cursor.transform(&mut |root| {
+            root.region = region.clone();
             root.draft = true;
             root.confined = Some(span);
         });
         cursor
     }
 
-    pub(super) fn finish_draft(&mut self, span: Span) -> Option<Datum> {
-        let mut result = self.drafts.remove(&Region::allocation(span))?;
+    pub(super) fn finish_draft(&mut self, cursor: &Datum) -> Option<Datum> {
+        let mut result = self.drafts.remove(&cursor.roots.first()?.region)?;
         result.freeze();
         Some(result)
+    }
+
+    pub(super) fn has_deferred_draft_access(&self, cursor: &Datum) -> bool {
+        cursor.roots.first().is_some_and(|cursor| {
+            self.storage_flow
+                .iter()
+                .flat_map(StorageFlow::values)
+                .flat_map(Datum::origins)
+                .any(|root| root.draft && root.region.allocation_root() == cursor.region)
+        })
     }
 
     pub(super) fn read_draft(&self, cursor: &Datum) -> Option<Datum> {
@@ -1636,12 +1653,30 @@ impl Ledger {
         for (_, _, argument) in &mut call.arguments {
             self.capture_array_extents(argument);
         }
-        self.invalidate_callback_array_extents(&call);
+        self.invalidate_callback_array_extents(
+            std::iter::once(&call.receiver).chain(call.arguments.iter().map(|(_, _, value)| value)),
+        );
         flow.push(StorageAction::Invoke(call));
         self.storage_flow = Some(flow);
     }
 
-    fn invalidate_callback_array_extents(&mut self, call: &DeferredStorageCall) {
+    pub(super) fn defer_storage_derive(&mut self, index: usize, base: &Datum, updater: &Datum) {
+        let mut flow = self
+            .storage_flow
+            .take()
+            .unwrap_or_else(|| self.storage_prefix());
+        let base = self.snapshot_call_graph(base);
+        let updater = self.snapshot_call_graph(updater);
+        self.invalidate_callback_array_extents(std::iter::once(&updater));
+        flow.push(StorageAction::Derive {
+            index,
+            base,
+            updater,
+        });
+        self.storage_flow = Some(flow);
+    }
+
+    fn invalidate_callback_array_extents<'a>(&mut self, operands: impl Iterator<Item = &'a Datum>) {
         if self.array_extents.is_empty() {
             return;
         }
@@ -1651,14 +1686,13 @@ impl Ledger {
             let owner = self.capture_owner?;
             (update.value.publications.get(&owner) == Some(&true)).then_some(&update.value)
         });
-        let operands = std::iter::once(&call.receiver)
-            .chain(call.arguments.iter().map(|(_, _, argument)| argument))
-            .chain(published);
         let mut exposed = BTreeSet::new();
-        for operand in operands {
+        let mut expose = |operand: &Datum| {
             let graph = self.snapshot(operand);
             exposed.extend(graph.origins().map(|root| root.region.clone()));
-        }
+        };
+        operands.for_each(&mut expose);
+        published.for_each(expose);
         for (array, extent) in &mut self.array_extents {
             if exposed.iter().any(|source| source.overlaps(array)) {
                 // Keep the initialized identity so an older occurrence of

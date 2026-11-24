@@ -38,6 +38,11 @@ pub(in crate::access) enum StorageAction {
         coordinate: Coordinate,
         mode: Mode,
     },
+    Derive {
+        index: usize,
+        base: Datum,
+        updater: Datum,
+    },
 }
 
 /// Ordered transfers to the caller's graph. At a loop backedge or a wide
@@ -172,6 +177,26 @@ impl StorageFlow {
                     return;
                 }
             }
+            StorageAction::Derive {
+                index,
+                base,
+                updater,
+            } => {
+                if let Some((prior_base, prior_updater)) =
+                    actions.iter_mut().find_map(|action| match action {
+                        StorageAction::Derive {
+                            index: prior,
+                            base,
+                            updater,
+                        } if prior == index => Some((base, updater)),
+                        _ => None,
+                    })
+                {
+                    *prior_base = std::mem::take(prior_base).joined(std::mem::take(base));
+                    *prior_updater = std::mem::take(prior_updater).joined(std::mem::take(updater));
+                    return;
+                }
+            }
         }
         actions.push(incoming);
     }
@@ -187,12 +212,16 @@ impl StorageFlow {
             .flatten()
             .chain(actions.into_iter().flatten())
             .flat_map(|action| {
-                let (root, arguments) = match action {
-                    StorageAction::Write(_, update) => (&mut update.value, None),
-                    StorageAction::Invoke(call) => (&mut call.receiver, Some(&mut call.arguments)),
-                    StorageAction::Read { base, .. } => (base, None),
+                let (root, second, arguments) = match action {
+                    StorageAction::Write(_, update) => (&mut update.value, None, None),
+                    StorageAction::Invoke(call) => {
+                        (&mut call.receiver, None, Some(&mut call.arguments))
+                    }
+                    StorageAction::Read { base, .. } => (base, None, None),
+                    StorageAction::Derive { base, updater, .. } => (base, Some(updater), None),
                 };
                 std::iter::once(root)
+                    .chain(second)
                     .chain(arguments.into_iter().flatten().map(|(_, _, value)| value))
             })
     }
@@ -208,12 +237,14 @@ impl StorageFlow {
             .flatten()
             .chain(actions.into_iter().flatten())
             .flat_map(|action| {
-                let (root, arguments) = match action {
-                    StorageAction::Write(_, update) => (&update.value, None),
-                    StorageAction::Invoke(call) => (&call.receiver, Some(&call.arguments)),
-                    StorageAction::Read { base, .. } => (base, None),
+                let (root, second, arguments) = match action {
+                    StorageAction::Write(_, update) => (&update.value, None, None),
+                    StorageAction::Invoke(call) => (&call.receiver, None, Some(&call.arguments)),
+                    StorageAction::Read { base, .. } => (base, None, None),
+                    StorageAction::Derive { base, updater, .. } => (base, Some(updater), None),
                 };
                 std::iter::once(root)
+                    .chain(second)
                     .chain(arguments.into_iter().flatten().map(|(_, _, value)| value))
             })
     }

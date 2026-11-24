@@ -266,7 +266,7 @@ struct Analyzer<'a> {
     recursive_calls: BTreeSet<Span>,
     resolving_callback_results: BTreeSet<usize>,
     resolving_interface_results: BTreeSet<Span>,
-    replaying_storage: BTreeSet<(Span, Span)>,
+    replaying_storage: BTreeSet<(Span, storage::ReplaySite)>,
     storage_read_sites: BTreeMap<storage::ReadSite, usize>,
     functions: Vec<DefinitionCheck>,
     done: BTreeSet<DefinitionId>,

@@ -311,13 +311,7 @@ impl<'program> Analyzer<'program> {
                     "callable requires a writable path",
                 );
             }
-            self.link_invocation(ctx, target);
-            for source in target.root_dependencies() {
-                self.seed(ctx, Obligation::Invoke(source));
-            }
-            for effect in &target.latent_effects {
-                self.effect(ctx, ledger, effect, span);
-            }
+            self.invoke_callable_obligations(ctx, ledger, target, span);
         }
         let syntax = id.and_then(|id| self.function_syntax(id));
         let indirect_template = target.as_ref().is_some_and(|target| {
@@ -1210,6 +1204,22 @@ impl<'program> Analyzer<'program> {
 
     pub(super) fn link_invocation(&mut self, ctx: &Context, target: &Datum) {
         self.link_invocation_if(ctx, target, None);
+    }
+
+    fn invoke_callable_obligations(
+        &mut self,
+        ctx: &Context,
+        ledger: &Ledger,
+        target: &Datum,
+        span: Span,
+    ) {
+        self.link_invocation(ctx, target);
+        for source in target.root_dependencies() {
+            self.seed(ctx, Obligation::Invoke(source));
+        }
+        for effect in &target.latent_effects {
+            self.effect(ctx, ledger, effect, span);
+        }
     }
 
     fn check_capture_overlap(
@@ -2265,6 +2275,27 @@ impl<'program> Analyzer<'program> {
                     *mode = *received;
                 }
             }
+            if *mode == Mode::Mut {
+                for root in &mut argument.roots {
+                    let draft_formal = formals
+                        .iter()
+                        .position(|formal| *formal == Some(root.region.source))
+                        .and_then(|formal| {
+                            entry
+                                .arguments
+                                .iter()
+                                .find(|(position, ..)| *position == formal)
+                        })
+                        .is_some_and(|(_, _, actual)| {
+                            actual.roots.iter().any(|origin| origin.draft)
+                        });
+                    if draft_formal {
+                        // A mutable argument selects the draft path. A read
+                        // of the same field may have sampled its data value.
+                        root.storage_read = None;
+                    }
+                }
+            }
             *argument = self.instantiate_return(formals, via, entry, argument, &mut Vec::new());
             if matches!(mode, Mode::Ref | Mode::Shared) {
                 for root in &mut argument.roots {
@@ -2768,16 +2799,19 @@ impl<'program> Analyzer<'program> {
             }
             "derive" => {
                 if let Some((_, _, callback)) = args.iter().find(|(i, _, _)| *i == 1) {
-                    self.link_invocation(ctx, callback);
-                    for effect in &callback.latent_effects {
-                        self.effect(ctx, ledger, effect, span);
-                    }
+                    self.invoke_callable_obligations(ctx, ledger, callback, span);
                     if let Some(base) = first
                         && ctx.runtime
                         && ctx.reachable
                         && !ctx.shadow
                     {
-                        return self.derive_storage(ctx, ledger, base, callback, span);
+                        let index = self.storage_read_index(super::storage::ReadSite::Derive(span));
+                        return self.derive_storage(
+                            ctx,
+                            ledger,
+                            (base, callback),
+                            (span, &[], index),
+                        );
                     }
                 }
             }

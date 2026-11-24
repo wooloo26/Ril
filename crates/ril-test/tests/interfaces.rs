@@ -988,6 +988,7 @@ pub type Shelf = .{ ^mut item: Cell }
 pub type Action = fn(new Shelf) -> int
 pub type Pair = .{ left: []Action, right: []Action }
 pub type Update = fn(mut Draft<Pair>) &mut -> ()
+pub type EditItems = fn(mut []Action) &mut -> ()
 pub type Slot = .{ var action: Action }
 pub type StateUpdate = fn(mut Draft<[]int>) &mut &up -> ()
 pub fn count(new shelf: Shelf) -> int { shelf.item.count }
@@ -995,6 +996,31 @@ fn freeze(new shelf: Shelf) -> int { let fixed = new shelf; fixed.item.count }
 pub fn extend(mut draft: Draft<Pair>) &mut -> () {
     Array::push(mut draft.left, count)
     Array::push(mut draft.left, freeze)
+}
+pub fn extend_safe(mut draft: Draft<Pair>) &mut -> () {
+    Array::push(mut draft.left, count)
+}
+pub fn forward(base: Pair, edit: Update) -> Pair { derive(base, edit) }
+pub fn twice(base: Pair, first: Update, second: Update) -> Pair {
+    forward(forward(base, first), second)
+}
+fn update_draft(mut draft: Draft<Pair>, edit: Update) &mut -> () { edit(mut draft) }
+pub fn forward_inside(base: Pair, edit: Update) -> Pair {
+    derive(base) \mut draft -> {
+        Array::push(mut draft.left, count)
+        update_draft(mut draft, edit)
+    }
+}
+pub fn append_freeze(mut items: []Action) &mut -> () { Array::push(mut items, freeze) }
+fn update_items(mut draft: Draft<Pair>, edit: EditItems) &mut -> () {
+    Array::push(mut draft.left, count)
+    edit(mut draft.left)
+}
+pub fn forward_items(base: Pair, edit: EditItems) -> Pair {
+    derive(base) \mut draft -> { update_items(mut draft, edit) }
+}
+pub fn forwarder() -> fn(Pair, Update) -> Pair {
+    \base: Pair, edit: Update -> derive(base, edit)
 }
 pub fn updater(first: Action) &capture &return(first) -> new Update {
     \mut draft: Draft<Pair> -> { Array::push(mut draft.left, first); Array::push(mut draft.left, freeze) }
@@ -1012,6 +1038,9 @@ pub fn edit_slot(mut slot: Slot, action: Action) &mut -> []int {
 pub fn edit_through(mut slot: Slot, edit: fn(mut Slot) &mut -> ()) &mut -> []int {
     derive([1]) \mut draft -> { Array::push(mut draft, 2); edit(mut slot) }
 }
+pub fn forward_state(base: []int, edit: StateUpdate) -> []int {
+    derive(base, edit)
+}
 "#;
     let mut library = VirtualPackage::new(Unit::Lib);
     library.entry = "pkg/updates.ril".into();
@@ -1026,6 +1055,9 @@ use library/updates
 pub fn updater(first: Updates::Action) &capture &return(first) -> new Updates::Update {
     Updates::updater(first)
 }
+pub fn forward(base: Updates::Pair, edit: Updates::Update) -> Updates::Pair {
+    Updates::forward(base, edit)
+}
 pub fn slot_updater(^mut slot: Updates::Slot, action: Updates::Action) &capture &^mut &return(^mut slot, action) -> new Updates::StateUpdate {
     Updates::slot_updater(^mut slot, action)
 }
@@ -1038,13 +1070,28 @@ pub fn slot_updater(^mut slot: Updates::Slot, action: Updates::Action) &capture 
         ("library/updates.ril", source.as_slice()),
         ("library/updates.rili", interface.as_slice()),
     ] {
-        for update in [
-            "derive(base, Updates::extend)",
-            "derive(base, Updates::updater(Updates::count))",
-            "derive(base, Forwarding::updater(Updates::count))",
-            "Updates::finished()",
+        for (update, frozen) in [
+            ("derive(base, Updates::extend)", "left[2]"),
+            ("derive(base, Updates::updater(Updates::count))", "left[2]"),
+            (
+                "derive(base, Forwarding::updater(Updates::count))",
+                "left[2]",
+            ),
+            ("Updates::finished()", "left[2]"),
+            ("Updates::forward(base, Updates::extend)", "left[2]"),
+            ("Forwarding::forward(base, Updates::extend)", "left[2]"),
+            ("Updates::forwarder()(base, Updates::extend)", "left[2]"),
+            ("Updates::forward_inside(base, Updates::extend)", "left[3]"),
+            (
+                "Updates::forward_items(base, Updates::append_freeze)",
+                "left[2]",
+            ),
+            (
+                "Updates::twice(base, Updates::extend_safe, Updates::extend)",
+                "left[3]",
+            ),
         ] {
-            for (target, freezes) in [("left[1]", false), ("left[2]", true), ("right[0]", false)] {
+            for (target, freezes) in [("left[1]", false), (frozen, true), ("right[0]", false)] {
                 let source = format!(
                     "use library/updates
 use relay/forwarding
@@ -1087,6 +1134,7 @@ fn observe() -> int {{
             "derive([1], Forwarding::slot_updater(^mut slot, {action}))",
             "Updates::edit_slot(mut slot, {action})",
             "Updates::edit_through(mut slot, \\mut target: Updates::Slot -> { target.action = {action} })",
+            "Updates::forward_state([1], Updates::slot_updater(^mut slot, {action}))",
         ] {
             for (initial, action, freezes) in [
                 ("freeze", "Updates::count", false),
@@ -2668,6 +2716,17 @@ fn exported_summaries_and_via_domains_agree_with_lean() {
                 "shape": [json!(parent), json!(member)],
                 "value": wire_storage_operand(value),
                 "definite": definite,
+            }
+        }),
+        StorageStep::Derive {
+            index,
+            base,
+            updater,
+        } => json!({
+            "derivation": {
+                "index": index,
+                "base": wire_storage_operand(base),
+                "updater": wire_storage_operand(updater),
             }
         }),
     };

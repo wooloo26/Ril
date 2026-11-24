@@ -236,6 +236,11 @@ pub enum StorageStep {
         coordinate: Coordinate,
         mode: Option<Input>,
     },
+    Derive {
+        index: usize,
+        base: CallbackArgument,
+        updater: CallbackArgument,
+    },
 }
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]

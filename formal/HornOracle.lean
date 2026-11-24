@@ -138,11 +138,18 @@ structure JsonStorageObservedWrite where
   definite : Bool
   deriving FromJson
 
+structure JsonStorageDerivation where
+  index : Nat
+  base : JsonStorageOperand
+  updater : JsonStorageOperand
+  deriving FromJson
+
 structure JsonStorageStep where
   write : Option JsonStorageUpdate
   invoke : Option JsonStorageInvocation
   read : Option JsonStorageRead
   write_observed : Option JsonStorageObservedWrite
+  derivation : Option JsonStorageDerivation
   deriving FromJson
 
 structure JsonStorageFlow where
@@ -244,10 +251,13 @@ def storageStepSubsumed (pairs : ProviderPairs) (old new : JsonStorageStep) : Bo
   | none, none, none, none, some left, some right =>
       left.shape.compress == right.shape.compress && storageOperandSubsumed pairs left.base right.base
   | none, none, none, none, none, none =>
-      match old.write_observed, new.write_observed with
-      | some left, some right => left.shape.compress == right.shape.compress &&
+      match old.write_observed, new.write_observed, old.derivation, new.derivation with
+      | some left, some right, _, _ => left.shape.compress == right.shape.compress &&
           (!left.definite || right.definite) && storageOperandSubsumed pairs left.value right.value
-      | _, _ => false
+      | none, none, some left, some right => left.index == right.index &&
+          storageOperandSubsumed pairs left.base right.base &&
+          storageOperandSubsumed pairs left.updater right.updater
+      | _, _, _, _ => false
   | _, _, _, _, _, _ => false
 
 def storageFlowsSubsumed (pairs : ProviderPairs) (old new : Option JsonStorageFlow) : Bool :=

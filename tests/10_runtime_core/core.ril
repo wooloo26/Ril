@@ -187,6 +187,32 @@ fn main() -> () {
     assert(holder.slot.action(new Shelf.{ item: ^mut live }) == 42)
 }
 
+-- @case forwarded_drafts_sample_the_committed_graph run-pass backend=both
+type Cell = .{ var count: int }
+type Shelf = .{ ^mut item: Cell }
+type Action = fn(new Shelf) -> int
+type Update = fn(mut Draft<[]Action>) &mut -> ()
+fn count(new shelf: Shelf) -> int { shelf.item.count }
+fn freeze(new shelf: Shelf) -> int { let fixed = new shelf; fixed.item.count + 100 }
+fn append_count(mut draft: Draft<[]Action>) &mut -> () { Array::push(mut draft, count) }
+fn append_freeze(mut draft: Draft<[]Action>) &mut -> () { Array::push(mut draft, freeze) }
+fn forward(base: []Action, edit: Update) -> []Action { derive(base, edit) }
+fn inspect(base: []Action, edit: Update, new input: Shelf) -> int {
+    forward(base, edit)[1](new input)
+}
+fn main() -> () {
+    let mut live = Cell.{ count: 41 }
+    live.count += 1
+    let base = [count]
+    let first = forward(base, append_count)
+    let second = forward(first, append_freeze)
+    assert(len(base) == 1 && len(first) == 2 && len(second) == 3)
+    assert(second[0](new Shelf.{ item: ^mut live }) == 42)
+    assert(second[1](new Shelf.{ item: ^mut live }) == 42)
+    assert(second[2](new Shelf.{ item: ^mut Cell.{ count: 3 } }) == 103)
+    assert(inspect(base, append_count, new Shelf.{ item: ^mut live }) == 42)
+}
+
 -- @case derive_updates_captured_fields_and_bindings run-pass backend=both
 type Cell = .{ var count: int }
 type Shelf = .{ ^mut item: Cell }

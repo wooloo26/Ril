@@ -145,6 +145,22 @@ fn storage_flows_subsume(
                 && left_mode == right_mode
                 && callback_operand_subsumes(left, right, pairs)
         }
+        (
+            StorageStep::Derive {
+                index: left_index,
+                base: left_base,
+                updater: left_updater,
+            },
+            StorageStep::Derive {
+                index: right_index,
+                base: right_base,
+                updater: right_updater,
+            },
+        ) => {
+            left_index == right_index
+                && callback_operand_subsumes(left_base, right_base, pairs)
+                && callback_operand_subsumes(left_updater, right_updater, pairs)
+        }
         _ => false,
     };
     match (old, new) {
