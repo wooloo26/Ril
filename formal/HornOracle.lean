@@ -127,9 +127,15 @@ structure JsonStorageInvocation where
   arguments : List JsonStorageOperand
   deriving FromJson
 
+structure JsonStorageRead where
+  shape : Json
+  base : JsonStorageOperand
+  deriving FromJson
+
 structure JsonStorageStep where
   write : Option JsonStorageUpdate
   invoke : Option JsonStorageInvocation
+  read : Option JsonStorageRead
   deriving FromJson
 
 structure JsonStorageFlow where
@@ -222,13 +228,15 @@ def storageOperandSubsumed (pairs : ProviderPairs) (old new : JsonStorageOperand
       snapshotCallbackReturnsSubsumed pairs [left] [right]
 
 def storageStepSubsumed (pairs : ProviderPairs) (old new : JsonStorageStep) : Bool :=
-  match old.write, new.write, old.invoke, new.invoke with
-  | some left, some right, _, _ => snapshotStorageUpdatesSubsumed pairs [left] [right]
-  | none, none, some left, some right =>
+  match old.write, new.write, old.invoke, new.invoke, old.read, new.read with
+  | some left, some right, _, _, _, _ => snapshotStorageUpdatesSubsumed pairs [left] [right]
+  | none, none, some left, some right, _, _ =>
       storageOperandSubsumed pairs left.receiver right.receiver &&
       left.arguments.length == right.arguments.length &&
       (left.arguments.zip right.arguments).all fun (left, right) => storageOperandSubsumed pairs left right
-  | _, _, _, _ => false
+  | none, none, none, none, some left, some right =>
+      left.shape.compress == right.shape.compress && storageOperandSubsumed pairs left.base right.base
+  | _, _, _, _, _, _ => false
 
 def storageFlowsSubsumed (pairs : ProviderPairs) (old new : Option JsonStorageFlow) : Bool :=
   match old, new with

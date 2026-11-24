@@ -111,6 +111,42 @@ fn main() -> () {
     assert(live.count == 43)
 }
 
+-- @case callback_reads_capture_the_value_at_the_read run-pass backend=both
+type Cell = .{ var count: int }
+type Shelf = .{ ^mut item: Cell }
+type Action = fn(new Shelf) -> int
+type Slot = .{ var action: Action }
+fn freeze(new shelf: Shelf) -> int { let fixed = new shelf; fixed.item.count + 100 }
+fn count(new shelf: Shelf) -> int { shelf.item.count }
+fn install(mut slot: Slot) &mut -> () { slot.action = freeze }
+fn clear(mut slot: Slot) &mut -> () { slot.action = count }
+fn read_before(mut slot: Slot, write: fn(mut Slot) &mut -> ()) &mut -> Action {
+    let saved = slot.action
+    write(mut slot)
+    saved
+}
+fn read_between(mut slot: Slot, write: fn(mut Slot) &mut -> ()) &mut -> Action {
+    write(mut slot)
+    let saved = slot.action
+    slot.action = count
+    saved
+}
+fn invoke_after(mut slot: Slot, write: fn(mut Slot) &mut -> (), new shelf: Shelf) &mut -> int {
+    write(mut slot)
+    slot.action(new shelf)
+}
+fn main() -> () {
+    let mut slot = Slot.{ action: count }
+    let before = read_before(mut slot, install)
+    let mut live = Cell.{ count: 41 }
+    live.count += 1
+    assert(before(new Shelf.{ item: ^mut live }) == 42)
+    let during = read_between(mut slot, install)
+    assert(during(new Shelf.{ item: ^mut Cell.{ count: 2 } }) == 102)
+    assert(invoke_after(mut slot, install, new Shelf.{ item: ^mut Cell.{ count: 3 } }) == 103)
+    assert(invoke_after(mut slot, clear, new Shelf.{ item: ^mut live }) == 42)
+}
+
 -- @case aliased_shared_formals_preserve_identity_through_a_nested_borrow run-pass backend=both
 type Cell = .{ var count: int }
 type Pair = .{ ^mut left: Cell, ^mut right: Cell }

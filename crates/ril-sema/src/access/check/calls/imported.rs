@@ -304,6 +304,11 @@ impl<'program> Analyzer<'program> {
             }
             ledger.no_continuation |= summary.nonreturning || self.ty(span) == &Ty::Never;
         }
+        let observed = frozen.with_storage_samples(ledger);
+        let entry = CallEntry {
+            ledger: &observed,
+            ..entry
+        };
         self.imported_result(
             function.name.span,
             &formals,
@@ -558,7 +563,14 @@ impl<'program> Analyzer<'program> {
         }
         for projection in projections {
             let node = self.exported_path(&mut value, &projection.path, ty, owner, implicit);
-            self.restore_snapshot_projection(owner, formals, node, projection);
+            let preserve_unobserved = projection.observation.is_some()
+                && projections.iter().any(|other| {
+                    other.observation.is_none()
+                        && other.path == projection.path
+                        && other.origin.source == projection.origin.source
+                        && other.allocation == projection.allocation
+                });
+            self.restore_snapshot_projection(owner, formals, node, projection, preserve_unobserved);
         }
         if value.roots.is_empty() && !projections.is_empty() && !value.members.is_empty() {
             value.roots = Datum::source(owner, Access::Immutable, false).roots;

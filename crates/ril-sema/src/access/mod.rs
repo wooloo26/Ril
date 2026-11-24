@@ -224,6 +224,18 @@ pub enum StorageStep {
         receiver: CallbackArgument,
         arguments: Vec<CallbackArgument>,
     },
+    Read {
+        index: usize,
+        base: CallbackArgument,
+        coordinate: Coordinate,
+        mode: Option<Input>,
+    },
+}
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+pub struct StorageObservation {
+    pub index: usize,
+    pub path: Vec<Coordinate>,
 }
 
 /// A source of callable provenance carried by a result or a stored value.
@@ -234,6 +246,8 @@ pub struct SnapshotProjection {
     pub qualified: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub allocation: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observation: Option<StorageObservation>,
 }
 
 impl SnapshotInput {

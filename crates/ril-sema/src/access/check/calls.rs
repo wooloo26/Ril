@@ -264,7 +264,7 @@ impl<'program> Analyzer<'program> {
         let aliases: BTreeMap<_, _> = target
             .iter()
             .flat_map(|target| &target.roots)
-            .filter(|root| root.region.selection.is_empty())
+            .filter(|root| root.region.selection.is_empty() && root.storage_read.is_none())
             .filter_map(|root| {
                 let owner = root.region.source;
                 let id = self.definition(owner)?;
@@ -288,7 +288,8 @@ impl<'program> Analyzer<'program> {
             && target.as_ref().is_some_and(|target| {
                 target.roots.iter().all(|root| {
                     Self::known_closure(&closures, root).is_some()
-                        || root.region.selection.is_empty()
+                        || root.storage_read.is_none()
+                            && root.region.selection.is_empty()
                             && aliases.contains_key(&root.region.source)
                 })
             });
@@ -730,6 +731,14 @@ impl<'program> Analyzer<'program> {
                 receiver
                     .roots
                     .retain(|root| Self::known_closure(&closures, root).is_some());
+                let after = self
+                    .closure_storage(ctx, &closures, &receiver, &entry, false)
+                    .unwrap_or_else(|| before.clone());
+                let observed = before.with_storage_samples(&after);
+                let entry = CallEntry {
+                    ledger: &observed,
+                    ..entry
+                };
                 let mut result = self
                     .callback_return(&receiver, &entry)
                     .unwrap_or_else(|| self.snapshot_value(span));
@@ -743,10 +752,7 @@ impl<'program> Analyzer<'program> {
                     }
                 }
                 outputs.push(result);
-                alternatives.push(
-                    self.closure_storage(ctx, &closures, &receiver, &entry, false)
-                        .unwrap_or_else(|| before.clone()),
-                );
+                alternatives.push(after);
             }
             ledger.merge(&before, &alternatives);
             return outputs
@@ -773,12 +779,19 @@ impl<'program> Analyzer<'program> {
                             .state
                             .iter()
                             .any(|state| matches!(state.as_str(), "mut" | "^mut" | "up"))
-                }),
+                }) || receiver
+                    .roots
+                    .iter()
+                    .any(|root| root.storage_read.is_some()),
             )
         } else {
             None
         }
-        .map(|after| std::mem::replace(ledger, after));
+        .map(|after| {
+            std::mem::replace(ledger, after)
+                .with_storage_samples(ledger)
+                .into_owned()
+        });
         if (has_via_closures || carries_callable)
             && all_closures_known
             && let Some(target) = &target
@@ -959,7 +972,7 @@ impl<'program> Analyzer<'program> {
                         ledger,
                         false,
                     );
-                    before_updates = Some(frozen);
+                    before_updates = Some(frozen.with_storage_samples(ledger).into_owned());
                 }
             }
         }
@@ -1660,7 +1673,8 @@ impl<'program> Analyzer<'program> {
                 .capture_paths
                 .keys()
                 .any(|path| path.owner == ctx.owner)
-            || root.callback_result.is_some())
+            || root.callback_result.is_some()
+            || root.storage_read.is_some())
         {
             return;
         }
@@ -1803,7 +1817,10 @@ impl<'program> Analyzer<'program> {
     ) -> Datum {
         let mut captured = None;
         if let Some(environment) = entry.environment
-            && !template.roots.iter().any(|root| root.detached_snapshot)
+            && !template
+                .roots
+                .iter()
+                .any(|root| root.detached_snapshot || root.storage_read.is_some())
         {
             for (path, &definite) in &template.capture_paths {
                 if path.owner != environment.owner {
@@ -1833,10 +1850,37 @@ impl<'program> Analyzer<'program> {
                 }
             }
         }
+        let mut sampled = 0;
         let mut output = template
             .roots
             .iter()
             .filter_map(|origin| {
+                if let Some(read) = &origin.storage_read {
+                    if let Some(value) =
+                        entry
+                            .ledger
+                            .sampled_storage((entry.span, entry.invocation, read.index))
+                    {
+                        let mut value = value.clone();
+                        for coordinate in &read.path {
+                            value = entry
+                                .ledger
+                                .project(&value, coordinate.clone(), Access::Mut);
+                        }
+                        value.transform(&mut |projected| {
+                            projected.fix_mode(origin.mode.project(projected.mode));
+                            projected.new &= origin.new;
+                        });
+                        value.requires_new &= template.requires_new;
+                        sampled += 1;
+                        return Some(value);
+                    }
+                    return Some(Datum {
+                        roots: vec![origin.clone()],
+                        requires_new: template.requires_new,
+                        ..Datum::default()
+                    });
+                }
                 if let Some(result) = origin.callback_result
                     && self.resolving_callback_results.insert(result.template)
                 {
@@ -1963,12 +2007,19 @@ impl<'program> Analyzer<'program> {
             })
             .reduce(Datum::joined)
             .unwrap_or_default();
-        for (coordinate, member) in &template.members {
-            output_path.push(coordinate.clone());
-            let specialized =
-                self.instantiate_return(formals, via_formals, entry, member, output_path);
-            output_path.pop();
-            output.members.insert(coordinate.clone(), specialized);
+        if sampled == 0 || sampled != template.roots.len() {
+            for (coordinate, member) in &template.members {
+                output_path.push(coordinate.clone());
+                let specialized =
+                    self.instantiate_return(formals, via_formals, entry, member, output_path);
+                output_path.pop();
+                let slot = output.members.entry(coordinate.clone()).or_default();
+                *slot = if sampled == 0 {
+                    specialized
+                } else {
+                    std::mem::take(slot).joined(specialized)
+                };
+            }
         }
         output.array_len = template.array_len;
         output

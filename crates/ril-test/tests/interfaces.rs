@@ -333,6 +333,7 @@ pub type Leaf = fn(new Shelf) -> int
 pub type Slot = .{ var action: Leaf }
 pub type Frame = .{ var action: Leaf, stamp: int }
 pub type Writer = fn() &up -> ()
+pub type ReadAfter = fn(mut Slot, fn(mut Slot) &mut -> ()) &mut -> Leaf
 pub type Controls = .{ ^mut select: Writer, ^mut store: Writer }
 fn freeze(new shelf: Shelf) -> int { let fixed = new shelf; fixed.item.count }
 fn count(new shelf: Shelf) -> int { shelf.item.count }
@@ -368,6 +369,52 @@ pub fn reset_then_install(mut slot: Slot, install: fn(mut Slot) &mut -> ()) &mut
     slot.action = count
     install(mut slot)
 }
+pub fn read_after(mut slot: Slot, install: fn(mut Slot) &mut -> ()) &mut -> Leaf {
+    install(mut slot)
+    slot.action
+}
+pub fn invoke_after(mut slot: Slot, install: fn(mut Slot) &mut -> (), new input: Shelf) &mut -> int {
+    install(mut slot)
+    slot.action(new input)
+}
+pub fn read_before(mut slot: Slot, install: fn(mut Slot) &mut -> ()) &mut -> Leaf {
+    let saved = slot.action
+    install(mut slot)
+    saved
+}
+pub fn read_between(mut slot: Slot, install: fn(mut Slot) &mut -> ()) &mut -> Leaf {
+    install(mut slot)
+    let saved = slot.action
+    slot.action = count
+    saved
+}
+pub fn destructure_after(mut slot: Slot, install: fn(mut Slot) &mut -> ()) &mut -> Leaf {
+    install(mut slot)
+    let Slot.{ action } = slot
+    action
+}
+pub fn read_either(mut slot: Slot, install: fn(mut Slot) &mut -> (), flag: bool) &mut -> Leaf {
+    let saved = slot.action
+    install(mut slot)
+    if flag { saved } else { slot.action }
+}
+pub fn array_after(mut actions: []Leaf, install: fn(mut []Leaf) &mut -> ()) &mut -> Leaf {
+    install(mut actions)
+    actions[1]
+}
+pub fn slice_after(mut actions: []Leaf, install: fn(mut []Leaf) &mut -> ()) &mut -> Leaf {
+    install(mut actions)
+    let selected = actions[1..2]
+    selected[0]
+}
+pub fn rest_after(mut actions: []Leaf, install: fn(mut []Leaf) &mut -> ()) &mut -> Leaf {
+    install(mut actions)
+    let [_, ..selected] = actions else { panic("missing first") }
+    selected[0]
+}
+pub fn make_reader() -> ReadAfter {
+    \mut slot: Slot, install: fn(mut Slot) &mut -> () -> { install(mut slot); slot.action }
+}
 pub fn copy_to(^mut slot: Slot, action: Leaf) &capture &^mut &return(^mut slot, action) -> new Writer {
     \-> { slot.action = action }
 }
@@ -395,6 +442,9 @@ pub fn read_frame(base: Frame) -> Frame { derive(base) \mut d -> { d.action = co
     let wrapper = br#"
 use library/snapshot
 pub fn invoke(mut action: Snapshot::Writer) &mut -> () { Snapshot::invoke(mut action) }
+pub fn read_after(mut slot: Snapshot::Slot, install: fn(mut Snapshot::Slot) &mut -> ()) &mut -> Snapshot::Leaf {
+    Snapshot::read_after(mut slot, install)
+}
 pub fn appender(^mut actions: []Snapshot::Leaf) &capture &^mut &return(^mut actions) -> new Snapshot::Writer {
     Snapshot::appender(^mut actions)
 }
@@ -467,6 +517,62 @@ pub fn controls(^mut slot: Snapshot::Slot, initial: Snapshot::Leaf, next: Snapsh
                 true,
             ),
             (
+                "{ let mut slot = Snapshot::Slot.{ action: count }; Snapshot::read_after(mut slot, install) }",
+                true,
+            ),
+            (
+                "{ let mut slot = Snapshot::Slot.{ action: freeze }; Snapshot::read_after(mut slot, clear) }",
+                false,
+            ),
+            (
+                "\\new input: Snapshot::Shelf -> { let mut slot = Snapshot::Slot.{ action: count }; Snapshot::invoke_after(mut slot, install, new input) }",
+                true,
+            ),
+            (
+                "\\new input: Snapshot::Shelf -> { let mut slot = Snapshot::Slot.{ action: freeze }; Snapshot::invoke_after(mut slot, clear, new input) }",
+                false,
+            ),
+            (
+                "{ let mut slot = Snapshot::Slot.{ action: count }; Snapshot::read_before(mut slot, install) }",
+                false,
+            ),
+            (
+                "{ let mut slot = Snapshot::Slot.{ action: count }; Snapshot::read_between(mut slot, install) }",
+                true,
+            ),
+            (
+                "{ let mut slot = Snapshot::Slot.{ action: count }; Snapshot::destructure_after(mut slot, install) }",
+                true,
+            ),
+            (
+                "{ let mut slot = Snapshot::Slot.{ action: freeze }; Snapshot::read_either(mut slot, clear, true) }",
+                true,
+            ),
+            (
+                "{ let mut slot = Snapshot::Slot.{ action: count }; Forwarding::read_after(mut slot, install) }",
+                true,
+            ),
+            (
+                "{ let mut slot = Snapshot::Slot.{ action: freeze }; Forwarding::read_after(mut slot, clear) }",
+                false,
+            ),
+            (
+                "{ let mut slot = Snapshot::Slot.{ action: count }; Snapshot::make_reader()(mut slot, install) }",
+                true,
+            ),
+            (
+                "{ let mut actions = [count]; Snapshot::array_after(mut actions, Snapshot::append) }",
+                true,
+            ),
+            (
+                "{ let mut actions = [count]; Snapshot::slice_after(mut actions, Snapshot::append) }",
+                true,
+            ),
+            (
+                "{ let mut actions = [count]; Snapshot::rest_after(mut actions, Snapshot::append) }",
+                true,
+            ),
+            (
                 "{ let mut slot = Snapshot::Slot.{ action: freeze }; let ^mut store = Forwarding::copy_to(^mut slot, count); store(); slot.action }",
                 false,
             ),
@@ -528,6 +634,7 @@ fn count(new shelf: Snapshot::Shelf) -> int {{ shelf.item.count }}
 fn make() -> Snapshot::Leaf {{ freeze }}
 fn keep(action: Snapshot::Leaf) -> Snapshot::Leaf {{ action }}
 fn install(mut slot: Snapshot::Slot) &mut -> () {{ slot.action = freeze }}
+fn clear(mut slot: Snapshot::Slot) &mut -> () {{ slot.action = count }}
 fn observe() -> int {{
     let mut live = Snapshot::Cell.{{ count: 1 }}
     live.count += 1
@@ -1989,7 +2096,7 @@ fn exported_summaries_and_via_domains_agree_with_lean() {
     }
     fn wire_projection(projection: &SnapshotProjection) -> Value {
         json!({
-            "shape": [&json!(projection.path), &json!(projection.qualified), &json!(projection.allocation)],
+            "shape": [&json!(projection.path), &json!(projection.qualified), &json!(projection.allocation), &json!(projection.observation)],
             "origin": wire_snapshot_origin(&projection.origin),
         })
     }
@@ -2075,13 +2182,24 @@ fn exported_summaries_and_via_domains_agree_with_lean() {
         })
     };
     let wire_storage_step = |step: &StorageStep| match step {
-        StorageStep::Write(update) => json!({"write": wire_storage_update(update), "invoke": null}),
+        StorageStep::Write(update) => {
+            json!({"write": wire_storage_update(update), "invoke": null, "read": null})
+        }
         StorageStep::Invoke {
             receiver,
             arguments,
-        } => json!({"write": null, "invoke": {
+        } => json!({"write": null, "read": null, "invoke": {
             "receiver": wire_storage_operand(receiver),
             "arguments": arguments.iter().map(wire_storage_operand).collect::<Vec<_>>(),
+        }}),
+        StorageStep::Read {
+            index,
+            base,
+            coordinate,
+            mode,
+        } => json!({"write": null, "invoke": null, "read": {
+            "shape": [json!(index), json!(coordinate), json!(mode)],
+            "base": wire_storage_operand(base),
         }}),
     };
     let wire_storage_flow = |flow: &StorageTransfer| match flow {

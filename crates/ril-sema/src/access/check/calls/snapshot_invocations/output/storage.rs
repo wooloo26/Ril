@@ -1,17 +1,47 @@
 use std::collections::BTreeMap;
 
 use super::{
-    Analyzer, Datum, ProviderReferences, PublishedValue, Span, Ty, normalize_capture_sources,
-    visit_callback_projections,
+    Analyzer, Datum, ProviderReferences, PublishedValue, Span, Summary, Ty,
+    normalize_capture_sources, visit_callback_projections,
 };
+use crate::access::check::storage::ReadSite;
 use crate::access::{
-    CallbackArgument, InvocationMode, SnapshotProjection, StorageStep, StorageTransfer,
+    CallbackArgument, Input, InvocationMode, SnapshotProjection, StorageStep, StorageTransfer,
     StorageUpdate,
     flow::{DeferredStorageCall, Region, Replacement, StorageAction, StorageFlow},
 };
 use ril_frontend::syntax::Mode;
 
 impl Analyzer<'_> {
+    pub(in crate::access::check::calls::snapshot_invocations) fn register_storage_observations(
+        &mut self,
+        owner: Span,
+        summary: &Summary,
+    ) {
+        for flow in summary.storage_flow.iter().chain(
+            summary
+                .snapshot_providers
+                .iter()
+                .filter_map(|provider| provider.storage_flow.as_ref()),
+        ) {
+            let paths = match flow {
+                StorageTransfer::Paths(paths) => paths.as_slice(),
+                StorageTransfer::Interleaved(steps) => std::slice::from_ref(steps),
+            };
+            for step in paths.iter().flatten() {
+                if let StorageStep::Read { index, .. } = step {
+                    self.storage_read_index(ReadSite::Imported(owner, *index));
+                }
+            }
+        }
+    }
+
+    pub(super) fn imported_storage_observation(&self, owner: Span, index: usize) -> Option<usize> {
+        self.storage_read_sites
+            .get(&ReadSite::Imported(owner, index))
+            .copied()
+    }
+
     pub(in crate::access::check::calls::snapshot_invocations) fn publish_provider_flow(
         &self,
         owner: Span,
@@ -29,6 +59,12 @@ impl Analyzer<'_> {
         }
         let imported = self.snapshot_providers.imported_storage.get(&owner)?;
         let mut flow = imported.flow.clone()?;
+        visit_reads(&mut flow, &mut |index| {
+            let local = self
+                .imported_storage_observation(imported.owner, *index)
+                .unwrap_or(*index);
+            *index = references.rebase_observation(local);
+        });
         visit_projections(&mut flow, &mut |projections| {
             self.globalize_projections(imported.owner, projections);
             references.rebase_projections(projections);
@@ -75,6 +111,17 @@ impl Analyzer<'_> {
                     .map(|(position, mode, value)| operand(*position, *mode, value.clone()))
                     .collect(),
             }),
+            StorageAction::Read {
+                index,
+                base,
+                coordinate,
+                mode,
+            } => Some(StorageStep::Read {
+                index: *index,
+                base: operand(0, Mode::Via, base.clone()),
+                coordinate: coordinate.clone(),
+                mode: Input::from_mode(*mode),
+            }),
         };
         let mut contract = match flow {
             StorageFlow::Paths(paths) => StorageTransfer::Paths(
@@ -87,6 +134,9 @@ impl Analyzer<'_> {
                 StorageTransfer::Interleaved(actions.iter().filter_map(describe).collect())
             }
         };
+        visit_reads(&mut contract, &mut |index| {
+            *index = references.rebase_observation(*index);
+        });
         visit_projections(&mut contract, &mut |projections| {
             references.rebase_projections(projections);
         });
@@ -137,6 +187,17 @@ impl Analyzer<'_> {
                         arguments,
                     }))
                 }
+                StorageStep::Read {
+                    index,
+                    base,
+                    coordinate,
+                    mode,
+                } => Some(StorageAction::Read {
+                    index: self.imported_storage_observation(owner, *index)?,
+                    base: self.decode_storage_operand(owner, formals, base),
+                    coordinate: coordinate.clone(),
+                    mode: mode.map_or(Mode::Via, Input::mode),
+                }),
             }
         };
         match contract {
@@ -225,6 +286,22 @@ fn visit_projections(
                     visit_callback_projections(&mut argument.callback_returns, visit);
                 }
             }
+            StorageStep::Read { base, .. } => {
+                visit(&mut base.snapshot_projections);
+                visit_callback_projections(&mut base.callback_returns, visit);
+            }
+        }
+    }
+}
+
+fn visit_reads(flow: &mut StorageTransfer, visit: &mut impl FnMut(&mut usize)) {
+    let paths = match flow {
+        StorageTransfer::Paths(paths) => paths.as_mut_slice(),
+        StorageTransfer::Interleaved(steps) => std::slice::from_mut(steps),
+    };
+    for step in paths.iter_mut().flatten() {
+        if let StorageStep::Read { index, .. } = step {
+            visit(index);
         }
     }
 }

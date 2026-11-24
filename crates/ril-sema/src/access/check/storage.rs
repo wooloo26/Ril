@@ -3,8 +3,15 @@ use std::collections::{BTreeMap, BTreeSet};
 use ril_base::span::Span;
 
 use super::{Analyzer, Datum, DefinitionCheck, Ledger, Region, Replacement, collect};
-use crate::access::flow::StorageFlow;
+use crate::access::flow::{Coordinate, InvocationSite, StorageFlow};
 use crate::ty::TypedProgram;
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub(super) enum ReadSite {
+    Source(Span, Coordinate),
+    Imported(Span, usize),
+    Forwarded(Span, Vec<InvocationSite>, usize),
+}
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(super) struct CallStorage {
@@ -138,12 +145,13 @@ fn function_depth(function: &DefinitionCheck) -> usize {
 // adds the continuations justified by the previous pass and repeats the ordinary
 // ledger transfer, so sites following a call see the stabilized values.
 pub(super) fn solve_recursive_storage(program: &TypedProgram) -> Analyzer<'_> {
-    let discovery = collect(program, BTreeMap::new());
+    let discovery = collect(program, BTreeMap::new(), BTreeMap::new());
     let mut targets = discovery.recursive_calls.clone();
     if targets.is_empty() {
         return discovery;
     }
     let mut opaque = BTreeSet::new();
+    let mut reads = discovery.storage_read_sites.clone();
     loop {
         let mut summaries: BTreeMap<_, _> = targets
             .difference(&opaque)
@@ -162,7 +170,8 @@ pub(super) fn solve_recursive_storage(program: &TypedProgram) -> Analyzer<'_> {
             .unwrap_or_default()
             .saturating_add(targets.len());
         loop {
-            let pass = collect(program, summaries.clone());
+            let pass = collect(program, summaries.clone(), reads);
+            reads = pass.storage_read_sites.clone();
             let old_len = targets.len();
             targets.extend(pass.recursive_calls.iter().copied());
             if old_len != targets.len() {

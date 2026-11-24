@@ -267,6 +267,7 @@ struct Analyzer<'a> {
     resolving_callback_results: BTreeSet<usize>,
     resolving_interface_results: BTreeSet<Span>,
     replaying_storage: BTreeSet<(Span, Span)>,
+    storage_read_sites: BTreeMap<storage::ReadSite, usize>,
     functions: Vec<DefinitionCheck>,
     done: BTreeSet<DefinitionId>,
     cleanups: BTreeMap<Span, CleanupAction>,
@@ -275,6 +276,7 @@ struct Analyzer<'a> {
 fn collect(
     program: &TypedProgram,
     recursive_storage: BTreeMap<Span, storage::CallStorage>,
+    storage_read_sites: BTreeMap<storage::ReadSite, usize>,
 ) -> Analyzer<'_> {
     let mut analyzer = Analyzer {
         program,
@@ -304,6 +306,7 @@ fn collect(
         resolving_callback_results: BTreeSet::new(),
         resolving_interface_results: BTreeSet::new(),
         replaying_storage: BTreeSet::new(),
+        storage_read_sites,
         functions: Vec::new(),
         done: BTreeSet::new(),
         cleanups: BTreeMap::new(),
@@ -2275,7 +2278,9 @@ impl<'a> Analyzer<'a> {
                 for (i, &item) in items.iter().enumerate() {
                     let coordinate = Coordinate::Index(i.to_string());
                     let mode = self.schema_mode(self.ty(node.span), &coordinate).0;
-                    let child = ledger.project_schema(&value, coordinate, mode);
+                    let span = self.ast(ctx.file).pattern(item).span;
+                    let child =
+                        self.project_observed(ctx, ledger, &value, (coordinate, mode, span));
                     self.bind(ctx, ledger, item, storage, child, site);
                 }
             }
@@ -2284,12 +2289,25 @@ impl<'a> Analyzer<'a> {
                 let (before, rest, after) = ast.slice_parts(elements);
                 let mode = self.schema_mode(self.ty(node.span), &Coordinate::Dynamic).0;
                 for (index, &item) in before.iter().enumerate() {
-                    let child =
-                        ledger.project_schema(&value, Coordinate::Index(index.to_string()), mode);
+                    let child = self.project_observed(
+                        ctx,
+                        ledger,
+                        &value,
+                        (
+                            Coordinate::Index(index.to_string()),
+                            mode,
+                            ast.pattern(item).span,
+                        ),
+                    );
                     self.bind(ctx, ledger, item, storage, child, site);
                 }
                 for &item in after {
-                    let child = ledger.project_schema(&value, Coordinate::Dynamic, mode);
+                    let child = self.project_observed(
+                        ctx,
+                        ledger,
+                        &value,
+                        (Coordinate::Dynamic, mode, ast.pattern(item).span),
+                    );
                     self.bind(ctx, ledger, item, storage, child, site);
                 }
                 if let Some(rest) = rest
@@ -2300,11 +2318,11 @@ impl<'a> Analyzer<'a> {
                         self.binding_scopes.insert(decl, ctx.scope);
                     }
                     let mut slice = if let Ty::Array(element) = self.ty(node.span) {
-                        let end = ledger
-                            .exact_array_length(&value)
-                            .or(value.array_len)
+                        let end = self
+                            .slice_source_length(ledger, &value)
                             .and_then(|len| len.checked_sub(after.len()));
                         self.array_slice(
+                            ctx,
                             ledger,
                             &value,
                             element,
@@ -2331,8 +2349,16 @@ impl<'a> Analyzer<'a> {
             }
             Pattern::Constructor(_, payload) => {
                 for (i, &item) in payload.iter().flatten().enumerate() {
-                    let child =
-                        ledger.project(&value, Coordinate::Index(i.to_string()), Access::Immutable);
+                    let child = self.project_observed(
+                        ctx,
+                        ledger,
+                        &value,
+                        (
+                            Coordinate::Index(i.to_string()),
+                            Mode::Plain,
+                            self.ast(ctx.file).pattern(item).span,
+                        ),
+                    );
                     self.bind(ctx, ledger, item, storage, child, site);
                 }
             }
@@ -2341,7 +2367,11 @@ impl<'a> Analyzer<'a> {
                     let coordinate = Coordinate::Field(field.name.value.clone());
                     let mode = self.schema_mode(self.ty(node.span), &coordinate).0;
                     let member_mode = Access::from_mode(mode);
-                    let child = ledger.project_schema(&value, coordinate, mode);
+                    let span = field.pattern.map_or(field.name.span, |item| {
+                        self.ast(ctx.file).pattern(item).span
+                    });
+                    let child =
+                        self.project_observed(ctx, ledger, &value, (coordinate, mode, span));
                     let mut received = field.storage.clone();
                     if received.mode == Mode::Plain {
                         received.mode = storage.mode;
@@ -2634,7 +2664,7 @@ impl<'a> Analyzer<'a> {
                 } else {
                     mode
                 };
-                ledger.project_schema(&value, coordinate, mode)
+                self.project_observed(ctx, ledger, &value, (coordinate, mode, span))
             }
             Expr::Index { base, index, .. } => {
                 let value = self.expr(ctx, ledger, *base);
@@ -3842,7 +3872,7 @@ impl<'a> Analyzer<'a> {
     }
 
     fn project_index(
-        &self,
+        &mut self,
         ctx: &Context,
         ledger: &mut Ledger,
         value: &Datum,
@@ -3863,18 +3893,55 @@ impl<'a> Analyzer<'a> {
             };
             let start = start.map_or(Some(0), bound);
             let end = end.map_or_else(
-                || ledger.exact_array_length(value).or(value.array_len),
+                || self.slice_source_length(ledger, value),
                 |end| bound(end).and_then(|bound| bound.checked_add(usize::from(inclusive))),
             );
-            return self.array_slice(ledger, value, element, (start, end), span);
+            return self.array_slice(ctx, ledger, value, element, (start, end), span);
         }
         let coordinate = self.collection_coordinate(ctx, ty, index);
         let mode = self.schema_mode(ty, &coordinate).0;
-        ledger.project_schema(value, coordinate, mode)
+        self.project_observed(ctx, ledger, value, (coordinate, mode, span))
+    }
+
+    fn project_observed(
+        &mut self,
+        ctx: &Context,
+        ledger: &mut Ledger,
+        base: &Datum,
+        (coordinate, mode, span): (Coordinate, Mode, Span),
+    ) -> Datum {
+        let mut selected = ledger.project_schema(base, coordinate.clone(), mode);
+        if ctx.reachable
+            && ctx.runtime
+            && !ctx.shadow
+            && ledger.storage_flow.is_some()
+            && !self.ty(span).is_value()
+            && !selected.roots.is_empty()
+        {
+            let index =
+                self.storage_read_index(storage::ReadSite::Source(span, coordinate.clone()));
+            ledger.record_storage_read(index, base, coordinate, mode, &mut selected);
+        }
+        selected
+    }
+
+    fn storage_read_index(&mut self, site: storage::ReadSite) -> usize {
+        let next = self.storage_read_sites.len();
+        *self.storage_read_sites.entry(site).or_insert(next)
+    }
+
+    fn slice_source_length(&self, ledger: &Ledger, array: &Datum) -> Option<usize> {
+        // A deferred callback can change the length before the copy runs.
+        ledger
+            .storage_flow
+            .is_none()
+            .then(|| ledger.exact_array_length(array).or(array.array_len))
+            .flatten()
     }
 
     fn array_slice(
-        &self,
+        &mut self,
+        ctx: &Context,
         ledger: &mut Ledger,
         array: &Datum,
         element: &ty::Member,
@@ -3891,8 +3958,9 @@ impl<'a> Analyzer<'a> {
         if element.ty.is_value() || length == Some(0) {
             return slice;
         }
-        let project = |ledger: &Ledger, coordinate| {
-            let mut member = ledger.project_schema(array, coordinate, element.mode.mode);
+        let mut project = |ledger: &mut Ledger, coordinate| {
+            let mut member =
+                self.project_observed(ctx, ledger, array, (coordinate, element.mode.mode, span));
             // The result has a fresh container and still points to the
             // source's elements.
             member.requires_new = false;
@@ -4043,7 +4111,7 @@ impl<'a> Analyzer<'a> {
             } else if let Expr::Member { member, .. } = &step.value {
                 let coordinate = self.coordinate(&mut present_ctx, ledger, member);
                 let mode = self.schema_mode(ty, &coordinate).0;
-                ledger.project_schema(&value, coordinate, mode)
+                self.project_observed(&present_ctx, ledger, &value, (coordinate, mode, step.span))
             } else {
                 ril_base::ice!("unexpected navigation coordinate");
             };

@@ -59,7 +59,7 @@ impl SnapshotProviders {
 }
 
 pub(super) fn known_provider(origin: &crate::access::flow::Origin) -> Option<Span> {
-    if origin.callback_result.is_some() {
+    if origin.callback_result.is_some() || origin.storage_read.is_some() {
         return None;
     }
     origin.snapshot_provider.or_else(|| {
@@ -305,6 +305,7 @@ impl Analyzer<'_> {
         formals: &[Option<Span>],
         summary: &Summary,
     ) {
+        self.register_storage_observations(owner, summary);
         let providers: Vec<_> = summary
             .snapshot_providers
             .iter()
@@ -557,8 +558,9 @@ impl Analyzer<'_> {
         {
             let mut receiver = ledger.snapshot(receiver);
             receiver.roots.retain(|root| {
-                !root.region.selection.is_empty()
-                    || !self.closure_modes.contains_key(&root.region.source)
+                root.storage_read.is_none()
+                    && (!root.region.selection.is_empty()
+                        || !self.closure_modes.contains_key(&root.region.source))
             });
             if !receiver.roots.is_empty() {
                 self.snapshot_invocations.push(SnapshotInvocation {
@@ -843,6 +845,7 @@ fn import_arguments(
 #[derive(Default)]
 struct ProviderReferences {
     indices: BTreeMap<usize, usize>,
+    observations: BTreeMap<usize, usize>,
     pending: VecDeque<usize>,
 }
 
@@ -856,7 +859,15 @@ impl ProviderReferences {
     fn rebase_projections(&mut self, projections: &mut [SnapshotProjection]) {
         for projection in projections {
             self.rebase_origin(&mut projection.origin);
+            if let Some(read) = &mut projection.observation {
+                read.index = self.rebase_observation(read.index);
+            }
         }
+    }
+
+    fn rebase_observation(&mut self, index: usize) -> usize {
+        let next = self.observations.len();
+        *self.observations.entry(index).or_insert(next)
     }
 
     fn rebase_origin(&mut self, origin: &mut SnapshotOrigin) {

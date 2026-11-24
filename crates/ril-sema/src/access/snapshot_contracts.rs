@@ -107,6 +107,25 @@ fn storage_flows_subsume(
                     .zip(right_arguments)
                     .all(|(left, right)| callback_operand_subsumes(left, right, pairs))
         }
+        (
+            StorageStep::Read {
+                index: left_index,
+                base: left,
+                coordinate: left_coordinate,
+                mode: left_mode,
+            },
+            StorageStep::Read {
+                index: right_index,
+                base: right,
+                coordinate: right_coordinate,
+                mode: right_mode,
+            },
+        ) => {
+            left_index == right_index
+                && left_coordinate == right_coordinate
+                && left_mode == right_mode
+                && callback_operand_subsumes(left, right, pairs)
+        }
         _ => false,
     };
     match (old, new) {
@@ -220,6 +239,7 @@ fn projections_subsume(
             allowed.path == required.path
                 && allowed.qualified == required.qualified
                 && allowed.allocation == required.allocation
+                && allowed.observation == required.observation
                 && origins_subsume(&allowed.origin, &required.origin, pairs)
         })
     })

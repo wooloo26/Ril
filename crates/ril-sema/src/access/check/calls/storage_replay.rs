@@ -7,6 +7,7 @@ use super::{
     Analyzer, CallEntry, CallStorage, Context, DeferredStorageCall, InvocationSite, Ledger,
     StorageAction, StorageFlow, snapshot_invocations::known_provider,
 };
+use crate::access::check::storage::ReadSite;
 
 impl Analyzer<'_> {
     pub(super) fn apply_callable_storage(
@@ -81,6 +82,11 @@ impl Analyzer<'_> {
         action: &StorageAction,
         published: bool,
     ) -> bool {
+        let observed = entry.ledger.with_storage_samples(after);
+        let entry = &CallEntry {
+            ledger: &observed,
+            ..*entry
+        };
         match action {
             StorageAction::Write(target, update) => self.apply_storage_updates(
                 ctx,
@@ -96,6 +102,37 @@ impl Analyzer<'_> {
             ),
             StorageAction::Invoke(call) => {
                 self.replay_deferred_storage(ctx, storage, entry, after, call)
+            }
+            StorageAction::Read {
+                index,
+                base,
+                coordinate,
+                mode,
+            } => {
+                let base = self.instantiate_return(
+                    &storage.formals,
+                    &storage.via,
+                    entry,
+                    base,
+                    &mut Vec::new(),
+                );
+                let mut selected = after.project_schema(&base, coordinate.clone(), *mode);
+                if after.storage_flow.is_some() && !selected.roots.is_empty() {
+                    let forwarded = self.storage_read_index(ReadSite::Forwarded(
+                        entry.span,
+                        entry.invocation.to_vec(),
+                        *index,
+                    ));
+                    after.record_storage_read(
+                        forwarded,
+                        &base,
+                        coordinate.clone(),
+                        *mode,
+                        &mut selected,
+                    );
+                }
+                after.sample_storage((entry.span, entry.invocation.to_vec(), *index), selected);
+                true
             }
         }
     }
@@ -123,14 +160,13 @@ impl Analyzer<'_> {
             ordinal: trace.len(),
         });
         let actual = CallEntry {
-            ledger: &before,
             invocation: &trace,
             ..*entry
         };
         let receiver = self.instantiate_return(
             &storage.formals,
             &storage.via,
-            &actual,
+            entry,
             &call.receiver,
             &mut Vec::new(),
         );
@@ -139,13 +175,14 @@ impl Analyzer<'_> {
         self.specialize_callback_arguments(
             &storage.formals,
             &storage.via,
-            &actual,
+            entry,
             (&mut arguments, &mut spans),
         );
         let invocation = CallEntry {
             arguments: &arguments,
             spans: &spans,
             environment: None,
+            ledger: &before,
             ..actual
         };
         let mut alternatives = Vec::new();
@@ -183,6 +220,21 @@ impl Analyzer<'_> {
         });
         if !closures.roots.is_empty() {
             let known = self.known_closures(&closures);
+            self.record_snapshot_invocation(
+                ctx,
+                &before,
+                &closures,
+                (&arguments, &spans),
+                entry.span,
+            );
+            for (&owner, closure) in &known {
+                self.record_snapshot_call(
+                    ctx,
+                    (owner, &closure.formals),
+                    (entry.span, &before),
+                    (&arguments, &spans),
+                );
+            }
             if let Some(branch) = self.closure_storage(ctx, &known, &closures, &invocation, true) {
                 alternatives.push(branch);
             }

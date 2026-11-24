@@ -1196,3 +1196,19 @@ pub fn update(mut slot: Slot, install: fn(mut Slot) &mut -> ()) &mut -> () {
     slot.action = count
     install(mut slot)
 }
+
+-- @case moving_a_read_past_a_callback_changes_the_result_contract compat-fail E0552
+-- @baseline
+pub type Slot = .{ var action: fn() -> int }
+pub fn read(mut slot: Slot, install: fn(mut Slot) &mut -> ()) &mut -> fn() -> int {
+    let saved = slot.action
+    install(mut slot)
+    saved
+}
+-- @revision
+pub type Slot = .{ var action: fn() -> int }
+pub fn read(mut slot: Slot, install: fn(mut Slot) &mut -> ()) &mut -> fn() -> int {
+-- ^ E0552
+    install(mut slot)
+    slot.action
+}

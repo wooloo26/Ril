@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use super::{Input, ModeExpression, ModeStep, ReturnAllocation};
 
 mod storage;
-pub(super) use storage::{DeferredStorageCall, StorageAction, StorageFlow};
+pub(super) use storage::{DeferredStorageCall, StorageAction, StorageFlow, StorageRead};
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 pub enum Access {
@@ -217,6 +217,7 @@ pub(super) struct Origin {
     pub mode: Access,
     pub inherits_mode: bool,
     pub callback_result: Option<CallbackOrigin>,
+    pub storage_read: Option<StorageRead>,
     pub snapshot_provider: Option<Span>,
     // A functional update retains the source for opaque projections. Its
     // materialized members describe the copied graph independently.
@@ -479,6 +480,7 @@ impl Datum {
                 mode,
                 inherits_mode: false,
                 callback_result: None,
+                storage_read: None,
                 snapshot_provider: None,
                 detached_snapshot: false,
                 return_allocation: None,
@@ -1220,6 +1222,7 @@ impl Datum {
     fn project_schema(&self, coordinate: Coordinate, mode: Mode) -> Self {
         if let Some(mut member) = self.known_member(&coordinate) {
             self.project_capture_paths(&coordinate, &mut member, false);
+            self.project_storage_read(&coordinate, &mut member);
             self.project_known(&mut member, &coordinate, mode);
             return member;
         }
@@ -1270,6 +1273,9 @@ impl Datum {
             .map(|origin| {
                 let mut origin = origin.clone();
                 origin.region.selection.push(coordinate.clone());
+                if let Some(read) = &mut origin.storage_read {
+                    read.path.push(coordinate.clone());
+                }
                 origin.snapshot_provider = None;
                 origin.variant = None;
                 origin.from_variable = false;
@@ -1332,6 +1338,24 @@ impl Datum {
                 let mut path = path.clone();
                 path.region.selection.push(coordinate.clone());
                 *member.capture_paths.entry(path).or_default() |= definite;
+            }
+        }
+    }
+
+    fn project_storage_read(&self, coordinate: &Coordinate, member: &mut Self) {
+        if let Some(read) = self
+            .roots
+            .first()
+            .and_then(|root| root.storage_read.as_ref())
+            && self
+                .roots
+                .iter()
+                .all(|root| root.storage_read.as_ref() == Some(read))
+        {
+            let mut read = read.clone();
+            read.path.push(coordinate.clone());
+            for root in &mut member.roots {
+                root.storage_read = Some(read.clone());
             }
         }
     }
@@ -1462,6 +1486,7 @@ pub(super) struct Ledger {
     storage_formals: Vec<Option<Span>>,
     storage_captures: BTreeSet<Span>,
     pub storage_flow: Option<StorageFlow>,
+    storage_samples: BTreeMap<(Span, Vec<InvocationSite>, usize), Datum>,
     loop_members: BTreeMap<Region, Datum>,
     // Length evidence for local array objects. Result iteration separately
     // tracks the immutable layout it needs to discharge obligations.
@@ -1480,6 +1505,7 @@ impl Ledger {
         self.storage_formals = formals.to_vec();
         self.storage_captures = self.slots.keys().copied().collect();
         self.storage_flow = None;
+        self.storage_samples.clear();
         for (&binding, slot) in &mut self.slots {
             if includes(binding) && !slot.value.roots.is_empty() {
                 slot.value.capture_paths.insert(
@@ -1506,6 +1532,57 @@ impl Ledger {
             .unwrap_or_else(|| self.storage_prefix());
         flow.push(StorageAction::Invoke(call));
         self.storage_flow = Some(flow);
+    }
+
+    pub(super) fn record_storage_read(
+        &mut self,
+        index: usize,
+        base: &Datum,
+        coordinate: Coordinate,
+        mode: Mode,
+        selected: &mut Datum,
+    ) {
+        if selected.roots.is_empty() || self.storage_flow.is_none() {
+            return;
+        }
+        let base = self.snapshot(base);
+        if let Some(flow) = &mut self.storage_flow {
+            flow.push(StorageAction::Read {
+                index,
+                base,
+                coordinate,
+                mode,
+            });
+        }
+        for root in &mut selected.roots {
+            root.storage_read = Some(StorageRead {
+                index,
+                path: Vec::new(),
+            });
+        }
+    }
+
+    pub(super) fn sample_storage(&mut self, key: (Span, Vec<InvocationSite>, usize), value: Datum) {
+        let slot = self.storage_samples.entry(key).or_default();
+        *slot = std::mem::take(slot).joined(value);
+    }
+
+    pub(super) fn sampled_storage(
+        &self,
+        (span, invocation, index): (Span, &[InvocationSite], usize),
+    ) -> Option<&Datum> {
+        self.storage_samples
+            .get(&(span, invocation.to_vec(), index))
+    }
+
+    pub(super) fn with_storage_samples(&self, current: &Self) -> Cow<'_, Self> {
+        if self.storage_samples == current.storage_samples {
+            Cow::Borrowed(self)
+        } else {
+            let mut entry = self.clone();
+            entry.storage_samples.clone_from(&current.storage_samples);
+            Cow::Owned(entry)
+        }
     }
 
     fn record_storage_write(&mut self, region: &Region, value: &Datum, definite: bool) {
@@ -1999,6 +2076,10 @@ impl Ledger {
             age_value(&mut update.value);
             update.value.fold_old_allocations(&mut self.loop_members);
         }
+        for sample in self.storage_samples.values_mut() {
+            age_value(sample);
+            sample.fold_old_allocations(&mut self.loop_members);
+        }
         if self.storage_flow != entry.storage_flow
             && let Some(flow) = &mut self.storage_flow
         {
@@ -2200,6 +2281,13 @@ impl Ledger {
         }
         self.choices = prior.choices.clone();
         self.merge_replacements(prior, &alternatives);
+        self.storage_samples = prior.storage_samples.clone();
+        for (key, value) in alternatives
+            .iter()
+            .flat_map(|branch| &branch.storage_samples)
+        {
+            self.sample_storage(key.clone(), value.clone());
+        }
         self.storage_flow = if alternatives.is_empty() {
             prior.storage_flow.clone()
         } else if alternatives
@@ -2559,6 +2647,9 @@ impl Ledger {
         let mut use_inline = false;
         let with_capture_path = |mut member: Datum, stored| {
             base.project_capture_paths(&coordinate, &mut member, stored);
+            if !stored {
+                base.project_storage_read(&coordinate, &mut member);
+            }
             member
         };
         for (root, origin) in base.roots.iter().zip(&slot.roots) {

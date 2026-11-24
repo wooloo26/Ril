@@ -3,7 +3,13 @@ use std::collections::BTreeMap;
 use ril_base::span::Span;
 use ril_frontend::syntax::Mode;
 
-use super::{BRANCH_LIMIT, Datum, Region, Replacement};
+use super::{BRANCH_LIMIT, Coordinate, Datum, Region, Replacement};
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub(in crate::access) struct StorageRead {
+    pub index: usize,
+    pub path: Vec<Coordinate>,
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(in crate::access) struct DeferredStorageCall {
@@ -17,6 +23,12 @@ pub(in crate::access) struct DeferredStorageCall {
 pub(in crate::access) enum StorageAction {
     Write(Region, Replacement),
     Invoke(DeferredStorageCall),
+    Read {
+        index: usize,
+        base: Datum,
+        coordinate: Coordinate,
+        mode: Mode,
+    },
 }
 
 /// Ordered transfers to the caller's graph. At a loop backedge or a wide
@@ -132,6 +144,25 @@ impl StorageFlow {
                     return;
                 }
             }
+            StorageAction::Read {
+                index,
+                base,
+                coordinate,
+                mode,
+            } => {
+                if let Some(previous) = actions.iter_mut().find_map(|action| match action {
+                    StorageAction::Read {
+                        index: other,
+                        base,
+                        coordinate: selected,
+                        mode: access,
+                    } if other == index && selected == coordinate && access == mode => Some(base),
+                    _ => None,
+                }) {
+                    *previous = std::mem::take(previous).joined(std::mem::take(base));
+                    return;
+                }
+            }
         }
         actions.push(incoming);
     }
@@ -150,6 +181,7 @@ impl StorageFlow {
                 let (root, arguments) = match action {
                     StorageAction::Write(_, update) => (&mut update.value, None),
                     StorageAction::Invoke(call) => (&mut call.receiver, Some(&mut call.arguments)),
+                    StorageAction::Read { base, .. } => (base, None),
                 };
                 std::iter::once(root)
                     .chain(arguments.into_iter().flatten().map(|(_, _, value)| value))
@@ -170,6 +202,7 @@ impl StorageFlow {
                 let (root, arguments) = match action {
                     StorageAction::Write(_, update) => (&update.value, None),
                     StorageAction::Invoke(call) => (&call.receiver, Some(&call.arguments)),
+                    StorageAction::Read { base, .. } => (base, None),
                 };
                 std::iter::once(root)
                     .chain(arguments.into_iter().flatten().map(|(_, _, value)| value))

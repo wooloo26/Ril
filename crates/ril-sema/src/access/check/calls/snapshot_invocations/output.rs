@@ -7,10 +7,10 @@ use super::{
 use crate::access::check::calls::imported::PublishedValue;
 use crate::{
     access::{
-        Access, Coordinate, SnapshotOrigin, SnapshotProjection, StorageTransfer, StorageUpdate,
-        Summary,
+        Access, Coordinate, SnapshotOrigin, SnapshotProjection, StorageObservation,
+        StorageTransfer, StorageUpdate, Summary,
         check::{DefinitionCheck, storage::CallStorage},
-        flow::{Origin, Region},
+        flow::{Origin, Region, StorageRead},
     },
     ty::{Ty, TypedProgram},
 };
@@ -98,6 +98,11 @@ impl Analyzer<'_> {
                 let provider = self.snapshot_providers.imported.get(&owner)?.get(index)?;
                 self.snapshot_providers.sources.binary_search(provider).ok()
             });
+            if let Some(read) = &mut projection.observation {
+                read.index = self
+                    .imported_storage_observation(owner, read.index)
+                    .unwrap_or(read.index);
+            }
         }
     }
 
@@ -206,7 +211,9 @@ impl Analyzer<'_> {
     ) -> Vec<SnapshotProjection> {
         self.snapshot_projections(formals, &Ty::Unknown, &[], std::slice::from_ref(value))
             .into_iter()
-            .filter(|projection| projection.origin.provider.is_some())
+            .filter(|projection| {
+                projection.origin.provider.is_some() || projection.observation.is_some()
+            })
             .collect()
     }
 
@@ -363,14 +370,20 @@ impl Analyzer<'_> {
                     let provider = known_provider(origin).and_then(|owner| {
                         self.snapshot_providers.sources.binary_search(&owner).ok()
                     });
-                    let source = axis(formals, origin).filter(|_| carries_callable());
-                    if provider.is_none() && source.is_none() {
+                    let observation = origin.storage_read.as_ref().map(|read| StorageObservation {
+                        index: read.index,
+                        path: read.path.clone(),
+                    });
+                    let source = axis(formals, origin)
+                        .filter(|_| observation.is_some() || carries_callable());
+                    if provider.is_none() && source.is_none() && observation.is_none() {
                         continue;
                     }
                     projections.insert(SnapshotProjection {
                         path: path.to_vec(),
                         qualified: node.requires_new,
                         allocation: origin.return_allocation.map(|identity| identity.index),
+                        observation,
                         origin: SnapshotOrigin {
                             source,
                             provider,
@@ -393,8 +406,15 @@ impl Analyzer<'_> {
         formals: &[Option<Span>],
         node: &mut Datum,
         projection: &SnapshotProjection,
+        preserve_unobserved: bool,
     ) {
         let origin = &projection.origin;
+        let storage_read = projection.observation.as_ref().and_then(|read| {
+            Some(StorageRead {
+                index: self.imported_storage_observation(owner, read.index)?,
+                path: read.path.clone(),
+            })
+        });
         let provider = origin.provider.and_then(|index| {
             self.snapshot_providers
                 .imported
@@ -414,10 +434,15 @@ impl Analyzer<'_> {
             && let Some(root) = node.roots.iter_mut().find(|root| {
                 root.return_allocation
                     .is_some_and(|identity| identity.index == allocation)
+                    && (root.storage_read == storage_read
+                        || !preserve_unobserved && root.storage_read.is_none())
             })
         {
             root.snapshot_provider = provider;
             root.detached_snapshot |= origin.detached;
+            if storage_read.is_some() {
+                root.storage_read = storage_read;
+            }
             return;
         }
         let source = origin
@@ -425,18 +450,23 @@ impl Analyzer<'_> {
             .as_ref()
             .and_then(|axis| formals.get(axis.parameter).copied().flatten());
         if let (Some(source), Some(axis)) = (source, &origin.source)
-            && let Some(root) = node
-                .roots
-                .iter_mut()
-                .find(|root| root.region.source == source && root.region.selection == axis.path)
+            && let Some(root) = node.roots.iter_mut().find(|root| {
+                root.region.source == source
+                    && root.region.selection == axis.path
+                    && (root.storage_read == storage_read
+                        || !preserve_unobserved && root.storage_read.is_none())
+            })
         {
             if provider.is_some() {
                 root.snapshot_provider = provider;
             }
             root.detached_snapshot |= origin.detached;
+            if storage_read.is_some() {
+                root.storage_read = storage_read;
+            }
             return;
         }
-        if source.is_none() && provider.is_none() {
+        if source.is_none() && provider.is_none() && storage_read.is_none() {
             return;
         }
         let local = Span::new(owner.file, owner.start, owner.start);
@@ -446,6 +476,7 @@ impl Analyzer<'_> {
             root.call_borrow = origin.borrowed;
             root.inherits_mode = origin.forwarded;
             root.detached_snapshot = origin.detached;
+            root.storage_read = storage_read.clone();
             if let Some(source) = &origin.source {
                 root.region.selection.clone_from(&source.path);
             }
