@@ -18,7 +18,7 @@ use ril_frontend::{
 };
 
 use super::{
-    AdtKind, Callable, LiteralError, Member, Parameter, Ty, Value,
+    Adt, AdtKind, Callable, GenericValue, LiteralError, Member, Parameter, Ty, Value,
     check::{Checker, Env, ImplicitExits, Phase, substitute, unknown_callable},
     literal,
 };
@@ -1872,6 +1872,86 @@ impl<'a> Checker<'a> {
         }
     }
 
+    fn nonclonable(&mut self, env: &Env, ty: &Ty, root: bool, active: &mut Vec<Arc<Adt>>) -> bool {
+        let ty = self.normalize(ty);
+        if root && (ty.is_value() || matches!(ty, Ty::Callable(_))) {
+            return true;
+        }
+        match ty {
+            Ty::Draft(_)
+            | Ty::Scope
+            | Ty::Task(_)
+            | Ty::Sender(_)
+            | Ty::Receiver(_)
+            | Ty::TypeValue(_)
+            | Ty::Mode => true,
+            Ty::Param(id) => env.domains.get(&id).is_some_and(|domain| {
+                domain
+                    .iter()
+                    .any(|ty| self.nonclonable(env, ty, root, active))
+            }),
+            Ty::Adt(adt) => {
+                if adt.kind == AdtKind::Foreign {
+                    return true;
+                }
+                if active
+                    .iter()
+                    .rev()
+                    .find(|outer| outer.definition == adt.definition)
+                    .is_some_and(|outer| !Self::nested_type_argument(outer, &adt))
+                {
+                    return false;
+                }
+                active.push(Arc::clone(&adt));
+                let invalid = match adt.kind {
+                    AdtKind::Sum | AdtKind::OpaqueSum => self
+                        .sum_variants(&adt)
+                        .values()
+                        .flatten()
+                        .any(|ty| self.nonclonable(env, ty, false, active)),
+                    _ => self
+                        .representation(env, &adt)
+                        .is_some_and(|ty| self.nonclonable(env, &ty, false, active)),
+                };
+                active.pop();
+                invalid
+            }
+            Ty::Tuple(items) => items
+                .iter()
+                .any(|item| self.nonclonable(env, &item.ty, false, active)),
+            Ty::Record(fields, _) => fields
+                .values()
+                .any(|field| self.nonclonable(env, &field.ty, false, active)),
+            Ty::Array(item) => self.nonclonable(env, &item.ty, false, active),
+            Ty::Map(key, item) => {
+                self.nonclonable(env, &key, false, active)
+                    || self.nonclonable(env, &item.ty, false, active)
+            }
+            Ty::Result(ok, error) => {
+                self.nonclonable(env, &ok, false, active)
+                    || self.nonclonable(env, &error, false, active)
+            }
+            Ty::Set(item) | Ty::Option(item) => self.nonclonable(env, &item, false, active),
+            _ => false,
+        }
+    }
+
+    fn nested_type_argument(outer: &Adt, inner: &Adt) -> bool {
+        // A finite type argument may use the same constructor. Following
+        // that argument is distinct from expanding a recursive definition.
+        outer.arguments.iter().any(|argument| {
+            let GenericValue::Type(ty) = argument else {
+                return false;
+            };
+            let mut nested = false;
+            super::check::transform(ty, &mut |part| {
+                nested |= matches!(part, Ty::Adt(application) if application.as_ref() == inner);
+                None
+            });
+            nested
+        })
+    }
+
     fn primitive_call(
         &mut self,
         env: &mut Env,
@@ -2014,9 +2094,7 @@ impl<'a> Checker<'a> {
                 Ty::Int
             }
             "clone" => {
-                if first.is_value()
-                    || matches!(&first, Ty::Adt(adt) if adt.kind == AdtKind::Foreign)
-                {
+                if self.nonclonable(env, &first, true, &mut Vec::new()) {
                     self.error(Code::E0301, span, "clone requires a clonable shared object");
                 }
                 first

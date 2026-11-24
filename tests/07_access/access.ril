@@ -3021,6 +3021,17 @@ fn run() -> int {
 -- @case copying_a_value_array_with_a_slice_creates_a_new_array compile-pass
 fn copy(values: []int) -> new []int { values[..] }
 
+-- @case clone_rejects_a_contained_live_closure compile-fail E0530 no-prelude
+type Cell = .{ var count: int }
+fn run() -> () {
+    let mut cell = Cell.{ count: 1 }
+    let ^mut shared = cell
+    let mut holder = .{ ^mut cb: \-> { shared.count += 1; shared.count } }
+    assert(holder.cb() == 2)
+    let _ = clone(ref holder)
+    -- ^ E0530
+}
+
 -- @case captured_array_appends_update_the_call_site compile-fail E0535
 type Shelf = .{ ^mut item: Cell }
 fn freeze(new shelf: Shelf) -> int { let fixed = new shelf; fixed.item.count }

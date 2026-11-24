@@ -1,6 +1,13 @@
 -- @suite meta
 -- @default_stage type
 
+-- @case static_clone_checks_a_specialized_scalar_root compile-fail E0301
+meta fn duplicate<T>(value: T) -> T {
+    clone(value)
+    -- ^ E0301
+}
+meta let INVALID = duplicate(42)
+
 -- @case anonymous_meta_callable_cannot_decay_to_runtime_value compile-fail E0810
 fn invalid() -> () {
     let callback = \meta value: int -> value + 1

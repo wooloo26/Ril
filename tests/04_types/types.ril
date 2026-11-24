@@ -280,3 +280,43 @@ fn read(values: [str: int]) -> int { values["key"] }
 
 -- @case map_compound_assignment_is_rejected compile-fail E0352
 fn update(mut values: [str: int]) &mut -> () { values["key"] += 1 }
+
+-- @case clone_rejects_a_callable_root compile-fail E0301
+fn count() -> int { 42 }
+fn copied() -> new fn() -> int {
+    clone(count)
+    -- ^ E0301
+}
+
+-- @case clone_rejects_endpoints_through_nested_generic_payloads compile-fail E0301
+use ril/channel
+nominal type Box<T> = .{ item: T }
+type Message { Empty; Full(Box<Box<Channel::Sender<int>>>) }
+fn duplicate(value: Message) -> new Message {
+    clone(value)
+    -- ^ E0301
+}
+
+-- @case clone_rejects_a_graph_containing_a_draft compile-fail E0301
+type Packet = .{ slot: Draft<[]int> }
+fn duplicate(packet: Packet) -> new Packet {
+    clone(packet)
+    -- ^ E0301
+}
+
+-- @case clone_rejects_a_graph_containing_a_foreign_handle compile-fail E0301 unit=bin
+-- @file pkg/main.ril
+use pkg/host
+type Packet = .{ mut port: Host::Port }
+fn duplicate(ref packet: Packet) -> new Packet {
+    clone(ref packet)
+    -- ^ E0301
+}
+fn main() -> () {}
+-- @file pkg/host.d.ril
+pub opaque type Port
+
+-- @case clone_accepts_nested_ordinary_payloads compile-pass
+nominal type Box<T> = .{ item: T }
+type Message { Empty; Full(Box<Box<int>>) }
+fn duplicate(value: Message) -> new Message { clone(value) }

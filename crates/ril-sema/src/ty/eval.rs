@@ -1391,7 +1391,21 @@ impl Checker<'_> {
             ("len", [Value::Map(items)]) => Ok(integer(items.len())),
             ("len", [Value::Str(str)]) => Ok(integer(str.chars().count())),
             ("len", [Value::Bytes(bytes)]) => Ok(integer(bytes.len())),
-            ("clone", [_]) => Ok(args.pop().unwrap_or(Value::Unit)),
+            (
+                "clone",
+                [
+                    Value::Array(_)
+                    | Value::Tuple(_)
+                    | Value::Record(_)
+                    | Value::Map(_)
+                    | Value::Tag(_, _),
+                ],
+            ) => Ok(args.pop().unwrap_or(Value::Unit)),
+            ("clone", [_]) => Err(Signal::Error(
+                Code::E0301,
+                span,
+                "clone requires a clonable shared object",
+            )),
             ("inner", [Value::Tag(_, values)]) if values.len() == 1 => {
                 values.first().cloned().ok_or_else(|| nonstatic(span))
             }

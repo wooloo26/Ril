@@ -17,6 +17,39 @@ use ril_sema::{
 use ril_test::{CaseMode, Stage, TestDriver, Unit, VirtualPackage, parse_suite, run_worker};
 
 #[test]
+fn hidden_clone_restrictions_survive_separate_compilation() {
+    let source = b"use ril/channel\npub opaque type Parcel = .{ mut tx: Channel::Sender<int> }";
+    let mut library = VirtualPackage::new(Unit::Lib);
+    library.entry = "pkg/vault.ril".into();
+    library.insert(library.entry.clone(), source.to_vec());
+    let interface = Driver.interface(&library).unwrap().encode().unwrap();
+    for (mount, bytes) in [
+        ("library/vault.ril", source.as_slice()),
+        ("library/vault.rili", interface.as_slice()),
+    ] {
+        let mut client = VirtualPackage::new(Unit::Lib);
+        client.insert(mount.into(), bytes.to_vec());
+        client.insert(
+            client.entry.clone(),
+            b"use library/vault\nfn duplicate(ref value: Vault::Parcel) -> new Vault::Parcel { clone(ref value) }"
+                .to_vec(),
+        );
+        let checked = Driver.check(&client, Stage::Type);
+        assert_eq!(
+            checked.result.diagnostics.len(),
+            1,
+            "{mount}: {:?}",
+            checked.result.diagnostics
+        );
+        assert_eq!(
+            checked.result.diagnostics[0].code,
+            Some(ril_base::diag::Code::E0301),
+            "{mount}"
+        );
+    }
+}
+
+#[test]
 fn transferred_snapshot_requirements_survive_separate_compilation() {
     use ril_base::diag::Code;
     use ril_sema::access::{Coordinate, SnapshotInput};
