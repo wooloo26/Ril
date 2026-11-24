@@ -988,6 +988,8 @@ pub type Shelf = .{ ^mut item: Cell }
 pub type Action = fn(new Shelf) -> int
 pub type Pair = .{ left: []Action, right: []Action }
 pub type Update = fn(mut Draft<Pair>) &mut -> ()
+pub type Slot = .{ var action: Action }
+pub type StateUpdate = fn(mut Draft<[]int>) &mut &up -> ()
 pub fn count(new shelf: Shelf) -> int { shelf.item.count }
 fn freeze(new shelf: Shelf) -> int { let fixed = new shelf; fixed.item.count }
 pub fn extend(mut draft: Draft<Pair>) &mut -> () {
@@ -1000,6 +1002,15 @@ pub fn updater(first: Action) &capture &return(first) -> new Update {
 pub fn finished() -> Pair {
     let shared = [count]
     derive(Pair.{ left: shared, right: shared }, extend)
+}
+pub fn slot_updater(^mut slot: Slot, action: Action) &capture &^mut &return(^mut slot, action) -> new StateUpdate {
+    \mut draft: Draft<[]int> -> { Array::push(mut draft, 2); slot.action = action }
+}
+pub fn edit_slot(mut slot: Slot, action: Action) &mut -> []int {
+    derive([1]) \mut draft -> { Array::push(mut draft, 2); slot.action = action }
+}
+pub fn edit_through(mut slot: Slot, edit: fn(mut Slot) &mut -> ()) &mut -> []int {
+    derive([1]) \mut draft -> { Array::push(mut draft, 2); edit(mut slot) }
 }
 "#;
     let mut library = VirtualPackage::new(Unit::Lib);
@@ -1014,6 +1025,9 @@ pub fn finished() -> Pair {
 use library/updates
 pub fn updater(first: Updates::Action) &capture &return(first) -> new Updates::Update {
     Updates::updater(first)
+}
+pub fn slot_updater(^mut slot: Updates::Slot, action: Updates::Action) &capture &^mut &return(^mut slot, action) -> new Updates::StateUpdate {
+    Updates::slot_updater(^mut slot, action)
 }
 "#
         .to_vec(),
@@ -1065,6 +1079,44 @@ fn observe() -> int {{
                         panic!("{mount} {update} {target}: {diagnostics:?}")
                     }
                     (true, Ok(_)) => panic!("{mount} {update} accepted a live view via {target}"),
+                }
+            }
+        }
+        for update in [
+            "derive([1], Updates::slot_updater(^mut slot, {action}))",
+            "derive([1], Forwarding::slot_updater(^mut slot, {action}))",
+            "Updates::edit_slot(mut slot, {action})",
+            "Updates::edit_through(mut slot, \\mut target: Updates::Slot -> { target.action = {action} })",
+        ] {
+            for (initial, action, freezes) in [
+                ("freeze", "Updates::count", false),
+                ("Updates::count", "freeze", true),
+            ] {
+                let update = update.replace("{action}", action);
+                let source = format!(
+                    "use library/updates
+use relay/forwarding
+fn freeze(new shelf: Updates::Shelf) -> int {{ let fixed = new shelf; fixed.item.count }}
+fn observe() -> int {{
+    let mut slot = Updates::Slot.{{ action: {initial} }}
+    let numbers = {update}
+    let mut live = Updates::Cell.{{ count: len(numbers) }}
+    live.count += 1
+    slot.action(new Updates::Shelf.{{ item: ^mut live }})
+}}"
+                );
+                let mut client = VirtualPackage::new(Unit::Lib);
+                client.insert(mount.into(), bytes.to_vec());
+                client.insert("relay/forwarding.rili".into(), forwarded.clone());
+                client.insert(client.entry.clone(), source.into_bytes());
+                match (freezes, Driver.analyze(&client)) {
+                    (false, Ok(_)) => {}
+                    (true, Err(diagnostics)) => {
+                        assert_eq!(diagnostics.len(), 1, "{mount} {update}: {diagnostics:?}");
+                        assert_eq!(diagnostics[0].code, Some(Code::E0535), "{mount} {update}");
+                    }
+                    (false, Err(diagnostics)) => panic!("{mount} {update}: {diagnostics:?}"),
+                    (true, Ok(_)) => panic!("{mount} {update} accepted a live view"),
                 }
             }
         }

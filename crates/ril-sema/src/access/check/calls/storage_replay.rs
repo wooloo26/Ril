@@ -146,6 +146,11 @@ impl Analyzer<'_> {
                     base,
                     &mut Vec::new(),
                 );
+                if let Some(working) = after.read_draft(&base) {
+                    let selected = after.project_schema(&working, coordinate.clone(), *mode);
+                    after.sample_storage((entry.span, entry.invocation.to_vec(), *index), selected);
+                    return true;
+                }
                 after.remember_return_graph(&base, entry.span);
                 let mut selected = after.project_schema(&base, coordinate.clone(), *mode);
                 if after.storage_flow.is_some() && !selected.roots.is_empty() {

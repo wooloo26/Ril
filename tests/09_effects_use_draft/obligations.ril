@@ -631,6 +631,24 @@ fn run() -> int {
     answer + live.count
 }
 
+-- @case derive_applies_a_store_to_an_outer_mutable_field compile-fail E0535 no-prelude
+type Cell = .{ var count: int }
+type Shelf = .{ ^mut item: Cell }
+type Slot = .{ var action: fn(new Shelf) -> int }
+fn count(new shelf: Shelf) -> int { shelf.item.count }
+fn freeze(new shelf: Shelf) -> int { let fixed = new shelf; fixed.item.count }
+fn run() -> int {
+    let mut live = Cell.{ count: 1 }
+    live.count += 1
+    let mut slot = Slot.{ action: count }
+    let next = derive([1]) \mut draft -> {
+        Array::push(mut draft, 2)
+        slot.action = freeze
+    }
+    slot.action(new Shelf.{ item: ^mut live }) + len(next)
+    -- ^ E0535
+}
+
 -- @case branching_between_draft_appends_and_literals_preserves_callable_alternatives compile-fail E0535 no-prelude
 type Cell = .{ var count: int }
 type Shelf = .{ ^mut item: Cell }

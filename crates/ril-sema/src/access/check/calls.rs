@@ -2773,9 +2773,11 @@ impl<'program> Analyzer<'program> {
                         self.effect(ctx, ledger, effect, span);
                     }
                     if let Some(base) = first
-                        && super::higher_order::carries_callable(self.program, self.ty(span))
+                        && ctx.runtime
+                        && ctx.reachable
+                        && !ctx.shadow
                     {
-                        return self.derived_snapshot(ledger, base, callback, span);
+                        return self.derive_storage(ctx, ledger, base, callback, span);
                     }
                 }
             }

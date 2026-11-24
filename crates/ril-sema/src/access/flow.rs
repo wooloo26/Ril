@@ -182,6 +182,12 @@ impl Region {
         matches!(member, Coordinate::ArrayTail(_)).then_some(parent)
     }
 
+    fn allocation_root(&self) -> Self {
+        let mut root = self.clone();
+        root.selection.clear();
+        root
+    }
+
     fn age_allocation(&mut self, inside_loop: bool) {
         if inside_loop && self.instance == RegionInstance::Allocation {
             self.instance = RegionInstance::PriorAllocations;
@@ -899,12 +905,7 @@ impl Datum {
         self.requires_new = false;
     }
 
-    pub(super) fn apply_draft_update(
-        &mut self,
-        path: &[Coordinate],
-        stored: &Self,
-        definite: bool,
-    ) {
+    fn apply_draft_update(&mut self, path: &[Coordinate], stored: &Self, definite: bool) {
         let Some((coordinate, rest)) = path.split_first() else {
             *self = if definite {
                 stored.clone()
@@ -964,7 +965,7 @@ impl Datum {
         })
     }
 
-    pub(super) fn join_draft_results(mut self, mut other: Self) -> Self {
+    fn join_draft_results(mut self, mut other: Self) -> Self {
         let fields: BTreeSet<_> = self
             .members
             .keys()
@@ -1552,12 +1553,49 @@ pub(super) struct Ledger {
     pub storage_flow: Option<StorageFlow>,
     storage_samples: BTreeMap<(Span, Vec<InvocationSite>, usize), Datum>,
     loop_members: BTreeMap<Region, Datum>,
+    // Draft handles are path cursors into private working graphs. Ordinary
+    // replacements in the same transfer can still update caller storage.
+    drafts: BTreeMap<Region, Datum>,
     // Length evidence for array objects. Result iteration separately
     // tracks the immutable layout it needs to discharge obligations.
     array_extents: BTreeMap<Region, ArrayExtent>,
 }
 
 impl Ledger {
+    pub(super) fn begin_draft(&mut self, span: Span, base: &Datum) -> Datum {
+        let working = self.snapshot_for_draft(base);
+        self.drafts.insert(Region::allocation(span), working);
+        let mut cursor = Datum::source(span, Access::Mut, true);
+        cursor.transform(&mut |root| {
+            root.draft = true;
+            root.confined = Some(span);
+        });
+        cursor
+    }
+
+    pub(super) fn finish_draft(&mut self, span: Span) -> Option<Datum> {
+        let mut result = self.drafts.remove(&Region::allocation(span))?;
+        result.freeze();
+        Some(result)
+    }
+
+    pub(super) fn read_draft(&self, cursor: &Datum) -> Option<Datum> {
+        cursor.roots.iter().try_fold(None, |selected, origin| {
+            if !origin.draft {
+                return None;
+            }
+            let working = self.drafts.get(&origin.region.allocation_root())?;
+            let value = origin
+                .region
+                .selection
+                .iter()
+                .fold(working.clone(), |value, step| {
+                    value.project(step.clone(), Access::Immutable)
+                });
+            Some(join_member(selected, value))
+        })?
+    }
+
     pub(super) fn enter_capture_storage(
         &mut self,
         owner: Span,
@@ -2425,6 +2463,18 @@ impl Ledger {
                     .collect(),
             )
         };
+        self.drafts = prior
+            .drafts
+            .iter()
+            .map(|(region, initial)| {
+                let working = alternatives
+                    .iter()
+                    .filter_map(|branch| branch.drafts.get(region).cloned())
+                    .reduce(Datum::join_draft_results)
+                    .unwrap_or_else(|| initial.clone());
+                (region.clone(), working)
+            })
+            .collect();
         self.array_extents = alternatives
             .first()
             .map_or(&prior.array_extents, |branch| &branch.array_extents)
@@ -2611,10 +2661,29 @@ impl Ledger {
             self.storage_flow = Some(self.storage_prefix());
         }
         let mut writes = BTreeMap::new();
+        let mut draft_paths = BTreeSet::new();
         for origin in &slot.roots {
             let region = &origin.region;
             let single_object = definite && single && !region.summarized();
             let strong_store = single_object && !region.selection.iter().any(Coordinate::is_range);
+            let single_append = single_object
+                && region
+                    .append_parent()
+                    .is_some_and(|parent| !parent.iter().any(Coordinate::is_range));
+            if origin.draft && self.drafts.contains_key(&region.allocation_root()) {
+                if draft_paths.insert(region) {
+                    let mut stored = self.snapshot_for_draft(&value);
+                    stored.freeze();
+                    if let Some(working) = self.drafts.get_mut(&region.allocation_root()) {
+                        working.apply_draft_update(
+                            &region.selection,
+                            &stored,
+                            strong_store || single_append,
+                        );
+                    }
+                }
+                continue;
+            }
             if strong_store && origin.draft {
                 self.replacements.retain(|prior, _| {
                     prior.selection.len() <= region.selection.len()
@@ -2624,10 +2693,6 @@ impl Ledger {
             }
             self.replace_region(region, &value, strong_store);
             if publishes && self.storage_flow.is_some() {
-                let single_append = single_object
-                    && region
-                        .append_parent()
-                        .is_some_and(|parent| !parent.iter().any(Coordinate::is_range));
                 let definite = strong_store || single_append;
                 // Draft writes keep the same path when an earlier step
                 // replaces the object currently stored there.
@@ -2644,6 +2709,14 @@ impl Ledger {
                     writes.insert(StorageTarget::Entry(region.clone()), definite);
                 }
             }
+        }
+        if !slot.roots.is_empty()
+            && slot
+                .roots
+                .iter()
+                .all(|root| draft_paths.contains(&root.region))
+        {
+            return;
         }
         let has_entry_target =
             slot.roots.is_empty() || slot.roots.iter().any(|root| root.storage_read.is_none());
@@ -2724,6 +2797,14 @@ impl Ledger {
     }
 
     pub(super) fn append_coordinate(&mut self, array: &Datum, single_push: bool) -> Coordinate {
+        if array
+            .roots
+            .iter()
+            .any(|root| root.draft && self.drafts.contains_key(&root.region.allocation_root()))
+        {
+            // A draft append selects its position in the working graph.
+            return Coordinate::ArrayTail(0);
+        }
         if single_push
             && let Some(first) = array.roots.first()
             && !first.region.summarized()
@@ -2895,7 +2976,7 @@ impl Ledger {
         snapshot
     }
 
-    pub(super) fn snapshot_for_draft(&self, value: &Datum) -> Datum {
+    fn snapshot_for_draft(&self, value: &Datum) -> Datum {
         let mut snapshot = self.snapshot(value);
         snapshot.transform(&mut |root| {
             // Imported allocations can carry their initial extent before

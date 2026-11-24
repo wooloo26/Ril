@@ -187,6 +187,31 @@ fn main() -> () {
     assert(holder.slot.action(new Shelf.{ item: ^mut live }) == 42)
 }
 
+-- @case derive_updates_captured_fields_and_bindings run-pass backend=both
+type Cell = .{ var count: int }
+type Shelf = .{ ^mut item: Cell }
+type Action = fn(new Shelf) -> int
+type Slot = .{ var action: Action }
+fn count(new shelf: Shelf) -> int { shelf.item.count }
+fn freeze(new shelf: Shelf) -> int { let fixed = new shelf; fixed.item.count + 100 }
+fn main() -> () {
+    let mut live = Cell.{ count: 41 }
+    live.count += 1
+    let mut slot = Slot.{ action: freeze }
+    var action: Action = freeze
+    let saved = slot.action
+    let base = [1]
+    let next = derive(base) \mut draft -> {
+        Array::push(mut draft, 2)
+        slot.action = count
+        action = count
+    }
+    assert(base == [1] && next == [1, 2])
+    assert(saved(new Shelf.{ item: ^mut Cell.{ count: 3 } }) == 103)
+    assert(slot.action(new Shelf.{ item: ^mut live }) == 42)
+    assert(action(new Shelf.{ item: ^mut live }) == 42)
+}
+
 -- @case draft_appends_follow_the_current_path_and_preserve_other_occurrences run-pass backend=both
 type Cell = .{ var count: int }
 type Shelf = .{ ^mut item: Cell }
