@@ -681,6 +681,7 @@ pub type Edit = fn(mut Holder, Swap) &mut -> ()
 pub type Action = fn(new Shelf) -> int
 pub type Batch = .{ var ^mut items: []Action }
 pub type ReplaceBatch = fn(mut Batch) &mut -> ()
+pub type Extend = fn() &up -> ()
 fn freeze(new shelf: Shelf) -> int { let fixed = new shelf; fixed.item.count }
 pub fn count(new shelf: Shelf) -> int { shelf.item.count }
 pub fn swap(mut holder: Holder) &mut -> () { holder.slot = Slot.{ action: count } }
@@ -722,6 +723,29 @@ pub fn unrelated(mut batch: Batch, replace: ReplaceBatch) &mut -> Action {
     Array::push(mut local, freeze)
     local[1]
 }
+pub fn append_pair(mut items: []Action) &mut -> () {
+    Array::push(mut items, count)
+    Array::push(mut items, freeze)
+}
+pub fn append_selected(mut items: []Action) &mut -> Action {
+    append_pair(mut items)
+    items[1]
+}
+pub fn append_branch(mut items: []Action, flag: bool) &mut -> () {
+    if flag { Array::push(mut items, count) } else { Array::push(mut items, freeze) }
+    Array::push(mut items, count)
+}
+pub fn append_fixed(mut items: []Action) &mut -> () {
+    for 0..2 as _ { Array::push(mut items, count) }
+    Array::push(mut items, freeze)
+}
+pub fn append_variable(mut items: []Action, times: int) &mut -> () {
+    for 0..times as _ { Array::push(mut items, count) }
+    Array::push(mut items, freeze)
+}
+pub fn extender(^mut items: []Action) &capture &^mut &return(^mut items) -> new Extend {
+    \-> { Array::push(mut items, count); Array::push(mut items, freeze) }
+}
 "#;
     let mut library = VirtualPackage::new(Unit::Lib);
     library.entry = "pkg/storage.ril".into();
@@ -743,6 +767,7 @@ pub fn writer() -> Storage::Edit { Storage::writer() }
 pub fn append_twice(mut batch: Storage::Batch, replace: Storage::ReplaceBatch) &mut -> () {
     Storage::append_twice(mut batch, replace)
 }
+pub fn append_pair(mut items: []Storage::Action) &mut -> () { Storage::append_pair(mut items) }
 "#
         .to_vec(),
     );
@@ -846,6 +871,82 @@ fn observe() -> int {{
 use relay/forwarding
 fn observe() -> int {{
     let mut batch = Storage::Batch.{{ items: [Storage::count, Storage::count, Storage::count] }}
+    {setup}
+    let mut live = Storage::Cell.{{ count: 1 }}
+    live.count += 1
+    {target}(new Storage::Shelf.{{ item: ^mut live }})
+}}"
+            );
+            let mut client = VirtualPackage::new(Unit::Lib);
+            client.insert(mount.into(), bytes.to_vec());
+            client.insert("relay/forwarding.rili".into(), forwarded.clone());
+            client.insert(client.entry.clone(), source.into_bytes());
+            match (freezes, Driver.analyze(&client)) {
+                (false, Ok(_)) => {}
+                (true, Err(diagnostics)) => {
+                    assert_eq!(
+                        diagnostics.len(),
+                        1,
+                        "{mount} {setup} {target}: {diagnostics:?}"
+                    );
+                    assert_eq!(
+                        diagnostics[0].code,
+                        Some(Code::E0535),
+                        "{mount} {setup} {target}"
+                    );
+                }
+                (false, Err(diagnostics)) => panic!("{mount} {setup} {target}: {diagnostics:?}"),
+                (true, Ok(_)) => panic!("{mount} {setup} accepted a live view via {target}"),
+            }
+        }
+        for (setup, target, freezes) in [
+            ("Storage::append_pair(mut items)", "items[1]", false),
+            ("Storage::append_pair(mut items)", "items[2]", true),
+            ("Forwarding::append_pair(mut items)", "items[1]", false),
+            ("Forwarding::append_pair(mut items)", "items[2]", true),
+            (
+                "let selected = Storage::append_selected(mut items)",
+                "selected",
+                false,
+            ),
+            (
+                "Storage::append_branch(mut items, times > 0)",
+                "items[1]",
+                true,
+            ),
+            (
+                "Storage::append_branch(mut items, times > 0)",
+                "items[2]",
+                false,
+            ),
+            ("Storage::append_fixed(mut items)", "items[2]", false),
+            ("Storage::append_fixed(mut items)", "items[3]", true),
+            (
+                "Storage::append_variable(mut items, times)",
+                "items[0]",
+                false,
+            ),
+            (
+                "Storage::append_variable(mut items, times)",
+                "items[1]",
+                true,
+            ),
+            (
+                "let ^mut extend = Storage::extender(^mut items); extend()",
+                "items[1]",
+                false,
+            ),
+            (
+                "let ^mut extend = Storage::extender(^mut items); extend()",
+                "items[2]",
+                true,
+            ),
+        ] {
+            let source = format!(
+                "use library/storage
+use relay/forwarding
+fn observe(times: int) -> int {{
+    let mut items = [Storage::count]
     {setup}
     let mut live = Storage::Cell.{{ count: 1 }}
     live.count += 1

@@ -177,6 +177,11 @@ impl Region {
             || self.returned.is_some_and(|identity| identity.summarized)
     }
 
+    fn append_parent(&self) -> Option<&[Coordinate]> {
+        let (member, parent) = self.selection.split_last()?;
+        matches!(member, Coordinate::ArrayTail(_)).then_some(parent)
+    }
+
     fn age_allocation(&mut self, inside_loop: bool) {
         if inside_loop && self.instance == RegionInstance::Allocation {
             self.instance = RegionInstance::PriorAllocations;
@@ -2563,7 +2568,20 @@ impl Ledger {
         let publishes = self
             .capture_owner
             .is_some_and(|owner| value.publications.contains_key(&owner));
-        let mut observed_targets = BTreeSet::new();
+        let formal = |region: &Region| self.storage_formals.contains(&Some(region.source));
+        let tracked_append = slot
+            .roots
+            .iter()
+            .any(|root| root.region.append_parent().is_some() && formal(&root.region))
+            || slot.capture_paths.keys().any(|path| {
+                self.capture_owner == Some(path.owner) && path.region.append_parent().is_some()
+            });
+        // The first relative append needs its own ordered step. Capture
+        // preceding transfers before adding the append to the ledger.
+        if publishes && tracked_append && self.storage_flow.is_none() {
+            self.storage_flow = Some(self.storage_prefix());
+        }
+        let mut writes = BTreeMap::new();
         for origin in &slot.roots {
             let region = &origin.region;
             let single_object = definite && single && !region.summarized();
@@ -2577,44 +2595,58 @@ impl Ledger {
             }
             self.replace_region(region, &value, strong_store);
             if publishes && self.storage_flow.is_some() {
+                let single_append = single_object
+                    && region
+                        .append_parent()
+                        .is_some_and(|parent| !parent.iter().any(Coordinate::is_range));
+                let definite = strong_store || single_append;
                 if let Some(parent) = &origin.storage_read
-                    && let Some((member, path)) = region.selection.split_last()
+                    && let Some(member) = region.selection.last()
                 {
                     let target = StorageTarget::Observed {
                         parent: parent.clone(),
                         member: member.clone(),
                     };
-                    if observed_targets.insert(target.clone()) {
-                        // The concrete index of an append is determined during replay.
-                        let single_append = single_object
-                            && matches!(member, Coordinate::ArrayTail(_))
-                            && !path.iter().any(Coordinate::is_range);
-                        self.record_storage_write(target, &value, strong_store || single_append);
-                    }
+                    writes.insert(target, definite);
                 } else if self.storage_formals.contains(&Some(region.source)) {
-                    self.record_storage_write(
-                        StorageTarget::Entry(region.clone()),
-                        &value,
-                        strong_store,
-                    );
+                    writes.insert(StorageTarget::Entry(region.clone()), definite);
                 }
             }
         }
         let has_entry_target =
             slot.roots.is_empty() || slot.roots.iter().any(|root| root.storage_read.is_none());
+        let entirely_at_entry = slot.roots.iter().all(|root| root.storage_read.is_none());
+        let captured_append_covered = single
+            && writes.keys().any(|target| {
+                matches!(target, StorageTarget::Entry(region) if region.append_parent().is_some())
+            });
         for (path, &known) in &slot.capture_paths {
             if has_entry_target && self.capture_owner == Some(path.owner) && publishes {
-                let definite = definite
-                    && observed_targets.is_empty()
-                    && known
-                    && !path.region.selection.iter().any(Coordinate::is_range);
-                Self::record_replacement(&mut self.capture_updates, &path.region, &value, definite);
-                self.record_storage_write(
-                    StorageTarget::Entry(path.region.clone()),
+                let definite = definite && entirely_at_entry && known;
+                let strong_store =
+                    definite && !path.region.selection.iter().any(Coordinate::is_range);
+                Self::record_replacement(
+                    &mut self.capture_updates,
+                    &path.region,
                     &value,
-                    definite,
+                    strong_store,
                 );
+                if let Some(parent) = path.region.append_parent() {
+                    if !captured_append_covered {
+                        let single_append = definite
+                            && slot.capture_paths.len() == 1
+                            && !parent.iter().any(Coordinate::is_range);
+                        writes.insert(StorageTarget::Entry(path.region.clone()), single_append);
+                    }
+                } else {
+                    *writes
+                        .entry(StorageTarget::Entry(path.region.clone()))
+                        .or_default() |= strong_store;
+                }
             }
+        }
+        for (target, definite) in writes {
+            self.record_storage_write(target, &value, definite);
         }
     }
 

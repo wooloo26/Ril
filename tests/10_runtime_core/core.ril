@@ -187,6 +187,34 @@ fn main() -> () {
     assert(holder.slot.action(new Shelf.{ item: ^mut live }) == 42)
 }
 
+-- @case calls_and_captured_writers_keep_append_order run-pass backend=both
+type Cell = .{ var count: int }
+type Shelf = .{ ^mut item: Cell }
+type Action = fn(new Shelf) -> int
+fn count(new shelf: Shelf) -> int { shelf.item.count }
+fn freeze(new shelf: Shelf) -> int { let fixed = new shelf; fixed.item.count + 100 }
+fn extend(mut items: []Action) &mut -> () {
+    for 0..2 as _ { Array::push(mut items, count) }
+    Array::push(mut items, freeze)
+}
+fn main() -> () {
+    let mut live = Cell.{ count: 41 }
+    live.count += 1
+    let mut direct = [count]
+    extend(mut direct)
+    assert(len(ref direct) == 4)
+    assert(direct[1](new Shelf.{ item: ^mut live }) == 42)
+    assert(direct[2](new Shelf.{ item: ^mut live }) == 42)
+    assert(direct[3](new Shelf.{ item: ^mut Cell.{ count: 3 } }) == 103)
+    var mut captured = [freeze]
+    let ^mut append = \-> { Array::push(mut captured, count); Array::push(mut captured, freeze) }
+    captured = [count, count]
+    append()
+    assert(len(ref captured) == 4)
+    assert(captured[2](new Shelf.{ item: ^mut live }) == 42)
+    assert(captured[3](new Shelf.{ item: ^mut Cell.{ count: 4 } }) == 104)
+}
+
 -- @case consecutive_appends_follow_the_length_of_the_replacement_array run-pass backend=both
 type Cell = .{ var count: int }
 type Shelf = .{ ^mut item: Cell }

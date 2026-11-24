@@ -1233,3 +1233,22 @@ pub fn write_after(mut holder: Holder, replace: fn(mut Holder) &mut -> ()) &mut 
     replace(mut holder)
     holder.slot.action = freeze
 }
+
+-- @case exchanging_two_appends_changes_the_callable_at_each_position compat-fail E0552
+-- @baseline
+pub type Shelf = .{ ^mut item: Cell }
+fn count(new shelf: Shelf) -> int { shelf.item.count }
+fn freeze(new shelf: Shelf) -> int { let fixed = new shelf; fixed.item.count }
+pub fn extend(mut actions: []fn(new Shelf) -> int) &mut -> () {
+    Array::push(mut actions, count)
+    Array::push(mut actions, freeze)
+}
+-- @revision
+pub type Shelf = .{ ^mut item: Cell }
+fn count(new shelf: Shelf) -> int { shelf.item.count }
+fn freeze(new shelf: Shelf) -> int { let fixed = new shelf; fixed.item.count }
+pub fn extend(mut actions: []fn(new Shelf) -> int) &mut -> () {
+-- ^ E0552
+    Array::push(mut actions, freeze)
+    Array::push(mut actions, count)
+}

@@ -1581,7 +1581,7 @@ impl<'program> Analyzer<'program> {
             let stored =
                 self.instantiate_return(&formals, &via, entry, &update.value, &mut output_path);
             let coordinate = if matches!(member, Coordinate::ArrayTail(_)) {
-                ledger.append_coordinate(&value, false)
+                ledger.append_coordinate(&value, update.definite)
             } else {
                 member.clone()
             };
