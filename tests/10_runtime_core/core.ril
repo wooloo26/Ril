@@ -187,6 +187,35 @@ fn main() -> () {
     assert(holder.slot.action(new Shelf.{ item: ^mut live }) == 42)
 }
 
+-- @case draft_appends_follow_the_current_path_and_preserve_other_occurrences run-pass backend=both
+type Cell = .{ var count: int }
+type Shelf = .{ ^mut item: Cell }
+type Action = fn(new Shelf) -> int
+type Pair = .{ left: []Action, right: []Action }
+fn count(new shelf: Shelf) -> int { shelf.item.count }
+fn freeze(new shelf: Shelf) -> int { let fixed = new shelf; fixed.item.count + 100 }
+fn main() -> () {
+    let mut live = Cell.{ count: 41 }
+    live.count += 1
+    let shared = [count]
+    let seed = [count, count]
+    let base = Pair.{ left: shared, right: shared }
+    let first = derive(base) \mut draft -> {
+        Array::push(mut draft.left, freeze)
+        draft.left = seed
+        Array::push(mut draft.left, count)
+        Array::push(mut draft.left, freeze)
+    }
+    let second = derive(first) \mut draft -> { Array::push(mut draft.left, count) }
+    assert(len(base.left) == 1 && len(base.right) == 1 && len(seed) == 2)
+    assert(len(first.left) == 4 && len(second.left) == 5 && len(second.right) == 1)
+    assert(second.right[0](new Shelf.{ item: ^mut live }) == 42)
+    assert(second.left[1](new Shelf.{ item: ^mut live }) == 42)
+    assert(second.left[2](new Shelf.{ item: ^mut live }) == 42)
+    assert(second.left[3](new Shelf.{ item: ^mut Cell.{ count: 3 } }) == 103)
+    assert(second.left[4](new Shelf.{ item: ^mut live }) == 42)
+}
+
 -- @case calls_and_captured_writers_keep_append_order run-pass backend=both
 type Cell = .{ var count: int }
 type Shelf = .{ ^mut item: Cell }

@@ -815,6 +815,10 @@ impl<'a> Analyzer<'a> {
             value.transform(&mut |origin| {
                 origin.dependencies.insert(span.into());
                 origin.enter_formal(ctx.owner, param.mode);
+                if matches!(param.ty, Ty::Draft(_)) {
+                    origin.draft = true;
+                    origin.confined = Some(ctx.scope);
+                }
             });
             value = results::receive_results(self.program, &mut ledger, &param.ty, value, span);
             ledger.slots.insert(

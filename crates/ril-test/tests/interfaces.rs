@@ -979,6 +979,99 @@ fn observe(times: int) -> int {{
 }
 
 #[test]
+fn ordered_draft_updates_survive_separate_compilation() {
+    use ril_base::diag::Code;
+
+    let source = br#"
+pub type Cell = .{ var count: int }
+pub type Shelf = .{ ^mut item: Cell }
+pub type Action = fn(new Shelf) -> int
+pub type Pair = .{ left: []Action, right: []Action }
+pub type Update = fn(mut Draft<Pair>) &mut -> ()
+pub fn count(new shelf: Shelf) -> int { shelf.item.count }
+fn freeze(new shelf: Shelf) -> int { let fixed = new shelf; fixed.item.count }
+pub fn extend(mut draft: Draft<Pair>) &mut -> () {
+    Array::push(mut draft.left, count)
+    Array::push(mut draft.left, freeze)
+}
+pub fn updater(first: Action) &capture &return(first) -> new Update {
+    \mut draft: Draft<Pair> -> { Array::push(mut draft.left, first); Array::push(mut draft.left, freeze) }
+}
+pub fn finished() -> Pair {
+    let shared = [count]
+    derive(Pair.{ left: shared, right: shared }, extend)
+}
+"#;
+    let mut library = VirtualPackage::new(Unit::Lib);
+    library.entry = "pkg/updates.ril".into();
+    library.insert(library.entry.clone(), source.to_vec());
+    let interface = Driver.interface(&library).unwrap().encode().unwrap();
+    let mut forwarding = VirtualPackage::new(Unit::Lib);
+    forwarding.entry = "pkg/forwarding.ril".into();
+    forwarding.insert(
+        forwarding.entry.clone(),
+        br#"
+use library/updates
+pub fn updater(first: Updates::Action) &capture &return(first) -> new Updates::Update {
+    Updates::updater(first)
+}
+"#
+        .to_vec(),
+    );
+    forwarding.insert("library/updates.rili".into(), interface.clone());
+    let forwarded = Driver.interface(&forwarding).unwrap().encode().unwrap();
+    for (mount, bytes) in [
+        ("library/updates.ril", source.as_slice()),
+        ("library/updates.rili", interface.as_slice()),
+    ] {
+        for update in [
+            "derive(base, Updates::extend)",
+            "derive(base, Updates::updater(Updates::count))",
+            "derive(base, Forwarding::updater(Updates::count))",
+            "Updates::finished()",
+        ] {
+            for (target, freezes) in [("left[1]", false), ("left[2]", true), ("right[0]", false)] {
+                let source = format!(
+                    "use library/updates
+use relay/forwarding
+fn observe() -> int {{
+    let shared = [Updates::count]
+    let base = Updates::Pair.{{ left: shared, right: shared }}
+    let next = {update}
+    let mut live = Updates::Cell.{{ count: len(base.left) }}
+    live.count += 1
+    next.{target}(new Updates::Shelf.{{ item: ^mut live }})
+}}"
+                );
+                let mut client = VirtualPackage::new(Unit::Lib);
+                client.insert(mount.into(), bytes.to_vec());
+                client.insert("relay/forwarding.rili".into(), forwarded.clone());
+                client.insert(client.entry.clone(), source.into_bytes());
+                match (freezes, Driver.analyze(&client)) {
+                    (false, Ok(_)) => {}
+                    (true, Err(diagnostics)) => {
+                        assert_eq!(
+                            diagnostics.len(),
+                            1,
+                            "{mount} {update} {target}: {diagnostics:?}"
+                        );
+                        assert_eq!(
+                            diagnostics[0].code,
+                            Some(Code::E0535),
+                            "{mount} {update} {target}"
+                        );
+                    }
+                    (false, Err(diagnostics)) => {
+                        panic!("{mount} {update} {target}: {diagnostics:?}")
+                    }
+                    (true, Ok(_)) => panic!("{mount} {update} accepted a live view via {target}"),
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn correlated_callback_mode_offers_survive_interface_only_calls() {
     use ril_base::diag::Code;
 

@@ -386,7 +386,7 @@ pub struct ReturnAllocation {
 }
 
 /// Length evidence for a newly constructed array object.
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 pub struct ArrayExtent {
     pub minimum: usize,
     pub exact: bool,

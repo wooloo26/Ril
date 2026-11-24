@@ -23,6 +23,19 @@ pub(super) struct PublishedValue<'a> {
     pub(super) constructs: bool,
 }
 
+fn imported_parameters(function: &Function) -> (Vec<Option<Span>>, BTreeSet<Span>) {
+    let mut formals = Vec::new();
+    let mut via = BTreeSet::new();
+    for parameter in &function.signature.params {
+        let span = parameter.name.as_ref().map(|name| name.span);
+        formals.push(span);
+        if parameter.mode == Mode::Via {
+            via.extend(span);
+        }
+    }
+    (formals, via)
+}
+
 impl<'program> Analyzer<'program> {
     pub(in crate::access::check) fn load_interface_calls(&mut self) {
         for (&id, export) in &self.program.imported_functions {
@@ -118,19 +131,7 @@ impl<'program> Analyzer<'program> {
         export: &Export,
         (arguments, spans, span, invocation): (&[CallArgument], &[Span], Span, &[InvocationSite]),
     ) -> Datum {
-        let formals: Vec<_> = function
-            .signature
-            .params
-            .iter()
-            .map(|param| param.name.as_ref().map(|name| name.span))
-            .collect();
-        let via: BTreeSet<_> = function
-            .signature
-            .params
-            .iter()
-            .filter(|param| param.mode == Mode::Via)
-            .filter_map(|param| param.name.as_ref().map(|name| name.span))
-            .collect();
+        let (formals, via) = imported_parameters(function);
         let frozen = ledger.clone();
         let entry = CallEntry {
             arguments,
@@ -243,64 +244,21 @@ impl<'program> Analyzer<'program> {
                     }
                 }
             }
-            let updates: BTreeMap<_, _> = summary
-                .storage_updates
-                .iter()
-                .filter_map(|update| {
-                    let source = formals.get(update.formal).copied().flatten()?;
-                    let mut ty = &signature?.parameters.get(update.formal)?.ty;
-                    for coord in &update.path {
-                        ty = self
-                            .schema_member(ty, coord)
-                            .map_or(&Ty::Unknown, |member| &member.ty);
-                    }
-                    let value = self.exported_value(
-                        function.name.span,
-                        &formals,
-                        PublishedValue {
-                            sources: &update.sources,
-                            callbacks: &update.callback_returns,
-                            projections: &update.snapshot_projections,
-                            allocations: &update.allocations,
-                            constructs: update.constructs,
-                        },
-                        ty,
-                    );
-                    let mut region = Region::root(source);
-                    region.selection.clone_from(&update.path);
-                    Some((
-                        region,
-                        Replacement {
-                            value,
-                            definite: update.definite,
-                        },
-                    ))
-                })
-                .collect();
-            let flow = summary.storage_flow.as_ref().map(|flow| {
-                let owner = function.name.span;
-                self.load_storage_flow((owner, owner), &formals, flow, |update| {
-                    let source = formals.get(update.formal).copied().flatten()?;
-                    let mut target = Region::root(source);
-                    target.selection.clone_from(&update.path);
-                    Some(target)
-                })
-            });
-            if !updates.is_empty() || flow.is_some() {
-                let storage = CallStorage {
-                    formals: formals.clone(),
-                    via: via.clone(),
-                    updates,
-                    flow,
-                    ..CallStorage::default()
-                };
-                if !self.apply_callable_storage(ctx, storage, &entry, ledger, false) {
-                    self.error(
-                        Code::E0520,
-                        span,
-                        "published storage update has no writable target",
-                    );
-                }
+            let storage = self.decode_imported_storage(
+                function.name.span,
+                signature,
+                summary,
+                formals.clone(),
+                via.clone(),
+            );
+            if (!storage.updates.is_empty() || storage.flow.is_some())
+                && !self.apply_callable_storage(ctx, storage, &entry, ledger, false)
+            {
+                self.error(
+                    Code::E0520,
+                    span,
+                    "published storage update has no writable target",
+                );
             }
             ledger.no_continuation |= summary.nonreturning || self.ty(span) == &Ty::Never;
         }
@@ -319,6 +277,83 @@ impl<'program> Analyzer<'program> {
         )
     }
 
+    pub(super) fn imported_draft_storage(
+        &mut self,
+        owner: Span,
+        entry: &CallEntry<'_>,
+    ) -> Option<CallStorage> {
+        let id = self.definition(owner)?;
+        let function = self.function_syntax(id)?;
+        let signature = self.program.callables.get(&id)?.as_ref();
+        let export = self.program.imported_functions.get(&id)?;
+        let (formals, via) = imported_parameters(function);
+        let summary = if export.domain.is_empty() {
+            &export.summary
+        } else {
+            self.select_imported_summary(export, signature, &formals, entry)?
+        };
+        Some(self.decode_imported_storage(owner, Some(signature), summary, formals, via))
+    }
+
+    fn decode_imported_storage(
+        &mut self,
+        owner: Span,
+        signature: Option<&'program Callable>,
+        summary: &Summary,
+        formals: Vec<Option<Span>>,
+        via: BTreeSet<Span>,
+    ) -> CallStorage {
+        let updates = summary
+            .storage_updates
+            .iter()
+            .filter_map(|update| {
+                let source = formals.get(update.formal).copied().flatten()?;
+                let mut ty = &signature?.parameters.get(update.formal)?.ty;
+                for coordinate in &update.path {
+                    ty = self
+                        .schema_member(ty, coordinate)
+                        .map_or(&Ty::Unknown, |member| &member.ty);
+                }
+                let value = self.exported_value(
+                    owner,
+                    &formals,
+                    PublishedValue {
+                        sources: &update.sources,
+                        callbacks: &update.callback_returns,
+                        projections: &update.snapshot_projections,
+                        allocations: &update.allocations,
+                        constructs: update.constructs,
+                    },
+                    ty,
+                );
+                let mut region = Region::root(source);
+                region.selection.clone_from(&update.path);
+                Some((
+                    region,
+                    Replacement {
+                        value,
+                        definite: update.definite,
+                    },
+                ))
+            })
+            .collect();
+        let flow = summary.storage_flow.as_ref().map(|flow| {
+            self.load_storage_flow((owner, owner), &formals, flow, |update| {
+                let source = formals.get(update.formal).copied().flatten()?;
+                let mut target = Region::root(source);
+                target.selection.clone_from(&update.path);
+                Some(target)
+            })
+        });
+        CallStorage {
+            formals,
+            via,
+            updates,
+            flow,
+            ..CallStorage::default()
+        }
+    }
+
     pub(super) fn imported_callback_result(
         &mut self,
         function: &Function,
@@ -326,19 +361,7 @@ impl<'program> Analyzer<'program> {
         export: &Export,
         entry: &CallEntry<'_>,
     ) -> Option<Datum> {
-        let formals: Vec<_> = function
-            .signature
-            .params
-            .iter()
-            .map(|param| param.name.as_ref().map(|name| name.span))
-            .collect();
-        let via: BTreeSet<_> = function
-            .signature
-            .params
-            .iter()
-            .filter(|param| param.mode == Mode::Via)
-            .filter_map(|param| param.name.as_ref().map(|name| name.span))
-            .collect();
+        let (formals, via) = imported_parameters(function);
         let summary = if export.domain.is_empty() {
             &export.summary
         } else {

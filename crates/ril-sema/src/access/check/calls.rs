@@ -30,6 +30,7 @@ use super::{
 };
 use crate::access::flow::InvocationSite;
 
+mod draft;
 mod imported;
 mod snapshot_invocations;
 mod storage_replay;
@@ -45,6 +46,12 @@ struct CallEntry<'a> {
     span: Span,
     invocation: &'a [InvocationSite],
     environment: Option<CallEnvironment<'a>>,
+}
+
+struct ProviderStorageCall {
+    storage: CallStorage,
+    arguments: Vec<CallArgument>,
+    spans: Vec<Span>,
 }
 
 #[derive(Clone, Copy)]
@@ -2801,77 +2808,6 @@ impl<'program> Analyzer<'program> {
             _ => {}
         }
         self.snapshot_value(span)
-    }
-
-    fn derived_snapshot(
-        &mut self,
-        ledger: &Ledger,
-        base: &Datum,
-        callback: &Datum,
-        span: Span,
-    ) -> Datum {
-        // Draft stores select paths in the working snapshot. Two paths to the
-        // same inserted object must still have independent updates.
-        let before = Ledger::default();
-        let arguments = [(0, Mode::Mut, base.clone())];
-        let entry = CallEntry {
-            arguments: &arguments,
-            spans: &[span],
-            ledger: &before,
-            span,
-            invocation: &[],
-            environment: None,
-        };
-        let alternatives = callback.roots.iter().map(|origin| {
-            let storage = snapshot_invocations::known_provider(origin).and_then(|owner| {
-                if let Some(closure) = self.closure_modes.get(&owner) {
-                    return Some(CallStorage {
-                        formals: closure.formals.clone(),
-                        via: closure.via.clone(),
-                        updates: closure.updates.clone(),
-                        ..CallStorage::default()
-                    });
-                }
-                self.functions
-                    .iter()
-                    .find(|function| function.owner == owner)
-                    .map(CallStorage::updates_of)
-            });
-            let Some(storage) = storage else {
-                return base.clone();
-            };
-            let mut working = base.clone();
-            for (region, update) in storage.updates {
-                if storage.formals.first().copied().flatten() != Some(region.source) {
-                    continue;
-                }
-                let mut path = region.selection;
-                let mut stored = self.instantiate_return(
-                    &storage.formals,
-                    &storage.via,
-                    &entry,
-                    &update.value,
-                    &mut path.clone(),
-                );
-                stored.freeze();
-                if let Some((tail @ Coordinate::ArrayTail(_), parent)) = path.split_last_mut() {
-                    let array = parent.iter().fold(working.clone(), |value, coordinate| {
-                        value.project(coordinate.clone(), Access::Immutable)
-                    });
-                    *tail = Coordinate::ArrayTail(ledger.array_prefix_length(&array));
-                }
-                working.apply_draft_update(&path, &stored, update.definite);
-            }
-            working
-        });
-        let mut result = alternatives
-            .reduce(Datum::join_draft_results)
-            .unwrap_or_else(|| base.clone());
-        result.freeze();
-        result.transform(&mut |root| {
-            root.detached_snapshot = true;
-        });
-        result
     }
 
     fn concurrent(

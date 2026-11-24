@@ -913,6 +913,13 @@ impl Datum {
             };
             return;
         };
+        let append;
+        let coordinate = if matches!(coordinate, Coordinate::ArrayTail(_)) && rest.is_empty() {
+            append = self.draft_append_coordinate(definite);
+            &append
+        } else {
+            coordinate
+        };
         if coordinate.is_range() {
             let mut indexed: Vec<_> = self
                 .members
@@ -933,6 +940,28 @@ impl Datum {
             member.apply_draft_update(rest, stored, definite);
             self.members.insert(coordinate.clone(), member);
         }
+    }
+
+    fn draft_append_coordinate(&mut self, definite: bool) -> Coordinate {
+        let extent = self
+            .roots
+            .iter()
+            .map(|root| root.array_extent.unwrap_or_default())
+            .reduce(ArrayExtent::meet)
+            .unwrap_or_default();
+        let next = (definite && extent.exact)
+            .then(|| extent.minimum.checked_add(1))
+            .flatten();
+        self.array_len = self.array_len.and(next);
+        for root in &mut self.roots {
+            root.array_extent = Some(ArrayExtent {
+                minimum: next.unwrap_or(extent.minimum),
+                exact: next.is_some(),
+            });
+        }
+        next.map_or(Coordinate::ArrayTail(extent.minimum), |_| {
+            Coordinate::Index(extent.minimum.to_string())
+        })
     }
 
     pub(super) fn join_draft_results(mut self, mut other: Self) -> Self {
@@ -2600,7 +2629,10 @@ impl Ledger {
                         .append_parent()
                         .is_some_and(|parent| !parent.iter().any(Coordinate::is_range));
                 let definite = strong_store || single_append;
-                if let Some(parent) = &origin.storage_read
+                // Draft writes keep the same path when an earlier step
+                // replaces the object currently stored there.
+                if !origin.draft
+                    && let Some(parent) = &origin.storage_read
                     && let Some(member) = region.selection.last()
                 {
                     let target = StorageTarget::Observed {
@@ -2668,23 +2700,27 @@ impl Ledger {
         array
             .roots
             .iter()
-            .map(|root| {
-                self.array_extents
-                    .get(&root.region)
-                    .map_or(0, |extent| extent.minimum)
-            })
+            .map(|root| self.array_extent(root).map_or(0, |extent| extent.minimum))
             .min()
             .unwrap_or(0)
     }
 
     pub(super) fn exact_array_length(&self, array: &Datum) -> Option<usize> {
-        let first = self.array_extents.get(&array.roots.first()?.region)?;
+        let first = self.array_extent(array.roots.first()?)?;
         (first.exact
             && array
                 .roots
                 .iter()
-                .all(|root| self.array_extents.get(&root.region) == Some(first)))
+                .all(|root| self.array_extent(root) == Some(first)))
         .then_some(first.minimum)
+    }
+
+    fn array_extent(&self, origin: &Origin) -> Option<ArrayExtent> {
+        if origin.detached_snapshot {
+            origin.array_extent
+        } else {
+            self.array_extents.get(&origin.region).copied()
+        }
     }
 
     pub(super) fn append_coordinate(&mut self, array: &Datum, single_push: bool) -> Coordinate {
@@ -2859,12 +2895,21 @@ impl Ledger {
         snapshot
     }
 
+    pub(super) fn snapshot_for_draft(&self, value: &Datum) -> Datum {
+        let mut snapshot = self.snapshot(value);
+        snapshot.transform(&mut |root| {
+            // Imported allocations can carry their initial extent before
+            // the caller has installed it in the ledger.
+            root.array_extent = self.array_extent(root).or(root.array_extent);
+            root.detached_snapshot = true;
+        });
+        snapshot
+    }
+
     fn capture_array_extents(&self, value: &mut Datum) {
         value.transform(&mut |root| {
             root.array_extent = self
-                .array_extents
-                .get(&root.region)
-                .copied()
+                .array_extent(root)
                 .filter(|extent| extent.exact || extent.minimum > 0);
         });
     }

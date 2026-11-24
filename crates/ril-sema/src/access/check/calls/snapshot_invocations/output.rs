@@ -4,7 +4,7 @@ use super::{
     Analyzer, CallEntry, Datum, Provider, ProviderReferences, Span, axis, known_provider,
     visit_callback_projections,
 };
-use crate::access::check::calls::imported::PublishedValue;
+use crate::access::check::calls::{ProviderStorageCall, imported::PublishedValue};
 use crate::{
     access::{
         Access, Coordinate, SnapshotOrigin, SnapshotProjection, StorageObservation,
@@ -123,14 +123,27 @@ impl Analyzer<'_> {
         entry: &CallEntry<'_>,
         ledger: &mut super::Ledger,
     ) {
-        let Some(storage) = self
+        let Some(call) = self.provider_storage_call((provider, root, receiver), entry) else {
+            return;
+        };
+        let entry = CallEntry {
+            arguments: &call.arguments,
+            spans: &call.spans,
+            ..*entry
+        };
+        self.apply_callable_storage(ctx, call.storage, &entry, ledger, true);
+    }
+
+    pub(in crate::access::check::calls) fn provider_storage_call(
+        &mut self,
+        (provider, root, receiver): (Span, &Origin, &Datum),
+        entry: &CallEntry<'_>,
+    ) -> Option<ProviderStorageCall> {
+        let storage = self
             .snapshot_providers
             .imported_storage
             .get(&provider)
-            .cloned()
-        else {
-            return;
-        };
+            .cloned()?;
         let parameter_count = storage.signature.formals.len();
         let mut formals = storage.signature.formals;
         formals.extend(&storage.captures);
@@ -189,19 +202,18 @@ impl Analyzer<'_> {
         let flow = storage.flow.as_ref().map(|flow| {
             self.load_storage_flow((storage.owner, provider), &formals, flow, capture_target)
         });
-        let call = CallStorage {
+        let storage = CallStorage {
             formals,
             via: storage.signature.via,
             updates,
             flow,
             ..CallStorage::default()
         };
-        let entry = CallEntry {
-            arguments: &arguments,
-            spans: &spans,
-            ..*entry
-        };
-        self.apply_callable_storage(ctx, call, &entry, ledger, true);
+        Some(ProviderStorageCall {
+            storage,
+            arguments,
+            spans,
+        })
     }
 
     pub(in crate::access::check::calls) fn snapshot_argument_providers(
