@@ -331,6 +331,7 @@ pub type Cell = .{ var count: int }
 pub type Shelf = .{ ^mut item: Cell }
 pub type Leaf = fn(new Shelf) -> int
 pub type Slot = .{ var action: Leaf }
+pub type Frame = .{ var action: Leaf, stamp: int }
 fn freeze(new shelf: Shelf) -> int { let fixed = new shelf; fixed.item.count }
 fn count(new shelf: Shelf) -> int { shelf.item.count }
 fn make_private() -> Leaf { freeze }
@@ -346,6 +347,9 @@ pub fn from_callback_with(make: fn(Leaf) -> Leaf) -> Leaf { make(freeze) }
 pub fn apply(make: fn() -> Leaf, new shelf: Shelf) -> int { make()(new shelf) }
 pub fn apply_with(make: fn(Leaf) -> Leaf, new shelf: Shelf) -> int { make(freeze)(new shelf) }
 pub fn install(mut slot: Slot) &mut -> () { slot.action = freeze }
+pub fn stamp(base: Frame) -> Frame { derive(base) \mut d -> { d.stamp = 42 } }
+pub fn freeze_frame(base: Frame) -> Frame { derive(base) \mut d -> { d.action = freeze } }
+pub fn read_frame(base: Frame) -> Frame { derive(base) \mut d -> { d.action = count } }
 "#;
     let mut library = VirtualPackage::new(Unit::Lib);
     library.entry = "pkg/snapshot.ril".into();
@@ -365,6 +369,18 @@ pub fn install(mut slot: Slot) &mut -> () { slot.action = freeze }
             ("Snapshot::identity(count)", false),
             ("Snapshot::from_callback(make)", true),
             ("Snapshot::from_callback_with(keep)", true),
+            (
+                "Snapshot::stamp(Snapshot::Frame.{ action: freeze, stamp: 1 }).action",
+                true,
+            ),
+            (
+                "{ let mut draft_base = Snapshot::Frame.{ action: freeze, stamp: 1 }; draft_base.action = count; let base = new draft_base; Snapshot::freeze_frame(base).action }",
+                true,
+            ),
+            (
+                "{ let mut draft_base = Snapshot::Frame.{ action: count, stamp: 1 }; draft_base.action = freeze; let base = new draft_base; Snapshot::read_frame(base).action }",
+                false,
+            ),
             (
                 "\\new input: Snapshot::Shelf -> Snapshot::apply(make, new input)",
                 true,
@@ -1675,6 +1691,7 @@ fn exported_summaries_and_via_domains_agree_with_lean() {
                     new: false,
                     borrowed: false,
                     forwarded: false,
+                    detached: false,
                     provider: Some(provider),
                 }],
             },
@@ -1831,7 +1848,7 @@ fn exported_summaries_and_via_domains_agree_with_lean() {
     };
     fn wire_snapshot_origin(root: &SnapshotOrigin) -> Value {
         json!({
-            "shape": [&json!(root.source), &json!(root.access), &json!(root.new), &json!(root.borrowed), &json!(root.forwarded)],
+            "shape": [&json!(root.source), &json!(root.access), &json!(root.new), &json!(root.borrowed), &json!(root.forwarded), &json!(root.detached)],
             "provider": root.provider,
         })
     }

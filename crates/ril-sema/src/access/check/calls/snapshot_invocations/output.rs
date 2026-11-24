@@ -213,6 +213,7 @@ impl Analyzer<'_> {
                             new: origin.new,
                             borrowed: origin.call_borrow,
                             forwarded: origin.inherits_mode,
+                            detached: origin.detached_snapshot,
                         },
                     });
                 }
@@ -243,6 +244,7 @@ impl Analyzer<'_> {
             })
         {
             root.snapshot_provider = provider;
+            root.detached_snapshot |= origin.detached;
             return;
         }
         let source = origin
@@ -258,6 +260,7 @@ impl Analyzer<'_> {
             if provider.is_some() {
                 root.snapshot_provider = provider;
             }
+            root.detached_snapshot |= origin.detached;
             return;
         }
         if source.is_none() && provider.is_none() {
@@ -269,6 +272,7 @@ impl Analyzer<'_> {
             root.snapshot_provider = provider;
             root.call_borrow = origin.borrowed;
             root.inherits_mode = origin.forwarded;
+            root.detached_snapshot = origin.detached;
             if let Some(source) = &origin.source {
                 root.region.selection.clone_from(&source.path);
             }

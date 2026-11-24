@@ -202,6 +202,7 @@ fn origins_subsume(old: &SnapshotOrigin, new: &SnapshotOrigin, pairs: &ProviderP
         && old.new == new.new
         && old.borrowed == new.borrowed
         && old.forwarded == new.forwarded
+        && old.detached == new.detached
         && match (old.provider, new.provider) {
             (None, None) => true,
             (Some(old), Some(new)) => pairs.contains(&(old, new)),

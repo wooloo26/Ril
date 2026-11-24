@@ -1622,6 +1622,11 @@ impl<'program> Analyzer<'program> {
                             root.call_borrow |= root.mode.writes();
                         }
                     }
+                    if origin.detached_snapshot {
+                        actual.transform(&mut |root| {
+                            root.detached_snapshot = true;
+                        });
+                    }
                     Some(actual)
                 } else {
                     let mut mapped = origin.clone();
@@ -2366,6 +2371,11 @@ impl<'program> Analyzer<'program> {
                     for effect in &callback.latent_effects {
                         self.effect(ctx, ledger, effect, span);
                     }
+                    if let Some(base) = first
+                        && super::higher_order::carries_callable(self.program, self.ty(span))
+                    {
+                        return self.derived_snapshot(base, callback, span);
+                    }
                 }
             }
             "absorb_panic" => {
@@ -2397,6 +2407,60 @@ impl<'program> Analyzer<'program> {
             _ => {}
         }
         self.snapshot_value(span)
+    }
+
+    fn derived_snapshot(&mut self, base: &Datum, callback: &Datum, span: Span) -> Datum {
+        // Draft stores select paths in the working snapshot. Two paths to the
+        // same inserted object must still have independent updates.
+        let before = Ledger::default();
+        let arguments = [(0, Mode::Mut, base.clone())];
+        let entry = CallEntry {
+            arguments: &arguments,
+            spans: &[span],
+            ledger: &before,
+            span,
+            invocation: &[],
+        };
+        let alternatives = callback.roots.iter().map(|origin| {
+            let storage = snapshot_invocations::known_provider(origin).and_then(|owner| {
+                if let Some(closure) = self.closure_modes.get(&owner) {
+                    return Some(CallStorage {
+                        formals: closure.formals.clone(),
+                        via: closure.via.clone(),
+                        updates: closure.updates.clone(),
+                        ..CallStorage::default()
+                    });
+                }
+                self.functions
+                    .iter()
+                    .find(|function| function.owner == owner)
+                    .map(CallStorage::updates_of)
+            });
+            let Some(storage) = storage else {
+                return base.clone();
+            };
+            let mut working = base.clone();
+            for (region, update) in storage.updates {
+                let mut stored = self.instantiate_return(
+                    &storage.formals,
+                    &storage.via,
+                    &entry,
+                    &update.value,
+                    &mut region.selection.clone(),
+                );
+                stored.freeze();
+                working.apply_draft_update(&region.selection, &stored, update.definite);
+            }
+            working
+        });
+        let mut result = alternatives
+            .reduce(Datum::join_draft_results)
+            .unwrap_or_else(|| base.clone());
+        result.freeze();
+        result.transform(&mut |root| {
+            root.detached_snapshot = true;
+        });
+        result
     }
 
     fn concurrent(

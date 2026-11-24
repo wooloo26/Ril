@@ -199,6 +199,9 @@ pub(super) struct Origin {
     pub inherits_mode: bool,
     pub callback_result: Option<CallbackOrigin>,
     pub snapshot_provider: Option<Span>,
+    // A functional update retains the source for opaque projections. Its
+    // materialized members describe the copied graph independently.
+    pub detached_snapshot: bool,
     pub return_allocation: Option<AllocationIdentity>,
     pub reception: Vec<Reception>,
     pub new: bool,
@@ -449,6 +452,7 @@ impl Datum {
                 inherits_mode: false,
                 callback_result: None,
                 snapshot_provider: None,
+                detached_snapshot: false,
                 return_allocation: None,
                 reception: Vec::new(),
                 new,
@@ -687,10 +691,9 @@ impl Datum {
             .roots
             .iter()
             .any(|root| root.region.instance == RegionInstance::PriorAllocations)
-            || self
-                .roots
-                .iter()
-                .any(|root| root.region.instance == RegionInstance::Source)
+            || self.roots.iter().any(|root| {
+                root.detached_snapshot || root.region.instance == RegionInstance::Source
+            })
         {
             return;
         }
@@ -768,6 +771,7 @@ impl Datum {
             for root in &mut source.roots {
                 root.call_borrow = origin.call_borrow;
                 root.snapshot_provider = origin.snapshot_provider;
+                root.detached_snapshot = origin.detached_snapshot;
                 root.inherits_mode = origin.inherits_mode;
                 root.entry_graph = origin.entry_graph.as_ref().map(|entry| EntryGraph {
                     callable: entry.callable,
@@ -834,6 +838,66 @@ impl Datum {
             member.freeze();
         }
         self.requires_new = false;
+    }
+
+    pub(super) fn apply_draft_update(
+        &mut self,
+        path: &[Coordinate],
+        stored: &Self,
+        definite: bool,
+    ) {
+        let Some((coordinate, rest)) = path.split_first() else {
+            *self = if definite {
+                stored.clone()
+            } else {
+                std::mem::take(self).joined(stored.clone())
+            };
+            return;
+        };
+        if *coordinate == Coordinate::Dynamic {
+            let mut indexed: Vec<_> = self
+                .members
+                .keys()
+                .filter(|key| coordinate.covers(key))
+                .cloned()
+                .collect();
+            if !indexed.contains(coordinate) {
+                indexed.push(coordinate.clone());
+            }
+            for coordinate in indexed {
+                let mut member = self.project(coordinate.clone(), Access::Immutable);
+                member.apply_draft_update(rest, stored, false);
+                self.members.insert(coordinate, member);
+            }
+        } else {
+            let mut member = self.project(coordinate.clone(), Access::Immutable);
+            member.apply_draft_update(rest, stored, definite);
+            self.members.insert(coordinate.clone(), member);
+        }
+    }
+
+    pub(super) fn join_draft_results(mut self, mut other: Self) -> Self {
+        let fields: BTreeSet<_> = self
+            .members
+            .keys()
+            .chain(other.members.keys())
+            .cloned()
+            .collect();
+        // A store may materialize a field in just one alternative. Project
+        // the corresponding entry source in the other alternative.
+        let members = fields
+            .into_iter()
+            .map(|coordinate| {
+                let left = self.project(coordinate.clone(), Access::Immutable);
+                let right = other.project(coordinate.clone(), Access::Immutable);
+                (coordinate, left.join_draft_results(right))
+            })
+            .collect();
+        self.members.clear();
+        other.members.clear();
+        let mut result = self.joined(other);
+        result.members = members;
+        result
     }
 
     pub(super) fn receive_binding(&mut self, access: Access) {
@@ -1127,6 +1191,10 @@ impl Datum {
                 .filter(|(key, _)| coordinate.covers(key))
                 .map(|(_, value)| value.clone())
                 .reduce(Self::joined)
+        } else if Coordinate::Dynamic.covers(coordinate)
+            && self.roots.iter().any(|root| root.detached_snapshot)
+        {
+            self.members.get(&Coordinate::Dynamic).cloned()
         } else {
             None
         }
@@ -1326,7 +1394,13 @@ impl Ledger {
         let alternatives: Vec<_> = value
             .roots
             .iter()
-            .map(|root| self.overwritten_paths(&root.region))
+            .map(|root| {
+                if root.detached_snapshot {
+                    Vec::new()
+                } else {
+                    self.overwritten_paths(&root.region)
+                }
+            })
             .collect();
         let candidates: BTreeSet<_> = alternatives.iter().flatten().collect();
         candidates
@@ -2102,6 +2176,13 @@ impl Ledger {
                 && single
                 && !region.summarized()
                 && !region.selection.contains(&Coordinate::Dynamic);
+            if definite && origin.draft {
+                self.replacements.retain(|prior, _| {
+                    prior.selection.len() <= region.selection.len()
+                        || !prior.selection.starts_with(&region.selection)
+                        || !prior.overlaps(region)
+                });
+            }
             self.replace_region(region, &value, definite);
         }
     }
@@ -2169,6 +2250,13 @@ impl Ledger {
                 continue;
             }
             let region = &origin.region;
+            if root.detached_snapshot {
+                use_inline = true;
+                if initial.is_none() && include_opaque(region) {
+                    missing.push(root.clone());
+                }
+                continue;
+            }
             let exact = self.replacements.get(region);
             if let Some(update) = exact.filter(|update| update.definite) {
                 projected = join_member(projected, update.value.clone());
@@ -2223,6 +2311,7 @@ impl Ledger {
         let regions: BTreeSet<_> = value
             .roots
             .iter()
+            .filter(|root| !root.detached_snapshot)
             .map(|root| (root.region.clone(), root.mode))
             .filter(|root| !ancestors.contains(root))
             .collect();

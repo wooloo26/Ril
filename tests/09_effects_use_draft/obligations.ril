@@ -475,3 +475,127 @@ fn work() -> () {
     use duplicate = original
     -- ^ E0604
 }
+
+-- @case deriving_without_replacing_a_callable_preserves_its_snapshot_contract compile-fail E0535 no-prelude
+type Cell = .{ var count: int }
+type Shelf = .{ ^mut item: Cell }
+type Action = fn(new Shelf) -> int
+type Holder = .{ action: Action, stamp: int }
+fn freeze(new shelf: Shelf) -> int { let fixed = new shelf; fixed.item.count }
+fn run() -> int {
+    let mut live = Cell.{ count: 1 }
+    live.count += 1
+    let base = Holder.{ action: freeze, stamp: 1 }
+    let next = derive(base) \mut draft -> { draft.stamp = 2 }
+    let answer = next.action(new Shelf.{ item: ^mut live })
+    -- ^ E0535
+    live.count += 8
+    answer + live.count
+}
+
+-- @case replacing_a_callable_in_a_draft_changes_only_the_derived_snapshot compile-pass no-prelude
+type Cell = .{ var count: int }
+type Shelf = .{ ^mut item: Cell }
+type Action = fn(new Shelf) -> int
+type Holder = .{ var action: Action, stamp: int }
+fn freeze(new shelf: Shelf) -> int { let fixed = new shelf; fixed.item.count }
+fn count(new shelf: Shelf) -> int { shelf.item.count }
+fn run() -> int {
+    let mut live = Cell.{ count: 1 }
+    live.count += 1
+    let mut source = Holder.{ action: count, stamp: 1 }
+    source.action = freeze
+    let base = new source
+    let next = derive(base) \mut draft -> { draft.action = count }
+    let answer = next.action(new Shelf.{ item: ^mut live })
+    live.count += 8
+    answer + live.count
+}
+
+-- @case a_draft_child_update_targets_the_replaced_parent compile-fail E0535 no-prelude
+type Cell = .{ var count: int }
+type Shelf = .{ ^mut item: Cell }
+type Action = fn(new Shelf) -> int
+type Leaf = .{ action: Action }
+type Holder = .{ leaf: Leaf }
+fn freeze(new shelf: Shelf) -> int { let fixed = new shelf; fixed.item.count }
+fn count(new shelf: Shelf) -> int { shelf.item.count }
+fn run() -> int {
+    let mut live = Cell.{ count: 1 }
+    live.count += 1
+    let base = Holder.{ leaf: Leaf.{ action: count } }
+    let next = derive(base) \mut draft -> {
+        draft.leaf = Leaf.{ action: count }
+        draft.leaf.action = freeze
+    }
+    let answer = next.leaf.action(new Shelf.{ item: ^mut live })
+    -- ^ E0535
+    live.count += 8
+    answer + live.count
+}
+
+-- @case replacing_a_draft_parent_discards_older_child_updates compile-pass no-prelude
+type Cell = .{ var count: int }
+type Shelf = .{ ^mut item: Cell }
+type Action = fn(new Shelf) -> int
+type Leaf = .{ action: Action }
+type Holder = .{ leaf: Leaf }
+fn freeze(new shelf: Shelf) -> int { let fixed = new shelf; fixed.item.count }
+fn count(new shelf: Shelf) -> int { shelf.item.count }
+fn run() -> int {
+    let mut live = Cell.{ count: 1 }
+    live.count += 1
+    let base = Holder.{ leaf: Leaf.{ action: count } }
+    let next = derive(base) \mut draft -> {
+        draft.leaf.action = freeze
+        draft.leaf = Leaf.{ action: count }
+    }
+    let answer = next.leaf.action(new Shelf.{ item: ^mut live })
+    live.count += 8
+    answer + live.count
+}
+
+-- @case draft_callable_updates_distinguish_paths_to_shared_snapshots compile-pass no-prelude
+type Cell = .{ var count: int }
+type Shelf = .{ ^mut item: Cell }
+type Action = fn(new Shelf) -> int
+type Leaf = .{ action: Action }
+type Holder = .{ left: Leaf, right: Leaf }
+fn freeze(new shelf: Shelf) -> int { let fixed = new shelf; fixed.item.count }
+fn count(new shelf: Shelf) -> int { shelf.item.count }
+fn run() -> int {
+    let mut live = Cell.{ count: 1 }
+    live.count += 1
+    let shared = Leaf.{ action: count }
+    let base = Holder.{ left: shared, right: shared }
+    let next = derive(base) \mut draft -> { draft.left.action = freeze }
+    let answer = next.right.action(new Shelf.{ item: ^mut live })
+    live.count += 8
+    answer + live.count
+}
+
+-- @case a_draft_callback_alternative_preserves_an_unmodified_entry_callback compile-fail E0535 no-prelude
+type Cell = .{ var count: int }
+type Shelf = .{ ^mut item: Cell }
+type Action = fn(new Shelf) -> int
+type Holder = .{ action: Action, stamp: int }
+fn freeze(new shelf: Shelf) -> int { let fixed = new shelf; fixed.item.count }
+fn count(new shelf: Shelf) -> int { shelf.item.count }
+fn edit(base: Holder, flag: bool) -> Holder {
+    let transform = if flag {
+        \mut draft: Draft<Holder> -> { draft.action = count }
+    } else {
+        \mut draft: Draft<Holder> -> { draft.stamp = 2 }
+    }
+    derive(base, transform)
+}
+fn run(flag: bool) -> int {
+    let mut live = Cell.{ count: 1 }
+    live.count += 1
+    let base = Holder.{ action: freeze, stamp: 1 }
+    let next = edit(base, flag)
+    let answer = next.action(new Shelf.{ item: ^mut live })
+    -- ^ E0535
+    live.count += 8
+    answer + live.count
+}

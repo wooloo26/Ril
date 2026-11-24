@@ -188,6 +188,8 @@ pub struct SnapshotOrigin {
     pub new: bool,
     pub borrowed: bool,
     pub forwarded: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub detached: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<usize>,
 }

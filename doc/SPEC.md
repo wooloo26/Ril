@@ -865,6 +865,8 @@ In higher-order parameter types, `fn(via T) @& -> infer R` opens mode polymorphi
 
 Draft paths follow the current working value, including after a field or an array entry has been replaced. Updating an inserted snapshot through a draft path leaves its original source and its other occurrences unchanged.
 
+The committed snapshot carries the callable contracts at its current paths. A field replacement updates the contract at that path in the result.
+
 ```ril
 type Profile = .{ email: str, tags: []str }
 type Account = .{ id: int, profile: Profile }

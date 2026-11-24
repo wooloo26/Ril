@@ -122,6 +122,7 @@ fn describe_graph(
             new: origin.new,
             borrowed: origin.call_borrow,
             forwarded: origin.inherits_mode,
+            detached: origin.detached_snapshot,
             provider: known_provider(origin).and_then(|owner| providers.get(&owner).copied()),
         })
         .collect();
@@ -259,6 +260,7 @@ fn import_graph(
                 }
                 origin.call_borrow = root.borrowed;
                 origin.inherits_mode = root.forwarded;
+                origin.detached_snapshot = root.detached;
                 origin.snapshot_provider = root
                     .provider
                     .and_then(|index| providers.get(index).copied());
