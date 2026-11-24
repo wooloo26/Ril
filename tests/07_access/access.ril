@@ -3032,6 +3032,44 @@ fn run() -> () {
     -- ^ E0530
 }
 
+-- @case clone_accepts_immutable_captures_in_a_live_container compile-pass no-prelude
+type Cell = .{ var count: int }
+fn count() -> int { 42 }
+fn run() -> int {
+    let fixed = Cell.{ count: count() }
+    let mut holder = .{ read: \-> fixed.count, var other: 0 }
+    holder.other = 1
+    let copy = clone(ref holder)
+    copy.read() + copy.other
+}
+
+-- @case clone_rejects_a_live_closure_installed_by_replacement compile-fail E0530 no-prelude
+type Cell = .{ var count: int }
+type Step = fn() &up -> int
+type Holder = .{ var ^mut step: Step }
+fn idle() -> new Step { \-> 0 }
+fn increment(^mut cell: Cell) &capture &^mut &return(^mut cell) -> new Step {
+    \-> { cell.count += 1; cell.count }
+}
+fn run() -> () {
+    let mut cell = Cell.{ count: 1 }
+    let mut holder = Holder.{ step: ^mut idle() }
+    holder.step = ^mut increment(^mut cell)
+    assert(holder.step() == 2)
+    let _ = clone(ref holder)
+    -- ^ E0530
+}
+
+-- @case clone_rejects_a_callable_with_a_stateful_handler compile-fail E0530
+eff Clock { fn tick() -> int }
+fn run() -> () {
+    var ticks = 0
+    with Clock::tick = \-> { ticks += 1; ticks }
+    let callbacks = [\-> Clock::tick()]
+    let _ = clone(callbacks)
+    -- ^ E0530
+}
+
 -- @case captured_array_appends_update_the_call_site compile-fail E0535
 type Shelf = .{ ^mut item: Cell }
 fn freeze(new shelf: Shelf) -> int { let fixed = new shelf; fixed.item.count }

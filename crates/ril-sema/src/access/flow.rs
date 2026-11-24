@@ -1426,6 +1426,20 @@ impl Datum {
         !self.environments.is_empty() || self.members.values().any(Self::creates_environment)
     }
 
+    pub(super) fn contains_live_callable_environment(&self) -> bool {
+        self.stateful_handler
+            || !self.environments.is_empty()
+                && self
+                    .members
+                    .values()
+                    .flat_map(Self::origins)
+                    .any(|origin| origin.mode != Access::Immutable)
+            || self
+                .members
+                .values()
+                .any(Self::contains_live_callable_environment)
+    }
+
     pub(super) fn surviving_publications(
         &self,
         owner: Span,
