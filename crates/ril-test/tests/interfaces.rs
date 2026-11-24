@@ -332,6 +332,8 @@ pub type Shelf = .{ ^mut item: Cell }
 pub type Leaf = fn(new Shelf) -> int
 pub type Slot = .{ var action: Leaf }
 pub type Frame = .{ var action: Leaf, stamp: int }
+pub type Writer = fn() &up -> ()
+pub type Controls = .{ ^mut select: Writer, ^mut store: Writer }
 fn freeze(new shelf: Shelf) -> int { let fixed = new shelf; fixed.item.count }
 fn count(new shelf: Shelf) -> int { shelf.item.count }
 fn make_private() -> Leaf { freeze }
@@ -348,6 +350,17 @@ pub fn apply(make: fn() -> Leaf, new shelf: Shelf) -> int { make()(new shelf) }
 pub fn apply_with(make: fn(Leaf) -> Leaf, new shelf: Shelf) -> int { make(freeze)(new shelf) }
 pub fn install(mut slot: Slot) &mut -> () { slot.action = freeze }
 pub fn append(mut actions: []Leaf) &mut -> () { Array::push(mut actions, freeze) }
+pub fn appender(^mut actions: []Leaf) &capture &^mut &return(^mut actions) -> new Writer {
+    \-> Array::push(mut actions, freeze)
+}
+pub fn copy_to(^mut slot: Slot, action: Leaf) &capture &^mut &return(^mut slot, action) -> new Writer {
+    \-> { slot.action = action }
+}
+pub fn controls(^mut slot: Slot, initial: Leaf, next: Leaf) &capture &^mut &return(^mut slot, initial, next) -> new Controls {
+    var action: Leaf = count
+    action = initial
+    Controls.{ select: \-> { action = next }, store: \-> { slot.action = action } }
+}
 pub fn build_array() -> []Leaf {
     let mut actions = [count]
     Array::push(mut actions, freeze)
@@ -364,6 +377,23 @@ pub fn read_frame(base: Frame) -> Frame { derive(base) \mut d -> { d.action = co
     library.entry = "pkg/snapshot.ril".into();
     library.insert(library.entry.clone(), source.to_vec());
     let interface = Driver.interface(&library).unwrap().encode().unwrap();
+    let wrapper = br#"
+use library/snapshot
+pub fn appender(^mut actions: []Snapshot::Leaf) &capture &^mut &return(^mut actions) -> new Snapshot::Writer {
+    Snapshot::appender(^mut actions)
+}
+pub fn copy_to(^mut slot: Snapshot::Slot, action: Snapshot::Leaf) &capture &^mut &return(^mut slot, action) -> new Snapshot::Writer {
+    Snapshot::copy_to(^mut slot, action)
+}
+pub fn controls(^mut slot: Snapshot::Slot, initial: Snapshot::Leaf, next: Snapshot::Leaf) &capture &^mut &return(^mut slot, initial, next) -> new Snapshot::Controls {
+    Snapshot::controls(^mut slot, initial, next)
+}
+"#;
+    let mut forwarding = VirtualPackage::new(Unit::Lib);
+    forwarding.entry = "pkg/forwarding.ril".into();
+    forwarding.insert(forwarding.entry.clone(), wrapper.to_vec());
+    forwarding.insert("library/snapshot.rili".into(), interface.clone());
+    let forwarded = Driver.interface(&forwarding).unwrap().encode().unwrap();
     for (mount, bytes) in [
         ("library/snapshot.ril", source.as_slice()),
         ("library/snapshot.rili", interface.as_slice()),
@@ -380,6 +410,42 @@ pub fn read_frame(base: Frame) -> Frame { derive(base) \mut d -> { d.action = co
             ("Snapshot::section([freeze, count])[0]", false),
             ("Snapshot::one([freeze, count, freeze])[0]", false),
             ("Snapshot::one([count, freeze, count])[0]", true),
+            (
+                "{ let mut actions = [count]; let ^mut append = Snapshot::appender(^mut actions); append(); actions[0] }",
+                false,
+            ),
+            (
+                "{ let mut actions = [count]; let ^mut append = Snapshot::appender(^mut actions); append(); actions[1] }",
+                true,
+            ),
+            (
+                "{ let mut slot = Snapshot::Slot.{ action: freeze }; let ^mut store = Snapshot::copy_to(^mut slot, count); store(); slot.action }",
+                false,
+            ),
+            (
+                "{ let mut slot = Snapshot::Slot.{ action: count }; let ^mut store = Snapshot::copy_to(^mut slot, freeze); store(); slot.action }",
+                true,
+            ),
+            (
+                "{ let mut actions = [count]; let ^mut append = Forwarding::appender(^mut actions); append(); actions[1] }",
+                true,
+            ),
+            (
+                "{ let mut slot = Snapshot::Slot.{ action: freeze }; let ^mut store = Forwarding::copy_to(^mut slot, count); store(); slot.action }",
+                false,
+            ),
+            (
+                "{ let mut slot = Snapshot::Slot.{ action: count }; let mut controls = Snapshot::controls(^mut slot, count, freeze); controls.select(); controls.store(); slot.action }",
+                true,
+            ),
+            (
+                "{ let mut slot = Snapshot::Slot.{ action: freeze }; let mut controls = Forwarding::controls(^mut slot, freeze, count); controls.select(); controls.store(); slot.action }",
+                false,
+            ),
+            (
+                "{ let mut first = Snapshot::Slot.{ action: count }; let mut second = Snapshot::Slot.{ action: count }; let mut controls = Snapshot::controls(^mut first, count, freeze); let mut other = Snapshot::controls(^mut second, count, freeze); controls.select(); controls.store(); other.store(); second.action }",
+                false,
+            ),
             (
                 "{ let mut actions = [count]; Snapshot::append(mut actions); actions[0] }",
                 false,
@@ -420,6 +486,7 @@ pub fn read_frame(base: Frame) -> Frame { derive(base) \mut d -> { d.action = co
             for (item, live) in [("live", true), ("Snapshot::Cell.{ count: 42 }", false)] {
                 let source = format!(
                     "use library/snapshot
+use relay/forwarding
 fn freeze(new shelf: Snapshot::Shelf) -> int {{ let fixed = new shelf; fixed.item.count }}
 fn count(new shelf: Snapshot::Shelf) -> int {{ shelf.item.count }}
 fn make() -> Snapshot::Leaf {{ freeze }}
@@ -435,6 +502,7 @@ fn observe() -> int {{
                 );
                 let mut client = VirtualPackage::new(Unit::Lib);
                 client.insert(mount.into(), bytes.to_vec());
+                client.insert("relay/forwarding.rili".into(), forwarded.clone());
                 client.insert(client.entry.clone(), source.into_bytes());
                 let accepted = !freezing || !live;
                 match (accepted, Driver.analyze(&client)) {
@@ -1735,6 +1803,8 @@ fn exported_summaries_and_via_domains_agree_with_lean() {
                 via_parameters: vec![false, false],
                 inputs: Vec::new(),
                 calls: vec![calls_provider(1 - root)],
+                captured_slots: Vec::new(),
+                storage_updates: Vec::new(),
                 returns: Vec::new(),
                 callback_returns: Vec::new(),
                 returns_new: false,
@@ -1743,6 +1813,8 @@ fn exported_summaries_and_via_domains_agree_with_lean() {
                 via_parameters: vec![false, false],
                 inputs,
                 calls: vec![calls_provider(root)],
+                captured_slots: Vec::new(),
+                storage_updates: Vec::new(),
                 returns: Vec::new(),
                 callback_returns: Vec::new(),
                 returns_new: false,
@@ -1944,6 +2016,18 @@ fn exported_summaries_and_via_domains_agree_with_lean() {
             "factory_steps": factory_steps,
         })
     };
+    let wire_storage_update = |update: &StorageUpdate| {
+        json!({
+            "formal": update.formal,
+            "path": update.path.iter().map(wire_coordinate).collect::<Vec<_>>(),
+            "sources": update.sources.iter().map(wire_source).collect::<Vec<_>>(),
+            "callback_returns": update.callback_returns.iter().map(wire_callback_return).collect::<Vec<_>>(),
+            "snapshot_projections": update.snapshot_projections.iter().map(wire_projection).collect::<Vec<_>>(),
+            "allocations": update.allocations,
+            "definite": update.definite,
+            "constructs": update.constructs,
+        })
+    };
     let wire = |summary: &Summary| -> Value {
         let effects: Vec<_> = summary
             .effects
@@ -1969,6 +2053,8 @@ fn exported_summaries_and_via_domains_agree_with_lean() {
                     "via_parameters": provider.via_parameters,
                     "inputs": provider.inputs.iter().map(wire_snapshot_input).collect::<Vec<_>>(),
                     "calls": provider.calls.iter().map(wire_snapshot_call).collect::<Vec<_>>(),
+                    "captured_slots": provider.captured_slots,
+                    "storage_updates": provider.storage_updates.iter().map(wire_storage_update).collect::<Vec<_>>(),
                     "returns": provider.returns.iter().map(wire_projection).collect::<Vec<_>>(),
                     "callback_returns": provider.callback_returns.iter().map(wire_callback_return).collect::<Vec<_>>(),
                     "returns_new": provider.returns_new,
@@ -1995,18 +2081,7 @@ fn exported_summaries_and_via_domains_agree_with_lean() {
         let storage_updates: Vec<_> = summary
             .storage_updates
             .iter()
-            .map(|update| {
-                json!({
-                    "formal": update.formal,
-                    "path": update.path.iter().map(wire_coordinate).collect::<Vec<_>>(),
-                    "sources": update.sources.iter().map(wire_source).collect::<Vec<_>>(),
-                    "callback_returns": update.callback_returns.iter().map(wire_callback_return).collect::<Vec<_>>(),
-                    "snapshot_projections": update.snapshot_projections.iter().map(wire_projection).collect::<Vec<_>>(),
-                    "allocations": update.allocations,
-                    "definite": update.definite,
-                    "constructs": update.constructs,
-                })
-            })
+            .map(wire_storage_update)
             .collect();
         json!({
             "writes": summary.writes,

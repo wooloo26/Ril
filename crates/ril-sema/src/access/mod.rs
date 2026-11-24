@@ -118,16 +118,6 @@ impl Summary {
                 .iter()
                 .all(|source| self.return_sources.contains(source))
             && self.return_allocations == revised.return_allocations
-            && self
-                .storage_updates
-                .iter()
-                .filter(|old| old.definite)
-                .all(|old| {
-                    revised
-                        .storage_updates
-                        .iter()
-                        .any(|update| old.same_target(update) && update.definite)
-                })
     }
 }
 
@@ -201,6 +191,12 @@ pub struct SnapshotProvider {
     pub via_parameters: Vec<bool>,
     pub inputs: Vec<SnapshotInput>,
     pub calls: Vec<SnapshotCall>,
+    /// Environment positions follow the declared parameters in storage
+    /// updates. A true entry denotes a replaceable captured slot.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub captured_slots: Vec<bool>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub storage_updates: Vec<StorageUpdate>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub returns: Vec<SnapshotProjection>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

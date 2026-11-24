@@ -150,6 +150,12 @@ impl Region {
         }
     }
 
+    fn capture_slot(source: Span) -> Self {
+        let mut cell = Self::allocation(source);
+        cell.selection.push(Coordinate::Index("0".into()));
+        cell
+    }
+
     pub(super) fn returned(source: Span, identity: AllocationIdentity) -> Self {
         Self {
             returned: Some(identity),
@@ -161,7 +167,7 @@ impl Region {
         self.invocation.extend_from_slice(invocation);
     }
 
-    pub(super) fn summarized(&self) -> bool {
+    fn summarized(&self) -> bool {
         self.instance == RegionInstance::PriorAllocations
             || self.returned.is_some_and(|identity| identity.summarized)
     }
@@ -613,7 +619,9 @@ impl Datum {
                 }
             });
         }
-        if !values.iter().any(|value| value.has_array_layout())
+        if !values
+            .iter()
+            .any(|value| value.has_array_layout() || value.creates_environment())
             && !regions.iter().any(|(region, occurrences)| {
                 region.summarized()
                     || region.returned.is_some()
@@ -2300,6 +2308,9 @@ impl Ledger {
             std::mem::take(&mut slot.value).joined(value.clone())
         };
         self.replace_region(&Region::root(decl), &value, definite);
+        if !value.roots.is_empty() {
+            self.replace_region(&Region::capture_slot(decl), &value, definite);
+        }
         true
     }
 

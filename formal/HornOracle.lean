@@ -156,6 +156,8 @@ structure JsonSnapshotProvider where
   via_parameters : List Bool
   inputs : List JsonSnapshotInput
   calls : List JsonSnapshotCall
+  captured_slots : List Bool
+  storage_updates : List JsonStorageUpdate
   returns : List JsonSnapshotProjection
   callback_returns : List JsonCallbackReturn
   returns_new : Bool
@@ -182,6 +184,14 @@ def snapshotCallbackReturnsSubsumed (pairs : ProviderPairs) (old new : List Json
     (offered.projections.zip required.projections).all fun (left, right) =>
       snapshotProjectionsSubsumed pairs left right
 
+def snapshotStorageUpdatesSubsumed (pairs : ProviderPairs) (old new : List JsonStorageUpdate) : Bool :=
+  RilAccess.storageUpdatesSubsumed (old.map JsonStorageUpdate.contract)
+    (new.map JsonStorageUpdate.contract) &&
+  new.all fun update => old.any fun allowed =>
+    allowed.contract.permits update.contract &&
+      snapshotCallbackReturnsSubsumed pairs allowed.callback_returns update.callback_returns &&
+      snapshotProjectionsSubsumed pairs allowed.snapshot_projections update.snapshot_projections
+
 def snapshotArgsSubsumed (pairs : ProviderPairs) (old new : List JsonSnapshotArgument) : Bool :=
   old.length == new.length && (old.zip new).all fun (offered, required) =>
     offered.shape.compress == required.shape.compress && offered.graph.length == required.graph.length &&
@@ -203,6 +213,8 @@ def pruneSnapshotProviders (old new : Array JsonSnapshotProvider) : Nat → Prov
       match old[i]?, new[j]? with
       | some left, some right => snapshotCallsSubsumed pairs left.calls right.calls &&
           (!left.returns_new || right.returns_new) &&
+          (right.storage_updates.isEmpty || left.captured_slots == right.captured_slots) &&
+          snapshotStorageUpdatesSubsumed pairs left.storage_updates right.storage_updates &&
           snapshotProjectionsSubsumed pairs left.returns right.returns &&
           snapshotCallbackReturnsSubsumed pairs left.callback_returns right.callback_returns
       | _, _ => false
@@ -269,12 +281,7 @@ def compareSummaries (baseline revision : JsonSummary) : Bool :=
       ((revision.mode_calls.getD (legacyModeCalls revision.invocations)).map JsonModeCall.contract) &&
     revision.invoked.all baseline.invoked.contains &&
     snapshotCallbackReturnsSubsumed providers baseline.callback_returns revision.callback_returns &&
-    RilAccess.storageUpdatesSubsumed (baseline.storage_updates.map JsonStorageUpdate.contract)
-      (revision.storage_updates.map JsonStorageUpdate.contract) &&
-    revision.storage_updates.all (fun update => baseline.storage_updates.any fun old =>
-      old.contract.permits update.contract &&
-        snapshotCallbackReturnsSubsumed providers old.callback_returns update.callback_returns &&
-        snapshotProjectionsSubsumed providers old.snapshot_projections update.snapshot_projections) &&
+    snapshotStorageUpdatesSubsumed providers baseline.storage_updates revision.storage_updates &&
     (!baseline.constructs || revision.constructs) &&
     (!baseline.nonreturning || revision.nonreturning)
 

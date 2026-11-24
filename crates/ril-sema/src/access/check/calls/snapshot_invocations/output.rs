@@ -6,7 +6,11 @@ use super::{
 };
 use crate::access::check::calls::imported::PublishedValue;
 use crate::{
-    access::{Coordinate, SnapshotOrigin, SnapshotProjection, Summary, check::DefinitionCheck},
+    access::{
+        Access, Coordinate, SnapshotOrigin, SnapshotProjection, StorageUpdate, Summary,
+        check::{DefinitionCheck, storage::CallStorage},
+        flow::{Origin, Region, Replacement},
+    },
     ty::{Ty, TypedProgram},
 };
 
@@ -17,6 +21,15 @@ pub(super) struct ImportedResult {
     pub(super) result: ProviderResult,
 }
 
+#[derive(Clone)]
+pub(super) struct ImportedStorage {
+    pub(super) owner: Span,
+    pub(super) signature: Provider,
+    pub(super) captures: Vec<Option<Span>>,
+    pub(super) slots: Vec<bool>,
+    pub(super) updates: Vec<StorageUpdate>,
+}
+
 #[derive(Clone, Default)]
 pub(super) struct ProviderResult {
     pub(super) projections: Vec<SnapshotProjection>,
@@ -25,6 +38,171 @@ pub(super) struct ProviderResult {
 }
 
 impl Analyzer<'_> {
+    pub(super) fn publish_provider_storage(
+        &self,
+        owner: Span,
+        references: &mut ProviderReferences,
+    ) -> (Vec<bool>, Vec<StorageUpdate>) {
+        let (slots, mut updates) = if let Some(closure) = self.closure_modes.get(&owner) {
+            let mut formals = closure.formals.clone();
+            formals.extend(closure.captures.iter().map(|&(binding, _)| Some(binding)));
+            let mut normalized = closure.updates.clone();
+            for update in normalized.values_mut() {
+                normalize_capture_sources(&mut update.value, owner, &formals);
+            }
+            let mut updates = self.describe_storage_updates(&formals, &normalized);
+            for update in &mut updates {
+                let Some(binding) = formals.get(update.formal).copied().flatten() else {
+                    continue;
+                };
+                let mut target = Region::root(binding);
+                target.selection.clone_from(&update.path);
+                if let Some(source) = normalized.get(&target) {
+                    update.snapshot_projections = self.snapshot_projections(
+                        &formals,
+                        &Ty::Unknown,
+                        &update.path,
+                        std::slice::from_ref(&source.value),
+                    );
+                }
+            }
+            let slots = closure.captures.iter().map(|&(_, slot)| slot).collect();
+            (slots, updates)
+        } else if let Some(imported) = self.snapshot_providers.imported_storage.get(&owner) {
+            let mut updates = imported.updates.clone();
+            for update in &mut updates {
+                let mut rebase = |projections: &mut [SnapshotProjection]| {
+                    self.globalize_projections(imported.owner, projections);
+                };
+                rebase(&mut update.snapshot_projections);
+                visit_callback_projections(&mut update.callback_returns, &mut rebase);
+            }
+            (imported.slots.clone(), updates)
+        } else {
+            return (Vec::new(), Vec::new());
+        };
+        for update in &mut updates {
+            references.rebase_projections(&mut update.snapshot_projections);
+            references.rebase_callback_returns(&mut update.callback_returns);
+        }
+        (slots, updates)
+    }
+
+    fn globalize_projections(&self, owner: Span, projections: &mut [SnapshotProjection]) {
+        for projection in projections {
+            projection.origin.provider = projection.origin.provider.and_then(|index| {
+                let provider = self.snapshot_providers.imported.get(&owner)?.get(index)?;
+                self.snapshot_providers.sources.binary_search(provider).ok()
+            });
+        }
+    }
+
+    pub(in crate::access::check::calls) fn has_imported_provider_storage(
+        &self,
+        owner: Span,
+    ) -> bool {
+        self.snapshot_providers
+            .imported_storage
+            .get(&owner)
+            .is_some_and(|storage| !storage.updates.is_empty())
+    }
+
+    pub(in crate::access::check::calls) fn replay_provider_storage(
+        &mut self,
+        ctx: &super::Context,
+        (provider, root, receiver): (Span, &Origin, &Datum),
+        entry: &CallEntry<'_>,
+        ledger: &mut super::Ledger,
+    ) {
+        let Some(storage) = self
+            .snapshot_providers
+            .imported_storage
+            .get(&provider)
+            .cloned()
+        else {
+            return;
+        };
+        let parameter_count = storage.signature.formals.len();
+        let mut formals = storage.signature.formals;
+        formals.extend(&storage.captures);
+        // Reify the environment as hidden call inputs. A store to a captured
+        // slot itself selects an environment position through the receiver.
+        let receiver_index = formals.len();
+        formals.push(Some(provider));
+        let mut receiver = receiver.clone();
+        receiver.retain_compatible_origins(&root.branches);
+        receiver.roots.retain(|origin| origin == root);
+        let mut arguments = entry.arguments.to_vec();
+        let mut spans = entry.spans.to_vec();
+        for (index, &binding) in storage.captures.iter().enumerate() {
+            let Some(binding) = binding else { continue };
+            let mut value =
+                entry
+                    .ledger
+                    .project(&receiver, Coordinate::Index(index.to_string()), Access::Mut);
+            if storage.slots.get(index) == Some(&true) {
+                value = entry
+                    .ledger
+                    .project(&value, Coordinate::Index("0".into()), Access::Mut);
+            }
+            arguments.push((parameter_count + index, super::Mode::Mut, value));
+            spans.push(binding);
+        }
+        arguments.push((receiver_index, super::Mode::Mut, receiver));
+        spans.push(provider);
+        let mut updates = std::collections::BTreeMap::new();
+        for update in &storage.updates {
+            let Some(source) = formals.get(update.formal).copied().flatten() else {
+                continue;
+            };
+            let mut target = Region::root(source);
+            if update.path.is_empty() {
+                let Some(index) = update.formal.checked_sub(parameter_count) else {
+                    continue;
+                };
+                if storage.slots.get(index) != Some(&true) {
+                    continue;
+                }
+                target = Region::root(provider);
+                target.selection.push(Coordinate::Index(index.to_string()));
+                target.selection.push(Coordinate::Index("0".into()));
+            } else {
+                target.selection.clone_from(&update.path);
+            }
+            let value = self.exported_value(
+                storage.owner,
+                &formals,
+                PublishedValue {
+                    sources: &update.sources,
+                    callbacks: &update.callback_returns,
+                    projections: &update.snapshot_projections,
+                    allocations: &update.allocations,
+                    constructs: update.constructs,
+                },
+                &Ty::Unknown,
+            );
+            updates.insert(
+                target,
+                Replacement {
+                    value,
+                    definite: update.definite,
+                },
+            );
+        }
+        let call = CallStorage {
+            formals,
+            via: storage.signature.via,
+            updates,
+            ..CallStorage::default()
+        };
+        let entry = CallEntry {
+            arguments: &arguments,
+            spans: &spans,
+            ..*entry
+        };
+        self.apply_storage_updates(ctx, call, &entry, ledger, true);
+    }
+
     pub(in crate::access::check::calls) fn snapshot_argument_providers(
         &self,
         formals: &[Option<Span>],
@@ -71,16 +249,7 @@ impl Analyzer<'_> {
             .map(|(&id, result)| {
                 let mut value = result.result.clone();
                 let mut rebase = |projections: &mut [SnapshotProjection]| {
-                    for projection in projections {
-                        projection.origin.provider = projection.origin.provider.and_then(|index| {
-                            let owner = self
-                                .snapshot_providers
-                                .imported
-                                .get(&result.owner)?
-                                .get(index)?;
-                            self.snapshot_providers.sources.binary_search(owner).ok()
-                        });
-                    }
+                    self.globalize_projections(result.owner, projections);
                 };
                 rebase(&mut value.projections);
                 visit_callback_projections(&mut value.callbacks, &mut rebase);
@@ -237,6 +406,14 @@ impl Analyzer<'_> {
                 .get(index)
                 .copied()
         });
+        if provider.is_some_and(|id| {
+            self.snapshot_providers
+                .imported_storage
+                .get(&id)
+                .is_some_and(|storage| !storage.slots.is_empty())
+        }) {
+            node.environments.insert(owner);
+        }
         if let Some(allocation) = projection.allocation
             && let Some(root) = node.roots.iter_mut().find(|root| {
                 root.return_allocation
@@ -282,6 +459,34 @@ impl Analyzer<'_> {
         node.roots.dedup();
         node.requires_new = (node.requires_new || projection.qualified)
             && node.roots.iter().all(|origin| origin.new);
+    }
+}
+
+fn normalize_capture_sources(value: &mut Datum, owner: Span, formals: &[Option<Span>]) {
+    let mut sources = BTreeSet::new();
+    let mut definite = false;
+    if value.roots.iter().all(|root| !root.detached_snapshot) {
+        for (path, &exact) in &value.capture_paths {
+            if path.owner == owner && formals.contains(&Some(path.region.source)) {
+                definite |= exact;
+                sources.extend(value.roots.iter().map(|root| {
+                    let mut source = root.clone();
+                    source.region = path.region.clone();
+                    source.snapshot_provider = None;
+                    source.callback_result = None;
+                    source.return_allocation = None;
+                    source
+                }));
+            }
+        }
+    }
+    if definite && !sources.is_empty() {
+        value.roots.clear();
+        value.members.clear();
+    }
+    value.roots.extend(sources);
+    for member in value.members.values_mut() {
+        normalize_capture_sources(member, owner, formals);
     }
 }
 

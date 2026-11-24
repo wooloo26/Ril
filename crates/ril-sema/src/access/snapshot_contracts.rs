@@ -2,7 +2,7 @@ use std::collections::BTreeSet;
 
 use super::{
     SnapshotArgument, SnapshotCall, SnapshotGraph, SnapshotInput, SnapshotOrigin,
-    SnapshotProjection, Summary,
+    SnapshotProjection, StorageUpdate, Summary,
 };
 
 type ProviderPairs = BTreeSet<(usize, usize)>;
@@ -36,6 +36,13 @@ pub(super) fn subsumes(baseline: &Summary, revision: &Summary) -> bool {
                 old.get(i).zip(new.get(j)).is_some_and(|(left, right)| {
                     calls_subsume(&left.calls, &right.calls, &pairs)
                         && (!left.returns_new || right.returns_new)
+                        && (right.storage_updates.is_empty()
+                            || left.captured_slots == right.captured_slots)
+                        && storage_updates_subsume(
+                            &left.storage_updates,
+                            &right.storage_updates,
+                            &pairs,
+                        )
                         && projections_subsume(&left.returns, &right.returns, &pairs)
                         && callback_returns_subsume(
                             &left.callback_returns,
@@ -61,21 +68,28 @@ pub(super) fn subsumes(baseline: &Summary, revision: &Summary) -> bool {
             &revision.snapshot_returns,
             &pairs,
         )
-        && revision.storage_updates.iter().all(|update| {
-            baseline.storage_updates.iter().any(|old| {
-                old.permits(update)
-                    && callback_returns_subsume(
-                        &old.callback_returns,
-                        &update.callback_returns,
-                        &pairs,
-                    )
-                    && projections_subsume(
-                        &old.snapshot_projections,
-                        &update.snapshot_projections,
-                        &pairs,
-                    )
-            })
+        && storage_updates_subsume(&baseline.storage_updates, &revision.storage_updates, &pairs)
+}
+
+fn storage_updates_subsume(
+    old: &[StorageUpdate],
+    new: &[StorageUpdate],
+    pairs: &ProviderPairs,
+) -> bool {
+    new.iter().all(|update| {
+        old.iter().any(|old| {
+            old.permits(update)
+                && callback_returns_subsume(&old.callback_returns, &update.callback_returns, pairs)
+                && projections_subsume(
+                    &old.snapshot_projections,
+                    &update.snapshot_projections,
+                    pairs,
+                )
         })
+    }) && old.iter().filter(|update| update.definite).all(|old| {
+        new.iter()
+            .any(|update| old.same_target(update) && update.definite)
+    })
 }
 
 fn callback_returns_subsume(

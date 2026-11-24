@@ -43,6 +43,7 @@ pub(in crate::access::check) struct SnapshotProviders {
     sources: Vec<Span>,
     imported: BTreeMap<Span, Vec<Span>>,
     imported_results: BTreeMap<Span, output::ImportedResult>,
+    imported_storage: BTreeMap<Span, output::ImportedStorage>,
     returns: BTreeMap<Span, output::ProviderResult>,
     synthetic: usize,
 }
@@ -331,6 +332,23 @@ impl Analyzer<'_> {
                 &contract.calls,
             );
             let signature = Provider { formals, via };
+            if !contract.storage_updates.is_empty() || !contract.captured_slots.is_empty() {
+                let captures = contract
+                    .captured_slots
+                    .iter()
+                    .map(|_| Some(self.snapshot_providers.fresh_identity(owner)))
+                    .collect();
+                self.snapshot_providers.imported_storage.insert(
+                    provider,
+                    output::ImportedStorage {
+                        owner,
+                        signature: signature.clone(),
+                        captures,
+                        slots: contract.captured_slots.clone(),
+                        updates: contract.storage_updates.clone(),
+                    },
+                );
+            }
             if !contract.returns.is_empty() || !contract.callback_returns.is_empty() {
                 self.snapshot_providers.imported_results.insert(
                     provider,
@@ -396,10 +414,14 @@ impl Analyzer<'_> {
                 .unwrap_or_default();
             references.rebase_projections(&mut result.projections);
             references.rebase_callback_returns(&mut result.callbacks);
+            let (captured_slots, storage_updates) =
+                self.publish_provider_storage(owner, &mut references);
             providers.push(SnapshotProvider {
                 via_parameters,
                 inputs: self.snapshots.inputs(owner, &signature.formals),
                 calls: self.publish_snapshot_calls(owner, &mut references),
+                captured_slots,
+                storage_updates,
                 returns: result.projections,
                 callback_returns: result.callbacks,
                 returns_new: result.constructs,

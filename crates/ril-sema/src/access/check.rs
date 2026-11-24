@@ -1137,13 +1137,16 @@ impl<'a> Analyzer<'a> {
     }
 
     fn storage_contracts(&self, fun: &DefinitionCheck) -> Vec<StorageUpdate> {
-        let formal_index = |source| {
-            fun.formals
-                .iter()
-                .position(|formal| *formal == Some(source))
-        };
-        let mut updates: Vec<_> = fun
-            .updates
+        self.describe_storage_updates(&fun.formals, &fun.updates)
+    }
+
+    fn describe_storage_updates(
+        &self,
+        formals: &[Option<Span>],
+        entries: &BTreeMap<Region, Replacement>,
+    ) -> Vec<StorageUpdate> {
+        let formal_index = |source| formals.iter().position(|formal| *formal == Some(source));
+        let mut updates: Vec<_> = entries
             .iter()
             .filter_map(|(region, update)| {
                 let formal = formal_index(region.source)?;
@@ -1164,7 +1167,7 @@ impl<'a> Analyzer<'a> {
                     formal,
                     path: region.selection.clone(),
                     sources: sources.into_iter().collect(),
-                    callback_returns: self.callback_return_contracts(&fun.formals, &update.value),
+                    callback_returns: self.callback_return_contracts(formals, &update.value),
                     snapshot_projections: Vec::new(),
                     allocations: Datum::return_allocations(std::slice::from_ref(&update.value)),
                     definite: update.definite,
@@ -3289,10 +3292,8 @@ impl<'a> Analyzer<'a> {
                 });
                 if captured {
                     value.publications.insert(ctx.owner, true);
-                    ledger.replace_slot(id, value, true);
-                } else {
-                    ledger.slots.entry(id).and_modify(|slot| slot.value = value);
                 }
+                ledger.replace_slot(id, value, true);
                 return;
             }
             self.error(
@@ -3428,6 +3429,10 @@ impl<'a> Analyzer<'a> {
             );
         }
         self.require_schema(ctx, value, SchemaRequirement::Writable);
+        self.record_write(ctx, value);
+    }
+
+    fn record_write(&mut self, ctx: &Context, value: &Datum) {
         for origin in &value.roots {
             if !origin.new {
                 self.seed(ctx, Obligation::WriteExisting(origin.region.source));

@@ -46,8 +46,13 @@ struct CallEntry<'a> {
 #[derive(Clone, Copy)]
 struct CallEnvironment<'a> {
     owner: Span,
-    bindings: Option<&'a BTreeMap<Span, Datum>>,
-    exact_slots: bool,
+    bindings: Option<&'a CapturedBindings>,
+}
+
+#[derive(Default)]
+struct CapturedBindings {
+    values: BTreeMap<Span, Datum>,
+    cells: BTreeMap<Span, Datum>,
 }
 
 #[derive(Clone, Eq, PartialEq)]
@@ -745,7 +750,7 @@ impl<'program> Analyzer<'program> {
                 .reduce(Datum::joined)
                 .unwrap_or_default();
         }
-        let before_updates = if all_closures_known && let Some(receiver) = &target {
+        let before_updates = if let Some(receiver) = &target {
             self.closure_storage(
                 ctx,
                 &closures,
@@ -938,10 +943,10 @@ impl<'program> Analyzer<'program> {
                             environment: Some(CallEnvironment {
                                 owner: fun.name.span,
                                 bindings: None,
-                                exact_slots: true,
                             }),
                         },
                         ledger,
+                        false,
                     );
                     before_updates = Some(frozen);
                 }
@@ -1087,7 +1092,6 @@ impl<'program> Analyzer<'program> {
                 environment: Some(CallEnvironment {
                     owner: fun.name.span,
                     bindings: None,
-                    exact_slots: true,
                 }),
             };
             if let Some(mut result) = self.return_template(fun, &entry) {
@@ -1479,6 +1483,7 @@ impl<'program> Analyzer<'program> {
         storage: CallStorage,
         entry: &CallEntry<'_>,
         ledger: &mut Ledger,
+        published: bool,
     ) -> bool {
         let CallStorage {
             formals,
@@ -1500,9 +1505,28 @@ impl<'program> Analyzer<'program> {
                 stored.transform(&mut |origin| {
                     origin.dependencies.insert(region.source.into());
                 });
-                let definite =
-                    update.definite && entry.environment.is_none_or(|env| env.exact_slots);
-                applied &= ledger.replace_slot(region.source, stored, definite);
+                let cell = entry
+                    .environment
+                    .and_then(|env| env.bindings?.cells.get(&region.source));
+                // A cell that belongs to this activation is also visible through
+                // its lexical binding. Escaping closures keep the cell itself.
+                if let Some(cell) =
+                    cell.filter(|cell| !Self::current_cell(entry.ledger, region.source, cell))
+                {
+                    let place = cell.slot_projection(Coordinate::Index("0".into()));
+                    applied &= !place.roots.is_empty();
+                    if entry.ledger.slots.contains_key(&region.source)
+                        && cell
+                            .roots
+                            .iter()
+                            .any(|root| root.region == Region::allocation(region.source))
+                    {
+                        ledger.replace_slot(region.source, stored.clone(), false);
+                    }
+                    ledger.replace_member(&place, stored, update.definite);
+                } else {
+                    applied &= ledger.replace_slot(region.source, stored, update.definite);
+                }
                 continue;
             };
             let actual = if let Some(formal) = formals
@@ -1531,6 +1555,9 @@ impl<'program> Analyzer<'program> {
             };
             let place = value.slot_projection(coordinate);
             applied &= !place.roots.is_empty();
+            if published {
+                self.record_write(ctx, &place);
+            }
             let mut stored =
                 self.instantiate_return(&formals, &via, entry, &update.value, &mut output_path);
             ledger.remember_return_graph(&stored, entry.span);
@@ -1553,7 +1580,11 @@ impl<'program> Analyzer<'program> {
         if !ctx.runtime
             || ctx.shadow
             || !ctx.reachable
-            || closures.values().all(|closure| closure.updates.is_empty())
+            || (closures.values().all(|closure| closure.updates.is_empty())
+                && receiver.roots.iter().all(|root| {
+                    snapshot_invocations::known_provider(root)
+                        .is_none_or(|owner| !self.has_imported_provider_storage(owner))
+                }))
         {
             return None;
         }
@@ -1563,9 +1594,17 @@ impl<'program> Analyzer<'program> {
             .map(|root| {
                 let mut after = entry.ledger.clone();
                 let Some((owner, closure)) = Self::known_closure(closures, root) else {
+                    if let Some(owner) = snapshot_invocations::known_provider(root) {
+                        self.replay_provider_storage(
+                            ctx,
+                            (owner, root, receiver),
+                            entry,
+                            &mut after,
+                        );
+                    }
                     return after;
                 };
-                let captures = Self::closure_captures(entry.ledger, receiver, root, owner, closure);
+                let captures = Self::closure_captures(entry.ledger, receiver, root, closure);
                 let storage = CallStorage {
                     formals: closure.formals.clone(),
                     via: closure.via.clone(),
@@ -1576,11 +1615,10 @@ impl<'program> Analyzer<'program> {
                     environment: Some(CallEnvironment {
                         owner,
                         bindings: Some(&captures),
-                        exact_slots: root.region.source == owner && !root.region.summarized(),
                     }),
                     ..*entry
                 };
-                self.apply_storage_updates(ctx, storage, &entry, &mut after);
+                self.apply_storage_updates(ctx, storage, &entry, &mut after, false);
                 after
             })
             .collect();
@@ -1614,47 +1652,51 @@ impl<'program> Analyzer<'program> {
         ledger: &Ledger,
         receiver: &Datum,
         root: &Origin,
-        owner: Span,
         closure: &ClosureModes,
-    ) -> BTreeMap<Span, Datum> {
+    ) -> CapturedBindings {
         let mut environment = receiver.clone();
         environment.retain_compatible_origins(&root.branches);
-        closure
-            .captures
-            .iter()
-            .enumerate()
-            .filter_map(|(index, &(binding, variable))| {
-                let mut captured =
-                    environment.known_member(&Coordinate::Index(index.to_string()))?;
-                if variable {
-                    // The synthetic origin tracks the slot's lifetime. The
-                    // other roots describe the value stored in it.
-                    captured
-                        .roots
-                        .retain(|origin| origin.region != Region::root(binding));
-                }
-                if let Some(slot) = ledger.slots.get(&binding) {
-                    let mut current = slot.value.clone();
-                    current.retain_compatible_origins(&root.branches);
-                    if variable {
-                        if root.region.source == owner && !root.region.summarized() {
-                            return Some((binding, current));
-                        }
-                        captured = captured.joined(current);
-                    } else if !captured.roots.is_empty()
+        let mut bindings = CapturedBindings::default();
+        for (index, &(binding, variable)) in closure.captures.iter().enumerate() {
+            let Some(mut captured) =
+                environment.known_member(&Coordinate::Index(index.to_string()))
+            else {
+                continue;
+            };
+            let current_cell = variable && Self::current_cell(ledger, binding, &captured);
+            if variable {
+                let value = ledger.project(&captured, Coordinate::Index("0".into()), Access::Mut);
+                bindings.cells.insert(binding, captured);
+                captured = value;
+            }
+            if let Some(slot) = ledger.slots.get(&binding) {
+                let mut current = slot.value.clone();
+                current.retain_compatible_origins(&root.branches);
+                if current_cell
+                    || (!variable
+                        && !captured.roots.is_empty()
                         && captured.roots.iter().all(|origin| {
                             current
                                 .roots
                                 .iter()
                                 .any(|current| current.region == origin.region)
-                        })
-                    {
-                        return Some((binding, current));
-                    }
+                        }))
+                {
+                    captured = current;
                 }
-                Some((binding, captured))
-            })
-            .collect()
+            }
+            bindings.values.insert(binding, captured);
+        }
+        bindings
+    }
+
+    fn current_cell(ledger: &Ledger, binding: Span, cell: &Datum) -> bool {
+        ledger.slots.contains_key(&binding)
+            && !cell.roots.is_empty()
+            && cell
+                .roots
+                .iter()
+                .all(|root| root.region == Region::allocation(binding))
     }
 
     fn capture_binding<'e>(
@@ -1664,7 +1706,7 @@ impl<'program> Analyzer<'program> {
     ) -> Option<(&'e Datum, &'program Ty)> {
         let environment = entry.environment?;
         let value = match environment.bindings {
-            Some(bindings) => bindings.get(&binding),
+            Some(bindings) => bindings.values.get(&binding),
             None => entry.ledger.slots.get(&binding).map(|slot| &slot.value),
         }?;
         let ty = self
@@ -1684,7 +1726,16 @@ impl<'program> Analyzer<'program> {
         let mut value = base.clone();
         for coordinate in path {
             let schema = self.schema_member(ty, coordinate);
-            let mode = schema.map_or(Mode::Plain, |member| member.mode.mode);
+            let mode = schema.map_or_else(
+                || {
+                    if *ty == Ty::Unknown {
+                        Mode::Mut
+                    } else {
+                        Mode::Plain
+                    }
+                },
+                |member| member.mode.mode,
+            );
             value = ledger.project_schema(&value, coordinate.clone(), mode);
             ty = schema.map_or(&Ty::Unknown, |member| &member.ty);
         }
@@ -2104,13 +2155,11 @@ impl<'program> Analyzer<'program> {
                 continue;
             }
             if let Some(closure) = self.closure_modes.get(&span).cloned() {
-                let captures =
-                    Self::closure_captures(entry.ledger, receiver, target, span, &closure);
+                let captures = Self::closure_captures(entry.ledger, receiver, target, &closure);
                 let entry = CallEntry {
                     environment: Some(CallEnvironment {
                         owner: span,
                         bindings: Some(&captures),
-                        exact_slots: target.region.source == span && !target.region.summarized(),
                     }),
                     ..*entry
                 };
@@ -3262,11 +3311,13 @@ impl<'program> Analyzer<'program> {
                 );
             }
             if slot.variable {
-                let mut origin = Datum::source(slot.decl, Access::Mut, false);
-                origin.transform(&mut |origin| {
+                let mut cell = Datum::source(slot.decl, Access::Mut, false);
+                cell.transform(&mut |origin| {
+                    origin.region = Region::allocation(slot.decl);
                     origin.dependencies.insert(slot.decl.into());
                 });
-                value = value.joined(origin);
+                cell.members.insert(Coordinate::Index("0".into()), value);
+                value = cell;
             }
             closure
                 .members

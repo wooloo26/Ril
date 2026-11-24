@@ -284,7 +284,7 @@ impl<'program> Analyzer<'program> {
                     updates,
                     ..CallStorage::default()
                 };
-                if !self.apply_storage_updates(ctx, storage, &entry, ledger) {
+                if !self.apply_storage_updates(ctx, storage, &entry, ledger, false) {
                     self.error(
                         Code::E0520,
                         span,

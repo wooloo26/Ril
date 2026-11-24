@@ -1160,3 +1160,22 @@ pub type Shelf = .{ ^mut item: Cell }
 fn freeze(new shelf: Shelf) -> int { let fixed = new shelf; fixed.item.count }
 pub fn append(mut actions: []fn(new Shelf) -> int) &mut -> () { Array::push(mut actions, freeze) }
 -- ^ E0552
+
+-- @case tightening_a_returned_closures_storage_contract_breaks_compatibility compat-fail E0552
+-- @baseline
+pub type Shelf = .{ ^mut item: Cell }
+pub type Action = fn(new Shelf) -> int
+pub type Append = fn() &up -> ()
+fn count(new shelf: Shelf) -> int { shelf.item.count }
+pub fn appender(^mut actions: []Action) &capture &^mut &return(^mut actions) -> new Append {
+    \-> Array::push(mut actions, count)
+}
+-- @revision
+pub type Shelf = .{ ^mut item: Cell }
+pub type Action = fn(new Shelf) -> int
+pub type Append = fn() &up -> ()
+fn freeze(new shelf: Shelf) -> int { let fixed = new shelf; fixed.item.count }
+pub fn appender(^mut actions: []Action) &capture &^mut &return(^mut actions) -> new Append {
+-- ^ E0552
+    \-> Array::push(mut actions, freeze)
+}
