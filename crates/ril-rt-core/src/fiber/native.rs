@@ -391,7 +391,7 @@ unsafe extern "C" fn ril_fiber_yield(raw: Raw) -> Value {
 unsafe extern "C" fn ril_fiber_sleep(raw: Raw, delay: Value) -> Value {
     // SAFETY: convert the input and drop the runtime borrow before sleeping.
     let rt = unsafe { context(raw) };
-    if let Some(delay) = rt.gc.integer(delay).and_then(ToPrimitive::to_u64)
+    if let Some(delay) = rt.gc.integer(delay).and_then(|delay| delay.to_u64())
         && let Some(until) = Instant::now().checked_add(Duration::from_millis(delay))
     {
         wait(raw, Event::Sleep(until));

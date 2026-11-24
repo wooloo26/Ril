@@ -114,7 +114,7 @@ unsafe extern "C" fn ril_fiber_timeout(raw: Raw, duration: Value, work: Value) -
     let Some(duration) = rt
         .gc
         .integer(duration)
-        .and_then(ToPrimitive::to_u64)
+        .and_then(|duration| duration.to_u64())
         .and_then(|ms| Instant::now().checked_add(Duration::from_millis(ms)))
     else {
         return error(rt, "invalid timeout");

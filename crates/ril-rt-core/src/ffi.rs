@@ -63,6 +63,9 @@ runtime_functions! {
     fn ril_rt_int_literal(rt, data: *const u8, len: usize) -> Value {
         // SAFETY: generated code passes the address and length of the literal's data symbol.
         let data = unsafe { raw_bytes(data, len) };
+        if let Ok(text) = std::str::from_utf8(data)
+            && let Ok(number) = text.parse::<i64>()
+        { return rt.gc.int_i64(number); }
         if let Some(num) = BigInt::parse_bytes(data, 10) { rt.gc.int(num).into() }
         else { rt.raise("invalid native integer literal"); Value::UNIT }
     }
@@ -119,7 +122,7 @@ runtime_functions! {
         }
     }
     fn ril_rt_to_f64(rt, value: Value) -> Value {
-        if let Some(number) = rt.gc.integer(value).and_then(num_traits::ToPrimitive::to_f64) {
+        if let Some(number) = rt.gc.integer(value).and_then(|number| number.to_f64()) {
             rt.gc.alloc(Object::F64(number.to_bits()))
         } else { rt.raise("expected int"); Value::UNIT }
     }
@@ -160,7 +163,10 @@ runtime_functions! {
             Some(Object::Map(entries)) => entries.len(),
             _ => { rt.raise("len requires a collection, bytes, or str"); return Value::UNIT; }
         };
-        rt.gc.int(len.into()).into()
+        match i64::try_from(len) {
+            Ok(len) => rt.gc.int_i64(len),
+            Err(_) => rt.gc.int(len.into()).into(),
+        }
     }
     fn ril_rt_inspect(rt, value: Value) -> Value {
         let text = rt.gc.inspect(value);
@@ -196,11 +202,11 @@ runtime_functions! {
         rt.checked(test)
     }
     fn ril_rt_str_at(rt, value: Value, index: Value) -> Value {
-        let item = text::str_at(&rt.gc, value, index).map(|item| rt.gc.int(item.into()).into());
+        let item = text::str_at(&rt.gc, value, index).map(|item| rt.gc.int_i64(i64::from(item)));
         text::option(&mut rt.gc, item)
     }
     fn ril_rt_bytes_at(rt, value: Value, index: Value) -> Value {
-        let item = text::byte_at(&rt.gc, value, index).map(|item| rt.gc.int(item.into()).into());
+        let item = text::byte_at(&rt.gc, value, index).map(|item| rt.gc.int_i64(i64::from(item)));
         text::option(&mut rt.gc, item)
     }
     fn ril_rt_str_scalars(rt, value: Value) -> Value {
@@ -435,10 +441,7 @@ fn store(rt: &mut Runtime, target: Value, key: Value, value: Value) -> Value {
         Err(message) => return rt.checked(Err(message)),
     };
     let key_text = read_text(rt, key).ok();
-    let index = rt
-        .gc
-        .integer(key)
-        .and_then(num_traits::ToPrimitive::to_usize);
+    let index = rt.gc.integer(key).and_then(|key| key.to_usize());
     let matching_key = match rt.gc.object(target) {
         Some(Object::Map(entries)) => entries
             .iter()
@@ -496,7 +499,7 @@ fn load(rt: &mut Runtime, target: Value, key: Value) -> Option<Value> {
         }
         Object::Bytes(bytes) => {
             let byte = *bytes.get(rt.gc.integer(key)?.to_usize()?)?;
-            return Some(rt.gc.int(byte.into()).into());
+            return Some(rt.gc.int_i64(i64::from(byte)));
         }
         _ => return None,
     };

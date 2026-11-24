@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
-use num_traits::{Signed as _, ToPrimitive as _};
+use num_traits::ToPrimitive as _;
 
 use super::{Event, Raw, Task, context, error, invoke, tag, wait};
 use crate::{Object, Runtime, Value};

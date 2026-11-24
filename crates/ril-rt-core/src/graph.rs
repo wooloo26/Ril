@@ -6,6 +6,9 @@ use crate::{GcRuntime, Object, Value, text};
 
 impl GcRuntime {
     pub fn equal(&self, a: Value, b: Value) -> Result<bool, &'static str> {
+        if a.is_immediate() || b.is_immediate() {
+            return Ok(a == b);
+        }
         self.equal_from(a, b, &mut BTreeSet::new())
     }
 
@@ -17,13 +20,13 @@ impl GcRuntime {
     ) -> Result<bool, &'static str> {
         let mut pending = vec![(a, b)];
         while let Some((a, b)) = pending.pop() {
-            if !seen.insert((a, b)) {
-                continue;
-            }
-            if a.0 < 3 || b.0 < 3 {
+            if a.is_immediate() || b.is_immediate() {
                 if a != b {
                     return Ok(false);
                 }
+                continue;
+            }
+            if !seen.insert((a, b)) {
                 continue;
             }
             match (self.object(a), self.object(b)) {
@@ -142,7 +145,7 @@ impl GcRuntime {
         copied: &mut BTreeMap<Value, Value>,
         pending: &mut Vec<(Value, Value)>,
     ) -> Result<Value, &'static str> {
-        if value.0 < 3 {
+        if value.is_immediate() {
             return Ok(value);
         }
         if let Some(&copy) = copied.get(&value) {
@@ -199,13 +202,19 @@ impl GcRuntime {
         if let Some(Object::Str(text)) = descriptor {
             return text.clone();
         }
-        if depth > 96 || !active.insert(value) {
+        if depth > 96 {
+            return "...".into();
+        }
+        if let Some(integer) = value.small_int() {
+            return integer.to_string();
+        }
+        if !active.insert(value) {
             return "...".into();
         }
         let mut render = |value, index: Option<Value>| {
             let next = index
                 .and_then(|index| self.integer(index))
-                .and_then(ToPrimitive::to_usize)
+                .and_then(|index| index.to_usize())
                 .and_then(|index| nodes.get(index).copied())
                 .unwrap_or(Value::UNIT);
             self.inspect_from(value, nodes, next, active, depth + 1)
@@ -235,8 +244,7 @@ impl GcRuntime {
                 Some(Object::Draft { .. }) => "<Draft>".into(),
                 Some(Object::Bytes(bytes)) => text::inspect_bytes(bytes),
                 Some(Object::Array(items)) => {
-                    let index =
-                        matches!(descriptor, Some(Object::Int(_))).then_some(descriptor_handle);
+                    let index = self.integer(descriptor_handle).map(|_| descriptor_handle);
                     format!(
                         "[{}]",
                         items

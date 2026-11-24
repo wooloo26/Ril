@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use num_bigint::BigInt;
+use num_traits::ToPrimitive as _;
 
 use crate::draft::DraftNode;
 
@@ -185,6 +186,12 @@ impl GcRuntime {
     }
 
     pub fn alloc(&mut self, object: Object) -> Value {
+        // Normalize integers here so equality can compare inline values by word.
+        if let Object::Int(number) = &object
+            && let Some(value) = number.to_i64().and_then(Value::from_small_int)
+        {
+            return value;
+        }
         if self.stress || self.objects.len() >= self.next_collection {
             self.collect(object.children());
         }
@@ -192,16 +199,19 @@ impl GcRuntime {
     }
 
     fn alloc_rooted(&mut self, object: Object) -> Value {
+        if self.next >= Value::SMALL_INT_TAG {
+            std::process::abort();
+        }
         let value = Value(self.next);
-        self.next = self
-            .next
-            .checked_add(1)
-            .unwrap_or_else(|| std::process::abort());
+        self.next += 1;
         self.objects.insert(value, object);
         value
     }
 
     pub fn object(&self, value: Value) -> Option<&Object> {
+        if value.is_immediate() {
+            return None;
+        }
         self.objects.get(&value)
     }
 
@@ -227,7 +237,8 @@ impl GcRuntime {
             .chain(additional)
             .collect();
         while let Some(value) = pending.pop() {
-            if let Some(object) = self.objects.get(&value)
+            if !value.is_immediate()
+                && let Some(object) = self.objects.get(&value)
                 && visited.insert(value)
             {
                 pending.extend(object.children());

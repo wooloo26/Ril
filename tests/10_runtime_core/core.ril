@@ -770,6 +770,34 @@ fn main() @io -> () {
     assert(3.0 * 2.0 == 6.0)
 }
 
+-- @case integer_storage_boundaries_preserve_arbitrary_precision run-pass backend=both
+fn main() -> () {
+    let min = -(1 << 62)
+    let max = (1 << 62) - 1
+    let high = max + 1
+    let low = min - 1
+    assert(min == -4611686018427387904 && max == 4611686018427387903)
+    assert(high == 4611686018427387904 && low == -4611686018427387905)
+    assert(low < min && max < high)
+    assert(min / -1 == high && min % -1 == 0)
+    assert(high - 1 == max && low + 1 == min)
+    assert(max * max == 21267647932558653957237540927630737409)
+    assert((max << 63) >> 63 == max)
+    assert((min << 62) >> 62 == min)
+    assert(min >> 500 == -1 && max >> 500 == 0)
+    assert(~min == max && (high | 3) ^ high == 3)
+    assert(Numeric::checked_div(min, -1) == Some(high))
+    assert(Numeric::checked_rem(min, 0) == None)
+    assert(Numeric::to_f64(max) == Numeric::to_f64(high))
+    assert(Numeric::trunc(-3.5) == Some(-3))
+    let keys = [max: "small", high: "large"]
+    assert(keys?[high - 1] == Some("small") && keys?[max + 1] == Some("large"))
+    let values = clone([min, max, high])
+    assert(values == [min, max, high])
+    assert(values?[high] == None && values?[min] == None)
+    assert(String::inspect(values) == "[-4611686018427387904, 4611686018427387903, 4611686018427387904]")
+}
+
 -- @case bin_exit_status_return run-pass backend=both
 -- @expect-exit 1
 fn main() -> new !<(), str> { Err("message on stderr") }

@@ -103,16 +103,11 @@ pub(crate) fn bytes(gc: &GcRuntime, values: Value) -> Option<Vec<u8>> {
 }
 
 pub(crate) fn int_array(gc: &mut GcRuntime, values: Vec<u32>) -> Value {
-    gc.push_frame(values.len());
-    let mut items = Vec::with_capacity(values.len());
-    for (index, value) in values.into_iter().enumerate() {
-        let value = gc.int(value.into()).into();
-        gc.set_root(index, value);
-        items.push(value);
-    }
-    let result = gc.alloc(Object::Array(items));
-    gc.pop_frame();
-    result
+    let items = values
+        .into_iter()
+        .map(|value| gc.int_i64(i64::from(value)))
+        .collect();
+    gc.alloc(Object::Array(items))
 }
 
 pub(crate) fn option(gc: &mut GcRuntime, value: Option<Value>) -> Value {

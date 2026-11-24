@@ -1,4 +1,32 @@
 use crate::{GcRuntime, Object, Runtime, TypeDesc, Value};
+use num_bigint::BigInt;
+
+#[test]
+fn small_int_arithmetic_promotes_and_demotes_without_allocating_in_range() {
+    let mut gc = GcRuntime::new(true);
+    let minimum: Value = gc.int(BigInt::from(-(1_i64 << 62))).into();
+    let maximum: Value = gc.int(BigInt::from((1_i64 << 62) - 1)).into();
+    let one: Value = gc.int(BigInt::from(1)).into();
+    assert_eq!(minimum.small_int(), Some(-(1_i64 << 62)));
+    assert_eq!(maximum.small_int(), Some((1_i64 << 62) - 1));
+    assert_eq!(
+        gc.binary("+", minimum, maximum).unwrap().small_int(),
+        Some(-1)
+    );
+    assert_eq!(gc.binary("/", minimum, one).unwrap(), minimum);
+    assert_eq!(gc.unary("~", minimum).unwrap(), maximum);
+    assert_eq!(gc.live_objects(), 0);
+
+    let promoted = gc.binary("+", maximum, one).unwrap();
+    assert!(
+        matches!(gc.object(promoted), Some(Object::Int(number)) if *number == BigInt::from(1_i64 << 62))
+    );
+    assert_eq!(gc.binary("-", promoted, one).unwrap(), maximum);
+    let demoted = gc.binary(">>", promoted, one).unwrap();
+    assert_eq!(demoted.small_int(), Some(1_i64 << 61));
+    gc.safepoint();
+    assert_eq!(gc.live_objects(), 0);
+}
 
 #[test]
 fn rooted_cycle_survives_allocations_and_reclaims_after_pop() {
