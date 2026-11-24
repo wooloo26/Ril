@@ -421,6 +421,18 @@ impl<'program> Analyzer<'program> {
         summary: &Summary,
         span: Span,
     ) {
+        for obligation in self.imported_effect_obligations(owner, signature, summary, span) {
+            self.use_effect(ctx, ledger, obligation, span, None);
+        }
+    }
+
+    pub(in crate::access::check) fn imported_effect_obligations(
+        &self,
+        owner: Span,
+        signature: &Callable,
+        summary: &Summary,
+        span: Span,
+    ) -> Vec<Obligation> {
         let mount = self
             .program
             .hir
@@ -430,6 +442,7 @@ impl<'program> Analyzer<'program> {
             .next()
             .and_then(std::ffi::OsStr::to_str)
             .unwrap_or("pkg");
+        let mut obligations = Vec::new();
         for (index, template) in signature.effects.iter().enumerate() {
             let applied = self.applied_effect(index, template, span).to_owned();
             let mut uses = summary
@@ -438,7 +451,7 @@ impl<'program> Analyzer<'program> {
                 .filter(|term| term.declaration == index)
                 .peekable();
             if uses.peek().is_none() {
-                self.effect(ctx, ledger, &applied, span);
+                obligations.push(Obligation::Effect(applied.clone()));
             }
             for term in uses {
                 if let Some(name) = &term.operation {
@@ -450,13 +463,14 @@ impl<'program> Analyzer<'program> {
                         .into_iter()
                         .find(|operation| self.program.hir.export_name(operation.id) == actual)
                     {
-                        self.use_effect(ctx, ledger, Obligation::Operation(operation), span, None);
+                        obligations.push(Obligation::Operation(operation));
                         continue;
                     }
                 }
-                self.effect(ctx, ledger, &applied, span);
+                obligations.push(Obligation::Effect(applied.clone()));
             }
         }
+        obligations
     }
 
     fn select_imported_summary<'a>(

@@ -93,6 +93,7 @@ structure JsonSnapshotOrigin where
 structure JsonSnapshotProjection where
   shape : Json
   origin : JsonSnapshotOrigin
+  live_callable_state : Option Bool
   deriving FromJson
 
 structure JsonCallbackReturn where
@@ -217,6 +218,7 @@ def snapshotOriginsSubsumed (pairs : ProviderPairs) (old new : List JsonSnapshot
 def snapshotProjectionsSubsumed (pairs : ProviderPairs) (old new : List JsonSnapshotProjection) : Bool :=
   new.all fun required => old.any fun offered =>
     offered.shape.compress == required.shape.compress &&
+      (offered.live_callable_state.getD false || !required.live_callable_state.getD false) &&
       snapshotOriginsSubsumed pairs [offered.origin] [required.origin]
 
 def snapshotCallbackReturnsSubsumed (pairs : ProviderPairs) (old new : List JsonCallbackReturn) : Bool :=

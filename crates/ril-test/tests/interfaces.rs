@@ -1041,6 +1041,65 @@ fn observe(times: int) -> int {{
 }
 
 #[test]
+fn clone_rejects_live_callable_state_from_an_imported_factory() {
+    use ril_base::diag::Code;
+
+    let source = br#"
+pub eff Clock { fn now() -> int; fn tick() -> int }
+pub fn now() @Clock -> int { Clock::now() }
+pub fn make() -> new fn() @Clock &up -> int {
+    var counter = 0
+    with Clock::tick = \-> { counter += 1; counter }
+    \-> Clock::tick()
+}
+"#;
+    let mut provider = VirtualPackage::new(Unit::Lib);
+    provider.entry = "pkg/clock.ril".into();
+    provider.insert(provider.entry.clone(), source.to_vec());
+    let encoded = Driver.interface(&provider).unwrap().encode().unwrap();
+    let decoded = Interface::decode(&encoded).unwrap();
+    assert!(
+        decoded.functions["pkg/clock.ril::make"]
+            .summary
+            .snapshot_returns
+            .iter()
+            .any(|projection| projection.live_callable_state)
+    );
+    for (mount, bytes) in [
+        ("library/clock.ril", source.as_slice()),
+        ("library/clock.rili", encoded.as_slice()),
+    ] {
+        let mut client = VirtualPackage::new(Unit::Lib);
+        client.insert(mount.into(), bytes.to_vec());
+        client.insert(
+            client.entry.clone(),
+            b"use library/clock\nfn run() -> () { let _ = clone([Clock::make()]) }".to_vec(),
+        );
+        let diagnostics = Driver.analyze(&client).err().unwrap_or_default();
+        assert_eq!(
+            diagnostics.iter().map(|d| d.code).collect::<Vec<_>>(),
+            [Some(Code::E0530)],
+            "{mount}: {diagnostics:?}"
+        );
+        client.insert(
+            client.entry.clone(),
+            br#"
+use library/clock as Provider
+fn run() -> () {
+    var counter = 0
+    with Provider::Clock::tick = \-> { counter += 1; counter }
+    with Provider::Clock::now = \-> 42
+    let copy = clone([Provider::now])
+    assert(copy[0]() == 42 && Provider::Clock::tick() == 1)
+}
+"#
+            .to_vec(),
+        );
+        assert!(Driver.analyze(&client).is_ok(), "{mount}");
+    }
+}
+
+#[test]
 fn clone_replays_callable_constraints_across_interfaces() {
     use ril_base::diag::Code;
     use ril_sema::access::{StorageStep, StorageTransfer};
@@ -2590,6 +2649,27 @@ fn exported_summaries_and_via_domains_agree_with_lean() {
             .into_values()
             .map(|export| export.summary),
     );
+    for live_callable_state in [false, true] {
+        summaries.push(Summary {
+            snapshot_returns: vec![SnapshotProjection {
+                path: vec![Coordinate::Index("0".into())],
+                origin: SnapshotOrigin {
+                    source: None,
+                    provider: None,
+                    access: Access::Immutable,
+                    new: false,
+                    borrowed: false,
+                    forwarded: false,
+                    detached: false,
+                },
+                qualified: false,
+                live_callable_state,
+                allocation: None,
+                observation: None,
+            }],
+            ..Summary::default()
+        });
+    }
     let calls_provider = |provider| SnapshotCall {
         factory_steps: Vec::new(),
         receiver: ModeAxis {
@@ -2785,6 +2865,7 @@ fn exported_summaries_and_via_domains_agree_with_lean() {
     fn wire_projection(projection: &SnapshotProjection) -> Value {
         json!({
             "shape": [&json!(projection.path), &json!(projection.qualified), &json!(projection.allocation), &json!(projection.observation)],
+            "live_callable_state": projection.live_callable_state,
             "origin": wire_snapshot_origin(&projection.origin),
         })
     }

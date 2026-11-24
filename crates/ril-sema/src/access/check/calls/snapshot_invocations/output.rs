@@ -388,12 +388,17 @@ impl Analyzer<'_> {
                     });
                     let source = axis(formals, origin)
                         .filter(|_| observation.is_some() || carries_callable());
-                    if provider.is_none() && source.is_none() && observation.is_none() {
+                    if provider.is_none()
+                        && source.is_none()
+                        && observation.is_none()
+                        && !node.live_callable_state
+                    {
                         continue;
                     }
                     projections.insert(SnapshotProjection {
                         path: path.to_vec(),
                         qualified: node.requires_new,
+                        live_callable_state: node.live_callable_state,
                         allocation: origin.return_allocation.map(|identity| identity.index),
                         observation,
                         origin: SnapshotOrigin {
@@ -420,6 +425,7 @@ impl Analyzer<'_> {
         projection: &SnapshotProjection,
         preserve_unobserved: bool,
     ) {
+        node.live_callable_state |= projection.live_callable_state;
         let origin = &projection.origin;
         let storage_read = projection.observation.as_ref().and_then(|read| {
             Some(StorageRead {

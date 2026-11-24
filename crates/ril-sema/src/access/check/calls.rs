@@ -2058,7 +2058,7 @@ impl<'program> Analyzer<'program> {
         output
             .latent_effects
             .extend(template.latent_effects.iter().cloned());
-        output.stateful_handler |= template.stateful_handler;
+        output.live_callable_state |= template.live_callable_state;
         output.result_fresh |= template.result_fresh;
         if !template.environments.is_empty() {
             output.environments.insert(entry.span);
@@ -2819,7 +2819,7 @@ impl<'program> Analyzer<'program> {
             "absorb_panic" => {
                 if first.is_some_and(|value| {
                     !value.latent_effects.is_empty()
-                        || value.stateful_handler
+                        || value.live_callable_state
                         || value.roots.iter().any(|origin| {
                             origin.mode != Access::Immutable
                                 && (!origin.new || !origin.dependencies.is_empty())
@@ -2899,7 +2899,7 @@ impl<'program> Analyzer<'program> {
                 "run" | "spawn" | "supervise" | "zip" | "try_zip" | "race" | "timeout_ms"
             ) {
                 for (i, _, callback) in values.iter().filter(|(_, _, v)| {
-                    v.stateful_handler || !v.latent_effects.is_empty() || !v.members.is_empty()
+                    v.live_callable_state || !v.latent_effects.is_empty() || !v.members.is_empty()
                 }) {
                     let argument = syntax
                         .get(*i)
@@ -2918,7 +2918,7 @@ impl<'program> Analyzer<'program> {
                             }
                         }
                     }
-                    if callback.stateful_handler {
+                    if callback.live_callable_state {
                         self.error(
                             Code::E0615,
                             argument.unwrap_or(span),
@@ -3461,7 +3461,7 @@ impl<'program> Analyzer<'program> {
                 .collect();
             closure.invocations.insert(inner.owner, bindings);
         }
-        closure.stateful_handler = self.rules.iter().skip(before).any(|rule| {
+        closure.live_callable_state = self.rules.iter().skip(before).any(|rule| {
             rule.conclusion.owner == inner.owner
                 && rule.conclusion.obligation == Obligation::StatefulHandler
         });

@@ -51,6 +51,44 @@ fn deep_graph_clone_and_equality_use_explicit_worklists() {
 }
 
 #[test]
+fn cloned_data_keeps_a_callable_and_its_environment_alive() {
+    let mut gc = GcRuntime::new(true);
+    gc.push_frame(1);
+    let handler = gc.alloc(Object::Closure {
+        function: 1,
+        arity: 0,
+        environment: Value::UNIT,
+        evidence: Value::UNIT,
+    });
+    let evidence = gc.alloc(Object::Evidence {
+        parent: Value::UNIT,
+        operation: "clock::tick".into(),
+        handler,
+    });
+    assert!(gc.set_root(0, evidence));
+    let captured = gc.alloc(Object::Tuple(vec![Value::TRUE]));
+    let closure = gc.alloc(Object::Closure {
+        function: 2,
+        arity: 0,
+        environment: captured,
+        evidence,
+    });
+    assert!(gc.clone_graph(closure).is_err());
+    let original = gc.alloc(Object::Array(vec![closure]));
+    let copy = gc.clone_graph(original).unwrap();
+    assert!(gc.set_root(0, copy));
+    gc.safepoint();
+    assert!(gc.object(original).is_none());
+    assert!(matches!(gc.object(copy), Some(Object::Array(values)) if values == &[closure]));
+    assert!(gc.object(captured).is_some());
+    assert!(gc.object(evidence).is_some());
+    assert!(gc.object(handler).is_some());
+    gc.pop_frame();
+    gc.safepoint();
+    assert_eq!(gc.live_objects(), 0);
+}
+
+#[test]
 fn descriptors_trace_only_managed_words() {
     let mut gc = GcRuntime::new(true);
     gc.push_frame(2);

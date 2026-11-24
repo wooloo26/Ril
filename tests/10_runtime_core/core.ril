@@ -870,6 +870,27 @@ fn main() -> () {
     assert(len(empty) == 0)
 }
 
+-- @case clone_copies_data_and_keeps_the_callable_snapshot run-pass backend=both
+type Counter = .{ var count: int }
+type Read = fn() -> int
+fn count() -> int { 42 }
+fn main() -> () {
+    let captured = Counter.{ count: count() }
+    let holder = .{ item: captured, read: \-> captured.count }
+    let mut copied: .{ mut item: Counter, read: Read } = clone(holder)
+    copied.item.count += 1
+    assert(copied.item.count == 43)
+    assert(copied.read() == 42 && holder.read() == 42 && holder.item.count == 42)
+}
+
+-- @case cloning_a_callback_array_through_a_function run-pass backend=both
+type Action = fn() -> int
+fn twice(actions: []Action) -> new []Action { clone(clone(actions)) }
+fn main() -> () {
+    let copied = twice([\-> 42])
+    assert(copied[0]() == 42)
+}
+
 -- @case narrowing_and_generalized_callable run-pass backend=both
 -- @expect-stdout 5:true
 fn unwrap(value: ??int) -> int {

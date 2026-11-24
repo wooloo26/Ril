@@ -480,7 +480,8 @@ pub(super) struct Datum {
     // the value on every incoming path, while false marks a possible source.
     pub capture_paths: BTreeMap<CapturePath, bool>,
     pub invocations: BTreeMap<Span, BTreeMap<Span, BTreeSet<Span>>>,
-    pub stateful_handler: bool,
+    // Live named captures or lexical handlers outside the member graph.
+    pub live_callable_state: bool,
     pub task_scope: Option<Span>,
     pub result_fresh: bool,
 }
@@ -709,7 +710,7 @@ impl Datum {
         }
         plain &= !self.requires_new
             && !self.result_fresh
-            && !self.stateful_handler
+            && !self.live_callable_state
             && self.task_scope.is_none()
             && self.results.is_empty()
             && self.latent_effects.is_empty()
@@ -834,6 +835,7 @@ impl Datum {
     }
 
     pub(super) fn widen_snapshot_graph(&mut self) {
+        let live_callable_state = self.contains_live_callable_environment();
         let mut roots = BTreeSet::new();
         self.snapshot_graph(&[], &mut |origin, owned, _| {
             let new = owned && origin.new;
@@ -856,6 +858,7 @@ impl Datum {
         *self = Self {
             roots: roots.into_iter().collect(),
             requires_new: self.requires_new,
+            live_callable_state,
             ..Self::default()
         };
     }
@@ -1257,7 +1260,7 @@ impl Datum {
                 captures.entry(source).or_default().extend(targets);
             }
         }
-        self.stateful_handler |= other.stateful_handler;
+        self.live_callable_state |= other.live_callable_state;
         self.result_fresh &= other.result_fresh;
         if self.task_scope != other.task_scope {
             self.task_scope = None;
@@ -1445,7 +1448,7 @@ impl Datum {
     }
 
     pub(super) fn contains_live_callable_environment(&self) -> bool {
-        self.stateful_handler
+        self.live_callable_state
             || !self.environments.is_empty()
                 && self
                     .members
@@ -1494,12 +1497,17 @@ impl Datum {
                 (extent.exact && roots.iter().all(|root| root.array_extent == Some(extent)))
                     .then_some(extent.minimum)
             });
-            let members = value
-                .members
-                .iter()
-                .map(|(key, value)| (key.clone(), copy(value, prototype, regions, true)))
-                .collect();
-            let mut copied = Datum {
+            let members = if value.environments.is_empty() {
+                value
+                    .members
+                    .iter()
+                    .map(|(key, value)| (key.clone(), copy(value, prototype, regions, true)))
+                    .collect()
+            } else {
+                // A callable keeps the immutable sources in its environment.
+                value.members.clone()
+            };
+            Datum {
                 requires_new: !roots.is_empty(),
                 roots,
                 members,
@@ -1507,17 +1515,10 @@ impl Datum {
                 latent_effects: value.latent_effects.clone(),
                 environments: value.environments.clone(),
                 invocations: value.invocations.clone(),
-                stateful_handler: value.stateful_handler,
+                live_callable_state: value.live_callable_state,
                 result_fresh: value.result_fresh,
                 ..Datum::default()
-            };
-            if !copied.environments.is_empty() {
-                // Captured values remain immutable in the copied environment.
-                for capture in copied.members.values_mut() {
-                    capture.freeze();
-                }
             }
-            copied
         }
 
         let mut fresh = Self::source(span, Access::Mut, true);

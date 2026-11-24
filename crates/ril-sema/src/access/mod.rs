@@ -259,6 +259,8 @@ pub struct SnapshotProjection {
     pub path: Vec<Coordinate>,
     pub origin: SnapshotOrigin,
     pub qualified: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub live_callable_state: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub allocation: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

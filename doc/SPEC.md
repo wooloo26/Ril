@@ -773,7 +773,7 @@ assert((holder.cb)() == 2)
 ```
 
 - **`clone(value)` / `clone(ref live)`**: Deep-copies an ordinary `SharedObject` graph (preserving internal aliases and cycles) into an isolated `new T`.
-- **Clonability restrictions**: Fails `E0301` on value-type roots, callables, or graphs containing `.d.ril` `opaque` handles, `Scope`, `Task`, `Sender` (use `Channel::clone`), `Receiver`, or `Draft`; fails `E0530` on live/mutable closure environments.
+- **Clonability restrictions**: Fails `E0301` on value-type or callable roots and graphs containing `.d.ril` `opaque` handles, `Scope`, `Task`, `Sender` (use `Channel::clone`), `Receiver`, or `Draft`. A contained callable copies by value, preserving its immutable captures and lexical handlers. A contained callable with a live capture or stateful lexical handler fails `E0530`.
 
 ### Type Identity and Subtyping
 
@@ -3023,7 +3023,7 @@ The implicit prelude encloses every compilation unit and inline `sub`:
 | :--- | :--- | :--- |
 | `len` | `pub fn len<T \|> LenTarget>(via item: T) -> int` | Dual-phase: scalar count of `str`, byte count of `bytes`, element/entry count of `[]T`, `[K: V]`, `Set<T>` (admits `ref` on collections at runtime; `E0401` on `ref str`) |
 | `inner` | `pub fn inner<W \|> NominalWrapper>(via wrapper: W) -> infer Unwrap<W>` | Dual-phase: unwraps accessible `.ril` `nominal` wrapper (or `Draft<W>`, lifting `NominalWrapper`/`Unwrap`) to its payload (`()` for unit nominals; `inner(mut x)` is a scoped path projection usable on `Draft<W>` or as an immediate `mut` path receiver, unable to bind a second unshared `let mut` alias, `E0510`; `E0907` on `.d.ril` nominals, `E0301` on non-nominals) |
-| `clone` | `pub fn clone<T \|> SharedObject>(via value: T) -> new T` | Dual-phase: deep copy of clonable `SharedObject` graph into isolated `new T` (`E0301` on value types or graphs containing `.d.ril` `opaque` / concurrency / `Draft` handles; `E0530` on live/mutable closures) |
+| `clone` | `pub fn clone<T \|> SharedObject>(via value: T) -> new T` | Dual-phase: deep copy of a clonable `SharedObject` graph into isolated `new T` (`E0301` on value-type or callable roots and graphs containing `.d.ril` `opaque` / concurrency / `Draft` handles, `E0530` on live callable environments) |
 | `derive` | `pub fn derive<T \|> SharedObject>(base: T, via update: fn(mut Draft<T>) @& -> ()) -> T` | Dual-phase: path-targeted functional update on immutable `SharedObject` (`E0536`, `E0308`, `E0607`) |
 | `absorb_panic` | `pub fn absorb_panic<T>(via action: fn() @& -> infer T) -> infer !<T, PanicError>` | Runtime: panic-isolated containment (`E0608`) |
 | `panic_message` | `pub fn panic_message(info: PanicInfo) -> str` | Runtime: extracts human-readable message from `PanicInfo` (`E0810` in static eval) |

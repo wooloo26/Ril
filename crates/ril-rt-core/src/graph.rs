@@ -81,6 +81,9 @@ impl GcRuntime {
     }
 
     pub fn clone_graph(&mut self, root: Value) -> Result<Value, &'static str> {
+        if matches!(self.object(root), Some(Object::Closure { .. })) {
+            return Err("object cannot be cloned");
+        }
         self.pin(root);
         let mut copied = BTreeMap::new();
         let result = self.copy_graph(root, &mut copied);
@@ -151,6 +154,10 @@ impl GcRuntime {
             | Object::Str(_)
             | Object::Bytes(_)
             | Object::PanicInfo(_) => Ok(value),
+            // A contained callable is a value with its original immutable
+            // environment and lexical dispatch evidence. Sema checks that
+            // it retains no live capture or stateful handler.
+            Object::Closure { .. } => Ok(value),
             Object::Array(_)
             | Object::Tuple(_)
             | Object::Tag(..)

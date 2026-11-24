@@ -606,9 +606,10 @@ impl<'a> Analyzer<'a> {
             for handler in operations.iter().filter_map(|id| ctx.handlers.get(id)) {
                 self.link_invocation_if(ctx, handler, if_exercised.as_ref());
                 self.check_handler_iteration(ledger, handler, span, if_exercised.as_ref());
-                if handler
-                    .origins()
-                    .any(|origin| origin.mode != Access::Immutable)
+                if handler.live_callable_state
+                    || handler
+                        .origins()
+                        .any(|origin| origin.mode != Access::Immutable)
                 {
                     self.rules.push(Rule {
                         premises: if_exercised.iter().cloned().collect(),
@@ -3099,11 +3100,96 @@ impl<'a> Analyzer<'a> {
                 for root in &mut value.roots {
                     root.snapshot_provider = Some(decl);
                 }
+                value.live_callable_state = self.named_value_has_live_state(id, ctx, ledger);
             }
             value
         } else {
             Datum::default()
         }
+    }
+
+    fn named_value_has_live_state(
+        &mut self,
+        id: DefinitionId,
+        ctx: &Context,
+        ledger: &Ledger,
+    ) -> bool {
+        let function = self.function_syntax(id);
+        let mut captured = self
+            .function_syntax(id)
+            .into_iter()
+            .flat_map(|fun| &fun.signature.obligations.state)
+            .filter(|clause| clause.kind == StateKind::Environment)
+            .flat_map(|clause| &clause.bindings);
+        if captured.any(|(storage, path)| {
+            storage.variable
+                || storage.mode != Mode::Plain
+                || self
+                    .declaration(path.span)
+                    .and_then(|decl| ledger.slots.get(&decl))
+                    .is_some_and(|slot| {
+                        slot.variable
+                            || slot.value.contains_live_callable_environment()
+                            || slot
+                                .value
+                                .origins()
+                                .any(|root| root.mode != Access::Immutable)
+                    })
+        }) {
+            return true;
+        }
+        let live_handlers: Vec<_> = self
+            .program
+            .callables
+            .get(&id)
+            .into_iter()
+            .flat_map(|callable| &callable.effects)
+            .flat_map(|effect| self.effect_operations(effect))
+            .filter(|operation| {
+                ctx.handlers.get(operation).is_some_and(|handler| {
+                    handler.live_callable_state
+                        || handler
+                            .origins()
+                            .any(|origin| origin.mode != Access::Immutable)
+                })
+            })
+            .collect();
+        if live_handlers.is_empty() {
+            return false;
+        }
+        if let Some(function) = function
+            && ctx.reachable
+            && !ctx.shadow
+        {
+            self.function(function, ledger);
+        }
+        live_handlers
+            .iter()
+            .any(|operation| self.named_may_use_handler(id, operation))
+    }
+
+    fn named_may_use_handler(&self, id: DefinitionId, operation: &Operation) -> bool {
+        let uses_handler = |obligation: &Obligation| match obligation {
+            Obligation::Operation(used) => used == operation,
+            Obligation::Effect(effect) => self.program.effect_covers(effect, &operation.effect),
+            _ => false,
+        };
+        if let Some(imported) = self.program.imported_functions.get(&id)
+            && let Some(signature) = self.program.callables.get(&id)
+        {
+            let owner = self.program.hir.definition(id).name.span;
+            return self
+                .imported_effect_obligations(owner, signature, &imported.summary, owner)
+                .iter()
+                .any(uses_handler);
+        }
+        let Some(checked) = self.functions.iter().find(|function| function.id == id) else {
+            // A foreign or currently recursive body has only its declared bound.
+            return true;
+        };
+        self.rules.iter().any(|rule| {
+            rule.conclusion.owner == checked.owner && uses_handler(&rule.conclusion.obligation)
+        })
     }
 
     fn check_live(

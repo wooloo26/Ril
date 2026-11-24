@@ -283,6 +283,7 @@ fn projections_subsume(
         old.iter().any(|allowed| {
             allowed.path == required.path
                 && allowed.qualified == required.qualified
+                && (allowed.live_callable_state || !required.live_callable_state)
                 && allowed.allocation == required.allocation
                 && allowed.observation == required.observation
                 && origins_subsume(&allowed.origin, &required.origin, pairs)

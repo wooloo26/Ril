@@ -98,6 +98,33 @@ fn main() @io -> () {
     println("{f(6)}")
 }
 
+-- @case cloned_callable_keeps_its_lexical_handler run-pass backend=both
+eff Clock { fn tick() -> int }
+eff Other { fn tick() -> int }
+fn main() -> () {
+    var counter = 0
+    with Other::tick = \-> { counter += 1; counter }
+    let callbacks = {
+        with Clock::tick = \-> 42
+        [\-> Clock::tick()]
+    }
+    with Clock::tick = \-> 99
+    let copied = clone(callbacks)
+    assert(copied[0]() == 42)
+    assert(Other::tick() == 1)
+}
+
+-- @case clone_ignores_handlers_for_operations_a_named_callable_does_not_use run-pass backend=both
+eff Clock { fn now() -> int; fn tick() -> int }
+fn main() -> () {
+    var counter = 0
+    with Clock::tick = \-> { counter += 1; counter }
+    with Clock::now = \-> 42
+    let copied = clone([now])
+    assert(copied[0]() == 42 && Clock::tick() == 1)
+}
+fn now() @Clock -> int { Clock::now() }
+
 -- @case captured_variable_uses_shared_slot run-pass backend=both
 -- @expect-stdout 2:3:3
 fn main() @io -> () {

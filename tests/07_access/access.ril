@@ -3087,6 +3087,31 @@ fn run() -> int {
     observed
 }
 
+-- @case clone_rejects_a_named_local_callables_live_capture compile-fail E0530
+type Counter = .{ var count: int }
+fn run() -> int {
+    let mut cell = Counter.{ count: 40 }
+    let ref view = cell
+    let holder = .{ cb: step }
+    let copy = clone(holder)
+    -- ^ E0530
+    cell.count += 2
+    copy.cb()
+where
+    fn step() &up(ref view) -> int { view.count }
+}
+
+-- @case clone_rejects_a_named_callable_with_live_lexical_evidence compile-fail E0530
+eff Clock { fn tick() -> int }
+fn tick() @Clock -> int { Clock::tick() }
+fn run() -> int {
+    var counter = 0
+    with Clock::tick = \-> { counter += 1; counter }
+    let copy = clone([tick])
+    -- ^ E0530
+    copy[0]()
+}
+
 -- @case clone_keeps_the_snapshot_requirement_of_a_contained_callable compile-fail E0535 no-prelude
 type Cell = .{ var count: int }
 type Shelf = .{ ^mut item: Cell }
