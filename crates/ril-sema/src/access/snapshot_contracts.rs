@@ -91,6 +91,25 @@ fn storage_flows_subsume(
             (!left.definite || right.definite) && storage_update_subsumes(left, right, pairs)
         }
         (
+            StorageStep::WriteObserved {
+                parent: left_parent,
+                member: left_member,
+                value: left,
+                definite: left_definite,
+            },
+            StorageStep::WriteObserved {
+                parent: right_parent,
+                member: right_member,
+                value: right,
+                definite: right_definite,
+            },
+        ) => {
+            left_parent == right_parent
+                && left_member == right_member
+                && (!left_definite || *right_definite)
+                && callback_operand_subsumes(left, right, pairs)
+        }
+        (
             StorageStep::Invoke {
                 receiver: left,
                 arguments: left_arguments,

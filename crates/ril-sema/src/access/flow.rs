@@ -10,7 +10,9 @@ use serde::{Deserialize, Serialize};
 use super::{Input, ModeExpression, ModeStep, ReturnAllocation};
 
 mod storage;
-pub(super) use storage::{DeferredStorageCall, StorageAction, StorageFlow, StorageRead};
+pub(super) use storage::{
+    DeferredStorageCall, StorageAction, StorageFlow, StorageRead, StorageTarget,
+};
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 pub enum Access {
@@ -1322,6 +1324,8 @@ impl Datum {
     pub(super) fn slot_projection(&self, coordinate: Coordinate) -> Self {
         let mut roots = self.roots.clone();
         for root in &mut roots {
+            // An observation selects the parent object. This coordinate
+            // addresses a slot within that object.
             root.region.selection.push(coordinate.clone());
         }
         let mut slot = Self {
@@ -1569,10 +1573,17 @@ impl Ledger {
 
     pub(super) fn sampled_storage(
         &self,
-        (span, invocation, index): (Span, &[InvocationSite], usize),
-    ) -> Option<&Datum> {
-        self.storage_samples
-            .get(&(span, invocation.to_vec(), index))
+        (span, invocation): (Span, &[InvocationSite]),
+        read: &StorageRead,
+    ) -> Option<Datum> {
+        let mut value = self
+            .storage_samples
+            .get(&(span, invocation.to_vec(), read.index))?
+            .clone();
+        for coordinate in &read.path {
+            value = self.project(&value, coordinate.clone(), Access::Mut);
+        }
+        Some(value)
     }
 
     pub(super) fn with_storage_samples(&self, current: &Self) -> Cow<'_, Self> {
@@ -1585,12 +1596,12 @@ impl Ledger {
         }
     }
 
-    fn record_storage_write(&mut self, region: &Region, value: &Datum, definite: bool) {
+    fn record_storage_write(&mut self, target: StorageTarget, value: &Datum, definite: bool) {
         if self.storage_flow.is_some() {
             let value = self.snapshot(value);
             if let Some(flow) = &mut self.storage_flow {
                 flow.push(StorageAction::Write(
-                    region.clone(),
+                    target,
                     Replacement { value, definite },
                 ));
             }
@@ -2470,7 +2481,7 @@ impl Ledger {
                 .capture_owner
                 .is_some_and(|owner| value.publications.contains_key(&owner))
         {
-            self.record_storage_write(&region, &value, definite);
+            self.record_storage_write(StorageTarget::Entry(region), &value, definite);
         }
         if !value.roots.is_empty() {
             self.replace_region(&Region::capture_slot(decl), &value, definite);
@@ -2480,10 +2491,15 @@ impl Ledger {
 
     pub(super) fn replace_member(&mut self, slot: &Datum, mut value: Datum, definite: bool) {
         self.stamp(&mut value);
-        let single = slot
-            .roots
-            .first()
-            .is_some_and(|first| slot.roots.iter().all(|root| root.region == first.region));
+        let single = slot.roots.first().is_some_and(|first| {
+            slot.roots
+                .iter()
+                .all(|root| root.region == first.region && root.storage_read == first.storage_read)
+        });
+        let publishes = self
+            .capture_owner
+            .is_some_and(|owner| value.publications.contains_key(&owner));
+        let mut observed_targets = BTreeSet::new();
         for origin in &slot.roots {
             let region = &origin.region;
             let definite = definite
@@ -2498,22 +2514,40 @@ impl Ledger {
                 });
             }
             self.replace_region(region, &value, definite);
-            if self.storage_formals.contains(&Some(region.source))
-                && self
-                    .capture_owner
-                    .is_some_and(|owner| value.publications.contains_key(&owner))
-            {
-                self.record_storage_write(region, &value, definite);
+            if publishes && self.storage_flow.is_some() {
+                if let Some(parent) = &origin.storage_read
+                    && let Some(member) = region.selection.last()
+                {
+                    let target = StorageTarget::Observed {
+                        parent: parent.clone(),
+                        member: member.clone(),
+                    };
+                    if observed_targets.insert(target.clone()) {
+                        self.record_storage_write(target, &value, definite);
+                    }
+                } else if self.storage_formals.contains(&Some(region.source)) {
+                    self.record_storage_write(
+                        StorageTarget::Entry(region.clone()),
+                        &value,
+                        definite,
+                    );
+                }
             }
         }
+        let has_entry_target =
+            slot.roots.is_empty() || slot.roots.iter().any(|root| root.storage_read.is_none());
         for (path, &known) in &slot.capture_paths {
-            if self.capture_owner == Some(path.owner)
-                && value.publications.contains_key(&path.owner)
-            {
-                let definite =
-                    definite && known && !path.region.selection.iter().any(Coordinate::is_range);
+            if has_entry_target && self.capture_owner == Some(path.owner) && publishes {
+                let definite = definite
+                    && observed_targets.is_empty()
+                    && known
+                    && !path.region.selection.iter().any(Coordinate::is_range);
                 Self::record_replacement(&mut self.capture_updates, &path.region, &value, definite);
-                self.record_storage_write(&path.region, &value, definite);
+                self.record_storage_write(
+                    StorageTarget::Entry(path.region.clone()),
+                    &value,
+                    definite,
+                );
             }
         }
     }

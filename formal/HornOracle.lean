@@ -132,10 +132,17 @@ structure JsonStorageRead where
   base : JsonStorageOperand
   deriving FromJson
 
+structure JsonStorageObservedWrite where
+  shape : Json
+  value : JsonStorageOperand
+  definite : Bool
+  deriving FromJson
+
 structure JsonStorageStep where
   write : Option JsonStorageUpdate
   invoke : Option JsonStorageInvocation
   read : Option JsonStorageRead
+  write_observed : Option JsonStorageObservedWrite
   deriving FromJson
 
 structure JsonStorageFlow where
@@ -236,6 +243,11 @@ def storageStepSubsumed (pairs : ProviderPairs) (old new : JsonStorageStep) : Bo
       (left.arguments.zip right.arguments).all fun (left, right) => storageOperandSubsumed pairs left right
   | none, none, none, none, some left, some right =>
       left.shape.compress == right.shape.compress && storageOperandSubsumed pairs left.base right.base
+  | none, none, none, none, none, none =>
+      match old.write_observed, new.write_observed with
+      | some left, some right => left.shape.compress == right.shape.compress &&
+          (!left.definite || right.definite) && storageOperandSubsumed pairs left.value right.value
+      | _, _ => false
   | _, _, _, _, _, _ => false
 
 def storageFlowsSubsumed (pairs : ProviderPairs) (old new : Option JsonStorageFlow) : Bool :=

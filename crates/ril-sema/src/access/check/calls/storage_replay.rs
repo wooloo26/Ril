@@ -5,7 +5,7 @@ use ril_frontend::{hir::DefinitionKind, syntax::StateKind};
 
 use super::{
     Analyzer, CallEntry, CallStorage, Context, DeferredStorageCall, InvocationSite, Ledger,
-    StorageAction, StorageFlow, snapshot_invocations::known_provider,
+    StorageAction, StorageFlow, StorageTarget, snapshot_invocations::known_provider,
 };
 use crate::access::check::storage::ReadSite;
 
@@ -88,18 +88,42 @@ impl Analyzer<'_> {
             ..*entry
         };
         match action {
-            StorageAction::Write(target, update) => self.apply_storage_updates(
-                ctx,
-                CallStorage {
-                    formals: storage.formals.clone(),
-                    via: storage.via.clone(),
-                    updates: BTreeMap::from([(target.clone(), update.clone())]),
-                    ..CallStorage::default()
-                },
-                entry,
-                after,
-                published,
-            ),
+            StorageAction::Write(StorageTarget::Entry(target), update) => self
+                .apply_storage_updates(
+                    ctx,
+                    CallStorage {
+                        formals: storage.formals.clone(),
+                        via: storage.via.clone(),
+                        updates: BTreeMap::from([(target.clone(), update.clone())]),
+                        ..CallStorage::default()
+                    },
+                    entry,
+                    after,
+                    published,
+                ),
+            StorageAction::Write(StorageTarget::Observed { parent, member }, update) => {
+                let Some(parent) = entry
+                    .ledger
+                    .sampled_storage((entry.span, entry.invocation), parent)
+                else {
+                    // This read may not have run yet on a widened trace.
+                    return true;
+                };
+                let value = self.instantiate_return(
+                    &storage.formals,
+                    &storage.via,
+                    entry,
+                    &update.value,
+                    &mut Vec::new(),
+                );
+                self.apply_storage_member(
+                    ctx,
+                    after,
+                    (&parent, member),
+                    value,
+                    (entry.span, update.definite, published),
+                )
+            }
             StorageAction::Invoke(call) => {
                 self.replay_deferred_storage(ctx, storage, entry, after, call)
             }
@@ -210,7 +234,7 @@ impl Analyzer<'_> {
                     fun,
                     signature,
                     (&arguments, &spans),
-                    entry.span,
+                    (entry.span, &trace),
                 );
                 alternatives.push(branch);
                 false

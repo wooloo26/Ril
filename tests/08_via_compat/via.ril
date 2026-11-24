@@ -1212,3 +1212,24 @@ pub fn read(mut slot: Slot, install: fn(mut Slot) &mut -> ()) &mut -> fn() -> in
     install(mut slot)
     slot.action
 }
+
+-- @case tightening_a_store_through_an_observed_target_breaks_compatibility compat-fail E0552
+-- @baseline
+pub type Shelf = .{ ^mut item: Cell }
+pub type Slot = .{ var action: fn(new Shelf) -> int }
+pub type Holder = .{ var ^mut slot: Slot }
+fn count(new shelf: Shelf) -> int { shelf.item.count }
+pub fn write_after(mut holder: Holder, replace: fn(mut Holder) &mut -> ()) &mut -> () {
+    replace(mut holder)
+    holder.slot.action = count
+}
+-- @revision
+pub type Shelf = .{ ^mut item: Cell }
+pub type Slot = .{ var action: fn(new Shelf) -> int }
+pub type Holder = .{ var ^mut slot: Slot }
+fn freeze(new shelf: Shelf) -> int { let fixed = new shelf; fixed.item.count }
+pub fn write_after(mut holder: Holder, replace: fn(mut Holder) &mut -> ()) &mut -> () {
+-- ^ E0552
+    replace(mut holder)
+    holder.slot.action = freeze
+}

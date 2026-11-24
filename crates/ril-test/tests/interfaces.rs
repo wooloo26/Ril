@@ -668,6 +668,120 @@ fn observe() -> int {{
 }
 
 #[test]
+fn observed_storage_targets_survive_separate_compilation() {
+    use ril_base::diag::Code;
+
+    let source = br#"
+pub type Cell = .{ var count: int }
+pub type Shelf = .{ ^mut item: Cell }
+pub type Slot = .{ var action: fn(new Shelf) -> int }
+pub type Holder = .{ var ^mut slot: Slot }
+pub type Swap = fn(mut Holder) &mut -> ()
+pub type Edit = fn(mut Holder, Swap) &mut -> ()
+fn freeze(new shelf: Shelf) -> int { let fixed = new shelf; fixed.item.count }
+pub fn count(new shelf: Shelf) -> int { shelf.item.count }
+pub fn swap(mut holder: Holder) &mut -> () { holder.slot = Slot.{ action: count } }
+fn paint(mut slot: Slot) &mut -> () { slot.action = freeze }
+pub fn write_after(mut holder: Holder, replace: Swap) &mut -> () {
+    replace(mut holder)
+    holder.slot.action = freeze
+}
+pub fn delegate(mut holder: Holder, replace: Swap) &mut -> () {
+    replace(mut holder)
+    paint(mut holder.slot)
+}
+pub fn write_saved(mut holder: Holder, replace: Swap) &mut -> () {
+    let ^mut saved = holder.slot
+    replace(mut holder)
+    saved.action = freeze
+}
+pub fn write_between(mut holder: Holder, replace: Swap) &mut -> () {
+    replace(mut holder)
+    let ^mut saved = holder.slot
+    replace(mut holder)
+    saved.action = freeze
+}
+pub fn writer() -> Edit {
+    \mut holder: Holder, replace: Swap -> { replace(mut holder); holder.slot.action = freeze }
+}
+"#;
+    let mut library = VirtualPackage::new(Unit::Lib);
+    library.entry = "pkg/storage.ril".into();
+    library.insert(library.entry.clone(), source.to_vec());
+    let interface = Driver.interface(&library).unwrap().encode().unwrap();
+    let mut forwarding = VirtualPackage::new(Unit::Lib);
+    forwarding.entry = "pkg/forwarding.ril".into();
+    forwarding.insert(
+        forwarding.entry.clone(),
+        br#"
+use library/storage
+pub fn write_after(mut holder: Storage::Holder, replace: Storage::Swap) &mut -> () {
+    Storage::write_after(mut holder, replace)
+}
+pub fn write_between(mut holder: Storage::Holder, replace: Storage::Swap) &mut -> () {
+    Storage::write_between(mut holder, replace)
+}
+pub fn writer() -> Storage::Edit { Storage::writer() }
+"#
+        .to_vec(),
+    );
+    forwarding.insert("library/storage.rili".into(), interface.clone());
+    let forwarded = Driver.interface(&forwarding).unwrap().encode().unwrap();
+    for (mount, bytes) in [
+        ("library/storage.ril", source.as_slice()),
+        ("library/storage.rili", interface.as_slice()),
+    ] {
+        for (write, target, freezes) in [
+            ("Storage::write_after", "holder.slot", true),
+            ("Storage::write_after", "original", false),
+            ("Storage::delegate", "holder.slot", true),
+            ("Storage::write_saved", "holder.slot", false),
+            ("Storage::write_saved", "original", true),
+            ("Storage::write_between", "holder.slot", false),
+            ("Storage::writer()", "holder.slot", true),
+            ("Forwarding::write_after", "holder.slot", true),
+            ("Forwarding::write_between", "holder.slot", false),
+            ("Forwarding::writer()", "holder.slot", true),
+        ] {
+            let source = format!(
+                "use library/storage
+use relay/forwarding
+fn observe() -> int {{
+    let mut original = Storage::Slot.{{ action: Storage::count }}
+    original.action = Storage::count
+    let mut holder = Storage::Holder.{{ slot: ^mut original }}
+    {write}(mut holder, Storage::swap)
+    let mut live = Storage::Cell.{{ count: 1 }}
+    live.count += 1
+    {target}.action(new Storage::Shelf.{{ item: ^mut live }})
+}}"
+            );
+            let mut client = VirtualPackage::new(Unit::Lib);
+            client.insert(mount.into(), bytes.to_vec());
+            client.insert("relay/forwarding.rili".into(), forwarded.clone());
+            client.insert(client.entry.clone(), source.into_bytes());
+            match (freezes, Driver.analyze(&client)) {
+                (false, Ok(_)) => {}
+                (true, Err(diagnostics)) => {
+                    assert_eq!(
+                        diagnostics.len(),
+                        1,
+                        "{mount} {write} {target}: {diagnostics:?}"
+                    );
+                    assert_eq!(
+                        diagnostics[0].code,
+                        Some(Code::E0535),
+                        "{mount} {write} {target}"
+                    );
+                }
+                (false, Err(diagnostics)) => panic!("{mount} {write} {target}: {diagnostics:?}"),
+                (true, Ok(_)) => panic!("{mount} {write} accepted a live view via {target}"),
+            }
+        }
+    }
+}
+
+#[test]
 fn correlated_callback_mode_offers_survive_interface_only_calls() {
     use ril_base::diag::Code;
 
@@ -2201,6 +2315,18 @@ fn exported_summaries_and_via_domains_agree_with_lean() {
             "shape": [json!(index), json!(coordinate), json!(mode)],
             "base": wire_storage_operand(base),
         }}),
+        StorageStep::WriteObserved {
+            parent,
+            member,
+            value,
+            definite,
+        } => json!({
+            "write_observed": {
+                "shape": [json!(parent), json!(member)],
+                "value": wire_storage_operand(value),
+                "definite": definite,
+            }
+        }),
     };
     let wire_storage_flow = |flow: &StorageTransfer| match flow {
         StorageTransfer::Paths(paths) => {

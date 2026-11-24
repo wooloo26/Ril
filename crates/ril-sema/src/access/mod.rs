@@ -220,6 +220,12 @@ pub enum StorageTransfer {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum StorageStep {
     Write(StorageUpdate),
+    WriteObserved {
+        parent: StorageObservation,
+        member: Coordinate,
+        value: CallbackArgument,
+        definite: bool,
+    },
     Invoke {
         receiver: CallbackArgument,
         arguments: Vec<CallbackArgument>,

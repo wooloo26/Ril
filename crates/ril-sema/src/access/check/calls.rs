@@ -17,7 +17,7 @@ use crate::{
         CallbackArgument, CallbackReturn, InvocationMode, ReturnSource,
         flow::{
             CallbackOrigin, DeferredStorageCall, Handoff, Origin, Revocation, StorageAction,
-            StorageFlow,
+            StorageFlow, StorageTarget,
         },
     },
     ty::{Callable, Ty},
@@ -688,7 +688,7 @@ impl<'program> Analyzer<'program> {
             }
         }
         if let Some(fun) = syntax {
-            return self.named_call(ctx, ledger, fun, sig, (&values, &value_spans), span);
+            return self.named_call(ctx, ledger, fun, sig, (&values, &value_spans), (span, &[]));
         }
         let carries_callable = super::higher_order::carries_callable(self.program, self.ty(span));
         if all_aliases_known && let Some(receiver) = &target {
@@ -702,8 +702,14 @@ impl<'program> Analyzer<'program> {
                     .callables
                     .get(&id)
                     .map(|signature| signature.as_ref());
-                let mut result =
-                    self.named_call(ctx, &mut after, fun, actual, (&values, &value_spans), span);
+                let mut result = self.named_call(
+                    ctx,
+                    &mut after,
+                    fun,
+                    actual,
+                    (&values, &value_spans),
+                    (span, &[]),
+                );
                 if !after.no_continuation {
                     if sig.is_some_and(|signature| signature.result_mode == Mode::Plain)
                         && fun.signature.result_mode == Mode::New
@@ -874,7 +880,7 @@ impl<'program> Analyzer<'program> {
         fun: &Function,
         sig: Option<&'program Callable>,
         (values, value_spans): (&[(usize, Mode, Datum)], &[Span]),
-        span: Span,
+        (span, invocation): (Span, &[InvocationSite]),
     ) -> Datum {
         if fun.body.is_none()
             && let Some(id) = self.definition(fun.name.span)
@@ -886,7 +892,7 @@ impl<'program> Analyzer<'program> {
                     fun,
                     sig,
                     export,
-                    (values, value_spans, span),
+                    (values, value_spans, span, invocation),
                 );
             }
             if self.program.hir.file(fun.name.span.file).is_interface()
@@ -963,7 +969,7 @@ impl<'program> Analyzer<'program> {
                             spans: value_spans,
                             ledger: &frozen,
                             span,
-                            invocation: &[],
+                            invocation,
                             environment: Some(CallEnvironment {
                                 owner: fun.name.span,
                                 bindings: None,
@@ -1112,7 +1118,7 @@ impl<'program> Analyzer<'program> {
                 spans: value_spans,
                 ledger: before_updates.as_ref().unwrap_or(ledger),
                 span,
-                invocation: &[],
+                invocation,
                 environment: Some(CallEnvironment {
                     owner: fun.name.span,
                     bindings: None,
@@ -1572,26 +1578,43 @@ impl<'program> Analyzer<'program> {
             };
 
             let value = self.project_entry_path(entry.ledger, actual, ty, parent);
-            let coordinate = if matches!(member, Coordinate::ArrayTail(_)) {
-                ledger.append_coordinate(&value, false)
-            } else {
-                member.clone()
-            };
-            let place = value.slot_projection(coordinate);
-            applied &= !place.roots.is_empty();
-            if published {
-                self.record_write(ctx, &place);
-            }
-            let mut stored =
+            let stored =
                 self.instantiate_return(&formals, &via, entry, &update.value, &mut output_path);
-            ledger.remember_return_graph(&stored, entry.span);
-            self.check_stored_views(&stored, false, entry.span);
-            stored
-                .publications
-                .insert(ctx.owner, place.roots.iter().any(|origin| !origin.new));
-            ledger.replace_member(&place, stored, update.definite);
+            applied &= self.apply_storage_member(
+                ctx,
+                ledger,
+                (&value, member),
+                stored,
+                (entry.span, update.definite, published),
+            );
         }
         applied
+    }
+
+    fn apply_storage_member(
+        &mut self,
+        ctx: &Context,
+        ledger: &mut Ledger,
+        (parent, member): (&Datum, &Coordinate),
+        mut stored: Datum,
+        (span, definite, published): (Span, bool, bool),
+    ) -> bool {
+        let coordinate = if matches!(member, Coordinate::ArrayTail(_)) {
+            ledger.append_coordinate(parent, false)
+        } else {
+            member.clone()
+        };
+        let place = parent.slot_projection(coordinate);
+        if published {
+            self.record_write(ctx, &place);
+        }
+        ledger.remember_return_graph(&stored, span);
+        self.check_stored_views(&stored, false, span);
+        stored
+            .publications
+            .insert(ctx.owner, place.roots.iter().any(|origin| !origin.new));
+        ledger.replace_member(&place, stored, definite);
+        !place.roots.is_empty()
     }
 
     fn closure_storage(
@@ -1856,17 +1879,10 @@ impl<'program> Analyzer<'program> {
             .iter()
             .filter_map(|origin| {
                 if let Some(read) = &origin.storage_read {
-                    if let Some(value) =
-                        entry
-                            .ledger
-                            .sampled_storage((entry.span, entry.invocation, read.index))
+                    if let Some(mut value) = entry
+                        .ledger
+                        .sampled_storage((entry.span, entry.invocation), read)
                     {
-                        let mut value = value.clone();
-                        for coordinate in &read.path {
-                            value = entry
-                                .ledger
-                                .project(&value, coordinate.clone(), Access::Mut);
-                        }
                         value.transform(&mut |projected| {
                             projected.fix_mode(origin.mode.project(projected.mode));
                             projected.new &= origin.new;

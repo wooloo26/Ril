@@ -6,9 +6,12 @@ use super::{
 };
 use crate::access::check::storage::ReadSite;
 use crate::access::{
-    CallbackArgument, Input, InvocationMode, SnapshotProjection, StorageStep, StorageTransfer,
-    StorageUpdate,
-    flow::{DeferredStorageCall, Region, Replacement, StorageAction, StorageFlow},
+    CallbackArgument, Input, InvocationMode, SnapshotProjection, StorageObservation, StorageStep,
+    StorageTransfer, StorageUpdate,
+    flow::{
+        DeferredStorageCall, Region, Replacement, StorageAction, StorageFlow, StorageRead,
+        StorageTarget,
+    },
 };
 use ril_frontend::syntax::Mode;
 
@@ -59,7 +62,7 @@ impl Analyzer<'_> {
         }
         let imported = self.snapshot_providers.imported_storage.get(&owner)?;
         let mut flow = imported.flow.clone()?;
-        visit_reads(&mut flow, &mut |index| {
+        visit_observations(&mut flow, &mut |index| {
             let local = self
                 .imported_storage_observation(imported.owner, *index)
                 .unwrap_or(*index);
@@ -88,7 +91,7 @@ impl Analyzer<'_> {
             operand
         };
         let describe = |action: &StorageAction| match action {
-            StorageAction::Write(target, update) => {
+            StorageAction::Write(StorageTarget::Entry(target), update) => {
                 let mut update = update.clone();
                 normalize_capture_sources(&mut update.value, owner, formals);
                 let projections = self.snapshot_projections(
@@ -102,6 +105,17 @@ impl Analyzer<'_> {
                     .pop()?;
                 contract.snapshot_projections = projections;
                 Some(StorageStep::Write(contract))
+            }
+            StorageAction::Write(StorageTarget::Observed { parent, member }, update) => {
+                Some(StorageStep::WriteObserved {
+                    parent: StorageObservation {
+                        index: parent.index,
+                        path: parent.path.clone(),
+                    },
+                    member: member.clone(),
+                    value: operand(0, Mode::Via, update.value.clone()),
+                    definite: update.definite,
+                })
             }
             StorageAction::Invoke(call) => Some(StorageStep::Invoke {
                 receiver: operand(0, Mode::Via, call.receiver.clone()),
@@ -134,7 +148,7 @@ impl Analyzer<'_> {
                 StorageTransfer::Interleaved(actions.iter().filter_map(describe).collect())
             }
         };
-        visit_reads(&mut contract, &mut |index| {
+        visit_observations(&mut contract, &mut |index| {
             *index = references.rebase_observation(*index);
         });
         visit_projections(&mut contract, &mut |projections| {
@@ -155,8 +169,26 @@ impl Analyzer<'_> {
             ordinal += 1;
             match step {
                 StorageStep::Write(update) => Some(StorageAction::Write(
-                    target(update)?,
+                    StorageTarget::Entry(target(update)?),
                     self.decode_storage_write(owner, formals, update),
+                )),
+                StorageStep::WriteObserved {
+                    parent,
+                    member,
+                    value,
+                    definite,
+                } => Some(StorageAction::Write(
+                    StorageTarget::Observed {
+                        parent: StorageRead {
+                            index: self.imported_storage_observation(owner, parent.index)?,
+                            path: parent.path.clone(),
+                        },
+                        member: member.clone(),
+                    },
+                    Replacement {
+                        value: self.decode_storage_operand(owner, formals, value),
+                        definite: *definite,
+                    },
                 )),
                 StorageStep::Invoke {
                     receiver,
@@ -286,7 +318,7 @@ fn visit_projections(
                     visit_callback_projections(&mut argument.callback_returns, visit);
                 }
             }
-            StorageStep::Read { base, .. } => {
+            StorageStep::Read { base, .. } | StorageStep::WriteObserved { value: base, .. } => {
                 visit(&mut base.snapshot_projections);
                 visit_callback_projections(&mut base.callback_returns, visit);
             }
@@ -294,14 +326,16 @@ fn visit_projections(
     }
 }
 
-fn visit_reads(flow: &mut StorageTransfer, visit: &mut impl FnMut(&mut usize)) {
+fn visit_observations(flow: &mut StorageTransfer, visit: &mut impl FnMut(&mut usize)) {
     let paths = match flow {
         StorageTransfer::Paths(paths) => paths.as_mut_slice(),
         StorageTransfer::Interleaved(steps) => std::slice::from_mut(steps),
     };
     for step in paths.iter_mut().flatten() {
-        if let StorageStep::Read { index, .. } = step {
-            visit(index);
+        match step {
+            StorageStep::Read { index, .. } => visit(index),
+            StorageStep::WriteObserved { parent, .. } => visit(&mut parent.index),
+            _ => {}
         }
     }
 }

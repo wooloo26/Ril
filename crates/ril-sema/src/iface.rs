@@ -20,7 +20,7 @@ use crate::{
     ty::{Ty, TypedProgram},
 };
 
-pub const FORMAT_VERSION: u32 = 24;
+pub const FORMAT_VERSION: u32 = 25;
 const OLDEST_FORMAT_VERSION: u32 = 12;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

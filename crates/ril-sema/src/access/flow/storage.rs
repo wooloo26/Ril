@@ -11,6 +11,15 @@ pub(in crate::access) struct StorageRead {
     pub path: Vec<Coordinate>,
 }
 
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub(in crate::access) enum StorageTarget {
+    Entry(Region),
+    Observed {
+        parent: StorageRead,
+        member: Coordinate,
+    },
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(in crate::access) struct DeferredStorageCall {
     pub site: Span,
@@ -21,7 +30,7 @@ pub(in crate::access) struct DeferredStorageCall {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(in crate::access) enum StorageAction {
-    Write(Region, Replacement),
+    Write(StorageTarget, Replacement),
     Invoke(DeferredStorageCall),
     Read {
         index: usize,
@@ -44,7 +53,7 @@ impl StorageFlow {
         Self::Paths(vec![
             updates
                 .into_iter()
-                .map(|(target, update)| StorageAction::Write(target, update))
+                .map(|(target, update)| StorageAction::Write(StorageTarget::Entry(target), update))
                 .collect(),
         ])
     }

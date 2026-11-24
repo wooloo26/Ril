@@ -147,6 +147,46 @@ fn main() -> () {
     assert(invoke_after(mut slot, clear, new Shelf.{ item: ^mut live }) == 42)
 }
 
+-- @case callback_writes_follow_the_object_selected_at_each_read run-pass backend=both
+type Cell = .{ var count: int }
+type Shelf = .{ ^mut item: Cell }
+type Slot = .{ var action: fn(new Shelf) -> int }
+type Holder = .{ var ^mut slot: Slot }
+type Swap = fn(mut Holder) &mut -> ()
+fn freeze(new shelf: Shelf) -> int { let fixed = new shelf; fixed.item.count + 100 }
+fn count(new shelf: Shelf) -> int { shelf.item.count }
+fn swap(mut holder: Holder) &mut -> () { holder.slot = Slot.{ action: count } }
+fn write_after(mut holder: Holder, replace: Swap) &mut -> () {
+    replace(mut holder)
+    holder.slot.action = freeze
+}
+fn write_saved(mut holder: Holder, replace: Swap) &mut -> () {
+    let ^mut saved = holder.slot
+    replace(mut holder)
+    saved.action = freeze
+}
+fn write_between(mut holder: Holder, replace: Swap) &mut -> () {
+    replace(mut holder)
+    let ^mut saved = holder.slot
+    replace(mut holder)
+    saved.action = freeze
+}
+fn main() -> () {
+    let mut live = Cell.{ count: 41 }
+    live.count += 1
+    let mut original = Slot.{ action: count }
+    let mut holder = Holder.{ slot: ^mut original }
+    write_after(mut holder, swap)
+    assert(original.action(new Shelf.{ item: ^mut live }) == 42)
+    assert(holder.slot.action(new Shelf.{ item: ^mut Cell.{ count: 3 } }) == 103)
+    holder.slot = ^mut original
+    write_saved(mut holder, swap)
+    assert(original.action(new Shelf.{ item: ^mut Cell.{ count: 4 } }) == 104)
+    assert(holder.slot.action(new Shelf.{ item: ^mut live }) == 42)
+    write_between(mut holder, swap)
+    assert(holder.slot.action(new Shelf.{ item: ^mut live }) == 42)
+}
+
 -- @case aliased_shared_formals_preserve_identity_through_a_nested_borrow run-pass backend=both
 type Cell = .{ var count: int }
 type Pair = .{ ^mut left: Cell, ^mut right: Cell }

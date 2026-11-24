@@ -116,7 +116,7 @@ impl<'program> Analyzer<'program> {
         function: &Function,
         signature: Option<&'program Callable>,
         export: &Export,
-        (arguments, spans, span): (&[CallArgument], &[Span], Span),
+        (arguments, spans, span, invocation): (&[CallArgument], &[Span], Span, &[InvocationSite]),
     ) -> Datum {
         let formals: Vec<_> = function
             .signature
@@ -136,7 +136,7 @@ impl<'program> Analyzer<'program> {
             arguments,
             spans,
             span,
-            invocation: &[],
+            invocation,
             environment: None,
             ledger: &frozen,
         };
@@ -298,7 +298,7 @@ impl<'program> Analyzer<'program> {
                     self.error(
                         Code::E0520,
                         span,
-                        "published storage update has no writable call-entry target",
+                        "published storage update has no writable target",
                     );
                 }
             }
