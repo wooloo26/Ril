@@ -23,6 +23,12 @@ use super::{
     literal,
 };
 
+#[derive(Default)]
+struct CloneProof {
+    active: Vec<Arc<Adt>>,
+    unresolved: bool,
+}
+
 impl<'a> Checker<'a> {
     pub(super) fn expect(&mut self, env: &mut Env, expr: ExprId, expected: &Ty) -> Ty {
         let found = self.expr(env, expr, Some(expected));
@@ -1872,7 +1878,17 @@ impl<'a> Checker<'a> {
         }
     }
 
-    fn nonclonable(&mut self, env: &Env, ty: &Ty, root: bool, active: &mut Vec<Arc<Adt>>) -> bool {
+    pub(super) fn check_clone(&mut self, env: &Env, ty: &Ty, span: Span, can_defer: bool) {
+        let mut proof = CloneProof::default();
+        if self.nonclonable(env, ty, true, &mut proof) || proof.unresolved && !can_defer {
+            self.error(Code::E0301, span, "clone requires a clonable shared object");
+        } else if proof.unresolved {
+            self.pending_clone_checks
+                .push((env.clone(), ty.clone(), span));
+        }
+    }
+
+    fn nonclonable(&mut self, env: &Env, ty: &Ty, root: bool, proof: &mut CloneProof) -> bool {
         let ty = self.normalize(ty);
         if root && (ty.is_value() || matches!(ty, Ty::Callable(_))) {
             return true;
@@ -1885,16 +1901,30 @@ impl<'a> Checker<'a> {
             | Ty::Receiver(_)
             | Ty::TypeValue(_)
             | Ty::Mode => true,
-            Ty::Param(id) => env.domains.get(&id).is_some_and(|domain| {
-                domain
-                    .iter()
-                    .any(|ty| self.nonclonable(env, ty, root, active))
-            }),
+            Ty::Param(id) => {
+                // A type match can select one type from the declared domain.
+                if let Some(GenericValue::Type(ty)) = env.generics.get(&id)
+                    && *ty != Ty::Param(id)
+                {
+                    return self.nonclonable(env, ty, root, proof);
+                }
+                env.domains.get(&id).is_none_or(|domain| {
+                    domain
+                        .iter()
+                        .any(|ty| self.nonclonable(env, ty, root, proof))
+                })
+            }
+            Ty::Projection(..) => true,
+            Ty::Infer(_) => {
+                proof.unresolved = true;
+                false
+            }
             Ty::Adt(adt) => {
                 if adt.kind == AdtKind::Foreign {
                     return true;
                 }
-                if active
+                if proof
+                    .active
                     .iter()
                     .rev()
                     .find(|outer| outer.definition == adt.definition)
@@ -1902,36 +1932,37 @@ impl<'a> Checker<'a> {
                 {
                     return false;
                 }
-                active.push(Arc::clone(&adt));
+                proof.active.push(Arc::clone(&adt));
                 let invalid = match adt.kind {
                     AdtKind::Sum | AdtKind::OpaqueSum => self
                         .sum_variants(&adt)
                         .values()
                         .flatten()
-                        .any(|ty| self.nonclonable(env, ty, false, active)),
+                        .any(|ty| self.nonclonable(env, ty, false, proof)),
                     _ => self
                         .representation(env, &adt)
-                        .is_some_and(|ty| self.nonclonable(env, &ty, false, active)),
+                        .is_some_and(|ty| self.nonclonable(env, &ty, false, proof)),
                 };
-                active.pop();
+                proof.active.pop();
                 invalid
             }
             Ty::Tuple(items) => items
                 .iter()
-                .any(|item| self.nonclonable(env, &item.ty, false, active)),
-            Ty::Record(fields, _) => fields
+                .any(|item| self.nonclonable(env, &item.ty, false, proof)),
+            Ty::Record(_, true) => true,
+            Ty::Record(fields, false) => fields
                 .values()
-                .any(|field| self.nonclonable(env, &field.ty, false, active)),
-            Ty::Array(item) => self.nonclonable(env, &item.ty, false, active),
+                .any(|field| self.nonclonable(env, &field.ty, false, proof)),
+            Ty::Array(item) => self.nonclonable(env, &item.ty, false, proof),
             Ty::Map(key, item) => {
-                self.nonclonable(env, &key, false, active)
-                    || self.nonclonable(env, &item.ty, false, active)
+                self.nonclonable(env, &key, false, proof)
+                    || self.nonclonable(env, &item.ty, false, proof)
             }
             Ty::Result(ok, error) => {
-                self.nonclonable(env, &ok, false, active)
-                    || self.nonclonable(env, &error, false, active)
+                self.nonclonable(env, &ok, false, proof)
+                    || self.nonclonable(env, &error, false, proof)
             }
-            Ty::Set(item) | Ty::Option(item) => self.nonclonable(env, &item, false, active),
+            Ty::Set(item) | Ty::Option(item) => self.nonclonable(env, &item, false, proof),
             _ => false,
         }
     }
@@ -1987,6 +2018,7 @@ impl<'a> Checker<'a> {
             return Ty::Unknown;
         }
         let context_arg = match (name, expected) {
+            ("clone", expected) => expected,
             ("Some", Some(Ty::Option(ty)))
             | ("Ok", Some(Ty::Result(ty, _)))
             | ("Err", Some(Ty::Result(_, ty))) => Some(ty.as_ref()),
@@ -2094,9 +2126,7 @@ impl<'a> Checker<'a> {
                 Ty::Int
             }
             "clone" => {
-                if self.nonclonable(env, &first, true, &mut Vec::new()) {
-                    self.error(Code::E0301, span, "clone requires a clonable shared object");
-                }
+                self.check_clone(env, &first, span, true);
                 first
             }
             "inner" => match if let Ty::Draft(wrapped) = &first {

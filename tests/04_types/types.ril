@@ -320,3 +320,34 @@ pub opaque type Port
 nominal type Box<T> = .{ item: T }
 type Message { Empty; Full(Box<Box<int>>) }
 fn duplicate(value: Message) -> new Message { clone(value) }
+
+-- @case clone_requires_a_proven_root_in_an_unconstrained_generic compile-fail E0301
+fn duplicate<T>(value: T) -> new T {
+    clone(value)
+    -- ^ E0301
+}
+
+-- @case clone_requires_proof_for_every_member_of_a_generic_domain compile-fail E0301
+use ril/channel
+nominal type Parcel<T> = .{ item: T }
+fn duplicate<T: int | Channel::Sender<int>>(value: Parcel<T>) -> new Parcel<T> {
+    clone(value)
+    -- ^ E0301
+}
+
+-- @case clone_requires_a_proven_member_type_in_a_generic_graph compile-fail E0301
+nominal type Parcel<T> = .{ item: T }
+fn duplicate<T>(value: Parcel<T>) -> new Parcel<T> {
+    clone(value)
+    -- ^ E0301
+}
+
+-- @case inferred_clone_cannot_generalize_an_unconstrained_operand compile-fail E0301
+fn count() -> int { 42 }
+fn invalid() -> () {
+    let duplicate = \value -> {
+        clone(value)
+        -- ^ E0301
+    }
+    let _ = duplicate(count)
+}

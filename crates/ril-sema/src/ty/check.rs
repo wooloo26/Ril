@@ -33,6 +33,9 @@ pub(super) fn check(hir: Program, budget: Option<u64>) -> Result<TypedProgram, V
             ck.statement(&mut env, item, false);
         }
     }
+    for (env, ty, span) in std::mem::take(&mut ck.pending_clone_checks) {
+        ck.check_clone(&env, &ty, span, false);
+    }
     if !ck.diagnostics.is_empty() {
         return Err(ck.diagnostics);
     }
@@ -232,6 +235,7 @@ pub(super) struct Checker<'a> {
     pub(super) tuple_payloads: HashMap<Span, usize>,
     pub(super) receptions: HashMap<Span, Vec<super::reception::Adjustment>>,
     pub(super) narrow_errors: HashMap<Span, Code>,
+    pub(super) pending_clone_checks: Vec<(Env, Ty, Span)>,
     constants: HashSet<DefinitionId>,
     active_metadata: HashSet<Span>,
     pub(super) stack: Vec<DefinitionId>,
@@ -280,6 +284,7 @@ impl<'a> Checker<'a> {
             tuple_payloads: HashMap::new(),
             receptions: HashMap::new(),
             narrow_errors: HashMap::new(),
+            pending_clone_checks: Vec::new(),
             constants: HashSet::new(),
             active_metadata: HashSet::new(),
             stack: Vec::new(),

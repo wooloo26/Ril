@@ -50,6 +50,35 @@ fn hidden_clone_restrictions_survive_separate_compilation() {
 }
 
 #[test]
+fn generic_clone_domain_survives_separate_compilation() {
+    let source = b"pub fn duplicate<T: []int>(value: T) -> new T { clone(value) }";
+    let mut library = VirtualPackage::new(Unit::Lib);
+    library.entry = "pkg/copy.ril".into();
+    library.insert(library.entry.clone(), source.to_vec());
+    let interface = Driver.interface(&library).unwrap().encode().unwrap();
+    for (mount, bytes) in [
+        ("library/copy.ril", source.as_slice()),
+        ("library/copy.rili", interface.as_slice()),
+    ] {
+        for (ty, expected) in [("[]int", None), ("int", Some(ril_base::diag::Code::E0301))] {
+            let mut client = VirtualPackage::new(Unit::Lib);
+            client.insert(mount.into(), bytes.to_vec());
+            client.insert(
+                client.entry.clone(),
+                format!(
+                    "use library/copy\nfn run(value: {ty}) -> new {ty} {{ Copy::duplicate(value) }}"
+                )
+                .into_bytes(),
+            );
+            let checked = Driver.check(&client, Stage::Type);
+            let codes: Vec<_> = checked.result.diagnostics.iter().map(|d| d.code).collect();
+            let expected: Vec<_> = expected.into_iter().map(Some).collect();
+            assert_eq!(codes, expected, "{mount} with {ty}");
+        }
+    }
+}
+
+#[test]
 fn transferred_snapshot_requirements_survive_separate_compilation() {
     use ril_base::diag::Code;
     use ril_sema::access::{Coordinate, SnapshotInput};

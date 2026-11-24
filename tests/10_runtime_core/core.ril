@@ -829,6 +829,22 @@ fn main() @io -> () {
     println("{vector[2]}")
 }
 
+-- @case generic_clone_copies_a_specialized_shared_object run-pass backend=both
+type Counter = .{ count: int }
+fn duplicate<T: Counter | []int>(value: T) -> new T { clone(value) }
+fn count<T: Counter | int>(value: T) -> int {
+    match <T> {
+        <Counter> -> { let copied = clone(value); copied.count }
+        _ -> value
+    }
+}
+fn main() -> () {
+    let copied = duplicate(Counter.{ count: 42 })
+    assert(copied.count == 42)
+    assert(duplicate([3, 7]) == [3, 7])
+    assert(count(copied) == 42 && count(3) == 3)
+}
+
 -- @case generic_type_match_specializes_before_codegen run-pass backend=both
 -- @expect-stdout int:7
 -- @expect-stdout true
@@ -841,6 +857,17 @@ fn describe<T>(item: T) -> str {
 fn main() @io -> () {
     println(describe(7))
     println(describe(true))
+}
+
+-- @case inferred_clone_respects_a_later_type_annotation run-pass backend=both
+fn main() -> () {
+    let duplicate = \value -> {
+        let copied: []int = clone(value)
+        copied
+    }
+    assert(duplicate([42]) == [42])
+    let empty: []int = clone([])
+    assert(len(empty) == 0)
 }
 
 -- @case narrowing_and_generalized_callable run-pass backend=both
