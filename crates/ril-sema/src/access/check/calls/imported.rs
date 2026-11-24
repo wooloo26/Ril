@@ -137,6 +137,7 @@ impl<'program> Analyzer<'program> {
             spans,
             span,
             invocation: &[],
+            environment: None,
             ledger: &frozen,
         };
         let summary = if export.domain.is_empty() {

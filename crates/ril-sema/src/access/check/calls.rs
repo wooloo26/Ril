@@ -15,7 +15,7 @@ use ril_frontend::{
 use crate::{
     access::{
         CallbackArgument, CallbackReturn, InvocationMode, ReturnSource,
-        flow::{CallbackOrigin, Handoff, Revocation},
+        flow::{CallbackOrigin, Handoff, Origin, Revocation},
     },
     ty::{Callable, Ty},
 };
@@ -33,12 +33,21 @@ pub(super) use snapshot_invocations::{SnapshotInvocation, SnapshotProviders};
 
 type CallArgument = (usize, Mode, Datum);
 
+#[derive(Clone, Copy)]
 struct CallEntry<'a> {
     arguments: &'a [CallArgument],
     spans: &'a [Span],
     ledger: &'a Ledger,
     span: Span,
     invocation: &'a [InvocationSite],
+    environment: Option<CallEnvironment<'a>>,
+}
+
+#[derive(Clone, Copy)]
+struct CallEnvironment<'a> {
+    owner: Span,
+    bindings: Option<&'a BTreeMap<Span, Datum>>,
+    exact_slots: bool,
 }
 
 #[derive(Clone, Eq, PartialEq)]
@@ -230,25 +239,18 @@ impl<'program> Analyzer<'program> {
             });
         let target = (id.is_none() || def.is_some_and(|def| def.kind == DefinitionKind::Local))
             .then(|| self.expr(ctx, ledger, callee_id));
-        let closures: BTreeMap<_, _> = target
-            .iter()
-            .flat_map(|target| &target.roots)
-            .filter(|root| root.region.selection.is_empty())
-            .filter_map(|origin| {
-                let owner = origin.region.source;
-                self.closure_modes
-                    .get(&owner)
-                    .map(|modes| (owner, modes.clone()))
-            })
-            .collect();
+        let closures = target
+            .as_ref()
+            .map_or_else(BTreeMap::new, |receiver| self.known_closures(receiver));
         let has_via_closures = closures
             .values()
             .any(|modes| !modes.via.is_empty() || !modes.member_axes.is_empty());
         let all_closures_known = target.as_ref().is_some_and(|target| {
             !target.roots.is_empty()
-                && target.roots.iter().all(|root| {
-                    root.region.selection.is_empty() && closures.contains_key(&root.region.source)
-                })
+                && target
+                    .roots
+                    .iter()
+                    .all(|root| Self::known_closure(&closures, root).is_some())
         });
         let aliases: BTreeMap<_, _> = target
             .iter()
@@ -276,9 +278,9 @@ impl<'program> Analyzer<'program> {
         let all_aliases_known = !aliases.is_empty()
             && target.as_ref().is_some_and(|target| {
                 target.roots.iter().all(|root| {
-                    root.region.selection.is_empty()
-                        && (aliases.contains_key(&root.region.source)
-                            || closures.contains_key(&root.region.source))
+                    Self::known_closure(&closures, root).is_some()
+                        || root.region.selection.is_empty()
+                            && aliases.contains_key(&root.region.source)
                 })
             });
         if let Some(target) = &target {
@@ -480,6 +482,7 @@ impl<'program> Analyzer<'program> {
                 ledger,
                 span,
                 invocation: &[],
+                environment: None,
             },
         );
         for (i, ((_, mode, value), &argument_span)) in values.iter().zip(&value_spans).enumerate() {
@@ -638,7 +641,27 @@ impl<'program> Analyzer<'program> {
         if let (Some(id), Expr::Path(path)) = (id, &callee.value)
             && let Some(operation) = self.operation(id, path.span)
         {
-            self.use_effect(ctx, ledger, Obligation::Operation(operation), span, None);
+            self.use_effect(
+                ctx,
+                ledger,
+                Obligation::Operation(operation.clone()),
+                span,
+                None,
+            );
+            if let Some(handler) = ctx.handlers.get(&operation) {
+                let closures = self.known_closures(handler);
+                let entry = CallEntry {
+                    arguments: &values,
+                    spans: &value_spans,
+                    ledger,
+                    span,
+                    invocation: &[],
+                    environment: None,
+                };
+                if let Some(after) = self.closure_storage(ctx, &closures, handler, &entry) {
+                    *ledger = after;
+                }
+            }
         }
         if syntax.is_none()
             && !all_aliases_known
@@ -692,11 +715,12 @@ impl<'program> Analyzer<'program> {
                     ledger: &before,
                     span,
                     invocation: &[],
+                    environment: None,
                 };
                 let mut receiver = receiver.clone();
                 receiver
                     .roots
-                    .retain(|root| closures.contains_key(&root.region.source));
+                    .retain(|root| Self::known_closure(&closures, root).is_some());
                 let mut result = self
                     .callback_return(&receiver, &entry)
                     .unwrap_or_else(|| self.snapshot_value(span));
@@ -711,7 +735,7 @@ impl<'program> Analyzer<'program> {
                 }
                 outputs.push(result);
                 alternatives.push(
-                    self.closure_storage(ctx, &closures, &entry)
+                    self.closure_storage(ctx, &closures, &receiver, &entry)
                         .unwrap_or_else(|| before.clone()),
                 );
             }
@@ -721,16 +745,18 @@ impl<'program> Analyzer<'program> {
                 .reduce(Datum::joined)
                 .unwrap_or_default();
         }
-        let before_updates = if all_closures_known {
+        let before_updates = if all_closures_known && let Some(receiver) = &target {
             self.closure_storage(
                 ctx,
                 &closures,
+                receiver,
                 &CallEntry {
                     arguments: &values,
                     spans: &value_spans,
                     ledger,
                     span,
                     invocation: &[],
+                    environment: None,
                 },
             )
         } else {
@@ -747,6 +773,7 @@ impl<'program> Analyzer<'program> {
                 ledger: before_updates.as_ref().unwrap_or(ledger),
                 span,
                 invocation: &[],
+                environment: None,
             };
             if let Some(result) = self.callback_return(target, &entry) {
                 return result;
@@ -771,6 +798,7 @@ impl<'program> Analyzer<'program> {
                     ledger: before_updates.as_ref().unwrap_or(ledger),
                     span,
                     invocation: &[],
+                    environment: None,
                 };
                 if let Some(result) = self.callback_return(&receiver, &entry) {
                     return result;
@@ -907,6 +935,11 @@ impl<'program> Analyzer<'program> {
                             ledger: &frozen,
                             span,
                             invocation: &[],
+                            environment: Some(CallEnvironment {
+                                owner: fun.name.span,
+                                bindings: None,
+                                exact_slots: true,
+                            }),
                         },
                         ledger,
                     );
@@ -1051,6 +1084,11 @@ impl<'program> Analyzer<'program> {
                 ledger: before_updates.as_ref().unwrap_or(ledger),
                 span,
                 invocation: &[],
+                environment: Some(CallEnvironment {
+                    owner: fun.name.span,
+                    bindings: None,
+                    exact_slots: true,
+                }),
             };
             if let Some(mut result) = self.return_template(fun, &entry) {
                 if matches!(fun.signature.result_mode, Mode::Ref | Mode::Shared) {
@@ -1462,36 +1500,30 @@ impl<'program> Analyzer<'program> {
                 stored.transform(&mut |origin| {
                     origin.dependencies.insert(region.source.into());
                 });
-                applied &= ledger.replace_slot(region.source, stored, update.definite);
+                let definite =
+                    update.definite && entry.environment.is_none_or(|env| env.exact_slots);
+                applied &= ledger.replace_slot(region.source, stored, definite);
                 continue;
             };
-            let Some(formal) = formals
+            let actual = if let Some(formal) = formals
                 .iter()
                 .position(|formal| *formal == Some(region.source))
-            else {
-                applied = false;
-                continue;
+            {
+                entry
+                    .arguments
+                    .iter()
+                    .zip(entry.spans)
+                    .find(|((index, _, _), _)| *index == formal)
+                    .map(|((_, _, actual), &span)| (actual, self.ty(span)))
+            } else {
+                self.capture_binding(entry, region.source)
             };
-            let Some(((_, _, actual), &argument_span)) = entry
-                .arguments
-                .iter()
-                .zip(entry.spans)
-                .find(|((index, _, _), _)| *index == formal)
-            else {
+            let Some((actual, ty)) = actual else {
                 applied = false;
                 continue;
             };
 
-            let mut value = actual.clone();
-            let mut ty = self.ty(argument_span);
-            for coordinate in parent {
-                let schema = self.schema_member(ty, coordinate);
-                let mode = schema.map_or(Mode::Plain, |member| member.mode.mode);
-                value = entry
-                    .ledger
-                    .project_schema(&value, coordinate.clone(), mode);
-                ty = schema.map_or(&Ty::Unknown, |member| &member.ty);
-            }
+            let value = self.project_entry_path(entry.ledger, actual, ty, parent);
             let coordinate = if matches!(member, Coordinate::ArrayTail(_)) {
                 ledger.append_coordinate(&value, false)
             } else {
@@ -1515,6 +1547,7 @@ impl<'program> Analyzer<'program> {
         &mut self,
         ctx: &Context,
         closures: &BTreeMap<Span, ClosureModes>,
+        receiver: &Datum,
         entry: &CallEntry<'_>,
     ) -> Option<Ledger> {
         if !ctx.runtime
@@ -1524,23 +1557,138 @@ impl<'program> Analyzer<'program> {
         {
             return None;
         }
-        let alternatives: Vec<_> = closures
-            .values()
-            .map(|closure| {
+        let alternatives: Vec<_> = receiver
+            .roots
+            .iter()
+            .map(|root| {
+                let mut after = entry.ledger.clone();
+                let Some((owner, closure)) = Self::known_closure(closures, root) else {
+                    return after;
+                };
+                let captures = Self::closure_captures(entry.ledger, receiver, root, owner, closure);
                 let storage = CallStorage {
                     formals: closure.formals.clone(),
                     via: closure.via.clone(),
                     updates: closure.updates.clone(),
                     ..CallStorage::default()
                 };
-                let mut after = entry.ledger.clone();
-                self.apply_storage_updates(ctx, storage, entry, &mut after);
+                let entry = CallEntry {
+                    environment: Some(CallEnvironment {
+                        owner,
+                        bindings: Some(&captures),
+                        exact_slots: root.region.source == owner && !root.region.summarized(),
+                    }),
+                    ..*entry
+                };
+                self.apply_storage_updates(ctx, storage, &entry, &mut after);
                 after
             })
             .collect();
         let mut after = entry.ledger.clone();
         after.merge(entry.ledger, &alternatives);
         Some(after)
+    }
+
+    fn known_closures(&self, receiver: &Datum) -> BTreeMap<Span, ClosureModes> {
+        receiver
+            .roots
+            .iter()
+            .filter_map(|root| {
+                let owner = snapshot_invocations::known_provider(root)?;
+                self.closure_modes
+                    .get(&owner)
+                    .map(|modes| (owner, modes.clone()))
+            })
+            .collect()
+    }
+
+    fn known_closure<'m>(
+        closures: &'m BTreeMap<Span, ClosureModes>,
+        root: &Origin,
+    ) -> Option<(Span, &'m ClosureModes)> {
+        let owner = snapshot_invocations::known_provider(root)?;
+        Some((owner, closures.get(&owner)?))
+    }
+
+    fn closure_captures(
+        ledger: &Ledger,
+        receiver: &Datum,
+        root: &Origin,
+        owner: Span,
+        closure: &ClosureModes,
+    ) -> BTreeMap<Span, Datum> {
+        let mut environment = receiver.clone();
+        environment.retain_compatible_origins(&root.branches);
+        closure
+            .captures
+            .iter()
+            .enumerate()
+            .filter_map(|(index, &(binding, variable))| {
+                let mut captured =
+                    environment.known_member(&Coordinate::Index(index.to_string()))?;
+                if variable {
+                    // The synthetic origin tracks the slot's lifetime. The
+                    // other roots describe the value stored in it.
+                    captured
+                        .roots
+                        .retain(|origin| origin.region != Region::root(binding));
+                }
+                if let Some(slot) = ledger.slots.get(&binding) {
+                    let mut current = slot.value.clone();
+                    current.retain_compatible_origins(&root.branches);
+                    if variable {
+                        if root.region.source == owner && !root.region.summarized() {
+                            return Some((binding, current));
+                        }
+                        captured = captured.joined(current);
+                    } else if !captured.roots.is_empty()
+                        && captured.roots.iter().all(|origin| {
+                            current
+                                .roots
+                                .iter()
+                                .any(|current| current.region == origin.region)
+                        })
+                    {
+                        return Some((binding, current));
+                    }
+                }
+                Some((binding, captured))
+            })
+            .collect()
+    }
+
+    fn capture_binding<'e>(
+        &self,
+        entry: &CallEntry<'e>,
+        binding: Span,
+    ) -> Option<(&'e Datum, &'program Ty)> {
+        let environment = entry.environment?;
+        let value = match environment.bindings {
+            Some(bindings) => bindings.get(&binding),
+            None => entry.ledger.slots.get(&binding).map(|slot| &slot.value),
+        }?;
+        let ty = self
+            .definition(binding)
+            .and_then(|id| self.program.bindings.get(&id))
+            .unwrap_or(&Ty::Unknown);
+        Some((value, ty))
+    }
+
+    fn project_entry_path(
+        &self,
+        ledger: &Ledger,
+        base: &Datum,
+        mut ty: &'program Ty,
+        path: &[Coordinate],
+    ) -> Datum {
+        let mut value = base.clone();
+        for coordinate in path {
+            let schema = self.schema_member(ty, coordinate);
+            let mode = schema.map_or(Mode::Plain, |member| member.mode.mode);
+            value = ledger.project_schema(&value, coordinate.clone(), mode);
+            ty = schema.map_or(&Ty::Unknown, |member| &member.ty);
+        }
+        value
     }
 
     fn instantiate_return(
@@ -1551,6 +1699,38 @@ impl<'program> Analyzer<'program> {
         template: &Datum,
         output_path: &mut Vec<Coordinate>,
     ) -> Datum {
+        let mut captured = None;
+        if let Some(environment) = entry.environment
+            && !template.roots.iter().any(|root| root.detached_snapshot)
+        {
+            for (path, &definite) in &template.capture_paths {
+                if path.owner != environment.owner {
+                    continue;
+                }
+                if let Some((base, ty)) = self.capture_binding(entry, path.region.source) {
+                    let mut value =
+                        self.project_entry_path(entry.ledger, base, ty, &path.region.selection);
+                    let access = template
+                        .roots
+                        .iter()
+                        .map(|root| root.mode)
+                        .max()
+                        .unwrap_or(Access::Immutable);
+                    value.transform(&mut |origin| {
+                        origin.fix_mode(access.project(origin.mode));
+                        origin.new &= template.requires_new;
+                    });
+                    value.requires_new &= template.requires_new;
+                    if definite {
+                        return value;
+                    }
+                    captured = Some(match captured {
+                        Some(previous) => value.joined(previous),
+                        None => value,
+                    });
+                }
+            }
+        }
         let mut output = template
             .roots
             .iter()
@@ -1717,7 +1897,10 @@ impl<'program> Analyzer<'program> {
                 }
             }
         }
-        output
+        match captured {
+            Some(value) => output.joined(value),
+            None => output,
+        }
     }
 
     fn defer_callback_result(&mut self, callback: CallbackResult, span: Span) -> Datum {
@@ -1848,6 +2031,7 @@ impl<'program> Analyzer<'program> {
             ledger: &ledger,
             span: entry.span,
             invocation: &trace,
+            environment: None,
         };
         let result = self
             .callback_return(&receiver, &invocation)
@@ -1920,11 +2104,21 @@ impl<'program> Analyzer<'program> {
                 continue;
             }
             if let Some(closure) = self.closure_modes.get(&span).cloned() {
+                let captures =
+                    Self::closure_captures(entry.ledger, receiver, target, span, &closure);
+                let entry = CallEntry {
+                    environment: Some(CallEnvironment {
+                        owner: span,
+                        bindings: Some(&captures),
+                        exact_slots: target.region.source == span && !target.region.summarized(),
+                    }),
+                    ..*entry
+                };
                 for value in &closure.returns {
                     outputs.push(self.instantiate_return(
                         &closure.formals,
                         &closure.via,
-                        entry,
+                        &entry,
                         value,
                         &mut Vec::new(),
                     ));
@@ -2454,6 +2648,7 @@ impl<'program> Analyzer<'program> {
             ledger: &before,
             span,
             invocation: &[],
+            environment: None,
         };
         let alternatives = callback.roots.iter().map(|origin| {
             let storage = snapshot_invocations::known_provider(origin).and_then(|owner| {
@@ -2475,6 +2670,9 @@ impl<'program> Analyzer<'program> {
             };
             let mut working = base.clone();
             for (region, update) in storage.updates {
+                if storage.formals.first().copied().flatten() != Some(region.source) {
+                    continue;
+                }
                 let mut path = region.selection;
                 let mut stored = self.instantiate_return(
                     &storage.formals,
@@ -2847,6 +3045,7 @@ impl<'program> Analyzer<'program> {
             return Datum::default();
         };
         let mut locals = ledger.clone();
+        locals.enter_capture_storage(node.span, |_| true);
         locals.clear_result_obligations();
         locals.clear_array_extents();
         locals.no_continuation = false;
@@ -2886,6 +3085,7 @@ impl<'program> Analyzer<'program> {
                     returns: Vec::new(),
                     updates: BTreeMap::new(),
                     models_publication: false,
+                    captures: Vec::new(),
                 },
             );
         }
@@ -2989,9 +3189,6 @@ impl<'program> Analyzer<'program> {
                 .updates
                 .keys()
                 .all(|region| closure.formals.contains(&Some(region.source)));
-            closure
-                .updates
-                .retain(|region, _| closure.formals.contains(&Some(region.source)));
             closure.returns.clone_from(&inner.return_values);
             if implicit && inner.reachable {
                 closure.returns.push(output.clone());
@@ -3028,6 +3225,17 @@ impl<'program> Analyzer<'program> {
                 }
             })
             .collect();
+        if let Some(modes) = self.closure_modes.get_mut(&node.span) {
+            modes.captures = used
+                .iter()
+                .filter_map(|binding| {
+                    ledger
+                        .slots
+                        .get(binding)
+                        .map(|slot| (*binding, slot.variable))
+                })
+                .collect();
+        }
         let new = ctx.expected == Mode::New;
         let mut closure = Datum::source(
             node.span,
@@ -3077,6 +3285,9 @@ impl<'program> Analyzer<'program> {
             .collect();
         if !closure.members.is_empty() {
             closure.environments.insert(node.span);
+            for root in &mut closure.roots {
+                root.region = Region::allocation(node.span);
+            }
             let bindings = used
                 .into_iter()
                 .map(|decl| {

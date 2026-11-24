@@ -710,6 +710,7 @@ impl Analyzer<'_> {
             ledger: &call.entry,
             span: call.site,
             invocation: &[],
+            environment: None,
         };
         let receiver = self.instantiate_return(
             &provider.formals,

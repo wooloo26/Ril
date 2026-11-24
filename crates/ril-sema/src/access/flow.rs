@@ -161,7 +161,7 @@ impl Region {
         self.invocation.extend_from_slice(invocation);
     }
 
-    fn summarized(&self) -> bool {
+    pub(super) fn summarized(&self) -> bool {
         self.instance == RegionInstance::PriorAllocations
             || self.returned.is_some_and(|identity| identity.summarized)
     }
@@ -244,6 +244,12 @@ pub(super) struct CaptureEntry {
     pub binding: Span,
     pub inferred: bool,
     shared: bool,
+}
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub(super) struct CapturePath {
+    pub owner: Span,
+    pub region: Region,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -443,6 +449,9 @@ pub(super) struct Datum {
     pub latent_effects: BTreeSet<String>,
     pub environments: BTreeSet<Span>,
     pub publications: BTreeMap<Span, bool>,
+    // Paths in the environment at callable entry. A true entry identifies
+    // the value on every incoming path, while false marks a possible source.
+    pub capture_paths: BTreeMap<CapturePath, bool>,
     pub invocations: BTreeMap<Span, BTreeMap<Span, BTreeSet<Span>>>,
     pub stateful_handler: bool,
     pub task_scope: Option<Span>,
@@ -1128,6 +1137,15 @@ impl Datum {
     pub(super) fn joined(mut self, mut other: Self) -> Self {
         self.materialize_range_alternatives(&other);
         other.materialize_range_alternatives(&self);
+        if self.roots.is_empty() {
+            self.capture_paths = std::mem::take(&mut other.capture_paths);
+        } else if !other.roots.is_empty() {
+            for (path, definite) in &mut self.capture_paths {
+                *definite &= other.capture_paths.remove(path).unwrap_or(false);
+            }
+            self.capture_paths
+                .extend(other.capture_paths.into_keys().map(|path| (path, false)));
+        }
         self.roots.append(&mut other.roots);
         self.roots.sort_unstable();
         self.roots.dedup();
@@ -1190,6 +1208,7 @@ impl Datum {
 
     fn project_schema(&self, coordinate: Coordinate, mode: Mode) -> Self {
         if let Some(mut member) = self.known_member(&coordinate) {
+            self.project_capture_paths(&coordinate, &mut member, false);
             self.project_known(&mut member, &coordinate, mode);
             return member;
         }
@@ -1254,11 +1273,13 @@ impl Datum {
                 origin
             })
             .collect();
-        Self {
+        let mut member = Self {
             requires_new: self.requires_new && roots.iter().all(|root| root.new),
             roots,
             ..Self::default()
-        }
+        };
+        self.project_capture_paths(&coordinate, &mut member, false);
+        member
     }
 
     fn attenuate(&self, member: &mut Self) {
@@ -1286,9 +1307,21 @@ impl Datum {
         for root in &mut roots {
             root.region.selection.push(coordinate.clone());
         }
-        Self {
+        let mut slot = Self {
             roots,
             ..Self::default()
+        };
+        self.project_capture_paths(&coordinate, &mut slot, false);
+        slot
+    }
+
+    fn project_capture_paths(&self, coordinate: &Coordinate, member: &mut Self, stored: bool) {
+        for (path, &definite) in &self.capture_paths {
+            if !stored || !member.publications.contains_key(&path.owner) {
+                let mut path = path.clone();
+                path.region.selection.push(coordinate.clone());
+                *member.capture_paths.entry(path).or_default() |= definite;
+            }
         }
     }
 
@@ -1411,6 +1444,10 @@ pub(super) struct Ledger {
     pub choices: Choices,
     pub no_continuation: bool,
     replacements: BTreeMap<Region, Replacement>,
+    // The ordinary ledger tracks object identities. Call summaries also
+    // need paths relative to the captured bindings at that call's entry.
+    capture_owner: Option<Span>,
+    capture_updates: BTreeMap<Region, Replacement>,
     loop_members: BTreeMap<Region, Datum>,
     // Length evidence for local array objects. Result iteration separately
     // tracks the immutable layout it needs to discharge obligations.
@@ -1418,6 +1455,22 @@ pub(super) struct Ledger {
 }
 
 impl Ledger {
+    pub(super) fn enter_capture_storage(&mut self, owner: Span, includes: impl Fn(Span) -> bool) {
+        self.capture_owner = Some(owner);
+        self.capture_updates.clear();
+        for (&binding, slot) in &mut self.slots {
+            if includes(binding) && !slot.value.roots.is_empty() {
+                slot.value.capture_paths.insert(
+                    CapturePath {
+                        owner,
+                        region: Region::root(binding),
+                    },
+                    true,
+                );
+            }
+        }
+    }
+
     pub(super) fn overwritten_paths(&self, root: &Region) -> Vec<Vec<Coordinate>> {
         self.replacements
             .iter()
@@ -1599,7 +1652,11 @@ impl Ledger {
             });
             slot.value.stamp_results(&selected);
         }
-        for replacement in self.replacements.values_mut() {
+        for replacement in self
+            .replacements
+            .values_mut()
+            .chain(self.capture_updates.values_mut())
+        {
             replacement.value.transform(&mut |origin| {
                 origin.branches.insert(key, arm);
             });
@@ -1888,6 +1945,10 @@ impl Ledger {
                 })
                 .or_insert(update);
         }
+        for update in self.capture_updates.values_mut() {
+            age_value(&mut update.value);
+            update.value.fold_old_allocations(&mut self.loop_members);
+        }
         for (token, triggers) in std::mem::take(&mut self.revoked) {
             let archived = self.revoked.entry(age(token)).or_default();
             for (trigger, choices) in triggers {
@@ -1988,6 +2049,11 @@ impl Ledger {
             .values()
             .map(|slot| slot.value.size())
             .chain(self.replacements.values().map(|update| update.value.size()))
+            .chain(
+                self.capture_updates
+                    .values()
+                    .map(|update| update.value.size()),
+            )
             .chain(self.loop_members.values().map(Datum::size))
             .sum()
     }
@@ -2073,6 +2139,16 @@ impl Ledger {
         }
         self.choices = prior.choices.clone();
         self.merge_replacements(prior, &alternatives);
+        self.capture_updates = if alternatives.is_empty() {
+            prior.capture_updates.clone()
+        } else {
+            Self::join_updates(
+                alternatives
+                    .iter()
+                    .map(|branch| &branch.capture_updates)
+                    .collect(),
+            )
+        };
         self.array_extents = alternatives
             .first()
             .map_or(&prior.array_extents, |branch| &branch.array_extents)
@@ -2190,6 +2266,11 @@ impl Ledger {
                     || region.selection.is_empty() && captures.contains(&region.source))
                     && update.value.publications.contains_key(&owner)
             })
+            .chain(
+                self.capture_updates
+                    .iter()
+                    .filter(|_| self.capture_owner == Some(owner)),
+            )
             .map(|(region, update)| {
                 (
                     region.clone(),
@@ -2242,6 +2323,15 @@ impl Ledger {
                 });
             }
             self.replace_region(region, &value, definite);
+        }
+        for (path, &known) in &slot.capture_paths {
+            if self.capture_owner == Some(path.owner)
+                && value.publications.contains_key(&path.owner)
+            {
+                let definite =
+                    definite && known && !path.region.selection.iter().any(Coordinate::is_range);
+                Self::record_replacement(&mut self.capture_updates, &path.region, &value, definite);
+            }
         }
     }
 
@@ -2307,8 +2397,17 @@ impl Ledger {
     }
 
     fn replace_region(&mut self, region: &Region, value: &Datum, definite: bool) {
+        Self::record_replacement(&mut self.replacements, region, value, definite);
+    }
+
+    fn record_replacement(
+        updates: &mut BTreeMap<Region, Replacement>,
+        region: &Region,
+        value: &Datum,
+        definite: bool,
+    ) {
         if definite {
-            self.replacements.insert(
+            updates.insert(
                 region.clone(),
                 Replacement {
                     value: value.clone(),
@@ -2316,12 +2415,12 @@ impl Ledger {
                 },
             );
         } else {
-            for (key, entry) in &mut self.replacements {
+            for (key, entry) in &mut *updates {
                 if key.selection.len() == region.selection.len() && key.overlaps(region) {
                     entry.value = std::mem::take(&mut entry.value).joined(value.clone());
                 }
             }
-            self.replacements
+            updates
                 .entry(region.clone())
                 .or_insert_with(|| Replacement {
                     value: value.clone(),
@@ -2363,6 +2462,10 @@ impl Ledger {
         let mut missing = Vec::new();
         let mut projected = None;
         let mut use_inline = false;
+        let with_capture_path = |mut member: Datum, stored| {
+            base.project_capture_paths(&coordinate, &mut member, stored);
+            member
+        };
         for (root, origin) in base.roots.iter().zip(&slot.roots) {
             if !follow(root) {
                 use_inline = true;
@@ -2378,7 +2481,7 @@ impl Ledger {
             }
             let exact = self.replacements.get(region);
             if let Some(update) = exact.filter(|update| update.definite) {
-                projected = join_member(projected, update.value.clone());
+                projected = join_member(projected, with_capture_path(update.value.clone(), true));
                 continue;
             }
             use_inline = true;
@@ -2389,12 +2492,13 @@ impl Ledger {
             for (key, member) in &self.loop_members {
                 if matches(key) {
                     folded |= key == region;
-                    projected = join_member(projected, member.clone());
+                    projected = join_member(projected, with_capture_path(member.clone(), true));
                 }
             }
             for (key, update) in &self.replacements {
                 if matches(key) {
-                    projected = join_member(projected, update.value.clone());
+                    projected =
+                        join_member(projected, with_capture_path(update.value.clone(), true));
                 }
             }
             if !folded && initial.is_none() && include_opaque(region) {
@@ -2402,7 +2506,7 @@ impl Ledger {
             }
         }
         if use_inline && let Some(initial) = initial {
-            projected = join_member(projected, initial);
+            projected = join_member(projected, with_capture_path(initial, false));
         }
         if let Some(value) = &mut projected {
             base.project_known(value, &coordinate, mode);
@@ -2411,6 +2515,7 @@ impl Ledger {
             let fallback = Datum {
                 roots: missing,
                 requires_new: base.requires_new,
+                capture_paths: base.capture_paths.clone(),
                 ..Datum::default()
             };
             projected = join_member(projected, fallback.project_opaque(coordinate, mode));

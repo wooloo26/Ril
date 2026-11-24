@@ -647,3 +647,21 @@ fn run(flag: bool) -> int {
     live.count += 8
     answer + live.count
 }
+
+-- @case effect_handler_append_updates_its_captured_array compile-fail E0535 no-prelude
+type Cell = .{ var count: int }
+type Shelf = .{ ^mut item: Cell }
+eff Append { fn push() -> () }
+fn freeze(new shelf: Shelf) -> int { let fixed = new shelf; fixed.item.count }
+fn count(new shelf: Shelf) -> int { shelf.item.count }
+fn run() -> int {
+    let mut live = Cell.{ count: 1 }
+    live.count += 1
+    let mut actions = [count]
+    with Append::push = \-> Array::push(mut actions, freeze)
+    Append::push()
+    let answer = actions[1](new Shelf.{ item: ^mut live })
+    -- ^ E0535
+    live.count += 8
+    answer + live.count
+}

@@ -220,6 +220,7 @@ struct ClosureModes {
     returns: Vec<Datum>,
     updates: BTreeMap<Region, Replacement>,
     models_publication: bool,
+    captures: Vec<(Span, bool)>,
 }
 
 #[derive(Default)]
@@ -760,9 +761,10 @@ impl<'a> Analyzer<'a> {
                     .map(|binding| (binding, storage.mode))
             })
             .collect();
-        let captures = capture_modes.keys().copied().collect();
+        let captures: BTreeSet<_> = capture_modes.keys().copied().collect();
         ctx.capture_modes = Some(capture_modes);
         let mut ledger = outer.clone();
+        ledger.enter_capture_storage(ctx.owner, |binding| captures.contains(&binding));
         ledger.clear_result_obligations();
         ledger.clear_array_extents();
         ledger.inspected.clear();
