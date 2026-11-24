@@ -1508,6 +1508,7 @@ impl<'a> Analyzer<'a> {
             }
             for root in &mut value.roots {
                 root.fix_mode(mode);
+                root.clone_member = false;
             }
             return true;
         };

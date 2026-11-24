@@ -565,6 +565,7 @@ impl<'program> Analyzer<'program> {
                     summarized: allocation.summarized,
                 });
                 root.array_extent = allocation.array_extent;
+                root.clone_member = allocation.clone_member;
             }
             self.exported_path(&mut value, &allocation.path, ty, owner, false)
                 .roots

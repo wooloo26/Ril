@@ -43,6 +43,10 @@ pub(in crate::access) enum StorageAction {
         base: Datum,
         updater: Datum,
     },
+    Clone {
+        index: usize,
+        base: Datum,
+    },
 }
 
 /// Ordered transfers to the caller's graph. At a loop backedge or a wide
@@ -54,6 +58,19 @@ pub(in crate::access) enum StorageFlow {
 }
 
 impl StorageFlow {
+    pub(in crate::access) fn has_deferred_writes(&self) -> bool {
+        let deferred = |action: &StorageAction| {
+            matches!(
+                action,
+                StorageAction::Invoke(_) | StorageAction::Derive { .. }
+            )
+        };
+        match self {
+            Self::Paths(paths) => paths.iter().flatten().any(deferred),
+            Self::Interleaved(actions) => actions.iter().any(deferred),
+        }
+    }
+
     pub(in crate::access) fn writes(updates: BTreeMap<Region, Replacement>) -> Self {
         Self::Paths(vec![
             updates
@@ -197,6 +214,15 @@ impl StorageFlow {
                     return;
                 }
             }
+            StorageAction::Clone { index, base } => {
+                if let Some(previous) = actions.iter_mut().find_map(|action| match action {
+                    StorageAction::Clone { index: prior, base } if prior == index => Some(base),
+                    _ => None,
+                }) {
+                    *previous = std::mem::take(previous).joined(std::mem::take(base));
+                    return;
+                }
+            }
         }
         actions.push(incoming);
     }
@@ -217,7 +243,9 @@ impl StorageFlow {
                     StorageAction::Invoke(call) => {
                         (&mut call.receiver, None, Some(&mut call.arguments))
                     }
-                    StorageAction::Read { base, .. } => (base, None, None),
+                    StorageAction::Read { base, .. } | StorageAction::Clone { base, .. } => {
+                        (base, None, None)
+                    }
                     StorageAction::Derive { base, updater, .. } => (base, Some(updater), None),
                 };
                 std::iter::once(root)
@@ -240,7 +268,9 @@ impl StorageFlow {
                 let (root, second, arguments) = match action {
                     StorageAction::Write(_, update) => (&update.value, None, None),
                     StorageAction::Invoke(call) => (&call.receiver, None, Some(&call.arguments)),
-                    StorageAction::Read { base, .. } => (base, None, None),
+                    StorageAction::Read { base, .. } | StorageAction::Clone { base, .. } => {
+                        (base, None, None)
+                    }
                     StorageAction::Derive { base, updater, .. } => (base, Some(updater), None),
                 };
                 std::iter::once(root)

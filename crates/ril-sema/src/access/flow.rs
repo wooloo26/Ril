@@ -233,6 +233,9 @@ pub(super) struct Origin {
     pub storage_read: Option<StorageRead>,
     pub array_extent: Option<ArrayExtent>,
     pub snapshot_provider: Option<Span>,
+    // A copied node has fresh authority. Its enclosing member's schema
+    // determines access when the node is projected from the copy.
+    pub clone_member: bool,
     // A functional update retains the source for opaque projections. Its
     // materialized members describe the copied graph independently.
     pub detached_snapshot: bool,
@@ -497,6 +500,7 @@ impl Datum {
                 storage_read: None,
                 array_extent: None,
                 snapshot_provider: None,
+                clone_member: false,
                 detached_snapshot: false,
                 return_allocation: None,
                 reception: Vec::new(),
@@ -688,6 +692,7 @@ impl Datum {
                         new: origin.new,
                         qualified: node.requires_new,
                         summarized,
+                        clone_member: origin.clone_member,
                         array_len: node.array_len,
                         array_extent: origin.array_extent,
                     });
@@ -1275,7 +1280,9 @@ impl Datum {
     }
 
     pub(super) fn project(&self, coordinate: Coordinate, mode: Access) -> Self {
-        self.project_schema(coordinate, mode.as_mode())
+        let mut value = self.project_schema(coordinate, mode.as_mode());
+        value.receive_cloned_member(mode.as_mode());
+        value
     }
 
     fn project_schema(&self, coordinate: Coordinate, mode: Mode) -> Self {
@@ -1297,6 +1304,17 @@ impl Datum {
             member.requires_new = path.requires_new;
         } else {
             self.attenuate(member);
+        }
+    }
+
+    fn receive_cloned_member(&mut self, mode: Mode) {
+        for root in &mut self.roots {
+            if std::mem::take(&mut root.clone_member) {
+                root.project_mode(mode);
+                if matches!(mode, Mode::Ref | Mode::Shared | Mode::Via) {
+                    root.new = false;
+                }
+            }
         }
     }
 
@@ -1438,6 +1456,79 @@ impl Datum {
                 .members
                 .values()
                 .any(Self::contains_live_callable_environment)
+    }
+
+    pub(super) fn cloned_graph(&self, span: Span, invocation: &[InvocationSite]) -> Self {
+        fn copy(
+            value: &Datum,
+            prototype: &Origin,
+            regions: &mut BTreeMap<Region, Region>,
+            member: bool,
+        ) -> Datum {
+            let mut roots = Vec::new();
+            for original in &value.roots {
+                let index = regions.len();
+                let region = regions.entry(original.region.clone()).or_insert_with(|| {
+                    let mut region = Region::returned(
+                        prototype.region.source,
+                        AllocationIdentity {
+                            index,
+                            summarized: original.region.summarized(),
+                        },
+                    );
+                    region.set_invocation(&prototype.region.invocation);
+                    region
+                });
+                roots.push(Origin {
+                    region: region.clone(),
+                    array_extent: original.array_extent,
+                    snapshot_provider: original.snapshot_provider,
+                    clone_member: member,
+                    branches: original.branches.clone(),
+                    variant: original.variant.clone(),
+                    ..prototype.clone()
+                });
+            }
+            let array_len = roots.first().and_then(|root| {
+                let extent = root.array_extent?;
+                (extent.exact && roots.iter().all(|root| root.array_extent == Some(extent)))
+                    .then_some(extent.minimum)
+            });
+            let members = value
+                .members
+                .iter()
+                .map(|(key, value)| (key.clone(), copy(value, prototype, regions, true)))
+                .collect();
+            let mut copied = Datum {
+                requires_new: !roots.is_empty(),
+                roots,
+                members,
+                array_len,
+                latent_effects: value.latent_effects.clone(),
+                environments: value.environments.clone(),
+                invocations: value.invocations.clone(),
+                stateful_handler: value.stateful_handler,
+                result_fresh: value.result_fresh,
+                ..Datum::default()
+            };
+            if !copied.environments.is_empty() {
+                // Captured values remain immutable in the copied environment.
+                for capture in copied.members.values_mut() {
+                    capture.freeze();
+                }
+            }
+            copied
+        }
+
+        let mut fresh = Self::source(span, Access::Mut, true);
+        let Some(prototype) = fresh.roots.first_mut() else {
+            return fresh;
+        };
+        prototype.region.set_invocation(invocation);
+        if self.roots.is_empty() {
+            return fresh;
+        }
+        copy(self, prototype, &mut BTreeMap::new(), false)
     }
 
     pub(super) fn surviving_publications(
@@ -1690,6 +1781,15 @@ impl Ledger {
         self.storage_flow = Some(flow);
     }
 
+    pub(super) fn defer_storage_clone(&mut self, index: usize, base: Datum) {
+        let mut flow = self
+            .storage_flow
+            .take()
+            .unwrap_or_else(|| self.storage_prefix());
+        flow.push(StorageAction::Clone { index, base });
+        self.storage_flow = Some(flow);
+    }
+
     fn invalidate_callback_array_extents<'a>(&mut self, operands: impl Iterator<Item = &'a Datum>) {
         if self.array_extents.is_empty() {
             return;
@@ -1748,8 +1848,15 @@ impl Ledger {
     }
 
     pub(super) fn sample_storage(&mut self, key: (Span, Vec<InvocationSite>, usize), value: Datum) {
-        let slot = self.storage_samples.entry(key).or_default();
-        *slot = std::mem::take(slot).joined(value);
+        match self.storage_samples.entry(key) {
+            std::collections::btree_map::Entry::Vacant(slot) => {
+                slot.insert(value);
+            }
+            std::collections::btree_map::Entry::Occupied(mut slot) => {
+                let slot = slot.get_mut();
+                *slot = std::mem::take(slot).joined(value);
+            }
+        }
     }
 
     pub(super) fn sampled_storage(
@@ -2924,6 +3031,7 @@ impl Ledger {
         let arbitrary_element =
             (coordinate.is_range() || coordinate == Coordinate::MapKey) && !singleton;
         let mut value = self.project_members(base, coordinate, mode, |_| true, |_| true);
+        value.receive_cloned_member(mode);
         if arbitrary_element {
             // A single unknown index cannot inspect the union of its possible values.
             value.forget_results();

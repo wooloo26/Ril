@@ -3070,6 +3070,50 @@ fn run() -> () {
     -- ^ E0530
 }
 
+-- @case forwarded_clone_checks_the_callers_closure_environment compile-fail E0530 no-prelude
+type Cell = .{ var count: int }
+type Step = fn() &up -> int
+type Holder = .{ ^mut step: Step }
+fn duplicate(ref holder: Holder) -> new Holder { clone(ref holder) }
+fn increment(^mut cell: Cell) &capture &^mut &return(^mut cell) -> new Step {
+    \-> { cell.count += 1; cell.count }
+}
+fn run() -> int {
+    let mut cell = Cell.{ count: 1 }
+    let mut holder = Holder.{ step: ^mut increment(^mut cell) }
+    let observed = holder.step()
+    let _ = duplicate(ref holder)
+    -- ^ E0530
+    observed
+}
+
+-- @case clone_keeps_the_snapshot_requirement_of_a_contained_callable compile-fail E0535 no-prelude
+type Cell = .{ var count: int }
+type Shelf = .{ ^mut item: Cell }
+fn freeze(new shelf: Shelf) -> int { let fixed = new shelf; fixed.item.count }
+fn run() -> int {
+    let mut live = Cell.{ count: 1 }
+    live.count += 1
+    let copy = clone([freeze])
+    copy[0](new Shelf.{ item: ^mut live })
+    -- ^ E0535
+}
+
+-- @case forwarded_clones_keep_callable_constraints compile-fail E0535 no-prelude
+type Cell = .{ var count: int }
+type Shelf = .{ ^mut item: Cell }
+type Action = fn(new Shelf) -> int
+fn freeze(new shelf: Shelf) -> int { let fixed = new shelf; fixed.item.count }
+fn duplicate(actions: []Action) -> new []Action { clone(actions) }
+fn twice(actions: []Action) -> new []Action { duplicate(duplicate(actions)) }
+fn run() -> int {
+    let mut live = Cell.{ count: 1 }
+    live.count += 1
+    let copy = twice([freeze])
+    copy[0](new Shelf.{ item: ^mut live })
+    -- ^ E0535
+}
+
 -- @case captured_array_appends_update_the_call_site compile-fail E0535
 type Shelf = .{ ^mut item: Cell }
 fn freeze(new shelf: Shelf) -> int { let fixed = new shelf; fixed.item.count }

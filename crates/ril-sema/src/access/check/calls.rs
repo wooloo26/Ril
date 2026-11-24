@@ -2763,8 +2763,14 @@ impl<'program> Analyzer<'program> {
                 }
             }
             "clone" => {
-                if first.is_some_and(Datum::contains_live_callable_environment) {
-                    self.error(Code::E0530, span, "cannot clone live callable authority");
+                if let Some(value) = first {
+                    return self.clone_storage(
+                        ctx,
+                        ledger,
+                        value,
+                        (span, &[]),
+                        super::storage::ReadSite::Clone(span),
+                    );
                 }
                 return Datum::source(span, Access::Mut, true);
             }

@@ -241,6 +241,10 @@ pub enum StorageStep {
         base: CallbackArgument,
         updater: CallbackArgument,
     },
+    Clone {
+        index: usize,
+        base: CallbackArgument,
+    },
 }
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
@@ -384,6 +388,8 @@ pub struct ReturnAllocation {
     pub new: bool,
     pub qualified: bool,
     pub summarized: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub clone_member: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub array_len: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -1041,6 +1041,113 @@ fn observe(times: int) -> int {{
 }
 
 #[test]
+fn clone_replays_callable_constraints_across_interfaces() {
+    use ril_base::diag::Code;
+    use ril_sema::access::{StorageStep, StorageTransfer};
+
+    let source = br#"
+pub type Cell = .{ var count: int }
+pub type Shelf = .{ ^mut item: Cell }
+pub type Action = fn(new Shelf) -> int
+pub type Pair = .{ item: Cell, var tag: int }
+pub fn count(new shelf: Shelf) -> int { shelf.item.count }
+pub fn freeze(new shelf: Shelf) -> int { let fixed = new shelf; fixed.item.count }
+pub fn duplicate(actions: []Action) -> new []Action { clone(actions) }
+pub fn twice(actions: []Action) -> new []Action { duplicate(duplicate(actions)) }
+pub fn pair() -> new Pair { clone(Pair.{ item: Cell.{ count: 1 }, tag: 0 }) }
+pub fn append_count(mut actions: []Action) &mut -> () { Array::push(mut actions, count) }
+pub fn append_freeze(mut actions: []Action) &mut -> () { Array::push(mut actions, freeze) }
+pub fn after(mut actions: []Action, edit: fn(mut []Action) &mut -> ()) &mut -> new []Action {
+    edit(mut actions)
+    clone(ref actions)
+}
+pub fn after_local(edit: fn(mut []Action) &mut -> ()) -> new []Action {
+    let mut actions = [count]
+    edit(mut actions)
+    clone(ref actions)
+}
+"#;
+    let mut library = VirtualPackage::new(Unit::Lib);
+    library.entry = "pkg/copies.ril".into();
+    library.insert(library.entry.clone(), source.to_vec());
+    let encoded = Driver.interface(&library).unwrap().encode().unwrap();
+    let decoded = Interface::decode(&encoded).unwrap();
+    let export = &decoded.functions["pkg/copies.ril::duplicate"];
+    assert!(matches!(
+        &export.summary.storage_flow,
+        Some(StorageTransfer::Paths(paths))
+            if matches!(paths.as_slice(), [steps] if matches!(steps.as_slice(), [StorageStep::Clone { .. }]))
+    ));
+
+    for (mount, bytes) in [
+        ("library/copies.ril", source.as_slice()),
+        ("library/copies.rili", encoded.as_slice()),
+    ] {
+        let mut client = VirtualPackage::new(Unit::Lib);
+        client.insert(mount.into(), bytes.to_vec());
+        client.insert(
+            client.entry.clone(),
+            br#"
+use library/copies
+fn run() -> int {
+    let mut pair = Copies::pair()
+    pair.tag += 1
+    pair.item.count += 1
+    pair.tag
+}
+"#
+            .to_vec(),
+        );
+        let diagnostics = Driver.analyze(&client).err().unwrap_or_default();
+        assert_eq!(
+            diagnostics.iter().map(|d| d.code).collect::<Vec<_>>(),
+            [Some(Code::E0520)],
+            "{mount}: {diagnostics:?}"
+        );
+        for (callback, code) in [("count", None), ("freeze", Some(Code::E0535))] {
+            for (copy, index) in [
+                (
+                    format!("let copied = Copies::twice([Copies::{callback}])"),
+                    0,
+                ),
+                (
+                    format!(
+                        "let mut actions = [Copies::count]
+    let copied = Copies::after(mut actions, Copies::append_{callback})
+    Array::push(mut actions, Copies::freeze)"
+                    ),
+                    1,
+                ),
+                (
+                    format!("let copied = Copies::after_local(Copies::append_{callback})"),
+                    1,
+                ),
+            ] {
+                let mut client = VirtualPackage::new(Unit::Lib);
+                client.insert(mount.into(), bytes.to_vec());
+                client.insert(
+                    client.entry.clone(),
+                    format!(
+                        "use library/copies
+fn run() -> int {{
+    let mut live = Copies::Cell.{{ count: 1 }}
+    live.count += 1
+    {copy}
+    copied[{index}](new Copies::Shelf.{{ item: ^mut live }})
+}}"
+                    )
+                    .into_bytes(),
+                );
+                let diagnostics = Driver.analyze(&client).err().unwrap_or_default();
+                let actual: Vec<_> = diagnostics.iter().map(|d| d.code).collect();
+                let expected: Vec<_> = code.into_iter().map(Some).collect();
+                assert_eq!(actual, expected, "{mount} {copy}: {diagnostics:?}");
+            }
+        }
+    }
+}
+
+#[test]
 fn ordered_draft_updates_survive_separate_compilation() {
     use ril_base::diag::Code;
 
@@ -2470,6 +2577,19 @@ fn exported_summaries_and_via_domains_agree_with_lean() {
             ..Summary::default()
         },
     ];
+    let mut copy_library = VirtualPackage::new(Unit::Lib);
+    copy_library.insert(
+        copy_library.entry.clone(),
+        b"pub fn duplicate(values: []int) -> new []int { clone(values) }".to_vec(),
+    );
+    summaries.extend(
+        Driver
+            .interface(&copy_library)
+            .unwrap()
+            .functions
+            .into_values()
+            .map(|export| export.summary),
+    );
     let calls_provider = |provider| SnapshotCall {
         factory_steps: Vec::new(),
         receiver: ModeAxis {
@@ -2554,6 +2674,7 @@ fn exported_summaries_and_via_domains_agree_with_lean() {
         new: false,
         qualified: false,
         summarized: true,
+        clone_member: false,
         array_len: None,
         array_extent: None,
     };
@@ -2791,6 +2912,10 @@ fn exported_summaries_and_via_domains_agree_with_lean() {
                 "updater": wire_storage_operand(updater),
             }
         }),
+        StorageStep::Clone { index, base } => json!({"read": {
+            "shape": [json!("clone"), json!(index)],
+            "base": wire_storage_operand(base),
+        }}),
     };
     let wire_storage_flow = |flow: &StorageTransfer| match flow {
         StorageTransfer::Paths(paths) => {

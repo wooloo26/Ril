@@ -10,6 +10,7 @@ use crate::ty::TypedProgram;
 pub(super) enum ReadSite {
     Source(Span, Coordinate),
     Derive(Span),
+    Clone(Span),
     Imported(Span, usize),
     Forwarded(Span, Vec<InvocationSite>, usize),
 }

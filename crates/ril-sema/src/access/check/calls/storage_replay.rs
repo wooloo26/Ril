@@ -1,18 +1,67 @@
 use std::collections::BTreeMap;
 
-use ril_base::diag::Diagnostic;
+use ril_base::{
+    diag::{Code, Diagnostic},
+    span::Span,
+};
 use ril_frontend::{hir::DefinitionKind, syntax::StateKind};
 
 use super::{
-    Analyzer, CallEntry, CallStorage, Context, DeferredStorageCall, InvocationSite, Ledger,
-    StorageAction, StorageFlow, StorageTarget, snapshot_invocations::known_provider,
+    Access, Analyzer, CallEntry, CallStorage, Context, Datum, DeferredStorageCall, InvocationSite,
+    Ledger, StorageAction, StorageFlow, StorageTarget, snapshot_invocations::known_provider,
 };
 use crate::access::{
     Coordinate,
     check::storage::{ReadSite, ReplaySite},
+    flow::StorageRead,
 };
 
 impl Analyzer<'_> {
+    pub(super) fn clone_storage(
+        &mut self,
+        ctx: &Context,
+        ledger: &mut Ledger,
+        base: &Datum,
+        (span, invocation): (Span, &[InvocationSite]),
+        site: ReadSite,
+    ) -> Datum {
+        let base = ledger.snapshot_call_graph(base);
+        if base.contains_live_callable_environment() {
+            self.error(Code::E0530, span, "cannot clone live callable authority");
+            return Datum::source(span, Access::Mut, true);
+        }
+        let depends_on_caller = |origin: &super::Origin| {
+            ctx.formals.contains(&Some(origin.region.source))
+                || origin.callback_result.is_some()
+                || origin.storage_read.is_some()
+        };
+        let deferred_writes = ledger
+            .storage_flow
+            .as_ref()
+            .is_some_and(StorageFlow::has_deferred_writes);
+        if ctx.in_function
+            && ctx.runtime
+            && ctx.reachable
+            && !ctx.shadow
+            && (deferred_writes
+                || !base.capture_paths.is_empty()
+                || base.origins().any(depends_on_caller))
+        {
+            let index = self.storage_read_index(site);
+            ledger.defer_storage_clone(index, base);
+            let mut pending = Datum::source(span, Access::Mut, true);
+            for root in &mut pending.roots {
+                root.storage_read = Some(StorageRead {
+                    index,
+                    path: Vec::new(),
+                });
+                root.region.set_invocation(invocation);
+            }
+            return pending;
+        }
+        base.cloned_graph(span, invocation)
+    }
+
     pub(super) fn apply_callable_storage(
         &mut self,
         ctx: &Context,
@@ -181,6 +230,24 @@ impl Analyzer<'_> {
                 );
                 after.sample_storage((entry.span, entry.invocation.to_vec(), *index), result);
                 self.replaying_storage.remove(&key);
+                true
+            }
+            StorageAction::Clone { index, base } => {
+                let base = self.instantiate_return(
+                    &storage.formals,
+                    &storage.via,
+                    entry,
+                    base,
+                    &mut Vec::new(),
+                );
+                let site = ReadSite::Forwarded(entry.span, entry.invocation.to_vec(), *index);
+                let mut trace = entry.invocation.to_vec();
+                trace.push(InvocationSite {
+                    span: entry.span,
+                    ordinal: *index,
+                });
+                let result = self.clone_storage(ctx, after, &base, (entry.span, &trace), site);
+                after.sample_storage((entry.span, entry.invocation.to_vec(), *index), result);
                 true
             }
             StorageAction::Read {

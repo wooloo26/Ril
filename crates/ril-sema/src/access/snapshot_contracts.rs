@@ -161,6 +161,16 @@ fn storage_flows_subsume(
                 && callback_operand_subsumes(left_base, right_base, pairs)
                 && callback_operand_subsumes(left_updater, right_updater, pairs)
         }
+        (
+            StorageStep::Clone {
+                index: left_index,
+                base: left,
+            },
+            StorageStep::Clone {
+                index: right_index,
+                base: right,
+            },
+        ) => left_index == right_index && callback_operand_subsumes(left, right, pairs),
         _ => false,
     };
     match (old, new) {
