@@ -332,7 +332,10 @@ impl Analyzer<'_> {
                 &contract.calls,
             );
             let signature = Provider { formals, via };
-            if !contract.storage_updates.is_empty() || !contract.captured_slots.is_empty() {
+            if !contract.storage_updates.is_empty()
+                || !contract.captured_slots.is_empty()
+                || contract.storage_flow.is_some()
+            {
                 let captures = contract
                     .captured_slots
                     .iter()
@@ -346,6 +349,7 @@ impl Analyzer<'_> {
                         captures,
                         slots: contract.captured_slots.clone(),
                         updates: contract.storage_updates.clone(),
+                        flow: contract.storage_flow.clone(),
                     },
                 );
             }
@@ -385,6 +389,9 @@ impl Analyzer<'_> {
         let mut references = ProviderReferences::default();
         summary.snapshot_calls = self.publish_snapshot_calls(function.owner, &mut references);
         self.publish_snapshot_projections(function, summary, &mut references);
+        summary.storage_flow = function.storage_flow.as_ref().map(|flow| {
+            self.publish_storage_flow(function.owner, &function.formals, flow, &mut references)
+        });
         references.rebase_callback_returns(&mut summary.callback_returns);
         for update in &mut summary.storage_updates {
             references.rebase_callback_returns(&mut update.callback_returns);
@@ -416,12 +423,14 @@ impl Analyzer<'_> {
             references.rebase_callback_returns(&mut result.callbacks);
             let (captured_slots, storage_updates) =
                 self.publish_provider_storage(owner, &mut references);
+            let storage_flow = self.publish_provider_flow(owner, &mut references);
             providers.push(SnapshotProvider {
                 via_parameters,
                 inputs: self.snapshots.inputs(owner, &signature.formals),
                 calls: self.publish_snapshot_calls(owner, &mut references),
                 captured_slots,
                 storage_updates,
+                storage_flow,
                 returns: result.projections,
                 callback_returns: result.callbacks,
                 returns_new: result.constructs,

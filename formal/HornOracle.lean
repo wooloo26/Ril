@@ -116,6 +116,27 @@ def JsonStorageUpdate.contract (update : JsonStorageUpdate) :
   ⟨(update.formal, update.path), update.sources, update.callback_returns.map (·.shape.compress),
     update.allocations.map Json.compress, update.definite, update.constructs⟩
 
+structure JsonStorageOperand where
+  shape : Json
+  projections : List JsonSnapshotProjection
+  callback_returns : List JsonCallbackReturn
+  deriving FromJson
+
+structure JsonStorageInvocation where
+  receiver : JsonStorageOperand
+  arguments : List JsonStorageOperand
+  deriving FromJson
+
+structure JsonStorageStep where
+  write : Option JsonStorageUpdate
+  invoke : Option JsonStorageInvocation
+  deriving FromJson
+
+structure JsonStorageFlow where
+  interleaved : Bool
+  paths : List (List JsonStorageStep)
+  deriving FromJson
+
 structure JsonEffectUse where
   effect : String
   operation : Option String
@@ -158,6 +179,7 @@ structure JsonSnapshotProvider where
   calls : List JsonSnapshotCall
   captured_slots : List Bool
   storage_updates : List JsonStorageUpdate
+  storage_flow : Option JsonStorageFlow
   returns : List JsonSnapshotProjection
   callback_returns : List JsonCallbackReturn
   returns_new : Bool
@@ -192,6 +214,35 @@ def snapshotStorageUpdatesSubsumed (pairs : ProviderPairs) (old new : List JsonS
       snapshotCallbackReturnsSubsumed pairs allowed.callback_returns update.callback_returns &&
       snapshotProjectionsSubsumed pairs allowed.snapshot_projections update.snapshot_projections
 
+def storageOperandSubsumed (pairs : ProviderPairs) (old new : JsonStorageOperand) : Bool :=
+  old.shape.compress == new.shape.compress &&
+    snapshotProjectionsSubsumed pairs old.projections new.projections &&
+    old.callback_returns.length == new.callback_returns.length &&
+    (old.callback_returns.zip new.callback_returns).all fun (left, right) =>
+      snapshotCallbackReturnsSubsumed pairs [left] [right]
+
+def storageStepSubsumed (pairs : ProviderPairs) (old new : JsonStorageStep) : Bool :=
+  match old.write, new.write, old.invoke, new.invoke with
+  | some left, some right, _, _ => snapshotStorageUpdatesSubsumed pairs [left] [right]
+  | none, none, some left, some right =>
+      storageOperandSubsumed pairs left.receiver right.receiver &&
+      left.arguments.length == right.arguments.length &&
+      (left.arguments.zip right.arguments).all fun (left, right) => storageOperandSubsumed pairs left right
+  | _, _, _, _ => false
+
+def storageFlowsSubsumed (pairs : ProviderPairs) (old new : Option JsonStorageFlow) : Bool :=
+  match old, new with
+  | none, none => true
+  | some left, some right =>
+      if left.interleaved then
+        right.paths.flatten.all fun required => left.paths.flatten.any fun allowed =>
+          storageStepSubsumed pairs allowed required
+      else
+        !right.interleaved && right.paths.all fun path => left.paths.any fun allowed =>
+          allowed.length == path.length && (allowed.zip path).all fun (left, right) =>
+            storageStepSubsumed pairs left right
+  | _, _ => false
+
 def snapshotArgsSubsumed (pairs : ProviderPairs) (old new : List JsonSnapshotArgument) : Bool :=
   old.length == new.length && (old.zip new).all fun (offered, required) =>
     offered.shape.compress == required.shape.compress && offered.graph.length == required.graph.length &&
@@ -213,8 +264,9 @@ def pruneSnapshotProviders (old new : Array JsonSnapshotProvider) : Nat → Prov
       match old[i]?, new[j]? with
       | some left, some right => snapshotCallsSubsumed pairs left.calls right.calls &&
           (!left.returns_new || right.returns_new) &&
-          (right.storage_updates.isEmpty || left.captured_slots == right.captured_slots) &&
+          ((right.storage_updates.isEmpty && right.storage_flow.isNone) || left.captured_slots == right.captured_slots) &&
           snapshotStorageUpdatesSubsumed pairs left.storage_updates right.storage_updates &&
+          storageFlowsSubsumed pairs left.storage_flow right.storage_flow &&
           snapshotProjectionsSubsumed pairs left.returns right.returns &&
           snapshotCallbackReturnsSubsumed pairs left.callback_returns right.callback_returns
       | _, _ => false
@@ -245,6 +297,7 @@ structure JsonSummary where
   invoked : List Nat
   callback_returns : List JsonCallbackReturn
   storage_updates : List JsonStorageUpdate
+  storage_flow : Option JsonStorageFlow
   captures : Bool
   constructs : Bool
   nonreturning : Bool
@@ -282,6 +335,7 @@ def compareSummaries (baseline revision : JsonSummary) : Bool :=
     revision.invoked.all baseline.invoked.contains &&
     snapshotCallbackReturnsSubsumed providers baseline.callback_returns revision.callback_returns &&
     snapshotStorageUpdatesSubsumed providers baseline.storage_updates revision.storage_updates &&
+    storageFlowsSubsumed providers baseline.storage_flow revision.storage_flow &&
     (!baseline.constructs || revision.constructs) &&
     (!baseline.nonreturning || revision.nonreturning)
 

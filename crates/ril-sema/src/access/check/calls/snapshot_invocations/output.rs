@@ -7,12 +7,15 @@ use super::{
 use crate::access::check::calls::imported::PublishedValue;
 use crate::{
     access::{
-        Access, Coordinate, SnapshotOrigin, SnapshotProjection, StorageUpdate, Summary,
+        Access, Coordinate, SnapshotOrigin, SnapshotProjection, StorageTransfer, StorageUpdate,
+        Summary,
         check::{DefinitionCheck, storage::CallStorage},
-        flow::{Origin, Region, Replacement},
+        flow::{Origin, Region},
     },
     ty::{Ty, TypedProgram},
 };
+
+mod storage;
 
 #[derive(Clone)]
 pub(super) struct ImportedResult {
@@ -28,6 +31,7 @@ pub(super) struct ImportedStorage {
     pub(super) captures: Vec<Option<Span>>,
     pub(super) slots: Vec<bool>,
     pub(super) updates: Vec<StorageUpdate>,
+    pub(super) flow: Option<StorageTransfer>,
 }
 
 #[derive(Clone, Default)]
@@ -104,7 +108,7 @@ impl Analyzer<'_> {
         self.snapshot_providers
             .imported_storage
             .get(&owner)
-            .is_some_and(|storage| !storage.updates.is_empty())
+            .is_some_and(|storage| !storage.updates.is_empty() || storage.flow.is_some())
     }
 
     pub(in crate::access::check::calls) fn replay_provider_storage(
@@ -150,18 +154,13 @@ impl Analyzer<'_> {
         }
         arguments.push((receiver_index, super::Mode::Mut, receiver));
         spans.push(provider);
-        let mut updates = std::collections::BTreeMap::new();
-        for update in &storage.updates {
-            let Some(source) = formals.get(update.formal).copied().flatten() else {
-                continue;
-            };
+        let capture_target = |update: &StorageUpdate| {
+            let source = formals.get(update.formal).copied().flatten()?;
             let mut target = Region::root(source);
             if update.path.is_empty() {
-                let Some(index) = update.formal.checked_sub(parameter_count) else {
-                    continue;
-                };
+                let index = update.formal.checked_sub(parameter_count)?;
                 if storage.slots.get(index) != Some(&true) {
-                    continue;
+                    return None;
                 }
                 target = Region::root(provider);
                 target.selection.push(Coordinate::Index(index.to_string()));
@@ -169,30 +168,27 @@ impl Analyzer<'_> {
             } else {
                 target.selection.clone_from(&update.path);
             }
-            let value = self.exported_value(
-                storage.owner,
-                &formals,
-                PublishedValue {
-                    sources: &update.sources,
-                    callbacks: &update.callback_returns,
-                    projections: &update.snapshot_projections,
-                    allocations: &update.allocations,
-                    constructs: update.constructs,
-                },
-                &Ty::Unknown,
-            );
-            updates.insert(
-                target,
-                Replacement {
-                    value,
-                    definite: update.definite,
-                },
-            );
-        }
+            Some(target)
+        };
+        let updates = storage
+            .updates
+            .iter()
+            .filter_map(|update| {
+                let target = capture_target(update)?;
+                Some((
+                    target,
+                    self.decode_storage_write(storage.owner, &formals, update),
+                ))
+            })
+            .collect();
+        let flow = storage.flow.as_ref().map(|flow| {
+            self.load_storage_flow((storage.owner, provider), &formals, flow, capture_target)
+        });
         let call = CallStorage {
             formals,
             via: storage.signature.via,
             updates,
+            flow,
             ..CallStorage::default()
         };
         let entry = CallEntry {
@@ -200,7 +196,7 @@ impl Analyzer<'_> {
             spans: &spans,
             ..*entry
         };
-        self.apply_storage_updates(ctx, call, &entry, ledger, true);
+        self.apply_callable_storage(ctx, call, &entry, ledger, true);
     }
 
     pub(in crate::access::check::calls) fn snapshot_argument_providers(

@@ -1179,3 +1179,20 @@ pub fn appender(^mut actions: []Action) &capture &^mut &return(^mut actions) -> 
 -- ^ E0552
     \-> Array::push(mut actions, freeze)
 }
+
+-- @case reordering_callback_writes_breaks_a_storage_guarantee compat-fail E0552
+-- @baseline
+pub type Slot = .{ var action: fn() -> int }
+fn count() -> int { 42 }
+pub fn update(mut slot: Slot, install: fn(mut Slot) &mut -> ()) &mut -> () {
+    install(mut slot)
+    slot.action = count
+}
+-- @revision
+pub type Slot = .{ var action: fn() -> int }
+fn count() -> int { 42 }
+pub fn update(mut slot: Slot, install: fn(mut Slot) &mut -> ()) &mut -> () {
+-- ^ E0552
+    slot.action = count
+    install(mut slot)
+}

@@ -277,14 +277,24 @@ impl<'program> Analyzer<'program> {
                     ))
                 })
                 .collect();
-            if !updates.is_empty() {
+            let flow = summary.storage_flow.as_ref().map(|flow| {
+                let owner = function.name.span;
+                self.load_storage_flow((owner, owner), &formals, flow, |update| {
+                    let source = formals.get(update.formal).copied().flatten()?;
+                    let mut target = Region::root(source);
+                    target.selection.clone_from(&update.path);
+                    Some(target)
+                })
+            });
+            if !updates.is_empty() || flow.is_some() {
                 let storage = CallStorage {
                     formals: formals.clone(),
                     via: via.clone(),
                     updates,
+                    flow,
                     ..CallStorage::default()
                 };
-                if !self.apply_storage_updates(ctx, storage, &entry, ledger, false) {
+                if !self.apply_callable_storage(ctx, storage, &entry, ledger, false) {
                     self.error(
                         Code::E0520,
                         span,

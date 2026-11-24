@@ -1,8 +1,8 @@
 use std::collections::BTreeSet;
 
 use super::{
-    SnapshotArgument, SnapshotCall, SnapshotGraph, SnapshotInput, SnapshotOrigin,
-    SnapshotProjection, StorageUpdate, Summary,
+    CallbackArgument, SnapshotArgument, SnapshotCall, SnapshotGraph, SnapshotInput, SnapshotOrigin,
+    SnapshotProjection, StorageStep, StorageTransfer, StorageUpdate, Summary,
 };
 
 type ProviderPairs = BTreeSet<(usize, usize)>;
@@ -36,11 +36,16 @@ pub(super) fn subsumes(baseline: &Summary, revision: &Summary) -> bool {
                 old.get(i).zip(new.get(j)).is_some_and(|(left, right)| {
                     calls_subsume(&left.calls, &right.calls, &pairs)
                         && (!left.returns_new || right.returns_new)
-                        && (right.storage_updates.is_empty()
+                        && ((right.storage_updates.is_empty() && right.storage_flow.is_none())
                             || left.captured_slots == right.captured_slots)
                         && storage_updates_subsume(
                             &left.storage_updates,
                             &right.storage_updates,
+                            &pairs,
+                        )
+                        && storage_flows_subsume(
+                            left.storage_flow.as_ref(),
+                            right.storage_flow.as_ref(),
                             &pairs,
                         )
                         && projections_subsume(&left.returns, &right.returns, &pairs)
@@ -69,6 +74,63 @@ pub(super) fn subsumes(baseline: &Summary, revision: &Summary) -> bool {
             &pairs,
         )
         && storage_updates_subsume(&baseline.storage_updates, &revision.storage_updates, &pairs)
+        && storage_flows_subsume(
+            baseline.storage_flow.as_ref(),
+            revision.storage_flow.as_ref(),
+            &pairs,
+        )
+}
+
+fn storage_flows_subsume(
+    old: Option<&StorageTransfer>,
+    new: Option<&StorageTransfer>,
+    pairs: &ProviderPairs,
+) -> bool {
+    let step = |left: &StorageStep, right: &StorageStep| match (left, right) {
+        (StorageStep::Write(left), StorageStep::Write(right)) => {
+            (!left.definite || right.definite) && storage_update_subsumes(left, right, pairs)
+        }
+        (
+            StorageStep::Invoke {
+                receiver: left,
+                arguments: left_arguments,
+            },
+            StorageStep::Invoke {
+                receiver: right,
+                arguments: right_arguments,
+            },
+        ) => {
+            callback_operand_subsumes(left, right, pairs)
+                && left_arguments.len() == right_arguments.len()
+                && left_arguments
+                    .iter()
+                    .zip(right_arguments)
+                    .all(|(left, right)| callback_operand_subsumes(left, right, pairs))
+        }
+        _ => false,
+    };
+    match (old, new) {
+        (None, None) => true,
+        (Some(StorageTransfer::Paths(old)), Some(StorageTransfer::Paths(new))) => {
+            new.iter().all(|path| {
+                old.iter().any(|allowed| {
+                    allowed.len() == path.len()
+                        && allowed
+                            .iter()
+                            .zip(path)
+                            .all(|(left, right)| step(left, right))
+                })
+            })
+        }
+        (Some(StorageTransfer::Interleaved(old)), Some(new)) => {
+            let allowed = |right: &StorageStep| old.iter().any(|left| step(left, right));
+            match new {
+                StorageTransfer::Paths(paths) => paths.iter().flatten().all(allowed),
+                StorageTransfer::Interleaved(steps) => steps.iter().all(allowed),
+            }
+        }
+        _ => false,
+    }
 }
 
 fn storage_updates_subsume(
@@ -77,19 +139,22 @@ fn storage_updates_subsume(
     pairs: &ProviderPairs,
 ) -> bool {
     new.iter().all(|update| {
-        old.iter().any(|old| {
-            old.permits(update)
-                && callback_returns_subsume(&old.callback_returns, &update.callback_returns, pairs)
-                && projections_subsume(
-                    &old.snapshot_projections,
-                    &update.snapshot_projections,
-                    pairs,
-                )
-        })
+        old.iter()
+            .any(|old| storage_update_subsumes(old, update, pairs))
     }) && old.iter().filter(|update| update.definite).all(|old| {
         new.iter()
             .any(|update| old.same_target(update) && update.definite)
     })
+}
+
+fn storage_update_subsumes(
+    old: &StorageUpdate,
+    new: &StorageUpdate,
+    pairs: &ProviderPairs,
+) -> bool {
+    old.permits(new)
+        && callback_returns_subsume(&old.callback_returns, &new.callback_returns, pairs)
+        && projections_subsume(&old.snapshot_projections, &new.snapshot_projections, pairs)
 }
 
 fn callback_returns_subsume(
@@ -119,24 +184,30 @@ fn callback_return_subsumes(
             .arguments
             .iter()
             .zip(&new.arguments)
-            .all(|(left, right)| {
-                left.position == right.position
-                    && left.modes == right.modes
-                    && left.sources == right.sources
-                    && left.allocations == right.allocations
-                    && left.constructs == right.constructs
-                    && projections_subsume(
-                        &left.snapshot_projections,
-                        &right.snapshot_projections,
-                        pairs,
-                    )
-                    && left.callback_returns.len() == right.callback_returns.len()
-                    && left
-                        .callback_returns
-                        .iter()
-                        .zip(&right.callback_returns)
-                        .all(|(left, right)| callback_return_subsumes(left, right, pairs))
-            })
+            .all(|(left, right)| callback_operand_subsumes(left, right, pairs))
+}
+
+fn callback_operand_subsumes(
+    left: &CallbackArgument,
+    right: &CallbackArgument,
+    pairs: &ProviderPairs,
+) -> bool {
+    left.position == right.position
+        && left.modes == right.modes
+        && left.sources == right.sources
+        && left.allocations == right.allocations
+        && left.constructs == right.constructs
+        && projections_subsume(
+            &left.snapshot_projections,
+            &right.snapshot_projections,
+            pairs,
+        )
+        && left.callback_returns.len() == right.callback_returns.len()
+        && left
+            .callback_returns
+            .iter()
+            .zip(&right.callback_returns)
+            .all(|(left, right)| callback_return_subsumes(left, right, pairs))
 }
 
 fn projections_subsume(

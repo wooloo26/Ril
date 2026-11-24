@@ -9,6 +9,9 @@ use serde::{Deserialize, Serialize};
 
 use super::{Input, ModeExpression, ModeStep, ReturnAllocation};
 
+mod storage;
+pub(super) use storage::{DeferredStorageCall, StorageAction, StorageFlow};
+
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 pub enum Access {
     Immutable,
@@ -1456,6 +1459,9 @@ pub(super) struct Ledger {
     // need paths relative to the captured bindings at that call's entry.
     capture_owner: Option<Span>,
     capture_updates: BTreeMap<Region, Replacement>,
+    storage_formals: Vec<Option<Span>>,
+    storage_captures: BTreeSet<Span>,
+    pub storage_flow: Option<StorageFlow>,
     loop_members: BTreeMap<Region, Datum>,
     // Length evidence for local array objects. Result iteration separately
     // tracks the immutable layout it needs to discharge obligations.
@@ -1463,9 +1469,17 @@ pub(super) struct Ledger {
 }
 
 impl Ledger {
-    pub(super) fn enter_capture_storage(&mut self, owner: Span, includes: impl Fn(Span) -> bool) {
+    pub(super) fn enter_capture_storage(
+        &mut self,
+        owner: Span,
+        formals: &[Option<Span>],
+        includes: impl Fn(Span) -> bool,
+    ) {
         self.capture_owner = Some(owner);
         self.capture_updates.clear();
+        self.storage_formals = formals.to_vec();
+        self.storage_captures = self.slots.keys().copied().collect();
+        self.storage_flow = None;
         for (&binding, slot) in &mut self.slots {
             if includes(binding) && !slot.value.roots.is_empty() {
                 slot.value.capture_paths.insert(
@@ -1475,6 +1489,33 @@ impl Ledger {
                     },
                     true,
                 );
+            }
+        }
+    }
+
+    fn storage_prefix(&self) -> StorageFlow {
+        StorageFlow::writes(self.capture_owner.map_or_else(BTreeMap::new, |owner| {
+            self.call_updates(owner, &self.storage_formals, &self.storage_captures)
+        }))
+    }
+
+    pub(super) fn defer_storage_call(&mut self, call: DeferredStorageCall) {
+        let mut flow = self
+            .storage_flow
+            .take()
+            .unwrap_or_else(|| self.storage_prefix());
+        flow.push(StorageAction::Invoke(call));
+        self.storage_flow = Some(flow);
+    }
+
+    fn record_storage_write(&mut self, region: &Region, value: &Datum, definite: bool) {
+        if self.storage_flow.is_some() {
+            let value = self.snapshot(value);
+            if let Some(flow) = &mut self.storage_flow {
+                flow.push(StorageAction::Write(
+                    region.clone(),
+                    Replacement { value, definite },
+                ));
             }
         }
     }
@@ -1886,6 +1927,7 @@ impl Ledger {
         repeated: Span,
         entry: &Self,
         local_data: impl Fn(Span) -> bool + Copy,
+        repeated_storage: bool,
     ) {
         let local = |span: Span| {
             span.file == repeated.file && span.start >= repeated.start && span.end <= repeated.end
@@ -1956,6 +1998,17 @@ impl Ledger {
         for update in self.capture_updates.values_mut() {
             age_value(&mut update.value);
             update.value.fold_old_allocations(&mut self.loop_members);
+        }
+        if self.storage_flow != entry.storage_flow
+            && let Some(flow) = &mut self.storage_flow
+        {
+            for value in flow.values_mut() {
+                age_value(value);
+                value.fold_old_allocations(&mut self.loop_members);
+            }
+            if repeated_storage {
+                flow.widen();
+            }
         }
         for (token, triggers) in std::mem::take(&mut self.revoked) {
             let archived = self.revoked.entry(age(token)).or_default();
@@ -2147,6 +2200,21 @@ impl Ledger {
         }
         self.choices = prior.choices.clone();
         self.merge_replacements(prior, &alternatives);
+        self.storage_flow = if alternatives.is_empty() {
+            prior.storage_flow.clone()
+        } else if alternatives
+            .iter()
+            .any(|branch| branch.storage_flow.is_some())
+        {
+            Some(StorageFlow::join(alternatives.iter().map(|branch| {
+                branch
+                    .storage_flow
+                    .clone()
+                    .unwrap_or_else(|| branch.storage_prefix())
+            })))
+        } else {
+            None
+        };
         self.capture_updates = if alternatives.is_empty() {
             prior.capture_updates.clone()
         } else {
@@ -2307,7 +2375,15 @@ impl Ledger {
         } else {
             std::mem::take(&mut slot.value).joined(value.clone())
         };
-        self.replace_region(&Region::root(decl), &value, definite);
+        let region = Region::root(decl);
+        self.replace_region(&region, &value, definite);
+        if self.storage_captures.contains(&decl)
+            && self
+                .capture_owner
+                .is_some_and(|owner| value.publications.contains_key(&owner))
+        {
+            self.record_storage_write(&region, &value, definite);
+        }
         if !value.roots.is_empty() {
             self.replace_region(&Region::capture_slot(decl), &value, definite);
         }
@@ -2334,6 +2410,13 @@ impl Ledger {
                 });
             }
             self.replace_region(region, &value, definite);
+            if self.storage_formals.contains(&Some(region.source))
+                && self
+                    .capture_owner
+                    .is_some_and(|owner| value.publications.contains_key(&owner))
+            {
+                self.record_storage_write(region, &value, definite);
+            }
         }
         for (path, &known) in &slot.capture_paths {
             if self.capture_owner == Some(path.owner)
@@ -2342,6 +2425,7 @@ impl Ledger {
                 let definite =
                     definite && known && !path.region.selection.iter().any(Coordinate::is_range);
                 Self::record_replacement(&mut self.capture_updates, &path.region, &value, definite);
+                self.record_storage_write(&path.region, &value, definite);
             }
         }
     }

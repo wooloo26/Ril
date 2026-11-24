@@ -89,6 +89,28 @@ fn main() -> () {
     assert(live.count == 43)
 }
 
+-- @case a_direct_store_overwrites_the_previous_callback_store run-pass backend=both
+type Cell = .{ var count: int }
+type Shelf = .{ ^mut item: Cell }
+type Action = fn(new Shelf) -> int
+type Slot = .{ var action: Action }
+fn freeze(new shelf: Shelf) -> int { let fixed = new shelf; fixed.item.count + 100 }
+fn count(new shelf: Shelf) -> int { shelf.item.count }
+fn install(mut slot: Slot) &mut -> () { slot.action = freeze }
+fn reset(mut slot: Slot, write: fn(mut Slot) &mut -> ()) &mut -> () {
+    write(mut slot)
+    slot.action = count
+}
+fn main() -> () {
+    let mut slot = Slot.{ action: count }
+    reset(mut slot, install)
+    let mut live = Cell.{ count: 41 }
+    live.count += 1
+    assert(slot.action(new Shelf.{ item: ^mut live }) == 42)
+    live.count += 1
+    assert(live.count == 43)
+}
+
 -- @case aliased_shared_formals_preserve_identity_through_a_nested_borrow run-pass backend=both
 type Cell = .{ var count: int }
 type Pair = .{ ^mut left: Cell, ^mut right: Cell }

@@ -3,6 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use ril_base::span::Span;
 
 use super::{Analyzer, Datum, DefinitionCheck, Ledger, Region, Replacement, collect};
+use crate::access::flow::StorageFlow;
 use crate::ty::TypedProgram;
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -10,6 +11,7 @@ pub(super) struct CallStorage {
     pub formals: Vec<Option<Span>>,
     pub via: BTreeSet<Span>,
     pub updates: BTreeMap<Region, Replacement>,
+    pub flow: Option<StorageFlow>,
     pub result: Option<Datum>,
     pub normal_exit: bool,
 }
@@ -20,6 +22,7 @@ impl CallStorage {
             formals: function.formals.clone(),
             via: function.via.clone(),
             updates: function.updates.clone(),
+            flow: function.storage_flow.clone(),
             normal_exit: function.normal_exit,
             result: None,
         }
@@ -33,6 +36,7 @@ impl CallStorage {
             return self;
         }
         Self {
+            flow: join_flows([(&self.updates, &self.flow), (&other.updates, &other.flow)]),
             updates: Ledger::join_updates(vec![&self.updates, &other.updates]),
             result: self
                 .result
@@ -48,6 +52,7 @@ impl CallStorage {
             .values()
             .map(|update| &update.value)
             .chain(&self.result)
+            .chain(self.flow.iter().flat_map(StorageFlow::values))
     }
 
     fn clear_activation_choices(&mut self) {
@@ -56,6 +61,7 @@ impl CallStorage {
             .values_mut()
             .map(|update| &mut update.value)
             .chain(&mut self.result);
+        let values = values.chain(self.flow.iter_mut().flat_map(StorageFlow::values_mut));
         for value in values {
             value.transform(&mut |origin| origin.branches.clear());
         }
@@ -72,6 +78,32 @@ impl CallStorage {
                         .all(|origin| origin.callback_result.is_none())
             })
     }
+}
+
+pub(super) struct StorageExit {
+    pub updates: BTreeMap<Region, Replacement>,
+    pub flow: Option<StorageFlow>,
+}
+
+impl StorageExit {
+    pub(super) fn join(exits: &[Self]) -> Self {
+        Self {
+            updates: Ledger::join_updates(exits.iter().map(|exit| &exit.updates).collect()),
+            flow: join_flows(exits.iter().map(|exit| (&exit.updates, &exit.flow))),
+        }
+    }
+}
+
+fn join_flows<'a>(
+    paths: impl IntoIterator<Item = (&'a BTreeMap<Region, Replacement>, &'a Option<StorageFlow>)>,
+) -> Option<StorageFlow> {
+    let paths: Vec<_> = paths.into_iter().collect();
+    paths.iter().any(|(_, flow)| flow.is_some()).then(|| {
+        StorageFlow::join(paths.into_iter().map(|(updates, flow)| {
+            flow.clone()
+                .unwrap_or_else(|| StorageFlow::writes(updates.clone()))
+        }))
+    })
 }
 
 fn value_depth(value: &Datum) -> usize {
@@ -91,6 +123,13 @@ fn function_depth(function: &DefinitionCheck) -> usize {
         .iter()
         .map(|(target, update)| target.selection.len().max(value_depth(&update.value)))
         .chain(function.returns.iter().map(value_depth))
+        .chain(
+            function
+                .storage_flow
+                .iter()
+                .flat_map(StorageFlow::values)
+                .map(value_depth),
+        )
         .max()
         .unwrap_or_default()
 }

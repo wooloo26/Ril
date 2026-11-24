@@ -38,6 +38,8 @@ pub struct Summary {
     pub invoked: Vec<usize>,
     pub callback_returns: Vec<CallbackReturn>,
     pub storage_updates: Vec<StorageUpdate>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub storage_flow: Option<StorageTransfer>,
     pub captures: bool,
     pub constructs: bool,
     pub nonreturning: bool,
@@ -197,12 +199,31 @@ pub struct SnapshotProvider {
     pub captured_slots: Vec<bool>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub storage_updates: Vec<StorageUpdate>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub storage_flow: Option<StorageTransfer>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub returns: Vec<SnapshotProjection>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub callback_returns: Vec<CallbackReturn>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub returns_new: bool,
+}
+
+/// Transfers on normal paths through a callable, including calls whose
+/// storage effects depend on the actual receiver supplied by the caller.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum StorageTransfer {
+    Paths(Vec<Vec<StorageStep>>),
+    Interleaved(Vec<StorageStep>),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum StorageStep {
+    Write(StorageUpdate),
+    Invoke {
+        receiver: CallbackArgument,
+        arguments: Vec<CallbackArgument>,
+    },
 }
 
 /// A source of callable provenance carried by a result or a stored value.

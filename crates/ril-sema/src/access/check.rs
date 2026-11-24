@@ -18,7 +18,7 @@ use super::{
     InvocationMode, ReturnSource, StorageUpdate, Summary,
     flow::{
         AccessConflict, ConflictKind, Coordinate, Datum, Ledger, Origin, Reception, Region,
-        Replacement, ResultOccurrence, Revocation, Slot, conflicts,
+        Replacement, ResultOccurrence, Revocation, Slot, StorageFlow, conflicts,
     },
     horn::{self, Rule},
 };
@@ -200,6 +200,7 @@ struct DefinitionCheck {
     return_sources: Vec<ReturnSource>,
     returns: Vec<Datum>,
     updates: BTreeMap<Region, Replacement>,
+    storage_flow: Option<StorageFlow>,
     normal_exit: bool,
     via: BTreeSet<Span>,
     member_axes: Vec<(usize, Region)>,
@@ -219,6 +220,7 @@ struct ClosureModes {
     member_axes: Vec<(usize, Region)>,
     returns: Vec<Datum>,
     updates: BTreeMap<Region, Replacement>,
+    storage_flow: Option<StorageFlow>,
     models_publication: bool,
     captures: Vec<(Span, bool)>,
 }
@@ -259,11 +261,12 @@ struct Analyzer<'a> {
     callback_results: Vec<calls::CallbackResult>,
     loop_transfers: BTreeMap<Span, LoopTransfers>,
     binding_scopes: BTreeMap<Span, Span>,
-    storage_exits: BTreeMap<Span, Vec<BTreeMap<Region, Replacement>>>,
+    storage_exits: BTreeMap<Span, Vec<storage::StorageExit>>,
     recursive_storage: BTreeMap<Span, storage::CallStorage>,
     recursive_calls: BTreeSet<Span>,
     resolving_callback_results: BTreeSet<usize>,
     resolving_interface_results: BTreeSet<Span>,
+    replaying_storage: BTreeSet<(Span, Span)>,
     functions: Vec<DefinitionCheck>,
     done: BTreeSet<DefinitionId>,
     cleanups: BTreeMap<Span, CleanupAction>,
@@ -300,6 +303,7 @@ fn collect(
         recursive_calls: BTreeSet::new(),
         resolving_callback_results: BTreeSet::new(),
         resolving_interface_results: BTreeSet::new(),
+        replaying_storage: BTreeSet::new(),
         functions: Vec::new(),
         done: BTreeSet::new(),
         cleanups: BTreeMap::new(),
@@ -764,7 +768,9 @@ impl<'a> Analyzer<'a> {
         let captures: BTreeSet<_> = capture_modes.keys().copied().collect();
         ctx.capture_modes = Some(capture_modes);
         let mut ledger = outer.clone();
-        ledger.enter_capture_storage(ctx.owner, |binding| captures.contains(&binding));
+        ledger.enter_capture_storage(ctx.owner, &ctx.formals, |binding| {
+            captures.contains(&binding)
+        });
         ledger.clear_result_obligations();
         ledger.clear_array_extents();
         ledger.inspected.clear();
@@ -904,7 +910,10 @@ impl<'a> Analyzer<'a> {
             }
         }
         let exits = self.storage_exits.remove(&ctx.owner).unwrap_or_default();
-        let mut updates = Ledger::join_updates(exits.iter().collect());
+        let storage::StorageExit {
+            mut updates,
+            flow: mut storage_flow,
+        } = storage::StorageExit::join(&exits);
         calls::seal_call_allocations(
             &mut self.callback_results,
             ctx.return_values
@@ -914,7 +923,8 @@ impl<'a> Analyzer<'a> {
                         || !value.results().is_empty()
                         || value.has_array_layout()
                 })
-                .chain(updates.values_mut().map(|update| &mut update.value)),
+                .chain(updates.values_mut().map(|update| &mut update.value))
+                .chain(storage_flow.iter_mut().flat_map(StorageFlow::values_mut)),
             body_span,
         );
         self.functions.push(DefinitionCheck {
@@ -929,6 +939,7 @@ impl<'a> Analyzer<'a> {
                 && ctx.return_values.iter().all(|value| value.requires_new),
             returns: ctx.return_values,
             updates,
+            storage_flow,
             normal_exit: !exits.is_empty(),
             capture_names: captures,
         });
@@ -1870,7 +1881,10 @@ impl<'a> Analyzer<'a> {
         self.storage_exits
             .entry(ctx.owner)
             .or_default()
-            .push(ledger.call_updates(ctx.owner, &ctx.formals, &ctx.caller_slots));
+            .push(storage::StorageExit {
+                updates: ledger.call_updates(ctx.owner, &ctx.formals, &ctx.caller_slots),
+                flow: ledger.storage_flow.clone(),
+            });
     }
 
     fn publish_at_exit(&mut self, ctx: &Context, ledger: &Ledger, normal: bool) {
@@ -3687,7 +3701,7 @@ impl<'a> Analyzer<'a> {
             if !continues.is_empty() {
                 let final_iteration = exact.map(|_| continues.clone());
                 for backedge in &mut continues {
-                    backedge.loop_backedge(owner, repeated, &entry, local_data);
+                    backedge.loop_backedge(owner, repeated, &entry, local_data, exact.is_none());
                     backedge.take_choice(owner, 1);
                 }
                 if let Some(final_iteration) = final_iteration {

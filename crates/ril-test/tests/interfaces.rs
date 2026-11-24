@@ -353,6 +353,21 @@ pub fn append(mut actions: []Leaf) &mut -> () { Array::push(mut actions, freeze)
 pub fn appender(^mut actions: []Leaf) &capture &^mut &return(^mut actions) -> new Writer {
     \-> Array::push(mut actions, freeze)
 }
+pub fn invoke(mut action: Writer) &mut -> () { action() }
+pub fn repeat(mut action: Writer, times: int) &mut -> () {
+    for 0..times as _ { action() }
+}
+pub fn maybe_invoke(mut action: Writer, condition: bool) &mut -> () {
+    if condition { action() }
+}
+pub fn reset(mut slot: Slot, install: fn(mut Slot) &mut -> ()) &mut -> () {
+    install(mut slot)
+    slot.action = count
+}
+pub fn reset_then_install(mut slot: Slot, install: fn(mut Slot) &mut -> ()) &mut -> () {
+    slot.action = count
+    install(mut slot)
+}
 pub fn copy_to(^mut slot: Slot, action: Leaf) &capture &^mut &return(^mut slot, action) -> new Writer {
     \-> { slot.action = action }
 }
@@ -379,6 +394,7 @@ pub fn read_frame(base: Frame) -> Frame { derive(base) \mut d -> { d.action = co
     let interface = Driver.interface(&library).unwrap().encode().unwrap();
     let wrapper = br#"
 use library/snapshot
+pub fn invoke(mut action: Snapshot::Writer) &mut -> () { Snapshot::invoke(mut action) }
 pub fn appender(^mut actions: []Snapshot::Leaf) &capture &^mut &return(^mut actions) -> new Snapshot::Writer {
     Snapshot::appender(^mut actions)
 }
@@ -428,6 +444,26 @@ pub fn controls(^mut slot: Snapshot::Slot, initial: Snapshot::Leaf, next: Snapsh
             ),
             (
                 "{ let mut actions = [count]; let ^mut append = Forwarding::appender(^mut actions); append(); actions[1] }",
+                true,
+            ),
+            (
+                "{ let mut actions = [count]; let mut append = Snapshot::appender(^mut actions); Forwarding::invoke(mut append); actions[1] }",
+                true,
+            ),
+            (
+                "{ let mut actions = [count]; let mut append = Snapshot::appender(^mut actions); Snapshot::repeat(mut append, 1); actions[1] }",
+                true,
+            ),
+            (
+                "{ let mut actions = [count]; let mut append = Snapshot::appender(^mut actions); Snapshot::maybe_invoke(mut append, true); actions[1] }",
+                true,
+            ),
+            (
+                "{ let mut slot = Snapshot::Slot.{ action: count }; Snapshot::reset(mut slot, install); slot.action }",
+                false,
+            ),
+            (
+                "{ let mut slot = Snapshot::Slot.{ action: count }; Snapshot::reset_then_install(mut slot, install); slot.action }",
                 true,
             ),
             (
@@ -491,6 +527,7 @@ fn freeze(new shelf: Snapshot::Shelf) -> int {{ let fixed = new shelf; fixed.ite
 fn count(new shelf: Snapshot::Shelf) -> int {{ shelf.item.count }}
 fn make() -> Snapshot::Leaf {{ freeze }}
 fn keep(action: Snapshot::Leaf) -> Snapshot::Leaf {{ action }}
+fn install(mut slot: Snapshot::Slot) &mut -> () {{ slot.action = freeze }}
 fn observe() -> int {{
     let mut live = Snapshot::Cell.{{ count: 1 }}
     live.count += 1
@@ -1732,8 +1769,8 @@ fn exported_summaries_and_via_domains_agree_with_lean() {
     use ril_sema::access::{
         CallbackArgument, CallbackReturn, Coordinate, Input, Instance, InvocationMode, ModeAxis,
         ReturnAllocation, ReturnSource, SnapshotArgument, SnapshotCall, SnapshotGraph,
-        SnapshotInput, SnapshotOrigin, SnapshotProjection, SnapshotProvider, StorageUpdate,
-        Summary,
+        SnapshotInput, SnapshotOrigin, SnapshotProjection, SnapshotProvider, StorageStep,
+        StorageTransfer, StorageUpdate, Summary,
     };
     use serde_json::{Value, json};
 
@@ -1805,6 +1842,7 @@ fn exported_summaries_and_via_domains_agree_with_lean() {
                 calls: vec![calls_provider(1 - root)],
                 captured_slots: Vec::new(),
                 storage_updates: Vec::new(),
+                storage_flow: None,
                 returns: Vec::new(),
                 callback_returns: Vec::new(),
                 returns_new: false,
@@ -1815,6 +1853,7 @@ fn exported_summaries_and_via_domains_agree_with_lean() {
                 calls: vec![calls_provider(root)],
                 captured_slots: Vec::new(),
                 storage_updates: Vec::new(),
+                storage_flow: None,
                 returns: Vec::new(),
                 callback_returns: Vec::new(),
                 returns_new: false,
@@ -2028,6 +2067,31 @@ fn exported_summaries_and_via_domains_agree_with_lean() {
             "constructs": update.constructs,
         })
     };
+    let wire_storage_operand = |operand: &CallbackArgument| {
+        json!({
+            "shape": [&json!(operand.position), &json!(operand.modes), &json!(operand.sources), &json!(operand.allocations), &json!(operand.constructs)],
+            "projections": operand.snapshot_projections.iter().map(wire_projection).collect::<Vec<_>>(),
+            "callback_returns": operand.callback_returns.iter().map(wire_callback_return).collect::<Vec<_>>(),
+        })
+    };
+    let wire_storage_step = |step: &StorageStep| match step {
+        StorageStep::Write(update) => json!({"write": wire_storage_update(update), "invoke": null}),
+        StorageStep::Invoke {
+            receiver,
+            arguments,
+        } => json!({"write": null, "invoke": {
+            "receiver": wire_storage_operand(receiver),
+            "arguments": arguments.iter().map(wire_storage_operand).collect::<Vec<_>>(),
+        }}),
+    };
+    let wire_storage_flow = |flow: &StorageTransfer| match flow {
+        StorageTransfer::Paths(paths) => {
+            json!({"interleaved": false, "paths": paths.iter().map(|path| path.iter().map(wire_storage_step).collect::<Vec<_>>()).collect::<Vec<_>>() })
+        }
+        StorageTransfer::Interleaved(steps) => {
+            json!({"interleaved": true, "paths": [steps.iter().map(wire_storage_step).collect::<Vec<_>>()] })
+        }
+    };
     let wire = |summary: &Summary| -> Value {
         let effects: Vec<_> = summary
             .effects
@@ -2055,6 +2119,7 @@ fn exported_summaries_and_via_domains_agree_with_lean() {
                     "calls": provider.calls.iter().map(wire_snapshot_call).collect::<Vec<_>>(),
                     "captured_slots": provider.captured_slots,
                     "storage_updates": provider.storage_updates.iter().map(wire_storage_update).collect::<Vec<_>>(),
+                    "storage_flow": provider.storage_flow.as_ref().map(wire_storage_flow),
                     "returns": provider.returns.iter().map(wire_projection).collect::<Vec<_>>(),
                     "callback_returns": provider.callback_returns.iter().map(wire_callback_return).collect::<Vec<_>>(),
                     "returns_new": provider.returns_new,
@@ -2100,6 +2165,7 @@ fn exported_summaries_and_via_domains_agree_with_lean() {
             "invoked": summary.invoked,
             "callback_returns": summary.callback_returns.iter().map(wire_callback_return).collect::<Vec<_>>(),
             "storage_updates": storage_updates,
+            "storage_flow": summary.storage_flow.as_ref().map(wire_storage_flow),
             "captures": summary.captures,
             "constructs": summary.constructs,
             "nonreturning": summary.nonreturning,

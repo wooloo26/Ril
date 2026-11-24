@@ -15,7 +15,10 @@ use ril_frontend::{
 use crate::{
     access::{
         CallbackArgument, CallbackReturn, InvocationMode, ReturnSource,
-        flow::{CallbackOrigin, Handoff, Origin, Revocation},
+        flow::{
+            CallbackOrigin, DeferredStorageCall, Handoff, Origin, Revocation, StorageAction,
+            StorageFlow,
+        },
     },
     ty::{Callable, Ty},
 };
@@ -29,6 +32,7 @@ use crate::access::flow::InvocationSite;
 
 mod imported;
 mod snapshot_invocations;
+mod storage_replay;
 pub(super) use snapshot_invocations::{SnapshotInvocation, SnapshotProviders};
 
 type CallArgument = (usize, Mode, Datum);
@@ -663,7 +667,7 @@ impl<'program> Analyzer<'program> {
                     invocation: &[],
                     environment: None,
                 };
-                if let Some(after) = self.closure_storage(ctx, &closures, handler, &entry) {
+                if let Some(after) = self.closure_storage(ctx, &closures, handler, &entry, false) {
                     *ledger = after;
                 }
             }
@@ -740,7 +744,7 @@ impl<'program> Analyzer<'program> {
                 }
                 outputs.push(result);
                 alternatives.push(
-                    self.closure_storage(ctx, &closures, &receiver, &entry)
+                    self.closure_storage(ctx, &closures, &receiver, &entry, false)
                         .unwrap_or_else(|| before.clone()),
                 );
             }
@@ -763,6 +767,13 @@ impl<'program> Analyzer<'program> {
                     invocation: &[],
                     environment: None,
                 },
+                sig.is_some_and(|signature| {
+                    signature.open_state
+                        || signature
+                            .state
+                            .iter()
+                            .any(|state| matches!(state.as_str(), "mut" | "^mut" | "up"))
+                }),
             )
         } else {
             None
@@ -929,9 +940,9 @@ impl<'program> Analyzer<'program> {
                 normal_exit =
                     self.recursive_storage.is_empty() || fun.is_meta || storage.normal_exit;
                 modeled_stores = true;
-                if !storage.updates.is_empty() {
+                if !storage.updates.is_empty() || storage.flow.is_some() {
                     let frozen = ledger.clone();
-                    modeled_stores = self.apply_storage_updates(
+                    modeled_stores = self.apply_callable_storage(
                         ctx,
                         storage,
                         &CallEntry {
@@ -1576,11 +1587,15 @@ impl<'program> Analyzer<'program> {
         closures: &BTreeMap<Span, ClosureModes>,
         receiver: &Datum,
         entry: &CallEntry<'_>,
+        defer: bool,
     ) -> Option<Ledger> {
         if !ctx.runtime
             || ctx.shadow
             || !ctx.reachable
-            || (closures.values().all(|closure| closure.updates.is_empty())
+            || (!defer
+                && closures
+                    .values()
+                    .all(|closure| closure.updates.is_empty() && closure.storage_flow.is_none())
                 && receiver.roots.iter().all(|root| {
                     snapshot_invocations::known_provider(root)
                         .is_none_or(|owner| !self.has_imported_provider_storage(owner))
@@ -1594,13 +1609,17 @@ impl<'program> Analyzer<'program> {
             .map(|root| {
                 let mut after = entry.ledger.clone();
                 let Some((owner, closure)) = Self::known_closure(closures, root) else {
-                    if let Some(owner) = snapshot_invocations::known_provider(root) {
+                    if let Some(owner) = snapshot_invocations::known_provider(root)
+                        && self.has_imported_provider_storage(owner)
+                    {
                         self.replay_provider_storage(
                             ctx,
                             (owner, root, receiver),
                             entry,
                             &mut after,
                         );
+                    } else if defer {
+                        self.defer_storage_invocation(ctx, &mut after, receiver, root, entry);
                     }
                     return after;
                 };
@@ -1609,6 +1628,7 @@ impl<'program> Analyzer<'program> {
                     formals: closure.formals.clone(),
                     via: closure.via.clone(),
                     updates: closure.updates.clone(),
+                    flow: closure.storage_flow.clone(),
                     ..CallStorage::default()
                 };
                 let entry = CallEntry {
@@ -1618,13 +1638,44 @@ impl<'program> Analyzer<'program> {
                     }),
                     ..*entry
                 };
-                self.apply_storage_updates(ctx, storage, &entry, &mut after, false);
+                self.apply_callable_storage(ctx, storage, &entry, &mut after, false);
                 after
             })
             .collect();
         let mut after = entry.ledger.clone();
         after.merge(entry.ledger, &alternatives);
         Some(after)
+    }
+
+    fn defer_storage_invocation(
+        &self,
+        ctx: &Context,
+        ledger: &mut Ledger,
+        receiver: &Datum,
+        root: &Origin,
+        entry: &CallEntry<'_>,
+    ) {
+        if !(ctx.formals.contains(&Some(root.region.source))
+            || receiver
+                .capture_paths
+                .keys()
+                .any(|path| path.owner == ctx.owner)
+            || root.callback_result.is_some())
+        {
+            return;
+        }
+        let mut receiver = receiver.clone();
+        receiver.retain_compatible_origins(&root.branches);
+        receiver.roots.retain(|origin| origin == root);
+        ledger.defer_storage_call(DeferredStorageCall {
+            site: entry
+                .invocation
+                .last()
+                .map_or(entry.span, |invocation| invocation.span),
+            receiver,
+            arguments: entry.arguments.to_vec(),
+            spans: entry.spans.to_vec(),
+        });
     }
 
     fn known_closures(&self, receiver: &Datum) -> BTreeMap<Span, ClosureModes> {
@@ -1993,42 +2044,7 @@ impl<'program> Analyzer<'program> {
             let mut arguments: Vec<_> = template
                 .arguments
                 .iter()
-                .map(|(position, mode, value)| {
-                    let modes = if let Some(input) = Input::from_mode(*mode) {
-                        vec![InvocationMode::Input(input)]
-                    } else {
-                        value
-                            .roots
-                            .iter()
-                            .filter(|root| root.inherits_mode)
-                            .filter_map(|root| {
-                                formal_index(root.region.source).map(InvocationMode::Formal)
-                            })
-                            .collect::<BTreeSet<_>>()
-                            .into_iter()
-                            .collect()
-                    };
-                    let mut sources = BTreeSet::new();
-                    value.visit_origins(&mut Vec::new(), &mut |path, root| {
-                        if let Some(formal) = formal_index(root.region.source) {
-                            sources.insert(ReturnSource {
-                                formal,
-                                source_path: root.region.selection.clone(),
-                                result_path: path.to_vec(),
-                                access: root.mode,
-                            });
-                        }
-                    });
-                    CallbackArgument {
-                        position: *position,
-                        modes,
-                        sources: sources.into_iter().collect(),
-                        callback_returns: self.callback_return_contracts(formals, value),
-                        snapshot_projections: self.snapshot_argument_providers(formals, value),
-                        allocations: Datum::return_allocations(std::slice::from_ref(value)),
-                        constructs: value.requires_new,
-                    }
-                })
+                .map(|argument| self.describe_callback_operand(formals, argument))
                 .collect();
             arguments.sort_unstable();
             for receiver in &template.receiver.roots {
@@ -2046,6 +2062,46 @@ impl<'program> Analyzer<'program> {
             }
         });
         contracts.into_iter().collect()
+    }
+
+    fn describe_callback_operand(
+        &self,
+        formals: &[Option<Span>],
+        (position, mode, value): &CallArgument,
+    ) -> CallbackArgument {
+        let formal_index = |source| formals.iter().position(|formal| *formal == Some(source));
+        let modes = if let Some(input) = Input::from_mode(*mode) {
+            vec![InvocationMode::Input(input)]
+        } else {
+            value
+                .roots
+                .iter()
+                .filter(|root| root.inherits_mode)
+                .filter_map(|root| formal_index(root.region.source).map(InvocationMode::Formal))
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect()
+        };
+        let mut sources = BTreeSet::new();
+        value.visit_origins(&mut Vec::new(), &mut |path, root| {
+            if let Some(formal) = formal_index(root.region.source) {
+                sources.insert(ReturnSource {
+                    formal,
+                    source_path: root.region.selection.clone(),
+                    result_path: path.to_vec(),
+                    access: root.mode,
+                });
+            }
+        });
+        CallbackArgument {
+            position: *position,
+            modes,
+            sources: sources.into_iter().collect(),
+            callback_returns: self.callback_return_contracts(formals, value),
+            snapshot_projections: self.snapshot_argument_providers(formals, value),
+            allocations: Datum::return_allocations(std::slice::from_ref(value)),
+            constructs: value.requires_new,
+        }
     }
 
     fn instantiate_callback_result<'e>(
@@ -3094,7 +3150,6 @@ impl<'program> Analyzer<'program> {
             return Datum::default();
         };
         let mut locals = ledger.clone();
-        locals.enter_capture_storage(node.span, |_| true);
         locals.clear_result_obligations();
         locals.clear_array_extents();
         locals.no_continuation = false;
@@ -3112,6 +3167,7 @@ impl<'program> Analyzer<'program> {
             .iter()
             .map(|param| param.name.as_ref().map(|name| name.span))
             .collect();
+        locals.enter_capture_storage(node.span, &inner.formals, |_| true);
         if let Ty::Callable(signature) = self.ty(node.span) {
             let axes = member_axes(signature, &inner.formals);
             inner.member_via |= !axes.is_empty();
@@ -3133,6 +3189,7 @@ impl<'program> Analyzer<'program> {
                     member_axes: axes,
                     returns: Vec::new(),
                     updates: BTreeMap::new(),
+                    storage_flow: None,
                     models_publication: false,
                     captures: Vec::new(),
                 },
@@ -3233,7 +3290,9 @@ impl<'program> Analyzer<'program> {
         let exits = self.storage_exits.remove(&node.span).unwrap_or_default();
         let body_span = self.ast(ctx.file).expr(*body).span;
         if let Some(closure) = self.closure_modes.get_mut(&node.span) {
-            closure.updates = Ledger::join_updates(exits.iter().collect());
+            let exit = super::storage::StorageExit::join(&exits);
+            closure.updates = exit.updates;
+            closure.storage_flow = exit.flow;
             closure.models_publication = closure
                 .updates
                 .keys()
@@ -3247,7 +3306,13 @@ impl<'program> Analyzer<'program> {
                 closure
                     .returns
                     .iter_mut()
-                    .chain(closure.updates.values_mut().map(|update| &mut update.value)),
+                    .chain(closure.updates.values_mut().map(|update| &mut update.value))
+                    .chain(
+                        closure
+                            .storage_flow
+                            .iter_mut()
+                            .flat_map(StorageFlow::values_mut),
+                    ),
                 body_span,
             );
         }
