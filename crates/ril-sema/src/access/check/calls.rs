@@ -1580,10 +1580,16 @@ impl<'program> Analyzer<'program> {
             let value = self.project_entry_path(entry.ledger, actual, ty, parent);
             let stored =
                 self.instantiate_return(&formals, &via, entry, &update.value, &mut output_path);
+            let coordinate = if matches!(member, Coordinate::ArrayTail(_)) {
+                ledger.append_coordinate(&value, false)
+            } else {
+                member.clone()
+            };
+            let place = value.slot_projection(coordinate);
             applied &= self.apply_storage_member(
                 ctx,
                 ledger,
-                (&value, member),
+                &place,
                 stored,
                 (entry.span, update.definite, published),
             );
@@ -1595,25 +1601,19 @@ impl<'program> Analyzer<'program> {
         &mut self,
         ctx: &Context,
         ledger: &mut Ledger,
-        (parent, member): (&Datum, &Coordinate),
+        place: &Datum,
         mut stored: Datum,
         (span, definite, published): (Span, bool, bool),
     ) -> bool {
-        let coordinate = if matches!(member, Coordinate::ArrayTail(_)) {
-            ledger.append_coordinate(parent, false)
-        } else {
-            member.clone()
-        };
-        let place = parent.slot_projection(coordinate);
         if published {
-            self.record_write(ctx, &place);
+            self.record_write(ctx, place);
         }
         ledger.remember_return_graph(&stored, span);
         self.check_stored_views(&stored, false, span);
         stored
             .publications
             .insert(ctx.owner, place.roots.iter().any(|origin| !origin.new));
-        ledger.replace_member(&place, stored, definite);
+        ledger.replace_member(place, stored, definite);
         !place.roots.is_empty()
     }
 

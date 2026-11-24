@@ -541,6 +541,7 @@ impl<'program> Analyzer<'program> {
                     index: allocation.index,
                     summarized: allocation.summarized,
                 });
+                root.array_extent = allocation.array_extent;
             }
             self.exported_path(&mut value, &allocation.path, ty, owner, false)
                 .roots

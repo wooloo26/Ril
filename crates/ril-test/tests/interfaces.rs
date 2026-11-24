@@ -678,6 +678,9 @@ pub type Slot = .{ var action: fn(new Shelf) -> int }
 pub type Holder = .{ var ^mut slot: Slot }
 pub type Swap = fn(mut Holder) &mut -> ()
 pub type Edit = fn(mut Holder, Swap) &mut -> ()
+pub type Action = fn(new Shelf) -> int
+pub type Batch = .{ var ^mut items: []Action }
+pub type ReplaceBatch = fn(mut Batch) &mut -> ()
 fn freeze(new shelf: Shelf) -> int { let fixed = new shelf; fixed.item.count }
 pub fn count(new shelf: Shelf) -> int { shelf.item.count }
 pub fn swap(mut holder: Holder) &mut -> () { holder.slot = Slot.{ action: count } }
@@ -704,6 +707,21 @@ pub fn write_between(mut holder: Holder, replace: Swap) &mut -> () {
 pub fn writer() -> Edit {
     \mut holder: Holder, replace: Swap -> { replace(mut holder); holder.slot.action = freeze }
 }
+fn one() -> new []Action { [count] }
+pub fn replace_one(mut batch: Batch) &mut -> () { batch.items = one() }
+pub fn replace_two(mut batch: Batch) &mut -> () { batch.items = [count, count] }
+pub fn append_twice(mut batch: Batch, replace: ReplaceBatch) &mut -> () {
+    replace(mut batch)
+    Array::push(mut batch.items, count)
+    Array::push(mut batch.items, freeze)
+}
+pub fn unrelated(mut batch: Batch, replace: ReplaceBatch) &mut -> Action {
+    let mut local = [count]
+    replace(mut batch)
+    Array::push(mut local, count)
+    Array::push(mut local, freeze)
+    local[1]
+}
 "#;
     let mut library = VirtualPackage::new(Unit::Lib);
     library.entry = "pkg/storage.ril".into();
@@ -722,6 +740,9 @@ pub fn write_between(mut holder: Storage::Holder, replace: Storage::Swap) &mut -
     Storage::write_between(mut holder, replace)
 }
 pub fn writer() -> Storage::Edit { Storage::writer() }
+pub fn append_twice(mut batch: Storage::Batch, replace: Storage::ReplaceBatch) &mut -> () {
+    Storage::append_twice(mut batch, replace)
+}
 "#
         .to_vec(),
     );
@@ -776,6 +797,81 @@ fn observe() -> int {{
                 }
                 (false, Err(diagnostics)) => panic!("{mount} {write} {target}: {diagnostics:?}"),
                 (true, Ok(_)) => panic!("{mount} {write} accepted a live view via {target}"),
+            }
+        }
+        for (setup, target, freezes) in [
+            (
+                "Storage::append_twice(mut batch, Storage::replace_one)",
+                "batch.items[0]",
+                false,
+            ),
+            (
+                "Storage::append_twice(mut batch, Storage::replace_one)",
+                "batch.items[1]",
+                false,
+            ),
+            (
+                "Storage::append_twice(mut batch, Storage::replace_one)",
+                "batch.items[2]",
+                true,
+            ),
+            (
+                "Storage::append_twice(mut batch, Storage::replace_two)",
+                "batch.items[2]",
+                false,
+            ),
+            (
+                "Storage::append_twice(mut batch, Storage::replace_two)",
+                "batch.items[3]",
+                true,
+            ),
+            (
+                "Forwarding::append_twice(mut batch, Storage::replace_one)",
+                "batch.items[1]",
+                false,
+            ),
+            (
+                "Forwarding::append_twice(mut batch, Storage::replace_one)",
+                "batch.items[2]",
+                true,
+            ),
+            (
+                "let run = Storage::unrelated(mut batch, Storage::replace_one)",
+                "run",
+                false,
+            ),
+        ] {
+            let source = format!(
+                "use library/storage
+use relay/forwarding
+fn observe() -> int {{
+    let mut batch = Storage::Batch.{{ items: [Storage::count, Storage::count, Storage::count] }}
+    {setup}
+    let mut live = Storage::Cell.{{ count: 1 }}
+    live.count += 1
+    {target}(new Storage::Shelf.{{ item: ^mut live }})
+}}"
+            );
+            let mut client = VirtualPackage::new(Unit::Lib);
+            client.insert(mount.into(), bytes.to_vec());
+            client.insert("relay/forwarding.rili".into(), forwarded.clone());
+            client.insert(client.entry.clone(), source.into_bytes());
+            match (freezes, Driver.analyze(&client)) {
+                (false, Ok(_)) => {}
+                (true, Err(diagnostics)) => {
+                    assert_eq!(
+                        diagnostics.len(),
+                        1,
+                        "{mount} {setup} {target}: {diagnostics:?}"
+                    );
+                    assert_eq!(
+                        diagnostics[0].code,
+                        Some(Code::E0535),
+                        "{mount} {setup} {target}"
+                    );
+                }
+                (false, Err(diagnostics)) => panic!("{mount} {setup} {target}: {diagnostics:?}"),
+                (true, Ok(_)) => panic!("{mount} {setup} accepted a live view via {target}"),
             }
         }
     }
@@ -2103,6 +2199,7 @@ fn exported_summaries_and_via_domains_agree_with_lean() {
         qualified: false,
         summarized: true,
         array_len: None,
+        array_extent: None,
     };
     for index in [0, 1] {
         let allocations = vec![

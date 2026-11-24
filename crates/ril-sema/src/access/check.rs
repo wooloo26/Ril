@@ -1783,7 +1783,7 @@ impl<'a> Analyzer<'a> {
     }
 
     fn returned(&mut self, ctx: &mut Context, ledger: &mut Ledger, value: Datum, span: Span) {
-        let mut value = ledger.snapshot(&value);
+        let mut value = ledger.snapshot_call_graph(&value);
         ledger.inspect(&value);
         if value.origins().any(|origin| origin.confined.is_some()) {
             self.error(Code::E0604, span, "confined authority cannot be returned");

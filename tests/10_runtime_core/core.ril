@@ -187,6 +187,37 @@ fn main() -> () {
     assert(holder.slot.action(new Shelf.{ item: ^mut live }) == 42)
 }
 
+-- @case consecutive_appends_follow_the_length_of_the_replacement_array run-pass backend=both
+type Cell = .{ var count: int }
+type Shelf = .{ ^mut item: Cell }
+type Action = fn(new Shelf) -> int
+type Batch = .{ var ^mut items: []Action }
+type Replace = fn(mut Batch) &mut -> ()
+fn count(new shelf: Shelf) -> int { shelf.item.count }
+fn freeze(new shelf: Shelf) -> int { let fixed = new shelf; fixed.item.count + 100 }
+fn one() -> new []Action { [count] }
+fn replace_one(mut batch: Batch) &mut -> () { batch.items = one() }
+fn replace_two(mut batch: Batch) &mut -> () { batch.items = [count, count] }
+fn append_twice(mut batch: Batch, replace: Replace) &mut -> () {
+    replace(mut batch)
+    Array::push(mut batch.items, count)
+    Array::push(mut batch.items, freeze)
+}
+fn main() -> () {
+    let mut live = Cell.{ count: 41 }
+    live.count += 1
+    let mut batch = Batch.{ items: [freeze, freeze, freeze] }
+    append_twice(mut batch, replace_one)
+    assert(len(ref batch.items) == 3)
+    assert(batch.items[0](new Shelf.{ item: ^mut live }) == 42)
+    assert(batch.items[1](new Shelf.{ item: ^mut live }) == 42)
+    assert(batch.items[2](new Shelf.{ item: ^mut Cell.{ count: 3 } }) == 103)
+    append_twice(mut batch, replace_two)
+    assert(len(ref batch.items) == 4)
+    assert(batch.items[2](new Shelf.{ item: ^mut live }) == 42)
+    assert(batch.items[3](new Shelf.{ item: ^mut Cell.{ count: 4 } }) == 104)
+}
+
 -- @case aliased_shared_formals_preserve_identity_through_a_nested_borrow run-pass backend=both
 type Cell = .{ var count: int }
 type Pair = .{ ^mut left: Cell, ^mut right: Cell }

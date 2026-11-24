@@ -7,7 +7,7 @@ use ril_base::span::Span;
 use ril_frontend::syntax::Mode;
 use serde::{Deserialize, Serialize};
 
-use super::{Input, ModeExpression, ModeStep, ReturnAllocation};
+use super::{ArrayExtent, Input, ModeExpression, ModeStep, ReturnAllocation};
 
 mod storage;
 pub(super) use storage::{
@@ -220,6 +220,7 @@ pub(super) struct Origin {
     pub inherits_mode: bool,
     pub callback_result: Option<CallbackOrigin>,
     pub storage_read: Option<StorageRead>,
+    pub array_extent: Option<ArrayExtent>,
     pub snapshot_provider: Option<Span>,
     // A functional update retains the source for opaque projections. Its
     // materialized members describe the copied graph independently.
@@ -483,6 +484,7 @@ impl Datum {
                 inherits_mode: false,
                 callback_result: None,
                 storage_read: None,
+                array_extent: None,
                 snapshot_provider: None,
                 detached_snapshot: false,
                 return_allocation: None,
@@ -676,6 +678,7 @@ impl Datum {
                         qualified: node.requires_new,
                         summarized,
                         array_len: node.array_len,
+                        array_extent: origin.array_extent,
                     });
                 }
             });
@@ -745,20 +748,37 @@ impl Datum {
         }
     }
 
-    fn remember_return_graph(&self, members: &mut BTreeMap<Region, Self>, call: Span) {
-        let parents: BTreeSet<_> = self
+    fn remember_return_graph(
+        &self,
+        members: &mut BTreeMap<Region, Self>,
+        extents: &mut BTreeMap<Region, Option<ArrayExtent>>,
+        call: Span,
+    ) {
+        let allocations = self
             .roots
             .iter()
-            .map(|origin| &origin.region)
-            .filter(|region| region.source == call && region.returned.is_some())
-            .collect();
+            .filter(|root| root.region.source == call && root.region.returned.is_some());
+        let mut parents = BTreeSet::new();
+        for root in allocations {
+            parents.insert(&root.region);
+            if !root.region.summarized() {
+                extents
+                    .entry(root.region.clone())
+                    .and_modify(|known| {
+                        *known = known
+                            .zip(root.array_extent)
+                            .map(|(left, right)| left.meet(right));
+                    })
+                    .or_insert(root.array_extent);
+            }
+        }
         for (coordinate, member) in &self.members {
             for parent in &parents {
                 let mut slot = (*parent).clone();
                 slot.selection.push(coordinate.clone());
                 merge_member(members, slot, member.clone());
             }
-            member.remember_return_graph(members, call);
+            member.remember_return_graph(members, extents, call);
         }
     }
 
@@ -949,7 +969,9 @@ impl Datum {
     }
 
     pub(super) fn has_array_layout(&self) -> bool {
-        self.array_len.is_some() || self.members.values().any(Self::has_array_layout)
+        self.array_len.is_some()
+            || self.roots.iter().any(|root| root.array_extent.is_some())
+            || self.members.values().any(Self::has_array_layout)
     }
 
     pub(super) fn forget_collection_layout(&mut self) {
@@ -1278,6 +1300,7 @@ impl Datum {
                 if let Some(read) = &mut origin.storage_read {
                     read.path.push(coordinate.clone());
                 }
+                origin.array_extent = None;
                 origin.snapshot_provider = None;
                 origin.variant = None;
                 origin.from_variable = false;
@@ -1461,10 +1484,13 @@ pub(super) struct Replacement {
     pub definite: bool,
 }
 
-#[derive(Clone, Copy, Eq, PartialEq)]
-struct ArrayExtent {
-    minimum: usize,
-    exact: bool,
+impl ArrayExtent {
+    fn meet(self, other: Self) -> Self {
+        Self {
+            minimum: self.minimum.min(other.minimum),
+            exact: self.exact && self == other,
+        }
+    }
 }
 
 #[derive(Clone, Default, Eq, PartialEq)]
@@ -1492,7 +1518,7 @@ pub(super) struct Ledger {
     pub storage_flow: Option<StorageFlow>,
     storage_samples: BTreeMap<(Span, Vec<InvocationSite>, usize), Datum>,
     loop_members: BTreeMap<Region, Datum>,
-    // Length evidence for local array objects. Result iteration separately
+    // Length evidence for array objects. Result iteration separately
     // tracks the immutable layout it needs to discharge obligations.
     array_extents: BTreeMap<Region, ArrayExtent>,
 }
@@ -1529,13 +1555,48 @@ impl Ledger {
         }))
     }
 
-    pub(super) fn defer_storage_call(&mut self, call: DeferredStorageCall) {
+    pub(super) fn defer_storage_call(&mut self, mut call: DeferredStorageCall) {
         let mut flow = self
             .storage_flow
             .take()
             .unwrap_or_else(|| self.storage_prefix());
+        self.capture_array_extents(&mut call.receiver);
+        for (_, _, argument) in &mut call.arguments {
+            self.capture_array_extents(argument);
+        }
+        self.invalidate_callback_array_extents(&call);
         flow.push(StorageAction::Invoke(call));
         self.storage_flow = Some(flow);
+    }
+
+    fn invalidate_callback_array_extents(&mut self, call: &DeferredStorageCall) {
+        if self.array_extents.is_empty() {
+            return;
+        }
+        // A callback can reach its operands and storage already exposed to
+        // the caller, including aliases retained by its environment.
+        let published = self.replacements.values().filter_map(|update| {
+            let owner = self.capture_owner?;
+            (update.value.publications.get(&owner) == Some(&true)).then_some(&update.value)
+        });
+        let operands = std::iter::once(&call.receiver)
+            .chain(call.arguments.iter().map(|(_, _, argument)| argument))
+            .chain(published);
+        let mut exposed = BTreeSet::new();
+        for operand in operands {
+            let graph = self.snapshot(operand);
+            exposed.extend(graph.origins().map(|root| root.region.clone()));
+        }
+        for (array, extent) in &mut self.array_extents {
+            if exposed.iter().any(|source| source.overlaps(array)) {
+                // Keep the initialized identity so an older occurrence of
+                // the same array cannot restore its original length.
+                *extent = ArrayExtent {
+                    minimum: 0,
+                    exact: false,
+                };
+            }
+        }
     }
 
     pub(super) fn record_storage_read(
@@ -1549,7 +1610,7 @@ impl Ledger {
         if selected.roots.is_empty() || self.storage_flow.is_none() {
             return;
         }
-        let base = self.snapshot(base);
+        let base = self.snapshot_call_graph(base);
         if let Some(flow) = &mut self.storage_flow {
             flow.push(StorageAction::Read {
                 index,
@@ -1598,7 +1659,7 @@ impl Ledger {
 
     fn record_storage_write(&mut self, target: StorageTarget, value: &Datum, definite: bool) {
         if self.storage_flow.is_some() {
-            let value = self.snapshot(value);
+            let value = self.snapshot_call_graph(value);
             if let Some(flow) = &mut self.storage_flow {
                 flow.push(StorageAction::Write(
                     target,
@@ -1719,7 +1780,13 @@ impl Ledger {
     }
 
     pub(super) fn remember_return_graph(&mut self, value: &Datum, call: Span) {
-        value.remember_return_graph(&mut self.loop_members, call);
+        let mut extents = BTreeMap::new();
+        value.remember_return_graph(&mut self.loop_members, &mut extents, call);
+        for (region, extent) in extents {
+            if let Some(extent) = extent {
+                self.array_extents.entry(region).or_insert(extent);
+            }
+        }
     }
 
     pub(super) fn reset_revocations(&mut self) {
@@ -2331,10 +2398,7 @@ impl Ledger {
             .filter_map(|(region, &extent)| {
                 let merged = alternatives.iter().try_fold(extent, |merged, branch| {
                     let branch = branch.array_extents.get(region)?;
-                    Some(ArrayExtent {
-                        minimum: merged.minimum.min(branch.minimum),
-                        exact: merged.exact && *branch == merged,
-                    })
+                    Some(merged.meet(*branch))
                 })?;
                 Some((region.clone(), merged))
             })
@@ -2450,7 +2514,7 @@ impl Ledger {
                 (
                     region.clone(),
                     Replacement {
-                        value: self.snapshot(&update.value),
+                        value: self.snapshot_call_graph(&update.value),
                         definite: update.definite,
                     },
                 )
@@ -2502,34 +2566,36 @@ impl Ledger {
         let mut observed_targets = BTreeSet::new();
         for origin in &slot.roots {
             let region = &origin.region;
-            let definite = definite
-                && single
-                && !region.summarized()
-                && !region.selection.iter().any(Coordinate::is_range);
-            if definite && origin.draft {
+            let single_object = definite && single && !region.summarized();
+            let strong_store = single_object && !region.selection.iter().any(Coordinate::is_range);
+            if strong_store && origin.draft {
                 self.replacements.retain(|prior, _| {
                     prior.selection.len() <= region.selection.len()
                         || !prior.selection.starts_with(&region.selection)
                         || !prior.overlaps(region)
                 });
             }
-            self.replace_region(region, &value, definite);
+            self.replace_region(region, &value, strong_store);
             if publishes && self.storage_flow.is_some() {
                 if let Some(parent) = &origin.storage_read
-                    && let Some(member) = region.selection.last()
+                    && let Some((member, path)) = region.selection.split_last()
                 {
                     let target = StorageTarget::Observed {
                         parent: parent.clone(),
                         member: member.clone(),
                     };
                     if observed_targets.insert(target.clone()) {
-                        self.record_storage_write(target, &value, definite);
+                        // The concrete index of an append is determined during replay.
+                        let single_append = single_object
+                            && matches!(member, Coordinate::ArrayTail(_))
+                            && !path.iter().any(Coordinate::is_range);
+                        self.record_storage_write(target, &value, strong_store || single_append);
                     }
                 } else if self.storage_formals.contains(&Some(region.source)) {
                     self.record_storage_write(
                         StorageTarget::Entry(region.clone()),
                         &value,
-                        definite,
+                        strong_store,
                     );
                 }
             }
@@ -2592,7 +2658,12 @@ impl Ledger {
     pub(super) fn append_coordinate(&mut self, array: &Datum, single_push: bool) -> Coordinate {
         if single_push
             && let Some(first) = array.roots.first()
-            && array.roots.iter().all(|root| root.region == first.region)
+            && !first.region.summarized()
+            && !first.region.selection.iter().any(Coordinate::is_range)
+            && array
+                .roots
+                .iter()
+                .all(|root| root.region == first.region && root.storage_read.is_none())
             && let Some(extent) = self.array_extents.get_mut(&first.region)
             && extent.exact
             && let Some(next) = extent.minimum.checked_add(1)
@@ -2748,6 +2819,22 @@ impl Ledger {
             return value.clone();
         }
         self.snapshot_members(value, &mut BTreeSet::new())
+    }
+
+    pub(super) fn snapshot_call_graph(&self, value: &Datum) -> Datum {
+        let mut snapshot = self.snapshot(value);
+        self.capture_array_extents(&mut snapshot);
+        snapshot
+    }
+
+    fn capture_array_extents(&self, value: &mut Datum) {
+        value.transform(&mut |root| {
+            root.array_extent = self
+                .array_extents
+                .get(&root.region)
+                .copied()
+                .filter(|extent| extent.exact || extent.minimum > 0);
+        });
     }
 
     fn snapshot_members(&self, value: &Datum, ancestors: &mut BTreeSet<(Region, Access)>) -> Datum {

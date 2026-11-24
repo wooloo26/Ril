@@ -381,6 +381,15 @@ pub struct ReturnAllocation {
     pub summarized: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub array_len: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub array_extent: Option<ArrayExtent>,
+}
+
+/// Length evidence for a newly constructed array object.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+pub struct ArrayExtent {
+    pub minimum: usize,
+    pub exact: bool,
 }
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]

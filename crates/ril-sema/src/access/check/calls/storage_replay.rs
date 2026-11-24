@@ -7,7 +7,7 @@ use super::{
     Analyzer, CallEntry, CallStorage, Context, DeferredStorageCall, InvocationSite, Ledger,
     StorageAction, StorageFlow, StorageTarget, snapshot_invocations::known_provider,
 };
-use crate::access::check::storage::ReadSite;
+use crate::access::{Coordinate, check::storage::ReadSite};
 
 impl Analyzer<'_> {
     pub(super) fn apply_callable_storage(
@@ -116,10 +116,16 @@ impl Analyzer<'_> {
                     &update.value,
                     &mut Vec::new(),
                 );
+                let coordinate = if matches!(member, Coordinate::ArrayTail(_)) {
+                    after.append_coordinate(&parent, update.definite)
+                } else {
+                    member.clone()
+                };
+                let place = parent.slot_projection(coordinate);
                 self.apply_storage_member(
                     ctx,
                     after,
-                    (&parent, member),
+                    &place,
                     value,
                     (entry.span, update.definite, published),
                 )
@@ -140,6 +146,7 @@ impl Analyzer<'_> {
                     base,
                     &mut Vec::new(),
                 );
+                after.remember_return_graph(&base, entry.span);
                 let mut selected = after.project_schema(&base, coordinate.clone(), *mode);
                 if after.storage_flow.is_some() && !selected.roots.is_empty() {
                     let forwarded = self.storage_read_index(ReadSite::Forwarded(
@@ -177,7 +184,7 @@ impl Analyzer<'_> {
             });
             return false;
         }
-        let before = after.clone();
+        let mut before = after.clone();
         let mut trace = entry.invocation.to_vec();
         trace.push(InvocationSite {
             span: call.site,
@@ -202,6 +209,9 @@ impl Analyzer<'_> {
             entry,
             (&mut arguments, &mut spans),
         );
+        for (_, _, argument) in &arguments {
+            before.remember_return_graph(argument, entry.span);
+        }
         let invocation = CallEntry {
             arguments: &arguments,
             spans: &spans,
