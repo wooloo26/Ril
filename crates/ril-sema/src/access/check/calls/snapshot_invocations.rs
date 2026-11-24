@@ -3,17 +3,22 @@ use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
 };
 
-use super::{Analyzer, CallArgument, CallEntry, Context, Coordinate, Datum, Ledger, Mode};
+use super::{
+    Analyzer, CallArgument, CallEntry, CallbackResult, Context, Coordinate, Datum, InvocationSite,
+    Ledger, Mode,
+};
 use crate::access::check::{
     higher_order::can_supply_snapshot_callback,
     snapshots::{Arguments, Call},
 };
 use crate::access::{
-    ModeAxis, SnapshotArgument, SnapshotCall, SnapshotGraph, SnapshotOrigin, SnapshotProvider,
-    Summary,
+    ModeAxis, SnapshotArgument, SnapshotCall, SnapshotFactoryStep, SnapshotGraph, SnapshotOrigin,
+    SnapshotProjection, SnapshotProvider, Summary,
     flow::{AllocationIdentity, Region, widen_recursive_projection},
 };
 use ril_base::span::Span;
+
+mod output;
 
 #[derive(Clone, Eq, PartialEq)]
 pub(in crate::access::check) struct SnapshotInvocation {
@@ -26,6 +31,7 @@ pub(in crate::access::check) struct SnapshotInvocation {
     entry: Ledger,
 }
 
+#[derive(Clone)]
 struct Provider {
     formals: Vec<Option<Span>>,
     via: BTreeSet<Span>,
@@ -35,6 +41,9 @@ struct Provider {
 pub(in crate::access::check) struct SnapshotProviders {
     signatures: BTreeMap<Span, Provider>,
     sources: Vec<Span>,
+    imported: BTreeMap<Span, Vec<Span>>,
+    imported_results: BTreeMap<Span, output::ImportedResult>,
+    returns: BTreeMap<Span, output::ProviderResult>,
     synthetic: usize,
 }
 
@@ -48,7 +57,10 @@ impl SnapshotProviders {
     }
 }
 
-fn known_provider(origin: &crate::access::flow::Origin) -> Option<Span> {
+pub(super) fn known_provider(origin: &crate::access::flow::Origin) -> Option<Span> {
+    if origin.callback_result.is_some() {
+        return None;
+    }
     origin.snapshot_provider.or_else(|| {
         origin
             .region
@@ -132,28 +144,96 @@ fn describe_graph(
 }
 
 fn describe_invocation(
+    analyzer: &Analyzer<'_>,
     formals: &[Option<Span>],
     invocation: &SnapshotInvocation,
     providers: &BTreeMap<Span, usize>,
-) -> Option<SnapshotCall> {
-    let receiver = axis(formals, invocation.receiver.roots.first()?)?;
-    let mut arguments: Vec<_> = invocation
-        .arguments
-        .0
+) -> Vec<SnapshotCall> {
+    let arguments = describe_arguments(
+        formals,
+        &invocation.arguments.0,
+        &invocation.whole_graphs,
+        &invocation.entry,
+        providers,
+    );
+    invocation
+        .receiver
+        .roots
+        .iter()
+        .flat_map(|receiver| {
+            describe_receiver(analyzer, formals, receiver, providers, &mut BTreeSet::new())
+        })
+        .map(|(receiver, factory_steps)| SnapshotCall {
+            receiver,
+            factory_steps,
+            recursive_path: invocation.recursive_path.clone(),
+            arguments: arguments.clone(),
+        })
+        .collect()
+}
+
+fn describe_arguments(
+    formals: &[Option<Span>],
+    values: &[CallArgument],
+    whole_graphs: &BTreeSet<usize>,
+    ledger: &Ledger,
+    providers: &BTreeMap<Span, usize>,
+) -> Vec<SnapshotArgument> {
+    let mut arguments: Vec<_> = values
         .iter()
         .map(|(position, mode, value)| SnapshotArgument {
             position: *position,
             mode: crate::access::Input::from_mode(*mode),
-            whole_graph: invocation.whole_graphs.contains(position),
-            graph: describe_graph(formals, value, &invocation.entry, providers),
+            whole_graph: whole_graphs.contains(position),
+            graph: describe_graph(formals, value, ledger, providers),
         })
         .collect();
     arguments.sort_unstable();
-    Some(SnapshotCall {
-        receiver,
-        recursive_path: invocation.recursive_path.clone(),
-        arguments,
-    })
+    arguments
+}
+
+fn describe_receiver(
+    analyzer: &Analyzer<'_>,
+    formals: &[Option<Span>],
+    receiver: &crate::access::flow::Origin,
+    providers: &BTreeMap<Span, usize>,
+    visiting: &mut BTreeSet<usize>,
+) -> Vec<(ModeAxis, Vec<SnapshotFactoryStep>)> {
+    if let Some(axis) = axis(formals, receiver) {
+        return vec![(axis, Vec::new())];
+    }
+    let Some(pending) = receiver.callback_result else {
+        return Vec::new();
+    };
+    let Some(template) = analyzer.callback_results.get(pending.template) else {
+        return Vec::new();
+    };
+    if !visiting.insert(pending.template) {
+        return Vec::new();
+    }
+    let step = SnapshotFactoryStep {
+        path: receiver.region.selection.clone(),
+        cap: pending.cap,
+        arguments: describe_arguments(
+            formals,
+            &template.arguments,
+            &BTreeSet::new(),
+            &Ledger::default(),
+            providers,
+        ),
+    };
+    let receivers = template
+        .receiver
+        .roots
+        .iter()
+        .flat_map(|root| describe_receiver(analyzer, formals, root, providers, visiting))
+        .map(|(axis, mut steps)| {
+            steps.push(step.clone());
+            (axis, steps)
+        })
+        .collect();
+    visiting.remove(&pending.template);
+    receivers
 }
 
 fn import_graph(
@@ -227,6 +307,9 @@ impl Analyzer<'_> {
             .iter()
             .map(|_| self.snapshot_providers.fresh_identity(owner))
             .collect();
+        self.snapshot_providers
+            .imported
+            .insert(owner, providers.clone());
         for (&provider, contract) in providers.iter().zip(&summary.snapshot_providers) {
             let formals: Vec<_> = contract
                 .via_parameters
@@ -245,9 +328,24 @@ impl Analyzer<'_> {
                 &providers,
                 &contract.calls,
             );
+            let signature = Provider { formals, via };
+            if !contract.returns.is_empty() || !contract.callback_returns.is_empty() {
+                self.snapshot_providers.imported_results.insert(
+                    provider,
+                    output::ImportedResult {
+                        owner,
+                        signature: signature.clone(),
+                        result: output::ProviderResult {
+                            projections: contract.returns.clone(),
+                            callbacks: contract.callback_returns.clone(),
+                            constructs: contract.returns_new,
+                        },
+                    },
+                );
+            }
             self.snapshot_providers
                 .signatures
-                .insert(provider, Provider { formals, via });
+                .insert(provider, signature);
         }
         self.snapshots
             .import(owner, formals, &summary.snapshot_inputs);
@@ -261,10 +359,16 @@ impl Analyzer<'_> {
 
     pub(in crate::access::check) fn publish_snapshot_contract(
         &self,
-        owner: Span,
-    ) -> (Vec<SnapshotCall>, Vec<SnapshotProvider>) {
+        function: &crate::access::check::DefinitionCheck,
+        summary: &mut Summary,
+    ) {
         let mut references = ProviderReferences::default();
-        let calls = self.publish_snapshot_calls(owner, &mut references);
+        summary.snapshot_calls = self.publish_snapshot_calls(function.owner, &mut references);
+        self.publish_snapshot_projections(function, summary, &mut references);
+        references.rebase_callback_returns(&mut summary.callback_returns);
+        for update in &mut summary.storage_updates {
+            references.rebase_callback_returns(&mut update.callback_returns);
+        }
         let mut providers = Vec::new();
         while let Some(source) = references.pending.pop_front() {
             let owner = *self
@@ -282,13 +386,24 @@ impl Analyzer<'_> {
                 .iter()
                 .map(|formal| formal.is_some_and(|formal| signature.via.contains(&formal)))
                 .collect();
+            let mut result = self
+                .snapshot_providers
+                .returns
+                .get(&owner)
+                .cloned()
+                .unwrap_or_default();
+            references.rebase_projections(&mut result.projections);
+            references.rebase_callback_returns(&mut result.callbacks);
             providers.push(SnapshotProvider {
                 via_parameters,
                 inputs: self.snapshots.inputs(owner, &signature.formals),
                 calls: self.publish_snapshot_calls(owner, &mut references),
+                returns: result.projections,
+                callback_returns: result.callbacks,
+                returns_new: result.constructs,
             });
         }
-        (calls, providers)
+        summary.snapshot_providers = providers;
     }
 
     fn publish_snapshot_calls(
@@ -302,7 +417,12 @@ impl Analyzer<'_> {
             .flatten()
             .cloned()
             .map(|mut call| {
-                for argument in &mut call.arguments {
+                for argument in call
+                    .factory_steps
+                    .iter_mut()
+                    .flat_map(|step| &mut step.arguments)
+                    .chain(&mut call.arguments)
+                {
                     references.rebase_graph(&mut argument.graph);
                 }
                 call
@@ -327,23 +447,44 @@ impl Analyzer<'_> {
             }
             let mut ledger = Ledger::default();
             let mut next_identity = 0;
-            let arguments: Vec<_> = call
-                .arguments
-                .iter()
-                .map(|argument| {
-                    (
-                        argument.position,
-                        argument.mode.map_or(Mode::Via, crate::access::Input::mode),
-                        import_graph(
-                            site,
-                            formals,
-                            providers,
-                            &argument.graph,
-                            (&mut ledger, &mut next_identity),
-                        ),
-                    )
-                })
-                .collect();
+            for (ordinal, step) in call.factory_steps.iter().enumerate() {
+                let arguments = import_arguments(
+                    site,
+                    formals,
+                    providers,
+                    &step.arguments,
+                    &mut next_identity,
+                    &mut Ledger::default(),
+                );
+                let spans = vec![site; arguments.len()];
+                receiver = self.defer_callback_result(
+                    CallbackResult {
+                        receiver,
+                        arguments,
+                        spans,
+                        site: vec![InvocationSite {
+                            span: site,
+                            ordinal,
+                        }],
+                        ordinal,
+                    },
+                    site,
+                );
+                for root in &mut receiver.roots {
+                    root.region.selection.clone_from(&step.path);
+                    if let Some(result) = &mut root.callback_result {
+                        result.cap = step.cap;
+                    }
+                }
+            }
+            let arguments = import_arguments(
+                site,
+                formals,
+                providers,
+                &call.arguments,
+                &mut next_identity,
+                &mut ledger,
+            );
             let spans = vec![site; arguments.len()];
             self.snapshot_invocations.push(SnapshotInvocation {
                 owner,
@@ -401,9 +542,6 @@ impl Analyzer<'_> {
     }
 
     pub(in crate::access::check) fn link_snapshot_invocations(&mut self, calls: &mut Vec<Call>) {
-        if self.snapshot_invocations.is_empty() {
-            return;
-        }
         let mut providers = std::mem::take(&mut self.snapshot_providers.signatures);
         providers.extend(
             self.functions
@@ -503,7 +641,8 @@ impl Analyzer<'_> {
                         calls.push(call);
                     }
                 } else if let Some(provider) = providers.get(&invocation.owner)
-                    && provider.formals.contains(&Some(source))
+                    && (provider.formals.contains(&Some(source))
+                        || receiver.callback_result.is_some())
                 {
                     let owner = invocation.owner;
                     if let Some(root) = invocation.receiver.roots.first_mut() {
@@ -523,13 +662,17 @@ impl Analyzer<'_> {
                         .iter()
                         .any(|(previous, _)| previous == &invocation)
                     {
-                        if let Some(contract) =
-                            describe_invocation(&provider.formals, &invocation, &provider_ids)
-                        {
+                        let contracts = describe_invocation(
+                            self,
+                            &provider.formals,
+                            &invocation,
+                            &provider_ids,
+                        );
+                        if !contracts.is_empty() {
                             self.snapshot_call_summaries
                                 .entry(owner)
                                 .or_default()
-                                .insert(contract);
+                                .extend(contracts);
                         }
                         for context in by_callee
                             .get(&owner)
@@ -550,6 +693,7 @@ impl Analyzer<'_> {
         }
         self.snapshot_providers.sources = providers.keys().copied().collect();
         self.snapshot_providers.signatures = providers;
+        self.prepare_snapshot_provider_results();
     }
 
     fn specialize_snapshot_invocation(
@@ -636,6 +780,32 @@ impl Analyzer<'_> {
     }
 }
 
+fn import_arguments(
+    site: Span,
+    formals: &[Option<Span>],
+    providers: &[Span],
+    arguments: &[SnapshotArgument],
+    next_identity: &mut usize,
+    ledger: &mut Ledger,
+) -> Vec<CallArgument> {
+    arguments
+        .iter()
+        .map(|argument| {
+            (
+                argument.position,
+                argument.mode.map_or(Mode::Via, crate::access::Input::mode),
+                import_graph(
+                    site,
+                    formals,
+                    providers,
+                    &argument.graph,
+                    (ledger, next_identity),
+                ),
+            )
+        })
+        .collect()
+}
+
 #[derive(Default)]
 struct ProviderReferences {
     indices: BTreeMap<usize, usize>,
@@ -643,18 +813,46 @@ struct ProviderReferences {
 }
 
 impl ProviderReferences {
+    fn rebase_callback_returns(&mut self, callbacks: &mut [crate::access::CallbackReturn]) {
+        visit_callback_projections(callbacks, &mut |projections| {
+            self.rebase_projections(projections);
+        });
+    }
+
+    fn rebase_projections(&mut self, projections: &mut [SnapshotProjection]) {
+        for projection in projections {
+            self.rebase_origin(&mut projection.origin);
+        }
+    }
+
+    fn rebase_origin(&mut self, origin: &mut SnapshotOrigin) {
+        if let Some(provider) = &mut origin.provider {
+            let next = self.indices.len();
+            *provider = *self.indices.entry(*provider).or_insert_with(|| {
+                self.pending.push_back(*provider);
+                next
+            });
+        }
+    }
+
     fn rebase_graph(&mut self, graph: &mut SnapshotGraph) {
         for root in &mut graph.roots {
-            if let Some(provider) = &mut root.provider {
-                let next = self.indices.len();
-                *provider = *self.indices.entry(*provider).or_insert_with(|| {
-                    self.pending.push_back(*provider);
-                    next
-                });
-            }
+            self.rebase_origin(root);
         }
         for (_, member) in &mut graph.members {
             self.rebase_graph(member);
+        }
+    }
+}
+
+fn visit_callback_projections(
+    callbacks: &mut [crate::access::CallbackReturn],
+    visit: &mut impl FnMut(&mut [SnapshotProjection]),
+) {
+    for callback in callbacks {
+        for argument in &mut callback.arguments {
+            visit(&mut argument.snapshot_projections);
+            visit_callback_projections(&mut argument.callback_returns, visit);
         }
     }
 }

@@ -19,7 +19,7 @@ use crate::{
         ModeAxis, ModeExpression, Summary,
         flow::{Choices, widen_recursive_projection},
     },
-    ty::{Callable, Ty},
+    ty::{Callable, Ty, TypedProgram},
 };
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -242,39 +242,57 @@ impl Offer {
 }
 
 fn can_supply_mode_callback(ty: &Ty) -> bool {
-    can_supply_callback(ty, |signature| !mode_axes(signature).is_empty())
+    can_supply_callback(
+        ty,
+        |signature| !mode_axes(signature).is_empty(),
+        None,
+        &mut BTreeSet::new(),
+    )
 }
 
 pub(super) fn can_supply_snapshot_callback(ty: &Ty) -> bool {
-    can_supply_callback(ty, |signature| {
-        signature.parameters.iter().any(|parameter| {
-            matches!(parameter.callable_mode(), Mode::New | Mode::Via)
-                || can_supply_snapshot_callback(&parameter.ty)
-        })
-    })
+    can_supply_callback(
+        ty,
+        |signature| {
+            signature.parameters.iter().any(|parameter| {
+                matches!(parameter.callable_mode(), Mode::New | Mode::Via)
+                    || can_supply_snapshot_callback(&parameter.ty)
+            })
+        },
+        None,
+        &mut BTreeSet::new(),
+    )
 }
 
-fn can_supply_callback(ty: &Ty, accepts: fn(&Callable) -> bool) -> bool {
+pub(super) fn carries_callable(program: &TypedProgram, ty: &Ty) -> bool {
+    can_supply_callback(ty, |_| true, Some(program), &mut BTreeSet::new())
+}
+
+fn can_supply_callback(
+    ty: &Ty,
+    accepts: fn(&Callable) -> bool,
+    program: Option<&TypedProgram>,
+    active: &mut BTreeSet<ril_frontend::hir::DefinitionId>,
+) -> bool {
+    let mut visit = |ty| can_supply_callback(ty, accepts, program, active);
     match ty {
         Ty::Callable(signature) => accepts(signature),
-        Ty::Record(fields, open) => {
-            *open
-                || fields
-                    .values()
-                    .any(|field| can_supply_callback(&field.ty, accepts))
-        }
-        Ty::Tuple(fields) => fields
-            .iter()
-            .any(|field| can_supply_callback(&field.ty, accepts)),
-        Ty::Array(item) => can_supply_callback(&item.ty, accepts),
-        Ty::Map(key, item) => {
-            can_supply_callback(key, accepts) || can_supply_callback(&item.ty, accepts)
-        }
-        Ty::Set(item) | Ty::Option(item) | Ty::Draft(item) | Ty::Task(item) => {
-            can_supply_callback(item, accepts)
-        }
-        Ty::Result(ok, error) => {
-            can_supply_callback(ok, accepts) || can_supply_callback(error, accepts)
+        Ty::Record(fields, open) => *open || fields.values().any(|field| visit(&field.ty)),
+        Ty::Tuple(fields) => fields.iter().any(|field| visit(&field.ty)),
+        Ty::Array(item) => visit(&item.ty),
+        Ty::Map(key, item) => visit(key) || visit(&item.ty),
+        Ty::Set(item) | Ty::Option(item) | Ty::Draft(item) | Ty::Task(item) => visit(item),
+        Ty::Result(ok, error) => visit(ok) || visit(error),
+        Ty::Adt(adt) if let Some(program) = program => {
+            if !active.insert(adt.definition) {
+                return false;
+            }
+            let result = program.nominal_layout(adt).map_or_else(
+                || adt.kind != crate::ty::AdtKind::Foreign,
+                |layout| can_supply_callback(&layout, accepts, Some(program), active),
+            );
+            active.remove(&adt.definition);
+            result
         }
         Ty::Adt(adt) => adt.kind != crate::ty::AdtKind::Foreign,
         Ty::Param(_) | Ty::Infer(_) | Ty::Projection(..) | Ty::Unknown => true,

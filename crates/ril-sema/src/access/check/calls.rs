@@ -634,6 +634,7 @@ impl<'program> Analyzer<'program> {
         if let Some(fun) = syntax {
             return self.named_call(ctx, ledger, fun, sig, (&values, &value_spans), span);
         }
+        let carries_callable = super::higher_order::carries_callable(self.program, self.ty(span));
         if all_aliases_known && let Some(receiver) = &target {
             let before = ledger.clone();
             let mut alternatives = Vec::new();
@@ -651,7 +652,11 @@ impl<'program> Analyzer<'program> {
                     if sig.is_some_and(|signature| signature.result_mode == Mode::Plain)
                         && fun.signature.result_mode == Mode::New
                     {
-                        result = self.snapshot_value(span);
+                        if carries_callable {
+                            self.freeze_value(ctx, &after, &mut result, span);
+                        } else {
+                            result = self.snapshot_value(span);
+                        }
                     }
                     outputs.push(result);
                     alternatives.push(after);
@@ -675,7 +680,11 @@ impl<'program> Analyzer<'program> {
                 if sig.is_some_and(|signature| signature.result_mode == Mode::Plain)
                     && result.requires_new
                 {
-                    result = self.snapshot_value(span);
+                    if carries_callable {
+                        self.freeze_value(ctx, &before, &mut result, span);
+                    } else {
+                        result = self.snapshot_value(span);
+                    }
                 }
                 outputs.push(result);
                 alternatives.push(
@@ -705,7 +714,7 @@ impl<'program> Analyzer<'program> {
             None
         }
         .map(|after| std::mem::replace(ledger, after));
-        if has_via_closures
+        if (has_via_closures || carries_callable)
             && all_closures_known
             && let Some(target) = &target
         {
@@ -728,10 +737,7 @@ impl<'program> Analyzer<'program> {
                     }
                 }
             }
-            if sig.result_mode == Mode::New {
-                return Datum::source(span, Access::Mut, true);
-            }
-            if sig.result_mode == Mode::Infer
+            if (sig.result_mode == Mode::Infer || carries_callable)
                 && let Some(receiver) = target
                 && !receiver.roots.is_empty()
                 && !self.ty(span).is_value()
@@ -746,7 +752,7 @@ impl<'program> Analyzer<'program> {
                 if let Some(result) = self.callback_return(&receiver, &entry) {
                     return result;
                 }
-                return self.defer_callback_result(
+                let mut result = self.defer_callback_result(
                     CallbackResult {
                         receiver,
                         arguments: values,
@@ -756,6 +762,26 @@ impl<'program> Analyzer<'program> {
                     },
                     span,
                 );
+                match sig.result_mode {
+                    Mode::Plain => result.freeze(),
+                    Mode::New => {
+                        for root in &mut result.roots {
+                            root.mode = Access::Mut;
+                            root.new = true;
+                        }
+                        result.requires_new = true;
+                    }
+                    Mode::Ref | Mode::Shared => {
+                        for root in &mut result.roots {
+                            root.fix_mode(Access::from_mode(sig.result_mode));
+                        }
+                    }
+                    _ => {}
+                }
+                return result;
+            }
+            if sig.result_mode == Mode::New {
+                return Datum::source(span, Access::Mut, true);
             }
         }
         self.snapshot_value(span)
@@ -993,6 +1019,7 @@ impl<'program> Analyzer<'program> {
             fun.signature.result_mode,
             Mode::New | Mode::Infer | Mode::Ref | Mode::Shared
         ) || super::results::carries_result(self.program, self.ty(span))
+            || super::higher_order::carries_callable(self.program, self.ty(span))
         {
             self.function(fun, ledger);
             let entry = CallEntry {
@@ -1730,6 +1757,7 @@ impl<'program> Analyzer<'program> {
                         modes,
                         sources: sources.into_iter().collect(),
                         callback_returns: self.callback_return_contracts(formals, value),
+                        snapshot_projections: self.snapshot_argument_providers(formals, value),
                         allocations: Datum::return_allocations(std::slice::from_ref(value)),
                         constructs: value.requires_new,
                     }
@@ -1853,10 +1881,11 @@ impl<'program> Analyzer<'program> {
     fn callback_return(&mut self, receiver: &Datum, entry: &CallEntry<'_>) -> Option<Datum> {
         let mut outputs = Vec::new();
         for target in &receiver.roots {
-            if !target.region.selection.is_empty() {
-                return None;
+            let span = snapshot_invocations::known_provider(target)?;
+            if let Some(result) = self.replay_snapshot_provider_result(span, entry) {
+                outputs.push(result);
+                continue;
             }
-            let span = target.region.source;
             if let Some(closure) = self.closure_modes.get(&span).cloned() {
                 for value in &closure.returns {
                     outputs.push(self.instantiate_return(

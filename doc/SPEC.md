@@ -1110,6 +1110,7 @@ assert(sample(1) == 20 && <SampleOut> == <int>)
   - A callable that freezes a transferred input records which call-entry subgraphs must be freezable. An edge definitely replaced before the freeze is excluded from this requirement, and the replacement is checked where the freeze occurs.
   - Callbacks preserve the provenance and modes of transferred arguments across module boundaries. These arguments are checked against the selected callback's snapshot requirements even when the result is discarded.
   - When a callable is passed through an exported callback, its snapshot contract is part of the semantic interface. The contract is available for checking indirect calls without changing the callable's declared visibility.
+  - Returning or storing a callable preserves its snapshot contract at the corresponding member or element path. A callable obtained from a callback result is checked when it is invoked.
 
 ---
 

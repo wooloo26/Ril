@@ -25,6 +25,8 @@ pub struct Summary {
     pub snapshot_calls: Vec<SnapshotCall>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub snapshot_providers: Vec<SnapshotProvider>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub snapshot_returns: Vec<SnapshotProjection>,
     pub independent_retention: Vec<usize>,
     pub return_sources: Vec<ReturnSource>,
     pub return_allocations: Vec<ReturnAllocation>,
@@ -112,18 +114,10 @@ impl Summary {
                 .iter()
                 .all(|position| self.invoked.contains(position))
             && revised
-                .callback_returns
-                .iter()
-                .all(|result| self.callback_returns.contains(result))
-            && revised
                 .return_sources
                 .iter()
                 .all(|source| self.return_sources.contains(source))
             && self.return_allocations == revised.return_allocations
-            && revised
-                .storage_updates
-                .iter()
-                .all(|update| self.storage_updates.iter().any(|old| old.permits(update)))
             && self
                 .storage_updates
                 .iter()
@@ -152,8 +146,18 @@ pub struct SnapshotInput {
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 pub struct SnapshotCall {
     pub receiver: ModeAxis,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub factory_steps: Vec<SnapshotFactoryStep>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recursive_path: Option<Vec<Coordinate>>,
+    pub arguments: Vec<SnapshotArgument>,
+}
+
+/// A call and projection that produce the receiver for the next step.
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+pub struct SnapshotFactoryStep {
+    pub path: Vec<Coordinate>,
+    pub cap: Option<Access>,
     pub arguments: Vec<SnapshotArgument>,
 }
 
@@ -195,6 +199,22 @@ pub struct SnapshotProvider {
     pub via_parameters: Vec<bool>,
     pub inputs: Vec<SnapshotInput>,
     pub calls: Vec<SnapshotCall>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub returns: Vec<SnapshotProjection>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub callback_returns: Vec<CallbackReturn>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub returns_new: bool,
+}
+
+/// A source of callable provenance carried by a result or a stored value.
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+pub struct SnapshotProjection {
+    pub path: Vec<Coordinate>,
+    pub origin: SnapshotOrigin,
+    pub qualified: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allocation: Option<usize>,
 }
 
 impl SnapshotInput {
@@ -296,6 +316,8 @@ pub struct CallbackArgument {
     pub modes: Vec<InvocationMode>,
     pub sources: Vec<ReturnSource>,
     pub callback_returns: Vec<CallbackReturn>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub snapshot_projections: Vec<SnapshotProjection>,
     pub allocations: Vec<ReturnAllocation>,
     pub constructs: bool,
 }
@@ -328,6 +350,8 @@ pub struct StorageUpdate {
     pub path: Vec<Coordinate>,
     pub sources: Vec<ReturnSource>,
     pub callback_returns: Vec<CallbackReturn>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub snapshot_projections: Vec<SnapshotProjection>,
     pub allocations: Vec<ReturnAllocation>,
     pub definite: bool,
     pub constructs: bool,
@@ -345,10 +369,6 @@ impl StorageUpdate {
                 .sources
                 .iter()
                 .all(|source| self.sources.contains(source))
-            && revised
-                .callback_returns
-                .iter()
-                .all(|result| self.callback_returns.contains(result))
             && self.allocations == revised.allocations
     }
 }

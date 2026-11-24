@@ -931,3 +931,19 @@ fn main() -> () {
     live.count += 8
     assert(observed == 5)
 }
+
+-- @case returned_snapshot_callbacks_call_their_runtime_targets run-pass backend=both no-prelude
+type Cell = .{ var count: int }
+type Shelf = .{ ^mut item: Cell }
+type Action = fn(new Shelf) -> int
+fn freeze(new shelf: Shelf) -> int { let fixed = new shelf; fixed.item.count }
+fn keep(action: Action) -> Action { action }
+fn make() -> Action { keep(freeze) }
+fn select(make_action: fn() -> Action, new shelf: Shelf) -> int {
+    let action = make_action()
+    action(new shelf)
+}
+fn main() -> () {
+    let actions = .{ table: [make] }
+    assert(select(actions.table[0], new Shelf.{ item: ^mut Cell.{ count: 42 } }) == 42)
+}

@@ -323,6 +323,100 @@ fn run() -> int {{
 }
 
 #[test]
+fn returned_and_stored_snapshot_callables_survive_separate_compilation() {
+    use ril_base::diag::Code;
+
+    let source = br#"
+pub type Cell = .{ var count: int }
+pub type Shelf = .{ ^mut item: Cell }
+pub type Leaf = fn(new Shelf) -> int
+pub type Slot = .{ var action: Leaf }
+fn freeze(new shelf: Shelf) -> int { let fixed = new shelf; fixed.item.count }
+fn count(new shelf: Shelf) -> int { shelf.item.count }
+fn make_private() -> Leaf { freeze }
+fn make_with_private(make: fn(Leaf) -> Leaf) -> Leaf { make(freeze) }
+pub fn make() -> Leaf { freeze }
+pub fn factory() -> fn() -> Leaf { make_private }
+pub fn factory_with() -> fn(fn(Leaf) -> Leaf) -> Leaf { make_with_private }
+pub fn read() -> Leaf { count }
+pub fn nested() -> .{ actions: []Leaf } { let fixed = .{ actions: [freeze] }; fixed }
+pub fn identity(action: Leaf) -> Leaf { action }
+pub fn from_callback(make: fn() -> Leaf) -> Leaf { make() }
+pub fn from_callback_with(make: fn(Leaf) -> Leaf) -> Leaf { make(freeze) }
+pub fn apply(make: fn() -> Leaf, new shelf: Shelf) -> int { make()(new shelf) }
+pub fn apply_with(make: fn(Leaf) -> Leaf, new shelf: Shelf) -> int { make(freeze)(new shelf) }
+pub fn install(mut slot: Slot) &mut -> () { slot.action = freeze }
+"#;
+    let mut library = VirtualPackage::new(Unit::Lib);
+    library.entry = "pkg/snapshot.ril".into();
+    library.insert(library.entry.clone(), source.to_vec());
+    let interface = Driver.interface(&library).unwrap().encode().unwrap();
+    for (mount, bytes) in [
+        ("library/snapshot.ril", source.as_slice()),
+        ("library/snapshot.rili", interface.as_slice()),
+    ] {
+        for (pick, freezing) in [
+            ("Snapshot::make()", true),
+            ("Snapshot::factory()()", true),
+            ("Snapshot::factory_with()(keep)", true),
+            ("Snapshot::read()", false),
+            ("Snapshot::nested().actions[0]", true),
+            ("Snapshot::identity(freeze)", true),
+            ("Snapshot::identity(count)", false),
+            ("Snapshot::from_callback(make)", true),
+            ("Snapshot::from_callback_with(keep)", true),
+            (
+                "\\new input: Snapshot::Shelf -> Snapshot::apply(make, new input)",
+                true,
+            ),
+            (
+                "\\new input: Snapshot::Shelf -> Snapshot::apply_with(keep, new input)",
+                true,
+            ),
+            (
+                "{ let mut slot = Snapshot::Slot.{ action: count }; Snapshot::install(mut slot); slot.action }",
+                true,
+            ),
+        ] {
+            for (item, live) in [("live", true), ("Snapshot::Cell.{ count: 42 }", false)] {
+                let source = format!(
+                    "use library/snapshot
+fn freeze(new shelf: Snapshot::Shelf) -> int {{ let fixed = new shelf; fixed.item.count }}
+fn count(new shelf: Snapshot::Shelf) -> int {{ shelf.item.count }}
+fn make() -> Snapshot::Leaf {{ freeze }}
+fn keep(action: Snapshot::Leaf) -> Snapshot::Leaf {{ action }}
+fn observe() -> int {{
+    let mut live = Snapshot::Cell.{{ count: 1 }}
+    live.count += 1
+    let action = {pick}
+    let count = action(new Snapshot::Shelf.{{ item: ^mut {item} }})
+    live.count += 8
+    count + live.count
+}}"
+                );
+                let mut client = VirtualPackage::new(Unit::Lib);
+                client.insert(mount.into(), bytes.to_vec());
+                client.insert(client.entry.clone(), source.into_bytes());
+                let accepted = !freezing || !live;
+                match (accepted, Driver.analyze(&client)) {
+                    (true, Ok(_)) => {}
+                    (false, Err(diagnostics)) => {
+                        assert_eq!(
+                            diagnostics.len(),
+                            1,
+                            "{mount} {pick} {item}: {diagnostics:?}"
+                        );
+                        assert_eq!(diagnostics[0].code, Some(Code::E0535));
+                    }
+                    (true, Err(diagnostics)) => panic!("{mount} {pick} {item}: {diagnostics:?}"),
+                    (false, Ok(_)) => panic!("{mount} accepted {pick} with {item}"),
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn correlated_callback_mode_offers_survive_interface_only_calls() {
     use ril_base::diag::Code;
 
@@ -1531,7 +1625,8 @@ fn exported_summaries_and_via_domains_agree_with_lean() {
     use ril_sema::access::{
         CallbackArgument, CallbackReturn, Coordinate, Input, Instance, InvocationMode, ModeAxis,
         ReturnAllocation, ReturnSource, SnapshotArgument, SnapshotCall, SnapshotGraph,
-        SnapshotInput, SnapshotOrigin, SnapshotProvider, StorageUpdate, Summary,
+        SnapshotInput, SnapshotOrigin, SnapshotProjection, SnapshotProvider, StorageUpdate,
+        Summary,
     };
     use serde_json::{Value, json};
 
@@ -1559,6 +1654,7 @@ fn exported_summaries_and_via_domains_agree_with_lean() {
         },
     ];
     let calls_provider = |provider| SnapshotCall {
+        factory_steps: Vec::new(),
         receiver: ModeAxis {
             parameter: 0,
             path: Vec::new(),
@@ -1599,11 +1695,17 @@ fn exported_summaries_and_via_domains_agree_with_lean() {
                 via_parameters: vec![false, false],
                 inputs: Vec::new(),
                 calls: vec![calls_provider(1 - root)],
+                returns: Vec::new(),
+                callback_returns: Vec::new(),
+                returns_new: false,
             },
             SnapshotProvider {
                 via_parameters: vec![false, false],
                 inputs,
                 calls: vec![calls_provider(root)],
+                returns: Vec::new(),
+                callback_returns: Vec::new(),
+                returns_new: false,
             },
         ];
         if root == 1 {
@@ -1649,6 +1751,7 @@ fn exported_summaries_and_via_domains_agree_with_lean() {
                 path: vec![Coordinate::Field("head".into())],
                 sources: Vec::new(),
                 callback_returns: Vec::new(),
+                snapshot_projections: Vec::new(),
                 allocations: allocations.clone(),
                 definite: true,
                 constructs: false,
@@ -1668,6 +1771,7 @@ fn exported_summaries_and_via_domains_agree_with_lean() {
                     modes: vec![InvocationMode::Input(Input::Shared)],
                     sources: Vec::new(),
                     callback_returns: Vec::new(),
+                    snapshot_projections: Vec::new(),
                     allocations,
                     constructs: false,
                 }],
@@ -1725,15 +1829,43 @@ fn exported_summaries_and_via_domains_agree_with_lean() {
                 .collect::<Vec<_>>(),
         })
     };
+    fn wire_snapshot_origin(root: &SnapshotOrigin) -> Value {
+        json!({
+            "shape": [&json!(root.source), &json!(root.access), &json!(root.new), &json!(root.borrowed), &json!(root.forwarded)],
+            "provider": root.provider,
+        })
+    }
+    fn wire_projection(projection: &SnapshotProjection) -> Value {
+        json!({
+            "shape": [&json!(projection.path), &json!(projection.qualified), &json!(projection.allocation)],
+            "origin": wire_snapshot_origin(&projection.origin),
+        })
+    }
+    fn wire_callback_return(callback: &CallbackReturn) -> Value {
+        fn take_projections(callback: &mut CallbackReturn, projections: &mut Vec<Vec<Value>>) {
+            for argument in &mut callback.arguments {
+                projections.push(
+                    std::mem::take(&mut argument.snapshot_projections)
+                        .iter()
+                        .map(wire_projection)
+                        .collect(),
+                );
+                for nested in &mut argument.callback_returns {
+                    take_projections(nested, projections);
+                }
+            }
+        }
+        let mut shape = callback.clone();
+        let mut projections = Vec::new();
+        take_projections(&mut shape, &mut projections);
+        json!({"shape": shape, "projections": projections})
+    }
     fn wire_snapshot_nodes(
         graph: &SnapshotGraph,
         path: &mut Vec<Coordinate>,
         nodes: &mut Vec<Value>,
     ) {
-        let roots: Vec<_> = graph.roots.iter().map(|root| json!({
-            "shape": [&json!(root.source), &json!(root.access), &json!(root.new), &json!(root.borrowed), &json!(root.forwarded)],
-            "provider": root.provider,
-        })).collect();
+        let roots: Vec<_> = graph.roots.iter().map(wire_snapshot_origin).collect();
         nodes.push(json!({
             "shape": [&json!(path), &json!(graph.owned), &json!(graph.environment), &json!(graph.replaced)],
             "roots": roots,
@@ -1744,16 +1876,32 @@ fn exported_summaries_and_via_domains_agree_with_lean() {
             path.pop();
         }
     }
-    let wire_snapshot_call = |call: &SnapshotCall| {
-        let arguments: Vec<_> = call.arguments.iter().map(|argument| {
+    let wire_snapshot_arguments = |arguments: &[SnapshotArgument]| {
+        arguments.iter().map(|argument| {
             let mut graph = Vec::new();
             wire_snapshot_nodes(&argument.graph, &mut Vec::new(), &mut graph);
             json!({
                 "shape": [&json!(argument.position), &json!(argument.mode), &json!(argument.whole_graph)],
                 "graph": graph,
             })
-        }).collect();
-        json!({"shape": [&json!(call.receiver), &json!(call.recursive_path)], "arguments": arguments})
+        }).collect::<Vec<_>>()
+    };
+    let wire_snapshot_call = |call: &SnapshotCall| {
+        let factory_steps: Vec<_> = call
+            .factory_steps
+            .iter()
+            .map(|step| {
+                json!({
+                    "shape": [&json!(step.path), &json!(step.cap)],
+                    "arguments": wire_snapshot_arguments(&step.arguments),
+                })
+            })
+            .collect();
+        json!({
+            "shape": [&json!(call.receiver), &json!(call.recursive_path)],
+            "arguments": wire_snapshot_arguments(&call.arguments),
+            "factory_steps": factory_steps,
+        })
     };
     let wire = |summary: &Summary| -> Value {
         let effects: Vec<_> = summary
@@ -1780,6 +1928,9 @@ fn exported_summaries_and_via_domains_agree_with_lean() {
                     "via_parameters": provider.via_parameters,
                     "inputs": provider.inputs.iter().map(wire_snapshot_input).collect::<Vec<_>>(),
                     "calls": provider.calls.iter().map(wire_snapshot_call).collect::<Vec<_>>(),
+                    "returns": provider.returns.iter().map(wire_projection).collect::<Vec<_>>(),
+                    "callback_returns": provider.callback_returns.iter().map(wire_callback_return).collect::<Vec<_>>(),
+                    "returns_new": provider.returns_new,
                 })
             })
             .collect();
@@ -1808,7 +1959,8 @@ fn exported_summaries_and_via_domains_agree_with_lean() {
                     "formal": update.formal,
                     "path": update.path.iter().map(wire_coordinate).collect::<Vec<_>>(),
                     "sources": update.sources.iter().map(wire_source).collect::<Vec<_>>(),
-                    "callback_returns": update.callback_returns,
+                    "callback_returns": update.callback_returns.iter().map(wire_callback_return).collect::<Vec<_>>(),
+                    "snapshot_projections": update.snapshot_projections.iter().map(wire_projection).collect::<Vec<_>>(),
                     "allocations": update.allocations,
                     "definite": update.definite,
                     "constructs": update.constructs,
@@ -1822,6 +1974,7 @@ fn exported_summaries_and_via_domains_agree_with_lean() {
             "snapshot_inputs": snapshot_inputs,
             "snapshot_calls": snapshot_calls,
             "snapshot_providers": snapshot_providers,
+            "snapshot_returns": summary.snapshot_returns.iter().map(wire_projection).collect::<Vec<_>>(),
             "return_sources": return_sources,
             "return_allocations": summary.return_allocations,
             "effects": effects,
@@ -1829,7 +1982,7 @@ fn exported_summaries_and_via_domains_agree_with_lean() {
             "invocations": invocations,
             "mode_calls": summary.mode_calls,
             "invoked": summary.invoked,
-            "callback_returns": summary.callback_returns,
+            "callback_returns": summary.callback_returns.iter().map(wire_callback_return).collect::<Vec<_>>(),
             "storage_updates": storage_updates,
             "captures": summary.captures,
             "constructs": summary.constructs,

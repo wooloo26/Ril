@@ -970,7 +970,6 @@ impl<'a> Analyzer<'a> {
     }
 
     fn finish_function(&mut self, facts: &BTreeSet<Fact>, fun: &DefinitionCheck) -> Summary {
-        let (snapshot_calls, snapshot_providers) = self.publish_snapshot_contract(fun.owner);
         let mut summary = Summary {
             return_sources: fun.return_sources.clone(),
             return_allocations: Datum::return_allocations(&fun.returns),
@@ -998,10 +997,9 @@ impl<'a> Analyzer<'a> {
                 .collect(),
             storage_updates: self.storage_contracts(fun),
             snapshot_inputs: self.snapshots.inputs(fun.owner, &fun.formals),
-            snapshot_calls,
-            snapshot_providers,
             ..Summary::default()
         };
+        self.publish_snapshot_contract(fun, &mut summary);
         let mut up = BTreeSet::new();
         for fact in facts.iter().filter(|fact| fact.owner == fun.owner) {
             match &fact.obligation {
@@ -1164,6 +1162,7 @@ impl<'a> Analyzer<'a> {
                     path: region.selection.clone(),
                     sources: sources.into_iter().collect(),
                     callback_returns: self.callback_return_contracts(&fun.formals, &update.value),
+                    snapshot_projections: Vec::new(),
                     allocations: Datum::return_allocations(std::slice::from_ref(&update.value)),
                     definite: update.definite,
                     constructs: update.value.requires_new,

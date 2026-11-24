@@ -7,7 +7,7 @@ use super::{Analyzer, CallArgument, CallEntry, CallbackResult, Context, Datum, L
 use crate::{
     access::{
         Access, CallbackReturn, Coordinate, Input, InvocationMode, ReturnAllocation, ReturnSource,
-        Summary,
+        SnapshotProjection, Summary,
         check::{Fact, Obligation, SchemaRequirement, member_axes, storage::CallStorage},
         flow::{AllocationIdentity, CallbackOrigin, InvocationSite, Origin, Region, Replacement},
     },
@@ -15,11 +15,12 @@ use crate::{
     ty::{Callable, Ty},
 };
 
-struct PublishedValue<'a> {
-    sources: &'a [ReturnSource],
-    callbacks: &'a [CallbackReturn],
-    allocations: &'a [ReturnAllocation],
-    constructs: bool,
+pub(super) struct PublishedValue<'a> {
+    pub(super) sources: &'a [ReturnSource],
+    pub(super) callbacks: &'a [CallbackReturn],
+    pub(super) projections: &'a [SnapshotProjection],
+    pub(super) allocations: &'a [ReturnAllocation],
+    pub(super) constructs: bool,
 }
 
 impl<'program> Analyzer<'program> {
@@ -258,6 +259,7 @@ impl<'program> Analyzer<'program> {
                         PublishedValue {
                             sources: &update.sources,
                             callbacks: &update.callback_returns,
+                            projections: &update.snapshot_projections,
                             allocations: &update.allocations,
                             constructs: update.constructs,
                         },
@@ -346,6 +348,7 @@ impl<'program> Analyzer<'program> {
     ) -> Datum {
         if summary.return_sources.is_empty()
             && summary.callback_returns.is_empty()
+            && summary.snapshot_returns.is_empty()
             && summary.return_allocations.is_empty()
             && !summary.constructs
         {
@@ -361,6 +364,7 @@ impl<'program> Analyzer<'program> {
             PublishedValue {
                 sources: &summary.return_sources,
                 callbacks: &summary.callback_returns,
+                projections: &summary.snapshot_returns,
                 allocations: &summary.return_allocations,
                 constructs: summary.constructs,
             },
@@ -463,13 +467,14 @@ impl<'program> Analyzer<'program> {
         })
     }
 
-    fn exported_value(
+    pub(super) fn exported_value(
         &mut self,
         owner: Span,
         formals: &[Option<Span>],
         PublishedValue {
             sources,
             callbacks,
+            projections,
             allocations,
             constructs,
         }: PublishedValue<'_>,
@@ -539,6 +544,13 @@ impl<'program> Analyzer<'program> {
         for (path, qualified) in qualification {
             let node = self.exported_path(&mut value, path, ty, owner, false);
             node.requires_new = qualified && node.roots.iter().all(|root| root.new);
+        }
+        for projection in projections {
+            let node = self.exported_path(&mut value, &projection.path, ty, owner, implicit);
+            self.restore_snapshot_projection(owner, formals, node, projection);
+        }
+        if value.roots.is_empty() && !projections.is_empty() && !value.members.is_empty() {
+            value.roots = Datum::source(owner, Access::Immutable, false).roots;
         }
         for (path, len) in array_layouts {
             if let Some(len) = len
@@ -610,6 +622,7 @@ impl<'program> Analyzer<'program> {
                 PublishedValue {
                     sources: &argument.sources,
                     callbacks: &argument.callback_returns,
+                    projections: &argument.snapshot_projections,
                     allocations: &argument.allocations,
                     constructs: argument.constructs,
                 },

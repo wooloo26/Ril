@@ -539,7 +539,7 @@ impl Datum {
         });
     }
 
-    fn visit_nodes(
+    pub(super) fn visit_nodes(
         &self,
         path: &mut Vec<Coordinate>,
         visit: &mut impl FnMut(&[Coordinate], &Self),
@@ -664,6 +664,7 @@ impl Datum {
                     && origin.region.instance != RegionInstance::Source
                     && local_data(origin.region.source)
                     && origin.callback_result.is_none()
+                    && origin.snapshot_provider.is_none()
                     && origin.confined.is_none()
             });
         if plain && !self.roots.is_empty() {

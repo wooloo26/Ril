@@ -85,11 +85,27 @@ def legacyModeCalls (invocations : List JsonInvocation) : List JsonModeCall :=
       (fun modes suffixes => modes.flatMap fun mode => suffixes.map (mode :: ·)) [[]]
     combinations.map fun arguments => ⟨⟨receiver, []⟩, arguments, none⟩
 
+structure JsonSnapshotOrigin where
+  shape : Json
+  provider : Option Nat
+  deriving FromJson
+
+structure JsonSnapshotProjection where
+  shape : Json
+  origin : JsonSnapshotOrigin
+  deriving FromJson
+
+structure JsonCallbackReturn where
+  shape : Json
+  projections : List (List JsonSnapshotProjection)
+  deriving FromJson
+
 structure JsonStorageUpdate where
   formal : Nat
   path : List JsonCoordinate
   sources : List JsonSource
-  callback_returns : List Json
+  callback_returns : List JsonCallbackReturn
+  snapshot_projections : List JsonSnapshotProjection
   allocations : List Json
   definite : Bool
   constructs : Bool
@@ -97,7 +113,7 @@ structure JsonStorageUpdate where
 
 def JsonStorageUpdate.contract (update : JsonStorageUpdate) :
     RilAccess.StorageUpdate (Nat × List JsonCoordinate) JsonSource :=
-  ⟨(update.formal, update.path), update.sources, update.callback_returns.map Json.compress,
+  ⟨(update.formal, update.path), update.sources, update.callback_returns.map (·.shape.compress),
     update.allocations.map Json.compress, update.definite, update.constructs⟩
 
 structure JsonEffectUse where
@@ -115,11 +131,6 @@ def JsonSnapshotInput.contract (input : JsonSnapshotInput) :
     RilAccess.SnapshotInput JsonCoordinate :=
   ⟨input.formal, input.path, input.replaced⟩
 
-structure JsonSnapshotOrigin where
-  shape : Json
-  provider : Option Nat
-  deriving FromJson
-
 structure JsonSnapshotNode where
   shape : Json
   roots : List JsonSnapshotOrigin
@@ -130,15 +141,24 @@ structure JsonSnapshotArgument where
   graph : List JsonSnapshotNode
   deriving FromJson
 
+structure JsonSnapshotFactoryStep where
+  shape : Json
+  arguments : List JsonSnapshotArgument
+  deriving FromJson
+
 structure JsonSnapshotCall where
   shape : Json
   arguments : List JsonSnapshotArgument
+  factory_steps : List JsonSnapshotFactoryStep
   deriving FromJson
 
 structure JsonSnapshotProvider where
   via_parameters : List Bool
   inputs : List JsonSnapshotInput
   calls : List JsonSnapshotCall
+  returns : List JsonSnapshotProjection
+  callback_returns : List JsonCallbackReturn
+  returns_new : Bool
   deriving FromJson
 
 abbrev ProviderPairs := List (Nat × Nat)
@@ -150,6 +170,18 @@ def snapshotOriginsSubsumed (pairs : ProviderPairs) (old new : List JsonSnapshot
     | some i, some j => pairs.contains (i, j)
     | _, _ => false
 
+def snapshotProjectionsSubsumed (pairs : ProviderPairs) (old new : List JsonSnapshotProjection) : Bool :=
+  new.all fun required => old.any fun offered =>
+    offered.shape.compress == required.shape.compress &&
+      snapshotOriginsSubsumed pairs [offered.origin] [required.origin]
+
+def snapshotCallbackReturnsSubsumed (pairs : ProviderPairs) (old new : List JsonCallbackReturn) : Bool :=
+  new.all fun required => old.any fun offered =>
+    offered.shape.compress == required.shape.compress &&
+    offered.projections.length == required.projections.length &&
+    (offered.projections.zip required.projections).all fun (left, right) =>
+      snapshotProjectionsSubsumed pairs left right
+
 def snapshotArgsSubsumed (pairs : ProviderPairs) (old new : List JsonSnapshotArgument) : Bool :=
   old.length == new.length && (old.zip new).all fun (offered, required) =>
     offered.shape.compress == required.shape.compress && offered.graph.length == required.graph.length &&
@@ -158,14 +190,21 @@ def snapshotArgsSubsumed (pairs : ProviderPairs) (old new : List JsonSnapshotArg
 
 def snapshotCallsSubsumed (pairs : ProviderPairs) (old new : List JsonSnapshotCall) : Bool :=
   new.all fun required => old.any fun offered =>
-    offered.shape.compress == required.shape.compress && snapshotArgsSubsumed pairs offered.arguments required.arguments
+    offered.shape.compress == required.shape.compress &&
+      snapshotArgsSubsumed pairs offered.arguments required.arguments &&
+      offered.factory_steps.length == required.factory_steps.length &&
+      (offered.factory_steps.zip required.factory_steps).all fun (left, right) =>
+        left.shape.compress == right.shape.compress && snapshotArgsSubsumed pairs left.arguments right.arguments
 
 def pruneSnapshotProviders (old new : Array JsonSnapshotProvider) : Nat → ProviderPairs → ProviderPairs
   | 0, pairs => pairs
   | fuel + 1, pairs =>
     let next := pairs.filter fun (i, j) =>
       match old[i]?, new[j]? with
-      | some left, some right => snapshotCallsSubsumed pairs left.calls right.calls
+      | some left, some right => snapshotCallsSubsumed pairs left.calls right.calls &&
+          (!left.returns_new || right.returns_new) &&
+          snapshotProjectionsSubsumed pairs left.returns right.returns &&
+          snapshotCallbackReturnsSubsumed pairs left.callback_returns right.callback_returns
       | _, _ => false
     if next.length == pairs.length then pairs else pruneSnapshotProviders old new fuel next
 
@@ -184,6 +223,7 @@ structure JsonSummary where
   snapshot_inputs : List JsonSnapshotInput
   snapshot_calls : List JsonSnapshotCall
   snapshot_providers : List JsonSnapshotProvider
+  snapshot_returns : List JsonSnapshotProjection
   return_sources : List JsonSource
   return_allocations : List Json
   effects : List Nat
@@ -191,7 +231,7 @@ structure JsonSummary where
   invocations : List JsonInvocation
   mode_calls : Option (List JsonModeCall)
   invoked : List Nat
-  callback_returns : List Json
+  callback_returns : List JsonCallbackReturn
   storage_updates : List JsonStorageUpdate
   captures : Bool
   constructs : Bool
@@ -212,13 +252,14 @@ structure JsonComparison where
   deriving FromJson
 
 def compareSummaries (baseline revision : JsonSummary) : Bool :=
+  let providers := compareSnapshotProviders baseline.snapshot_providers revision.snapshot_providers
   RilAccess.SummaryOf.subsumesBy (fun _ => false) baseline.formal revision.formal &&
     decide (baseline.return_allocations.map Json.compress = revision.return_allocations.map Json.compress) &&
     revision.independent_retention.all baseline.independent_retention.contains &&
     RilAccess.snapshotInputsSubsumed (baseline.snapshot_inputs.map JsonSnapshotInput.contract)
       (revision.snapshot_inputs.map JsonSnapshotInput.contract) &&
-    snapshotCallsSubsumed (compareSnapshotProviders baseline.snapshot_providers revision.snapshot_providers)
-      baseline.snapshot_calls revision.snapshot_calls &&
+    snapshotCallsSubsumed providers baseline.snapshot_calls revision.snapshot_calls &&
+    snapshotProjectionsSubsumed providers baseline.snapshot_returns revision.snapshot_returns &&
     revision.effect_uses.all (fun effect => baseline.effect_uses.any fun old =>
       old.effect == effect.effect && (old.operation.isNone || old.operation == effect.operation)) &&
     RilAccess.callbackInvocationsSubsumed (baseline.invocations.map JsonInvocation.contract)
@@ -227,10 +268,13 @@ def compareSummaries (baseline revision : JsonSummary) : Bool :=
       ((baseline.mode_calls.getD (legacyModeCalls baseline.invocations)).map JsonModeCall.contract)
       ((revision.mode_calls.getD (legacyModeCalls revision.invocations)).map JsonModeCall.contract) &&
     revision.invoked.all baseline.invoked.contains &&
-    RilAccess.callbackReturnsSubsumed (baseline.callback_returns.map Json.compress)
-      (revision.callback_returns.map Json.compress) &&
+    snapshotCallbackReturnsSubsumed providers baseline.callback_returns revision.callback_returns &&
     RilAccess.storageUpdatesSubsumed (baseline.storage_updates.map JsonStorageUpdate.contract)
       (revision.storage_updates.map JsonStorageUpdate.contract) &&
+    revision.storage_updates.all (fun update => baseline.storage_updates.any fun old =>
+      old.contract.permits update.contract &&
+        snapshotCallbackReturnsSubsumed providers old.callback_returns update.callback_returns &&
+        snapshotProjectionsSubsumed providers old.snapshot_projections update.snapshot_projections) &&
     (!baseline.constructs || revision.constructs) &&
     (!baseline.nonreturning || revision.nonreturning)
 
