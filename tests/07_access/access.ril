@@ -2955,3 +2955,68 @@ fn run() -> int {
     live.count += 8
     before + after + replaced + live.count
 }
+
+-- @case array_slice_keeps_callback_snapshot_requirements compile-fail E0535
+type Shelf = .{ ^mut item: Cell }
+fn freeze(new shelf: Shelf) -> int { let fixed = new shelf; fixed.item.count }
+fn count(new shelf: Shelf) -> int { shelf.item.count }
+fn run(index: int) -> int {
+    let mut live = Cell.{ count: 1 }
+    live.count += 1
+    let actions = [count, freeze]
+    let selected = actions[index..]
+    let answer = selected[0](new Shelf.{ item: ^mut live })
+    -- ^ E0535
+    live.count += 8
+    answer + live.count
+}
+
+-- @case array_rest_pattern_keeps_callback_snapshot_requirements compile-fail E0535
+type Shelf = .{ ^mut item: Cell }
+fn freeze(new shelf: Shelf) -> int { let fixed = new shelf; fixed.item.count }
+fn count(new shelf: Shelf) -> int { shelf.item.count }
+fn run() -> int {
+    let mut live = Cell.{ count: 1 }
+    live.count += 1
+    let [_, ..tail] = [count, freeze] else { return 0 }
+    let answer = tail[0](new Shelf.{ item: ^mut live })
+    -- ^ E0535
+    live.count += 8
+    answer + live.count
+}
+
+-- @case safe_array_slice_keeps_callback_snapshot_requirements compile-fail E0535
+type Shelf = .{ ^mut item: Cell }
+fn freeze(new shelf: Shelf) -> int { let fixed = new shelf; fixed.item.count }
+fn count(new shelf: Shelf) -> int { shelf.item.count }
+fn run() -> int {
+    let mut live = Cell.{ count: 1 }
+    live.count += 1
+    let actions = [count, freeze]
+    let answer = match actions?[1..] {
+        Some(tail) -> tail[0](new Shelf.{ item: ^mut live })
+        -- ^ E0535
+        None -> 0
+    }
+    live.count += 8
+    answer + live.count
+}
+
+-- @case array_slices_select_only_the_requested_callback_positions compile-pass
+type Shelf = .{ ^mut item: Cell }
+fn freeze(new shelf: Shelf) -> int { let fixed = new shelf; fixed.item.count }
+fn count(new shelf: Shelf) -> int { shelf.item.count }
+fn run() -> int {
+    let mut live = Cell.{ count: 1 }
+    live.count += 1
+    let actions = [freeze, count, freeze]
+    let selected = actions[1..2]
+    let [_, ..middle, _] = actions else { return 0 }
+    let first = selected[0](new Shelf.{ item: ^mut live })
+    let second = middle[0](new Shelf.{ item: ^mut live })
+    live.count += 8
+    first + second + live.count
+}
+
+-- @case copying_a_value_array_with_a_slice_creates_a_new_array compile-pass
+fn copy(values: []int) -> new []int { values[..] }

@@ -354,6 +354,8 @@ pub fn build_array() -> []Leaf {
     let fixed = new actions
     fixed
 }
+pub fn section(actions: []Leaf) &return(actions) -> new []Leaf { actions[1..] }
+pub fn one(actions: []Leaf) &return(actions) -> new []Leaf { actions[1..2] }
 pub fn stamp(base: Frame) -> Frame { derive(base) \mut d -> { d.stamp = 42 } }
 pub fn freeze_frame(base: Frame) -> Frame { derive(base) \mut d -> { d.action = freeze } }
 pub fn read_frame(base: Frame) -> Frame { derive(base) \mut d -> { d.action = count } }
@@ -374,6 +376,10 @@ pub fn read_frame(base: Frame) -> Frame { derive(base) \mut d -> { d.action = co
             ("Snapshot::nested().actions[0]", true),
             ("Snapshot::build_array()[0]", false),
             ("Snapshot::build_array()[1]", true),
+            ("Snapshot::section([count, freeze])[0]", true),
+            ("Snapshot::section([freeze, count])[0]", false),
+            ("Snapshot::one([freeze, count, freeze])[0]", false),
+            ("Snapshot::one([count, freeze, count])[0]", true),
             (
                 "{ let mut actions = [count]; Snapshot::append(mut actions); actions[0] }",
                 false,

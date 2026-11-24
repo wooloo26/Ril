@@ -55,7 +55,7 @@ pub enum Coordinate {
     Index(String),
     Dynamic,
     MapKey,
-    // Possible locations for an append whose exact index is unknown.
+    // Array indices at or above the given position.
     ArrayTail(usize),
 }
 
@@ -1126,8 +1126,8 @@ impl Datum {
     }
 
     pub(super) fn joined(mut self, mut other: Self) -> Self {
-        self.materialize_tail_alternatives(&other);
-        other.materialize_tail_alternatives(&self);
+        self.materialize_range_alternatives(&other);
+        other.materialize_range_alternatives(&self);
         self.roots.append(&mut other.roots);
         self.roots.sort_unstable();
         self.roots.dedup();
@@ -1170,12 +1170,8 @@ impl Datum {
         self
     }
 
-    fn materialize_tail_alternatives(&mut self, other: &Self) {
-        if !self
-            .members
-            .keys()
-            .any(|key| matches!(key, Coordinate::ArrayTail(_)))
-        {
+    fn materialize_range_alternatives(&mut self, other: &Self) {
+        if !self.members.keys().any(Coordinate::is_range) {
             return;
         }
         for coordinate in other.members.keys() {
@@ -1213,10 +1209,12 @@ impl Datum {
     }
 
     pub(super) fn known_member(&self, coordinate: &Coordinate) -> Option<Self> {
-        if *coordinate == Coordinate::Dynamic {
+        if coordinate.is_range() {
             self.members
                 .iter()
-                .filter(|(key, _)| coordinate.covers(key))
+                .filter(|(key, _)| {
+                    coordinate.covers(key) || key.is_range() && key.covers(coordinate)
+                })
                 .map(|(_, value)| value.clone())
                 .reduce(Self::joined)
         } else if let Some(value) = self.members.get(coordinate) {
@@ -1226,7 +1224,8 @@ impl Datum {
             self.members
                 .iter()
                 .filter(|(key, _)| {
-                    (matches!(key, Coordinate::ArrayTail(_)) || detached && key.is_range())
+                    (matches!(coordinate, Coordinate::Index(_)) || detached)
+                        && key.is_range()
                         && key.covers(coordinate)
                 })
                 .map(|(_, member)| member.clone())
@@ -2271,6 +2270,16 @@ impl Ledger {
             })
             .min()
             .unwrap_or(0)
+    }
+
+    pub(super) fn exact_array_length(&self, array: &Datum) -> Option<usize> {
+        let first = self.array_extents.get(&array.roots.first()?.region)?;
+        (first.exact
+            && array
+                .roots
+                .iter()
+                .all(|root| self.array_extents.get(&root.region) == Some(first)))
+        .then_some(first.minimum)
     }
 
     pub(super) fn append_coordinate(&mut self, array: &Datum, single_push: bool) -> Coordinate {

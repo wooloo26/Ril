@@ -2280,19 +2280,21 @@ impl<'a> Analyzer<'a> {
                     if ctx.in_function {
                         self.binding_scopes.insert(decl, ctx.scope);
                     }
-                    let mut slice = if *text {
-                        Datum::default()
+                    let mut slice = if let Ty::Array(element) = self.ty(node.span) {
+                        let end = ledger
+                            .exact_array_length(&value)
+                            .or(value.array_len)
+                            .and_then(|len| len.checked_sub(after.len()));
+                        self.array_slice(
+                            ledger,
+                            &value,
+                            element,
+                            (Some(before.len()), end),
+                            ast.pattern(rest).span,
+                        )
                     } else {
-                        Datum::source(ast.pattern(rest).span, Access::Mut, true)
+                        Datum::default()
                     };
-                    if let Ty::Array(element) = self.ty(node.span)
-                        && !element.ty.is_value()
-                    {
-                        let mut child = ledger.project_schema(&value, Coordinate::Dynamic, mode);
-                        child.requires_new = false;
-                        child.transform(&mut |origin| origin.new = false);
-                        slice.members.insert(Coordinate::Dynamic, child);
-                    }
                     self.check_resource_binding(name.span, &slice, resource);
                     slice.transform(&mut |origin| {
                         origin.dependencies.insert(decl.into());
@@ -2619,9 +2621,7 @@ impl<'a> Analyzer<'a> {
                 let value = self.expr(ctx, ledger, *base);
                 self.expr(ctx, ledger, *index);
                 let ty = self.ty(ast.expr(*base).span);
-                let coordinate = self.collection_coordinate(ctx, ty, *index);
-                let (mode, _) = self.schema_mode(ty, &coordinate);
-                ledger.project_schema(&value, coordinate, mode)
+                self.project_index(ctx, ledger, &value, (ty, *index, span))
             }
             Expr::Block {
                 statements,
@@ -3820,6 +3820,95 @@ impl<'a> Analyzer<'a> {
         }
     }
 
+    fn project_index(
+        &self,
+        ctx: &Context,
+        ledger: &mut Ledger,
+        value: &Datum,
+        (ty, index, span): (&Ty, ExprId, Span),
+    ) -> Datum {
+        if let Expr::Range {
+            start,
+            end,
+            inclusive,
+        } = self.ast(ctx.file).expr(index).value
+        {
+            let Some(element) = self.schema_member(ty, &Coordinate::Dynamic) else {
+                return Datum::default();
+            };
+            let bound = |id| match self.index_coordinate(ctx, id) {
+                Coordinate::Index(index) => index.parse::<usize>().ok(),
+                _ => None,
+            };
+            let start = start.map_or(Some(0), bound);
+            let end = end.map_or_else(
+                || ledger.exact_array_length(value).or(value.array_len),
+                |end| bound(end).and_then(|bound| bound.checked_add(usize::from(inclusive))),
+            );
+            return self.array_slice(ledger, value, element, (start, end), span);
+        }
+        let coordinate = self.collection_coordinate(ctx, ty, index);
+        let mode = self.schema_mode(ty, &coordinate).0;
+        ledger.project_schema(value, coordinate, mode)
+    }
+
+    fn array_slice(
+        &self,
+        ledger: &mut Ledger,
+        array: &Datum,
+        element: &ty::Member,
+        (start, end): (Option<usize>, Option<usize>),
+        span: Span,
+    ) -> Datum {
+        let mut slice = Datum::source(span, Access::Mut, true);
+        let length = start
+            .zip(end)
+            .and_then(|(start, end)| end.checked_sub(start));
+        if let Some(length) = length {
+            ledger.record_array_length(span, length);
+        }
+        if element.ty.is_value() || length == Some(0) {
+            return slice;
+        }
+        let project = |ledger: &Ledger, coordinate| {
+            let mut member = ledger.project_schema(array, coordinate, element.mode.mode);
+            // The result has a fresh container and still points to the
+            // source's elements.
+            member.requires_new = false;
+            member.transform(&mut |origin| origin.new = false);
+            member
+        };
+        if let (Some(start), Some(1)) = (start, length) {
+            slice.members.insert(
+                Coordinate::Index("0".into()),
+                project(ledger, Coordinate::Index(start.to_string())),
+            );
+            return slice;
+        }
+        if let Some(start) = start {
+            let source = ledger.snapshot(array);
+            for coordinate in source.members.keys() {
+                if let Coordinate::Index(index) = coordinate
+                    && let Ok(index) = index.parse::<usize>()
+                    && index >= start
+                    && end.is_none_or(|end| index < end)
+                {
+                    let member = project(ledger, coordinate.clone());
+                    slice
+                        .members
+                        .insert(Coordinate::Index((index - start).to_string()), member);
+                }
+            }
+        }
+        if length != Some(slice.members.len()) {
+            let range = start.map_or(Coordinate::Dynamic, Coordinate::ArrayTail);
+            slice
+                .members
+                .insert(Coordinate::Dynamic, project(ledger, range));
+        }
+        slice
+    }
+
     fn constant_map_key(&self, ctx: &Context, id: ExprId) -> Option<Coordinate> {
         let node = self.ast(ctx.file).expr(id);
         let value = if let Expr::Literal(literal) = &node.value {
@@ -3924,19 +4013,19 @@ impl<'a> Analyzer<'a> {
                 value = ledger.project(&value, payload.clone(), Access::Immutable);
                 ty = inner;
             }
-            let coordinate = if let Some(index) = index {
+            value = if let Some(index) = index {
                 self.expr(&mut present_ctx, ledger, index);
-                self.collection_coordinate(&present_ctx, ty, index)
+                if safe {
+                    missing.push(ledger.clone());
+                }
+                self.project_index(&present_ctx, ledger, &value, (ty, index, step.span))
             } else if let Expr::Member { member, .. } = &step.value {
-                self.coordinate(&mut present_ctx, ledger, member)
+                let coordinate = self.coordinate(&mut present_ctx, ledger, member);
+                let mode = self.schema_mode(ty, &coordinate).0;
+                ledger.project_schema(&value, coordinate, mode)
             } else {
                 ril_base::ice!("unexpected navigation coordinate");
             };
-            if safe && index.is_some() {
-                missing.push(ledger.clone());
-            }
-            let mode = self.schema_mode(ty, &coordinate).0;
-            value = ledger.project_schema(&value, coordinate, mode);
             ty = self
                 .program
                 .navigation_values
