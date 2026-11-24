@@ -2921,3 +2921,37 @@ fn dispatch(node: Node) -> int {
 fn run() -> int {
     apply(dispatch, Node.{ action: count, next: None }, 2)
 }
+
+-- @case appended_callable_keeps_its_snapshot_requirement compile-fail E0535
+type Shelf = .{ ^mut item: Cell }
+fn freeze(new shelf: Shelf) -> int { let fixed = new shelf; fixed.item.count }
+fn count(new shelf: Shelf) -> int { shelf.item.count }
+fn run(flag: bool, index: int) -> int {
+    let mut live = Cell.{ count: 1 }
+    live.count += 1
+    let mut actions = [count]
+    if flag { Array::push(mut actions, freeze) }
+    Array::push(mut actions, count)
+    let answer = actions[index](new Shelf.{ item: ^mut live })
+    -- ^ E0535
+    live.count += 8
+    answer + live.count
+}
+
+-- @case appending_preserves_exact_callable_slots compile-pass
+type Shelf = .{ ^mut item: Cell }
+fn freeze(new shelf: Shelf) -> int { let fixed = new shelf; fixed.item.count }
+fn count(new shelf: Shelf) -> int { shelf.item.count }
+fn run() -> int {
+    let mut live = Cell.{ count: 1 }
+    live.count += 1
+    let mut actions = [count]
+    Array::push(mut actions, freeze)
+    Array::push(mut actions, count)
+    let before = actions[0](new Shelf.{ item: ^mut live })
+    let after = actions[2](new Shelf.{ item: ^mut live })
+    actions[1] = count
+    let replaced = actions[1](new Shelf.{ item: ^mut live })
+    live.count += 8
+    before + after + replaced + live.count
+}

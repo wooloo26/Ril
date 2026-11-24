@@ -606,8 +606,31 @@ impl<'program> Analyzer<'program> {
                     .find(|((index, _, _), _)| *index == inserted)
             {
                 self.check_stored_views(value, *mode == Mode::Ref, value_span);
-                if let Some((_, _, target)) = values.iter().find(|(index, _, _)| *index == 0) {
+                if let Some(((.., target), &target_span)) = values
+                    .iter()
+                    .zip(&value_spans)
+                    .find(|((index, ..), _)| *index == 0)
+                {
                     self.check_draft_insertion(ctx, ledger, target, value, value_span);
+                    if module == Some("Array") && name == "push" {
+                        self.mutate(ctx, ledger, target, span);
+                        if ctx.reachable
+                            && let Some(member) =
+                                self.schema_member(self.ty(target_span), &Coordinate::Dynamic)
+                            && super::higher_order::carries_callable(self.program, &member.ty)
+                        {
+                            let coordinate = ledger.append_coordinate(target, true);
+                            let place = target.slot_projection(coordinate);
+                            self.store_member(
+                                (ctx, ledger),
+                                &place,
+                                value.clone(),
+                                Access::from_mode(member.mode.mode),
+                                value_span,
+                            );
+                        }
+                        return Datum::default();
+                    }
                 }
             }
             return self.primitive(ctx, ledger, name, &values, span);
@@ -1469,7 +1492,12 @@ impl<'program> Analyzer<'program> {
                     .project_schema(&value, coordinate.clone(), mode);
                 ty = schema.map_or(&Ty::Unknown, |member| &member.ty);
             }
-            let place = value.slot_projection(member.clone());
+            let coordinate = if matches!(member, Coordinate::ArrayTail(_)) {
+                ledger.append_coordinate(&value, false)
+            } else {
+                member.clone()
+            };
+            let place = value.slot_projection(coordinate);
             applied &= !place.roots.is_empty();
             let mut stored =
                 self.instantiate_return(&formals, &via, entry, &update.value, &mut output_path);
@@ -2374,7 +2402,7 @@ impl<'program> Analyzer<'program> {
                     if let Some(base) = first
                         && super::higher_order::carries_callable(self.program, self.ty(span))
                     {
-                        return self.derived_snapshot(base, callback, span);
+                        return self.derived_snapshot(ledger, base, callback, span);
                     }
                 }
             }
@@ -2409,7 +2437,13 @@ impl<'program> Analyzer<'program> {
         self.snapshot_value(span)
     }
 
-    fn derived_snapshot(&mut self, base: &Datum, callback: &Datum, span: Span) -> Datum {
+    fn derived_snapshot(
+        &mut self,
+        ledger: &Ledger,
+        base: &Datum,
+        callback: &Datum,
+        span: Span,
+    ) -> Datum {
         // Draft stores select paths in the working snapshot. Two paths to the
         // same inserted object must still have independent updates.
         let before = Ledger::default();
@@ -2441,15 +2475,22 @@ impl<'program> Analyzer<'program> {
             };
             let mut working = base.clone();
             for (region, update) in storage.updates {
+                let mut path = region.selection;
                 let mut stored = self.instantiate_return(
                     &storage.formals,
                     &storage.via,
                     &entry,
                     &update.value,
-                    &mut region.selection.clone(),
+                    &mut path.clone(),
                 );
                 stored.freeze();
-                working.apply_draft_update(&region.selection, &stored, update.definite);
+                if let Some((tail @ Coordinate::ArrayTail(_), parent)) = path.split_last_mut() {
+                    let array = parent.iter().fold(working.clone(), |value, coordinate| {
+                        value.project(coordinate.clone(), Access::Immutable)
+                    });
+                    *tail = Coordinate::ArrayTail(ledger.array_prefix_length(&array));
+                }
+                working.apply_draft_update(&path, &stored, update.definite);
             }
             working
         });
@@ -2807,6 +2848,7 @@ impl<'program> Analyzer<'program> {
         };
         let mut locals = ledger.clone();
         locals.clear_result_obligations();
+        locals.clear_array_extents();
         locals.no_continuation = false;
         let mut inner = Context::new(node.span);
         inner.in_function = true;

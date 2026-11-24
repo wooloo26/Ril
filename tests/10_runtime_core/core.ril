@@ -1,6 +1,26 @@
 -- @suite runtime_core
 -- @default_stage run
 
+-- @case appended_callbacks_keep_their_positions_in_arrays_and_drafts run-pass backend=both
+type Cell = .{ var count: int }
+type Shelf = .{ ^mut item: Cell }
+fn freeze(new shelf: Shelf) -> int { let fixed = new shelf; fixed.item.count + 100 }
+fn count(new shelf: Shelf) -> int { shelf.item.count }
+fn main() -> () {
+    let mut live = Cell.{ count: 1 }
+    live.count += 1
+    let mut actions = [count]
+    Array::push(mut actions, freeze)
+    assert(actions[0](new Shelf.{ item: ^mut live }) == 2)
+    assert(actions[1](new Shelf.{ item: ^mut Cell.{ count: 3 } }) == 103)
+    let base = new actions
+    let next = derive(base) \mut draft -> { Array::push(mut draft, count) }
+    assert(len(base) == 2 && len(next) == 3)
+    assert(next[2](new Shelf.{ item: ^mut Cell.{ count: 4 } }) == 4)
+    live.count += 8
+    assert(live.count == 10)
+}
+
 -- @case aliased_shared_formals_preserve_identity_through_a_nested_borrow run-pass backend=both
 type Cell = .{ var count: int }
 type Pair = .{ ^mut left: Cell, ^mut right: Cell }

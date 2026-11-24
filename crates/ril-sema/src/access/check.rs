@@ -764,6 +764,7 @@ impl<'a> Analyzer<'a> {
         ctx.capture_modes = Some(capture_modes);
         let mut ledger = outer.clone();
         ledger.clear_result_obligations();
+        ledger.clear_array_extents();
         ledger.inspected.clear();
         ledger.reset_revocations();
         ledger.no_continuation = false;
@@ -2533,9 +2534,13 @@ impl<'a> Analyzer<'a> {
             }
             Expr::Tuple(items) | Expr::Array(items) => {
                 let mut sequence = Datum::source(span, Access::Mut, true);
-                if matches!(self.ty(span), Ty::Array(member) if results::carries_result(self.program, &member.ty))
-                {
-                    sequence.array_len = Some(items.len());
+                if let Ty::Array(member) = self.ty(span) {
+                    if higher_order::carries_callable(self.program, &member.ty) {
+                        ledger.record_array_length(span, items.len());
+                    }
+                    if results::carries_result(self.program, &member.ty) {
+                        sequence.array_len = Some(items.len());
+                    }
                 }
                 for (i, &item) in items.iter().enumerate() {
                     let coordinate = Coordinate::Index(i.to_string());
@@ -3295,12 +3300,38 @@ impl<'a> Analyzer<'a> {
             );
             return;
         }
-        if !matches!(node.value, Expr::Member { .. } | Expr::Index { .. }) {
+        let (Expr::Member { base, .. } | Expr::Index { base, .. }) = node.value else {
             self.error(Code::E0503, node.span, "invalid assignment target");
             return;
-        }
+        };
         self.mutate(ctx, ledger, prior, span);
         self.check_draft_insertion(ctx, ledger, prior, &value, span);
+        if let Some(coordinate) = prior
+            .roots
+            .first()
+            .and_then(|origin| origin.region.selection.last())
+        {
+            let access = self
+                .member_schema(self.ast(ctx.file).expr(base).span, coordinate)
+                .0;
+            if ctx.reachable
+                && !value.roots.is_empty()
+                && results::carries_result(self.program, self.ty(node.span))
+            {
+                ledger.lose_collection_elements_at(prior);
+            }
+            self.store_member((ctx, ledger), prior, value, access, span);
+        }
+    }
+
+    fn store_member(
+        &mut self,
+        (ctx, ledger): (&Context, &mut Ledger),
+        place: &Datum,
+        value: Datum,
+        access: Access,
+        span: Span,
+    ) {
         if ledger
             .loop_snapshot(&value)
             .origins()
@@ -3312,7 +3343,7 @@ impl<'a> Analyzer<'a> {
                 "confined value cannot be stored in an outer object",
             );
         }
-        if prior.origins().any(|origin| {
+        if place.origins().any(|origin| {
             let source = origin.region.source;
             ctx.caller_sources.contains(&source)
                 || ctx.formals.contains(&Some(source))
@@ -3320,35 +3351,20 @@ impl<'a> Analyzer<'a> {
         }) {
             self.check_publication_source(ctx, ledger, &value, span);
         }
-        if ctx.reachable && !value.roots.is_empty() {
-            let access = match &node.value {
-                Expr::Member { base, .. } | Expr::Index { base, .. } => prior
-                    .roots
-                    .first()
-                    .and_then(|origin| origin.region.selection.last())
-                    .map(|coordinate| {
-                        self.member_schema(self.ast(ctx.file).expr(*base).span, coordinate)
-                            .0
-                    }),
-                _ => None,
-            };
-            if let Some(access) = access {
-                if results::carries_result(self.program, self.ty(node.span)) {
-                    ledger.lose_collection_elements_at(prior);
-                }
-                if access == Access::Ref {
-                    self.check_stored_views(&ledger.loop_snapshot(&value), true, span);
-                }
-                if access == Access::Shared {
-                    self.require_shared_replacement(&value, span, true);
-                }
-                let mut value = self.receive_member(ctx, ledger, value, access, span);
-                value
-                    .publications
-                    .insert(ctx.owner, prior.roots.iter().any(|root| !root.new));
-                ledger.replace_member(prior, value, true);
-            }
+        if !ctx.reachable || value.roots.is_empty() {
+            return;
         }
+        if access == Access::Ref {
+            self.check_stored_views(&ledger.loop_snapshot(&value), true, span);
+        }
+        if access == Access::Shared {
+            self.require_shared_replacement(&value, span, true);
+        }
+        let mut value = self.receive_member(ctx, ledger, value, access, span);
+        value
+            .publications
+            .insert(ctx.owner, place.roots.iter().any(|root| !root.new));
+        ledger.replace_member(place, value, true);
     }
 
     fn check_draft_insertion(

@@ -55,6 +55,8 @@ pub enum Coordinate {
     Index(String),
     Dynamic,
     MapKey,
+    // Possible locations for an append whose exact index is unknown.
+    ArrayTail(usize),
 }
 
 impl Coordinate {
@@ -62,8 +64,16 @@ impl Coordinate {
         match (self, step) {
             (Self::MapKey, _) | (_, Self::MapKey) => self == step,
             (Self::Dynamic, _) => true,
+            (Self::ArrayTail(start), Self::Index(index)) => {
+                index.parse::<usize>().is_ok_and(|index| index >= *start)
+            }
+            (Self::ArrayTail(start), Self::ArrayTail(other)) => start <= other,
             _ => self == step,
         }
+    }
+
+    fn is_range(&self) -> bool {
+        matches!(self, Self::Dynamic | Self::ArrayTail(_))
     }
 }
 
@@ -854,7 +864,7 @@ impl Datum {
             };
             return;
         };
-        if *coordinate == Coordinate::Dynamic {
+        if coordinate.is_range() {
             let mut indexed: Vec<_> = self
                 .members
                 .keys()
@@ -1116,6 +1126,8 @@ impl Datum {
     }
 
     pub(super) fn joined(mut self, mut other: Self) -> Self {
+        self.materialize_tail_alternatives(&other);
+        other.materialize_tail_alternatives(&self);
         self.roots.append(&mut other.roots);
         self.roots.sort_unstable();
         self.roots.dedup();
@@ -1158,6 +1170,24 @@ impl Datum {
         self
     }
 
+    fn materialize_tail_alternatives(&mut self, other: &Self) {
+        if !self
+            .members
+            .keys()
+            .any(|key| matches!(key, Coordinate::ArrayTail(_)))
+        {
+            return;
+        }
+        for coordinate in other.members.keys() {
+            if matches!(coordinate, Coordinate::Index(_))
+                && !self.members.contains_key(coordinate)
+                && let Some(member) = self.known_member(coordinate)
+            {
+                self.members.insert(coordinate.clone(), member);
+            }
+        }
+    }
+
     pub(super) fn project(&self, coordinate: Coordinate, mode: Access) -> Self {
         self.project_schema(coordinate, mode.as_mode())
     }
@@ -1183,20 +1213,24 @@ impl Datum {
     }
 
     pub(super) fn known_member(&self, coordinate: &Coordinate) -> Option<Self> {
-        if let Some(value) = self.members.get(coordinate) {
-            Some(value.clone())
-        } else if *coordinate == Coordinate::Dynamic {
+        if *coordinate == Coordinate::Dynamic {
             self.members
                 .iter()
                 .filter(|(key, _)| coordinate.covers(key))
                 .map(|(_, value)| value.clone())
                 .reduce(Self::joined)
-        } else if Coordinate::Dynamic.covers(coordinate)
-            && self.roots.iter().any(|root| root.detached_snapshot)
-        {
-            self.members.get(&Coordinate::Dynamic).cloned()
+        } else if let Some(value) = self.members.get(coordinate) {
+            Some(value.clone())
         } else {
-            None
+            let detached = self.roots.iter().any(|root| root.detached_snapshot);
+            self.members
+                .iter()
+                .filter(|(key, _)| {
+                    (matches!(key, Coordinate::ArrayTail(_)) || detached && key.is_range())
+                        && key.covers(coordinate)
+                })
+                .map(|(_, member)| member.clone())
+                .reduce(Self::joined)
         }
     }
 
@@ -1356,6 +1390,12 @@ pub(super) struct Replacement {
     pub definite: bool,
 }
 
+#[derive(Clone, Copy, Eq, PartialEq)]
+struct ArrayExtent {
+    minimum: usize,
+    exact: bool,
+}
+
 #[derive(Clone, Default, Eq, PartialEq)]
 pub(super) struct Ledger {
     pub slots: BTreeMap<Span, Slot>,
@@ -1373,6 +1413,9 @@ pub(super) struct Ledger {
     pub no_continuation: bool,
     replacements: BTreeMap<Region, Replacement>,
     loop_members: BTreeMap<Region, Datum>,
+    // Length evidence for local array objects. Result iteration separately
+    // tracks the immutable layout it needs to discharge obligations.
+    array_extents: BTreeMap<Region, ArrayExtent>,
 }
 
 impl Ledger {
@@ -1384,7 +1427,7 @@ impl Ledger {
                 (update.definite
                     && !tail.is_empty()
                     && path.overlaps(root)
-                    && !path.selection.contains(&Coordinate::Dynamic))
+                    && !path.selection.iter().any(Coordinate::is_range))
                 .then(|| tail.to_vec())
             })
             .collect()
@@ -1428,7 +1471,7 @@ impl Ledger {
             if let Some(stored) = parent.members.get(step) {
                 for origin in parent.slot_projection(step.clone()).roots {
                     if !origin.region.summarized()
-                        && !origin.region.selection.contains(&Coordinate::Dynamic)
+                        && !origin.region.selection.iter().any(Coordinate::is_range)
                     {
                         self.replace_region(&origin.region, stored, true);
                     }
@@ -1799,6 +1842,7 @@ impl Ledger {
         self.iteration.truncate(entry.iteration.len());
         self.holds.truncate(entry.holds.len());
         self.slots.retain(|id, _| entry.slots.contains_key(id));
+        self.array_extents.retain(|region, _| !local(region.source));
         let carried = self.rebase_results(local, age_choices);
         self.choices
             .retain(|key, _| key.span != owner && !local(key.span));
@@ -2030,6 +2074,21 @@ impl Ledger {
         }
         self.choices = prior.choices.clone();
         self.merge_replacements(prior, &alternatives);
+        self.array_extents = alternatives
+            .first()
+            .map_or(&prior.array_extents, |branch| &branch.array_extents)
+            .iter()
+            .filter_map(|(region, &extent)| {
+                let merged = alternatives.iter().try_fold(extent, |merged, branch| {
+                    let branch = branch.array_extents.get(region)?;
+                    Some(ArrayExtent {
+                        minimum: merged.minimum.min(branch.minimum),
+                        exact: merged.exact && *branch == merged,
+                    })
+                })?;
+                Some((region.clone(), merged))
+            })
+            .collect();
         self.loop_members = if alternatives.is_empty() {
             prior.loop_members.clone()
         } else {
@@ -2175,7 +2234,7 @@ impl Ledger {
             let definite = definite
                 && single
                 && !region.summarized()
-                && !region.selection.contains(&Coordinate::Dynamic);
+                && !region.selection.iter().any(Coordinate::is_range);
             if definite && origin.draft {
                 self.replacements.retain(|prior, _| {
                     prior.selection.len() <= region.selection.len()
@@ -2185,6 +2244,57 @@ impl Ledger {
             }
             self.replace_region(region, &value, definite);
         }
+    }
+
+    pub(super) fn record_array_length(&mut self, allocation: Span, length: usize) {
+        self.array_extents.insert(
+            Region::allocation(allocation),
+            ArrayExtent {
+                minimum: length,
+                exact: true,
+            },
+        );
+    }
+
+    pub(super) fn clear_array_extents(&mut self) {
+        self.array_extents.clear();
+    }
+
+    pub(super) fn array_prefix_length(&self, array: &Datum) -> usize {
+        array
+            .roots
+            .iter()
+            .map(|root| {
+                self.array_extents
+                    .get(&root.region)
+                    .map_or(0, |extent| extent.minimum)
+            })
+            .min()
+            .unwrap_or(0)
+    }
+
+    pub(super) fn append_coordinate(&mut self, array: &Datum, single_push: bool) -> Coordinate {
+        if single_push
+            && let Some(first) = array.roots.first()
+            && array.roots.iter().all(|root| root.region == first.region)
+            && let Some(extent) = self.array_extents.get_mut(&first.region)
+            && extent.exact
+            && let Some(next) = extent.minimum.checked_add(1)
+        {
+            let position = Coordinate::Index(extent.minimum.to_string());
+            extent.minimum = next;
+            return position;
+        }
+        let minimum = self.array_prefix_length(array);
+        for (region, extent) in &mut self.array_extents {
+            if array.roots.iter().any(|root| {
+                root.region.selection.len() == region.selection.len()
+                    && root.region.overlaps(region)
+            }) {
+                extent.exact = false;
+            }
+        }
+        Coordinate::ArrayTail(minimum)
     }
 
     fn replace_region(&mut self, region: &Region, value: &Datum, definite: bool) {
@@ -2219,7 +2329,7 @@ impl Ledger {
         let singleton =
             base.array_len == Some(1) || base.map_keys.as_ref().is_some_and(|keys| keys.len() == 1);
         let arbitrary_element =
-            matches!(coordinate, Coordinate::Dynamic | Coordinate::MapKey) && !singleton;
+            (coordinate.is_range() || coordinate == Coordinate::MapKey) && !singleton;
         let mut value = self.project_members(base, coordinate, mode, |_| true, |_| true);
         if arbitrary_element {
             // A single unknown index cannot inspect the union of its possible values.

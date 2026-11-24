@@ -1149,3 +1149,14 @@ pub fn report() -> () { () }
 -- @revision
 pub fn report() @io -> () { println("message") }
 -- ^ E0552
+
+-- @case tightening_an_appended_callable_snapshot_contract_breaks_compatibility compat-fail E0552
+-- @baseline
+pub type Shelf = .{ ^mut item: Cell }
+fn read(new shelf: Shelf) -> int { shelf.item.count }
+pub fn append(mut actions: []fn(new Shelf) -> int) &mut -> () { Array::push(mut actions, read) }
+-- @revision
+pub type Shelf = .{ ^mut item: Cell }
+fn freeze(new shelf: Shelf) -> int { let fixed = new shelf; fixed.item.count }
+pub fn append(mut actions: []fn(new Shelf) -> int) &mut -> () { Array::push(mut actions, freeze) }
+-- ^ E0552

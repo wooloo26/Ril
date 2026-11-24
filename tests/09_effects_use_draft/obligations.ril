@@ -599,3 +599,51 @@ fn run(flag: bool) -> int {
     live.count += 8
     answer + live.count
 }
+
+-- @case draft_array_append_preserves_callable_snapshot_requirements compile-fail E0535 no-prelude
+type Cell = .{ var count: int }
+type Shelf = .{ ^mut item: Cell }
+fn freeze(new shelf: Shelf) -> int { let fixed = new shelf; fixed.item.count }
+fn count(new shelf: Shelf) -> int { shelf.item.count }
+fn run() -> int {
+    let mut live = Cell.{ count: 1 }
+    live.count += 1
+    let base = [count]
+    let next = derive(base) \mut draft -> { Array::push(mut draft, freeze) }
+    let answer = next[1](new Shelf.{ item: ^mut live })
+    -- ^ E0535
+    live.count += 8
+    answer + live.count
+}
+
+-- @case draft_array_append_keeps_existing_callable_positions compile-pass no-prelude
+type Cell = .{ var count: int }
+type Shelf = .{ ^mut item: Cell }
+fn freeze(new shelf: Shelf) -> int { let fixed = new shelf; fixed.item.count }
+fn count(new shelf: Shelf) -> int { shelf.item.count }
+fn run() -> int {
+    let mut live = Cell.{ count: 1 }
+    live.count += 1
+    let base = [count]
+    let next = derive(base) \mut draft -> { Array::push(mut draft, freeze) }
+    let answer = next[0](new Shelf.{ item: ^mut live })
+    live.count += 8
+    answer + live.count
+}
+
+-- @case branching_between_draft_appends_and_literals_preserves_callable_alternatives compile-fail E0535 no-prelude
+type Cell = .{ var count: int }
+type Shelf = .{ ^mut item: Cell }
+fn freeze(new shelf: Shelf) -> int { let fixed = new shelf; fixed.item.count }
+fn count(new shelf: Shelf) -> int { shelf.item.count }
+fn run(flag: bool) -> int {
+    let mut live = Cell.{ count: 1 }
+    live.count += 1
+    let base = [count]
+    let next = if flag { derive(base) \mut draft -> { Array::push(mut draft, freeze) } }
+        else { [count, count] }
+    let answer = next[1](new Shelf.{ item: ^mut live })
+    -- ^ E0535
+    live.count += 8
+    answer + live.count
+}

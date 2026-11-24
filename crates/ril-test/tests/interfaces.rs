@@ -347,6 +347,13 @@ pub fn from_callback_with(make: fn(Leaf) -> Leaf) -> Leaf { make(freeze) }
 pub fn apply(make: fn() -> Leaf, new shelf: Shelf) -> int { make()(new shelf) }
 pub fn apply_with(make: fn(Leaf) -> Leaf, new shelf: Shelf) -> int { make(freeze)(new shelf) }
 pub fn install(mut slot: Slot) &mut -> () { slot.action = freeze }
+pub fn append(mut actions: []Leaf) &mut -> () { Array::push(mut actions, freeze) }
+pub fn build_array() -> []Leaf {
+    let mut actions = [count]
+    Array::push(mut actions, freeze)
+    let fixed = new actions
+    fixed
+}
 pub fn stamp(base: Frame) -> Frame { derive(base) \mut d -> { d.stamp = 42 } }
 pub fn freeze_frame(base: Frame) -> Frame { derive(base) \mut d -> { d.action = freeze } }
 pub fn read_frame(base: Frame) -> Frame { derive(base) \mut d -> { d.action = count } }
@@ -365,6 +372,16 @@ pub fn read_frame(base: Frame) -> Frame { derive(base) \mut d -> { d.action = co
             ("Snapshot::factory_with()(keep)", true),
             ("Snapshot::read()", false),
             ("Snapshot::nested().actions[0]", true),
+            ("Snapshot::build_array()[0]", false),
+            ("Snapshot::build_array()[1]", true),
+            (
+                "{ let mut actions = [count]; Snapshot::append(mut actions); actions[0] }",
+                false,
+            ),
+            (
+                "{ let mut actions = [count]; Snapshot::append(mut actions); actions[1] }",
+                true,
+            ),
             ("Snapshot::identity(freeze)", true),
             ("Snapshot::identity(count)", false),
             ("Snapshot::from_callback(make)", true),
@@ -1828,6 +1845,7 @@ fn exported_summaries_and_via_domains_agree_with_lean() {
         Coordinate::Index(key) => json!({"kind": "index", "key": key}),
         Coordinate::Dynamic => json!({"kind": "dynamic", "key": ""}),
         Coordinate::MapKey => json!({"kind": "map-key", "key": ""}),
+        Coordinate::ArrayTail(start) => json!({"kind": "array-tail", "key": start.to_string()}),
     };
     let wire_source = |source: &ReturnSource| {
         json!({
