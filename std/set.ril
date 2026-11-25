@@ -2,6 +2,8 @@
 
 pub opaque type Set<T>
 
+pub fn empty<T>() -> new Set<T>
+pub fn from_array<T>(via items: []T) -> new Set<T>
 pub fn insert<T>(mut set: Set<T>, value: T) &mut -> ()
 pub fn remove<T>(mut set: Set<T>, value: T) &mut -> bool
 pub fn contains<T>(via set: Set<T>, value: T) -> bool

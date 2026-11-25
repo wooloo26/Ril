@@ -1,6 +1,6 @@
 use std::{collections::HashSet, sync::Arc};
 
-use ril_hir::{StdType, TextBuiltin};
+use ril_hir::StdType;
 use ril_source::{diag::Code, span::Span};
 use ril_syntax::syntax::{self, Argument, Expr, Mode};
 
@@ -303,6 +303,20 @@ impl Checker<'_> {
                 Ty::Unit
             }
             "len" => {
+                if let Some(arg) = args.first()
+                    && arg.mode != Mode::Plain
+                {
+                    let arg_span = self.ast(env.file).expr(arg.value).span;
+                    if first.is_value() {
+                        self.error(
+                            Code::E0401,
+                            arg_span,
+                            "value-type argument cannot carry live authority",
+                        );
+                    } else if arg.mode != Mode::Ref {
+                        self.error(Code::E0406, arg_span, "len accepts plain or ref access");
+                    }
+                }
                 if !matches!(
                     first,
                     Ty::Str
@@ -390,6 +404,24 @@ impl Checker<'_> {
             "contains" | "has_default" => Ty::Bool,
             "type_name" => Ty::Str,
             "inspect" => {
+                if let Some(arg) = args.first()
+                    && arg.mode != Mode::Plain
+                {
+                    let arg_span = self.ast(env.file).expr(arg.value).span;
+                    if first.is_value() {
+                        self.error(
+                            Code::E0401,
+                            arg_span,
+                            "value-type argument cannot carry live authority",
+                        );
+                    } else if arg.mode != Mode::Ref {
+                        self.error(
+                            Code::E0406,
+                            arg_span,
+                            "String::inspect accepts plain or ref access",
+                        );
+                    }
+                }
                 self.inspection_scopes.insert(span, env.scope);
                 Ty::Str
             }
@@ -440,64 +472,6 @@ impl Checker<'_> {
             },
             _ => Ty::Unknown,
         }
-    }
-
-    pub(super) fn text_call(
-        &mut self,
-        env: &mut Env,
-        builtin: TextBuiltin,
-        args: &[Argument],
-        span: Span,
-    ) -> Ty {
-        use TextBuiltin::*;
-        let option = |ty| Ty::Option(Box::new(ty));
-        let int_array = || Ty::Array(Box::new(Member::plain(Ty::Int)));
-        let (inputs, output) = match builtin {
-            Join => (
-                vec![Ty::Array(Box::new(Member::plain(Ty::Str))), Ty::Str],
-                Ty::Str,
-            ),
-            StartsWith | EndsWith => (vec![Ty::Str, Ty::Str], Ty::Bool),
-            ScalarAt => (vec![Ty::Str, Ty::Int], option(Ty::Int)),
-            ByteAt => (vec![Ty::Bytes, Ty::Int], option(Ty::Int)),
-            Scalars => (vec![Ty::Str], int_array()),
-            ToArray => (vec![Ty::Bytes], int_array()),
-            FromScalars => (vec![int_array()], option(Ty::Str)),
-            FromArray => (vec![int_array()], option(Ty::Bytes)),
-            EncodeUtf8 => (vec![Ty::Str], Ty::Bytes),
-            DecodeUtf8 => (vec![Ty::Bytes], option(Ty::Str)),
-        };
-        let Some(order) = builtin.argument_order(
-            args.iter()
-                .map(|arg| arg.name.as_ref().map(|label| label.value.as_str())),
-        ) else {
-            self.error(
-                Code::E0314,
-                span,
-                "text arguments do not match the primitive's parameters",
-            );
-            return output;
-        };
-        let mut written_types = vec![(None, false); args.len()];
-        for (index, (written, expected)) in order.into_iter().zip(inputs).enumerate() {
-            let allows_live_arg = index == 0 && matches!(builtin, Join | FromScalars | FromArray);
-            if let Some(slot) = written_types.get_mut(written) {
-                *slot = (Some(expected), allows_live_arg);
-            }
-        }
-        for (arg, (ty, allows_live_arg)) in args.iter().zip(written_types) {
-            if let Some(ty) = ty {
-                self.expect(env, arg.value, &ty);
-            }
-            if !(arg.mode == Mode::Plain || allows_live_arg) {
-                self.error(
-                    Code::E0406,
-                    self.ast(env.file).expr(arg.value).span,
-                    "text primitive argument mode does not match",
-                );
-            }
-        }
-        output
     }
 
     pub(super) fn reflect_call(

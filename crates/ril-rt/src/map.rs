@@ -176,6 +176,28 @@ impl RilMap {
         }
     }
 
+    /// Removes the entry at dense `index`, preserving insertion order of remaining entries.
+    pub fn remove_at(&mut self, index: usize) -> Option<(Value, Value)> {
+        if index >= self.entries.len() {
+            return None;
+        }
+        let (_, key, value) = self.entries.remove(index);
+        if !self.table.is_empty() {
+            if self.entries.len() <= 8 {
+                self.table.clear();
+            } else {
+                self.rehash();
+            }
+        }
+        Some((key, value))
+    }
+
+    /// Removes all entries from the map.
+    pub fn clear(&mut self) {
+        self.entries.clear();
+        self.table.clear();
+    }
+
     fn rehash(&mut self) {
         let cap = (self.entries.len() * 2).next_power_of_two().max(16);
         self.table.clear();
@@ -353,6 +375,14 @@ impl GcRuntime {
                     acc = acc.wrapping_add(mix64(kh ^ vh.rotate_left(17)));
                 }
                 mix64(0x2006_u64 ^ (map.len() as u64) ^ acc)
+            }
+            Some(Object::Set(set)) => {
+                let mut acc = 0_u64;
+                for &(_, k, _) in set.entries() {
+                    let kh = self.bisim_hash_depth(k, depth - 1);
+                    acc = acc.wrapping_add(mix64(kh ^ 0x517c_c1b7_2722_0a95));
+                }
+                mix64(0x2007_u64 ^ (set.len() as u64) ^ acc)
             }
             _ => mix64(0x3000),
         }

@@ -8,7 +8,7 @@ use std::{
 
 use ril_sema::{
     access::{Analysis, CleanupAction},
-    hir::{DefinitionId, DefinitionKind, Resolution, TextBuiltin},
+    hir::{DefinitionId, DefinitionKind, Intrinsic, Resolution},
     syntax::{
         Argument, Ast, Expr, ExprId, Function as SyntaxFunction, Member, Name, Parameter, Pattern,
         PatternId, StmtId, StmtKind, StringPart, Transfer,
@@ -34,6 +34,7 @@ enum NativeBody<'a> {
     Accessor(&'a [(bool, Member)]),
     Foreign(Arc<ForeignImport>),
     Constructor(&'a str, usize),
+    Primitive(&'static str, usize),
 }
 
 pub(super) fn lower(typed: &TypedProgram, analysis: &Analysis) -> Result<Program> {
@@ -54,6 +55,7 @@ pub(super) fn lower(typed: &TypedProgram, analysis: &Analysis) -> Result<Program
         queued: Vec::new(),
         named_index: HashMap::new(),
         ctor_index: HashMap::new(),
+        prim_index: HashMap::new(),
         closure_index: HashMap::new(),
         used_symbols: HashSet::new(),
         source_locs: Vec::new(),
@@ -120,6 +122,7 @@ struct Lowering<'a> {
     queued: Vec<Work>,
     named_index: HashMap<DefinitionId, Vec<FunctionId>>,
     ctor_index: HashMap<(DefinitionId, usize), FunctionId>,
+    prim_index: HashMap<DefinitionId, FunctionId>,
     closure_index: HashMap<(FileId, ExprId), Vec<FunctionId>>,
     used_symbols: HashSet<String>,
     source_locs: Vec<SourceLocEntry>,
@@ -131,6 +134,7 @@ struct Lowering<'a> {
 #[derive(Clone, PartialEq)]
 enum Work {
     Constructor(DefinitionId, usize),
+    Primitive(DefinitionId, &'static str, usize),
     Named(
         DefinitionId,
         BTreeMap<DefinitionId, Ty>,
@@ -164,6 +168,15 @@ impl<'a> Lowering<'a> {
                 }
                 let function = FunctionId(self.queued.len());
                 self.ctor_index.insert((*id, *arity), function);
+                self.queued.push(work);
+                function
+            }
+            Work::Primitive(id, _, _) => {
+                if let Some(&func) = self.prim_index.get(id) {
+                    return func;
+                }
+                let function = FunctionId(self.queued.len());
+                self.prim_index.insert(*id, function);
                 self.queued.push(work);
                 function
             }
@@ -352,6 +365,21 @@ impl<'a> Lowering<'a> {
                         BTreeMap::new(),
                     )
                 }
+                Work::Primitive(id, symbol, arity) => {
+                    let def = self.typed.hir.definition(id);
+                    (
+                        "prim",
+                        def.name.span,
+                        def.name.span.file,
+                        self.typed.hir.export_name(id),
+                        NativeBody::Primitive(symbol, arity),
+                        &[][..],
+                        Vec::new(),
+                        Vec::new(),
+                        BTreeMap::new(),
+                        BTreeMap::new(),
+                    )
+                }
                 Work::Named(id, types, captures, statics) => {
                     let f = self.declaration(id).ok_or_else(|| {
                         Diagnostic::unsupported("missing native function definition")
@@ -411,7 +439,7 @@ impl<'a> Lowering<'a> {
         let params: Vec<_> = params.iter().filter(|param| !param.is_meta).collect();
         let arity = match body {
             NativeBody::Accessor(_) => 1,
-            NativeBody::Constructor(_, arity) => arity,
+            NativeBody::Constructor(_, arity) | NativeBody::Primitive(_, arity) => arity,
             _ => params.len(),
         };
         let symbol = self.mangle_symbol(kind_tag, &name, arity, &types, &statics, &captures);
@@ -478,6 +506,7 @@ impl<'a> Lowering<'a> {
                 builder.project_path(path, value)?
             }
             NativeBody::Constructor(tag, _) => builder.tag(tag, builder.params(entry)),
+            NativeBody::Primitive(symbol, _) => builder.runtime(symbol, builder.params(entry)),
         };
         if builder.current.is_some() {
             builder.return_value(result)?;
@@ -1238,6 +1267,29 @@ impl<'a> Builder<'_, 'a> {
                     .map_or(0, |f| f.signature.params.len());
                 Ok(self.box_closure(id, arity, environment))
             }
+            DefinitionKind::Primitive(_)
+                if self
+                    .global
+                    .typed
+                    .hir
+                    .intrinsic(source)
+                    .and_then(Intrinsic::runtime_symbol)
+                    .is_some() =>
+            {
+                let symbol = self
+                    .global
+                    .typed
+                    .hir
+                    .intrinsic(source)
+                    .and_then(Intrinsic::runtime_symbol)
+                    .unwrap_or_else(|| ril_source::ice!("checked runtime symbol"));
+                let arity = self.global.declaration(source).map_or(0, |f| {
+                    f.signature.params.iter().filter(|p| !p.is_meta).count()
+                });
+                let id = self.global.queue(Work::Primitive(source, symbol, arity));
+                let environment = self.unit();
+                Ok(self.box_closure(id, arity, environment))
+            }
             _ => Err(self.unsupported(span, "first-class callable or uninitialized local")),
         }
     }
@@ -1290,11 +1342,9 @@ impl<'a> Builder<'_, 'a> {
                 let args = self.arguments(params, self.file, args, &metadata, span)?;
                 return Ok(self.invoke_closure(value, args));
             }
+            let callee_span = self.ast().expr(callee).span;
             let value = self.expr(callee)?;
-            let args = args
-                .iter()
-                .map(|arg| self.expr(arg.value))
-                .collect::<Result<Vec<_>>>()?;
+            let args = self.indirect_arguments(callee_span, args, span)?;
             return Ok(self.invoke_closure(value, args));
         };
         let id = self
@@ -1304,14 +1354,11 @@ impl<'a> Builder<'_, 'a> {
         let def = self.global.typed.hir.definition(id);
         let name = def.name.value.as_str();
         if matches!(def.kind, DefinitionKind::Primitive(_)) {
-            if let Some(builtin) = self.global.typed.hir.text_builtin(id) {
-                return self.text_builtin(builtin, args);
-            }
             if let Some(module @ ("Fiber" | "Channel")) = self.global.typed.hir.primitive_module(id)
             {
                 return self.concurrent(module, name, args, span);
             }
-            return self.primitive(name, args, span);
+            return self.primitive(id, name, args, span);
         }
         if let Some(label) = self
             .global
@@ -1335,11 +1382,9 @@ impl<'a> Builder<'_, 'a> {
             return Ok(self.invoke_closure(handler, args));
         }
         if def.kind == DefinitionKind::Local {
+            let callee_span = self.ast().expr(callee).span;
             let closure = self.read(id, span)?;
-            let args = args
-                .iter()
-                .map(|arg| self.expr(arg.value))
-                .collect::<Result<Vec<_>>>()?;
+            let args = self.indirect_arguments(callee_span, args, span)?;
             return Ok(self.invoke_closure(closure, args));
         }
         if matches!(def.kind, DefinitionKind::Variant(_) | DefinitionKind::Type) {
@@ -1632,6 +1677,43 @@ impl<'a> Builder<'_, 'a> {
         result
     }
 
+    fn indirect_arguments(
+        &mut self,
+        callee_span: Span,
+        args: &[Argument],
+        span: Span,
+    ) -> Result<Vec<Register>> {
+        if !args.iter().any(|arg| arg.name.is_some()) {
+            return args.iter().map(|arg| self.expr(arg.value)).collect();
+        }
+        let Some(Ty::Callable(sig)) = self.global.typed.types.get(&callee_span) else {
+            return args.iter().map(|arg| self.expr(arg.value)).collect();
+        };
+        let mut provided = vec![false; sig.parameters.len()];
+        let mut values = vec![None; sig.parameters.len()];
+        for arg in args {
+            let index = if let Some(name) = &arg.name {
+                sig.parameters
+                    .iter()
+                    .position(|p| p.label.as_deref() == Some(name.value.as_str()))
+            } else {
+                provided.iter().position(|present| !present)
+            }
+            .ok_or_else(|| self.unsupported(span, "indirect argument binding"))?;
+            if let Some(present) = provided.get_mut(index) {
+                *present = true;
+            }
+            let value = self.expr(arg.value)?;
+            if let Some(slot) = values.get_mut(index) {
+                *slot = Some(value);
+            }
+        }
+        values
+            .into_iter()
+            .map(|slot| slot.ok_or_else(|| self.unsupported(span, "missing indirect argument")))
+            .collect()
+    }
+
     fn concurrent(
         &mut self,
         module: &str,
@@ -1684,13 +1766,20 @@ impl<'a> Builder<'_, 'a> {
         Ok(self.runtime(symbol, args))
     }
 
-    fn primitive(&mut self, name: &str, args: &[Argument], span: Span) -> Result<Register> {
-        if name == "absorb_panic"
+    fn primitive(
+        &mut self,
+        id: DefinitionId,
+        name: &str,
+        args: &[Argument],
+        span: Span,
+    ) -> Result<Register> {
+        let intrinsic = self.global.typed.hir.intrinsic(id);
+        if intrinsic == Some(Intrinsic::AbsorbPanic)
             && let [action] = args
         {
             return self.absorb(action.value, span);
         }
-        if name == "derive"
+        if intrinsic == Some(Intrinsic::Derive)
             && let [base, update] = args
         {
             let base = self.expr(base.value)?;
@@ -1720,7 +1809,7 @@ impl<'a> Builder<'_, 'a> {
             self.current = Some(done);
             return Ok(self.result_param(done));
         }
-        if name == "inner"
+        if intrinsic == Some(Intrinsic::Inner)
             && let [arg] = args
         {
             let wrapper = self.collection(arg.value)?;
@@ -1751,7 +1840,7 @@ impl<'a> Builder<'_, 'a> {
                 },
             );
         }
-        if name == "inspect"
+        if intrinsic == Some(Intrinsic::StringInspect)
             && let [argument] = args
         {
             let argument_span = self.ast().expr(argument.value).span;
@@ -1766,69 +1855,42 @@ impl<'a> Builder<'_, 'a> {
             }
             return Ok(self.runtime("ril_rt_inspect", vec![value]));
         }
-        let mut args = args
-            .iter()
-            .map(|arg| self.expr(arg.value))
-            .collect::<Result<Vec<_>>>()?;
-        let symbol = match name {
-            "print" => "ril_rt_print",
-            "println" => "ril_rt_println",
-            "panic" => "ril_rt_panic",
-            "assert" => {
-                if args.len() == 1 {
-                    args.push(self.string("assertion failed"));
-                }
-                "ril_rt_assert"
-            }
-            "len" => "ril_rt_len",
-            "read" => "ril_rt_file_read",
-            "write" => "ril_rt_file_write",
-            "to_f64" => "ril_rt_to_f64",
-            "convert" => "ril_rt_to_int",
-            "trunc" => "ril_rt_trunc",
-            "clone" => "ril_rt_clone",
-            "push" => "ril_rt_append",
-            "panic_message" => "ril_rt_panic_message",
-            _ => return Err(self.unsupported(span, &format!("primitive {name}"))),
-        };
-        Ok(self.runtime(symbol, args))
-    }
-
-    fn text_builtin(&mut self, builtin: TextBuiltin, args: &[Argument]) -> Result<Register> {
-        use TextBuiltin::*;
-        let symbol = match builtin {
-            Join => "ril_rt_str_join",
-            StartsWith => "ril_rt_str_starts_with",
-            EndsWith => "ril_rt_str_ends_with",
-            ScalarAt => "ril_rt_str_at",
-            Scalars => "ril_rt_str_scalars",
-            FromScalars => "ril_rt_str_from_scalars",
-            EncodeUtf8 => "ril_rt_encode_utf8",
-            DecodeUtf8 => "ril_rt_decode_utf8",
-            ByteAt => "ril_rt_bytes_at",
-            ToArray => "ril_rt_bytes_to_array",
-            FromArray => "ril_rt_bytes_from_array",
-        };
-        let order = builtin
-            .argument_order(
+        if intrinsic == Some(Intrinsic::Assert) {
+            let mut values = if let Some(decl) = self.global.declaration(id) {
+                self.arguments(
+                    &decl.signature.params,
+                    decl.name.span.file,
+                    args,
+                    &BTreeMap::new(),
+                    span,
+                )?
+            } else {
                 args.iter()
-                    .map(|arg| arg.name.as_ref().map(|label| label.value.as_str())),
-            )
-            .unwrap_or_else(|| ril_source::ice!("text primitive arguments passed type checking"));
-        let written = args
-            .iter()
-            .map(|arg| self.expr(arg.value))
-            .collect::<Result<Vec<_>>>()?;
-        let args = order
-            .into_iter()
-            .map(|index| {
-                written
-                    .get(index)
-                    .copied()
-                    .unwrap_or_else(|| ril_source::ice!("missing checked text argument"))
-            })
-            .collect();
-        Ok(self.runtime(symbol, args))
+                    .map(|arg| self.expr(arg.value))
+                    .collect::<Result<Vec<_>>>()?
+            };
+            if values.len() == 1 {
+                values.push(self.string("assertion failed"));
+            }
+            return Ok(self.runtime("ril_rt_assert", values));
+        }
+        let values = if let Some(decl) = self.global.declaration(id) {
+            self.arguments(
+                &decl.signature.params,
+                decl.name.span.file,
+                args,
+                &BTreeMap::new(),
+                span,
+            )?
+        } else {
+            args.iter()
+                .map(|arg| self.expr(arg.value))
+                .collect::<Result<Vec<_>>>()?
+        };
+        let Some(symbol) = intrinsic.and_then(Intrinsic::runtime_symbol) else {
+            return Err(self.unsupported(span, &format!("primitive {name}")));
+        };
+        Ok(self.runtime(symbol, values))
     }
 
     fn absorb(&mut self, action: ExprId, span: Span) -> Result<Register> {

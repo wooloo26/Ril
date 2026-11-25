@@ -275,9 +275,6 @@ impl Checker<'_> {
                     {
                         return self.reflect_call(env, path, args, expected, span);
                     }
-                    if let Some(builtin) = self.hir.text_builtin(id) {
-                        return self.text_call(env, builtin, args, span);
-                    }
                     if let Some(module @ ("Fiber" | "Channel")) = self.hir.primitive_module(id) {
                         let explicit = if module == "Channel"
                             && matches!(def.name.value.as_str(), "bounded" | "unbounded")
@@ -322,7 +319,19 @@ impl Checker<'_> {
                             "runtime primitive called in static computation",
                         );
                     }
-                    return self.primitive_call(env, &def.name.value, args, expected, span);
+                    if self
+                        .hir
+                        .intrinsic(id)
+                        .is_some_and(ril_hir::Intrinsic::uses_declared_signature)
+                    {
+                        let type_args = path
+                            .and_then(|p| p.segments.last())
+                            .map_or(&[][..], |p| p.arguments.as_slice());
+                        let generic = self.call_argument_types(env, id, type_args, span);
+                        (Ty::Callable(self.declare_function(id)), generic)
+                    } else {
+                        return self.primitive_call(env, &def.name.value, args, expected, span);
+                    }
                 }
                 DefinitionKind::Type => {
                     let ty = self.constructor_type(
@@ -447,12 +456,27 @@ impl Checker<'_> {
                 .parameters
                 .get(index)
                 .unwrap_or_else(|| ril_source::ice!("bound argument without parameter"));
-            self.expect(env, arg.value, &substitute(&parameter.ty, &generics));
+            let param_ty = substitute(&parameter.ty, &generics);
+            let allows_draft_receiver = index == 0
+                && def_id.is_some_and(|id| {
+                    matches!(self.hir.primitive_module(id), Some("Array" | "Map" | "Set"))
+                });
+            if allows_draft_receiver {
+                let actual = self.expr(env, arg.value, None);
+                let normalized = self.normalize(&actual);
+                if let Ty::Draft(inner) = normalized {
+                    self.require(env, arg_span, &inner, &param_ty);
+                } else {
+                    self.require(env, arg_span, &normalized, &param_ty);
+                }
+            } else {
+                self.expect(env, arg.value, &param_ty);
+            }
             if matches!(arg.mode, Mode::Mut | Mode::Shared | Mode::Ref)
                 && self.types.get(&arg_span).is_some_and(Ty::is_value)
             {
                 self.error(
-                    Code::E0402,
+                    Code::E0401,
                     arg_span,
                     "value-type argument cannot carry live authority",
                 );
@@ -513,6 +537,58 @@ impl Checker<'_> {
         }
         if let Some(known) = def_id {
             self.validate_generic_uses(env, known, &generics, span);
+            if let Some(intrinsic) = self.hir.intrinsic(known) {
+                match intrinsic {
+                    ril_hir::Intrinsic::ArraySort => {
+                        if let Some(arg0) = args.first() {
+                            let arg0_span = ast.expr(arg0.value).span;
+                            let mut receiver =
+                                self.types.get(&arg0_span).cloned().unwrap_or(Ty::Unknown);
+                            receiver = self.normalize(&receiver);
+                            if let Ty::Draft(inner) = receiver {
+                                receiver = self.normalize(&inner);
+                            }
+                            if let Ty::Array(elem) = receiver {
+                                let elem_ty = self.normalize(&elem.ty);
+                                let orderable = matches!(
+                                    &elem_ty,
+                                    Ty::Int
+                                        | Ty::F64
+                                        | Ty::Str
+                                        | Ty::Bytes
+                                        | Ty::Unknown
+                                        | Ty::Infer(_)
+                                ) || matches!(&elem_ty, Ty::Param(id) if env
+                                .domains
+                                .get(id)
+                                .is_some_and(|dom| dom.iter().all(|t| matches!(
+                                    t,
+                                    Ty::Int | Ty::F64 | Ty::Str | Ty::Bytes
+                                ))));
+                                if !orderable {
+                                    self.error(
+                                        Code::E0327,
+                                        span,
+                                        "Array::sort requires orderable elements",
+                                    );
+                                }
+                            }
+                        }
+                    }
+                    ril_hir::Intrinsic::SetEmpty | ril_hir::Intrinsic::SetFromArray => {
+                        if let Ty::Set(elem) = self.normalize(&result)
+                            && !self.eligible_key(env, &elem, &mut HashSet::new())
+                        {
+                            self.error(
+                                Code::E0328,
+                                span,
+                                "set element type does not support stable equality",
+                            );
+                        }
+                    }
+                    _ => {}
+                }
+            }
         }
         if !env.shadow && !generics.is_empty() {
             self.generic_arguments.insert(span, generics.clone());

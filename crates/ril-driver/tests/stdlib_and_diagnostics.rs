@@ -268,3 +268,120 @@ fn prelude_real_sums_platform_math_and_removed_aliases() -> Result<(), String> {
     }
     Ok(())
 }
+
+#[test]
+fn wave_b_stdlib_primitives_set_sort_first_class_and_named_args() -> Result<(), String> {
+    let source = r#"
+        fn sub_named(left: int, right: int) -> int { left - right }
+
+        fn main() @io -> () {
+            -- Array::{pop, insert, remove, sort, clear, len}
+            let mut xs = [30, 10, 20]
+            Array::sort(mut xs)
+            assert(xs == [10, 20, 30])
+            Array::insert(mut xs, 1, 15)
+            assert(xs == [10, 15, 20, 30])
+            assert(Array::remove(mut xs, 2) == Some(20))
+            assert(Array::pop(mut xs) == Some(30))
+            assert(Array::len(ref xs) == 2)
+            Array::clear(mut xs)
+            assert(Array::len(ref xs) == 0 && Array::pop(mut xs) == None)
+
+            -- Map::{get, insert, remove, contains, clear, keys, values, len}
+            let mut m: [str: int] = [:]
+            Map::insert(mut m, "a", 1)
+            Map::insert(mut m, "b", 2)
+            assert(Map::len(ref m) == 2)
+            assert(Map::contains(ref m, "a") && !Map::contains(ref m, "z"))
+            assert(Map::get(ref m, "b") == Some(2))
+            assert(Map::keys(ref m) == ["a", "b"])
+            assert(Map::values(ref m) == [1, 2])
+            assert(Map::remove(mut m, "a") == Some(1))
+            assert(Map::remove(mut m, "a") == None)
+            Map::clear(mut m)
+            assert(Map::len(ref m) == 0)
+
+            -- Set::{empty, from_array, insert, remove, contains, len}, clone, ==, for
+            let mut s: Set<int> = Set::empty()
+            Set::insert(mut s, 10)
+            Set::insert(mut s, 20)
+            Set::insert(mut s, 10)
+            assert(len(ref s) == 2 && Set::len(ref s) == 2)
+            assert(Set::contains(ref s, 10) && !Set::contains(ref s, 99))
+            let s2 = Set::from_array([20, 10, 20])
+            assert(s == s2)
+            let s3 = clone(ref s)
+            assert(s3 == s2)
+            var sum = 0
+            for s2 as item {
+                sum += item
+            }
+            assert(sum == 30)
+            assert(Set::remove(mut s, 10) && !Set::remove(mut s, 10))
+            assert(len(ref s) == 1)
+
+            -- String::split + named args + first-class primitives + indirect named args
+            let parts = String::split(separator: ",", text: "alpha,beta,gamma")
+            assert(parts == ["alpha", "beta", "gamma"])
+            let joined = String::join(separator: "-", parts: parts)
+            assert(joined == "alpha-beta-gamma")
+
+            let f_to_f64 = Numeric::to_f64
+            let floats = Array::map([1, 2, 3], f_to_f64)
+            assert(floats == [1.0, 2.0, 3.0])
+
+            -- BigInt to_f64 overflow returns +-infinity rather than panicking
+            let huge = 1 << 2000
+            let inf = Numeric::to_f64(huge)
+            assert(inf > 1.0e300 && Numeric::trunc(inf) == None)
+
+            let f_sub: fn(left: int, right: int) -> int = sub_named
+            assert(f_sub(right: 3, left: 10) == 7)
+
+            println("wave-b-ok")
+        }
+    "#;
+    run_aot(source, "wave-b-ok\n")?;
+
+    // Module-specific receiver checks and mode/orderable/mutability checks.
+    for (src, code) in [
+        (
+            "fn main() -> () { let _ = Map::len(\"abc\") }\n",
+            Code::E0301,
+        ),
+        (
+            "fn main() -> () { let _ = len(ref \"abc\") }\n",
+            Code::E0401,
+        ),
+        (
+            "fn main() -> () { let _ = String::inspect(ref 42) }\n",
+            Code::E0401,
+        ),
+        (
+            "fn main() -> () { let xs = [3, 1, 2]; Array::sort(mut xs) }\n",
+            Code::E0520,
+        ),
+        (
+            "fn f(mut xs: []int) -> () { Array::sort(mut xs) }\nfn main() -> () { let mut xs = [1]; f(mut xs) }\n",
+            Code::E0510,
+        ),
+        (
+            "fn main() -> () { let mut xs = [true, false]; Array::sort(mut xs) }\n",
+            Code::E0327,
+        ),
+    ] {
+        let mut pkg = VirtualPackage::new(Unit::Bin);
+        pkg.insert(pkg.entry.clone(), src.as_bytes().to_vec());
+        let checked = Driver.check(&pkg, Stage::Access);
+        assert!(
+            checked
+                .result
+                .diagnostics
+                .iter()
+                .any(|d| d.code == Some(code)),
+            "expected {code:?} for `{src}`, got {:?}",
+            checked.result.diagnostics
+        );
+    }
+    Ok(())
+}

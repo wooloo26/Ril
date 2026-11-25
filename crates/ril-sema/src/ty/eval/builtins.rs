@@ -104,6 +104,11 @@ impl Checker<'_> {
             ("len", [Value::Map(items)]) => Ok(integer(items.len())),
             ("len", [Value::Str(str)]) => Ok(integer(str.chars().count())),
             ("len", [Value::Bytes(bytes)]) => Ok(integer(bytes.len())),
+            ("split", [Value::Str(text), Value::Str(separator)]) => Ok(Value::Array(
+                text.split(separator.as_str())
+                    .map(|part| Value::Str(part.to_owned()))
+                    .collect(),
+            )),
             (
                 "clone",
                 [

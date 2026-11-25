@@ -65,7 +65,6 @@ impl<'a> Integer<'a> {
         }
     }
 
-    #[cfg(not(miri))]
     pub(crate) fn is_negative(&self) -> bool {
         match self {
             Self::Small(number) => *number < 0,
@@ -73,7 +72,7 @@ impl<'a> Integer<'a> {
         }
     }
 
-    fn compare(self, other: Self) -> Ordering {
+    pub(crate) fn compare(self, other: Self) -> Ordering {
         match (self, other) {
             (Self::Small(a), Self::Small(b)) => a.cmp(&b),
             (a, b) => a.into_big().cmp(&b.into_big()),

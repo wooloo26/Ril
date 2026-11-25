@@ -337,7 +337,7 @@ fn stdlib_intrinsic_phase(module_name: &str, name: &str) -> Option<PrimitivePhas
         ("Reflect", "attrs" | "field_attrs" | "variant_attrs" | "has_default") => Some(Static),
         ("Array", "push" | "pop" | "insert" | "remove" | "sort" | "clear" | "len")
         | ("Map", "get" | "insert" | "remove" | "contains" | "clear" | "keys" | "values" | "len")
-        | ("Set", "insert" | "remove" | "contains" | "len")
+        | ("Set", "empty" | "from_array" | "insert" | "remove" | "contains" | "len")
         | (
             "String",
             "raw_encode_utf8" | "raw_decode_utf8" | "inspect" | "len" | "join" | "split"

@@ -85,6 +85,7 @@ pub enum Object {
     Tuple(Vec<Value>),
     Record(BTreeMap<String, Value>),
     Map(RilMap),
+    Set(RilMap),
     Tag(String, Vec<Value>),
     Closure {
         function: *const u8,
@@ -123,6 +124,11 @@ impl Object {
                 for &(_, k, v) in map.entries() {
                     visit(k);
                     visit(v);
+                }
+            }
+            Self::Set(set) => {
+                for &(_, k, _) in set.entries() {
+                    visit(k);
                 }
             }
             Self::Closure {

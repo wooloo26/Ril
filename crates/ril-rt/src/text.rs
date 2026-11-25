@@ -24,6 +24,21 @@ pub(crate) fn join(gc: &GcRuntime, parts: Value, separator: Value) -> Option<Str
     Some(joined)
 }
 
+pub(crate) fn split(gc: &GcRuntime, text: Value, separator: Value) -> Option<Vec<String>> {
+    let Object::Str(text) = gc.object(text)? else {
+        return None;
+    };
+    let Object::Str(separator) = gc.object(separator)? else {
+        return None;
+    };
+    Some(
+        text.as_str()
+            .split(separator.as_str())
+            .map(str::to_owned)
+            .collect(),
+    )
+}
+
 pub(crate) fn inspect_string(text: &str) -> String {
     let mut out = String::from("\"");
     for ch in text.chars() {

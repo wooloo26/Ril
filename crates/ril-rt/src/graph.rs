@@ -76,6 +76,25 @@ impl GcRuntime {
                         }
                     }
                 }
+                (Some(Object::Set(a)), Some(Object::Set(b))) if a.len() == b.len() => {
+                    for &(hash, key, _) in a.entries() {
+                        let mut found = false;
+                        for cand_idx in b.indices_with_hash(hash) {
+                            let Some((other, _)) = b.get_entry(cand_idx) else {
+                                continue;
+                            };
+                            let mut trial = seen.clone();
+                            if self.equal_from(key, other, &mut trial)? {
+                                *seen = trial;
+                                found = true;
+                                break;
+                            }
+                        }
+                        if !found {
+                            return Ok(false);
+                        }
+                    }
+                }
                 (Some(Object::Closure { .. } | Object::Draft { .. }), _)
                 | (_, Some(Object::Closure { .. } | Object::Draft { .. })) => {
                     return Err("object does not support equality");
@@ -138,6 +157,14 @@ impl GcRuntime {
                     }
                     Object::Map(cloned)
                 }
+                Object::Set(set) => {
+                    let mut cloned = crate::RilMap::new();
+                    for &(hash, key, _) in set.entries() {
+                        let k = copy(key)?;
+                        cloned.push_new(hash, k, Value::UNIT);
+                    }
+                    Object::Set(cloned)
+                }
                 _ => return Err("object cannot be cloned"),
             };
             *self.object_mut(target).ok_or("missing pinned graph copy")? = result;
@@ -171,7 +198,8 @@ impl GcRuntime {
             | Object::Tuple(_)
             | Object::Tag(..)
             | Object::Record(_)
-            | Object::Map(_) => {
+            | Object::Map(_)
+            | Object::Set(_) => {
                 // Pin unfinished copies until every incoming edge has been rebuilt.
                 let copy = self.alloc(Object::Array(Vec::new()));
                 self.pin(copy);
@@ -289,6 +317,17 @@ impl GcRuntime {
                         .collect::<Vec<_>>()
                         .join(", ")
                 ),
+                Some(Object::Set(set)) => {
+                    let index = self.integer(descriptor_handle).map(|_| descriptor_handle);
+                    format!(
+                        "Set([{}])",
+                        set.entries()
+                            .iter()
+                            .map(|&(_, key, _)| render(key, index))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )
+                }
                 Some(Object::Tag(tag, fields)) if fields.is_empty() => tag.clone(),
                 Some(Object::Tag(tag, fields)) => {
                     let ids = match field(tag).and_then(|child| self.object(child)) {

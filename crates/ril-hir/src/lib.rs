@@ -90,6 +90,168 @@ impl TextBuiltin {
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum Intrinsic {
+    Len,
+    Inner,
+    Clone,
+    Derive,
+    AbsorbPanic,
+    PanicMessage,
+    TypeName,
+    Coords,
+    Variants,
+    Panic,
+    Assert,
+    Print,
+    Println,
+    FileRead,
+    FileWrite,
+    NumericToF64,
+    NumericConvert,
+    NumericTrunc,
+    ArrayPush,
+    ArrayPop,
+    ArrayInsert,
+    ArrayRemove,
+    ArraySort,
+    ArrayClear,
+    ArrayLen,
+    MapGet,
+    MapInsert,
+    MapRemove,
+    MapContains,
+    MapClear,
+    MapKeys,
+    MapValues,
+    MapLen,
+    SetEmpty,
+    SetFromArray,
+    SetInsert,
+    SetRemove,
+    SetContains,
+    SetLen,
+    StringInspect,
+    StringLen,
+    StringJoin,
+    StringSplit,
+    StringStartsWith,
+    StringEndsWith,
+    StringAt,
+    StringScalars,
+    StringFromScalars,
+    StringEncodeUtf8,
+    StringDecodeUtf8,
+    BytesLen,
+    BytesAt,
+    BytesToArray,
+    BytesFromArray,
+    ReflectAttrs,
+    ReflectFieldAttrs,
+    ReflectVariantAttrs,
+    ReflectHasDefault,
+}
+
+impl Intrinsic {
+    /// Ordinary bodyless stdlib intrinsics whose `.ril` signatures in `std/*.ril`
+    /// are typechecked directly via `declare_function()`.
+    pub const fn uses_declared_signature(self) -> bool {
+        use Intrinsic::*;
+        matches!(
+            self,
+            Print
+                | Println
+                | FileRead
+                | FileWrite
+                | NumericToF64
+                | NumericTrunc
+                | ArrayPush
+                | ArrayPop
+                | ArrayInsert
+                | ArrayRemove
+                | ArraySort
+                | ArrayClear
+                | ArrayLen
+                | MapGet
+                | MapInsert
+                | MapRemove
+                | MapContains
+                | MapClear
+                | MapKeys
+                | MapValues
+                | MapLen
+                | SetEmpty
+                | SetFromArray
+                | SetInsert
+                | SetRemove
+                | SetContains
+                | SetLen
+                | StringLen
+                | StringJoin
+                | StringSplit
+                | StringStartsWith
+                | StringEndsWith
+                | StringAt
+                | StringScalars
+                | StringFromScalars
+                | StringEncodeUtf8
+                | StringDecodeUtf8
+                | BytesLen
+                | BytesAt
+                | BytesToArray
+                | BytesFromArray
+        )
+    }
+
+    pub const fn runtime_symbol(self) -> Option<&'static str> {
+        use Intrinsic::*;
+        Some(match self {
+            Print => "ril_rt_print",
+            Println => "ril_rt_println",
+            Panic => "ril_rt_panic",
+            Len | ArrayLen | MapLen | SetLen | StringLen | BytesLen => "ril_rt_len",
+            FileRead => "ril_rt_file_read",
+            FileWrite => "ril_rt_file_write",
+            NumericToF64 => "ril_rt_to_f64",
+            NumericConvert => "ril_rt_to_int",
+            NumericTrunc => "ril_rt_trunc",
+            Clone => "ril_rt_clone",
+            PanicMessage => "ril_rt_panic_message",
+            ArrayPush => "ril_rt_append",
+            ArrayPop => "ril_rt_array_pop",
+            ArrayInsert => "ril_rt_array_insert",
+            ArrayRemove => "ril_rt_array_remove",
+            ArraySort => "ril_rt_array_sort",
+            ArrayClear => "ril_rt_array_clear",
+            MapGet => "ril_rt_map_get",
+            MapInsert => "ril_rt_map_insert",
+            MapRemove => "ril_rt_map_remove",
+            MapContains => "ril_rt_map_contains",
+            MapClear => "ril_rt_map_clear",
+            MapKeys => "ril_rt_map_keys",
+            MapValues => "ril_rt_map_values",
+            SetEmpty => "ril_rt_set_new",
+            SetFromArray => "ril_rt_set_from_array",
+            SetInsert => "ril_rt_set_insert",
+            SetRemove => "ril_rt_set_remove",
+            SetContains => "ril_rt_set_contains",
+            StringJoin => "ril_rt_str_join",
+            StringSplit => "ril_rt_str_split",
+            StringStartsWith => "ril_rt_str_starts_with",
+            StringEndsWith => "ril_rt_str_ends_with",
+            StringAt => "ril_rt_str_at",
+            StringScalars => "ril_rt_str_scalars",
+            StringFromScalars => "ril_rt_str_from_scalars",
+            StringEncodeUtf8 => "ril_rt_encode_utf8",
+            StringDecodeUtf8 => "ril_rt_decode_utf8",
+            BytesAt => "ril_rt_bytes_at",
+            BytesToArray => "ril_rt_bytes_to_array",
+            BytesFromArray => "ril_rt_bytes_from_array",
+            _ => return None,
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum StdType {
     Option,
     Result,
@@ -380,6 +542,77 @@ impl Program {
 
     pub fn std_type_id(&self, kind: StdType) -> Option<DefinitionId> {
         self.std_types.get(&kind).copied()
+    }
+
+    pub fn intrinsic(&self, id: DefinitionId) -> Option<Intrinsic> {
+        use Intrinsic::*;
+        let def = self.definition(id);
+        if !matches!(def.kind, DefinitionKind::Primitive(_)) {
+            return None;
+        }
+        let module = self.primitive_module(id)?;
+        let name = def.name.value.as_str();
+        Some(match (module, name) {
+            ("Prelude", "len") => Len,
+            ("Prelude", "inner") => Inner,
+            ("Prelude", "clone") => Clone,
+            ("Prelude", "derive") => Derive,
+            ("Prelude", "absorb_panic") => AbsorbPanic,
+            ("Prelude", "panic_message") => PanicMessage,
+            ("Prelude", "type_name") => TypeName,
+            ("Prelude", "coords") => Coords,
+            ("Prelude", "variants") => Variants,
+            ("Prelude", "panic") => Panic,
+            ("Prelude", "assert") => Assert,
+            ("Prelude" | "Io", "print") => Print,
+            ("Prelude" | "Io", "println") => Println,
+            ("File", "read") => FileRead,
+            ("File", "write") => FileWrite,
+            ("Numeric", "to_f64") => NumericToF64,
+            ("Numeric", "convert") => NumericConvert,
+            ("Numeric", "trunc") => NumericTrunc,
+            ("Array", "push") => ArrayPush,
+            ("Array", "pop") => ArrayPop,
+            ("Array", "insert") => ArrayInsert,
+            ("Array", "remove") => ArrayRemove,
+            ("Array", "sort") => ArraySort,
+            ("Array", "clear") => ArrayClear,
+            ("Array", "len") => ArrayLen,
+            ("Map", "get") => MapGet,
+            ("Map", "insert") => MapInsert,
+            ("Map", "remove") => MapRemove,
+            ("Map", "contains") => MapContains,
+            ("Map", "clear") => MapClear,
+            ("Map", "keys") => MapKeys,
+            ("Map", "values") => MapValues,
+            ("Map", "len") => MapLen,
+            ("Set", "empty") => SetEmpty,
+            ("Set", "from_array") => SetFromArray,
+            ("Set", "insert") => SetInsert,
+            ("Set", "remove") => SetRemove,
+            ("Set", "contains") => SetContains,
+            ("Set", "len") => SetLen,
+            ("String", "inspect") => StringInspect,
+            ("String", "len") => StringLen,
+            ("String", "join") => StringJoin,
+            ("String", "split") => StringSplit,
+            ("String", "starts_with") => StringStartsWith,
+            ("String", "ends_with") => StringEndsWith,
+            ("String", "at") => StringAt,
+            ("String", "scalars") => StringScalars,
+            ("String", "from_scalars") => StringFromScalars,
+            ("String", "raw_encode_utf8" | "encode_utf8") => StringEncodeUtf8,
+            ("String", "raw_decode_utf8" | "decode_utf8") => StringDecodeUtf8,
+            ("Bytes", "len") => BytesLen,
+            ("Bytes", "at") => BytesAt,
+            ("Bytes", "to_array") => BytesToArray,
+            ("Bytes", "from_array") => BytesFromArray,
+            ("Reflect", "attrs") => ReflectAttrs,
+            ("Reflect", "field_attrs") => ReflectFieldAttrs,
+            ("Reflect", "variant_attrs") => ReflectVariantAttrs,
+            ("Reflect", "has_default") => ReflectHasDefault,
+            _ => return None,
+        })
     }
     pub fn operation_effect(&self, operation: DefinitionId) -> Option<DefinitionId> {
         let scope = self.definition(operation).scope;

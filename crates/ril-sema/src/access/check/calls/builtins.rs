@@ -16,10 +16,17 @@ impl Analyzer<'_> {
         match name {
             "println" | "print" => self.effect(ctx, ledger, "io", span),
             "panic" => self.publish_at_exit(ctx, ledger, false),
-            "push" | "pop" | "insert" | "remove" | "clear" => {
+            "push" | "pop" | "insert" | "remove" | "sort" | "clear" => {
                 if let Some(value) = first {
                     self.mutate(ctx, ledger, value, span);
                 }
+                if matches!(name, "pop" | "remove") {
+                    return Datum::source(span, Access::Mut, true);
+                }
+            }
+            "get" | "keys" | "values" | "empty" | "from_array" | "split" | "at" | "scalars"
+            | "from_scalars" | "raw_decode_utf8" | "to_array" | "convert" | "trunc" => {
+                return Datum::source(span, Access::Mut, true);
             }
             "clone" => {
                 if let Some(value) = first {
@@ -102,7 +109,10 @@ impl Analyzer<'_> {
             "scope" | "spawn" | "join" | "send" | "recv" => {
                 self.effect(ctx, ledger, "fiber", span);
             }
-            "read" | "write" => self.effect(ctx, ledger, "io", span),
+            "read" | "write" => {
+                self.effect(ctx, ledger, "io", span);
+                return Datum::source(span, Access::Mut, true);
+            }
             _ => {}
         }
         self.snapshot_value(span)

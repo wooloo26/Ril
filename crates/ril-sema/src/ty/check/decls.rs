@@ -484,7 +484,25 @@ impl Checker<'_> {
                 self.error(Code::E0319, span, "bare type in value expression");
                 Ty::Unknown
             }
-            DefinitionKind::Primitive(_) => self.primitive_type(env, &def.name.value, span, callee),
+            DefinitionKind::Primitive(_) => {
+                if let Some(stmt) = def.stmt
+                    && matches!(
+                        self.ast(def.name.span.file).stmt(stmt).value.kind,
+                        StmtKind::Function(_)
+                    )
+                {
+                    let call = self.declare_function(id);
+                    if !callee && self.is_meta_fn(id) {
+                        self.error(
+                            Code::E0810,
+                            span,
+                            "meta fn requires direct saturated application",
+                        );
+                    }
+                    return Ty::Callable(call);
+                }
+                self.primitive_type(env, &def.name.value, span, callee)
+            }
             _ => Ty::Unknown,
         }
     }

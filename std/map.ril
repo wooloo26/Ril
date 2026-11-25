@@ -1,10 +1,10 @@
 -- Standard Map module: compiler-backed ordered hash map primitives.
 
-pub fn get<K, V>(via map: [K: V], key: K) -> new ?V
-pub fn insert<K, V>(mut map: [K: V], key: K, via value: V) &mut -> ()
-pub fn remove<K, V>(mut map: [K: V], key: K) &mut -> new ?V
-pub fn contains<K, V>(via map: [K: V], key: K) -> bool
-pub fn clear<K, V>(mut map: [K: V]) &mut -> ()
-pub fn keys<K, V>(via map: [K: V]) -> new []K
-pub fn values<K, V>(via map: [K: V]) -> new []V
-pub fn len<K, V>(via map: [K: V]) -> int
+pub fn get<K, V>(via map: [K: via V], key: K) -> new ?V
+pub fn insert<K, V>(mut map: [K: via V], key: K, via value: V) &mut -> ()
+pub fn remove<K, V>(mut map: [K: via V], key: K) &mut -> new ?V
+pub fn contains<K, V>(via map: [K: via V], key: K) -> bool
+pub fn clear<K, V>(mut map: [K: via V]) &mut -> ()
+pub fn keys<K, V>(via map: [K: via V]) -> new []K
+pub fn values<K, V>(via map: [K: via V]) -> new []V
+pub fn len<K, V>(via map: [K: via V]) -> int
