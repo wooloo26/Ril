@@ -281,7 +281,7 @@ fn can_supply_callback(
         Ty::Tuple(fields) => fields.iter().any(|field| visit(&field.ty)),
         Ty::Array(item) => visit(&item.ty),
         Ty::Map(key, item) => visit(key) || visit(&item.ty),
-        Ty::Set(item) | Ty::Option(item) | Ty::Draft(item) | Ty::Task(item) => visit(item),
+        Ty::Option(item) | Ty::Draft(item) | Ty::Task(item) => visit(item),
         Ty::Result(ok, error) => visit(ok) || visit(error),
         Ty::Adt(adt) if let Some(program) = program => {
             if !active.insert(adt.definition) {

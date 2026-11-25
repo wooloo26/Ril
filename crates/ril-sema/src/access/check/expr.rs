@@ -517,21 +517,21 @@ impl Analyzer<'_> {
                                 );
                                 child = pair;
                             }
-                            let traversal =
-                                if matches!(iterable_type, Ty::Array(_) | Ty::Map(..) | Ty::Set(_))
-                                    && local.reachable
-                                {
-                                    results::CollectionTraversal::enter(
-                                        this.program,
-                                        inside,
-                                        this.ty(pattern_span),
-                                        &value,
-                                        &mut child,
-                                        pattern_span,
-                                    )
-                                } else {
-                                    None
-                                };
+                            let traversal = if (matches!(iterable_type, Ty::Array(_) | Ty::Map(..))
+                                || iterable_type.is_set(&self.program.hir))
+                                && local.reachable
+                            {
+                                results::CollectionTraversal::enter(
+                                    this.program,
+                                    inside,
+                                    this.ty(pattern_span),
+                                    &value,
+                                    &mut child,
+                                    pattern_span,
+                                )
+                            } else {
+                                None
+                            };
                             this.pattern_tests(local, inside, *pattern, &child)
                                 .inspect(inside, true);
                             this.bind(

@@ -1,9 +1,34 @@
--- Standard Set module: compiler-backed ordered set type and primitives.
+-- Standard Set module: ordered set self-hosted over Map.
 
-pub opaque type Set<T>
+pub opaque type Set<T> = [T: ()]
 
-pub fn empty<T>() -> new Set<T>
-pub fn from_array<T>(via items: []T) -> new Set<T>
-pub fn insert<T>(mut set: Set<T>, value: T) &mut -> ()
-pub fn remove<T>(mut set: Set<T>, value: T) &mut -> bool
-pub fn contains<T>(via set: Set<T>, value: T) -> bool
+pub fn empty<T>() -> new Set<T> {
+    let m: [T: ()] = [:]
+    Set(m)
+}
+
+pub fn from_array<T>(via items: []T) -> new Set<T> {
+    let mut m: [T: ()] = [:]
+    for items as item {
+        m[item] = ()
+    }
+    Set(new m)
+}
+
+pub fn insert<T>(mut set: Set<T>, value: T) &mut -> () {
+    inner(mut set)[value] = ()
+}
+
+pub fn remove<T>(mut set: Set<T>, value: T) &mut -> bool {
+    match Map::remove(mut inner(mut set), value) {
+        Some(_) -> true
+        None -> false
+    }
+}
+
+pub fn contains<T>(via set: Set<T>, value: T) -> bool {
+    match inner(set)?[value] {
+        Some(_) -> true
+        None -> false
+    }
+}

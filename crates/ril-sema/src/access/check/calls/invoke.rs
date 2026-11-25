@@ -136,6 +136,7 @@ impl Analyzer<'_> {
                     Mode::Plain if value.requires_new => Mode::New,
                     Mode::Plain
                         if (syntax.is_some_and(|fun| fun.body.is_some())
+                            || (primitive && name != "derive")
                             || id.is_some_and(|id| {
                                 self.program.imported_functions.contains_key(&id)
                             })

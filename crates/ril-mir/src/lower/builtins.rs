@@ -100,6 +100,27 @@ impl Builder<'_, '_> {
             }
             return Ok(self.runtime("ril_rt_inspect", vec![value]));
         }
+        if intrinsic == Some(Intrinsic::Len)
+            && let [argument] = args
+        {
+            let mut value = self.collection(argument.value)?;
+            let arg_span = self.ast().expr(argument.value).span;
+            let is_set = self
+                .global
+                .typed
+                .types
+                .get(&arg_span)
+                .map(|ty| self.concrete(ty))
+                .is_some_and(|ty| match ty {
+                    Ty::Draft(inner) => inner.is_set(&self.global.typed.hir),
+                    other => other.is_set(&self.global.typed.hir),
+                });
+            if is_set {
+                let zero = self.integer("0");
+                value = self.runtime("ril_rt_load", vec![value, zero]);
+            }
+            return Ok(self.runtime("ril_rt_len", vec![value]));
+        }
         if intrinsic == Some(Intrinsic::Assert) {
             let mut values = if let Some(decl) = self.global.declaration(id) {
                 self.arguments(

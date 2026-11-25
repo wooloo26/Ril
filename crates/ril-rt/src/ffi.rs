@@ -161,7 +161,6 @@ runtime_functions! {
             Some(Object::Bytes(bytes)) => bytes.len(),
             Some(Object::Array(items) | Object::Tuple(items)) => items.len(),
             Some(Object::Map(map)) => map.len(),
-            Some(Object::Set(set)) => set.len(),
             _ => { rt.raise("len requires a collection, bytes, or str"); return Value::UNIT; }
         };
         match i64::try_from(len) {
@@ -292,81 +291,6 @@ runtime_functions! {
     fn ril_rt_tuple(rt) -> Value { rt.gc.alloc(Object::Tuple(Vec::new())) }
     fn ril_rt_record(rt) -> Value { rt.gc.alloc(Object::Record(BTreeMap::new())) }
     fn ril_rt_map(rt) -> Value { rt.gc.alloc(Object::Map(RilMap::new())) }
-    fn ril_rt_set_new(rt) -> Value { rt.gc.alloc(Object::Set(RilMap::new())) }
-    fn ril_rt_set_from_array(rt, values: Value) -> Value {
-        let values = rt.gc.draft_read(values).unwrap_or(values);
-        let Some(Object::Array(items)) = rt.gc.object(values) else {
-            return rt.checked(Err("Set::from_array requires an array"));
-        };
-        let items = items.clone();
-        let set = rt.gc.alloc(Object::Set(RilMap::new()));
-        rt.gc.pin(set);
-        for item in items {
-            let hash = rt.gc.bisim_hash(item);
-            let exists = match rt.gc.object(set) {
-                Some(Object::Set(map)) => map
-                    .find_index(hash, |stored| rt.gc.equal(stored, item).unwrap_or(false))
-                    .is_some(),
-                _ => false,
-            };
-            if !exists
-                && let Some(Object::Set(map)) = rt.gc.object_mut(set)
-            {
-                map.push_new(hash, item, Value::UNIT);
-            }
-        }
-        rt.gc.unpin(set);
-        set
-    }
-    fn ril_rt_set_insert(rt, target: Value, value: Value) -> Value {
-        let target = rt.gc.draft_read(target).unwrap_or(target);
-        let value = match rt.gc.draft_insertion(target, value) {
-            Ok(value) => value,
-            Err(message) => return rt.checked(Err(message)),
-        };
-        let hash = rt.gc.bisim_hash(value);
-        let existing = match rt.gc.object(target) {
-            Some(Object::Set(set)) => {
-                set.find_index(hash, |stored| rt.gc.equal(stored, value).unwrap_or(false))
-            }
-            _ => return rt.checked(Err("Set::insert requires a set")),
-        };
-        if existing.is_none()
-            && let Some(Object::Set(set)) = rt.gc.object_mut(target)
-        {
-            set.push_new(hash, value, Value::UNIT);
-        }
-        Value::UNIT
-    }
-    fn ril_rt_set_remove(rt, target: Value, value: Value) -> Value {
-        let target = rt.gc.draft_read(target).unwrap_or(target);
-        let hash = rt.gc.bisim_hash(value);
-        let existing = match rt.gc.object(target) {
-            Some(Object::Set(set)) => {
-                set.find_index(hash, |stored| rt.gc.equal(stored, value).unwrap_or(false))
-            }
-            _ => return rt.checked(Err("Set::remove requires a set")),
-        };
-        if let Some(index) = existing
-            && let Some(Object::Set(set)) = rt.gc.object_mut(target)
-        {
-            set.remove_at(index);
-            Value::TRUE
-        } else {
-            Value::FALSE
-        }
-    }
-    fn ril_rt_set_contains(rt, target: Value, value: Value) -> Value {
-        let target = rt.gc.draft_read(target).unwrap_or(target);
-        let hash = rt.gc.bisim_hash(value);
-        match rt.gc.object(target) {
-            Some(Object::Set(set)) => Value::boolean(
-                set.find_index(hash, |stored| rt.gc.equal(stored, value).unwrap_or(false))
-                    .is_some(),
-            ),
-            _ => rt.checked(Err("Set::contains requires a set")),
-        }
-    }
     fn ril_rt_array_pop(rt, target: Value) -> Value {
         let target = rt.gc.draft_read(target).unwrap_or(target);
         let item = match rt.gc.object_mut(target) {
@@ -743,10 +667,6 @@ fn compare_sortable(gc: &crate::GcRuntime, a: Value, b: Value) -> std::cmp::Orde
 
 fn iter_at(rt: &mut Runtime, target: Value, position: Value) -> Option<Value> {
     let target = rt.gc.draft_read(target).unwrap_or(target);
-    if let Some(Object::Set(set)) = rt.gc.object(target) {
-        let index = rt.gc.integer(position)?.to_usize()?;
-        return set.get_entry(index).map(|(key, _)| key);
-    }
     let Some(Object::Map(map)) = rt.gc.object(target) else {
         return load(rt, target, position);
     };

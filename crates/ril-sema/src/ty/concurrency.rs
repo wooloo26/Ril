@@ -434,9 +434,7 @@ impl Checker<'_> {
             Ty::Map(key, item) => {
                 self.is_sendable(env, &key, active) && self.sendable_member(env, &item, active)
             }
-            Ty::Option(t) | Ty::Set(t) | Ty::Sender(t) | Ty::Receiver(t) => {
-                self.is_sendable(env, &t, active)
-            }
+            Ty::Option(t) | Ty::Sender(t) | Ty::Receiver(t) => self.is_sendable(env, &t, active),
             Ty::Result(a, b) => {
                 self.is_sendable(env, &a, active) && self.is_sendable(env, &b, active)
             }

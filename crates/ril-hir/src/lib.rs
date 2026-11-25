@@ -77,11 +77,6 @@ pub enum Intrinsic {
     MapClear,
     MapKeys,
     MapValues,
-    SetEmpty,
-    SetFromArray,
-    SetInsert,
-    SetRemove,
-    SetContains,
     StringInspect,
     StringJoin,
     StringSplit,
@@ -132,11 +127,6 @@ impl Intrinsic {
                 | MapClear
                 | MapKeys
                 | MapValues
-                | SetEmpty
-                | SetFromArray
-                | SetInsert
-                | SetRemove
-                | SetContains
                 | StringJoin
                 | StringSplit
                 | StringStartsWith

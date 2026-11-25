@@ -36,7 +36,7 @@ pub(super) fn carries_result(program: &TypedProgram, ty: &Ty) -> bool {
     fn visit(program: &TypedProgram, ty: &Ty, active: &mut BTreeSet<DefinitionId>) -> bool {
         match ty {
             Ty::Result(..) => true,
-            Ty::Option(inner) | Ty::Set(inner) => visit(program, inner, active),
+            Ty::Option(inner) => visit(program, inner, active),
             Ty::Array(member) => visit(program, &member.ty, active),
             Ty::Map(key, member) => {
                 visit(program, key, active) || visit(program, &member.ty, active)
@@ -152,7 +152,9 @@ impl BoundaryResults<'_> {
                     );
                 }
             }
-            Ty::Map(..) | Ty::Set(_) if carries_result(self.program, ty) => {
+            ty if (matches!(ty, Ty::Map(..)) || ty.is_set(&self.program.hir))
+                && carries_result(self.program, ty) =>
+            {
                 let part = self.part();
                 ledger.record_result_part(&mut value, self.span, part, choices, true);
             }

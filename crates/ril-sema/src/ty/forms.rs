@@ -655,7 +655,7 @@ impl Checker<'_> {
             Ty::Tuple(items) => items
                 .iter()
                 .all(|member| immutable(member) && self.eligible_key(env, &member.ty, seen)),
-            Ty::Option(inner) | Ty::Set(inner) => self.eligible_key(env, &inner, seen),
+            Ty::Option(inner) => self.eligible_key(env, &inner, seen),
             Ty::Result(ok, err) => {
                 self.eligible_key(env, &ok, seen) && self.eligible_key(env, &err, seen)
             }
@@ -712,7 +712,7 @@ impl Checker<'_> {
             Ty::Tuple(items) => items
                 .iter()
                 .all(|member| self.meta_exportable(env, &member.ty, seen)),
-            Ty::Option(inner) | Ty::Set(inner) => self.meta_exportable(env, &inner, seen),
+            Ty::Option(inner) => self.meta_exportable(env, &inner, seen),
             Ty::Result(ok, err) => {
                 self.meta_exportable(env, &ok, seen) && self.meta_exportable(env, &err, seen)
             }

@@ -813,10 +813,19 @@ impl Checker<'_> {
                     .segments
                     .last()
                     .map_or(&[][..], |s| s.arguments.as_slice());
-                if let Some(std_ty) = self.hir.std_type(id) {
+                if let Some(std_ty) = self.hir.std_type(id)
+                    && matches!(
+                        std_ty,
+                        StdType::Option
+                            | StdType::Result
+                            | StdType::Draft
+                            | StdType::Task
+                            | StdType::Sender
+                            | StdType::Receiver
+                    )
+                {
                     return match (std_ty, args, &target) {
-                        (StdType::Set, [GenericArg::Type(p)], Ty::Set(t))
-                        | (StdType::Option, [GenericArg::Type(p)], Ty::Option(t))
+                        (StdType::Option, [GenericArg::Type(p)], Ty::Option(t))
                         | (StdType::Draft, [GenericArg::Type(p)], Ty::Draft(t))
                         | (StdType::Task, [GenericArg::Type(p)], Ty::Task(t))
                         | (StdType::Sender, [GenericArg::Type(p)], Ty::Sender(t))

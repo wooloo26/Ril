@@ -47,7 +47,6 @@ pub enum Ty {
     Record(BTreeMap<String, Member>, bool),
     Array(Box<Member>),
     Map(Box<Ty>, Box<Member>),
-    Set(Box<Ty>),
     Option(Box<Ty>),
     Result(Box<Ty>, Box<Ty>),
     Range,
@@ -80,7 +79,6 @@ impl Ty {
             Self::Tuple(items) => items.iter().any(|m| m.ty.contains_type_value()),
             Self::Record(items, _) => items.values().any(|m| m.ty.contains_type_value()),
             Self::Projection(inner, _)
-            | Self::Set(inner)
             | Self::Option(inner)
             | Self::Draft(inner)
             | Self::Task(inner)
@@ -108,6 +106,21 @@ impl Ty {
 
     pub const fn is_result(&self) -> bool {
         matches!(self, Self::Result(_, _))
+    }
+
+    pub fn as_set(&self, hir: &Program) -> Option<&Ty> {
+        if let Self::Adt(adt) = self
+            && hir.std_type(adt.definition) == Some(ril_hir::StdType::Set)
+            && let [GenericValue::Type(elem)] = adt.arguments.as_slice()
+        {
+            Some(elem)
+        } else {
+            None
+        }
+    }
+
+    pub fn is_set(&self, hir: &Program) -> bool {
+        self.as_set(hir).is_some()
     }
 
     fn has_unresolved_static_type(&self) -> bool {
@@ -412,7 +425,6 @@ impl fmt::Display for Display<'_> {
                 member_mode(f, member.mode)?;
                 write!(f, "{}]", show(&member.ty))
             }
-            Ty::Set(inner) => write!(f, "Set<{}>", show(inner)),
             Ty::Option(inner) => write!(f, "?{}", show(inner)),
             Ty::Result(ok, err) => write!(f, "!<{}, {}>", show(ok), show(err)),
             Ty::Callable(call) => {

@@ -314,7 +314,6 @@ impl Checker<'_> {
             if let Some(std_ty) = std_ty {
                 let expected_arity = match std_ty {
                     StdType::Option
-                    | StdType::Set
                     | StdType::Draft
                     | StdType::Task
                     | StdType::Sender
@@ -335,17 +334,7 @@ impl Checker<'_> {
                         let err = arg1(self, env);
                         return Ty::Result(Box::new(ok), Box::new(err));
                     }
-                    StdType::Set => {
-                        let key = arg0(self, env);
-                        if !self.eligible_key(env, &key, &mut HashSet::new()) {
-                            self.error(
-                                Code::E0328,
-                                path.span,
-                                "set element type does not support stable equality",
-                            );
-                        }
-                        return Ty::Set(Box::new(key));
-                    }
+                    StdType::Set => {}
                     StdType::Draft => return Ty::Draft(Box::new(arg0(self, env))),
                     StdType::FieldMode => return Ty::Mode,
                     StdType::Scope => return Ty::Scope,
@@ -485,7 +474,19 @@ impl Checker<'_> {
                     None => Ty::Unknown,
                 }
             }
-            _ => self.adt(id, decl, arguments),
+            _ => {
+                if self.hir.std_type(id) == Some(StdType::Set)
+                    && let [GenericValue::Type(key)] = arguments.as_slice()
+                    && !self.eligible_key(env, key, &mut HashSet::new())
+                {
+                    self.error(
+                        Code::E0328,
+                        path.span,
+                        "set element type does not support stable equality",
+                    );
+                }
+                self.adt(id, decl, arguments)
+            }
         }
     }
 

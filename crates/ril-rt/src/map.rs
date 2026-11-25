@@ -376,14 +376,6 @@ impl GcRuntime {
                 }
                 mix64(0x2006_u64 ^ (map.len() as u64) ^ acc)
             }
-            Some(Object::Set(set)) => {
-                let mut acc = 0_u64;
-                for &(_, k, _) in set.entries() {
-                    let kh = self.bisim_hash_depth(k, depth - 1);
-                    acc = acc.wrapping_add(mix64(kh ^ 0x517c_c1b7_2722_0a95));
-                }
-                mix64(0x2007_u64 ^ (set.len() as u64) ^ acc)
-            }
             _ => mix64(0x3000),
         }
     }

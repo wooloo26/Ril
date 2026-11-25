@@ -429,8 +429,7 @@ impl<'a> Checker<'a> {
                 })
                 .is_some_and(|found| found != &expected && self.fits(env, &actual, found)),
             (Ty::Option(a), Ty::Option(b)) => self.fits(env, a, b),
-            (Ty::Set(a), Ty::Set(b))
-            | (Ty::Draft(a), Ty::Draft(b))
+            (Ty::Draft(a), Ty::Draft(b))
             | (Ty::Task(a), Ty::Task(b))
             | (Ty::Sender(a), Ty::Sender(b))
             | (Ty::Receiver(a), Ty::Receiver(b)) => self.equiv(env, a, b),
@@ -509,7 +508,6 @@ impl<'a> Checker<'a> {
                 })
                 .is_some_and(|found| found != &b && self.equiv(env, &a, found)),
             (Ty::Option(x), Ty::Option(y))
-            | (Ty::Set(x), Ty::Set(y))
             | (Ty::Draft(x), Ty::Draft(y))
             | (Ty::Task(x), Ty::Task(y))
             | (Ty::Sender(x), Ty::Sender(y))
@@ -771,7 +769,6 @@ pub(super) fn transform(ty: &Ty, f: &mut impl FnMut(&Ty) -> Option<Ty>) -> Ty {
         ),
         Ty::Array(item) => Ty::Array(Box::new(member(item, f))),
         Ty::Map(key, item) => Ty::Map(wrap(key, f), Box::new(member(item, f))),
-        Ty::Set(item) => Ty::Set(wrap(item, f)),
         Ty::Option(item) => Ty::Option(wrap(item, f)),
         Ty::Result(ok, err) => Ty::Result(wrap(ok, f), wrap(err, f)),
         Ty::Draft(ty) => Ty::Draft(wrap(ty, f)),

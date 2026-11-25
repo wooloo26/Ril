@@ -110,6 +110,13 @@ impl Checker<'_> {
             ("panic", _) => Err(defect(span, "static evaluation panicked")),
             ("len", [Value::Array(items)]) => Ok(integer(items.len())),
             ("len", [Value::Map(items)]) => Ok(integer(items.len())),
+            ("len", [Value::Tag(tag, items)]) if tag == "Set" => {
+                if let [Value::Map(map)] = items.as_slice() {
+                    Ok(integer(map.len()))
+                } else {
+                    Err(nonstatic(span))
+                }
+            }
             ("len", [Value::Str(str)]) => Ok(integer(str.chars().count())),
             ("len", [Value::Bytes(bytes)]) => Ok(integer(bytes.len())),
             ("split", [Value::Str(text), Value::Str(separator)]) => Ok(Value::Array(

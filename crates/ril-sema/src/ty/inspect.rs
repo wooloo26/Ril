@@ -20,7 +20,7 @@ impl TypedProgram {
         let ty = self.types.get(&argument)?.specialize(types);
         let env = Env::new(call.file, *self.inspection_scopes.get(&call)?);
         let plan = Plan::build(&mut Checker::new(&self.hir, None), &env, &ty);
-        plan.has_redactions().then(|| plan.encode())
+        plan.needs_plan().then(|| plan.encode())
     }
 }
 
@@ -30,6 +30,7 @@ enum Node {
     Raw,
     Redacted(String),
     Elements(usize),
+    Set(usize),
     Indexed(Vec<usize>),
     Fields(BTreeMap<String, usize>),
     Tags(BTreeMap<String, Vec<usize>>),
@@ -54,10 +55,10 @@ impl Plan {
         }
     }
 
-    fn has_redactions(&self) -> bool {
+    fn needs_plan(&self) -> bool {
         self.nodes
             .iter()
-            .any(|node| matches!(node, Node::Redacted(_)))
+            .any(|node| matches!(node, Node::Redacted(_) | Node::Set(_)))
     }
 
     // The runtime reads these descriptors with the same indexing conventions
@@ -72,6 +73,7 @@ impl Plan {
                     Node::Raw => Value::Unit,
                     Node::Redacted(text) => Value::Str(text),
                     Node::Elements(item) => index(item),
+                    Node::Set(item) => Value::Tag("Set".into(), vec![index(item)]),
                     Node::Indexed(items) => indexed(items),
                     Node::Fields(items) => Value::Record(
                         items
@@ -111,6 +113,15 @@ impl Plan {
                     .map(|value| self.render_at(value, *item))
                     .collect::<Vec<_>>();
                 format!("[{}]", parts.join(", "))
+            }
+            (Some(Node::Set(item)), Value::Tag(_, values))
+                if let [Value::Map(entries)] = values.as_slice() =>
+            {
+                let parts = entries
+                    .iter()
+                    .map(|(key, _)| self.render_at(key, *item))
+                    .collect::<Vec<_>>();
+                format!("Set([{}])", parts.join(", "))
             }
             (Some(Node::Indexed(ids)), Value::Tuple(values)) => format!("({})", list(values, ids)),
             (Some(Node::Indexed(ids)), Value::Map(values)) => {
@@ -174,7 +185,6 @@ impl Builder<'_, '_> {
     fn describe(&mut self, ty: &Ty, depth: usize) -> Node {
         match ty {
             Ty::Array(item) => Node::Elements(self.visit(&item.ty, depth)),
-            Ty::Set(item) => Node::Elements(self.visit(item, depth)),
             Ty::Map(key, item) => {
                 Node::Indexed(vec![self.visit(key, depth), self.visit(&item.ty, depth)])
             }
@@ -194,6 +204,11 @@ impl Builder<'_, '_> {
                 ("Err".into(), vec![self.visit(err, depth)]),
             ])),
             Ty::Adt(adt) => {
+                if self.checker.hir.std_type(adt.definition) == Some(ril_hir::StdType::Set)
+                    && let [super::GenericValue::Type(elem)] = adt.arguments.as_slice()
+                {
+                    return Node::Set(self.visit(elem, depth));
+                }
                 let name = self
                     .checker
                     .hir

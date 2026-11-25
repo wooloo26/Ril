@@ -571,7 +571,7 @@ fn carries_callable_at(
         (Ty::Array(item) | Ty::Map(_, item), _) => {
             carries_callable_at(program, &item.ty, rest, seen)
         }
-        (Ty::Option(item) | Ty::Set(item), _) => carries_callable_at(program, item, rest, seen),
+        (Ty::Option(item), _) => carries_callable_at(program, item, rest, seen),
         (Ty::Result(ok, error), _) => {
             carries_callable_at(program, ok, rest, seen)
                 || carries_callable_at(program, error, rest, seen)

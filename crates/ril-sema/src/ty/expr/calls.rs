@@ -621,17 +621,6 @@ impl Checker<'_> {
                             }
                         }
                     }
-                    ril_hir::Intrinsic::SetEmpty | ril_hir::Intrinsic::SetFromArray => {
-                        if let Ty::Set(elem) = self.normalize(&result)
-                            && !self.eligible_key(env, &elem, &mut HashSet::new())
-                        {
-                            self.error(
-                                Code::E0328,
-                                span,
-                                "set element type does not support stable equality",
-                            );
-                        }
-                    }
                     ril_hir::Intrinsic::TypeName => {
                         if env.phase == Phase::Runtime && !env.shadow {
                             self.eval_introspection_root(env, "type_name", args, span);
@@ -661,6 +650,20 @@ impl Checker<'_> {
                     }
                     _ => {}
                 }
+            }
+            if self.hir.primitive_module(known) == Some("Set")
+                && matches!(
+                    self.hir.definition(known).name.value.as_str(),
+                    "empty" | "from_array"
+                )
+                && let Some(elem) = self.normalize(&result).as_set(self.hir)
+                && !self.eligible_key(env, elem, &mut HashSet::new())
+            {
+                self.error(
+                    Code::E0328,
+                    span,
+                    "set element type does not support stable equality",
+                );
             }
             if self.hir.primitive_module(known) == Some("Channel")
                 && self.hir.definition(known).name.value == "close_recv"

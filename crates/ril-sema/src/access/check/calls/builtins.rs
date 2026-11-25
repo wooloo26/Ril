@@ -474,9 +474,7 @@ impl Analyzer<'_> {
         match ty {
             Ty::Sender(_) | Ty::Receiver(_) | Ty::Scope | Ty::Task(_) => true,
             Ty::Adt(adt) => adt.kind == crate::ty::AdtKind::Foreign,
-            Ty::Option(inner) | Ty::Set(inner) | Ty::Draft(inner) => {
-                Self::contains_panic_unsafe_handle(inner)
-            }
+            Ty::Option(inner) | Ty::Draft(inner) => Self::contains_panic_unsafe_handle(inner),
             Ty::Result(ok, err) => {
                 Self::contains_panic_unsafe_handle(ok) || Self::contains_panic_unsafe_handle(err)
             }

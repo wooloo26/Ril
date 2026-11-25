@@ -450,6 +450,16 @@ impl Builder<'_, '_> {
         pattern: PatternId,
         body: ExprId,
     ) -> Result<Register> {
+        let is_set = self
+            .global
+            .typed
+            .types
+            .get(&self.ast().expr(iterable).span)
+            .map(|ty| self.concrete(ty))
+            .is_some_and(|ty| match ty {
+                Ty::Draft(inner) => inner.is_set(&self.global.typed.hir),
+                other => other.is_set(&self.global.typed.hir),
+            });
         let (start, end, collection, inclusive) = match self.ast().expr(iterable).value {
             Expr::Range {
                 start: Some(start),
@@ -457,7 +467,11 @@ impl Builder<'_, '_> {
                 inclusive,
             } => (self.expr(start)?, self.expr(end)?, None, inclusive),
             _ => {
-                let value = self.expr(iterable)?;
+                let mut value = self.expr(iterable)?;
+                if is_set {
+                    let zero = self.integer("0");
+                    value = self.runtime("ril_rt_load", vec![value, zero]);
+                }
                 let len = self.runtime("ril_rt_len", vec![value]);
                 (self.integer("0"), len, Some(value), false)
             }
@@ -507,7 +521,13 @@ impl Builder<'_, '_> {
         });
         self.current = Some(body_start);
         let element = if let Some(collection) = collection {
-            self.runtime("ril_rt_iter_at", vec![collection, current])
+            let item = self.runtime("ril_rt_iter_at", vec![collection, current]);
+            if is_set {
+                let zero = self.integer("0");
+                self.runtime("ril_rt_load", vec![item, zero])
+            } else {
+                item
+            }
         } else {
             current
         };

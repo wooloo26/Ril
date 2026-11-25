@@ -287,19 +287,23 @@ impl Checker<'_> {
                 ..
             } => {
                 let ty = self.expr(env, *iterable, None);
-                let item = match self.normalize(&ty) {
-                    Ty::Range => Ty::Int,
-                    Ty::Array(item) => item.ty,
-                    Ty::Map(key, value) => Ty::Tuple(vec![Member::plain(*key), *value]),
-                    Ty::Set(item) => *item,
-                    Ty::Unknown => Ty::Unknown,
-                    _ => {
-                        self.error(
-                            Code::E0355,
-                            self.ast(env.file).expr(*iterable).span,
-                            "value is not iterable",
-                        );
-                        Ty::Unknown
+                let norm = self.normalize(&ty);
+                let item = if let Some(elem) = norm.as_set(self.hir) {
+                    elem.clone()
+                } else {
+                    match norm {
+                        Ty::Range => Ty::Int,
+                        Ty::Array(item) => item.ty,
+                        Ty::Map(key, value) => Ty::Tuple(vec![Member::plain(*key), *value]),
+                        Ty::Unknown => Ty::Unknown,
+                        _ => {
+                            self.error(
+                                Code::E0355,
+                                self.ast(env.file).expr(*iterable).span,
+                                "value is not iterable",
+                            );
+                            Ty::Unknown
+                        }
                     }
                 };
                 if !matches!(item, Ty::Unknown | Ty::Never) {
@@ -703,7 +707,7 @@ impl Checker<'_> {
                 .values()
                 .all(|field| self.equatable(env, &field.ty, seen)),
             Ty::Result(ok, err) => self.equatable(env, ok, seen) && self.equatable(env, err, seen),
-            Ty::Option(ty) | Ty::Set(ty) => self.equatable(env, ty, seen),
+            Ty::Option(ty) => self.equatable(env, ty, seen),
             Ty::Map(key, value) => {
                 self.equatable(env, key, seen) && self.equatable(env, &value.ty, seen)
             }

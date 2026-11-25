@@ -41,6 +41,7 @@ impl Checker<'_> {
         while let Ty::Adt(adt) = &ty {
             if matches!(adt.kind, AdtKind::Opaque | AdtKind::OpaqueSum)
                 && adt.defining_scope != env.scope
+                && self.hir.std_type(adt.definition) != Some(StdType::Set)
             {
                 self.error(Code::E0308, span, "opaque representation is sealed");
                 return;
@@ -160,7 +161,7 @@ impl Checker<'_> {
                 self.nonclonable(env, &ok, false, proof)
                     || self.nonclonable(env, &error, false, proof)
             }
-            Ty::Set(item) | Ty::Option(item) => self.nonclonable(env, &item, false, proof),
+            Ty::Option(item) => self.nonclonable(env, &item, false, proof),
             _ => false,
         }
     }
@@ -249,14 +250,9 @@ impl Checker<'_> {
                 }
                 if !matches!(
                     first,
-                    Ty::Str
-                        | Ty::Bytes
-                        | Ty::Array(_)
-                        | Ty::Map(..)
-                        | Ty::Set(_)
-                        | Ty::Unknown
-                        | Ty::Param(_)
-                ) {
+                    Ty::Str | Ty::Bytes | Ty::Array(_) | Ty::Map(..) | Ty::Unknown | Ty::Param(_)
+                ) && !first.is_set(self.hir)
+                {
                     self.error(
                         Code::E0301,
                         span,
