@@ -593,7 +593,7 @@ impl Analyzer<'_> {
                 target,
                 propagate,
             } => {
-                let mut args = vec![ril_frontend::syntax::Argument {
+                let mut args = vec![ril_syntax::syntax::Argument {
                     value: *value,
                     mode: *mode,
                     name: None,
@@ -641,7 +641,7 @@ impl Analyzer<'_> {
             Expr::Cast { value, .. } => self.expr(ctx, ledger, *value),
             Expr::Interpolated(parts) => {
                 for part in parts {
-                    if let ril_frontend::syntax::StringPart::Interpolation(expr) = part {
+                    if let ril_syntax::syntax::StringPart::Interpolation(expr) = part {
                         self.expr(ctx, ledger, *expr);
                     }
                 }

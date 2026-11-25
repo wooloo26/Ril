@@ -43,7 +43,7 @@ fn hidden_clone_restrictions_survive_separate_compilation() {
         );
         assert_eq!(
             checked.result.diagnostics[0].code,
-            Some(ril_base::diag::Code::E0301),
+            Some(ril_source::diag::Code::E0301),
             "{mount}"
         );
     }
@@ -60,7 +60,10 @@ fn generic_clone_domain_survives_separate_compilation() {
         ("library/copy.ril", source.as_slice()),
         ("library/copy.rili", interface.as_slice()),
     ] {
-        for (ty, expected) in [("[]int", None), ("int", Some(ril_base::diag::Code::E0301))] {
+        for (ty, expected) in [
+            ("[]int", None),
+            ("int", Some(ril_source::diag::Code::E0301)),
+        ] {
             let mut client = VirtualPackage::new(Unit::Lib);
             client.insert(mount.into(), bytes.to_vec());
             client.insert(
@@ -80,8 +83,8 @@ fn generic_clone_domain_survives_separate_compilation() {
 
 #[test]
 fn transferred_snapshot_requirements_survive_separate_compilation() {
-    use ril_base::diag::Code;
     use ril_sema::access::{Coordinate, SnapshotInput};
+    use ril_source::diag::Code;
 
     let source = br#"
 pub type Cell = .{ var count: int }
@@ -157,7 +160,7 @@ fn run() -> int {{
 
 #[test]
 fn snapshot_callback_arguments_survive_separate_compilation() {
-    use ril_base::diag::Code;
+    use ril_source::diag::Code;
 
     let source = br#"
 pub type Cell = .{ var count: int }
@@ -251,7 +254,7 @@ fn run() -> int {{
 
 #[test]
 fn private_snapshot_providers_survive_nested_callbacks_across_an_interface() {
-    use ril_base::diag::Code;
+    use ril_source::diag::Code;
 
     let source = br#"
 pub type Cell = .{ var count: int }
@@ -337,7 +340,7 @@ fn test() -> int {{
 
 #[test]
 fn callback_snapshot_contracts_can_take_live_inputs_before_constructing_a_graph() {
-    use ril_base::diag::Code;
+    use ril_source::diag::Code;
 
     let source = br#"
 pub type Cell = .{ var count: int }
@@ -386,7 +389,7 @@ fn run() -> int {{
 
 #[test]
 fn returned_and_stored_snapshot_callables_survive_separate_compilation() {
-    use ril_base::diag::Code;
+    use ril_source::diag::Code;
 
     let source = br#"
 pub type Cell = .{ var count: int }
@@ -731,7 +734,7 @@ fn observe() -> int {{
 
 #[test]
 fn observed_storage_targets_survive_separate_compilation() {
-    use ril_base::diag::Code;
+    use ril_source::diag::Code;
 
     let source = br#"
 pub type Cell = .{ var count: int }
@@ -1042,7 +1045,7 @@ fn observe(times: int) -> int {{
 
 #[test]
 fn clone_rejects_live_callable_state_from_an_imported_factory() {
-    use ril_base::diag::Code;
+    use ril_source::diag::Code;
 
     let source = br#"
 pub eff Clock { fn now() -> int; fn tick() -> int }
@@ -1101,8 +1104,8 @@ fn run() -> () {
 
 #[test]
 fn clone_replays_callable_constraints_across_interfaces() {
-    use ril_base::diag::Code;
     use ril_sema::access::{StorageStep, StorageTransfer};
+    use ril_source::diag::Code;
 
     let source = br#"
 pub type Cell = .{ var count: int }
@@ -1208,7 +1211,7 @@ fn run() -> int {{
 
 #[test]
 fn ordered_draft_updates_survive_separate_compilation() {
-    use ril_base::diag::Code;
+    use ril_source::diag::Code;
 
     let source = br#"
 pub type Cell = .{ var count: int }
@@ -1401,7 +1404,7 @@ fn observe() -> int {{
 
 #[test]
 fn correlated_callback_mode_offers_survive_interface_only_calls() {
-    use ril_base::diag::Code;
+    use ril_source::diag::Code;
 
     let nested_callback_call = |callback| {
         format!(
@@ -1507,8 +1510,8 @@ fn run(flag: bool) -> int {{
 
 #[test]
 fn derive_snapshot_domains_survive_interface_only_forwarding() {
-    use ril_base::diag::Code;
     use ril_sema::access::Input;
+    use ril_source::diag::Code;
 
     let provider_source = br#"
 pub type Cell = .{ var count: int }
@@ -1612,8 +1615,8 @@ fn run() -> int {{
 
 #[test]
 fn joint_via_restrictions_survive_interface_only_forwarding() {
-    use ril_base::diag::Code;
     use ril_sema::access::Input;
+    use ril_source::diag::Code;
 
     let provider_source = br#"
 pub type Cell = .{ var count: int }
@@ -1684,7 +1687,7 @@ fn run() -> int {{
 
 #[test]
 fn compound_result_obligations_survive_an_interface_only_boundary() {
-    use ril_base::diag::Code;
+    use ril_source::diag::Code;
 
     let provider_source = br#"
 fn get(value: int) -> new !<int, str> { Ok(value) }
@@ -1818,7 +1821,7 @@ pub fn snapshot_aliases() -> (!<int, str>, !<int, str>) {
 
 #[test]
 fn recursive_allocation_graphs_survive_interface_replay() {
-    use ril_base::diag::Code;
+    use ril_source::diag::Code;
 
     let provider_source = br#"
 pub nominal type Node = .{ var value: int, var ^mut next: ?Node }
@@ -2045,7 +2048,7 @@ fn run(count: int) -> () {
 
 #[test]
 fn a_dependency_can_be_checked_using_only_its_published_interface() {
-    use ril_base::diag::Code;
+    use ril_source::diag::Code;
 
     let mut provider = VirtualPackage::new(Unit::Lib);
     provider.entry = "pkg/store.ril".into();

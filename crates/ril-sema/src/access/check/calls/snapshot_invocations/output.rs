@@ -539,7 +539,7 @@ fn carries_callable_at(
     program: &TypedProgram,
     ty: &Ty,
     path: &[Coordinate],
-    seen: &mut BTreeSet<(ril_frontend::hir::DefinitionId, usize)>,
+    seen: &mut BTreeSet<(ril_hir::DefinitionId, usize)>,
 ) -> bool {
     let Some((member, rest)) = path.split_first() else {
         return crate::access::check::higher_order::carries_callable(program, ty);

@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use ril_base::{diag::Code, span::Span};
-use ril_frontend::syntax::{Function, Mode};
+use ril_source::{diag::Code, span::Span};
+use ril_syntax::syntax::{Function, Mode};
 
 use super::{Analyzer, CallArgument, CallEntry, CallbackResult, Context, Datum, Ledger, Rule};
 use crate::{

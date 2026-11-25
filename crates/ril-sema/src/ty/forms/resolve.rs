@@ -3,9 +3,9 @@ use std::{
     sync::Arc,
 };
 
-use ril_base::{diag::Code, span::Span};
-use ril_frontend::{
-    hir::{BuiltinSum, DefinitionId, DefinitionKind},
+use ril_hir::{BuiltinSum, DefinitionId, DefinitionKind};
+use ril_source::{diag::Code, span::Span};
+use ril_syntax::{
     lexer::{Word, word_kind},
     parser::FileKind,
     syntax::{

@@ -1,8 +1,8 @@
 use std::collections::{HashMap, HashSet};
 
-use ril_base::{diag::Code, span::Span};
-use ril_frontend::hir::DefinitionId;
-use ril_frontend::syntax::{
+use ril_hir::DefinitionId;
+use ril_source::{diag::Code, span::Span};
+use ril_syntax::syntax::{
     Ast, ExprId, LiteralKind, MatchArm, Mode, Pattern, PatternId, StmtKind, Type, TypeDefinition,
     TypeId, Variant,
 };

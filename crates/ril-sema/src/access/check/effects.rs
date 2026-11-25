@@ -62,7 +62,7 @@ impl Analyzer<'_> {
         let (label, operations) = match &obligation {
             Obligation::Operation(operation) => (operation.effect.clone(), vec![operation.clone()]),
             Obligation::Effect(effect) => (effect.clone(), self.effect_operations(effect)),
-            _ => ril_base::ice!("expected effect obligation"),
+            _ => ril_source::ice!("expected effect obligation"),
         };
         if !operations.is_empty() && operations.iter().all(|id| ctx.handlers.contains_key(id)) {
             for handler in operations.iter().filter_map(|id| ctx.handlers.get(id)) {

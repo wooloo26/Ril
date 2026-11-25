@@ -62,7 +62,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "ril-rt-core"
+name = "ril-rt"
 version = "0.1.0"
 dependencies = [
  "corosensei",
@@ -74,7 +74,7 @@ dependencies = [
 name = "ril-rt-static"
 version = "0.1.0"
 dependencies = [
- "ril-rt-core",
+ "ril-rt",
 ]
 
 [[package]]

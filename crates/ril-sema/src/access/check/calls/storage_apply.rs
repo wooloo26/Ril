@@ -3,7 +3,7 @@ use super::*;
 impl<'program> Analyzer<'program> {
     pub(super) fn source_args<'a>(
         &self,
-        fun: &'a ril_frontend::syntax::Function,
+        fun: &'a ril_syntax::syntax::Function,
         values: &'a [(usize, Mode, Datum)],
         sources: impl Iterator<Item = Span> + 'a,
     ) -> impl Iterator<Item = Datum> + 'a {
@@ -22,7 +22,7 @@ impl<'program> Analyzer<'program> {
 
     pub(super) fn inferred_forwarding(
         &self,
-        fun: &ril_frontend::syntax::Function,
+        fun: &ril_syntax::syntax::Function,
         values: &[(usize, Mode, Datum)],
         span: Span,
     ) -> Datum {
@@ -49,7 +49,7 @@ impl<'program> Analyzer<'program> {
 
     pub(super) fn return_template(
         &mut self,
-        fun: &ril_frontend::syntax::Function,
+        fun: &ril_syntax::syntax::Function,
         entry: &CallEntry<'_>,
     ) -> Option<Datum> {
         let (formals, via, returns) = if let Some(definition) = self

@@ -5,16 +5,17 @@ use std::{
     sync::{Arc, Mutex, PoisonError},
 };
 
-use ril_backend::mir;
-use ril_base::{
+use ril_hir as hir;
+use ril_mir as mir;
+use ril_sema::{access::Analysis, iface::Interface, ty::TypedProgram};
+use ril_source::{
     diag::{Code, Diagnostic},
     span::{FileId, SourceFile, SourceMap, Span},
 };
-use ril_frontend::{
-    hir, lexer,
+use ril_syntax::{
+    lexer,
     parser::{self, FileKind},
 };
-use ril_sema::{access::Analysis, iface::Interface, ty::TypedProgram};
 use ril_test::{CheckResult, Stage, Unit};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
@@ -558,8 +559,8 @@ impl DiskCheckEntry {
         let mut diagnostics = Vec::with_capacity(self.diagnostics.len());
         for item in self.diagnostics {
             let severity = match item.severity.as_str() {
-                "warning" => ril_base::diag::Severity::Warning,
-                _ => ril_base::diag::Severity::Error,
+                "warning" => ril_source::diag::Severity::Warning,
+                _ => ril_source::diag::Severity::Error,
             };
             let code = match item.code {
                 Some(text) => Some(text.parse::<Code>().ok()?),

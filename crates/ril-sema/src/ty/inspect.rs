@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
-use ril_base::span::Span;
-use ril_frontend::hir::DefinitionId;
+use ril_hir::DefinitionId;
+use ril_source::span::Span;
 
 use super::{
     AdtKind, Member, Ty, TypedProgram, Value,

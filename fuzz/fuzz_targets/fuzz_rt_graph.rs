@@ -1,7 +1,7 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use ril_rt_core::{
+use ril_rt::{
     Runtime,
     ffi::{ril_rt_array, ril_rt_clone, ril_rt_equal, ril_rt_map_new, ril_rt_map_set},
     gc::Value,

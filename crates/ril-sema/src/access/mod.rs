@@ -11,8 +11,9 @@ pub use via::{ViaDomain, ViaRow, ViaRows};
 
 use std::{borrow::Cow, collections::BTreeMap};
 
-use ril_base::{diag::Diagnostic, span::Span};
-use ril_frontend::{hir::DefinitionId, syntax::Mode};
+use ril_hir::DefinitionId;
+use ril_source::{diag::Diagnostic, span::Span};
+use ril_syntax::syntax::Mode;
 use serde::{Deserialize, Serialize};
 
 use crate::ty::TypedProgram;

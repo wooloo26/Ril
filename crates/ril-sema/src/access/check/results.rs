@@ -1,10 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use ril_base::span::Span;
-use ril_frontend::{
-    hir::DefinitionId,
-    syntax::{Mode, Pattern, PatternId},
-};
+use ril_hir::DefinitionId;
+use ril_source::span::Span;
+use ril_syntax::syntax::{Mode, Pattern, PatternId};
 
 use super::{Access, Analyzer, Context, Coordinate, Datum, Ledger, Ty};
 use crate::access::flow::{Choices, Occurrence, Region, ResultOccurrence};

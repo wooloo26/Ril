@@ -3,14 +3,12 @@ use std::{
     collections::{BTreeMap, BTreeSet},
 };
 
-use ril_base::{
+use ril_hir::{Definition, DefinitionId, DefinitionKind};
+use ril_source::{
     diag::{Code, Diagnostic},
     span::Span,
 };
-use ril_frontend::{
-    hir::{Definition, DefinitionId, DefinitionKind},
-    syntax::{Argument, Expr, ExprId, Function, Handler, Mode, StateKind, StmtKind},
-};
+use ril_syntax::syntax::{Argument, Expr, ExprId, Function, Handler, Mode, StateKind, StmtKind};
 
 use crate::{
     access::{

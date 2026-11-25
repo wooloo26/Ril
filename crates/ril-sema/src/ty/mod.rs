@@ -18,11 +18,9 @@ use std::{
     sync::Arc,
 };
 
-use ril_base::{diag::Diagnostic, span::Span};
-use ril_frontend::{
-    hir::{DefinitionId, Program, ScopeId},
-    syntax::{Mode, Visibility},
-};
+use ril_hir::{DefinitionId, Program, ScopeId};
+use ril_source::{diag::Diagnostic, span::Span};
+use ril_syntax::syntax::{Mode, Visibility};
 
 pub use pattern::text_slice_fragment;
 pub use value::{LiteralError, Value, arithmetic, literal, render};
@@ -281,7 +279,7 @@ impl TypedProgram {
         let layout = self.nominal_layouts.get(&adt.definition)?;
         let definition = self.hir.definition(adt.definition);
         let ast = &self.hir.file(definition.name.span.file).ast;
-        let ril_frontend::syntax::StmtKind::Type(decl) = &ast.stmt(definition.stmt?).value.kind
+        let ril_syntax::syntax::StmtKind::Type(decl) = &ast.stmt(definition.stmt?).value.kind
         else {
             return None;
         };
@@ -291,10 +289,9 @@ impl TypedProgram {
             .zip(&adt.arguments)
             .filter_map(|(parameter, argument)| {
                 match (self.hir.resolve(parameter.name.span), argument) {
-                    (
-                        Some(ril_frontend::hir::Resolution::Definition(id)),
-                        GenericValue::Type(ty),
-                    ) => Some((id, ty.clone())),
+                    (Some(ril_hir::Resolution::Definition(id)), GenericValue::Type(ty)) => {
+                        Some((id, ty.clone()))
+                    }
                     _ => None,
                 }
             })

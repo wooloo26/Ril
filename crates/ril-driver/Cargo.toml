@@ -8,10 +8,12 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
-ril-base.workspace = true
-ril-frontend.workspace = true
+ril-source.workspace = true
+ril-syntax.workspace = true
+ril-hir.workspace = true
 ril-sema.workspace = true
-ril-backend = { workspace = true, features = ["native-runtime"] }
+ril-mir.workspace = true
+ril-codegen = { workspace = true, features = ["native-runtime"] }
 ril-test.workspace = true
 serde.workspace = true
 serde_json.workspace = true

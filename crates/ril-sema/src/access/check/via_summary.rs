@@ -322,7 +322,7 @@ impl Analyzer<'_> {
             let (safe, index) = match &step.value {
                 Expr::Member { safe, .. } => (*safe, None),
                 Expr::Index { safe, index, .. } => (*safe, Some(*index)),
-                _ => ril_base::ice!("unexpected navigation step"),
+                _ => ril_source::ice!("unexpected navigation step"),
             };
             if safe && let Ty::Option(inner) = ty {
                 let mut absent = ledger.clone();
@@ -343,7 +343,7 @@ impl Analyzer<'_> {
                 let mode = self.schema_mode(ty, &coordinate).0;
                 self.project_observed(&present_ctx, ledger, &value, (coordinate, mode, step.span))
             } else {
-                ril_base::ice!("unexpected navigation coordinate");
+                ril_source::ice!("unexpected navigation coordinate");
             };
             ty = self
                 .program

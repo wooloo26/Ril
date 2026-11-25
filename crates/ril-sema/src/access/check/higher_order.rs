@@ -3,11 +3,11 @@ use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
 };
 
-use ril_base::{
+use ril_source::{
     diag::{Code, Diagnostic},
     span::Span,
 };
-use ril_frontend::syntax::Mode;
+use ril_syntax::syntax::Mode;
 
 use super::{
     Analyzer, Context, Datum, Fact, Input, Ledger, Obligation, Region, Revocation, Rule,
@@ -272,7 +272,7 @@ fn can_supply_callback(
     ty: &Ty,
     accepts: fn(&Callable) -> bool,
     program: Option<&TypedProgram>,
-    active: &mut BTreeSet<ril_frontend::hir::DefinitionId>,
+    active: &mut BTreeSet<ril_hir::DefinitionId>,
 ) -> bool {
     let mut visit = |ty| can_supply_callback(ty, accepts, program, active);
     match ty {

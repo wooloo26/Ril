@@ -8,8 +8,8 @@ use std::{
 };
 
 use clap::{Parser, Subcommand, ValueEnum};
-use ril_base::diag::Diagnostic;
 use ril_driver::{CompileOptions, Driver, OptLevel, infer_unit, load_package};
+use ril_source::diag::Diagnostic;
 use ril_test::{Stage, Unit};
 
 #[derive(Parser)]
@@ -308,7 +308,7 @@ fn run(action: Action) -> Result<ExitCode, String> {
             }
         }
         Action::Lsp => {
-            ril_driver::lsp::serve_stdio()?;
+            ril_lsp::serve_stdio()?;
         }
         Action::Run {
             path,

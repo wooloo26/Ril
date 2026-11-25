@@ -1,10 +1,8 @@
 use std::{collections::HashSet, sync::Arc};
 
-use ril_base::{diag::Code, span::Span};
-use ril_frontend::{
-    hir::{BuiltinSum, TextBuiltin},
-    syntax::{self, Argument, Expr, Mode},
-};
+use ril_hir::{BuiltinSum, TextBuiltin};
+use ril_source::{diag::Code, span::Span};
+use ril_syntax::syntax::{self, Argument, Expr, Mode};
 
 use crate::ty::{
     Adt, AdtKind, Callable, GenericValue, Member, Parameter, Ty,

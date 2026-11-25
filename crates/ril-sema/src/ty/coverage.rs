@@ -1,4 +1,4 @@
-use ril_frontend::syntax::{Pattern, PatternId, Type};
+use ril_syntax::syntax::{Pattern, PatternId, Type};
 
 use super::{
     AdtKind, Ty,

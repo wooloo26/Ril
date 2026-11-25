@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use ril_base::span::Span;
+use ril_source::span::Span;
 
 use super::{Analyzer, Datum, DefinitionCheck, Ledger, Region, Replacement, collect};
 use crate::access::flow::{Coordinate, InvocationSite, StorageFlow};

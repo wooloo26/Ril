@@ -2,24 +2,23 @@
 
 use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
 
-use ril_base::{
-    diag::{Code, Diagnostic},
-    span::{FileId, SourceMap, Span},
-};
-use ril_frontend::{
-    hir::{self, Program},
-    lexer,
-    parser::{self, FileKind},
-};
+use ril_hir::{self as hir, Program};
 use ril_sema::{
     access::{self, Analysis},
     iface::{self, Export, Interface},
     ty::{self, TypedProgram},
 };
+use ril_source::{
+    diag::{Code, Diagnostic},
+    span::{FileId, SourceMap, Span},
+};
+use ril_syntax::{
+    lexer,
+    parser::{self, FileKind},
+};
 use ril_test::{CheckResult, ExecOutput, Stage, TestDriver, Unit, VirtualPackage};
 
 mod incremental;
-pub mod lsp;
 mod native;
 mod package;
 
@@ -31,7 +30,7 @@ pub use package::{PackageManifest, infer_unit, load_package, parse_manifest};
 pub fn format_file(path: &std::path::Path) -> Result<String, String> {
     let bytes = std::fs::read(path).map_err(|err| format!("{}: {err}", path.display()))?;
     let source =
-        ril_base::span::SourceFile::from_bytes(FileId::from_path(path), path.to_owned(), &bytes)
+        ril_source::span::SourceFile::from_bytes(FileId::from_path(path), path.to_owned(), &bytes)
             .map_err(|diag| diag.to_string())?;
     let kind = match infer_unit(path) {
         Unit::Bin => FileKind::Executable,
@@ -39,7 +38,7 @@ pub fn format_file(path: &std::path::Path) -> Result<String, String> {
         Unit::Lib => FileKind::Module,
         Unit::Snippet => FileKind::Snippet,
     };
-    ril_frontend::fmt::format_source(&source, kind).map_err(|diags| {
+    ril_syntax::fmt::format_source(&source, kind).map_err(|diags| {
         diags
             .into_iter()
             .map(|d| d.to_string())
@@ -61,11 +60,11 @@ pub enum OptLevel {
 }
 
 impl OptLevel {
-    pub const fn to_backend(self) -> ril_backend::cranelift::OptLevel {
+    pub const fn to_backend(self) -> ril_codegen::OptLevel {
         match self {
-            Self::None => ril_backend::cranelift::OptLevel::None,
-            Self::Speed => ril_backend::cranelift::OptLevel::Speed,
-            Self::SpeedAndSize => ril_backend::cranelift::OptLevel::SpeedAndSize,
+            Self::None => ril_codegen::OptLevel::None,
+            Self::Speed => ril_codegen::OptLevel::Speed,
+            Self::SpeedAndSize => ril_codegen::OptLevel::SpeedAndSize,
         }
     }
 }
@@ -80,8 +79,8 @@ pub struct CompileOptions {
 }
 
 impl CompileOptions {
-    pub const fn lower_options(self) -> ril_backend::mir::LowerOptions {
-        ril_backend::mir::LowerOptions {
+    pub const fn lower_options(self) -> ril_mir::LowerOptions {
+        ril_mir::LowerOptions {
             stack_promote: self.opt_stack_promote,
         }
     }
@@ -301,16 +300,15 @@ impl Compiler {
         typed: Arc<TypedProgram>,
         analysis: Arc<Analysis>,
         key: MirKey,
-    ) -> Result<Arc<ril_backend::mir::Program>, Vec<Diagnostic>> {
+    ) -> Result<Arc<ril_mir::Program>, Vec<Diagnostic>> {
         if let Some(cache) = &self.cache
             && let Some(hit) = cache.get_mir(&key)
         {
             return hit;
         }
-        let result =
-            ril_backend::mir::lower_with_options(&typed, &analysis, self.options.lower_options())
-                .map(Arc::new)
-                .map_err(|err| vec![err]);
+        let result = ril_mir::lower_with_options(&typed, &analysis, self.options.lower_options())
+            .map(Arc::new)
+            .map_err(|err| vec![err]);
         if let Some(cache) = &self.cache {
             cache.put_mir(key, result.clone());
         }

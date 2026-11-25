@@ -6,8 +6,9 @@ use std::{
     sync::Arc,
 };
 
-use ril_backend::{cranelift, mir};
-use ril_base::diag::Diagnostic;
+use ril_codegen as cranelift;
+use ril_mir as mir;
+use ril_source::diag::Diagnostic;
 use ril_test::{ExecOutput, Unit, VirtualPackage, run_worker};
 use serde::{Deserialize, Serialize};
 
@@ -380,7 +381,7 @@ fn runtime_source_digest(root: &Path) -> Result<String> {
         hasher.update(&out.stdout);
     }
     let mut files = Vec::new();
-    collect_files(&root.join("crates/ril-rt-core"), &mut files);
+    collect_files(&root.join("crates/ril-rt"), &mut files);
     collect_files(&root.join("runtime/ril-rt-static"), &mut files);
     files.sort();
     for path in files {

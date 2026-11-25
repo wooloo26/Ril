@@ -1,11 +1,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use ril_base::{
+use ril_hir::{DefinitionId, DefinitionKind, Resolution};
+use ril_source::{
     diag::{Code, Diagnostic},
     span::{FileId, Span},
 };
-use ril_frontend::{
-    hir::{DefinitionId, DefinitionKind, Resolution},
+use ril_syntax::{
     parser::FileKind,
     syntax::{
         Ast, Condition, Expr, ExprId, Function, LiteralKind, MatchArm, Member, Mode, Path, Pattern,

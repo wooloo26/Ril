@@ -9,12 +9,14 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-ril-base = { path = "../crates/ril-base" }
-ril-frontend = { path = "../crates/ril-frontend" }
+ril-source = { path = "../crates/ril-source" }
+ril-syntax = { path = "../crates/ril-syntax" }
+ril-hir = { path = "../crates/ril-hir" }
 ril-sema = { path = "../crates/ril-sema" }
-ril-backend = { path = "../crates/ril-backend" }
+ril-mir = { path = "../crates/ril-mir" }
+ril-codegen = { path = "../crates/ril-codegen" }
 ril-driver = { path = "../crates/ril-driver" }
-ril-rt-core = { path = "../crates/ril-rt-core" }
+ril-rt = { path = "../crates/ril-rt" }
 ril-test = { path = "../crates/ril-test" }
 
 [[bin]]

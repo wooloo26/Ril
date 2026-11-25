@@ -1,1 +1,1 @@
-pub use ril_rt_core::*;
+pub use ril_rt_impl::*;

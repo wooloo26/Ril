@@ -3,11 +3,9 @@ use std::{
     sync::Arc,
 };
 
-use ril_base::{diag::Code, span::Span};
-use ril_frontend::{
-    hir::{DefinitionId, DefinitionKind},
-    syntax::{self, Function, Mode, StmtId, StmtKind, TypeDefinition, Variant},
-};
+use ril_hir::{DefinitionId, DefinitionKind};
+use ril_source::{diag::Code, span::Span};
+use ril_syntax::syntax::{self, Function, Mode, StmtId, StmtKind, TypeDefinition, Variant};
 
 use super::{Checker, Env, Phase, substitute, transform, unknown_callable};
 use crate::ty::{AdtKind, Callable, GenericValue, Ty, Value};
@@ -305,7 +303,7 @@ impl Checker<'_> {
                 match &decl.definition {
                     TypeDefinition::Data(ty) => {
                         let representation = self.type_expr(&mut local, *ty);
-                        if decl.kind == ril_frontend::syntax::TypeKind::Nominal
+                        if decl.kind == ril_syntax::syntax::TypeKind::Nominal
                             && let Some(id) = self.resolve(decl.name.span)
                         {
                             self.nominal_layouts.insert(id, representation);

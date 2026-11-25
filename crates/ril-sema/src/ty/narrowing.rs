@@ -1,10 +1,8 @@
 use std::collections::HashMap;
 
-use ril_base::diag::Code;
-use ril_frontend::{
-    hir::DefinitionId,
-    syntax::{Condition, Expr, ExprId, Member},
-};
+use ril_hir::DefinitionId;
+use ril_source::diag::Code;
+use ril_syntax::syntax::{Condition, Expr, ExprId, Member};
 
 use super::{
     Ty, Value,

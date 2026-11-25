@@ -13,7 +13,7 @@ use std::{
 };
 
 use libtest_mimic::{Arguments, Failed, Trial};
-use ril_base::{
+use ril_source::{
     diag::Diagnostic,
     span::{FileId, SourceFile},
 };

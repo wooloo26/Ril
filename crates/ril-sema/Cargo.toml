@@ -8,8 +8,9 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
-ril-base.workspace = true
-ril-frontend.workspace = true
+ril-source.workspace = true
+ril-syntax.workspace = true
+ril-hir.workspace = true
 num-bigint.workspace = true
 num-traits.workspace = true
 serde.workspace = true

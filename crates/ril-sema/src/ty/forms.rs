@@ -3,13 +3,11 @@ mod resolve;
 
 use std::collections::HashSet;
 
-use ril_base::{diag::Code, span::Span};
-use ril_frontend::{
-    hir::{DefinitionId, DefinitionKind},
-    syntax::{
-        self, GenericArg, GenericParam, Member as Coordinate, Mode, StateKind, StmtKind, Type,
-        TypeDecl, TypeDefinition, TypeKind, Variant,
-    },
+use ril_hir::{DefinitionId, DefinitionKind};
+use ril_source::{diag::Code, span::Span};
+use ril_syntax::syntax::{
+    self, GenericArg, GenericParam, Member as Coordinate, Mode, StateKind, StmtKind, Type,
+    TypeDecl, TypeDefinition, TypeKind, Variant,
 };
 
 use super::{

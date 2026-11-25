@@ -1,7 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use ril_base::{diag::Code, span::Span};
-use ril_frontend::{hir::DefinitionId, syntax::Mode};
+use ril_hir::DefinitionId;
+use ril_source::{diag::Code, span::Span};
+use ril_syntax::syntax::Mode;
 
 use super::{
     Analysis, Analyzer, Callable, Context, Datum, DefinitionCheck, Fact, Input, Obligation, Region,

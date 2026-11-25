@@ -5,11 +5,9 @@ mod expr;
 use std::collections::HashMap;
 
 use num_traits::ToPrimitive;
-use ril_base::{diag::Code, span::Span};
-use ril_frontend::{
-    hir::DefinitionId,
-    syntax::{self, Argument, Expr, ExprId, Member as Coordinate, Mode},
-};
+use ril_hir::DefinitionId;
+use ril_source::{diag::Code, span::Span};
+use ril_syntax::syntax::{self, Argument, Expr, ExprId, Member as Coordinate, Mode};
 
 use super::{
     Ty, Value,

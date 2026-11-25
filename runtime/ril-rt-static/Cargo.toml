@@ -10,7 +10,7 @@ name = "ril_rt"
 crate-type = ["staticlib"]
 
 [dependencies]
-ril-rt-core = { path = "../../crates/ril-rt-core" }
+ril_rt_impl = { package = "ril-rt", path = "../../crates/ril-rt" }
 
 [profile.dev]
 panic = "abort"

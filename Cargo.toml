@@ -25,12 +25,15 @@ serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 sha2 = "0.10.9"
 tempfile = "3.27.0"
-ril-base = { path = "crates/ril-base" }
-ril-frontend = { path = "crates/ril-frontend" }
+ril-source = { path = "crates/ril-source" }
+ril-syntax = { path = "crates/ril-syntax" }
+ril-hir = { path = "crates/ril-hir" }
 ril-sema = { path = "crates/ril-sema" }
-ril-backend = { path = "crates/ril-backend" }
-ril-rt-core = { path = "crates/ril-rt-core" }
+ril-mir = { path = "crates/ril-mir" }
+ril-codegen = { path = "crates/ril-codegen" }
+ril-rt = { path = "crates/ril-rt" }
 ril-driver = { path = "crates/ril-driver" }
+ril-lsp = { path = "crates/ril-lsp" }
 ril-test = { path = "crates/ril-test" }
 
 [workspace.lints.rust]

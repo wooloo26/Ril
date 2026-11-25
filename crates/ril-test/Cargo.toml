@@ -8,7 +8,7 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
-ril-base.workspace = true
+ril-source.workspace = true
 libtest-mimic.workspace = true
 tempfile.workspace = true
 

@@ -1,5 +1,5 @@
-use ril_base::span::Span;
-use ril_frontend::syntax::Mode;
+use ril_source::span::Span;
+use ril_syntax::syntax::Mode;
 
 use super::{
     Access, Analyzer, CallEntry, CallEnvironment, CallStorage, Context, Datum, InvocationSite,

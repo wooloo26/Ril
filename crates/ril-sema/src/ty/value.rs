@@ -2,7 +2,7 @@ use std::{cmp::Ordering, collections::BTreeMap, fmt::Write as _};
 
 use num_bigint::BigInt;
 use num_traits::{Signed, ToPrimitive, Zero};
-use ril_frontend::syntax::{Literal, LiteralKind};
+use ril_syntax::syntax::{Literal, LiteralKind};
 
 use super::{MemberMode, Ty};
 

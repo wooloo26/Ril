@@ -1,12 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-use ril_base::span::{FileId, Span};
-use ril_frontend::{
-    hir::{DefinitionId, DefinitionKind, Resolution},
-    syntax::{
-        Ast, Condition, Expr, ExprId, Mode, Pattern, PatternId, StmtId, StmtKind, Storage,
-        StringPart,
-    },
+use ril_hir::{DefinitionId, DefinitionKind, Resolution};
+use ril_source::span::{FileId, Span};
+use ril_syntax::syntax::{
+    Ast, Condition, Expr, ExprId, Mode, Pattern, PatternId, StmtId, StmtKind, Storage, StringPart,
 };
 
 use super::{
@@ -637,7 +634,7 @@ impl<'a> BodyBuilder<'a> {
         Body {
             owner: self
                 .owner
-                .unwrap_or_else(|| ril_base::ice!("THIR body missing owner")),
+                .unwrap_or_else(|| ril_source::ice!("THIR body missing owner")),
             file: self.file,
             exprs: self.exprs,
             stmts: self.stmts,

@@ -17,7 +17,7 @@ use std::{
     str::FromStr,
 };
 
-use ril_base::{diag::Diagnostic, span::FileId};
+use ril_source::{diag::Diagnostic, span::FileId};
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum Stage {

@@ -30,12 +30,12 @@ pub fn solve<A: Clone + Ord>(rules: &[Rule<A>]) -> BTreeSet<A> {
             for index in dependent {
                 let count = unmet
                     .get_mut(index)
-                    .unwrap_or_else(|| ril_base::ice!("invalid Horn rule index"));
+                    .unwrap_or_else(|| ril_source::ice!("invalid Horn rule index"));
                 *count -= 1;
                 if *count == 0 {
                     let rule = rules
                         .get(index)
-                        .unwrap_or_else(|| ril_base::ice!("missing Horn rule"));
+                        .unwrap_or_else(|| ril_source::ice!("missing Horn rule"));
                     ready.push_back(&rule.conclusion);
                 }
             }
@@ -61,7 +61,7 @@ pub fn oracle_input<A: Ord>(rules: &[Rule<A>]) -> Vec<Rule<usize>> {
     let number = |atom| {
         *index
             .get(atom)
-            .unwrap_or_else(|| ril_base::ice!("Horn atom missing from exported domain"))
+            .unwrap_or_else(|| ril_source::ice!("Horn atom missing from exported domain"))
     };
     rules
         .iter()

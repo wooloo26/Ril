@@ -3,7 +3,7 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
-use ril_base::diag::Code;
+use ril_source::diag::Code;
 
 use crate::{Stage, Unit, VirtualFile, VirtualPackage, shield::Shield};
 

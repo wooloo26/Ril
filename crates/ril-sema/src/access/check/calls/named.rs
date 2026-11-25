@@ -357,7 +357,7 @@ impl<'program> Analyzer<'program> {
     pub(super) fn check_capture_overlap(
         &mut self,
         ctx: &Context,
-        function: Option<&ril_frontend::syntax::Function>,
+        function: Option<&ril_syntax::syntax::Function>,
         target: Option<&Datum>,
         entry: &CallEntry<'_>,
     ) {

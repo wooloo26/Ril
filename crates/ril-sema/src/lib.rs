@@ -4,4 +4,5 @@ pub mod access;
 pub mod iface;
 pub mod thir;
 pub mod ty;
-pub use ril_frontend::{hir, syntax};
+pub use ril_hir as hir;
+pub use ril_syntax::syntax;

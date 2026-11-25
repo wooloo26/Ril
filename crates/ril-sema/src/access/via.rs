@@ -103,7 +103,7 @@ impl ViaDomain {
                     return self.intern(Node::Leaf(sid));
                 }
                 let Some(modes) = self.permitted.get(axis) else {
-                    ril_base::ice!("invalid via axis index");
+                    ril_source::ice!("invalid via axis index");
                 };
                 if !self.relevant.contains(&axis) {
                     if let (Some(&first), Some(slot)) = (modes.first(), self.current.get_mut(axis))
@@ -485,7 +485,7 @@ impl ViaDomain {
         };
         graph
             .validate()
-            .unwrap_or_else(|error| ril_base::ice!("invalid generated via graph: {error}"));
+            .unwrap_or_else(|error| ril_source::ice!("invalid generated via graph: {error}"));
         Self(Arc::new(Encoding::Graph(graph)))
     }
 

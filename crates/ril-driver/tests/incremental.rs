@@ -2,8 +2,8 @@
 
 use std::path::PathBuf;
 
-use ril_base::diag::Code;
 use ril_driver::{CompileOptions, Driver};
+use ril_source::diag::Code;
 use ril_test::{Stage, Unit, VirtualPackage};
 
 #[test]

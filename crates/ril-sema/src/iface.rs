@@ -1,11 +1,11 @@
 use std::{collections::BTreeMap, path::Path};
 
-use ril_base::{
+use ril_hir::{DefinitionKind, Program, Resolution};
+use ril_source::{
     diag::{Code, Diagnostic},
     span::{FileId, SourceFile, Span},
 };
-use ril_frontend::{
-    hir::{DefinitionKind, Program, Resolution},
+use ril_syntax::{
     lexer,
     parser::{self, FileKind},
     syntax::{
@@ -286,7 +286,7 @@ impl Interface {
             &self.declarations,
             &sealed,
         ))
-        .unwrap_or_else(|err| ril_base::ice!("interface export serialization failed: {err}"));
+        .unwrap_or_else(|err| ril_source::ice!("interface export serialization failed: {err}"));
         format!("{:x}", Sha256::digest(data))
     }
 
@@ -299,7 +299,7 @@ impl Interface {
 
     fn compute_codegen_hash(&self, opaque_layouts: &BTreeMap<String, String>) -> String {
         let data = serde_json::to_vec(&(&self.abi_hash, opaque_layouts))
-            .unwrap_or_else(|err| ril_base::ice!("codegen hash serialization failed: {err}"));
+            .unwrap_or_else(|err| ril_source::ice!("codegen hash serialization failed: {err}"));
         format!("{:x}", Sha256::digest(data))
     }
 
@@ -431,7 +431,7 @@ impl Interface {
     }
 }
 
-fn declaration_source(file: &ril_frontend::hir::File) -> String {
+fn declaration_source(file: &ril_hir::File) -> String {
     fn omit_bodies(ast: &Ast, items: &[StmtId], spans: &mut Vec<Span>) {
         for &item in items {
             match &ast.stmt(item).value.kind {
@@ -507,11 +507,11 @@ fn type_shape(program: &TypedProgram, ast: &Ast, id: TypeId) -> String {
 fn fingerprint(program: &TypedProgram, span: Span) -> String {
     let tokens: Vec<_> = program.hir.file(span.file).token_text(span).collect();
     let bytes = serde_json::to_vec(&tokens)
-        .unwrap_or_else(|err| ril_base::ice!("token encoding failed: {err}"));
+        .unwrap_or_else(|err| ril_source::ice!("token encoding failed: {err}"));
     format!("{:x}", Sha256::digest(bytes))
 }
 
-fn path_shape(program: &TypedProgram, path: &ril_frontend::syntax::Path) -> String {
+fn path_shape(program: &TypedProgram, path: &ril_syntax::syntax::Path) -> String {
     if let Some(Resolution::Definition(def)) = program.hir.resolve(path.span) {
         program.hir.export_name(def)
     } else {

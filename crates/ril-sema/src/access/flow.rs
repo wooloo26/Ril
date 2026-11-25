@@ -3,8 +3,8 @@ use std::{
     collections::{BTreeMap, BTreeSet},
 };
 
-use ril_base::span::Span;
-use ril_frontend::syntax::Mode;
+use ril_source::span::Span;
+use ril_syntax::syntax::Mode;
 use serde::{Deserialize, Serialize};
 
 use super::{ArrayExtent, Input, ModeExpression, ModeStep, ReturnAllocation};

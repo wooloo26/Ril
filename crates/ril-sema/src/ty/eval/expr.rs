@@ -1,9 +1,9 @@
 use std::collections::BTreeMap;
 
-use ril_base::{diag::Code, span::Span};
-use ril_frontend::{
-    hir::{DefinitionId, DefinitionKind},
-    syntax::{self, Argument, Condition, Expr, ExprId, Mode, StmtKind, StringPart, Transfer},
+use ril_hir::{DefinitionId, DefinitionKind};
+use ril_source::{diag::Code, span::Span};
+use ril_syntax::syntax::{
+    self, Argument, Condition, Expr, ExprId, Mode, StmtKind, StringPart, Transfer,
 };
 
 use super::{Budget, Eval, Frame, Signal, Values, defect, none, nonstatic, optional_payload};
@@ -52,7 +52,7 @@ impl Checker<'_> {
                             None => return Err(defect(step.span, "static index is out of bounds")),
                         };
                     }
-                    _ => ril_base::ice!("unexpected static navigation step"),
+                    _ => ril_source::ice!("unexpected static navigation step"),
                 }
             }
             return if self

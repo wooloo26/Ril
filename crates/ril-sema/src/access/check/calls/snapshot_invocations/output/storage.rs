@@ -13,7 +13,7 @@ use crate::access::{
         StorageTarget,
     },
 };
-use ril_frontend::syntax::Mode;
+use ril_syntax::syntax::Mode;
 
 impl Analyzer<'_> {
     pub(in crate::access::check::calls::snapshot_invocations) fn register_storage_observations(

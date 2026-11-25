@@ -284,7 +284,7 @@ impl Builder {
                     let prefix = group
                         .first()
                         .and_then(|row| row.0.get(..axis))
-                        .unwrap_or_else(|| ril_base::ice!("missing via mode prefix"))
+                        .unwrap_or_else(|| ril_source::ice!("missing via mode prefix"))
                         .to_vec();
                     let edges = group
                         .iter()
@@ -292,7 +292,7 @@ impl Builder {
                             let mode = modes
                                 .get(axis)
                                 .copied()
-                                .unwrap_or_else(|| ril_base::ice!("missing via mode axis"));
+                                .unwrap_or_else(|| ril_source::ice!("missing via mode axis"));
                             (mode, *child)
                         })
                         .collect();

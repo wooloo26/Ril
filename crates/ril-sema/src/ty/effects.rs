@@ -1,10 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-use ril_base::{diag::Code, span::Span};
-use ril_frontend::{
-    hir::{DefinitionId, DefinitionKind, Program},
-    syntax::{GenericArg, Path, StmtKind, Type},
-};
+use ril_hir::{DefinitionId, DefinitionKind, Program};
+use ril_source::{diag::Code, span::Span};
+use ril_syntax::syntax::{GenericArg, Path, StmtKind, Type};
 
 use super::{
     GenericValue, Ty, Value,

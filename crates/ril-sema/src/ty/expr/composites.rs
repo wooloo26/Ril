@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, HashSet};
 
-use ril_base::{diag::Code, span::Span};
-use ril_frontend::syntax::{self, Expr, ExprId, Mode, StmtKind, TypeDefinition, ValueField};
+use ril_source::{diag::Code, span::Span};
+use ril_syntax::syntax::{self, Expr, ExprId, Mode, StmtKind, TypeDefinition, ValueField};
 
 use crate::ty::{
     AdtKind, Member, MemberMode, Ty,
@@ -38,7 +38,7 @@ impl Checker<'_> {
                     }
                     self.index(env, ty, *index, *safe, node.span)
                 }
-                _ => ril_base::ice!("unexpected navigation step"),
+                _ => ril_source::ice!("unexpected navigation step"),
             };
             self.types.insert(node.span, ty.clone());
             self.navigation_values.insert(node.span, ty.clone());

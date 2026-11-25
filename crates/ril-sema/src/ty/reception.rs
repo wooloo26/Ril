@@ -1,4 +1,4 @@
-use ril_frontend::syntax::{ExprId, Mode};
+use ril_syntax::syntax::{ExprId, Mode};
 
 use super::{
     Member, Ty,

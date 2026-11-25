@@ -684,7 +684,19 @@ dependencies = [
 ]
 
 [[package]]
-name = "ril-backend"
+name = "ril-cli"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "ril-driver",
+ "ril-lsp",
+ "ril-source",
+ "ril-test",
+ "tempfile",
+]
+
+[[package]]
+name = "ril-codegen"
 version = "0.1.0"
 dependencies = [
  "cranelift-codegen",
@@ -693,37 +705,21 @@ dependencies = [
  "cranelift-module",
  "cranelift-native",
  "cranelift-object",
- "ril-base",
- "ril-rt-core",
- "ril-sema",
-]
-
-[[package]]
-name = "ril-base"
-version = "0.1.0"
-dependencies = [
- "ariadne",
-]
-
-[[package]]
-name = "ril-cli"
-version = "0.1.0"
-dependencies = [
- "clap",
- "ril-base",
- "ril-driver",
- "ril-test",
- "tempfile",
+ "ril-mir",
+ "ril-rt",
+ "ril-source",
 ]
 
 [[package]]
 name = "ril-driver"
 version = "0.1.0"
 dependencies = [
- "ril-backend",
- "ril-base",
- "ril-frontend",
+ "ril-codegen",
+ "ril-hir",
+ "ril-mir",
  "ril-sema",
+ "ril-source",
+ "ril-syntax",
  "ril-test",
  "serde",
  "serde_json",
@@ -732,14 +728,38 @@ dependencies = [
 ]
 
 [[package]]
-name = "ril-frontend"
+name = "ril-hir"
 version = "0.1.0"
 dependencies = [
- "ril-base",
+ "ril-source",
+ "ril-syntax",
 ]
 
 [[package]]
-name = "ril-rt-core"
+name = "ril-lsp"
+version = "0.1.0"
+dependencies = [
+ "ril-driver",
+ "ril-hir",
+ "ril-sema",
+ "ril-source",
+ "ril-syntax",
+ "ril-test",
+ "serde_json",
+]
+
+[[package]]
+name = "ril-mir"
+version = "0.1.0"
+dependencies = [
+ "ril-hir",
+ "ril-sema",
+ "ril-source",
+ "ril-syntax",
+]
+
+[[package]]
+name = "ril-rt"
 version = "0.1.0"
 dependencies = [
  "corosensei",
@@ -753,11 +773,28 @@ version = "0.1.0"
 dependencies = [
  "num-bigint",
  "num-traits",
- "ril-base",
- "ril-frontend",
+ "ril-hir",
+ "ril-source",
+ "ril-syntax",
  "serde",
  "serde_json",
  "sha2",
+]
+
+[[package]]
+name = "ril-source"
+version = "0.1.0"
+dependencies = [
+ "ariadne",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "ril-syntax"
+version = "0.1.0"
+dependencies = [
+ "ril-source",
 ]
 
 [[package]]
@@ -765,9 +802,9 @@ name = "ril-test"
 version = "0.1.0"
 dependencies = [
  "libtest-mimic",
- "ril-base",
  "ril-driver",
  "ril-sema",
+ "ril-source",
  "serde_json",
  "tempfile",
 ]

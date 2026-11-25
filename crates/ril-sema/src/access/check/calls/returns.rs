@@ -359,7 +359,7 @@ impl Analyzer<'_> {
             .callback_results
             .get(template)
             .cloned()
-            .unwrap_or_else(|| ril_base::ice!("missing callback return template"));
+            .unwrap_or_else(|| ril_source::ice!("missing callback return template"));
         let receiver = self.instantiate_return(formals, via, entry, &receiver, &mut Vec::new());
         self.specialize_callback_arguments(formals, via, entry, (&mut arguments, &mut spans));
         let mut ledger = Cow::Borrowed(entry.ledger);

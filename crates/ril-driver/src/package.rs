@@ -4,9 +4,9 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use ril_base::span::{FileId, SourceFile};
-use ril_frontend::lexer::{self, Kind, Token};
 use ril_sema::iface::Interface;
+use ril_source::span::{FileId, SourceFile};
+use ril_syntax::lexer::{self, Kind, Token};
 use ril_test::{Unit, VirtualPackage};
 
 /// Lightweight token-stream check for a top-level `fn main` without constructing an AST.

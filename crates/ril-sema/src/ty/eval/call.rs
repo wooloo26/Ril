@@ -1,8 +1,6 @@
-use ril_base::{diag::Code, span::Span};
-use ril_frontend::{
-    hir::{DefinitionId, DefinitionKind, PrimitivePhase},
-    syntax::{self, Argument, Expr, ExprId, StmtKind},
-};
+use ril_hir::{DefinitionId, DefinitionKind, PrimitivePhase};
+use ril_source::{diag::Code, span::Span};
+use ril_syntax::syntax::{self, Argument, Expr, ExprId, StmtKind};
 
 use super::{Budget, Eval, Frame, Place, Signal, Values, builtins::eval_text, defect, nonstatic};
 use crate::ty::{
@@ -406,7 +404,7 @@ impl Checker<'_> {
             {
                 let id = self
                     .resolve(path.span)
-                    .unwrap_or_else(|| ril_base::ice!("resolved static callable disappeared"));
+                    .unwrap_or_else(|| ril_source::ice!("resolved static callable disappeared"));
                 self.eval_function(
                     env,
                     id,

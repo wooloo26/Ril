@@ -1,0 +1,13 @@
+[package]
+name = "ril-rt"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+corosensei.workspace = true
+num-bigint.workspace = true
+num-traits.workspace = true

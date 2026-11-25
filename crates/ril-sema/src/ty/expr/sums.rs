@@ -1,10 +1,8 @@
 use std::collections::{BTreeMap, HashSet};
 
-use ril_base::{diag::Code, span::Span};
-use ril_frontend::{
-    hir::{BuiltinPayload, BuiltinSum, DefinitionId},
-    syntax::{self, StmtKind, TypeDefinition},
-};
+use ril_hir::{BuiltinPayload, BuiltinSum, DefinitionId};
+use ril_source::{diag::Code, span::Span};
+use ril_syntax::syntax::{self, StmtKind, TypeDefinition};
 
 use crate::ty::{
     Adt, AdtKind, GenericValue, Ty,

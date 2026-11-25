@@ -1,0 +1,13 @@
+[package]
+name = "ril-source"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+ariadne.workspace = true
+serde.workspace = true
+serde_json.workspace = true

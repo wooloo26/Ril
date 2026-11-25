@@ -1,0 +1,14 @@
+[package]
+name = "ril-mir"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+ril-source.workspace = true
+ril-syntax.workspace = true
+ril-hir.workspace = true
+ril-sema.workspace = true

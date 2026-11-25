@@ -1,7 +1,6 @@
 [package]
 name = "ril-cli"
 version.workspace = true
-default-run = "ril"
 edition.workspace = true
 rust-version.workspace = true
 
@@ -9,8 +8,9 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
-ril-base.workspace = true
+ril-source.workspace = true
 ril-driver.workspace = true
+ril-lsp.workspace = true
 ril-test.workspace = true
 clap.workspace = true
 tempfile.workspace = true

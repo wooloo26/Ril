@@ -3,11 +3,9 @@ use std::{
     sync::Arc,
 };
 
-use ril_base::{diag::Code, span::Span};
-use ril_frontend::{
-    hir::{BuiltinSum, DefinitionId},
-    syntax::{Argument, Mode},
-};
+use ril_hir::{BuiltinSum, DefinitionId};
+use ril_source::{diag::Code, span::Span};
+use ril_syntax::syntax::{Argument, Mode};
 
 use super::{
     Callable, Member, MemberMode, Parameter, Ty,
@@ -347,7 +345,7 @@ impl Checker<'_> {
         let ty = self.expr(env, arg.value, Some(&expected));
         if let Ty::Callable(sig) = ty {
             let Ty::Callable(expect) = &expected else {
-                ril_base::ice!("callback expected type is not callable");
+                ril_source::ice!("callback expected type is not callable");
             };
             if sig.parameters.len() != expect.parameters.len() {
                 self.error(

@@ -3,11 +3,9 @@ use std::{
     sync::Arc,
 };
 
-use ril_base::{diag::Code, span::Span};
-use ril_frontend::{
-    hir::{DefinitionId, DefinitionKind},
-    syntax::{self, GenericArg, GenericParam, StmtKind, Type, TypeDefinition},
-};
+use ril_hir::{DefinitionId, DefinitionKind};
+use ril_source::{diag::Code, span::Span};
+use ril_syntax::syntax::{self, GenericArg, GenericParam, StmtKind, Type, TypeDefinition};
 
 use crate::ty::{
     Adt, AdtKind, GenericValue, Ty, Value,
@@ -109,7 +107,7 @@ impl Checker<'_> {
                     .map_or(Span::new(env.file, 0, 0), |&id| {
                         self.ast(env.file).stmt(id).span
                     }),
-                GenericArg::Type(_) => ril_base::ice!("type argument was already handled"),
+                GenericArg::Type(_) => ril_source::ice!("type argument was already handled"),
             };
             self.error(Code::E0306, span, "type parameter requires type syntax");
             Ty::Unknown

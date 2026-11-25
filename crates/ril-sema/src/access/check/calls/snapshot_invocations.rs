@@ -16,7 +16,7 @@ use crate::access::{
     SnapshotProjection, SnapshotProvider, Summary,
     flow::{AllocationIdentity, Region, widen_recursive_projection},
 };
-use ril_base::span::Span;
+use ril_source::span::Span;
 
 mod output;
 
@@ -403,12 +403,12 @@ impl Analyzer<'_> {
                 .snapshot_providers
                 .sources
                 .get(source)
-                .unwrap_or_else(|| ril_base::ice!("missing snapshot provider index {source}"));
+                .unwrap_or_else(|| ril_source::ice!("missing snapshot provider index {source}"));
             let signature = self
                 .snapshot_providers
                 .signatures
                 .get(&owner)
-                .unwrap_or_else(|| ril_base::ice!("missing snapshot provider signature"));
+                .unwrap_or_else(|| ril_source::ice!("missing snapshot provider signature"));
             let via_parameters = signature
                 .formals
                 .iter()

@@ -1,10 +1,11 @@
 use std::collections::BTreeMap;
 
-use ril_base::{
+use ril_hir::DefinitionKind;
+use ril_source::{
     diag::{Code, Diagnostic},
     span::Span,
 };
-use ril_frontend::{hir::DefinitionKind, syntax::StateKind};
+use ril_syntax::syntax::StateKind;
 
 use super::{
     Access, Analyzer, CallEntry, CallStorage, Context, Datum, DeferredStorageCall, InvocationSite,

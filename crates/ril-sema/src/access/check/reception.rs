@@ -6,9 +6,9 @@ impl Analyzer<'_> {
         &mut self,
         ctx: &Context,
         ledger: &Ledger,
-        ty: ril_frontend::syntax::TypeId,
+        ty: ril_syntax::syntax::TypeId,
     ) {
-        use ril_frontend::syntax::{GenericArg, Type};
+        use ril_syntax::syntax::{GenericArg, Type};
         match &self.ast(ctx.file).ty(ty).value {
             Type::TypeOf(expr) => {
                 let mut shadow = ctx.clone();

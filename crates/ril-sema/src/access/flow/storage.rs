@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
-use ril_base::span::Span;
-use ril_frontend::syntax::Mode;
+use ril_source::span::Span;
+use ril_syntax::syntax::Mode;
 
 use super::{BRANCH_LIMIT, Coordinate, Datum, Region, Replacement};
 

@@ -1,10 +1,8 @@
 use num_bigint::BigInt;
 use num_traits::{FromPrimitive, Signed, ToPrimitive};
-use ril_base::{diag::Code, span::Span};
-use ril_frontend::{
-    hir::{DefinitionId, TextBuiltin},
-    syntax::{self, ExprId, StmtKind, Type, TypeDefinition, Variant},
-};
+use ril_hir::{DefinitionId, TextBuiltin};
+use ril_source::{diag::Code, span::Span};
+use ril_syntax::syntax::{self, ExprId, StmtKind, Type, TypeDefinition, Variant};
 
 use super::{Eval, Signal, defect, integer, none, nonstatic};
 use crate::ty::{

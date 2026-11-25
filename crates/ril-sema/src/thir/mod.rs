@@ -10,11 +10,9 @@ mod build;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-use ril_base::span::{FileId, Span};
-use ril_frontend::{
-    hir::{DefinitionId, DefinitionKind, Resolution, ScopeId},
-    syntax::{Mode, Pattern, StmtKind, Storage, Type},
-};
+use ril_hir::{DefinitionId, DefinitionKind, Resolution, ScopeId};
+use ril_source::span::{FileId, Span};
+use ril_syntax::syntax::{Mode, Pattern, StmtKind, Storage, Type};
 
 use crate::ty::{Ty, TypedProgram};
 use build::BodyBuilder;

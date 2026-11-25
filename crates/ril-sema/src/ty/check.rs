@@ -5,14 +5,12 @@ use std::{
     sync::Arc,
 };
 
-use ril_base::{
+use ril_hir::{DefinitionId, DefinitionKind, Program, Resolution, ScopeId};
+use ril_source::{
     diag::{Code, Diagnostic},
     span::{FileId, Span},
 };
-use ril_frontend::{
-    hir::{DefinitionId, DefinitionKind, Program, Resolution, ScopeId},
-    syntax::{self, Ast, Mode, Name, Storage},
-};
+use ril_syntax::syntax::{self, Ast, Mode, Name, Storage};
 
 use super::narrowing::Refinements;
 use super::{
@@ -353,7 +351,7 @@ impl<'a> Checker<'a> {
     pub(super) fn closure_exits(&mut self, index: usize) -> &mut ImplicitExits {
         self.implicit_exits
             .get_mut(index)
-            .unwrap_or_else(|| ril_base::ice!("missing inference state for the current closure"))
+            .unwrap_or_else(|| ril_source::ice!("missing inference state for the current closure"))
     }
 
     pub(super) fn fresh(&mut self) -> Ty {

@@ -17,7 +17,7 @@ impl Analyzer<'_> {
                 self.check_resource_binding(name.span, &value, resource);
                 let binding = self
                     .definition(name.span)
-                    .unwrap_or_else(|| ril_base::ice!("unresolved binding pattern"));
+                    .unwrap_or_else(|| ril_source::ice!("unresolved binding pattern"));
                 let declaration = self.program.hir.definition(binding).name.span;
                 if ctx.in_function {
                     self.binding_scopes.insert(declaration, ctx.scope);

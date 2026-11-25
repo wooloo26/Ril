@@ -6,11 +6,9 @@ mod sums;
 use std::{collections::HashSet, sync::Arc};
 
 use num_traits::{Signed, Zero};
-use ril_base::{diag::Code, span::Span};
-use ril_frontend::{
-    hir::{DefinitionId, DefinitionKind, Resolution},
-    syntax::{self, Argument, Condition, Expr, ExprId, Mode, StmtKind, Transfer},
-};
+use ril_hir::{DefinitionId, DefinitionKind, Resolution};
+use ril_source::{diag::Code, span::Span};
+use ril_syntax::syntax::{self, Argument, Condition, Expr, ExprId, Mode, StmtKind, Transfer};
 
 use super::{
     AdtKind, Callable, LiteralError, Member, Parameter, Ty, Value,

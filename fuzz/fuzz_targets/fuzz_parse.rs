@@ -3,8 +3,8 @@
 use std::path::PathBuf;
 
 use libfuzzer_sys::fuzz_target;
-use ril_base::span::{FileId, SourceFile};
-use ril_frontend::{
+use ril_source::span::{FileId, SourceFile};
+use ril_syntax::{
     cst::CstFile,
     lexer,
     parser::{self, FileKind},

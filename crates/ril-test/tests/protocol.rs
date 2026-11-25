@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use ril_base::{
+use ril_source::{
     diag::{Code, Diagnostic},
     span::{FileId, Span},
 };

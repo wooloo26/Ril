@@ -3,11 +3,9 @@ use std::{
     sync::Arc,
 };
 
-use ril_base::{diag::Code, span::Span};
-use ril_frontend::{
-    hir::{DefinitionKind, PrimitivePhase},
-    syntax::{self, Argument, Expr, ExprId, Mode},
-};
+use ril_hir::{DefinitionKind, PrimitivePhase};
+use ril_source::{diag::Code, span::Span};
+use ril_syntax::syntax::{self, Argument, Expr, ExprId, Mode};
 
 use crate::ty::{
     AdtKind, Callable, Member, Parameter, Ty,
@@ -207,7 +205,7 @@ impl Checker<'_> {
         let result = self.expr(&mut local, body, target.as_ref());
         let result = if infer_result {
             let exits = self.implicit_exits.pop().unwrap_or_else(|| {
-                ril_base::ice!("missing inference state for the current closure")
+                ril_source::ice!("missing inference state for the current closure")
             });
             self.infer_closure_result(&local, result, exits, self.ast(env.file).expr(body).span)
         } else {
@@ -329,7 +327,7 @@ impl Checker<'_> {
                 DefinitionKind::Type => {
                     let ty = self.constructor_type(
                         env,
-                        path.unwrap_or_else(|| ril_base::ice!("constructor without path")),
+                        path.unwrap_or_else(|| ril_source::ice!("constructor without path")),
                         expected,
                     );
                     return self.nominal_constructor(env, ty, args, span);
@@ -359,7 +357,7 @@ impl Checker<'_> {
                 _ => (
                     self.path_expr(
                         env,
-                        path.unwrap_or_else(|| ril_base::ice!("resolved call without path")),
+                        path.unwrap_or_else(|| ril_source::ice!("resolved call without path")),
                         expected,
                         true,
                     ),
@@ -445,7 +443,7 @@ impl Checker<'_> {
             let parameter = call
                 .parameters
                 .get(index)
-                .unwrap_or_else(|| ril_base::ice!("bound argument without parameter"));
+                .unwrap_or_else(|| ril_source::ice!("bound argument without parameter"));
             self.expect(env, arg.value, &substitute(&parameter.ty, &generics));
             if matches!(arg.mode, Mode::Mut | Mode::Shared | Mode::Ref)
                 && self.types.get(&arg_span).is_some_and(Ty::is_value)

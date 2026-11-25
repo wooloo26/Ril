@@ -1,13 +1,11 @@
 use std::collections::{BTreeMap, VecDeque};
 
-use ril_base::{
+use ril_hir::DefinitionId;
+use ril_source::{
     diag::{Code, Diagnostic},
     span::Span,
 };
-use ril_frontend::{
-    hir::DefinitionId,
-    syntax::{Argument, Expr, ExprId, MatchArm, PatternId},
-};
+use ril_syntax::syntax::{Argument, Expr, ExprId, MatchArm, PatternId};
 
 use super::{
     GenericValue, Ty, TypedProgram, Value,
@@ -354,7 +352,7 @@ impl Checker<'_> {
                 StaticInput::Ready(value) => value.clone(),
                 StaticInput::Supplied(_) => arguments
                     .remove(&index)
-                    .unwrap_or_else(|| ril_base::ice!("evaluated static call input is missing")),
+                    .unwrap_or_else(|| ril_source::ice!("evaluated static call input is missing")),
                 StaticInput::Default(expr) => self
                     .evaluate_static(&callee, *expr)
                     .map_err(|failure| failure.diagnostic(span))?,
