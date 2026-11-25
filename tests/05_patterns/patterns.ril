@@ -169,3 +169,21 @@ type After { ..Before; Read() }
 -- @case sum_spread_resolves_without_recursive_expansion compile-fail E0313
 type First { ..Second }
 type Second { ..First }
+
+-- @case duplicate_pattern_binder_in_tuple_rejected compile-fail E0347
+-- @forbid E0203
+fn bad() -> int {
+    let (dup, dup) = (1, 2)
+    -- ^ E0347
+    dup
+}
+
+-- @case duplicate_pattern_binder_in_or_alternative_rejected compile-fail E0347
+-- @forbid E0203
+fn bad(pair: (int, int)) -> int {
+    match pair {
+        (x, 1) | (x, x) -> x
+        -- ^ E0347
+        _ -> 0
+    }
+}

@@ -2141,6 +2141,23 @@ fn invalid(snapshot: Box) -> () {
     Array::push(mut field, 3)
 }
 
+-- @case tuple_immutable_slot_cannot_decompose_as_mut compile-fail E0551 no-prelude
+fn invalid() -> () {
+    let (mut bad_slot, _) = ([1], [2])
+    -- ^ E0551
+    Array::push(mut bad_slot, 3)
+}
+
+-- @case variant_fixed_subslots_cannot_decompose_as_mut compile-fail E0551 no-prelude
+type Shape { Rect([]int, []int) }
+fn invalid() -> () {
+    let s = Rect([1], [2])
+    match s {
+        Rect(mut a, _) -> Array::push(mut a, 3)
+        -- ^ E0551
+    }
+}
+
 -- @case array_reference_mode_synthesizes_from_explicit_reference compile-pass no-prelude
 type Cell = .{ var value: int }
 fn build(snapshot: Cell) &return(ref snapshot) -> new [ref]Cell {

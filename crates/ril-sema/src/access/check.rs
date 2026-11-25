@@ -2303,6 +2303,25 @@ impl<'a> Analyzer<'a> {
                     let span = self.ast(ctx.file).pattern(item).span;
                     let child =
                         self.project_observed(ctx, ledger, &value, (coordinate, mode, span));
+                    if let Pattern::Binding(own, name) = &self.ast(ctx.file).pattern(item).value {
+                        let requested = if own.mode == Mode::Plain {
+                            storage.mode
+                        } else {
+                            own.mode
+                        };
+                        let member_mode = Access::from_mode(mode);
+                        if matches!(requested, Mode::Mut | Mode::Shared)
+                            && mode != Mode::Via
+                            && !member_mode.writes()
+                            && !child.origins().any(|origin| origin.draft)
+                        {
+                            self.error(
+                                Code::E0551,
+                                name.span,
+                                "tuple slot cannot decompose with writable authority",
+                            );
+                        }
+                    }
                     self.bind(ctx, ledger, item, storage, child, site);
                 }
             }
@@ -2370,7 +2389,8 @@ impl<'a> Analyzer<'a> {
                 }
             }
             Pattern::Constructor(_, payload) => {
-                for (i, &item) in payload.iter().flatten().enumerate() {
+                let items = payload.as_deref().unwrap_or(&[]);
+                for (i, &item) in items.iter().enumerate() {
                     let child = self.project_observed(
                         ctx,
                         ledger,
@@ -2381,6 +2401,24 @@ impl<'a> Analyzer<'a> {
                             self.ast(ctx.file).pattern(item).span,
                         ),
                     );
+                    if items.len() > 1
+                        && let Pattern::Binding(own, name) = &self.ast(ctx.file).pattern(item).value
+                    {
+                        let requested = if own.mode == Mode::Plain {
+                            storage.mode
+                        } else {
+                            own.mode
+                        };
+                        if matches!(requested, Mode::Mut | Mode::Shared)
+                            && !child.origins().any(|origin| origin.draft)
+                        {
+                            self.error(
+                                Code::E0551,
+                                name.span,
+                                "variant payload slot cannot decompose with writable authority",
+                            );
+                        }
+                    }
                     self.bind(ctx, ledger, item, storage, child, site);
                 }
             }

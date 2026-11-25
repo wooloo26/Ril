@@ -797,29 +797,38 @@ impl Walk<'_> {
     }
 
     fn bind_pattern(&mut self, id: PatternId, alias: bool) {
+        let mut seen = HashSet::new();
+        self.bind_pattern_in(id, alias, &mut seen);
+    }
+
+    fn bind_pattern_in(&mut self, id: PatternId, alias: bool, seen: &mut HashSet<String>) {
         match &self.ast.pattern(id).value {
             Pattern::Binding(storage, name) => {
                 self.storage(storage);
-                self.bind_name(name, alias);
+                self.bind_pattern_name(name, alias, seen);
             }
-            Pattern::Rest(Some(name)) => self.bind_name(name, alias),
+            Pattern::Rest(Some(name)) => self.bind_pattern_name(name, alias, seen),
             Pattern::Tuple(children)
             | Pattern::Slice {
                 elements: children, ..
             } => {
                 for &item in children {
-                    self.bind_pattern(item, alias);
+                    self.bind_pattern_in(item, alias, seen);
                 }
             }
             Pattern::Or(children) => {
+                let mut combined = seen.clone();
                 for (index, &item) in children.iter().enumerate() {
-                    self.bind_pattern(item, alias || index > 0);
+                    let mut branch = seen.clone();
+                    self.bind_pattern_in(item, alias || index > 0, &mut branch);
+                    combined.extend(branch);
                 }
+                *seen = combined;
             }
             Pattern::Constructor(path, args) => {
                 self.path(path);
                 for &arg in args.iter().flatten() {
-                    self.bind_pattern(arg, alias);
+                    self.bind_pattern_in(arg, alias, seen);
                 }
             }
             Pattern::Record { name, fields, .. } => {
@@ -829,16 +838,16 @@ impl Walk<'_> {
                 for field in fields {
                     self.storage(&field.storage);
                     if let Some(pattern) = field.pattern {
-                        self.bind_pattern(pattern, alias);
+                        self.bind_pattern_in(pattern, alias, seen);
                     } else {
-                        self.bind_name(&field.name, alias);
+                        self.bind_pattern_name(&field.name, alias, seen);
                     }
                 }
             }
             Pattern::Subset { ty, binding } => {
                 self.ty(*ty);
                 if let Some(binding) = binding {
-                    self.bind_pattern(*binding, alias);
+                    self.bind_pattern_in(*binding, alias, seen);
                 }
             }
             Pattern::Type(ty) => self.ty(*ty),
@@ -851,6 +860,18 @@ impl Walk<'_> {
             | Pattern::Range { .. }
             | Pattern::Rest(None) => {}
         }
+    }
+
+    fn bind_pattern_name(&mut self, name: &Name, alias: bool, seen: &mut HashSet<String>) {
+        if !seen.insert(name.value.clone()) {
+            self.report(
+                Code::E0347,
+                name.span,
+                format!("duplicate pattern binding {}", name.value),
+            );
+            return;
+        }
+        self.bind_name(name, alias);
     }
 
     fn bind_name(&mut self, name: &Name, alias: bool) {
@@ -869,40 +890,47 @@ impl Walk<'_> {
     }
 
     fn reserve_pattern(&mut self, id: PatternId) {
+        let mut seen = HashSet::new();
+        self.reserve_pattern_in(id, &mut seen);
+    }
+
+    fn reserve_pattern_in(&mut self, id: PatternId, seen: &mut HashSet<String>) {
         match &self.ast.pattern(id).value {
             Pattern::Binding(_, name) | Pattern::Rest(Some(name)) => {
-                self.declare(name, DefinitionKind::Local, None, true);
+                if seen.insert(name.value.clone()) {
+                    self.declare(name, DefinitionKind::Local, None, true);
+                }
             }
             Pattern::Tuple(children)
             | Pattern::Slice {
                 elements: children, ..
             } => {
                 for &item in children {
-                    self.reserve_pattern(item);
+                    self.reserve_pattern_in(item, seen);
                 }
             }
             Pattern::Or(children) => {
                 if let Some(&item) = children.first() {
-                    self.reserve_pattern(item);
+                    self.reserve_pattern_in(item, seen);
                 }
             }
             Pattern::Constructor(_, args) => {
                 for &arg in args.iter().flatten() {
-                    self.reserve_pattern(arg);
+                    self.reserve_pattern_in(arg, seen);
                 }
             }
             Pattern::Record { fields, .. } => {
                 for field in fields {
                     if let Some(pattern) = field.pattern {
-                        self.reserve_pattern(pattern);
-                    } else {
+                        self.reserve_pattern_in(pattern, seen);
+                    } else if seen.insert(field.name.value.clone()) {
                         self.declare(&field.name, DefinitionKind::Local, None, true);
                     }
                 }
             }
             Pattern::Subset {
                 binding: Some(id), ..
-            } => self.reserve_pattern(*id),
+            } => self.reserve_pattern_in(*id, seen),
             _ => {}
         }
     }
