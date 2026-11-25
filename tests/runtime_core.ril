@@ -1116,7 +1116,7 @@ fn total(flag: bool) -> int {
 fn main() -> () { assert(total(true) == 3 && total(false) == 0) }
 
 -- @case static_coordinate_specializes_generic_getter run-pass backend=both
-fn read<T: .{ .. }>(via item: T, meta key: str |> Key<T>) -> infer T.(key) {
+fn read<T: .{ .. }>(via item: T, meta key: str |> KeyOf<T>) -> infer T.(key) {
     item.(key)
 }
 fn main() -> () {
@@ -1201,10 +1201,10 @@ fn main() -> () {
 pub fn unreachable() -> int
 
 -- @case guarded_static_coordinate_keeps_its_dependent_return_through_a_call run-pass backend=both
-fn read<T: .{ .. }>(via item: T, meta key: str |> Key<T>) -> infer T.(key) {
+fn read<T: .{ .. }>(via item: T, meta key: str |> KeyOf<T>) -> infer T.(key) {
     item.(key)
 }
-fn relay<T: .{ .. }>(via item: T, meta key: str |> Key<T>) -> infer T.(key) {
+fn relay<T: .{ .. }>(via item: T, meta key: str |> KeyOf<T>) -> infer T.(key) {
     read(item, key)
 }
 fn main() -> () {

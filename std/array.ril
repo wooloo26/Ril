@@ -6,7 +6,6 @@ pub fn insert<T>(mut xs: [via]T, index: int, via item: T) &mut -> ()
 pub fn remove<T>(mut xs: [via]T, index: int) &mut -> new ?T
 pub fn sort<T>(mut xs: []T) &mut -> ()
 pub fn clear<T>(mut xs: [via]T) &mut -> ()
-pub fn len<T>(via xs: [via]T) -> int
 
 pub fn at<T>(xs: []T, index: int) &return(xs) -> new ?T {
     if index < 0 || index >= len(xs) {

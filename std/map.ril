@@ -7,4 +7,3 @@ pub fn contains<K, V>(via map: [K: via V], key: K) -> bool
 pub fn clear<K, V>(mut map: [K: via V]) &mut -> ()
 pub fn keys<K, V>(via map: [K: via V]) -> new []K
 pub fn values<K, V>(via map: [K: via V]) -> new []V
-pub fn len<K, V>(via map: [K: via V]) -> int

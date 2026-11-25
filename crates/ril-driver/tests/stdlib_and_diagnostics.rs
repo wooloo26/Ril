@@ -208,7 +208,7 @@ fn prelude_real_sums_platform_math_and_removed_aliases() -> Result<(), String> {
         use ril/os
         use ril/platform
 
-        fn check_set_sig(s: Set<int>) -> int { Set::len(s) }
+        fn check_set_sig(s: Set<int>) -> int { len(s) }
 
         fn main() @io -> new Result<(), str> {
             let opt: Option<int> = Option::Some(42)
@@ -237,7 +237,7 @@ fn prelude_real_sums_platform_math_and_removed_aliases() -> Result<(), String> {
             assert(Math::max(3, 7) == 7)
             assert(Math::clamp(15, 0, 10) == 10)
             assert(Math::PI > 3.14 && Math::EULER > 2.71)
-            assert(Bytes::len(String::encode_utf8("ab")) == 2)
+            assert(len(String::encode_utf8("ab")) == 2)
             let _ = check_set_sig
             println("wave-a-ok")
             Result::Ok()
@@ -283,15 +283,15 @@ fn wave_b_stdlib_primitives_set_sort_first_class_and_named_args() -> Result<(), 
             assert(xs == [10, 15, 20, 30])
             assert(Array::remove(mut xs, 2) == Some(20))
             assert(Array::pop(mut xs) == Some(30))
-            assert(Array::len(ref xs) == 2)
+            assert(len(ref xs) == 2)
             Array::clear(mut xs)
-            assert(Array::len(ref xs) == 0 && Array::pop(mut xs) == None)
+            assert(len(ref xs) == 0 && Array::pop(mut xs) == None)
 
-            -- Map::{get, insert, remove, contains, clear, keys, values, len}
+            -- Map::{get, insert, remove, contains, clear, keys, values}
             let mut m: [str: int] = [:]
             Map::insert(mut m, "a", 1)
             Map::insert(mut m, "b", 2)
-            assert(Map::len(ref m) == 2)
+            assert(len(ref m) == 2)
             assert(Map::contains(ref m, "a") && !Map::contains(ref m, "z"))
             assert(Map::get(ref m, "b") == Some(2))
             assert(Map::keys(ref m) == ["a", "b"])
@@ -299,14 +299,14 @@ fn wave_b_stdlib_primitives_set_sort_first_class_and_named_args() -> Result<(), 
             assert(Map::remove(mut m, "a") == Some(1))
             assert(Map::remove(mut m, "a") == None)
             Map::clear(mut m)
-            assert(Map::len(ref m) == 0)
+            assert(len(ref m) == 0)
 
-            -- Set::{empty, from_array, insert, remove, contains, len}, clone, ==, for
+            -- Set::{empty, from_array, insert, remove, contains}, clone, ==, for
             let mut s: Set<int> = Set::empty()
             Set::insert(mut s, 10)
             Set::insert(mut s, 20)
             Set::insert(mut s, 10)
-            assert(len(ref s) == 2 && Set::len(ref s) == 2)
+            assert(len(ref s) == 2)
             assert(Set::contains(ref s, 10) && !Set::contains(ref s, 99))
             let s2 = Set::from_array([20, 10, 20])
             assert(s == s2)
@@ -343,11 +343,15 @@ fn wave_b_stdlib_primitives_set_sort_first_class_and_named_args() -> Result<(), 
     "#;
     run_aot(source, "wave-b-ok\n")?;
 
-    // Module-specific receiver checks and mode/orderable/mutability checks.
+    // Unified len() rejects non-LenTarget values and removed module-specific len() fails resolution.
     for (src, code) in [
         (
-            "fn main() -> () { let _ = Map::len(\"abc\") }\n",
+            "fn main() -> () { let _ = Map::contains(\"abc\", \"a\") }\n",
             Code::E0301,
+        ),
+        (
+            "fn main() -> () { let _ = Array::len([1, 2]) }\n",
+            Code::E0209,
         ),
         (
             "fn main() -> () { let _ = len(ref \"abc\") }\n",
@@ -394,7 +398,7 @@ fn wave_c_soundness_static_checks_narrowing_patterns_and_nominals() -> Result<()
         meta let DEFAULT_CFG = Config.{ port: 9000 }
 
         fn unwrap_copy<W |> NominalWrapper>(w: W) -> Unwrap<W> { inner(w) }
-        fn coord_kind<T>(k: CoordKey<T>) -> CoordKey<T> { k }
+        fn coord_kind<T>(k: FieldKey<T>) -> FieldKey<T> { k }
         fn pair_only<T |> Tuple>(t: T) -> T { t }
         fn shared_only<T |> SharedObject>(v: T) -> T { v }
         fn len_only<T |> LenTarget>(v: T) -> int { len(v) }
@@ -685,7 +689,7 @@ fn wave_e_introspection_type_patterns_and_parser_conformance() -> Result<(), Str
             _ -> <.{}>
         }
         type CirclePayload = Shape.("Circle")
-        type Dict<K, M: MemberMode, V> = [K: M V]
+        type Dict<K, M: FieldMode, V> = [K: M V]
 
         fn main() @io -> () {
             -- Self-hosted LenTarget in std/prelude.ril
@@ -704,10 +708,10 @@ fn wave_e_introspection_type_patterns_and_parser_conformance() -> Result<(), Str
             assert(b == "unboxed" && s == 99 && kv.0 == "k" && kv.1 == 7 && rest.port == 80)
             assert(r == 3.5 && d?["x"] == Some(1))
 
-            -- Runtime static folding of type_name, coords, variants, Reflect::has_default
+            -- Runtime static folding of type_name, fields, variants, Reflect::has_default
             assert(type_name(<int>) == "int")
-            assert(len(coords(<()>)) == 0)
-            assert(len(coords(<Pair>)) == 2)
+            assert(len(fields(<()>)) == 0)
+            assert(len(fields(<Pair>)) == 2)
             assert(len(variants(<Shape>)) == 3)
             assert(Reflect::has_default(<Config>, "host"))
             assert(!Reflect::has_default(<Config>, "port"))
@@ -820,4 +824,20 @@ fn wave_e_introspection_type_patterns_and_parser_conformance() -> Result<(), Str
         );
     }
     Ok(())
+}
+
+#[test]
+fn primitive_manifest_runtime_symbols_exist_in_ril_rt() {
+    let rt_symbols: std::collections::HashSet<&str> =
+        ril_codegen::runtime_symbol_names().into_iter().collect();
+    for spec in ril_hir::PRIMITIVE_FNS {
+        if let Some(symbol) = spec.runtime_symbol {
+            assert!(
+                rt_symbols.contains(symbol),
+                "PRIMITIVE_FNS entry {}::{} references missing ril-rt symbol `{symbol}`",
+                spec.module,
+                spec.name
+            );
+        }
+    }
 }

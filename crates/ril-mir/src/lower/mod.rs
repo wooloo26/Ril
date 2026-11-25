@@ -11,7 +11,7 @@ use std::{
 
 use ril_sema::{
     access::{Analysis, CleanupAction},
-    hir::{DefinitionId, DefinitionKind, Intrinsic, Resolution},
+    hir::{DefinitionId, DefinitionKind, Resolution},
     syntax::{
         Argument, Ast, Expr, ExprId, Function as SyntaxFunction, Member, Name, Pattern, PatternId,
         StmtId, StmtKind, StringPart, Transfer,
@@ -1284,20 +1284,13 @@ impl<'a> Builder<'_, 'a> {
                 Ok(self.box_closure(id, arity, environment))
             }
             DefinitionKind::Primitive(_)
-                if self
-                    .global
-                    .typed
-                    .hir
-                    .intrinsic(source)
-                    .and_then(Intrinsic::runtime_symbol)
-                    .is_some() =>
+                if self.global.typed.hir.runtime_symbol(source).is_some() =>
             {
                 let symbol = self
                     .global
                     .typed
                     .hir
-                    .intrinsic(source)
-                    .and_then(Intrinsic::runtime_symbol)
+                    .runtime_symbol(source)
                     .unwrap_or_else(|| ril_source::ice!("checked runtime symbol"));
                 let arity = self.global.declaration(source).map_or(0, |f| {
                     f.signature.params.iter().filter(|p| !p.is_meta).count()

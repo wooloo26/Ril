@@ -320,7 +320,7 @@ impl Checker<'_> {
                     | StdType::Sender
                     | StdType::Receiver => Some(1),
                     StdType::Result => Some(2),
-                    StdType::MemberMode | StdType::Scope => Some(0),
+                    StdType::FieldMode | StdType::Scope => Some(0),
                     _ => None,
                 };
                 if let Some(expected) = expected_arity
@@ -347,7 +347,7 @@ impl Checker<'_> {
                         return Ty::Set(Box::new(key));
                     }
                     StdType::Draft => return Ty::Draft(Box::new(arg0(self, env))),
-                    StdType::MemberMode => return Ty::Mode,
+                    StdType::FieldMode => return Ty::Mode,
                     StdType::Scope => return Ty::Scope,
                     StdType::Task => {
                         let inner = arg0(self, env);
@@ -373,10 +373,7 @@ impl Checker<'_> {
                     StdType::PanicInfo
                     | StdType::PanicError
                     | StdType::TaskFault
-                    | StdType::TimeoutError
-                    | StdType::SendError
-                    | StdType::TrySendError
-                    | StdType::TryRecvError => {}
+                    | StdType::TimeoutError => {}
                 }
             }
             if is_prim {
@@ -401,9 +398,9 @@ impl Checker<'_> {
                         let target = self.normalize(&raw);
                         return self.eval_unwrap_helper(env, &target, path.span);
                     }
-                    "CoordKey" => {
+                    "FieldKey" => {
                         if last.arguments.len() != 1 {
-                            self.error(Code::E0340, path.span, "CoordKey takes one type argument");
+                            self.error(Code::E0340, path.span, "FieldKey takes one type argument");
                             return Ty::Unknown;
                         }
                         let raw = arg0(self, env);
@@ -668,7 +665,7 @@ impl Checker<'_> {
                     ..unknown_callable()
                 }));
             }
-            Some(StdType::MemberMode) => return Ty::Mode,
+            Some(StdType::FieldMode) => return Ty::Mode,
             _ => {}
         }
         let owner = self.hir.definition(parent);

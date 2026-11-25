@@ -11,58 +11,6 @@ use super::{Builder, Result};
 use crate::{DraftOp, Register, Target, Terminator};
 
 impl Builder<'_, '_> {
-    pub(super) fn concurrent(
-        &mut self,
-        module: &str,
-        name: &str,
-        args: &[Argument],
-        span: Span,
-    ) -> Result<Register> {
-        let symbol = match (module, name) {
-            ("Fiber", "run") => "ril_fiber_run",
-            ("Fiber", "scope") => "ril_fiber_scope",
-            ("Fiber", "try_scope") => "ril_fiber_try_scope",
-            ("Fiber", "spawn") => "ril_fiber_spawn",
-            ("Fiber", "join")
-                if args
-                    .get(1)
-                    .is_some_and(|arg| arg.mode == ril_sema::syntax::Mode::New) =>
-            {
-                "ril_fiber_join_owned"
-            }
-            ("Fiber", "join") => "ril_fiber_join",
-            ("Fiber", "cancel") => "ril_fiber_cancel",
-            ("Fiber", "cancel_scope") => "ril_fiber_cancel_scope",
-            ("Fiber", "yield_now") => "ril_fiber_yield",
-            ("Fiber", "sleep_ms") => "ril_fiber_sleep",
-            ("Fiber", "is_cancelled") => "ril_fiber_cancelled",
-            ("Fiber", "uncancellable") => "ril_fiber_uncancellable",
-            ("Fiber", "supervise") => "ril_fiber_supervise",
-            ("Fiber", "timeout_ms") => "ril_fiber_timeout",
-            ("Fiber", "zip") => "ril_fiber_zip",
-            ("Fiber", "try_zip") => "ril_fiber_try_zip",
-            ("Fiber", "race") => "ril_fiber_race",
-            ("Fiber", "map") => "ril_fiber_map",
-            ("Fiber", "try_map") => "ril_fiber_try_map",
-            ("Channel", "bounded") => "ril_channel_bounded",
-            ("Channel", "unbounded") => "ril_channel_unbounded",
-            ("Channel", "send") => "ril_channel_send",
-            ("Channel", "recv") => "ril_channel_recv",
-            ("Channel", "try_send") => "ril_channel_try_send",
-            ("Channel", "try_recv") => "ril_channel_try_recv",
-            ("Channel", "clone") => "ril_channel_clone",
-            ("Channel", "close") => "ril_channel_close",
-            ("Channel", "close_recv") => "ril_channel_close_recv",
-            ("Channel", "drain") => "ril_channel_drain",
-            _ => return Err(self.unsupported(span, &format!("{module}::{name}"))),
-        };
-        let args = args
-            .iter()
-            .map(|arg| self.expr(arg.value))
-            .collect::<Result<Vec<_>>>()?;
-        Ok(self.runtime(symbol, args))
-    }
-
     pub(super) fn primitive(
         &mut self,
         id: DefinitionId,
@@ -184,7 +132,16 @@ impl Builder<'_, '_> {
                 .map(|arg| self.expr(arg.value))
                 .collect::<Result<Vec<_>>>()?
         };
-        let Some(symbol) = intrinsic.and_then(Intrinsic::runtime_symbol) else {
+        let symbol = if self.global.typed.hir.primitive_module(id) == Some("Fiber")
+            && name == "join"
+            && args
+                .get(1)
+                .is_some_and(|arg| arg.mode == ril_sema::syntax::Mode::New)
+        {
+            "ril_fiber_join_owned"
+        } else if let Some(symbol) = self.global.typed.hir.runtime_symbol(id) {
+            symbol
+        } else {
             return Err(self.unsupported(span, &format!("primitive {name}")));
         };
         Ok(self.runtime(symbol, values))

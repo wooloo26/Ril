@@ -446,7 +446,7 @@ impl Checker<'_> {
                 "Let" | "Var" | "Mut" | "SharedMut" | "Ref" | "VarMut" | "VarSharedMut" | "VarRef",
                 Ty::Mode,
             ) if variant_parent
-                .is_none_or(|p| self.hir.std_type(p) == Some(ril_hir::StdType::MemberMode)) =>
+                .is_none_or(|p| self.hir.std_type(p) == Some(ril_hir::StdType::FieldMode)) =>
             {
                 Vec::new()
             }

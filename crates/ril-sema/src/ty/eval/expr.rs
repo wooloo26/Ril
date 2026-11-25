@@ -549,7 +549,7 @@ impl Checker<'_> {
                 result
             }
             DefinitionKind::Variant(parent)
-                if self.hir.std_type(parent) == Some(ril_hir::StdType::MemberMode) =>
+                if self.hir.std_type(parent) == Some(ril_hir::StdType::FieldMode) =>
             {
                 match def.name.value.as_str() {
                     "Let" => Ok(Value::Mode(MemberMode::PLAIN)),

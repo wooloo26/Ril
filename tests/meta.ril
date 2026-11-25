@@ -174,14 +174,14 @@ meta fn evaluate() -> int {
 meta let _ = assert(evaluate() == 12)
 
 -- @case meta_key_specializes_projection_and_rejects_unknown_coordinate compile-fail E0323
-fn read<T: .{ .. }>(via item: T, meta key: str |> Key<T>) -> infer T.(key) {
+fn read<T: .{ .. }>(via item: T, meta key: str |> KeyOf<T>) -> infer T.(key) {
     item.(key)
 }
 fn bad() -> int { read(.{ size: 2 }, "missing") }
 -- ^ E0323
 
 -- @case projection_meta_argument_must_be_static compile-fail E0814
-fn read<T: .{ .. }>(via item: T, meta key: str |> Key<T>) -> infer T.(key) {
+fn read<T: .{ .. }>(via item: T, meta key: str |> KeyOf<T>) -> infer T.(key) {
     item.(key)
 }
 fn bad(key: str) -> int { read(.{ size: 2 }, key) }
@@ -189,7 +189,7 @@ fn bad(key: str) -> int { read(.{ size: 2 }, key) }
 
 -- @case mapped_record_reads_static_locals_and_preserves_member_modes compile-pass
 type Select = \T: .{ .. }, keys: []str -> {
-    let chosen = coords(<T>) |> Array::filter(\(_, k) -> Array::contains(keys, k))
+    let chosen = fields(<T>) |> Array::filter(\(_, k) -> Array::contains(keys, k))
     <.{ m [chosen as (m, k)]: T.(k) }>
 }
 type Model = .{ id: int, var title: str, mut rows: []int }

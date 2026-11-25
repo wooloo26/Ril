@@ -353,7 +353,7 @@ impl fmt::Display for Display<'_> {
             Ty::Bytes => f.write_str("bytes"),
             Ty::Never => f.write_str("never"),
             Ty::Range => f.write_str("Range"),
-            Ty::Mode => f.write_str("MemberMode"),
+            Ty::Mode => f.write_str("FieldMode"),
             Ty::Infer(_) | Ty::Unknown => f.write_str("_"),
             Ty::Param(id) => f.write_str(&self.hir.definition(*id).name.value),
             Ty::Projection(base, key) => write!(

@@ -11,7 +11,465 @@ use ril_syntax::{
     syntax::{Function, GenericParam, StmtKind, TypeDecl},
 };
 
-use super::{File, PrimitivePhase, StdType};
+use super::{File, Intrinsic, PrimitivePhase, StdType};
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PrimitiveSpec {
+    pub module: &'static str,
+    pub name: &'static str,
+    pub phase: PrimitivePhase,
+    pub runtime_symbol: Option<&'static str>,
+    pub intrinsic: Option<Intrinsic>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PrimitiveTypeSpec {
+    pub module: &'static str,
+    pub name: &'static str,
+    pub std_type: StdType,
+    pub is_object: bool,
+}
+
+const fn prim(
+    module: &'static str,
+    name: &'static str,
+    phase: PrimitivePhase,
+    runtime_symbol: Option<&'static str>,
+    intrinsic: Option<Intrinsic>,
+) -> PrimitiveSpec {
+    PrimitiveSpec {
+        module,
+        name,
+        phase,
+        runtime_symbol,
+        intrinsic,
+    }
+}
+
+const fn ptype(
+    module: &'static str,
+    name: &'static str,
+    std_type: StdType,
+    is_object: bool,
+) -> PrimitiveTypeSpec {
+    PrimitiveTypeSpec {
+        module,
+        name,
+        std_type,
+        is_object,
+    }
+}
+
+/// Single central manifest of compiler-known standard library types.
+pub const PRIMITIVE_TYPES: &[PrimitiveTypeSpec] = {
+    use StdType::*;
+    &[
+        ptype("Prelude", "Option", Option, false),
+        ptype("Prelude", "Result", Result, false),
+        ptype("Prelude", "PanicInfo", PanicInfo, false),
+        ptype("Prelude", "PanicError", PanicError, false),
+        ptype("Prelude", "Draft", Draft, true),
+        ptype("Reflect", "FieldMode", FieldMode, false),
+        ptype("Set", "Set", Set, true),
+        ptype("Fiber", "Scope", Scope, true),
+        ptype("Fiber", "Task", Task, true),
+        ptype("Fiber", "TaskFault", TaskFault, false),
+        ptype("Fiber", "TimeoutError", TimeoutError, false),
+        ptype("Channel", "Sender", Sender, true),
+        ptype("Channel", "Receiver", Receiver, true),
+    ]
+};
+
+/// Single central manifest of all bodyless standard library primitives.
+///
+/// Ordinary bodied `.ril` functions in `std/*.ril` are NOT listed here and can
+/// be added, edited, or moved without touching compiler code.
+pub const PRIMITIVE_FNS: &[PrimitiveSpec] = {
+    use Intrinsic::*;
+    use PrimitivePhase::{Both, Runtime, Static};
+    &[
+        // Prelude
+        prim("Prelude", "len", Both, Some("ril_rt_len"), Some(Len)),
+        prim("Prelude", "inner", Both, None, Some(Inner)),
+        prim("Prelude", "clone", Both, Some("ril_rt_clone"), Some(Clone)),
+        prim("Prelude", "derive", Both, None, Some(Derive)),
+        prim("Prelude", "absorb_panic", Runtime, None, Some(AbsorbPanic)),
+        prim(
+            "Prelude",
+            "panic_message",
+            Runtime,
+            Some("ril_rt_panic_message"),
+            Some(PanicMessage),
+        ),
+        prim("Prelude", "type_name", Static, None, Some(TypeName)),
+        prim("Prelude", "fields", Static, None, Some(Fields)),
+        prim("Prelude", "variants", Static, None, Some(Variants)),
+        prim("Prelude", "panic", Both, Some("ril_rt_panic"), Some(Panic)),
+        prim(
+            "Prelude",
+            "assert",
+            Both,
+            Some("ril_rt_assert"),
+            Some(Assert),
+        ),
+        // Io / File
+        prim("Io", "print", Runtime, Some("ril_rt_print"), Some(Print)),
+        prim(
+            "Io",
+            "println",
+            Runtime,
+            Some("ril_rt_println"),
+            Some(Println),
+        ),
+        prim(
+            "File",
+            "read",
+            Runtime,
+            Some("ril_rt_file_read"),
+            Some(FileRead),
+        ),
+        prim(
+            "File",
+            "write",
+            Runtime,
+            Some("ril_rt_file_write"),
+            Some(FileWrite),
+        ),
+        // Numeric
+        prim(
+            "Numeric",
+            "to_f64",
+            Both,
+            Some("ril_rt_to_f64"),
+            Some(NumericToF64),
+        ),
+        prim(
+            "Numeric",
+            "convert",
+            Both,
+            Some("ril_rt_to_int"),
+            Some(NumericConvert),
+        ),
+        prim(
+            "Numeric",
+            "trunc",
+            Both,
+            Some("ril_rt_trunc"),
+            Some(NumericTrunc),
+        ),
+        // Array
+        prim(
+            "Array",
+            "push",
+            Both,
+            Some("ril_rt_append"),
+            Some(ArrayPush),
+        ),
+        prim(
+            "Array",
+            "pop",
+            Both,
+            Some("ril_rt_array_pop"),
+            Some(ArrayPop),
+        ),
+        prim(
+            "Array",
+            "insert",
+            Both,
+            Some("ril_rt_array_insert"),
+            Some(ArrayInsert),
+        ),
+        prim(
+            "Array",
+            "remove",
+            Both,
+            Some("ril_rt_array_remove"),
+            Some(ArrayRemove),
+        ),
+        prim(
+            "Array",
+            "sort",
+            Both,
+            Some("ril_rt_array_sort"),
+            Some(ArraySort),
+        ),
+        prim(
+            "Array",
+            "clear",
+            Both,
+            Some("ril_rt_array_clear"),
+            Some(ArrayClear),
+        ),
+        // Map
+        prim("Map", "get", Both, Some("ril_rt_map_get"), Some(MapGet)),
+        prim(
+            "Map",
+            "insert",
+            Both,
+            Some("ril_rt_map_insert"),
+            Some(MapInsert),
+        ),
+        prim(
+            "Map",
+            "remove",
+            Both,
+            Some("ril_rt_map_remove"),
+            Some(MapRemove),
+        ),
+        prim(
+            "Map",
+            "contains",
+            Both,
+            Some("ril_rt_map_contains"),
+            Some(MapContains),
+        ),
+        prim(
+            "Map",
+            "clear",
+            Both,
+            Some("ril_rt_map_clear"),
+            Some(MapClear),
+        ),
+        prim("Map", "keys", Both, Some("ril_rt_map_keys"), Some(MapKeys)),
+        prim(
+            "Map",
+            "values",
+            Both,
+            Some("ril_rt_map_values"),
+            Some(MapValues),
+        ),
+        // Set
+        prim("Set", "empty", Both, Some("ril_rt_set_new"), Some(SetEmpty)),
+        prim(
+            "Set",
+            "from_array",
+            Both,
+            Some("ril_rt_set_from_array"),
+            Some(SetFromArray),
+        ),
+        prim(
+            "Set",
+            "insert",
+            Both,
+            Some("ril_rt_set_insert"),
+            Some(SetInsert),
+        ),
+        prim(
+            "Set",
+            "remove",
+            Both,
+            Some("ril_rt_set_remove"),
+            Some(SetRemove),
+        ),
+        prim(
+            "Set",
+            "contains",
+            Both,
+            Some("ril_rt_set_contains"),
+            Some(SetContains),
+        ),
+        // String
+        prim("String", "inspect", Both, None, Some(StringInspect)),
+        prim(
+            "String",
+            "join",
+            Both,
+            Some("ril_rt_str_join"),
+            Some(StringJoin),
+        ),
+        prim(
+            "String",
+            "split",
+            Both,
+            Some("ril_rt_str_split"),
+            Some(StringSplit),
+        ),
+        prim(
+            "String",
+            "starts_with",
+            Both,
+            Some("ril_rt_str_starts_with"),
+            Some(StringStartsWith),
+        ),
+        prim(
+            "String",
+            "ends_with",
+            Both,
+            Some("ril_rt_str_ends_with"),
+            Some(StringEndsWith),
+        ),
+        prim("String", "at", Both, Some("ril_rt_str_at"), Some(StringAt)),
+        prim(
+            "String",
+            "scalars",
+            Both,
+            Some("ril_rt_str_scalars"),
+            Some(StringScalars),
+        ),
+        prim(
+            "String",
+            "from_scalars",
+            Both,
+            Some("ril_rt_str_from_scalars"),
+            Some(StringFromScalars),
+        ),
+        prim(
+            "String",
+            "raw_encode_utf8",
+            Both,
+            Some("ril_rt_encode_utf8"),
+            Some(StringEncodeUtf8),
+        ),
+        prim(
+            "String",
+            "raw_decode_utf8",
+            Both,
+            Some("ril_rt_decode_utf8"),
+            Some(StringDecodeUtf8),
+        ),
+        // Bytes
+        prim("Bytes", "at", Both, Some("ril_rt_bytes_at"), Some(BytesAt)),
+        prim(
+            "Bytes",
+            "to_array",
+            Both,
+            Some("ril_rt_bytes_to_array"),
+            Some(BytesToArray),
+        ),
+        prim(
+            "Bytes",
+            "from_array",
+            Both,
+            Some("ril_rt_bytes_from_array"),
+            Some(BytesFromArray),
+        ),
+        // Reflect
+        prim("Reflect", "attrs", Static, None, Some(ReflectAttrs)),
+        prim(
+            "Reflect",
+            "field_attrs",
+            Static,
+            None,
+            Some(ReflectFieldAttrs),
+        ),
+        prim(
+            "Reflect",
+            "variant_attrs",
+            Static,
+            None,
+            Some(ReflectVariantAttrs),
+        ),
+        prim(
+            "Reflect",
+            "has_default",
+            Static,
+            None,
+            Some(ReflectHasDefault),
+        ),
+        // Fiber
+        prim("Fiber", "run", Runtime, Some("ril_fiber_run"), None),
+        prim("Fiber", "scope", Runtime, Some("ril_fiber_scope"), None),
+        prim(
+            "Fiber",
+            "try_scope",
+            Runtime,
+            Some("ril_fiber_try_scope"),
+            None,
+        ),
+        prim("Fiber", "spawn", Runtime, Some("ril_fiber_spawn"), None),
+        prim("Fiber", "join", Runtime, Some("ril_fiber_join"), None),
+        prim("Fiber", "cancel", Runtime, Some("ril_fiber_cancel"), None),
+        prim(
+            "Fiber",
+            "cancel_scope",
+            Runtime,
+            Some("ril_fiber_cancel_scope"),
+            None,
+        ),
+        prim("Fiber", "yield_now", Runtime, Some("ril_fiber_yield"), None),
+        prim("Fiber", "sleep_ms", Runtime, Some("ril_fiber_sleep"), None),
+        prim(
+            "Fiber",
+            "is_cancelled",
+            Runtime,
+            Some("ril_fiber_cancelled"),
+            None,
+        ),
+        prim(
+            "Fiber",
+            "uncancellable",
+            Runtime,
+            Some("ril_fiber_uncancellable"),
+            None,
+        ),
+        prim(
+            "Fiber",
+            "supervise",
+            Runtime,
+            Some("ril_fiber_supervise"),
+            None,
+        ),
+        prim(
+            "Fiber",
+            "timeout_ms",
+            Runtime,
+            Some("ril_fiber_timeout"),
+            None,
+        ),
+        prim("Fiber", "zip", Runtime, Some("ril_fiber_zip"), None),
+        prim("Fiber", "try_zip", Runtime, Some("ril_fiber_try_zip"), None),
+        prim("Fiber", "race", Runtime, Some("ril_fiber_race"), None),
+        prim("Fiber", "map", Runtime, Some("ril_fiber_map"), None),
+        prim("Fiber", "try_map", Runtime, Some("ril_fiber_try_map"), None),
+        // Channel
+        prim(
+            "Channel",
+            "bounded",
+            Runtime,
+            Some("ril_channel_bounded"),
+            None,
+        ),
+        prim(
+            "Channel",
+            "unbounded",
+            Runtime,
+            Some("ril_channel_unbounded"),
+            None,
+        ),
+        prim("Channel", "send", Runtime, Some("ril_channel_send"), None),
+        prim("Channel", "recv", Runtime, Some("ril_channel_recv"), None),
+        prim(
+            "Channel",
+            "try_send",
+            Runtime,
+            Some("ril_channel_try_send"),
+            None,
+        ),
+        prim(
+            "Channel",
+            "try_recv",
+            Runtime,
+            Some("ril_channel_try_recv"),
+            None,
+        ),
+        prim("Channel", "clone", Runtime, Some("ril_channel_clone"), None),
+        prim("Channel", "close", Runtime, Some("ril_channel_close"), None),
+        prim(
+            "Channel",
+            "close_recv",
+            Runtime,
+            Some("ril_channel_close_recv"),
+            None,
+        ),
+        prim("Channel", "drain", Runtime, Some("ril_channel_drain"), None),
+    ]
+};
+
+pub(crate) fn lookup_primitive(module_name: &str, name: &str) -> Option<&'static PrimitiveSpec> {
+    PRIMITIVE_FNS
+        .iter()
+        .find(|spec| spec.module == module_name && spec.name == name)
+}
 
 pub(super) enum TypeRegistration {
     Object,
@@ -24,114 +482,143 @@ pub(super) struct StdModule {
     pub(super) file: File,
 }
 
+const STD_SOURCES: &[(&str, &str, &str, &str)] = &[
+    (
+        "Prelude",
+        "ril/prelude",
+        "ril/std/prelude.ril",
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../std/prelude.ril"
+        )),
+    ),
+    (
+        "Numeric",
+        "ril/numeric",
+        "ril/std/numeric.ril",
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../std/numeric.ril"
+        )),
+    ),
+    (
+        "Array",
+        "ril/array",
+        "ril/std/array.ril",
+        include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../std/array.ril")),
+    ),
+    (
+        "Map",
+        "ril/map",
+        "ril/std/map.ril",
+        include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../std/map.ril")),
+    ),
+    (
+        "Set",
+        "ril/set",
+        "ril/std/set.ril",
+        include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../std/set.ril")),
+    ),
+    (
+        "String",
+        "ril/string",
+        "ril/std/string.ril",
+        include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../std/string.ril")),
+    ),
+    (
+        "Bytes",
+        "ril/bytes",
+        "ril/std/bytes.ril",
+        include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../std/bytes.ril")),
+    ),
+    (
+        "Reflect",
+        "ril/reflect",
+        "ril/std/reflect.ril",
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../std/reflect.ril"
+        )),
+    ),
+    (
+        "Io",
+        "ril/io",
+        "ril/std/io.ril",
+        include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../std/io.ril")),
+    ),
+    (
+        "File",
+        "ril/file",
+        "ril/std/file.ril",
+        include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../std/file.ril")),
+    ),
+    (
+        "Fiber",
+        "ril/fiber",
+        "ril/std/fiber.ril",
+        include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../std/fiber.ril")),
+    ),
+    (
+        "Channel",
+        "ril/channel",
+        "ril/std/channel.ril",
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../std/channel.ril"
+        )),
+    ),
+    (
+        "Math",
+        "ril/math",
+        "ril/std/math.ril",
+        include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../std/math.ril")),
+    ),
+    (
+        "Os",
+        "ril/os",
+        "ril/std/os.ril",
+        include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../std/os.ril")),
+    ),
+    (
+        "Crypto",
+        "ril/crypto",
+        "ril/std/crypto.ril",
+        include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../std/crypto.ril")),
+    ),
+];
+
+fn render_diagnostic(source: &SourceFile, diag: &Diagnostic) -> String {
+    let mut map = ril_source::span::SourceMap::default();
+    let _ = map.add_with_id(source.id(), source.path().into(), source.text().as_bytes());
+    let mut out = Vec::new();
+    let _ = diag.render(&map, &mut out);
+    String::from_utf8_lossy(&out).into_owned()
+}
+
 fn parse_embedded(path_str: &str, text: &str) -> File {
     let path = Path::new(path_str);
     let id = FileId::from_path(path);
     let source = SourceFile::from_bytes(id, path.into(), text.as_bytes())
-        .unwrap_or_else(|error| ril_source::ice!("invalid stdlib source {path_str}: {error:?}"));
-    let tokens = lexer::lex(&source)
-        .unwrap_or_else(|error| ril_source::ice!("invalid stdlib tokens {path_str}: {error:?}"));
-    let ast = parser::parse(&source, &tokens, FileKind::Module)
-        .unwrap_or_else(|error| ril_source::ice!("invalid stdlib AST in {path_str}: {error:?}"));
+        .unwrap_or_else(|error| ril_source::ice!("invalid stdlib source {path_str}: {error}"));
+    let tokens = lexer::lex(&source).unwrap_or_else(|error| {
+        ril_source::ice!(
+            "invalid stdlib tokens in {path_str}:\n{}",
+            render_diagnostic(&source, &error)
+        )
+    });
+    let ast = parser::parse(&source, &tokens, FileKind::Module).unwrap_or_else(|error| {
+        ril_source::ice!(
+            "invalid stdlib AST in {path_str}:\n{}",
+            render_diagnostic(&source, &error)
+        )
+    });
     File::new(source, FileKind::Module, ast, tokens)
 }
 
 pub(super) fn stdlib_modules() -> &'static [StdModule] {
     static MODULES: OnceLock<Vec<StdModule>> = OnceLock::new();
     MODULES.get_or_init(|| {
-        const SOURCES: &[(&str, &str, &str, &str)] = &[
-            (
-                "Prelude",
-                "ril/prelude",
-                "ril/std/prelude.ril",
-                include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../std/prelude.ril")),
-            ),
-            (
-                "Numeric",
-                "ril/numeric",
-                "ril/std/numeric.ril",
-                include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../std/numeric.ril")),
-            ),
-            (
-                "Array",
-                "ril/array",
-                "ril/std/array.ril",
-                include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../std/array.ril")),
-            ),
-            (
-                "Map",
-                "ril/map",
-                "ril/std/map.ril",
-                include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../std/map.ril")),
-            ),
-            (
-                "Set",
-                "ril/set",
-                "ril/std/set.ril",
-                include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../std/set.ril")),
-            ),
-            (
-                "String",
-                "ril/string",
-                "ril/std/string.ril",
-                include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../std/string.ril")),
-            ),
-            (
-                "Bytes",
-                "ril/bytes",
-                "ril/std/bytes.ril",
-                include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../std/bytes.ril")),
-            ),
-            (
-                "Reflect",
-                "ril/reflect",
-                "ril/std/reflect.ril",
-                include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../std/reflect.ril")),
-            ),
-            (
-                "Io",
-                "ril/io",
-                "ril/std/io.ril",
-                include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../std/io.ril")),
-            ),
-            (
-                "File",
-                "ril/file",
-                "ril/std/file.ril",
-                include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../std/file.ril")),
-            ),
-            (
-                "Fiber",
-                "ril/fiber",
-                "ril/std/fiber.ril",
-                include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../std/fiber.ril")),
-            ),
-            (
-                "Channel",
-                "ril/channel",
-                "ril/std/channel.ril",
-                include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../std/channel.ril")),
-            ),
-            (
-                "Math",
-                "ril/math",
-                "ril/std/math.ril",
-                include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../std/math.ril")),
-            ),
-            (
-                "Os",
-                "ril/os",
-                "ril/std/os.ril",
-                include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../std/os.ril")),
-            ),
-            (
-                "Crypto",
-                "ril/crypto",
-                "ril/std/crypto.ril",
-                include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../std/crypto.ril")),
-            ),
-        ];
-        let mut modules: Vec<StdModule> = SOURCES
+        let mut modules: Vec<StdModule> = STD_SOURCES
             .iter()
             .map(|&(module_name, import_key, path_str, text)| StdModule {
                 module_name,
@@ -155,48 +642,25 @@ pub(super) fn stdlib_modules() -> &'static [StdModule] {
 }
 
 pub(super) fn module(path: &Path) -> Option<&'static str> {
-    match path.to_str()? {
-        "ril/prelude.ril" | "ril/std/prelude.ril" => Some("Prelude"),
-        "ril/array.ril" | "ril/std/array.ril" => Some("Array"),
-        "ril/map.ril" | "ril/std/map.ril" => Some("Map"),
-        "ril/set.ril" | "ril/std/set.ril" => Some("Set"),
-        "ril/string.ril" | "ril/std/string.ril" => Some("String"),
-        "ril/bytes.ril" | "ril/std/bytes.ril" => Some("Bytes"),
-        "ril/numeric.ril" | "ril/std/numeric.ril" => Some("Numeric"),
-        "ril/reflect.ril" | "ril/std/reflect.ril" => Some("Reflect"),
-        "ril/io.ril" | "ril/std/io.ril" => Some("Io"),
-        "ril/file.ril" | "ril/std/file.ril" => Some("File"),
-        "ril/platform.ril" | "ril/std/platform.ril" => Some("Platform"),
-        "ril/fiber.ril" | "ril/std/fiber.ril" => Some("Fiber"),
-        "ril/channel.ril" | "ril/std/channel.ril" => Some("Channel"),
-        "ril/math.ril" | "ril/std/math.ril" => Some("Math"),
-        "ril/os.ril" | "ril/std/os.ril" => Some("Os"),
-        "ril/crypto.ril" | "ril/std/crypto.ril" => Some("Crypto"),
-        _ => None,
+    let raw = path.to_str()?;
+    let stem = raw
+        .strip_prefix("ril/std/")
+        .or_else(|| raw.strip_prefix("ril/"))?
+        .strip_suffix(".ril")?;
+    if stem == "platform" {
+        return Some("Platform");
     }
+    STD_SOURCES
+        .iter()
+        .find(|&&(_, import_key, _, _)| import_key.strip_prefix("ril/") == Some(stem))
+        .map(|&(module_name, _, _, _)| module_name)
 }
 
 pub(super) fn std_type_for(module_name: &str, name: &str) -> Option<StdType> {
-    use StdType::*;
-    match (module_name, name) {
-        ("Prelude", "Option") => Some(Option),
-        ("Prelude", "Result") => Some(Result),
-        ("Reflect", "MemberMode") => Some(MemberMode),
-        ("Prelude", "PanicInfo") => Some(PanicInfo),
-        ("Prelude", "PanicError") => Some(PanicError),
-        ("Prelude", "Draft") => Some(Draft),
-        ("Set", "Set") => Some(Set),
-        ("Fiber", "Scope") => Some(Scope),
-        ("Fiber", "Task") => Some(Task),
-        ("Fiber", "TaskFault") => Some(TaskFault),
-        ("Fiber", "TimeoutError") => Some(TimeoutError),
-        ("Channel", "Sender") => Some(Sender),
-        ("Channel", "Receiver") => Some(Receiver),
-        ("Channel", "SendError") => Some(SendError),
-        ("Channel", "TrySendError") => Some(TrySendError),
-        ("Channel", "TryRecvError") => Some(TryRecvError),
-        _ => None,
-    }
+    PRIMITIVE_TYPES
+        .iter()
+        .find(|spec| spec.module == module_name && spec.name == name)
+        .map(|spec| spec.std_type)
 }
 
 fn is_embedded_std(path: &Path) -> bool {
@@ -246,13 +710,9 @@ pub(super) fn registered_type(
     actual: &TypeDecl,
 ) -> Option<Result<TypeRegistration, Diagnostic>> {
     let module_name = module(&file.path)?;
-    let is_object = matches!(
-        (module_name, actual.name.value.as_str()),
-        ("Prelude", "Draft")
-            | ("Set", "Set")
-            | ("Fiber", "Scope" | "Task")
-            | ("Channel", "Sender" | "Receiver")
-    );
+    let is_object = PRIMITIVE_TYPES
+        .iter()
+        .any(|spec| spec.module == module_name && spec.name == actual.name.value && spec.is_object);
     if is_embedded_std(&file.path) {
         return Some(Ok(if is_object {
             TypeRegistration::Object
@@ -295,11 +755,11 @@ pub(super) fn bodyless(
         return Err(missing_body(function.name.span));
     };
     let name = function.name.value.as_str();
-    let Some(phase) = stdlib_intrinsic_phase(module_name, name) else {
+    let Some(spec) = lookup_primitive(module_name, name) else {
         return Err(missing_body(function.name.span));
     };
     if is_embedded_std(&file.path) {
-        return Ok(phase);
+        return Ok(spec.phase);
     }
     let Some(registered) = registered_module_file(module_name) else {
         return Err(missing_body(function.name.span));
@@ -322,43 +782,9 @@ pub(super) fn bodyless(
                 &expected.generics,
             )
     {
-        Ok(phase)
+        Ok(spec.phase)
     } else {
         Err(mismatch(function.name.span))
-    }
-}
-
-fn stdlib_intrinsic_phase(module_name: &str, name: &str) -> Option<PrimitivePhase> {
-    use PrimitivePhase::{Both, Runtime, Static};
-    match (module_name, name) {
-        ("Prelude", "len" | "inner" | "clone" | "derive" | "panic" | "assert") => Some(Both),
-        ("Prelude", "absorb_panic" | "panic_message" | "print" | "println") => Some(Runtime),
-        ("Prelude", "type_name" | "coords" | "variants") => Some(Static),
-        ("Reflect", "attrs" | "field_attrs" | "variant_attrs" | "has_default") => Some(Static),
-        ("Array", "push" | "pop" | "insert" | "remove" | "sort" | "clear" | "len")
-        | ("Map", "get" | "insert" | "remove" | "contains" | "clear" | "keys" | "values" | "len")
-        | ("Set", "empty" | "from_array" | "insert" | "remove" | "contains" | "len")
-        | (
-            "String",
-            "raw_encode_utf8" | "raw_decode_utf8" | "inspect" | "len" | "join" | "split"
-            | "starts_with" | "ends_with" | "at" | "scalars" | "from_scalars",
-        )
-        | ("Bytes", "len" | "at" | "to_array" | "from_array")
-        | ("Numeric", "to_f64" | "convert" | "trunc") => Some(Both),
-        ("Io", "print" | "println")
-        | ("File", "read" | "write")
-        | (
-            "Fiber",
-            "run" | "yield_now" | "sleep_ms" | "is_cancelled" | "uncancellable" | "timeout_ms"
-            | "scope" | "try_scope" | "supervise" | "spawn" | "join" | "cancel" | "cancel_scope"
-            | "zip" | "try_zip" | "map" | "try_map" | "race",
-        )
-        | (
-            "Channel",
-            "bounded" | "unbounded" | "clone" | "send" | "try_send" | "recv" | "try_recv" | "close"
-            | "close_recv" | "drain",
-        ) => Some(Runtime),
-        _ => None,
     }
 }
 

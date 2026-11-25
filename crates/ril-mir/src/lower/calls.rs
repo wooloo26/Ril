@@ -42,10 +42,6 @@ impl Builder<'_, '_> {
         let def = self.global.typed.hir.definition(id);
         let name = def.name.value.as_str();
         if matches!(def.kind, DefinitionKind::Primitive(_)) {
-            if let Some(module @ ("Fiber" | "Channel")) = self.global.typed.hir.primitive_module(id)
-            {
-                return self.concurrent(module, name, args, span);
-            }
             return self.primitive(id, name, args, span);
         }
         if let Some(label) = self

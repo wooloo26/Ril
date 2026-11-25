@@ -218,7 +218,7 @@ impl Checker<'_> {
         }
         let first = types.first().cloned().unwrap_or(Ty::Unknown);
         let arity = match name {
-            "len" | "clone" | "inner" | "coords" | "variants" | "convert" | "absorb_panic" => {
+            "len" | "clone" | "inner" | "fields" | "variants" | "convert" | "absorb_panic" => {
                 Some(1..=1)
             }
             "has_default" | "derive" => Some(2..=2),
@@ -295,7 +295,7 @@ impl Checker<'_> {
                 self.require(env, span, &first, &Ty::F64);
                 Ty::Option(Box::new(Ty::Int))
             }
-            "coords" => {
+            "fields" => {
                 let key = if let Ty::TypeValue(Some(ty)) = first {
                     match self.normalize(&ty) {
                         Ty::Record(..) => Ty::Str,
@@ -318,14 +318,14 @@ impl Checker<'_> {
                                 self.error(
                                     Code::E0358,
                                     span,
-                                    "coords requires a tuple or record type",
+                                    "fields requires a tuple or record type",
                                 );
                                 Ty::Unknown
                             }
                         },
                         Ty::Param(_) | Ty::Unknown | Ty::Infer(_) => Ty::Unknown,
                         _ => {
-                            self.error(Code::E0358, span, "coords requires a tuple or record type");
+                            self.error(Code::E0358, span, "fields requires a tuple or record type");
                             Ty::Unknown
                         }
                     }
@@ -333,7 +333,7 @@ impl Checker<'_> {
                     Ty::Unknown
                 };
                 if env.phase == Phase::Runtime && !env.shadow {
-                    self.eval_introspection_root(env, "coords", args, span);
+                    self.eval_introspection_root(env, "fields", args, span);
                 }
                 Ty::Array(Box::new(Member::plain(Ty::Tuple(vec![
                     Member::plain(Ty::Mode),

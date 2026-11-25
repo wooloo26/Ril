@@ -543,7 +543,7 @@ Records (`.{...}`), nonempty tuples `(A, B)`, arrays `[M]T`, maps `[K: M V]`, `S
 
 ### Record Types and Open Record Tails
 
-Record types, values, patterns, and mapped types uniformly use `.{...}`. Record fields may carry slot/access `MemberMode` modifiers (`var`, `mut`, `^mut`, `ref`, `var mut`, `var ^mut`, `var ref`), inferred `via` modes, or a static `MemberMode` expression `M` (`E0356`).
+Record types, values, patterns, and mapped types uniformly use `.{...}`. Record fields may carry slot/access `FieldMode` modifiers (`var`, `mut`, `^mut`, `ref`, `var mut`, `var ^mut`, `var ref`), inferred `via` modes, or a static `FieldMode` expression `M` (`E0356`).
 
 ```ril
 type WithId<R> = .{ id: int, ..R }
@@ -588,10 +588,10 @@ RecordType      ::= ".{" [ RecordFieldList ] "}"
 RecordFieldList ::= RecordTail
                   | RecordField { "," RecordField } [ "," RecordTail ] [ "," ]
 RecordField     ::= { MetaAttr } [ RecordFieldMode ] FieldLabel ":" TypeExpression [ "=" Expression ]
-RecordFieldMode ::= MemberMode | "via" | StorageModeExpression
+RecordFieldMode ::= FieldMode | "via" | StorageModeExpression
 FieldLabel      ::= ValueName
 RecordTail      ::= ".." [ PascalCase ]
-MemberMode      ::= "var" [ "mut" | "^mut" | "ref" ]
+FieldMode       ::= "var" [ "mut" | "^mut" | "ref" ]
                   | "mut" | "^mut" | "ref"
 ```
 
@@ -613,7 +613,7 @@ assert(xs[0] == 10 && table?["ok"] == Some(200) && pair.1 == "one")
 -- type BadElem = [var][]int           -- Error [E0356]: element mode forbids 'var'
 ```
 
-- **Element modes (`E0356`)**: Plain `[]T` / `[K: V]` hold deeply immutable elements. Element modes admit `mut`, `^mut`, `ref`, `via`, or a static `MemberMode` expression without `var` (`E0356`).
+- **Element modes (`E0356`)**: Plain `[]T` / `[K: V]` hold deeply immutable elements. Element modes admit `mut`, `^mut`, `ref`, `via`, or a static `FieldMode` expression without `var` (`E0356`).
 - **Keys & indexing (`E0328`, `E0352`)**: Map keys `K` and `Set<T>` elements require structural equality (`E0328`). Map reads use safe `m?[k] -> ?V` (`E0352` on `m[k]` reads or `m[k] += v`); `m[k] = v` inserts/updates. Lengths and indices have type `int`.
 - **Tuples (`E0312`)**: Zero-element `()` or $\ge 2$ elements `(A, B)`. `(T)` is grouping, never a 1-tuple. Tuple slots are strictly immutable; use records for mutable multi-field data.
 
@@ -900,7 +900,7 @@ assert(t2 == (2, "a") && inner(b2) == [1, 2, 3])
 
 ### Generic Parameters, Defaults, and Static Kinds
 
-Declarations admit abstract type parameters (`T`), compile-time value parameters (`cap: int`), and member-mode parameters (`M: MemberMode`). Type declarations (`type`, `nominal type`, `opaque type`, `TypeFunctionExpr`) admit trailing generic defaults (`E0316` non-trailing, `E0320` forward reference; prohibited on `fn`/`meta fn`, `E0317`).
+Declarations admit abstract type parameters (`T`), compile-time value parameters (`cap: int`), and field-mode parameters (`M: FieldMode`). Type declarations (`type`, `nominal type`, `opaque type`, `TypeFunctionExpr`) admit trailing generic defaults (`E0316` non-trailing, `E0320` forward reference; prohibited on `fn`/`meta fn`, `E0317`).
 
 ```ril
 fn add<T: int | f64>(a: T, b: T) -> T { a + b }
@@ -908,7 +908,7 @@ assert(add(2, 3) == 5 && add(1.5, 0.5) == 2.0)
 
 type Positive = \n: int -> if n > 0 { <()> } else { <never> }
 type AtLeast  = \n: int, lo: int -> if n >= lo { <()> } else { <never> }
-type Chunk<T = int, cap: int |> Positive |> AtLeast<1> = 64, M: MemberMode = mut> = .{ M data: []T }
+type Chunk<T = int, cap: int |> Positive |> AtLeast<1> = 64, M: FieldMode = mut> = .{ M data: []T }
 type DefaultChunk = Chunk<>
 type FrozenChunk  = Chunk<int, 1, let>          -- OK: 'let' selects plain immutable member mode
 ```
@@ -931,8 +931,8 @@ type Checked<n: int |> WrongCheck> = int
 
 - **Closed type sets (`T: int | f64`)**: Every member is checked at definition time (`E0301`), each call instantiates `T` to one concrete type (`E0306`), and `match <T>` over all members is exhaustive (`E0304` on redundant `_`). Bare untagged unions or literal types fail `E0318`.
 - **Static type checks (`T |> Check<Args>`)**: Passes `T` first; holds iff $T \not\equiv \text{never} \wedge \text{Check}\langle T, \text{Args} \rangle \equiv T$ (`E0301`, `E0306`).
-- **Static value checks (`cap: int |> Positive`)**: Runs after kind checking and substitution; accepts `<()>`, rejects `<never>` (`E0323`), and fails `E0306` on any other type value. `Key<T>` (`val |> Key<T>` $\equiv$ `Key<val, T>`) validates coordinates of `T`.
-- **Strict parameter kinds (`E0306`, `E0323`, `E0814`, `E0340`, `E0344`)**: Ordinary values and type values cannot supply type parameters (`E0306`; write `typeof e`). Type syntax adapts one-way to a declared `Type<T>` static value parameter. `Reflect::MemberMode` re-exports prelude `MemberMode`.
+- **Static value checks (`cap: int |> Positive`)**: Runs after kind checking and substitution; accepts `<()>`, rejects `<never>` (`E0323`), and fails `E0306` on any other type value. `KeyOf<T>` (`val |> KeyOf<T>` $\equiv$ `KeyOf<val, T>`) validates field keys of `T`.
+- **Strict parameter kinds (`E0306`, `E0323`, `E0814`, `E0340`, `E0344`)**: Ordinary values and type values cannot supply type parameters (`E0306`; write `typeof e`). Type syntax adapts one-way to a declared `Type<T>` static value parameter. `Reflect::FieldMode` re-exports prelude `FieldMode`.
 
 ```ebnf
 GenericParams         ::= "<" GenericParamDecl { "," GenericParamDecl } [ "," ] ">"
@@ -948,11 +948,11 @@ StaticValueParamDecl  ::= ValueName ":" TypeExpression { "|>" PipelineConstraint
 RecordConstraint      ::= ".{" RecordConstraintField { "," RecordConstraintField } "," RecordTail [ "," ] "}"
                         | ".{" RecordTail [ "," ] "}"
 RecordConstraintField ::= [ RecordFieldMode ] FieldLabel ":" TypeExpression
-ModeParamDecl         ::= PascalCase ":" ModeKindReference [ "=" MemberModeLiteral ]
-ModeKindReference     ::= [ "Reflect::" ] "MemberMode"
+ModeParamDecl         ::= PascalCase ":" ModeKindReference [ "=" FieldModeLiteral ]
+ModeKindReference     ::= [ "Reflect::" ] "FieldMode"
 GenericArgs           ::= "<" [ GenericArg { "," GenericArg } [ "," ] ] ">"
-GenericArg            ::= TypeExpression | Expression | MemberModeLiteral
-MemberModeLiteral     ::= "let" | "var" [ "mut" | "^mut" | "ref" ] | "mut" | "^mut" | "ref"
+GenericArg            ::= TypeExpression | Expression | FieldModeLiteral
+FieldModeLiteral     ::= "let" | "var" [ "mut" | "^mut" | "ref" ] | "mut" | "^mut" | "ref"
 ```
 
 ### Type Definition Boundaries
@@ -1018,7 +1018,7 @@ C |- e <= TypeResult ; J              type-producing result checking
 
 - **Alias expansion (`K-EQ`)**: `?T` ≡ `Option<T>`, `!<T, E>` ≡ `Result<T, E>`, and transparent `type A = B` aliases expand directly; cyclic transparent aliases without nominal or sum indirection fail `E0313`.
 - **Structural & nominal identity (`K-EQ`)**:
-  - Structural records compare equal up to field reordering when labels, types, and `MemberMode`s match.
+  - Structural records compare equal up to field reordering when labels, types, and `FieldMode`s match.
   - Nominal, sum, and `opaque` types (`.ril` and `.d.ril`) compare by declaration identity and static argument equivalence (IEEE bits for `f64` with `-0.0 != 0.0` and NaNs agreeing; structural value equivalence for collections/records; equivalent target types for `Type<A>`).
 - **Opacity scope**: Inside its exact defining `sub` or root `.ril` file, `opaque type A = Rep` converts bidirectionally with `Rep` while keeping `A`'s distinct identity in `Type<A>` and exported interfaces. Outside that exact scope (including child/parent `sub`s), value/construction mismatch fails `E0301` and representation access fails `E0308`.
 
@@ -1488,7 +1488,7 @@ AtomExpr                 ::= Literal
 HoleExpr                 ::= "..."
 TypeQuoteExpr            ::= "<" TypeExpression ">"
 RecordExpr               ::= [ TypeReference ] ".{" [ RecordValueField { "," RecordValueField } [ "," ] ] "}"
-RecordValueField         ::= [ MemberMode ] FieldLabel [ ":" Expression ]
+RecordValueField         ::= [ FieldMode ] FieldLabel [ ":" Expression ]
 TupleExpr                ::= "(" Expression "," Expression { "," Expression } [ "," ] ")"
 ArrayExpr                ::= "[" [ Expression { "," Expression } [ "," ] ] "]"
 MapExpr                  ::= "[" ":" "]"
@@ -1557,7 +1557,7 @@ cells |> mut Array::push(Cell.{ v: 2 }) -- OK: 'elem' last use has ended
 - **Slicing (`s[a..b]`, `s[a..=b]`, `s?[a..b]`)**: Produces a fresh `new`-qualified array on `[M]T` (preserving element modes; binding directly to `let ref` fails `E0543`), a Unicode-scalar sub-string on `str`, and a byte sub-sequence on `bytes`.
 - **Maps `[K: M V]`**: Reads require safe lookup `m?[k] -> ?V` (`E0352` on `m[k]` reads or `m[k] += v`); direct slot assignment `m[k] = v` inserts or updates key `k`.
 - **Container Element Holds (`E0537`, `E0526`)**: On live `[M]T` and `[K: M V]` containers, `xs[i]`, `xs?[i]`, and `m?[k]` establish scoped element holds bounded by the container; mutating or resizing the container while a `ref`/`mut` hold is active or during `for` iteration fails `E0537` / `E0526`.
-- **Tuple & Static Coordinate Projection (`t.0`, `r.(key)`)**: `t.0` projects tuple elements (`E0312` out of bounds; `E0337` on sums, records, collections, or primitives). `r.(key)` projects an accessible record field or tuple slot using a compile-time `meta` coordinate validated by `Key<T>`.
+- **Tuple & Static Coordinate Projection (`t.0`, `r.(key)`)**: `t.0` projects tuple elements (`E0312` out of bounds; `E0337` on sums, records, collections, or primitives). `r.(key)` projects an accessible record field or tuple slot using a compile-time `meta` key validated by `KeyOf<T>`.
 
 ### Text and Byte Operations
 
@@ -1645,7 +1645,7 @@ assert(a == 3 && b == 3)
 -- a = b = 3                           -- Error [E0701]: chained assignment is prohibited
 ```
 
-- **Record Construction (`[Type].{ [MemberMode] field: expr, shorthand }`)**: Must initialize every non-defaulted declared field of the target record type (`E0307` missing, `E0302` unexpected, `E0210` duplicate). Field shorthand `.{ id, name }` desugars to `.{ id: id, name: name }`. On anonymous `.{ ... }`, `[ MemberMode ]` explicitly declares the field's mode (or a `ref expr` value synthesizes a `ref` field; `var` is never synthesized implicitly, `E0357`). On named `Type.{ ... }`, fields inherit `Type`'s declared modes (any written `[ MemberMode ]` must match, `E0357`, and `ref` fields require a `ref`-mode expression).
+- **Record Construction (`[Type].{ [FieldMode] field: expr, shorthand }`)**: Must initialize every non-defaulted declared field of the target record type (`E0307` missing, `E0302` unexpected, `E0210` duplicate). Field shorthand `.{ id, name }` desugars to `.{ id: id, name: name }`. On anonymous `.{ ... }`, `[ FieldMode ]` explicitly declares the field's mode (or a `ref expr` value synthesizes a `ref` field; `var` is never synthesized implicitly, `E0357`). On named `Type.{ ... }`, fields inherit `Type`'s declared modes (any written `[ FieldMode ]` must match, `E0357`, and `ref` fields require a `ref`-mode expression).
 - **Assignment Semantics (`target = expr`, `target += expr`, ...)**: Assignment is a `()`-typed expression and does not chain (`a = b = 1` fails `E0701`). Compound assignments evaluate `target`'s receiver/index expression exactly once.
 - **Valid `AssignTarget`**: Must be a `var` variable, a `var` record field on a `mut`/`^mut` path, an element of a `mut`/`^mut` array/map, or a field/tuple slot on a confined `mut Draft<T>` path.
   - Fails `E0501` on `let` or plain fields, `E0502` on pinned `let mut`/`let ref`, `E0503` on temporaries or non-draft tuple slots, and `E0352` on map compound assignment `m[k] += v`.
@@ -2500,7 +2500,7 @@ test_audit()
 ```ril
 -- Rejected effect labels, handler arms, and active-hold conflicts:
 -- with { Clock::now_ms = \-> 1; Clock::now_ms = \-> 2 } -- Error [E0622]: duplicate handler arm in single 'with'
--- with Array::len = \_ -> 0                             -- Error [E0621]: module function is not an 'eff' operation
+-- with Array::at = \_ -> None                           -- Error [E0621]: module function is not an 'eff' operation
 -- with Log::warn = step                                 -- Error [E0405]: '&up' variable requires 'mut'/'^mut'/'new'
 -- let frozen: []str = new lines                         -- Error [E0535]: active 'with' write hold on 'lines'
 -- for ref lines as s { Log::info(s) }                   -- Error [E0526]: '@Log' handler mutates 'lines' during iteration
@@ -2646,7 +2646,7 @@ assert(Fiber::run(\-> sum_pipeline(4)) == 30)
 -- File: ril/fiber.ril
 pub opaque type Scope
 pub opaque type Task<T |> Sendable>
-pub type Zip<A, B, M1: MemberMode = let, M2: MemberMode = let> = .{ M1 first: A, M2 second: B }
+pub type Zip<A, B, M1: FieldMode = let, M2: FieldMode = let> = .{ M1 first: A, M2 second: B }
 pub type TaskFault { ..PanicError; Cancelled }
 pub type TimeoutError { Elapsed }
 
@@ -2803,7 +2803,7 @@ assert(describe(7) == "int:7" && describe(true) == "true")
 
 ```ril
 type Select = \T: .{ .. }, keys: []str -> {
-    let chosen = coords(<T>) |> Array::filter(\(_, k) -> Array::contains(keys, k))
+    let chosen = fields(<T>) |> Array::filter(\(_, k) -> Array::contains(keys, k))
     <.{ m [chosen as (m, k)]: T.(k) }>
 }
 
@@ -2811,9 +2811,9 @@ type Model = .{ id: int, var title: str, mut rows: []int }
 type Patch = Select<Model, ["title", "rows"]> -- .{ var title: str, mut rows: []int }
 nominal type Args = .{ query: str, limit: int = 10 }
 meta let _ = assert(Reflect::has_default(<Args>, "limit") && !Reflect::has_default(<Args>, "query"))
-meta let _ = assert(len(coords(<Args>)) == 2 && coords(<(int, str)>)[0] == (MemberMode::Let, 0))
+meta let _ = assert(len(fields(<Args>)) == 2 && fields(<(int, str)>)[0] == (FieldMode::Let, 0))
 
-fn read_field<T: .{ .. }>(via rec: T, meta key: str |> Key<T>) -> infer T.(key) {
+fn read_field<T: .{ .. }>(via rec: T, meta key: str |> KeyOf<T>) -> infer T.(key) {
     rec.(key)
 }
 fn test_introspection() -> () {
@@ -2825,23 +2825,23 @@ test_introspection()
 
 ```ril
 -- Rejected introspection and mapped-record forms:
--- meta let _ = coords(<int>)            -- Error [E0358]: 'coords' requires a transparent record or tuple type
+-- meta let _ = fields(<int>)            -- Error [E0358]: 'fields' requires a transparent record or tuple type
 -- type BadMap = .{ [[1, 2] as k]: int } -- Error [E0341]: mapped record key must have type 'str'
 -- type BadKey = .{ [["fn"] as k]: int } -- Error [E0815]: keyword 'fn' is not a valid FieldLabel
 -- type BadIdx = (int, str).(-1)         -- Error [E0815]: negative static tuple coordinate '-1'
 ```
 
 - **Constituent Projection (`T.(k)`)**: Projects field type `T.field` / `T.("field")` on accessible records (structural, `nominal`, in-scope `opaque`), `T.0` / `T.(0)` on tuples, and payload type `T.Variant` / `T.("Variant")` on transparent sums (`()` for unit variants; `E0308` on sealed `.ril` `opaque`, `E0907` on `.d.ril`).
-- **`MemberMode` & `coords` / `variants`**:
-  - Prelude `MemberMode` provides value constructors `MemberMode::Let`, `Var`, `Mut`, `SharedMut`, `Ref`, `VarMut`, `VarSharedMut`, and `VarRef` (corresponding to type-level `MemberModeLiteral` spellings `let`, `var`, `mut`, `^mut`, `ref`, `var mut`, `var ^mut`, `var ref`).
-  - `coords(<T>) -> [](MemberMode, CoordKey<T>)` enumerates `(mode, field_name)` pairs in UTF-8 byte order for records (`CoordKey<T>` = `str`) and `(MemberMode::Let, index)` pairs in ascending index order for tuples (`CoordKey<T>` = `int`; `()` yields `[]`; `E0358` on other types, `E0308` when sealed).
+- **`FieldMode` & `fields` / `variants`**:
+  - Prelude `FieldMode` provides value constructors `FieldMode::Let`, `Var`, `Mut`, `SharedMut`, `Ref`, `VarMut`, `VarSharedMut`, and `VarRef` (corresponding to type-level `FieldModeLiteral` spellings `let`, `var`, `mut`, `^mut`, `ref`, `var mut`, `var ^mut`, `var ref`).
+  - `fields(<T>) -> [](FieldMode, FieldKey<T>)` enumerates `(mode, field_name)` pairs in UTF-8 byte order for records (`FieldKey<T>` = `str`) and `(FieldMode::Let, index)` pairs in ascending index order for tuples (`FieldKey<T>` = `int`; `()` yields `[]`; `E0358` on other types, `E0308` when sealed).
   - `variants(<T>) -> []str` enumerates deduplicated variant names in UTF-8 byte order for closed transparent sums (`E0301` on non-sums; `E0308` when sealed or open `..`).
-- **Mapped Record Types (`.{ [ModeModifier] [expr as pat]: Type }`)**: When `ModeModifier` is omitted or is a fixed `RecordFieldMode`, the comprehension iterable yields `str` keys directly (`E0341` otherwise); when `ModeModifier` is a `ValueName` bound by `pat`, the iterable yields `(MemberMode, str)` pairs whose first component supplies the mode and whose second component supplies the `str` key (`E0341` otherwise). Keys must be valid non-keyword `FieldLabel` syntax (`E0815`) with no duplicates (`E0210`). Value-type fields with `mut`/`^mut`/`ref` modes fail `E0402`; invalid mode values fail `E0356` / `E0357`.
+- **Mapped Record Types (`.{ [ModeModifier] [expr as pat]: Type }`)**: When `ModeModifier` is omitted or is a fixed `RecordFieldMode`, the comprehension iterable yields `str` keys directly (`E0341` otherwise); when `ModeModifier` is a `ValueName` bound by `pat`, the iterable yields `(FieldMode, str)` pairs whose first component supplies the mode and whose second component supplies the `str` key (`E0341` otherwise). Keys must be valid non-keyword `FieldLabel` syntax (`E0815`) with no duplicates (`E0210`). Value-type fields with `mut`/`^mut`/`ref` modes fail `E0402`; invalid mode values fail `E0356` / `E0357`.
 - **Metadata Introspection (`Reflect`)**:
   - `Reflect::attrs<T, A>(target: Type<T>) -> []A`
-  - `Reflect::field_attrs<T, A>(target: Type<T>, meta key: str |> Key<T>) -> []A`
+  - `Reflect::field_attrs<T, A>(target: Type<T>, meta key: str |> KeyOf<T>) -> []A`
   - `Reflect::variant_attrs<T, A>(target: Type<T>, meta variant: str) -> []A`
-  - `Reflect::has_default<T>(target: Type<T>, meta key: str |> Key<T>) -> bool` (`true` iff `T` is a `nominal` or in-scope `opaque` record whose root field `key` declares `= expr`)
+  - `Reflect::has_default<T>(target: Type<T>, meta key: str |> KeyOf<T>) -> bool` (`true` iff `T` is a `nominal` or in-scope `opaque` record whose root field `key` declares `= expr`)
 
 ```ebnf
 TypeProjection            ::= ( PrimaryType | TupleType | RecordType | TypeProjection ) "." ( FieldLabel | PascalCase | TupleIndex | "(" Expression ")" )
@@ -2852,7 +2852,7 @@ ModeModifier              ::= RecordFieldMode | ValueName
 
 ### Structural Type Pattern Matching
 
-`let U` binds an exact type variable (or `MemberMode` in `let M field: ...`); bare `PascalCase` heads match concrete nominal, sum, or opaque type constructors (`E0306` on type-constructor pattern variables like `<(let F)<let X>>`):
+`let U` binds an exact type variable (or `FieldMode` in `let M field: ...`); bare `PascalCase` heads match concrete nominal, sum, or opaque type constructors (`E0306` on type-constructor pattern variables like `<(let F)<let X>>`):
 
 ```ril
 type UnwrapResult = \T -> match <T> {
@@ -2884,7 +2884,7 @@ TypeTuplePattern      ::= "(" ")"
 TypeRecordPattern     ::= ".{" [ TypeRecordPatternList ] "}"
 TypeRecordPatternList ::= TypeRestPattern [ "," ]
                         | TypePatternField { "," TypePatternField } [ "," TypeRestPattern ] [ "," ]
-TypePatternField      ::= [ MemberMode ] FieldLabel ":" TypePatternInner
+TypePatternField      ::= [ FieldMode ] FieldLabel ":" TypePatternInner
                         | "let" PascalCase FieldLabel ":" TypePatternInner
 TypeRestPattern       ::= ".." [ "let" PascalCase ]
 TypePatternAccessMode ::= "mut" | "^mut" | "ref" | "let" PascalCase | StorageModeExpression
@@ -2892,7 +2892,7 @@ TypeArrayPattern      ::= "[" [ TypePatternAccessMode ] "]" TypePatternInner
 TypeMapPattern        ::= "[" TypePatternInner ":" [ TypePatternAccessMode ] TypePatternInner "]"
 RigidNominalPattern   ::= { "Super" "::" } { RigidPatternSegment "::" } RigidPatternSegment
 RigidPatternSegment   ::= PascalCase [ "<" TypePatternArg { "," TypePatternArg } [ "," ] ">" ]
-TypePatternArg        ::= TypePatternInner | "let" ValueName | MemberModeLiteral
+TypePatternArg        ::= TypePatternInner | "let" ValueName | FieldModeLiteral
 PrimitivePattern      ::= PrimitiveType
 ```
 
@@ -2924,7 +2924,7 @@ pub sub UnitCircle {
 -- Rejected module, sub-scope, and top-level purity forms:
 -- sub UnitCircle { let _ = PI }                   -- Error [E0204]: 'PI' not in scope without 'Super::'
 -- let _r: UnitCircle::Rad = 1.0                   -- Error [E0301]: expected 'UnitCircle::Rad', found 'f64'
--- let _k = coords(<UnitCircle::Rad>)              -- Error [E0308]: 'Rad' representation is sealed outside 'UnitCircle'
+-- let _k = fields(<UnitCircle::Rad>)              -- Error [E0308]: 'Rad' representation is sealed outside 'UnitCircle'
 -- use Super::PI                                   -- Error [E0208]: file root has no enclosing 'Super'
 -- pub fn leak() -> new Hidden { Hidden.{ r: 1.0 } } -- Error [E0910]: 'pub' signature leaks private 'Hidden'
 -- var global_hits = 0                             -- Error [E0906]: top-level mutable state is prohibited
@@ -3012,8 +3012,8 @@ fn main() @io @fiber -> new !<(), str> {
 ### Prelude Scope
 
 The implicit prelude encloses every compilation unit and inline `sub`:
-- **Types & effects**: Primitive types, `Option<T>` (`?T`; `Some(T); None`), `Result<T, E>` (`!<T, E>`; `Ok(T); Err(E)`), `Set<T>`, `PanicInfo`, `PanicError`, `MemberMode`, `Draft<T>`, `@io`, and `@fiber`.
-- **Static checks & type helpers**: `SharedObject`, `Sendable`, `LenTarget`, `Tuple`, `NominalWrapper`, `Unwrap`, `CoordKey`, and `Key`.
+- **Types & effects**: Primitive types, `Option<T>` (`?T`; `Some(T); None`), `Result<T, E>` (`!<T, E>`; `Ok(T); Err(E)`), `Set<T>`, `PanicInfo`, `PanicError`, `FieldMode`, `Draft<T>`, `@io`, and `@fiber`.
+- **Static checks & type helpers**: `SharedObject`, `Sendable`, `LenTarget`, `Tuple`, `NominalWrapper`, `Unwrap`, `FieldKey`, and `KeyOf`.
 - **Core modules**: `Array`, `Map`, `Set`, `String`, `Bytes`, `Numeric`, and `Reflect`.
 - **Explicit standard imports**: `use ril/io`, `use ril/file`, `use ril/os`, `use ril/fiber`, `use ril/channel`, `use ril/platform`, `use ril/math`, and `use ril/crypto`.
 
@@ -3028,7 +3028,7 @@ The implicit prelude encloses every compilation unit and inline `sub`:
 | `absorb_panic` | `pub fn absorb_panic<T>(via action: fn() @& -> infer T) -> infer !<T, PanicError>` | Runtime: panic-isolated containment (`E0608`) |
 | `panic_message` | `pub fn panic_message(info: PanicInfo) -> str` | Runtime: extracts human-readable message from `PanicInfo` (`E0810` in static eval) |
 | `type_name` | `pub meta fn type_name<T>(tv: Type<T>) -> str` | Static only: diagnostic display string of `T` |
-| `coords` | `pub meta fn coords<T>(tv: Type<T>) -> [](MemberMode, CoordKey<T>)` | Static only: `(mode, key)` pairs of accessible record (`str` keys) or tuple (`int` keys) `T` (`E0358` non-record/non-tuple, `E0308` sealed) |
+| `fields` | `pub meta fn fields<T>(tv: Type<T>) -> [](FieldMode, FieldKey<T>)` | Static only: `(mode, key)` pairs of accessible record (`str` keys) or tuple (`int` keys) `T` (`E0358` non-record/non-tuple, `E0308` sealed) |
 | `variants` | `pub meta fn variants<T>(tv: Type<T>) -> []str` | Static only: variant tags of closed transparent sum `T` (`E0301` non-sum, `E0308` sealed/open) |
 | `panic` | `pub fn panic(message: str) -> never` | Dual-phase: LIFO panic unwinding at runtime; `E0831` in static eval |
 | `assert` | `pub fn assert(condition: bool, message: str = "assertion failed") -> ()` | Dual-phase: panics with `message` when `false` at runtime; `E0830` when `false` in static eval |

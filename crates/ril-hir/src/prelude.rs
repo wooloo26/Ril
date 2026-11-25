@@ -21,8 +21,8 @@ const LANGUAGE_PRIMITIVES: &[(PrimitivePhase, &[&str])] = &[
             "Tuple",
             "NominalWrapper",
             "Unwrap",
-            "CoordKey",
-            "Key",
+            "FieldKey",
+            "KeyOf",
         ],
     ),
 ];

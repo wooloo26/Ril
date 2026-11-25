@@ -144,7 +144,7 @@ impl Checker<'_> {
                 Ok(Value::Bool(values.iter().any(|(k, _)| ieee_equal(k, item))))
             }
             ("type_name", [Value::Type(ty)]) => Ok(Value::Str(ty.display(self.hir).to_string())),
-            ("coords", [Value::Type(ty)]) => self.eval_coords(env, ty, span),
+            ("fields", [Value::Type(ty)]) => self.eval_coords(env, ty, span),
             ("variants", [Value::Type(ty)]) => match self.normalize(ty) {
                 Ty::Option(_) => Ok(Value::Array(vec![
                     Value::Str("Some".into()),

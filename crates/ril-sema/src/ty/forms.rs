@@ -581,7 +581,7 @@ impl Checker<'_> {
     fn prelude_key(&self, path: &syntax::Path) -> bool {
         self.resolve(path.span).is_some_and(|id| {
             let def = self.hir.definition(id);
-            matches!(def.kind, DefinitionKind::Primitive(_)) && def.name.value == "Key"
+            matches!(def.kind, DefinitionKind::Primitive(_)) && def.name.value == "KeyOf"
         })
     }
 

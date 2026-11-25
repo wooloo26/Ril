@@ -6,7 +6,7 @@ pub use ril/io::(print, println)
 pub use ril/map
 pub use ril/numeric
 pub use ril/reflect
-pub use ril/reflect::MemberMode
+pub use ril/reflect::FieldMode
 pub use ril/set
 pub use ril/set::Set
 pub use ril/string
@@ -49,7 +49,7 @@ pub fn derive<T |> SharedObject>(base: T, via update: fn(mut Draft<T>) @& -> ())
 pub fn absorb_panic<T>(via action: fn() @& -> infer T) -> infer !<T, PanicError>
 pub fn panic_message(info: PanicInfo) -> str
 pub meta fn type_name<T>(tv: Type<T>) -> str
-pub meta fn coords<T>(tv: Type<T>) -> [](MemberMode, CoordKey<T>)
+pub meta fn fields<T>(tv: Type<T>) -> [](FieldMode, FieldKey<T>)
 pub meta fn variants<T>(tv: Type<T>) -> []str
 pub fn panic(message: str) -> never
 pub fn assert(condition: bool, message: str ="assertion failed") -> ()

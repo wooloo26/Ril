@@ -1,6 +1,6 @@
 pub opaque type Scope
 pub opaque type Task<T |> Sendable>
-pub type Zip<A, B, M1: MemberMode = let, M2: MemberMode = let> = .{ M1 first: A, M2 second: B }
+pub type Zip<A, B, M1: FieldMode = let, M2: FieldMode = let> = .{ M1 first: A, M2 second: B }
 pub type TaskFault { ..PanicError; Cancelled }
 pub type TimeoutError { Elapsed }
 
