@@ -320,6 +320,9 @@ impl<'a> Lowering<'a> {
     }
 
     fn record_source_loc(&mut self, span: Span) -> Option<u32> {
+        if span.file == FileId::BUILTIN {
+            return None;
+        }
         let file = self.typed.hir.file(span.file);
         let loc = file.source().location(span.start)?;
         let id = u32::try_from(self.source_locs.len() + 1).ok()?;
