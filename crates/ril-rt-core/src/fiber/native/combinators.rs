@@ -58,7 +58,11 @@ fn cancel_all(raw: Raw, tasks: &[Task]) {
     // SAFETY: the draining task is active.
     let rt = unsafe { context(raw) };
     if let Some(depth) = rt.fiber.shielded.get_mut(&owner) {
-        *depth -= 1;
+        if *depth <= 1 {
+            rt.fiber.shielded.remove(&owner);
+        } else {
+            *depth -= 1;
+        }
     }
     if let Some(panic) = panic {
         rt.raise(panic);

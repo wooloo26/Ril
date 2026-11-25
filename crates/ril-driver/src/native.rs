@@ -21,7 +21,7 @@ fn failure(error: impl ToString) -> Vec<Diagnostic> {
 
 impl Compiler {
     pub fn lower(&self, package: &VirtualPackage) -> Result<mir::Program> {
-        let (typed, analysis) = self.analyze(package)?;
+        let (typed, analysis, _) = self.analyze_arc(package)?;
         mir::lower_with_options(&typed, &analysis, self.options().lower_options())
             .map_err(|error| vec![error])
     }

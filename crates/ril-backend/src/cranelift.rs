@@ -294,6 +294,22 @@ impl<'a, M: Module> MirToClifTranslator<'a, M> {
                 registers.insert(register, value);
             }
         }
+        let non_gc_params: std::collections::BTreeSet<Register> = function
+            .blocks
+            .iter()
+            .filter_map(|block| match &block.terminator {
+                Some(Terminator::Invoke {
+                    target: Target::Runtime("ril_rt_closure_address"),
+                    normal,
+                    keep_result: true,
+                    ..
+                }) => function
+                    .blocks
+                    .get(normal.0)
+                    .and_then(|target| target.params.first().copied()),
+                _ => None,
+            })
+            .collect();
         for id in order {
             let source = function
                 .blocks
@@ -311,7 +327,9 @@ impl<'a, M: Module> MirToClifTranslator<'a, M> {
                 }
             }
             for &parameter in &source.params {
-                self.root(&mut builder, rt, parameter, reg(&registers, parameter)?)?;
+                if !non_gc_params.contains(&parameter) {
+                    self.root(&mut builder, rt, parameter, reg(&registers, parameter)?)?;
+                }
             }
             for (result, instruction) in &source.instructions {
                 match instruction {
@@ -342,6 +360,10 @@ impl<'a, M: Module> MirToClifTranslator<'a, M> {
                     Instruction::Environment => {
                         registers.insert(*result, incoming_environment);
                         self.root(&mut builder, rt, *result, incoming_environment)?;
+                    }
+                    Instruction::FunctionAddress(_) | Instruction::RawU64(_) => {
+                        let value = self.instruction(&mut builder, rt, instruction)?;
+                        registers.insert(*result, value);
                     }
                     _ => {
                         let value = self.instruction(&mut builder, rt, instruction)?;
@@ -538,7 +560,7 @@ impl<'a, M: Module> MirToClifTranslator<'a, M> {
                     .declare_func_in_func(self.function_id(*id)?, builder.func);
                 Ok(builder.ins().func_addr(types::I64, fun))
             }
-            Instruction::Handle(value) => Ok(builder
+            Instruction::Handle(value) | Instruction::RawU64(value) => Ok(builder
                 .ins()
                 .iconst(types::I64, i64::from_ne_bytes(value.to_ne_bytes()))),
             Instruction::Float(bits) => {

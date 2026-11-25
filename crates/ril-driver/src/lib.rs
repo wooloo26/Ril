@@ -186,6 +186,14 @@ impl Compiler {
         Ok((typed, analysis))
     }
 
+    pub fn analyze_cached(
+        &self,
+        pkg: &VirtualPackage,
+    ) -> Result<(Arc<TypedProgram>, Arc<Analysis>), Vec<Diagnostic>> {
+        let (typed, analysis, _) = self.analyze_arc(pkg)?;
+        Ok((typed, analysis))
+    }
+
     pub(crate) fn analyze_arc(
         &self,
         pkg: &VirtualPackage,

@@ -472,13 +472,17 @@ fn hex_digest(bytes: &ContentDigest) -> String {
 }
 
 fn write_atomic(path: &Path, bytes: &[u8]) {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
+
     let Some(parent) = path.parent() else {
         return;
     };
     if fs::create_dir_all(parent).is_err() {
         return;
     }
-    let tmp = path.with_extension(format!("tmp.{}", std::process::id()));
+    let seq = TMP_SEQ.fetch_add(1, Ordering::Relaxed);
+    let tmp = path.with_extension(format!("tmp.{}.{seq}", std::process::id()));
     if fs::write(&tmp, bytes).is_ok() {
         let _ = fs::rename(&tmp, path);
     }

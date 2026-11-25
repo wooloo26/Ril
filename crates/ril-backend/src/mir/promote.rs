@@ -951,53 +951,107 @@ fn simplify_stack_slots(function: &mut Function) -> bool {
 }
 
 fn coalesce_blocks(function: &mut Function) -> bool {
+    let n = function.blocks.len();
+    if n <= 1 {
+        return false;
+    }
+    // Compute reachability and predecessor counts once in O(B + E).
+    let mut reachable = vec![false; n];
+    let mut pred_count = vec![0usize; n];
+    let mut stack = vec![BlockId(0)];
+    if let Some(slot) = reachable.first_mut() {
+        *slot = true;
+    }
+    while let Some(id) = stack.pop() {
+        let Some(block) = function.blocks.get(id.0) else {
+            continue;
+        };
+        let Some(term) = &block.terminator else {
+            continue;
+        };
+        let succs: Vec<BlockId> = match term {
+            Terminator::Unreachable | Terminator::Return(_) => Vec::new(),
+            Terminator::Jump(target, _) => vec![*target],
+            Terminator::Branch { yes, no, .. } => vec![*yes, *no],
+            Terminator::Invoke { normal, unwind, .. } => {
+                if normal == unwind {
+                    vec![*normal]
+                } else {
+                    vec![*normal, *unwind]
+                }
+            }
+        };
+        for succ in succs {
+            if let Some(count) = pred_count.get_mut(succ.0) {
+                *count += 1;
+            }
+            if let Some(seen) = reachable.get_mut(succ.0)
+                && !*seen
+            {
+                *seen = true;
+                stack.push(succ);
+            }
+        }
+    }
+
+    let mut merged = vec![false; n];
+    let mut subst: HashMap<Register, Register> = HashMap::new();
     let mut changed_any = false;
-    loop {
-        let cfg = Cfg::build(function);
-        let candidate = cfg.order.iter().copied().find_map(|block_id| {
-            let block = function.blocks.get(block_id.0)?;
-            let Some(Terminator::Jump(target, args)) = &block.terminator else {
-                return None;
-            };
-            if *target == BlockId(0) || *target == block_id || !cfg.single_pred(*target, block_id) {
-                return None;
-            }
-            let target_block = function.blocks.get(target.0)?;
-            if target_block.params.len() != args.len() {
-                return None;
-            }
-            Some((block_id, *target))
-        });
-        let Some((from, target)) = candidate else {
-            break;
-        };
-        let args = match function
-            .blocks
-            .get(from.0)
-            .and_then(|b| b.terminator.as_ref())
+
+    for idx in 0..n {
+        if !reachable.get(idx).copied().unwrap_or(false)
+            || merged.get(idx).copied().unwrap_or(false)
         {
-            Some(Terminator::Jump(_, args)) => args.clone(),
-            _ => break,
-        };
-        let (params, mut instructions, terminator) = {
-            let Some(target_block) = function.blocks.get_mut(target.0) else {
+            continue;
+        }
+        while let Some(Terminator::Jump(target, args)) = function
+            .blocks
+            .get(idx)
+            .and_then(|block| block.terminator.as_ref())
+        {
+            let (target, args) = (*target, args.clone());
+            if target.0 == 0
+                || target.0 == idx
+                || target.0 >= n
+                || merged.get(target.0).copied().unwrap_or(false)
+                || pred_count.get(target.0).copied().unwrap_or(0) != 1
+            {
                 break;
+            }
+            let same_arity = function
+                .blocks
+                .get(target.0)
+                .is_some_and(|tb| tb.params.len() == args.len());
+            if !same_arity {
+                break;
+            }
+            let (params, mut instructions, terminator) = {
+                let Some(target_block) = function.blocks.get_mut(target.0) else {
+                    break;
+                };
+                (
+                    std::mem::take(&mut target_block.params),
+                    std::mem::take(&mut target_block.instructions),
+                    target_block.terminator.take(),
+                )
             };
-            (
-                std::mem::take(&mut target_block.params),
-                std::mem::take(&mut target_block.instructions),
-                target_block.terminator.take(),
-            )
-        };
-        if let Some(from_block) = function.blocks.get_mut(from.0) {
-            from_block.instructions.append(&mut instructions);
-            from_block.terminator = terminator;
+            if let Some(from_block) = function.blocks.get_mut(idx) {
+                from_block.instructions.append(&mut instructions);
+                from_block.terminator = terminator;
+            }
+            for (param, arg) in params.into_iter().zip(args) {
+                let resolved = resolve_reg(&subst, arg);
+                subst.insert(param, resolved);
+            }
+            if let Some(slot) = merged.get_mut(target.0) {
+                *slot = true;
+            }
+            changed_any = true;
         }
-        if !params.is_empty() {
-            let map: HashMap<_, _> = params.into_iter().zip(args).collect();
-            substitute_registers(function, &map);
-        }
-        changed_any = true;
+    }
+
+    if !subst.is_empty() {
+        substitute_registers(function, &subst);
     }
     changed_any
 }

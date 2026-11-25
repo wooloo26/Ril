@@ -93,6 +93,10 @@ impl Ast {
         self.exprs.iter()
     }
 
+    pub fn patterns(&self) -> impl Iterator<Item = &Spanned<Pattern>> {
+        self.patterns.iter()
+    }
+
     pub fn slice_parts<'a>(
         &self,
         items: &'a [PatternId],

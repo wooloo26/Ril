@@ -93,6 +93,18 @@ unsafe extern "C" fn ril_channel_clone(raw: Raw, sender: Value) -> Value {
     rt.gc.alloc(Object::Sender(id))
 }
 
+fn maybe_reap_channel(rt: &mut Runtime, id: u64) {
+    let reap = rt.fiber.channels.get(&id).is_some_and(|channel| {
+        channel.senders == 0
+            && !channel.receiver
+            && channel.waiting_senders.is_empty()
+            && channel.queued.is_empty()
+    });
+    if reap {
+        rt.fiber.channels.remove(&id);
+    }
+}
+
 #[unsafe(no_mangle)]
 unsafe extern "C" fn ril_channel_close(raw: Raw, sender: Value) -> Value {
     // SAFETY: closes the handle synchronously.
@@ -108,6 +120,7 @@ unsafe extern "C" fn ril_channel_close(raw: Raw, sender: Value) -> Value {
         *value = Object::Array(Vec::new());
     }
     rt.fiber.wake.insert(id);
+    maybe_reap_channel(rt, id);
     Value::UNIT
 }
 
@@ -126,6 +139,7 @@ unsafe extern "C" fn ril_channel_close_recv(raw: Raw, receiver: Value) -> Value 
         }
     }
     rt.fiber.wake.insert(id);
+    maybe_reap_channel(rt, id);
     Value::UNIT
 }
 
@@ -139,7 +153,8 @@ fn send(raw: Raw, sender: Value, item: Value, blocking: bool) -> Value {
         let id = *id;
         let active = rt.fiber.active;
         let Some(channel) = rt.fiber.channels.get_mut(&id) else {
-            return error(rt, "unknown channel");
+            let fault = tag(rt, "Closed", Some(item));
+            return tag(rt, "Err", Some(fault));
         };
         if channel.delivered.remove(&active) {
             return tag(rt, "Ok", Some(Value::UNIT));
@@ -148,6 +163,7 @@ fn send(raw: Raw, sender: Value, item: Value, blocking: bool) -> Value {
             if let Some(item) = channel.withdraw(active) {
                 rt.gc.unpin(item);
             }
+            maybe_reap_channel(rt, id);
             let fault = tag(rt, "Closed", Some(item));
             return tag(rt, "Err", Some(fault));
         }
@@ -186,6 +202,7 @@ fn send(raw: Raw, sender: Value, item: Value, blocking: bool) -> Value {
             {
                 rt.gc.unpin(item);
             }
+            maybe_reap_channel(rt, id);
             return Value::UNIT;
         }
     }
@@ -200,14 +217,20 @@ fn receive(raw: Raw, receiver: Value, blocking: bool) -> Value {
         };
         let id = *id;
         let Some(channel) = rt.fiber.channels.get_mut(&id) else {
-            return error(rt, "unknown channel");
+            if blocking {
+                return tag(rt, "None", None);
+            }
+            let fault = tag(rt, "Closed", None);
+            return tag(rt, "Err", Some(fault));
         };
         if let Some(item) = channel.take() {
             rt.gc.unpin(item);
             rt.fiber.wake.insert(id);
+            maybe_reap_channel(rt, id);
             return tag(rt, if blocking { "Some" } else { "Ok" }, Some(item));
         }
         if blocking && (!channel.receiver || channel.senders == 0) {
+            maybe_reap_channel(rt, id);
             return tag(rt, "None", None);
         }
         if !blocking {
@@ -216,6 +239,7 @@ fn receive(raw: Raw, receiver: Value, blocking: bool) -> Value {
             } else {
                 "Empty"
             };
+            maybe_reap_channel(rt, id);
             let fault = tag(rt, name, None);
             return tag(rt, "Err", Some(fault));
         }

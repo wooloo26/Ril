@@ -83,39 +83,68 @@ fn captured_slots(typed: &TypedProgram) -> BTreeSet<DefinitionId> {
             .filter(|node| matches!(node.value, Expr::Closure { .. }))
             .map(|node| node.span)
             .collect();
-        let mutable: BTreeSet<_> = file
+        let mut mutable: BTreeSet<_> = file
             .ast
-            .statements()
+            .patterns()
             .filter_map(|node| {
-                let StmtKind::Binding {
-                    pattern, storage, ..
-                } = &node.value.kind
-                else {
+                let Pattern::Binding(storage, name) = &node.value else {
                     return None;
                 };
                 if !storage.variable {
                     return None;
                 }
-                let Pattern::Binding(_, name) = &file.ast.pattern(*pattern).value else {
-                    return None;
-                };
                 match typed.hir.resolve(name.span) {
                     Some(Resolution::Definition(id)) => Some(id),
                     _ => None,
                 }
             })
             .collect();
-        for node in file.ast.expressions() {
-            if let Expr::Path(path) = &node.value
-                && let Some(Resolution::Definition(id)) = typed.hir.resolve(path.span)
-                && mutable.contains(&id)
-                && closure_spans.iter().any(|closure| {
-                    typed.hir.definition(id).name.span.start < closure.start
-                        && closure.start <= node.span.start
-                        && node.span.end <= closure.end
-                })
+        for node in file.ast.statements() {
+            let StmtKind::Binding {
+                pattern, storage, ..
+            } = &node.value.kind
+            else {
+                continue;
+            };
+            if !storage.variable {
+                continue;
+            }
+            if let Pattern::Binding(_, name) = &file.ast.pattern(*pattern).value
+                && let Some(Resolution::Definition(id)) = typed.hir.resolve(name.span)
             {
-                needed.insert(id);
+                mutable.insert(id);
+            }
+        }
+        let check_capture =
+            |id: DefinitionId, use_span: Span, needed: &mut BTreeSet<DefinitionId>| {
+                if mutable.contains(&id)
+                    && closure_spans.iter().any(|closure| {
+                        typed.hir.definition(id).name.span.start < closure.start
+                            && closure.start <= use_span.start
+                            && use_span.end <= closure.end
+                    })
+                {
+                    needed.insert(id);
+                }
+            };
+        for node in file.ast.expressions() {
+            match &node.value {
+                Expr::Path(path) => {
+                    if let Some(Resolution::Definition(id)) = typed.hir.resolve(path.span) {
+                        check_capture(id, node.span, &mut needed);
+                    }
+                }
+                Expr::Record { fields, .. } => {
+                    for field in fields {
+                        if field.value.is_none()
+                            && let Some(Resolution::Definition(id)) =
+                                typed.hir.resolve(field.name.span)
+                        {
+                            check_capture(id, field.name.span, &mut needed);
+                        }
+                    }
+                }
+                _ => {}
             }
         }
         for (_, def) in typed
@@ -601,7 +630,12 @@ impl<'a> Builder<'_, 'a> {
     fn cleanup_to(&mut self, depth: usize) {
         while self.cleanups.len() > depth {
             if let Some(cleanup) = self.cleanups.pop() {
-                self.invoke(cleanup.action.target(), vec![cleanup.value], true);
+                self.invoke_with(
+                    cleanup.action.target(),
+                    vec![cleanup.value],
+                    false,
+                    cleanup.evidence,
+                );
             }
         }
     }
@@ -1270,7 +1304,7 @@ impl<'a> Builder<'_, 'a> {
 
     fn box_closure(&mut self, id: FunctionId, arity: usize, environment: Register) -> Register {
         let address = self.instruction(Instruction::FunctionAddress(id));
-        let arity = self.instruction(Instruction::Handle(
+        let arity = self.instruction(Instruction::RawU64(
             u64::try_from(arity).unwrap_or(u64::MAX),
         ));
         self.runtime(
@@ -1280,7 +1314,7 @@ impl<'a> Builder<'_, 'a> {
     }
 
     fn invoke_closure(&mut self, closure: Register, args: Vec<Register>) -> Register {
-        let arity = self.instruction(Instruction::Handle(
+        let arity = self.instruction(Instruction::RawU64(
             u64::try_from(args.len()).unwrap_or(u64::MAX),
         ));
         let address = self.runtime("ril_rt_closure_address", vec![closure, arity]);
@@ -1303,16 +1337,55 @@ impl<'a> Builder<'_, 'a> {
         arguments: Option<&BTreeMap<DefinitionId, Value>>,
     ) -> Result<Register> {
         let span = self.ast().expr(id).span;
-        let capture: std::collections::BTreeSet<_> = self
+        let mut referenced = Vec::new();
+        for node in self
             .ast()
             .expressions()
             .filter(|node| node.span.start > span.start && node.span.end <= span.end)
-            .filter_map(|node| match &node.value {
-                Expr::Path(path) => self.global.resolve(path.span),
-                _ => None,
-            })
-            .filter(|id| self.locals.contains_key(id))
-            .collect();
+        {
+            match &node.value {
+                Expr::Path(path) => {
+                    if let Some(def) = self.global.resolve(path.span) {
+                        referenced.push(def);
+                    }
+                }
+                Expr::Record { fields, .. } => {
+                    for field in fields {
+                        if field.value.is_none()
+                            && let Some(def) = self.global.resolve(field.name.span)
+                        {
+                            referenced.push(def);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut capture = std::collections::BTreeSet::new();
+        let mut visited_fns = std::collections::BTreeSet::new();
+        while let Some(def) = referenced.pop() {
+            if self.locals.contains_key(&def) {
+                capture.insert(def);
+            } else if visited_fns.insert(def) {
+                let info = self.global.typed.hir.definition(def);
+                if let Some(stmt_id) = info.stmt {
+                    let ast = &self.global.typed.hir.file(info.name.span.file).ast;
+                    if let StmtKind::Function(fun) = &ast.stmt(stmt_id).value.kind {
+                        for (_, up_path) in fun
+                            .signature
+                            .obligations
+                            .state
+                            .iter()
+                            .flat_map(|clause| &clause.bindings)
+                        {
+                            if let Some(up_def) = self.global.resolve(up_path.span) {
+                                referenced.push(up_def);
+                            }
+                        }
+                    }
+                }
+            }
+        }
         let capture: Vec<_> = capture.into_iter().collect();
         let environment = self.environment(&capture);
         let mut statics = self.statics.clone();
@@ -1479,9 +1552,19 @@ impl<'a> Builder<'_, 'a> {
             let result = self.draft(DraftOp::Commit, vec![draft]);
             self.terminate(Terminator::Jump(done, vec![result]));
             self.current = Some(abort);
-            self.draft(DraftOp::Abort, vec![draft]);
-            let unreachable_value = self.unit();
-            self.terminate(Terminator::Jump(done, vec![unreachable_value]));
+            let outer_unwind = self.unwind_pad();
+            self.term_at(
+                abort,
+                Terminator::Invoke {
+                    target: Target::Draft(DraftOp::Abort),
+                    evidence: self.evidence,
+                    arguments: vec![draft],
+                    normal: outer_unwind,
+                    unwind: outer_unwind,
+                    cleanup: true,
+                    keep_result: false,
+                },
+            );
             self.current = Some(done);
             return Ok(self.result_param(done));
         }

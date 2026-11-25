@@ -250,6 +250,8 @@ unsafe fn schedule(raw: Raw, action: Value) -> Result<Value, String> {
                 }
                 rt.fiber.tasks.insert(task, completion);
                 rt.fiber.completion_order.push_back(task);
+                rt.fiber.cancelled.remove(&task);
+                rt.fiber.shielded.remove(&task);
                 ready.complete(task);
             }
         }
@@ -417,8 +419,13 @@ unsafe extern "C" fn ril_fiber_uncancellable(raw: Raw, action: Value) -> Value {
     // SAFETY: the action has the nullary callable ABI.
     let value = unsafe { invoke(raw, action, None) };
     // SAFETY: generated code has completed and relinquished the context.
-    if let Some(depth) = unsafe { context(raw) }.fiber.shielded.get_mut(&task) {
-        *depth -= 1;
+    let shielded = &mut unsafe { context(raw) }.fiber.shielded;
+    if let Some(depth) = shielded.get_mut(&task) {
+        if *depth <= 1 {
+            shielded.remove(&task);
+        } else {
+            *depth -= 1;
+        }
     }
     value
 }
@@ -462,7 +469,11 @@ unsafe fn scope(raw: Raw, action: Value, try_scope: bool) -> Value {
     // SAFETY: the scope owns the context again after draining its children.
     let rt = unsafe { context(raw) };
     if let Some(depth) = rt.fiber.shielded.get_mut(&task) {
-        *depth -= 1;
+        if *depth <= 1 {
+            rt.fiber.shielded.remove(&task);
+        } else {
+            *depth -= 1;
+        }
     }
     rt.gc.unpin(output);
     if let Some(message) = failed {

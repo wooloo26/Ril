@@ -77,6 +77,7 @@ pub(crate) struct Block {
 #[derive(Debug)]
 pub(crate) enum Instruction {
     Handle(u64),
+    RawU64(u64),
     Evidence,
     Environment,
     FunctionAddress(FunctionId),
