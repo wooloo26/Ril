@@ -22,6 +22,11 @@ type Eval<T = Value> = Result<T, Signal>;
 pub(super) enum Signal {
     Dependent(Span),
     Error(Code, Span, &'static str),
+    CompileError {
+        code: Code,
+        span: Span,
+        message: String,
+    },
     Return(Value),
     Break,
     Continue,
@@ -120,10 +125,20 @@ fn integer(value: usize) -> Value {
 
 impl Checker<'_> {
     pub(super) fn eval_root(&mut self, env: &Env, expr: ExprId, required: bool) -> Option<Value> {
+        let span = self.ast(env.file).expr(expr).span;
+        self.eval_root_at(env, expr, required, span)
+    }
+
+    pub(super) fn eval_root_at(
+        &mut self,
+        env: &Env,
+        expr: ExprId,
+        required: bool,
+        span: Span,
+    ) -> Option<Value> {
         if env.shadow {
             return None;
         }
-        let span = self.ast(env.file).expr(expr).span;
         let result = self.evaluate_static(env, expr);
         self.finish_eval(span, result, required)
     }
@@ -287,6 +302,20 @@ impl Checker<'_> {
             Err(Signal::Error(code, span, message)) => {
                 if required {
                     self.error(code, span, message);
+                }
+                None
+            }
+            Err(Signal::CompileError {
+                code,
+                span: origin,
+                message,
+            }) => {
+                if required {
+                    let mut diagnostic = ril_source::diag::Diagnostic::error(code, span, message);
+                    if origin != span && !self.hir.is_stdlib_file(origin.file) {
+                        diagnostic = diagnostic.with_label(origin, "compile_error triggered here");
+                    }
+                    self.diagnostics.push(diagnostic);
                 }
                 None
             }

@@ -8,22 +8,21 @@ use ril_syntax::syntax::{Name, StmtId, Visibility};
 
 use crate::{DefinitionKind, Entry, PrimitivePhase, Program, ScopeId, Target, builtins};
 
-const LANGUAGE_PRIMITIVES: &[(PrimitivePhase, &[&str])] = &[
+const LANGUAGE_PRIMITIVES: &[(PrimitivePhase, Visibility, &[&str])] = &[
     (
         PrimitivePhase::Both,
+        Visibility::Public,
         &["bool", "int", "f64", "str", "bytes", "never", "Type"],
     ),
     (
         PrimitivePhase::Static,
-        &[
-            "SharedObject",
-            "Sendable",
-            "Tuple",
-            "NominalWrapper",
-            "Unwrap",
-            "FieldKey",
-            "KeyOf",
-        ],
+        Visibility::Public,
+        &["Sendable", "KeyOf"],
+    ),
+    (
+        PrimitivePhase::Static,
+        Visibility::Private,
+        &["UnwrapNominal", "TryUnwrapNominal", "SharedObjectKernel"],
     ),
 ];
 
@@ -32,9 +31,9 @@ impl Program {
         let file = FileId::BUILTIN;
         self.prelude = self.new_scope(file, "ril".into(), None, Visibility::Public);
         self.scope_mut(self.prelude).primitive_module = Some("Prelude");
-        for &(phase, names) in LANGUAGE_PRIMITIVES {
+        for &(phase, visibility, names) in LANGUAGE_PRIMITIVES {
             for &name in names {
-                self.primitive(self.prelude, name, phase);
+                self.primitive(self.prelude, name, phase, visibility);
             }
         }
     }
@@ -74,19 +73,25 @@ impl Program {
         }
     }
 
-    fn primitive(&mut self, scope: ScopeId, name: &str, phase: PrimitivePhase) {
+    fn primitive(
+        &mut self,
+        scope: ScopeId,
+        name: &str,
+        phase: PrimitivePhase,
+        visibility: Visibility,
+    ) {
         let def = self.new_def(
             scope,
             Name::new(name.into(), Span::new(FileId::BUILTIN, 0, 0)),
             DefinitionKind::Primitive(phase),
             None,
-            Visibility::Public,
+            visibility,
         );
         self.scope_mut(scope).names.insert(
             name.into(),
             Entry {
                 target: Target::Def(def),
-                visibility: Visibility::Public,
+                visibility,
             },
         );
     }

@@ -184,9 +184,10 @@ impl Checker<'_> {
                 iterable,
                 field,
             } => self.mapped_record(env, storage, *pattern, *iterable, *field, node.span),
-            Type::PatternBinding(_) | Type::PatternWildcard | Type::PatternLiteral(_) => {
-                Ty::Unknown
-            }
+            Type::TupleAny
+            | Type::PatternBinding(_)
+            | Type::PatternWildcard
+            | Type::PatternLiteral(_) => Ty::Unknown,
         };
         self.types.insert(node.span, ty.clone());
         ty
@@ -365,23 +366,34 @@ impl Checker<'_> {
                         };
                         return Ty::TypeValue(inner);
                     }
-                    "Unwrap" => {
-                        if last.arguments.len() != 1 {
-                            self.error(Code::E0340, path.span, "Unwrap takes one type argument");
-                            return Ty::Unknown;
-                        }
+                    "UnwrapNominal" => {
                         let raw = arg0(self, env);
                         let target = self.normalize(&raw);
-                        return self.eval_unwrap_helper(env, &target, path.span);
+                        return self.eval_unwrap_nominal_kernel(env, &target, path.span, true);
                     }
-                    "FieldKey" => {
-                        if last.arguments.len() != 1 {
-                            self.error(Code::E0340, path.span, "FieldKey takes one type argument");
-                            return Ty::Unknown;
-                        }
+                    "TryUnwrapNominal" => {
                         let raw = arg0(self, env);
                         let target = self.normalize(&raw);
-                        return self.eval_coord_key_helper(env, &target, path.span);
+                        return self.eval_unwrap_nominal_kernel(env, &target, path.span, false);
+                    }
+                    "SharedObjectKernel" => {
+                        let raw = arg0(self, env);
+                        let target = self.normalize(&raw);
+                        let valid = !target.is_value()
+                            && !matches!(
+                                &target,
+                                Ty::Callable(_)
+                                    | Ty::TypeValue(_)
+                                    | Ty::Mode
+                                    | Ty::Range
+                                    | Ty::Draft(_)
+                                    | Ty::Scope
+                                    | Ty::Task(_)
+                                    | Ty::Sender(_)
+                                    | Ty::Receiver(_)
+                            )
+                            && !matches!(&target, Ty::Adt(adt) if adt.kind == AdtKind::Foreign);
+                        return if valid { target } else { Ty::Never };
                     }
                     _ => {}
                 }
@@ -430,10 +442,12 @@ impl Checker<'_> {
                 ty
             }
             TypeDefinition::Function(_, body) => {
-                if arguments
-                    .iter()
-                    .any(|v| matches!(v, GenericValue::Type(Ty::Param(_))))
-                {
+                if arguments.iter().any(|v| {
+                    matches!(
+                        v,
+                        GenericValue::Type(Ty::Param(_) | Ty::Infer(_) | Ty::Unknown)
+                    )
+                }) {
                     return Ty::Unknown;
                 }
                 if u64::try_from(self.stack.len()).unwrap_or(u64::MAX) >= self.budget.min(256) {
@@ -444,9 +458,12 @@ impl Checker<'_> {
                     );
                     return Ty::Unknown;
                 }
+                let call_span = env.error_span.unwrap_or(path.span);
                 self.stack.push(id);
                 local.phase = Phase::TypeEval;
-                let value = self.eval_root(&local, *body, true);
+                local.caller_scope = Some(env.effective_scope());
+                local.error_span = Some(call_span);
+                let value = self.eval_root_at(&local, *body, true, call_span);
                 self.stack.pop();
                 match value {
                     Some(Value::Type(ty)) => *ty,
@@ -505,74 +522,41 @@ impl Checker<'_> {
         }))
     }
 
-    fn eval_unwrap_helper(&mut self, env: &Env, target: &Ty, span: Span) -> Ty {
+    fn eval_unwrap_nominal_kernel(
+        &mut self,
+        env: &Env,
+        target: &Ty,
+        span: Span,
+        strict: bool,
+    ) -> Ty {
+        let err_span = env.error_span.unwrap_or(span);
+        let caller_scope = env.effective_scope();
         match target {
             Ty::Unknown | Ty::Infer(_) | Ty::Param(_) => Ty::Unknown,
-            Ty::Draft(inner) => {
-                let inner = self.normalize(inner);
-                let unwrapped = self.eval_unwrap_helper(env, &inner, span);
-                if matches!(unwrapped, Ty::Unknown) {
-                    Ty::Unknown
-                } else {
-                    Ty::Draft(Box::new(unwrapped))
-                }
-            }
             Ty::Adt(adt) if adt.kind == AdtKind::Foreign => {
-                self.error(Code::E0907, span, "foreign representation is sealed");
+                self.error(Code::E0907, err_span, "foreign representation is sealed");
                 Ty::Unknown
             }
-            Ty::Adt(adt) if adt.kind == AdtKind::Opaque && adt.defining_scope != env.scope => {
-                self.error(Code::E0308, span, "opaque representation is sealed");
+            Ty::Adt(adt)
+                if matches!(adt.kind, AdtKind::Opaque | AdtKind::OpaqueSum)
+                    && adt.defining_scope != caller_scope
+                    && (adt.kind == AdtKind::Opaque || !strict) =>
+            {
+                self.error(Code::E0308, err_span, "opaque representation is sealed");
                 Ty::Unknown
             }
             Ty::Adt(adt) if matches!(adt.kind, AdtKind::Nominal | AdtKind::Opaque) => {
                 self.representation(env, adt).unwrap_or(Ty::Unknown)
             }
-            _ => {
-                self.error(Code::E0301, span, "Unwrap requires a nominal wrapper type");
-                Ty::Unknown
-            }
-        }
-    }
-
-    fn eval_coord_key_helper(&mut self, env: &Env, target: &Ty, span: Span) -> Ty {
-        match target {
-            Ty::Unknown | Ty::Infer(_) | Ty::Param(_) => Ty::Unknown,
-            Ty::Record(..) => Ty::Str,
-            Ty::Tuple(_) | Ty::Unit => Ty::Int,
-            Ty::Adt(adt) if adt.kind == AdtKind::Foreign => {
-                self.error(Code::E0907, span, "foreign representation is sealed");
-                Ty::Unknown
-            }
-            Ty::Adt(adt)
-                if matches!(adt.kind, AdtKind::Opaque | AdtKind::OpaqueSum)
-                    && adt.defining_scope != env.scope =>
-            {
-                self.error(Code::E0308, span, "opaque representation is sealed");
-                Ty::Unknown
-            }
-            Ty::Adt(adt) if matches!(adt.kind, AdtKind::Nominal | AdtKind::Opaque) => {
-                match self.representation(env, adt) {
-                    Some(Ty::Record(..)) => Ty::Str,
-                    Some(Ty::Tuple(_) | Ty::Unit) => Ty::Int,
-                    _ => {
-                        self.error(
-                            Code::E0358,
-                            span,
-                            "CoordKey requires a record or tuple type",
-                        );
-                        Ty::Unknown
-                    }
-                }
-            }
-            _ => {
+            _ if strict => {
                 self.error(
-                    Code::E0358,
-                    span,
-                    "CoordKey requires a record or tuple type",
+                    Code::E0301,
+                    err_span,
+                    "Unwrap requires a nominal wrapper type",
                 );
                 Ty::Unknown
             }
+            _ => Ty::Never,
         }
     }
 

@@ -74,6 +74,18 @@ impl Checker<'_> {
         span: Span,
     ) -> Eval {
         match (name, args.as_slice()) {
+            ("compile_error", [Value::Str(message)]) => Err(Signal::CompileError {
+                code: Code::E0832,
+                span,
+                message: message.clone(),
+            }),
+            ("compile_error_code", [Value::Str(code), Value::Str(message)]) => {
+                Err(Signal::CompileError {
+                    code: code.parse::<Code>().unwrap_or(Code::E0832),
+                    span,
+                    message: message.clone(),
+                })
+            }
             ("assert", [Value::Bool(true), ..]) => Ok(Value::Unit),
             ("assert", [Value::Bool(false), ..]) => {
                 Err(Signal::Error(Code::E0830, span, "static assertion failed"))

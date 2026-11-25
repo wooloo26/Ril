@@ -104,6 +104,14 @@ pub const PRIMITIVE_FNS: &[PrimitiveSpec] = {
         prim("Prelude", "type_name", Static, None, Some(TypeName)),
         prim("Prelude", "fields", Static, None, Some(Fields)),
         prim("Prelude", "variants", Static, None, Some(Variants)),
+        prim("Prelude", "compile_error", Static, None, Some(CompileError)),
+        prim(
+            "Prelude",
+            "compile_error_code",
+            Static,
+            None,
+            Some(CompileErrorCode),
+        ),
         prim("Prelude", "panic", Both, Some("ril_rt_panic"), Some(Panic)),
         // Io / File
         prim("Io", "print", Runtime, Some("ril_rt_print"), Some(Print)),

@@ -55,6 +55,8 @@ pub enum Intrinsic {
     TypeName,
     Fields,
     Variants,
+    CompileError,
+    CompileErrorCode,
     Panic,
     Print,
     FileRead,
@@ -88,6 +90,8 @@ impl Intrinsic {
         matches!(
             self,
             Panic
+                | CompileError
+                | CompileErrorCode
                 | PanicMessage
                 | TypeName
                 | StringInspect

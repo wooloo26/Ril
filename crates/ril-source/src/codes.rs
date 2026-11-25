@@ -167,6 +167,7 @@ diagnostic_codes! {
     (E0816, RuntimeTypeValueProhibitedError),
     (E0830, StaticAssertionFailedError),
     (E0831, StaticEvaluationPanicError),
+    (E0832, CompileErrorDiagnostic),
     (E0901, BodyInForeignInterfaceError),
     (E0902, MissingDeclarationBodyError),
     (E0903, MissingEntryPointError),

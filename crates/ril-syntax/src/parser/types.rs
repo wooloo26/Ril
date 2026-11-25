@@ -74,27 +74,34 @@ impl Parser<'_> {
             }
             "(" => {
                 self.open("(", ")", Layout::List)?;
-                let mut elements = self.list(")", |p| {
-                    let storage = p.storage(false)?;
-                    let ty = p.type_expr(pattern)?;
-                    if matches!(p.text(), "@" | "&") {
-                        return Err(p.error(
-                            Code::E0333,
-                            p.current().span,
-                            "element effect/state belongs on a callable type",
-                        ));
+                self.skip_lines();
+                if pattern && self.eat("..") {
+                    self.skip_lines();
+                    self.close(")")?;
+                    Type::TupleAny
+                } else {
+                    let mut elements = self.list(")", |p| {
+                        let storage = p.storage(false)?;
+                        let ty = p.type_expr(pattern)?;
+                        if matches!(p.text(), "@" | "&") {
+                            return Err(p.error(
+                                Code::E0333,
+                                p.current().span,
+                                "element effect/state belongs on a callable type",
+                            ));
+                        }
+                        Ok((storage, ty))
+                    })?;
+                    match elements.len() {
+                        0 => Type::Unit,
+                        1 => {
+                            let (_, only) = elements
+                                .pop()
+                                .unwrap_or_else(|| ril_source::ice!("missing grouped type"));
+                            self.ast.ty(only).value.clone()
+                        }
+                        _ => Type::Tuple(elements),
                     }
-                    Ok((storage, ty))
-                })?;
-                match elements.len() {
-                    0 => Type::Unit,
-                    1 => {
-                        let (_, only) = elements
-                            .pop()
-                            .unwrap_or_else(|| ril_source::ice!("missing grouped type"));
-                        self.ast.ty(only).value.clone()
-                    }
-                    _ => Type::Tuple(elements),
                 }
             }
             "[" => {

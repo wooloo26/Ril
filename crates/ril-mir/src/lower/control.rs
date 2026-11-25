@@ -688,6 +688,7 @@ impl Builder<'_, '_> {
             (Type::Option(item), target) => target
                 .as_option(&self.global.typed.hir)
                 .is_some_and(|expected| self.static_type_pattern(*item, expected)),
+            (Type::TupleAny, Ty::Tuple(_) | Ty::Unit) => true,
             (Type::Array(_, item), Ty::Array(expected)) => {
                 self.static_type_pattern(*item, &expected.ty)
             }

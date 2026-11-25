@@ -163,6 +163,8 @@ impl Checker<'_> {
             return;
         };
         let mut local = Env::new(def.name.span.file, def.scope);
+        local.caller_scope = Some(caller.effective_scope());
+        local.error_span = Some(caller.error_span.unwrap_or(span));
         local.generics.clone_from(supplied);
         for param in &function.generics {
             let Some(definition) = self.resolve(param.name.span) else {
@@ -380,67 +382,9 @@ impl Checker<'_> {
         if matches!(def.kind, DefinitionKind::Primitive(_)) {
             if let GenericValue::Type(ty) = input {
                 let ty = self.normalize(ty);
-                match def.name.value.as_str() {
-                    "Sendable" => {
-                        if !self.is_sendable(env, &ty, &mut HashSet::new()) {
-                            self.error(Code::E0301, span, "type does not satisfy Sendable");
-                        }
-                    }
-                    "SharedObject" => {
-                        let valid = !ty.is_value()
-                            && !matches!(
-                                &ty,
-                                Ty::Callable(_)
-                                    | Ty::TypeValue(_)
-                                    | Ty::Mode
-                                    | Ty::Range
-                                    | Ty::Draft(_)
-                                    | Ty::Scope
-                                    | Ty::Task(_)
-                                    | Ty::Sender(_)
-                                    | Ty::Receiver(_)
-                            )
-                            && !matches!(&ty, Ty::Adt(adt) if adt.kind == AdtKind::Foreign);
-                        if !valid {
-                            self.error(Code::E0301, span, "type does not satisfy SharedObject");
-                        }
-                    }
-                    "Tuple" => {
-                        if !matches!(
-                            &ty,
-                            Ty::Tuple(_) | Ty::Unit | Ty::Unknown | Ty::Infer(_) | Ty::Param(_)
-                        ) {
-                            self.error(Code::E0301, span, "type does not satisfy Tuple");
-                        }
-                    }
-                    "NominalWrapper" => {
-                        let target = match &ty {
-                            Ty::Draft(inner) => self.normalize(inner),
-                            other => other.clone(),
-                        };
-                        match &target {
-                            Ty::Unknown | Ty::Infer(_) | Ty::Param(_) => {}
-                            Ty::Adt(adt) if adt.kind == AdtKind::Foreign => {
-                                self.error(Code::E0907, span, "foreign representation is sealed");
-                            }
-                            Ty::Adt(adt)
-                                if adt.kind == AdtKind::Opaque
-                                    && adt.defining_scope != env.scope =>
-                            {
-                                self.error(Code::E0308, span, "opaque representation is sealed");
-                            }
-                            Ty::Adt(adt)
-                                if matches!(adt.kind, AdtKind::Nominal | AdtKind::Opaque) => {}
-                            _ => {
-                                self.error(
-                                    Code::E0301,
-                                    span,
-                                    "type does not satisfy NominalWrapper",
-                                );
-                            }
-                        }
-                    }
-                    _ => {}
+                if def.name.value == "Sendable" && !self.is_sendable(env, &ty, &mut HashSet::new())
+                {
+                    self.error(Code::E0301, span, "type does not satisfy Sendable");
                 }
             }
             if self.prelude_key(path)
@@ -495,8 +439,11 @@ impl Checker<'_> {
             self.error(Code::E0340, path.span, "too many static check arguments");
             return;
         }
+        let call_span = env.error_span.unwrap_or(span);
         let mut local = Env::new(file, def.scope);
         local.phase = Phase::TypeEval;
+        local.caller_scope = Some(env.effective_scope());
+        local.error_span = Some(call_span);
         if let Some(id) = self.resolve(first.name.span) {
             local.generics.insert(id, input.clone());
         }
@@ -522,7 +469,7 @@ impl Checker<'_> {
             return;
         }
         self.stack.push(check);
-        let result = self.eval_root(&local, *body, true);
+        let result = self.eval_root_at(&local, *body, true, call_span);
         self.stack.pop();
         let Some(result) = result else { return };
         let Value::Type(ty) = result else {

@@ -35,11 +35,55 @@ pub use PanicError::Panicked
 
 pub opaque type Draft<T>
 
+meta fn compile_error_code(code: str, message: str) -> never
+pub meta fn compile_error(message: str) -> never
+
 pub type LenTarget = \T -> match <T> {
     <str> | <bytes> | <Set<_>> -> <T>
     <[let M]_> -> <T>
     <[_: let M _]> -> <T>
-    _ -> <never>
+    _ -> compile_error_code("E0301","len requires text, bytes, or a collection")
+}
+
+pub type Tuple = \T -> match <T> {
+    <(..)> -> <T>
+    _ -> compile_error_code("E0301","type does not satisfy Tuple")
+}
+
+pub type Unwrap = \W -> match <W> {
+    <Draft<let Inner>> -> <Draft<Unwrap<Inner>>>
+    _ -> <UnwrapNominal<W>>
+}
+
+pub type NominalWrapper = \W -> match <W> {
+    <Draft<let Inner>> -> {
+        let _ = <NominalWrapper<Inner>>
+        <W>
+    }
+    _ -> {
+        let _ = <UnwrapNominal<W>>
+        <W>
+    }
+}
+
+pub type FieldKey = \T -> match <T> {
+    <.{ ..}> -> <str>
+    <(..)> -> <int>
+    _ -> match <TryUnwrapNominal<T>> {
+        <.{ ..}> -> <str>
+        <(..)> -> <int>
+        _ -> compile_error_code("E0358","FieldKey requires a record or tuple type")
+    }
+}
+
+pub type SharedObject = \T -> match <T> {
+    <bool> | <int> | <f64> | <str> | <bytes> | <()> | <never> -> compile_error_code("E0301","type does not satisfy SharedObject")
+    <FieldMode> | <Draft<_>> | <Type> | <Type<_>> -> compile_error_code("E0301","type does not satisfy SharedObject")
+    <[let M]_> | <[_: let M _]> | <.{ ..}> | <(..)> -> <T>
+    _ -> match <SharedObjectKernel<T>> {
+        <never> -> compile_error_code("E0301","type does not satisfy SharedObject")
+        <let Ok> -> <Ok>
+    }
 }
 
 pub fn len<T |> LenTarget>(via item: T) -> int

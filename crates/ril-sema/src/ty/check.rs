@@ -155,6 +155,8 @@ pub(super) enum Phase {
 pub(super) struct Env {
     pub(super) file: FileId,
     pub(super) scope: ScopeId,
+    pub(super) caller_scope: Option<ScopeId>,
+    pub(super) error_span: Option<Span>,
     pub(super) phase: Phase,
     pub(super) generics: HashMap<DefinitionId, GenericValue>,
     pub(super) domains: HashMap<DefinitionId, Vec<Ty>>,
@@ -182,6 +184,8 @@ impl Env {
         Self {
             file,
             scope,
+            caller_scope: None,
+            error_span: None,
             phase: Phase::Runtime,
             generics: HashMap::new(),
             domains: HashMap::new(),
@@ -203,6 +207,10 @@ impl Env {
             staging_gates: Vec::new(),
             require_concrete_types: false,
         }
+    }
+
+    pub(super) fn effective_scope(&self) -> ScopeId {
+        self.caller_scope.unwrap_or(self.scope)
     }
 }
 

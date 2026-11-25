@@ -795,7 +795,7 @@ impl Walk<'_> {
                 self.ty(*base);
                 self.member(field);
             }
-            Type::Unit | Type::PatternWildcard | Type::PatternLiteral(_) => {}
+            Type::Unit | Type::TupleAny | Type::PatternWildcard | Type::PatternLiteral(_) => {}
         }
     }
 
@@ -1211,6 +1211,8 @@ impl Walk<'_> {
             let kind = self.program.definition(def).kind;
             if self.exposure > self.program.definition(def).visibility
                 && !matches!(kind, DefinitionKind::Generic | DefinitionKind::Local)
+                && !(matches!(kind, DefinitionKind::Primitive(_))
+                    && self.program.is_stdlib_file(name.span.file))
                 && !self.local_types.contains(&def)
             {
                 self.report(

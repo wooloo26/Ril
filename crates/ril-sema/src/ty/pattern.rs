@@ -744,6 +744,7 @@ impl Checker<'_> {
                     && self.match_member_mode(env, storage, tv.mode)
                     && self.match_type_pattern(env, *val, &tv.ty)
             }
+            (Type::TupleAny, Ty::Tuple(_) | Ty::Unit) => true,
             (Type::Tuple(items), Ty::Tuple(targets)) => {
                 items.len() == targets.len()
                     && items

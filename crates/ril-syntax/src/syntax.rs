@@ -358,6 +358,7 @@ pub enum Type {
     Named(Path),
     Unit,
     Tuple(Vec<(Storage, TypeId)>),
+    TupleAny,
     Array(Storage, TypeId),
     Map(TypeId, Storage, TypeId),
     Result(TypeId, TypeId),

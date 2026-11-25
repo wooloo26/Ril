@@ -2878,6 +2878,7 @@ TypePatternInner      ::= "_"
                         | LiteralPattern
 TypeResultPattern     ::= "!<" TypePatternInner "," TypePatternInner [ "," ] ">"
 TypeTuplePattern      ::= "(" ")"
+                        | "(" ".." ")"
                         | "(" TypePatternInner "," TypePatternInner { "," TypePatternInner } [ "," ] ")"
 TypeRecordPattern     ::= ".{" [ TypeRecordPatternList ] "}"
 TypeRecordPatternList ::= TypeRestPattern [ "," ]
@@ -3028,6 +3029,7 @@ The implicit prelude encloses every compilation unit and inline `sub`:
 | `type_name` | `pub meta fn type_name<T>(tv: Type<T>) -> str` | Static only: diagnostic display string of `T` |
 | `fields` | `pub meta fn fields<T>(tv: Type<T>) -> [](FieldMode, FieldKey<T>)` | Static only: `(mode, key)` pairs of accessible record (`str` keys) or tuple (`int` keys) `T` (`E0358` non-record/non-tuple, `E0308` sealed) |
 | `variants` | `pub meta fn variants<T>(tv: Type<T>) -> []str` | Static only: variant tags of closed transparent sum `T` (`E0301` non-sum, `E0308` sealed/open) |
+| `compile_error` | `pub meta fn compile_error(message: str) -> never` | Static only: emits compile-time diagnostic `E0832` with `message`, anchored at the enclosing type/meta instantiation site |
 | `panic` | `pub fn panic(message: str) -> never` | Dual-phase: LIFO panic unwinding at runtime; `E0831` in static eval |
 | `assert` | `pub fn assert(condition: bool, message: str = "assertion failed") -> ()` | Dual-phase: panics with `message` when `false` at runtime; `E0830` when `false` in static eval |
 | `print` / `println` | `pub fn print(text: str) @io -> ()`<br>`pub fn println(text: str) @io -> ()` | Runtime (`@io`): writes UTF-8 text (plus `\n` for `println`) to stdout |
@@ -3280,6 +3282,7 @@ An early return through `?` exits normally with `Err` or `None`. An outstanding 
 | **`E0816`** | [`RuntimeTypeValueProhibitedError`](#pure-type-functions-and-result-restrictions) |
 | **`E0830`** | [`StaticAssertionFailedError`](#pure-type-functions-and-result-restrictions) |
 | **`E0831`** | [`StaticEvaluationPanicError`](#pure-type-functions-and-result-restrictions) |
+| **`E0832`** | [`CompileErrorDiagnostic`](#built-in-foundational-operations) |
 
 ### Module Forms, Entry Points, and Foreign Interfaces
 
