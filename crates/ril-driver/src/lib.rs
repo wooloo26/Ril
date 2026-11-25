@@ -19,12 +19,34 @@ use ril_sema::{
 use ril_test::{CheckResult, ExecOutput, Stage, TestDriver, Unit, VirtualPackage};
 
 mod incremental;
+pub mod lsp;
 mod native;
 mod package;
 
 pub use incremental::{IncrementalCache, QueryStats};
 pub use native::worker_entry;
 pub use package::{PackageManifest, infer_unit, load_package, parse_manifest};
+
+/// Formats a `.ril` / `.d.ril` source file on disk, returning the formatted text.
+pub fn format_file(path: &std::path::Path) -> Result<String, String> {
+    let bytes = std::fs::read(path).map_err(|err| format!("{}: {err}", path.display()))?;
+    let source =
+        ril_base::span::SourceFile::from_bytes(FileId::from_path(path), path.to_owned(), &bytes)
+            .map_err(|diag| diag.to_string())?;
+    let kind = match infer_unit(path) {
+        Unit::Bin => FileKind::Executable,
+        Unit::Decl => FileKind::Foreign,
+        Unit::Lib => FileKind::Module,
+        Unit::Snippet => FileKind::Snippet,
+    };
+    ril_frontend::fmt::format_source(&source, kind).map_err(|diags| {
+        diags
+            .into_iter()
+            .map(|d| d.to_string())
+            .collect::<Vec<_>>()
+            .join("\n")
+    })
+}
 
 use incremental::{CheckKey, ContentDigest, FileFingerprint, MirKey, PackageKey, TypeKey, sha256};
 

@@ -1,0 +1,48 @@
+[package]
+name = "ril-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+ril-base = { path = "../crates/ril-base" }
+ril-frontend = { path = "../crates/ril-frontend" }
+ril-sema = { path = "../crates/ril-sema" }
+ril-backend = { path = "../crates/ril-backend" }
+ril-driver = { path = "../crates/ril-driver" }
+ril-rt-core = { path = "../crates/ril-rt-core" }
+ril-test = { path = "../crates/ril-test" }
+
+[[bin]]
+name = "fuzz_parse"
+path = "fuzz_targets/fuzz_parse.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_type_eval"
+path = "fuzz_targets/fuzz_type_eval.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_access_horn"
+path = "fuzz_targets/fuzz_access_horn.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_opt_equiv"
+path = "fuzz_targets/fuzz_opt_equiv.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_mir_verify"
+path = "fuzz_targets/fuzz_mir_verify.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_rt_graph"
+path = "fuzz_targets/fuzz_rt_graph.rs"
+doc = false

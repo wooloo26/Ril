@@ -53,6 +53,7 @@ fn target(pic: bool, opt_level: OptLevel) -> Result<isa::OwnedTargetIsa> {
     flags
         .set("opt_level", opt_level.as_cranelift())
         .map_err(diagnostic)?;
+    flags.set("unwind_info", "true").map_err(diagnostic)?;
     flags
         .set(
             "enable_verifier",
@@ -80,12 +81,13 @@ pub fn object(program: &mir::Program) -> Result<Vec<u8>> {
 }
 
 pub fn object_with_opt(program: &mir::Program, opt_level: OptLevel) -> Result<Vec<u8>> {
-    let object = ObjectBuilder::new(
+    let mut object = ObjectBuilder::new(
         target(true, opt_level)?,
         "ril.program",
         default_libcall_names(),
     )
     .map_err(diagnostic)?;
+    object.unwind_info(!cfg!(target_os = "macos"));
     let mut module = ObjectModule::new(object);
     MirToClifTranslator::compile(&mut module, program, None, false)?;
     module.finish().emit().map_err(diagnostic)
@@ -123,8 +125,10 @@ pub fn objects_with_opt(
     let mut objects = Vec::with_capacity(count);
     for cgu in 0..count {
         let name = format!("ril.cgu.{cgu}");
-        let object = ObjectBuilder::new(target(true, opt_level)?, name, default_libcall_names())
-            .map_err(diagnostic)?;
+        let mut object =
+            ObjectBuilder::new(target(true, opt_level)?, name, default_libcall_names())
+                .map_err(diagnostic)?;
+        object.unwind_info(!cfg!(target_os = "macos"));
         let mut module = ObjectModule::new(object);
         MirToClifTranslator::compile_cgu(&mut module, program, &owners, cgu)?;
         objects.push(module.finish().emit().map_err(diagnostic)?);
@@ -564,6 +568,9 @@ impl<'a, M: Module> MirToClifTranslator<'a, M> {
         context.func.signature = self.signature(function.arity + 3, Some(types::I64));
         let mut scratch = FunctionBuilderContext::new();
         let mut builder = FunctionBuilder::new(&mut context.func, &mut scratch);
+        if let Some(loc_id) = function.source_loc {
+            builder.set_srcloc(ir::SourceLoc::new(loc_id));
+        }
         let order = reachable(function)?;
         let mut blocks = BTreeMap::new();
         for &source in &order {
@@ -1255,9 +1262,11 @@ mod tests {
         let program = mir::Program {
             entry: FunctionId(0),
             suspend_at_entry: false,
+            source_locs: Vec::new(),
             functions: vec![mir::Function {
                 name: "main".into(),
                 symbol: "_Ril_main_test".into(),
+                source_loc: None,
                 arity: 0,
                 registers: 4,
                 reg_types: vec![

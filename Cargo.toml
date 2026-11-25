@@ -1,6 +1,6 @@
 [workspace]
 members = ["crates/*"]
-exclude = ["runtime/ril-rt-static"]
+exclude = ["runtime/ril-rt-static", "fuzz"]
 resolver = "3"
 
 [workspace.package]

@@ -174,17 +174,32 @@ impl IntUnaryOp {
     }
 }
 
+/// Source-location table entry attached to lowered MIR functions for debugger/profiler mapping.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub struct SourceLocEntry {
+    pub id: u32,
+    pub file: String,
+    pub line: u32,
+    pub column: u32,
+}
+
 #[derive(Debug)]
 pub struct Program {
     pub(crate) functions: Vec<Function>,
     pub(crate) entry: FunctionId,
     pub(crate) suspend_at_entry: bool,
+    pub(crate) source_locs: Vec<SourceLocEntry>,
 }
 
 impl Program {
     /// Returns the deterministic canonical linker symbols of all lowered MIR functions.
     pub fn function_symbols(&self) -> Vec<&str> {
         self.functions.iter().map(|f| f.symbol.as_str()).collect()
+    }
+
+    /// Returns the debug source-location table emitted alongside Cranelift `SourceLoc` records.
+    pub fn source_locations(&self) -> &[SourceLocEntry] {
+        &self.source_locs
     }
 }
 
@@ -207,6 +222,7 @@ pub enum ForeignAbi {
 pub(crate) struct Function {
     pub(crate) name: String,
     pub(crate) symbol: String,
+    pub(crate) source_loc: Option<u32>,
     pub(crate) arity: usize,
     pub(crate) registers: usize,
     pub(crate) reg_types: Vec<MirTy>,

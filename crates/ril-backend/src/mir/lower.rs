@@ -22,7 +22,8 @@ use ril_sema::{
 
 use super::{
     Block, BlockId, DraftOp, ForeignAbi, ForeignImport, Function, FunctionId, Instruction,
-    IntBinOp, IntLowering, IntUnaryOp, ManagedInt, MirTy, Program, Register, Target, Terminator,
+    IntBinOp, IntLowering, IntUnaryOp, ManagedInt, MirTy, Program, Register, SourceLocEntry,
+    Target, Terminator,
 };
 
 type Result<T> = std::result::Result<T, Diagnostic>;
@@ -55,6 +56,7 @@ pub(super) fn lower(typed: &TypedProgram, analysis: &Analysis) -> Result<Program
         ctor_index: HashMap::new(),
         closure_index: HashMap::new(),
         used_symbols: HashSet::new(),
+        source_locs: Vec::new(),
         effect_ops: HashMap::new(),
         top_level_fns: collect_top_level_functions(typed),
         boxed: captured_slots(typed),
@@ -77,6 +79,7 @@ pub(super) fn lower(typed: &TypedProgram, analysis: &Analysis) -> Result<Program
         entry,
         functions,
         suspend_at_entry,
+        source_locs: lowering.source_locs,
     })
 }
 
@@ -119,6 +122,7 @@ struct Lowering<'a> {
     ctor_index: HashMap<(DefinitionId, usize), FunctionId>,
     closure_index: HashMap<(FileId, ExprId), Vec<FunctionId>>,
     used_symbols: HashSet<String>,
+    source_locs: Vec<SourceLocEntry>,
     effect_ops: HashMap<String, u64>,
     top_level_fns: HashSet<DefinitionId>,
     boxed: BTreeSet<DefinitionId>,
@@ -315,76 +319,93 @@ impl<'a> Lowering<'a> {
         }
     }
 
+    fn record_source_loc(&mut self, span: Span) -> Option<u32> {
+        let file = self.typed.hir.file(span.file);
+        let loc = file.source().location(span.start)?;
+        let id = u32::try_from(self.source_locs.len() + 1).ok()?;
+        self.source_locs.push(SourceLocEntry {
+            id,
+            file: file.path.display().to_string(),
+            line: u32::try_from(loc.line).unwrap_or(u32::MAX),
+            column: u32::try_from(loc.column).unwrap_or(u32::MAX),
+        });
+        Some(id)
+    }
+
     fn function(&mut self, work: Work) -> Result<Function> {
-        let (kind_tag, file, name, body, params, guards, captures, types, statics) = match work {
-            Work::Constructor(id, arity) => {
-                let def = self.typed.hir.definition(id);
-                (
-                    "ctor",
-                    def.name.span.file,
-                    self.typed.hir.export_name(id),
-                    NativeBody::Constructor(&def.name.value, arity),
-                    &[][..],
-                    Vec::new(),
-                    Vec::new(),
-                    BTreeMap::new(),
-                    BTreeMap::new(),
-                )
-            }
-            Work::Named(id, types, captures, statics) => {
-                let f = self
-                    .declaration(id)
-                    .ok_or_else(|| Diagnostic::unsupported("missing native function definition"))?;
-                let body = if let Some(body) = f.body {
-                    NativeBody::Expression(body)
-                } else {
-                    NativeBody::Foreign(self.foreign(id)?)
-                };
-                (
-                    "fn",
-                    f.name.span.file,
-                    self.typed.hir.export_name(id),
-                    body,
-                    f.signature.params.as_slice(),
-                    f.signature.guards.clone(),
-                    captures,
-                    types,
-                    statics,
-                )
-            }
-            Work::Closure {
-                file,
-                syntax,
-                captures,
-                types,
-                statics,
-            } => {
-                let ast = &self.typed.hir.file(file).ast;
-                let node = ast.expr(syntax);
-                let (body, params) = match &node.value {
-                    Expr::Closure { params, body, .. } => {
-                        (NativeBody::Expression(*body), params.as_slice())
-                    }
-                    Expr::Accessor(path) => (NativeBody::Accessor(path), &[][..]),
-                    _ => return Err(Diagnostic::unsupported("invalid closure body")),
-                };
-                (
-                    "closure",
+        let (kind_tag, fn_span, file, name, body, params, guards, captures, types, statics) =
+            match work {
+                Work::Constructor(id, arity) => {
+                    let def = self.typed.hir.definition(id);
+                    (
+                        "ctor",
+                        def.name.span,
+                        def.name.span.file,
+                        self.typed.hir.export_name(id),
+                        NativeBody::Constructor(&def.name.value, arity),
+                        &[][..],
+                        Vec::new(),
+                        Vec::new(),
+                        BTreeMap::new(),
+                        BTreeMap::new(),
+                    )
+                }
+                Work::Named(id, types, captures, statics) => {
+                    let f = self.declaration(id).ok_or_else(|| {
+                        Diagnostic::unsupported("missing native function definition")
+                    })?;
+                    let body = if let Some(body) = f.body {
+                        NativeBody::Expression(body)
+                    } else {
+                        NativeBody::Foreign(self.foreign(id)?)
+                    };
+                    (
+                        "fn",
+                        f.name.span,
+                        f.name.span.file,
+                        self.typed.hir.export_name(id),
+                        body,
+                        f.signature.params.as_slice(),
+                        f.signature.guards.clone(),
+                        captures,
+                        types,
+                        statics,
+                    )
+                }
+                Work::Closure {
                     file,
-                    format!(
-                        "{}:closure@{}",
-                        self.typed.hir.file(file).path.display(),
-                        node.span.start
-                    ),
-                    body,
-                    params,
-                    Vec::new(),
+                    syntax,
                     captures,
                     types,
                     statics,
-                )
-            }
-        };
+                } => {
+                    let ast = &self.typed.hir.file(file).ast;
+                    let node = ast.expr(syntax);
+                    let (body, params) = match &node.value {
+                        Expr::Closure { params, body, .. } => {
+                            (NativeBody::Expression(*body), params.as_slice())
+                        }
+                        Expr::Accessor(path) => (NativeBody::Accessor(path), &[][..]),
+                        _ => return Err(Diagnostic::unsupported("invalid closure body")),
+                    };
+                    (
+                        "closure",
+                        node.span,
+                        file,
+                        format!(
+                            "{}:closure@{}",
+                            self.typed.hir.file(file).path.display(),
+                            node.span.start
+                        ),
+                        body,
+                        params,
+                        Vec::new(),
+                        captures,
+                        types,
+                        statics,
+                    )
+                }
+            };
         let params: Vec<_> = params.iter().filter(|param| !param.is_meta).collect();
         let arity = match body {
             NativeBody::Accessor(_) => 1,
@@ -392,12 +413,14 @@ impl<'a> Lowering<'a> {
             _ => params.len(),
         };
         let symbol = self.mangle_symbol(kind_tag, &name, arity, &types, &statics, &captures);
+        let source_loc = self.record_source_loc(fn_span);
         let mut builder = Builder {
             global: self,
             file,
             function: Function {
                 name,
                 symbol,
+                source_loc,
                 arity,
                 registers: 0,
                 reg_types: Vec::new(),

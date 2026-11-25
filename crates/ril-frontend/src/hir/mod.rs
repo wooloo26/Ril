@@ -191,6 +191,10 @@ impl File {
             .map(|token| token.text(&self.source))
     }
 
+    pub fn source(&self) -> &SourceFile {
+        &self.source
+    }
+
     pub fn source_text(&self) -> &str {
         self.source.text()
     }
@@ -258,6 +262,9 @@ pub struct Program {
 }
 
 impl Program {
+    pub fn resolutions(&self) -> impl Iterator<Item = (&Span, &Resolution)> {
+        self.resolutions.iter()
+    }
     pub fn is_stdlib_file(&self, file: FileId) -> bool {
         self.stdlib_files.contains(&file)
     }

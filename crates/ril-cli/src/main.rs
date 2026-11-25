@@ -4,6 +4,7 @@ use std::{
     io::{IsTerminal as _, Write as _},
     path::{Path, PathBuf},
     process::{Command, ExitCode},
+    time::{Duration, Instant, SystemTime},
 };
 
 use clap::{Parser, Subcommand, ValueEnum};
@@ -55,6 +56,10 @@ enum Action {
         incremental: Option<PathBuf>,
         #[arg(long, value_enum, default_value = "human")]
         message_format: MessageFormat,
+        #[arg(long)]
+        timings: bool,
+        #[arg(long)]
+        watch: bool,
     },
     Build {
         path: PathBuf,
@@ -72,7 +77,16 @@ enum Action {
         cgus: usize,
         #[arg(long, num_args = 0..=1, default_missing_value = ".ril-cache", value_name = "CACHE_DIR")]
         incremental: Option<PathBuf>,
+        #[arg(long)]
+        timings: bool,
     },
+    Fmt {
+        #[arg(required = true)]
+        paths: Vec<PathBuf>,
+        #[arg(long)]
+        check: bool,
+    },
+    Lsp,
     Run {
         path: PathBuf,
         #[arg(long, value_enum, default_value = "jit")]
@@ -164,45 +178,77 @@ fn run(action: Action) -> Result<ExitCode, String> {
             opt_stack_promote,
             incremental,
             message_format,
+            timings,
+            watch,
         } => {
             let compiler = compiler_for(opt_stack_promote, OptLevel::None, incremental);
-            let package = load_package(&path, unit.unwrap_or_else(|| infer_unit(&path)))?;
-            let checked = compiler.check(&package, stage);
-            let use_color = std::io::stderr().is_terminal();
-            for diagnostic in &checked.result.diagnostics {
-                match message_format {
-                    MessageFormat::Human => {
-                        diagnostic
-                            .render_with_color(
-                                &checked.sources,
-                                use_color,
+            let run_once = || -> Result<ExitCode, String> {
+                let t0 = Instant::now();
+                let package = load_package(&path, unit.unwrap_or_else(|| infer_unit(&path)))?;
+                let t_load = t0.elapsed();
+                let t1 = Instant::now();
+                let checked = compiler.check(&package, stage);
+                let t_check = t1.elapsed();
+                let use_color = std::io::stderr().is_terminal();
+                for diagnostic in &checked.result.diagnostics {
+                    match message_format {
+                        MessageFormat::Human => {
+                            diagnostic
+                                .render_with_color(
+                                    &checked.sources,
+                                    use_color,
+                                    std::io::stderr().lock(),
+                                )
+                                .map_err(|err| err.to_string())?;
+                        }
+                        MessageFormat::Json => {
+                            writeln!(
                                 std::io::stderr().lock(),
+                                "{}",
+                                diagnostic.to_json_line(&checked.sources)
                             )
                             .map_err(|err| err.to_string())?;
-                    }
-                    MessageFormat::Json => {
-                        writeln!(
-                            std::io::stderr().lock(),
-                            "{}",
-                            diagnostic.to_json_line(&checked.sources)
-                        )
-                        .map_err(|err| err.to_string())?;
+                        }
                     }
                 }
-            }
-            if !checked.result.diagnostics.is_empty() {
-                return Ok(ExitCode::FAILURE);
-            }
-            if emit_interface.is_some() || emit_interface_json.is_some() {
-                let interface = compiler.interface_arc(&package).map_err(display)?;
-                if let Some(path) = emit_interface {
-                    let bytes = interface.encode().map_err(|err| err.to_string())?;
-                    std::fs::write(path, bytes).map_err(|err| err.to_string())?;
+                if timings {
+                    eprintln!(
+                        "timings: load={:.2}ms check={:.2}ms total={:.2}ms",
+                        t_load.as_secs_f64() * 1000.0,
+                        t_check.as_secs_f64() * 1000.0,
+                        t0.elapsed().as_secs_f64() * 1000.0,
+                    );
                 }
-                if let Some(path) = emit_interface_json {
-                    let bytes = interface.encode_json().map_err(|err| err.to_string())?;
-                    std::fs::write(path, bytes).map_err(|err| err.to_string())?;
+                if !checked.result.diagnostics.is_empty() {
+                    return Ok(ExitCode::FAILURE);
                 }
+                if emit_interface.is_some() || emit_interface_json.is_some() {
+                    let interface = compiler.interface_arc(&package).map_err(display)?;
+                    if let Some(ref out_path) = emit_interface {
+                        let bytes = interface.encode().map_err(|err| err.to_string())?;
+                        std::fs::write(out_path, bytes).map_err(|err| err.to_string())?;
+                    }
+                    if let Some(ref out_path) = emit_interface_json {
+                        let bytes = interface.encode_json().map_err(|err| err.to_string())?;
+                        std::fs::write(out_path, bytes).map_err(|err| err.to_string())?;
+                    }
+                }
+                Ok(ExitCode::SUCCESS)
+            };
+            if watch {
+                let mut last_mtime = file_mtime(&path);
+                let _ = run_once()?;
+                loop {
+                    std::thread::sleep(Duration::from_millis(250));
+                    let current = file_mtime(&path);
+                    if current != last_mtime {
+                        last_mtime = current;
+                        eprintln!("--- change detected, re-checking {} ---", path.display());
+                        let _ = run_once()?;
+                    }
+                }
+            } else {
+                return run_once();
             }
         }
         Action::Build {
@@ -214,19 +260,55 @@ fn run(action: Action) -> Result<ExitCode, String> {
             opt,
             cgus,
             incremental,
+            timings,
         } => {
+            let t0 = Instant::now();
             let (opt_level, default_promote) = parse_opt_level(release, opt.as_deref())?;
             let compiler =
                 compiler_for(opt_stack_promote || default_promote, opt_level, incremental);
             let package = load_package(&path, Unit::Bin)?;
+            let t_load = t0.elapsed();
             let output =
                 output.unwrap_or_else(|| path.with_extension(std::env::consts::EXE_EXTENSION));
             if same_file(&path, &output) {
                 return Err("output would overwrite the source file".into());
             }
+            let t1 = Instant::now();
             compiler
                 .compile_aot_with_cgus(&package, &output, &link, cgus)
                 .map_err(display)?;
+            if timings {
+                eprintln!(
+                    "timings: load={:.2}ms build={:.2}ms total={:.2}ms (cgus={})",
+                    t_load.as_secs_f64() * 1000.0,
+                    t1.elapsed().as_secs_f64() * 1000.0,
+                    t0.elapsed().as_secs_f64() * 1000.0,
+                    cgus.max(1),
+                );
+            }
+        }
+        Action::Fmt { paths, check } => {
+            let mut needs_formatting = false;
+            for path in paths {
+                let original = std::fs::read_to_string(&path)
+                    .map_err(|e| format!("{}: {e}", path.display()))?;
+                let formatted = ril_driver::format_file(&path)?;
+                if formatted != original {
+                    if check {
+                        eprintln!("would reformat {}", path.display());
+                        needs_formatting = true;
+                    } else {
+                        std::fs::write(&path, formatted)
+                            .map_err(|e| format!("{}: {e}", path.display()))?;
+                    }
+                }
+            }
+            if check && needs_formatting {
+                return Ok(ExitCode::FAILURE);
+            }
+        }
+        Action::Lsp => {
+            ril_driver::lsp::serve_stdio()?;
         }
         Action::Run {
             path,
@@ -321,6 +403,10 @@ fn exit(status: std::process::ExitStatus) -> ExitCode {
         }
     }
     ExitCode::FAILURE
+}
+
+fn file_mtime(path: &Path) -> Option<SystemTime> {
+    std::fs::metadata(path).ok()?.modified().ok()
 }
 
 fn display(diagnostics: Vec<Diagnostic>) -> String {
