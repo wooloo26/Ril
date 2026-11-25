@@ -211,35 +211,17 @@ impl Checker<'_> {
             self.expect(env, update.value, &callback);
             return base;
         }
-        if name == "None" {
-            self.error(Code::E0338, span, "unit constructor is not callable");
-            return Ty::Unknown;
-        }
-        let context_arg = match (name, expected) {
-            ("clone", expected) => expected,
-            ("Some", Some(Ty::Option(ty)))
-            | ("Ok", Some(Ty::Result(ty, _)))
-            | ("Err", Some(Ty::Result(_, ty))) => Some(ty.as_ref()),
-            _ => None,
-        };
+        let context_arg = if name == "clone" { expected } else { None };
         let mut types = Vec::new();
         for arg in args {
             types.push(self.expr(env, arg.value, context_arg));
         }
-        let first = types
-            .first()
-            .cloned()
-            .unwrap_or(if matches!(name, "Some" | "Ok" | "Err") {
-                Ty::Unit
-            } else {
-                Ty::Unknown
-            });
+        let first = types.first().cloned().unwrap_or(Ty::Unknown);
         let arity = match name {
-            "panic" | "print" | "println" | "len" | "clone" | "inner" | "inspect" | "type_name"
-            | "coords" | "variants" | "to_f64" | "trunc" | "convert" | "absorb_panic"
-            | "panic_message" => Some(1..=1),
-            "assert" => Some(1..=2),
-            "has_default" | "contains" | "push" | "derive" => Some(2..=2),
+            "len" | "clone" | "inner" | "coords" | "variants" | "convert" | "absorb_panic" => {
+                Some(1..=1)
+            }
+            "has_default" | "derive" => Some(2..=2),
             _ => None,
         };
         if arity.is_some_and(|range| !range.contains(&args.len())) {
@@ -250,58 +232,6 @@ impl Checker<'_> {
             );
         }
         match name {
-            "read" | "write" => {
-                self.require(env, span, &first, &Ty::Str);
-                if name == "write"
-                    && let Some(content) = types.get(1)
-                {
-                    self.require(env, span, content, &Ty::Str);
-                }
-                if !env.shadow {
-                    env.effects_seen.insert("io".into());
-                }
-                Ty::Result(
-                    Box::new(if name == "read" { Ty::Str } else { Ty::Unit }),
-                    Box::new(Ty::Str),
-                )
-            }
-            "Some" => Ty::Option(Box::new(first)),
-            "Ok" => Ty::Result(
-                Box::new(first),
-                expected
-                    .and_then(|ty| match ty {
-                        Ty::Result(_, err) => Some(err.clone()),
-                        _ => None,
-                    })
-                    .unwrap_or_else(|| Box::new(self.fresh())),
-            ),
-            "Err" => Ty::Result(
-                expected
-                    .and_then(|ty| match ty {
-                        Ty::Result(ok, _) => Some(ok.clone()),
-                        _ => None,
-                    })
-                    .unwrap_or_else(|| Box::new(self.fresh())),
-                Box::new(first),
-            ),
-            "panic" | "print" | "println" => {
-                self.require(env, span, &first, &Ty::Str);
-                if name == "panic" {
-                    Ty::Never
-                } else {
-                    if !env.shadow {
-                        env.effects_seen.insert("io".into());
-                    }
-                    Ty::Unit
-                }
-            }
-            "assert" => {
-                self.require(env, span, &first, &Ty::Bool);
-                if let Some(message) = types.get(1) {
-                    self.require(env, span, message, &Ty::Str);
-                }
-                Ty::Unit
-            }
             "len" => {
                 if let Some(arg) = args.first()
                     && arg.mode != Mode::Plain
@@ -361,11 +291,7 @@ impl Checker<'_> {
                     Ty::Unknown
                 }
             },
-            "to_f64" => {
-                self.require(env, span, &first, &Ty::Int);
-                Ty::F64
-            }
-            "trunc" | "convert" => {
+            "convert" => {
                 self.require(env, span, &first, &Ty::F64);
                 Ty::Option(Box::new(Ty::Int))
             }
@@ -459,7 +385,6 @@ impl Checker<'_> {
                 }
                 Ty::Array(Box::new(Member::plain(Ty::Str)))
             }
-            "contains" => Ty::Bool,
             "has_default" => {
                 if let Ty::TypeValue(Some(ty)) = &first {
                     match self.normalize(ty) {
@@ -491,56 +416,6 @@ impl Checker<'_> {
                     self.eval_introspection_root(env, "has_default", args, span);
                 }
                 Ty::Bool
-            }
-            "type_name" => {
-                if env.phase == Phase::Runtime && !env.shadow {
-                    self.eval_introspection_root(env, "type_name", args, span);
-                }
-                Ty::Str
-            }
-            "inspect" => {
-                if let Some(arg) = args.first()
-                    && arg.mode != Mode::Plain
-                {
-                    let arg_span = self.ast(env.file).expr(arg.value).span;
-                    if first.is_value() {
-                        self.error(
-                            Code::E0401,
-                            arg_span,
-                            "value-type argument cannot carry live authority",
-                        );
-                    } else if arg.mode != Mode::Ref {
-                        self.error(
-                            Code::E0406,
-                            arg_span,
-                            "String::inspect accepts plain or ref access",
-                        );
-                    }
-                }
-                self.inspection_scopes.insert(span, env.scope);
-                Ty::Str
-            }
-            "panic_message" => {
-                let info = self.std_adt(StdType::PanicInfo, Vec::new());
-                self.require(env, span, &first, &info);
-                Ty::Str
-            }
-            "push" => {
-                let target = if let Ty::Draft(inner) = &first {
-                    inner.as_ref()
-                } else {
-                    &first
-                };
-                match self.normalize(target) {
-                    Ty::Array(member) => {
-                        if let Some(item) = types.get(1) {
-                            self.require(env, span, item, &member.ty);
-                        }
-                    }
-                    Ty::Unknown | Ty::Infer(_) | Ty::Param(_) => {}
-                    _ => self.error(Code::E0301, span, "Array::push requires an array"),
-                }
-                Ty::Unit
             }
             "derive" => first,
             "absorb_panic" => match self.normalize(&first) {

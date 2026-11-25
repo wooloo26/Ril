@@ -249,11 +249,8 @@ fn constructor(span: Span, values: impl IntoIterator<Item = (usize, Mode, Datum)
 }
 
 fn data_constructor(definition: &Definition) -> bool {
-    match definition.kind {
-        DefinitionKind::Type | DefinitionKind::Variant(_) => true,
-        DefinitionKind::Primitive(_) => {
-            matches!(definition.name.value.as_str(), "Some" | "Ok" | "Err")
-        }
-        _ => false,
-    }
+    matches!(
+        definition.kind,
+        DefinitionKind::Type | DefinitionKind::Variant(_)
+    )
 }

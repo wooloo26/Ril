@@ -660,6 +660,7 @@ fn store(rt: &mut Runtime, target: Value, key: Value, value: Value) -> Value {
         Ok(value) => value,
         Err(message) => return rt.checked(Err(message)),
     };
+    let target = rt.gc.draft_read(target).unwrap_or(target);
     let key_text = read_text(rt, key).ok();
     let index = rt.gc.integer(key).and_then(|key| key.to_usize());
     let map_lookup = match rt.gc.object(target) {

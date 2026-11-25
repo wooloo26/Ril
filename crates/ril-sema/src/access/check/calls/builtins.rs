@@ -1,34 +1,47 @@
 use super::*;
 
 impl Analyzer<'_> {
+    fn apply_primitive_signature(
+        &mut self,
+        ctx: &mut Context,
+        ledger: &mut Ledger,
+        sig: Option<&crate::ty::Callable>,
+        args: &[(usize, Mode, Datum)],
+        span: Span,
+    ) {
+        let Some(sig) = sig else {
+            return;
+        };
+        self.charge_call_effects(ctx, ledger, sig, None, span);
+        if sig.state.iter().any(|s| s == "mut" || s == "^mut") {
+            for (index, _, value) in args {
+                if sig
+                    .parameters
+                    .get(*index)
+                    .is_some_and(|p| matches!(p.mode, Mode::Mut | Mode::Shared))
+                {
+                    self.mutate(ctx, ledger, value, span);
+                }
+            }
+        }
+    }
+
     pub(super) fn primitive(
         &mut self,
         ctx: &mut Context,
         ledger: &mut Ledger,
-        name: &str,
+        (name, sig): (&str, Option<&crate::ty::Callable>),
         args: &[(usize, Mode, Datum)],
         syntax: &[Argument],
         span: Span,
     ) -> Datum {
+        self.apply_primitive_signature(ctx, ledger, sig, args, span);
         let first = args
             .iter()
             .find(|(index, _, _)| *index == 0)
             .map(|(_, _, v)| v);
         match name {
-            "println" | "print" => self.effect(ctx, ledger, "io", span),
             "panic" => self.publish_at_exit(ctx, ledger, false),
-            "push" | "pop" | "insert" | "remove" | "sort" | "clear" => {
-                if let Some(value) = first {
-                    self.mutate(ctx, ledger, value, span);
-                }
-                if matches!(name, "pop" | "remove") {
-                    return Datum::source(span, Access::Mut, true);
-                }
-            }
-            "get" | "keys" | "values" | "empty" | "from_array" | "split" | "at" | "scalars"
-            | "from_scalars" | "raw_decode_utf8" | "to_array" | "convert" | "trunc" => {
-                return Datum::source(span, Access::Mut, true);
-            }
             "clone" => {
                 if let Some(value) = first {
                     return self.clone_storage(
@@ -144,14 +157,10 @@ impl Analyzer<'_> {
                     .insert(Coordinate::Index("0".into()), payload);
                 return result;
             }
-            "scope" | "spawn" | "join" | "send" | "recv" => {
-                self.effect(ctx, ledger, "fiber", span);
-            }
-            "read" | "write" => {
-                self.effect(ctx, ledger, "io", span);
-                return Datum::source(span, Access::Mut, true);
-            }
             _ => {}
+        }
+        if sig.is_some_and(|sig| sig.result_mode == Mode::New) && !self.ty(span).is_value() {
+            return Datum::source(span, Access::Mut, true);
         }
         self.snapshot_value(span)
     }
@@ -160,11 +169,12 @@ impl Analyzer<'_> {
         &mut self,
         ctx: &mut Context,
         ledger: &mut Ledger,
-        (module, name): (&str, &str),
+        (module, name, sig): (&str, &str, Option<&crate::ty::Callable>),
         values: &[(usize, Mode, Datum)],
         syntax: &[Argument],
         span: Span,
     ) -> Datum {
+        self.apply_primitive_signature(ctx, ledger, sig, values, span);
         let first = values
             .iter()
             .find(|(i, _, _)| *i == 0)
@@ -174,33 +184,6 @@ impl Analyzer<'_> {
             .find(|(i, _, _)| *i == 1)
             .map(|(_, _, datum)| datum);
         if module == "Fiber" {
-            if matches!(
-                name,
-                "scope"
-                    | "try_scope"
-                    | "join"
-                    | "cancel"
-                    | "yield_now"
-                    | "sleep_ms"
-                    | "is_cancelled"
-                    | "timeout_ms"
-                    | "supervise"
-                    | "zip"
-                    | "try_zip"
-                    | "race"
-                    | "map"
-                    | "try_map"
-            ) {
-                self.effect(ctx, ledger, "fiber", span);
-            }
-            if matches!(name, "sleep_ms" | "timeout_ms") {
-                self.effect(ctx, ledger, "io", span);
-            }
-            if matches!(name, "spawn" | "join" | "cancel" | "cancel_scope")
-                && let Some(scope) = first
-            {
-                self.mutate(ctx, ledger, scope, span);
-            }
             if matches!(
                 name,
                 "run"
@@ -456,14 +439,6 @@ impl Analyzer<'_> {
             }
             return self.snapshot_value(span);
         }
-        if matches!(name, "send" | "recv") {
-            self.effect(ctx, ledger, "fiber", span);
-        }
-        if matches!(name, "send" | "try_send" | "recv" | "try_recv")
-            && let Some(value) = first
-        {
-            self.mutate(ctx, ledger, value, span);
-        }
         if name == "drain"
             && let Some(consumer) = second
         {
@@ -485,7 +460,10 @@ impl Analyzer<'_> {
                 }
                 pair
             }
-            "send" | "try_send" | "recv" | "try_recv" | "clone" => {
+            "send" | "try_send" => Datum::source(span, Access::Mut, true),
+            _ if sig.is_some_and(|sig| sig.result_mode == Mode::New)
+                && !self.ty(span).is_value() =>
+            {
                 Datum::source(span, Access::Mut, true)
             }
             _ => Datum::default(),

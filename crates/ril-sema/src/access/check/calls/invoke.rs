@@ -368,16 +368,9 @@ impl Analyzer<'_> {
             return result;
         }
         if let Some(module @ ("Fiber" | "Channel")) = module {
-            return self.concurrent(ctx, ledger, (module, name), &values, args, span);
+            return self.concurrent(ctx, ledger, (module, name, sig), &values, args, span);
         }
         if primitive {
-            if id.is_some_and(|id| self.program.hir.text_builtin(id).is_some()) {
-                return if self.ty(span).is_value() {
-                    Datum::default()
-                } else {
-                    Datum::source(span, Access::Mut, true)
-                };
-            }
             let inserted = match (module, name) {
                 (Some("Array"), "push") | (Some("Set"), "insert") => Some(1),
                 (Some("Array" | "Map"), "insert") => Some(2),
@@ -420,7 +413,7 @@ impl Analyzer<'_> {
                     }
                 }
             }
-            return self.primitive(ctx, ledger, name, &values, args, span);
+            return self.primitive(ctx, ledger, (name, sig), &values, args, span);
         }
         if let (Some(id), Expr::Path(path)) = (id, &callee.value)
             && let Some(operation) = self.operation(id, path.span)

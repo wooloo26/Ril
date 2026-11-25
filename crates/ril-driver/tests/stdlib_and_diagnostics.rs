@@ -620,7 +620,7 @@ fn wave_d_effects_guards_absorb_panic_and_concurrency() -> Result<(), String> {
             Code::E0314,
         ),
         (
-            "use ril/channel\nfn main() -> () { let Channel::ChannelPair.{ mut tx, mut rx } = Channel::bounded(1); let _ = absorb_panic(\\-> Channel::close(new tx)); Channel::close_recv(new rx) }\n",
+            "use ril/channel\nfn main() -> () { let Channel::ChannelPair.{ mut tx, mut rx } = Channel::bounded<int>(1); let _ = absorb_panic(\\-> Channel::close(new tx)); Channel::close_recv(new rx) }\n",
             Stage::Access,
             Code::E0608,
         ),

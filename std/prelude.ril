@@ -6,6 +6,7 @@ pub use ril/io::(print, println)
 pub use ril/map
 pub use ril/numeric
 pub use ril/reflect
+pub use ril/reflect::MemberMode
 pub use ril/set
 pub use ril/set::Set
 pub use ril/string
@@ -23,17 +24,6 @@ pub type Result<T, E> {
 }
 
 pub use Result::(Ok, Err)
-
-pub type MemberMode {
-    Let
-    Var
-    Mut
-    SharedMut
-    Ref
-    VarMut
-    VarSharedMut
-    VarRef
-}
 
 pub opaque type PanicInfo = str
 

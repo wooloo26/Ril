@@ -42,8 +42,8 @@ impl Checker<'_> {
     pub(super) fn concurrent_call(
         &mut self,
         env: &mut Env,
-        module: &str,
-        name: &str,
+        id: DefinitionId,
+        (module, name): (&str, &str),
         args: &[Argument],
         expected: Option<&Ty>,
         span: Span,
@@ -54,6 +54,10 @@ impl Checker<'_> {
                 span,
                 "structured concurrency is a runtime call family",
             );
+        }
+        let sig = self.declare_function(id);
+        if !env.shadow {
+            env.effects_seen.extend(sig.effects.iter().cloned());
         }
         if module == "Fiber" {
             self.fiber(env, name, args, expected, span)
@@ -134,17 +138,6 @@ impl Checker<'_> {
                     self.error(Code::E0301, span, "expected a task handle");
                     Ty::Unknown
                 }
-            }
-            ("cancel_scope", [scope]) => {
-                self.require_marker(scope, Mode::Mut, env);
-                self.expect(env, scope.value, &Ty::Scope);
-                Ty::Unit
-            }
-            ("yield_now", []) => Ty::Unit,
-            ("is_cancelled", []) => Ty::Bool,
-            ("sleep_ms", [duration]) => {
-                self.expect(env, duration.value, &Ty::Int);
-                Ty::Unit
             }
             ("timeout_ms", [duration, work]) => {
                 self.expect(env, duration.value, &Ty::Int);
@@ -285,66 +278,6 @@ impl Checker<'_> {
                 self.channel_shape(expected)
             }
             ("unbounded", []) => self.channel_shape(expected),
-            ("clone", [channel]) => {
-                self.require_marker(channel, Mode::Ref, env);
-                let ty = self.expr(env, channel.value, None);
-                if !matches!(ty, Ty::Sender(_)) {
-                    self.error(Code::E0301, span, "only a sender can be cloned");
-                }
-                ty
-            }
-            ("send" | "try_send", [sender, value]) => {
-                self.require_marker(sender, Mode::Mut, env);
-                let sender = self.expr(env, sender.value, None);
-                if !matches!(sender, Ty::Sender(_)) {
-                    self.error(Code::E0301, span, "send requires a channel sender");
-                }
-                let item = self.expect(env, value.value, &item(&sender));
-                if !self.is_sendable(env, &item, &mut HashSet::new()) {
-                    self.error(Code::E0301, span, "channel item is not Sendable");
-                }
-                let error = if name == "send" {
-                    StdType::SendError
-                } else {
-                    StdType::TrySendError
-                };
-                Ty::Result(
-                    Box::new(Ty::Unit),
-                    Box::new(self.std_adt(
-                        error,
-                        vec![super::GenericValue::Type(self.normalize(&item))],
-                    )),
-                )
-            }
-            ("recv" | "try_recv", [receiver]) => {
-                self.require_marker(receiver, Mode::Mut, env);
-                let ty = self.expr(env, receiver.value, None);
-                if !matches!(ty, Ty::Receiver(_)) {
-                    self.error(Code::E0301, span, "recv requires a channel receiver");
-                }
-                if name == "recv" {
-                    Ty::Option(Box::new(item(&ty)))
-                } else {
-                    Ty::Result(
-                        Box::new(item(&ty)),
-                        Box::new(self.std_adt(StdType::TryRecvError, Vec::new())),
-                    )
-                }
-            }
-            ("close" | "close_recv", [endpoint]) => {
-                self.require_marker(endpoint, Mode::New, env);
-                let ty = self.expr(env, endpoint.value, None);
-                if !matches!(
-                    (name, &ty),
-                    ("close", Ty::Sender(_)) | ("close_recv", Ty::Receiver(_))
-                ) {
-                    self.error(Code::E0301, span, "wrong endpoint for channel close");
-                }
-                if name == "close_recv" {
-                    self.reject_nested_result(&item(&ty), span);
-                }
-                Ty::Unit
-            }
             ("drain", [endpoint, consumer]) => {
                 self.require_marker(endpoint, Mode::New, env);
                 let ty = self.expr(env, endpoint.value, None);
@@ -451,7 +384,7 @@ impl Checker<'_> {
         }
     }
 
-    fn reject_nested_result(&mut self, ty: &Ty, span: Span) {
+    pub(super) fn reject_nested_result(&mut self, ty: &Ty, span: Span) {
         if ty.is_result() {
             self.error(Code::E0720, span, "operation would hide a fallible payload");
         }

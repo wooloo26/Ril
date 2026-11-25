@@ -181,7 +181,7 @@ pub(super) fn std_type_for(module_name: &str, name: &str) -> Option<StdType> {
     match (module_name, name) {
         ("Prelude", "Option") => Some(Option),
         ("Prelude", "Result") => Some(Result),
-        ("Prelude", "MemberMode") => Some(MemberMode),
+        ("Reflect", "MemberMode") => Some(MemberMode),
         ("Prelude", "PanicInfo") => Some(PanicInfo),
         ("Prelude", "PanicError") => Some(PanicError),
         ("Prelude", "Draft") => Some(Draft),

@@ -43,56 +43,6 @@ pub enum PrimitivePhase {
     Both,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum TextBuiltin {
-    Join,
-    StartsWith,
-    EndsWith,
-    ScalarAt,
-    Scalars,
-    FromScalars,
-    EncodeUtf8,
-    DecodeUtf8,
-    ByteAt,
-    ToArray,
-    FromArray,
-}
-
-impl TextBuiltin {
-    pub const fn parameters(self) -> &'static [&'static str] {
-        use TextBuiltin::*;
-        match self {
-            Join => &["parts", "separator"],
-            StartsWith => &["text", "prefix"],
-            EndsWith => &["text", "suffix"],
-            ScalarAt => &["text", "index"],
-            Scalars | EncodeUtf8 => &["text"],
-            FromScalars | FromArray => &["values"],
-            DecodeUtf8 | ToArray => &["data"],
-            ByteAt => &["data", "index"],
-        }
-    }
-
-    pub fn argument_order<'a>(
-        self,
-        labels: impl IntoIterator<Item = Option<&'a str>>,
-    ) -> Option<Vec<usize>> {
-        let parameters = self.parameters();
-        let mut order = vec![None; parameters.len()];
-        for (written, label) in labels.into_iter().enumerate() {
-            let expected = if let Some(label) = label {
-                parameters.iter().position(|&param| param == label)?
-            } else {
-                order.iter().position(Option::is_none)?
-            };
-            if order.get_mut(expected)?.replace(written).is_some() {
-                return None;
-            }
-        }
-        order.into_iter().collect()
-    }
-}
-
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum Intrinsic {
     Len,
@@ -162,7 +112,12 @@ impl Intrinsic {
         use Intrinsic::*;
         matches!(
             self,
-            Print
+            Panic
+                | Assert
+                | PanicMessage
+                | TypeName
+                | StringInspect
+                | Print
                 | Println
                 | FileRead
                 | FileWrite
@@ -514,30 +469,6 @@ impl Program {
                     if declaration.kind == ril_syntax::syntax::TypeKind::Nominal
                     && matches!(declaration.definition, TypeDefinition::Opaque)
             )
-    }
-
-    pub fn text_builtin(&self, id: DefinitionId) -> Option<TextBuiltin> {
-        use TextBuiltin::*;
-        if !matches!(self.definition(id).kind, DefinitionKind::Primitive(_)) {
-            return None;
-        }
-        match (
-            self.primitive_module(id)?,
-            self.definition(id).name.value.as_str(),
-        ) {
-            ("String", "join") => Some(Join),
-            ("String", "starts_with") => Some(StartsWith),
-            ("String", "ends_with") => Some(EndsWith),
-            ("String", "at") => Some(ScalarAt),
-            ("String", "scalars") => Some(Scalars),
-            ("String", "from_scalars") => Some(FromScalars),
-            ("String", "encode_utf8" | "raw_encode_utf8") => Some(EncodeUtf8),
-            ("String", "decode_utf8" | "raw_decode_utf8") => Some(DecodeUtf8),
-            ("Bytes", "at") => Some(ByteAt),
-            ("Bytes", "to_array") => Some(ToArray),
-            ("Bytes", "from_array") => Some(FromArray),
-            _ => None,
-        }
     }
 
     pub fn std_type(&self, id: DefinitionId) -> Option<StdType> {

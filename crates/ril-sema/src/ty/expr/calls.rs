@@ -276,61 +276,93 @@ impl Checker<'_> {
                         return self.reflect_call(env, path, args, expected, span);
                     }
                     if let Some(module @ ("Fiber" | "Channel")) = self.hir.primitive_module(id) {
-                        let explicit = if module == "Channel"
-                            && matches!(def.name.value.as_str(), "bounded" | "unbounded")
-                            && let Some(segment) = path.and_then(|path| path.segments.last())
-                            && let Some(argument) = segment.arguments.first()
-                        {
-                            if segment.arguments.len() > 1 {
+                        let direct_sig = matches!(
+                            (module, def.name.value.as_str()),
+                            (
+                                "Fiber",
+                                "yield_now" | "sleep_ms" | "is_cancelled" | "cancel_scope"
+                            ) | (
+                                "Channel",
+                                "clone"
+                                    | "send"
+                                    | "try_send"
+                                    | "recv"
+                                    | "try_recv"
+                                    | "close"
+                                    | "close_recv"
+                            )
+                        );
+                        if direct_sig {
+                            if !env.shadow && env.phase != Phase::Runtime {
                                 self.error(
-                                    Code::E0340,
-                                    segment.name.span,
-                                    "channel constructor takes one element type",
-                                );
-                            }
-                            let ty = self.type_argument(env, argument);
-                            if !self.is_sendable(env, &ty, &mut HashSet::new()) {
-                                self.error(
-                                    Code::E0301,
+                                    Code::E0810,
                                     span,
-                                    "channel element type is not Sendable",
+                                    "structured concurrency is a runtime call family",
                                 );
                             }
-                            Some(crate::ty::concurrency::channel_pair(ty))
+                            let type_args = path
+                                .and_then(|p| p.segments.last())
+                                .map_or(&[][..], |p| p.arguments.as_slice());
+                            let generic = self.call_argument_types(env, id, type_args, span);
+                            (Ty::Callable(self.declare_function(id)), generic)
                         } else {
-                            None
-                        };
-                        return self.concurrent_call(
-                            env,
-                            module,
-                            &def.name.value,
-                            args,
-                            explicit.as_ref().or(expected),
-                            span,
-                        );
-                    }
-                    if !env.shadow
-                        && phase == PrimitivePhase::Runtime
-                        && env.phase != Phase::Runtime
-                    {
-                        self.error(
-                            Code::E0810,
-                            callee.span,
-                            "runtime primitive called in static computation",
-                        );
-                    }
-                    if self
-                        .hir
-                        .intrinsic(id)
-                        .is_some_and(ril_hir::Intrinsic::uses_declared_signature)
-                    {
-                        let type_args = path
-                            .and_then(|p| p.segments.last())
-                            .map_or(&[][..], |p| p.arguments.as_slice());
-                        let generic = self.call_argument_types(env, id, type_args, span);
-                        (Ty::Callable(self.declare_function(id)), generic)
+                            let explicit = if module == "Channel"
+                                && matches!(def.name.value.as_str(), "bounded" | "unbounded")
+                                && let Some(segment) = path.and_then(|path| path.segments.last())
+                                && let Some(argument) = segment.arguments.first()
+                            {
+                                if segment.arguments.len() > 1 {
+                                    self.error(
+                                        Code::E0340,
+                                        segment.name.span,
+                                        "channel constructor takes one element type",
+                                    );
+                                }
+                                let ty = self.type_argument(env, argument);
+                                if !self.is_sendable(env, &ty, &mut HashSet::new()) {
+                                    self.error(
+                                        Code::E0301,
+                                        span,
+                                        "channel element type is not Sendable",
+                                    );
+                                }
+                                Some(crate::ty::concurrency::channel_pair(ty))
+                            } else {
+                                None
+                            };
+                            return self.concurrent_call(
+                                env,
+                                id,
+                                (module, &def.name.value),
+                                args,
+                                explicit.as_ref().or(expected),
+                                span,
+                            );
+                        }
                     } else {
-                        return self.primitive_call(env, &def.name.value, args, expected, span);
+                        if !env.shadow
+                            && phase == PrimitivePhase::Runtime
+                            && env.phase != Phase::Runtime
+                        {
+                            self.error(
+                                Code::E0810,
+                                callee.span,
+                                "runtime primitive called in static computation",
+                            );
+                        }
+                        if self
+                            .hir
+                            .intrinsic(id)
+                            .is_some_and(ril_hir::Intrinsic::uses_declared_signature)
+                        {
+                            let type_args = path
+                                .and_then(|p| p.segments.last())
+                                .map_or(&[][..], |p| p.arguments.as_slice());
+                            let generic = self.call_argument_types(env, id, type_args, span);
+                            (Ty::Callable(self.declare_function(id)), generic)
+                        } else {
+                            return self.primitive_call(env, &def.name.value, args, expected, span);
+                        }
                     }
                 }
                 DefinitionKind::Type => {
@@ -600,8 +632,45 @@ impl Checker<'_> {
                             );
                         }
                     }
+                    ril_hir::Intrinsic::TypeName => {
+                        if env.phase == Phase::Runtime && !env.shadow {
+                            self.eval_introspection_root(env, "type_name", args, span);
+                        }
+                    }
+                    ril_hir::Intrinsic::StringInspect => {
+                        if let Some(arg) = args.first()
+                            && arg.mode != Mode::Plain
+                        {
+                            let arg_span = ast.expr(arg.value).span;
+                            let first = self.types.get(&arg_span).cloned().unwrap_or(Ty::Unknown);
+                            if first.is_value() {
+                                self.error(
+                                    Code::E0401,
+                                    arg_span,
+                                    "value-type argument cannot carry live authority",
+                                );
+                            } else if arg.mode != Mode::Ref {
+                                self.error(
+                                    Code::E0406,
+                                    arg_span,
+                                    "String::inspect accepts plain or ref access",
+                                );
+                            }
+                        }
+                        self.inspection_scopes.insert(span, env.scope);
+                    }
                     _ => {}
                 }
+            }
+            if self.hir.primitive_module(known) == Some("Channel")
+                && self.hir.definition(known).name.value == "close_recv"
+                && let Some(arg0) = args.first()
+                && let Some(Ty::Receiver(item)) = self
+                    .types
+                    .get(&ast.expr(arg0.value).span)
+                    .map(|ty| self.normalize(ty))
+            {
+                self.reject_nested_result(&item, span);
             }
         }
         if !env.shadow && !generics.is_empty() {

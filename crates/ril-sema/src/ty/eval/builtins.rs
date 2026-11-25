@@ -1,6 +1,6 @@
 use num_bigint::BigInt;
 use num_traits::{FromPrimitive, Signed, ToPrimitive};
-use ril_hir::{DefinitionId, TextBuiltin};
+use ril_hir::{DefinitionId, Intrinsic};
 use ril_source::{diag::Code, span::Span};
 use ril_syntax::syntax::{self, ExprId, StmtKind, Type, TypeDefinition, Variant};
 
@@ -11,50 +11,54 @@ use crate::ty::{
     value::ieee_equal,
 };
 
-pub(super) fn eval_text(builtin: TextBuiltin, args: &[Value], span: Span) -> Eval {
-    use TextBuiltin::*;
+pub(super) fn eval_text(intrinsic: Intrinsic, args: &[Value], span: Span) -> Option<Eval> {
+    use Intrinsic::*;
     let option = |value: Option<Value>| {
         value.map_or_else(none, |value| Value::Tag("Some".into(), vec![value]))
     };
-    match (builtin, args) {
-        (Join, [Value::Array(parts), Value::Str(separator)]) => {
-            let parts = parts
+    Some(match (intrinsic, args) {
+        (StringJoin, [Value::Array(parts), Value::Str(separator)]) => {
+            let parts = match parts
                 .iter()
                 .map(|part| match part {
                     Value::Str(text) => Ok(text.as_str()),
                     _ => Err(nonstatic(span)),
                 })
-                .collect::<Eval<Vec<_>>>()?;
+                .collect::<Eval<Vec<_>>>()
+            {
+                Ok(parts) => parts,
+                Err(err) => return Some(Err(err)),
+            };
             Ok(Value::Str(parts.join(separator)))
         }
-        (StartsWith, [Value::Str(text), Value::Str(pattern)]) => {
+        (StringStartsWith, [Value::Str(text), Value::Str(pattern)]) => {
             Ok(Value::Bool(text.starts_with(pattern)))
         }
-        (EndsWith, [Value::Str(text), Value::Str(pattern)]) => {
+        (StringEndsWith, [Value::Str(text), Value::Str(pattern)]) => {
             Ok(Value::Bool(text.ends_with(pattern)))
         }
-        (ScalarAt, [Value::Str(text), Value::Int(index)]) => Ok(option(
+        (StringAt, [Value::Str(text), Value::Int(index)]) => Ok(option(
             index
                 .to_usize()
                 .and_then(|index| text.chars().nth(index))
                 .map(|scalar| Value::Int(u32::from(scalar).into())),
         )),
-        (ByteAt, [Value::Bytes(bytes), Value::Int(index)]) => Ok(option(
+        (BytesAt, [Value::Bytes(bytes), Value::Int(index)]) => Ok(option(
             index
                 .to_usize()
                 .and_then(|index| bytes.get(index))
                 .copied()
                 .map(|byte| Value::Int(byte.into())),
         )),
-        (Scalars, [Value::Str(text)]) => Ok(Value::Array(
+        (StringScalars, [Value::Str(text)]) => Ok(Value::Array(
             text.chars()
                 .map(|scalar| Value::Int(u32::from(scalar).into()))
                 .collect(),
         )),
-        (ToArray, [Value::Bytes(bytes)]) => Ok(Value::Array(
+        (BytesToArray, [Value::Bytes(bytes)]) => Ok(Value::Array(
             bytes.iter().map(|&byte| Value::Int(byte.into())).collect(),
         )),
-        (FromScalars, [Value::Array(items)]) => {
+        (StringFromScalars, [Value::Array(items)]) => {
             let text = items
                 .iter()
                 .map(|value| match value {
@@ -64,7 +68,7 @@ pub(super) fn eval_text(builtin: TextBuiltin, args: &[Value], span: Span) -> Eva
                 .collect::<Option<String>>();
             Ok(option(text.map(Value::Str)))
         }
-        (FromArray, [Value::Array(items)]) => {
+        (BytesFromArray, [Value::Array(items)]) => {
             let bytes = items
                 .iter()
                 .map(|value| match value {
@@ -74,14 +78,20 @@ pub(super) fn eval_text(builtin: TextBuiltin, args: &[Value], span: Span) -> Eva
                 .collect::<Option<Vec<_>>>();
             Ok(option(bytes.map(Value::Bytes)))
         }
-        (EncodeUtf8, [Value::Str(text)]) => Ok(Value::Bytes(text.as_bytes().to_vec())),
-        (DecodeUtf8, [Value::Bytes(bytes)]) => Ok(option(
+        (StringEncodeUtf8, [Value::Str(text)]) => Ok(Value::Bytes(text.as_bytes().to_vec())),
+        (StringDecodeUtf8, [Value::Bytes(bytes)]) => Ok(option(
             std::str::from_utf8(bytes)
                 .ok()
                 .map(|text| Value::Str(text.to_owned())),
         )),
-        _ => Err(nonstatic(span)),
-    }
+        (
+            StringJoin | StringStartsWith | StringEndsWith | StringAt | BytesAt | StringScalars
+            | BytesToArray | StringFromScalars | BytesFromArray | StringEncodeUtf8
+            | StringDecodeUtf8,
+            _,
+        ) => Err(nonstatic(span)),
+        _ => return None,
+    })
 }
 
 impl Checker<'_> {
@@ -98,8 +108,6 @@ impl Checker<'_> {
                 Err(Signal::Error(Code::E0830, span, "static assertion failed"))
             }
             ("panic", _) => Err(defect(span, "static evaluation panicked")),
-            ("Some" | "Ok" | "Err", []) => Ok(Value::Tag(name.into(), vec![Value::Unit])),
-            ("Some" | "Ok" | "Err", [_]) => Ok(Value::Tag(name.into(), args)),
             ("len", [Value::Array(items)]) => Ok(integer(items.len())),
             ("len", [Value::Map(items)]) => Ok(integer(items.len())),
             ("len", [Value::Str(str)]) => Ok(integer(str.chars().count())),

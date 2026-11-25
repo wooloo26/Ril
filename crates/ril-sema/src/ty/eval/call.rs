@@ -9,6 +9,50 @@ use crate::ty::{
 };
 
 impl Checker<'_> {
+    fn order_primitive_args(
+        &self,
+        id: DefinitionId,
+        args: Vec<(Option<String>, Value)>,
+        span: Span,
+    ) -> Eval<Vec<Value>> {
+        if !args.iter().any(|(label, _)| label.is_some()) {
+            return Ok(args.into_iter().map(|(_, value)| value).collect());
+        }
+        let def = self.hir.definition(id);
+        let Some(stmt) = def.stmt else {
+            return Ok(args.into_iter().map(|(_, value)| value).collect());
+        };
+        let StmtKind::Function(fun) = &self.ast(def.name.span.file).stmt(stmt).value.kind else {
+            return Ok(args.into_iter().map(|(_, value)| value).collect());
+        };
+        let params = &fun.signature.params;
+        let mut bound = vec![None; params.len()];
+        for (label, value) in args {
+            let index = if let Some(label) = label {
+                params
+                    .iter()
+                    .position(|p| p.name.as_ref().is_some_and(|name| name.value == label))
+            } else {
+                bound.iter().position(Option::is_none)
+            };
+            let Some(slot) = index.and_then(|i| bound.get_mut(i)) else {
+                return Err(nonstatic(span));
+            };
+            if slot.replace(value).is_some() {
+                return Err(nonstatic(span));
+            }
+        }
+        let mut out = Vec::with_capacity(params.len());
+        for (param, value) in params.iter().zip(bound) {
+            if let Some(value) = value {
+                out.push(value);
+            } else if param.default.is_none() {
+                return Err(nonstatic(span));
+            }
+        }
+        Ok(out)
+    }
+
     pub(super) fn eval_args(
         &mut self,
         env: &mut Env,
@@ -82,28 +126,19 @@ impl Checker<'_> {
                 }
                 DefinitionKind::Primitive(_) => {
                     fuel.step(span)?;
-                    let args = self.eval_args(env, slots, args, fuel)?;
-                    if let Some(builtin) = self.hir.text_builtin(id) {
-                        let order = builtin
-                            .argument_order(args.iter().map(|(label, _)| label.as_deref()))
-                            .ok_or_else(|| nonstatic(span))?;
-                        let ordered = order
-                            .into_iter()
-                            .map(|index| {
-                                args.get(index)
-                                    .map(|(_, value)| value.clone())
-                                    .ok_or_else(|| nonstatic(span))
-                            })
-                            .collect::<Eval<Vec<_>>>()?;
-                        return eval_text(builtin, &ordered, span);
+                    let raw_args = self.eval_args(env, slots, args, fuel)?;
+                    let ordered = self.order_primitive_args(id, raw_args, span)?;
+                    if let Some(intrinsic) = self.hir.intrinsic(id)
+                        && let Some(result) = eval_text(intrinsic, &ordered, span)
+                    {
+                        return result;
                     }
-                    let args = args.into_iter().map(|(_, value)| value).collect::<Vec<_>>();
                     if self.hir.primitive_module(id) == Some("Reflect")
                         && matches!(name, "attrs" | "field_attrs" | "variant_attrs")
                     {
-                        self.eval_metadata(env, path, &args, span)
+                        self.eval_metadata(env, path, &ordered, span)
                     } else {
-                        self.eval_primitive(env, name, args, span)
+                        self.eval_primitive(env, name, ordered, span)
                     }
                 }
                 DefinitionKind::Variant(_) | DefinitionKind::Type => {

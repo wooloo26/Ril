@@ -1,6 +1,17 @@
 -- Standard Reflect module: compile-time attribute and default introspection primitives.
 
-pub meta fn attrs<T, A>(tv: Type<T>) -> []A
-pub meta fn field_attrs<T, A>(tv: Type<T>, field: str) -> []A
-pub meta fn variant_attrs<T, A>(tv: Type<T>, variant: str) -> []A
-pub meta fn has_default<T>(tv: Type<T>, field: str) -> bool
+pub type MemberMode {
+    Let
+    Var
+    Mut
+    SharedMut
+    Ref
+    VarMut
+    VarSharedMut
+    VarRef
+}
+
+pub meta fn attrs<T, A>(target: Type<T>) -> []A
+pub meta fn field_attrs<T, A>(target: Type<T>, meta key: str |> Key<T>) -> []A
+pub meta fn variant_attrs<T, A>(target: Type<T>, meta variant: str) -> []A
+pub meta fn has_default<T>(target: Type<T>, meta key: str |> Key<T>) -> bool
