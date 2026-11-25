@@ -22,9 +22,9 @@ impl Symbol {
 /// Pre-interned language keywords, primitive types, and common standard-library names.
 pub const PREINTERNED: &[&str] = &[
     // 29 keywords & contextual keywords
-    "let", "var", "mut", "ref", "new", "via", "infer", "fn", "meta", "type", "nominal", "opaque",
-    "sub", "eff", "with", "use", "where", "if", "else", "match", "while", "for", "as", "in",
-    "return", "break", "continue", "pub", "pkg", "true", "false", "typeof", "clone", "derive",
+    "let", "var", "mut", "ref", "new", "via", "infer", "fn", "meta", "type", "opaque", "sub", "eff",
+    "with", "use", "where", "if", "else", "match", "while", "for", "as", "in", "return", "break",
+    "continue", "pub", "pkg", "true", "false", "typeof", "clone", "derive",
     "inner", // 6 primitive types & never
     "bool", "int", "f64", "str", "bytes", "never", // Common stdlib names
     "Option", "Some", "None", "Result", "Ok", "Err", "String", "Array", "Map", "Set", "Fiber",

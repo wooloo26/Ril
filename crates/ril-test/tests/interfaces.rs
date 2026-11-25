@@ -18,7 +18,7 @@ use ril_test::{CaseMode, Stage, TestDriver, Unit, VirtualPackage, parse_suite, r
 
 #[test]
 fn hidden_clone_restrictions_survive_separate_compilation() {
-    let source = b"use ril/channel\npub opaque type Parcel = .{ mut tx: Channel::Sender<int> }";
+    let source = b"use ril/channel\npub opaque type Parcel .{ mut tx: Channel::Sender<int> }";
     let mut library = VirtualPackage::new(Unit::Lib);
     library.entry = "pkg/vault.ril".into();
     library.insert(library.entry.clone(), source.to_vec());
@@ -1434,7 +1434,7 @@ pub fn relay(action: fn(via Cell, via Cell) -> (), via left: Cell, via right: Ce
     if recur { relay(action, left, right, false) }
     else { forward(action, left, right) }
 }
-pub nominal type Node = .{ action: fn(via Cell, via Cell) -> (), next: ?Node }
+pub type Node .{ action: fn(via Cell, via Cell) -> (), next: ?Node }
 pub fn observe(via left: Cell, via right: Cell) -> () { assert(left.count == right.count) }
 pub fn visit(node: Node) -> int {
     let mut cell = Cell.{ count: 1 }
@@ -1691,7 +1691,7 @@ fn compound_result_obligations_survive_an_interface_only_boundary() {
 
     let provider_source = br#"
 fn get(value: int) -> new !<int, str> { Ok(value) }
-pub nominal type Packet<T> = .{ payload: T }
+pub type Packet<T> .{ payload: T }
 pub fn packet() -> new Packet<!<int, str>> { Packet.{ payload: get(1) } }
 pub fn batch() -> new []!<int, str> { [get(1), get(2)] }
 pub fn varying_batch(flag: bool) -> new []!<int, str> {
@@ -1824,7 +1824,7 @@ fn recursive_allocation_graphs_survive_interface_replay() {
     use ril_source::diag::Code;
 
     let provider_source = br#"
-pub nominal type Node = .{ var value: int, var ^mut next: ?Node }
+pub type Node .{ var value: int, var ^mut next: ?Node }
 pub type Shelf = .{ var mut head: Node }
 pub type Pair = .{ var ^mut left: Node, var ^mut right: Node }
 pub fn build(^mut tail: Node, count: int) &mut &^mut &return(^mut tail) -> new Node {
@@ -2080,7 +2080,7 @@ pub eff Meter { fn read() -> int; fn reset() -> () }
 pub fn read_meter() @Meter -> int { Meter::read() }
 pub eff Extended { ..Meter; fn record() -> () }
 pub fn read_extended() @Extended -> int { Meter::read() }
-pub opaque type Handle use(close) = .{ id: int }
+pub opaque type Handle use(close) .{ id: int }
 pub fn open() -> new Handle { Handle.{ id: 1 } }
 pub fn close(new handle: Handle) @Meter -> () { let _ = Meter::read() }
 pub fn apply(via action: fn(via Cell) @& -> infer Cell, via cell: Cell) -> infer Cell { action(cell) }

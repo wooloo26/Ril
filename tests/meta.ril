@@ -107,7 +107,7 @@ meta let _ = assert(<Output> == <str>)
 meta let _ = assert(<Choose<f64>> == <bool>)
 
 -- @case type_identity_uses_f64_bits compile-pass
-nominal type Fixed<n: f64> = int
+type Fixed<n: f64> int
 meta let _ = assert(<Fixed<-0.0>> != <Fixed<0.0>>)
 meta let _ = assert(-0.0 == 0.0)
 
@@ -140,9 +140,9 @@ type Invalid = Checked<bool>
 -- ^ E0301
 
 -- @case reflection_filters_type_field_and_variant_metadata compile-pass
-nominal type Role = str
+type Role str
 meta(Role("admin"), "ignored", Role("writer"))
-nominal type Request = .{ meta(Role("private")) email: str }
+type Request .{ meta(Role("private")) email: str }
 type ApiError { meta(Role("log")) Missing; Unused }
 type NestedError { ..ApiError; Bad }
 meta let ROLES = Reflect::attrs<Request, Role>(<Request>)
@@ -153,12 +153,12 @@ meta let _ = assert(FIELD_ROLES == [Role("private")])
 meta let _ = assert(VARIANT_ROLES == [Role("log")])
 
 -- @case metadata_cannot_contain_a_runtime_callable compile-fail E0816
-nominal type Role = str
+type Role str
 meta((\x: int -> x, 1))
-nominal type Request = .{ email: str }
+type Request .{ email: str }
 
 -- @case field_metadata_requires_a_valid_key compile-fail E0323
-nominal type Request = .{ email: str }
+type Request .{ email: str }
 meta let INVALID = Reflect::field_attrs<Request, str>(<Request>, "unknown")
 -- ^ E0323
 
@@ -206,7 +206,7 @@ type Invalid = .{ [["key", "key"] as key]: int }
 
 -- @case static_inspection_obeys_opaque_boundaries_in_nested_values compile-pass unit=lib
 -- @file pkg/secret.ril
-pub opaque type Token = int
+pub opaque type Token int
 pub meta fn token(value: int) -> Token { value }
 pub meta fn inside() -> str { String::inspect(token(42)) }
 -- @file pkg/main.ril
@@ -266,7 +266,7 @@ fn spin(meta n: int) -> int {
 fn start() -> int { spin(0) }
 
 -- @case inferred_type_values_keep_opaque_declaration_identity compile-fail E0301
-opaque type Weight = int
+opaque type Weight int
 fn read(meta kind: Type<Weight>) -> int { if kind == <Weight> { 42 } else { 0 } }
 fn invalid() -> int { read(<int>) }
 -- ^ E0301
@@ -312,7 +312,7 @@ meta let CHECK = assert(edit(State.{ items: [None, Some(Cell.{ count: 41 })] }, 
     State.{ items: [None, Some(Cell.{ count: 42 })] })
 
 -- @case static_draft_inner_updates_nominal_array_payload compile-pass stage=access
-nominal type Bag = []int
+type Bag []int
 meta fn append(base: Bag) -> Bag {
     derive(base) \mut draft -> {
         inner(mut draft) |> mut Array::push(42)
@@ -336,7 +336,7 @@ meta fn edit(base: Item) -> Item {
 meta let CHECK = assert(edit(Present(Cell.{ count: 41 })) == Present(Cell.{ count: 7 }))
 
 -- @case static_draft_inner_writes_nominal_tuple_coordinates compile-pass stage=access
-nominal type Pair = (int, int)
+type Pair (int, int)
 meta fn edit(base: Pair) -> Pair {
     derive(base) \mut draft -> {
         inner(mut draft).0 = 41

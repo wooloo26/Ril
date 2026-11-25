@@ -25,7 +25,7 @@ pub type Result<T, E> {
 
 pub use Result::(Ok, Err)
 
-pub opaque type PanicInfo = str
+pub opaque type PanicInfo str
 
 pub type PanicError {
     Panicked(PanicInfo)

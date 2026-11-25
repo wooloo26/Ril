@@ -46,7 +46,7 @@ eff Log {
     fn emit(msg: str) -> ()
 }
 
-opaque type Res use(close_res) = .{ id: int }
+opaque type Res use(close_res) .{ id: int }
 
 fn close_res(ref r: Res) @Log -> () {
     Log::emit("{Log::tag()}:{r.id}")

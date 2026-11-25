@@ -21,7 +21,7 @@ This document defines Ril syntax, static semantics, access modes, state and prov
 | Provenance / `new` subgraphs | Provenance tracks which existing sources a value references and which parts are `new`; `new` lets the target choose modes for newly constructed subgraphs while nested existing sources keep their authority and aliases |
 | Values / shared objects | `bool`, `int`, `f64`, `str`, `bytes`, and `()` copy by value; records, nonempty tuples, collections, and sums have automatically reclaimed object identity |
 | Record forms / constructors | Named and anonymous records attach `.{...}` (`User.{ id: 1 }`); payload variants and non-record nominal constructors use tight `(...)` (`Ok(42)`, `Ok()`, `Rect(10.0, 20.0)`, `UserId(42)`) |
-| Aliases / nominal / opaque | `type A = B` is a structural alias; `nominal type A = B` has distinct public identity; `opaque type A = B` seals representation outside its defining file or `sub` |
+| Aliases / nominal / opaque | `type A = B` is a structural alias; `type A B` has distinct public identity; `opaque type A B` seals representation outside its defining file or `sub` |
 | Reachable authority use | `var` requires reachable slot replacement, `mut` requires writable or `new`-handoff use, `^mut` parameters require surviving retention, and named state annotations must be minimal (`E0527`, `E0529`) |
 | `where` / checks & guards | Dual-tier `where` hoists helper declarations (`type`, `fn`, `meta fn`, block `eff`); `\|>` runs static checks on generic parameters and fallible signature guards on runtime parameters/returns |
 | Purity / defects | Purity excludes outward effects and non-pure state/provenance obligations; finite defects initiate LIFO panic unwinding |
@@ -408,7 +408,7 @@ var      via      where    while    with
 ```
 
 - **Protected Names (`bool`, `int`, `f64`, `str`, `bytes`, `never`, `Type`, `Super`)**: Primitive type names cannot be used as identifiers or field labels (`E0113`), `Type` and `Super` cannot be redeclared or shadowed (`E0203`), and bare type names in runtime value expressions fail `E0319` (write `<int>`, `<never>`).
-- **Contextual Identifiers (`opaque`, `nominal`, `ril`, `io`, `fiber`, `capture`, `up`)**: Ordinary `SnakeCase` identifiers in bindings, parameters, paths, and fields (`let opaque = true`, `let fiber = 1`, `use ril/io`). Recognized contextually only in `opaque type`, `nominal type`, `use ril/...`, `@io`, `@fiber`, `&capture`, and `&up` / `&up(...)`.
+- **Contextual Identifiers (`opaque`, `ril`, `io`, `fiber`, `capture`, `up`)**: Ordinary `SnakeCase` identifiers in bindings, parameters, paths, and fields (`let opaque = true`, `let fiber = 1`, `use ril/io`). Recognized contextually only in `opaque type`, `use ril/...`, `@io`, `@fiber`, `&capture`, and `&up` / `&up(...)`.
 
 ```ril
 let opaque = true                      -- OK: contextual outside 'opaque type'
@@ -547,7 +547,7 @@ Record types, values, patterns, and mapped types uniformly use `.{...}`. Record 
 
 ```ril
 type WithId<R> = .{ id: int, ..R }
-nominal type ServerCfg = .{ host: str, port: int = 8080, var retries: int = 3 }
+type ServerCfg .{ host: str, port: int = 8080, var retries: int = 3 }
 
 fn get_id(item: .{ id: int, .. }) -> int { item.id }
 
@@ -569,11 +569,11 @@ assert(get_id(inner(cfg) |> \_ -> .{ id: 1 }) == 1)
 -- let bad_mode: .{ var x: int } = .{ x: 1 }            -- Error [E0357]: incompatible member mode
 
 -- type BadAliasDef = .{ port: int = 8080 }             -- Error [E0359]: alias forbids field defaults
--- nominal type BadNested = .{ inner: .{ x: int = 1 } } -- Error [E0359]: default only on root fields
--- nominal type BadMutDef = .{ mut items: []int = [] }  -- Error [E0404]: writable field forbids default
--- nominal type BadFwd = .{ a: int = b, b: int = 1 }    -- Error [E0408]: forward field reference
+-- type BadNested .{ inner: .{ x: int = 1 } } -- Error [E0359]: default only on root fields
+-- type BadMutDef .{ mut items: []int = [] }  -- Error [E0404]: writable field forbids default
+-- type BadFwd .{ a: int = b, b: int = 1 }    -- Error [E0408]: forward field reference
 -- eff Rng { fn next() -> int }
--- nominal type BadImpure = .{ seed: int = Rng::next() }-- Error [E0409]: field default must be pure
+-- type BadImpure .{ seed: int = Rng::next() }-- Error [E0409]: field default must be pure
 ```
 
 - **Closed records**: Exact field set, order irrelevant (`E0210` duplicate, `E0307` missing, `E0302` unexpected, `E0336` unknown field read, `E0324` dynamic `rec[k]`).
@@ -706,11 +706,11 @@ fn widen_demo(e: DbErr) -> ApiErr { e as ApiErr } -- OK: DbErr <= ApiErr
 Ril defines four `.ril` type forms alongside `.d.ril` foreign opaque handles:
 
 ```ril
-pub nominal type Disconnected
-pub nominal type Connected
-pub nominal type UserId = int
-pub nominal type OrgId  = int
-pub opaque type Conn<State> = .{ fd: int }
+pub type Disconnected
+pub type Connected
+pub type UserId int
+pub type OrgId int
+pub opaque type Conn<State> .{ fd: int }
 
 pub fn open_raw() -> new Conn<Disconnected> { Conn.{ fd: -1 } }
 pub fn dial(new c: Conn<Disconnected>, fd: int) -> new Conn<Connected> {
@@ -729,7 +729,7 @@ close_conn(new c1)
 -- Rejected nominal, alias, and opaque cases:
 -- let _ = dial(new c0, 4)             -- Error [E0549]: 'c0' ended at handoff
 -- let bad_nom: OrgId = UserId(1)      -- Error [E0305]: distinct nominal types
--- pub type MissingEq .{ id: int }     -- Error [E0124]: missing '=' in type declaration
+-- opaque type BadEq = int             -- Error [E0120]: opaque type does not use '='
 -- type Cyc = Cyc                      -- Error [E0313]: cyclic transparent type alias
 -- let bad_peek = c1.fd                -- Error [E0308]: opaque representation sealed outside defining scope
 ```
@@ -737,17 +737,16 @@ close_conn(new c1)
 | Form | Syntax | Identity & representation |
 | :--- | :--- | :--- |
 | Transparent alias | `type Point = .{ x: f64, y: f64 }` | Type-equivalent to target everywhere (`E0313` cycles; forbids `meta(...)` `E0708` and defaults `E0359`) |
-| Nominal type / marker | `nominal type Marker`<br>`nominal type UserId = int`<br>`nominal type Req = .{ k: str }` | Distinct type everywhere (`E0305`); public representation. Unit `Marker` stands alone; non-records use `UserId(42)` / `Pair(1, 2)` and bare non-record nominal names act as `fn(Payload) -> Nominal` (`42 \|> UserId`, exempt from `E0319`); records use `Req.{ k: "a" }` (`E0338` on mismatch). Unwrap via `inner(w)` |
-| Scope-opaque type (`.ril`) | `opaque type Token = str` | Interconvertible with representation inside exact defining `sub` or root file (`<Token> != <str>`); sealed outside, including child/parent `sub`s (`E0301`, `E0308`). Bodyless `.ril` `opaque type` requires registered built-in (`E0902`) |
+| Nominal type / marker | `type Marker`<br>`type UserId int`<br>`type Req .{ k: str }` | Distinct type everywhere (`E0305`); public representation. Unit `Marker` stands alone; non-records use `UserId(42)` / `Pair(1, 2)` and bare non-record nominal names act as `fn(Payload) -> Nominal` (`42 \|> UserId`, exempt from `E0319`); records use `Req.{ k: "a" }` (`E0338` on mismatch). Unwrap via `inner(w)` |
+| Scope-opaque type (`.ril`) | `opaque type Token str` | Interconvertible with representation inside exact defining `sub` or root file (`<Token> != <str>`); sealed outside, including child/parent `sub`s (`E0301`, `E0308`). Bodyless `.ril` `opaque type` requires registered built-in (`E0902`) |
 | Sum type | `type Res<T, E> { Ok(T); Err(E) }` | Closed or extensible variant type (`opaque` seals construction, widening, and matching outside defining scope, `E0308`) |
 | Foreign opaque handle (`.d.ril`) | `pub opaque type HostFd use(close)` | Exclusive, non-duplicable host handle (`E0907` access, `E0908` snapshot/`^mut` signature); forbids `clone`, `derive`, `==`, freezing, `var mut`, and collections; admits `new`, `let mut`, `mut`, `ref`, `use` |
 
 ```ebnf
 TypeDecl        ::= TypeDeclHead "=" ( TypeExpression | TypeFunctionExpr )
-NominalTypeDecl ::= NominalTypeHead [ UseCleanupClause ] [ "=" TypeExpression ]
-OpaqueTypeDecl  ::= OpaqueTypeHead [ UseCleanupClause ] [ "=" TypeExpression ]
+NominalTypeDecl ::= TypeDeclHead [ UseCleanupClause ] [ TypeExpression ]
+OpaqueTypeDecl  ::= OpaqueTypeHead [ UseCleanupClause ] [ TypeExpression ]
 TypeDeclHead    ::= { MetaAttr } [ Visibility ] "type" PascalCase [ GenericParams ]
-NominalTypeHead ::= { MetaAttr } [ Visibility ] "nominal" "type" PascalCase [ GenericParams ]
 OpaqueTypeHead  ::= { MetaAttr } [ Visibility ] "opaque" "type" PascalCase [ GenericParams ]
 LocalTypeDecl   ::= TypeDecl | NominalTypeDecl | OpaqueTypeDecl | SumTypeDecl
 ```
@@ -790,7 +789,7 @@ let ok_cb: fn(int) @io -> int = \x -> x        -- OK: pure fn <: @io fn
 ```
 
 Subtyping $S <: T$ holds **only** for:
-1. **Type equivalence** ($S \equiv T$): expands transparent `type A = B` aliases, plus bidirectional `A` $\leftrightarrow$ `Rep` for `.ril` `opaque type A = Rep` inside its exact defining `sub` or root file.
+1. **Type equivalence** ($S \equiv T$): expands transparent `type A = B` aliases, plus bidirectional `A` $\leftrightarrow$ `Rep` for `.ril` `opaque type A Rep` inside its exact defining `sub` or root file.
 2. **Bottom type**: `never <: T` for every well-formed `T`.
 3. **Covariant immutable wrappers**: `?S <: ?T` when $S <: T$; `!<S1, E1> <: !<S2, E2>` when $S_1 <: S_2 \land E_1 <: E_2$ (mutable/invariant containers require `S ≡ T`).
 4. **Callable subtyping** (via `MatchCallable`): accepts broader parameter types, returns a narrower result type, matches concrete access modes and return provenance, and stays within bounded effect/state sets.
@@ -892,7 +891,7 @@ assert(next.profile.email == "b@ril.dev" && next.profile.tags == ["core", "admin
 | Fixed shape (`E0336`, `E0312`) | Preserves record fields, tuple arity, and active sum tags of `T`; forwards the `derive` closure's effects and outer state obligations |
 
 ```ril
-nominal type Bag = []int
+type Bag []int
 let t2 = (1, "a") |> derive \mut d -> { d.0 = 2 }
 let b2 = Bag([1, 2]) |> derive \mut d -> { inner(mut d) |> mut Array::push(3) }
 assert(t2 == (2, "a") && inner(b2) == [1, 2, 3])
@@ -900,7 +899,7 @@ assert(t2 == (2, "a") && inner(b2) == [1, 2, 3])
 
 ### Generic Parameters, Defaults, and Static Kinds
 
-Declarations admit abstract type parameters (`T`), compile-time value parameters (`cap: int`), and field-mode parameters (`M: FieldMode`). Type declarations (`type`, `nominal type`, `opaque type`, `TypeFunctionExpr`) admit trailing generic defaults (`E0316` non-trailing, `E0320` forward reference; prohibited on `fn`/`meta fn`, `E0317`).
+Declarations admit abstract type parameters (`T`), compile-time value parameters (`cap: int`), and field-mode parameters (`M: FieldMode`). Type declarations (`type`, `opaque type`, `TypeFunctionExpr`) admit trailing generic defaults (`E0316` non-trailing, `E0320` forward reference; prohibited on `fn`/`meta fn`, `E0317`).
 
 ```ril
 fn add<T: int | f64>(a: T, b: T) -> T { a + b }
@@ -1020,7 +1019,7 @@ C |- e <= TypeResult ; J              type-producing result checking
 - **Structural & nominal identity (`K-EQ`)**:
   - Structural records compare equal up to field reordering when labels, types, and `FieldMode`s match.
   - Nominal, sum, and `opaque` types (`.ril` and `.d.ril`) compare by declaration identity and static argument equivalence (IEEE bits for `f64` with `-0.0 != 0.0` and NaNs agreeing; structural value equivalence for collections/records; equivalent target types for `Type<A>`).
-- **Opacity scope**: Inside its exact defining `sub` or root `.ril` file, `opaque type A = Rep` converts bidirectionally with `Rep` while keeping `A`'s distinct identity in `Type<A>` and exported interfaces. Outside that exact scope (including child/parent `sub`s), value/construction mismatch fails `E0301` and representation access fails `E0308`.
+- **Opacity scope**: Inside its exact defining `sub` or root `.ril` file, `opaque type A Rep` converts bidirectionally with `Rep` while keeping `A`'s distinct identity in `Type<A>` and exported interfaces. Outside that exact scope (including child/parent `sub`s), value/construction mismatch fails `E0301` and representation access fails `E0308`.
 
 ### Subtyping, Reception, and Callable Compatibility
 
@@ -1271,7 +1270,7 @@ Array::push(mut views, ref fixed_doc)
 `use [mut] x = expr` anchors a non-escaping resource in a block slot for the remainder of the enclosing block whose static type `T` declares an accessible `use(<fn_name>)` cleanup declaration (`E0541` otherwise).
 
 ```ril
-pub opaque type DbConn use(close) = .{ var open: bool, mut log: []str }
+pub opaque type DbConn use(close) .{ var open: bool, mut log: []str }
 
 pub fn close(new c: DbConn) @io -> () {
     let mut conn = new c
@@ -1296,7 +1295,7 @@ fn run_query() @io -> new !<int, str> {
 -- use bad_plain = 42                  -- Error [E0541]: 'int' has no 'use' cleanup declaration
 -- use var bad = acquire()             -- Error [E0532]: 'use' bindings forbid 'var'
 -- return conn                         -- Error [E0604]: 'use' binding cannot escape block
--- pub opaque type BadFiber use(fiber_close) = .{ fd: int }
+-- pub opaque type BadFiber use(fiber_close) .{ fd: int }
 -- pub fn fiber_close(new _c: BadFiber) @fiber -> () {} -- Error [E0616]: '@fiber' prohibited on cleanup
 -- fn missing_io() -> () { use _ = acquire() }          -- Error [E0612]: unhandled @io from close
 ```
@@ -1311,14 +1310,14 @@ fn run_query() @io -> new !<int, str> {
 ### Declaration Metadata Attributes
 
 Compile-time `meta(expr1, expr2)` attributes attach deeply immutable constant values (`E0814` on non-static expressions; `E0812`/`E0816` on type values or callables).
-- Permitted on `nominal type`, `opaque type`, sum, `sub`, nominal/opaque root record fields, variants, effects, and functions (`E0708` on transparent aliases, structural record fields, `use` imports/bindings, or local `let`/`var`).
+- Permitted on nominal wrapper/marker types, `opaque type`, sum, `sub`, nominal/opaque root record fields, variants, effects, and functions (`E0708` on transparent aliases, structural record fields, `use` imports/bindings, or local `let`/`var`).
 
 ```ril
-pub nominal type Route = str
-pub nominal type Role  = str
+pub type Route str
+pub type Role str
 
 meta(Route("/users"), Role("admin"))
-pub nominal type CreateUserReq = .{
+pub type CreateUserReq .{
     meta(Role("pii"))
     email: str,
 }
@@ -1357,9 +1356,9 @@ pub sub Signals {
 -- let _ = fd.internal_handle              -- Error [E0907]: foreign representation is sealed
 ```
 
-- **Bodyless `.d.ril` (`E0901`, `E0902`)**: `.d.ril` forbids function bodies, initializers, field defaults, `=` bodies on `opaque type`, and `opaque` on sum/nominal/alias declarations (`E0901`). Bodyless functions or `opaque type` in `.ril` fail `E0902` unless matching a registered built-in.
+- **Bodyless `.d.ril` (`E0901`, `E0902`)**: `.d.ril` forbids function bodies, initializers, field defaults, representation bodies on `opaque type`/nominal declarations, and `opaque` on sum/alias declarations (`E0901`). Bodyless functions or `opaque type` in `.ril` fail `E0902` unless matching a registered built-in.
 - **Sealing & signatures (`E0907`, `E0908`, `E0906`)**:
-  - Foreign `opaque type` and `nominal type` shapes cannot be constructed, unwrapped via `inner`, or accessed via fields, patterns, or introspection in `.ril` (`E0907`, taking precedence over `E0308`).
+  - Foreign `opaque type` and bodyless nominal shapes cannot be constructed, unwrapped via `inner`, or accessed via fields, patterns, or introspection in `.ril` (`E0907`, taking precedence over `E0308`).
   - Foreign signatures forbid `^mut`, `&^mut`, `&capture`, `via`/`infer`, and unannotated plain `DeclOpaqueType` parameters/returns (`E0908`).
   - `DeclLet` admits pure immutable data constants only (`E0906`); host-stateful foreign functions must declare `@io` for `absorb_panic` isolation (`E0608`).
 - **Foreign `opaque type` handle matrix** (e.g., `pub opaque type HostFd use(close)`):
@@ -1378,9 +1377,8 @@ DeclFunction    ::= { MetaAttr } [ Visibility ] "fn" ValueName [ GenericParams ]
                     "(" [ ParameterList ] ")" ReturnSpec
 DeclType        ::= DeclSumType | DeclNominalType | DeclTypeAlias | DeclOpaqueType
 DeclTypeHead    ::= { MetaAttr } [ Visibility ] "type" PascalCase [ GenericParams ]
-DeclNominalHead ::= { MetaAttr } [ Visibility ] "nominal" "type" PascalCase [ GenericParams ]
 DeclSumType     ::= DeclTypeHead [ UseCleanupClause ] "{" [ VariantDeclList ] "}"
-DeclNominalType ::= DeclNominalHead [ UseCleanupClause ]
+DeclNominalType ::= DeclTypeHead [ UseCleanupClause ]
 DeclTypeAlias   ::= DeclTypeHead "=" TypeExpression
 DeclOpaqueType  ::= { MetaAttr } [ Visibility ] "opaque" "type" PascalCase [ GenericParams ]
                     [ UseCleanupClause ]
@@ -2559,7 +2557,7 @@ The prelude predeclares two lowercase system effect labels (`@io` and `@fiber`),
 
 ```ril
 -- File: ril/prelude.ril
-pub opaque type PanicInfo = str
+pub opaque type PanicInfo str
 pub type PanicError { Panicked(PanicInfo) }
 
 pub fn panic_message(info: PanicInfo) -> str
@@ -2809,7 +2807,7 @@ type Select = \T: .{ .. }, keys: []str -> {
 
 type Model = .{ id: int, var title: str, mut rows: []int }
 type Patch = Select<Model, ["title", "rows"]> -- .{ var title: str, mut rows: []int }
-nominal type Args = .{ query: str, limit: int = 10 }
+type Args .{ query: str, limit: int = 10 }
 meta let _ = assert(Reflect::has_default(<Args>, "limit") && !Reflect::has_default(<Args>, "query"))
 meta let _ = assert(len(fields(<Args>)) == 2 && fields(<(int, str)>)[0] == (FieldMode::Let, 0))
 
@@ -2914,7 +2912,7 @@ pub fn area(r: f64) -> f64 { PI * r * r }             -- Zero '&up' needed for p
 pkg fn label_opaque(opaque: str) -> str { opaque }    -- 'pkg' is package visibility; 'opaque' is contextual
 
 pub sub UnitCircle {
-    pub opaque type Rad = f64
+    pub opaque type Rad f64
     pub fn zero() -> Rad { 0.0 }                      -- Bidirectional Rad <-> f64 inside 'UnitCircle'
     pub fn circumference() -> f64 { 2.0 * Super::PI } -- Isolated 'sub' reaches parent 'PI' via 'Super::'
 }
@@ -2935,7 +2933,7 @@ pub sub UnitCircle {
 | :--- | :--- |
 | **Executable Root (`.ril`)** | Non-`sub` entry file, unimportable (`E0208`); forbids root `pub`/`pkg` (`E0905`) and requires private root `fn main` (`E0903`, `E0904`) |
 | **Library Module (`.ril`)** | Importable module named `to_pascal_case(file_stem)`; forbids `fn main` (`E0904`). Items default to file-private (`E0201`); files with zero root `pub` items have `pkg` visibility (`E0201` outside package) |
-| **Foreign Interface (`.d.ril`)** | Bodyless foreign host declarations (`E0901` on bodies or `=` on `opaque type`); forbids `fn main` (`E0904`); nested `sub` blocks inherit `.d.ril` rules |
+| **Foreign Interface (`.d.ril`)** | Bodyless foreign host declarations (`E0901` on bodies or representations on `opaque type`/nominal declarations); forbids `fn main` (`E0904`); nested `sub` blocks inherit `.d.ril` rules |
 
 - **Inline `sub` (`[Visibility] sub Name`)**: Non-generic `PascalCase` namespace at file or `sub` top-level (`E0703` in statements, `E0702`/`E0704` in `where`, `E0203` on `sub Super`, `E0904` on `fn main`).
   - **Scope isolation**: Only the prelude is automatically in scope; `Super::` accesses enclosing file/`sub` items (`E0208` at file root); downward access requires `pub` or same-package `pkg` (`E0201`).

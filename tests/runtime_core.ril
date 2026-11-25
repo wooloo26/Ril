@@ -357,8 +357,8 @@ fn main() -> () {
 }
 
 -- @case nominal_inner_preserves_record_payloads run-pass backend=both
-nominal type Packet<T> = .{ payload: T }
-nominal type Parcel<T> = T
+type Packet<T> .{ payload: T }
+type Parcel<T> T
 fn get() -> new !<int, str> { Ok(42) }
 fn packet() -> new Packet<!<int, str>> { Packet.{ payload: get() } }
 fn parcel() -> new Parcel<!<int, str>> { Parcel(get()) }
@@ -399,7 +399,7 @@ fn main() -> () {
 }
 
 -- @case loops_can_grow_shared_recursive_data run-pass backend=both
-nominal type Node = .{ var value: int, var ^mut next: ?Node }
+type Node .{ var value: int, var ^mut next: ?Node }
 fn copy(mut target: Node, ref reader: Node) &mut -> () { target.value = reader.value }
 fn read(count: int) -> int {
     let mut tail = Node.{ value: 4, next: None }
@@ -426,7 +426,7 @@ fn read(count: int) -> int {
 fn main() -> () { assert(read(80) == 78) }
 
 -- @case callback_forwarded_chain_keeps_the_callers_tail run-pass backend=both
-nominal type Link = .{ var value: int, var ^mut next: ?Link }
+type Link .{ var value: int, var ^mut next: ?Link }
 fn build(^mut tail: Link, count: int) &mut &^mut &return(^mut tail) -> new Link {
     var ^mut head = tail
     for 0..count as i {
@@ -459,7 +459,7 @@ fn main() -> () {
 }
 
 -- @case a_cyclic_graph_can_be_cloned_compared_and_inspected run-pass backend=both
-nominal type Node = .{ var value: int, var ^mut next: ?Node }
+type Node .{ var value: int, var ^mut next: ?Node }
 fn main() -> () {
     let mut first = Node.{ value: 20, next: None }
     let mut second = Node.{ value: 22, next: None }
@@ -936,7 +936,7 @@ fn main() @io -> () {
 
 -- @case record_defaults_are_evaluated_in_order run-pass backend=both
 -- @expect-stdout 22
-nominal type Settings = .{ start: int, finish: int = start + 10 }
+type Settings .{ start: int, finish: int = start + 10 }
 fn main() @io -> () {
     let settings = Settings.{ start: 12 }
     println("{settings.finish}")
@@ -1041,9 +1041,9 @@ fn main() -> () {
 }
 
 -- @case direct_reflection_call_becomes_runtime_snapshot run-pass backend=both
-nominal type Role = str
+type Role str
 meta(Role("admin"))
-nominal type Request = .{ email: str }
+type Request .{ email: str }
 fn main() -> () {
     let roles: []Role = Reflect::attrs(<Request>)
     assert(len(roles) == 1 && inner(roles[0]) == "admin")
@@ -1051,8 +1051,8 @@ fn main() -> () {
 
 -- @case tuple_payload_accepts_tuple_or_separate_arguments run-pass backend=both
 type Shape { Rect(int, int) }
-nominal type Size = (int, int)
-nominal type Empty
+type Size (int, int)
+type Empty
 meta let STATIC_RECT = Shape::Rect((9, 2))
 fn main() -> () {
     let pair = (9, 2)
@@ -1063,13 +1063,13 @@ fn main() -> () {
 }
 
 -- @case contextual_opaque_constructor_instantiates_generic_type run-pass backend=both
-nominal type Open
-opaque type Resource<Flag> = .{ value: int }
+type Open
+opaque type Resource<Flag> .{ value: int }
 fn make() -> new Resource<Open> { Resource.{ value: 42 } }
 fn main() -> () { assert(make().value == 42) }
 
 -- @case draft_nominal_inner_projects_into_working_copy run-pass backend=both
-nominal type Bag = []int
+type Bag []int
 fn main() -> () {
     let base = Bag([1, 2])
     let next = base |> derive \mut draft -> {
@@ -1127,7 +1127,7 @@ fn main() -> () {
 
 -- @case inspection_obeys_opaque_boundaries_in_nested_values run-pass backend=both
 -- @file pkg/secret.ril
-pub opaque type Token = int
+pub opaque type Token int
 pub opaque type Packet { Hidden(int) }
 pub fn token(value: int) -> Token { value }
 pub fn packet() -> new Packet { Hidden(72) }
@@ -1317,7 +1317,7 @@ fn main() -> () {
 
 -- @case recursively_wrapping_a_complete_new_graph_preserves_snapshot_reception run-pass backend=both no-prelude
 type Cell = .{ var count: int }
-nominal type Node = .{ ^mut value: Cell, mut next: ?Node }
+type Node .{ ^mut value: Cell, mut next: ?Node }
 fn freeze(new source: Node) -> int { let snapshot = new source; snapshot.value.count }
 fn visit(action: fn(new Node) -> int, new input: Node, depth: int) -> int {
     if depth == 0 { action(new input) }

@@ -1543,7 +1543,7 @@ fn run() -> () {
 }
 
 -- @case returned_nominal_field_keeps_its_result_obligation compile-fail E0720
-nominal type Packet = .{ payload: !<int, str> }
+type Packet .{ payload: !<int, str> }
 fn get() -> new !<int, str> { Ok(1) }
 fn packet() -> new Packet { Packet.{ payload: get() } }
 fn run() -> () {
@@ -1553,8 +1553,8 @@ fn run() -> () {
 }
 
 -- @case specialized_nominal_layout_exposes_the_result_to_inner compile-pass
-nominal type Packet<T> = .{ payload: T }
-nominal type Parcel<T> = T
+type Packet<T> .{ payload: T }
+type Parcel<T> T
 fn get() -> new !<int, str> { Ok(1) }
 fn packet() -> new Packet<!<int, str>> { Packet.{ payload: get() } }
 fn parcel() -> new Parcel<!<int, str>> { Parcel(get()) }
@@ -2694,7 +2694,7 @@ fn update(swap: bool) -> () {
 }
 
 -- @case cyclic_arguments_share_a_reachable_descendant compile-fail E0523
-nominal type Node = .{ var count: int, var ^mut next: ?Node }
+type Node .{ var count: int, var ^mut next: ?Node }
 fn edit(mut left: Node, mut right: Node) &mut -> () {
     left.count += 1
     right.count += 1
@@ -2853,7 +2853,7 @@ fn update(again: bool, swap: bool) -> () {
 
 -- @case shared_chain_keeps_deep_aliases_after_the_loop compile-fail E0524
 -- @forbid E0531
-nominal type Node = .{ var value: int, var ^mut next: ?Node }
+type Node .{ var value: int, var ^mut next: ?Node }
 fn copy(mut target: Node, ref reader: Node) &mut -> () {
     target.value = reader.value
 }
@@ -2884,7 +2884,7 @@ fn run(count: int) -> int {
 -- @case snapshot_checks_follow_callback_receivers_in_recursive_data compile-fail E0535 no-prelude
 type Cell = .{ var count: int }
 type Shelf = .{ ^mut item: Cell }
-nominal type Node = .{ action: fn(new Shelf) -> int, next: ?Node }
+type Node .{ action: fn(new Shelf) -> int, next: ?Node }
 fn freeze(new source: Shelf) -> int { let snapshot = new source; snapshot.item.count }
 fn count(new source: Shelf) -> int { source.item.count }
 fn visit(node: Node, new input: Shelf) -> int {
@@ -2905,7 +2905,7 @@ fn observe() -> () {
 
 -- @case snapshot_checks_converge_when_recursive_calls_wrap_an_argument compile-fail E0535 no-prelude
 type Cell = .{ var count: int }
-nominal type Node = .{ ^mut value: Cell, mut next: ?Node }
+type Node .{ ^mut value: Cell, mut next: ?Node }
 fn freeze(new source: Node) -> int { let snapshot = new source; snapshot.value.count }
 fn visit(action: fn(new Node) -> int, new input: Node, depth: int) -> int {
     if depth == 0 { action(new input) }
@@ -2927,7 +2927,7 @@ fn observe() -> () {
 type Cell = .{ var count: int }
 type Shelf = .{ ^mut item: Cell }
 type Leaf = fn(new Shelf) -> int
-nominal type Node = .{ action: Leaf, next: ?Node }
+type Node .{ action: Leaf, next: ?Node }
 fn count(new input: Shelf) -> int { input.item.count }
 fn apply(action: fn(Node) -> int, node: Node, depth: int) -> int {
     if depth == 0 { action(node) } else { apply(action, Node.{ action: count, next: Some(node) }, depth - 1) }

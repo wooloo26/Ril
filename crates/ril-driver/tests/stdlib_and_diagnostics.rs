@@ -393,8 +393,8 @@ fn wave_b_stdlib_primitives_set_sort_first_class_and_named_args() -> Result<(), 
 #[test]
 fn wave_c_soundness_static_checks_narrowing_patterns_and_nominals() -> Result<(), String> {
     let source = r#"
-        nominal type UserId = int
-        nominal type Config = .{ host: str = "localhost", port: int = 8080 }
+        type UserId int
+        type Config .{ host: str = "localhost", port: int = 8080 }
         meta let DEFAULT_CFG = Config.{ port: 9000 }
 
         fn unwrap_copy<W |> NominalWrapper>(w: W) -> Unwrap<W> { inner(w) }
@@ -510,7 +510,7 @@ fn wave_c_soundness_static_checks_narrowing_patterns_and_nominals() -> Result<()
             Code::E0301,
         ),
         (
-            "nominal type U = .{ id: int }\nnominal type V = .{ id: int }\nfn f(u: U) -> int { let V.{ id } = u; id }\nfn main() -> () {}\n",
+            "type U .{ id: int }\ntype V .{ id: int }\nfn f(u: U) -> int { let V.{ id } = u; id }\nfn main() -> () {}\n",
             Code::E0301,
         ),
         (
@@ -673,9 +673,9 @@ fn wave_d_effects_guards_absorb_panic_and_concurrency() -> Result<(), String> {
 #[test]
 fn wave_e_introspection_type_patterns_and_parser_conformance() -> Result<(), String> {
     let source = r#"
-        nominal type Pair = (int, str)
-        nominal type Config = .{ host: str = "localhost", port: int }
-        nominal type Box<T> = .{ item: T }
+        type Pair (int, str)
+        type Config .{ host: str = "localhost", port: int }
+        type Box<T> .{ item: T }
         type Shape { Circle(f64); Rect(f64, f64); Unit }
 
         type UnwrapBox = \T -> match <T> {
@@ -805,7 +805,7 @@ fn wave_e_introspection_type_patterns_and_parser_conformance() -> Result<(), Str
             Code::E0301,
         ),
         (
-            "nominal type Cfg = .{ host: str = \"a\" }\nmeta let BAD = Reflect::has_default(<Cfg>, \"missing\")\nfn main() -> () {}\n",
+            "type Cfg .{ host: str = \"a\" }\nmeta let BAD = Reflect::has_default(<Cfg>, \"missing\")\nfn main() -> () {}\n",
             Stage::Type,
             Code::E0323,
         ),

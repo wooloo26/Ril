@@ -515,7 +515,7 @@ fn run() -> int {
 }
 
 -- @case higher_order_callback_in_a_recursive_member_checks_the_mode_pair compile-fail E0520
-nominal type Node = .{ action: fn(via Cell, via Cell) -> (), next: ?Node }
+type Node .{ action: fn(via Cell, via Cell) -> (), next: ?Node }
 fn edit(mut writer: Cell, ref reader: Cell) &mut -> () { writer.count += reader.count }
 fn combine(via left: Cell, via right: Cell) -> () { edit(mut left, ref right) }
 fn observe(via left: Cell, via right: Cell) -> () { assert(left.count == right.count) }
@@ -872,9 +872,9 @@ pub fn pack(input: Cell) &return(input) -> new []Cell { [Cell.{ count: 0 }, inpu
 
 -- @case changed_exported_member_mode_breaks_compatibility compat-fail E0552 no-prelude
 -- @baseline
-pub nominal type Endpoint = .{ port: int }
+pub type Endpoint .{ port: int }
 -- @revision
-pub nominal type Endpoint = .{ var port: int }
+pub type Endpoint .{ var port: int }
 -- ^ E0552
 
 -- @case narrower_generic_domain_breaks_compatibility compat-fail E0552 no-prelude

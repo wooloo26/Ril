@@ -48,7 +48,7 @@ fn read() -> int { answer }
 pkg let answer = 42
 
 -- @case public_cleanup_cannot_expose_package_item compile-fail E0910 unit=lib
-pub opaque type Handle use(cleanup) = .{ id: int }
+pub opaque type Handle use(cleanup) .{ id: int }
 -- ^ E0910
 pkg fn cleanup(new _handle: Handle) -> () {}
 
@@ -88,7 +88,7 @@ pub fn leak() -> new Hidden { Hidden.{ value: 1 } }
 
 -- @case opaque_hides_representation compile-pass unit=lib
 type Hidden = .{ value: int }
-pub opaque type Wrapper = Hidden
+pub opaque type Wrapper Hidden
 
 -- @case helper_capture_before_initialization compile-fail E0207 unit=lib
 fn count() -> int {
@@ -160,7 +160,7 @@ pub fn yield_now() @fiber -> ()
 -- @file pkg/main.ril
 use ril/fiber
 -- @file ril/fiber.ril
-pub opaque type Scope = int
+pub opaque type Scope int
 -- ^ E0909
 
 -- @case registered_prelude_primitive_can_be_bodyless compile-pass unit=lib

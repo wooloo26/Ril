@@ -129,7 +129,7 @@ fn main() @io -> () { println("{Fiber::run(\-> pipeline())}") }
 -- @expect-stdout cleanup
 -- @expect-stdout done
 use ril/fiber
-opaque type Resource use(close) = .{ id: int }
+opaque type Resource use(close) .{ id: int }
 fn close(new resource: Resource) @io -> () { println("cleanup") }
 fn main() @io -> () {
     Fiber::run \-> Fiber::scope \mut s -> {

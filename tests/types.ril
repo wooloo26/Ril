@@ -44,13 +44,13 @@ let x = 1.0e999999
 -- ^ E0326
 
 -- @case nominal_wrappers_are_distinct compile-fail E0305
-nominal type Left = int
-nominal type Right = int
+type Left int
+type Right int
 fn invalid() -> new Left { Right(1) }
 -- ^ E0305
 
 -- @case opaque_converts_inside_scope compile-pass
-opaque type Weight = int
+opaque type Weight int
 fn wrap(n: int) -> Weight { n }
 fn unwrap(w: Weight) -> int { w }
 
@@ -62,7 +62,7 @@ fn read(item: Vault::Token) -> int { item.code }
 -- @forbid E0301, E0336
 fn main() -> () {}
 -- @file pkg/vault.ril
-pub opaque type Token = .{ code: int }
+pub opaque type Token .{ code: int }
 
 -- @case foreign_member_has_priority compile-fail E0907 unit=bin
 -- @file pkg/main.ril
@@ -177,7 +177,7 @@ type Structural = .{ field: int = 4 }
 -- ^ E0359
 
 -- @case field_default_cannot_read_later_field compile-fail E0408
-nominal type Backward = .{ first: int = last, last: int = 4 }
+type Backward .{ first: int = last, last: int = 4 }
 -- ^ E0408
 
 -- @case defaults_are_pure compile-fail E0409
@@ -245,7 +245,7 @@ where
 fn escaped() -> Hidden
 -- ^ E0315
 where
-    nominal type Hidden = int
+    type Hidden int
 {
     Hidden(1)
 }
@@ -255,7 +255,7 @@ fn escaped() -> int {
     return Hidden(1)
     -- ^ E0315
 where
-    nominal type Hidden = int
+    type Hidden int
 }
 
 -- @case public_signature_can_desugar_a_local_alias compile-pass unit=lib
@@ -290,7 +290,7 @@ fn copied() -> new fn() -> int {
 
 -- @case clone_rejects_endpoints_through_nested_generic_payloads compile-fail E0301
 use ril/channel
-nominal type Box<T> = .{ item: T }
+type Box<T> .{ item: T }
 type Message { Empty; Full(Box<Box<Channel::Sender<int>>>) }
 fn duplicate(value: Message) -> new Message {
     clone(value)
@@ -317,7 +317,7 @@ fn main() -> () {}
 pub opaque type Port
 
 -- @case clone_accepts_nested_ordinary_payloads compile-pass
-nominal type Box<T> = .{ item: T }
+type Box<T> .{ item: T }
 type Message { Empty; Full(Box<Box<int>>) }
 fn duplicate(value: Message) -> new Message { clone(value) }
 
@@ -329,14 +329,14 @@ fn duplicate<T>(value: T) -> new T {
 
 -- @case clone_requires_proof_for_every_member_of_a_generic_domain compile-fail E0301
 use ril/channel
-nominal type Parcel<T> = .{ item: T }
+type Parcel<T> .{ item: T }
 fn duplicate<T: int | Channel::Sender<int>>(value: Parcel<T>) -> new Parcel<T> {
     clone(value)
     -- ^ E0301
 }
 
 -- @case clone_requires_a_proven_member_type_in_a_generic_graph compile-fail E0301
-nominal type Parcel<T> = .{ item: T }
+type Parcel<T> .{ item: T }
 fn duplicate<T>(value: Parcel<T>) -> new Parcel<T> {
     clone(value)
     -- ^ E0301

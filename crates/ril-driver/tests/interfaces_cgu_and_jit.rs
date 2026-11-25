@@ -58,12 +58,12 @@ fn binary_rili_v32_roundtrip_and_tamper_detection() -> Result<(), String> {
 #[test]
 fn opaque_type_dual_hash_early_cutoff_and_codegen_invalidation() -> Result<(), String> {
     let v1 = lib_package(
-        "pub opaque type Token = .{ id: int }\n\
+        "pub opaque type Token .{ id: int }\n\
          pub fn make(n: int) -> new Token { Token.{ id: n } }\n\
          pub fn read(t: Token) -> int { t.id }\n",
     );
     let v2 = lib_package(
-        "pub opaque type Token = .{ id: int, tag: str }\n\
+        "pub opaque type Token .{ id: int, tag: str }\n\
          pub fn make(n: int) -> new Token { Token.{ id: n, tag: \"v2\" } }\n\
          pub fn read(t: Token) -> int { t.id }\n",
     );

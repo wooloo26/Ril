@@ -155,7 +155,7 @@ impl Parser<'_> {
             self.bump();
         }
         let declaration = matches!(self.text(), "fn" | "type" | "eff" | "sub")
-            || matches!(self.text(), "opaque" | "nominal") && self.next_text() == "type";
+            || self.is("opaque") && self.next_text() == "type";
         if context == Context::Block && declaration {
             return Err(self.error(
                 Code::E0703,
@@ -195,14 +195,10 @@ impl Parser<'_> {
                 }
                 StmtKind::Function(Box::new(self.function(meta, false)?))
             }
-            "type" => StmtKind::Type(Box::new(self.type_decl(TypeKind::Alias)?)),
+            "type" => StmtKind::Type(Box::new(self.type_decl(false)?)),
             "opaque" if self.next_text() == "type" => {
                 self.bump();
-                StmtKind::Type(Box::new(self.type_decl(TypeKind::Opaque)?))
-            }
-            "nominal" if self.next_text() == "type" => {
-                self.bump();
-                StmtKind::Type(Box::new(self.type_decl(TypeKind::Nominal)?))
+                StmtKind::Type(Box::new(self.type_decl(true)?))
             }
             "sub" => {
                 self.bump();
@@ -475,7 +471,7 @@ impl Parser<'_> {
         Ok(obligations)
     }
 
-    fn type_decl(&mut self, kind: TypeKind) -> Result<TypeDecl> {
+    fn type_decl(&mut self, opaque: bool) -> Result<TypeDecl> {
         self.require("type")?;
         let name = self.name(Some(Word::Pascal), false)?;
         let generics = self.generics()?;
@@ -492,16 +488,30 @@ impl Parser<'_> {
             None
         };
         let foreign = self.kind == FileKind::Foreign;
-        let definition = if self.eat("=") {
-            if foreign && kind != TypeKind::Alias {
+        let (kind, definition) = if self.eat("=") {
+            if opaque {
+                if foreign {
+                    return Err(self.error(
+                        Code::E0901,
+                        self.last,
+                        "foreign type representation is sealed",
+                    ));
+                }
                 return Err(self.error(
-                    Code::E0901,
+                    Code::E0120,
                     self.last,
-                    "foreign type representation is sealed",
+                    "opaque type does not use '='; write 'opaque type Name Underlying'",
+                ));
+            }
+            if let Some(ref cleanup_name) = cleanup {
+                return Err(self.error(
+                    Code::E0120,
+                    cleanup_name.span,
+                    "type alias cannot declare a use cleanup clause",
                 ));
             }
             self.skip_lines();
-            if self.eat("\\") {
+            let definition = if self.eat("\\") {
                 if foreign {
                     return Err(self.error(
                         Code::E0901,
@@ -548,36 +558,11 @@ impl Parser<'_> {
                 self.skip_lines();
                 TypeDefinition::Function(params, self.expr()?)
             } else {
-                if matches!(self.text(), "@" | "&") {
-                    return Err(self.error(
-                        if self.is("@") {
-                            Code::E0330
-                        } else {
-                            Code::E0331
-                        },
-                        self.current().span,
-                        "effect and state clauses cannot be used as data aliases",
-                    ));
-                }
-                let ty = self.ty()?;
-                if matches!(self.text(), "@" | "&") {
-                    return Err(self.error(
-                        Code::E0613,
-                        self.current().span,
-                        "type alias cannot carry effect or state clauses",
-                    ));
-                }
-                if self.is("|") {
-                    return Err(self.error(
-                        Code::E0318,
-                        self.current().span,
-                        "untagged union is not a data type",
-                    ));
-                }
-                TypeDefinition::Data(ty)
-            }
+                self.data_type_definition()?
+            };
+            (TypeKind::Alias, definition)
         } else if self.is("{") {
-            if foreign && kind == TypeKind::Opaque {
+            if foreign && opaque {
                 return Err(self.error(
                     Code::E0901,
                     self.current().span,
@@ -630,12 +615,35 @@ impl Parser<'_> {
                 }
             }
             self.close("}")?;
-            TypeDefinition::Sum(variants)
-        } else if kind != TypeKind::Alias {
-            TypeDefinition::Opaque
+            let kind = if opaque {
+                TypeKind::Opaque
+            } else {
+                TypeKind::Alias
+            };
+            (kind, TypeDefinition::Sum(variants))
+        } else if matches!(self.current().kind, Kind::Newline | Kind::Eof)
+            || matches!(self.text(), ";" | "}")
+        {
+            let kind = if opaque {
+                TypeKind::Opaque
+            } else {
+                TypeKind::Nominal
+            };
+            (kind, TypeDefinition::Opaque)
         } else {
-            self.require("=")?;
-            ril_source::ice!("accepted absent type definition");
+            if foreign {
+                return Err(self.error(
+                    Code::E0901,
+                    self.current().span,
+                    "foreign type representation is sealed",
+                ));
+            }
+            let kind = if opaque {
+                TypeKind::Opaque
+            } else {
+                TypeKind::Nominal
+            };
+            (kind, self.data_type_definition()?)
         };
         Ok(TypeDecl {
             name,
@@ -644,6 +652,36 @@ impl Parser<'_> {
             cleanup,
             definition,
         })
+    }
+
+    fn data_type_definition(&mut self) -> Result<TypeDefinition> {
+        if matches!(self.text(), "@" | "&") {
+            return Err(self.error(
+                if self.is("@") {
+                    Code::E0330
+                } else {
+                    Code::E0331
+                },
+                self.current().span,
+                "effect and state clauses cannot be used as data aliases",
+            ));
+        }
+        let ty = self.ty()?;
+        if matches!(self.text(), "@" | "&") {
+            return Err(self.error(
+                Code::E0613,
+                self.current().span,
+                "type alias cannot carry effect or state clauses",
+            ));
+        }
+        if self.is("|") {
+            return Err(self.error(
+                Code::E0318,
+                self.current().span,
+                "untagged union is not a data type",
+            ));
+        }
+        Ok(TypeDefinition::Data(ty))
     }
 
     fn effect(&mut self) -> Result<StmtKind> {

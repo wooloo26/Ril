@@ -12,7 +12,7 @@ fn main() -> () { let _ = shift(-1) }
 -- @case cleanup_runs_in_reverse_order run-pass backend=both
 -- @expect-stdout second
 -- @expect-stdout first
-opaque type Resource use(close) = .{ message: str }
+opaque type Resource use(close) .{ message: str }
 fn acquire(message: str) -> new Resource { Resource.{ message } }
 fn close(new resource: Resource) @io -> () { println(resource.message) }
 fn main() @io -> () {
@@ -22,7 +22,7 @@ fn main() @io -> () {
 
 -- @case panic_runs_cleanup run-panic "failure" backend=both
 -- @expect-stdout cleanup
-opaque type Resource use(close) = .{ id: int }
+opaque type Resource use(close) .{ id: int }
 fn close(new resource: Resource) @io -> () { println("cleanup") }
 fn main() @io -> () {
     use resource = Resource.{ id: 1 }
@@ -33,7 +33,7 @@ fn main() @io -> () {
 -- @expect-stdout second
 -- @expect-stdout first
 eff Finalize { fn report(message: str) -> () }
-opaque type Resource use(close) = .{ message: str }
+opaque type Resource use(close) .{ message: str }
 fn close(new resource: Resource) @Finalize -> () { Finalize::report(resource.message) }
 fn main() @io -> () {
     with Finalize::report = \message: str -> println(message)
@@ -43,7 +43,7 @@ fn main() @io -> () {
 }
 
 -- @case double_panic_aborts run-abort backend=both
-opaque type Bomb use(detonate) = .{ id: int }
+opaque type Bomb use(detonate) .{ id: int }
 fn detonate(new _b: Bomb) -> () { panic("second") }
 fn main() -> () {
     let outcome = absorb_panic \-> {
@@ -412,7 +412,7 @@ fn main() -> () {
 -- @case aborted_draft_dispatches_body_and_cleanup_effects run-panic "aborted draft" backend=both
 -- @expect-stdout 5:8
 eff Report { fn emit(value: int) -> () }
-opaque type Event use(record) = .{ value: int }
+opaque type Event use(record) .{ value: int }
 fn record(new event: Event) @Report -> () { Report::emit(event.value) }
 fn main() @io -> () {
     with Report::emit = \value: int -> {
@@ -443,7 +443,7 @@ fn main() -> () {
 }
 
 -- @case mutable_cleanup_changes_the_callers_resource run-pass backend=both
-opaque type Handle use(close) = .{ var id: int }
+opaque type Handle use(close) .{ var id: int }
 fn close(mut handle: Handle) &mut -> () { handle.id = 42 }
 fn scope(mut handle: Handle) &mut -> () {
     use scoped = handle
@@ -457,7 +457,7 @@ fn main() -> () {
 }
 
 -- @case draft_inner_writes_nominal_tuple_coordinates run-pass backend=both
-nominal type Pair = (int, int)
+type Pair (int, int)
 fn main() -> () {
     let base = Pair(1, 2)
     let updated = derive(base) \mut draft -> {
