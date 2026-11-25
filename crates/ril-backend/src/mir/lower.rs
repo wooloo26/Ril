@@ -54,6 +54,7 @@ pub(super) fn lower(typed: &TypedProgram, analysis: &Analysis) -> Result<Program
         named_index: HashMap::new(),
         ctor_index: HashMap::new(),
         closure_index: HashMap::new(),
+        used_symbols: HashSet::new(),
         effect_ops: HashMap::new(),
         top_level_fns: collect_top_level_functions(typed),
         boxed: captured_slots(typed),
@@ -117,6 +118,7 @@ struct Lowering<'a> {
     named_index: HashMap<DefinitionId, Vec<FunctionId>>,
     ctor_index: HashMap<(DefinitionId, usize), FunctionId>,
     closure_index: HashMap<(FileId, ExprId), Vec<FunctionId>>,
+    used_symbols: HashSet<String>,
     effect_ops: HashMap<String, u64>,
     top_level_fns: HashSet<DefinitionId>,
     boxed: BTreeSet<DefinitionId>,
@@ -244,11 +246,81 @@ impl<'a> Lowering<'a> {
         })
     }
 
+    fn mangle_symbol(
+        &mut self,
+        kind: &str,
+        name: &str,
+        arity: usize,
+        types: &BTreeMap<DefinitionId, Ty>,
+        statics: &BTreeMap<DefinitionId, Value>,
+        captures: &[DefinitionId],
+    ) -> String {
+        use std::fmt::Write as _;
+        let mut canonical = String::new();
+        let _ = write!(canonical, "{kind}\0{name}\0arity={arity}");
+        for (def, ty) in types {
+            let _ = write!(
+                canonical,
+                "\0T:{}={}",
+                self.typed.hir.definition(*def).name.value,
+                ty.qualified_display(&self.typed.hir)
+            );
+        }
+        for (def, val) in statics {
+            let _ = write!(
+                canonical,
+                "\0S:{}={val:?}",
+                self.typed.hir.definition(*def).name.value
+            );
+        }
+        for cap in captures {
+            let def = self.typed.hir.definition(*cap);
+            let _ = write!(canonical, "\0C:{}@{}", def.name.value, def.name.span.start);
+        }
+        let mut h1: u64 = 0xcbf2_9ce4_8422_2325;
+        let mut h2: u64 = 0x8422_2325_cbf2_9ce4;
+        for &byte in canonical.as_bytes() {
+            h1 ^= u64::from(byte);
+            h1 = h1.wrapping_mul(0x0100_0000_01b3);
+            h2 = h2.wrapping_mul(0x0100_0000_01b3);
+            h2 ^= u64::from(byte).wrapping_add(0x9e37_79b9);
+        }
+        let mut sanitized = String::new();
+        let mut prev_underscore = false;
+        for ch in name.chars() {
+            if ch.is_ascii_alphanumeric() {
+                sanitized.push(ch);
+                prev_underscore = false;
+            } else if !prev_underscore && !sanitized.is_empty() {
+                sanitized.push('_');
+                prev_underscore = true;
+            }
+            if sanitized.len() >= 48 {
+                break;
+            }
+        }
+        let trimmed = sanitized.trim_matches('_');
+        let stem = if trimmed.is_empty() { "fn" } else { trimmed };
+        let base = format!("_Ril_{stem}_{h1:08x}{h2:08x}");
+        if self.used_symbols.insert(base.clone()) {
+            return base;
+        }
+        let mut suffix = 2usize;
+        loop {
+            let candidate = format!("{base}__{suffix}");
+            if self.used_symbols.insert(candidate.clone()) {
+                return candidate;
+            }
+            suffix += 1;
+        }
+    }
+
     fn function(&mut self, work: Work) -> Result<Function> {
-        let (file, name, body, params, guards, captures, types, statics) = match work {
+        let (kind_tag, file, name, body, params, guards, captures, types, statics) = match work {
             Work::Constructor(id, arity) => {
                 let def = self.typed.hir.definition(id);
                 (
+                    "ctor",
                     def.name.span.file,
                     self.typed.hir.export_name(id),
                     NativeBody::Constructor(&def.name.value, arity),
@@ -269,6 +341,7 @@ impl<'a> Lowering<'a> {
                     NativeBody::Foreign(self.foreign(id)?)
                 };
                 (
+                    "fn",
                     f.name.span.file,
                     self.typed.hir.export_name(id),
                     body,
@@ -296,6 +369,7 @@ impl<'a> Lowering<'a> {
                     _ => return Err(Diagnostic::unsupported("invalid closure body")),
                 };
                 (
+                    "closure",
                     file,
                     format!(
                         "{}:closure@{}",
@@ -317,11 +391,13 @@ impl<'a> Lowering<'a> {
             NativeBody::Constructor(_, arity) => arity,
             _ => params.len(),
         };
+        let symbol = self.mangle_symbol(kind_tag, &name, arity, &types, &statics, &captures);
         let mut builder = Builder {
             global: self,
             file,
             function: Function {
                 name,
+                symbol,
                 arity,
                 registers: 0,
                 reg_types: Vec::new(),

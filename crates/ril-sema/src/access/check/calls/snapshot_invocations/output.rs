@@ -406,7 +406,7 @@ impl Analyzer<'_> {
                             provider,
                             access: origin.mode,
                             new: origin.new,
-                            borrowed: origin.call_scoped_access,
+                            call_scoped: origin.call_scoped_access,
                             forwarded: origin.inherits_mode,
                             detached: origin.detached_snapshot,
                         },
@@ -491,7 +491,7 @@ impl Analyzer<'_> {
         let mut value = Datum::source(source.unwrap_or(local), origin.access, origin.new);
         for root in &mut value.roots {
             root.snapshot_provider = provider;
-            root.call_scoped_access = origin.borrowed;
+            root.call_scoped_access = origin.call_scoped;
             root.inherits_mode = origin.forwarded;
             root.detached_snapshot = origin.detached;
             root.storage_read = storage_read.clone();

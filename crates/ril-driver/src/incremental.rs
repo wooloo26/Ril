@@ -120,6 +120,7 @@ pub(crate) struct TypeKey {
 #[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize)]
 pub(crate) struct MirKey {
     pub(crate) access: TypeKey,
+    pub(crate) codegen_hashes: Vec<(PathBuf, String)>,
     pub(crate) options: CompileOptions,
 }
 

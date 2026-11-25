@@ -2291,7 +2291,8 @@ pub fn total(via a: Item, via b: Item, via c: Item, via d: Item, via e: Item,
     assert_eq!(encoded, interface.encode().unwrap());
     assert!(encoded.len() < 10_000);
 
-    let mut wire: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
+    let json_encoded = interface.encode_json().unwrap();
+    let mut wire: serde_json::Value = serde_json::from_slice(&json_encoded).unwrap();
     let domain = wire
         .pointer_mut("/functions/pkg~1catalog.ril::total/domain")
         .unwrap();
@@ -2347,7 +2348,7 @@ fn expanded_via_interfaces_keep_their_hash_and_compatibility() {
             .to_vec(),
     );
     assert!(Driver.analyze(&client).is_ok());
-    let republished = Driver.interface(&client).unwrap().encode().unwrap();
+    let republished = Driver.interface(&client).unwrap().encode_json().unwrap();
     let republished: serde_json::Value = serde_json::from_slice(&republished).unwrap();
     let functions = republished["functions"].as_object().unwrap();
     assert!(
@@ -2374,7 +2375,13 @@ fn interface_roundtrip_is_stable_and_detects_corruption() {
     let encoded = interface.encode().unwrap();
     let readback = Interface::decode(&encoded).unwrap();
     assert_eq!(encoded, readback.encode().unwrap());
-    let text = String::from_utf8(encoded).unwrap();
+    let mut corrupt_bin = encoded.clone();
+    if let Some(last) = corrupt_bin.last_mut() {
+        *last ^= 0xff;
+    }
+    assert!(Interface::decode(&corrupt_bin).is_err());
+
+    let text = String::from_utf8(interface.encode_json().unwrap()).unwrap();
     let other_version = text.replace(
         &format!("\"format_version\": {FORMAT_VERSION}"),
         "\"format_version\": 0",
@@ -2748,7 +2755,7 @@ fn exported_summaries_and_via_domains_agree_with_lean() {
                     provider: None,
                     access: Access::Immutable,
                     new: false,
-                    borrowed: false,
+                    call_scoped: false,
                     forwarded: false,
                     detached: false,
                 },
@@ -2772,7 +2779,7 @@ fn exported_summaries_and_via_domains_agree_with_lean() {
             mode: Some(Input::Plain),
             whole_graph: false,
             graph: SnapshotGraph {
-                owned: false,
+                new_root: false,
                 environment: false,
                 replaced: Vec::new(),
                 members: Vec::new(),
@@ -2780,7 +2787,7 @@ fn exported_summaries_and_via_domains_agree_with_lean() {
                     source: None,
                     access: Access::Immutable,
                     new: false,
-                    borrowed: false,
+                    call_scoped: false,
                     forwarded: false,
                     detached: false,
                     provider: Some(provider),
@@ -2948,7 +2955,7 @@ fn exported_summaries_and_via_domains_agree_with_lean() {
     };
     fn wire_snapshot_origin(root: &SnapshotOrigin) -> Value {
         json!({
-            "shape": [&json!(root.source), &json!(root.access), &json!(root.new), &json!(root.borrowed), &json!(root.forwarded), &json!(root.detached)],
+            "shape": [&json!(root.source), &json!(root.access), &json!(root.new), &json!(root.call_scoped), &json!(root.forwarded), &json!(root.detached)],
             "provider": root.provider,
         })
     }
@@ -2985,7 +2992,7 @@ fn exported_summaries_and_via_domains_agree_with_lean() {
     ) {
         let roots: Vec<_> = graph.roots.iter().map(wire_snapshot_origin).collect();
         nodes.push(json!({
-            "shape": [&json!(path), &json!(graph.owned), &json!(graph.environment), &json!(graph.replaced)],
+            "shape": [&json!(path), &json!(graph.new_root), &json!(graph.environment), &json!(graph.replaced)],
             "roots": roots,
         }));
         for (key, child) in &graph.members {

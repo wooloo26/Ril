@@ -167,7 +167,8 @@ pub struct SnapshotArgument {
 
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 pub struct SnapshotGraph {
-    pub owned: bool,
+    #[serde(alias = "owned")]
+    pub new_root: bool,
     pub environment: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub replaced: Vec<Vec<Coordinate>>,
@@ -180,7 +181,8 @@ pub struct SnapshotOrigin {
     pub source: Option<ModeAxis>,
     pub access: Access,
     pub new: bool,
-    pub borrowed: bool,
+    #[serde(alias = "borrowed")]
+    pub call_scoped: bool,
     pub forwarded: bool,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub detached: bool,

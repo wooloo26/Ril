@@ -331,7 +331,7 @@ fn arguments_subsume(
 }
 
 fn graphs_subsume(old: &SnapshotGraph, new: &SnapshotGraph, pairs: &ProviderPairs) -> bool {
-    old.owned == new.owned
+    old.new_root == new.new_root
         && old.environment == new.environment
         && old.replaced == new.replaced
         && new.roots.iter().all(|root| {
@@ -351,7 +351,7 @@ fn origins_subsume(old: &SnapshotOrigin, new: &SnapshotOrigin, pairs: &ProviderP
     old.source == new.source
         && old.access == new.access
         && old.new == new.new
-        && old.borrowed == new.borrowed
+        && old.call_scoped == new.call_scoped
         && old.forwarded == new.forwarded
         && old.detached == new.detached
         && match (old.provider, new.provider) {

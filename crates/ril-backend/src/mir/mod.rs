@@ -181,6 +181,13 @@ pub struct Program {
     pub(crate) suspend_at_entry: bool,
 }
 
+impl Program {
+    /// Returns the deterministic canonical linker symbols of all lowered MIR functions.
+    pub fn function_symbols(&self) -> Vec<&str> {
+        self.functions.iter().map(|f| f.symbol.as_str()).collect()
+    }
+}
+
 /// The source declaration and ABI of a host callback used by native code.
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct ForeignImport {
@@ -199,6 +206,7 @@ pub enum ForeignAbi {
 #[derive(Debug)]
 pub(crate) struct Function {
     pub(crate) name: String,
+    pub(crate) symbol: String,
     pub(crate) arity: usize,
     pub(crate) registers: usize,
     pub(crate) reg_types: Vec<MirTy>,

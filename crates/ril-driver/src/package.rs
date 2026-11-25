@@ -91,24 +91,187 @@ pub fn infer_unit(path: &Path) -> Unit {
     }
 }
 
+/// Parsed subset of a `ril.toml` package manifest.
+#[derive(Clone, Debug, Default)]
+pub struct PackageManifest {
+    pub name: Option<String>,
+    pub entry: Option<PathBuf>,
+    pub dependencies: BTreeMap<String, PathBuf>,
+}
+
+fn unquote_toml_string(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if let Some(inner) = trimmed.strip_prefix('"').and_then(|s| s.strip_suffix('"')) {
+        Some(inner.replace("\\\"", "\""))
+    } else {
+        trimmed
+            .strip_prefix('\'')
+            .and_then(|s| s.strip_suffix('\''))
+            .map(str::to_owned)
+    }
+}
+
+/// Parse a `ril.toml` manifest (`[package]` and `[dependencies]` sections).
+pub fn parse_manifest(text: &str) -> Result<PackageManifest, String> {
+    let mut manifest = PackageManifest::default();
+    let mut section = String::new();
+    for (line_no, raw_line) in text.lines().enumerate() {
+        let line = raw_line.split('#').next().unwrap_or("").trim();
+        if line.is_empty() {
+            continue;
+        }
+        if let Some(header) = line.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
+            section = header.trim().to_owned();
+            continue;
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            return Err(format!("ril.toml:{}: expected `key = value`", line_no + 1));
+        };
+        let key = key.trim();
+        let value = value.trim();
+        match section.as_str() {
+            "package" => match key {
+                "name" => {
+                    manifest.name = Some(unquote_toml_string(value).ok_or_else(|| {
+                        format!("ril.toml:{}: expected string for `name`", line_no + 1)
+                    })?);
+                }
+                "entry" => {
+                    manifest.entry = Some(PathBuf::from(unquote_toml_string(value).ok_or_else(
+                        || format!("ril.toml:{}: expected string for `entry`", line_no + 1),
+                    )?));
+                }
+                _ => {}
+            },
+            "dependencies" => {
+                let dep_path = if let Some(s) = unquote_toml_string(value) {
+                    s
+                } else if let Some(inner) =
+                    value.strip_prefix('{').and_then(|s| s.strip_suffix('}'))
+                {
+                    let mut found = None;
+                    for pair in inner.split(',') {
+                        if let Some((k, v)) = pair.split_once('=')
+                            && k.trim() == "path"
+                        {
+                            found = unquote_toml_string(v);
+                        }
+                    }
+                    found.ok_or_else(|| {
+                        format!(
+                            "ril.toml:{}: dependency `{key}` requires `path = \"...\"`",
+                            line_no + 1
+                        )
+                    })?
+                } else {
+                    return Err(format!(
+                        "ril.toml:{}: invalid dependency `{key}`",
+                        line_no + 1
+                    ));
+                };
+                manifest
+                    .dependencies
+                    .insert(key.to_owned(), PathBuf::from(dep_path));
+            }
+            _ => {}
+        }
+    }
+    Ok(manifest)
+}
+
+fn find_manifest(start: &Path) -> Option<(PathBuf, PackageManifest)> {
+    for dir in start.ancestors() {
+        let candidate = dir.join("ril.toml");
+        if candidate.is_file() {
+            let text = fs::read_to_string(&candidate).ok()?;
+            let manifest = parse_manifest(&text).ok()?;
+            return Some((dir.to_owned(), manifest));
+        }
+    }
+    None
+}
+
+fn resolve_dep_root(base_dir: &Path, raw: &Path) -> PathBuf {
+    let joined = base_dir.join(raw);
+    let resolved = joined.canonicalize().unwrap_or(joined);
+    let pkg_sub = resolved.join("pkg");
+    if pkg_sub.is_dir() {
+        return pkg_sub;
+    }
+    let src_sub = resolved.join("src");
+    if src_sub.is_dir() {
+        return src_sub;
+    }
+    resolved
+}
+
 pub fn load_package(entry: &Path, unit: Unit) -> Result<VirtualPackage, String> {
-    let entry = entry
+    let mut entry = entry
         .canonicalize()
         .map_err(|err| format!("{}: {err}", entry.display()))?;
-    let package_dir = entry
+    let mut manifest_info: Option<(PathBuf, PackageManifest)> = None;
+    if entry.is_dir() {
+        let toml_path = entry.join("ril.toml");
+        let text = fs::read_to_string(&toml_path)
+            .map_err(|err| format!("{}: {err}", toml_path.display()))?;
+        let manifest = parse_manifest(&text)?;
+        let rel = manifest
+            .entry
+            .clone()
+            .unwrap_or_else(|| PathBuf::from("src/main.ril"));
+        let dir = entry;
+        entry = dir
+            .join(&rel)
+            .canonicalize()
+            .map_err(|err| format!("{}: {err}", dir.join(&rel).display()))?;
+        manifest_info = Some((dir, manifest));
+    } else if entry.file_name().is_some_and(|name| name == "ril.toml") {
+        let dir = entry
+            .parent()
+            .ok_or("ril.toml needs a parent directory")?
+            .to_owned();
+        let text =
+            fs::read_to_string(&entry).map_err(|err| format!("{}: {err}", entry.display()))?;
+        let manifest = parse_manifest(&text)?;
+        let rel = manifest
+            .entry
+            .clone()
+            .unwrap_or_else(|| PathBuf::from("src/main.ril"));
+        entry = dir
+            .join(&rel)
+            .canonicalize()
+            .map_err(|err| format!("{}: {err}", dir.join(&rel).display()))?;
+        manifest_info = Some((dir, manifest));
+    } else if let Some(parent) = entry.parent() {
+        manifest_info = find_manifest(parent);
+    }
+
+    let package_dir: PathBuf = entry
         .ancestors()
         .skip(1)
         .find(|parent| parent.file_name().is_some_and(|name| name == "pkg"))
-        .or_else(|| entry.parent())
+        .map(Path::to_path_buf)
+        .or_else(|| {
+            manifest_info.as_ref().and_then(|(dir, _)| {
+                let src = dir.join("src");
+                entry.starts_with(&src).then_some(src)
+            })
+        })
+        .or_else(|| entry.parent().map(Path::to_path_buf))
         .ok_or("source path needs a parent directory")?;
     let local = entry
-        .strip_prefix(package_dir)
+        .strip_prefix(&package_dir)
         .map_err(|err| err.to_string())?;
     let mut package = VirtualPackage::new(unit);
     package.entry = Path::new("pkg").join(local);
-    let mut mounts = BTreeMap::from([("pkg".to_owned(), package_dir.to_owned())]);
+    let mut mounts = BTreeMap::from([("pkg".to_owned(), package_dir.clone())]);
+    if let Some((manifest_dir, manifest)) = &manifest_info {
+        for (dep_name, dep_path) in &manifest.dependencies {
+            mounts.insert(dep_name.clone(), resolve_dep_root(manifest_dir, dep_path));
+        }
+    }
     let mut bundled = BTreeMap::new();
-    let parent = package_dir.parent().unwrap_or(package_dir).to_owned();
+    let parent = package_dir.parent().unwrap_or(&package_dir).to_owned();
     let mut pending = vec![(package.entry.clone(), entry)];
     let mut visited = BTreeSet::new();
     while let Some((path, source_path)) = pending.pop() {

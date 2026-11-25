@@ -2,11 +2,12 @@ use std::{collections::BTreeMap, path::Path};
 
 use ril_base::{
     diag::{Code, Diagnostic},
-    span::Span,
+    span::{FileId, SourceFile, Span},
 };
 use ril_frontend::{
     hir::{DefinitionKind, Program, Resolution},
-    parser::FileKind,
+    lexer,
+    parser::{self, FileKind},
     syntax::{
         Ast, GenericArg, GenericParam, StmtId, StmtKind, Type, TypeDefinition, TypeId, TypeKind,
         Variant, Visibility,
@@ -20,14 +21,18 @@ use crate::{
     ty::{Ty, TypedProgram},
 };
 
+const BINARY_MAGIC: &[u8; 5] = b"RILI\x00";
 const VIA_GRAPH_VERSION: u32 = 31;
-pub const FORMAT_VERSION: u32 = VIA_GRAPH_VERSION;
+const BINARY_FORMAT_VERSION: u32 = 32;
+pub const FORMAT_VERSION: u32 = BINARY_FORMAT_VERSION;
 const OLDEST_FORMAT_VERSION: u32 = 12;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Interface {
     pub format_version: u32,
     pub abi_hash: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub codegen_abi_hash: String,
     pub functions: BTreeMap<String, Export>,
     pub declarations: BTreeMap<String, Declaration>,
     pub modules: BTreeMap<String, String>,
@@ -232,9 +237,33 @@ impl Interface {
                 ))
             })
             .collect();
+        let mut opaque_layouts = BTreeMap::new();
+        for (id, def) in program.hir.definitions() {
+            if def.visibility == Visibility::Private
+                || program.hir.is_stdlib_file(def.name.span.file)
+            {
+                continue;
+            }
+            let Some(stmt) = def.stmt else {
+                continue;
+            };
+            let ast = &program.hir.file(def.name.span.file).ast;
+            if let StmtKind::Type(decl) = &ast.stmt(stmt).value.kind
+                && decl.kind == TypeKind::Opaque
+            {
+                let layout = match &decl.definition {
+                    TypeDefinition::Data(ty) => type_shape(program, ast, *ty),
+                    TypeDefinition::Opaque => "foreign".into(),
+                    TypeDefinition::Function(_, body) => fingerprint(program, ast.expr(*body).span),
+                    TypeDefinition::Sum(variants) => format!("sum:{}", variants.len()),
+                };
+                opaque_layouts.insert(program.hir.export_name(id), layout);
+            }
+        }
         let mut result = Self {
             format_version: FORMAT_VERSION,
             abi_hash: String::new(),
+            codegen_abi_hash: String::new(),
             functions,
             declarations,
             modules: program
@@ -248,25 +277,97 @@ impl Interface {
                 .collect(),
         };
         result.abi_hash = result.compute_hash();
+        result.codegen_abi_hash = result.compute_codegen_hash(&opaque_layouts);
         result
     }
 
     fn compute_hash(&self) -> String {
+        let sealed = (self.format_version >= BINARY_FORMAT_VERSION).then(|| self.sealed_modules());
+        let modules_for_hash = sealed.as_ref().unwrap_or(&self.modules);
         let data = serde_json::to_vec(&(
             self.format_version,
             &self.functions,
             &self.declarations,
-            &self.modules,
+            modules_for_hash,
         ))
         .unwrap_or_else(|err| ril_base::ice!("interface export serialization failed: {err}"));
         format!("{:x}", Sha256::digest(data))
     }
 
+    fn sealed_modules(&self) -> BTreeMap<String, String> {
+        self.modules
+            .iter()
+            .map(|(path, src)| (path.clone(), seal_opaque_representations(path, src)))
+            .collect()
+    }
+
+    fn compute_codegen_hash(&self, opaque_layouts: &BTreeMap<String, String>) -> String {
+        let data = serde_json::to_vec(&(&self.abi_hash, opaque_layouts))
+            .unwrap_or_else(|err| ril_base::ice!("codegen hash serialization failed: {err}"));
+        format!("{:x}", Sha256::digest(data))
+    }
+
+    /// Encodes the interface into the canonical wire format:
+    /// - v32+: compact binary `RILI\x00` envelope with header SHA-256 for single-pass decoding
+    /// - legacy v12..=31: pretty JSON for backward-compatible roundtripping
     pub fn encode(&self) -> Result<Vec<u8>, serde_json::Error> {
+        if self.format_version < BINARY_FORMAT_VERSION {
+            return self.encode_json();
+        }
+        let payload = serde_json::to_vec(self)?;
+        let digest = Sha256::digest(&payload);
+        let len = u32::try_from(payload.len()).unwrap_or(u32::MAX);
+        let mut out = Vec::with_capacity(BINARY_MAGIC.len() + 4 + 32 + 4 + payload.len());
+        out.extend_from_slice(BINARY_MAGIC);
+        out.extend_from_slice(&self.format_version.to_le_bytes());
+        out.extend_from_slice(&digest);
+        out.extend_from_slice(&len.to_le_bytes());
+        out.extend_from_slice(&payload);
+        Ok(out)
+    }
+
+    /// Encodes the interface as human-readable JSON (`--emit-interface-json`).
+    pub fn encode_json(&self) -> Result<Vec<u8>, serde_json::Error> {
         serde_json::to_vec_pretty(self)
     }
 
     pub fn decode(bytes: &[u8]) -> Result<Self, String> {
+        if let Some(rest) = bytes.strip_prefix(BINARY_MAGIC) {
+            let (header, payload) = rest
+                .split_at_checked(40)
+                .ok_or_else(|| "truncated binary .rili header".to_owned())?;
+            let (ver_bytes, after_ver) = header
+                .split_at_checked(4)
+                .ok_or_else(|| "truncated binary .rili version".to_owned())?;
+            let (expected_digest, len_bytes) = after_ver
+                .split_at_checked(32)
+                .ok_or_else(|| "truncated binary .rili digest".to_owned())?;
+            let version = u32::from_le_bytes(
+                ver_bytes
+                    .try_into()
+                    .map_err(|_| "invalid binary .rili version".to_owned())?,
+            );
+            if !(BINARY_FORMAT_VERSION..=FORMAT_VERSION).contains(&version) {
+                return Err(format!("unsupported .rili format version {version}"));
+            }
+            let payload_len = u32::from_le_bytes(
+                len_bytes
+                    .try_into()
+                    .map_err(|_| "invalid binary .rili length".to_owned())?,
+            ) as usize;
+            if payload.len() != payload_len {
+                return Err("binary .rili payload length mismatch".into());
+            }
+            let actual_digest = Sha256::digest(payload);
+            if actual_digest.as_slice() != expected_digest {
+                return Err(".rili binary payload checksum mismatch".into());
+            }
+            let value: Self = serde_json::from_slice(payload).map_err(|err| err.to_string())?;
+            if value.format_version != version {
+                return Err(".rili header version does not match payload version".into());
+            }
+            return Ok(value);
+        }
         #[derive(Deserialize)]
         struct Version {
             format_version: u32,
@@ -370,6 +471,45 @@ fn declaration_source(file: &ril_frontend::hir::File) -> String {
         source.replace_range(span.start..span.end, "");
     }
     source
+}
+
+fn seal_opaque_representations(path: &str, text: &str) -> String {
+    fn collect_opaque_rhs(ast: &Ast, items: &[StmtId], spans: &mut Vec<Span>) {
+        for &item in items {
+            match &ast.stmt(item).value.kind {
+                StmtKind::Type(decl) if decl.kind == TypeKind::Opaque => {
+                    if let TypeDefinition::Data(ty) = decl.definition {
+                        spans.push(ast.ty(ty).span);
+                    }
+                }
+                StmtKind::Sub { items, .. } => collect_opaque_rhs(ast, items, spans),
+                _ => {}
+            }
+        }
+    }
+    let Ok(src) = SourceFile::from_bytes(
+        FileId::from_path(Path::new(path)),
+        path.into(),
+        text.as_bytes(),
+    ) else {
+        return text.to_owned();
+    };
+    let lexed = lexer::lex_with_recovery(&src);
+    if !lexed.diagnostics.is_empty() {
+        return text.to_owned();
+    }
+    let parsed = parser::parse_with_recovery(&src, &lexed.tokens, FileKind::Interface);
+    let mut spans = Vec::new();
+    collect_opaque_rhs(&parsed.ast, &parsed.ast.items, &mut spans);
+    if spans.is_empty() {
+        return text.to_owned();
+    }
+    let mut out = text.to_owned();
+    spans.sort_unstable();
+    for span in spans.into_iter().rev() {
+        out.replace_range(span.start..span.end, "sealed");
+    }
+    out
 }
 
 fn type_shape(program: &TypedProgram, ast: &Ast, id: TypeId) -> String {

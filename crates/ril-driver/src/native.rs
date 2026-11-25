@@ -21,24 +21,26 @@ fn failure(error: impl ToString) -> Vec<Diagnostic> {
 
 impl Compiler {
     pub fn lower(&self, package: &VirtualPackage) -> Result<mir::Program> {
-        let (typed, analysis, _) = self.analyze_arc(package)?;
+        let (typed, analysis, _, _) = self.analyze_arc(package)?;
         mir::lower_with_options(&typed, &analysis, self.options().lower_options())
             .map_err(|error| vec![error])
     }
 
     pub fn lower_arc(&self, package: &VirtualPackage) -> Result<Arc<mir::Program>> {
-        let (typed, analysis, access) = self.analyze_arc(package)?;
+        let (typed, analysis, access, codegen_hashes) = self.analyze_arc(package)?;
         let key = MirKey {
             access,
+            codegen_hashes,
             options: self.options(),
         };
         self.lower_with(typed, analysis, key)
     }
 
     pub fn clif(&self, package: &VirtualPackage) -> Result<String> {
-        let (typed, analysis, access) = self.analyze_arc(package)?;
+        let (typed, analysis, access, codegen_hashes) = self.analyze_arc(package)?;
         let key = MirKey {
             access,
+            codegen_hashes,
             options: self.options(),
         };
         if let Some(cache) = self.cache()
@@ -65,6 +67,7 @@ impl Compiler {
         };
         let key = MirKey {
             access: access.clone(),
+            codegen_hashes: prepared.codegen_hashes.clone(),
             options: self.options(),
         };
         if let Some(cache) = self.cache()
@@ -86,6 +89,19 @@ impl Compiler {
         result
     }
 
+    pub fn compile_objects(
+        &self,
+        package: &VirtualPackage,
+        cgu_count: usize,
+    ) -> Result<Vec<Vec<u8>>> {
+        if cgu_count <= 1 {
+            return Ok(vec![(*self.compile_object(package)?).clone()]);
+        }
+        let compiled = self.lower_arc(package)?;
+        cranelift::objects_with_opt(&compiled, cgu_count, self.options().opt_level.to_backend())
+            .map_err(|err| vec![err])
+    }
+
     pub fn horn_json(&self, package: &VirtualPackage) -> Result<String> {
         serde_json::to_string_pretty(&self.horn_rules(package)?).map_err(failure)
     }
@@ -100,6 +116,16 @@ impl Compiler {
         output: &Path,
         links: &[PathBuf],
     ) -> Result<()> {
+        self.compile_aot_with_cgus(package, output, links, 1)
+    }
+
+    pub fn compile_aot_with_cgus(
+        &self,
+        package: &VirtualPackage,
+        output: &Path,
+        links: &[PathBuf],
+        cgu_count: usize,
+    ) -> Result<()> {
         let links = links
             .iter()
             .map(|path| {
@@ -107,8 +133,21 @@ impl Compiler {
                     .map_err(|err| failure(format!("{}: {err}", path.display())))
             })
             .collect::<Result<Vec<_>>>()?;
-        let object = self.compile_object(package)?;
-        link_object(&object, &links, output)
+        if cgu_count <= 1 {
+            let object = self.compile_object(package)?;
+            link_objects(std::slice::from_ref(&*object), &links, output)
+        } else {
+            let objects = self.compile_objects(package, cgu_count)?;
+            link_objects(&objects, &links, output)
+        }
+    }
+
+    /// Compile and execute a package directly in the current process via Cranelift JIT
+    /// without spawning a worker subprocess. Returns the program's integer exit status.
+    pub fn execute_jit_in_process(&self, package: &VirtualPackage) -> Result<i32> {
+        let compiled = self.lower_arc(package)?;
+        cranelift::jit_with_opt(&compiled, self.options().opt_level.to_backend())
+            .map_err(|err| vec![err])
     }
 
     pub fn execute_jit(&self, package: &VirtualPackage) -> Result<ExecOutput> {
@@ -171,16 +210,20 @@ impl Driver {
     }
 }
 
-pub(crate) fn link_object(object: &[u8], links: &[PathBuf], output: &Path) -> Result<()> {
+pub(crate) fn link_objects(objects: &[Vec<u8>], links: &[PathBuf], output: &Path) -> Result<()> {
     let tmp = tempfile::tempdir().map_err(failure)?;
-    let object_path = tmp.path().join("ril.o");
-    fs::write(&object_path, object).map_err(failure)?;
+    let mut object_paths = Vec::with_capacity(objects.len());
+    for (idx, bytes) in objects.iter().enumerate() {
+        let object_path = tmp.path().join(format!("ril_{idx}.o"));
+        fs::write(&object_path, bytes).map_err(failure)?;
+        object_paths.push(object_path);
+    }
     let runtime = runtime_archive()?;
     let mut command = if cfg!(target_env = "msvc") && std::env::var_os("CC").is_none() {
         let mut cmd = Command::new("link.exe");
         cmd.arg("/NOLOGO")
             .arg("/OPT:REF")
-            .arg(&object_path)
+            .args(&object_paths)
             .args(links)
             .arg(&runtime)
             .args([
@@ -194,7 +237,7 @@ pub(crate) fn link_object(object: &[u8], links: &[PathBuf], output: &Path) -> Re
         cmd
     } else {
         let mut cmd = Command::new(std::env::var_os("CC").unwrap_or_else(|| "cc".into()));
-        cmd.arg(&object_path).args(links).arg(&runtime);
+        cmd.args(&object_paths).args(links).arg(&runtime);
         if cfg!(target_os = "linux") {
             cmd.args(["-Wl,--gc-sections", "-ldl", "-lpthread", "-lm"]);
         } else if cfg!(target_os = "macos") {

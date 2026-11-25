@@ -24,7 +24,7 @@ mod package;
 
 pub use incremental::{IncrementalCache, QueryStats};
 pub use native::worker_entry;
-pub use package::{infer_unit, load_package};
+pub use package::{PackageManifest, infer_unit, load_package, parse_manifest};
 
 use incremental::{CheckKey, ContentDigest, FileFingerprint, MirKey, PackageKey, TypeKey, sha256};
 
@@ -69,6 +69,9 @@ impl CompileOptions {
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Driver;
+
+type CodegenHashes = Vec<(PathBuf, String)>;
+pub(crate) type AnalyzedArc = (Arc<TypedProgram>, Arc<Analysis>, TypeKey, CodegenHashes);
 
 #[derive(Clone, Debug, Default)]
 pub struct Compiler {
@@ -174,6 +177,7 @@ impl Compiler {
                 package: prepared.package_key.clone(),
                 budget: pkg.budget,
             };
+            let codegen_hashes = prepared.codegen_hashes.clone();
             let typed = self.typed_with(pkg, prepared, type_key.clone())?;
             if stage == Stage::Access {
                 self.analyze_with(typed.clone(), type_key)?;
@@ -181,6 +185,7 @@ impl Compiler {
                 let (typed, analysis) = self.analyze_with(typed.clone(), type_key.clone())?;
                 let mir_key = MirKey {
                     access: type_key,
+                    codegen_hashes,
                     options: self.options,
                 };
                 self.lower_with(typed, analysis, mir_key)?;
@@ -215,22 +220,20 @@ impl Compiler {
         &self,
         pkg: &VirtualPackage,
     ) -> Result<(Arc<TypedProgram>, Arc<Analysis>), Vec<Diagnostic>> {
-        let (typed, analysis, _) = self.analyze_arc(pkg)?;
+        let (typed, analysis, _, _) = self.analyze_arc(pkg)?;
         Ok((typed, analysis))
     }
 
-    pub(crate) fn analyze_arc(
-        &self,
-        pkg: &VirtualPackage,
-    ) -> Result<(Arc<TypedProgram>, Arc<Analysis>, TypeKey), Vec<Diagnostic>> {
+    pub(crate) fn analyze_arc(&self, pkg: &VirtualPackage) -> Result<AnalyzedArc, Vec<Diagnostic>> {
         let prepared = prepare_inputs(pkg, self.cache());
+        let codegen_hashes = prepared.codegen_hashes.clone();
         let key = TypeKey {
             package: prepared.package_key.clone(),
             budget: pkg.budget,
         };
         let typed = self.typed_with(pkg, prepared, key.clone())?;
         let (typed, analysis) = self.analyze_with(typed, key.clone())?;
-        Ok((typed, analysis, key))
+        Ok((typed, analysis, key, codegen_hashes))
     }
 
     fn typed_with(
@@ -413,6 +416,7 @@ struct PreparedInputs {
     imports: BTreeMap<String, Export>,
     diagnostics: Vec<Diagnostic>,
     package_key: PackageKey,
+    codegen_hashes: Vec<(PathBuf, String)>,
 }
 
 fn prepare_inputs(pkg: &VirtualPackage, cache: Option<&IncrementalCache>) -> PreparedInputs {
@@ -422,6 +426,7 @@ fn prepare_inputs(pkg: &VirtualPackage, cache: Option<&IncrementalCache>) -> Pre
     let mut entry = None;
     let mut imports = BTreeMap::new();
     let mut fingerprints = Vec::new();
+    let mut codegen_hashes = Vec::new();
     for (path, file) in &pkg.files {
         let mut logical = path.clone();
         let from_interface = path
@@ -446,13 +451,23 @@ fn prepare_inputs(pkg: &VirtualPackage, cache: Option<&IncrementalCache>) -> Pre
                     name.strip_prefix(&prefix)
                         .map(|local| (format!("{}::{local}", logical.display()), export.clone()))
                 }));
-                Ok((interface.abi_hash.clone(), source.as_bytes().to_vec()))
+                let cg_hash = if interface.codegen_abi_hash.is_empty() {
+                    interface.abi_hash.clone()
+                } else {
+                    interface.codegen_abi_hash.clone()
+                };
+                Ok((
+                    interface.abi_hash.clone(),
+                    cg_hash,
+                    source.as_bytes().to_vec(),
+                ))
             }) {
-                Ok((abi_hash, data)) => {
+                Ok((abi_hash, cg_hash, data)) => {
                     fingerprints.push(FileFingerprint::Interface {
                         path: path.clone(),
                         abi_hash,
                     });
+                    codegen_hashes.push((path.clone(), cg_hash));
                     declarations = data;
                     &declarations
                 }
@@ -498,6 +513,7 @@ fn prepare_inputs(pkg: &VirtualPackage, cache: Option<&IncrementalCache>) -> Pre
         imports,
         diagnostics,
         package_key: PackageKey::new(pkg.unit, pkg.entry.clone(), fingerprints),
+        codegen_hashes,
     }
 }
 

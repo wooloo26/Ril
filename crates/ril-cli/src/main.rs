@@ -48,6 +48,8 @@ enum Action {
         #[arg(long)]
         emit_interface: Option<PathBuf>,
         #[arg(long)]
+        emit_interface_json: Option<PathBuf>,
+        #[arg(long)]
         opt_stack_promote: bool,
         #[arg(long, num_args = 0..=1, default_missing_value = ".ril-cache", value_name = "CACHE_DIR")]
         incremental: Option<PathBuf>,
@@ -66,6 +68,8 @@ enum Action {
         release: bool,
         #[arg(short = 'O', value_name = "0|1|2|s")]
         opt: Option<String>,
+        #[arg(long, default_value_t = 1)]
+        cgus: usize,
         #[arg(long, num_args = 0..=1, default_missing_value = ".ril-cache", value_name = "CACHE_DIR")]
         incremental: Option<PathBuf>,
     },
@@ -156,6 +160,7 @@ fn run(action: Action) -> Result<ExitCode, String> {
             stage,
             unit,
             emit_interface,
+            emit_interface_json,
             opt_stack_promote,
             incremental,
             message_format,
@@ -188,10 +193,16 @@ fn run(action: Action) -> Result<ExitCode, String> {
             if !checked.result.diagnostics.is_empty() {
                 return Ok(ExitCode::FAILURE);
             }
-            if let Some(path) = emit_interface {
+            if emit_interface.is_some() || emit_interface_json.is_some() {
                 let interface = compiler.interface_arc(&package).map_err(display)?;
-                let bytes = interface.encode().map_err(|err| err.to_string())?;
-                std::fs::write(path, bytes).map_err(|err| err.to_string())?;
+                if let Some(path) = emit_interface {
+                    let bytes = interface.encode().map_err(|err| err.to_string())?;
+                    std::fs::write(path, bytes).map_err(|err| err.to_string())?;
+                }
+                if let Some(path) = emit_interface_json {
+                    let bytes = interface.encode_json().map_err(|err| err.to_string())?;
+                    std::fs::write(path, bytes).map_err(|err| err.to_string())?;
+                }
             }
         }
         Action::Build {
@@ -201,6 +212,7 @@ fn run(action: Action) -> Result<ExitCode, String> {
             opt_stack_promote,
             release,
             opt,
+            cgus,
             incremental,
         } => {
             let (opt_level, default_promote) = parse_opt_level(release, opt.as_deref())?;
@@ -213,7 +225,7 @@ fn run(action: Action) -> Result<ExitCode, String> {
                 return Err("output would overwrite the source file".into());
             }
             compiler
-                .compile_aot_with_links(&package, &output, &link)
+                .compile_aot_with_cgus(&package, &output, &link, cgus)
                 .map_err(display)?;
         }
         Action::Run {

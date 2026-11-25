@@ -121,14 +121,14 @@ fn describe_graph(
             source: axis(formals, origin),
             access: origin.mode,
             new: origin.new,
-            borrowed: origin.call_scoped_access,
+            call_scoped: origin.call_scoped_access,
             forwarded: origin.inherits_mode,
             detached: origin.detached_snapshot,
             provider: known_provider(origin).and_then(|owner| providers.get(&owner).copied()),
         })
         .collect();
     SnapshotGraph {
-        owned: value.requires_new,
+        new_root: value.requires_new,
         environment: !value.environments.is_empty(),
         replaced: ledger.snapshot_overwrites(value),
         roots: roots.into_iter().collect(),
@@ -259,7 +259,7 @@ fn import_graph(
                 if let Some(axis) = &root.source {
                     origin.region.selection.clone_from(&axis.path);
                 }
-                origin.call_scoped_access = root.borrowed;
+                origin.call_scoped_access = root.call_scoped;
                 origin.inherits_mode = root.forwarded;
                 origin.detached_snapshot = root.detached;
                 origin.snapshot_provider = root
@@ -290,7 +290,7 @@ fn import_graph(
                 )
             })
             .collect(),
-        requires_new: graph.owned,
+        requires_new: graph.new_root,
         environments: graph.environment.then_some(owner).into_iter().collect(),
         ..Datum::default()
     };

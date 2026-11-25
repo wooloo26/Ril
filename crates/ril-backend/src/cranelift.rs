@@ -91,6 +91,47 @@ pub fn object_with_opt(program: &mir::Program, opt_level: OptLevel) -> Result<Ve
     module.finish().emit().map_err(diagnostic)
 }
 
+/// Compile a MIR program into `cgu_count` single-owner object files using deterministic
+/// canonical symbol partitioning (`Linkage::Export` in the owning CGU, `Linkage::Import`
+/// in all other CGUs). The executable `main` wrapper is emitted in CGU 0.
+pub fn objects_with_opt(
+    program: &mir::Program,
+    cgu_count: usize,
+    opt_level: OptLevel,
+) -> Result<Vec<Vec<u8>>> {
+    let count = cgu_count.max(1).min(program.functions.len().max(1));
+    if count <= 1 {
+        return Ok(vec![object_with_opt(program, opt_level)?]);
+    }
+    let owners: Vec<usize> = program
+        .functions
+        .iter()
+        .enumerate()
+        .map(|(idx, function)| {
+            if FunctionId(idx) == program.entry {
+                0
+            } else {
+                let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+                for &b in function.symbol.as_bytes() {
+                    hash ^= u64::from(b);
+                    hash = hash.wrapping_mul(0x0100_0000_01b3);
+                }
+                usize::try_from(hash % (count as u64)).unwrap_or(0)
+            }
+        })
+        .collect();
+    let mut objects = Vec::with_capacity(count);
+    for cgu in 0..count {
+        let name = format!("ril.cgu.{cgu}");
+        let object = ObjectBuilder::new(target(true, opt_level)?, name, default_libcall_names())
+            .map_err(diagnostic)?;
+        let mut module = ObjectModule::new(object);
+        MirToClifTranslator::compile_cgu(&mut module, program, &owners, cgu)?;
+        objects.push(module.finish().emit().map_err(diagnostic)?);
+    }
+    Ok(objects)
+}
+
 pub fn emit_clif(program: &mir::Program) -> Result<String> {
     emit_clif_with_opt(program, OptLevel::None)
 }
@@ -394,11 +435,11 @@ impl<'a, M: Module> MirToClifTranslator<'a, M> {
             data_pool: HashMap::new(),
             emit_text,
         };
-        for (index, function) in program.functions.iter().enumerate() {
+        for function in &program.functions {
             let signature = compiler.signature(function.arity + 3, Some(types::I64));
             let id = compiler
                 .module
-                .declare_function(&format!("ril_fn_{index}"), Linkage::Local, &signature)
+                .declare_function(&function.symbol, Linkage::Local, &signature)
                 .map_err(diagnostic)?;
             compiler.functions.push(id);
         }
@@ -408,7 +449,12 @@ impl<'a, M: Module> MirToClifTranslator<'a, M> {
             let code = compiler.translate(id, function)?;
             if emit_text {
                 use std::fmt::Write as _;
-                writeln!(ir, "\n; {}\n{code}", function.name).map_err(diagnostic)?;
+                writeln!(
+                    ir,
+                    "\n; {}\n; symbol: {}\n{code}",
+                    function.name, function.symbol
+                )
+                .map_err(diagnostic)?;
             }
         }
         let (entry, wrapper) = compiler.wrapper(program.entry, program.suspend_at_entry)?;
@@ -417,6 +463,45 @@ impl<'a, M: Module> MirToClifTranslator<'a, M> {
             writeln!(ir, "\n; executable entry\n{wrapper}").map_err(diagnostic)?;
         }
         Ok((entry, ir))
+    }
+
+    fn compile_cgu(
+        module: &'a mut M,
+        program: &mir::Program,
+        owners: &[usize],
+        cgu: usize,
+    ) -> Result<()> {
+        let mut compiler = MirToClifTranslator {
+            module,
+            functions: Vec::new(),
+            foreign_names: None,
+            data_pool: HashMap::new(),
+            emit_text: false,
+        };
+        for (index, function) in program.functions.iter().enumerate() {
+            let signature = compiler.signature(function.arity + 3, Some(types::I64));
+            let linkage = if owners.get(index).copied() == Some(cgu) {
+                Linkage::Export
+            } else {
+                Linkage::Import
+            };
+            let id = compiler
+                .module
+                .declare_function(&function.symbol, linkage, &signature)
+                .map_err(diagnostic)?;
+            compiler.functions.push(id);
+        }
+        for (index, function) in program.functions.iter().enumerate() {
+            if owners.get(index).copied() != Some(cgu) {
+                continue;
+            }
+            let id = compiler.function_id(FunctionId(index))?;
+            let _ = compiler.translate(id, function)?;
+        }
+        if cgu == 0 {
+            let _ = compiler.wrapper(program.entry, program.suspend_at_entry)?;
+        }
+        Ok(())
     }
 
     fn function_id(&self, id: FunctionId) -> Result<FuncId> {
@@ -1172,6 +1257,7 @@ mod tests {
             suspend_at_entry: false,
             functions: vec![mir::Function {
                 name: "main".into(),
+                symbol: "_Ril_main_test".into(),
                 arity: 0,
                 registers: 4,
                 reg_types: vec![

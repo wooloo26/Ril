@@ -79,7 +79,7 @@ fn incremental_invalidates_on_dependency_interface_change_and_reuses_same_abi_ha
         b"pub type Cell = .{ var count: int }\npub fn read(via c: Cell) -> int { c.count }\n"
             .to_vec(),
     );
-    let iface_v1 = Driver.interface(&dep_v1).unwrap().encode().unwrap();
+    let iface_v1 = Driver.interface(&dep_v1).unwrap().encode_json().unwrap();
     // Reformat JSON without changing semantics/abi_hash.
     let parsed_json: serde_json::Value = serde_json::from_slice(&iface_v1).unwrap();
     let iface_v1_compact = serde_json::to_vec(&parsed_json).unwrap();
