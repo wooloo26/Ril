@@ -70,7 +70,7 @@ pub enum Object {
     },
     Evidence {
         parent: Value,
-        operation: String,
+        operation: u64,
         handler: Value,
     },
     Draft {

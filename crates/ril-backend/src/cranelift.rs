@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use cranelift_codegen::{
     ir::{self, AbiParam, BlockArg, InstBuilder as _, Value, condcodes::IntCC, types},
@@ -7,7 +7,7 @@ use cranelift_codegen::{
     verify_function,
 };
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
-use cranelift_module::{DataDescription, FuncId, Linkage, Module, default_libcall_names};
+use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module, default_libcall_names};
 use cranelift_object::{ObjectBuilder, ObjectModule};
 use ril_base::diag::Diagnostic;
 
@@ -216,6 +216,7 @@ struct MirToClifTranslator<'a, M> {
     module: &'a mut M,
     functions: Vec<FuncId>,
     foreign_names: Option<&'a BTreeMap<ForeignImport, String>>,
+    data_pool: HashMap<Box<[u8]>, DataId>,
     emit_text: bool,
 }
 
@@ -241,11 +242,13 @@ struct RootLayout {
 }
 
 impl RootLayout {
-    fn build(function: &mir::Function) -> Self {
+    fn build(function: &mir::Function, order: &[BlockId]) -> Self {
+        let live_at_safepoint = compute_safepoint_liveness(function, order);
         let mut reg_slot = vec![None; function.registers];
         let mut next = 0usize;
         for (idx, ty) in function.reg_types.iter().enumerate() {
             if ty.is_gc_managed()
+                && live_at_safepoint.contains(&Register(idx))
                 && let Some(entry) = reg_slot.get_mut(idx)
                 && let Ok(offset) = i32::try_from(16 + next * 8)
             {
@@ -271,6 +274,112 @@ impl RootLayout {
     }
 }
 
+fn inst_is_safepoint(inst: &Instruction) -> bool {
+    matches!(
+        inst,
+        Instruction::Float(_)
+            | Instruction::Integer(_)
+            | Instruction::Text(_)
+            | Instruction::Bytes(_)
+            | Instruction::IntBinOp { .. }
+            | Instruction::IntUnaryOp { .. }
+    )
+}
+
+/// Backward dataflow liveness analysis finding every register live at or across any safepoint.
+fn compute_safepoint_liveness(function: &mir::Function, order: &[BlockId]) -> BTreeSet<Register> {
+    let mut live_in: HashMap<BlockId, BTreeSet<Register>> = HashMap::new();
+    let mut at_safepoint = BTreeSet::new();
+
+    for _ in 0..=order.len().saturating_add(4) {
+        let mut changed = false;
+        for &bid in order.iter().rev() {
+            let Some(block) = function.blocks.get(bid.0) else {
+                continue;
+            };
+            let mut live = BTreeSet::new();
+            let mut add_succ = |succ: BlockId| {
+                if let Some(succ_live) = live_in.get(&succ) {
+                    live.extend(succ_live.iter().copied());
+                }
+                if let Some(succ_block) = function.blocks.get(succ.0) {
+                    for p in &succ_block.params {
+                        live.remove(p);
+                    }
+                }
+            };
+            match &block.terminator {
+                Some(Terminator::Jump(target, args)) => {
+                    add_succ(*target);
+                    live.extend(args.iter().copied());
+                }
+                Some(Terminator::Branch { condition, yes, no }) => {
+                    add_succ(*yes);
+                    add_succ(*no);
+                    live.insert(*condition);
+                }
+                Some(Terminator::Invoke {
+                    target,
+                    evidence,
+                    arguments,
+                    normal,
+                    unwind,
+                    ..
+                }) => {
+                    add_succ(*normal);
+                    add_succ(*unwind);
+                    live.insert(*evidence);
+                    live.extend(arguments.iter().copied());
+                    match target {
+                        Target::FunctionWithEnv { environment, .. } => {
+                            live.insert(*environment);
+                        }
+                        Target::Indirect {
+                            address,
+                            evidence,
+                            environment,
+                        } => {
+                            live.insert(*address);
+                            live.insert(*evidence);
+                            live.insert(*environment);
+                        }
+                        Target::Function(_)
+                        | Target::Runtime(_)
+                        | Target::Draft(_)
+                        | Target::Foreign(_) => {}
+                    }
+                    at_safepoint.extend(live.iter().copied());
+                }
+                Some(Terminator::Return(reg)) => {
+                    live.insert(*reg);
+                }
+                Some(Terminator::Unreachable) | None => {}
+            }
+
+            for (dst, inst) in block.instructions.iter().rev() {
+                live.remove(dst);
+                inst.visit_reads(|r| {
+                    live.insert(r);
+                });
+                if inst_is_safepoint(inst) {
+                    at_safepoint.extend(live.iter().copied());
+                }
+            }
+
+            let prev = live_in.entry(bid).or_default();
+            if *prev != live {
+                *prev = live;
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+
+    at_safepoint
+}
+
 impl<'a, M: Module> MirToClifTranslator<'a, M> {
     fn compile(
         module: &'a mut M,
@@ -282,6 +391,7 @@ impl<'a, M: Module> MirToClifTranslator<'a, M> {
             module,
             functions: Vec::new(),
             foreign_names,
+            data_pool: HashMap::new(),
             emit_text,
         };
         for (index, function) in program.functions.iter().enumerate() {
@@ -391,7 +501,7 @@ impl<'a, M: Module> MirToClifTranslator<'a, M> {
                 ))
             })
             .collect();
-        let root_layout = RootLayout::build(function);
+        let root_layout = RootLayout::build(function, &order);
         let root_frame = if root_layout.total_slots > 0 {
             let bytes = u32::try_from(16 + root_layout.total_slots * 8).map_err(diagnostic)?;
             Some(builder.create_sized_stack_slot(ir::StackSlotData::new(
@@ -902,19 +1012,25 @@ impl<'a, M: Module> MirToClifTranslator<'a, M> {
                     Instruction::Text(_) => "ril_rt_string",
                     _ => "ril_rt_bytes",
                 };
-                let id = self
-                    .module
-                    .declare_anonymous_data(false, false)
-                    .map_err(diagnostic)?;
-                let mut description = DataDescription::new();
-                description.define(if data.is_empty() {
-                    Box::new([0])
+                let id = if let Some(&cached) = self.data_pool.get(data) {
+                    cached
                 } else {
-                    data.clone()
-                });
-                self.module
-                    .define_data(id, &description)
-                    .map_err(diagnostic)?;
+                    let id = self
+                        .module
+                        .declare_anonymous_data(false, false)
+                        .map_err(diagnostic)?;
+                    let mut description = DataDescription::new();
+                    description.define(if data.is_empty() {
+                        Box::new([0])
+                    } else {
+                        data.clone()
+                    });
+                    self.module
+                        .define_data(id, &description)
+                        .map_err(diagnostic)?;
+                    self.data_pool.insert(data.clone(), id);
+                    id
+                };
                 let global = self.module.declare_data_in_func(id, builder.func);
                 let addr = builder.ins().symbol_value(types::I64, global);
                 let len = number(builder, data.len())?;

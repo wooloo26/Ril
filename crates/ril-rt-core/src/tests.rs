@@ -90,7 +90,7 @@ fn cloned_data_keeps_a_callable_and_its_environment_alive() {
     });
     let evidence = gc.alloc(Object::Evidence {
         parent: Value::UNIT,
-        operation: "clock::tick".into(),
+        operation: 1,
         handler,
     });
     assert!(gc.set_root(0, evidence));

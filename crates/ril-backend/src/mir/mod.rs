@@ -1,4 +1,5 @@
 mod lower;
+mod opt;
 mod promote;
 mod verify;
 
@@ -22,11 +23,13 @@ pub fn lower_with_options(
     options: LowerOptions,
 ) -> Result<Program, Diagnostic> {
     let mut lowered = lower::lower(program, analysis)?;
+    opt::optimize(&mut lowered);
     if cfg!(debug_assertions) {
         verify::verify(&lowered)?;
     }
     if options.stack_promote {
         promote::promote_program(&mut lowered);
+        opt::optimize(&mut lowered);
         if cfg!(debug_assertions) {
             verify::verify(&lowered)?;
         }

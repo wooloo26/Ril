@@ -54,6 +54,7 @@ pub(super) fn lower(typed: &TypedProgram, analysis: &Analysis) -> Result<Program
         named_index: HashMap::new(),
         ctor_index: HashMap::new(),
         closure_index: HashMap::new(),
+        effect_ops: HashMap::new(),
         top_level_fns: collect_top_level_functions(typed),
         boxed: captured_slots(typed),
     };
@@ -116,6 +117,7 @@ struct Lowering<'a> {
     named_index: HashMap<DefinitionId, Vec<FunctionId>>,
     ctor_index: HashMap<(DefinitionId, usize), FunctionId>,
     closure_index: HashMap<(FileId, ExprId), Vec<FunctionId>>,
+    effect_ops: HashMap<String, u64>,
     top_level_fns: HashSet<DefinitionId>,
     boxed: BTreeSet<DefinitionId>,
 }
@@ -139,6 +141,15 @@ enum Work {
 }
 
 impl<'a> Lowering<'a> {
+    fn effect_op_id(&mut self, label: &str) -> u64 {
+        if let Some(&id) = self.effect_ops.get(label) {
+            return id;
+        }
+        let id = (self.effect_ops.len() as u64) + 1;
+        self.effect_ops.insert(label.to_owned(), id);
+        id
+    }
+
     fn queue(&mut self, work: Work) -> FunctionId {
         match &work {
             Work::Constructor(id, arity) => {
@@ -844,7 +855,10 @@ impl<'a> Builder<'_, 'a> {
                 self.index(base, *index, false)
             }
             Expr::Interpolated(parts) => {
-                let mut accumulated = self.string("");
+                if parts.is_empty() {
+                    return Ok(self.string(""));
+                }
+                let mut rendered = Vec::with_capacity(parts.len());
                 for part in parts {
                     let value = match part {
                         StringPart::Text(text) => self.constant(
@@ -860,9 +874,19 @@ impl<'a> Builder<'_, 'a> {
                             self.runtime("ril_rt_text", vec![value])
                         }
                     };
-                    accumulated = self.runtime("ril_rt_concat", vec![accumulated, value]);
+                    rendered.push(value);
                 }
-                Ok(accumulated)
+                match rendered.as_slice() {
+                    [only] => Ok(*only),
+                    [a, b] => Ok(self.runtime("ril_rt_concat", vec![*a, *b])),
+                    _ => {
+                        let array = self.runtime("ril_rt_array", Vec::new());
+                        for part in rendered {
+                            self.runtime("ril_rt_append", vec![array, part]);
+                        }
+                        Ok(self.runtime("ril_rt_concat_many", vec![array]))
+                    }
+                }
             }
             _ => Err(self.unsupported(span, "this expression form")),
         }
@@ -938,7 +962,8 @@ impl<'a> Builder<'_, 'a> {
                         .typed
                         .operation_evidence(operation, handler.operation.span, &self.types)
                         .ok_or_else(|| self.unsupported(node.span, "invalid handler operation"))?;
-                    let key = self.string(&label);
+                    let op_id = self.global.effect_op_id(&label);
+                    let key = self.instruction(Instruction::RawU64(op_id));
                     installed.push((key, self.expr(handler.value)?));
                 }
                 for (name, handler) in installed {
@@ -1215,7 +1240,8 @@ impl<'a> Builder<'_, 'a> {
                 &BTreeMap::new(),
                 span,
             )?;
-            let key = self.string(&label);
+            let op_id = self.global.effect_op_id(&label);
+            let key = self.instruction(Instruction::RawU64(op_id));
             let handler = self.runtime("ril_rt_evidence_find", vec![self.evidence, key]);
             return Ok(self.invoke_closure(handler, args));
         }

@@ -185,6 +185,29 @@ runtime_functions! {
             Err(msg) => { rt.raise(msg); Value::UNIT }
         }
     }
+    fn ril_rt_concat_many(rt, parts: Value) -> Value {
+        let Some(Object::Array(items)) = rt.gc.object(parts) else {
+            rt.raise("ril_rt_concat_many requires an array");
+            return Value::UNIT;
+        };
+        let mut total_len = 0usize;
+        for &item in items {
+            match rt.gc.object(item) {
+                Some(Object::Str(s)) => total_len = total_len.saturating_add(s.len()),
+                _ => {
+                    rt.raise("expected str");
+                    return Value::UNIT;
+                }
+            }
+        }
+        let mut out = String::with_capacity(total_len);
+        for &item in items {
+            if let Some(Object::Str(s)) = rt.gc.object(item) {
+                out.push_str(s);
+            }
+        }
+        rt.gc.alloc(Object::Str(out))
+    }
     fn ril_rt_str_starts_with(rt, value: Value, prefix: Value) -> Value {
         let test = read_text(rt, value).and_then(|text| read_text(rt, prefix).map(|prefix| Value::boolean(text.starts_with(&prefix))));
         rt.checked(test)
@@ -334,18 +357,14 @@ runtime_functions! {
         if let Some(Object::Closure { environment, .. }) = rt.gc.object(closure) { *environment }
         else { rt.raise("invalid callable"); Value::UNIT }
     }
-    fn ril_rt_evidence_push(rt, parent: Value, operation: Value, handler: Value) -> Value {
-        if let Ok(operation) = read_text(rt, operation) {
-            rt.gc.alloc(Object::Evidence { parent, operation, handler })
-        } else { rt.raise("invalid effect operation"); Value::UNIT }
+    fn ril_rt_evidence_push(rt, parent: Value, operation: u64, handler: Value) -> Value {
+        rt.gc.alloc(Object::Evidence { parent, operation, handler })
     }
-    fn ril_rt_evidence_find(rt, evidence: Value, key: Value) -> Value {
+    fn ril_rt_evidence_find(rt, evidence: Value, key: u64) -> Value {
         let mut evidence = evidence;
-        if let Ok(key) = read_text(rt, key) {
-            while let Some(Object::Evidence { parent, operation, handler }) = rt.gc.object(evidence) {
-                if operation == &key { return *handler; }
-                evidence = *parent;
-            }
+        while let Some(Object::Evidence { parent, operation, handler }) = rt.gc.object(evidence) {
+            if *operation == key { return *handler; }
+            evidence = *parent;
         }
         rt.raise("missing lexical effect handler");
         Value::UNIT
