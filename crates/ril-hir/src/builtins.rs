@@ -534,6 +534,18 @@ pub(super) fn module(path: &Path) -> Option<&'static str> {
         .map(|&(module_name, _, _, _)| module_name)
 }
 
+pub(super) fn std_import_key(path: &Path) -> Option<&'static str> {
+    let raw = path.to_str()?;
+    let stem = raw.strip_prefix("ril/std/")?.strip_suffix(".ril")?;
+    if stem == "platform" {
+        return Some("ril/platform");
+    }
+    STD_SOURCES
+        .iter()
+        .find(|&&(_, import_key, _, _)| import_key.strip_prefix("ril/") == Some(stem))
+        .map(|&(_, import_key, _, _)| import_key)
+}
+
 pub(super) fn std_type_for(module_name: &str, name: &str) -> Option<StdType> {
     PRIMITIVE_TYPES
         .iter()

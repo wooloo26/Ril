@@ -1,27 +1,41 @@
 #![forbid(unsafe_code)]
 
-//! Lightweight JSON-RPC 2.0 Language Server (`ril lsp`) powered by incremental `Compiler`.
+//! JSON-RPC 2.0 Language Server (`ril lsp`) powered by incremental `Compiler`.
 //!
-//! Supports `initialize`, `textDocument/didOpen`, `textDocument/didChange`,
-//! `textDocument/publishDiagnostics`, `textDocument/hover`, `textDocument/definition`,
-//! `textDocument/formatting`, `shutdown`, and `exit`, with full on-disk `ril.toml`
-//! workspace resolution and Go-To-Definition into both project modules and `std/*.ril`.
+//! Features:
+//! - Live `ril.toml` workspace & `std/*.ril` resolution (zero false bodyless errors on stdlib)
+//! - Fault-tolerant partial analysis (`publishDiagnostics` + cached `TypedProgram`)
+//! - First-parameter-driven pipeline auto-suggestion (`|>`, `|?>`, and optional dot-to-pipe `.`)
+//! - Context-aware completion, pipeline-aware signature help, and rich hover with doc comments
+//! - TypeScript-Monokai-aligned semantic tokens (`textDocument/semanticTokens/full`)
+//! - Go-to-definition, find references, safe rename, document/workspace symbols, inlay hints,
+//!   quick-fix code actions, and formatting.
+
+mod analysis;
+mod code_actions;
+mod completion;
+mod hover;
+mod inlay_hints;
+mod navigation;
+mod pipeline;
+mod protocol;
+mod semantic_tokens;
+mod symbols;
+mod workspace;
 
 use std::{
-    collections::BTreeMap,
     io::{self, BufRead, Write},
-    path::{Path, PathBuf},
+    path::PathBuf,
 };
 
-use ril_driver::{CompileOptions, Compiler, infer_unit, load_package};
-use ril_sema::ty::Ty;
-use ril_source::{
-    diag::Severity,
-    span::{FileId, SourceFile, Span},
-};
+use ril_source::{diag::Severity, span::{FileId, SourceFile}};
 use ril_syntax::{fmt, parser::FileKind};
-use ril_test::{Stage, Unit, VirtualPackage};
 use serde_json::{Value, json};
+
+use crate::{
+    analysis::LspState,
+    protocol::{read_message, span_to_lsp_range, uri_to_fs_path, uri_to_logical_path, write_message, zero_range},
+};
 
 /// Runs the LSP server over standard input / standard output.
 pub fn serve_stdio() -> Result<(), String> {
@@ -48,6 +62,9 @@ pub fn handle_session<R: BufRead, W: Write>(mut reader: R, mut writer: W) -> Res
                 } else if let Some(root_path) = params.get("rootPath").and_then(Value::as_str) {
                     state.workspace_root = Some(PathBuf::from(root_path));
                 }
+                if let Some(opts) = params.get("initializationOptions") {
+                    apply_config(&mut state, opts);
+                }
                 if let Some(id) = id {
                     write_message(
                         &mut writer,
@@ -59,7 +76,25 @@ pub fn handle_session<R: BufRead, W: Write>(mut reader: R, mut writer: W) -> Res
                                     "textDocumentSync": 1,
                                     "hoverProvider": true,
                                     "definitionProvider": true,
-                                    "documentFormattingProvider": true
+                                    "referencesProvider": true,
+                                    "renameProvider": { "prepareProvider": true },
+                                    "documentSymbolProvider": true,
+                                    "workspaceSymbolProvider": true,
+                                    "documentFormattingProvider": true,
+                                    "completionProvider": {
+                                        "triggerCharacters": [".", ":", ">", "/", "@"]
+                                    },
+                                    "signatureHelpProvider": {
+                                        "triggerCharacters": ["(", ","]
+                                    },
+                                    "semanticTokensProvider": {
+                                        "legend": semantic_tokens::legend_json(),
+                                        "full": true
+                                    },
+                                    "inlayHintProvider": true,
+                                    "codeActionProvider": {
+                                        "codeActionKinds": ["quickfix"]
+                                    }
                                 },
                                 "serverInfo": {
                                     "name": "ril-lsp",
@@ -71,6 +106,12 @@ pub fn handle_session<R: BufRead, W: Write>(mut reader: R, mut writer: W) -> Res
                 }
             }
             "initialized" => {}
+            "workspace/didChangeConfiguration" => {
+                if let Some(settings) = params.get("settings") {
+                    let ril_cfg = settings.get("ril").unwrap_or(settings);
+                    apply_config(&mut state, ril_cfg);
+                }
+            }
             "textDocument/didOpen" => {
                 if let Some(doc) = params.get("textDocument")
                     && let (Some(uri), Some(text)) = (
@@ -79,7 +120,7 @@ pub fn handle_session<R: BufRead, W: Write>(mut reader: R, mut writer: W) -> Res
                     )
                 {
                     state.documents.insert(uri.to_owned(), text.to_owned());
-                    let notif = state.publish_diagnostics(uri);
+                    let notif = publish_diagnostics(&mut state, uri);
                     write_message(&mut writer, &notif)?;
                 }
             }
@@ -90,13 +131,46 @@ pub fn handle_session<R: BufRead, W: Write>(mut reader: R, mut writer: W) -> Res
                         .and_then(Value::as_str)
                 {
                     state.documents.insert(uri.to_owned(), text.to_owned());
-                    let notif = state.publish_diagnostics(uri);
+                    let notif = publish_diagnostics(&mut state, uri);
                     write_message(&mut writer, &notif)?;
+                }
+            }
+            "textDocument/didClose" => {
+                if let Some(uri) = params.pointer("/textDocument/uri").and_then(Value::as_str) {
+                    state.documents.remove(uri);
+                    state.cache.remove(uri);
                 }
             }
             "textDocument/hover" => {
                 if let Some(id) = id {
-                    let result = state.hover(&params).unwrap_or(Value::Null);
+                    let result = hover::hover(&mut state, &params).unwrap_or(Value::Null);
+                    write_message(
+                        &mut writer,
+                        &json!({ "jsonrpc": "2.0", "id": id, "result": result }),
+                    )?;
+                }
+            }
+            "textDocument/signatureHelp" => {
+                if let Some(id) = id {
+                    let result = hover::signature_help(&mut state, &params).unwrap_or(Value::Null);
+                    write_message(
+                        &mut writer,
+                        &json!({ "jsonrpc": "2.0", "id": id, "result": result }),
+                    )?;
+                }
+            }
+            "textDocument/completion" => {
+                if let Some(id) = id {
+                    let result = completion::complete(&mut state, &params);
+                    write_message(
+                        &mut writer,
+                        &json!({ "jsonrpc": "2.0", "id": id, "result": result }),
+                    )?;
+                }
+            }
+            "textDocument/semanticTokens/full" => {
+                if let Some(id) = id {
+                    let result = semantic_tokens::semantic_tokens_full(&mut state, &params);
                     write_message(
                         &mut writer,
                         &json!({ "jsonrpc": "2.0", "id": id, "result": result }),
@@ -105,7 +179,71 @@ pub fn handle_session<R: BufRead, W: Write>(mut reader: R, mut writer: W) -> Res
             }
             "textDocument/definition" => {
                 if let Some(id) = id {
-                    let result = state.definition(&params).unwrap_or(Value::Null);
+                    let result = navigation::definition(&mut state, &params).unwrap_or(Value::Null);
+                    write_message(
+                        &mut writer,
+                        &json!({ "jsonrpc": "2.0", "id": id, "result": result }),
+                    )?;
+                }
+            }
+            "textDocument/references" => {
+                if let Some(id) = id {
+                    let result = navigation::references(&mut state, &params);
+                    write_message(
+                        &mut writer,
+                        &json!({ "jsonrpc": "2.0", "id": id, "result": result }),
+                    )?;
+                }
+            }
+            "textDocument/prepareRename" => {
+                if let Some(id) = id {
+                    let result =
+                        navigation::prepare_rename(&mut state, &params).unwrap_or(Value::Null);
+                    write_message(
+                        &mut writer,
+                        &json!({ "jsonrpc": "2.0", "id": id, "result": result }),
+                    )?;
+                }
+            }
+            "textDocument/rename" => {
+                if let Some(id) = id {
+                    let result = navigation::rename(&mut state, &params).unwrap_or(Value::Null);
+                    write_message(
+                        &mut writer,
+                        &json!({ "jsonrpc": "2.0", "id": id, "result": result }),
+                    )?;
+                }
+            }
+            "textDocument/documentSymbol" => {
+                if let Some(id) = id {
+                    let result = symbols::document_symbols(&mut state, &params);
+                    write_message(
+                        &mut writer,
+                        &json!({ "jsonrpc": "2.0", "id": id, "result": result }),
+                    )?;
+                }
+            }
+            "workspace/symbol" => {
+                if let Some(id) = id {
+                    let result = symbols::workspace_symbols(&mut state, &params);
+                    write_message(
+                        &mut writer,
+                        &json!({ "jsonrpc": "2.0", "id": id, "result": result }),
+                    )?;
+                }
+            }
+            "textDocument/inlayHint" => {
+                if let Some(id) = id {
+                    let result = inlay_hints::inlay_hints(&mut state, &params);
+                    write_message(
+                        &mut writer,
+                        &json!({ "jsonrpc": "2.0", "id": id, "result": result }),
+                    )?;
+                }
+            }
+            "textDocument/codeAction" => {
+                if let Some(id) = id {
+                    let result = code_actions::code_actions(&state, &params);
                     write_message(
                         &mut writer,
                         &json!({ "jsonrpc": "2.0", "id": id, "result": result }),
@@ -114,7 +252,7 @@ pub fn handle_session<R: BufRead, W: Write>(mut reader: R, mut writer: W) -> Res
             }
             "textDocument/formatting" => {
                 if let Some(id) = id {
-                    let result = state.formatting(&params).unwrap_or_else(|| json!([]));
+                    let result = formatting(&state, &params).unwrap_or_else(|| json!([]));
                     write_message(
                         &mut writer,
                         &json!({ "jsonrpc": "2.0", "id": id, "result": result }),
@@ -148,398 +286,88 @@ pub fn handle_session<R: BufRead, W: Write>(mut reader: R, mut writer: W) -> Res
     Ok(())
 }
 
-struct WorkspacePackage {
-    pkg: VirtualPackage,
-    entry_logical: PathBuf,
-    package_dir: Option<PathBuf>,
-    logical_to_uri: BTreeMap<PathBuf, String>,
-}
-
-struct LspState {
-    compiler: Compiler,
-    workspace_root: Option<PathBuf>,
-    documents: BTreeMap<String, String>,
-    shutdown: bool,
-}
-
-impl LspState {
-    fn new() -> Self {
-        Self {
-            compiler: Compiler::incremental(CompileOptions::default()),
-            workspace_root: None,
-            documents: BTreeMap::new(),
-            shutdown: false,
-        }
+fn apply_config(state: &mut LspState, opts: &Value) {
+    if let Some(v) = opts.pointer("/completion/dotToPipe").and_then(Value::as_bool) {
+        state.config.dot_to_pipe = v;
+    } else if let Some(v) = opts.get("dotToPipe").and_then(Value::as_bool) {
+        state.config.dot_to_pipe = v;
     }
+    if let Some(v) = opts.pointer("/completion/autoImport").and_then(Value::as_bool) {
+        state.config.auto_import = v;
+    } else if let Some(v) = opts.get("autoImport").and_then(Value::as_bool) {
+        state.config.auto_import = v;
+    }
+    if let Some(v) = opts.pointer("/inlayHints/enable").and_then(Value::as_bool) {
+        state.config.inlay_hints = v;
+    } else if let Some(v) = opts.get("inlayHints").and_then(Value::as_bool) {
+        state.config.inlay_hints = v;
+    }
+}
 
-    fn build_package(&self, uri: &str) -> Option<WorkspacePackage> {
-        let text = self.documents.get(uri)?;
-        if let Some(fs_path) = uri_to_fs_path(uri)
-            && fs_path.is_file()
-            && let Ok(mut pkg) = load_package(&fs_path, infer_unit(&fs_path))
-        {
-            let entry_logical = pkg.entry.clone();
-            let canonical = fs_path.canonicalize().unwrap_or(fs_path);
-            let package_dir = entry_logical
-                .strip_prefix("pkg")
-                .ok()
-                .and_then(|rel| {
-                    let comps = rel.components().count();
-                    canonical.ancestors().nth(comps).map(Path::to_path_buf)
-                })
-                .or_else(|| canonical.parent().map(Path::to_path_buf));
-
-            let mut logical_to_uri = BTreeMap::new();
-            logical_to_uri.insert(entry_logical.clone(), uri.to_owned());
-
-            // Overlay the currently opened document text and map sibling disk files to URIs.
-            pkg.insert(entry_logical.clone(), text.as_bytes().to_vec());
-            if let Some(ref root_dir) = package_dir {
-                let keys: Vec<PathBuf> = pkg.files.keys().cloned().collect();
-                for logical in keys {
-                    if let Ok(rel) = logical.strip_prefix("pkg") {
-                        let disk = root_dir.join(rel);
-                        if disk.is_file() {
-                            let disk_uri = fs_path_to_uri(&disk);
-                            if let Some(open_text) = self.documents.get(&disk_uri) {
-                                pkg.insert(logical.clone(), open_text.as_bytes().to_vec());
-                            }
-                            logical_to_uri.entry(logical).or_insert(disk_uri);
-                        }
-                    }
-                }
-            }
-            return Some(WorkspacePackage {
-                pkg,
-                entry_logical,
-                package_dir,
-                logical_to_uri,
-            });
-        }
-
-        // Fallback for unsaved/virtual URIs not backed by an on-disk file.
-        let logical = uri_to_logical_path(uri);
-        let unit = if text.contains("fn main") {
-            Unit::Bin
-        } else {
-            Unit::Lib
-        };
-        let mut pkg = VirtualPackage::new(unit);
-        pkg.entry = logical.clone();
-        pkg.insert(logical.clone(), text.as_bytes().to_vec());
-        let mut logical_to_uri = BTreeMap::new();
-        logical_to_uri.insert(logical.clone(), uri.to_owned());
-        for (other_uri, other_text) in &self.documents {
-            if other_uri == uri {
+fn publish_diagnostics(state: &mut LspState, uri: &str) -> Value {
+    let mut diagnostics = Vec::new();
+    if let Some((ws, partial)) = state.refresh_document(uri) {
+        let entry_file_id = FileId::from_path(&ws.entry_logical);
+        for diag in &partial.diagnostics {
+            // Only publish diagnostics belonging to the active file (or unspanned entry errors)
+            // so errors in sibling modules don't pollute unrelated line numbers in `uri`.
+            if let Some(span) = diag.primary
+                && span.file != entry_file_id
+            {
                 continue;
             }
-            let other_logical = uri_to_logical_path(other_uri);
-            pkg.insert(other_logical.clone(), other_text.as_bytes().to_vec());
-            logical_to_uri.insert(other_logical, other_uri.clone());
-        }
-        Some(WorkspacePackage {
-            pkg,
-            entry_logical: logical,
-            package_dir: None,
-            logical_to_uri,
-        })
-    }
-
-    fn resolve_std_uri(&self, std_rel: &Path, active_uri: &str) -> Option<String> {
-        let mut candidates = Vec::new();
-        if let Some(ref root) = self.workspace_root {
-            candidates.push(root.join("std").join(std_rel));
-        }
-        if let Some(fs_path) = uri_to_fs_path(active_uri) {
-            for ancestor in fs_path.ancestors() {
-                candidates.push(ancestor.join("std").join(std_rel));
-            }
-        }
-        candidates
-            .into_iter()
-            .find(|p| p.is_file())
-            .map(|p| fs_path_to_uri(&p.canonicalize().unwrap_or(p)))
-    }
-
-    fn publish_diagnostics(&self, uri: &str) -> Value {
-        let mut diagnostics = Vec::new();
-        if let Some(ws) = self.build_package(uri) {
-            let checked = self.compiler.check(&ws.pkg, Stage::Access);
-            for diag in &checked.result.diagnostics {
-                let range = diag
-                    .primary
-                    .and_then(|span| span_to_lsp_range(&checked.sources, span))
-                    .unwrap_or_else(zero_range);
-                let severity = match diag.severity {
-                    Severity::Error => 1,
-                    Severity::Warning => 2,
-                };
-                let mut item = json!({
-                    "range": range,
-                    "severity": severity,
-                    "source": "ril",
-                    "message": diag.message,
-                });
-                if let Some(code) = diag.code
-                    && let Some(obj) = item.as_object_mut()
-                {
-                    obj.insert("code".into(), json!(code.as_str()));
-                }
-                diagnostics.push(item);
-            }
-        }
-        json!({
-            "jsonrpc": "2.0",
-            "method": "textDocument/publishDiagnostics",
-            "params": {
-                "uri": uri,
-                "diagnostics": diagnostics
-            }
-        })
-    }
-
-    fn hover(&self, params: &Value) -> Option<Value> {
-        let uri = params.pointer("/textDocument/uri")?.as_str()?;
-        let line = usize::try_from(params.pointer("/position/line")?.as_u64()?).ok()?;
-        let character = usize::try_from(params.pointer("/position/character")?.as_u64()?).ok()?;
-        let text = self.documents.get(uri)?;
-        let offset = line_col_to_offset(text, line, character)?;
-        let ws = self.build_package(uri)?;
-        let (typed, _) = self.compiler.analyze_cached(&ws.pkg).ok()?;
-        let file = typed.hir.files().find(|f| f.path == ws.entry_logical)?;
-        let file_id = file.id;
-
-        // 1. Check direct definition under cursor (function or binding).
-        for (def_id, def) in typed.hir.definitions() {
-            if def.name.span.file == file_id
-                && offset >= def.name.span.start
-                && offset <= def.name.span.end
+            let range = diag
+                .primary
+                .and_then(|span| span_to_lsp_range(&partial.sources, span))
+                .unwrap_or_else(zero_range);
+            let severity = match diag.severity {
+                Severity::Error => 1,
+                Severity::Warning => 2,
+            };
+            let mut item = json!({
+                "range": range,
+                "severity": severity,
+                "source": "ril",
+                "message": diag.message,
+            });
+            if let Some(code) = diag.code
+                && let Some(obj) = item.as_object_mut()
             {
-                let info = describe_definition(&typed, def_id)?;
-                return Some(json!({
-                    "contents": { "kind": "markdown", "value": format!("```ril\n{info}\n```") }
-                }));
+                obj.insert("code".into(), json!(code.as_str()));
             }
-        }
-
-        // 2. Check resolved identifier reference under cursor (prefers tightest span).
-        if let Some(def_id) = typed
-            .hir
-            .resolutions()
-            .filter(|(span, _)| span.file == file_id && offset >= span.start && offset <= span.end)
-            .min_by_key(|(span, _)| span.end.saturating_sub(span.start))
-            .and_then(|(_, res)| res.definition())
-            && let Some(info) = describe_definition(&typed, def_id)
-        {
-            return Some(json!({
-                "contents": { "kind": "markdown", "value": format!("```ril\n{info}\n```") }
-            }));
-        }
-
-        // 3. Fallback: smallest expression span containing the offset in `typed.types`.
-        let best = typed
-            .types
-            .iter()
-            .filter(|(span, _)| span.file == file_id && offset >= span.start && offset <= span.end)
-            .min_by_key(|(span, _)| span.end.saturating_sub(span.start));
-        if let Some((_, ty)) = best {
-            let rendered = ty.display(&typed.hir).to_string();
-            return Some(json!({
-                "contents": { "kind": "markdown", "value": format!("```ril\n{rendered}\n```") }
-            }));
-        }
-        None
-    }
-
-    fn definition(&self, params: &Value) -> Option<Value> {
-        let uri = params.pointer("/textDocument/uri")?.as_str()?;
-        let line = usize::try_from(params.pointer("/position/line")?.as_u64()?).ok()?;
-        let character = usize::try_from(params.pointer("/position/character")?.as_u64()?).ok()?;
-        let text = self.documents.get(uri)?;
-        let offset = line_col_to_offset(text, line, character)?;
-        let ws = self.build_package(uri)?;
-        let (typed, _) = self.compiler.analyze_cached(&ws.pkg).ok()?;
-        let file = typed.hir.files().find(|f| f.path == ws.entry_logical)?;
-        let file_id = file.id;
-
-        let target_id = typed
-            .hir
-            .resolutions()
-            .filter(|(span, _)| span.file == file_id && offset >= span.start && offset <= span.end)
-            .min_by_key(|(span, _)| span.end.saturating_sub(span.start))
-            .and_then(|(_, res)| res.definition())?;
-        let def = typed.hir.definition(target_id);
-        if def.name.span.file == FileId::BUILTIN {
-            return None;
-        }
-        let target_file = typed.hir.file(def.name.span.file);
-        let range = span_to_file_range(target_file.source(), def.name.span)?;
-
-        let target_uri = if let Some(mapped) = ws.logical_to_uri.get(&target_file.path) {
-            mapped.clone()
-        } else if let Ok(std_rel) = target_file.path.strip_prefix("ril/std") {
-            self.resolve_std_uri(std_rel, uri)
-                .unwrap_or_else(|| format!("file:///{}", target_file.path.display()))
-        } else if let Some(ref root_dir) = ws.package_dir
-            && let Ok(rel) = target_file.path.strip_prefix("pkg")
-        {
-            fs_path_to_uri(&root_dir.join(rel))
-        } else {
-            uri.to_owned()
-        };
-
-        Some(json!({
-            "uri": target_uri,
-            "range": range
-        }))
-    }
-
-    fn formatting(&self, params: &Value) -> Option<Value> {
-        let uri = params.pointer("/textDocument/uri")?.as_str()?;
-        let text = self.documents.get(uri)?;
-        let logical = uri_to_logical_path(uri);
-        let kind = if text.contains("fn main") {
-            FileKind::Executable
-        } else {
-            FileKind::Module
-        };
-        let source =
-            SourceFile::from_bytes(FileId::from_path(&logical), logical, text.as_bytes()).ok()?;
-        let formatted = fmt::format_source(&source, kind).ok()?;
-        let end_line = text.lines().count();
-        Some(json!([{
-            "range": {
-                "start": { "line": 0, "character": 0 },
-                "end": { "line": end_line + 1, "character": 0 }
-            },
-            "newText": formatted
-        }]))
-    }
-}
-
-fn describe_definition(
-    typed: &ril_sema::ty::TypedProgram,
-    id: ril_hir::DefinitionId,
-) -> Option<String> {
-    let def = typed.hir.definition(id);
-    if let Some(callable) = typed.callables.get(&id) {
-        let ty = Ty::Callable(callable.clone())
-            .display(&typed.hir)
-            .to_string();
-        let sig = ty
-            .strip_prefix("fn")
-            .map_or_else(|| ty.clone(), |rest| format!("fn {}{rest}", def.name.value));
-        return Some(sig);
-    }
-    if let Some(ty) = typed.bindings.get(&id) {
-        return Some(format!("{}: {}", def.name.value, ty.display(&typed.hir)));
-    }
-    None
-}
-
-fn uri_to_fs_path(uri: &str) -> Option<PathBuf> {
-    let rest = uri.strip_prefix("file://")?;
-    let path_str = rest.strip_prefix("localhost").unwrap_or(rest);
-    if path_str.is_empty() {
-        None
-    } else {
-        Some(PathBuf::from(path_str))
-    }
-}
-
-fn fs_path_to_uri(path: &Path) -> String {
-    let normalized = path.to_string_lossy().replace('\\', "/");
-    if normalized.starts_with('/') {
-        format!("file://{normalized}")
-    } else {
-        format!("file:///{normalized}")
-    }
-}
-
-fn uri_to_logical_path(uri: &str) -> PathBuf {
-    let stripped = uri.strip_prefix("file://").unwrap_or(uri);
-    let file_name = Path::new(stripped)
-        .file_name()
-        .and_then(|s| s.to_str())
-        .unwrap_or("main.ril");
-    Path::new("pkg").join(file_name)
-}
-
-fn line_col_to_offset(text: &str, target_line: usize, target_col: usize) -> Option<usize> {
-    let mut line = 0usize;
-    let mut col = 0usize;
-    for (idx, ch) in text.char_indices() {
-        if line == target_line && col == target_col {
-            return Some(idx);
-        }
-        if ch == '\n' {
-            if line == target_line {
-                return Some(idx);
-            }
-            line += 1;
-            col = 0;
-        } else {
-            col += 1;
+            diagnostics.push(item);
         }
     }
-    (line == target_line).then_some(text.len())
-}
-
-fn span_to_lsp_range(sources: &ril_source::span::SourceMap, span: Span) -> Option<Value> {
-    let file = sources.get(span.file)?;
-    span_to_file_range(file, span)
-}
-
-fn span_to_file_range(file: &SourceFile, span: Span) -> Option<Value> {
-    let start = file.location(span.start)?;
-    let end = file.location(span.end).unwrap_or(start);
-    Some(json!({
-        "start": { "line": start.line.saturating_sub(1), "character": start.column.saturating_sub(1) },
-        "end": { "line": end.line.saturating_sub(1), "character": end.column.saturating_sub(1) }
-    }))
-}
-
-fn zero_range() -> Value {
     json!({
-        "start": { "line": 0, "character": 0 },
-        "end": { "line": 0, "character": 0 }
+        "jsonrpc": "2.0",
+        "method": "textDocument/publishDiagnostics",
+        "params": {
+            "uri": uri,
+            "diagnostics": diagnostics
+        }
     })
 }
 
-fn read_message<R: BufRead>(reader: &mut R) -> Result<Option<Value>, String> {
-    let mut content_length: Option<usize> = None;
-    let mut line = String::new();
-    loop {
-        line.clear();
-        let read = reader.read_line(&mut line).map_err(|e| e.to_string())?;
-        if read == 0 {
-            return Ok(None);
-        }
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            break;
-        }
-        if let Some(rest) = trimmed
-            .strip_prefix("Content-Length:")
-            .or_else(|| trimmed.strip_prefix("content-length:"))
-        {
-            content_length = Some(
-                rest.trim()
-                    .parse::<usize>()
-                    .map_err(|e| format!("invalid Content-Length: {e}"))?,
-            );
-        }
-    }
-    let len = content_length.ok_or_else(|| "missing Content-Length header".to_owned())?;
-    let mut buf = vec![0u8; len];
-    reader.read_exact(&mut buf).map_err(|e| e.to_string())?;
-    let value: Value = serde_json::from_slice(&buf).map_err(|e| e.to_string())?;
-    Ok(Some(value))
-}
-
-fn write_message<W: Write>(writer: &mut W, value: &Value) -> Result<(), String> {
-    let body = serde_json::to_vec(value).map_err(|e| e.to_string())?;
-    write!(writer, "Content-Length: {}\r\n\r\n", body.len()).map_err(|e| e.to_string())?;
-    writer.write_all(&body).map_err(|e| e.to_string())?;
-    writer.flush().map_err(|e| e.to_string())
+fn formatting(state: &LspState, params: &Value) -> Option<Value> {
+    let uri = params.pointer("/textDocument/uri")?.as_str()?;
+    let text = state.documents.get(uri)?;
+    let logical = uri_to_logical_path(uri);
+    let kind = if uri.ends_with(".d.ril") {
+        FileKind::Foreign
+    } else if text.contains("fn main") {
+        FileKind::Executable
+    } else {
+        FileKind::Module
+    };
+    let source =
+        SourceFile::from_bytes(FileId::from_path(&logical), logical, text.as_bytes()).ok()?;
+    let formatted = fmt::format_source(&source, kind).ok()?;
+    let end_line = text.lines().count();
+    Some(json!([{
+        "range": {
+            "start": { "line": 0, "character": 0 },
+            "end": { "line": end_line + 1, "character": 0 }
+        },
+        "newText": formatted
+    }]))
 }

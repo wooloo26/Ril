@@ -243,6 +243,90 @@ impl Compiler {
         Ok((typed, analysis))
     }
 
+    /// Best-effort partial analysis for IDE/LSP consumers.
+    ///
+    /// Always attempts to produce a `TypedProgram` (even when parse recovery,
+    /// HIR, type, or access diagnostics occur) while collecting full `Stage::Access`
+    /// diagnostics when earlier stages succeed.
+    pub fn analyze_partial(&self, pkg: &VirtualPackage) -> PartialAnalysis {
+        let prepared = prepare_inputs(pkg, self.cache());
+        let sources = prepared.sources.clone();
+        let entry = prepared.entry;
+        let imports = prepared.imports.clone();
+        let mut diagnostics = prepared.diagnostics.clone();
+
+        let mut parsed = Vec::new();
+        for item in &prepared.valid {
+            let Some(file) = sources.get(item.id) else {
+                continue;
+            };
+            let kind = if item.from_interface {
+                FileKind::Interface
+            } else if file.path().to_string_lossy().ends_with(".d.ril")
+                || Some(file.id()) == entry && pkg.unit == Unit::Decl
+            {
+                FileKind::Foreign
+            } else if Some(file.id()) != entry {
+                FileKind::Module
+            } else {
+                match pkg.unit {
+                    Unit::Bin => FileKind::Executable,
+                    Unit::Lib => FileKind::Module,
+                    Unit::Snippet => FileKind::Snippet,
+                    Unit::Decl => FileKind::Foreign,
+                }
+            };
+            let lexed = lexer::lex_with_recovery(file);
+            diagnostics.extend(lexed.diagnostics);
+            let out = parser::parse_with_recovery(file, &lexed.tokens, kind);
+            diagnostics.extend(out.diagnostics);
+            parsed.push(hir::File::new(file.clone(), kind, out.ast, lexed.tokens));
+        }
+
+        let Some(entry) = entry else {
+            let missing_id = FileId::from_path(&pkg.entry);
+            diagnostics.push(Diagnostic::error(
+                Code::E0208,
+                Span::new(missing_id, 0, 0),
+                format!("missing entry {}", pkg.entry.display()),
+            ));
+            return PartialAnalysis {
+                sources,
+                typed: None,
+                diagnostics,
+            };
+        };
+
+        let had_syntax_errors = !diagnostics.is_empty();
+        let (hir_prog, hir_diags) = hir::lower_partial(parsed, entry);
+        diagnostics.extend(hir_diags);
+        let (mut typed, type_diags) = ty::check_partial(hir_prog, pkg.budget);
+        diagnostics.extend(type_diags);
+        if !imports.is_empty() {
+            let mut imports = imports;
+            typed.imported_functions = typed
+                .callables
+                .keys()
+                .filter(|&&id| typed.hir.operation_effect(id).is_none())
+                .filter_map(|&id| {
+                    imports
+                        .remove(&typed.hir.export_name(id))
+                        .map(|export| (id, export))
+                })
+                .collect();
+        }
+        if !had_syntax_errors && diagnostics.is_empty()
+            && let Err(access_diags) = access::check(&typed)
+        {
+            diagnostics.extend(access_diags);
+        }
+        PartialAnalysis {
+            sources,
+            typed: Some(Arc::new(typed)),
+            diagnostics,
+        }
+    }
+
     pub(crate) fn analyze_arc(&self, pkg: &VirtualPackage) -> Result<AnalyzedArc, Vec<Diagnostic>> {
         let prepared = prepare_inputs(pkg, self.cache());
         let codegen_hashes = prepared.codegen_hashes.clone();
@@ -358,6 +442,12 @@ impl Compiler {
 pub struct Checked {
     pub sources: SourceMap,
     pub result: CheckResult,
+}
+
+pub struct PartialAnalysis {
+    pub sources: SourceMap,
+    pub typed: Option<Arc<TypedProgram>>,
+    pub diagnostics: Vec<Diagnostic>,
 }
 
 impl Driver {

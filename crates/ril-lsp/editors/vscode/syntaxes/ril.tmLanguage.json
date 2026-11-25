@@ -13,6 +13,9 @@
       "include": "#declarations"
     },
     {
+      "include": "#closures"
+    },
+    {
       "include": "#effects-and-state"
     },
     {
@@ -165,7 +168,7 @@
               "match": "\\\\."
             },
             {
-              "name": "meta.embedded.expression.ril",
+              "name": "meta.template.expression.ril",
               "begin": "\\{",
               "end": "\\}",
               "beginCaptures": {
@@ -191,15 +194,43 @@
     "declarations": {
       "patterns": [
         {
-          "match": "\\b(fn)\\s+([a-z_][a-z0-9_]*)",
-          "captures": {
+          "name": "meta.function.ril",
+          "begin": "\\b(fn)\\s+([a-z_][a-z0-9_]*)\\s*(?:(<)([^>\n]*)(>))?\\s*(\\()",
+          "beginCaptures": {
             "1": {
               "name": "storage.type.function.ril"
             },
             "2": {
               "name": "entity.name.function.ril"
+            },
+            "3": {
+              "name": "punctuation.definition.typeparameters.begin.ril"
+            },
+            "4": {
+              "patterns": [
+                {
+                  "include": "#generic-params"
+                }
+              ]
+            },
+            "5": {
+              "name": "punctuation.definition.typeparameters.end.ril"
+            },
+            "6": {
+              "name": "punctuation.definition.parameters.begin.ril"
             }
-          }
+          },
+          "end": "\\)",
+          "endCaptures": {
+            "0": {
+              "name": "punctuation.definition.parameters.end.ril"
+            }
+          },
+          "patterns": [
+            {
+              "include": "#function-parameters"
+            }
+          ]
         },
         {
           "match": "\\b(fn)\\s+([A-Z][A-Za-z0-9_]*)",
@@ -244,7 +275,7 @@
               "name": "keyword.control.import.ril"
             },
             "2": {
-              "name": "entity.name.namespace.ril"
+              "name": "support.class.ril"
             }
           }
         },
@@ -258,9 +289,134 @@
               "name": "storage.type.ril"
             },
             "3": {
-              "name": "variable.other.constant.ril"
+              "name": "constant.other.constant.ril"
             }
           }
+        }
+      ]
+    },
+    "generic-params": {
+      "patterns": [
+        {
+          "name": "keyword.operator.pipeline.ril",
+          "match": "\\|>"
+        },
+        {
+          "name": "keyword.operator.ril",
+          "match": "\\||:|="
+        },
+        {
+          "name": "support.type.primitive.ril",
+          "match": "\\b(?:bool|int|f64|str|bytes|never|Type)\\b"
+        },
+        {
+          "name": "support.type.ril",
+          "match": "\\b[A-Z][A-Za-z0-9_]*\\b"
+        }
+      ]
+    },
+    "function-parameters": {
+      "patterns": [
+        {
+          "include": "#comments"
+        },
+        {
+          "include": "#strings"
+        },
+        {
+          "name": "meta.type.callable.ril",
+          "begin": "\\b(fn)\\s*(\\()",
+          "beginCaptures": {
+            "1": {
+              "name": "storage.type.function.ril"
+            },
+            "2": {
+              "name": "punctuation.definition.parameters.begin.ril"
+            }
+          },
+          "end": "\\)",
+          "endCaptures": {
+            "0": {
+              "name": "punctuation.definition.parameters.end.ril"
+            }
+          },
+          "patterns": [
+            {
+              "include": "$self"
+            }
+          ]
+        },
+        {
+          "match": "(?:\\b(meta)\\s+)?(?:(\\^mut|\\b(?:mut|ref|new|via)\\b)\\s+)?([a-z_][a-z0-9_]*)\\s*(:)",
+          "captures": {
+            "1": {
+              "name": "storage.modifier.ril"
+            },
+            "2": {
+              "name": "storage.modifier.ril"
+            },
+            "3": {
+              "name": "variable.parameter.ril"
+            },
+            "4": {
+              "name": "keyword.operator.type.annotation.ril"
+            }
+          }
+        },
+        {
+          "include": "#effects-and-state"
+        },
+        {
+          "include": "#keywords"
+        },
+        {
+          "include": "#numbers"
+        },
+        {
+          "include": "#operators"
+        },
+        {
+          "include": "#identifiers"
+        }
+      ]
+    },
+    "closures": {
+      "patterns": [
+        {
+          "name": "meta.closure.ril",
+          "begin": "(\\\\)(?=[\\sA-Za-z_\\-^])",
+          "beginCaptures": {
+            "1": {
+              "name": "storage.type.function.ril"
+            }
+          },
+          "end": "->",
+          "endCaptures": {
+            "0": {
+              "name": "storage.type.function.arrow.ril"
+            }
+          },
+          "patterns": [
+            {
+              "include": "#effects-and-state"
+            },
+            {
+              "name": "storage.modifier.ril",
+              "match": "\\^mut\\b|\\b(?:mut|ref|new|via)\\b"
+            },
+            {
+              "name": "variable.parameter.ril",
+              "match": "\\b[a-z_][a-z0-9_]*\\b"
+            },
+            {
+              "name": "support.type.ril",
+              "match": "\\b[A-Z][A-Za-z0-9_]*\\b"
+            },
+            {
+              "name": "keyword.operator.type.annotation.ril",
+              "match": ":"
+            }
+          ]
         }
       ]
     },
@@ -340,7 +496,7 @@
       "patterns": [
         {
           "name": "keyword.operator.pipeline.ril",
-          "match": "\\|>"
+          "match": "\\|\\?>|\\|>"
         },
         {
           "name": "storage.type.function.arrow.ril",
@@ -387,16 +543,24 @@
     "identifiers": {
       "patterns": [
         {
-          "name": "entity.name.namespace.ril",
+          "name": "support.class.ril",
           "match": "\\b[A-Z][A-Za-z0-9_]*(?=::)"
         },
         {
-          "name": "variable.other.constant.ril",
+          "name": "constant.other.enum.ril",
+          "match": "\\b(?:Some|None|Ok|Err|Panicked)\\b"
+        },
+        {
+          "name": "constant.other.constant.ril",
           "match": "\\b[A-Z][A-Z0-9_]*_[A-Z0-9_]*\\b|\\b[A-Z]{2,}[A-Z0-9]*\\b"
         },
         {
-          "name": "entity.name.type.ril",
+          "name": "support.type.ril",
           "match": "\\b[A-Z][A-Za-z0-9_]*\\b"
+        },
+        {
+          "name": "support.function.ril",
+          "match": "\\b(?:len|inner|clone|derive|absorb_panic|panic_message|type_name|fields|variants|compile_error|compile_error_code|panic|assert|print|println)(?=(?:<[^>\n]*>)?\\()"
         },
         {
           "name": "entity.name.function.ril",

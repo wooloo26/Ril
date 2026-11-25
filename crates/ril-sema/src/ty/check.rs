@@ -20,6 +20,19 @@ use super::{
 pub(super) const DEFAULT_BUDGET: u64 = 10_000;
 
 pub(super) fn check(hir: Program, budget: Option<u64>) -> Result<TypedProgram, Vec<Diagnostic>> {
+    let (program, diagnostics) = check_impl(hir, budget, false);
+    if diagnostics.is_empty() {
+        Ok(program)
+    } else {
+        Err(diagnostics)
+    }
+}
+
+pub(super) fn check_partial(hir: Program, budget: Option<u64>) -> (TypedProgram, Vec<Diagnostic>) {
+    check_impl(hir, budget, true)
+}
+
+fn check_impl(hir: Program, budget: Option<u64>, partial: bool) -> (TypedProgram, Vec<Diagnostic>) {
     let mut ck = Checker::new(&hir, budget);
     for (id, def) in hir.definitions() {
         if def.kind == DefinitionKind::Function && def.stmt.is_some() {
@@ -36,8 +49,40 @@ pub(super) fn check(hir: Program, budget: Option<u64>) -> Result<TypedProgram, V
     for (env, ty, span) in std::mem::take(&mut ck.pending_clone_checks) {
         ck.check_clone(&env, &ty, span, false);
     }
-    if !ck.diagnostics.is_empty() {
-        return Err(ck.diagnostics);
+    let mut diagnostics = std::mem::take(&mut ck.diagnostics);
+    if !partial && !diagnostics.is_empty() {
+        return (
+            TypedProgram {
+                hir,
+                types: HashMap::new(),
+                type_arguments: HashMap::new(),
+                bindings: HashMap::new(),
+                callables: BTreeMap::new(),
+                imported_functions: BTreeMap::new(),
+                static_values: HashMap::new(),
+                meta_calls: HashMap::new(),
+                static_folds: HashMap::new(),
+                static_conditions: HashMap::new(),
+                static_matches: HashMap::new(),
+                static_generic_arguments: HashMap::new(),
+                static_budget: 0,
+                meta_parameters: HashSet::new(),
+                inspection_scopes: HashMap::new(),
+                narrowings: HashMap::new(),
+                navigation_values: HashMap::new(),
+                propagation_inputs: HashMap::new(),
+                nominal_layouts: HashMap::new(),
+                effect_instances: BTreeMap::new(),
+                operation_effects: HashMap::new(),
+                operation_instances: HashMap::new(),
+                effect_applications: HashMap::new(),
+                subset_tags: HashMap::new(),
+                tuple_payloads: HashMap::new(),
+                receptions: HashMap::new(),
+                boxed_var_captures: std::collections::BTreeSet::new(),
+            },
+            diagnostics,
+        );
     }
     let types = std::mem::take(&mut ck.types)
         .into_iter()
@@ -139,9 +184,14 @@ pub(super) fn check(hir: Program, budget: Option<u64>) -> Result<TypedProgram, V
         receptions,
         boxed_var_captures: std::collections::BTreeSet::new(),
     };
-    program.validate_specializations()?;
+    if let Err(spec_diags) = program.validate_specializations() {
+        diagnostics.extend(spec_diags);
+    }
+    if !partial && !diagnostics.is_empty() {
+        return (program, diagnostics);
+    }
     program.boxed_var_captures = super::captures::collect_boxed_var_captures(&program.hir);
-    Ok(program)
+    (program, diagnostics)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

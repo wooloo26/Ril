@@ -401,3 +401,432 @@ fn lsp_prelude_definitions_jump_to_std_prelude_ril() -> Result<(), String> {
     }
     Ok(())
 }
+
+#[test]
+fn lsp_stdlib_bodyless_primitives_have_zero_diagnostics() -> Result<(), String> {
+    let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .canonicalize()
+        .map_err(|e| e.to_string())?;
+    let root_uri = format!("file://{}", repo_root.display());
+
+    let mut input = Vec::new();
+    input.extend(frame_lsp(&json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": { "rootUri": root_uri }
+    })));
+    let std_files = [
+        "std/prelude.ril",
+        "std/array.ril",
+        "std/string.ril",
+        "std/io.ril",
+        "std/fiber.ril",
+        "std/channel.ril",
+    ];
+    for rel in std_files {
+        let path = repo_root.join(rel);
+        let text = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+        let uri = format!("file://{}", path.display());
+        input.extend(frame_lsp(&json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": { "uri": uri, "languageId": "ril", "version": 1, "text": text }
+            }
+        })));
+    }
+    input.extend(frame_lsp(&json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "shutdown",
+        "params": null
+    })));
+    input.extend(frame_lsp(&json!({ "jsonrpc": "2.0", "method": "exit" })));
+
+    let mut output = Vec::new();
+    ril_lsp::handle_session(Cursor::new(input), &mut output)?;
+    let frames = parse_lsp_frames(&output)?;
+    assert_eq!(frames.len(), 2 + std_files.len());
+
+    for (idx, rel) in std_files.iter().enumerate() {
+        let diags = frames
+            .get(1 + idx)
+            .and_then(|v| v.pointer("/params/diagnostics"))
+            .and_then(Value::as_array)
+            .ok_or_else(|| format!("missing diagnostics for {rel}"))?;
+        assert!(
+            diags.is_empty(),
+            "expected zero diagnostics when opening {rel}, got: {diags:#?}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn lsp_pipeline_auto_suggestion_and_signature_help() -> Result<(), String> {
+    let uri = "file:///workspace/pkg/pipe_demo.ril";
+    let src = "\
+fn double_int(x: int) -> int { x * 2 }
+
+fn demo() -> () {
+    let nums = [1, 2, 3]
+    let text = \"hello world\"
+    let fallible: !<str, str> = Ok(\"hi\")
+    let _a = nums |> 
+    let _b = text |> 
+    let _c = fallible |?> 
+    let _d = nums |> mut 
+    let _e = nums.
+    let _f = nums |> Array::map(
+}
+";
+
+    let mut input = Vec::new();
+    input.extend(frame_lsp(&json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": { "initializationOptions": { "dotToPipe": true, "autoImport": true } }
+    })));
+    input.extend(frame_lsp(&json!({
+        "jsonrpc": "2.0",
+        "method": "textDocument/didOpen",
+        "params": {
+            "textDocument": { "uri": uri, "languageId": "ril", "version": 1, "text": src }
+        }
+    })));
+    // id 2: `nums |> ` (line 6, col 21)
+    input.extend(frame_lsp(&json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "textDocument/completion",
+        "params": { "textDocument": { "uri": uri }, "position": { "line": 6, "character": 21 } }
+    })));
+    // id 3: `text |> ` (line 7, col 21)
+    input.extend(frame_lsp(&json!({
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "textDocument/completion",
+        "params": { "textDocument": { "uri": uri }, "position": { "line": 7, "character": 21 } }
+    })));
+    // id 4: `fallible |?> ` (line 8, col 26)
+    input.extend(frame_lsp(&json!({
+        "jsonrpc": "2.0",
+        "id": 4,
+        "method": "textDocument/completion",
+        "params": { "textDocument": { "uri": uri }, "position": { "line": 8, "character": 26 } }
+    })));
+    // id 5: `nums |> mut ` (line 9, col 25)
+    input.extend(frame_lsp(&json!({
+        "jsonrpc": "2.0",
+        "id": 5,
+        "method": "textDocument/completion",
+        "params": { "textDocument": { "uri": uri }, "position": { "line": 9, "character": 25 } }
+    })));
+    // id 6: `nums.` dot-to-pipe (line 10, col 18)
+    input.extend(frame_lsp(&json!({
+        "jsonrpc": "2.0",
+        "id": 6,
+        "method": "textDocument/completion",
+        "params": { "textDocument": { "uri": uri }, "position": { "line": 10, "character": 18 } }
+    })));
+    // id 7: pipeline-aware signatureHelp on `nums |> Array::map(` (line 11, col 32)
+    input.extend(frame_lsp(&json!({
+        "jsonrpc": "2.0",
+        "id": 7,
+        "method": "textDocument/signatureHelp",
+        "params": { "textDocument": { "uri": uri }, "position": { "line": 11, "character": 32 } }
+    })));
+    input.extend(frame_lsp(&json!({ "jsonrpc": "2.0", "id": 8, "method": "shutdown", "params": null })));
+    input.extend(frame_lsp(&json!({ "jsonrpc": "2.0", "method": "exit" })));
+
+    let mut output = Vec::new();
+    ril_lsp::handle_session(Cursor::new(input), &mut output)?;
+    let frames = parse_lsp_frames(&output)?;
+
+    let labels = |frame_idx: usize| -> Vec<String> {
+        frames
+            .get(frame_idx)
+            .and_then(|v| v.pointer("/result/items"))
+            .and_then(Value::as_array)
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|it| it.get("label").and_then(Value::as_str).map(str::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+
+    // `nums |> ` suggests Array functions + `len`, NOT String::split or double_int
+    let nums_labels = labels(2);
+    assert!(
+        nums_labels.iter().any(|l| l == "Array::map")
+            && nums_labels.iter().any(|l| l == "mut Array::push")
+            && nums_labels.iter().any(|l| l == "len"),
+        "expected Array::map, mut Array::push, len for []int pipeline, got: {nums_labels:?}"
+    );
+    assert!(
+        !nums_labels.iter().any(|l| l == "String::split" || l == "double_int"),
+        "should not recommend incompatible String::split/double_int for []int: {nums_labels:?}"
+    );
+
+    // `text |> ` suggests String functions + `len`, NOT Array::map
+    let text_labels = labels(3);
+    assert!(
+        text_labels.iter().any(|l| l == "String::split")
+            && text_labels.iter().any(|l| l == "String::starts_with")
+            && text_labels.iter().any(|l| l == "len"),
+        "expected String::split/starts_with/len for str pipeline, got: {text_labels:?}"
+    );
+    assert!(
+        !text_labels.iter().any(|l| l == "Array::map"),
+        "should not recommend Array::map for str: {text_labels:?}"
+    );
+
+    // `fallible |?> ` unwraps `!<str, str>` -> `str` and suggests `String::split` + auto-import `File::read`
+    let prop_items = frames
+        .get(4)
+        .and_then(|v| v.pointer("/result/items"))
+        .and_then(Value::as_array)
+        .ok_or("missing |?> completion items")?;
+    let prop_labels: Vec<&str> = prop_items
+        .iter()
+        .filter_map(|it| it.get("label").and_then(Value::as_str))
+        .collect();
+    assert!(
+        prop_labels.contains(&"String::split"),
+        "expected unwrapped str suggestions for |?>, got: {prop_labels:?}"
+    );
+    let file_read = prop_items
+        .iter()
+        .find(|it| it.get("label").and_then(Value::as_str) == Some("File::read"));
+    assert!(
+        file_read
+            .and_then(|it| it.pointer("/additionalTextEdits/0/newText"))
+            .and_then(Value::as_str)
+            == Some("use ril/file\n"),
+        "expected auto-import edit for File::read, got: {file_read:?}"
+    );
+
+    // `nums |> mut ` omits duplicate `mut` prefix on Array::push
+    let mut_labels = labels(5);
+    assert!(
+        mut_labels.iter().any(|l| l == "Array::push")
+            && !mut_labels.iter().any(|l| l == "mut Array::push"),
+        "expected Array::push without duplicate mut, got: {mut_labels:?}"
+    );
+
+    // `nums.` dot-to-pipe offers `|> Array::map` rewriting `.` into ` |> Array::map(...)`
+    let dot_items = frames
+        .get(6)
+        .and_then(|v| v.pointer("/result/items"))
+        .and_then(Value::as_array)
+        .ok_or("missing dot-to-pipe items")?;
+    assert!(
+        dot_items.iter().any(|it| {
+            it.get("label").and_then(Value::as_str) == Some("|> Array::map")
+                && it
+                    .pointer("/textEdit/newText")
+                    .and_then(Value::as_str)
+                    .is_some_and(|t| t.starts_with(" |> Array::map("))
+        }),
+        "expected dot-to-pipe rewrite for Array::map, got: {dot_items:?}"
+    );
+
+    // Pipeline-aware signatureHelp skips param 0 (`xs`) and highlights param 1 (`f`)
+    assert_eq!(
+        frames
+            .get(7)
+            .and_then(|v| v.pointer("/result/activeParameter")),
+        Some(&json!(1)),
+        "expected activeParameter == 1 in piped Array::map(, got: {:?}",
+        frames.get(7)
+    );
+    Ok(())
+}
+
+#[test]
+fn lsp_semantic_tokens_navigation_symbols_inlay_and_code_actions() -> Result<(), String> {
+    let uri = "file:///workspace/pkg/ide_demo.ril";
+    let src = "\
+-- Adds one to an integer.
+fn inc(n: int) -> int {
+    n + 1
+}
+
+fn main() -> () {
+    let base = 41
+    let res = inc(base)
+    let opt = Some(res)
+    assert(opt == Some(42))
+}
+";
+
+    let mut input = Vec::new();
+    input.extend(frame_lsp(&json!({ "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {} })));
+    input.extend(frame_lsp(&json!({
+        "jsonrpc": "2.0",
+        "method": "textDocument/didOpen",
+        "params": { "textDocument": { "uri": uri, "languageId": "ril", "version": 1, "text": src } }
+    })));
+    // id 2: semantic tokens
+    input.extend(frame_lsp(&json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "textDocument/semanticTokens/full",
+        "params": { "textDocument": { "uri": uri } }
+    })));
+    // id 3: hover on `inc` call (line 7, col 15) — should include doc comment!
+    input.extend(frame_lsp(&json!({
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "textDocument/hover",
+        "params": { "textDocument": { "uri": uri }, "position": { "line": 7, "character": 15 } }
+    })));
+    // id 4: references for `inc`
+    input.extend(frame_lsp(&json!({
+        "jsonrpc": "2.0",
+        "id": 4,
+        "method": "textDocument/references",
+        "params": {
+            "textDocument": { "uri": uri },
+            "position": { "line": 1, "character": 4 },
+            "context": { "includeDeclaration": true }
+        }
+    })));
+    // id 5: rename `inc` -> `increment`
+    input.extend(frame_lsp(&json!({
+        "jsonrpc": "2.0",
+        "id": 5,
+        "method": "textDocument/rename",
+        "params": {
+            "textDocument": { "uri": uri },
+            "position": { "line": 1, "character": 4 },
+            "newName": "increment"
+        }
+    })));
+    // id 6: documentSymbol
+    input.extend(frame_lsp(&json!({
+        "jsonrpc": "2.0",
+        "id": 6,
+        "method": "textDocument/documentSymbol",
+        "params": { "textDocument": { "uri": uri } }
+    })));
+    // id 7: inlayHint
+    input.extend(frame_lsp(&json!({
+        "jsonrpc": "2.0",
+        "id": 7,
+        "method": "textDocument/inlayHint",
+        "params": {
+            "textDocument": { "uri": uri },
+            "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 12, "character": 0 } }
+        }
+    })));
+    // id 8: codeAction quickfix for missing `use ril/fiber`
+    input.extend(frame_lsp(&json!({
+        "jsonrpc": "2.0",
+        "id": 8,
+        "method": "textDocument/codeAction",
+        "params": {
+            "textDocument": { "uri": uri },
+            "range": { "start": { "line": 7, "character": 0 }, "end": { "line": 7, "character": 10 } },
+            "context": {
+                "diagnostics": [{
+                    "range": { "start": { "line": 7, "character": 0 }, "end": { "line": 7, "character": 5 } },
+                    "severity": 1,
+                    "code": "E0204",
+                    "message": "cannot resolve Fiber"
+                }]
+            }
+        }
+    })));
+    input.extend(frame_lsp(&json!({ "jsonrpc": "2.0", "id": 9, "method": "shutdown", "params": null })));
+    input.extend(frame_lsp(&json!({ "jsonrpc": "2.0", "method": "exit" })));
+
+    let mut output = Vec::new();
+    ril_lsp::handle_session(Cursor::new(input), &mut output)?;
+    let frames = parse_lsp_frames(&output)?;
+
+    // Semantic tokens non-empty & multiple of 5, containing parameter token (type index 4)
+    let sem_data = frames
+        .get(2)
+        .and_then(|v| v.pointer("/result/data"))
+        .and_then(Value::as_array)
+        .ok_or("missing semanticTokens data")?;
+    assert!(!sem_data.is_empty() && sem_data.len() % 5 == 0);
+    let has_param_token = sem_data
+        .chunks_exact(5)
+        .any(|c| c.get(3).and_then(Value::as_u64) == Some(4));
+    assert!(has_param_token, "expected parameter semantic token (type=4)");
+
+    // Hover includes doc comment
+    let hover_val = frames
+        .get(3)
+        .and_then(|v| v.pointer("/result/contents/value"))
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    assert!(
+        hover_val.contains("fn inc") && hover_val.contains("Adds one to an integer."),
+        "expected doc comment in hover, got: {hover_val}"
+    );
+
+    // References finds both declaration and call site (>= 2)
+    let refs = frames
+        .get(4)
+        .and_then(|v| v.get("result"))
+        .and_then(Value::as_array)
+        .ok_or("missing references")?;
+    assert!(refs.len() >= 2, "expected >= 2 references for inc, got: {refs:?}");
+
+    // Rename produces edits at both declaration and call site
+    let rename_edits = frames
+        .get(5)
+        .and_then(|v| v.pointer("/result/changes"))
+        .and_then(|c| c.get(uri))
+        .and_then(Value::as_array)
+        .ok_or("missing rename edits")?;
+    assert_eq!(rename_edits.len(), 2, "expected 2 rename edits: {rename_edits:?}");
+
+    // Document symbols contain `inc` and `main`
+    let syms = frames
+        .get(6)
+        .and_then(|v| v.get("result"))
+        .and_then(Value::as_array)
+        .ok_or("missing document symbols")?;
+    let sym_names: Vec<&str> = syms
+        .iter()
+        .filter_map(|s| s.get("name").and_then(Value::as_str))
+        .collect();
+    assert!(sym_names.contains(&"inc") && sym_names.contains(&"main"));
+
+    // Inlay hints contain `: int` for `let base = 41`
+    let hints = frames
+        .get(7)
+        .and_then(|v| v.get("result"))
+        .and_then(Value::as_array)
+        .ok_or("missing inlay hints")?;
+    assert!(
+        hints
+            .iter()
+            .any(|h| h.get("label").and_then(Value::as_str) == Some(": int")),
+        "expected `: int` inlay hint, got: {hints:?}"
+    );
+
+    // Code action quickfix imports `ril/fiber`
+    let actions = frames
+        .get(8)
+        .and_then(|v| v.get("result"))
+        .and_then(Value::as_array)
+        .ok_or("missing code actions")?;
+    assert!(
+        actions.iter().any(|a| {
+            a.get("title")
+                .and_then(Value::as_str)
+                .is_some_and(|t| t.contains("ril/fiber"))
+        }),
+        "expected Import ril/fiber code action, got: {actions:?}"
+    );
+    Ok(())
+}

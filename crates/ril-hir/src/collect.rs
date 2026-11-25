@@ -19,6 +19,21 @@ use crate::{
 };
 
 pub fn lower(files: Vec<File>, entry: FileId) -> Result<Program, Vec<Diagnostic>> {
+    let (program, errors) = lower_impl(files, entry, false);
+    if errors.is_empty() {
+        Ok(program)
+    } else {
+        Err(errors)
+    }
+}
+
+/// Lowering variant for IDE/LSP use that always returns the partially resolved
+/// `Program` alongside any HIR diagnostics.
+pub fn lower_partial(files: Vec<File>, entry: FileId) -> (Program, Vec<Diagnostic>) {
+    lower_impl(files, entry, true)
+}
+
+fn lower_impl(files: Vec<File>, entry: FileId, partial: bool) -> (Program, Vec<Diagnostic>) {
     let mut program = Program {
         files: files.into_iter().map(|file| (file.id.0, file)).collect(),
         modules: BTreeMap::new(),
@@ -54,6 +69,23 @@ pub fn lower(files: Vec<File>, entry: FileId) -> Result<Program, Vec<Diagnostic>
     let mut errors = Vec::new();
     let mut imports = Vec::new();
     for (id, path, kind, items) in units {
+        if let Some(std_key) = builtins::std_import_key(&path) {
+            program.stdlib_files.insert(id);
+            if std_key == "ril/prelude" {
+                let root = program.prelude;
+                program.scope_mut(root).file = id;
+                program.roots.insert(id.0, root);
+                program.modules.insert(PathBuf::from(std_key), root);
+                program.collect(root, &items, &mut imports, &mut errors);
+                continue;
+            }
+            let root = program.new_scope(id, "ril".into(), None, Visibility::Public);
+            program.scope_mut(root).primitive_module = builtins::module(&path);
+            program.roots.insert(id.0, root);
+            program.modules.insert(PathBuf::from(std_key), root);
+            program.collect(root, &items, &mut imports, &mut errors);
+            continue;
+        }
         let package = mount(&path).to_owned();
         let has_pub = items.iter().any(|&id_stmt| {
             program.file(id).ast.stmt(id_stmt).value.visibility == Visibility::Public
@@ -87,16 +119,12 @@ pub fn lower(files: Vec<File>, entry: FileId) -> Result<Program, Vec<Diagnostic>
     }
     program.attach_stdlib(&mut imports, &mut errors);
     program.load_imports(imports, &mut errors);
-    if errors.is_empty() {
+    if errors.is_empty() || partial {
         walk::check(&mut program, &mut errors);
         program.resolve_effect_spreads(&mut errors);
         program.finalize_indices();
     }
-    if errors.is_empty() {
-        Ok(program)
-    } else {
-        Err(errors)
-    }
+    (program, errors)
 }
 
 fn mount(path: &Path) -> &str {

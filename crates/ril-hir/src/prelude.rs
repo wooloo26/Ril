@@ -45,6 +45,9 @@ impl Program {
     ) {
         for module in builtins::stdlib_modules() {
             let key = PathBuf::from(module.import_key);
+            if self.modules.contains_key(&key) {
+                continue;
+            }
             if module.module_name == "Prelude" {
                 let file = module.file.clone();
                 let id = file.id;
@@ -55,9 +58,6 @@ impl Program {
                 self.roots.insert(id.0, self.prelude);
                 self.modules.entry(key).or_insert(self.prelude);
                 self.collect(self.prelude, &items, imports, errors);
-                continue;
-            }
-            if self.modules.contains_key(&key) {
                 continue;
             }
             let file = module.file.clone();

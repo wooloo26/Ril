@@ -6,6 +6,30 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
+const SEMANTIC_TOKEN_TYPES = [
+  "namespace",
+  "type",
+  "typeParameter",
+  "function",
+  "parameter",
+  "variable",
+  "property",
+  "enumMember",
+  "macro",
+];
+
+const SEMANTIC_TOKEN_MODIFIERS = [
+  "declaration",
+  "readonly",
+  "modification",
+  "defaultLibrary",
+];
+
+const SEMANTIC_LEGEND = new vscode.SemanticTokensLegend(
+  SEMANTIC_TOKEN_TYPES,
+  SEMANTIC_TOKEN_MODIFIERS
+);
+
 /** @type {RilLspClient | null} */
 let activeClient = null;
 /** @type {vscode.OutputChannel | null} */
@@ -29,6 +53,15 @@ function resolveCargoBinary() {
     return homeCargo;
   }
   return "cargo";
+}
+
+function readRilSettings() {
+  const cfg = vscode.workspace.getConfiguration("ril");
+  return {
+    dotToPipe: cfg.get("completion.dotToPipe", true),
+    autoImport: cfg.get("completion.autoImport", true),
+    inlayHints: cfg.get("inlayHints.enable", true),
+  };
 }
 
 function resolveServerCommand(workspaceRoot) {
@@ -83,6 +116,13 @@ function toVscodeRange(range) {
   );
 }
 
+function toLspRange(range) {
+  return {
+    start: { line: range.start.line, character: range.start.character },
+    end: { line: range.end.line, character: range.end.character },
+  };
+}
+
 function toVscodeSeverity(severity) {
   switch (severity) {
     case 1:
@@ -96,6 +136,68 @@ function toVscodeSeverity(severity) {
     default:
       return vscode.DiagnosticSeverity.Error;
   }
+}
+
+function toLspSeverity(severity) {
+  switch (severity) {
+    case vscode.DiagnosticSeverity.Error:
+      return 1;
+    case vscode.DiagnosticSeverity.Warning:
+      return 2;
+    case vscode.DiagnosticSeverity.Information:
+      return 3;
+    case vscode.DiagnosticSeverity.Hint:
+      return 4;
+    default:
+      return 1;
+  }
+}
+
+function toVscodeCompletionKind(kind) {
+  // LSP CompletionItemKind is 1-based, VS Code CompletionItemKind is 0-based.
+  if (typeof kind === "number" && kind >= 1) {
+    return kind - 1;
+  }
+  return vscode.CompletionItemKind.Text;
+}
+
+function toVscodeSymbolKind(kind) {
+  // LSP SymbolKind is 1-based, VS Code SymbolKind is 0-based.
+  if (typeof kind === "number" && kind >= 1) {
+    return kind - 1;
+  }
+  return vscode.SymbolKind.Variable;
+}
+
+function toVscodeDocumentSymbol(sym) {
+  const ds = new vscode.DocumentSymbol(
+    sym.name || "",
+    sym.detail || "",
+    toVscodeSymbolKind(sym.kind),
+    toVscodeRange(sym.range),
+    toVscodeRange(sym.selectionRange || sym.range)
+  );
+  if (Array.isArray(sym.children)) {
+    ds.children = sym.children.map(toVscodeDocumentSymbol);
+  }
+  return ds;
+}
+
+function toVscodeWorkspaceEdit(lspEdit) {
+  const edit = new vscode.WorkspaceEdit();
+  if (lspEdit && lspEdit.changes) {
+    for (const [uriStr, edits] of Object.entries(lspEdit.changes)) {
+      const uri = vscode.Uri.parse(uriStr);
+      if (Array.isArray(edits)) {
+        for (const e of edits) {
+          if (e && e.range && typeof e.newText === "string") {
+            edit.replace(uri, toVscodeRange(e.range), e.newText);
+          }
+        }
+      }
+    }
+  }
+  return edit;
 }
 
 class RilLspClient {
@@ -142,6 +244,7 @@ class RilLspClient {
       this.out.appendLine(`[ril-lsp] exited (code=${code}, signal=${signal})`);
       this.rejectAll(new Error(`ril lsp exited (${code})`));
       this.proc = null;
+      this.initialized = false;
     });
 
     const rootUri = this.workspaceRoot
@@ -151,7 +254,19 @@ class RilLspClient {
     this.ready = this.request("initialize", {
       processId: process.pid,
       rootUri,
-      capabilities: {},
+      initializationOptions: readRilSettings(),
+      capabilities: {
+        textDocument: {
+          completion: {
+            completionItem: { snippetSupport: true },
+          },
+          semanticTokens: {
+            requests: { full: true },
+            tokenTypes: SEMANTIC_TOKEN_TYPES,
+            tokenModifiers: SEMANTIC_TOKEN_MODIFIERS,
+          },
+        },
+      },
     }).then(() => {
       this.notify("initialized", {});
       this.initialized = true;
@@ -280,8 +395,21 @@ class RilLspClient {
     });
   }
 
+  didClose(doc) {
+    this.notify("textDocument/didClose", {
+      textDocument: { uri: doc.uri.toString() },
+    });
+  }
+
+  didChangeConfiguration() {
+    this.notify("workspace/didChangeConfiguration", {
+      settings: { ril: readRilSettings() },
+    });
+  }
+
   async stop() {
     this.disposed = true;
+    this.initialized = false;
     if (!this.proc) {
       return;
     }
@@ -342,6 +470,11 @@ function activate(context) {
       diagnostics.clear();
       await startClient();
     }),
+    vscode.workspace.onDidChangeConfiguration((e) => {
+      if (e.affectsConfiguration("ril") && activeClient && activeClient.initialized) {
+        activeClient.didChangeConfiguration();
+      }
+    }),
     vscode.workspace.onDidOpenTextDocument((doc) => {
       if (doc.languageId === "ril" && activeClient && activeClient.initialized) {
         activeClient.didOpen(doc);
@@ -355,8 +488,132 @@ function activate(context) {
     vscode.workspace.onDidCloseTextDocument((doc) => {
       if (doc.languageId === "ril") {
         diagnostics.delete(doc.uri);
+        if (activeClient && activeClient.initialized) {
+          activeClient.didClose(doc);
+        }
       }
     }),
+    vscode.languages.registerCompletionItemProvider(
+      selector,
+      {
+        async provideCompletionItems(doc, position, _token, ctx) {
+          try {
+            const client = await ensureReady();
+            if (!client) return [];
+            const res = await client.request("textDocument/completion", {
+              textDocument: { uri: doc.uri.toString() },
+              position: { line: position.line, character: position.character },
+              context: {
+                triggerKind: ctx.triggerKind + 1,
+                triggerCharacter: ctx.triggerCharacter,
+              },
+            });
+            const rawItems = Array.isArray(res)
+              ? res
+              : res && Array.isArray(res.items)
+              ? res.items
+              : [];
+            return rawItems.map((it) => {
+              const item = new vscode.CompletionItem(
+                it.label || "",
+                toVscodeCompletionKind(it.kind)
+              );
+              if (it.detail) item.detail = it.detail;
+              if (it.sortText) item.sortText = it.sortText;
+              if (it.filterText) item.filterText = it.filterText;
+              if (it.documentation) {
+                const val =
+                  typeof it.documentation === "string"
+                    ? it.documentation
+                    : it.documentation.value || "";
+                if (val) item.documentation = new vscode.MarkdownString(val);
+              }
+              const isSnippet = it.insertTextFormat === 2;
+              if (it.textEdit && it.textEdit.range && typeof it.textEdit.newText === "string") {
+                item.range = toVscodeRange(it.textEdit.range);
+                item.insertText = isSnippet
+                  ? new vscode.SnippetString(it.textEdit.newText)
+                  : it.textEdit.newText;
+              } else if (typeof it.insertText === "string") {
+                item.insertText = isSnippet
+                  ? new vscode.SnippetString(it.insertText)
+                  : it.insertText;
+              }
+              if (Array.isArray(it.additionalTextEdits)) {
+                item.additionalTextEdits = it.additionalTextEdits
+                  .filter((e) => e && e.range && typeof e.newText === "string")
+                  .map(
+                    (e) =>
+                      new vscode.TextEdit(toVscodeRange(e.range), e.newText)
+                  );
+              }
+              return item;
+            });
+          } catch {
+            return [];
+          }
+        },
+      },
+      ".",
+      ":",
+      ">",
+      "/",
+      "@"
+    ),
+    vscode.languages.registerSignatureHelpProvider(
+      selector,
+      {
+        async provideSignatureHelp(doc, position) {
+          try {
+            const client = await ensureReady();
+            if (!client) return null;
+            const res = await client.request("textDocument/signatureHelp", {
+              textDocument: { uri: doc.uri.toString() },
+              position: { line: position.line, character: position.character },
+            });
+            if (!res || !Array.isArray(res.signatures) || res.signatures.length === 0) {
+              return null;
+            }
+            const help = new vscode.SignatureHelp();
+            help.activeSignature = res.activeSignature || 0;
+            help.activeParameter = res.activeParameter || 0;
+            help.signatures = res.signatures.map((sig) => {
+              const info = new vscode.SignatureInformation(sig.label || "");
+              if (Array.isArray(sig.parameters)) {
+                info.parameters = sig.parameters.map(
+                  (p) => new vscode.ParameterInformation(p.label || "")
+                );
+              }
+              return info;
+            });
+            return help;
+          } catch {
+            return null;
+          }
+        },
+      },
+      "(",
+      ","
+    ),
+    vscode.languages.registerDocumentSemanticTokensProvider(
+      selector,
+      {
+        async provideDocumentSemanticTokens(doc) {
+          try {
+            const client = await ensureReady();
+            if (!client) return null;
+            const res = await client.request("textDocument/semanticTokens/full", {
+              textDocument: { uri: doc.uri.toString() },
+            });
+            if (!res || !Array.isArray(res.data)) return null;
+            return new vscode.SemanticTokens(new Uint32Array(res.data));
+          } catch {
+            return null;
+          }
+        },
+      },
+      SEMANTIC_LEGEND
+    ),
     vscode.languages.registerHoverProvider(selector, {
       async provideHover(doc, position) {
         try {
@@ -402,6 +659,168 @@ function activate(context) {
         }
       },
     }),
+    vscode.languages.registerReferenceProvider(selector, {
+      async provideReferences(doc, position, ctx) {
+        try {
+          const client = await ensureReady();
+          if (!client) return [];
+          const res = await client.request("textDocument/references", {
+            textDocument: { uri: doc.uri.toString() },
+            position: { line: position.line, character: position.character },
+            context: { includeDeclaration: !!ctx.includeDeclaration },
+          });
+          if (!Array.isArray(res)) return [];
+          return res
+            .filter((loc) => loc && loc.uri && loc.range)
+            .map(
+              (loc) =>
+                new vscode.Location(vscode.Uri.parse(loc.uri), toVscodeRange(loc.range))
+            );
+        } catch {
+          return [];
+        }
+      },
+    }),
+    vscode.languages.registerRenameProvider(selector, {
+      async prepareRename(doc, position) {
+        const client = await ensureReady();
+        if (!client) throw new Error("Ril Language Server is not running");
+        const res = await client.request("textDocument/prepareRename", {
+          textDocument: { uri: doc.uri.toString() },
+          position: { line: position.line, character: position.character },
+        });
+        if (!res || !res.range) {
+          throw new Error("Cannot rename this symbol");
+        }
+        return {
+          range: toVscodeRange(res.range),
+          placeholder: res.placeholder || "",
+        };
+      },
+      async provideRenameEdits(doc, position, newName) {
+        try {
+          const client = await ensureReady();
+          if (!client) return null;
+          const res = await client.request("textDocument/rename", {
+            textDocument: { uri: doc.uri.toString() },
+            position: { line: position.line, character: position.character },
+            newName,
+          });
+          return res ? toVscodeWorkspaceEdit(res) : null;
+        } catch {
+          return null;
+        }
+      },
+    }),
+    vscode.languages.registerDocumentSymbolProvider(selector, {
+      async provideDocumentSymbols(doc) {
+        try {
+          const client = await ensureReady();
+          if (!client) return [];
+          const res = await client.request("textDocument/documentSymbol", {
+            textDocument: { uri: doc.uri.toString() },
+          });
+          if (!Array.isArray(res)) return [];
+          return res.map(toVscodeDocumentSymbol);
+        } catch {
+          return [];
+        }
+      },
+    }),
+    vscode.languages.registerWorkspaceSymbolProvider({
+      async provideWorkspaceSymbols(query) {
+        try {
+          const client = await ensureReady();
+          if (!client) return [];
+          const res = await client.request("workspace/symbol", { query });
+          if (!Array.isArray(res)) return [];
+          return res
+            .filter((s) => s && s.location && s.location.uri && s.location.range)
+            .map(
+              (s) =>
+                new vscode.SymbolInformation(
+                  s.name || "",
+                  toVscodeSymbolKind(s.kind),
+                  "",
+                  new vscode.Location(
+                    vscode.Uri.parse(s.location.uri),
+                    toVscodeRange(s.location.range)
+                  )
+                )
+            );
+        } catch {
+          return [];
+        }
+      },
+    }),
+    vscode.languages.registerInlayHintsProvider(selector, {
+      async provideInlayHints(doc, range) {
+        try {
+          const client = await ensureReady();
+          if (!client) return [];
+          const res = await client.request("textDocument/inlayHint", {
+            textDocument: { uri: doc.uri.toString() },
+            range: toLspRange(range),
+          });
+          if (!Array.isArray(res)) return [];
+          return res
+            .filter((h) => h && h.position && h.label)
+            .map((h) => {
+              const hint = new vscode.InlayHint(
+                new vscode.Position(h.position.line, h.position.character),
+                h.label,
+                h.kind === 1
+                  ? vscode.InlayHintKind.Type
+                  : vscode.InlayHintKind.Parameter
+              );
+              hint.paddingLeft = !!h.paddingLeft;
+              hint.paddingRight = !!h.paddingRight;
+              return hint;
+            });
+        } catch {
+          return [];
+        }
+      },
+    }),
+    vscode.languages.registerCodeActionsProvider(
+      selector,
+      {
+        async provideCodeActions(doc, range, ctx) {
+          try {
+            const client = await ensureReady();
+            if (!client) return [];
+            const res = await client.request("textDocument/codeAction", {
+              textDocument: { uri: doc.uri.toString() },
+              range: toLspRange(range),
+              context: {
+                diagnostics: (ctx.diagnostics || []).map((d) => ({
+                  range: toLspRange(d.range),
+                  severity: toLspSeverity(d.severity),
+                  code: d.code,
+                  source: d.source,
+                  message: d.message,
+                })),
+              },
+            });
+            if (!Array.isArray(res)) return [];
+            return res.map((a) => {
+              const action = new vscode.CodeAction(
+                a.title || "Quick Fix",
+                vscode.CodeActionKind.QuickFix
+              );
+              action.isPreferred = !!a.isPreferred;
+              if (a.edit) {
+                action.edit = toVscodeWorkspaceEdit(a.edit);
+              }
+              return action;
+            });
+          } catch {
+            return [];
+          }
+        },
+      },
+      { providedCodeActionKinds: [vscode.CodeActionKind.QuickFix] }
+    ),
     vscode.languages.registerDocumentFormattingEditProvider(selector, {
       async provideDocumentFormattingEdits(doc, options) {
         try {

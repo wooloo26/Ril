@@ -30,6 +30,12 @@ pub fn check(hir: Program, budget: Option<u64>) -> Result<TypedProgram, Vec<Diag
     check::check(hir, budget)
 }
 
+/// Partial typecheck for IDE/LSP use: returns the best-effort `TypedProgram`
+/// alongside any type diagnostics.
+pub fn check_partial(hir: Program, budget: Option<u64>) -> (TypedProgram, Vec<Diagnostic>) {
+    check::check_partial(hir, budget)
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Ty {
     Unit,
@@ -310,7 +316,7 @@ impl TypedProgram {
         self.inspection_scopes.get(&span).copied()
     }
 
-    pub(crate) fn nominal_layout(&self, adt: &Adt) -> Option<Ty> {
+    pub fn nominal_layout(&self, adt: &Adt) -> Option<Ty> {
         let layout = self.nominal_layouts.get(&adt.definition)?;
         let definition = self.hir.definition(adt.definition);
         let ast = &self.hir.file(definition.name.span.file).ast;

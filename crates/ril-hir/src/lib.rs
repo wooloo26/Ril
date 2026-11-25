@@ -9,7 +9,7 @@ mod prelude;
 mod walk;
 
 pub use builtins::{PRIMITIVE_FNS, PRIMITIVE_TYPES, PrimitiveSpec, PrimitiveTypeSpec};
-pub use collect::lower;
+pub use collect::{lower, lower_partial};
 
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
@@ -196,6 +196,10 @@ impl File {
 
     pub fn source_text(&self) -> &str {
         self.source.text()
+    }
+
+    pub fn tokens(&self) -> &[Token] {
+        &self.tokens
     }
 
     pub fn is_interface(&self) -> bool {
@@ -479,6 +483,34 @@ impl Program {
             .get(&id.0)
             .copied()
             .unwrap_or_else(|| ril_source::ice!("missing module scope {}", id.0))
+    }
+
+    pub fn prelude_scope(&self) -> ScopeId {
+        self.prelude
+    }
+
+    pub fn scope_parent(&self, scope: ScopeId) -> Option<ScopeId> {
+        self.scope(scope).parent
+    }
+
+    pub fn scope_file(&self, scope: ScopeId) -> FileId {
+        self.scope(scope).file
+    }
+
+    pub fn scope_entries(&self, scope: ScopeId) -> Vec<(String, Resolution, Visibility)> {
+        self.scope(scope)
+            .names
+            .iter()
+            .map(|(name, entry)| (name.clone(), Resolution::from(entry.target), entry.visibility))
+            .collect()
+    }
+
+    pub fn module_scopes(&self) -> impl Iterator<Item = (&PathBuf, ScopeId)> {
+        self.modules.iter().map(|(k, &v)| (k, v))
+    }
+
+    pub fn is_visible(&self, owner: ScopeId, viewer: ScopeId, visibility: Visibility) -> bool {
+        self.visible(owner, viewer, visibility)
     }
 
     pub fn files(&self) -> impl Iterator<Item = &File> {

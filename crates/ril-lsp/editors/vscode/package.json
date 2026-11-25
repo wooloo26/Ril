@@ -1,7 +1,7 @@
 {
   "name": "ril-lang",
   "displayName": "Ril Language",
-  "description": "Syntax highlighting and local Language Server (ril lsp) integration for Ril (.ril / .d.ril)",
+  "description": "TypeScript-style Monokai syntax highlighting, semantic tokens, pipeline auto-suggestions, and local Language Server (ril lsp) for Ril (.ril / .d.ril)",
   "version": "0.1.0",
   "publisher": "ril-local",
   "engines": {
@@ -40,6 +40,46 @@
         "path": "./syntaxes/ril.tmLanguage.json"
       }
     ],
+    "semanticTokenScopes": [
+      {
+        "language": "ril",
+        "scopes": {
+          "parameter": [
+            "variable.parameter.ril"
+          ],
+          "type.declaration": [
+            "entity.name.type.ril"
+          ],
+          "type": [
+            "support.type.ril"
+          ],
+          "typeParameter": [
+            "support.type.ril"
+          ],
+          "namespace": [
+            "support.class.ril"
+          ],
+          "enumMember": [
+            "constant.other.enum.ril"
+          ],
+          "variable.readonly": [
+            "constant.other.constant.ril"
+          ],
+          "function.defaultLibrary": [
+            "support.function.ril"
+          ],
+          "function": [
+            "entity.name.function.ril"
+          ],
+          "macro": [
+            "entity.other.attribute-name.effect.ril"
+          ],
+          "property": [
+            "variable.other.property.ril"
+          ]
+        }
+      }
+    ],
     "commands": [
       {
         "command": "ril.restartServer",
@@ -63,6 +103,21 @@
             "lsp"
           ],
           "description": "Arguments passed to the `ril` binary when `ril.serverPath` is explicitly set."
+        },
+        "ril.completion.dotToPipe": {
+          "type": "boolean",
+          "default": true,
+          "description": "Suggest pipeable functions after `.` (rewriting `x.fn` into `x |> Mod::fn(...)`)."
+        },
+        "ril.completion.autoImport": {
+          "type": "boolean",
+          "default": true,
+          "description": "Include unimported `ril/*` stdlib and `pkg/*` modules in pipeline completions with automatic `use` insertion."
+        },
+        "ril.inlayHints.enable": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show inferred type inlay hints on unannotated `let`/`var` bindings and closure parameters."
         }
       }
     }

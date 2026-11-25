@@ -18,10 +18,6 @@
     [
       "(",
       ")"
-    ],
-    [
-      "<",
-      ">"
     ]
   ],
   "autoClosingPairs": [
@@ -75,9 +71,10 @@
       "\""
     ]
   ],
+  "autoCloseBefore": ";:.,=}])> \n\t",
   "indentationRules": {
-    "increaseIndentPattern": "^.*(\\{|\\(|\\[|->)\\s*(--.*)?$",
-    "decreaseIndentPattern": "^\\s*(\\}|\\)|\\]).*$"
+    "increaseIndentPattern": "^.*(\\{[^}]*|\\([^)]*|\\[[^\\]]*|->\\s*)$",
+    "decreaseIndentPattern": "^\\s*[\\}\\]\\)].*$"
   },
   "wordPattern": "[A-Za-z_][A-Za-z0-9_]*"
 }
