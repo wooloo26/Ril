@@ -45,6 +45,13 @@ pub use PanicError::Panicked
 
 pub opaque type Draft<T>
 
+pub type LenTarget = \T -> match <T> {
+    <str> | <bytes> | <Set<_>> -> <T>
+    <[let M]_> -> <T>
+    <[_: let M _]> -> <T>
+    _ -> <never>
+}
+
 pub fn len<T |> LenTarget>(via item: T) -> int
 pub fn inner<W |> NominalWrapper>(via wrapper: W) -> infer Unwrap<W>
 pub fn clone<T |> SharedObject>(via value: T) -> new T

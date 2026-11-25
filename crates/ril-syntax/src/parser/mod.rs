@@ -466,6 +466,7 @@ impl Parser<'_> {
             variable,
             mode,
             mode_path,
+            bind_mode: false,
         })
     }
 }

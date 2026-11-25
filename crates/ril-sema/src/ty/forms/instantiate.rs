@@ -173,11 +173,13 @@ impl Checker<'_> {
             }
             if let Some(GenericValue::Type(actual)) = supplied.get(&definition) {
                 let actual = self.normalize(actual);
+                local.allow_open_record = true;
                 let domain: Vec<_> = param
                     .bound
                     .iter()
                     .map(|&ty| self.type_expr(&mut local, ty))
                     .collect();
+                local.allow_open_record = false;
                 let allowed = domain.is_empty()
                     || domain
                         .iter()
@@ -401,21 +403,6 @@ impl Checker<'_> {
                             && !matches!(&ty, Ty::Adt(adt) if adt.kind == AdtKind::Foreign);
                         if !valid {
                             self.error(Code::E0301, span, "type does not satisfy SharedObject");
-                        }
-                    }
-                    "LenTarget" => {
-                        if !matches!(
-                            &ty,
-                            Ty::Str
-                                | Ty::Bytes
-                                | Ty::Array(_)
-                                | Ty::Map(..)
-                                | Ty::Set(_)
-                                | Ty::Unknown
-                                | Ty::Infer(_)
-                                | Ty::Param(_)
-                        ) {
-                            self.error(Code::E0301, span, "type does not satisfy LenTarget");
                         }
                     }
                     "Tuple" => {

@@ -178,6 +178,7 @@ pub struct Storage {
     pub variable: bool,
     pub mode: Mode,
     pub mode_path: Option<Path>,
+    pub bind_mode: bool,
 }
 
 #[derive(Clone, Debug)]

@@ -76,7 +76,15 @@ impl Parser<'_> {
                 self.open("(", ")", Layout::List)?;
                 let mut elements = self.list(")", |p| {
                     let storage = p.storage(false)?;
-                    Ok((storage, p.type_expr(pattern)?))
+                    let ty = p.type_expr(pattern)?;
+                    if matches!(p.text(), "@" | "&") {
+                        return Err(p.error(
+                            Code::E0333,
+                            p.current().span,
+                            "element effect/state belongs on a callable type",
+                        ));
+                    }
+                    Ok((storage, ty))
                 })?;
                 match elements.len() {
                     0 => Type::Unit,
@@ -246,11 +254,31 @@ impl Parser<'_> {
         record: bool,
         allow_bracket_mode: bool,
     ) -> Result<Storage> {
-        if pattern && self.eat("let") {
-            Ok(Storage {
-                mode_path: Some(self.path(Angle::None, false)?),
-                ..Storage::default()
-            })
+        if pattern && self.is("let") {
+            let checkpoint = (self.pos, self.split, self.last, self.delimiters.len());
+            self.bump();
+            if let Ok(path) = self.path(Angle::None, false) {
+                let is_mode = if record {
+                    true
+                } else if allow_bracket_mode {
+                    self.is("]")
+                } else {
+                    !matches!(
+                        self.text(),
+                        "]" | "," | ")" | ">" | "}" | ";" | ":" | "|" | "->" | "."
+                    ) && !matches!(self.current().kind, Kind::Newline | Kind::Eof)
+                };
+                if is_mode {
+                    return Ok(Storage {
+                        mode_path: Some(path),
+                        bind_mode: true,
+                        ..Storage::default()
+                    });
+                }
+            }
+            (self.pos, self.split, self.last) = (checkpoint.0, checkpoint.1, checkpoint.2);
+            self.delimiters.truncate(checkpoint.3);
+            Ok(Storage::default())
         } else if record {
             let mut storage = self.storage(true)?;
             if storage.mode_path.is_none()
@@ -261,20 +289,52 @@ impl Parser<'_> {
             }
             Ok(storage)
         } else {
+            if self.is("var") {
+                return Err(self.error(
+                    Code::E0356,
+                    self.current().span,
+                    "array and map elements cannot be var",
+                ));
+            }
             let mode = self.mode(&[Mode::Mut, Mode::Ref, Mode::Shared, Mode::Via]);
-            let mode_path = (allow_bracket_mode
+            let mode_path = if allow_bracket_mode
                 && mode == Mode::Plain
                 && matches!(
                     self.current().kind,
                     Kind::Word(Word::Pascal | Word::Constant)
                 )
-                && matches!(self.next_text(), "]" | "::"))
-            .then(|| self.path(Angle::None, false))
-            .transpose()?;
+                && matches!(self.next_text(), "]" | "::")
+            {
+                Some(self.path(Angle::None, false)?)
+            } else if !allow_bracket_mode
+                && mode == Mode::Plain
+                && matches!(
+                    self.current().kind,
+                    Kind::Word(Word::Pascal | Word::Constant)
+                )
+            {
+                let checkpoint = (self.pos, self.split, self.last, self.delimiters.len());
+                if let Ok(path) = self.path(Angle::None, false)
+                    && !matches!(
+                        self.text(),
+                        "]" | "," | ")" | ">" | "}" | ";" | ":" | "|" | "->" | "." | "<"
+                    )
+                    && !matches!(self.current().kind, Kind::Newline | Kind::Eof)
+                {
+                    Some(path)
+                } else {
+                    (self.pos, self.split, self.last) = (checkpoint.0, checkpoint.1, checkpoint.2);
+                    self.delimiters.truncate(checkpoint.3);
+                    None
+                }
+            } else {
+                None
+            };
             Ok(Storage {
                 variable: false,
                 mode,
                 mode_path,
+                bind_mode: false,
             })
         }
     }

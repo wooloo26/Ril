@@ -435,7 +435,7 @@ impl Lexer<'_> {
         if self
             .tokens
             .last()
-            .is_some_and(|tok| matches!(tok.text(self.source), "." | "?."))
+            .is_some_and(|tok| matches!(tok.text(self.source), "." | "?.") && tok.span.end == start)
         {
             self.pos += self.rest().bytes().take_while(u8::is_ascii_digit).count();
             self.emit(Kind::TupleIndex, start);

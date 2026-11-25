@@ -799,6 +799,131 @@ impl Walk<'_> {
         }
     }
 
+    fn bind_type_pattern_name(&mut self, name: &Name, alias: bool, seen: &mut HashSet<String>) {
+        if name.value == "_" {
+            return;
+        }
+        if alias {
+            self.resolve_name(name);
+            return;
+        }
+        if !seen.insert(name.value.clone()) {
+            self.report(
+                Code::E0203,
+                name.span,
+                format!("duplicate binding {}", name.value),
+            );
+            return;
+        }
+        self.declare(name, DefinitionKind::Generic, None, false);
+    }
+
+    fn ty_pattern_storage(&mut self, storage: &Storage, alias: bool, seen: &mut HashSet<String>) {
+        if storage.bind_mode
+            && let Some(path) = &storage.mode_path
+            && let [seg] = path.segments.as_slice()
+        {
+            self.bind_type_pattern_name(&seg.name, alias, seen);
+            if let Some(res) = self.program.resolve(seg.name.span) {
+                self.program.resolutions.insert(path.span, res);
+            }
+        } else {
+            self.storage(storage);
+        }
+    }
+
+    fn ty_pattern(&mut self, id: TypeId, alias: bool, seen: &mut HashSet<String>) {
+        match &self.ast.ty(id).value {
+            Type::PatternBinding(name) => self.bind_type_pattern_name(name, alias, seen),
+            Type::Named(path) => {
+                // Resolve base path segments, then walk nested generic args as type patterns.
+                let mut current = None;
+                for (index, segment) in path.segments.iter().enumerate() {
+                    for arg in &segment.arguments {
+                        match arg {
+                            GenericArg::Type(ty) => self.ty_pattern(*ty, alias, seen),
+                            GenericArg::Value(expr) => self.expr(*expr),
+                            GenericArg::Mode(storage) => {
+                                self.ty_pattern_storage(storage, alias, seen);
+                            }
+                        }
+                    }
+                    let target = if let Some(prev) = current {
+                        let Some(scope) = self.program.namespace(prev) else {
+                            self.report(
+                                Code::E0204,
+                                segment.name.span,
+                                format!("cannot access {} here", segment.name.value),
+                            );
+                            return;
+                        };
+                        match self
+                            .program
+                            .lookup(self.scope, scope, &segment.name, Code::E0204)
+                        {
+                            Ok(found) => found,
+                            Err(err) => {
+                                self.errors.push(err);
+                                return;
+                            }
+                        }
+                    } else if segment.name.value == "Super" {
+                        let Some(parent) = self.program.scope(self.scope).parent else {
+                            self.report(Code::E0204, segment.name.span, "no parent scope");
+                            return;
+                        };
+                        Target::Module(parent)
+                    } else {
+                        let Some(found) = self.resolve_name(&segment.name) else {
+                            return;
+                        };
+                        found
+                    };
+                    let res = match target {
+                        Target::Def(def) => Resolution::Definition(def),
+                        Target::Module(scope) => Resolution::Module(scope),
+                        Target::TypeAndModule(def, scope) => Resolution::TypeAndModule(def, scope),
+                    };
+                    self.program.resolutions.insert(segment.name.span, res);
+                    if index + 1 == path.segments.len() {
+                        self.program.resolutions.insert(path.span, res);
+                    }
+                    current = Some(target);
+                }
+            }
+            Type::Tuple(items) => {
+                for (mode, id) in items {
+                    self.ty_pattern_storage(mode, alias, seen);
+                    self.ty_pattern(*id, alias, seen);
+                }
+            }
+            Type::Array(mode, id) => {
+                self.ty_pattern_storage(mode, alias, seen);
+                self.ty_pattern(*id, alias, seen);
+            }
+            Type::Map(key, mode, value) => {
+                self.ty_pattern(*key, alias, seen);
+                self.ty_pattern_storage(mode, alias, seen);
+                self.ty_pattern(*value, alias, seen);
+            }
+            Type::Result(ok, err) => {
+                self.ty_pattern(*ok, alias, seen);
+                self.ty_pattern(*err, alias, seen);
+            }
+            Type::Option(id) => self.ty_pattern(*id, alias, seen),
+            Type::Record { fields, tail } => {
+                for field in fields {
+                    self.ty_pattern_storage(&field.storage, alias, seen);
+                    self.ty_pattern(field.ty, alias, seen);
+                }
+                if let Some(FieldTail::Named(name)) = tail {
+                    self.bind_type_pattern_name(name, alias, seen);
+                }
+            }
+            _ => self.ty(id),
+        }
+    }
+
     fn bind_pattern(&mut self, id: PatternId, alias: bool) {
         let mut seen = HashSet::new();
         self.bind_pattern_in(id, alias, &mut seen);
@@ -853,7 +978,7 @@ impl Walk<'_> {
                     self.bind_pattern_in(*binding, alias, seen);
                 }
             }
-            Pattern::Type(ty) => self.ty(*ty),
+            Pattern::Type(ty) => self.ty_pattern(*ty, alias, seen),
             Pattern::TypeBinding(name) => {
                 self.declare(name, DefinitionKind::Generic, None, false);
             }

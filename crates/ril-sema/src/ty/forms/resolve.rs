@@ -27,10 +27,26 @@ impl Checker<'_> {
             Type::Tuple(items) => Ty::Tuple(
                 items
                     .iter()
-                    .map(|(mode, ty)| self.member(env, mode, *ty))
+                    .map(|(mode, ty)| {
+                        let member = self.member(env, mode, *ty);
+                        if mode.variable || mode.mode != Mode::Plain || mode.mode_path.is_some() {
+                            self.error(
+                                Code::E0356,
+                                self.ast(env.file).ty(*ty).span,
+                                "tuple elements cannot carry member storage modes",
+                            );
+                        }
+                        member
+                    })
                     .collect(),
             ),
-            Type::Array(mode, item) => Ty::Array(Box::new(self.member(env, mode, *item))),
+            Type::Array(mode, item) => {
+                let member = self.member(env, mode, *item);
+                if member.mode.variable {
+                    self.error(Code::E0356, node.span, "array elements cannot be var");
+                }
+                Ty::Array(Box::new(member))
+            }
             Type::Map(key, mode, item) => {
                 let key = self.type_expr(env, *key);
                 if !self.eligible_key(env, &key, &mut HashSet::new()) {
@@ -40,7 +56,11 @@ impl Checker<'_> {
                         "map key type does not support stable equality",
                     );
                 }
-                Ty::Map(Box::new(key), Box::new(self.member(env, mode, *item)))
+                let member = self.member(env, mode, *item);
+                if member.mode.variable {
+                    self.error(Code::E0356, node.span, "map elements cannot be var");
+                }
+                Ty::Map(Box::new(key), Box::new(member))
             }
             Type::Result(ok, err) => Ty::Result(
                 Box::new(self.type_expr(env, *ok)),
@@ -85,6 +105,17 @@ impl Checker<'_> {
                     map.insert(field.name.value.clone(), member);
                 }
                 let mut open = tail.is_some();
+                if matches!(tail, Some(FieldTail::Open))
+                    && !env.allow_open_record
+                    && !env.checking_type_template
+                    && env.phase == Phase::Runtime
+                {
+                    self.error(
+                        Code::E0344,
+                        node.span,
+                        "open record tail is not permitted in a concrete type",
+                    );
+                }
                 if let Some(FieldTail::Named(name)) = tail
                     && let Some(tail) = self.resolve(name.span).and_then(|id| env.generics.get(&id))
                 {
@@ -231,7 +262,7 @@ impl Checker<'_> {
         let mode = self.member_mode(env, mode);
         if typed.is_value() && matches!(mode.mode, Mode::Mut | Mode::Shared | Mode::Ref) {
             self.error(
-                Code::E0356,
+                Code::E0402,
                 self.ast(env.file).ty(ty).span,
                 "value-type members cannot carry live access",
             );

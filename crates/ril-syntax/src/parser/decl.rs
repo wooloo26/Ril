@@ -122,6 +122,17 @@ impl Parser<'_> {
         };
         let top = matches!(context, Context::Module | Context::Sub);
         let foreign = self.kind == FileKind::Foreign;
+        if matches!(
+            context,
+            Context::Block | Context::BlockWhere | Context::SignatureWhere
+        ) && visibility != Visibility::Private
+        {
+            return Err(self.error(
+                Code::E0120,
+                start,
+                "visibility modifier is not allowed in local scope",
+            ));
+        }
         if context == Context::Module
             && self.kind == FileKind::Executable
             && visibility != Visibility::Private
@@ -498,9 +509,30 @@ impl Parser<'_> {
                         "type function in foreign declaration",
                     ));
                 }
+                if !generics.is_empty() {
+                    return Err(self.error(
+                        Code::E0120,
+                        self.last,
+                        "type function cannot also declare angle generic parameters",
+                    ));
+                }
                 let mut params = Vec::new();
                 loop {
-                    params.push(self.generic_param()?);
+                    let param = self.generic_param()?;
+                    if param
+                        .name
+                        .value
+                        .starts_with(|c: char| c.is_ascii_lowercase() || c == '_')
+                        && param.bound.is_empty()
+                        && param.guards.is_empty()
+                    {
+                        return Err(self.error(
+                            Code::E0544,
+                            param.name.span,
+                            "value type-function parameter requires a type or guard",
+                        ));
+                    }
+                    params.push(param);
                     if matches!(self.text(), "@" | "&") {
                         return Err(self.error(
                             Code::E0335,
@@ -528,6 +560,13 @@ impl Parser<'_> {
                     ));
                 }
                 let ty = self.ty()?;
+                if matches!(self.text(), "@" | "&") {
+                    return Err(self.error(
+                        Code::E0613,
+                        self.current().span,
+                        "type alias cannot carry effect or state clauses",
+                    ));
+                }
                 if self.is("|") {
                     return Err(self.error(
                         Code::E0318,
@@ -658,6 +697,16 @@ impl Parser<'_> {
             self.require("let")?;
         }
         let mode = self.mode(&[Mode::Mut, Mode::Ref, Mode::Shared, Mode::Via]);
+        if variable && mode == Mode::Via {
+            return Err(self.error(Code::E0403, self.last, "var binding cannot use via mode"));
+        }
+        if resource && !matches!(mode, Mode::Plain | Mode::Mut) {
+            return Err(self.error(
+                Code::E0532,
+                self.last,
+                "scoped resource binding only permits plain or mut mode",
+            ));
+        }
         if top && (resource || variable || mode != Mode::Plain) {
             return Err(self.error(
                 Code::E0906,
@@ -677,7 +726,7 @@ impl Parser<'_> {
             };
             self.ast.add_pattern(name.span, kind)
         } else {
-            if top && matches!(self.current().kind, Kind::Word(Word::Constant)) {
+            if matches!(self.current().kind, Kind::Word(Word::Constant)) {
                 return Err(self.error(
                     Code::E0101,
                     self.current().span,
@@ -718,6 +767,13 @@ impl Parser<'_> {
         };
         self.continue_lines(|tok| tok == "else");
         let fallback = if self.eat("else") {
+            if variable || resource || is_meta {
+                return Err(self.error(
+                    Code::E0120,
+                    self.last,
+                    "else fallback is only permitted on let bindings",
+                ));
+            }
             self.skip_lines();
             Some(self.block()?)
         } else {
@@ -728,6 +784,7 @@ impl Parser<'_> {
                 variable,
                 mode,
                 mode_path: None,
+                bind_mode: false,
             },
             pattern,
             ty,

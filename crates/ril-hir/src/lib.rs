@@ -1382,7 +1382,6 @@ const LANGUAGE_PRIMITIVES: &[(PrimitivePhase, &[&str])] = &[
         &[
             "SharedObject",
             "Sendable",
-            "LenTarget",
             "Tuple",
             "NominalWrapper",
             "Unwrap",

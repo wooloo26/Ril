@@ -392,9 +392,12 @@ impl<'a> Analyzer<'a> {
             );
         }
         if ledger.iteration.iter().any(|iterable| {
-            value
-                .origins()
-                .any(|value| iterable.origins().any(|iterator| value.overlaps(iterator)))
+            value.origins().any(|written| {
+                iterable.origins().any(|iterator| {
+                    written.overlaps(iterator)
+                        && written.region.selection.len() <= iterator.region.selection.len()
+                })
+            })
         }) {
             self.error(Code::E0526, span, "collection is already being iterated");
         }

@@ -186,6 +186,7 @@ impl<'a> BodyBuilder<'a> {
                             variable: false,
                             mode: Mode::Plain,
                             mode_path: None,
+                            bind_mode: false,
                         };
                         self.record_local(def, name.span, st.clone());
                         if let Some(bound) = bound_in_closure.as_deref_mut() {
@@ -577,6 +578,7 @@ impl<'a> BodyBuilder<'a> {
                                 variable: false,
                                 mode: param.mode,
                                 mode_path: None,
+                                bind_mode: false,
                             },
                         );
                     }

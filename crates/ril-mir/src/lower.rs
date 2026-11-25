@@ -1201,7 +1201,22 @@ impl<'a> Builder<'_, 'a> {
                     .collect::<Result<Vec<_>>>()?;
                 self.tag(tag, items)
             }
-            Value::Type(_) | Value::Mode(_) => {
+            Value::Mode(mode) => {
+                use ril_sema::syntax::Mode;
+                let tag = match (mode.variable, mode.mode) {
+                    (false, Mode::Plain) => "Let",
+                    (true, Mode::Plain) => "Var",
+                    (false, Mode::Mut) => "Mut",
+                    (false, Mode::Shared) => "SharedMut",
+                    (false, Mode::Ref) => "Ref",
+                    (true, Mode::Mut) => "VarMut",
+                    (true, Mode::Shared) => "VarSharedMut",
+                    (true, Mode::Ref) => "VarRef",
+                    _ => "Let",
+                };
+                self.tag(tag, Vec::new())
+            }
+            Value::Type(_) => {
                 return Err(self.unsupported(span, "static-only value in runtime code"));
             }
         })

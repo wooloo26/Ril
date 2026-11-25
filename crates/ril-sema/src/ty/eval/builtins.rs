@@ -137,8 +137,16 @@ impl Checker<'_> {
             }
             ("type_name", [Value::Type(ty)]) => Ok(Value::Str(ty.display(self.hir).to_string())),
             ("coords", [Value::Type(ty)]) => self.eval_coords(env, ty, span),
-            ("variants", [Value::Type(ty)]) => {
-                if let Ty::Adt(adt) = ty.as_ref() {
+            ("variants", [Value::Type(ty)]) => match self.normalize(ty) {
+                Ty::Option(_) => Ok(Value::Array(vec![
+                    Value::Str("Some".into()),
+                    Value::Str("None".into()),
+                ])),
+                Ty::Result(..) => Ok(Value::Array(vec![
+                    Value::Str("Ok".into()),
+                    Value::Str("Err".into()),
+                ])),
+                Ty::Adt(adt) => {
                     if adt.kind == AdtKind::Foreign {
                         return Err(Signal::Error(
                             Code::E0907,
@@ -153,20 +161,93 @@ impl Checker<'_> {
                             "opaque representation is sealed",
                         ));
                     }
+                    if !matches!(adt.kind, AdtKind::Sum | AdtKind::OpaqueSum) {
+                        return Err(Signal::Error(
+                            Code::E0301,
+                            span,
+                            "variants requires a sum type",
+                        ));
+                    }
+                    let def = self.hir.definition(adt.definition);
+                    let extensible = def.stmt.is_some_and(|item| {
+                        matches!(
+                            &self.ast(def.name.span.file).stmt(item).value.kind,
+                            StmtKind::Type(decl)
+                                if matches!(&decl.definition, TypeDefinition::Sum(vs)
+                                    if vs.iter().any(|v| matches!(v, Variant::Extensible)))
+                        )
+                    });
+                    if extensible && !self.hir.same_package(def.scope, env.scope) {
+                        return Err(Signal::Error(
+                            Code::E0308,
+                            span,
+                            "extensible sum variants are sealed outside their defining package",
+                        ));
+                    }
                     Ok(Value::Array(
-                        self.sum_variants(adt).into_keys().map(Value::Str).collect(),
-                    ))
-                } else {
-                    Err(Signal::Error(
-                        Code::E0301,
-                        span,
-                        "variants requires a sum type",
+                        self.sum_variants(&adt)
+                            .into_keys()
+                            .map(Value::Str)
+                            .collect(),
                     ))
                 }
+                _ => Err(Signal::Error(
+                    Code::E0301,
+                    span,
+                    "variants requires a sum type",
+                )),
+            },
+            ("has_default", [Value::Type(ty), Value::Str(field)]) => {
+                let target = self.normalize(ty);
+                if let Ty::Adt(adt) = &target {
+                    if adt.kind == AdtKind::Foreign {
+                        return Err(Signal::Error(
+                            Code::E0907,
+                            span,
+                            "foreign representation is sealed",
+                        ));
+                    }
+                    if matches!(adt.kind, AdtKind::Opaque | AdtKind::OpaqueSum)
+                        && adt.defining_scope != env.scope
+                    {
+                        return Err(Signal::Error(
+                            Code::E0308,
+                            span,
+                            "opaque representation is sealed",
+                        ));
+                    }
+                }
+                let fields_ok = match &target {
+                    Ty::Record(fields, _) => fields.contains_key(field),
+                    Ty::Adt(adt) => match self.representation(env, adt) {
+                        Some(Ty::Record(fields, _)) => fields.contains_key(field),
+                        _ => {
+                            return Err(Signal::Error(
+                                Code::E0358,
+                                span,
+                                "Reflect::has_default requires a record type",
+                            ));
+                        }
+                    },
+                    _ => {
+                        return Err(Signal::Error(
+                            Code::E0358,
+                            span,
+                            "Reflect::has_default requires a record type",
+                        ));
+                    }
+                };
+                if !fields_ok {
+                    return Err(Signal::Error(
+                        Code::E0323,
+                        span,
+                        "invalid field key for Reflect::has_default",
+                    ));
+                }
+                Ok(Value::Bool(
+                    self.record_defaults(&Some(target)).contains(field),
+                ))
             }
-            ("has_default", [Value::Type(ty), Value::Str(field)]) => Ok(Value::Bool(
-                self.record_defaults(&Some((**ty).clone())).contains(field),
-            )),
             ("to_f64", [Value::Int(value)]) => Ok(Value::F64(
                 value
                     .to_f64()
@@ -385,6 +466,7 @@ impl Checker<'_> {
                     Value::Tuple(vec![Value::Mode(member.mode), integer(position)])
                 })
                 .collect(),
+            Ty::Unit => Vec::new(),
             _ => {
                 return Err(Signal::Error(
                     Code::E0358,

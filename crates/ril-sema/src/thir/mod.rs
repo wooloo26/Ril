@@ -329,6 +329,7 @@ impl ThirProgram {
                                         variable: false,
                                         mode: param.mode,
                                         mode_path: None,
+                                        bind_mode: false,
                                     },
                                 );
                             }

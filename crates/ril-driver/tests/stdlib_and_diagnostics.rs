@@ -665,3 +665,159 @@ fn wave_d_effects_guards_absorb_panic_and_concurrency() -> Result<(), String> {
     }
     Ok(())
 }
+
+#[test]
+fn wave_e_introspection_type_patterns_and_parser_conformance() -> Result<(), String> {
+    let source = r#"
+        nominal type Pair = (int, str)
+        nominal type Config = .{ host: str = "localhost", port: int }
+        nominal type Box<T> = .{ item: T }
+        type Shape { Circle(f64); Rect(f64, f64); Unit }
+
+        type UnwrapBox = \T -> match <T> {
+            <Box<let X>> -> <X>
+            <Set<let X>> -> <X>
+            <[let K: let M let V]> -> <(K, V)>
+            _ -> <int>
+        }
+        type DropHost = \T -> match <T> {
+            <.{ host: str, ..let Rest }> -> <Rest>
+            _ -> <.{}>
+        }
+        type CirclePayload = Shape.("Circle")
+        type Dict<K, M: MemberMode, V> = [K: M V]
+
+        fn main() @io -> () {
+            -- Self-hosted LenTarget in std/prelude.ril
+            assert(len("hello") == 5)
+            assert(len([1, 2, 3]) == 3)
+            assert(len(["a": 1]) == 1)
+            assert(len(Set::from_array([1, 2])) == 2)
+
+            -- Structural type pattern matching (Box<let X>, Set<let X>, [K: M V], ..let Rest)
+            let b: UnwrapBox<Box<str>> = "unboxed"
+            let s: UnwrapBox<Set<int>> = 99
+            let kv: UnwrapBox<[str: int]> = ("k", 7)
+            let rest: DropHost<.{ host: str, port: int }> = .{ port: 80 }
+            let r: CirclePayload = 3.5
+            let d: Dict<str, let, int> = ["x": 1]
+            assert(b == "unboxed" && s == 99 && kv.0 == "k" && kv.1 == 7 && rest.port == 80)
+            assert(r == 3.5 && d?["x"] == Some(1))
+
+            -- Runtime static folding of type_name, coords, variants, Reflect::has_default
+            assert(type_name(<int>) == "int")
+            assert(len(coords(<()>)) == 0)
+            assert(len(coords(<Pair>)) == 2)
+            assert(len(variants(<Shape>)) == 3)
+            assert(Reflect::has_default(<Config>, "host"))
+            assert(!Reflect::has_default(<Config>, "port"))
+
+            -- for xs as mut x
+            let mut boxes: [mut].{ var n: int } = [.{ var n: 1 }, .{ var n: 2 }]
+            for mut boxes as mut item {
+                item.n += 10
+            }
+            assert(boxes[0].n == 11 && boxes[1].n == 12)
+
+            println("wave-e-ok")
+        }
+    "#;
+    run_aot(source, "wave-e-ok\n")?;
+
+    for (src, stage, code) in [
+        (
+            "fn f(x: [var][]int) -> () { let _ = x }\nfn main() -> () {}\n",
+            Stage::Parse,
+            Code::E0356,
+        ),
+        (
+            "fn f(x: (int @io, str)) -> () { let _ = x }\nfn main() -> () {}\n",
+            Stage::Parse,
+            Code::E0333,
+        ),
+        (
+            "type Bad = int @io\nfn main() -> () {}\n",
+            Stage::Parse,
+            Code::E0613,
+        ),
+        (
+            "fn main() -> () { let MAX = 1; let _ = MAX }\n",
+            Stage::Parse,
+            Code::E0101,
+        ),
+        (
+            "fn main() -> () { pub let x = 1; let _ = x }\n",
+            Stage::Parse,
+            Code::E0120,
+        ),
+        (
+            "fn main() -> () { var via x = 1; let _ = x }\n",
+            Stage::Parse,
+            Code::E0403,
+        ),
+        (
+            "fn main() -> () { use ref x = 1; let _ = x }\n",
+            Stage::Parse,
+            Code::E0532,
+        ),
+        (
+            "fn main() -> () { var x = Some(1) else { return }; let _ = x }\n",
+            Stage::Parse,
+            Code::E0120,
+        ),
+        (
+            "type F<T> = \\U -> <U>\nfn main() -> () {}\n",
+            Stage::Parse,
+            Code::E0120,
+        ),
+        (
+            "type G = \\x -> <int>\nfn main() -> () {}\n",
+            Stage::Parse,
+            Code::E0544,
+        ),
+        (
+            "fn f(x: .{ mut n: int }) -> () { let _ = x }\nfn main() -> () {}\n",
+            Stage::Type,
+            Code::E0402,
+        ),
+        (
+            "fn f(x: (mut []int, int)) -> () { let _ = x }\nfn main() -> () {}\n",
+            Stage::Type,
+            Code::E0356,
+        ),
+        (
+            "fn main() -> () { let _: .{ a: int, .. } = .{ a: 1 } }\n",
+            Stage::Type,
+            Code::E0344,
+        ),
+        (
+            "fn f() -> .{ a: int, .. } { .{ a: 1 } }\nfn main() -> () {}\n",
+            Stage::Type,
+            Code::E0344,
+        ),
+        (
+            "meta let BAD = variants(<int>)\nfn main() -> () {}\n",
+            Stage::Type,
+            Code::E0301,
+        ),
+        (
+            "nominal type Cfg = .{ host: str = \"a\" }\nmeta let BAD = Reflect::has_default(<Cfg>, \"missing\")\nfn main() -> () {}\n",
+            Stage::Type,
+            Code::E0323,
+        ),
+    ] {
+        let mut pkg = VirtualPackage::new(Unit::Bin);
+        pkg.insert(pkg.entry.clone(), src.as_bytes().to_vec());
+        let checked = Driver.check(&pkg, stage);
+        assert!(
+            checked
+                .result
+                .diagnostics
+                .iter()
+                .any(|d| d.code == Some(code)),
+            "expected {code:?} at {stage:?} for `{src}`, got {:?}",
+            checked.result.diagnostics
+        );
+    }
+    Ok(())
+}

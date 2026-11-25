@@ -364,7 +364,7 @@ impl Parser<'_> {
                     },
                 )?;
                 self.require("as")?;
-                let pattern = self.pattern(false)?;
+                let pattern = self.pattern(true)?;
                 self.skip_lines();
                 Expr::For {
                     mode,

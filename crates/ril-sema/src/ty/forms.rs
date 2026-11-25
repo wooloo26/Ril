@@ -194,11 +194,14 @@ impl Checker<'_> {
                         .unwrap_or(Ty::Unknown);
                     self.bindings.insert(id, ty);
                 } else if !env.generics.contains_key(&id) {
+                    let prev_open = env.allow_open_record;
+                    env.allow_open_record = true;
                     let domain: Vec<_> = param
                         .bound
                         .iter()
                         .map(|&ty| self.type_expr(env, ty))
                         .collect();
+                    env.allow_open_record = prev_open;
                     if !domain.is_empty() {
                         env.domains.insert(id, domain);
                     }
@@ -221,7 +224,11 @@ impl Checker<'_> {
             .iter()
             .map(|param| {
                 let ty = if let Some(ty) = param.ty {
-                    self.type_expr(env, ty)
+                    let prev_open = env.allow_open_record;
+                    env.allow_open_record = named;
+                    let resolved = self.type_expr(env, ty);
+                    env.allow_open_record = prev_open;
+                    resolved
                 } else if let Some(&guard) = param.guards.first() {
                     self.guard_parameter(env, guard)
                 } else {
@@ -463,21 +470,39 @@ impl Checker<'_> {
                     }
                 }
                 AdtKind::Sum | AdtKind::OpaqueSum if type_level => {
-                    let def = self.hir.definition(adt.definition);
-                    if let Coordinate::Name(name) = field
-                        && let Some(stmt) = def.stmt
-                        && let StmtKind::Type(decl) = &self.ast(def.name.span.file).stmt(stmt).value.kind
-                        && let TypeDefinition::Sum(variants) = &decl.definition
-                        && let Some(Variant::Constructor { payload, .. }) = variants.iter().find(|variant|
-                            matches!(variant, Variant::Constructor { name: variant, .. } if variant.value == name.value))
-                    {
-                        let mut local = self.instantiate_adt(adt);
-                        let parts: Vec<_> = payload.iter().flatten().map(|&ty| Member::plain(self.type_expr(&mut local, ty))).collect();
-                        return match parts.as_slice() {
-                            [] => Ty::Unit,
-                            [one] => one.ty.clone(),
-                            _ => Ty::Tuple(parts),
-                        };
+                    let variant_name = match field {
+                        Coordinate::Name(name) => Some(name.value.clone()),
+                        Coordinate::Computed(expr) => match self.eval_root(env, *expr, false) {
+                            Some(Value::Str(s)) => Some(s),
+                            Some(_) => {
+                                self.error(
+                                    Code::E0324,
+                                    span,
+                                    "sum variant projection requires a string variant name",
+                                );
+                                return Ty::Unknown;
+                            }
+                            None => None,
+                        },
+                        Coordinate::Index(_) => None,
+                    };
+                    if let Some(variant_name) = variant_name {
+                        let variants = self.sum_variants(adt);
+                        if let Some(payload) = variants.get(&variant_name) {
+                            return match payload.as_slice() {
+                                [] => Ty::Unit,
+                                [one] => one.clone(),
+                                many => {
+                                    Ty::Tuple(many.iter().cloned().map(Member::plain).collect())
+                                }
+                            };
+                        }
+                        self.error(
+                            Code::E0336,
+                            span,
+                            format!("unknown sum variant {variant_name}"),
+                        );
+                        return Ty::Unknown;
                     }
                 }
                 _ => {}

@@ -216,6 +216,37 @@ impl Checker<'_> {
         }
     }
 
+    pub(super) fn eval_introspection_root(
+        &mut self,
+        env: &Env,
+        name: &str,
+        args: &[Argument],
+        span: Span,
+    ) {
+        let mut local = env.clone();
+        local.phase = Phase::MetaValue;
+        local.require_concrete_types = true;
+        let mut fuel = Budget {
+            remaining: self.budget,
+            depth: 0,
+        };
+        let result = self
+            .eval_args(&mut local, &mut Frame::default(), args, &mut fuel)
+            .and_then(|values| {
+                let values = values.into_iter().map(|(_, value)| value).collect();
+                self.eval_primitive(&local, name, values, span)
+            });
+        match result {
+            Ok(value) => {
+                self.static_values.insert(span, value);
+            }
+            Err(Signal::Dependent(_)) => {}
+            other => {
+                self.finish_eval(span, other, true);
+            }
+        }
+    }
+
     pub(super) fn eval_metadata_root(
         &mut self,
         env: &Env,

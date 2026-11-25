@@ -371,9 +371,9 @@ impl Checker<'_> {
             }
             "coords" => {
                 let key = if let Ty::TypeValue(Some(ty)) = first {
-                    match *ty {
+                    match self.normalize(&ty) {
                         Ty::Record(..) => Ty::Str,
-                        Ty::Tuple(_) => Ty::Int,
+                        Ty::Tuple(_) | Ty::Unit => Ty::Int,
                         Ty::Adt(adt) if adt.kind == AdtKind::Foreign => {
                             self.error(Code::E0907, span, "foreign representation is sealed");
                             Ty::Unknown
@@ -385,12 +385,19 @@ impl Checker<'_> {
                             self.error(Code::E0308, span, "opaque representation is sealed");
                             Ty::Unknown
                         }
-                        Ty::Adt(adt)
-                            if matches!(self.representation(env, &adt), Some(Ty::Record(..))) =>
-                        {
-                            Ty::Str
-                        }
-                        Ty::Param(_) | Ty::Unknown => Ty::Unknown,
+                        Ty::Adt(adt) => match self.representation(env, &adt) {
+                            Some(Ty::Record(..)) => Ty::Str,
+                            Some(Ty::Tuple(_) | Ty::Unit) => Ty::Int,
+                            _ => {
+                                self.error(
+                                    Code::E0358,
+                                    span,
+                                    "coords requires a tuple or record type",
+                                );
+                                Ty::Unknown
+                            }
+                        },
+                        Ty::Param(_) | Ty::Unknown | Ty::Infer(_) => Ty::Unknown,
                         _ => {
                             self.error(Code::E0358, span, "coords requires a tuple or record type");
                             Ty::Unknown
@@ -399,14 +406,98 @@ impl Checker<'_> {
                 } else {
                     Ty::Unknown
                 };
+                if env.phase == Phase::Runtime && !env.shadow {
+                    self.eval_introspection_root(env, "coords", args, span);
+                }
                 Ty::Array(Box::new(Member::plain(Ty::Tuple(vec![
                     Member::plain(Ty::Mode),
                     Member::plain(key),
                 ]))))
             }
-            "variants" => Ty::Array(Box::new(Member::plain(Ty::Str))),
-            "contains" | "has_default" => Ty::Bool,
-            "type_name" => Ty::Str,
+            "variants" => {
+                if let Ty::TypeValue(Some(ty)) = first {
+                    match self.normalize(&ty) {
+                        Ty::Adt(adt) if adt.kind == AdtKind::Foreign => {
+                            self.error(Code::E0907, span, "foreign representation is sealed");
+                        }
+                        Ty::Adt(adt)
+                            if adt.kind == AdtKind::OpaqueSum
+                                && adt.defining_scope != env.scope =>
+                        {
+                            self.error(Code::E0308, span, "opaque representation is sealed");
+                        }
+                        Ty::Adt(adt) if matches!(adt.kind, AdtKind::Sum | AdtKind::OpaqueSum) => {
+                            let def = self.hir.definition(adt.definition);
+                            let extensible = def.stmt.is_some_and(|item| {
+                                matches!(
+                                    &self.ast(def.name.span.file).stmt(item).value.kind,
+                                    syntax::StmtKind::Type(decl)
+                                        if matches!(&decl.definition, syntax::TypeDefinition::Sum(vs)
+                                            if vs.iter().any(|v| matches!(v, syntax::Variant::Extensible)))
+                                )
+                            });
+                            if extensible && !self.hir.same_package(def.scope, env.scope) {
+                                self.error(
+                                    Code::E0308,
+                                    span,
+                                    "extensible sum variants are sealed outside their defining package",
+                                );
+                            }
+                        }
+                        Ty::Option(_)
+                        | Ty::Result(..)
+                        | Ty::Param(_)
+                        | Ty::Unknown
+                        | Ty::Infer(_) => {}
+                        _ => {
+                            self.error(Code::E0301, span, "variants requires a sum type");
+                        }
+                    }
+                }
+                if env.phase == Phase::Runtime && !env.shadow {
+                    self.eval_introspection_root(env, "variants", args, span);
+                }
+                Ty::Array(Box::new(Member::plain(Ty::Str)))
+            }
+            "contains" => Ty::Bool,
+            "has_default" => {
+                if let Ty::TypeValue(Some(ty)) = &first {
+                    match self.normalize(ty) {
+                        Ty::Adt(adt) if adt.kind == AdtKind::Foreign => {
+                            self.error(Code::E0907, span, "foreign representation is sealed");
+                        }
+                        Ty::Adt(adt)
+                            if matches!(adt.kind, AdtKind::Opaque | AdtKind::OpaqueSum)
+                                && adt.defining_scope != env.scope =>
+                        {
+                            self.error(Code::E0308, span, "opaque representation is sealed");
+                        }
+                        Ty::Record(..) | Ty::Param(_) | Ty::Unknown | Ty::Infer(_) => {}
+                        Ty::Adt(adt)
+                            if matches!(self.representation(env, &adt), Some(Ty::Record(..))) => {}
+                        _ => {
+                            self.error(
+                                Code::E0358,
+                                span,
+                                "Reflect::has_default requires a record type",
+                            );
+                        }
+                    }
+                }
+                if let Some(key_ty) = types.get(1) {
+                    self.require(env, span, key_ty, &Ty::Str);
+                }
+                if env.phase == Phase::Runtime && !env.shadow {
+                    self.eval_introspection_root(env, "has_default", args, span);
+                }
+                Ty::Bool
+            }
+            "type_name" => {
+                if env.phase == Phase::Runtime && !env.shadow {
+                    self.eval_introspection_root(env, "type_name", args, span);
+                }
+                Ty::Str
+            }
             "inspect" => {
                 if let Some(arg) = args.first()
                     && arg.mode != Mode::Plain
