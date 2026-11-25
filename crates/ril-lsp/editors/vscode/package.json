@@ -1,0 +1,70 @@
+{
+  "name": "ril-lang",
+  "displayName": "Ril Language",
+  "description": "Syntax highlighting and local Language Server (ril lsp) integration for Ril (.ril / .d.ril)",
+  "version": "0.1.0",
+  "publisher": "ril-local",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "extensionKind": [
+    "workspace",
+    "ui"
+  ],
+  "categories": [
+    "Programming Languages"
+  ],
+  "activationEvents": [
+    "onLanguage:ril"
+  ],
+  "main": "./extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "ril",
+        "aliases": [
+          "Ril",
+          "ril"
+        ],
+        "extensions": [
+          ".ril",
+          ".d.ril"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "ril",
+        "scopeName": "source.ril",
+        "path": "./syntaxes/ril.tmLanguage.json"
+      }
+    ],
+    "commands": [
+      {
+        "command": "ril.restartServer",
+        "title": "Ril: Restart Language Server"
+      }
+    ],
+    "configuration": {
+      "title": "Ril",
+      "properties": {
+        "ril.serverPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to the `ril` binary. When empty, auto-detects workspace target/debug/ril, target/release/ril, cargo run, or `ril` in PATH."
+        },
+        "ril.serverArgs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "lsp"
+          ],
+          "description": "Arguments passed to the `ril` binary when `ril.serverPath` is explicitly set."
+        }
+      }
+    }
+  }
+}

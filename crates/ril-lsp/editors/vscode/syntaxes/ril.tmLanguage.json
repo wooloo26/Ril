@@ -1,0 +1,416 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Ril",
+  "scopeName": "source.ril",
+  "patterns": [
+    {
+      "include": "#comments"
+    },
+    {
+      "include": "#strings"
+    },
+    {
+      "include": "#declarations"
+    },
+    {
+      "include": "#effects-and-state"
+    },
+    {
+      "include": "#keywords"
+    },
+    {
+      "include": "#numbers"
+    },
+    {
+      "include": "#operators"
+    },
+    {
+      "include": "#identifiers"
+    }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        {
+          "name": "comment.line.double-dash.ril",
+          "begin": "--",
+          "end": "$",
+          "beginCaptures": {
+            "0": {
+              "name": "punctuation.definition.comment.ril"
+            }
+          }
+        },
+        {
+          "include": "#block-comment"
+        }
+      ]
+    },
+    "block-comment": {
+      "name": "comment.block.ril",
+      "begin": "\\{-",
+      "end": "-\\}",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.begin.ril"
+        }
+      },
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.end.ril"
+        }
+      },
+      "patterns": [
+        {
+          "include": "#block-comment"
+        }
+      ]
+    },
+    "strings": {
+      "patterns": [
+        {
+          "name": "string.quoted.double.raw.bytes.ril",
+          "begin": "\\b(bytes)(#+)(\")",
+          "end": "(\")(\\2)",
+          "beginCaptures": {
+            "1": {
+              "name": "storage.type.string.ril"
+            },
+            "2": {
+              "name": "punctuation.definition.string.begin.ril"
+            },
+            "3": {
+              "name": "punctuation.definition.string.begin.ril"
+            }
+          },
+          "endCaptures": {
+            "1": {
+              "name": "punctuation.definition.string.end.ril"
+            },
+            "2": {
+              "name": "punctuation.definition.string.end.ril"
+            }
+          }
+        },
+        {
+          "name": "string.quoted.double.bytes.ril",
+          "begin": "\\b(bytes)(\")",
+          "end": "\"|$",
+          "beginCaptures": {
+            "1": {
+              "name": "storage.type.string.ril"
+            },
+            "2": {
+              "name": "punctuation.definition.string.begin.ril"
+            }
+          },
+          "endCaptures": {
+            "0": {
+              "name": "punctuation.definition.string.end.ril"
+            }
+          },
+          "patterns": [
+            {
+              "name": "constant.character.escape.ril",
+              "match": "\\\\(?:[\\\\\"nrt0]|x[0-9a-fA-F]{2})"
+            },
+            {
+              "name": "invalid.illegal.escape.ril",
+              "match": "\\\\."
+            }
+          ]
+        },
+        {
+          "name": "string.quoted.double.raw.ril",
+          "begin": "(#+)(\")",
+          "end": "(\")(\\1)",
+          "beginCaptures": {
+            "1": {
+              "name": "punctuation.definition.string.begin.ril"
+            },
+            "2": {
+              "name": "punctuation.definition.string.begin.ril"
+            }
+          },
+          "endCaptures": {
+            "1": {
+              "name": "punctuation.definition.string.end.ril"
+            },
+            "2": {
+              "name": "punctuation.definition.string.end.ril"
+            }
+          }
+        },
+        {
+          "name": "string.quoted.double.ril",
+          "begin": "\"",
+          "end": "\"|$",
+          "beginCaptures": {
+            "0": {
+              "name": "punctuation.definition.string.begin.ril"
+            }
+          },
+          "endCaptures": {
+            "0": {
+              "name": "punctuation.definition.string.end.ril"
+            }
+          },
+          "patterns": [
+            {
+              "name": "constant.character.escape.ril",
+              "match": "\\{\\{|\\}\\}|\\\\(?:[\\\\\"nrt0]|u\\{[0-9a-fA-F]{1,6}\\})"
+            },
+            {
+              "name": "invalid.illegal.escape.ril",
+              "match": "\\\\."
+            },
+            {
+              "name": "meta.embedded.expression.ril",
+              "begin": "\\{",
+              "end": "\\}",
+              "beginCaptures": {
+                "0": {
+                  "name": "punctuation.definition.template-expression.begin.ril"
+                }
+              },
+              "endCaptures": {
+                "0": {
+                  "name": "punctuation.definition.template-expression.end.ril"
+                }
+              },
+              "patterns": [
+                {
+                  "include": "$self"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "declarations": {
+      "patterns": [
+        {
+          "match": "\\b(fn)\\s+([a-z_][a-z0-9_]*)",
+          "captures": {
+            "1": {
+              "name": "storage.type.function.ril"
+            },
+            "2": {
+              "name": "entity.name.function.ril"
+            }
+          }
+        },
+        {
+          "match": "\\b(fn)\\s+([A-Z][A-Za-z0-9_]*)",
+          "captures": {
+            "1": {
+              "name": "storage.type.function.ril"
+            },
+            "2": {
+              "name": "entity.name.type.ril"
+            }
+          }
+        },
+        {
+          "match": "\\b(opaque)\\s+(type)\\s+([A-Z][A-Za-z0-9_]*)",
+          "captures": {
+            "1": {
+              "name": "storage.modifier.ril"
+            },
+            "2": {
+              "name": "storage.type.type.ril"
+            },
+            "3": {
+              "name": "entity.name.type.ril"
+            }
+          }
+        },
+        {
+          "match": "\\b(type|eff|sub)\\s+([A-Z][A-Za-z0-9_]*)",
+          "captures": {
+            "1": {
+              "name": "storage.type.ril"
+            },
+            "2": {
+              "name": "entity.name.type.ril"
+            }
+          }
+        },
+        {
+          "match": "\\b(use)\\s+([a-z_][a-z0-9_]*(?:/[a-z_][a-z0-9_]*)+)",
+          "captures": {
+            "1": {
+              "name": "keyword.control.import.ril"
+            },
+            "2": {
+              "name": "entity.name.namespace.ril"
+            }
+          }
+        },
+        {
+          "match": "\\b(meta)\\s+(let)\\s+([A-Z][A-Z0-9_]*)",
+          "captures": {
+            "1": {
+              "name": "storage.modifier.ril"
+            },
+            "2": {
+              "name": "storage.type.ril"
+            },
+            "3": {
+              "name": "variable.other.constant.ril"
+            }
+          }
+        }
+      ]
+    },
+    "effects-and-state": {
+      "patterns": [
+        {
+          "name": "entity.other.attribute-name.effect.ril",
+          "match": "@(?:io|fiber|[A-Z][A-Za-z0-9_]*)\\b"
+        },
+        {
+          "name": "storage.modifier.state.ril",
+          "match": "&(?:\\^mut|mut|capture|up|return)\\b"
+        },
+        {
+          "name": "storage.modifier.ril",
+          "match": "\\^mut\\b"
+        }
+      ]
+    },
+    "keywords": {
+      "patterns": [
+        {
+          "name": "keyword.control.flow.ril",
+          "match": "\\b(?:if|else|match|while|for|break|continue|return)\\b"
+        },
+        {
+          "name": "keyword.control.ril",
+          "match": "\\b(?:as|use|with|where)\\b"
+        },
+        {
+          "name": "storage.type.ril",
+          "match": "\\b(?:let|var|fn|type|eff|sub)\\b"
+        },
+        {
+          "name": "storage.modifier.ril",
+          "match": "\\b(?:pub|pkg|meta|mut|ref|new|via|infer)\\b"
+        },
+        {
+          "name": "keyword.operator.expression.typeof.ril",
+          "match": "\\btypeof\\b"
+        },
+        {
+          "name": "constant.language.boolean.ril",
+          "match": "\\b(?:true|false)\\b"
+        },
+        {
+          "name": "support.type.primitive.ril",
+          "match": "\\b(?:bool|int|f64|str|bytes|never|Type|Super)\\b"
+        }
+      ]
+    },
+    "numbers": {
+      "patterns": [
+        {
+          "name": "constant.numeric.hex.ril",
+          "match": "\\b0[xX][0-9a-fA-F][0-9a-fA-F_]*\\b"
+        },
+        {
+          "name": "constant.numeric.octal.ril",
+          "match": "\\b0[oO][0-7][0-7_]*\\b"
+        },
+        {
+          "name": "constant.numeric.binary.ril",
+          "match": "\\b0[bB][01][01_]*\\b"
+        },
+        {
+          "name": "constant.numeric.float.ril",
+          "match": "\\b[0-9][0-9_]*\\.[0-9][0-9_]*(?:[eE][+-]?[0-9][0-9_]*)?\\b|\\b[0-9][0-9_]*[eE][+-]?[0-9][0-9_]*\\b"
+        },
+        {
+          "name": "constant.numeric.decimal.ril",
+          "match": "\\b[0-9][0-9_]*\\b"
+        }
+      ]
+    },
+    "operators": {
+      "patterns": [
+        {
+          "name": "keyword.operator.pipeline.ril",
+          "match": "\\|>"
+        },
+        {
+          "name": "storage.type.function.arrow.ril",
+          "match": "->"
+        },
+        {
+          "name": "keyword.operator.fallback.ril",
+          "match": "\\?\\?"
+        },
+        {
+          "name": "keyword.operator.range.ril",
+          "match": "\\.\\.=|\\.\\."
+        },
+        {
+          "name": "keyword.operator.comparison.ril",
+          "match": "==|!=|<=|>="
+        },
+        {
+          "name": "keyword.operator.assignment.compound.ril",
+          "match": "(?:\\+|-|\\*|/|%|<<|>>|&|\\||\\^)="
+        },
+        {
+          "name": "keyword.operator.logical.ril",
+          "match": "&&|\\|\\|"
+        },
+        {
+          "name": "keyword.operator.bitwise.ril",
+          "match": "<<|>>"
+        },
+        {
+          "name": "punctuation.accessor.optional.ril",
+          "match": "\\?\\."
+        },
+        {
+          "name": "punctuation.separator.namespace.ril",
+          "match": "::"
+        },
+        {
+          "name": "keyword.operator.ril",
+          "match": "!<|@&|@|&|!|~|\\+|-|\\*|/|%|<|>|=|\\||\\^|\\?"
+        }
+      ]
+    },
+    "identifiers": {
+      "patterns": [
+        {
+          "name": "entity.name.namespace.ril",
+          "match": "\\b[A-Z][A-Za-z0-9_]*(?=::)"
+        },
+        {
+          "name": "variable.other.constant.ril",
+          "match": "\\b[A-Z][A-Z0-9_]*_[A-Z0-9_]*\\b|\\b[A-Z]{2,}[A-Z0-9]*\\b"
+        },
+        {
+          "name": "entity.name.type.ril",
+          "match": "\\b[A-Z][A-Za-z0-9_]*\\b"
+        },
+        {
+          "name": "entity.name.function.ril",
+          "match": "\\b[a-z_][a-z0-9_]*(?=(?:<[^>\n]*>)?\\()"
+        },
+        {
+          "name": "variable.other.property.ril",
+          "match": "(?<=\\.)[a-z_][a-z0-9_]*\\b"
+        },
+        {
+          "name": "variable.other.readwrite.ril",
+          "match": "\\b[a-z_][a-z0-9_]*\\b"
+        }
+      ]
+    }
+  }
+}
