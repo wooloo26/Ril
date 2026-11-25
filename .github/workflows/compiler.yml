@@ -47,7 +47,8 @@ jobs:
       - uses: leanprover/lean-action@v1
         with:
           lake-package-directory: formal
-      - run: lake -d formal build horn-oracle access-check audit
+      - run: lake build horn-oracle access-check audit
+        working-directory: formal
       - run: formal/.lake/build/bin/access-check
       - run: formal/.lake/build/bin/audit
       - run: cargo test -p ril-test --test interfaces --locked
