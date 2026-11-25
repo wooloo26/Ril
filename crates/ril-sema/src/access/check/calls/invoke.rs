@@ -420,7 +420,7 @@ impl Analyzer<'_> {
                     }
                 }
             }
-            return self.primitive(ctx, ledger, name, &values, span);
+            return self.primitive(ctx, ledger, name, &values, args, span);
         }
         if let (Some(id), Expr::Path(path)) = (id, &callee.value)
             && let Some(operation) = self.operation(id, path.span)

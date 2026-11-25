@@ -590,6 +590,28 @@ impl<'a> Checker<'a> {
             }
     }
 
+    fn state_clause_fits(expected: &[String], clause: &str) -> bool {
+        if expected.iter().any(|e| e == clause) {
+            return true;
+        }
+        if clause == "up(ref)" || clause.starts_with("up(") {
+            if expected.iter().any(|e| e == "up") {
+                return true;
+            }
+            if expected.iter().any(|e| e == "up(ref)") {
+                let inner = clause
+                    .strip_prefix("up(")
+                    .and_then(|s| s.strip_suffix(')'))
+                    .unwrap_or("");
+                return inner.split(',').all(|binding| {
+                    let b = binding.trim();
+                    !b.starts_with("mut ") && !b.starts_with("^mut ")
+                });
+            }
+        }
+        false
+    }
+
     fn callable_fits(&mut self, env: &Env, actual: &Callable, expected: &Callable) -> bool {
         actual.parameters.len() == expected.parameters.len()
             && (expected.open_effects
@@ -605,7 +627,7 @@ impl<'a> Checker<'a> {
                     && actual
                         .state
                         .iter()
-                        .all(|clause| expected.state.contains(clause)))
+                        .all(|clause| Self::state_clause_fits(&expected.state, clause)))
             && (actual.result_mode == expected.result_mode
                 || expected.result_mode == Mode::Infer
                 || actual.result_mode == Mode::New && expected.result_mode == Mode::Plain)

@@ -73,7 +73,13 @@ impl Checker<'_> {
         }
     }
 
-    pub(super) fn check_guard(&mut self, env: &Env, guard: syntax::ExprId, output: &Ty) {
+    pub(super) fn check_guard(
+        &mut self,
+        env: &mut Env,
+        guard: syntax::ExprId,
+        subject: &Ty,
+        output: &Ty,
+    ) {
         let ast = self.ast(env.file);
         let original = ast.expr(guard);
         let mut node = original;
@@ -82,8 +88,10 @@ impl Checker<'_> {
         {
             node = ast.expr(*value);
         }
-        if let syntax::Expr::Call { callee, .. } = node.value {
-            node = ast.expr(callee);
+        let mut extra_args: Vec<syntax::Argument> = Vec::new();
+        if let syntax::Expr::Call { callee, args } = &node.value {
+            extra_args = args.clone();
+            node = ast.expr(*callee);
         }
         let syntax::Expr::Path(path) = &node.value else {
             return;
@@ -92,6 +100,20 @@ impl Checker<'_> {
             return;
         };
         let signature = self.declare_function(id);
+        let mut fresh_generics = std::collections::HashMap::new();
+        if let Some(stmt) = self.hir.definition(id).stmt
+            && let StmtKind::Function(fun) = &self
+                .ast(self.hir.definition(id).name.span.file)
+                .stmt(stmt)
+                .value
+                .kind
+        {
+            for param in &fun.generics {
+                if let Some(pid) = self.resolve(param.name.span) {
+                    fresh_generics.insert(pid, GenericValue::Type(self.fresh()));
+                }
+            }
+        }
         if signature.open_effects
             || signature.open_state
             || !signature.effects.is_empty()
@@ -99,7 +121,30 @@ impl Checker<'_> {
         {
             self.error(Code::E0409, original.span, "signature guard must be pure");
         }
-        let compatible = match (&signature.result, output) {
+        let expected_extra = signature.parameters.len().saturating_sub(1);
+        let required_extra = signature
+            .parameters
+            .iter()
+            .skip(1)
+            .filter(|p| !p.optional)
+            .count();
+        if extra_args.len() < required_extra || extra_args.len() > expected_extra {
+            self.error(
+                Code::E0314,
+                original.span,
+                "signature guard argument count does not match",
+            );
+        }
+        if let Some(first_param) = signature.parameters.first() {
+            let expected_subject = super::check::substitute(&first_param.ty, &fresh_generics);
+            self.require(env, original.span, subject, &expected_subject);
+        }
+        for (arg, param) in extra_args.iter().zip(signature.parameters.iter().skip(1)) {
+            let expected_arg = super::check::substitute(&param.ty, &fresh_generics);
+            self.expect(env, arg.value, &expected_arg);
+        }
+        let guard_result = super::check::substitute(&signature.result, &fresh_generics);
+        let compatible = match (&guard_result, output) {
             (Ty::Option(inner), Ty::Option(_)) if inner.as_ref() == &Ty::Unit => true,
             (Ty::Result(ok, err), Ty::Result(_, expected)) if ok.as_ref() == &Ty::Unit => {
                 self.fits(env, err, expected) || self.sum_subset(env, err, expected)

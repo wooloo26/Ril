@@ -135,11 +135,11 @@ impl Checker<'_> {
                 let referenced: HashSet<_> =
                     self.hir.references_within(span).map(|(_, id)| id).collect();
                 for (position, formal) in fun.signature.params.iter().enumerate() {
-                    if formal
+                    if let Some(formal_id) = formal
                         .name
                         .as_ref()
                         .and_then(|name| self.resolve(name.span))
-                        .is_some_and(|id| referenced.contains(&id))
+                        .filter(|id| referenced.contains(id))
                     {
                         if position >= index {
                             self.error(
@@ -150,8 +150,15 @@ impl Checker<'_> {
                         } else if matches!(
                             formal.mode,
                             Mode::Mut | Mode::Shared | Mode::New | Mode::Via
-                        ) {
-                            self.error(Code::E0409, span, "default reads live writable state");
+                        ) || (formal.mode == Mode::Ref
+                            && !(p.mode == Mode::Ref
+                                && matches!(
+                                    &self.ast(local.file).expr(default).value,
+                                    syntax::Expr::Path(path)
+                                        if self.resolve(path.span) == Some(formal_id)
+                                )))
+                        {
+                            self.error(Code::E0409, span, "default reads live state");
                         }
                     }
                 }
@@ -162,15 +169,20 @@ impl Checker<'_> {
             let mut helper_env = env.clone();
             self.statement(&mut helper_env, helper, false);
         }
-        for &guard in fun
-            .signature
-            .params
-            .iter()
-            .filter(|parameter| !parameter.is_meta)
-            .flat_map(|p| &p.guards)
-            .chain(&fun.signature.guards)
-        {
-            self.check_guard(&local, guard, &call.result);
+        for (p, ty) in fun.signature.params.iter().zip(&call.parameters) {
+            if !p.is_meta {
+                for &guard in &p.guards {
+                    self.check_guard(&mut local, guard, &ty.ty, &call.result);
+                }
+            }
+        }
+        let return_subject = match self.normalize(&call.result) {
+            Ty::Option(inner) => *inner,
+            Ty::Result(ok, _) => *ok,
+            other => other,
+        };
+        for &guard in &fun.signature.guards {
+            self.check_guard(&mut local, guard, &return_subject, &call.result);
         }
         if let Some(body) = fun.body {
             local.return_scope = Some(self.ast(local.file).expr(body).span);
@@ -360,7 +372,10 @@ impl Checker<'_> {
                         }
                         expected.result = substitute(&expected.result, &bindings);
                         expected.open_effects = true;
-                        expected.open_state = true;
+                        expected.open_state = false;
+                        if !expected.state.iter().any(|s| s == "up") {
+                            expected.state.push("up".into());
+                        }
                         self.expect(env, handler.value, &Ty::Callable(Arc::new(expected)));
                     } else {
                         self.expr(env, handler.value, None);

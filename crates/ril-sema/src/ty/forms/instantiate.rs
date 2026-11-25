@@ -24,6 +24,8 @@ impl Checker<'_> {
     ) -> (Vec<GenericValue>, Env) {
         let def = self.hir.definition(id);
         let mut local = Env::new(def.name.span.file, def.scope);
+        local.sendable_guards = env.sendable_guards.clone();
+        local.domains = env.domains.clone();
         if args.len() > params.len() {
             self.error(Code::E0340, span, "too many generic arguments");
         }

@@ -80,7 +80,12 @@ impl Checker<'_> {
                 } else {
                     expected
                 };
-                let result = self.callback(env, action, None, target);
+                let result = self.callback(env, action, None, target, true);
+                if matches!(name, "run" | "supervise")
+                    && !self.is_sendable(env, &result, &mut HashSet::new())
+                {
+                    self.error(Code::E0301, span, "fiber result is not Sendable");
+                }
                 if name == "supervise" {
                     self.reject_nested_result(&result, span);
                     Ty::Result(
@@ -92,12 +97,21 @@ impl Checker<'_> {
                 }
             }
             ("scope" | "try_scope", [body]) => {
-                self.callback(env, body, Some((Mode::Mut, Ty::Scope)), expected)
+                let result = self.callback(env, body, Some((Mode::Mut, Ty::Scope)), expected, true);
+                if name == "try_scope"
+                    && !matches!(
+                        self.normalize(&result),
+                        Ty::Result(..) | Ty::Unknown | Ty::Infer(_) | Ty::Never
+                    )
+                {
+                    self.error(Code::E0301, span, "try_scope body must return Result");
+                }
+                result
             }
             ("spawn", [scope, work]) => {
                 self.require_marker(scope, Mode::Mut, env);
                 self.expect(env, scope.value, &Ty::Scope);
-                let result = self.callback(env, work, None, None);
+                let result = self.callback(env, work, None, None, true);
                 if !self.is_sendable(env, &result, &mut HashSet::new()) {
                     self.error(Code::E0301, span, "task result is not Sendable");
                 }
@@ -134,7 +148,10 @@ impl Checker<'_> {
             }
             ("timeout_ms", [duration, work]) => {
                 self.expect(env, duration.value, &Ty::Int);
-                let result = self.callback(env, work, None, None);
+                let result = self.callback(env, work, None, None, true);
+                if !self.is_sendable(env, &result, &mut HashSet::new()) {
+                    self.error(Code::E0301, span, "timeout_ms result is not Sendable");
+                }
                 self.reject_nested_result(&result, span);
                 Ty::Result(
                     Box::new(result),
@@ -142,9 +159,14 @@ impl Checker<'_> {
                 )
             }
             ("zip" | "try_zip" | "race", [left, right]) => {
-                let a = self.callback(env, left, None, None);
-                let b = self.callback(env, right, None, None);
+                let a = self.callback(env, left, None, None, true);
+                let b = self.callback(env, right, None, None, true);
                 if name == "race" {
+                    if !self.is_sendable(env, &a, &mut HashSet::new())
+                        || !self.is_sendable(env, &b, &mut HashSet::new())
+                    {
+                        self.error(Code::E0301, span, "race result is not Sendable");
+                    }
                     self.reject_nested_result(&a, span);
                     self.reject_nested_result(&b, span);
                     self.join(env, span, a, b)
@@ -160,6 +182,13 @@ impl Checker<'_> {
                     };
                     if name == "try_zip" {
                         if let (Ty::Result(a, e), Ty::Result(b, f)) = (a, b) {
+                            if !self.is_sendable(env, &a, &mut HashSet::new())
+                                || !self.is_sendable(env, &b, &mut HashSet::new())
+                                || !self.is_sendable(env, &e, &mut HashSet::new())
+                                || !self.is_sendable(env, &f, &mut HashSet::new())
+                            {
+                                self.error(Code::E0301, span, "try_zip result is not Sendable");
+                            }
                             self.reject_nested_result(&a, span);
                             self.reject_nested_result(&b, span);
                             let err = self.join(env, span, *e, *f);
@@ -169,6 +198,11 @@ impl Checker<'_> {
                             Ty::Unknown
                         }
                     } else {
+                        if !self.is_sendable(env, &a, &mut HashSet::new())
+                            || !self.is_sendable(env, &b, &mut HashSet::new())
+                        {
+                            self.error(Code::E0301, span, "zip result is not Sendable");
+                        }
                         self.reject_nested_result(&a, span);
                         self.reject_nested_result(&b, span);
                         record(a, b)
@@ -182,11 +216,23 @@ impl Checker<'_> {
                     items.value,
                     &Ty::Array(Box::new(Member::plain(item.clone()))),
                 );
-                let result =
-                    self.callback(env, work, Some((Mode::Plain, self.normalize(&item))), None);
+                let item = self.normalize(&item);
+                if !self.is_sendable(env, &item, &mut HashSet::new()) {
+                    self.error(
+                        Code::E0301,
+                        span,
+                        "Fiber::map input element is not Sendable",
+                    );
+                }
+                let result = self.callback(env, work, Some((Mode::Plain, item)), None, false);
                 let array = |ty| Ty::Array(Box::new(Member::plain(ty)));
                 if name == "try_map" {
                     if let Ty::Result(ok, err) = result {
+                        if !self.is_sendable(env, &ok, &mut HashSet::new())
+                            || !self.is_sendable(env, &err, &mut HashSet::new())
+                        {
+                            self.error(Code::E0301, span, "try_map result is not Sendable");
+                        }
                         self.reject_nested_result(&ok, span);
                         Ty::Result(Box::new(array(*ok)), err)
                     } else {
@@ -194,6 +240,9 @@ impl Checker<'_> {
                         Ty::Unknown
                     }
                 } else {
+                    if !self.is_sendable(env, &result, &mut HashSet::new()) {
+                        self.error(Code::E0301, span, "map result is not Sendable");
+                    }
                     self.reject_nested_result(&result, span);
                     array(result)
                 }
@@ -299,7 +348,19 @@ impl Checker<'_> {
             ("drain", [endpoint, consumer]) => {
                 self.require_marker(endpoint, Mode::New, env);
                 let ty = self.expr(env, endpoint.value, None);
-                self.callback(env, consumer, Some((Mode::Via, item(&ty))), Some(&Ty::Unit));
+                if !matches!(
+                    self.normalize(&ty),
+                    Ty::Receiver(_) | Ty::Unknown | Ty::Infer(_)
+                ) {
+                    self.error(Code::E0301, span, "drain requires a channel receiver");
+                }
+                self.callback(
+                    env,
+                    consumer,
+                    Some((Mode::Via, item(&ty))),
+                    Some(&Ty::Unit),
+                    true,
+                );
                 Ty::Unit
             }
             _ => {
@@ -327,10 +388,11 @@ impl Checker<'_> {
         arg: &Argument,
         param: Option<(Mode, Ty)>,
         result: Option<&Ty>,
+        allow_state: bool,
     ) -> Ty {
         let expected = Ty::Callable(Arc::new(Callable {
             open_effects: true,
-            open_state: true,
+            open_state: allow_state,
             result_mode: Mode::Infer,
             result: result.cloned().unwrap_or(Ty::Unknown),
             parameters: param
@@ -355,6 +417,12 @@ impl Checker<'_> {
                     Code::E0314,
                     self.ast(env.file).expr(arg.value).span,
                     "incorrect callback arity",
+                );
+            } else if !allow_state && (sig.open_state || !sig.state.is_empty()) {
+                self.error(
+                    Code::E0534,
+                    self.ast(env.file).expr(arg.value).span,
+                    "concurrent callback must be stateless",
                 );
             }
             sig.result.clone()
@@ -439,14 +507,7 @@ impl Checker<'_> {
             Ty::Result(a, b) => {
                 self.is_sendable(env, &a, active) && self.is_sendable(env, &b, active)
             }
-            Ty::Callable(sig) => {
-                sig.effects
-                    .iter()
-                    .all(|e| matches!(e.as_str(), "io" | "fiber"))
-                    && !sig.open_effects
-                    && !sig.open_state
-                    && sig.state.is_empty()
-            }
+            Ty::Callable(sig) => !sig.open_effects && !sig.open_state && sig.state.is_empty(),
             _ => true,
         }
     }

@@ -529,3 +529,139 @@ fn wave_c_soundness_static_checks_narrowing_patterns_and_nominals() -> Result<()
     }
     Ok(())
 }
+
+#[test]
+fn wave_d_effects_guards_absorb_panic_and_concurrency() -> Result<(), String> {
+    let source = r#"
+        use ril/fiber
+        use ril/channel
+
+        type Box = .{ var v: int }
+        eff Tag { fn mark() -> int }
+
+        fn make_box() -> new Box { .{ var v: 7 } }
+        fn take_plain(f: fn() -> Box) -> int { f().v }
+        fn make_ref_reader(ref b: Box) &capture &return(ref b) -> new fn() &up(ref) -> int { \-> b.v }
+        fn take_up(mut f: fn() &up -> int) &mut -> int { f() }
+        fn ref_alias(ref a: Box, ref b: Box = a) -> int { b.v }
+        fn sendable_eff(f: fn() @Tag -> int) -> bool {
+            let _ = f
+            true
+        }
+
+        fn main() @io -> () {
+            -- -> new T into -> T
+            assert(take_plain(make_box) == 7)
+
+            -- &up(ref) into &up
+            let mut b: Box = .{ var v: 9 }
+            b.v = 11
+            let mut up_fn: fn() &up -> int = make_ref_reader(ref b)
+            assert(take_up(mut up_fn) == 11)
+            assert(ref_alias(ref b) == 11)
+
+            -- Fiber::Zip real alias + Fiber::map + Channel::drain + Sendable user eff
+            let zipped: Fiber::Zip<int, str> = Fiber::run \-> Fiber::zip(\-> 1, \-> "ok")
+            assert(zipped.first == 1 && zipped.second == "ok")
+            let mapped = Fiber::run \-> Fiber::map([1, 2, 3], \x -> x * 2)
+            assert(mapped == [2, 4, 6])
+
+            let sum = Fiber::run \-> {
+                let Channel::ChannelPair.{ mut tx, mut rx } = Channel::bounded(4)
+                let Ok() = Channel::send(mut tx, 10) else { panic("send failed") }
+                let Ok() = Channel::send(mut tx, 20) else { panic("send failed") }
+                Channel::close(new tx)
+                var acc = 0
+                Channel::drain(new rx, \v -> { acc += v })
+                acc
+            }
+            assert(sum == 30)
+            assert(sendable_eff(\-> Tag::mark()))
+
+            println("wave-d-ok")
+        }
+    "#;
+    run_aot(source, "wave-d-ok\n")?;
+
+    for (src, stage, code) in [
+        (
+            "type Box = .{ var v: int }\neff E { fn op(x: Box) -> () }\nfn bad(x: Box) &capture -> () { let _ = x }\nfn main() -> () { with E::op = bad; E::op(.{ v: 1 }) }\n",
+            Stage::Type,
+            Code::E0534,
+        ),
+        (
+            "type Box = .{ var v: int }\nfn f(ref a: Box, n: int = a.v) -> int { n }\nfn main() -> () {}\n",
+            Stage::Type,
+            Code::E0409,
+        ),
+        (
+            "fn in_range(v: int, lo: int, hi: int) -> ?() { if v >= lo && v <= hi { Some(()) } else { None } }\nfn f(x: int |> in_range(0, \"bad\")) -> ?int { Some(x) }\nfn main() -> () {}\n",
+            Stage::Type,
+            Code::E0301,
+        ),
+        (
+            "fn in_range(v: int, lo: int, hi: int) -> ?() { if v >= lo && v <= hi { Some(()) } else { None } }\nfn f(x: int |> in_range(0)) -> ?int { Some(x) }\nfn main() -> () {}\n",
+            Stage::Type,
+            Code::E0314,
+        ),
+        (
+            "type Box = .{ var v: int }\nfn ok_after(res: int, b: Box) -> ?() { if res == b.v { Some(()) } else { None } }\nfn f(new b: Box) -> ?int |> ok_after(b) { let _ = new b; Some(1) }\nfn main() -> () {}\n",
+            Stage::Access,
+            Code::E0549,
+        ),
+        (
+            "fn main() -> () { let _ = absorb_panic(42) }\n",
+            Stage::Type,
+            Code::E0338,
+        ),
+        (
+            "fn main() -> () { let _ = absorb_panic(\\x: int -> x) }\n",
+            Stage::Type,
+            Code::E0314,
+        ),
+        (
+            "use ril/channel\nfn main() -> () { let Channel::ChannelPair.{ mut tx, mut rx } = Channel::bounded(1); let _ = absorb_panic(\\-> Channel::close(new tx)); Channel::close_recv(new rx) }\n",
+            Stage::Access,
+            Code::E0608,
+        ),
+        (
+            "use ril/fiber\nfn main() -> () { var n = 0; let _ = Fiber::run(\\-> Fiber::map([1, 2], \\x -> { n += x; x })) }\n",
+            Stage::Access,
+            Code::E0601,
+        ),
+        (
+            "use ril/fiber\neff Tick { fn bump() -> int }\nfn main() -> () { var n = 0; with Tick::bump = \\-> { n += 1; n }; let _ = Fiber::run(\\-> Fiber::map([1, 2], \\_ -> Tick::bump())) }\n",
+            Stage::Access,
+            Code::E0615,
+        ),
+        (
+            "use ril/fiber\nfn main() -> () { let _ = Fiber::run(\\-> Fiber::try_scope(\\mut _ -> 42)) }\n",
+            Stage::Type,
+            Code::E0301,
+        ),
+        (
+            "use ril/channel\nfn main() -> () { let Channel::ChannelPair.{ mut tx, mut rx } = Channel::bounded(1); Channel::drain(new tx, \\_ -> ()); Channel::close_recv(new rx) }\n",
+            Stage::Type,
+            Code::E0301,
+        ),
+        (
+            "use ril/fiber\nfn f(t: Fiber::Task<Fiber::Scope>) -> () { let _ = t }\nfn main() -> () {}\n",
+            Stage::Type,
+            Code::E0301,
+        ),
+    ] {
+        let mut pkg = VirtualPackage::new(Unit::Bin);
+        pkg.insert(pkg.entry.clone(), src.as_bytes().to_vec());
+        let checked = Driver.check(&pkg, stage);
+        assert!(
+            checked
+                .result
+                .diagnostics
+                .iter()
+                .any(|d| d.code == Some(code)),
+            "expected {code:?} at {stage:?} for `{src}`, got {:?}",
+            checked.result.diagnostics
+        );
+    }
+    Ok(())
+}

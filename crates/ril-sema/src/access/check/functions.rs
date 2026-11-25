@@ -38,6 +38,7 @@ impl Analyzer<'_> {
             .filter_map(|name| self.declaration(name.span))
             .collect();
         ctx.declared_contained = self.declared_sources(&fun.signature);
+        ctx.return_guards = fun.signature.guards.clone();
         let capture_modes: BTreeMap<_, _> = fun
             .signature
             .obligations
@@ -146,6 +147,11 @@ impl Analyzer<'_> {
         for &helper in &fun.helpers {
             self.statement(&mut ctx, &mut ledger, helper, false);
         }
+        for ast_param in &fun.signature.params {
+            if !ast_param.is_meta && !ast_param.guards.is_empty() {
+                self.check_guard_args(&mut ctx, &mut ledger, &ast_param.guards);
+            }
+        }
         let value = self.expr(&mut ctx, &mut ledger, body);
         let body_span = self.ast(ctx.file).expr(body).span;
         if ctx.reachable && self.ty(body_span) != &Ty::Never {
@@ -232,6 +238,31 @@ impl Analyzer<'_> {
             normal_exit: !exits.is_empty(),
             capture_names: captures,
         });
+    }
+
+    pub(super) fn check_guard_args(
+        &mut self,
+        ctx: &mut Context,
+        ledger: &mut Ledger,
+        guards: &[ExprId],
+    ) {
+        if !ctx.runtime || ctx.shadow || !ctx.reachable {
+            return;
+        }
+        for &guard in guards {
+            let mut node = self.ast(ctx.file).expr(guard);
+            if let Expr::Unary { op, value } = &node.value
+                && op.value == "ref"
+            {
+                node = self.ast(ctx.file).expr(*value);
+            }
+            if let Expr::Call { args, .. } = &node.value {
+                let arg_exprs: Vec<ExprId> = args.iter().map(|a| a.value).collect();
+                for arg_expr in arg_exprs {
+                    let _ = self.expr(ctx, ledger, arg_expr);
+                }
+            }
+        }
     }
 
     pub(super) fn declared_sources(&self, signature: &Signature) -> Vec<(Access, Span)> {

@@ -452,7 +452,7 @@ impl Checker<'_> {
                 Ty::Unit
             }
             "derive" => first,
-            "absorb_panic" => match first {
+            "absorb_panic" => match self.normalize(&first) {
                 Ty::Callable(call) if call.parameters.is_empty() => {
                     if args.first().is_some_and(|arg| {
                         !matches!(
@@ -472,7 +472,23 @@ impl Checker<'_> {
                         Box::new(self.std_adt(StdType::PanicError, Vec::new())),
                     )
                 }
-                _ => Ty::Unknown,
+                Ty::Callable(_) => {
+                    self.error(
+                        Code::E0314,
+                        span,
+                        "absorb_panic action must take zero arguments",
+                    );
+                    Ty::Unknown
+                }
+                Ty::Unknown | Ty::Infer(_) | Ty::Never => Ty::Unknown,
+                _ => {
+                    self.error(
+                        Code::E0338,
+                        span,
+                        "absorb_panic requires a zero-argument callable",
+                    );
+                    Ty::Unknown
+                }
             },
             _ => Ty::Unknown,
         }

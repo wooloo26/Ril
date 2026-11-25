@@ -7,6 +7,7 @@ impl Analyzer<'_> {
         ledger: &mut Ledger,
         name: &str,
         args: &[(usize, Mode, Datum)],
+        syntax: &[Argument],
         span: Span,
     ) -> Datum {
         let first = args
@@ -85,26 +86,63 @@ impl Analyzer<'_> {
                 }
             }
             "absorb_panic" => {
-                if first.is_some_and(|value| {
-                    !value.latent_effects.is_empty()
-                        || value.live_callable_state
-                        || value.roots.iter().any(|origin| {
-                            origin.mode != Access::Immutable
-                                && (!origin.new || !origin.dependencies.is_empty())
+                let has_forbidden_outer_handle = syntax.first().is_some_and(|arg| {
+                    let arg_span = self.ast(ctx.file).expr(arg.value).span;
+                    self.program
+                        .hir
+                        .references_within(arg_span)
+                        .any(|(ref_span, def_id)| {
+                            let def = self.program.hir.definition(def_id);
+                            let is_outer = def.name.span.start < arg_span.start
+                                || def.name.span.end > arg_span.end;
+                            is_outer
+                                && Self::contains_panic_unsafe_handle(
+                                    self.program
+                                        .types
+                                        .get(&ref_span)
+                                        .or_else(|| self.program.bindings.get(&def_id))
+                                        .unwrap_or(&Ty::Unknown),
+                                )
                         })
-                        || value
-                            .members
-                            .values()
-                            .flat_map(Datum::origins)
-                            .any(|origin| origin.mode != Access::Immutable)
-                }) {
+                });
+                if has_forbidden_outer_handle
+                    || first.is_some_and(|value| {
+                        !value.latent_effects.is_empty()
+                            || value.live_callable_state
+                            || value.roots.iter().any(|origin| {
+                                origin.mode != Access::Immutable
+                                    && (!origin.new || !origin.dependencies.is_empty())
+                            })
+                            || value
+                                .members
+                                .values()
+                                .flat_map(Datum::origins)
+                                .any(|origin| origin.mode != Access::Immutable)
+                    })
+                {
                     self.error(
                         Code::E0608,
                         span,
-                        "panic containment cannot capture live state or emit an outward effect",
+                        "panic containment cannot capture live state, outer channel/foreign handles, or emit an outward effect",
                     );
                 }
-                return Datum::source(span, Access::Mut, true);
+                let mut result = Datum::source(span, Access::Mut, true);
+                let fresh = first.is_some_and(|value| value.result_fresh)
+                    || syntax.first().is_some_and(|arg| {
+                        matches!(
+                            self.ty(self.ast(ctx.file).expr(arg.value).span),
+                            Ty::Callable(sig) if sig.result_mode == Mode::New
+                        )
+                    });
+                let payload = if fresh {
+                    Datum::source(span, Access::Mut, true)
+                } else {
+                    self.snapshot_value(span)
+                };
+                result
+                    .members
+                    .insert(Coordinate::Index("0".into()), payload);
+                return result;
             }
             "scope" | "spawn" | "join" | "send" | "recv" => {
                 self.effect(ctx, ledger, "fiber", span);
@@ -165,8 +203,17 @@ impl Analyzer<'_> {
             }
             if matches!(
                 name,
-                "run" | "spawn" | "supervise" | "zip" | "try_zip" | "race" | "timeout_ms"
+                "run"
+                    | "spawn"
+                    | "supervise"
+                    | "zip"
+                    | "try_zip"
+                    | "race"
+                    | "timeout_ms"
+                    | "map"
+                    | "try_map"
             ) {
+                let multi_run = matches!(name, "map" | "try_map");
                 for (i, _, callback) in values.iter().filter(|(_, _, v)| {
                     v.live_callable_state || !v.latent_effects.is_empty() || !v.members.is_empty()
                 }) {
@@ -209,7 +256,8 @@ impl Analyzer<'_> {
                     for origin in callback.members.values().flat_map(Datum::origins) {
                         if origin.confined.is_some()
                             || origin.mode != Access::Immutable
-                                && !origin.dependency_spans().any(|id| moved.contains(&id))
+                                && (multi_run
+                                    || !origin.dependency_spans().any(|id| moved.contains(&id)))
                         {
                             let target_span = argument.unwrap_or(span);
                             let mut diag = Diagnostic::error(
@@ -230,7 +278,13 @@ impl Analyzer<'_> {
                         }
                     }
                     for &decl in &moved {
-                        if let Some(slot) = ledger.slots.get(&decl)
+                        if multi_run {
+                            self.error(
+                                Code::E0601,
+                                argument.unwrap_or(span),
+                                "multi-item fiber closure cannot hand off an outer new binding",
+                            );
+                        } else if let Some(slot) = ledger.slots.get(&decl)
                             && slot.variable
                         {
                             let target_span = argument.unwrap_or(span);
@@ -309,6 +363,97 @@ impl Analyzer<'_> {
                     return Datum::source(span, Access::Mut, true);
                 }
             }
+            if matches!(
+                name,
+                "run"
+                    | "scope"
+                    | "try_scope"
+                    | "uncancellable"
+                    | "supervise"
+                    | "timeout_ms"
+                    | "zip"
+                    | "try_zip"
+                    | "map"
+                    | "try_map"
+                    | "race"
+            ) {
+                let callback_fresh = |idx: usize| {
+                    values
+                        .iter()
+                        .find(|(i, _, _)| *i == idx)
+                        .is_some_and(|(_, _, cb)| cb.result_fresh)
+                        || syntax.get(idx).is_some_and(|argument| {
+                            matches!(
+                                self.ty(self.ast(ctx.file).expr(argument.value).span),
+                                Ty::Callable(sig) if sig.result_mode == Mode::New
+                            )
+                        })
+                };
+                match name {
+                    "run" | "scope" | "try_scope" | "uncancellable" => {
+                        if callback_fresh(0) {
+                            return Datum::source(span, Access::Mut, true);
+                        }
+                    }
+                    "supervise" | "timeout_ms" => {
+                        let work_idx = usize::from(name == "timeout_ms");
+                        let mut result = Datum::source(span, Access::Mut, true);
+                        let payload = if callback_fresh(work_idx) {
+                            Datum::source(span, Access::Mut, true)
+                        } else {
+                            self.snapshot_value(span)
+                        };
+                        result
+                            .members
+                            .insert(Coordinate::Index("0".into()), payload);
+                        return result;
+                    }
+                    "zip" | "try_zip" => {
+                        let mut record = Datum::source(span, Access::Mut, true);
+                        let first_payload = if callback_fresh(0) {
+                            Datum::source(span, Access::Mut, true)
+                        } else {
+                            self.snapshot_value(span)
+                        };
+                        let second_payload = if callback_fresh(1) {
+                            Datum::source(span, Access::Mut, true)
+                        } else {
+                            self.snapshot_value(span)
+                        };
+                        record
+                            .members
+                            .insert(Coordinate::Field("first".into()), first_payload);
+                        record
+                            .members
+                            .insert(Coordinate::Field("second".into()), second_payload);
+                        if name == "try_zip" {
+                            let mut result = Datum::source(span, Access::Mut, true);
+                            result.members.insert(Coordinate::Index("0".into()), record);
+                            return result;
+                        }
+                        return record;
+                    }
+                    "map" | "try_map" => {
+                        let mut array = Datum::source(span, Access::Mut, true);
+                        if callback_fresh(1) {
+                            array.members.insert(
+                                Coordinate::Dynamic,
+                                Datum::source(span, Access::Mut, true),
+                            );
+                        }
+                        if name == "try_map" {
+                            let mut result = Datum::source(span, Access::Mut, true);
+                            result.members.insert(Coordinate::Index("0".into()), array);
+                            return result;
+                        }
+                        return array;
+                    }
+                    "race" if callback_fresh(0) && callback_fresh(1) => {
+                        return Datum::source(span, Access::Mut, true);
+                    }
+                    _ => {}
+                }
+            }
             return self.snapshot_value(span);
         }
         if matches!(name, "send" | "recv") {
@@ -318,6 +463,15 @@ impl Analyzer<'_> {
             && let Some(value) = first
         {
             self.mutate(ctx, ledger, value, span);
+        }
+        if name == "drain"
+            && let Some(consumer) = second
+        {
+            self.invoke_callable_obligations(ctx, ledger, consumer, span);
+            self.link_invocation(ctx, consumer);
+            for effect in &consumer.latent_effects {
+                self.effect(ctx, ledger, effect, span);
+            }
         }
         match name {
             "bounded" | "unbounded" => {
@@ -335,6 +489,30 @@ impl Analyzer<'_> {
                 Datum::source(span, Access::Mut, true)
             }
             _ => Datum::default(),
+        }
+    }
+
+    fn contains_panic_unsafe_handle(ty: &Ty) -> bool {
+        match ty {
+            Ty::Sender(_) | Ty::Receiver(_) | Ty::Scope | Ty::Task(_) => true,
+            Ty::Adt(adt) => adt.kind == crate::ty::AdtKind::Foreign,
+            Ty::Option(inner) | Ty::Set(inner) | Ty::Draft(inner) => {
+                Self::contains_panic_unsafe_handle(inner)
+            }
+            Ty::Result(ok, err) => {
+                Self::contains_panic_unsafe_handle(ok) || Self::contains_panic_unsafe_handle(err)
+            }
+            Ty::Array(item) => Self::contains_panic_unsafe_handle(&item.ty),
+            Ty::Map(k, v) => {
+                Self::contains_panic_unsafe_handle(k) || Self::contains_panic_unsafe_handle(&v.ty)
+            }
+            Ty::Tuple(items) => items
+                .iter()
+                .any(|m| Self::contains_panic_unsafe_handle(&m.ty)),
+            Ty::Record(fields, _) => fields
+                .values()
+                .any(|m| Self::contains_panic_unsafe_handle(&m.ty)),
+            _ => false,
         }
     }
 }

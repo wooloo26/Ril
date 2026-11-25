@@ -318,9 +318,27 @@ impl Checker<'_> {
                     StdType::Draft => return Ty::Draft(Box::new(arg0(self, env))),
                     StdType::MemberMode => return Ty::Mode,
                     StdType::Scope => return Ty::Scope,
-                    StdType::Task => return Ty::Task(Box::new(arg0(self, env))),
-                    StdType::Sender => return Ty::Sender(Box::new(arg0(self, env))),
-                    StdType::Receiver => return Ty::Receiver(Box::new(arg0(self, env))),
+                    StdType::Task => {
+                        let inner = arg0(self, env);
+                        if !self.is_sendable(env, &inner, &mut HashSet::new()) {
+                            self.error(Code::E0301, path.span, "Task payload must be Sendable");
+                        }
+                        return Ty::Task(Box::new(inner));
+                    }
+                    StdType::Sender => {
+                        let inner = arg0(self, env);
+                        if !self.is_sendable(env, &inner, &mut HashSet::new()) {
+                            self.error(Code::E0301, path.span, "Sender payload must be Sendable");
+                        }
+                        return Ty::Sender(Box::new(inner));
+                    }
+                    StdType::Receiver => {
+                        let inner = arg0(self, env);
+                        if !self.is_sendable(env, &inner, &mut HashSet::new()) {
+                            self.error(Code::E0301, path.span, "Receiver payload must be Sendable");
+                        }
+                        return Ty::Receiver(Box::new(inner));
+                    }
                     StdType::PanicInfo
                     | StdType::PanicError
                     | StdType::TaskFault

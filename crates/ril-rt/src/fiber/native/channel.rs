@@ -300,6 +300,8 @@ unsafe extern "C" fn ril_channel_drain(raw: Raw, receiver: Value, consumer: Valu
         // SAFETY: this invocation returned and the item no longer needs pinning.
         unsafe { context(raw) }.gc.unpin(value);
     }
+    // SAFETY: channel drain finished; reap channel if no endpoints remain.
+    maybe_reap_channel(unsafe { context(raw) }, id);
     Value::UNIT
 }
 
