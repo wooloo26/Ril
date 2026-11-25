@@ -955,7 +955,7 @@ impl<'a> Checker<'a> {
                     }
                 }
             }
-            StmtKind::Import(_) => {}
+            StmtKind::Import(_) | StmtKind::Error => {}
         }
         Ty::Unit
     }

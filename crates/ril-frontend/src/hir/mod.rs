@@ -6,6 +6,7 @@ mod walk;
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     path::{Path, PathBuf},
+    sync::Arc,
 };
 
 use ril_base::{
@@ -161,7 +162,7 @@ pub struct File {
     pub id: FileId,
     pub path: PathBuf,
     pub kind: FileKind,
-    pub ast: Ast,
+    pub ast: Arc<Ast>,
     source: SourceFile,
     tokens: Vec<Token>,
 }
@@ -172,7 +173,7 @@ impl File {
             id: source.id(),
             path: source.path().into(),
             kind,
-            ast,
+            ast: Arc::new(ast),
             source,
             tokens,
         }
@@ -243,6 +244,10 @@ pub struct Program {
     scopes: Vec<Scope>,
     definitions: Vec<Definition>,
     resolutions: HashMap<Span, Resolution>,
+    resolutions_by_file: HashMap<FileId, Vec<(Span, DefinitionId)>>,
+    namespace_owner: HashMap<ScopeId, DefinitionId>,
+    effect_owner: HashMap<ScopeId, DefinitionId>,
+    effect_by_label_map: HashMap<String, DefinitionId>,
     local_effects: BTreeSet<DefinitionId>,
     effect_spreads: BTreeMap<DefinitionId, BTreeSet<DefinitionId>>,
     pending_operations: Vec<effects::PendingOperation>,
@@ -272,11 +277,8 @@ impl Program {
         let mut chain = vec![def.name.value.as_str()];
         let mut scope = def.scope;
         while let Some(parent) = self.scope(scope).parent {
-            if let Some((_, namespace)) = self
-                .definitions()
-                .find(|(_, item)| item.kind == DefinitionKind::Namespace(scope))
-            {
-                chain.push(namespace.name.value.as_str());
+            if let Some(&owner) = self.namespace_owner.get(&scope) {
+                chain.push(self.definition(owner).name.value.as_str());
             }
             scope = parent;
         }
@@ -379,9 +381,7 @@ impl Program {
     }
     pub fn operation_effect(&self, operation: DefinitionId) -> Option<DefinitionId> {
         let scope = self.definition(operation).scope;
-        self.definitions().find_map(|(id, definition)| {
-            (definition.kind == DefinitionKind::Effect(scope)).then_some(id)
-        })
+        self.effect_owner.get(&scope).copied()
     }
 
     pub fn effect_label(&self, effect: DefinitionId) -> String {
@@ -424,6 +424,9 @@ impl Program {
     }
 
     pub fn effect_by_label(&self, label: &str) -> Option<DefinitionId> {
+        if let Some(&id) = self.effect_by_label_map.get(label) {
+            return Some(id);
+        }
         self.definitions().find_map(|(id, def)| {
             (matches!(def.kind, DefinitionKind::Effect(_)) && self.effect_label(id) == label)
                 .then_some(id)
@@ -484,16 +487,11 @@ impl Program {
         &self,
         outer: Span,
     ) -> impl Iterator<Item = (Span, DefinitionId)> + '_ {
-        self.resolutions
-            .iter()
-            .filter_map(move |(&span, &resolved)| {
-                (span.file == outer.file && span.start >= outer.start && span.end <= outer.end)
-                    .then_some(match resolved {
-                        Resolution::Definition(id) => Some((span, id)),
-                        Resolution::Module(_) => None,
-                    })
-                    .flatten()
-            })
+        self.resolutions_by_file
+            .get(&outer.file)
+            .into_iter()
+            .flat_map(|entries| entries.iter().copied())
+            .filter(move |(span, _)| span.start >= outer.start && span.end <= outer.end)
     }
 
     pub fn bindings_within(&self, outer: Span) -> BTreeSet<DefinitionId> {
@@ -564,6 +562,15 @@ impl Program {
         if name.value != "_" && (stmt.is_some() || !matches!(kind, DefinitionKind::Primitive(_))) {
             self.resolutions
                 .insert(name.span, Resolution::Definition(id));
+        }
+        match kind {
+            DefinitionKind::Namespace(child_scope) => {
+                self.namespace_owner.insert(child_scope, id);
+            }
+            DefinitionKind::Effect(child_scope) => {
+                self.effect_owner.insert(child_scope, id);
+            }
+            _ => {}
         }
         self.definitions.push(Definition {
             name,
@@ -680,6 +687,10 @@ pub fn lower(files: Vec<File>, entry: FileId) -> Result<Program, Vec<Diagnostic>
         scopes: Vec::new(),
         definitions: Vec::new(),
         resolutions: HashMap::new(),
+        resolutions_by_file: HashMap::new(),
+        namespace_owner: HashMap::new(),
+        effect_owner: HashMap::new(),
+        effect_by_label_map: HashMap::new(),
         local_effects: BTreeSet::new(),
         effect_spreads: BTreeMap::new(),
         pending_operations: Vec::new(),
@@ -737,6 +748,7 @@ pub fn lower(files: Vec<File>, entry: FileId) -> Result<Program, Vec<Diagnostic>
     if errors.is_empty() {
         walk::check(&mut program, &mut errors);
         program.resolve_effect_spreads(&mut errors);
+        program.finalize_indices();
     }
     if errors.is_empty() {
         Ok(program)
@@ -957,11 +969,36 @@ impl Program {
                     imports.push((scope, id));
                     continue;
                 }
-                StmtKind::With(_) | StmtKind::Expr(_) => continue,
+                StmtKind::With(_) | StmtKind::Expr(_) | StmtKind::Error => continue,
             };
             if let Err(err) = declaration {
                 errors.push(err);
             }
+        }
+    }
+
+    fn finalize_indices(&mut self) {
+        self.resolutions_by_file.clear();
+        for (&span, &resolved) in &self.resolutions {
+            if let Resolution::Definition(id) = resolved {
+                self.resolutions_by_file
+                    .entry(span.file)
+                    .or_default()
+                    .push((span, id));
+            }
+        }
+        self.effect_by_label_map.clear();
+        let effect_ids: Vec<_> = self
+            .definitions
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, def)| {
+                matches!(def.kind, DefinitionKind::Effect(_)).then_some(DefinitionId(idx))
+            })
+            .collect();
+        for id in effect_ids {
+            let label = self.effect_label(id);
+            self.effect_by_label_map.insert(label, id);
         }
     }
 

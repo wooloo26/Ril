@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use ril_base::span::Span;
+use ril_base::{span::Span, symbol::Symbol};
 
 #[derive(Clone, Debug)]
 pub struct Spanned<T> {
@@ -15,6 +15,13 @@ impl<T> Spanned<T> {
 }
 
 pub type Name = Spanned<String>;
+
+impl Name {
+    /// Intern this identifier into the global 4-byte `Symbol` table.
+    pub fn symbol(&self) -> Symbol {
+        ril_base::symbol::intern(&self.value)
+    }
+}
 
 macro_rules! arenas {
     ($(($id:ident, $node:ty, $field:ident, $push:ident, $get:ident)),* $(,)?) => {
@@ -320,6 +327,7 @@ pub enum StmtKind {
     },
     With(Vec<Handler>),
     Expr(ExprId),
+    Error,
 }
 
 #[derive(Clone, Debug)]

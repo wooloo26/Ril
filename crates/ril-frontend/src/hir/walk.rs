@@ -1,4 +1,7 @@
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::{
+    collections::{BTreeMap, HashMap, HashSet},
+    sync::Arc,
+};
 
 use ril_base::{
     diag::{Code, Diagnostic},
@@ -20,10 +23,13 @@ pub(super) fn check(program: &mut Program, errors: &mut Vec<Diagnostic>) {
         .map(|(&file, &scope)| (file, scope))
         .collect();
     for (file, scope) in units {
-        let Some(source) = program.files.get_mut(&file) else {
+        let Some(ast) = program
+            .files
+            .get(&file)
+            .map(|source| Arc::clone(&source.ast))
+        else {
             continue;
         };
-        let ast = std::mem::take(&mut source.ast);
         let mut walk = Walk {
             ast: &ast,
             program,
@@ -41,9 +47,6 @@ pub(super) fn check(program: &mut Program, errors: &mut Vec<Diagnostic>) {
         };
         for &item in &ast.items {
             walk.statement(item);
-        }
-        if let Some(source) = program.files.get_mut(&file) {
-            source.ast = ast;
         }
     }
 }
@@ -247,7 +250,7 @@ impl Walk<'_> {
                 }
             }
             StmtKind::Expr(expr) => self.expr(*expr),
-            StmtKind::Import(_) => {}
+            StmtKind::Import(_) | StmtKind::Error => {}
         }
         self.exposure = previous;
     }

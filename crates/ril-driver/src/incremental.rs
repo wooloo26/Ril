@@ -164,7 +164,7 @@ type AnalysisResult = Result<AnalysisPair, Vec<Diagnostic>>;
 struct CacheState {
     stats: QueryStats,
     decoded_interfaces: HashMap<ContentDigest, Result<Arc<Interface>, String>>,
-    parsed_files: HashMap<ParseKey, Result<hir::File, Diagnostic>>,
+    parsed_files: HashMap<ParseKey, Result<hir::File, Vec<Diagnostic>>>,
     checks: HashMap<CheckKey, (SourceMap, CheckResult)>,
     typed: HashMap<TypeKey, Result<Arc<TypedProgram>, Vec<Diagnostic>>>,
     analysis: HashMap<TypeKey, AnalysisResult>,
@@ -243,7 +243,7 @@ impl IncrementalCache {
         source: &SourceFile,
         kind: FileKind,
         content_hash: ContentDigest,
-    ) -> Result<hir::File, Diagnostic> {
+    ) -> Result<hir::File, Vec<Diagnostic>> {
         let key = ParseKey::new(source.id(), source.path().to_path_buf(), kind, content_hash);
         {
             let mut state = self.lock();
@@ -253,10 +253,17 @@ impl IncrementalCache {
             }
             state.stats.parse_misses += 1;
         }
-        let parsed = lexer::lex(source).and_then(|tokens| {
-            parser::parse(source, &tokens, kind)
-                .map(|ast| hir::File::new(source.clone(), kind, ast, tokens))
-        });
+        let lexed = lexer::lex_with_recovery(source);
+        let parsed = if !lexed.diagnostics.is_empty() {
+            Err(lexed.diagnostics)
+        } else {
+            let out = parser::parse_with_recovery(source, &lexed.tokens, kind);
+            if !out.diagnostics.is_empty() {
+                Err(out.diagnostics)
+            } else {
+                Ok(hir::File::new(source.clone(), kind, out.ast, lexed.tokens))
+            }
+        };
         self.lock().parsed_files.insert(key, parsed.clone());
         parsed
     }

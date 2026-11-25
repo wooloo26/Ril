@@ -515,10 +515,9 @@ fn run_frontend_full(
     let mut parsed = Vec::new();
     if stage == Stage::Lex {
         for item in valid {
-            if let Some(file) = sources.get(item.id)
-                && let Err(diagnostic) = lexer::lex(file)
-            {
-                diagnostics.push(diagnostic);
+            if let Some(file) = sources.get(item.id) {
+                let lexed = lexer::lex_with_recovery(file);
+                diagnostics.extend(lexed.diagnostics);
             }
         }
     } else {
@@ -544,14 +543,23 @@ fn run_frontend_full(
             };
             let file_result = match cache {
                 Some(cache) => cache.parse_file(file, kind, item.content_hash),
-                None => lexer::lex(file).and_then(|tokens| {
-                    parser::parse(file, &tokens, kind)
-                        .map(|ast| hir::File::new(file.clone(), kind, ast, tokens))
-                }),
+                None => {
+                    let lexed = lexer::lex_with_recovery(file);
+                    if !lexed.diagnostics.is_empty() {
+                        Err(lexed.diagnostics)
+                    } else {
+                        let out = parser::parse_with_recovery(file, &lexed.tokens, kind);
+                        if !out.diagnostics.is_empty() {
+                            Err(out.diagnostics)
+                        } else {
+                            Ok(hir::File::new(file.clone(), kind, out.ast, lexed.tokens))
+                        }
+                    }
+                }
             };
             match file_result {
                 Ok(hir_file) => parsed.push(hir_file),
-                Err(diagnostic) => diagnostics.push(diagnostic),
+                Err(mut file_diags) => diagnostics.append(&mut file_diags),
             }
         }
     }

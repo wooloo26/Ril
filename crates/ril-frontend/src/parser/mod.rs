@@ -22,6 +22,12 @@ pub enum FileKind {
     Snippet,
 }
 
+#[derive(Clone, Debug)]
+pub struct ParseOutput {
+    pub ast: Ast,
+    pub diagnostics: Vec<Diagnostic>,
+}
+
 pub fn parse(file: &SourceFile, tokens: &[Token], kind: FileKind) -> Result<Ast> {
     let mut parser = Parser {
         file,
@@ -33,6 +39,8 @@ pub fn parse(file: &SourceFile, tokens: &[Token], kind: FileKind) -> Result<Ast>
         last: file.span(0, 0),
         kind,
         depth: 0,
+        recover: false,
+        diagnostics: Vec::new(),
     };
     parser.ast.items = parser.sequence(
         None,
@@ -43,6 +51,35 @@ pub fn parse(file: &SourceFile, tokens: &[Token], kind: FileKind) -> Result<Ast>
         },
     )?;
     Ok(parser.ast)
+}
+
+pub fn parse_with_recovery(file: &SourceFile, tokens: &[Token], kind: FileKind) -> ParseOutput {
+    let mut parser = Parser {
+        file,
+        tokens,
+        pos: 0,
+        split: 0,
+        ast: Ast::default(),
+        delimiters: Vec::new(),
+        last: file.span(0, 0),
+        kind,
+        depth: 0,
+        recover: true,
+        diagnostics: Vec::new(),
+    };
+    let context = if kind == FileKind::Snippet {
+        decl::Context::Snippet
+    } else {
+        decl::Context::Module
+    };
+    match parser.sequence(None, context) {
+        Ok(items) => parser.ast.items = items,
+        Err(diag) => parser.diagnostics.push(diag),
+    }
+    ParseOutput {
+        ast: parser.ast,
+        diagnostics: parser.diagnostics,
+    }
 }
 
 type Result<T> = std::result::Result<T, Diagnostic>;
@@ -70,6 +107,8 @@ struct Parser<'a> {
     last: Span,
     kind: FileKind,
     depth: usize,
+    recover: bool,
+    diagnostics: Vec<Diagnostic>,
 }
 
 impl Parser<'_> {
@@ -436,4 +475,45 @@ enum Angle {
     Type,
     Expression,
     None,
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use ril_base::span::FileId;
+
+    use super::*;
+    use crate::lexer;
+
+    #[test]
+    fn parse_with_recovery_collects_multiple_statement_errors() {
+        let src = SourceFile::from_bytes(
+            FileId(1),
+            PathBuf::from("pkg/bad.ril"),
+            b"fn a() int { 1 }\nfn ok() -> int { 2 }\nfn b() int { 3 }\n",
+        )
+        .unwrap_or_else(|e| ril_base::ice!("{e:?}"));
+        let lexed = lexer::lex_with_recovery(&src);
+        assert!(lexed.diagnostics.is_empty());
+        let parsed = parse_with_recovery(&src, &lexed.tokens, FileKind::Module);
+        assert_eq!(parsed.diagnostics.len(), 2);
+        assert!(parsed.ast.items.len() >= 3);
+    }
+
+    #[test]
+    fn parse_with_recovery_preserves_e0122_unclosed_delimiter_priority() {
+        let src = SourceFile::from_bytes(
+            FileId(2),
+            PathBuf::from("pkg/unclosed.ril"),
+            b"fn a() -> int {\n    let x = (1 + 2\n}\n",
+        )
+        .unwrap_or_else(|e| ril_base::ice!("{e:?}"));
+        let lexed = lexer::lex_with_recovery(&src);
+        let parsed = parse_with_recovery(&src, &lexed.tokens, FileKind::Module);
+        assert!(matches!(
+            parsed.diagnostics.first().and_then(|d| d.code),
+            Some(Code::E0122 | Code::E0123)
+        ));
+    }
 }

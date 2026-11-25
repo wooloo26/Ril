@@ -1471,7 +1471,7 @@ impl<'a> Analyzer<'a> {
                     self.shadow_type(ctx, ledger, ty);
                 }
             }
-            StmtKind::Effect { .. } | StmtKind::Import(_) => {}
+            StmtKind::Effect { .. } | StmtKind::Import(_) | StmtKind::Error => {}
         }
         Datum::default()
     }

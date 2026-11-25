@@ -38,16 +38,76 @@ impl Parser<'_> {
             && !close.is_some_and(|close| self.is(close))
             && !(context == Context::Block && self.is("where"))
         {
-            items.push(self.nested(|p| p.statement(context))?);
-            if !self.separators()
-                && self.current().kind != Kind::Eof
-                && !close.is_some_and(|close| self.is(close))
-                && !(context == Context::Block && self.is("where"))
-            {
-                return Err(self.unexpected("expected a newline or semicolon"));
+            let before = self.pos;
+            let start = self.current().span;
+            let delimiter_depth = self.delimiters.len();
+            match self.nested(|p| p.statement(context)) {
+                Ok(stmt) => {
+                    items.push(stmt);
+                    if !self.separators()
+                        && self.current().kind != Kind::Eof
+                        && !close.is_some_and(|close| self.is(close))
+                        && !(context == Context::Block && self.is("where"))
+                    {
+                        let diag = self.unexpected("expected a newline or semicolon");
+                        if !self.recover || matches!(diag.code, Some(Code::E0122 | Code::E0123)) {
+                            return Err(diag);
+                        }
+                        self.diagnostics.push(diag);
+                        self.sync_statement(close, context);
+                    }
+                }
+                Err(diag) => {
+                    if !self.recover || matches!(diag.code, Some(Code::E0122 | Code::E0123)) {
+                        return Err(diag);
+                    }
+                    self.delimiters.truncate(delimiter_depth);
+                    self.diagnostics.push(diag);
+                    let err_stmt = self.ast.add_stmt(
+                        start.join(self.last),
+                        Stmt {
+                            attrs: Vec::new(),
+                            visibility: Visibility::Private,
+                            kind: StmtKind::Error,
+                        },
+                    );
+                    items.push(err_stmt);
+                    if self.pos == before {
+                        self.bump();
+                    }
+                    self.sync_statement(close, context);
+                }
             }
         }
         Ok(items)
+    }
+
+    fn sync_statement(&mut self, close: Option<&str>, context: Context) {
+        let mut brace_depth = 0usize;
+        while self.current().kind != Kind::Eof {
+            if brace_depth == 0 {
+                if self.current().kind == Kind::Newline || self.is(";") {
+                    self.separators();
+                    return;
+                }
+                if close.is_some_and(|c| self.is(c))
+                    || (context == Context::Block && self.is("where"))
+                {
+                    return;
+                }
+            }
+            match self.text() {
+                "{" | ".{" => brace_depth += 1,
+                "}" => {
+                    if brace_depth == 0 {
+                        return;
+                    }
+                    brace_depth -= 1;
+                }
+                _ => {}
+            }
+            self.bump();
+        }
     }
 
     fn statement(&mut self, context: Context) -> Result<StmtId> {

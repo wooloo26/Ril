@@ -113,29 +113,91 @@ impl Token {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TriviaKind {
+    Whitespace,
+    LineComment,
+    BlockComment,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Trivia {
+    pub kind: TriviaKind,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug)]
+pub struct LexOutput {
+    pub tokens: Vec<Token>,
+    pub trivia: Vec<Trivia>,
+    pub diagnostics: Vec<Diagnostic>,
+}
+
 pub fn lex(source: &SourceFile) -> Result<Vec<Token>, Diagnostic> {
+    let output = lex_with_recovery(source);
+    if let Some(first) = output.diagnostics.into_iter().next() {
+        Err(first)
+    } else {
+        Ok(output.tokens)
+    }
+}
+
+pub fn lex_with_recovery(source: &SourceFile) -> LexOutput {
     let mut lexer = Lexer {
         source,
         pos: 0,
         tokens: Vec::new(),
+        trivia: Vec::new(),
         modes: Vec::new(),
     };
+    let mut diagnostics = Vec::new();
     while !lexer.rest().is_empty() {
-        if matches!(lexer.modes.last(), Some(Mode::String { .. })) {
-            lexer.string()?;
+        let before = lexer.pos;
+        let step = if matches!(lexer.modes.last(), Some(Mode::String { .. })) {
+            lexer.string()
         } else {
-            lexer.code()?;
+            lexer.code()
+        };
+        if let Err(diag) = step {
+            diagnostics.push(diag);
+            // Recover safely while guaranteeing strict forward progress.
+            if matches!(lexer.modes.last(), Some(Mode::String { .. })) {
+                if lexer.first().is_none_or(|c| matches!(c, '\n' | '\r')) {
+                    lexer.modes.pop();
+                } else if lexer.pos == before {
+                    lexer.bump();
+                }
+            } else if matches!(lexer.modes.last(), Some(Mode::Interpolation { .. })) {
+                if lexer.first().is_none_or(|c| matches!(c, '\n' | '\r')) {
+                    lexer.modes.pop();
+                    if matches!(lexer.modes.last(), Some(Mode::String { .. })) {
+                        lexer.modes.pop();
+                    }
+                    lexer.bump();
+                } else if lexer.pos == before {
+                    lexer.bump();
+                }
+            } else {
+                if lexer.pos == before {
+                    lexer.bump();
+                }
+                lexer.emit(Kind::Unknown, before);
+            }
         }
     }
-    if let Some(mode) = lexer.modes.last() {
+    while let Some(mode) = lexer.modes.pop() {
         let (code, start, message) = match mode {
-            Mode::String { start } => (Code::E0107, *start, "unterminated string"),
-            Mode::Interpolation { start, .. } => (Code::E0112, *start, "unclosed interpolation"),
+            Mode::String { start } => (Code::E0107, start, "unterminated string"),
+            Mode::Interpolation { start, .. } => (Code::E0112, start, "unclosed interpolation"),
         };
-        return Err(lexer.error(code, start, message));
+        diagnostics.push(lexer.error(code, start, message));
     }
     lexer.emit(Kind::Eof, lexer.pos);
-    Ok(lexer.tokens)
+    LexOutput {
+        tokens: lexer.tokens,
+        trivia: lexer.trivia,
+        diagnostics,
+    }
 }
 
 enum Mode {
@@ -153,6 +215,7 @@ struct Lexer<'a> {
     source: &'a SourceFile,
     pos: usize,
     tokens: Vec<Token>,
+    trivia: Vec<Trivia>,
     modes: Vec<Mode>,
 }
 
@@ -203,7 +266,13 @@ impl Lexer<'_> {
         };
         match ch {
             ' ' | '\t' | '\r' => {
-                self.bump();
+                while self.first().is_some_and(|c| matches!(c, ' ' | '\t' | '\r')) {
+                    self.bump();
+                }
+                self.trivia.push(Trivia {
+                    kind: TriviaKind::Whitespace,
+                    span: self.source.span(start, self.pos),
+                });
                 return Ok(());
             }
             '\n' => {
@@ -216,10 +285,19 @@ impl Lexer<'_> {
         }
         if self.take("--") {
             self.pos += self.rest().find('\n').unwrap_or(self.rest().len());
+            self.trivia.push(Trivia {
+                kind: TriviaKind::LineComment,
+                span: self.source.span(start, self.pos),
+            });
             return Ok(());
         }
         if self.take("{-") {
-            return self.comment(start);
+            let result = self.comment(start);
+            self.trivia.push(Trivia {
+                kind: TriviaKind::BlockComment,
+                span: self.source.span(start, self.pos),
+            });
+            return result;
         }
         if matches!(ch, '\0'..='\u{1f}' | '\u{7f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
         {
@@ -554,4 +632,49 @@ impl Lexer<'_> {
 
 fn leading_hashes(text: &str) -> usize {
     text.bytes().take_while(|&byte| byte == b'#').count()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use ril_base::span::FileId;
+
+    use super::*;
+
+    #[test]
+    fn lex_with_recovery_collects_multiple_errors_and_preserves_trivia() {
+        let src = SourceFile::from_bytes(
+            FileId(1),
+            PathBuf::from("pkg/recover.ril"),
+            b"-- header comment\nlet bad_One = 1\n{- block -}\nlet bad_Two = 2\n",
+        )
+        .unwrap_or_else(|e| ril_base::ice!("{e:?}"));
+        let output = lex_with_recovery(&src);
+        assert_eq!(output.diagnostics.len(), 2);
+        assert!(
+            output
+                .diagnostics
+                .iter()
+                .all(|d| d.code == Some(Code::E0102))
+        );
+        assert!(
+            output
+                .trivia
+                .iter()
+                .any(|t| t.kind == TriviaKind::LineComment)
+        );
+        assert!(
+            output
+                .trivia
+                .iter()
+                .any(|t| t.kind == TriviaKind::BlockComment)
+        );
+        assert!(
+            output
+                .trivia
+                .iter()
+                .any(|t| t.kind == TriviaKind::Whitespace)
+        );
+    }
 }

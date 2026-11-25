@@ -5,13 +5,73 @@ use std::{
 };
 
 use ril_base::span::{FileId, SourceFile};
-use ril_frontend::{
-    lexer,
-    parser::{self, FileKind},
-    syntax::{Ast, StmtId, StmtKind},
-};
+use ril_frontend::lexer::{self, Kind, Token};
 use ril_sema::iface::Interface;
 use ril_test::{Unit, VirtualPackage};
+
+/// Lightweight token-stream check for a top-level `fn main` without constructing an AST.
+fn has_top_level_main(source: &SourceFile, tokens: &[Token]) -> bool {
+    let mut depth = 0usize;
+    let mut i = 0;
+    while let Some(tok) = tokens.get(i) {
+        let text = tok.text(source);
+        match text {
+            "{" | ".{" => depth += 1,
+            "}" => depth = depth.saturating_sub(1),
+            "fn" if depth == 0 => {
+                if let Some(next) = tokens.get(i + 1)
+                    && next.text(source) == "main"
+                {
+                    return true;
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    false
+}
+
+/// Lightweight token-stream scanner collecting module `use a/b/c` import paths without full parsing.
+fn scan_use_imports(source: &SourceFile, tokens: &[Token]) -> Vec<Vec<String>> {
+    let mut out = Vec::new();
+    let mut i = 0;
+    while let Some(tok) = tokens.get(i) {
+        if tok.text(source) == "use" {
+            let mut j = i + 1;
+            // Distinguish `use a/b/c` import from `use [mut] x = expr` scoped resource binding:
+            // an import has `/` immediately after the first segment.
+            let mut parts = Vec::new();
+            if let Some(first) = tokens.get(j)
+                && matches!(first.kind, Kind::Word(_))
+            {
+                let first_text = first.text(source);
+                if tokens.get(j + 1).is_some_and(|t| t.text(source) == "/") {
+                    parts.push(first_text.to_owned());
+                    j += 1;
+                    while tokens.get(j).is_some_and(|t| t.text(source) == "/") {
+                        j += 1;
+                        if let Some(seg) = tokens.get(j)
+                            && matches!(seg.kind, Kind::Word(_))
+                        {
+                            parts.push(seg.text(source).to_owned());
+                            j += 1;
+                        } else {
+                            break;
+                        }
+                    }
+                    if parts.len() >= 2 {
+                        out.push(parts);
+                    }
+                    i = j;
+                    continue;
+                }
+            }
+        }
+        i += 1;
+    }
+    out
+}
 
 pub fn infer_unit(path: &Path) -> Unit {
     if path.to_string_lossy().ends_with(".d.ril") {
@@ -22,10 +82,7 @@ pub fn infer_unit(path: &Path) -> Unit {
         let source =
             SourceFile::from_bytes(FileId::from_path(path), path.to_owned(), &bytes).ok()?;
         let tokens = lexer::lex(&source).ok()?;
-        let syntax = parser::parse(&source, &tokens, FileKind::Snippet).ok()?;
-        Some(syntax.items.iter().any(|&stmt| {
-            matches!(&syntax.stmt(stmt).value.kind, StmtKind::Function(function) if function.name.value == "main")
-        }))
+        Some(has_top_level_main(&source, &tokens))
     })();
     if main == Some(true) {
         Unit::Bin
@@ -102,26 +159,9 @@ pub fn load_package(entry: &Path, unit: Unit) -> Result<VirtualPackage, String> 
         } else {
             &data
         };
-        let kind = if interface.is_some() {
-            FileKind::Interface
-        } else if source_path.to_string_lossy().ends_with(".d.ril") {
-            FileKind::Foreign
-        } else if path == package.entry {
-            match unit {
-                Unit::Bin => FileKind::Executable,
-                Unit::Decl => FileKind::Foreign,
-                Unit::Lib => FileKind::Module,
-                Unit::Snippet => FileKind::Snippet,
-            }
-        } else {
-            FileKind::Module
-        };
-        if let Ok(src) = SourceFile::from_bytes(FileId::from_path(&module), module, declaration)
-            && let Ok(tokens) = lexer::lex(&src)
-            && let Ok(ast) = parser::parse(&src, &tokens, kind)
-        {
-            let mut imports = Vec::new();
-            collect(&ast, &ast.items, &mut imports);
+        if let Ok(src) = SourceFile::from_bytes(FileId::from_path(&module), module, declaration) {
+            let lexed = lexer::lex_with_recovery(&src);
+            let imports = scan_use_imports(&src, &lexed.tokens);
             for parts in imports {
                 let Some(anchor) = parts.first() else {
                     continue;
@@ -162,18 +202,4 @@ pub fn load_package(entry: &Path, unit: Unit) -> Result<VirtualPackage, String> 
         package.insert(path, data);
     }
     Ok(package)
-}
-
-fn collect(ast: &Ast, items: &[StmtId], files: &mut Vec<Vec<String>>) {
-    for &item in items {
-        match &ast.stmt(item).value.kind {
-            StmtKind::Import(import) => {
-                if let Some(path) = &import.file {
-                    files.push(path.iter().map(|name| name.value.clone()).collect());
-                }
-            }
-            StmtKind::Sub { items, .. } => collect(ast, items, files),
-            _ => {}
-        }
-    }
 }
