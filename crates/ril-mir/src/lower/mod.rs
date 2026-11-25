@@ -116,7 +116,7 @@ fn collect_top_level_functions(typed: &TypedProgram) -> HashSet<DefinitionId> {
 }
 
 fn captured_slots(typed: &TypedProgram) -> BTreeSet<DefinitionId> {
-    typed.thir.boxed_var_captures.clone()
+    typed.boxed_var_captures.clone()
 }
 
 struct Lowering<'a> {

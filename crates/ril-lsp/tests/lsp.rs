@@ -296,7 +296,10 @@ fn lsp_prelude_definitions_jump_to_std_prelude_ril() -> Result<(), String> {
     let root_uri = format!("file://{}", repo_root.display());
     let doc_uri = format!("file://{}/pkg/prelude_jump.ril", repo_root.display());
     let source = concat!(
-        "fn check(x: Option<int>, y: Result<int, PanicError>) -> int {\n",
+        "type Rec .{ a: int }\n",
+        "type K = FieldKey<Rec>\n",
+        "fn check<T |> Tuple>(t: T, x: Option<int>, y: Result<int, PanicError>) -> int {\n",
+        "    let _ = t\n",
         "    let fallback = match y {\n",
         "        Ok(n) -> n\n",
         "        Err(_) -> 0\n",
@@ -320,6 +323,8 @@ fn lsp_prelude_definitions_jump_to_std_prelude_ril() -> Result<(), String> {
     let (res_line, res_col) = locate("Result")?;
     let (panic_line, panic_col) = locate("PanicError")?;
     let (len_line, len_col) = locate("len(")?;
+    let (fk_line, fk_col) = locate("FieldKey")?;
+    let (tup_line, tup_col) = locate("Tuple")?;
 
     let mut input = Vec::new();
     input.extend(frame_lsp(&json!({
@@ -340,6 +345,8 @@ fn lsp_prelude_definitions_jump_to_std_prelude_ril() -> Result<(), String> {
         (3, (res_line, res_col)),
         (4, (panic_line, panic_col)),
         (5, (len_line, len_col)),
+        (6, (fk_line, fk_col)),
+        (7, (tup_line, tup_col)),
     ] {
         input.extend(frame_lsp(&json!({
             "jsonrpc": "2.0",
@@ -353,7 +360,7 @@ fn lsp_prelude_definitions_jump_to_std_prelude_ril() -> Result<(), String> {
     }
     input.extend(frame_lsp(&json!({
         "jsonrpc": "2.0",
-        "id": 6,
+        "id": 8,
         "method": "shutdown",
         "params": null
     })));
@@ -365,7 +372,7 @@ fn lsp_prelude_definitions_jump_to_std_prelude_ril() -> Result<(), String> {
     let mut output = Vec::new();
     ril_lsp::handle_session(Cursor::new(input), &mut output)?;
     let frames = parse_lsp_frames(&output)?;
-    assert_eq!(frames.len(), 7, "expected 7 LSP messages, got {frames:#?}");
+    assert_eq!(frames.len(), 9, "expected 9 LSP messages, got {frames:#?}");
 
     let diags = frames
         .get(1)
@@ -374,7 +381,14 @@ fn lsp_prelude_definitions_jump_to_std_prelude_ril() -> Result<(), String> {
         .ok_or("missing diagnostics")?;
     assert!(diags.is_empty(), "expected clean diagnostics: {diags:?}");
 
-    for (idx, label) in [(2, "Option"), (3, "Result"), (4, "PanicError"), (5, "len")] {
+    for (idx, label) in [
+        (2, "Option"),
+        (3, "Result"),
+        (4, "PanicError"),
+        (5, "len"),
+        (6, "FieldKey"),
+        (7, "Tuple"),
+    ] {
         let uri = frames
             .get(idx)
             .and_then(|v| v.pointer("/result/uri"))

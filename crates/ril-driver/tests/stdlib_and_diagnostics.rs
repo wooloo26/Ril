@@ -841,3 +841,179 @@ fn primitive_manifest_runtime_symbols_exist_in_ril_rt() {
         }
     }
 }
+
+#[test]
+fn de_magification_self_hosted_set_stdlib_convert_compile_error_and_wrapper_syntax()
+-> Result<(), String> {
+    let source = r#"
+        use ril/fiber
+        use ril/channel
+
+        type UserId int
+        type AliasInt = int
+        type Marker
+        type BoxRec .{ label: str = "def", count: int }
+        opaque type SecretTag str
+
+        fn make_secret(s: str) -> new SecretTag { SecretTag(s) }
+        fn read_secret(t: SecretTag) -> str { inner(t) }
+
+        meta fn static_stdlib_check() -> int {
+            let mut s = Set::from_array([3, 1, 2, 1])
+            Set::insert(mut s, 4)
+            let _ = Set::remove(mut s, 2)
+            let s_snap = new s
+            var sum = 0
+            for s_snap as x {
+                sum += x
+            }
+            let mut xs = [5, 2, 4, 1, 3]
+            Array::sort(mut xs)
+            let mut m: [str: int] = ["a": 10, "b": 20]
+            Map::insert(mut m, "c", 30)
+            let total = sum + xs[0] + (Map::get(ref m, "c") ?? 0) + len(String::split("x,y,z", ",")) + len(Bytes::to_array(bytes"AB"))
+            Map::clear(mut m)
+            Array::clear(mut xs)
+            total + len(ref m) + len(ref xs)
+        }
+
+        meta let STATIC_TOTAL = static_stdlib_check()
+
+        fn main() @io -> () {
+            -- Wrapper vs alias distinction
+            let uid = UserId(7)
+            let alias: AliasInt = 7
+            let plain: int = alias
+            assert(inner(uid) == plain && inner(Marker) == ())
+            let rec = BoxRec.{ count: 2 }
+            assert(rec.label == "def" && rec.count == 2)
+            assert(read_secret(make_secret("ok")) == "ok")
+
+            -- Self-hosted Set + derive + inspect + len + for
+            let s0 = Set::from_array([10, 20])
+            let s1 = derive(s0, \mut d -> {
+                Set::insert(mut d, 30)
+                let _ = Set::remove(mut d, 10)
+            })
+            assert(len(s0) == 2 && Set::contains(s0, 10) && !Set::contains(s0, 30))
+            assert(len(s1) == 2 && !Set::contains(s1, 10) && Set::contains(s1, 30))
+            assert(String::inspect(s1) == "Set([20, 30])")
+
+            -- Self-hosted Numeric::convert<f64> and <int>
+            assert(Numeric::convert<f64>(3.5) == Some(3.5))
+            assert(Numeric::convert<int>(3.5) == None)
+            assert(Numeric::convert<int>(4.0) == Some(4))
+
+            -- Self-hosted Array::sort (including NaN), Map, String, Bytes under Draft too
+            let a0 = [3, 1, 2]
+            let a1 = derive(a0, \mut d -> {
+                Array::sort(mut d)
+            })
+            assert(a0 == [3, 1, 2] && a1 == [1, 2, 3])
+            let m0: [str: int] = ["k": 1, "z": 2]
+            let m1 = derive(m0, \mut d -> {
+                Map::clear(mut d)
+                Map::insert(mut d, "n", 9)
+            })
+            assert(len(m0) == 2 && Map::get(m1, "n") == Some(9) && Map::keys(m1) == ["n"] && Map::values(m1) == [9])
+            assert(String::split("ab", "") == ["", "a", "b", ""])
+            assert(String::split("", ",") == [""])
+            assert(Bytes::to_array(bytes"AZ") == [65, 90])
+
+            -- First-class Fiber/Channel named args & closure effect tracking
+            let result = Fiber::run(\-> {
+                let yield_fn = Fiber::yield_now
+                yield_fn()
+                let .{ mut tx, mut rx } = Channel::bounded<int>(capacity: 2)
+                match Channel::send(item: 41, tx: mut tx) {
+                    Ok() -> ()
+                    Err(_) -> panic("closed")
+                }
+                Channel::close(new tx)
+                match Channel::recv(mut rx) {
+                    Some(v) -> v + 1
+                    None -> 0
+                }
+            })
+            assert(result == 42)
+            assert(STATIC_TOTAL == 44)
+            println("wave-5-ok")
+        }
+    "#;
+    run_aot(source, "wave-5-ok\n")?;
+
+    // compile_error reports E0832 anchored at caller instantiation site with secondary label.
+    let compile_err_src = concat!(
+        "type MustBeInt = \\T -> match <T> {\n",
+        "    <int> -> <int>\n",
+        "    _ -> compile_error(\"expected int type\")\n",
+        "}\n",
+        "type Bad = MustBeInt<str>\n",
+        "fn main() -> () {}\n",
+    );
+    let mut pkg = VirtualPackage::new(Unit::Bin);
+    pkg.insert(pkg.entry.clone(), compile_err_src.as_bytes().to_vec());
+    let checked = Driver.check(&pkg, Stage::Type);
+    let diag = checked
+        .result
+        .diagnostics
+        .iter()
+        .find(|d| d.code == Some(Code::E0832))
+        .ok_or_else(|| format!("expected E0832, got {:?}", checked.result.diagnostics))?;
+    assert!(
+        diag.message.contains("expected int type"),
+        "unexpected compile_error message: {}",
+        diag.message
+    );
+    let call_offset = compile_err_src
+        .find("MustBeInt<str>")
+        .ok_or("missing call site")?;
+    let primary = diag.primary.ok_or("missing primary span")?;
+    assert_eq!(
+        primary.start, call_offset,
+        "expected compile_error primary span anchored at caller instantiation site"
+    );
+    assert!(
+        !diag.labels().is_empty(),
+        "expected secondary label pointing at compile_error site"
+    );
+
+    // Reject `opaque type Bad = int` (no `=` on opaque wrapper) and distinct wrappers `type A int` vs `type B int`.
+    for (src, stage, code) in [
+        (
+            "opaque type Bad = int\nfn main() -> () {}\n",
+            Stage::Parse,
+            Code::E0120,
+        ),
+        (
+            "type A int\ntype B int\nfn main() -> () { let _: B = A(1) }\n",
+            Stage::Type,
+            Code::E0305,
+        ),
+        (
+            "fn f<T |> Tuple>(x: T) -> () { let _ = x }\nfn main() -> () { f(42) }\n",
+            Stage::Type,
+            Code::E0301,
+        ),
+        (
+            "type BadKey = FieldKey<int>\nfn main() -> () {}\n",
+            Stage::Type,
+            Code::E0358,
+        ),
+    ] {
+        let mut pkg = VirtualPackage::new(Unit::Bin);
+        pkg.insert(pkg.entry.clone(), src.as_bytes().to_vec());
+        let checked = Driver.check(&pkg, stage);
+        assert!(
+            checked
+                .result
+                .diagnostics
+                .iter()
+                .any(|d| d.code == Some(code)),
+            "expected {code:?} at {stage:?} for `{src}`, got {:?}",
+            checked.result.diagnostics
+        );
+    }
+
+    Ok(())
+}

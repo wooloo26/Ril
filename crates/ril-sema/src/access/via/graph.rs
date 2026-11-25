@@ -1,13 +1,10 @@
-use std::{
-    borrow::Cow,
-    collections::{BTreeMap, BTreeSet, HashMap},
-};
+use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
 
-use super::{Input, Summary, ViaDomain, ViaRow};
+use super::{Input, Summary, ViaRow};
 
-#[derive(Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub(super) struct Graph {
     pub(super) summaries: Vec<Summary>,
     // The root is last and every edge points to an earlier node.
@@ -30,6 +27,10 @@ impl Graph {
     pub(super) fn validate(&mut self) -> Result<(), &'static str> {
         self.widths.clear();
         self.counts.clear();
+        if self.nodes.is_empty() && self.summaries.is_empty() {
+            self.width = 0;
+            return Ok(());
+        }
         for (index, node) in self.nodes.iter().enumerate() {
             let (width, count) = match node {
                 Node::Leaf(summary) if *summary < self.summaries.len() => (0, 1_u128),
@@ -186,12 +187,12 @@ impl Graph {
     }
 
     pub(super) fn subsumes(&self, revision: &Self) -> bool {
-        if self.width != revision.width {
-            return false;
-        }
         let Some(old_root) = self.nodes.len().checked_sub(1) else {
             return true;
         };
+        if self.width != revision.width {
+            return false;
+        }
         let Some(new_root) = revision.nodes.len().checked_sub(1) else {
             return false;
         };
@@ -223,83 +224,5 @@ impl Graph {
             }
         }
         true
-    }
-}
-
-#[derive(Default)]
-pub(super) struct Builder {
-    rows: BTreeMap<Vec<Input>, usize>,
-    summaries: Vec<Summary>,
-    summary_ids: HashMap<Summary, usize>,
-    previous: Option<usize>,
-}
-
-impl Builder {
-    pub(super) fn push(&mut self, modes: Vec<Input>, summary: Cow<'_, Summary>) {
-        let std::collections::btree_map::Entry::Vacant(row) = self.rows.entry(modes) else {
-            return;
-        };
-        let id = if let Some(id) = self.previous
-            && self.summaries.get(id) == Some(summary.as_ref())
-        {
-            id
-        } else if let Some(&id) = self.summary_ids.get(summary.as_ref()) {
-            id
-        } else {
-            let owned = summary.into_owned();
-            let id = self.summaries.len();
-            self.summaries.push(owned.clone());
-            self.summary_ids.insert(owned, id);
-            id
-        };
-        self.previous = Some(id);
-        row.insert(id);
-    }
-
-    pub(super) fn finish(self) -> ViaDomain {
-        let Some(width) = self.rows.keys().next().map(Vec::len) else {
-            return ViaDomain::default();
-        };
-        let mut nodes = Vec::new();
-        let mut interned = HashMap::new();
-        let mut intern = |node: Node| {
-            if let Some(&id) = interned.get(&node) {
-                return id;
-            }
-            let id = nodes.len();
-            nodes.push(node.clone());
-            interned.insert(node, id);
-            id
-        };
-        let mut rows: Vec<_> = self
-            .rows
-            .into_iter()
-            .map(|(modes, summary)| (modes, intern(Node::Leaf(summary))))
-            .collect();
-        // Fold the sorted rows from the final axis to the first.
-        for axis in (0..width).rev() {
-            rows = rows
-                .chunk_by(|left, right| left.0.get(..axis) == right.0.get(..axis))
-                .map(|group| {
-                    let prefix = group
-                        .first()
-                        .and_then(|row| row.0.get(..axis))
-                        .unwrap_or_else(|| ril_source::ice!("missing via mode prefix"))
-                        .to_vec();
-                    let edges = group
-                        .iter()
-                        .map(|(modes, child)| {
-                            let mode = modes
-                                .get(axis)
-                                .copied()
-                                .unwrap_or_else(|| ril_source::ice!("missing via mode axis"));
-                            (mode, *child)
-                        })
-                        .collect();
-                    (prefix, intern(Node::Branch(edges)))
-                })
-                .collect();
-        }
-        ViaDomain::from_graph(self.summaries, nodes)
     }
 }

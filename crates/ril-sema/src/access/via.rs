@@ -1,28 +1,19 @@
 use std::{
-    borrow::Cow,
     collections::{BTreeSet, HashMap},
     sync::Arc,
 };
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
 
-use super::{Input, Instance, Summary};
+use super::{Input, Summary};
 
 mod graph;
-use graph::{Builder, Graph, Node};
+use graph::{Graph, Node};
 
 /// An exact set of mode tuples and their summaries. A branch tests one
 /// mode axis. Identical subgraphs and summaries are stored once.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ViaDomain(Arc<Encoding>);
-
-#[derive(Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(untagged)]
-enum Encoding {
-    Graph(Graph),
-    // Older .rili files hash the expanded rows in their original order.
-    Rows(Vec<Instance>),
-}
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ViaDomain(Arc<Graph>);
 
 pub struct ViaRow<'a> {
     pub modes: Vec<Input>,
@@ -32,12 +23,6 @@ pub struct ViaRow<'a> {
 pub struct ViaRows<'a> {
     domain: &'a ViaDomain,
     next: usize,
-}
-
-impl Default for ViaDomain {
-    fn default() -> Self {
-        Self(Arc::new(Encoding::Rows(Vec::new())))
-    }
 }
 
 impl ViaDomain {
@@ -154,10 +139,7 @@ impl ViaDomain {
         support_axes: &[usize],
         classify: impl FnMut(&[(usize, Input)]) -> Option<T>,
     ) -> (Self, Self, Option<T>) {
-        let compact = self.compact();
-        let Encoding::Graph(graph) = compact.0.as_ref() else {
-            return (Self::default(), Self::default(), None);
-        };
+        let graph = self.0.as_ref();
         let Some(root) = graph.nodes.len().checked_sub(1) else {
             return (Self::default(), Self::default(), None);
         };
@@ -290,11 +272,7 @@ impl ViaDomain {
         if other.is_empty() {
             return self.clone();
         }
-        let a = self.compact();
-        let b = other.compact();
-        let (Encoding::Graph(ga), Encoding::Graph(gb)) = (a.0.as_ref(), b.0.as_ref()) else {
-            return Self::default();
-        };
+        let (ga, gb) = (self.0.as_ref(), other.0.as_ref());
         if ga.width != gb.width {
             return self.clone();
         }
@@ -396,11 +374,7 @@ impl ViaDomain {
         if self.is_empty() || mask.is_empty() {
             return self.clone();
         }
-        let a = self.compact();
-        let b = mask.compact();
-        let (Encoding::Graph(ga), Encoding::Graph(gb)) = (a.0.as_ref(), b.0.as_ref()) else {
-            return self.clone();
-        };
+        let (ga, gb) = (self.0.as_ref(), mask.0.as_ref());
         if ga.width != gb.width {
             return self.clone();
         }
@@ -486,14 +460,11 @@ impl ViaDomain {
         graph
             .validate()
             .unwrap_or_else(|error| ril_source::ice!("invalid generated via graph: {error}"));
-        Self(Arc::new(Encoding::Graph(graph)))
+        Self(Arc::new(graph))
     }
 
     pub fn len_u128(&self) -> u128 {
-        match self.0.as_ref() {
-            Encoding::Graph(graph) => graph.counts.last().copied().unwrap_or_default(),
-            Encoding::Rows(rows) => rows.len() as u128,
-        }
+        self.0.counts.last().copied().unwrap_or_default()
     }
 
     pub fn len(&self) -> usize {
@@ -509,24 +480,11 @@ impl ViaDomain {
     }
 
     pub fn uses_graph(&self) -> bool {
-        matches!(self.0.as_ref(), Encoding::Graph(_))
+        true
     }
 
     pub(crate) fn compact(&self) -> Self {
-        let Encoding::Rows(rows) = self.0.as_ref() else {
-            return self.clone();
-        };
-        let Some(first) = rows.first() else {
-            return self.clone();
-        };
-        if rows.iter().any(|row| row.modes.len() != first.modes.len()) {
-            return self.clone();
-        }
-        let mut builder = Builder::default();
-        for row in rows {
-            builder.push(row.modes.clone(), Cow::Borrowed(&row.summary));
-        }
-        builder.finish()
+        self.clone()
     }
 
     pub(crate) fn select(&self, actual: &[Option<Input>]) -> Option<&Summary> {
@@ -534,67 +492,23 @@ impl ViaDomain {
     }
 
     pub(super) fn count_matching_u128(&self, pattern: &[Option<Input>]) -> u128 {
-        match self.0.as_ref() {
-            Encoding::Graph(graph) => graph.count_matching_u128(pattern),
-            Encoding::Rows(rows) => rows
-                .iter()
-                .filter(|row| {
-                    row.modes.len() == pattern.len()
-                        && row.modes.iter().zip(pattern).all(|(&mode, expected)| {
-                            expected.is_none_or(|expected| expected == mode)
-                        })
-                })
-                .map(|row| &row.modes)
-                .collect::<BTreeSet<_>>()
-                .len() as u128,
-        }
+        self.0.count_matching_u128(pattern)
     }
 
     pub(super) fn all_at(&self, axis: usize, permits: impl Fn(Input) -> bool) -> bool {
-        match self.0.as_ref() {
-            Encoding::Graph(graph) => axis < graph.width && graph.modes_at(axis).all(permits),
-            Encoding::Rows(rows) => rows
-                .iter()
-                .all(|row| row.modes.get(axis).copied().is_some_and(&permits)),
-        }
+        self.0.nodes.is_empty() || (axis < self.0.width && self.0.modes_at(axis).all(permits))
     }
 
     pub(super) fn marginal_len(&self, axis: usize) -> usize {
-        match self.0.as_ref() {
-            Encoding::Graph(graph) => graph.modes_at(axis).count(),
-            Encoding::Rows(rows) => rows
-                .iter()
-                .filter_map(|row| row.modes.get(axis))
-                .collect::<BTreeSet<_>>()
-                .len(),
-        }
+        self.0.modes_at(axis).count()
     }
 
     fn matching(&self, width: usize, mode: impl Fn(usize) -> Option<Input>) -> Option<&Summary> {
-        match self.0.as_ref() {
-            Encoding::Graph(graph) => graph.matching(width, mode),
-            Encoding::Rows(rows) => rows.iter().find_map(|row| {
-                (row.modes.len() == width
-                    && row
-                        .modes
-                        .iter()
-                        .copied()
-                        .enumerate()
-                        .all(|(index, input)| mode(index).is_none_or(|actual| actual == input)))
-                .then_some(&row.summary)
-            }),
-        }
+        self.0.matching(width, mode)
     }
 
     pub fn subsumes(&self, revision: &Self) -> bool {
-        match (self.0.as_ref(), revision.0.as_ref()) {
-            (Encoding::Graph(old), Encoding::Graph(new)) => old.subsumes(new),
-            _ => self.iter().all(|old| {
-                revision
-                    .matching(old.modes.len(), |index| old.modes.get(index).copied())
-                    .is_some_and(|new| old.summary.subsumes(new))
-            }),
-        }
+        self.0.subsumes(&revision.0)
     }
 }
 
@@ -629,13 +543,7 @@ impl<'a> Iterator for ViaRows<'a> {
             return None;
         }
         self.next += 1;
-        match self.domain.0.as_ref() {
-            Encoding::Graph(graph) => graph.row(index as u128),
-            Encoding::Rows(rows) => rows.get(index).map(|row| ViaRow {
-                modes: row.modes.clone(),
-                summary: &row.summary,
-            }),
-        }
+        self.domain.0.row(index as u128)
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
@@ -654,10 +562,8 @@ impl Serialize for ViaDomain {
 
 impl<'de> Deserialize<'de> for ViaDomain {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let mut encoding = Encoding::deserialize(deserializer)?;
-        if let Encoding::Graph(graph) = &mut encoding {
-            graph.validate().map_err(D::Error::custom)?;
-        }
-        Ok(Self(Arc::new(encoding)))
+        let mut graph = Graph::deserialize(deserializer)?;
+        graph.validate().map_err(D::Error::custom)?;
+        Ok(Self(Arc::new(graph)))
     }
 }

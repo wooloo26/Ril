@@ -137,10 +137,10 @@ pub(super) fn check(hir: Program, budget: Option<u64>) -> Result<TypedProgram, V
         subset_tags,
         tuple_payloads,
         receptions,
-        thir: crate::thir::ThirProgram::default(),
+        boxed_var_captures: std::collections::BTreeSet::new(),
     };
     program.validate_specializations()?;
-    program.thir = crate::thir::ThirProgram::build(&program);
+    program.boxed_var_captures = super::captures::collect_boxed_var_captures(&program.hir);
     Ok(program)
 }
 

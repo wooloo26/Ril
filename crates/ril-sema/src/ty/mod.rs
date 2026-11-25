@@ -1,3 +1,4 @@
+mod captures;
 mod check;
 mod concurrency;
 mod coverage;
@@ -13,7 +14,7 @@ mod staging;
 mod value;
 
 use std::{
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     fmt,
     sync::Arc,
 };
@@ -301,7 +302,7 @@ pub struct TypedProgram {
     pub(crate) operation_effects: HashMap<Span, String>,
     pub(crate) operation_instances: HashMap<Span, effects::Instance>,
     pub(crate) effect_applications: HashMap<Span, Vec<String>>,
-    pub thir: crate::thir::ThirProgram,
+    pub boxed_var_captures: BTreeSet<DefinitionId>,
 }
 
 impl TypedProgram {
