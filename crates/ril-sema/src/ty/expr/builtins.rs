@@ -282,10 +282,6 @@ impl Checker<'_> {
                     Ty::Unknown
                 }
             },
-            "convert" => {
-                self.require(env, span, &first, &Ty::F64);
-                self.make_option(Ty::Int)
-            }
             "fields" => {
                 let key = if let Ty::TypeValue(Some(ty)) = first {
                     match self.normalize(&ty) {

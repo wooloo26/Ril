@@ -4,8 +4,26 @@ pub fn push<T>(mut xs: [via]T, via item: T) &mut -> ()
 pub fn pop<T>(mut xs: [via]T) &mut -> new ?T
 pub fn insert<T>(mut xs: [via]T, index: int, via item: T) &mut -> ()
 pub fn remove<T>(mut xs: [via]T, index: int) &mut -> new ?T
-pub fn sort<T>(mut xs: []T) &mut -> ()
-pub fn clear<T>(mut xs: [via]T) &mut -> ()
+
+pub fn clear<T>(mut xs: [via]T) &mut -> () {
+    while len(ref xs) > 0 {
+        let via _ = pop(mut xs)
+    }
+}
+
+pub fn sort<T: int | f64 | str | bytes>(mut xs: []T) &mut -> () {
+    var i = 1
+    while i < len(ref xs) {
+        let key = xs[i]
+        var j = i - 1
+        while j >= 0 && (xs[j] > key || (key == key && !(xs[j] == xs[j]))) {
+            xs[j + 1] = xs[j]
+            j -= 1
+        }
+        xs[j + 1] = key
+        i += 1
+    }
+}
 
 pub fn at<T>(xs: []T, index: int) &return(xs) -> new ?T {
     if index < 0 || index >= len(xs) {

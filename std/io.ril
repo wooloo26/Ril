@@ -1,4 +1,7 @@
--- Standard Io module: synchronous standard-output primitives.
+-- Standard Io module: synchronous standard-output primitive plus println helper.
 
 pub fn print(text: str) @io -> ()
-pub fn println(text: str) @io -> ()
+
+pub fn println(text: str) @io -> () {
+    print("{text}\n")
+}

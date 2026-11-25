@@ -98,7 +98,8 @@ impl Analyzer<'_> {
         let mut values = Vec::new();
         let mut value_spans = Vec::new();
         let mut choices = Vec::new();
-        let refining_assert = primitive
+        let refining_assert = (primitive
+            || def.is_some_and(|def| self.program.hir.is_stdlib_file(def.name.span.file)))
             && name == "assert"
             && args
                 .get(1)
@@ -371,7 +372,7 @@ impl Analyzer<'_> {
         }
         if primitive {
             let inserted = match (module, name) {
-                (Some("Array"), "push") | (Some("Set"), "insert") => Some(1),
+                (Some("Array"), "push") => Some(1),
                 (Some("Array" | "Map"), "insert") => Some(2),
                 _ => None,
             };

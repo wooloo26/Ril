@@ -4,41 +4,6 @@ use num_traits::ToPrimitive as _;
 
 use crate::{GcRuntime, Object, Value};
 
-pub(crate) fn join(gc: &GcRuntime, parts: Value, separator: Value) -> Option<String> {
-    let Object::Array(parts) = gc.object(parts)? else {
-        return None;
-    };
-    let Object::Str(separator) = gc.object(separator)? else {
-        return None;
-    };
-    let mut joined = String::new();
-    for (index, &part) in parts.iter().enumerate() {
-        let Object::Str(part) = gc.object(part)? else {
-            return None;
-        };
-        if index != 0 {
-            joined.push_str(separator);
-        }
-        joined.push_str(part);
-    }
-    Some(joined)
-}
-
-pub(crate) fn split(gc: &GcRuntime, text: Value, separator: Value) -> Option<Vec<String>> {
-    let Object::Str(text) = gc.object(text)? else {
-        return None;
-    };
-    let Object::Str(separator) = gc.object(separator)? else {
-        return None;
-    };
-    Some(
-        text.as_str()
-            .split(separator.as_str())
-            .map(str::to_owned)
-            .collect(),
-    )
-}
-
 pub(crate) fn inspect_string(text: &str) -> String {
     let mut out = String::from("\"");
     for ch in text.chars() {
@@ -115,14 +80,6 @@ pub(crate) fn bytes(gc: &GcRuntime, values: Value) -> Option<Vec<u8>> {
         .iter()
         .map(|&value| gc.integer(value)?.to_u8())
         .collect()
-}
-
-pub(crate) fn int_array(gc: &mut GcRuntime, values: Vec<u32>) -> Value {
-    let items = values
-        .into_iter()
-        .map(|value| gc.int_i64(i64::from(value)))
-        .collect();
-    gc.alloc(Object::Array(items))
 }
 
 pub(crate) fn option(gc: &mut GcRuntime, value: Option<Value>) -> Value {

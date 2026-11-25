@@ -121,25 +121,6 @@ impl Builder<'_, '_> {
             }
             return Ok(self.runtime("ril_rt_len", vec![value]));
         }
-        if intrinsic == Some(Intrinsic::Assert) {
-            let mut values = if let Some(decl) = self.global.declaration(id) {
-                self.arguments(
-                    &decl.signature.params,
-                    decl.name.span.file,
-                    args,
-                    &BTreeMap::new(),
-                    span,
-                )?
-            } else {
-                args.iter()
-                    .map(|arg| self.expr(arg.value))
-                    .collect::<Result<Vec<_>>>()?
-            };
-            if values.len() == 1 {
-                values.push(self.string("assertion failed"));
-            }
-            return Ok(self.runtime("ril_rt_assert", values));
-        }
         let values = if let Some(decl) = self.global.declaration(id) {
             self.arguments(
                 &decl.signature.params,

@@ -239,6 +239,12 @@ impl Checker<'_> {
                             .into_iter()
                             .map(|(k, v)| Value::Tuple(vec![k, v]))
                             .collect(),
+                        Value::Tag(tag, items) if tag == "Set" => match items.as_slice() {
+                            [Value::Map(entries)] => {
+                                entries.iter().map(|(k, _)| k.clone()).collect()
+                            }
+                            _ => return Err(defect(span, "value is not iterable")),
+                        },
                         _ => return Err(defect(span, "value is not iterable")),
                     };
                     for value in values {

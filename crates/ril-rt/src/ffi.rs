@@ -128,10 +128,8 @@ runtime_functions! {
             Value::UNIT
         }
     }
-    fn ril_rt_to_int(rt, value: Value) -> Value { float_to_int(rt, value, false) }
-    fn ril_rt_trunc(rt, value: Value) -> Value { float_to_int(rt, value, true) }
-    fn ril_rt_print(rt, value: Value) -> Value { print(rt, value, false) }
-    fn ril_rt_println(rt, value: Value) -> Value { print(rt, value, true) }
+    fn ril_rt_trunc(rt, value: Value) -> Value { float_to_int(rt, value) }
+    fn ril_rt_print(rt, value: Value) -> Value { print(rt, value) }
     fn ril_rt_panic(rt, message: Value) -> Value {
         let text = read_text(rt, message).unwrap_or_else(|message| message.into());
         rt.raise(text);
@@ -146,13 +144,6 @@ runtime_functions! {
             Some(Object::PanicInfo(message)) => rt.gc.alloc(Object::Str(RilStr::new(message.clone()))),
             _ => rt.checked(Err("panic_message requires PanicInfo")),
         }
-    }
-    fn ril_rt_assert(rt, condition: Value, message: Value) -> Value {
-        if condition != Value::TRUE {
-            let text = read_text(rt, message).unwrap_or_else(|_| "assertion failed".into());
-            rt.raise(text);
-        }
-        Value::UNIT
     }
     fn ril_rt_len(rt, value: Value) -> Value {
         let value = rt.gc.draft_read(value).unwrap_or(value);
@@ -214,27 +205,6 @@ runtime_functions! {
         let test = read_text(rt, value).and_then(|text| read_text(rt, prefix).map(|prefix| Value::boolean(text.starts_with(&prefix))));
         rt.checked(test)
     }
-    fn ril_rt_str_join(rt, parts: Value, separator: Value) -> Value {
-        match text::join(&rt.gc, parts, separator) {
-            Some(text) => rt.gc.alloc(Object::Str(RilStr::new(text))),
-            None => rt.checked(Err("String::join requires []str and str")),
-        }
-    }
-    fn ril_rt_str_split(rt, value: Value, separator: Value) -> Value {
-        let Some(parts) = text::split(&rt.gc, value, separator) else {
-            return rt.checked(Err("String::split requires str and str"));
-        };
-        let array = rt.gc.alloc(Object::Array(Vec::new()));
-        rt.gc.pin(array);
-        for part in parts {
-            let item = rt.gc.alloc(Object::Str(RilStr::new(part)));
-            if let Some(Object::Array(items)) = rt.gc.object_mut(array) {
-                items.push(item);
-            }
-        }
-        rt.gc.unpin(array);
-        array
-    }
     fn ril_rt_str_ends_with(rt, value: Value, suffix: Value) -> Value {
         let test = read_text(rt, value).and_then(|text| read_text(rt, suffix).map(|suffix| Value::boolean(text.ends_with(&suffix))));
         rt.checked(test)
@@ -246,24 +216,6 @@ runtime_functions! {
     fn ril_rt_bytes_at(rt, value: Value, index: Value) -> Value {
         let item = text::byte_at(&rt.gc, value, index).map(|item| rt.gc.int_i64(i64::from(item)));
         text::option(&mut rt.gc, item)
-    }
-    fn ril_rt_str_scalars(rt, value: Value) -> Value {
-        match rt.gc.object(value) {
-            Some(Object::Str(text)) => {
-                let values = text.chars().map(u32::from).collect();
-                text::int_array(&mut rt.gc, values)
-            }
-            _ => rt.checked(Err("String::scalars requires str")),
-        }
-    }
-    fn ril_rt_bytes_to_array(rt, value: Value) -> Value {
-        match rt.gc.object(value) {
-            Some(Object::Bytes(bytes)) => {
-                let values = bytes.iter().copied().map(u32::from).collect();
-                text::int_array(&mut rt.gc, values)
-            }
-            _ => rt.checked(Err("Bytes::to_array requires bytes")),
-        }
     }
     fn ril_rt_str_from_scalars(rt, values: Value) -> Value {
         let result = text::scalars(&rt.gc, values).map(|text| rt.gc.alloc(Object::Str(RilStr::new(text))));
@@ -327,30 +279,6 @@ runtime_functions! {
         };
         text::option(&mut rt.gc, item)
     }
-    fn ril_rt_array_clear(rt, target: Value) -> Value {
-        let target = rt.gc.draft_read(target).unwrap_or(target);
-        match rt.gc.object_mut(target) {
-            Some(Object::Array(values)) => values.clear(),
-            _ => rt.raise("Array::clear requires an array"),
-        }
-        Value::UNIT
-    }
-    fn ril_rt_array_sort(rt, target: Value) -> Value {
-        let target = rt.gc.draft_read(target).unwrap_or(target);
-        let mut items = match rt.gc.object(target) {
-            Some(Object::Array(values)) => values.clone(),
-            _ => return rt.checked(Err("Array::sort requires an array")),
-        };
-        items.sort_by(|&a, &b| compare_sortable(&rt.gc, a, b));
-        if let Some(Object::Array(values)) = rt.gc.object_mut(target) {
-            *values = items;
-        }
-        Value::UNIT
-    }
-    fn ril_rt_map_get(rt, target: Value, key: Value) -> Value {
-        let value = load(rt, target, key);
-        text::option(&mut rt.gc, value)
-    }
     fn ril_rt_map_insert(rt, target: Value, key: Value, value: Value) -> Value {
         let target = rt.gc.draft_read(target).unwrap_or(target);
         store(rt, target, key, value)
@@ -372,41 +300,6 @@ runtime_functions! {
             }
         });
         text::option(&mut rt.gc, removed)
-    }
-    fn ril_rt_map_contains(rt, target: Value, key: Value) -> Value {
-        let target = rt.gc.draft_read(target).unwrap_or(target);
-        let hash = rt.gc.bisim_hash(key);
-        match rt.gc.object(target) {
-            Some(Object::Map(map)) => Value::boolean(
-                map.find_index(hash, |stored| rt.gc.equal(stored, key).unwrap_or(false))
-                    .is_some(),
-            ),
-            _ => rt.checked(Err("Map::contains requires a map")),
-        }
-    }
-    fn ril_rt_map_clear(rt, target: Value) -> Value {
-        let target = rt.gc.draft_read(target).unwrap_or(target);
-        match rt.gc.object_mut(target) {
-            Some(Object::Map(map)) => map.clear(),
-            _ => rt.raise("Map::clear requires a map"),
-        }
-        Value::UNIT
-    }
-    fn ril_rt_map_keys(rt, target: Value) -> Value {
-        let target = rt.gc.draft_read(target).unwrap_or(target);
-        let keys: Vec<Value> = match rt.gc.object(target) {
-            Some(Object::Map(map)) => map.entries().iter().map(|&(_, k, _)| k).collect(),
-            _ => return rt.checked(Err("Map::keys requires a map")),
-        };
-        rt.gc.alloc(Object::Array(keys))
-    }
-    fn ril_rt_map_values(rt, target: Value) -> Value {
-        let target = rt.gc.draft_read(target).unwrap_or(target);
-        let values: Vec<Value> = match rt.gc.object(target) {
-            Some(Object::Map(map)) => map.entries().iter().map(|&(_, _, v)| v).collect(),
-            _ => return rt.checked(Err("Map::values requires a map")),
-        };
-        rt.gc.alloc(Object::Array(values))
     }
     fn ril_rt_tag(rt, name: Value) -> Value {
         if let Ok(tag) = read_text(rt, name) { rt.gc.alloc(Object::Tag(tag, Vec::new())) }
@@ -532,7 +425,7 @@ fn file_error(rt: &mut Runtime, error: String) -> Value {
     rt.gc.alloc(Object::Tag("Err".into(), vec![payload]))
 }
 
-fn float_to_int(rt: &mut Runtime, value: Value, rounded: bool) -> Value {
+fn float_to_int(rt: &mut Runtime, value: Value) -> Value {
     let number = match rt.gc.object(value) {
         Some(Object::F64(bits)) => f64::from_bits(*bits),
         _ => {
@@ -540,9 +433,7 @@ fn float_to_int(rt: &mut Runtime, value: Value, rounded: bool) -> Value {
             return Value::UNIT;
         }
     };
-    if (rounded || number.fract() == 0.0)
-        && let Some(integer) = BigInt::from_f64(number.trunc())
-    {
+    if let Some(integer) = BigInt::from_f64(number.trunc()) {
         let payload = rt.gc.int(integer).into();
         rt.gc.alloc(Object::Tag("Some".into(), vec![payload]))
     } else {
@@ -560,16 +451,13 @@ fn unary(rt: &mut Runtime, op: &str, a: Value) -> Value {
     rt.checked(result)
 }
 
-fn print(rt: &mut Runtime, value: Value, newline: bool) -> Value {
+fn print(rt: &mut Runtime, value: Value) -> Value {
     match read_text(rt, value) {
         Ok(text) => {
             let mut stdout = std::io::stdout().lock();
-            let result = stdout.write_all(text.as_bytes()).and_then(|()| {
-                if newline {
-                    stdout.write_all(b"\n")?;
-                }
-                stdout.flush()
-            });
+            let result = stdout
+                .write_all(text.as_bytes())
+                .and_then(|()| stdout.flush());
             if let Err(err) = result {
                 rt.raise(err.to_string());
             }
@@ -649,20 +537,6 @@ fn load(rt: &mut Runtime, target: Value, key: Value) -> Option<Value> {
         _ => return None,
     };
     rt.gc.draft_child(target, slot, value)
-}
-
-fn compare_sortable(gc: &crate::GcRuntime, a: Value, b: Value) -> std::cmp::Ordering {
-    if let (Some(x), Some(y)) = (gc.integer(a), gc.integer(b)) {
-        return x.compare(y);
-    }
-    match (gc.object(a), gc.object(b)) {
-        (Some(Object::F64(x)), Some(Object::F64(y))) => {
-            f64::from_bits(*x).total_cmp(&f64::from_bits(*y))
-        }
-        (Some(Object::Str(x)), Some(Object::Str(y))) => x.as_str().cmp(y.as_str()),
-        (Some(Object::Bytes(x)), Some(Object::Bytes(y))) => x.cmp(y),
-        _ => std::cmp::Ordering::Equal,
-    }
 }
 
 fn iter_at(rt: &mut Runtime, target: Value, position: Value) -> Option<Value> {

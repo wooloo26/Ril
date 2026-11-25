@@ -17,26 +17,6 @@ pub(super) fn eval_text(intrinsic: Intrinsic, args: &[Value], span: Span) -> Opt
         value.map_or_else(none, |value| Value::Tag("Some".into(), vec![value]))
     };
     Some(match (intrinsic, args) {
-        (StringJoin, [Value::Array(parts), Value::Str(separator)]) => {
-            let parts = match parts
-                .iter()
-                .map(|part| match part {
-                    Value::Str(text) => Ok(text.as_str()),
-                    _ => Err(nonstatic(span)),
-                })
-                .collect::<Eval<Vec<_>>>()
-            {
-                Ok(parts) => parts,
-                Err(err) => return Some(Err(err)),
-            };
-            Ok(Value::Str(parts.join(separator)))
-        }
-        (StringStartsWith, [Value::Str(text), Value::Str(pattern)]) => {
-            Ok(Value::Bool(text.starts_with(pattern)))
-        }
-        (StringEndsWith, [Value::Str(text), Value::Str(pattern)]) => {
-            Ok(Value::Bool(text.ends_with(pattern)))
-        }
         (StringAt, [Value::Str(text), Value::Int(index)]) => Ok(option(
             index
                 .to_usize()
@@ -49,14 +29,6 @@ pub(super) fn eval_text(intrinsic: Intrinsic, args: &[Value], span: Span) -> Opt
                 .and_then(|index| bytes.get(index))
                 .copied()
                 .map(|byte| Value::Int(byte.into())),
-        )),
-        (StringScalars, [Value::Str(text)]) => Ok(Value::Array(
-            text.chars()
-                .map(|scalar| Value::Int(u32::from(scalar).into()))
-                .collect(),
-        )),
-        (BytesToArray, [Value::Bytes(bytes)]) => Ok(Value::Array(
-            bytes.iter().map(|&byte| Value::Int(byte.into())).collect(),
         )),
         (StringFromScalars, [Value::Array(items)]) => {
             let text = items
@@ -85,8 +57,7 @@ pub(super) fn eval_text(intrinsic: Intrinsic, args: &[Value], span: Span) -> Opt
                 .map(|text| Value::Str(text.to_owned())),
         )),
         (
-            StringJoin | StringStartsWith | StringEndsWith | StringAt | BytesAt | StringScalars
-            | BytesToArray | StringFromScalars | BytesFromArray | StringEncodeUtf8
+            StringAt | BytesAt | StringFromScalars | BytesFromArray | StringEncodeUtf8
             | StringDecodeUtf8,
             _,
         ) => Err(nonstatic(span)),

@@ -1,16 +1,85 @@
--- Standard String module: private compiler UTF-8 intrinsics wrapped by Ril helpers.
+-- Standard String module: minimal UTF-8/scalar primitives plus self-hosted Ril helpers.
+
+use ril/array
 
 fn raw_encode_utf8(text: str) -> bytes
 fn raw_decode_utf8(data: bytes) -> new ?str
 
 pub fn inspect<T>(via value: T) -> str
-pub fn join(via parts: []str, separator: str) -> str
-pub fn split(text: str, separator: str) -> new []str
-pub fn starts_with(text: str, prefix: str) -> bool
-pub fn ends_with(text: str, suffix: str) -> bool
 pub fn at(text: str, index: int) -> new ?int
-pub fn scalars(text: str) -> new []int
 pub fn from_scalars(via values: []int) -> new ?str
+
+pub fn join(via parts: []str, separator: str) -> str {
+    var out =""
+    var i = 0
+    while i < len(parts) {
+        if i > 0 {
+            out ="{out}{separator}"
+        }
+        out ="{out}{parts[i]}"
+        i += 1
+    }
+    out
+}
+
+pub fn split(text: str, separator: str) -> new []str {
+    let mut out: []str = []
+    let n = len(text)
+    let m = len(separator)
+    if m == 0 {
+        Array::push(mut out,"")
+        var i = 0
+        while i < n {
+            Array::push(mut out, text[i..i + 1])
+            i += 1
+        }
+        Array::push(mut out,"")
+        return new out
+    }
+    var start = 0
+    var i = 0
+    while i + m <= n {
+        if text[i..i + m] == separator {
+            Array::push(mut out, text[start..i])
+            i += m
+            start = i
+        } else {
+            i += 1
+        }
+    }
+    Array::push(mut out, text[start..n])
+    new out
+}
+
+pub fn starts_with(text: str, prefix: str) -> bool {
+    let n = len(prefix)
+    if n > len(text) {
+        return false
+    }
+    text[..n] == prefix
+}
+
+pub fn ends_with(text: str, suffix: str) -> bool {
+    let n = len(suffix)
+    let m = len(text)
+    if n > m {
+        return false
+    }
+    text[m - n..] == suffix
+}
+
+pub fn scalars(text: str) -> new []int {
+    let mut out: []int = []
+    var i = 0
+    let n = len(text)
+    while i < n {
+        if let Some(cp) = at(text, i) {
+            Array::push(mut out, cp)
+        }
+        i += 1
+    }
+    new out
+}
 
 pub fn encode_utf8(text: str) -> bytes {
     raw_encode_utf8(text)

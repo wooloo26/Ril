@@ -105,22 +105,8 @@ pub const PRIMITIVE_FNS: &[PrimitiveSpec] = {
         prim("Prelude", "fields", Static, None, Some(Fields)),
         prim("Prelude", "variants", Static, None, Some(Variants)),
         prim("Prelude", "panic", Both, Some("ril_rt_panic"), Some(Panic)),
-        prim(
-            "Prelude",
-            "assert",
-            Both,
-            Some("ril_rt_assert"),
-            Some(Assert),
-        ),
         // Io / File
         prim("Io", "print", Runtime, Some("ril_rt_print"), Some(Print)),
-        prim(
-            "Io",
-            "println",
-            Runtime,
-            Some("ril_rt_println"),
-            Some(Println),
-        ),
         prim(
             "File",
             "read",
@@ -142,13 +128,6 @@ pub const PRIMITIVE_FNS: &[PrimitiveSpec] = {
             Both,
             Some("ril_rt_to_f64"),
             Some(NumericToF64),
-        ),
-        prim(
-            "Numeric",
-            "convert",
-            Both,
-            Some("ril_rt_to_int"),
-            Some(NumericConvert),
         ),
         prim(
             "Numeric",
@@ -186,22 +165,7 @@ pub const PRIMITIVE_FNS: &[PrimitiveSpec] = {
             Some("ril_rt_array_remove"),
             Some(ArrayRemove),
         ),
-        prim(
-            "Array",
-            "sort",
-            Both,
-            Some("ril_rt_array_sort"),
-            Some(ArraySort),
-        ),
-        prim(
-            "Array",
-            "clear",
-            Both,
-            Some("ril_rt_array_clear"),
-            Some(ArrayClear),
-        ),
         // Map
-        prim("Map", "get", Both, Some("ril_rt_map_get"), Some(MapGet)),
         prim(
             "Map",
             "insert",
@@ -216,66 +180,9 @@ pub const PRIMITIVE_FNS: &[PrimitiveSpec] = {
             Some("ril_rt_map_remove"),
             Some(MapRemove),
         ),
-        prim(
-            "Map",
-            "contains",
-            Both,
-            Some("ril_rt_map_contains"),
-            Some(MapContains),
-        ),
-        prim(
-            "Map",
-            "clear",
-            Both,
-            Some("ril_rt_map_clear"),
-            Some(MapClear),
-        ),
-        prim("Map", "keys", Both, Some("ril_rt_map_keys"), Some(MapKeys)),
-        prim(
-            "Map",
-            "values",
-            Both,
-            Some("ril_rt_map_values"),
-            Some(MapValues),
-        ),
         // String
         prim("String", "inspect", Both, None, Some(StringInspect)),
-        prim(
-            "String",
-            "join",
-            Both,
-            Some("ril_rt_str_join"),
-            Some(StringJoin),
-        ),
-        prim(
-            "String",
-            "split",
-            Both,
-            Some("ril_rt_str_split"),
-            Some(StringSplit),
-        ),
-        prim(
-            "String",
-            "starts_with",
-            Both,
-            Some("ril_rt_str_starts_with"),
-            Some(StringStartsWith),
-        ),
-        prim(
-            "String",
-            "ends_with",
-            Both,
-            Some("ril_rt_str_ends_with"),
-            Some(StringEndsWith),
-        ),
         prim("String", "at", Both, Some("ril_rt_str_at"), Some(StringAt)),
-        prim(
-            "String",
-            "scalars",
-            Both,
-            Some("ril_rt_str_scalars"),
-            Some(StringScalars),
-        ),
         prim(
             "String",
             "from_scalars",
@@ -299,13 +206,6 @@ pub const PRIMITIVE_FNS: &[PrimitiveSpec] = {
         ),
         // Bytes
         prim("Bytes", "at", Both, Some("ril_rt_bytes_at"), Some(BytesAt)),
-        prim(
-            "Bytes",
-            "to_array",
-            Both,
-            Some("ril_rt_bytes_to_array"),
-            Some(BytesToArray),
-        ),
         prim(
             "Bytes",
             "from_array",

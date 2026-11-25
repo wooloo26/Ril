@@ -52,4 +52,8 @@ pub meta fn type_name<T>(tv: Type<T>) -> str
 pub meta fn fields<T>(tv: Type<T>) -> [](FieldMode, FieldKey<T>)
 pub meta fn variants<T>(tv: Type<T>) -> []str
 pub fn panic(message: str) -> never
-pub fn assert(condition: bool, message: str ="assertion failed") -> ()
+pub fn assert(condition: bool, message: str ="assertion failed") -> () {
+    if !condition {
+        panic(message)
+    }
+}

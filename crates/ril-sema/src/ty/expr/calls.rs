@@ -598,42 +598,6 @@ impl Checker<'_> {
             self.validate_generic_uses(env, known, &generics, span);
             if let Some(intrinsic) = self.hir.intrinsic(known) {
                 match intrinsic {
-                    ril_hir::Intrinsic::ArraySort => {
-                        if let Some(arg0) = args.first() {
-                            let arg0_span = ast.expr(arg0.value).span;
-                            let mut receiver =
-                                self.types.get(&arg0_span).cloned().unwrap_or(Ty::Unknown);
-                            receiver = self.normalize(&receiver);
-                            if let Ty::Draft(inner) = receiver {
-                                receiver = self.normalize(&inner);
-                            }
-                            if let Ty::Array(elem) = receiver {
-                                let elem_ty = self.normalize(&elem.ty);
-                                let orderable = matches!(
-                                    &elem_ty,
-                                    Ty::Int
-                                        | Ty::F64
-                                        | Ty::Str
-                                        | Ty::Bytes
-                                        | Ty::Unknown
-                                        | Ty::Infer(_)
-                                ) || matches!(&elem_ty, Ty::Param(id) if env
-                                .domains
-                                .get(id)
-                                .is_some_and(|dom| dom.iter().all(|t| matches!(
-                                    t,
-                                    Ty::Int | Ty::F64 | Ty::Str | Ty::Bytes
-                                ))));
-                                if !orderable {
-                                    self.error(
-                                        Code::E0327,
-                                        span,
-                                        "Array::sort requires orderable elements",
-                                    );
-                                }
-                            }
-                        }
-                    }
                     ril_hir::Intrinsic::TypeName => {
                         if env.phase == Phase::Runtime && !env.shadow {
                             self.eval_introspection_root(env, "type_name", args, span);
@@ -662,6 +626,33 @@ impl Checker<'_> {
                         self.inspection_scopes.insert(span, env.scope);
                     }
                     _ => {}
+                }
+            }
+            if self.hir.primitive_module(known) == Some("Array")
+                && self.hir.definition(known).name.value == "sort"
+                && let Some(arg0) = args.first()
+            {
+                let arg0_span = ast.expr(arg0.value).span;
+                let mut receiver = self.types.get(&arg0_span).cloned().unwrap_or(Ty::Unknown);
+                receiver = self.normalize(&receiver);
+                if let Ty::Draft(inner) = receiver {
+                    receiver = self.normalize(&inner);
+                }
+                if let Ty::Array(elem) = receiver {
+                    let elem_ty = self.normalize(&elem.ty);
+                    let orderable = matches!(
+                        &elem_ty,
+                        Ty::Int | Ty::F64 | Ty::Str | Ty::Bytes | Ty::Unknown | Ty::Infer(_)
+                    ) || matches!(&elem_ty, Ty::Param(id) if env
+                    .domains
+                    .get(id)
+                    .is_some_and(|dom| dom.iter().all(|t| matches!(
+                        t,
+                        Ty::Int | Ty::F64 | Ty::Str | Ty::Bytes
+                    ))));
+                    if !orderable {
+                        self.error(Code::E0327, span, "Array::sort requires orderable elements");
+                    }
                 }
             }
             if self.hir.primitive_module(known) == Some("Set")

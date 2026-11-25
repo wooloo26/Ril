@@ -2,10 +2,13 @@ use ril_hir::{DefinitionId, DefinitionKind, PrimitivePhase};
 use ril_source::{diag::Code, span::Span};
 use ril_syntax::syntax::{self, Argument, Expr, ExprId, StmtKind};
 
-use super::{Budget, Eval, Frame, Place, Signal, Values, builtins::eval_text, defect, nonstatic};
+use super::{
+    Budget, Eval, Frame, Place, Signal, Values, builtins::eval_text, defect, none, nonstatic,
+};
 use crate::ty::{
     GenericValue, Ty, Value,
     check::{Checker, Env, Phase},
+    value::ieee_equal,
 };
 
 impl Checker<'_> {
@@ -108,6 +111,62 @@ impl Checker<'_> {
                     items.push(item);
                     Ok(Value::Unit)
                 }
+                DefinitionKind::Primitive(_)
+                    if name == "pop" && self.hir.primitive_module(id) == Some("Array") =>
+                {
+                    let [array] = args else {
+                        return Err(nonstatic(span));
+                    };
+                    fuel.step(span)?;
+                    let place = self.eval_place(env, slots, array.value, fuel)?;
+                    let Value::Array(items) = place.slot(slots, false)? else {
+                        return Err(defect(span, "static Array::pop requires an array"));
+                    };
+                    Ok(items
+                        .pop()
+                        .map_or_else(none, |item| Value::Tag("Some".into(), vec![item])))
+                }
+                DefinitionKind::Primitive(_)
+                    if name == "insert" && self.hir.primitive_module(id) == Some("Map") =>
+                {
+                    let [map, key, value] = args else {
+                        return Err(nonstatic(span));
+                    };
+                    fuel.step(span)?;
+                    let place = self.eval_place(env, slots, map.value, fuel)?;
+                    let key = self.evaluate(env, slots, key.value, fuel)?;
+                    let value = self.evaluate(env, slots, value.value, fuel)?;
+                    let Value::Map(entries) = place.slot(slots, false)? else {
+                        return Err(defect(span, "static Map::insert requires a map"));
+                    };
+                    if let Some((_, existing)) = entries
+                        .iter_mut()
+                        .find(|(stored, _)| ieee_equal(stored, &key))
+                    {
+                        *existing = value;
+                    } else {
+                        entries.push((key, value));
+                    }
+                    Ok(Value::Unit)
+                }
+                DefinitionKind::Primitive(_)
+                    if name == "remove" && self.hir.primitive_module(id) == Some("Map") =>
+                {
+                    let [map, key] = args else {
+                        return Err(nonstatic(span));
+                    };
+                    fuel.step(span)?;
+                    let place = self.eval_place(env, slots, map.value, fuel)?;
+                    let key = self.evaluate(env, slots, key.value, fuel)?;
+                    let Value::Map(entries) = place.slot(slots, false)? else {
+                        return Err(defect(span, "static Map::remove requires a map"));
+                    };
+                    let removed = entries
+                        .iter()
+                        .position(|(stored, _)| ieee_equal(stored, &key))
+                        .map(|index| entries.remove(index).1);
+                    Ok(removed.map_or_else(none, |item| Value::Tag("Some".into(), vec![item])))
+                }
                 DefinitionKind::Primitive(_) if name == "inspect" => {
                     let [argument] = args else {
                         return Err(nonstatic(span));
@@ -163,6 +222,21 @@ impl Checker<'_> {
                 }
                 DefinitionKind::Function => {
                     if self.hir.is_stdlib_file(def.name.span.file)
+                        && self.hir.primitive_module(id) == Some("Prelude")
+                        && name == "assert"
+                    {
+                        fuel.step(span)?;
+                        let raw_args = self.eval_args(env, slots, args, fuel)?;
+                        let ordered = self.order_primitive_args(id, raw_args, span)?;
+                        return match ordered.as_slice() {
+                            [Value::Bool(true), ..] => Ok(Value::Unit),
+                            [Value::Bool(false), ..] => {
+                                Err(Signal::Error(Code::E0830, span, "static assertion failed"))
+                            }
+                            _ => Err(nonstatic(span)),
+                        };
+                    }
+                    if self.hir.is_stdlib_file(def.name.span.file)
                         && self.hir.primitive_module(id) == Some("Array")
                         && matches!(name, "filter" | "map")
                     {
@@ -191,8 +265,21 @@ impl Checker<'_> {
                         }
                         return Ok(Value::Array(result));
                     }
-                    let args = self.eval_args(env, slots, args, fuel)?;
-                    self.eval_function(env, id, args, span, fuel)
+                    let mut evaluated = Vec::with_capacity(args.len());
+                    for arg in args {
+                        let place = if arg.mode == syntax::Mode::Mut {
+                            self.eval_place(env, slots, arg.value, fuel).ok()
+                        } else {
+                            None
+                        };
+                        let value = self.evaluate(env, slots, arg.value, fuel)?;
+                        evaluated.push((
+                            arg.name.as_ref().map(|name| name.value.clone()),
+                            value,
+                            place,
+                        ));
+                    }
+                    self.eval_function_with_writeback(env, Some(slots), id, evaluated, span, fuel)
                 }
                 _ => Err(nonstatic(span)),
             }
@@ -269,6 +356,22 @@ impl Checker<'_> {
         span: Span,
         fuel: &mut Budget,
     ) -> Eval {
+        let args = args
+            .into_iter()
+            .map(|(label, value)| (label, value, None))
+            .collect();
+        self.eval_function_with_writeback(env, None, id, args, span, fuel)
+    }
+
+    fn eval_function_with_writeback(
+        &mut self,
+        env: &Env,
+        caller_slots: Option<&mut Frame>,
+        id: DefinitionId,
+        args: Vec<(Option<String>, Value, Option<Place>)>,
+        span: Span,
+        fuel: &mut Budget,
+    ) -> Eval {
         let def = self.hir.definition(id);
         let mut local = Env::new(def.name.span.file, def.scope);
         local.phase = if env.phase == Phase::TypeEval {
@@ -314,8 +417,8 @@ impl Checker<'_> {
                 "compile-time evaluation exceeded recursion capacity",
             ));
         }
-        let mut bound = vec![None; fun.signature.params.len()];
-        for (label, value) in args {
+        let mut bound: Vec<Option<(Value, Option<Place>)>> = vec![None; fun.signature.params.len()];
+        for (label, value, place) in args {
             let index = if let Some(label) = label {
                 fun.signature
                     .params
@@ -327,17 +430,18 @@ impl Checker<'_> {
             let Some(slot) = index.and_then(|i| bound.get_mut(i)) else {
                 return Err(nonstatic(span));
             };
-            *slot = Some(value);
+            *slot = Some((value, place));
         }
         fuel.depth += 1;
         let result = (|| {
             let mut slots = Frame::default();
             let mut guards = Vec::new();
+            let mut writebacks = Vec::new();
             for (param, input) in fun.signature.params.iter().zip(bound) {
-                let input = if let Some(input) = input {
-                    input
+                let (input, place) = if let Some((input, place)) = input {
+                    (input, place)
                 } else if let Some(default) = param.default {
-                    self.evaluate(&mut local, &mut slots, default, fuel)?
+                    (self.evaluate(&mut local, &mut slots, default, fuel)?, None)
                 } else {
                     return Err(nonstatic(span));
                 };
@@ -345,6 +449,11 @@ impl Checker<'_> {
                     guards.push((&param.guards, input.clone()));
                 }
                 if let Some(id) = param.name.as_ref().and_then(|name| self.resolve(name.span)) {
+                    if param.mode == syntax::Mode::Mut
+                        && let Some(place) = place
+                    {
+                        writebacks.push((id, place));
+                    }
                     slots.locals.insert(id, input);
                 }
             }
@@ -359,10 +468,20 @@ impl Checker<'_> {
                     self.check_meta_input(&mut local, checks, &input, span);
                 }
             }
-            match self.evaluate(&mut local, &mut slots, body, fuel) {
+            let outcome = match self.evaluate(&mut local, &mut slots, body, fuel) {
                 Err(Signal::Return(value)) => Ok(value),
                 rest => rest,
+            };
+            if outcome.is_ok()
+                && let Some(caller_slots) = caller_slots
+            {
+                for (param_id, place) in writebacks {
+                    if let Some(updated) = slots.locals.get(&param_id).cloned() {
+                        *place.slot(caller_slots, false)? = updated;
+                    }
+                }
             }
+            outcome
         })();
         fuel.depth -= 1;
         result

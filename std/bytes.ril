@@ -1,5 +1,19 @@
--- Standard Bytes module: compiler-backed byte-slice primitives.
+-- Standard Bytes module: minimal byte primitives plus self-hosted Ril helpers.
+
+use ril/array
 
 pub fn at(data: bytes, index: int) -> new ?int
-pub fn to_array(data: bytes) -> new []int
 pub fn from_array(via values: []int) -> new ?bytes
+
+pub fn to_array(data: bytes) -> new []int {
+    let mut out: []int = []
+    var i = 0
+    let n = len(data)
+    while i < n {
+        if let Some(b) = at(data, i) {
+            Array::push(mut out, b)
+        }
+        i += 1
+    }
+    new out
+}

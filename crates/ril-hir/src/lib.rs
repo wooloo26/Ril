@@ -56,39 +56,23 @@ pub enum Intrinsic {
     Fields,
     Variants,
     Panic,
-    Assert,
     Print,
-    Println,
     FileRead,
     FileWrite,
     NumericToF64,
-    NumericConvert,
     NumericTrunc,
     ArrayPush,
     ArrayPop,
     ArrayInsert,
     ArrayRemove,
-    ArraySort,
-    ArrayClear,
-    MapGet,
     MapInsert,
     MapRemove,
-    MapContains,
-    MapClear,
-    MapKeys,
-    MapValues,
     StringInspect,
-    StringJoin,
-    StringSplit,
-    StringStartsWith,
-    StringEndsWith,
     StringAt,
-    StringScalars,
     StringFromScalars,
     StringEncodeUtf8,
     StringDecodeUtf8,
     BytesAt,
-    BytesToArray,
     BytesFromArray,
     ReflectAttrs,
     ReflectFieldAttrs,
@@ -104,12 +88,10 @@ impl Intrinsic {
         matches!(
             self,
             Panic
-                | Assert
                 | PanicMessage
                 | TypeName
                 | StringInspect
                 | Print
-                | Println
                 | FileRead
                 | FileWrite
                 | NumericToF64
@@ -118,26 +100,13 @@ impl Intrinsic {
                 | ArrayPop
                 | ArrayInsert
                 | ArrayRemove
-                | ArraySort
-                | ArrayClear
-                | MapGet
                 | MapInsert
                 | MapRemove
-                | MapContains
-                | MapClear
-                | MapKeys
-                | MapValues
-                | StringJoin
-                | StringSplit
-                | StringStartsWith
-                | StringEndsWith
                 | StringAt
-                | StringScalars
                 | StringFromScalars
                 | StringEncodeUtf8
                 | StringDecodeUtf8
                 | BytesAt
-                | BytesToArray
                 | BytesFromArray
         )
     }
