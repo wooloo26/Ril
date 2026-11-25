@@ -373,8 +373,10 @@ impl Program {
             ("String", "at") => Some(ScalarAt),
             ("String", "scalars") => Some(Scalars),
             ("String", "from_scalars") => Some(FromScalars),
-            ("String", "encode_utf8" | "bytes") | ("Bytes", "from_str") => Some(EncodeUtf8),
-            ("String", "decode_utf8" | "from_bytes") => Some(DecodeUtf8),
+            ("String", "encode_utf8" | "raw_encode_utf8" | "bytes") | ("Bytes", "from_str") => {
+                Some(EncodeUtf8)
+            }
+            ("String", "decode_utf8" | "raw_decode_utf8" | "from_bytes") => Some(DecodeUtf8),
             ("Bytes", "at") => Some(ByteAt),
             ("Bytes", "to_array") => Some(ToArray),
             ("Bytes", "from_array") => Some(FromArray),
@@ -1125,47 +1127,13 @@ impl Program {
         self.register_builtin_sum(self.prelude, BuiltinSum::PanicError);
         use PrimitivePhase::{Both, Runtime, Static};
         let modules: &[(&str, &str, PrimitivePhase, &[&str])] = &[
-            (
-                "",
-                "Array",
-                Both,
-                &["push", "pop", "insert", "remove", "sort", "clear", "len"],
-            ),
-            (
-                "",
-                "Map",
-                Both,
-                &[
-                    "get", "insert", "remove", "contains", "clear", "keys", "values", "len",
-                ],
-            ),
-            ("", "Set", Both, &["insert", "remove", "contains", "len"]),
-            (
-                "",
-                "String",
-                Both,
-                &[
-                    "inspect",
-                    "len",
-                    "bytes",
-                    "join",
-                    "split",
-                    "starts_with",
-                    "ends_with",
-                    "at",
-                    "scalars",
-                    "from_scalars",
-                    "encode_utf8",
-                    "decode_utf8",
-                ],
-            ),
-            ("", "Bytes", Both, &["len", "at", "to_array", "from_array"]),
-            (
-                "",
-                "Numeric",
-                Both,
-                &["to_int", "to_f64", "convert", "trunc"],
-            ),
+            ("", "Array", Both, &[]),
+            ("", "Map", Both, &[]),
+            ("", "Set", Both, &[]),
+            // `bytes` is a primitive type keyword and cannot be written as `pub fn bytes` in `.ril`.
+            ("", "String", Both, &["bytes"]),
+            ("", "Bytes", Both, &[]),
+            ("", "Numeric", Both, &[]),
             (
                 "",
                 "MemberMode",
@@ -1196,8 +1164,8 @@ impl Program {
                     "key",
                 ],
             ),
-            ("io", "Io", Runtime, &["print", "println"]),
-            ("file", "File", Runtime, &["read", "write", "open", "close"]),
+            ("io", "Io", Runtime, &[]),
+            ("file", "File", Runtime, &[]),
             (
                 "platform",
                 "Platform",
@@ -1336,13 +1304,21 @@ impl Program {
         imports: &mut Vec<(ScopeId, StmtId)>,
         errors: &mut Vec<Diagnostic>,
     ) {
-        for (module_name, template) in builtins::self_hosted_modules() {
-            let Some(Entry {
-                target: Target::Module(scope),
-                ..
-            }) = self.scope(self.prelude).names.get(*module_name).copied()
-            else {
-                continue;
+        for (module_name, import_path, template) in builtins::self_hosted_modules() {
+            let scope = if let Some(import_path) = import_path {
+                let Some(&scope) = self.modules.get(Path::new(import_path)) else {
+                    continue;
+                };
+                scope
+            } else {
+                let Some(Entry {
+                    target: Target::Module(scope),
+                    ..
+                }) = self.scope(self.prelude).names.get(*module_name).copied()
+                else {
+                    continue;
+                };
+                scope
             };
             let file = template.clone();
             let id = file.id;

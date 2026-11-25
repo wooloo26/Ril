@@ -1,0 +1,10 @@
+-- Standard Bytes module: compiler primitives plus UTF-8 string conversion.
+
+pub fn len(data: bytes) -> int
+pub fn at(data: bytes, index: int) -> new ?int
+pub fn to_array(data: bytes) -> new []int
+pub fn from_array(via values: []int) -> new ?bytes
+
+pub fn from_str(text: str) -> bytes {
+    String::encode_utf8(text)
+}

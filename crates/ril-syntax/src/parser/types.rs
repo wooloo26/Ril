@@ -92,7 +92,7 @@ impl Parser<'_> {
             "[" => {
                 self.open("[", "]", Layout::List)?;
                 self.skip_lines();
-                let mode = self.type_storage(pattern, false)?;
+                let mode = self.type_storage(pattern, false, true)?;
                 self.skip_lines();
                 if self.is("]") {
                     self.close("]")?;
@@ -102,7 +102,7 @@ impl Parser<'_> {
                     self.skip_lines();
                     self.require(":")?;
                     self.skip_lines();
-                    let storage = self.type_storage(pattern, false)?;
+                    let storage = self.type_storage(pattern, false, false)?;
                     let value = self.type_expr(pattern)?;
                     self.skip_lines();
                     self.close("]")?;
@@ -177,7 +177,7 @@ impl Parser<'_> {
                 break;
             }
             let attrs = self.attributes()?;
-            let storage = self.type_storage(pattern, true)?;
+            let storage = self.type_storage(pattern, true, false)?;
             if self.eat("[") {
                 let iterable = self.expression(
                     6,
@@ -240,7 +240,12 @@ impl Parser<'_> {
         Ok(Type::Record { fields, tail })
     }
 
-    fn type_storage(&mut self, pattern: bool, record: bool) -> Result<Storage> {
+    fn type_storage(
+        &mut self,
+        pattern: bool,
+        record: bool,
+        allow_bracket_mode: bool,
+    ) -> Result<Storage> {
         if pattern && self.eat("let") {
             Ok(Storage {
                 mode_path: Some(self.path(Angle::None, false)?),
@@ -257,7 +262,8 @@ impl Parser<'_> {
             Ok(storage)
         } else {
             let mode = self.mode(&[Mode::Mut, Mode::Ref, Mode::Shared, Mode::Via]);
-            let mode_path = (mode == Mode::Plain
+            let mode_path = (allow_bracket_mode
+                && mode == Mode::Plain
                 && matches!(
                     self.current().kind,
                     Kind::Word(Word::Pascal | Word::Constant)

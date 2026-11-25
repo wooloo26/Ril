@@ -1,0 +1,4 @@
+-- Standard Io module: synchronous standard-output primitives.
+
+pub fn print(text: str) @io -> ()
+pub fn println(text: str) @io -> ()

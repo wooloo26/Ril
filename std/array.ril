@@ -1,10 +1,12 @@
-pub fn get<T>(xs: []T, index: int) &return(xs) -> new ?T {
-    if index < 0 || index >= len(xs) {
-        None
-    } else {
-        Some(xs[index])
-    }
-}
+-- Standard Array module: compiler primitives plus self-hosted Ril combinators.
+
+pub fn push<T>(mut xs: []T, via item: T) &mut -> ()
+pub fn pop<T>(mut xs: []T) &mut -> new ?T
+pub fn insert<T>(mut xs: []T, index: int, via item: T) &mut -> ()
+pub fn remove<T>(mut xs: []T, index: int) &mut -> new ?T
+pub fn sort<T>(mut xs: []T) &mut -> ()
+pub fn clear<T>(mut xs: []T) &mut -> ()
+pub fn len<T>(via xs: []T) -> int
 
 pub fn at<T>(xs: []T, index: int) &return(xs) -> new ?T {
     if index < 0 || index >= len(xs) {

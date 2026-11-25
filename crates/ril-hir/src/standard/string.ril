@@ -1,3 +1,0 @@
-pub fn from_bytes(data: bytes) -> new ?str {
-    String::decode_utf8(data)
-}

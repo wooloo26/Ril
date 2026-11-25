@@ -1,0 +1,6 @@
+-- Standard Set module: compiler-backed ordered set primitives.
+
+pub fn insert<T>(mut set: Set<T>, value: T) &mut -> ()
+pub fn remove<T>(mut set: Set<T>, value: T) &mut -> bool
+pub fn contains<T>(via set: Set<T>, value: T) -> bool
+pub fn len<T>(via set: Set<T>) -> int

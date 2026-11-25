@@ -1,0 +1,26 @@
+-- Standard String module: private compiler UTF-8 intrinsics wrapped by Ril helpers.
+
+fn raw_encode_utf8(text: str) -> bytes
+fn raw_decode_utf8(data: bytes) -> new ?str
+
+pub fn inspect<T>(via value: T) -> str
+pub fn len(text: str) -> int
+pub fn join(via parts: []str, sep: str) -> str
+pub fn split(text: str, sep: str) -> new []str
+pub fn starts_with(text: str, prefix: str) -> bool
+pub fn ends_with(text: str, suffix: str) -> bool
+pub fn at(text: str, index: int) -> new ?str
+pub fn scalars(text: str) -> new []int
+pub fn from_scalars(via values: []int) -> new ?str
+
+pub fn encode_utf8(text: str) -> bytes {
+    raw_encode_utf8(text)
+}
+
+pub fn decode_utf8(data: bytes) -> new ?str {
+    raw_decode_utf8(data)
+}
+
+pub fn from_bytes(data: bytes) -> new ?str {
+    raw_decode_utf8(data)
+}

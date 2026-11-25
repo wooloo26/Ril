@@ -19,44 +19,79 @@ pub(super) enum TypeRegistration {
     Sum(BuiltinSum),
 }
 
-pub(super) fn self_hosted_modules() -> &'static [(&'static str, File)] {
-    static MODULES: OnceLock<Vec<(&'static str, File)>> = OnceLock::new();
+pub(super) fn self_hosted_modules() -> &'static [(&'static str, Option<&'static str>, File)] {
+    static MODULES: OnceLock<Vec<(&'static str, Option<&'static str>, File)>> = OnceLock::new();
     MODULES.get_or_init(|| {
-        const SOURCES: &[(&str, &str, &str)] = &[
+        // (module_name, optional `ril/<mod>` import path if not in prelude, virtual path, source)
+        const SOURCES: &[(&str, Option<&str>, &str, &str)] = &[
             (
                 "Numeric",
+                None,
                 "ril/std/numeric.ril",
-                include_str!("standard/numeric.ril"),
+                include_str!(concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/../../std/numeric.ril"
+                )),
             ),
             (
                 "Array",
+                None,
                 "ril/std/array.ril",
-                include_str!("standard/array.ril"),
+                include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../std/array.ril")),
+            ),
+            (
+                "Map",
+                None,
+                "ril/std/map.ril",
+                include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../std/map.ril")),
+            ),
+            (
+                "Set",
+                None,
+                "ril/std/set.ril",
+                include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../std/set.ril")),
             ),
             (
                 "String",
+                None,
                 "ril/std/string.ril",
-                include_str!("standard/string.ril"),
+                include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../std/string.ril")),
             ),
             (
                 "Bytes",
+                None,
                 "ril/std/bytes.ril",
-                include_str!("standard/bytes.ril"),
+                include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../std/bytes.ril")),
+            ),
+            (
+                "Io",
+                Some("ril/io"),
+                "ril/std/io.ril",
+                include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../std/io.ril")),
+            ),
+            (
+                "File",
+                Some("ril/file"),
+                "ril/std/file.ril",
+                include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../std/file.ril")),
             ),
         ];
         SOURCES
             .iter()
-            .map(|&(module_name, path_str, text)| {
+            .map(|&(module_name, import_path, path_str, text)| {
                 let path = Path::new(path_str);
                 let id = FileId::from_path(path);
                 let source = SourceFile::from_bytes(id, path.into(), text.as_bytes())
                     .unwrap_or_else(|error| ril_source::ice!("invalid stdlib source: {error:?}"));
                 let tokens = lexer::lex(&source)
                     .unwrap_or_else(|error| ril_source::ice!("invalid stdlib tokens: {error:?}"));
-                let ast = parser::parse(&source, &tokens, FileKind::Module)
-                    .unwrap_or_else(|error| ril_source::ice!("invalid stdlib AST: {error:?}"));
+                let ast =
+                    parser::parse(&source, &tokens, FileKind::Module).unwrap_or_else(|error| {
+                        ril_source::ice!("invalid stdlib AST in {path_str}: {error:?}")
+                    });
                 (
                     module_name,
+                    import_path,
                     File::new(source, FileKind::Module, ast, tokens),
                 )
             })
@@ -78,9 +113,24 @@ fn declarations(path: &Path) -> Option<&'static File> {
     static FIBER: OnceLock<File> = OnceLock::new();
     static CHANNEL: OnceLock<File> = OnceLock::new();
     let (cache, text) = match module(path)? {
-        "Prelude" => (&PRELUDE, include_str!("standard/prelude.ril")),
-        "Fiber" => (&FIBER, include_str!("standard/fiber.ril")),
-        "Channel" => (&CHANNEL, include_str!("standard/channel.ril")),
+        "Prelude" => (
+            &PRELUDE,
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../std/prelude.ril"
+            )),
+        ),
+        "Fiber" => (
+            &FIBER,
+            include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../std/fiber.ril")),
+        ),
+        "Channel" => (
+            &CHANNEL,
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../std/channel.ril"
+            )),
+        ),
         _ => return None,
     };
     Some(cache.get_or_init(|| {
@@ -170,6 +220,9 @@ pub(super) fn bodyless(
     use PrimitivePhase::{Both, Runtime};
     let path = &file.path;
     let ast = &file.ast;
+    if let Some(phase) = stdlib_intrinsic_phase(path, function.name.value.as_str()) {
+        return Ok(phase);
+    }
     if let Some(registered) = declarations(path)
         && let Some((node, expected)) = registered.ast.items.iter().find_map(|&item| {
             let node = registered.ast.stmt(item);
@@ -260,6 +313,28 @@ pub(super) fn bodyless(
         Ok(phase)
     } else {
         Err(mismatch(function.name.span))
+    }
+}
+
+fn stdlib_intrinsic_phase(path: &Path, name: &str) -> Option<PrimitivePhase> {
+    use PrimitivePhase::{Both, Runtime};
+    match (path.to_str()?, name) {
+        ("ril/std/array.ril", "push" | "pop" | "insert" | "remove" | "sort" | "clear" | "len")
+        | (
+            "ril/std/map.ril",
+            "get" | "insert" | "remove" | "contains" | "clear" | "keys" | "values" | "len",
+        )
+        | ("ril/std/set.ril", "insert" | "remove" | "contains" | "len")
+        | (
+            "ril/std/string.ril",
+            "raw_encode_utf8" | "raw_decode_utf8" | "inspect" | "len" | "join" | "split"
+            | "starts_with" | "ends_with" | "at" | "scalars" | "from_scalars",
+        )
+        | ("ril/std/bytes.ril", "len" | "at" | "to_array" | "from_array")
+        | ("ril/std/numeric.ril", "to_int" | "to_f64" | "convert" | "trunc") => Some(Both),
+        ("ril/std/io.ril", "print" | "println")
+        | ("ril/std/file.ril", "read" | "write" | "open" | "close") => Some(Runtime),
+        _ => None,
     }
 }
 

@@ -51,8 +51,8 @@ fn self_hosted_stdlib_combinators_execute_under_gc_stress() -> Result<(), String
             assert(Numeric::checked_rem(43, 0) == None)
 
             let xs = [10, 20, 30, 40]
-            assert(Array::get(xs, 2) == Some(30))
-            assert(Array::get(xs, -1) == None)
+            assert(Array::at(xs, 2) == Some(30))
+            assert(Array::at(xs, -1) == None)
             assert(Array::at(xs, 4) == None)
             assert(Array::contains(xs, 20))
             assert(!Array::contains(xs, 99))
@@ -65,10 +65,46 @@ fn self_hosted_stdlib_combinators_execute_under_gc_stress() -> Result<(), String
 
             let raw = Bytes::from_str("ril-std")
             assert(String::from_bytes(raw) == Some("ril-std"))
+            assert(String::decode_utf8(String::encode_utf8("ril-std")) == Some("ril-std"))
             println("std-ok")
         }
     "#;
     run_aot(source, "std-ok\n")
+}
+
+#[test]
+fn private_stdlib_intrinsics_are_hidden_and_array_get_is_removed() {
+    let mut private_call = VirtualPackage::new(Unit::Bin);
+    private_call.insert(
+        private_call.entry.clone(),
+        b"fn main() -> () { let _ = String::raw_encode_utf8(\"hi\") }\n".to_vec(),
+    );
+    let checked = Driver.check(&private_call, Stage::Hir);
+    assert!(
+        checked
+            .result
+            .diagnostics
+            .iter()
+            .any(|d| d.code == Some(Code::E0201)),
+        "expected E0201 private-item error for internal intrinsic, got {:?}",
+        checked.result.diagnostics
+    );
+
+    let mut removed_get = VirtualPackage::new(Unit::Bin);
+    removed_get.insert(
+        removed_get.entry.clone(),
+        b"fn main() -> () { let _ = Array::get([1, 2], 0) }\n".to_vec(),
+    );
+    let checked = Driver.check(&removed_get, Stage::Hir);
+    assert!(
+        checked
+            .result
+            .diagnostics
+            .iter()
+            .any(|d| d.code == Some(Code::E0209)),
+        "expected E0209 unresolved-member error for removed Array::get, got {:?}",
+        checked.result.diagnostics
+    );
 }
 
 #[test]
