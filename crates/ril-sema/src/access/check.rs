@@ -15,7 +15,7 @@ use ril_frontend::{
 
 use super::{
     Access, Analysis, CallbackModeCall, CleanupAction, EffectUse, Input, Instance, Invocation,
-    InvocationMode, ReturnSource, StorageUpdate, Summary,
+    InvocationMode, ReturnSource, StorageUpdate, Summary, ViaDomain,
     flow::{
         AccessConflict, ConflictKind, Coordinate, Datum, Ledger, Origin, Reception, Region,
         Replacement, ResultOccurrence, Revocation, Slot, StorageFlow, conflicts,
@@ -1203,11 +1203,11 @@ impl<'a> Analyzer<'a> {
         fun: &DefinitionCheck,
         summary: &Summary,
         facts: &BTreeSet<Fact>,
-    ) -> Vec<Instance> {
+    ) -> ViaDomain {
         if fun.via.is_empty() && fun.member_axes.is_empty() {
-            return Vec::new();
+            return ViaDomain::default();
         }
-        let mut rows: Vec<Vec<Input>> = vec![Vec::new()];
+        let mut permitted = Vec::new();
         let mut formals = BTreeMap::new();
         let mut axes = Vec::new();
         for (index, formal) in fun.formals.iter().enumerate() {
@@ -1223,9 +1223,9 @@ impl<'a> Analyzer<'a> {
                     fun.owner,
                     "via source cannot be both transferred and retained as shared",
                 );
-                return Vec::new();
+                return ViaDomain::default();
             }
-            extend_rows(&mut rows, domain);
+            permitted.push(domain.to_vec());
         }
         for (_, axis) in &fun.member_axes {
             axes.push(axis.clone());
@@ -1236,128 +1236,144 @@ impl<'a> Analyzer<'a> {
                     fun.owner,
                     "member via template has incompatible access requirements",
                 );
-                return Vec::new();
+                return ViaDomain::default();
             }
+            permitted.push(domain);
+        }
+        if fun.declared.result_mode != Mode::Infer
+            && summary
+                .invocations
+                .iter()
+                .all(|invocation| matches!(invocation.mode, InvocationMode::Input(_)))
+            && summary.mode_calls.as_ref().is_none_or(Vec::is_empty)
+            && summary.callback_returns.is_empty()
+            && summary
+                .storage_updates
+                .iter()
+                .all(|update| update.callback_returns.is_empty())
+        {
+            return ViaDomain::uniform(&permitted, summary);
+        }
+        let mut rows = vec![Vec::new()];
+        for domain in permitted {
             extend_rows(&mut rows, &domain);
         }
-        rows.into_iter()
-            .map(|modes| {
-                let mut summary = summary.clone();
-                let input = |formal| {
-                    formals
-                        .get(&formal)
-                        .and_then(|&axis| modes.get(axis))
+        ViaDomain::from_instances(rows.into_iter().map(|modes| {
+            let mut summary = summary.clone();
+            let input = |formal| {
+                formals
+                    .get(&formal)
+                    .and_then(|&axis| modes.get(axis))
+                    .copied()
+            };
+            for invocation in &mut summary.invocations {
+                if let InvocationMode::Formal(formal) = invocation.mode
+                    && let Some(input) = input(formal)
+                {
+                    invocation.mode = InvocationMode::Input(input);
+                }
+            }
+            summary.normalize_invocations();
+            let axis_input = |axis: &super::ModeAxis| {
+                if axis.path.is_empty() {
+                    input(axis.parameter)
+                } else {
+                    fun.member_axes
+                        .iter()
+                        .position(|(parameter, region)| {
+                            *parameter == axis.parameter && region.selection == axis.path
+                        })
+                        .and_then(|index| modes.get(formals.len() + index))
                         .copied()
-                };
-                for invocation in &mut summary.invocations {
-                    if let InvocationMode::Formal(formal) = invocation.mode
-                        && let Some(input) = input(formal)
-                    {
-                        invocation.mode = InvocationMode::Input(input);
-                    }
                 }
-                summary.normalize_invocations();
-                let axis_input = |axis: &super::ModeAxis| {
-                    if axis.path.is_empty() {
-                        input(axis.parameter)
-                    } else {
-                        fun.member_axes
-                            .iter()
-                            .position(|(parameter, region)| {
-                                *parameter == axis.parameter && region.selection == axis.path
-                            })
-                            .and_then(|index| modes.get(formals.len() + index))
-                            .copied()
-                    }
-                };
-                if let Some(calls) = &mut summary.mode_calls {
-                    for call in &mut *calls {
-                        call.specialize(&axis_input);
-                    }
-                    calls.sort_unstable();
-                    calls.dedup();
+            };
+            if let Some(calls) = &mut summary.mode_calls {
+                for call in &mut *calls {
+                    call.specialize(&axis_input);
                 }
-                for result in &mut summary.callback_returns {
+                calls.sort_unstable();
+                calls.dedup();
+            }
+            for result in &mut summary.callback_returns {
+                result.specialize(&input);
+            }
+            summary.callback_returns.sort_unstable();
+            summary.callback_returns.dedup();
+            for update in &mut summary.storage_updates {
+                for result in &mut update.callback_returns {
                     result.specialize(&input);
                 }
-                summary.callback_returns.sort_unstable();
-                summary.callback_returns.dedup();
-                for update in &mut summary.storage_updates {
-                    for result in &mut update.callback_returns {
-                        result.specialize(&input);
-                    }
-                    update.callback_returns.sort_unstable();
-                    update.callback_returns.dedup();
-                }
-                if fun.declared.result_mode == Mode::Infer {
-                    summary.constructs = !fun.returns.is_empty()
-                        && fun.returns.iter().all(|value| {
-                            value.requires_new
-                                || (!value.roots.is_empty()
-                                    && value.roots.iter().all(|origin| {
-                                        origin.inherits_mode
-                                            && origin.region.selection.is_empty()
-                                            && fun
-                                                .formals
-                                                .iter()
-                                                .position(|formal| {
-                                                    *formal == Some(origin.region.source)
-                                                })
-                                                .and_then(|index| formals.get(&index))
-                                                .is_some_and(|&position| {
-                                                    modes.get(position) == Some(&Input::New)
-                                                })
-                                    }))
-                        });
-                    let mut sources = BTreeSet::new();
-                    for value in &fun.returns {
-                        value.visit_origins(&mut Vec::new(), &mut |result_path, origin| {
-                            let Some(formal) = fun
-                                .formals
+                update.callback_returns.sort_unstable();
+                update.callback_returns.dedup();
+            }
+            if fun.declared.result_mode == Mode::Infer {
+                summary.constructs = !fun.returns.is_empty()
+                    && fun.returns.iter().all(|value| {
+                        value.requires_new
+                            || (!value.roots.is_empty()
+                                && value.roots.iter().all(|origin| {
+                                    origin.inherits_mode
+                                        && origin.region.selection.is_empty()
+                                        && fun
+                                            .formals
+                                            .iter()
+                                            .position(|formal| {
+                                                *formal == Some(origin.region.source)
+                                            })
+                                            .and_then(|index| formals.get(&index))
+                                            .is_some_and(|&position| {
+                                                modes.get(position) == Some(&Input::New)
+                                            })
+                                }))
+                    });
+                let mut sources = BTreeSet::new();
+                for value in &fun.returns {
+                    value.visit_origins(&mut Vec::new(), &mut |result_path, origin| {
+                        let Some(formal) = fun
+                            .formals
+                            .iter()
+                            .position(|decl| *decl == Some(origin.region.source))
+                        else {
+                            return;
+                        };
+                        if !result_path.is_empty() && origin.new {
+                            return;
+                        }
+                        let input = |axis: &Region| {
+                            axes.iter()
+                                .zip(&modes)
+                                .find(|(decl, _)| decl.matches_axis(axis))
+                                .map_or(Access::Mut, |(_, mode)| mode.access())
+                        };
+                        let access = if origin.inherits_mode {
+                            input(&origin.region)
+                        } else if origin.reception.is_empty() {
+                            formals
+                                .get(&formal)
+                                .and_then(|index| modes.get(*index))
+                                .map_or(origin.mode, |mode| mode.access().project(origin.mode))
+                        } else {
+                            origin
+                                .reception
                                 .iter()
-                                .position(|decl| *decl == Some(origin.region.source))
-                            else {
-                                return;
-                            };
-                            if !result_path.is_empty() && origin.new {
-                                return;
-                            }
-                            let input = |axis: &Region| {
-                                axes.iter()
-                                    .zip(&modes)
-                                    .find(|(decl, _)| decl.matches_axis(axis))
-                                    .map_or(Access::Mut, |(_, mode)| mode.access())
-                            };
-                            let access = if origin.inherits_mode {
-                                input(&origin.region)
-                            } else if origin.reception.is_empty() {
-                                formals
-                                    .get(&formal)
-                                    .and_then(|index| modes.get(*index))
-                                    .map_or(origin.mode, |mode| mode.access().project(origin.mode))
-                            } else {
-                                origin
-                                    .reception
-                                    .iter()
-                                    .map(|step| match step {
-                                        Reception::Fixed(access) => *access,
-                                        Reception::Axis(axis) => input(axis),
-                                    })
-                                    .fold(Access::Mut, Access::project)
-                            };
-                            sources.insert(ReturnSource {
-                                formal,
-                                source_path: origin.region.selection.clone(),
-                                result_path: result_path.to_vec(),
-                                access,
-                            });
+                                .map(|step| match step {
+                                    Reception::Fixed(access) => *access,
+                                    Reception::Axis(axis) => input(axis),
+                                })
+                                .fold(Access::Mut, Access::project)
+                        };
+                        sources.insert(ReturnSource {
+                            formal,
+                            source_path: origin.region.selection.clone(),
+                            result_path: result_path.to_vec(),
+                            access,
                         });
-                    }
-                    summary.return_sources = sources.into_iter().collect();
+                    });
                 }
-                Instance { modes, summary }
-            })
-            .collect()
+                summary.return_sources = sources.into_iter().collect();
+            }
+            Instance { modes, summary }
+        }))
     }
 
     fn statement(

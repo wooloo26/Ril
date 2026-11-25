@@ -74,11 +74,7 @@ impl<'program> Analyzer<'program> {
                             (Input::New, Obligation::Handoff(formal)),
                             (Input::Shared, Obligation::NeedsSharing(formal)),
                         ] {
-                            if export
-                                .domain
-                                .iter()
-                                .all(|row| row.modes.get(via_axis) == Some(&mode))
-                            {
+                            if export.domain.all_at(via_axis, |actual| actual == mode) {
                                 self.rules.push(Rule {
                                     premises: Vec::new(),
                                     conclusion: Fact { owner, obligation },
@@ -100,11 +96,10 @@ impl<'program> Analyzer<'program> {
                         SchemaRequirement::Exclusive,
                         SchemaRequirement::Shared,
                     ] {
-                        if export.domain.iter().all(|row| {
-                            row.modes
-                                .get(via_axis + index)
-                                .is_some_and(|mode| required.accepts(mode.access()))
-                        }) {
+                        if export
+                            .domain
+                            .all_at(via_axis + index, |mode| required.accepts(mode.access()))
+                        {
                             self.rules.push(Rule {
                                 premises: Vec::new(),
                                 conclusion: Fact {
@@ -505,18 +500,11 @@ impl<'program> Analyzer<'program> {
             }
             actual.push(Input::from_mode(mode));
         }
-        let row = export.domain.iter().find(|row| {
-            row.modes.len() == actual.len()
-                && row
-                    .modes
-                    .iter()
-                    .zip(&actual)
-                    .all(|(mode, actual)| actual.is_none_or(|actual| actual == *mode))
-        })?;
+        let summary = export.domain.select(&actual)?;
         Some(if actual.iter().any(Option::is_none) {
             &export.summary
         } else {
-            &row.summary
+            summary
         })
     }
 

@@ -16,11 +16,12 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::{
-    access::{Analysis, Instance, Summary},
+    access::{Analysis, Summary, ViaDomain},
     ty::{Ty, TypedProgram},
 };
 
-pub const FORMAT_VERSION: u32 = 30;
+const VIA_GRAPH_VERSION: u32 = 31;
+pub const FORMAT_VERSION: u32 = VIA_GRAPH_VERSION;
 const OLDEST_FORMAT_VERSION: u32 = 12;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -42,7 +43,7 @@ pub struct Export {
     pub parameter_defaults: Vec<Option<String>>,
     pub meta_parameters: Vec<bool>,
     pub summary: Summary,
-    pub domain: Vec<Instance>,
+    pub domain: ViaDomain,
     #[serde(skip)]
     span: Span,
 }
@@ -113,7 +114,10 @@ impl Interface {
                         .map(|param| param.is_meta)
                         .collect(),
                     summary: analysis.summaries.get(&id).cloned().unwrap_or_default(),
-                    domain: analysis.via.get(&id).cloned().unwrap_or_default(),
+                    domain: analysis
+                        .via
+                        .get(&id)
+                        .map_or_else(ViaDomain::default, ViaDomain::compact),
                     span: def.name.span,
                 },
             );
@@ -268,6 +272,14 @@ impl Interface {
             return Err(format!("unsupported .rili format version {format_version}"));
         }
         let value: Self = serde_json::from_slice(bytes).map_err(|err| err.to_string())?;
+        if format_version < VIA_GRAPH_VERSION
+            && value
+                .functions
+                .values()
+                .any(|export| export.domain.uses_graph())
+        {
+            return Err("compressed via domains require a newer .rili format".into());
+        }
         if value.compute_hash() != value.abi_hash {
             return Err(".rili ABI hash does not match its contents".into());
         }
@@ -301,7 +313,7 @@ impl Interface {
                     && if baseline.domain.is_empty() {
                         baseline.summary.subsumes(&export.summary)
                     } else {
-                        Instance::domain_subsumes(&baseline.domain, &export.domain)
+                        baseline.domain.subsumes(&export.domain)
                     }
             });
             if !compatible {

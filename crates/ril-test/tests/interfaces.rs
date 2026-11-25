@@ -1534,7 +1534,7 @@ pub fn member(via box: .{ via item: Cell, var stamp: int }) -> Cell {
             export
                 .domain
                 .iter()
-                .map(|row| row.modes.clone())
+                .map(|row| row.modes)
                 .collect::<BTreeSet<_>>()
         })
     };
@@ -2270,6 +2270,94 @@ fn invalid() -> () {
 }
 
 #[test]
+fn wide_via_domains_share_summaries_and_suffixes() {
+    let mut package = VirtualPackage::new(Unit::Lib);
+    package.entry = "pkg/catalog.ril".into();
+    package.insert(
+        package.entry.clone(),
+        br#"
+pub type Item = .{ count: int }
+pub fn total(via a: Item, via b: Item, via c: Item, via d: Item, via e: Item,
+             via f: Item, via g: Item, via h: Item, via i: Item) -> int {
+    a.count + b.count + c.count + d.count + e.count + f.count + g.count + h.count + i.count
+}
+"#
+        .to_vec(),
+    );
+    let encoded = Driver.interface(&package).unwrap().encode().unwrap();
+    let interface = Interface::decode(&encoded).unwrap();
+    let export = &interface.functions["pkg/catalog.ril::total"];
+    assert_eq!(export.domain.len(), 5_usize.pow(9));
+    assert_eq!(encoded, interface.encode().unwrap());
+    assert!(encoded.len() < 10_000);
+
+    let mut wire: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
+    let domain = wire
+        .pointer_mut("/functions/pkg~1catalog.ril::total/domain")
+        .unwrap();
+    assert_eq!(domain["summaries"].as_array().unwrap().len(), 1);
+    let nodes = domain["nodes"].as_array_mut().unwrap();
+    assert_eq!(nodes.len(), 10);
+    let root = nodes.last_mut().unwrap();
+    let child = root.pointer_mut("/Branch/0/1").unwrap();
+    *child = serde_json::json!(9);
+    let corrupt = serde_json::to_vec(&wire).unwrap();
+    assert!(
+        Interface::decode(&corrupt)
+            .unwrap_err()
+            .contains("invalid via branch reference")
+    );
+}
+
+#[test]
+fn expanded_via_interfaces_keep_their_hash_and_compatibility() {
+    use ril_base::diag::Code;
+
+    let bytes = include_bytes!("fixtures/via-v30.rili");
+    let legacy = Interface::decode(bytes).unwrap();
+    assert_eq!(legacy.format_version, 30);
+    assert_eq!(legacy.encode().unwrap(), bytes);
+    let mut provider = VirtualPackage::new(Unit::Lib);
+    provider.entry = "pkg/legacy.ril".into();
+    let source = b"pub type Item = .{ var count: int }\npub fn lookup(via item: Item) -> int { item.count }\n";
+    provider.insert(provider.entry.clone(), source.to_vec());
+    let current = Driver.interface(&provider).unwrap();
+    assert!(legacy.compare(&current).is_empty());
+    assert!(current.compare(&legacy).is_empty());
+
+    provider.insert(
+        provider.entry.clone(),
+        b"pub type Item = .{ var count: int }\npub fn lookup(via item: Item) -> int { item.count += 1; item.count }\n".to_vec(),
+    );
+    let tightened = Driver.interface(&provider).unwrap();
+    assert_eq!(
+        legacy
+            .compare(&tightened)
+            .first()
+            .and_then(|item| item.code),
+        Some(Code::E0552)
+    );
+    assert!(tightened.compare(&legacy).is_empty());
+
+    let mut client = VirtualPackage::new(Unit::Lib);
+    client.insert("library/legacy.rili".into(), bytes.to_vec());
+    client.insert(
+        client.entry.clone(),
+        b"use library/legacy\nfn read() -> int { Legacy::lookup(Legacy::Item.{ count: 6 }) }"
+            .to_vec(),
+    );
+    assert!(Driver.analyze(&client).is_ok());
+    let republished = Driver.interface(&client).unwrap().encode().unwrap();
+    let republished: serde_json::Value = serde_json::from_slice(&republished).unwrap();
+    let functions = republished["functions"].as_object().unwrap();
+    assert!(
+        functions
+            .values()
+            .any(|export| export["domain"]["nodes"].is_array())
+    );
+}
+
+#[test]
 fn interface_roundtrip_is_stable_and_detects_corruption() {
     let suite = parse_suite(
         Path::new("via.ril"),
@@ -2606,10 +2694,10 @@ fn exported_horn_facts_agree_with_lean() {
 #[test]
 fn exported_summaries_and_via_domains_agree_with_lean() {
     use ril_sema::access::{
-        CallbackArgument, CallbackReturn, Coordinate, Input, Instance, InvocationMode, ModeAxis,
+        CallbackArgument, CallbackReturn, Coordinate, Input, InvocationMode, ModeAxis,
         ReturnAllocation, ReturnSource, SnapshotArgument, SnapshotCall, SnapshotGraph,
         SnapshotInput, SnapshotOrigin, SnapshotProjection, SnapshotProvider, StorageStep,
-        StorageTransfer, StorageUpdate, Summary,
+        StorageTransfer, StorageUpdate, Summary, ViaDomain,
     };
     use serde_json::{Value, json};
 
@@ -2805,7 +2893,7 @@ fn exported_summaries_and_via_domains_agree_with_lean() {
             ..Summary::default()
         });
     }
-    let mut domains = vec![Vec::new()];
+    let mut domains = vec![ViaDomain::default()];
     for case in suite.cases {
         for pkg in case.baseline.iter().chain(std::iter::once(&case.pkg)) {
             if let Ok(interface) = Driver.interface(pkg) {
@@ -2813,7 +2901,7 @@ fn exported_summaries_and_via_domains_agree_with_lean() {
                 for function in decoded.functions.into_values() {
                     summaries.push(function.summary);
                     for instance in &function.domain {
-                        if !summaries.contains(&instance.summary) {
+                        if !summaries.contains(instance.summary) {
                             summaries.push(instance.summary.clone());
                         }
                     }
@@ -3105,9 +3193,9 @@ fn exported_summaries_and_via_domains_agree_with_lean() {
     );
 
     assert!(domains.len() > 4);
-    let domain_wire = |rows: &[Instance]| {
+    let domain_wire = |rows: &ViaDomain| {
         rows.iter()
-            .map(|row| json!({"modes": row.modes, "summary": wire(&row.summary)}))
+            .map(|row| json!({"modes": row.modes, "summary": wire(row.summary)}))
             .collect::<Vec<_>>()
     };
     let cases: Vec<_> = domains
@@ -3120,7 +3208,7 @@ fn exported_summaries_and_via_domains_agree_with_lean() {
     let actual = query(&oracle, "domain", &serde_json::to_vec(&input).unwrap()).unwrap();
     let expected: Vec<_> = cases
         .iter()
-        .map(|(baseline, revision)| Instance::domain_subsumes(baseline, revision))
+        .map(|(baseline, revision)| baseline.subsumes(revision))
         .collect();
     assert_eq!(
         serde_json::from_slice::<Vec<bool>>(&actual).unwrap(),

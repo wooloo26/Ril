@@ -4,8 +4,8 @@ use ril_base::{diag::Code, span::Span};
 use ril_frontend::{hir::DefinitionId, syntax::Mode};
 
 use super::{
-    Analysis, Analyzer, Callable, Context, Datum, DefinitionCheck, Fact, Input, Instance,
-    Obligation, Region, SchemaRequirement, collect_axes, extend_rows,
+    Analysis, Analyzer, Callable, Context, Datum, DefinitionCheck, Fact, Input, Obligation, Region,
+    SchemaRequirement, Summary, ViaDomain, collect_axes,
 };
 use crate::access::{
     ModeAxis, ModeExpression,
@@ -100,23 +100,36 @@ type Row = Vec<Input>;
 
 struct Domain {
     axes: Vec<(ModeAxis, Region)>,
-    initial: Option<BTreeSet<Row>>,
-    allowed: BTreeSet<Row>,
+    modes: ViaDomain,
+    local: bool,
+    rejected: BTreeSet<Row>,
     export: Option<DefinitionId>,
 }
 
 impl Domain {
     fn local(
         axes: Vec<(ModeAxis, Region)>,
-        rows: BTreeSet<Row>,
+        modes: ViaDomain,
         export: Option<DefinitionId>,
     ) -> Self {
         Self {
             axes,
-            initial: Some(rows.clone()),
-            allowed: rows,
+            modes,
+            local: true,
+            rejected: BTreeSet::new(),
             export,
         }
+    }
+
+    fn allowed(&self) -> impl Iterator<Item = Row> + '_ {
+        self.modes
+            .iter()
+            .map(|row| row.modes)
+            .filter(|row| !self.rejected.contains(row))
+    }
+
+    fn is_empty(&self) -> bool {
+        self.modes.len() == self.rejected.len()
     }
 
     fn input(&self, row: &Row, axis: &Region) -> Option<Input> {
@@ -133,28 +146,25 @@ pub(super) struct Domains {
 }
 
 impl Domains {
-    pub(super) fn register_function(&mut self, function: &DefinitionCheck, instances: &[Instance]) {
+    pub(super) fn register_function(&mut self, function: &DefinitionCheck, instances: &ViaDomain) {
         let axes = axes(&function.declared, &function.formals);
-        let rows = instances.iter().map(|row| row.modes.clone()).collect();
-        self.tables
-            .insert(function.owner, Domain::local(axes, rows, Some(function.id)));
+        self.tables.insert(
+            function.owner,
+            Domain::local(axes, instances.clone(), Some(function.id)),
+        );
     }
 
     fn exclusions(&self, application: &Application, mut reject: impl FnMut(Option<&Row>)) {
         let Some(target) = self.tables.get(&application.target) else {
             return;
         };
-        if target
-            .initial
-            .as_ref()
-            .is_some_and(|rows| rows.len() == target.allowed.len())
-        {
+        if target.local && target.rejected.is_empty() {
             return;
         }
         if let Some(owner) = self.tables.get(&application.owner) {
-            for row in &owner.allowed {
-                if application.excludes(target, |axis| owner.input(row, axis)) {
-                    reject(Some(row));
+            for row in owner.allowed() {
+                if application.excludes(target, |axis| owner.input(&row, axis)) {
+                    reject(Some(&row));
                 }
             }
         } else if application.excludes(target, |_| None) {
@@ -220,27 +230,27 @@ impl Application {
                     .zip(&pattern)
                     .all(|(mode, expect)| expect.is_none_or(|expected| *mode == expected))
         };
-        if let Some(initial) = &target.initial {
+        if target.local {
             // Existing unary checks report incompatible individual inputs.
-            initial
-                .iter()
-                .any(|row| matches(row) && !target.allowed.contains(row))
+            target.rejected.iter().any(matches)
         } else {
             // Published rows include the original unary restrictions. If
             // some modes cannot be resolved, check their combinations using
             // the published marginal domains.
-            let allowed = target.allowed.iter().filter(|row| matches(row)).count();
+            let allowed = target.modes.count_matching(&pattern)
+                - target.rejected.iter().filter(|row| matches(row)).count();
             let count = pattern
                 .iter()
                 .enumerate()
                 .fold(1usize, |size, (position, mode)| {
                     let choices = if mode.is_some() {
                         1
+                    } else if target.rejected.is_empty() {
+                        target.modes.marginal_len(position)
                     } else {
                         target
-                            .allowed
-                            .iter()
-                            .filter_map(|row| row.get(position))
+                            .allowed()
+                            .filter_map(|row| row.get(position).copied())
                             .collect::<BTreeSet<_>>()
                             .len()
                     };
@@ -377,8 +387,9 @@ impl Analyzer<'_> {
                     function.name.span,
                     Domain {
                         axes: axes(signature, &formals),
-                        initial: None,
-                        allowed: export.domain.iter().map(|row| row.modes.clone()).collect(),
+                        modes: export.domain.clone(),
+                        local: false,
+                        rejected: BTreeSet::new(),
                         export: None,
                     },
                 );
@@ -395,20 +406,18 @@ impl Analyzer<'_> {
             }
             let bad = if let Some(domain) = domains.tables.get_mut(&constraint.owner) {
                 let rejected: Vec<_> = domain
-                    .allowed
-                    .iter()
+                    .allowed()
                     .filter_map(|row| {
                         constraint
                             .test
-                            .violation(|axis| domain.input(row, axis))
-                            .map(|code| (row.clone(), code))
+                            .violation(|axis| domain.input(&row, axis))
+                            .map(|code| (row, code))
                     })
                     .collect();
                 for (row, _) in &rejected {
-                    domain.allowed.remove(row);
+                    domain.rejected.insert(row.clone());
                 }
                 domain
-                    .allowed
                     .is_empty()
                     .then(|| rejected.first().map(|(_, kind)| *kind))
                     .flatten()
@@ -445,8 +454,8 @@ impl Analyzer<'_> {
             for (owner, rows) in removed {
                 if let Some(domain) = domains.tables.get_mut(&owner) {
                     for (row, site) in rows {
-                        domain.allowed.remove(&row);
-                        if domain.allowed.is_empty() {
+                        domain.rejected.insert(row);
+                        if domain.is_empty() {
                             self.error(
                                 Code::E0520,
                                 site,
@@ -460,15 +469,16 @@ impl Analyzer<'_> {
         for domain in domains.tables.values() {
             if let Some(id) = domain.export
                 && let Some(instances) = analysis.via.get_mut(&id)
+                && !domain.rejected.is_empty()
             {
-                instances.retain(|row| domain.allowed.contains(&row.modes));
+                instances.exclude(&domain.rejected);
             }
         }
     }
 
     fn register_closure_domains(&self, facts: &BTreeSet<Fact>, domains: &mut Domains) {
         for (&owner, closure) in &self.closure_modes {
-            let mut rows = vec![Vec::new()];
+            let mut permitted = Vec::new();
             let mut axes = Vec::new();
             for (parameter, formal) in closure.formals.iter().enumerate() {
                 let Some(formal) = formal.filter(|formal| closure.via.contains(formal)) else {
@@ -482,7 +492,7 @@ impl Analyzer<'_> {
                     },
                     Region::root(formal),
                 ));
-                extend_rows(&mut rows, allowed);
+                permitted.push(allowed.to_vec());
             }
             for (parameter, axis) in &closure.member_axes {
                 axes.push((
@@ -492,13 +502,13 @@ impl Analyzer<'_> {
                     },
                     axis.clone(),
                 ));
-                let allowed = member_modes(facts, owner, axis);
-                extend_rows(&mut rows, &allowed);
+                permitted.push(member_modes(facts, owner, axis));
             }
             if !axes.is_empty() {
+                let modes = ViaDomain::uniform(&permitted, &Summary::default());
                 domains
                     .tables
-                    .insert(owner, Domain::local(axes, rows.into_iter().collect(), None));
+                    .insert(owner, Domain::local(axes, modes, None));
             }
         }
     }
@@ -520,13 +530,7 @@ pub(super) fn root_modes(facts: &BTreeSet<Fact>, owner: Span, formal: Span) -> &
     } else if exercised(Obligation::Write(formal)) || exercised(Obligation::WriteExisting(formal)) {
         &[Input::Mut, Input::Shared, Input::New]
     } else {
-        &[
-            Input::Plain,
-            Input::Ref,
-            Input::Mut,
-            Input::Shared,
-            Input::New,
-        ]
+        &Input::ALL
     }
 }
 

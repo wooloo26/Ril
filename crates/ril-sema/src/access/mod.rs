@@ -3,9 +3,11 @@ mod flow;
 pub mod horn;
 mod modes;
 mod snapshot_contracts;
+mod via;
 
 pub use flow::{Access, Coordinate};
 pub use modes::{CallbackModeCall, ModeAxis, ModeExpression, ModeStep};
+pub use via::{ViaDomain, ViaRow, ViaRows};
 
 use std::{borrow::Cow, collections::BTreeMap};
 
@@ -444,6 +446,8 @@ pub enum Input {
 }
 
 impl Input {
+    const ALL: [Self; 5] = [Self::Plain, Self::Ref, Self::Mut, Self::Shared, Self::New];
+
     const fn from_mode(mode: Mode) -> Option<Self> {
         Some(match mode {
             Mode::Plain => Self::Plain,
@@ -501,7 +505,7 @@ pub enum CleanupAction {
 #[derive(Default)]
 pub struct Analysis {
     pub summaries: BTreeMap<DefinitionId, Summary>,
-    pub via: BTreeMap<DefinitionId, Vec<Instance>>,
+    pub via: BTreeMap<DefinitionId, ViaDomain>,
     pub horn_rules: Vec<horn::Rule<usize>>,
     pub cleanups: BTreeMap<Span, CleanupAction>,
 }
