@@ -15,15 +15,17 @@ struct FakeDriver;
 impl TestDriver for FakeDriver {
     fn check_stage(&self, pkg: &VirtualPackage, _upto: Stage) -> CheckResult {
         let mut result = CheckResult::default();
-        for (index, (path, file)) in pkg.files.iter().enumerate() {
+        for (path, file) in &pkg.files {
             assert!(path.extension().is_some_and(|ext| ext == "ril"));
+            let id = FileId::from_path(path);
+            result.file_paths.insert(id, path.clone());
             let source = String::from_utf8_lossy(&file.bytes);
             result
                 .diagnostics
                 .extend(source.match_indices("invalid").map(|(start, word)| {
                     Diagnostic::error(
                         Code::E0120,
-                        Span::new(FileId(index), start, start + word.len()),
+                        Span::new(id, start, start + word.len()),
                         "fixture diagnostic",
                     )
                 }));

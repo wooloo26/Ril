@@ -21,7 +21,7 @@ use sha2::{Digest as _, Sha256};
 
 use crate::CompileOptions;
 
-const DISK_SCHEMA_VERSION: u32 = 1;
+const DISK_SCHEMA_VERSION: u32 = 2;
 
 pub(crate) type ContentDigest = [u8; 32];
 
@@ -489,16 +489,27 @@ fn write_atomic(path: &Path, bytes: &[u8]) {
 }
 
 #[derive(Serialize, Deserialize)]
+struct DiskLabel {
+    span: (usize, usize, usize),
+    message: String,
+}
+
+#[derive(Serialize, Deserialize)]
 struct DiskDiagnostic {
+    severity: String,
     code: Option<String>,
     primary: Option<(usize, usize, usize)>,
     message: String,
+    labels: Vec<DiskLabel>,
+    notes: Vec<String>,
+    help: Vec<String>,
 }
 
 #[derive(Serialize, Deserialize)]
 struct DiskCheckEntry {
     diagnostics: Vec<DiskDiagnostic>,
     signatures: BTreeMap<String, String>,
+    file_paths: BTreeMap<usize, PathBuf>,
 }
 
 impl From<&CheckResult> for DiskCheckEntry {
@@ -508,12 +519,28 @@ impl From<&CheckResult> for DiskCheckEntry {
                 .diagnostics
                 .iter()
                 .map(|diag| DiskDiagnostic {
+                    severity: diag.severity.as_str().to_owned(),
                     code: diag.code.map(|code| code.as_str().to_owned()),
                     primary: diag.primary.map(|span| (span.file.0, span.start, span.end)),
                     message: diag.message.clone(),
+                    labels: diag
+                        .labels()
+                        .iter()
+                        .map(|label| DiskLabel {
+                            span: (label.span.file.0, label.span.start, label.span.end),
+                            message: label.message.clone(),
+                        })
+                        .collect(),
+                    notes: diag.notes().to_vec(),
+                    help: diag.help().to_vec(),
                 })
                 .collect(),
             signatures: result.signatures.clone(),
+            file_paths: result
+                .file_paths
+                .iter()
+                .map(|(id, path)| (id.0, path.clone()))
+                .collect(),
         }
     }
 }
@@ -522,6 +549,10 @@ impl DiskCheckEntry {
     fn into_check_result(self) -> Option<CheckResult> {
         let mut diagnostics = Vec::with_capacity(self.diagnostics.len());
         for item in self.diagnostics {
+            let severity = match item.severity.as_str() {
+                "warning" => ril_base::diag::Severity::Warning,
+                _ => ril_base::diag::Severity::Error,
+            };
             let code = match item.code {
                 Some(text) => Some(text.parse::<Code>().ok()?),
                 None => None,
@@ -529,15 +560,33 @@ impl DiskCheckEntry {
             let primary = item
                 .primary
                 .map(|(file, start, end)| Span::new(FileId(file), start, end));
-            diagnostics.push(Diagnostic {
-                code,
-                primary,
-                message: item.message,
-            });
+            let mut diag = Diagnostic::unsupported(item.message);
+            diag.severity = severity;
+            diag.code = code;
+            diag.primary = primary;
+            for label in item.labels {
+                diag = diag.with_label(
+                    Span::new(FileId(label.span.0), label.span.1, label.span.2),
+                    label.message,
+                );
+            }
+            for note in item.notes {
+                diag = diag.with_note(note);
+            }
+            for help in item.help {
+                diag = diag.with_help(help);
+            }
+            diagnostics.push(diag);
         }
+        let file_paths = self
+            .file_paths
+            .into_iter()
+            .map(|(id, path)| (FileId(id), path))
+            .collect();
         Some(CheckResult {
             diagnostics,
             signatures: self.signatures,
+            file_paths,
         })
     }
 }

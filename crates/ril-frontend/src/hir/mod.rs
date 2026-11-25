@@ -719,7 +719,7 @@ pub fn lower(files: Vec<File>, entry: FileId) -> Result<Program, Vec<Diagnostic>
             if program
                 .modules
                 .insert(name, root)
-                .is_some_and(|old| program.scope(old).file != FileId(usize::MAX))
+                .is_some_and(|old| program.scope(old).file != FileId::BUILTIN)
             {
                 errors.push(Diagnostic::error(
                     Code::E0203,
@@ -1061,7 +1061,7 @@ const PRELUDE: &[(PrimitivePhase, &[&str])] = &[
 
 impl Program {
     fn add_prelude(&mut self) {
-        let file = FileId(usize::MAX);
+        let file = FileId::BUILTIN;
         self.prelude = self.new_scope(file, "ril".into(), None, Visibility::Public);
         for &(phase, names) in PRELUDE {
             for &name in names {
@@ -1296,7 +1296,7 @@ impl Program {
     fn primitive(&mut self, scope: ScopeId, name: &str, phase: PrimitivePhase) {
         let def = self.new_def(
             scope,
-            Name::new(name.into(), Span::new(FileId(usize::MAX), 0, 0)),
+            Name::new(name.into(), Span::new(FileId::BUILTIN, 0, 0)),
             DefinitionKind::Primitive(phase),
             None,
             Visibility::Public,

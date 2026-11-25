@@ -39,7 +39,7 @@ fn declarations(path: &Path) -> Option<&'static File> {
         _ => return None,
     };
     Some(cache.get_or_init(|| {
-        let source = SourceFile::from_bytes(FileId(usize::MAX), path.into(), text.as_bytes())
+        let source = SourceFile::from_bytes(FileId::BUILTIN, path.into(), text.as_bytes())
             .unwrap_or_else(|error| ril_base::ice!("invalid registered source: {error:?}"));
         let tokens = lexer::lex(&source)
             .unwrap_or_else(|error| ril_base::ice!("invalid registered tokens: {error:?}"));

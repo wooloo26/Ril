@@ -142,7 +142,8 @@ impl Compiler {
         stage: Stage,
         prepared: PreparedInputs,
     ) -> CheckResult {
-        (|| {
+        let file_paths = prepared.sources.file_paths();
+        let mut result = (|| {
             if stage < Stage::Type {
                 let _ = run_frontend(pkg, stage, prepared, self.cache())?;
                 return Ok(CheckResult::default());
@@ -170,7 +171,9 @@ impl Compiler {
         .unwrap_or_else(|diagnostics| CheckResult {
             diagnostics,
             ..CheckResult::default()
-        })
+        });
+        result.file_paths = file_paths;
+        result
     }
 
     pub fn analyze(
@@ -451,7 +454,8 @@ fn prepare_inputs(pkg: &VirtualPackage, cache: Option<&IncrementalCache>) -> Pre
             &file.bytes
         };
         let content_hash = sha256(data);
-        match sources.add(logical, data) {
+        let stable_id = FileId::from_path(&logical);
+        match sources.add_with_id(stable_id, logical, data) {
             Ok(id) => {
                 if path == &pkg.entry {
                     entry = Some(id);
@@ -558,9 +562,10 @@ fn run_frontend_full(
         return Ok((sources, None, imports));
     }
     let Some(entry) = entry else {
+        let missing_id = FileId::from_path(&pkg.entry);
         return Err(vec![Diagnostic::error(
             Code::E0208,
-            Span::new(FileId(0), 0, 0),
+            Span::new(missing_id, 0, 0),
             format!("missing entry {}", pkg.entry.display()),
         )]);
     };
@@ -574,12 +579,14 @@ impl TestDriver for Compiler {
     }
 
     fn check_compat(&self, base: &VirtualPackage, revision: &VirtualPackage) -> CheckResult {
+        let file_paths = prepare_inputs(revision, self.cache()).sources.file_paths();
         let diagnostics = match (self.interface(base), self.interface(revision)) {
             (Ok(base), Ok(revision)) => base.compare(&revision),
             (Err(diagnostics), _) | (_, Err(diagnostics)) => diagnostics,
         };
         CheckResult {
             diagnostics,
+            file_paths,
             ..CheckResult::default()
         }
     }

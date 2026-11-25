@@ -116,10 +116,10 @@ impl Analyzer<'_> {
                     }
                     head = next;
                 }
-                self.diagnostics.push(Diagnostic {
-                    primary: Some(entry.span),
-                    ..Diagnostic::unsupported("could not stabilize callback storage updates")
-                });
+                self.diagnostics.push(Diagnostic::unsupported_at(
+                    entry.span,
+                    "could not stabilize callback storage updates",
+                ));
             }
         }
         applied
@@ -192,10 +192,10 @@ impl Analyzer<'_> {
             } => {
                 let key = (entry.span, ReplaySite::Derive(*index));
                 if !self.replaying_storage.insert(key) {
-                    self.diagnostics.push(Diagnostic {
-                        primary: Some(entry.span),
-                        ..Diagnostic::unsupported("could not stabilize recursive draft updates")
-                    });
+                    self.diagnostics.push(Diagnostic::unsupported_at(
+                        entry.span,
+                        "could not stabilize recursive draft updates",
+                    ));
                     return false;
                 }
                 let base = self.instantiate_return(
@@ -300,10 +300,10 @@ impl Analyzer<'_> {
     ) -> bool {
         let key = (entry.span, ReplaySite::Callback(call.site));
         if !self.replaying_storage.insert(key) {
-            self.diagnostics.push(Diagnostic {
-                primary: Some(entry.span),
-                ..Diagnostic::unsupported("could not stabilize recursive callback storage updates")
-            });
+            self.diagnostics.push(Diagnostic::unsupported_at(
+                entry.span,
+                "could not stabilize recursive callback storage updates",
+            ));
             return false;
         }
         let mut before = after.clone();

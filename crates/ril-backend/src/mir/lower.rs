@@ -529,10 +529,7 @@ impl<'a> Builder<'_, 'a> {
     }
 
     fn unsupported(&self, span: Span, feature: &str) -> Diagnostic {
-        Diagnostic {
-            primary: Some(span),
-            ..Diagnostic::unsupported(format!("native lowering does not support {feature}"))
-        }
+        Diagnostic::unsupported_at(span, format!("native lowering does not support {feature}"))
     }
 
     fn invoke(&mut self, target: Target, arguments: Vec<Register>, cleanup: bool) -> Register {

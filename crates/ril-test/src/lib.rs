@@ -17,7 +17,7 @@ use std::{
     str::FromStr,
 };
 
-use ril_base::diag::Diagnostic;
+use ril_base::{diag::Diagnostic, span::FileId};
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum Milestone {
@@ -173,6 +173,7 @@ impl VirtualPackage {
 pub struct CheckResult {
     pub diagnostics: Vec<Diagnostic>,
     pub signatures: BTreeMap<String, String>,
+    pub file_paths: BTreeMap<FileId, PathBuf>,
 }
 
 impl CheckResult {
@@ -180,6 +181,7 @@ impl CheckResult {
         Self {
             diagnostics: vec![Diagnostic::unsupported(message)],
             signatures: BTreeMap::new(),
+            file_paths: BTreeMap::new(),
         }
     }
 }

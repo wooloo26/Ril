@@ -1,7 +1,7 @@
 #![forbid(unsafe_code)]
 
 use std::{
-    io::Write as _,
+    io::{IsTerminal as _, Write as _},
     path::{Path, PathBuf},
     process::{Command, ExitCode},
 };
@@ -31,6 +31,12 @@ enum IrFormat {
     Horn,
 }
 
+#[derive(Clone, Copy, ValueEnum)]
+enum MessageFormat {
+    Human,
+    Json,
+}
+
 #[derive(Subcommand)]
 enum Action {
     Check {
@@ -45,6 +51,8 @@ enum Action {
         opt_stack_promote: bool,
         #[arg(long, num_args = 0..=1, default_missing_value = ".ril-cache", value_name = "CACHE_DIR")]
         incremental: Option<PathBuf>,
+        #[arg(long, value_enum, default_value = "human")]
+        message_format: MessageFormat,
     },
     Build {
         path: PathBuf,
@@ -118,14 +126,32 @@ fn run(action: Action) -> Result<ExitCode, String> {
             emit_interface,
             opt_stack_promote,
             incremental,
+            message_format,
         } => {
             let compiler = compiler_for(opt_stack_promote, incremental);
             let package = load_package(&path, unit.unwrap_or_else(|| infer_unit(&path)))?;
             let checked = compiler.check(&package, stage);
+            let use_color = std::io::stderr().is_terminal();
             for diagnostic in &checked.result.diagnostics {
-                diagnostic
-                    .render(&checked.sources, std::io::stderr().lock())
-                    .map_err(|err| err.to_string())?;
+                match message_format {
+                    MessageFormat::Human => {
+                        diagnostic
+                            .render_with_color(
+                                &checked.sources,
+                                use_color,
+                                std::io::stderr().lock(),
+                            )
+                            .map_err(|err| err.to_string())?;
+                    }
+                    MessageFormat::Json => {
+                        writeln!(
+                            std::io::stderr().lock(),
+                            "{}",
+                            diagnostic.to_json_line(&checked.sources)
+                        )
+                        .map_err(|err| err.to_string())?;
+                    }
+                }
             }
             if !checked.result.diagnostics.is_empty() {
                 return Ok(ExitCode::FAILURE);

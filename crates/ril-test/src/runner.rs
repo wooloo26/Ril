@@ -125,7 +125,7 @@ fn check(case: &Case, result: &CheckResult) -> Result<(), String> {
         let output = diagnostics
             .iter()
             .map(|diag| {
-                if let Some(line) = diagnostic_line(&case.pkg, diag) {
+                if let Some(line) = diagnostic_line(&case.pkg, result, diag) {
                     format!("suite line {line}: {diag}")
                 } else {
                     diag.to_string()
@@ -160,7 +160,7 @@ fn check(case: &Case, result: &CheckResult) -> Result<(), String> {
     for &(line, code) in &case.markers {
         if !diagnostics
             .iter()
-            .any(|d| d.code == Some(code) && diagnostic_line(&case.pkg, d) == Some(line))
+            .any(|d| d.code == Some(code) && diagnostic_line(&case.pkg, result, d) == Some(line))
         {
             return Err(fail(format!("expected {code} at suite line {line}")));
         }
@@ -176,11 +176,20 @@ fn check(case: &Case, result: &CheckResult) -> Result<(), String> {
     Ok(())
 }
 
-// The driver assigns FileIds in virtual path order even when a file fails UTF-8 validation.
-fn diagnostic_line(pkg: &VirtualPackage, diagnostic: &Diagnostic) -> Option<usize> {
+fn diagnostic_line(
+    pkg: &VirtualPackage,
+    result: &CheckResult,
+    diagnostic: &Diagnostic,
+) -> Option<usize> {
     let span = diagnostic.primary?;
-    let FileId(index) = span.file;
-    let (_, file) = pkg.files.iter().nth(index)?;
+    let file = result
+        .file_paths
+        .get(&span.file)
+        .and_then(|path| pkg.files.get(path))
+        .or_else(|| {
+            let FileId(index) = span.file;
+            pkg.files.iter().nth(index).map(|(_, file)| file)
+        })?;
     let line = if let Ok(source) = SourceFile::from_bytes(span.file, pkg.entry.clone(), &file.bytes)
     {
         source.location(span.start)?.line

@@ -3918,10 +3918,10 @@ impl<'a> Analyzer<'a> {
             ledger.merge(&entry, &breaks);
             return;
         }
-        self.diagnostics.push(Diagnostic {
-            primary: Some(owner),
-            ..Diagnostic::unsupported("could not stabilize loop provenance")
-        });
+        self.diagnostics.push(Diagnostic::unsupported_at(
+            owner,
+            "could not stabilize loop provenance",
+        ));
     }
 
     fn iterable_extent(&self, ctx: &Context, id: ExprId) -> LoopExtent {
