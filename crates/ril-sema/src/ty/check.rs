@@ -110,7 +110,7 @@ pub(super) fn check(hir: Program, budget: Option<u64>) -> Result<TypedProgram, V
         receptions,
         ..
     } = ck;
-    let program = TypedProgram {
+    let mut program = TypedProgram {
         hir,
         types,
         type_arguments,
@@ -137,8 +137,10 @@ pub(super) fn check(hir: Program, budget: Option<u64>) -> Result<TypedProgram, V
         subset_tags,
         tuple_payloads,
         receptions,
+        thir: crate::thir::ThirProgram::default(),
     };
     program.validate_specializations()?;
+    program.thir = crate::thir::ThirProgram::build(&program);
     Ok(program)
 }
 

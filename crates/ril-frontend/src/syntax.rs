@@ -104,6 +104,10 @@ impl Ast {
         self.patterns.iter()
     }
 
+    pub fn types_iter(&self) -> impl Iterator<Item = &Spanned<Type>> {
+        self.types.iter()
+    }
+
     pub fn slice_parts<'a>(
         &self,
         items: &'a [PatternId],

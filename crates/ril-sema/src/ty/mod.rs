@@ -269,9 +269,14 @@ pub struct TypedProgram {
     pub(crate) operation_effects: HashMap<Span, String>,
     pub(crate) operation_instances: HashMap<Span, effects::Instance>,
     pub(crate) effect_applications: HashMap<Span, Vec<String>>,
+    pub thir: crate::thir::ThirProgram,
 }
 
 impl TypedProgram {
+    pub fn inspection_scope(&self, span: Span) -> Option<ScopeId> {
+        self.inspection_scopes.get(&span).copied()
+    }
+
     pub(crate) fn nominal_layout(&self, adt: &Adt) -> Option<Ty> {
         let layout = self.nominal_layouts.get(&adt.definition)?;
         let definition = self.hir.definition(adt.definition);
