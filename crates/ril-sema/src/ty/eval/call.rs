@@ -154,6 +154,35 @@ impl Checker<'_> {
                     }
                 }
                 DefinitionKind::Function => {
+                    if self.hir.is_stdlib_file(def.name.span.file)
+                        && self.hir.primitive_module(id) == Some("Array")
+                        && matches!(name, "filter" | "map")
+                    {
+                        let [array, callback] = args else {
+                            return Err(nonstatic(span));
+                        };
+                        let Value::Array(items) = self.evaluate(env, slots, array.value, fuel)?
+                        else {
+                            return Err(nonstatic(span));
+                        };
+                        let mut result = Vec::new();
+                        for item in items {
+                            let answer = self.eval_closure(
+                                env,
+                                slots,
+                                callback.value,
+                                vec![item.clone()],
+                                span,
+                                fuel,
+                            )?;
+                            if name == "map" {
+                                result.push(answer);
+                            } else if answer == Value::Bool(true) {
+                                result.push(item);
+                            }
+                        }
+                        return Ok(Value::Array(result));
+                    }
                     let args = self.eval_args(env, slots, args, fuel)?;
                     self.eval_function(env, id, args, span, fuel)
                 }
@@ -245,7 +274,7 @@ impl Checker<'_> {
         let StmtKind::Function(fun) = &ast.stmt(stmt).value.kind else {
             return Err(nonstatic(span));
         };
-        if !fun.is_meta {
+        if !fun.is_meta && !self.hir.is_stdlib_file(def.name.span.file) {
             return Err(Signal::Error(
                 Code::E0810,
                 span,

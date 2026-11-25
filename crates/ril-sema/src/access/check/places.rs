@@ -43,18 +43,23 @@ impl<'a> Analyzer<'a> {
         value: &mut Datum,
         span: Span,
     ) {
-        if ledger.holds.iter().any(|(_, held)| {
+        if let Some(hold_span) = ledger.holds.iter().find_map(|(_, held)| {
             let held = ledger.loop_snapshot(held);
-            value
-                .roots
-                .iter()
-                .any(|moving| held.origins().any(|active| moving.overlaps(active)))
+            value.roots.iter().find_map(|moving| {
+                held.origins()
+                    .find(|active| moving.overlaps(active))
+                    .map(|active| active.region.source)
+            })
         }) {
-            self.error(
+            let mut diag = Diagnostic::error(
                 Code::E0535,
                 span,
                 "new handoff overlaps an active handler hold",
             );
+            if hold_span != span {
+                diag = diag.with_label(hold_span, "active handler hold originated here");
+            }
+            self.error_diag(diag);
             return;
         }
         if ledger
@@ -79,20 +84,25 @@ impl<'a> Analyzer<'a> {
             );
             return;
         }
-        if ledger.slots.values().any(|slot| {
-            slot.mode == Mode::Shared
+        if let Some(shared_decl) = ledger.slots.values().find_map(|slot| {
+            (slot.mode == Mode::Shared
                 && value.roots.iter().any(|root| {
                     ledger
                         .loop_snapshot(&slot.value)
                         .origins()
                         .any(|retained| root.overlaps(retained))
-                })
+                }))
+            .then_some(slot.decl)
         }) {
-            self.error(
+            let mut diag = Diagnostic::error(
                 Code::E0548,
                 span,
                 "new handoff has an independently retained shared writer",
             );
+            if shared_decl != span {
+                diag = diag.with_label(shared_decl, "shared writer retained here");
+            }
+            self.error_diag(diag);
             return;
         }
         let dependencies: BTreeSet<_> = value
@@ -100,19 +110,28 @@ impl<'a> Analyzer<'a> {
             .iter()
             .flat_map(Origin::dependency_spans)
             .collect();
-        if value
+        if let Some(var_decl) = value
             .roots
             .iter()
             .flat_map(|origin| &origin.dependencies)
-            .any(|dependency| {
-                !dependency.prior_iteration
-                    && ledger
-                        .slots
-                        .get(&dependency.span)
-                        .is_some_and(|slot| slot.variable)
+            .find_map(|dependency| {
+                (!dependency.prior_iteration)
+                    .then(|| {
+                        ledger
+                            .slots
+                            .get(&dependency.span)
+                            .filter(|slot| slot.variable)
+                            .map(|slot| slot.decl)
+                    })
+                    .flatten()
             })
         {
-            self.error(Code::E0548, span, "reassignable slots cannot be handed off");
+            let mut diag =
+                Diagnostic::error(Code::E0548, span, "reassignable slots cannot be handed off");
+            if var_decl != span {
+                diag = diag.with_label(var_decl, "replaceable `var` slot declared here");
+            }
+            self.error_diag(diag);
             return;
         }
         if ctx.reachable {
@@ -183,15 +202,19 @@ impl<'a> Analyzer<'a> {
                     .map(|slot| (slot.decl, slot.mode, slot.variable))
             {
                 if !variable {
-                    self.error(
-                        if mode == Mode::Plain {
-                            Code::E0501
-                        } else {
-                            Code::E0502
-                        },
-                        node.span,
-                        "binding cannot be reassigned",
-                    );
+                    let code = if mode == Mode::Plain {
+                        Code::E0501
+                    } else {
+                        Code::E0502
+                    };
+                    let mut diag =
+                        Diagnostic::error(code, node.span, "binding cannot be reassigned");
+                    if decl != node.span {
+                        diag = diag.with_label(decl, "binding declared here without `var`");
+                    }
+                    diag = diag
+                        .with_help("declare the binding with `var` if the slot must be replaced");
+                    self.error_diag(diag);
                     return;
                 }
                 if self.references_scoped_resource(&value) {

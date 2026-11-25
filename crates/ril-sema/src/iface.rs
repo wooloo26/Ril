@@ -70,7 +70,10 @@ impl Interface {
         let mut functions = BTreeMap::new();
         for (&id, callable) in &program.callables {
             let def = program.hir.definition(id);
-            if def.kind != DefinitionKind::Function || def.visibility == Visibility::Private {
+            if def.kind != DefinitionKind::Function
+                || def.visibility == Visibility::Private
+                || program.hir.is_stdlib_file(def.name.span.file)
+            {
                 continue;
             }
             let Some(stmt) = def.stmt else {
@@ -126,7 +129,9 @@ impl Interface {
             .hir
             .definitions()
             .filter_map(|(id, def)| {
-                if def.visibility == Visibility::Private {
+                if def.visibility == Visibility::Private
+                    || program.hir.is_stdlib_file(def.name.span.file)
+                {
                     return None;
                 }
                 let stmt = def.stmt?;

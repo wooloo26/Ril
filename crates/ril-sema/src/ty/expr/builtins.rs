@@ -264,8 +264,7 @@ impl Checker<'_> {
             | "panic_message" => Some(1..=1),
             "Some" | "Ok" | "Err" => Some(0..=1),
             "assert" => Some(1..=2),
-            "has_default" | "contains" | "push" | "filter" | "map" | "checked_div"
-            | "checked_rem" | "derive" => Some(2..=2),
+            "has_default" | "contains" | "push" | "derive" => Some(2..=2),
             _ => None,
         };
         if arity.is_some_and(|range| !range.contains(&args.len())) {
@@ -377,12 +376,6 @@ impl Checker<'_> {
                 self.require(env, span, &first, &Ty::F64);
                 Ty::Option(Box::new(Ty::Int))
             }
-            "checked_div" | "checked_rem" => {
-                for ty in types {
-                    self.require(env, span, &ty, &Ty::Int);
-                }
-                Ty::Option(Box::new(Ty::Int))
-            }
             "coords" => {
                 let key = if let Ty::TypeValue(Some(ty)) = first {
                     match *ty {
@@ -449,17 +442,6 @@ impl Checker<'_> {
                     _ => self.error(Code::E0301, span, "Array::push requires an array"),
                 }
                 Ty::Unit
-            }
-            "filter" => first,
-            "map" => {
-                let ty = types
-                    .get(1)
-                    .and_then(|ty| match ty {
-                        Ty::Callable(sig) => Some(sig.result.clone()),
-                        _ => None,
-                    })
-                    .unwrap_or(Ty::Unknown);
-                Ty::Array(Box::new(Member::plain(ty)))
             }
             "derive" => first,
             "absorb_panic" => match first {

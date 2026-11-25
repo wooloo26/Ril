@@ -2,7 +2,7 @@ mod control;
 mod slice;
 
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     sync::Arc,
 };
 
@@ -51,6 +51,10 @@ pub(super) fn lower(typed: &TypedProgram, analysis: &Analysis) -> Result<Program
         typed,
         analysis,
         queued: Vec::new(),
+        named_index: HashMap::new(),
+        ctor_index: HashMap::new(),
+        closure_index: HashMap::new(),
+        top_level_fns: collect_top_level_functions(typed),
         boxed: captured_slots(typed),
     };
     let suspend_at_entry = typed
@@ -74,6 +78,33 @@ pub(super) fn lower(typed: &TypedProgram, analysis: &Analysis) -> Result<Program
     })
 }
 
+fn collect_top_level_functions(typed: &TypedProgram) -> HashSet<DefinitionId> {
+    fn walk_items(
+        typed: &TypedProgram,
+        ast: &Ast,
+        items: &[StmtId],
+        out: &mut HashSet<DefinitionId>,
+    ) {
+        for &stmt_id in items {
+            match &ast.stmt(stmt_id).value.kind {
+                StmtKind::Function(fun) => {
+                    if let Some(Resolution::Definition(id)) = typed.hir.resolve(fun.name.span) {
+                        out.insert(id);
+                    }
+                }
+                StmtKind::Sub { items, .. } => walk_items(typed, ast, items, out),
+                _ => {}
+            }
+        }
+    }
+
+    let mut out = HashSet::new();
+    for file in typed.hir.files() {
+        walk_items(typed, &file.ast, &file.ast.items, &mut out);
+    }
+    out
+}
+
 fn captured_slots(typed: &TypedProgram) -> BTreeSet<DefinitionId> {
     typed.thir.boxed_var_captures.clone()
 }
@@ -82,6 +113,10 @@ struct Lowering<'a> {
     typed: &'a TypedProgram,
     analysis: &'a Analysis,
     queued: Vec<Work>,
+    named_index: HashMap<DefinitionId, Vec<FunctionId>>,
+    ctor_index: HashMap<(DefinitionId, usize), FunctionId>,
+    closure_index: HashMap<(FileId, ExprId), Vec<FunctionId>>,
+    top_level_fns: HashSet<DefinitionId>,
     boxed: BTreeSet<DefinitionId>,
 }
 
@@ -105,12 +140,45 @@ enum Work {
 
 impl<'a> Lowering<'a> {
     fn queue(&mut self, work: Work) -> FunctionId {
-        if let Some(id) = self.queued.iter().position(|known| known == &work) {
-            return FunctionId(id);
+        match &work {
+            Work::Constructor(id, arity) => {
+                if let Some(&func) = self.ctor_index.get(&(*id, *arity)) {
+                    return func;
+                }
+                let function = FunctionId(self.queued.len());
+                self.ctor_index.insert((*id, *arity), function);
+                self.queued.push(work);
+                function
+            }
+            Work::Named(id, _, _, _) => {
+                let id = *id;
+                if let Some(bucket) = self.named_index.get(&id)
+                    && let Some(&func) = bucket
+                        .iter()
+                        .find(|&&f| self.queued.get(f.0) == Some(&work))
+                {
+                    return func;
+                }
+                let function = FunctionId(self.queued.len());
+                self.queued.push(work);
+                self.named_index.entry(id).or_default().push(function);
+                function
+            }
+            Work::Closure { file, syntax, .. } => {
+                let key = (*file, *syntax);
+                if let Some(bucket) = self.closure_index.get(&key)
+                    && let Some(&func) = bucket
+                        .iter()
+                        .find(|&&f| self.queued.get(f.0) == Some(&work))
+                {
+                    return func;
+                }
+                let function = FunctionId(self.queued.len());
+                self.queued.push(work);
+                self.closure_index.entry(key).or_default().push(function);
+                function
+            }
         }
-        let function = FunctionId(self.queued.len());
-        self.queued.push(work);
-        function
     }
 
     fn resolve(&self, span: Span) -> Option<DefinitionId> {
@@ -796,11 +864,13 @@ impl<'a> Builder<'_, 'a> {
                     self.cleanups.push(Cleanup {
                         action: match function {
                             CleanupAction::Function(function) => {
+                                let (types, statics) =
+                                    self.project_callee_env(function, node.span, BTreeMap::new());
                                 Clean::Function(self.global.queue(Work::Named(
                                     function,
-                                    BTreeMap::new(),
+                                    types,
                                     Vec::new(),
-                                    self.statics.clone(),
+                                    statics,
                                 )))
                             }
                             CleanupAction::CloseSender => Clean::Sender,
@@ -999,12 +1069,10 @@ impl<'a> Builder<'_, 'a> {
             DefinitionKind::Function if self.global.declaration(source).is_some() => {
                 let captures = self.named_captures(source);
                 let environment = self.environment(&captures);
-                let id = self.global.queue(Work::Named(
-                    source,
-                    BTreeMap::new(),
-                    captures,
-                    self.statics.clone(),
-                ));
+                let (types, statics) = self.project_callee_env(source, span, BTreeMap::new());
+                let id = self
+                    .global
+                    .queue(Work::Named(source, types, captures, statics));
                 let arity = self
                     .global
                     .declaration(source)
@@ -1153,14 +1221,9 @@ impl<'a> Builder<'_, 'a> {
             span,
         )?;
         if function.body.is_some() {
-            let mut types = self.types.clone();
-            if let Some(arguments) = self.global.typed.type_arguments.get(&span) {
-                types.extend(arguments.iter().map(|(&id, ty)| (id, self.concrete(ty))));
-            }
+            let (types, statics) = self.project_callee_env(id, span, metadata);
             let captures = self.named_captures(id);
             let environment = (!captures.is_empty()).then(|| self.environment(&captures));
-            let mut statics = self.statics.clone();
-            statics.extend(metadata);
             let function = self.global.queue(Work::Named(id, types, captures, statics));
             let target = environment.map_or(Target::Function(function), |environment| {
                 Target::FunctionWithEnv {
@@ -1172,6 +1235,38 @@ impl<'a> Builder<'_, 'a> {
         } else {
             Ok(self.invoke(Target::Foreign(self.global.foreign(id)?), values, false))
         }
+    }
+
+    fn project_callee_env(
+        &self,
+        id: DefinitionId,
+        call_span: Span,
+        extra_statics: BTreeMap<DefinitionId, Value>,
+    ) -> (BTreeMap<DefinitionId, Ty>, BTreeMap<DefinitionId, Value>) {
+        // Top-level and `sub`-level functions have no enclosing function scope, so
+        // they depend solely on their own generic and meta arguments — never the
+        // caller's unrelated `self.types`/`self.statics`. Local functions and `where`
+        // helpers retain enclosing bindings.
+        let is_top_level = self.global.top_level_fns.contains(&id);
+        let mut types = if is_top_level {
+            BTreeMap::new()
+        } else {
+            self.types.clone()
+        };
+        if let Some(arguments) = self.global.typed.type_arguments.get(&call_span) {
+            types.extend(
+                arguments
+                    .iter()
+                    .map(|(&param, ty)| (param, self.concrete(ty))),
+            );
+        }
+        let mut statics = if is_top_level {
+            BTreeMap::new()
+        } else {
+            self.statics.clone()
+        };
+        statics.extend(extra_statics);
+        (types, statics)
     }
 
     fn named_captures(&self, id: DefinitionId) -> Vec<DefinitionId> {
@@ -1541,8 +1636,6 @@ impl<'a> Builder<'_, 'a> {
             "to_f64" => "ril_rt_to_f64",
             "to_int" | "convert" => "ril_rt_to_int",
             "trunc" => "ril_rt_trunc",
-            "checked_div" => "ril_rt_checked_div",
-            "checked_rem" => "ril_rt_checked_rem",
             "clone" => "ril_rt_clone",
             "push" => "ril_rt_append",
             "panic_message" => "ril_rt_panic_message",

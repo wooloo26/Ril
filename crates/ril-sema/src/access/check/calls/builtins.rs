@@ -203,22 +203,39 @@ impl Analyzer<'_> {
                             || origin.mode != Access::Immutable
                                 && !origin.dependency_spans().any(|id| moved.contains(&id))
                         {
-                            self.error(
+                            let target_span = argument.unwrap_or(span);
+                            let mut diag = Diagnostic::error(
                                 Code::E0601,
-                                argument.unwrap_or(span),
+                                target_span,
                                 "fiber closure captures live or confined state",
                             );
+                            if origin.region.source != target_span {
+                                diag = diag.with_label(
+                                    origin.region.source,
+                                    "live or confined source originated here",
+                                );
+                            }
+                            diag = diag.with_help(
+                                "hand off a `new` value or pass an immutable snapshot across the fiber boundary",
+                            );
+                            self.error_diag(diag);
                         }
                     }
                     for &decl in &moved {
                         if let Some(slot) = ledger.slots.get(&decl)
                             && slot.variable
                         {
-                            self.error(
+                            let target_span = argument.unwrap_or(span);
+                            let mut diag = Diagnostic::error(
                                 Code::E0601,
-                                argument.unwrap_or(span),
+                                target_span,
                                 "fiber closure captures a replaceable slot",
                             );
+                            if slot.decl != target_span {
+                                diag = diag
+                                    .with_label(slot.decl, "replaceable `var` slot declared here");
+                            }
+                            self.error_diag(diag);
                         } else {
                             ledger.revoke(decl.into(), None, None);
                         }

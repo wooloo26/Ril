@@ -128,8 +128,6 @@ runtime_functions! {
     }
     fn ril_rt_to_int(rt, value: Value) -> Value { float_to_int(rt, value, false) }
     fn ril_rt_trunc(rt, value: Value) -> Value { float_to_int(rt, value, true) }
-    fn ril_rt_checked_div(rt, a: Value, b: Value) -> Value { checked_div(rt, "/", a, b) }
-    fn ril_rt_checked_rem(rt, a: Value, b: Value) -> Value { checked_div(rt, "%", a, b) }
     fn ril_rt_print(rt, value: Value) -> Value { print(rt, value, false) }
     fn ril_rt_println(rt, value: Value) -> Value { print(rt, value, true) }
     fn ril_rt_panic(rt, message: Value) -> Value {
@@ -396,13 +394,6 @@ fn float_to_int(rt: &mut Runtime, value: Value, rounded: bool) -> Value {
         rt.gc.alloc(Object::Tag("Some".into(), vec![payload]))
     } else {
         rt.gc.alloc(Object::Tag("None".into(), Vec::new()))
-    }
-}
-
-fn checked_div(rt: &mut Runtime, op: &str, a: Value, b: Value) -> Value {
-    match rt.gc.binary(op, a, b) {
-        Ok(value) => rt.gc.alloc(Object::Tag("Some".into(), vec![value])),
-        Err(_) => rt.gc.alloc(Object::Tag("None".into(), Vec::new())),
     }
 }
 

@@ -335,9 +335,14 @@ impl Checker<'_> {
                     return self.nominal_constructor(env, ty, args, span);
                 }
                 DefinitionKind::Function => {
+                    let is_stdlib = self.hir.is_stdlib_file(def.name.span.file);
                     pending_meta =
                         self.is_meta_fn(id) && env.phase == Phase::Runtime && !env.shadow;
-                    if !env.shadow && !self.is_meta_fn(id) && env.phase != Phase::Runtime {
+                    if !env.shadow
+                        && !self.is_meta_fn(id)
+                        && !is_stdlib
+                        && env.phase != Phase::Runtime
+                    {
                         self.error(
                             Code::E0810,
                             callee.span,

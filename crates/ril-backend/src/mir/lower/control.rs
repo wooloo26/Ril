@@ -944,12 +944,8 @@ impl Builder<'_, '_> {
         }
         let captures = self.named_captures(id);
         let environment = (!captures.is_empty()).then(|| self.environment(&captures));
-        let function = self.global.queue(Work::Named(
-            id,
-            Default::default(),
-            captures,
-            self.statics.clone(),
-        ));
+        let (types, statics) = self.project_callee_env(id, node.span, Default::default());
+        let function = self.global.queue(Work::Named(id, types, captures, statics));
         let target = environment.map_or(Target::Function(function), |environment| {
             Target::FunctionWithEnv {
                 function,

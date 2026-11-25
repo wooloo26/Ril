@@ -335,10 +335,17 @@ impl Checker<'_> {
                     _ => None,
                 }
                 .unwrap_or(Ty::Unknown);
-                let mut base = label.clone();
+                let mut base = self.normalize(&label);
+                let mut optional = false;
                 for (safe, coordinate) in segments {
-                    base = if *safe && let Ty::Option(inner) = base {
-                        Ty::Option(Box::new(self.project(env, coordinate, &inner, span, false)))
+                    optional |= *safe;
+                    base = if optional && let Ty::Option(inner) = base {
+                        let next = self.project(env, coordinate, &inner, span, false);
+                        if *safe && matches!(next, Ty::Option(_)) {
+                            next
+                        } else {
+                            Ty::Option(Box::new(next))
+                        }
                     } else {
                         self.project(env, coordinate, &base, span, false)
                     };

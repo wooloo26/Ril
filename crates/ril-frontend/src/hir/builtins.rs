@@ -19,6 +19,51 @@ pub(super) enum TypeRegistration {
     Sum(BuiltinSum),
 }
 
+pub(super) fn self_hosted_modules() -> &'static [(&'static str, File)] {
+    static MODULES: OnceLock<Vec<(&'static str, File)>> = OnceLock::new();
+    MODULES.get_or_init(|| {
+        const SOURCES: &[(&str, &str, &str)] = &[
+            (
+                "Numeric",
+                "ril/std/numeric.ril",
+                include_str!("standard/numeric.ril"),
+            ),
+            (
+                "Array",
+                "ril/std/array.ril",
+                include_str!("standard/array.ril"),
+            ),
+            (
+                "String",
+                "ril/std/string.ril",
+                include_str!("standard/string.ril"),
+            ),
+            (
+                "Bytes",
+                "ril/std/bytes.ril",
+                include_str!("standard/bytes.ril"),
+            ),
+        ];
+        SOURCES
+            .iter()
+            .map(|&(module_name, path_str, text)| {
+                let path = Path::new(path_str);
+                let id = FileId::from_path(path);
+                let source = SourceFile::from_bytes(id, path.into(), text.as_bytes())
+                    .unwrap_or_else(|error| ril_base::ice!("invalid stdlib source: {error:?}"));
+                let tokens = lexer::lex(&source)
+                    .unwrap_or_else(|error| ril_base::ice!("invalid stdlib tokens: {error:?}"));
+                let ast = parser::parse(&source, &tokens, FileKind::Module)
+                    .unwrap_or_else(|error| ril_base::ice!("invalid stdlib AST: {error:?}"));
+                (
+                    module_name,
+                    File::new(source, FileKind::Module, ast, tokens),
+                )
+            })
+            .collect()
+    })
+}
+
 pub(super) fn module(path: &Path) -> Option<&'static str> {
     match path.to_str()? {
         "ril/prelude.ril" => Some("Prelude"),

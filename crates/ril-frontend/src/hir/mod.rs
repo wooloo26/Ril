@@ -252,11 +252,16 @@ pub struct Program {
     effect_spreads: BTreeMap<DefinitionId, BTreeSet<DefinitionId>>,
     pending_operations: Vec<effects::PendingOperation>,
     builtin_sums: BTreeMap<BuiltinSum, DefinitionId>,
+    stdlib_files: BTreeSet<FileId>,
     pub entry: FileId,
     prelude: ScopeId,
 }
 
 impl Program {
+    pub fn is_stdlib_file(&self, file: FileId) -> bool {
+        self.stdlib_files.contains(&file)
+    }
+
     pub fn file(&self, id: FileId) -> &File {
         self.files
             .get(&id.0)
@@ -695,6 +700,7 @@ pub fn lower(files: Vec<File>, entry: FileId) -> Result<Program, Vec<Diagnostic>
         effect_spreads: BTreeMap::new(),
         pending_operations: Vec::new(),
         builtin_sums: BTreeMap::new(),
+        stdlib_files: BTreeSet::new(),
         entry,
         prelude: ScopeId(0),
     };
@@ -744,6 +750,7 @@ pub fn lower(files: Vec<File>, entry: FileId) -> Result<Program, Vec<Diagnostic>
             program.validate_main(root, &mut errors);
         }
     }
+    program.attach_self_hosted_stdlib(&mut imports, &mut errors);
     program.load_imports(imports, &mut errors);
     if errors.is_empty() {
         walk::check(&mut program, &mut errors);
@@ -1112,10 +1119,7 @@ impl Program {
                 "",
                 "Array",
                 Both,
-                &[
-                    "get", "at", "push", "pop", "insert", "remove", "filter", "map", "contains",
-                    "sort", "clear", "len",
-                ],
+                &["push", "pop", "insert", "remove", "sort", "clear", "len"],
             ),
             (
                 "",
@@ -1134,7 +1138,6 @@ impl Program {
                     "inspect",
                     "len",
                     "bytes",
-                    "from_bytes",
                     "join",
                     "split",
                     "starts_with",
@@ -1146,24 +1149,12 @@ impl Program {
                     "decode_utf8",
                 ],
             ),
-            (
-                "",
-                "Bytes",
-                Both,
-                &["len", "from_str", "at", "to_array", "from_array"],
-            ),
+            ("", "Bytes", Both, &["len", "at", "to_array", "from_array"]),
             (
                 "",
                 "Numeric",
                 Both,
-                &[
-                    "to_int",
-                    "to_f64",
-                    "convert",
-                    "trunc",
-                    "checked_div",
-                    "checked_rem",
-                ],
+                &["to_int", "to_f64", "convert", "trunc"],
             ),
             (
                 "",
@@ -1327,6 +1318,30 @@ impl Program {
                     visibility: Visibility::Public,
                 },
             );
+        }
+    }
+
+    fn attach_self_hosted_stdlib(
+        &mut self,
+        imports: &mut Vec<(ScopeId, StmtId)>,
+        errors: &mut Vec<Diagnostic>,
+    ) {
+        for (module_name, template) in builtins::self_hosted_modules() {
+            let Some(Entry {
+                target: Target::Module(scope),
+                ..
+            }) = self.scope(self.prelude).names.get(*module_name).copied()
+            else {
+                continue;
+            };
+            let file = template.clone();
+            let id = file.id;
+            let items = file.ast.items.clone();
+            self.stdlib_files.insert(id);
+            self.files.insert(id.0, file);
+            self.scope_mut(scope).file = id;
+            self.roots.insert(id.0, scope);
+            self.collect(scope, &items, imports, errors);
         }
     }
 

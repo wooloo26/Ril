@@ -1,5 +1,5 @@
 use num_bigint::BigInt;
-use num_traits::{FromPrimitive, Signed, ToPrimitive, Zero};
+use num_traits::{FromPrimitive, Signed, ToPrimitive};
 use ril_base::{diag::Code, span::Span};
 use ril_frontend::{
     hir::{DefinitionId, TextBuiltin},
@@ -187,20 +187,6 @@ impl Checker<'_> {
                     || Value::Tag("None".into(), Vec::new()),
                     |value| Value::Tag("Some".into(), vec![Value::Int(value)]),
                 ))
-            }
-            ("checked_div" | "checked_rem", [Value::Int(a), Value::Int(b)]) => {
-                if b.is_zero() {
-                    Ok(Value::Tag("None".into(), Vec::new()))
-                } else {
-                    Ok(Value::Tag(
-                        "Some".into(),
-                        vec![Value::Int(if name == "checked_div" {
-                            a / b
-                        } else {
-                            a % b
-                        })],
-                    ))
-                }
             }
             _ => Err(nonstatic(span)),
         }

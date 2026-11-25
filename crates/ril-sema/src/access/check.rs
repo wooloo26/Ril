@@ -478,13 +478,16 @@ impl<'a> Analyzer<'a> {
     }
 
     fn error(&mut self, code: Code, span: Span, message: impl Into<String>) {
+        self.error_diag(Diagnostic::error(code, span, message));
+    }
+
+    fn error_diag(&mut self, diagnostic: Diagnostic) {
         if !self
             .diagnostics
             .iter()
-            .any(|diag| diag.code == Some(code) && diag.primary == Some(span))
+            .any(|diag| diag.code == diagnostic.code && diag.primary == diagnostic.primary)
         {
-            self.diagnostics
-                .push(Diagnostic::error(code, span, message));
+            self.diagnostics.push(diagnostic);
         }
     }
 
