@@ -8,140 +8,206 @@ use ril_source::{
 use ril_syntax::{
     lexer,
     parser::{self, FileKind},
-    syntax::{Ast, Expr, Function, GenericParam, Mode, StmtKind, Type, TypeDecl, TypeId},
+    syntax::{Function, GenericParam, StmtKind, TypeDecl},
 };
 
-use super::{BuiltinSum, File, PrimitivePhase};
+use super::{File, PrimitivePhase, StdType};
 
 pub(super) enum TypeRegistration {
     Object,
-    Alias,
-    Sum(BuiltinSum),
+    Regular,
 }
 
-pub(super) fn self_hosted_modules() -> &'static [(&'static str, Option<&'static str>, File)] {
-    static MODULES: OnceLock<Vec<(&'static str, Option<&'static str>, File)>> = OnceLock::new();
+pub(super) struct StdModule {
+    pub(super) module_name: &'static str,
+    pub(super) import_key: &'static str,
+    pub(super) file: File,
+}
+
+fn parse_embedded(path_str: &str, text: &str) -> File {
+    let path = Path::new(path_str);
+    let id = FileId::from_path(path);
+    let source = SourceFile::from_bytes(id, path.into(), text.as_bytes())
+        .unwrap_or_else(|error| ril_source::ice!("invalid stdlib source {path_str}: {error:?}"));
+    let tokens = lexer::lex(&source)
+        .unwrap_or_else(|error| ril_source::ice!("invalid stdlib tokens {path_str}: {error:?}"));
+    let ast = parser::parse(&source, &tokens, FileKind::Module)
+        .unwrap_or_else(|error| ril_source::ice!("invalid stdlib AST in {path_str}: {error:?}"));
+    File::new(source, FileKind::Module, ast, tokens)
+}
+
+pub(super) fn stdlib_modules() -> &'static [StdModule] {
+    static MODULES: OnceLock<Vec<StdModule>> = OnceLock::new();
     MODULES.get_or_init(|| {
-        // (module_name, optional `ril/<mod>` import path if not in prelude, virtual path, source)
-        const SOURCES: &[(&str, Option<&str>, &str, &str)] = &[
+        const SOURCES: &[(&str, &str, &str, &str)] = &[
+            (
+                "Prelude",
+                "ril/prelude",
+                "ril/std/prelude.ril",
+                include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../std/prelude.ril")),
+            ),
             (
                 "Numeric",
-                None,
+                "ril/numeric",
                 "ril/std/numeric.ril",
-                include_str!(concat!(
-                    env!("CARGO_MANIFEST_DIR"),
-                    "/../../std/numeric.ril"
-                )),
+                include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../std/numeric.ril")),
             ),
             (
                 "Array",
-                None,
+                "ril/array",
                 "ril/std/array.ril",
                 include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../std/array.ril")),
             ),
             (
                 "Map",
-                None,
+                "ril/map",
                 "ril/std/map.ril",
                 include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../std/map.ril")),
             ),
             (
                 "Set",
-                None,
+                "ril/set",
                 "ril/std/set.ril",
                 include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../std/set.ril")),
             ),
             (
                 "String",
-                None,
+                "ril/string",
                 "ril/std/string.ril",
                 include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../std/string.ril")),
             ),
             (
                 "Bytes",
-                None,
+                "ril/bytes",
                 "ril/std/bytes.ril",
                 include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../std/bytes.ril")),
             ),
             (
+                "Reflect",
+                "ril/reflect",
+                "ril/std/reflect.ril",
+                include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../std/reflect.ril")),
+            ),
+            (
                 "Io",
-                Some("ril/io"),
+                "ril/io",
                 "ril/std/io.ril",
                 include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../std/io.ril")),
             ),
             (
                 "File",
-                Some("ril/file"),
+                "ril/file",
                 "ril/std/file.ril",
                 include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../std/file.ril")),
             ),
+            (
+                "Fiber",
+                "ril/fiber",
+                "ril/std/fiber.ril",
+                include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../std/fiber.ril")),
+            ),
+            (
+                "Channel",
+                "ril/channel",
+                "ril/std/channel.ril",
+                include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../std/channel.ril")),
+            ),
+            (
+                "Math",
+                "ril/math",
+                "ril/std/math.ril",
+                include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../std/math.ril")),
+            ),
+            (
+                "Os",
+                "ril/os",
+                "ril/std/os.ril",
+                include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../std/os.ril")),
+            ),
+            (
+                "Crypto",
+                "ril/crypto",
+                "ril/std/crypto.ril",
+                include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../std/crypto.ril")),
+            ),
         ];
-        SOURCES
+        let mut modules: Vec<StdModule> = SOURCES
             .iter()
-            .map(|&(module_name, import_path, path_str, text)| {
-                let path = Path::new(path_str);
-                let id = FileId::from_path(path);
-                let source = SourceFile::from_bytes(id, path.into(), text.as_bytes())
-                    .unwrap_or_else(|error| ril_source::ice!("invalid stdlib source: {error:?}"));
-                let tokens = lexer::lex(&source)
-                    .unwrap_or_else(|error| ril_source::ice!("invalid stdlib tokens: {error:?}"));
-                let ast =
-                    parser::parse(&source, &tokens, FileKind::Module).unwrap_or_else(|error| {
-                        ril_source::ice!("invalid stdlib AST in {path_str}: {error:?}")
-                    });
-                (
-                    module_name,
-                    import_path,
-                    File::new(source, FileKind::Module, ast, tokens),
-                )
+            .map(|&(module_name, import_key, path_str, text)| StdModule {
+                module_name,
+                import_key,
+                file: parse_embedded(path_str, text),
             })
-            .collect()
+            .collect();
+        let platform_src = format!(
+            "-- Target platform metadata constants.\n\npub meta let OS: str = {:?}\npub meta let ARCH: str = {:?}\npub meta let HAS_OPENAT: bool = {}\n",
+            std::env::consts::OS,
+            std::env::consts::ARCH,
+            cfg!(unix),
+        );
+        modules.push(StdModule {
+            module_name: "Platform",
+            import_key: "ril/platform",
+            file: parse_embedded("ril/std/platform.ril", &platform_src),
+        });
+        modules
     })
 }
 
 pub(super) fn module(path: &Path) -> Option<&'static str> {
     match path.to_str()? {
-        "ril/prelude.ril" => Some("Prelude"),
-        "ril/fiber.ril" => Some("Fiber"),
-        "ril/channel.ril" => Some("Channel"),
+        "ril/prelude.ril" | "ril/std/prelude.ril" => Some("Prelude"),
+        "ril/array.ril" | "ril/std/array.ril" => Some("Array"),
+        "ril/map.ril" | "ril/std/map.ril" => Some("Map"),
+        "ril/set.ril" | "ril/std/set.ril" => Some("Set"),
+        "ril/string.ril" | "ril/std/string.ril" => Some("String"),
+        "ril/bytes.ril" | "ril/std/bytes.ril" => Some("Bytes"),
+        "ril/numeric.ril" | "ril/std/numeric.ril" => Some("Numeric"),
+        "ril/reflect.ril" | "ril/std/reflect.ril" => Some("Reflect"),
+        "ril/io.ril" | "ril/std/io.ril" => Some("Io"),
+        "ril/file.ril" | "ril/std/file.ril" => Some("File"),
+        "ril/platform.ril" | "ril/std/platform.ril" => Some("Platform"),
+        "ril/fiber.ril" | "ril/std/fiber.ril" => Some("Fiber"),
+        "ril/channel.ril" | "ril/std/channel.ril" => Some("Channel"),
+        "ril/math.ril" | "ril/std/math.ril" => Some("Math"),
+        "ril/os.ril" | "ril/std/os.ril" => Some("Os"),
+        "ril/crypto.ril" | "ril/std/crypto.ril" => Some("Crypto"),
         _ => None,
     }
 }
 
-fn declarations(path: &Path) -> Option<&'static File> {
-    static PRELUDE: OnceLock<File> = OnceLock::new();
-    static FIBER: OnceLock<File> = OnceLock::new();
-    static CHANNEL: OnceLock<File> = OnceLock::new();
-    let (cache, text) = match module(path)? {
-        "Prelude" => (
-            &PRELUDE,
-            include_str!(concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/../../std/prelude.ril"
-            )),
-        ),
-        "Fiber" => (
-            &FIBER,
-            include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../std/fiber.ril")),
-        ),
-        "Channel" => (
-            &CHANNEL,
-            include_str!(concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/../../std/channel.ril"
-            )),
-        ),
-        _ => return None,
-    };
-    Some(cache.get_or_init(|| {
-        let source = SourceFile::from_bytes(FileId::BUILTIN, path.into(), text.as_bytes())
-            .unwrap_or_else(|error| ril_source::ice!("invalid registered source: {error:?}"));
-        let tokens = lexer::lex(&source)
-            .unwrap_or_else(|error| ril_source::ice!("invalid registered tokens: {error:?}"));
-        let ast = parser::parse(&source, &tokens, FileKind::Module)
-            .unwrap_or_else(|error| ril_source::ice!("invalid registered declaration: {error:?}"));
-        File::new(source, FileKind::Module, ast, tokens)
-    }))
+pub(super) fn std_type_for(module_name: &str, name: &str) -> Option<StdType> {
+    use StdType::*;
+    match (module_name, name) {
+        ("Prelude", "Option") => Some(Option),
+        ("Prelude", "Result") => Some(Result),
+        ("Prelude", "MemberMode") => Some(MemberMode),
+        ("Prelude", "PanicInfo") => Some(PanicInfo),
+        ("Prelude", "PanicError") => Some(PanicError),
+        ("Prelude", "Draft") => Some(Draft),
+        ("Set", "Set") => Some(Set),
+        ("Fiber", "Scope") => Some(Scope),
+        ("Fiber", "Task") => Some(Task),
+        ("Fiber", "TaskFault") => Some(TaskFault),
+        ("Fiber", "TimeoutError") => Some(TimeoutError),
+        ("Channel", "Sender") => Some(Sender),
+        ("Channel", "Receiver") => Some(Receiver),
+        ("Channel", "SendError") => Some(SendError),
+        ("Channel", "TrySendError") => Some(TrySendError),
+        ("Channel", "TryRecvError") => Some(TryRecvError),
+        _ => None,
+    }
+}
+
+fn is_embedded_std(path: &Path) -> bool {
+    path.to_str().is_some_and(|s| s.starts_with("ril/std/"))
+}
+
+fn registered_module_file(module_name: &str) -> Option<&'static File> {
+    stdlib_modules()
+        .iter()
+        .find(|m| m.module_name == module_name)
+        .map(|m| &m.file)
 }
 
 fn signature(
@@ -179,7 +245,22 @@ pub(super) fn registered_type(
     declaration: Span,
     actual: &TypeDecl,
 ) -> Option<Result<TypeRegistration, Diagnostic>> {
-    let registered = declarations(&file.path)?;
+    let module_name = module(&file.path)?;
+    let is_object = matches!(
+        (module_name, actual.name.value.as_str()),
+        ("Prelude", "Draft")
+            | ("Set", "Set")
+            | ("Fiber", "Scope" | "Task")
+            | ("Channel", "Sender" | "Receiver")
+    );
+    if is_embedded_std(&file.path) {
+        return Some(Ok(if is_object {
+            TypeRegistration::Object
+        } else {
+            TypeRegistration::Regular
+        }));
+    }
+    let registered = registered_module_file(module_name)?;
     let (node, expected) = registered.ast.items.iter().find_map(|&item| {
         let node = registered.ast.stmt(item);
         match &node.value.kind {
@@ -198,18 +279,11 @@ pub(super) fn registered_type(
     {
         return Some(Err(mismatch(actual.name.span)));
     }
-    use BuiltinSum::*;
-    let registration = match actual.name.value.as_str() {
-        "PanicError" => TypeRegistration::Sum(PanicError),
-        "TaskFault" => TypeRegistration::Sum(TaskFault),
-        "TimeoutError" => TypeRegistration::Sum(TimeoutError),
-        "SendError" => TypeRegistration::Sum(SendError),
-        "TrySendError" => TypeRegistration::Sum(TrySendError),
-        "TryRecvError" => TypeRegistration::Sum(TryRecvError),
-        "ChannelPair" | "Zip" => TypeRegistration::Alias,
-        _ => TypeRegistration::Object,
-    };
-    Some(Ok(registration))
+    Some(Ok(if is_object {
+        TypeRegistration::Object
+    } else {
+        TypeRegistration::Regular
+    }))
 }
 
 pub(super) fn bodyless(
@@ -217,123 +291,73 @@ pub(super) fn bodyless(
     declaration: Span,
     function: &Function,
 ) -> Result<PrimitivePhase, Diagnostic> {
-    use PrimitivePhase::{Both, Runtime};
-    let path = &file.path;
-    let ast = &file.ast;
-    if let Some(phase) = stdlib_intrinsic_phase(path, function.name.value.as_str()) {
-        return Ok(phase);
-    }
-    if let Some(registered) = declarations(path)
-        && let Some((node, expected)) = registered.ast.items.iter().find_map(|&item| {
-            let node = registered.ast.stmt(item);
-            match &node.value.kind {
-                StmtKind::Function(expected) if expected.name.value == function.name.value => {
-                    Some((node, expected))
-                }
-                _ => None,
-            }
-        })
-    {
-        return if !function.is_meta
-            && signature(file, function.name.span, declaration, &function.generics)
-                == signature(
-                    registered,
-                    expected.name.span,
-                    node.span,
-                    &expected.generics,
-                )
-        {
-            Ok(Runtime)
-        } else {
-            Err(mismatch(function.name.span))
-        };
-    }
-    let path_is_prelude = path == Path::new("ril/prelude.ril");
-    let name = function.name.value.as_str();
-    let sig = &function.signature;
-    let routine = match (path.to_str(), name, path_is_prelude) {
-        (_, "panic", true) => Some((Both, "never", &["str"][..], &[][..])),
-        (_, "assert", true) => Some((Both, "()", &["bool", "str"][..], &[][..])),
-        (_, "print" | "println", true) | (Some("ril/io.ril"), "print" | "println", _) => {
-            Some((Runtime, "()", &["str"][..], &["io"][..]))
-        }
-        (_, "len", true) => Some((Both, "int", &["T"][..], &[][..])),
-        (_, "panic_message", true) => Some((Runtime, "str", &["PanicInfo"][..], &[][..])),
-        (Some("ril/string.ril"), "inspect", _) => Some((Both, "str", &["T"][..], &[][..])),
-        _ => None,
-    };
-    let Some((phase, output, parameters, effects)) = routine else {
+    let Some(module_name) = module(&file.path) else {
         return Err(missing_body(function.name.span));
     };
-    let mut valid = sig.params.len() == parameters.len()
-        && sig.params.iter().zip(parameters).all(|(param, expected)| {
-            param
-                .ty
-                .is_some_and(|ty| simple_type(ast, ty) == Some(expected))
-                && !param.is_meta
-                && param.guards.is_empty()
-        })
-        && sig
-            .obligations
-            .effects
-            .iter()
-            .map(|path| {
-                path.segments
-                    .last()
-                    .map_or("", |segment| segment.name.value.as_str())
-            })
-            .eq(effects.iter().copied())
-        && sig.obligations.state.is_empty()
-        && !sig.obligations.open_effects
-        && !sig.obligations.open_state
-        && sig.result_mode == Mode::Plain
-        && sig.guards.is_empty()
-        && simple_type(ast, sig.result) == Some(output)
-        && !function.is_meta;
-    let via = name == "len";
-    valid &= sig
-        .params
-        .iter()
-        .all(|param| param.mode == if via { Mode::Via } else { Mode::Plain });
-    valid &= if matches!(name, "len" | "inspect") {
-        matches!(function.generics.as_slice(), [generic] if generic.name.value == "T" && generic.default.is_none()
-            && generic.bound.is_empty() && (name == "inspect" || matches!(generic.guards.as_slice(), [guard]
-                if guard.segments.last().is_some_and(|name| name.name.value == "LenTarget"))))
-    } else {
-        function.generics.is_empty()
+    let name = function.name.value.as_str();
+    let Some(phase) = stdlib_intrinsic_phase(module_name, name) else {
+        return Err(missing_body(function.name.span));
     };
-    valid &= if name == "assert" {
-        sig.params.get(1).and_then(|param| param.default).is_some_and(|default| {
-            matches!(&ast.expr(default).value, Expr::Literal(lit) if lit.text == "assertion failed")
-        })
-    } else {
-        sig.params.iter().all(|param| param.default.is_none())
+    if is_embedded_std(&file.path) {
+        return Ok(phase);
+    }
+    let Some(registered) = registered_module_file(module_name) else {
+        return Err(missing_body(function.name.span));
     };
-    if valid {
+    let Some((node, expected)) = registered.ast.items.iter().find_map(|&item| {
+        let node = registered.ast.stmt(item);
+        match &node.value.kind {
+            StmtKind::Function(expected) if expected.name.value == name => Some((node, expected)),
+            _ => None,
+        }
+    }) else {
+        return Err(missing_body(function.name.span));
+    };
+    if function.is_meta == expected.is_meta
+        && signature(file, function.name.span, declaration, &function.generics)
+            == signature(
+                registered,
+                expected.name.span,
+                node.span,
+                &expected.generics,
+            )
+    {
         Ok(phase)
     } else {
         Err(mismatch(function.name.span))
     }
 }
 
-fn stdlib_intrinsic_phase(path: &Path, name: &str) -> Option<PrimitivePhase> {
-    use PrimitivePhase::{Both, Runtime};
-    match (path.to_str()?, name) {
-        ("ril/std/array.ril", "push" | "pop" | "insert" | "remove" | "sort" | "clear" | "len")
+fn stdlib_intrinsic_phase(module_name: &str, name: &str) -> Option<PrimitivePhase> {
+    use PrimitivePhase::{Both, Runtime, Static};
+    match (module_name, name) {
+        ("Prelude", "len" | "inner" | "clone" | "derive" | "panic" | "assert") => Some(Both),
+        ("Prelude", "absorb_panic" | "panic_message" | "print" | "println") => Some(Runtime),
+        ("Prelude", "type_name" | "coords" | "variants") => Some(Static),
+        ("Reflect", "attrs" | "field_attrs" | "variant_attrs" | "has_default") => Some(Static),
+        ("Array", "push" | "pop" | "insert" | "remove" | "sort" | "clear" | "len")
+        | ("Map", "get" | "insert" | "remove" | "contains" | "clear" | "keys" | "values" | "len")
+        | ("Set", "insert" | "remove" | "contains" | "len")
         | (
-            "ril/std/map.ril",
-            "get" | "insert" | "remove" | "contains" | "clear" | "keys" | "values" | "len",
-        )
-        | ("ril/std/set.ril", "insert" | "remove" | "contains" | "len")
-        | (
-            "ril/std/string.ril",
+            "String",
             "raw_encode_utf8" | "raw_decode_utf8" | "inspect" | "len" | "join" | "split"
             | "starts_with" | "ends_with" | "at" | "scalars" | "from_scalars",
         )
-        | ("ril/std/bytes.ril", "len" | "at" | "to_array" | "from_array")
-        | ("ril/std/numeric.ril", "to_int" | "to_f64" | "convert" | "trunc") => Some(Both),
-        ("ril/std/io.ril", "print" | "println")
-        | ("ril/std/file.ril", "read" | "write" | "open" | "close") => Some(Runtime),
+        | ("Bytes", "len" | "at" | "to_array" | "from_array")
+        | ("Numeric", "to_f64" | "convert" | "trunc") => Some(Both),
+        ("Io", "print" | "println")
+        | ("File", "read" | "write")
+        | (
+            "Fiber",
+            "run" | "yield_now" | "sleep_ms" | "is_cancelled" | "uncancellable" | "timeout_ms"
+            | "scope" | "try_scope" | "supervise" | "spawn" | "join" | "cancel" | "cancel_scope"
+            | "zip" | "try_zip" | "map" | "try_map" | "race",
+        )
+        | (
+            "Channel",
+            "bounded" | "unbounded" | "clone" | "send" | "try_send" | "recv" | "try_recv" | "close"
+            | "close_recv" | "drain",
+        ) => Some(Runtime),
         _ => None,
     }
 }
@@ -348,15 +372,4 @@ fn mismatch(span: Span) -> Diagnostic {
         span,
         "declaration differs from the registered primitive signature",
     )
-}
-
-fn simple_type(ast: &Ast, id: TypeId) -> Option<&str> {
-    match &ast.ty(id).value {
-        Type::Unit => Some("()"),
-        Type::Named(path) => match path.segments.as_slice() {
-            [seg] if seg.arguments.is_empty() => Some(seg.name.value.as_str()),
-            _ => None,
-        },
-        _ => None,
-    }
 }

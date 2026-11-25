@@ -1,11 +1,11 @@
 use std::collections::{BTreeMap, HashSet};
 
-use ril_hir::{BuiltinPayload, BuiltinSum, DefinitionId};
+use ril_hir::DefinitionId;
 use ril_source::{diag::Code, span::Span};
 use ril_syntax::syntax::{self, StmtKind, TypeDefinition};
 
 use crate::ty::{
-    Adt, AdtKind, GenericValue, Ty,
+    Adt, AdtKind, Ty,
     check::{Checker, Env},
 };
 
@@ -30,11 +30,6 @@ impl<'a> Checker<'a> {
         }
         if actual.definition == target.definition {
             return actual.arguments == target.arguments;
-        }
-        if self.hir.builtin_sum(actual.definition) == Some(BuiltinSum::PanicError)
-            && self.hir.builtin_sum(target.definition) == Some(BuiltinSum::TaskFault)
-        {
-            return true;
         }
         if (target.kind == AdtKind::OpaqueSum && env.scope != target.defining_scope)
             || !active.insert(target.definition)
@@ -84,23 +79,6 @@ impl<'a> Checker<'a> {
         active: &mut HashSet<DefinitionId>,
         at: Span,
     ) -> BTreeMap<String, Option<Vec<Ty>>> {
-        if let Some(kind) = self.hir.builtin_sum(adt.definition) {
-            return kind
-                .variants()
-                .iter()
-                .map(|&(tag, payload)| {
-                    let shape = match payload {
-                        BuiltinPayload::UnitTag => None,
-                        BuiltinPayload::PanicInfo => Some(vec![Ty::PanicInfo]),
-                        BuiltinPayload::Element => Some(vec![match adt.arguments.first() {
-                            Some(GenericValue::Type(element)) => element.clone(),
-                            _ => Ty::Unknown,
-                        }]),
-                    };
-                    (tag.into(), shape)
-                })
-                .collect();
-        }
         if !active.insert(adt.definition) {
             self.error(Code::E0313, at, "cyclic sum spread");
             return BTreeMap::new();

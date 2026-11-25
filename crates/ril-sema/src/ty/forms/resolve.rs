@@ -3,7 +3,7 @@ use std::{
     sync::Arc,
 };
 
-use ril_hir::{BuiltinSum, DefinitionId, DefinitionKind};
+use ril_hir::{DefinitionId, DefinitionKind, StdType};
 use ril_source::{diag::Code, span::Span};
 use ril_syntax::{
     lexer::{Word, word_kind},
@@ -253,72 +253,52 @@ impl Checker<'_> {
             _ => {}
         }
         let resolved = self.resolve(path.span);
-        if let Some(kind) = resolved.and_then(|id| self.hir.builtin_sum(id)) {
-            if last.arguments.len() != usize::from(kind.has_parameter()) {
-                self.error(Code::E0340, path.span, "incorrect number of type arguments");
-            }
-            let element = last
-                .arguments
-                .first()
-                .map(|arg| self.type_argument(env, arg));
-            return self.builtin_sum_type(kind, element);
-        }
-        if let Some(def) = resolved
-            && matches!(self.hir.primitive_module(def), Some("Fiber" | "Channel"))
-            && matches!(self.hir.definition(def).kind, DefinitionKind::Primitive(_))
-        {
-            if last.name.value == "Scope" {
-                return Ty::Scope;
-            }
-            let parameter = last
-                .arguments
-                .first()
-                .map(|arg| self.type_argument(env, arg))
-                .unwrap_or(Ty::Unknown);
-            return match last.name.value.as_str() {
-                "Task" => Ty::Task(Box::new(parameter)),
-                "Sender" => Ty::Sender(Box::new(parameter)),
-                "Receiver" => Ty::Receiver(Box::new(parameter)),
-                "ChannelPair" => crate::ty::concurrency::channel_pair(parameter),
-                _ => Ty::Unknown,
-            };
-        }
-        if path.segments.len() == 1
-            && resolved.is_none_or(|id| {
-                matches!(self.hir.definition(id).kind, DefinitionKind::Primitive(_))
-            })
-        {
+        if let Some(id) = resolved {
+            let std_ty = self.hir.std_type(id);
+            let is_type_prim = matches!(self.hir.definition(id).kind, DefinitionKind::Primitive(_))
+                && last.name.value == "Type";
             let mut args = last.arguments.iter();
             let mut ty_arg = || {
                 args.next()
                     .map(|arg| self.type_argument(env, arg))
                     .unwrap_or(Ty::Unknown)
             };
-            match last.name.value.as_str() {
-                "PanicInfo" => return Ty::PanicInfo,
-                "Option" => return Ty::Option(Box::new(ty_arg())),
-                "Result" => {
-                    let ok = ty_arg();
-                    let err = ty_arg();
-                    return Ty::Result(Box::new(ok), Box::new(err));
-                }
-                "Set" => {
-                    let key = ty_arg();
-                    if !self.eligible_key(env, &key, &mut HashSet::new()) {
-                        self.error(
-                            Code::E0328,
-                            path.span,
-                            "set element type does not support stable equality",
-                        );
+            if let Some(std_ty) = std_ty {
+                match std_ty {
+                    StdType::Option => return Ty::Option(Box::new(ty_arg())),
+                    StdType::Result => {
+                        let ok = ty_arg();
+                        let err = ty_arg();
+                        return Ty::Result(Box::new(ok), Box::new(err));
                     }
-                    return Ty::Set(Box::new(key));
+                    StdType::Set => {
+                        let key = ty_arg();
+                        if !self.eligible_key(env, &key, &mut HashSet::new()) {
+                            self.error(
+                                Code::E0328,
+                                path.span,
+                                "set element type does not support stable equality",
+                            );
+                        }
+                        return Ty::Set(Box::new(key));
+                    }
+                    StdType::Draft => return Ty::Draft(Box::new(ty_arg())),
+                    StdType::MemberMode => return Ty::Mode,
+                    StdType::Scope => return Ty::Scope,
+                    StdType::Task => return Ty::Task(Box::new(ty_arg())),
+                    StdType::Sender => return Ty::Sender(Box::new(ty_arg())),
+                    StdType::Receiver => return Ty::Receiver(Box::new(ty_arg())),
+                    StdType::PanicInfo
+                    | StdType::PanicError
+                    | StdType::TaskFault
+                    | StdType::TimeoutError
+                    | StdType::SendError
+                    | StdType::TrySendError
+                    | StdType::TryRecvError => {}
                 }
-                "Type" => {
-                    return Ty::TypeValue((!last.arguments.is_empty()).then(|| Box::new(ty_arg())));
-                }
-                "Draft" => return Ty::Draft(Box::new(ty_arg())),
-                "MemberMode" => return Ty::Mode,
-                _ => {}
+            }
+            if is_type_prim {
+                return Ty::TypeValue((!last.arguments.is_empty()).then(|| Box::new(ty_arg())));
             }
         }
         let Some(id) = resolved else {
@@ -427,19 +407,21 @@ impl Checker<'_> {
         }))
     }
 
-    pub(in crate::ty) fn builtin_sum_type(&self, kind: BuiltinSum, element: Option<Ty>) -> Ty {
-        let definition = self.hir.builtin_sum_id(kind);
+    pub(in crate::ty) fn std_adt(&self, kind: StdType, arguments: Vec<GenericValue>) -> Ty {
+        let Some(definition) = self.hir.std_type_id(kind) else {
+            return Ty::Unknown;
+        };
         let def = self.hir.definition(definition);
+        let adt_kind = match kind {
+            StdType::PanicInfo => AdtKind::Opaque,
+            _ => AdtKind::Sum,
+        };
         Ty::Adt(Arc::new(Adt {
             definition,
-            kind: AdtKind::Sum,
+            kind: adt_kind,
             defining_scope: def.scope,
             visibility: def.visibility,
-            arguments: if kind.has_parameter() {
-                vec![GenericValue::Type(element.unwrap_or(Ty::Unknown))]
-            } else {
-                Vec::new()
-            },
+            arguments,
         }))
     }
 
@@ -454,40 +436,56 @@ impl Checker<'_> {
         let DefinitionKind::Variant(parent) = def.kind else {
             return Ty::Unknown;
         };
-        if let Some(kind) = self.hir.builtin_sum(parent) {
-            let result = if let Some(Ty::Adt(target)) = expected
-                && target.definition == parent
-            {
-                Ty::Adt(Arc::clone(target))
-            } else {
-                let element = kind.has_parameter().then(|| self.fresh());
-                self.builtin_sum_type(kind, element)
-            };
-            let Ty::Adt(adt) = &result else {
-                return Ty::Unknown;
-            };
-            let payload = self
-                .sum_variants(adt)
-                .remove(&def.name.value)
-                .unwrap_or_default();
-            if payload.is_empty() {
-                return result;
-            }
-            return Ty::Callable(Arc::new(Callable {
-                parameters: payload
-                    .into_iter()
-                    .map(|ty| Parameter {
+        match self.hir.std_type(parent) {
+            Some(StdType::Option) => {
+                let inner = if let Some(Ty::Option(ty)) = expected {
+                    (**ty).clone()
+                } else {
+                    self.fresh()
+                };
+                let result = Ty::Option(Box::new(inner.clone()));
+                if def.name.value == "None" {
+                    return result;
+                }
+                return Ty::Callable(Arc::new(Callable {
+                    parameters: vec![Parameter {
                         label: None,
-                        mode: Mode::Plain,
-                        ty,
+                        mode: Mode::Via,
+                        ty: inner,
                         optional: false,
                         is_meta: false,
-                    })
-                    .collect(),
-                result,
-                result_mode: Mode::New,
-                ..unknown_callable()
-            }));
+                    }],
+                    result,
+                    result_mode: Mode::New,
+                    ..unknown_callable()
+                }));
+            }
+            Some(StdType::Result) => {
+                let (ok, err) = if let Some(Ty::Result(ok, err)) = expected {
+                    ((**ok).clone(), (**err).clone())
+                } else {
+                    (self.fresh(), self.fresh())
+                };
+                let payload = if def.name.value == "Ok" {
+                    ok.clone()
+                } else {
+                    err.clone()
+                };
+                return Ty::Callable(Arc::new(Callable {
+                    parameters: vec![Parameter {
+                        label: None,
+                        mode: Mode::Via,
+                        ty: payload,
+                        optional: false,
+                        is_meta: false,
+                    }],
+                    result: Ty::Result(Box::new(ok), Box::new(err)),
+                    result_mode: Mode::New,
+                    ..unknown_callable()
+                }));
+            }
+            Some(StdType::MemberMode) => return Ty::Mode,
+            _ => {}
         }
         let owner = self.hir.definition(parent);
         let Some(stmt) = owner.stmt else {
@@ -529,7 +527,7 @@ impl Checker<'_> {
                         .map(|&ty| Parameter {
                             label: None,
                             ty: self.type_expr(&mut local, ty),
-                            mode: Mode::Plain,
+                            mode: Mode::Via,
                             optional: false,
                             is_meta: false,
                         })

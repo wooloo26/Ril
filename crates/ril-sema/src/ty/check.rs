@@ -327,10 +327,7 @@ impl<'a> Checker<'a> {
     }
 
     pub(super) fn resolve(&self, span: Span) -> Option<DefinitionId> {
-        match self.hir.resolve(span) {
-            Some(Resolution::Definition(def)) => Some(def),
-            _ => None,
-        }
+        self.hir.resolve(span).and_then(Resolution::definition)
     }
 
     pub(super) fn exposes_type(

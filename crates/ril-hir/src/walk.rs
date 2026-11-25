@@ -1046,10 +1046,7 @@ impl Walk<'_> {
             }
             Err(_) => {}
         }
-        if let Ok(target) = self
-            .program
-            .lookup(self.scope, self.program.prelude, name, Code::E0204)
-        {
+        if let Ok(target) = self.program.lookup_prelude(self.scope, name) {
             self.record(name, target);
             return Some(target);
         }
@@ -1085,7 +1082,7 @@ impl Walk<'_> {
 
     fn record(&mut self, name: &Name, target: Target) {
         self.program.resolutions.insert(name.span, target.into());
-        if let Target::Def(def) = target {
+        if let Target::Def(def) | Target::TypeAndModule(def, _) = target {
             let kind = self.program.definition(def).kind;
             if self.exposure > self.program.definition(def).visibility
                 && !matches!(kind, DefinitionKind::Generic | DefinitionKind::Local)

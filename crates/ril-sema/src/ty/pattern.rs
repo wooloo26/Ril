@@ -316,6 +316,10 @@ impl Checker<'_> {
             | ("Ok", Ty::Result(inner, _))
             | ("Err", Ty::Result(_, inner)) => vec![(**inner).clone()],
             ("None", Ty::Option(_)) => Vec::new(),
+            (
+                "Let" | "Var" | "Mut" | "SharedMut" | "Ref" | "VarMut" | "VarSharedMut" | "VarRef",
+                Ty::Mode,
+            ) => Vec::new(),
             (_, Ty::Adt(adt)) if adt.kind == AdtKind::Foreign => {
                 self.error(
                     Code::E0907,

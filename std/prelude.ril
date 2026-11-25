@@ -1,5 +1,58 @@
-pub opaque type PanicInfo = str
-pub type PanicError { Panicked(PanicInfo) }
+-- Standard Prelude module: implicit ambient scope for every Ril compilation unit.
 
-pub fn panic_message(info: PanicInfo) -> str
+pub use ril/array
+pub use ril/bytes
+pub use ril/io::(print, println)
+pub use ril/map
+pub use ril/numeric
+pub use ril/reflect
+pub use ril/set
+pub use ril/set::Set
+pub use ril/string
+
+pub type Option<T> {
+    Some(T)
+    None
+}
+
+pub use Option::(Some, None)
+
+pub type Result<T, E> {
+    Ok(T)
+    Err(E)
+}
+
+pub use Result::(Ok, Err)
+
+pub type MemberMode {
+    Let
+    Var
+    Mut
+    SharedMut
+    Ref
+    VarMut
+    VarSharedMut
+    VarRef
+}
+
+pub opaque type PanicInfo = str
+
+pub type PanicError {
+    Panicked(PanicInfo)
+}
+
+pub use PanicError::Panicked
+
+pub opaque type Draft<T>
+
+pub fn len<T |> LenTarget>(via item: T) -> int
+pub fn inner<W |> NominalWrapper>(via wrapper: W) -> infer Unwrap<W>
+pub fn clone<T |> SharedObject>(via value: T) -> new T
+pub fn derive<T |> SharedObject>(base: T, via update: fn(mut Draft<T>) @& -> ()) -> T
 pub fn absorb_panic<T>(via action: fn() @& -> infer T) -> infer !<T, PanicError>
+pub fn panic_message(info: PanicInfo) -> str
+pub meta fn type_name<T>(tv: Type<T>) -> str
+pub meta fn coords<T>(tv: Type<T>) -> [](MemberMode, CoordKey<T>)
+pub meta fn variants<T>(tv: Type<T>) -> []str
+pub fn panic(message: str) -> never
+pub fn assert(condition: bool, message: str ="assertion failed") -> ()

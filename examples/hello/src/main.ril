@@ -10,8 +10,8 @@ fn main() @io -> () {
     assert(Math::safe_ratio(42, 6) == Some(7))
     assert(Math::safe_ratio(42, 0) == None)
 
-    let raw = Bytes::from_str("hello-ril")
-    assert(String::from_bytes(raw) == Some("hello-ril"))
+    let raw = String::encode_utf8("hello-ril")
+    assert(String::decode_utf8(raw) == Some("hello-ril"))
 
     Fiber::run \-> {
         let doubled = Fiber::map(squares, \n -> n * 2)

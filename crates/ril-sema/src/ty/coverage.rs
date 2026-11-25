@@ -203,6 +203,16 @@ impl Checker<'_> {
                 ("Ok".into(), vec![(**ok).clone()]),
                 ("Err".into(), vec![(**err).clone()]),
             ],
+            Ty::Mode => vec![
+                ("Let".into(), vec![]),
+                ("Var".into(), vec![]),
+                ("Mut".into(), vec![]),
+                ("SharedMut".into(), vec![]),
+                ("Ref".into(), vec![]),
+                ("VarMut".into(), vec![]),
+                ("VarSharedMut".into(), vec![]),
+                ("VarRef".into(), vec![]),
+            ],
             Ty::Tuple(items) => vec![(
                 "tuple".into(),
                 items.iter().map(|item| item.ty.clone()).collect(),

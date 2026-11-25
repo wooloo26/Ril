@@ -1,9 +1,8 @@
 -- Standard Numeric module: conversion primitives plus self-hosted checked division.
 
-pub fn to_int(value: f64) -> int
-pub fn to_f64(value: int) -> f64
-pub fn convert<T: int | f64, U: int | f64>(value: T) -> U
-pub fn trunc(value: f64) -> int
+pub fn to_f64(n: int) -> f64
+pub fn convert<T: int | f64>(x: f64) -> new ?T
+pub fn trunc(x: f64) -> new ?int
 
 pub fn checked_div(a: int, b: int) -> new ?int {
     if b == 0 {

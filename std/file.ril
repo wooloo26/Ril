@@ -1,6 +1,4 @@
 -- Standard File module: host file I/O primitives.
 
-pub fn read(path: str) @io -> new ?str
-pub fn write(path: str, content: str) @io -> ()
-pub fn open(path: str) @io -> ()
-pub fn close(path: str) @io -> ()
+pub fn read(path: str) @io -> new !<str, str>
+pub fn write(path: str, content: str) @io -> new !<(), str>

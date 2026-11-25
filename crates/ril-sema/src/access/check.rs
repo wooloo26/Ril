@@ -466,10 +466,10 @@ impl<'a> Analyzer<'a> {
     }
 
     fn definition(&self, span: Span) -> Option<DefinitionId> {
-        match self.program.hir.resolve(span) {
-            Some(Resolution::Definition(id)) => Some(id),
-            _ => None,
-        }
+        self.program
+            .hir
+            .resolve(span)
+            .and_then(Resolution::definition)
     }
 
     fn declaration(&self, span: Span) -> Option<Span> {

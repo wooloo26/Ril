@@ -407,21 +407,6 @@ impl Checker<'_> {
             if matches!(def.kind, DefinitionKind::Variant(_)) {
                 return self.variant(env, id, expected, path.span);
             }
-            if matches!(def.kind, DefinitionKind::Primitive(_)) {
-                match def.name.value.as_str() {
-                    "None" => {
-                        let ty = if let Some(Ty::Option(ty)) = expected {
-                            (**ty).clone()
-                        } else {
-                            self.fresh()
-                        };
-                        return Ty::Option(Box::new(ty));
-                    }
-                    "HAS_OPENAT" => return Ty::Bool,
-                    "OS" | "ARCH" => return Ty::Str,
-                    _ => {}
-                }
-            }
             let ty = self.def_type(env, id, path.span, called);
             substitute(&ty, &env.generics)
         } else {

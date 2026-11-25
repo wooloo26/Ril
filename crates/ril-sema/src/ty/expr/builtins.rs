@@ -1,6 +1,6 @@
 use std::{collections::HashSet, sync::Arc};
 
-use ril_hir::{BuiltinSum, TextBuiltin};
+use ril_hir::{StdType, TextBuiltin};
 use ril_source::{diag::Code, span::Span};
 use ril_syntax::syntax::{self, Argument, Expr, Mode};
 
@@ -24,29 +24,8 @@ impl Checker<'_> {
         callee: bool,
     ) -> Ty {
         match name {
-            "Some" | "Ok" | "Err" => {
-                let payload = self.fresh();
-                let result = match name {
-                    "Some" => Ty::Option(Box::new(payload.clone())),
-                    "Ok" => Ty::Result(Box::new(payload.clone()), Box::new(self.fresh())),
-                    _ => Ty::Result(Box::new(self.fresh()), Box::new(payload.clone())),
-                };
-                Ty::Callable(Arc::new(Callable {
-                    parameters: vec![Parameter {
-                        label: None,
-                        mode: Mode::Plain,
-                        ty: payload,
-                        optional: false,
-                        is_meta: false,
-                    }],
-                    result,
-                    result_mode: Mode::New,
-                    ..unknown_callable()
-                }))
-            }
-            "Let" => Ty::Mode,
-            "Var" | "Mut" | "Ref" | "SharedMut" | "VarMut" | "VarRef" | "VarSharedMut" => Ty::Mode,
-            "bool" | "int" | "f64" | "str" | "bytes" | "never" | "Type" | "PanicInfo"
+            "bool" | "int" | "f64" | "str" | "bytes" | "never" | "Type" | "Set" | "Draft"
+            | "Scope" | "Task" | "Sender" | "Receiver"
                 if !callee =>
             {
                 self.error(Code::E0319, span, "type value requires angle quotation");
@@ -82,7 +61,6 @@ impl Checker<'_> {
             || matches!(
                 ty,
                 Ty::Callable(_)
-                    | Ty::PanicInfo
                     | Ty::Draft(_)
                     | Ty::Scope
                     | Ty::Task(_)
@@ -258,9 +236,8 @@ impl Checker<'_> {
             });
         let arity = match name {
             "panic" | "print" | "println" | "len" | "clone" | "inner" | "inspect" | "type_name"
-            | "coords" | "variants" | "to_f64" | "to_int" | "trunc" | "absorb_panic"
+            | "coords" | "variants" | "to_f64" | "trunc" | "convert" | "absorb_panic"
             | "panic_message" => Some(1..=1),
-            "Some" | "Ok" | "Err" => Some(0..=1),
             "assert" => Some(1..=2),
             "has_default" | "contains" | "push" | "derive" => Some(2..=2),
             _ => None,
@@ -370,7 +347,7 @@ impl Checker<'_> {
                 self.require(env, span, &first, &Ty::Int);
                 Ty::F64
             }
-            "to_int" | "trunc" | "convert" => {
+            "trunc" | "convert" => {
                 self.require(env, span, &first, &Ty::F64);
                 Ty::Option(Box::new(Ty::Int))
             }
@@ -417,12 +394,9 @@ impl Checker<'_> {
                 Ty::Str
             }
             "panic_message" => {
-                self.require(env, span, &first, &Ty::PanicInfo);
+                let info = self.std_adt(StdType::PanicInfo, Vec::new());
+                self.require(env, span, &first, &info);
                 Ty::Str
-            }
-            "PanicInfo" => {
-                self.error(Code::E0301, span, "PanicInfo has no accessible constructor");
-                Ty::Unknown
             }
             "push" => {
                 let target = if let Ty::Draft(inner) = &first {
@@ -459,7 +433,7 @@ impl Checker<'_> {
                     }
                     Ty::Result(
                         Box::new(call.result.clone()),
-                        Box::new(self.builtin_sum_type(BuiltinSum::PanicError, None)),
+                        Box::new(self.std_adt(StdType::PanicError, Vec::new())),
                     )
                 }
                 _ => Ty::Unknown,

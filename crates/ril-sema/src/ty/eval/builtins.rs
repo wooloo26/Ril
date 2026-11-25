@@ -174,7 +174,7 @@ impl Checker<'_> {
                     })
                     .to_bits(),
             )),
-            ("convert" | "to_int" | "trunc", [Value::F64(value)]) => {
+            ("convert" | "trunc", [Value::F64(value)]) => {
                 let value = f64::from_bits(*value);
                 let integer = if name == "trunc" || value.fract() == 0.0 {
                     BigInt::from_f64(value.trunc())

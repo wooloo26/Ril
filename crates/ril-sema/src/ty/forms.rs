@@ -392,10 +392,6 @@ impl Checker<'_> {
         {
             return Ty::Projection(Box::new(ty), key);
         }
-        if ty == Ty::PanicInfo {
-            self.error(Code::E0308, span, "PanicInfo is opaque");
-            return Ty::Unknown;
-        }
         if let Ty::Param(id) = &ty {
             let id = *id;
             if let Some(GenericValue::Type(specialized)) = env.generics.get(&id) {

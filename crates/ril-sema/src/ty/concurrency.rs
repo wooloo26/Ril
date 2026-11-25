@@ -3,7 +3,7 @@ use std::{
     sync::Arc,
 };
 
-use ril_hir::{BuiltinSum, DefinitionId};
+use ril_hir::{DefinitionId, StdType};
 use ril_source::{diag::Code, span::Span};
 use ril_syntax::syntax::{Argument, Mode};
 
@@ -85,7 +85,7 @@ impl Checker<'_> {
                     self.reject_nested_result(&result, span);
                     Ty::Result(
                         Box::new(result),
-                        Box::new(self.builtin_sum_type(BuiltinSum::TaskFault, None)),
+                        Box::new(self.std_adt(StdType::TaskFault, Vec::new())),
                     )
                 } else {
                     result
@@ -126,9 +126,9 @@ impl Checker<'_> {
                 self.expect(env, scope.value, &Ty::Scope);
                 Ty::Unit
             }
-            ("yield" | "yield_now", []) => Ty::Unit,
+            ("yield_now", []) => Ty::Unit,
             ("is_cancelled", []) => Ty::Bool,
-            ("sleep" | "sleep_ms", [duration]) => {
+            ("sleep_ms", [duration]) => {
                 self.expect(env, duration.value, &Ty::Int);
                 Ty::Unit
             }
@@ -138,7 +138,7 @@ impl Checker<'_> {
                 self.reject_nested_result(&result, span);
                 Ty::Result(
                     Box::new(result),
-                    Box::new(self.builtin_sum_type(BuiltinSum::TimeoutError, None)),
+                    Box::new(self.std_adt(StdType::TimeoutError, Vec::new())),
                 )
             }
             ("zip" | "try_zip" | "race", [left, right]) => {
@@ -222,7 +222,7 @@ impl Checker<'_> {
             _ => Ty::Unknown,
         };
         match (name, args) {
-            ("bounded" | "mpsc", [capacity]) => {
+            ("bounded", [capacity]) => {
                 self.expect(env, capacity.value, &Ty::Int);
                 if let Some(value) = self.eval_root(env, capacity.value, false)
                     && matches!(value, super::Value::Int(n) if num_traits::Signed::is_negative(&n))
@@ -235,7 +235,7 @@ impl Checker<'_> {
                 }
                 self.channel_shape(expected)
             }
-            ("unbounded" | "mpsc", []) => self.channel_shape(expected),
+            ("unbounded", []) => self.channel_shape(expected),
             ("clone", [channel]) => {
                 self.require_marker(channel, Mode::Ref, env);
                 let ty = self.expr(env, channel.value, None);
@@ -255,13 +255,16 @@ impl Checker<'_> {
                     self.error(Code::E0301, span, "channel item is not Sendable");
                 }
                 let error = if name == "send" {
-                    BuiltinSum::SendError
+                    StdType::SendError
                 } else {
-                    BuiltinSum::TrySendError
+                    StdType::TrySendError
                 };
                 Ty::Result(
                     Box::new(Ty::Unit),
-                    Box::new(self.builtin_sum_type(error, Some(self.normalize(&item)))),
+                    Box::new(self.std_adt(
+                        error,
+                        vec![super::GenericValue::Type(self.normalize(&item))],
+                    )),
                 )
             }
             ("recv" | "try_recv", [receiver]) => {
@@ -275,7 +278,7 @@ impl Checker<'_> {
                 } else {
                     Ty::Result(
                         Box::new(item(&ty)),
-                        Box::new(self.builtin_sum_type(BuiltinSum::TryRecvError, None)),
+                        Box::new(self.std_adt(StdType::TryRecvError, Vec::new())),
                     )
                 }
             }

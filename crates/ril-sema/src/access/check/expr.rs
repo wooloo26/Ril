@@ -724,11 +724,9 @@ impl Analyzer<'_> {
             }
             value
         } else if self.program.hir.unit_constructor(id)
-            || matches!(definition.kind, DefinitionKind::Primitive(_))
-                && definition.name.value == "None"
-                && matches!(self.ty(span), Ty::Option(_))
             || matches!(definition.kind, DefinitionKind::Variant(_))
-                && matches!(self.ty(span), Ty::Adt(adt) if matches!(adt.kind, AdtKind::Sum | AdtKind::OpaqueSum))
+                && (matches!(self.ty(span), Ty::Option(_))
+                    || matches!(self.ty(span), Ty::Adt(adt) if matches!(adt.kind, AdtKind::Sum | AdtKind::OpaqueSum)))
         {
             let mut value = Datum::source(span, Access::Mut, true);
             value.set_variant(&definition.name.value);

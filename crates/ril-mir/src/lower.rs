@@ -199,10 +199,10 @@ impl<'a> Lowering<'a> {
     }
 
     fn resolve(&self, span: Span) -> Option<DefinitionId> {
-        match self.typed.hir.resolve(span) {
-            Some(Resolution::Definition(id)) => Some(id),
-            _ => None,
-        }
+        self.typed
+            .hir
+            .resolve(span)
+            .and_then(Resolution::definition)
     }
 
     fn declaration(&self, id: DefinitionId) -> Option<&'a SyntaxFunction> {
@@ -1221,18 +1221,6 @@ impl<'a> Builder<'_, 'a> {
                 self.file = prev_file;
                 result
             }
-            DefinitionKind::Primitive(_) if def.name.value == "None" => {
-                Ok(self.tag("None", Vec::new()))
-            }
-            DefinitionKind::Primitive(_) if def.name.value == "OS" => {
-                Ok(self.string(std::env::consts::OS))
-            }
-            DefinitionKind::Primitive(_) if def.name.value == "ARCH" => {
-                Ok(self.string(std::env::consts::ARCH))
-            }
-            DefinitionKind::Primitive(_) if def.name.value == "HAS_OPENAT" => {
-                Ok(self.boolean(cfg!(unix)))
-            }
             DefinitionKind::Variant(_) => Ok(self.tag(&def.name.value, Vec::new())),
             DefinitionKind::Type if self.global.typed.hir.unit_constructor(source) => {
                 Ok(self.tag(&def.name.value, Vec::new()))
@@ -1355,9 +1343,7 @@ impl<'a> Builder<'_, 'a> {
             return Ok(self.invoke_closure(closure, args));
         }
         if matches!(def.kind, DefinitionKind::Variant(_) | DefinitionKind::Type) {
-            let unit_payload = args.is_empty()
-                && matches!(self.global.typed.types.get(&self.ast().expr(callee).span),
-                    Some(Ty::Callable(call)) if matches!(call.parameters.as_slice(), [parameter] if self.concrete(&parameter.ty) == Ty::Unit));
+            let unit_payload = args.is_empty() && matches!(def.kind, DefinitionKind::Variant(_));
             let mut args = args
                 .iter()
                 .map(|arg| self.expr(arg.value))
@@ -1668,8 +1654,8 @@ impl<'a> Builder<'_, 'a> {
             ("Fiber", "join") => "ril_fiber_join",
             ("Fiber", "cancel") => "ril_fiber_cancel",
             ("Fiber", "cancel_scope") => "ril_fiber_cancel_scope",
-            ("Fiber", "yield" | "yield_now") => "ril_fiber_yield",
-            ("Fiber", "sleep" | "sleep_ms") => "ril_fiber_sleep",
+            ("Fiber", "yield_now") => "ril_fiber_yield",
+            ("Fiber", "sleep_ms") => "ril_fiber_sleep",
             ("Fiber", "is_cancelled") => "ril_fiber_cancelled",
             ("Fiber", "uncancellable") => "ril_fiber_uncancellable",
             ("Fiber", "supervise") => "ril_fiber_supervise",
@@ -1679,10 +1665,8 @@ impl<'a> Builder<'_, 'a> {
             ("Fiber", "race") => "ril_fiber_race",
             ("Fiber", "map") => "ril_fiber_map",
             ("Fiber", "try_map") => "ril_fiber_try_map",
-            ("Channel", "bounded") | ("Channel", "mpsc") if !args.is_empty() => {
-                "ril_channel_bounded"
-            }
-            ("Channel", "unbounded" | "mpsc") => "ril_channel_unbounded",
+            ("Channel", "bounded") => "ril_channel_bounded",
+            ("Channel", "unbounded") => "ril_channel_unbounded",
             ("Channel", "send") => "ril_channel_send",
             ("Channel", "recv") => "ril_channel_recv",
             ("Channel", "try_send") => "ril_channel_try_send",
@@ -1786,12 +1770,6 @@ impl<'a> Builder<'_, 'a> {
             .iter()
             .map(|arg| self.expr(arg.value))
             .collect::<Result<Vec<_>>>()?;
-        if matches!(name, "Ok" | "Err" | "Some" | "Panicked") {
-            if args.is_empty() && matches!(name, "Some" | "Ok" | "Err") {
-                args.push(self.unit());
-            }
-            return Ok(self.tag(name, args));
-        }
         let symbol = match name {
             "print" => "ril_rt_print",
             "println" => "ril_rt_println",
@@ -1806,7 +1784,7 @@ impl<'a> Builder<'_, 'a> {
             "read" => "ril_rt_file_read",
             "write" => "ril_rt_file_write",
             "to_f64" => "ril_rt_to_f64",
-            "to_int" | "convert" => "ril_rt_to_int",
+            "convert" => "ril_rt_to_int",
             "trunc" => "ril_rt_trunc",
             "clone" => "ril_rt_clone",
             "push" => "ril_rt_append",

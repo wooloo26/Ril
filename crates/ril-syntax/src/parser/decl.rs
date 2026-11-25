@@ -788,7 +788,13 @@ impl Parser<'_> {
             };
             let mut segments = vec![root];
             while self.eat("/") {
-                segments.push(self.name(Some(Word::Value), false)?);
+                let token = self.current();
+                if token.kind == Kind::Word(Word::Primitive) {
+                    self.bump();
+                    segments.push(self.owned(token));
+                } else {
+                    segments.push(self.name(Some(Word::Value), false)?);
+                }
             }
             file = Some(segments);
         } else if self.next_text() == "::" {

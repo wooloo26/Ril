@@ -158,6 +158,10 @@ impl Checker<'_> {
                 self.check_pure_default(&local, default, &ty.ty);
             }
         }
+        for &helper in &fun.helpers {
+            let mut helper_env = env.clone();
+            self.statement(&mut helper_env, helper, false);
+        }
         for &guard in fun
             .signature
             .params

@@ -1,4 +1,6 @@
--- Standard Set module: compiler-backed ordered set primitives.
+-- Standard Set module: compiler-backed ordered set type and primitives.
+
+pub opaque type Set<T>
 
 pub fn insert<T>(mut set: Set<T>, value: T) &mut -> ()
 pub fn remove<T>(mut set: Set<T>, value: T) &mut -> bool

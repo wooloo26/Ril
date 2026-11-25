@@ -1,0 +1,45 @@
+-- Standard Math module: pure self-hosted numeric constants and helpers.
+
+pub meta let PI: f64 = 3.141592653589793
+pub meta let EULER: f64 = 2.718281828459045
+
+pub fn abs<T: int | f64>(x: T) -> T {
+    match <T> {
+        <int> -> if x < 0 {
+            return -x
+        } else {
+            return x
+        }
+        <f64> -> if x < 0.0 {
+            return -x
+        } else {
+            return x
+        }
+    }
+}
+
+pub fn min<T: int | f64>(a: T, b: T) -> T {
+    if a < b {
+        a
+    } else {
+        b
+    }
+}
+
+pub fn max<T: int | f64>(a: T, b: T) -> T {
+    if a > b {
+        a
+    } else {
+        b
+    }
+}
+
+pub fn clamp<T: int | f64>(value: T, low: T, high: T) -> T {
+    if value < low {
+        low
+    } else if value > high {
+        high
+    } else {
+        value
+    }
+}

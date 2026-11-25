@@ -1001,28 +1001,21 @@ impl Builder<'_, '_> {
                     return Some(value.clone());
                 }
                 let def = self.global.typed.hir.definition(id);
-                match def.name.value.as_str() {
-                    "OS" => Some(Value::Str(std::env::consts::OS.into())),
-                    "ARCH" => Some(Value::Str(std::env::consts::ARCH.into())),
-                    "HAS_OPENAT" => Some(Value::Bool(cfg!(unix))),
-                    _ => {
-                        let decl = def.stmt?;
-                        let ast = &self.global.typed.hir.file(def.name.span.file).ast;
-                        let ril_sema::syntax::StmtKind::Binding {
-                            value: Some(value),
-                            is_meta: true,
-                            ..
-                        } = ast.stmt(decl).value.kind
-                        else {
-                            return None;
-                        };
-                        self.global
-                            .typed
-                            .static_values
-                            .get(&ast.expr(value).span)
-                            .cloned()
-                    }
-                }
+                let decl = def.stmt?;
+                let ast = &self.global.typed.hir.file(def.name.span.file).ast;
+                let ril_sema::syntax::StmtKind::Binding {
+                    value: Some(value),
+                    is_meta: true,
+                    ..
+                } = ast.stmt(decl).value.kind
+                else {
+                    return None;
+                };
+                self.global
+                    .typed
+                    .static_values
+                    .get(&ast.expr(value).span)
+                    .cloned()
             }
             Expr::Binary { op, left, right } => {
                 let left = self.static_expr(*left)?;

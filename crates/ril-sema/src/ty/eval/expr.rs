@@ -500,34 +500,34 @@ impl Checker<'_> {
                 fuel.depth -= 1;
                 result
             }
+            DefinitionKind::Variant(parent)
+                if self.hir.std_type(parent) == Some(ril_hir::StdType::MemberMode) =>
+            {
+                match def.name.value.as_str() {
+                    "Let" => Ok(Value::Mode(MemberMode::PLAIN)),
+                    "Var" => Ok(Value::Mode(MemberMode {
+                        variable: true,
+                        mode: Mode::Plain,
+                    })),
+                    "Mut" | "VarMut" => Ok(Value::Mode(MemberMode {
+                        variable: def.name.value == "VarMut",
+                        mode: Mode::Mut,
+                    })),
+                    "Ref" | "VarRef" => Ok(Value::Mode(MemberMode {
+                        variable: def.name.value == "VarRef",
+                        mode: Mode::Ref,
+                    })),
+                    "SharedMut" | "VarSharedMut" => Ok(Value::Mode(MemberMode {
+                        variable: def.name.value == "VarSharedMut",
+                        mode: Mode::Shared,
+                    })),
+                    _ => Err(nonstatic(span)),
+                }
+            }
             DefinitionKind::Variant(_) => Ok(Value::Tag(def.name.value.clone(), Vec::new())),
             DefinitionKind::Type if self.hir.unit_constructor(id) => {
                 Ok(Value::Tag(def.name.value.clone(), Vec::new()))
             }
-            DefinitionKind::Primitive(_) => match def.name.value.as_str() {
-                "None" => Ok(Value::Tag("None".into(), Vec::new())),
-                "OS" => Ok(Value::Str(std::env::consts::OS.into())),
-                "ARCH" => Ok(Value::Str(std::env::consts::ARCH.into())),
-                "HAS_OPENAT" => Ok(Value::Bool(cfg!(unix))),
-                "Let" => Ok(Value::Mode(MemberMode::PLAIN)),
-                "Var" => Ok(Value::Mode(MemberMode {
-                    variable: true,
-                    mode: Mode::Plain,
-                })),
-                "Mut" | "VarMut" => Ok(Value::Mode(MemberMode {
-                    variable: def.name.value == "VarMut",
-                    mode: Mode::Mut,
-                })),
-                "Ref" | "VarRef" => Ok(Value::Mode(MemberMode {
-                    variable: def.name.value == "VarRef",
-                    mode: Mode::Ref,
-                })),
-                "SharedMut" | "VarSharedMut" => Ok(Value::Mode(MemberMode {
-                    variable: def.name.value == "VarSharedMut",
-                    mode: Mode::Shared,
-                })),
-                _ => Err(nonstatic(span)),
-            },
             _ => Err(nonstatic(span)),
         }
     }

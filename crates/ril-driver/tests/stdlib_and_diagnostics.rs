@@ -63,8 +63,8 @@ fn self_hosted_stdlib_combinators_execute_under_gc_stress() -> Result<(), String
             let big = Array::filter(xs, \x -> x >= 25)
             assert(len(big) == 2 && big[0] == 30 && big[1] == 40)
 
-            let raw = Bytes::from_str("ril-std")
-            assert(String::from_bytes(raw) == Some("ril-std"))
+            let raw = String::encode_utf8("ril-std")
+            assert(String::decode_utf8(raw) == Some("ril-std"))
             assert(String::decode_utf8(String::encode_utf8("ril-std")) == Some("ril-std"))
             println("std-ok")
         }
@@ -196,5 +196,75 @@ fn access_diagnostics_attach_secondary_labels_and_help() -> Result<(), String> {
         !diag.labels().is_empty(),
         "expected secondary var-slot declaration label on E0548"
     );
+    Ok(())
+}
+
+#[test]
+fn prelude_real_sums_platform_math_and_removed_aliases() -> Result<(), String> {
+    let source = r#"
+        use ril/bytes
+        use ril/crypto
+        use ril/math
+        use ril/os
+        use ril/platform
+
+        fn check_set_sig(s: Set<int>) -> int { Set::len(s) }
+
+        fn main() @io -> new Result<(), str> {
+            let opt: Option<int> = Option::Some(42)
+            assert(opt == Some(42))
+            let none_val: Option<int> = Option::None
+            assert(none_val == None)
+
+            let res: Result<int, str> = Result::Ok(7)
+            assert(res == Ok(7))
+            let err_val: Result<int, str> = Result::Err("boom")
+            assert(err_val == Err("boom"))
+
+            let caught = absorb_panic(\-> { panic("oops"); 1 })
+            match caught {
+                Result::Ok(_) -> panic("expected panic")
+                Result::Err(Panicked(info)) -> assert(panic_message(info) == "oops")
+            }
+
+            assert(len(Platform::OS) > 0)
+            assert(len(Platform::ARCH) > 0)
+            assert(Platform::HAS_OPENAT || !Platform::HAS_OPENAT)
+
+            assert(Math::abs(-9) == 9)
+            assert(Math::abs(-2.5) == 2.5)
+            assert(Math::min(3, 7) == 3)
+            assert(Math::max(3, 7) == 7)
+            assert(Math::clamp(15, 0, 10) == 10)
+            assert(Math::PI > 3.14 && Math::EULER > 2.71)
+            assert(Bytes::len(String::encode_utf8("ab")) == 2)
+            let _ = check_set_sig
+            println("wave-a-ok")
+            Result::Ok()
+        }
+    "#;
+    run_aot(source, "wave-a-ok\n")?;
+
+    for bad in [
+        "use ril/fiber\nfn main() @fiber -> () { Fiber::yield() }\n",
+        "use ril/fiber\nfn main() @io @fiber -> () { Fiber::sleep(1) }\n",
+        "use ril/channel\nfn main() -> () { let _ = Channel::mpsc(1) }\n",
+        "fn main() -> () { let _ = Numeric::to_int(1.0) }\n",
+        "fn main() -> () { let _ = String::from_bytes(bytes\"a\") }\n",
+        "fn main() -> () { let _ = Bytes::from_str(\"a\") }\n",
+    ] {
+        let mut pkg = VirtualPackage::new(Unit::Bin);
+        pkg.insert(pkg.entry.clone(), bad.as_bytes().to_vec());
+        let checked = Driver.check(&pkg, Stage::Hir);
+        assert!(
+            checked
+                .result
+                .diagnostics
+                .iter()
+                .any(|d| d.code == Some(Code::E0209)),
+            "expected E0209 for removed legacy alias `{bad}`, got {:?}",
+            checked.result.diagnostics
+        );
+    }
     Ok(())
 }

@@ -280,7 +280,7 @@ impl Checker<'_> {
                     }
                     if let Some(module @ ("Fiber" | "Channel")) = self.hir.primitive_module(id) {
                         let explicit = if module == "Channel"
-                            && matches!(def.name.value.as_str(), "bounded" | "unbounded" | "mpsc")
+                            && matches!(def.name.value.as_str(), "bounded" | "unbounded")
                             && let Some(segment) = path.and_then(|path| path.segments.last())
                             && let Some(argument) = segment.arguments.first()
                         {
@@ -396,7 +396,10 @@ impl Checker<'_> {
         if def_id
             .is_some_and(|id| matches!(self.hir.definition(id).kind, DefinitionKind::Variant(_)))
             && (args.is_empty()
-                && matches!(call.parameters.as_slice(), [parameter] if self.normalize(&parameter.ty) == Ty::Unit)
+                && matches!(call.parameters.as_slice(), [parameter] if {
+                    let norm = self.normalize(&parameter.ty);
+                    norm == Ty::Unit || (matches!(norm, Ty::Infer(_)) && self.fits(env, &Ty::Unit, &norm))
+                })
                 || self.check_tuple_payload(
                     env,
                     args,
@@ -559,7 +562,11 @@ impl Checker<'_> {
             return Ty::Unknown;
         }
         if adt.kind == AdtKind::Opaque && adt.defining_scope != env.scope {
-            self.error(Code::E0308, span, "opaque constructor is sealed");
+            if self.hir.std_type(adt.definition) == Some(ril_hir::StdType::PanicInfo) {
+                self.error(Code::E0301, span, "PanicInfo has no accessible constructor");
+            } else {
+                self.error(Code::E0308, span, "opaque constructor is sealed");
+            }
             return Ty::Unknown;
         }
         let params = match self.representation(env, adt) {

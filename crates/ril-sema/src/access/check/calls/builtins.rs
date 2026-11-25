@@ -99,10 +99,10 @@ impl Analyzer<'_> {
                 }
                 return Datum::source(span, Access::Mut, true);
             }
-            "yield" | "sleep" | "scope" | "spawn" | "join" | "send" | "recv" => {
+            "scope" | "spawn" | "join" | "send" | "recv" => {
                 self.effect(ctx, ledger, "fiber", span);
             }
-            "read" | "open" | "close" | "write" => self.effect(ctx, ledger, "io", span),
+            "read" | "write" => self.effect(ctx, ledger, "io", span),
             _ => {}
         }
         self.snapshot_value(span)
@@ -132,9 +132,7 @@ impl Analyzer<'_> {
                     | "try_scope"
                     | "join"
                     | "cancel"
-                    | "yield"
                     | "yield_now"
-                    | "sleep"
                     | "sleep_ms"
                     | "is_cancelled"
                     | "timeout_ms"
@@ -147,7 +145,7 @@ impl Analyzer<'_> {
             ) {
                 self.effect(ctx, ledger, "fiber", span);
             }
-            if matches!(name, "sleep" | "sleep_ms" | "timeout_ms") {
+            if matches!(name, "sleep_ms" | "timeout_ms") {
                 self.effect(ctx, ledger, "io", span);
             }
             if matches!(name, "spawn" | "join" | "cancel" | "cancel_scope")
@@ -312,7 +310,7 @@ impl Analyzer<'_> {
             self.mutate(ctx, ledger, value, span);
         }
         match name {
-            "bounded" | "unbounded" | "mpsc" => {
+            "bounded" | "unbounded" => {
                 let mut pair = Datum::source(span, Access::Mut, true);
                 for key in ["tx", "rx"] {
                     pair.members.insert(

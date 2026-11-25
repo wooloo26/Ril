@@ -110,7 +110,7 @@ fn scoped() -> new Handle {
 -- @case cleanup_cannot_suspend compile-fail E0616
 use ril/fiber
 opaque type Handle use(close) = .{ id: int }
-fn close(new resource: Handle) @fiber -> () { Fiber::yield() }
+fn close(new resource: Handle) @fiber -> () { Fiber::yield_now() }
 fn acquire() -> new Handle { Handle.{ id: 42 } }
 fn scoped() @fiber -> int {
     use handle = acquire()

@@ -89,52 +89,24 @@ impl TextBuiltin {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub enum BuiltinSum {
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum StdType {
+    Option,
+    Result,
+    Set,
+    Draft,
+    MemberMode,
+    PanicInfo,
     PanicError,
+    Scope,
+    Task,
+    Sender,
+    Receiver,
     TaskFault,
     TimeoutError,
     SendError,
     TrySendError,
     TryRecvError,
-}
-
-#[derive(Clone, Copy, Debug)]
-pub enum BuiltinPayload {
-    UnitTag,
-    PanicInfo,
-    Element,
-}
-
-impl BuiltinSum {
-    pub const fn name(self) -> &'static str {
-        use BuiltinSum::*;
-        match self {
-            PanicError => "PanicError",
-            TaskFault => "TaskFault",
-            TimeoutError => "TimeoutError",
-            SendError => "SendError",
-            TrySendError => "TrySendError",
-            TryRecvError => "TryRecvError",
-        }
-    }
-
-    pub const fn variants(self) -> &'static [(&'static str, BuiltinPayload)] {
-        use BuiltinPayload::*;
-        use BuiltinSum::*;
-        match self {
-            PanicError => &[("Panicked", PanicInfo)],
-            TaskFault => &[("Panicked", PanicInfo), ("Cancelled", UnitTag)],
-            TimeoutError => &[("Elapsed", UnitTag)],
-            SendError => &[("Closed", Element)],
-            TrySendError => &[("Closed", Element), ("Full", Element)],
-            TryRecvError => &[("Closed", UnitTag), ("Empty", UnitTag)],
-        }
-    }
-
-    pub const fn has_parameter(self) -> bool {
-        matches!(self, Self::SendError | Self::TrySendError)
-    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -227,12 +199,30 @@ struct Entry {
 enum Target {
     Def(DefinitionId),
     Module(ScopeId),
+    TypeAndModule(DefinitionId, ScopeId),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Resolution {
     Definition(DefinitionId),
     Module(ScopeId),
+    TypeAndModule(DefinitionId, ScopeId),
+}
+
+impl Resolution {
+    pub const fn definition(self) -> Option<DefinitionId> {
+        match self {
+            Self::Definition(id) | Self::TypeAndModule(id, _) => Some(id),
+            Self::Module(_) => None,
+        }
+    }
+
+    pub const fn module(self) -> Option<ScopeId> {
+        match self {
+            Self::Module(id) | Self::TypeAndModule(_, id) => Some(id),
+            Self::Definition(_) => None,
+        }
+    }
 }
 
 impl From<Target> for Resolution {
@@ -240,6 +230,7 @@ impl From<Target> for Resolution {
         match target {
             Target::Def(id) => Self::Definition(id),
             Target::Module(id) => Self::Module(id),
+            Target::TypeAndModule(def, scope) => Self::TypeAndModule(def, scope),
         }
     }
 }
@@ -258,7 +249,8 @@ pub struct Program {
     local_effects: BTreeSet<DefinitionId>,
     effect_spreads: BTreeMap<DefinitionId, BTreeSet<DefinitionId>>,
     pending_operations: Vec<effects::PendingOperation>,
-    builtin_sums: BTreeMap<BuiltinSum, DefinitionId>,
+    std_types: BTreeMap<StdType, DefinitionId>,
+    std_type_ids: HashMap<DefinitionId, StdType>,
     stdlib_files: BTreeSet<FileId>,
     pub entry: FileId,
     prelude: ScopeId,
@@ -373,10 +365,8 @@ impl Program {
             ("String", "at") => Some(ScalarAt),
             ("String", "scalars") => Some(Scalars),
             ("String", "from_scalars") => Some(FromScalars),
-            ("String", "encode_utf8" | "raw_encode_utf8" | "bytes") | ("Bytes", "from_str") => {
-                Some(EncodeUtf8)
-            }
-            ("String", "decode_utf8" | "raw_decode_utf8" | "from_bytes") => Some(DecodeUtf8),
+            ("String", "encode_utf8" | "raw_encode_utf8") => Some(EncodeUtf8),
+            ("String", "decode_utf8" | "raw_decode_utf8") => Some(DecodeUtf8),
             ("Bytes", "at") => Some(ByteAt),
             ("Bytes", "to_array") => Some(ToArray),
             ("Bytes", "from_array") => Some(FromArray),
@@ -384,17 +374,12 @@ impl Program {
         }
     }
 
-    pub fn builtin_sum(&self, id: DefinitionId) -> Option<BuiltinSum> {
-        self.builtin_sums
-            .iter()
-            .find_map(|(&kind, &definition)| (definition == id).then_some(kind))
+    pub fn std_type(&self, id: DefinitionId) -> Option<StdType> {
+        self.std_type_ids.get(&id).copied()
     }
 
-    pub fn builtin_sum_id(&self, kind: BuiltinSum) -> DefinitionId {
-        self.builtin_sums
-            .get(&kind)
-            .copied()
-            .unwrap_or_else(|| ril_source::ice!("unregistered built-in sum {kind:?}"))
+    pub fn std_type_id(&self, kind: StdType) -> Option<DefinitionId> {
+        self.std_types.get(&kind).copied()
     }
     pub fn operation_effect(&self, operation: DefinitionId) -> Option<DefinitionId> {
         let scope = self.definition(operation).scope;
@@ -427,7 +412,7 @@ impl Program {
             .names
             .values()
             .filter_map(|entry| match entry.target {
-                Target::Def(operation) => Some(operation),
+                Target::Def(operation) | Target::TypeAndModule(operation, _) => Some(operation),
                 Target::Module(_) => None,
             })
     }
@@ -600,9 +585,36 @@ impl Program {
     }
 
     fn insert(&mut self, scope: ScopeId, name: &Name, entry: Entry) -> Result<(), Diagnostic> {
-        if matches!(name.value.as_str(), "Type" | "Super")
-            || self.scope(scope).names.contains_key(&name.value)
-        {
+        if matches!(name.value.as_str(), "Type" | "Super") {
+            return Err(Diagnostic::error(
+                Code::E0203,
+                name.span,
+                format!("duplicate or protected declaration {}", name.value),
+            ));
+        }
+        if let Some(&existing) = self.scope(scope).names.get(&name.value) {
+            let merged = match (existing.target, entry.target) {
+                (Target::Module(module), Target::Def(def))
+                | (Target::Def(def), Target::Module(module))
+                    if self.definition(def).scope == module
+                        && matches!(
+                            self.definition(def).kind,
+                            DefinitionKind::Type | DefinitionKind::Primitive(_)
+                        ) =>
+                {
+                    Some(Entry {
+                        target: Target::TypeAndModule(def, module),
+                        visibility: existing.visibility.max(entry.visibility),
+                    })
+                }
+                _ => None,
+            };
+            if let Some(merged) = merged {
+                self.scope_mut(scope)
+                    .names
+                    .insert(name.value.clone(), merged);
+                return Ok(());
+            }
             return Err(Diagnostic::error(
                 Code::E0203,
                 name.span,
@@ -637,7 +649,7 @@ impl Program {
 
     fn namespace(&self, target: Target) -> Option<ScopeId> {
         match target {
-            Target::Module(scope) => Some(scope),
+            Target::Module(scope) | Target::TypeAndModule(_, scope) => Some(scope),
             Target::Def(def) => match self.definition(def).kind {
                 DefinitionKind::Namespace(scope)
                 | DefinitionKind::Effect(scope)
@@ -652,6 +664,26 @@ impl Program {
             || visibility == Visibility::Public
             || visibility == Visibility::Package
                 && self.scope(owner).package == self.scope(viewer).package
+    }
+
+    fn lookup_prelude(&self, caller: ScopeId, name: &Name) -> Result<Target, Diagnostic> {
+        let scope = self.prelude;
+        if let Some(entry) = self.scope(scope).names.get(&name.value) {
+            return if self.visible(scope, caller, entry.visibility) {
+                Ok(entry.target)
+            } else {
+                Err(Diagnostic::error(
+                    Code::E0201,
+                    name.span,
+                    format!("{} is private to its module", name.value),
+                ))
+            };
+        }
+        Err(Diagnostic::error(
+            Code::E0204,
+            name.span,
+            format!("cannot resolve {}", name.value),
+        ))
     }
 
     fn lookup(
@@ -711,12 +743,13 @@ pub fn lower(files: Vec<File>, entry: FileId) -> Result<Program, Vec<Diagnostic>
         local_effects: BTreeSet::new(),
         effect_spreads: BTreeMap::new(),
         pending_operations: Vec::new(),
-        builtin_sums: BTreeMap::new(),
+        std_types: BTreeMap::new(),
+        std_type_ids: HashMap::new(),
         stdlib_files: BTreeSet::new(),
         entry,
         prelude: ScopeId(0),
     };
-    program.add_prelude();
+    program.init_prelude();
     let units: Vec<_> = program
         .files()
         .map(|file| {
@@ -762,7 +795,7 @@ pub fn lower(files: Vec<File>, entry: FileId) -> Result<Program, Vec<Diagnostic>
             program.validate_main(root, &mut errors);
         }
     }
-    program.attach_self_hosted_stdlib(&mut imports, &mut errors);
+    program.attach_stdlib(&mut imports, &mut errors);
     program.load_imports(imports, &mut errors);
     if errors.is_empty() {
         walk::check(&mut program, &mut errors);
@@ -889,14 +922,18 @@ impl Program {
                     }
                     if let TypeDefinition::Sum(variants) = decl.definition {
                         let namespace = self.child(scope, vis, false);
+                        let type_name = decl.name.value.clone();
                         let Ok(sum) = self
                             .register(scope, decl.name, DefinitionKind::Sum(namespace), id, vis)
                             .map_err(|err| errors.push(err))
                         else {
                             continue;
                         };
-                        if let Some(builtins::TypeRegistration::Sum(builtin)) = contract {
-                            self.builtin_sums.insert(builtin, sum);
+                        if let Some(module_name) = self.scope(scope).primitive_module
+                            && let Some(std_type) = builtins::std_type_for(module_name, &type_name)
+                        {
+                            self.std_types.entry(std_type).or_insert(sum);
+                            self.std_type_ids.insert(sum, std_type);
                         }
                         for variant in variants {
                             if let Variant::Constructor { name, .. } = variant
@@ -924,7 +961,16 @@ impl Program {
                         } else {
                             DefinitionKind::Type
                         };
-                        self.register(scope, decl.name, kind, id, vis)
+                        let type_name = decl.name.value.clone();
+                        let result = self.register(scope, decl.name, kind, id, vis);
+                        if let Ok(def_id) = result
+                            && let Some(module_name) = self.scope(scope).primitive_module
+                            && let Some(std_type) = builtins::std_type_for(module_name, &type_name)
+                        {
+                            self.std_types.entry(std_type).or_insert(def_id);
+                            self.std_type_ids.insert(def_id, std_type);
+                        }
+                        result
                     }
                 }
                 StmtKind::Effect {
@@ -999,7 +1045,7 @@ impl Program {
     fn finalize_indices(&mut self) {
         self.resolutions_by_file.clear();
         for (&span, &resolved) in &self.resolutions {
-            if let Resolution::Definition(id) = resolved {
+            if let Some(id) = resolved.definition() {
                 self.resolutions_by_file
                     .entry(span.file)
                     .or_default()
@@ -1048,6 +1094,35 @@ impl Program {
                                 && path.segments.first().is_some_and(|s| s.name.value == "str"))
                             && matches!(signature.result_mode, ril_syntax::syntax::Mode::New | ril_syntax::syntax::Mode::Plain)
                     }
+                    Type::Named(path)
+                        if path.segments.len() == 1
+                            && path.segments.first().is_some_and(|s| {
+                                s.name.value == "Result" && s.arguments.len() == 2
+                            }) =>
+                    {
+                        let args = path
+                            .segments
+                            .first()
+                            .map_or(&[][..], |s| s.arguments.as_slice());
+                        let ok_unit = matches!(
+                            args.first(),
+                            Some(ril_syntax::syntax::GenericArg::Type(ok))
+                                if matches!(ast.ty(*ok).value, Type::Unit)
+                        );
+                        let err_str = matches!(
+                            args.get(1),
+                            Some(ril_syntax::syntax::GenericArg::Type(err))
+                                if matches!(&ast.ty(*err).value, Type::Named(p)
+                                    if p.segments.len() == 1
+                                        && p.segments.first().is_some_and(|s| s.name.value == "str"))
+                        );
+                        ok_unit
+                            && err_str
+                            && matches!(
+                                signature.result_mode,
+                                ril_syntax::syntax::Mode::New | ril_syntax::syntax::Mode::Plain
+                            )
+                    }
                     _ => false,
                 };
                 !fun.is_meta && fun.generics.is_empty() && signature.params.is_empty() && result_ok
@@ -1064,45 +1139,14 @@ impl Program {
     }
 }
 
-const PRELUDE: &[(PrimitivePhase, &[&str])] = &[
+const LANGUAGE_PRIMITIVES: &[(PrimitivePhase, &[&str])] = &[
     (
         PrimitivePhase::Both,
-        &[
-            "bool",
-            "int",
-            "f64",
-            "str",
-            "bytes",
-            "never",
-            "Type",
-            "Option",
-            "Result",
-            "Set",
-            "PanicInfo",
-            "MemberMode",
-            "Draft",
-            "Some",
-            "None",
-            "Ok",
-            "Err",
-            "len",
-            "inner",
-            "clone",
-            "derive",
-            "panic",
-            "assert",
-        ],
-    ),
-    (
-        PrimitivePhase::Runtime,
-        &["absorb_panic", "panic_message", "print", "println"],
+        &["bool", "int", "f64", "str", "bytes", "never", "Type"],
     ),
     (
         PrimitivePhase::Static,
         &[
-            "type_name",
-            "coords",
-            "variants",
             "SharedObject",
             "Sendable",
             "LenTarget",
@@ -1116,217 +1160,48 @@ const PRELUDE: &[(PrimitivePhase, &[&str])] = &[
 ];
 
 impl Program {
-    fn add_prelude(&mut self) {
+    fn init_prelude(&mut self) {
         let file = FileId::BUILTIN;
         self.prelude = self.new_scope(file, "ril".into(), None, Visibility::Public);
-        for &(phase, names) in PRELUDE {
+        self.scope_mut(self.prelude).primitive_module = Some("Prelude");
+        for &(phase, names) in LANGUAGE_PRIMITIVES {
             for &name in names {
                 self.primitive(self.prelude, name, phase);
             }
         }
-        self.register_builtin_sum(self.prelude, BuiltinSum::PanicError);
-        use PrimitivePhase::{Both, Runtime, Static};
-        let modules: &[(&str, &str, PrimitivePhase, &[&str])] = &[
-            ("", "Array", Both, &[]),
-            ("", "Map", Both, &[]),
-            ("", "Set", Both, &[]),
-            // `bytes` is a primitive type keyword and cannot be written as `pub fn bytes` in `.ril`.
-            ("", "String", Both, &["bytes"]),
-            ("", "Bytes", Both, &[]),
-            ("", "Numeric", Both, &[]),
-            (
-                "",
-                "MemberMode",
-                Both,
-                &[
-                    "Let",
-                    "Var",
-                    "Mut",
-                    "Ref",
-                    "SharedMut",
-                    "VarMut",
-                    "VarRef",
-                    "VarSharedMut",
-                ],
-            ),
-            (
-                "",
-                "Reflect",
-                Static,
-                &[
-                    "MemberMode",
-                    "attrs",
-                    "field_attrs",
-                    "variant_attrs",
-                    "has_default",
-                    "coords",
-                    "variants",
-                    "key",
-                ],
-            ),
-            ("io", "Io", Runtime, &[]),
-            ("file", "File", Runtime, &[]),
-            (
-                "platform",
-                "Platform",
-                Static,
-                &["HAS_OPENAT", "OS", "ARCH"],
-            ),
-            (
-                "fiber",
-                "Fiber",
-                Runtime,
-                &[
-                    "run",
-                    "scope",
-                    "try_scope",
-                    "spawn",
-                    "join",
-                    "yield",
-                    "yield_now",
-                    "cancel",
-                    "cancel_scope",
-                    "sleep",
-                    "sleep_ms",
-                    "is_cancelled",
-                    "uncancellable",
-                    "timeout_ms",
-                    "supervise",
-                    "zip",
-                    "try_zip",
-                    "map",
-                    "try_map",
-                    "race",
-                    "Scope",
-                    "Task",
-                    "Zip",
-                ],
-            ),
-            (
-                "channel",
-                "Channel",
-                Runtime,
-                &[
-                    "mpsc",
-                    "bounded",
-                    "unbounded",
-                    "send",
-                    "try_send",
-                    "recv",
-                    "try_recv",
-                    "close",
-                    "close_recv",
-                    "drain",
-                    "clone",
-                    "Sender",
-                    "Receiver",
-                    "ChannelPair",
-                ],
-            ),
-            ("os", "Os", Runtime, &[]),
-            ("math", "Math", Both, &[]),
-            ("crypto", "Crypto", Runtime, &[]),
-        ];
-        for &(file_name, name, phase, members) in modules {
-            let module = self.new_scope(file, "ril".into(), None, Visibility::Public);
-            self.scope_mut(module).primitive_module = Some(name);
-            for &member in members {
-                self.primitive(module, member, phase);
-            }
-            let sums = match name {
-                "Fiber" => &[BuiltinSum::TaskFault, BuiltinSum::TimeoutError][..],
-                "Channel" => &[
-                    BuiltinSum::SendError,
-                    BuiltinSum::TrySendError,
-                    BuiltinSum::TryRecvError,
-                ][..],
-                _ => &[],
-            };
-            for &kind in sums {
-                self.register_builtin_sum(module, kind);
-            }
-            if file_name.is_empty() {
-                if name == "Set" || name == "MemberMode" {
-                    self.scope_mut(self.prelude).names.remove(name);
-                }
-                self.scope_mut(self.prelude).names.insert(
-                    name.into(),
-                    Entry {
-                        target: Target::Module(module),
-                        visibility: Visibility::Public,
-                    },
-                );
-            } else {
-                self.modules
-                    .insert(PathBuf::from("ril").join(file_name), module);
-            }
-        }
     }
 
-    fn register_builtin_sum(&mut self, scope: ScopeId, kind: BuiltinSum) {
-        let at = Span::new(self.scope(scope).file, 0, 0);
-        let namespace = self.child(scope, Visibility::Public, false);
-        let owner = self.new_def(
-            scope,
-            Name::new(kind.name().into(), at),
-            DefinitionKind::Sum(namespace),
-            None,
-            Visibility::Public,
-        );
-        self.builtin_sums.insert(kind, owner);
-        self.scope_mut(scope).names.insert(
-            kind.name().into(),
-            Entry {
-                target: Target::Def(owner),
-                visibility: Visibility::Public,
-            },
-        );
-        for &(name, _) in kind.variants() {
-            let operation = self.new_def(
-                namespace,
-                Name::new(name.into(), at),
-                DefinitionKind::Variant(owner),
-                None,
-                Visibility::Public,
-            );
-            self.scope_mut(namespace).names.insert(
-                name.into(),
-                Entry {
-                    target: Target::Def(operation),
-                    visibility: Visibility::Public,
-                },
-            );
-        }
-    }
-
-    fn attach_self_hosted_stdlib(
+    fn attach_stdlib(
         &mut self,
         imports: &mut Vec<(ScopeId, StmtId)>,
         errors: &mut Vec<Diagnostic>,
     ) {
-        for (module_name, import_path, template) in builtins::self_hosted_modules() {
-            let scope = if let Some(import_path) = import_path {
-                let Some(&scope) = self.modules.get(Path::new(import_path)) else {
-                    continue;
-                };
-                scope
-            } else {
-                let Some(Entry {
-                    target: Target::Module(scope),
-                    ..
-                }) = self.scope(self.prelude).names.get(*module_name).copied()
-                else {
-                    continue;
-                };
-                scope
-            };
-            let file = template.clone();
+        for module in builtins::stdlib_modules() {
+            let key = PathBuf::from(module.import_key);
+            if module.module_name == "Prelude" {
+                let file = module.file.clone();
+                let id = file.id;
+                let items = file.ast.items.clone();
+                self.stdlib_files.insert(id);
+                self.files.insert(id.0, file);
+                self.scope_mut(self.prelude).file = id;
+                self.roots.insert(id.0, self.prelude);
+                self.modules.entry(key).or_insert(self.prelude);
+                self.collect(self.prelude, &items, imports, errors);
+                continue;
+            }
+            if self.modules.contains_key(&key) {
+                continue;
+            }
+            let file = module.file.clone();
             let id = file.id;
             let items = file.ast.items.clone();
+            let scope = self.new_scope(id, "ril".into(), None, Visibility::Public);
+            self.scope_mut(scope).primitive_module = Some(module.module_name);
             self.stdlib_files.insert(id);
             self.files.insert(id.0, file);
-            self.scope_mut(scope).file = id;
             self.roots.insert(id.0, scope);
+            self.modules.insert(key, scope);
             self.collect(scope, &items, imports, errors);
         }
     }

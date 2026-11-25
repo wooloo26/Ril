@@ -14,7 +14,6 @@ use std::{
 };
 
 use ril_driver::{CompileOptions, Compiler, infer_unit, load_package};
-use ril_hir::Resolution;
 use ril_sema::ty::Ty;
 use ril_source::{
     diag::Severity,
@@ -324,12 +323,13 @@ impl LspState {
         }
 
         // 2. Check resolved identifier reference under cursor (prefers tightest span).
-        if let Some((_, Resolution::Definition(def_id))) = typed
+        if let Some(def_id) = typed
             .hir
             .resolutions()
             .filter(|(span, _)| span.file == file_id && offset >= span.start && offset <= span.end)
             .min_by_key(|(span, _)| span.end.saturating_sub(span.start))
-            && let Some(info) = describe_definition(&typed, *def_id)
+            .and_then(|(_, res)| res.definition())
+            && let Some(info) = describe_definition(&typed, def_id)
         {
             return Some(json!({
                 "contents": { "kind": "markdown", "value": format!("```ril\n{info}\n```") }
@@ -367,10 +367,7 @@ impl LspState {
             .resolutions()
             .filter(|(span, _)| span.file == file_id && offset >= span.start && offset <= span.end)
             .min_by_key(|(span, _)| span.end.saturating_sub(span.start))
-            .and_then(|(_, res)| match *res {
-                Resolution::Definition(id) => Some(id),
-                _ => None,
-            })?;
+            .and_then(|(_, res)| res.definition())?;
         let def = typed.hir.definition(target_id);
         if def.name.span.file == FileId::BUILTIN {
             return None;

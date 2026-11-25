@@ -74,7 +74,6 @@ pub enum MirTy {
     Task,
     Sender,
     Receiver,
-    PanicInfo,
     Foreign,
     RawFnPtr,
     RawU64,
