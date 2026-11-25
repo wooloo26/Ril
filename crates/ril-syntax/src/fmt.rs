@@ -175,20 +175,27 @@ fn needs_space(left: Item<'_>, right: Item<'_>) -> bool {
             if rt.tight_left && matches!(rtext, "(" | ".{" | "[" | "?" | "?.") {
                 return false;
             }
-            if matches!(
-                rtext,
-                "," | ";" | ":" | ")" | "]" | "::" | "." | "?." | ".."
-            ) {
+            if matches!(rtext, "," | ";" | ":" | ")" | "]" | "::" | "." | "?.") {
+                return false;
+            }
+            if rtext == ".." && !matches!(ltext, "{" | ".{") {
                 return false;
             }
             if matches!(
                 ltext,
-                "(" | "[" | "::" | "." | "?." | "@" | "\\" | "^" | "!" | "~" | ".."
+                "(" | "[" | "::" | "." | "?." | "\\" | "^" | "!" | "!<" | "~" | ".."
             ) {
                 return false;
             }
-            // Preserve tight `<T>` / `!<T, E>` generic brackets when originally tight.
-            if (rtext == "<" || ltext == "<" || rtext == ">") && rt.tight_left {
+            if ltext == "@" && rtext != "->" {
+                return false;
+            }
+            // Keep array type prefix `[]T` tight when originally tight.
+            if ltext == "]" && rt.tight_left {
+                return false;
+            }
+            // Preserve tight `<T>` / `!<T, E>` / `!<(), E<T>>` generic brackets when originally tight.
+            if (rtext == "<" || ltext == "<" || rtext == ">" || rtext == ">>") && rt.tight_left {
                 return false;
             }
             // Keep `&mut`, `&^mut`, `&return`, `&up`, `&capture` tight when originally tight.

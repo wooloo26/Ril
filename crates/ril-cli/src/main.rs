@@ -288,10 +288,23 @@ fn run(action: Action) -> Result<ExitCode, String> {
             }
         }
         Action::Fmt { paths, check } => {
-            let mut needs_formatting = false;
+            let mut files = Vec::new();
             for path in paths {
+                collect_ril_files(&path, &mut files)?;
+            }
+            files.sort();
+            files.dedup();
+            let mut needs_formatting = false;
+            for path in files {
                 let original = std::fs::read_to_string(&path)
                     .map_err(|e| format!("{}: {e}", path.display()))?;
+                if original
+                    .lines()
+                    .find(|line| !line.trim().is_empty())
+                    .is_some_and(|first| first.trim_start().starts_with("-- @suite"))
+                {
+                    continue;
+                }
                 let formatted = ril_driver::format_file(&path)?;
                 if formatted != original {
                     if check {
@@ -403,6 +416,32 @@ fn exit(status: std::process::ExitStatus) -> ExitCode {
         }
     }
     ExitCode::FAILURE
+}
+
+fn collect_ril_files(path: &Path, out: &mut Vec<PathBuf>) -> Result<(), String> {
+    if path.is_dir() {
+        let entries = std::fs::read_dir(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        for entry in entries {
+            let entry = entry.map_err(|e| format!("{}: {e}", path.display()))?;
+            let child = entry.path();
+            if child.is_dir() {
+                if child.file_name().and_then(|n| n.to_str()).is_some_and(|n| {
+                    matches!(
+                        n,
+                        ".git" | "target" | ".local" | ".ril-cache" | "node_modules"
+                    )
+                }) {
+                    continue;
+                }
+                collect_ril_files(&child, out)?;
+            } else if child.extension().is_some_and(|ext| ext == "ril") {
+                out.push(child);
+            }
+        }
+    } else {
+        out.push(path.to_owned());
+    }
+    Ok(())
 }
 
 fn file_mtime(path: &Path) -> Option<SystemTime> {

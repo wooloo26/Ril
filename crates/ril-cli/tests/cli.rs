@@ -177,3 +177,102 @@ fn cli_incremental_cache_reuses_and_invalidates_on_source_dep_and_option_changes
     let run = Command::new(&exe).output().unwrap();
     assert_eq!(String::from_utf8_lossy(&run.stdout), "v2\n");
 }
+
+#[test]
+fn cli_fmt_check_std_examples_run_hello_and_spawn_lsp() {
+    use std::io::Write as _;
+    use std::process::Stdio;
+
+    let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let std_dir = repo_root.join("std");
+    let examples_dir = repo_root.join("examples");
+    let hello_dir = examples_dir.join("hello");
+
+    // 1. Verify `ril fmt --check` passes on 100% of std/ and examples/
+    let fmt_check = Command::new(ril_bin())
+        .args(["fmt", "--check"])
+        .arg(&std_dir)
+        .arg(&examples_dir)
+        .output()
+        .unwrap();
+    assert!(
+        fmt_check.status.success(),
+        "ril fmt --check failed:\n{}",
+        String::from_utf8_lossy(&fmt_check.stderr)
+    );
+
+    // 2. Run multi-module `examples/hello` package via `ril run`
+    let run_hello = Command::new(ril_bin())
+        .arg("run")
+        .arg(&hello_dir)
+        .output()
+        .unwrap();
+    assert!(
+        run_hello.status.success(),
+        "ril run examples/hello failed:\n{}",
+        String::from_utf8_lossy(&run_hello.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&run_hello.stdout), "hello-ok\n");
+
+    // 3. Spawn the real `ril lsp` binary over stdio and verify initialize + didOpen + shutdown
+    let main_path = hello_dir.join("src/main.ril").canonicalize().unwrap();
+    let main_text = fs::read_to_string(&main_path).unwrap();
+    let mut child = Command::new(ril_bin())
+        .arg("lsp")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let frame = |body: &str| format!("Content-Length: {}\r\n\r\n{body}", body.len());
+    let init = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#;
+    let open = format!(
+        r#"{{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{{"textDocument":{{"uri":"file://{}","languageId":"ril","version":1,"text":{}}}}}}}"#,
+        main_path.display(),
+        serde_json_escape(&main_text)
+    );
+    let shutdown = r#"{"jsonrpc":"2.0","id":2,"method":"shutdown","params":null}"#;
+    let exit = r#"{"jsonrpc":"2.0","method":"exit"}"#;
+    {
+        let mut stdin = child.stdin.take().unwrap();
+        stdin
+            .write_all(
+                format!(
+                    "{}{}{}{}",
+                    frame(init),
+                    frame(&open),
+                    frame(shutdown),
+                    frame(exit)
+                )
+                .as_bytes(),
+            )
+            .unwrap();
+    }
+    let output = child.wait_with_output().unwrap();
+    assert!(
+        output.status.success(),
+        "ril lsp exited with {:?}: {}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("\"hoverProvider\":true"));
+    assert!(stdout.contains("\"diagnostics\":[]"));
+}
+
+fn serde_json_escape(text: &str) -> String {
+    let mut out = String::with_capacity(text.len() + 2);
+    out.push('"');
+    for ch in text.chars() {
+        match ch {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}

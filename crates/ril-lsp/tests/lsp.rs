@@ -160,3 +160,129 @@ fn lsp_jsonrpc_diagnostics_hover_definition_and_formatting() -> Result<(), Strin
     );
     Ok(())
 }
+
+#[test]
+fn lsp_real_workspace_cross_file_and_stdlib_definition() -> Result<(), String> {
+    let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .canonicalize()
+        .map_err(|e| e.to_string())?;
+    let main_path = repo_root.join("examples/hello/src/main.ril");
+    let main_text = std::fs::read_to_string(&main_path).map_err(|e| e.to_string())?;
+    let root_uri = format!("file://{}", repo_root.display());
+    let main_uri = format!("file://{}", main_path.display());
+
+    // Find exact 0-based (line, col) of `Math::square` and `Array::at` and `Array::map`.
+    let locate = |needle: &str| -> Result<(usize, usize), String> {
+        for (line_idx, line) in main_text.lines().enumerate() {
+            if let Some(col) = line.find(needle) {
+                return Ok((line_idx, col + needle.len().saturating_sub(2)));
+            }
+        }
+        Err(format!(
+            "needle {needle:?} not found in examples/hello/src/main.ril"
+        ))
+    };
+    let (sq_line, sq_col) = locate("Math::square")?;
+    let (at_line, at_col) = locate("Array::at")?;
+    let (map_line, map_col) = locate("Array::map")?;
+
+    let mut input = Vec::new();
+    input.extend(frame_lsp(&json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": { "rootUri": root_uri }
+    })));
+    input.extend(frame_lsp(&json!({
+        "jsonrpc": "2.0",
+        "method": "textDocument/didOpen",
+        "params": {
+            "textDocument": { "uri": main_uri, "languageId": "ril", "version": 1, "text": main_text }
+        }
+    })));
+    input.extend(frame_lsp(&json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "textDocument/definition",
+        "params": {
+            "textDocument": { "uri": main_uri },
+            "position": { "line": sq_line, "character": sq_col }
+        }
+    })));
+    input.extend(frame_lsp(&json!({
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "textDocument/definition",
+        "params": {
+            "textDocument": { "uri": main_uri },
+            "position": { "line": at_line, "character": at_col }
+        }
+    })));
+    input.extend(frame_lsp(&json!({
+        "jsonrpc": "2.0",
+        "id": 4,
+        "method": "textDocument/hover",
+        "params": {
+            "textDocument": { "uri": main_uri },
+            "position": { "line": map_line, "character": map_col }
+        }
+    })));
+    input.extend(frame_lsp(&json!({
+        "jsonrpc": "2.0",
+        "id": 5,
+        "method": "shutdown",
+        "params": null
+    })));
+    input.extend(frame_lsp(&json!({
+        "jsonrpc": "2.0",
+        "method": "exit"
+    })));
+
+    let mut output = Vec::new();
+    ril_lsp::handle_session(Cursor::new(input), &mut output)?;
+    let frames = parse_lsp_frames(&output)?;
+    assert_eq!(frames.len(), 6, "expected 6 LSP messages, got {frames:#?}");
+
+    // 1. Clean diagnostics on examples/hello/src/main.ril
+    let diags = frames
+        .get(1)
+        .and_then(|v| v.pointer("/params/diagnostics"))
+        .and_then(Value::as_array)
+        .ok_or("missing diagnostics")?;
+    assert!(
+        diags.is_empty(),
+        "expected clean example diagnostics: {diags:?}"
+    );
+
+    // 2. Cross-file Go-To-Definition jumps to examples/hello/src/math.ril
+    let math_uri = frames
+        .get(2)
+        .and_then(|v| v.pointer("/result/uri"))
+        .and_then(Value::as_str)
+        .ok_or("missing cross-file definition uri")?;
+    assert!(
+        math_uri.ends_with("examples/hello/src/math.ril"),
+        "expected definition in math.ril, got {math_uri}"
+    );
+
+    // 3. Stdlib Go-To-Definition jumps directly into std/array.ril!
+    let std_uri = frames
+        .get(3)
+        .and_then(|v| v.pointer("/result/uri"))
+        .and_then(Value::as_str)
+        .ok_or("missing stdlib definition uri")?;
+    assert!(
+        std_uri.ends_with("std/array.ril"),
+        "expected definition in std/array.ril, got {std_uri}"
+    );
+
+    // 4. Hover on Array::map displays its signature from std/array.ril
+    let hover = frames
+        .get(4)
+        .and_then(|v| v.pointer("/result/contents/value"))
+        .and_then(Value::as_str)
+        .ok_or("missing Array::map hover")?;
+    assert!(hover.contains("fn map"), "unexpected hover: {hover}");
+    Ok(())
+}

@@ -1,0 +1,21 @@
+-- Multi-module Ril example showcasing stdlib combinators and structured concurrency.
+
+use pkg/math
+use ril/fiber
+
+fn main() @io -> () {
+    let nums = [2, 3, 4, 5]
+    let squares = Array::map(nums, \x -> Math::square(x))
+    assert(Array::at(squares, 2) == Some(16))
+    assert(Math::safe_ratio(42, 6) == Some(7))
+    assert(Math::safe_ratio(42, 0) == None)
+
+    let raw = Bytes::from_str("hello-ril")
+    assert(String::from_bytes(raw) == Some("hello-ril"))
+
+    Fiber::run \-> {
+        let doubled = Fiber::map(squares, \n -> n * 2)
+        assert(Array::at(doubled, 3) == Some(50))
+    }
+    println("hello-ok")
+}

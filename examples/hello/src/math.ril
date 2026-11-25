@@ -1,0 +1,9 @@
+-- Reusable math utilities for the hello example.
+
+pub fn square(x: int) -> int {
+    x * x
+}
+
+pub fn safe_ratio(a: int, b: int) -> new ?int {
+    Numeric::checked_div(a, b)
+}

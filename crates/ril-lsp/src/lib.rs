@@ -4,7 +4,8 @@
 //!
 //! Supports `initialize`, `textDocument/didOpen`, `textDocument/didChange`,
 //! `textDocument/publishDiagnostics`, `textDocument/hover`, `textDocument/definition`,
-//! `textDocument/formatting`, `shutdown`, and `exit`.
+//! `textDocument/formatting`, `shutdown`, and `exit`, with full on-disk `ril.toml`
+//! workspace resolution and Go-To-Definition into both project modules and `std/*.ril`.
 
 use std::{
     collections::BTreeMap,
@@ -12,6 +13,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use ril_driver::{CompileOptions, Compiler, infer_unit, load_package};
 use ril_hir::Resolution;
 use ril_sema::ty::Ty;
 use ril_source::{
@@ -21,8 +23,6 @@ use ril_source::{
 use ril_syntax::{fmt, parser::FileKind};
 use ril_test::{Stage, Unit, VirtualPackage};
 use serde_json::{Value, json};
-
-use ril_driver::{CompileOptions, Compiler};
 
 /// Runs the LSP server over standard input / standard output.
 pub fn serve_stdio() -> Result<(), String> {
@@ -44,6 +44,11 @@ pub fn handle_session<R: BufRead, W: Write>(mut reader: R, mut writer: W) -> Res
 
         match method {
             "initialize" => {
+                if let Some(root_uri) = params.get("rootUri").and_then(Value::as_str) {
+                    state.workspace_root = uri_to_fs_path(root_uri);
+                } else if let Some(root_path) = params.get("rootPath").and_then(Value::as_str) {
+                    state.workspace_root = Some(PathBuf::from(root_path));
+                }
                 if let Some(id) = id {
                     write_message(
                         &mut writer,
@@ -144,8 +149,16 @@ pub fn handle_session<R: BufRead, W: Write>(mut reader: R, mut writer: W) -> Res
     Ok(())
 }
 
+struct WorkspacePackage {
+    pkg: VirtualPackage,
+    entry_logical: PathBuf,
+    package_dir: Option<PathBuf>,
+    logical_to_uri: BTreeMap<PathBuf, String>,
+}
+
 struct LspState {
     compiler: Compiler,
+    workspace_root: Option<PathBuf>,
     documents: BTreeMap<String, String>,
     shutdown: bool,
 }
@@ -154,13 +167,58 @@ impl LspState {
     fn new() -> Self {
         Self {
             compiler: Compiler::incremental(CompileOptions::default()),
+            workspace_root: None,
             documents: BTreeMap::new(),
             shutdown: false,
         }
     }
 
-    fn build_package(&self, uri: &str) -> Option<(VirtualPackage, PathBuf)> {
+    fn build_package(&self, uri: &str) -> Option<WorkspacePackage> {
         let text = self.documents.get(uri)?;
+        if let Some(fs_path) = uri_to_fs_path(uri)
+            && fs_path.is_file()
+            && let Ok(mut pkg) = load_package(&fs_path, infer_unit(&fs_path))
+        {
+            let entry_logical = pkg.entry.clone();
+            let canonical = fs_path.canonicalize().unwrap_or(fs_path);
+            let package_dir = entry_logical
+                .strip_prefix("pkg")
+                .ok()
+                .and_then(|rel| {
+                    let comps = rel.components().count();
+                    canonical.ancestors().nth(comps).map(Path::to_path_buf)
+                })
+                .or_else(|| canonical.parent().map(Path::to_path_buf));
+
+            let mut logical_to_uri = BTreeMap::new();
+            logical_to_uri.insert(entry_logical.clone(), uri.to_owned());
+
+            // Overlay the currently opened document text and map sibling disk files to URIs.
+            pkg.insert(entry_logical.clone(), text.as_bytes().to_vec());
+            if let Some(ref root_dir) = package_dir {
+                let keys: Vec<PathBuf> = pkg.files.keys().cloned().collect();
+                for logical in keys {
+                    if let Ok(rel) = logical.strip_prefix("pkg") {
+                        let disk = root_dir.join(rel);
+                        if disk.is_file() {
+                            let disk_uri = fs_path_to_uri(&disk);
+                            if let Some(open_text) = self.documents.get(&disk_uri) {
+                                pkg.insert(logical.clone(), open_text.as_bytes().to_vec());
+                            }
+                            logical_to_uri.entry(logical).or_insert(disk_uri);
+                        }
+                    }
+                }
+            }
+            return Some(WorkspacePackage {
+                pkg,
+                entry_logical,
+                package_dir,
+                logical_to_uri,
+            });
+        }
+
+        // Fallback for unsaved/virtual URIs not backed by an on-disk file.
         let logical = uri_to_logical_path(uri);
         let unit = if text.contains("fn main") {
             Unit::Bin
@@ -170,22 +228,44 @@ impl LspState {
         let mut pkg = VirtualPackage::new(unit);
         pkg.entry = logical.clone();
         pkg.insert(logical.clone(), text.as_bytes().to_vec());
+        let mut logical_to_uri = BTreeMap::new();
+        logical_to_uri.insert(logical.clone(), uri.to_owned());
         for (other_uri, other_text) in &self.documents {
             if other_uri == uri {
                 continue;
             }
-            pkg.insert(
-                uri_to_logical_path(other_uri),
-                other_text.as_bytes().to_vec(),
-            );
+            let other_logical = uri_to_logical_path(other_uri);
+            pkg.insert(other_logical.clone(), other_text.as_bytes().to_vec());
+            logical_to_uri.insert(other_logical, other_uri.clone());
         }
-        Some((pkg, logical))
+        Some(WorkspacePackage {
+            pkg,
+            entry_logical: logical,
+            package_dir: None,
+            logical_to_uri,
+        })
+    }
+
+    fn resolve_std_uri(&self, std_rel: &Path, active_uri: &str) -> Option<String> {
+        let mut candidates = Vec::new();
+        if let Some(ref root) = self.workspace_root {
+            candidates.push(root.join("std").join(std_rel));
+        }
+        if let Some(fs_path) = uri_to_fs_path(active_uri) {
+            for ancestor in fs_path.ancestors() {
+                candidates.push(ancestor.join("std").join(std_rel));
+            }
+        }
+        candidates
+            .into_iter()
+            .find(|p| p.is_file())
+            .map(|p| fs_path_to_uri(&p.canonicalize().unwrap_or(p)))
     }
 
     fn publish_diagnostics(&self, uri: &str) -> Value {
         let mut diagnostics = Vec::new();
-        if let Some((pkg, _)) = self.build_package(uri) {
-            let checked = self.compiler.check(&pkg, Stage::Access);
+        if let Some(ws) = self.build_package(uri) {
+            let checked = self.compiler.check(&ws.pkg, Stage::Access);
             for diag in &checked.result.diagnostics {
                 let range = diag
                     .primary
@@ -225,9 +305,9 @@ impl LspState {
         let character = usize::try_from(params.pointer("/position/character")?.as_u64()?).ok()?;
         let text = self.documents.get(uri)?;
         let offset = line_col_to_offset(text, line, character)?;
-        let (pkg, logical) = self.build_package(uri)?;
-        let (typed, _) = self.compiler.analyze_cached(&pkg).ok()?;
-        let file = typed.hir.files().find(|f| f.path == logical)?;
+        let ws = self.build_package(uri)?;
+        let (typed, _) = self.compiler.analyze_cached(&ws.pkg).ok()?;
+        let file = typed.hir.files().find(|f| f.path == ws.entry_logical)?;
         let file_id = file.id;
 
         // 1. Check direct definition under cursor (function or binding).
@@ -243,18 +323,17 @@ impl LspState {
             }
         }
 
-        // 2. Check resolved identifier reference under cursor.
-        for (&span, resolution) in typed.hir.resolutions() {
-            if span.file == file_id
-                && offset >= span.start
-                && offset <= span.end
-                && let Resolution::Definition(def_id) = *resolution
-                && let Some(info) = describe_definition(&typed, def_id)
-            {
-                return Some(json!({
-                    "contents": { "kind": "markdown", "value": format!("```ril\n{info}\n```") }
-                }));
-            }
+        // 2. Check resolved identifier reference under cursor (prefers tightest span).
+        if let Some((_, Resolution::Definition(def_id))) = typed
+            .hir
+            .resolutions()
+            .filter(|(span, _)| span.file == file_id && offset >= span.start && offset <= span.end)
+            .min_by_key(|(span, _)| span.end.saturating_sub(span.start))
+            && let Some(info) = describe_definition(&typed, *def_id)
+        {
+            return Some(json!({
+                "contents": { "kind": "markdown", "value": format!("```ril\n{info}\n```") }
+            }));
         }
 
         // 3. Fallback: smallest expression span containing the offset in `typed.types`.
@@ -278,9 +357,9 @@ impl LspState {
         let character = usize::try_from(params.pointer("/position/character")?.as_u64()?).ok()?;
         let text = self.documents.get(uri)?;
         let offset = line_col_to_offset(text, line, character)?;
-        let (pkg, logical) = self.build_package(uri)?;
-        let (typed, _) = self.compiler.analyze_cached(&pkg).ok()?;
-        let file = typed.hir.files().find(|f| f.path == logical)?;
+        let ws = self.build_package(uri)?;
+        let (typed, _) = self.compiler.analyze_cached(&ws.pkg).ok()?;
+        let file = typed.hir.files().find(|f| f.path == ws.entry_logical)?;
         let file_id = file.id;
 
         let target_id = typed
@@ -293,14 +372,25 @@ impl LspState {
                 _ => None,
             })?;
         let def = typed.hir.definition(target_id);
+        if def.name.span.file == FileId::BUILTIN {
+            return None;
+        }
         let target_file = typed.hir.file(def.name.span.file);
         let range = span_to_file_range(target_file.source(), def.name.span)?;
-        let target_uri = self
-            .documents
-            .keys()
-            .find(|u| uri_to_logical_path(u) == target_file.path)
-            .cloned()
-            .unwrap_or_else(|| uri.to_owned());
+
+        let target_uri = if let Some(mapped) = ws.logical_to_uri.get(&target_file.path) {
+            mapped.clone()
+        } else if let Ok(std_rel) = target_file.path.strip_prefix("ril/std") {
+            self.resolve_std_uri(std_rel, uri)
+                .unwrap_or_else(|| format!("file:///{}", target_file.path.display()))
+        } else if let Some(ref root_dir) = ws.package_dir
+            && let Ok(rel) = target_file.path.strip_prefix("pkg")
+        {
+            fs_path_to_uri(&root_dir.join(rel))
+        } else {
+            uri.to_owned()
+        };
+
         Some(json!({
             "uri": target_uri,
             "range": range
@@ -348,6 +438,25 @@ fn describe_definition(
         return Some(format!("{}: {}", def.name.value, ty.display(&typed.hir)));
     }
     None
+}
+
+fn uri_to_fs_path(uri: &str) -> Option<PathBuf> {
+    let rest = uri.strip_prefix("file://")?;
+    let path_str = rest.strip_prefix("localhost").unwrap_or(rest);
+    if path_str.is_empty() {
+        None
+    } else {
+        Some(PathBuf::from(path_str))
+    }
+}
+
+fn fs_path_to_uri(path: &Path) -> String {
+    let normalized = path.to_string_lossy().replace('\\', "/");
+    if normalized.starts_with('/') {
+        format!("file://{normalized}")
+    } else {
+        format!("file:///{normalized}")
+    }
 }
 
 fn uri_to_logical_path(uri: &str) -> PathBuf {
