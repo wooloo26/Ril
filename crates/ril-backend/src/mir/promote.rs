@@ -314,6 +314,11 @@ fn promote_pass(function: &mut Function) -> bool {
                         const_int.insert(*reg, value);
                     }
                 }
+                Instruction::ConstSmallInt(n) => {
+                    if let Ok(value) = usize::try_from(*n) {
+                        const_int.insert(*reg, value);
+                    }
+                }
                 _ => {}
             }
         }
@@ -444,9 +449,7 @@ fn promote_pass(function: &mut Function) -> bool {
             continue;
         };
         for (_, inst) in &block.instructions {
-            if let Instruction::StackStore { value, .. } = inst {
-                invalidate(&mut candidates, *value);
-            }
+            inst.visit_reads(|reg| invalidate(&mut candidates, reg));
         }
         match &block.terminator {
             Some(Terminator::Return(reg)) => invalidate(&mut candidates, *reg),
@@ -709,7 +712,7 @@ fn promote_pass(function: &mut Function) -> bool {
                             rewrite_const(
                                 function,
                                 block,
-                                Instruction::Handle(if matches { 2 } else { 1 }),
+                                Instruction::Handle(if matches { 6 } else { 2 }),
                                 normal,
                                 keep_result,
                             );
@@ -803,6 +806,7 @@ fn validate_sequence(
 fn alloc_reg(function: &mut Function) -> Register {
     let id = Register(function.registers);
     function.registers += 1;
+    function.reg_types.push(super::MirTy::Any);
     id
 }
 
@@ -1064,9 +1068,9 @@ fn remove_dead_instructions(function: &mut Function) -> bool {
             continue;
         };
         for (_, inst) in &block.instructions {
-            if let Instruction::StackStore { value, .. } = inst {
-                used.insert(*value);
-            }
+            inst.visit_reads(|reg| {
+                used.insert(reg);
+            });
         }
         if let Some(term) = &block.terminator {
             visit_terminator_reads(term, |reg| {
@@ -1126,9 +1130,7 @@ fn resolve_reg(map: &HashMap<Register, Register>, mut reg: Register) -> Register
 fn substitute_registers(function: &mut Function, map: &HashMap<Register, Register>) {
     for block in &mut function.blocks {
         for (_, inst) in &mut block.instructions {
-            if let Instruction::StackStore { value, .. } = inst {
-                *value = resolve_reg(map, *value);
-            }
+            inst.remap_reads(|reg| *reg = resolve_reg(map, *reg));
         }
         if let Some(term) = &mut block.terminator {
             match term {

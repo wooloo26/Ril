@@ -15,6 +15,9 @@ fn aot_foreign_functions_support_first_class_calls_and_cleanup() {
         r#"
         #include <stdint.h>
         #include <stdio.h>
+        #define RIL_UNIT  UINT64_C(0)
+        #define RIL_FALSE UINT64_C(2)
+        #define RIL_TRUE  UINT64_C(6)
         extern uint64_t ril_rt_int_literal(void *context, const uint8_t *text, size_t length);
         static const uint64_t token = UINT64_C(0x800000000000ab00);
         uint64_t host_answer(void *context) {
@@ -24,12 +27,12 @@ fn aot_foreign_functions_support_first_class_calls_and_cleanup() {
         uint64_t host_open(void *context) { (void)context; return token; }
         uint64_t host_live(void *context, uint64_t handle) {
             (void)context;
-            return handle == token ? 2 : 1;
+            return handle == token ? RIL_TRUE : RIL_FALSE;
         }
         uint64_t host_close(void *context, uint64_t handle) {
             (void)context;
             if (handle == token) puts("closed");
-            return 0;
+            return RIL_UNIT;
         }
     "#,
     )

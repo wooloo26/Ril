@@ -47,9 +47,10 @@ impl Compiler {
             return hit.map(|text| (*text).clone());
         }
         let compiled = self.lower_with(typed, analysis, key.clone())?;
-        let result = cranelift::emit_clif(&compiled)
-            .map(Arc::new)
-            .map_err(|err| vec![err]);
+        let result =
+            cranelift::emit_clif_with_opt(&compiled, self.options().opt_level.to_backend())
+                .map(Arc::new)
+                .map_err(|err| vec![err]);
         if let Some(cache) = self.cache() {
             cache.put_clif(key, result.clone());
         }
@@ -75,7 +76,7 @@ impl Compiler {
             let typed = self.typed_with(package, prepared, access.clone())?;
             let (typed, analysis) = self.analyze_with(typed, access)?;
             let compiled = self.lower_with(typed, analysis, key.clone())?;
-            cranelift::object(&compiled)
+            cranelift::object_with_opt(&compiled, self.options().opt_level.to_backend())
                 .map(Arc::new)
                 .map_err(|err| vec![err])
         })();
@@ -162,10 +163,11 @@ impl Driver {
         let wire: PackageWire = serde_json::from_reader(file).map_err(failure)?;
         let options = CompileOptions {
             opt_stack_promote: wire.opt_stack_promote,
+            opt_level: wire.opt_level,
         };
         let package = wire.into_package()?;
         let program = self.with_options(options).lower(&package)?;
-        cranelift::jit(&program).map_err(|err| vec![err])
+        cranelift::jit_with_opt(&program, options.opt_level.to_backend()).map_err(|err| vec![err])
     }
 }
 
@@ -246,6 +248,8 @@ struct PackageWire {
     budget: Option<u64>,
     #[serde(default)]
     opt_stack_promote: bool,
+    #[serde(default)]
+    opt_level: crate::OptLevel,
     files: Vec<(PathBuf, Vec<u8>)>,
 }
 
@@ -262,6 +266,7 @@ impl PackageWire {
             entry: package.entry.clone(),
             budget: package.budget,
             opt_stack_promote: options.opt_stack_promote,
+            opt_level: options.opt_level,
             files: package
                 .files
                 .iter()

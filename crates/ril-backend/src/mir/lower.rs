@@ -22,7 +22,7 @@ use ril_sema::{
 
 use super::{
     Block, BlockId, DraftOp, ForeignAbi, ForeignImport, Function, FunctionId, Instruction,
-    IntLowering, ManagedInt, Program, Register, Target, Terminator,
+    IntBinOp, IntLowering, IntUnaryOp, ManagedInt, MirTy, Program, Register, Target, Terminator,
 };
 
 type Result<T> = std::result::Result<T, Diagnostic>;
@@ -313,6 +313,7 @@ impl<'a> Lowering<'a> {
                 name,
                 arity,
                 registers: 0,
+                reg_types: Vec::new(),
                 stack_slots: 0,
                 blocks: Vec::new(),
             },
@@ -427,8 +428,13 @@ impl<'a> Builder<'_, 'a> {
     }
 
     fn register(&mut self) -> Register {
+        self.register_typed(MirTy::Any)
+    }
+
+    fn register_typed(&mut self, ty: MirTy) -> Register {
         let id = self.function.registers;
         self.function.registers += 1;
+        self.function.reg_types.push(ty);
         Register(id)
     }
 
@@ -451,8 +457,27 @@ impl<'a> Builder<'_, 'a> {
             .clone()
     }
 
+    fn instruction_ty(instruction: &Instruction) -> MirTy {
+        match instruction {
+            Instruction::Handle(0) | Instruction::StackStore { .. } => MirTy::Unit,
+            Instruction::Handle(2 | 6) | Instruction::BoolNot(_) => MirTy::Bool,
+            Instruction::Handle(_) => MirTy::Any,
+            Instruction::ConstSmallInt(_) => MirTy::SmallInt,
+            Instruction::RawU64(_) => MirTy::RawU64,
+            Instruction::FunctionAddress(_) => MirTy::RawFnPtr,
+            Instruction::Evidence => MirTy::Evidence,
+            Instruction::Environment => MirTy::Obj,
+            Instruction::Integer(_) => MirTy::Int,
+            Instruction::Float(_) => MirTy::F64,
+            Instruction::Text(_) => MirTy::Str,
+            Instruction::Bytes(_) => MirTy::Bytes,
+            Instruction::IntBinOp { op, .. } => op.result_ty(),
+            Instruction::IntUnaryOp { .. } | Instruction::StackLoad(_) => MirTy::Any,
+        }
+    }
+
     fn instruction_at(&mut self, block: BlockId, instruction: Instruction) -> Register {
-        let value = self.register();
+        let value = self.register_typed(Self::instruction_ty(&instruction));
         self.function
             .blocks
             .get_mut(block.0)
@@ -466,7 +491,7 @@ impl<'a> Builder<'_, 'a> {
         if let Some(block) = self.current {
             self.instruction_at(block, instruction)
         } else {
-            self.register()
+            self.register_typed(Self::instruction_ty(&instruction))
         }
     }
 
@@ -489,7 +514,7 @@ impl<'a> Builder<'_, 'a> {
     }
 
     fn boolean(&mut self, value: bool) -> Register {
-        self.instruction(Instruction::Handle(if value { 2 } else { 1 }))
+        self.instruction(Instruction::Handle(if value { 6 } else { 2 }))
     }
 
     fn string(&mut self, value: &str) -> Register {
@@ -497,6 +522,11 @@ impl<'a> Builder<'_, 'a> {
     }
 
     fn integer(&mut self, value: &str) -> Register {
+        if let Ok(number) = value.parse::<i64>()
+            && ((i64::MIN >> 1)..=(i64::MAX >> 1)).contains(&number)
+        {
+            return self.instruction(Instruction::ConstSmallInt(number));
+        }
         self.instruction(Instruction::Integer(value.as_bytes().into()))
     }
 
@@ -540,7 +570,13 @@ impl<'a> Builder<'_, 'a> {
     }
 
     fn runtime(&mut self, symbol: &'static str, arguments: Vec<Register>) -> Register {
-        self.invoke(Target::Runtime(symbol), arguments, false)
+        let result = self.invoke(Target::Runtime(symbol), arguments, false);
+        if symbol == "ril_rt_closure_address"
+            && let Some(ty) = self.function.reg_types.get_mut(result.0)
+        {
+            *ty = MirTy::RawFnPtr;
+        }
+        result
     }
 
     fn draft(&mut self, operation: DraftOp, arguments: Vec<Register>) -> Register {
@@ -689,6 +725,15 @@ impl<'a> Builder<'_, 'a> {
                 match op.value.as_str() {
                     "new" | "ref" | "^mut" => Ok(value),
                     "?" => self.propagate(value),
+                    "!" => Ok(self.instruction(Instruction::BoolNot(value))),
+                    "-" => Ok(self.instruction(Instruction::IntUnaryOp {
+                        op: IntUnaryOp::Neg,
+                        value,
+                    })),
+                    "~" => Ok(self.instruction(Instruction::IntUnaryOp {
+                        op: IntUnaryOp::BitNot,
+                        value,
+                    })),
                     op => ManagedInt
                         .unary(op)
                         .map(|symbol| self.runtime(symbol, vec![value]))

@@ -16,22 +16,29 @@ impl From<RilInt> for Value {
 }
 
 impl Value {
-    pub(crate) const SMALL_INT_TAG: u64 = 1 << 63;
+    pub const SMALL_INT_TAG: u64 = 1;
 
-    pub(crate) fn from_small_int(number: i64) -> Option<Self> {
-        // The lower 63 bits store a signed two's-complement payload.
-        ((i64::MIN >> 1)..=(i64::MAX >> 1))
-            .contains(&number)
-            .then(|| Self(u64::from_ne_bytes(number.to_ne_bytes()) | Self::SMALL_INT_TAG))
+    pub const fn from_small_int(number: i64) -> Option<Self> {
+        // 63-bit signed integer stored in bits [63:1] with low tag bit 1.
+        if number >= (i64::MIN >> 1) && number <= (i64::MAX >> 1) {
+            Some(Self(
+                (u64::from_ne_bytes(number.to_ne_bytes()) << 1) | Self::SMALL_INT_TAG,
+            ))
+        } else {
+            None
+        }
     }
 
-    pub(crate) fn small_int(self) -> Option<i64> {
-        (self.0 & Self::SMALL_INT_TAG != 0)
-            .then(|| i64::from_ne_bytes((self.0 << 1).to_ne_bytes()) >> 1)
+    pub const fn small_int(self) -> Option<i64> {
+        if self.0 & Self::SMALL_INT_TAG != 0 {
+            Some(i64::from_ne_bytes(self.0.to_ne_bytes()) >> 1)
+        } else {
+            None
+        }
     }
 
-    pub(crate) const fn is_immediate(self) -> bool {
-        self.0 < 3 || self.0 & Self::SMALL_INT_TAG != 0
+    pub const fn is_immediate(self) -> bool {
+        self.0 == 0 || (self.0 & 0b111) != 0
     }
 }
 

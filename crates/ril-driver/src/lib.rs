@@ -33,8 +33,30 @@ pub const AVAILABLE: ril_test::Milestone = ril_test::Milestone::M5;
 #[derive(
     Clone, Copy, Debug, Default, Eq, Hash, PartialEq, serde::Serialize, serde::Deserialize,
 )]
+pub enum OptLevel {
+    #[default]
+    None,
+    Speed,
+    SpeedAndSize,
+}
+
+impl OptLevel {
+    pub const fn to_backend(self) -> ril_backend::cranelift::OptLevel {
+        match self {
+            Self::None => ril_backend::cranelift::OptLevel::None,
+            Self::Speed => ril_backend::cranelift::OptLevel::Speed,
+            Self::SpeedAndSize => ril_backend::cranelift::OptLevel::SpeedAndSize,
+        }
+    }
+}
+
+#[derive(
+    Clone, Copy, Debug, Default, Eq, Hash, PartialEq, serde::Serialize, serde::Deserialize,
+)]
 pub struct CompileOptions {
     pub opt_stack_promote: bool,
+    #[serde(default)]
+    pub opt_level: OptLevel,
 }
 
 impl CompileOptions {

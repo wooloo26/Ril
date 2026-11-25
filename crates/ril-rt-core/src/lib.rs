@@ -10,7 +10,7 @@ mod text;
 mod unwind;
 
 pub use ffi::symbols;
-pub use gc::{GcRuntime, Object, TypeDesc, Value};
+pub use gc::{GcRuntime, Object, RootFrameHeader, TypeDesc, Value};
 pub use num::RilInt;
 pub use unwind::Runtime;
 

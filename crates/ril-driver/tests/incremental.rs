@@ -148,9 +148,11 @@ fn incremental_invalidates_on_dependency_interface_change_and_reuses_same_abi_ha
 fn incremental_invalidates_only_affected_stages_on_option_and_budget_changes() {
     let base = Driver.incremental(CompileOptions {
         opt_stack_promote: false,
+        ..CompileOptions::default()
     });
     let opt = base.with_options(CompileOptions {
         opt_stack_promote: true,
+        ..CompileOptions::default()
     });
 
     let mut pkg = VirtualPackage::new(Unit::Bin);
@@ -226,6 +228,7 @@ fn disk_incremental_cache_persists_across_sessions_and_invalidates_on_changes() 
     let cold = Driver.with_disk_cache(
         CompileOptions {
             opt_stack_promote: false,
+            ..CompileOptions::default()
         },
         cache_dir.clone(),
     );
@@ -243,6 +246,7 @@ fn disk_incremental_cache_persists_across_sessions_and_invalidates_on_changes() 
     let warm = Driver.with_disk_cache(
         CompileOptions {
             opt_stack_promote: false,
+            ..CompileOptions::default()
         },
         cache_dir.clone(),
     );
@@ -263,6 +267,7 @@ fn disk_incremental_cache_persists_across_sessions_and_invalidates_on_changes() 
     let opt_session = Driver.with_disk_cache(
         CompileOptions {
             opt_stack_promote: true,
+            ..CompileOptions::default()
         },
         cache_dir.clone(),
     );

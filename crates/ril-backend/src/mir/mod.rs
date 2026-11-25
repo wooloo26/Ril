@@ -1,5 +1,6 @@
 mod lower;
 mod promote;
+mod verify;
 
 use std::sync::Arc;
 
@@ -21,8 +22,14 @@ pub fn lower_with_options(
     options: LowerOptions,
 ) -> Result<Program, Diagnostic> {
     let mut lowered = lower::lower(program, analysis)?;
+    if cfg!(debug_assertions) {
+        verify::verify(&lowered)?;
+    }
     if options.stack_promote {
         promote::promote_program(&mut lowered);
+        if cfg!(debug_assertions) {
+            verify::verify(&lowered)?;
+        }
     }
     Ok(lowered)
 }
@@ -35,6 +42,134 @@ pub(crate) struct BlockId(pub usize);
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub(crate) struct Register(pub usize);
+
+/// Static type of a MIR SSA register, separating GC-managed values from raw/immediate words.
+#[allow(
+    dead_code,
+    reason = "typed MIR variants used progressively across R3 passes"
+)]
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+pub(crate) enum MirTy {
+    Unit,
+    Bool,
+    SmallInt,
+    Int,
+    F64,
+    Never,
+    Str,
+    Bytes,
+    Obj,
+    Sum,
+    Array,
+    Map,
+    Closure,
+    Evidence,
+    Draft,
+    Scope,
+    Task,
+    Sender,
+    Receiver,
+    PanicInfo,
+    Foreign,
+    RawFnPtr,
+    RawU64,
+    #[default]
+    Any,
+}
+
+impl MirTy {
+    /// Returns `true` when values of this MIR type may point to a GC-managed heap object
+    /// and therefore require a slot in the stack `RootFrame`.
+    pub(crate) const fn is_gc_managed(self) -> bool {
+        !matches!(
+            self,
+            Self::Unit
+                | Self::Bool
+                | Self::SmallInt
+                | Self::Never
+                | Self::Foreign
+                | Self::RawFnPtr
+                | Self::RawU64
+        )
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub(crate) enum IntBinOp {
+    Add,
+    Sub,
+    Mul,
+    BitAnd,
+    BitOr,
+    BitXor,
+    Eq,
+    Ne,
+    Lt,
+    Le,
+    Gt,
+    Ge,
+}
+
+impl IntBinOp {
+    pub(crate) const fn slow_symbol(self) -> &'static str {
+        match self {
+            Self::Add => "ril_rt_int_add",
+            Self::Sub => "ril_rt_int_sub",
+            Self::Mul => "ril_rt_int_mul",
+            Self::BitAnd => "ril_rt_int_and",
+            Self::BitOr => "ril_rt_int_or",
+            Self::BitXor => "ril_rt_int_xor",
+            Self::Eq => "ril_rt_equal",
+            Self::Ne => "ril_rt_not_equal",
+            Self::Lt => "ril_rt_lt",
+            Self::Le => "ril_rt_le",
+            Self::Gt => "ril_rt_gt",
+            Self::Ge => "ril_rt_ge",
+        }
+    }
+
+    pub(crate) fn from_token(token: &str) -> Option<Self> {
+        Some(match token {
+            "+" => Self::Add,
+            "-" => Self::Sub,
+            "*" => Self::Mul,
+            "&" => Self::BitAnd,
+            "|" => Self::BitOr,
+            "^" => Self::BitXor,
+            "==" => Self::Eq,
+            "!=" => Self::Ne,
+            "<" => Self::Lt,
+            "<=" => Self::Le,
+            ">" => Self::Gt,
+            ">=" => Self::Ge,
+            _ => return None,
+        })
+    }
+
+    pub(crate) const fn result_ty(self) -> MirTy {
+        match self {
+            Self::Eq | Self::Ne | Self::Lt | Self::Le | Self::Gt | Self::Ge => MirTy::Bool,
+            Self::Add | Self::Sub | Self::Mul | Self::BitAnd | Self::BitOr | Self::BitXor => {
+                MirTy::Any
+            }
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub(crate) enum IntUnaryOp {
+    Neg,
+    BitNot,
+}
+
+impl IntUnaryOp {
+    pub(crate) const fn slow_symbol(self) -> &'static str {
+        match self {
+            Self::Neg => "ril_rt_neg",
+            Self::BitNot => "ril_rt_bit_not",
+        }
+    }
+}
 
 #[derive(Debug)]
 pub struct Program {
@@ -63,6 +198,7 @@ pub(crate) struct Function {
     pub(crate) name: String,
     pub(crate) arity: usize,
     pub(crate) registers: usize,
+    pub(crate) reg_types: Vec<MirTy>,
     pub(crate) stack_slots: usize,
     pub(crate) blocks: Vec<Block>,
 }
@@ -77,6 +213,7 @@ pub(crate) struct Block {
 #[derive(Debug)]
 pub(crate) enum Instruction {
     Handle(u64),
+    ConstSmallInt(i64),
     RawU64(u64),
     Evidence,
     Environment,
@@ -85,8 +222,69 @@ pub(crate) enum Instruction {
     Float(u64),
     Text(Box<[u8]>),
     Bytes(Box<[u8]>),
+    IntBinOp {
+        op: IntBinOp,
+        left: Register,
+        right: Register,
+    },
+    IntUnaryOp {
+        op: IntUnaryOp,
+        value: Register,
+    },
+    BoolNot(Register),
     StackLoad(usize),
-    StackStore { slot: usize, value: Register },
+    StackStore {
+        slot: usize,
+        value: Register,
+    },
+}
+
+impl Instruction {
+    pub(crate) fn visit_reads(&self, mut visit: impl FnMut(Register)) {
+        match self {
+            Self::StackStore { value, .. }
+            | Self::IntUnaryOp { value, .. }
+            | Self::BoolNot(value) => visit(*value),
+            Self::IntBinOp { left, right, .. } => {
+                visit(*left);
+                visit(*right);
+            }
+            Self::Handle(_)
+            | Self::ConstSmallInt(_)
+            | Self::RawU64(_)
+            | Self::Evidence
+            | Self::Environment
+            | Self::FunctionAddress(_)
+            | Self::Integer(_)
+            | Self::Float(_)
+            | Self::Text(_)
+            | Self::Bytes(_)
+            | Self::StackLoad(_) => {}
+        }
+    }
+
+    pub(crate) fn remap_reads(&mut self, mut remap: impl FnMut(&mut Register)) {
+        match self {
+            Self::StackStore { value, .. }
+            | Self::IntUnaryOp { value, .. }
+            | Self::BoolNot(value) => remap(value),
+            Self::IntBinOp { left, right, .. } => {
+                remap(left);
+                remap(right);
+            }
+            Self::Handle(_)
+            | Self::ConstSmallInt(_)
+            | Self::RawU64(_)
+            | Self::Evidence
+            | Self::Environment
+            | Self::FunctionAddress(_)
+            | Self::Integer(_)
+            | Self::Float(_)
+            | Self::Text(_)
+            | Self::Bytes(_)
+            | Self::StackLoad(_) => {}
+        }
+    }
 }
 
 #[derive(Clone, Debug)]

@@ -12,19 +12,46 @@ use cranelift_object::{ObjectBuilder, ObjectModule};
 use ril_base::diag::Diagnostic;
 
 use crate::mir::{
-    self, BlockId, ForeignAbi, ForeignImport, FunctionId, Instruction, Register, Target, Terminator,
+    self, BlockId, ForeignAbi, ForeignImport, FunctionId, Instruction, IntBinOp, IntUnaryOp,
+    Register, Target, Terminator,
 };
 
 type Result<T> = std::result::Result<T, Diagnostic>;
+
+const RIL_UNIT: i64 = 0;
+const RIL_FALSE: i64 = 0b010;
+const RIL_TRUE: i64 = 0b110;
+
+/// Cranelift backend optimization level exposed to `ril build` / `ril run`.
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+pub enum OptLevel {
+    #[default]
+    None,
+    Speed,
+    SpeedAndSize,
+}
+
+impl OptLevel {
+    const fn as_cranelift(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Speed => "speed",
+            Self::SpeedAndSize => "speed_and_size",
+        }
+    }
+}
 
 fn diagnostic(error: impl std::fmt::Display) -> Diagnostic {
     Diagnostic::unsupported(format!("native code generation: {error}"))
 }
 
-fn target(pic: bool) -> Result<isa::OwnedTargetIsa> {
+fn target(pic: bool, opt_level: OptLevel) -> Result<isa::OwnedTargetIsa> {
     let mut flags = settings::builder();
     flags
         .set("is_pic", if pic { "true" } else { "false" })
+        .map_err(diagnostic)?;
+    flags
+        .set("opt_level", opt_level.as_cranelift())
         .map_err(diagnostic)?;
     flags
         .set(
@@ -49,18 +76,34 @@ fn target(pic: bool) -> Result<isa::OwnedTargetIsa> {
 }
 
 pub fn object(program: &mir::Program) -> Result<Vec<u8>> {
-    let object = ObjectBuilder::new(target(true)?, "ril.program", default_libcall_names())
-        .map_err(diagnostic)?;
+    object_with_opt(program, OptLevel::None)
+}
+
+pub fn object_with_opt(program: &mir::Program, opt_level: OptLevel) -> Result<Vec<u8>> {
+    let object = ObjectBuilder::new(
+        target(true, opt_level)?,
+        "ril.program",
+        default_libcall_names(),
+    )
+    .map_err(diagnostic)?;
     let mut module = ObjectModule::new(object);
-    MirToClifTranslator::compile(&mut module, program, None)?;
+    MirToClifTranslator::compile(&mut module, program, None, false)?;
     module.finish().emit().map_err(diagnostic)
 }
 
 pub fn emit_clif(program: &mir::Program) -> Result<String> {
-    let object = ObjectBuilder::new(target(true)?, "ril.program", default_libcall_names())
-        .map_err(diagnostic)?;
+    emit_clif_with_opt(program, OptLevel::None)
+}
+
+pub fn emit_clif_with_opt(program: &mir::Program, opt_level: OptLevel) -> Result<String> {
+    let object = ObjectBuilder::new(
+        target(true, opt_level)?,
+        "ril.program",
+        default_libcall_names(),
+    )
+    .map_err(diagnostic)?;
     let mut module = ObjectModule::new(object);
-    let (_, text) = MirToClifTranslator::compile(&mut module, program, None)?;
+    let (_, text) = MirToClifTranslator::compile(&mut module, program, None, true)?;
     Ok(text)
 }
 
@@ -72,7 +115,18 @@ pub fn emit_clif(program: &mir::Program) -> Result<String> {
 pub fn jit(program: &mir::Program) -> Result<i32> {
     // SAFETY: the resolver supplies no host functions. Every reachable import
     // outside the runtime must resolve explicitly before generated code is run.
-    unsafe { jit_with_imports(program, |_| None) }
+    unsafe { jit_with_imports_and_opt(program, OptLevel::None, |_| None) }
+}
+
+#[cfg(feature = "native-runtime")]
+#[allow(
+    unsafe_code,
+    reason = "execute the verified native entry while its JIT module owns the code"
+)]
+pub fn jit_with_opt(program: &mir::Program, opt_level: OptLevel) -> Result<i32> {
+    // SAFETY: the resolver supplies no host functions. Every reachable import
+    // outside the runtime must resolve explicitly before generated code is run.
+    unsafe { jit_with_imports_and_opt(program, opt_level, |_| None) }
 }
 
 /// Execute native code with an embedding application's host bindings.
@@ -91,11 +145,29 @@ pub fn jit(program: &mir::Program) -> Result<i32> {
 )]
 pub unsafe fn jit_with_imports(
     program: &mir::Program,
+    resolve: impl FnMut(&ForeignImport) -> Option<*const u8>,
+) -> Result<i32> {
+    // SAFETY: caller upholds the foreign import ABI contract.
+    unsafe { jit_with_imports_and_opt(program, OptLevel::None, resolve) }
+}
+
+/// Execute native code at a chosen Cranelift optimization level with host bindings.
+///
+/// # Safety
+/// Same requirements as [`jit_with_imports`].
+#[cfg(feature = "native-runtime")]
+#[allow(
+    unsafe_code,
+    reason = "verify imports before entering generated native code"
+)]
+pub unsafe fn jit_with_imports_and_opt(
+    program: &mir::Program,
+    opt_level: OptLevel,
     mut resolve: impl FnMut(&ForeignImport) -> Option<*const u8>,
 ) -> Result<i32> {
     use cranelift_jit::{JITBuilder, JITModule};
 
-    let mut builder = JITBuilder::with_isa(target(false)?, default_libcall_names());
+    let mut builder = JITBuilder::with_isa(target(false, opt_level)?, default_libcall_names());
     builder.symbols(ril_rt_core::symbols());
     let mut imports = BTreeSet::new();
     for function in &program.functions {
@@ -129,7 +201,8 @@ pub unsafe fn jit_with_imports(
         foreign_names.insert(import.clone(), alias);
     }
     let mut module = JITModule::new(builder);
-    let (entry, _) = MirToClifTranslator::compile(&mut module, program, Some(&foreign_names))?;
+    let (entry, _) =
+        MirToClifTranslator::compile(&mut module, program, Some(&foreign_names), false)?;
     module.finalize_definitions().map_err(diagnostic)?;
     let address = module.get_finalized_function(entry);
     // SAFETY: the translator defines entry with the platform C signature () -> i32.
@@ -143,6 +216,7 @@ struct MirToClifTranslator<'a, M> {
     module: &'a mut M,
     functions: Vec<FuncId>,
     foreign_names: Option<&'a BTreeMap<ForeignImport, String>>,
+    emit_text: bool,
 }
 
 fn foreign_symbol<'a>(
@@ -158,16 +232,57 @@ fn foreign_symbol<'a>(
     }
 }
 
+/// Maps each GC-managed MIR register and stack slot to its compact offset inside the
+/// function's intrusive stack-allocated `RootFrame` (`[prev: 8B | count: 8B | slots: N*8B]`).
+struct RootLayout {
+    reg_slot: Vec<Option<i32>>,
+    stack_slot_base: usize,
+    total_slots: usize,
+}
+
+impl RootLayout {
+    fn build(function: &mir::Function) -> Self {
+        let mut reg_slot = vec![None; function.registers];
+        let mut next = 0usize;
+        for (idx, ty) in function.reg_types.iter().enumerate() {
+            if ty.is_gc_managed()
+                && let Some(entry) = reg_slot.get_mut(idx)
+                && let Ok(offset) = i32::try_from(16 + next * 8)
+            {
+                *entry = Some(offset);
+                next += 1;
+            }
+        }
+        let stack_slot_base = next;
+        let total_slots = next + function.stack_slots;
+        Self {
+            reg_slot,
+            stack_slot_base,
+            total_slots,
+        }
+    }
+
+    fn reg_offset(&self, reg: Register) -> Option<i32> {
+        self.reg_slot.get(reg.0).copied().flatten()
+    }
+
+    fn stack_offset(&self, slot: usize) -> Result<i32> {
+        i32::try_from(16 + (self.stack_slot_base + slot) * 8).map_err(diagnostic)
+    }
+}
+
 impl<'a, M: Module> MirToClifTranslator<'a, M> {
     fn compile(
         module: &'a mut M,
         program: &mir::Program,
         foreign_names: Option<&'a BTreeMap<ForeignImport, String>>,
+        emit_text: bool,
     ) -> Result<(FuncId, String)> {
         let mut compiler = MirToClifTranslator {
             module,
             functions: Vec::new(),
             foreign_names,
+            emit_text,
         };
         for (index, function) in program.functions.iter().enumerate() {
             let signature = compiler.signature(function.arity + 3, Some(types::I64));
@@ -181,12 +296,16 @@ impl<'a, M: Module> MirToClifTranslator<'a, M> {
         for (index, function) in program.functions.iter().enumerate() {
             let id = compiler.function_id(FunctionId(index))?;
             let code = compiler.translate(id, function)?;
-            use std::fmt::Write as _;
-            writeln!(ir, "\n; {}\n{code}", function.name).map_err(diagnostic)?;
+            if emit_text {
+                use std::fmt::Write as _;
+                writeln!(ir, "\n; {}\n{code}", function.name).map_err(diagnostic)?;
+            }
         }
         let (entry, wrapper) = compiler.wrapper(program.entry, program.suspend_at_entry)?;
-        use std::fmt::Write as _;
-        writeln!(ir, "\n; executable entry\n{wrapper}").map_err(diagnostic)?;
+        if emit_text {
+            use std::fmt::Write as _;
+            writeln!(ir, "\n; executable entry\n{wrapper}").map_err(diagnostic)?;
+        }
         Ok((entry, ir))
     }
 
@@ -272,6 +391,17 @@ impl<'a, M: Module> MirToClifTranslator<'a, M> {
                 ))
             })
             .collect();
+        let root_layout = RootLayout::build(function);
+        let root_frame = if root_layout.total_slots > 0 {
+            let bytes = u32::try_from(16 + root_layout.total_slots * 8).map_err(diagnostic)?;
+            Some(builder.create_sized_stack_slot(ir::StackSlotData::new(
+                ir::StackSlotKind::ExplicitSlot,
+                bytes,
+                3,
+            )))
+        } else {
+            None
+        };
         let abi = builder.block_params(entry).to_vec();
         let [rt, evidence, environment, rest @ ..] = abi.as_slice() else {
             return Err(diagnostic("missing Ril closure ABI parameters"));
@@ -294,22 +424,6 @@ impl<'a, M: Module> MirToClifTranslator<'a, M> {
                 registers.insert(register, value);
             }
         }
-        let non_gc_params: std::collections::BTreeSet<Register> = function
-            .blocks
-            .iter()
-            .filter_map(|block| match &block.terminator {
-                Some(Terminator::Invoke {
-                    target: Target::Runtime("ril_rt_closure_address"),
-                    normal,
-                    keep_result: true,
-                    ..
-                }) => function
-                    .blocks
-                    .get(normal.0)
-                    .and_then(|target| target.params.first().copied()),
-                _ => None,
-            })
-            .collect();
         for id in order {
             let source = function
                 .blocks
@@ -317,18 +431,34 @@ impl<'a, M: Module> MirToClifTranslator<'a, M> {
                 .ok_or_else(|| diagnostic("invalid MIR block"))?;
             builder.switch_to_block(labels(id)?);
             if id == BlockId(0) {
-                let size = number(&mut builder, function.registers + function.stack_slots)?;
-                self.native(&mut builder, "ril_rt_roots_push", &[rt, size], None)?;
-                if !stack_slots.is_empty() {
-                    let zero = builder.ins().iconst(types::I64, 0);
-                    for &slot in &stack_slots {
-                        builder.ins().stack_store(types::I64, zero, slot, 0);
+                let zero = builder.ins().iconst(types::I64, RIL_UNIT);
+                if let Some(frame) = root_frame {
+                    // Prologue invariant: zero-initialize all root slots BEFORE linking
+                    // the frame into `rt.gc.top_frame` (offset 8 of Runtime).
+                    for idx in 0..root_layout.total_slots {
+                        let offset = i32::try_from(16 + idx * 8).map_err(diagnostic)?;
+                        builder.ins().stack_store(types::I64, zero, frame, offset);
                     }
+                    let prev = builder
+                        .ins()
+                        .load(types::I64, ir::MemFlagsData::trusted(), rt, 8);
+                    builder.ins().stack_store(types::I64, prev, frame, 0);
+                    let count = number(&mut builder, root_layout.total_slots)?;
+                    builder.ins().stack_store(types::I64, count, frame, 8);
+                    let frame_addr = builder.ins().stack_addr(types::I64, frame, 0);
+                    builder
+                        .ins()
+                        .store(ir::MemFlagsData::trusted(), frame_addr, rt, 8);
+                }
+                for &slot in &stack_slots {
+                    builder.ins().stack_store(types::I64, zero, slot, 0);
                 }
             }
             for &parameter in &source.params {
-                if !non_gc_params.contains(&parameter) {
-                    self.root(&mut builder, rt, parameter, reg(&registers, parameter)?)?;
+                if let (Some(frame), Some(offset)) = (root_frame, root_layout.reg_offset(parameter))
+                {
+                    let val = reg(&registers, parameter)?;
+                    builder.ins().stack_store(types::I64, val, frame, offset);
                 }
             }
             for (result, instruction) in &source.instructions {
@@ -341,7 +471,11 @@ impl<'a, M: Module> MirToClifTranslator<'a, M> {
                             .ins()
                             .stack_load(types::I64, types::I64, clif_slot, 0);
                         registers.insert(*result, value);
-                        self.root_if_heap(&mut builder, rt, result.0, value)?;
+                        if let (Some(frame), Some(offset)) =
+                            (root_frame, root_layout.reg_offset(*result))
+                        {
+                            builder.ins().stack_store(types::I64, value, frame, offset);
+                        }
                     }
                     Instruction::StackStore { slot, value } => {
                         let clif_slot = *stack_slots
@@ -349,26 +483,72 @@ impl<'a, M: Module> MirToClifTranslator<'a, M> {
                             .ok_or_else(|| diagnostic("invalid MIR stack slot"))?;
                         let value = reg(&registers, *value)?;
                         builder.ins().stack_store(types::I64, value, clif_slot, 0);
-                        self.root_if_heap(&mut builder, rt, function.registers + *slot, value)?;
-                        let unit = builder.ins().iconst(types::I64, 0);
+                        if let Some(frame) = root_frame {
+                            let offset = root_layout.stack_offset(*slot)?;
+                            builder.ins().stack_store(types::I64, value, frame, offset);
+                        }
+                        let unit = builder.ins().iconst(types::I64, RIL_UNIT);
                         registers.insert(*result, unit);
                     }
                     Instruction::Evidence => {
                         registers.insert(*result, incoming_evidence);
-                        self.root(&mut builder, rt, *result, incoming_evidence)?;
+                        if let (Some(frame), Some(offset)) =
+                            (root_frame, root_layout.reg_offset(*result))
+                        {
+                            builder
+                                .ins()
+                                .stack_store(types::I64, incoming_evidence, frame, offset);
+                        }
                     }
                     Instruction::Environment => {
                         registers.insert(*result, incoming_environment);
-                        self.root(&mut builder, rt, *result, incoming_environment)?;
+                        if let (Some(frame), Some(offset)) =
+                            (root_frame, root_layout.reg_offset(*result))
+                        {
+                            builder.ins().stack_store(
+                                types::I64,
+                                incoming_environment,
+                                frame,
+                                offset,
+                            );
+                        }
                     }
-                    Instruction::FunctionAddress(_) | Instruction::RawU64(_) => {
-                        let value = self.instruction(&mut builder, rt, instruction)?;
+                    Instruction::IntBinOp { op, left, right } => {
+                        let a = reg(&registers, *left)?;
+                        let b = reg(&registers, *right)?;
+                        let value = self.emit_int_binop(&mut builder, rt, *op, a, b)?;
                         registers.insert(*result, value);
+                        if let (Some(frame), Some(offset)) =
+                            (root_frame, root_layout.reg_offset(*result))
+                        {
+                            builder.ins().stack_store(types::I64, value, frame, offset);
+                        }
+                    }
+                    Instruction::IntUnaryOp { op, value } => {
+                        let a = reg(&registers, *value)?;
+                        let out = self.emit_int_unaryop(&mut builder, rt, *op, a)?;
+                        registers.insert(*result, out);
+                        if let (Some(frame), Some(offset)) =
+                            (root_frame, root_layout.reg_offset(*result))
+                        {
+                            builder.ins().stack_store(types::I64, out, frame, offset);
+                        }
+                    }
+                    Instruction::BoolNot(value) => {
+                        let a = reg(&registers, *value)?;
+                        // RIL_FALSE = 0b010 (2), RIL_TRUE = 0b110 (6); XOR 4 flips cleanly.
+                        let mask = builder.ins().iconst(types::I64, 4);
+                        let out = builder.ins().bxor(a, mask);
+                        registers.insert(*result, out);
                     }
                     _ => {
                         let value = self.instruction(&mut builder, rt, instruction)?;
                         registers.insert(*result, value);
-                        self.root(&mut builder, rt, *result, value)?;
+                        if let (Some(frame), Some(offset)) =
+                            (root_frame, root_layout.reg_offset(*result))
+                        {
+                            builder.ins().stack_store(types::I64, value, frame, offset);
+                        }
                     }
                 }
             }
@@ -391,7 +571,7 @@ impl<'a, M: Module> MirToClifTranslator<'a, M> {
                 }
                 Terminator::Branch { condition, yes, no } => {
                     let value = reg(&registers, *condition)?;
-                    let test = builder.ins().icmp_imm_s(IntCC::Equal, value, 2);
+                    let test = builder.ins().icmp_imm_s(IntCC::Equal, value, RIL_TRUE);
                     builder
                         .ins()
                         .brif(test, labels(*yes)?, &[], labels(*no)?, &[]);
@@ -418,7 +598,7 @@ impl<'a, M: Module> MirToClifTranslator<'a, M> {
                                 if let Target::FunctionWithEnv { environment, .. } = target {
                                     reg(&registers, *environment)?
                                 } else {
-                                    builder.ins().iconst(types::I64, 0)
+                                    builder.ins().iconst(types::I64, RIL_UNIT)
                                 };
                             let args = [rt, reg(&registers, *evidence)?, environment]
                                 .into_iter()
@@ -488,7 +668,12 @@ impl<'a, M: Module> MirToClifTranslator<'a, M> {
                 }
                 Terminator::Return(value) => {
                     let value = reg(&registers, *value)?;
-                    self.native(&mut builder, "ril_rt_roots_pop", &[rt], None)?;
+                    if let Some(frame) = root_frame {
+                        let prev = builder.ins().stack_load(types::I64, types::I64, frame, 0);
+                        builder
+                            .ins()
+                            .store(ir::MemFlagsData::trusted(), prev, rt, 8);
+                    }
                     builder.ins().return_(&[value]);
                 }
             }
@@ -498,47 +683,182 @@ impl<'a, M: Module> MirToClifTranslator<'a, M> {
         if cfg!(debug_assertions) {
             verify_function(&context.func, self.module.isa()).map_err(diagnostic)?;
         }
-        let text = context.func.display().to_string();
+        let text = if self.emit_text {
+            context.func.display().to_string()
+        } else {
+            String::new()
+        };
         self.module
             .define_function(id, &mut context)
-            .map_err(|err| diagnostic(format!("{}: {err}\n{text}", function.name)))?;
+            .map_err(|err| {
+                let dump = if text.is_empty() {
+                    context.func.display().to_string()
+                } else {
+                    text.clone()
+                };
+                diagnostic(format!("{}: {err}\n{dump}", function.name))
+            })?;
         Ok(text)
     }
 
-    fn root(
+    fn emit_int_binop(
         &mut self,
         builder: &mut FunctionBuilder<'_>,
         rt: Value,
-        register: Register,
-        value: Value,
-    ) -> Result<()> {
-        let slot = number(builder, register.0)?;
-        self.native(builder, "ril_rt_roots_set", &[rt, slot, value], None)?;
-        Ok(())
-    }
+        op: IntBinOp,
+        a: Value,
+        b: Value,
+    ) -> Result<Value> {
+        let one = builder.ins().iconst(types::I64, 1);
+        let both_bits = builder.ins().band(a, b);
+        let both_small = builder.ins().band(both_bits, one);
 
-    fn root_if_heap(
-        &mut self,
-        builder: &mut FunctionBuilder<'_>,
-        rt: Value,
-        slot: usize,
-        value: Value,
-    ) -> Result<()> {
-        let offset = builder.ins().iadd_imm_s(value, -3);
-        let is_heap = builder
-            .ins()
-            .icmp_imm_s(IntCC::UnsignedLessThan, offset, i64::MAX - 2);
-        let root_block = builder.create_block();
-        let cont_block = builder.create_block();
+        let fast_block = builder.create_block();
+        let slow_block = builder.create_block();
+        let merge_block = builder.create_block();
+        builder.append_block_param(merge_block, types::I64);
+        builder.set_cold_block(slow_block);
+
         builder
             .ins()
-            .brif(is_heap, root_block, &[], cont_block, &[]);
-        builder.switch_to_block(root_block);
-        let slot = number(builder, slot)?;
-        self.native(builder, "ril_rt_roots_set", &[rt, slot, value], None)?;
-        builder.ins().jump(cont_block, &[]);
-        builder.switch_to_block(cont_block);
-        Ok(())
+            .brif(both_small, fast_block, &[], slow_block, &[]);
+
+        builder.switch_to_block(fast_block);
+        match op {
+            IntBinOp::BitAnd => {
+                let res = builder.ins().band(a, b);
+                builder.ins().jump(merge_block, &[BlockArg::Value(res)]);
+            }
+            IntBinOp::BitOr => {
+                let res = builder.ins().bor(a, b);
+                builder.ins().jump(merge_block, &[BlockArg::Value(res)]);
+            }
+            IntBinOp::BitXor => {
+                let x = builder.ins().bxor(a, b);
+                let res = builder.ins().bor(x, one);
+                builder.ins().jump(merge_block, &[BlockArg::Value(res)]);
+            }
+            IntBinOp::Eq
+            | IntBinOp::Ne
+            | IntBinOp::Lt
+            | IntBinOp::Le
+            | IntBinOp::Gt
+            | IntBinOp::Ge => {
+                let cc = match op {
+                    IntBinOp::Eq => IntCC::Equal,
+                    IntBinOp::Ne => IntCC::NotEqual,
+                    IntBinOp::Lt => IntCC::SignedLessThan,
+                    IntBinOp::Le => IntCC::SignedLessThanOrEqual,
+                    IntBinOp::Gt => IntCC::SignedGreaterThan,
+                    IntBinOp::Ge => IntCC::SignedGreaterThanOrEqual,
+                    _ => unreachable!(),
+                };
+                // Tagged SmallInt `(n << 1) | 1` preserves signed two's-complement ordering.
+                let cmp = builder.ins().icmp(cc, a, b);
+                let t = builder.ins().iconst(types::I64, RIL_TRUE);
+                let f = builder.ins().iconst(types::I64, RIL_FALSE);
+                let res = builder.ins().select(cmp, t, f);
+                builder.ins().jump(merge_block, &[BlockArg::Value(res)]);
+            }
+            IntBinOp::Add => {
+                let a_even = builder.ins().bxor(a, one);
+                let (sum, overflow) = builder.ins().sadd_overflow(a_even, b);
+                builder.ins().brif(
+                    overflow,
+                    slow_block,
+                    &[],
+                    merge_block,
+                    &[BlockArg::Value(sum)],
+                );
+            }
+            IntBinOp::Sub => {
+                let b_even = builder.ins().bxor(b, one);
+                let (diff, overflow) = builder.ins().ssub_overflow(a, b_even);
+                builder.ins().brif(
+                    overflow,
+                    slow_block,
+                    &[],
+                    merge_block,
+                    &[BlockArg::Value(diff)],
+                );
+            }
+            IntBinOp::Mul => {
+                let a_raw = builder.ins().sshr(a, one);
+                let b_even = builder.ins().bxor(b, one);
+                let (prod_even, overflow) = builder.ins().smul_overflow(a_raw, b_even);
+                let ok_block = builder.create_block();
+                builder.ins().brif(overflow, slow_block, &[], ok_block, &[]);
+                builder.switch_to_block(ok_block);
+                let res = builder.ins().bor(prod_even, one);
+                builder.ins().jump(merge_block, &[BlockArg::Value(res)]);
+            }
+        }
+
+        builder.switch_to_block(slow_block);
+        let fallback = self.handle(builder, op.slow_symbol(), &[rt, a, b])?;
+        builder
+            .ins()
+            .jump(merge_block, &[BlockArg::Value(fallback)]);
+
+        builder.switch_to_block(merge_block);
+        builder
+            .block_params(merge_block)
+            .first()
+            .copied()
+            .ok_or_else(|| diagnostic("missing merge param for IntBinOp"))
+    }
+
+    fn emit_int_unaryop(
+        &mut self,
+        builder: &mut FunctionBuilder<'_>,
+        rt: Value,
+        op: IntUnaryOp,
+        a: Value,
+    ) -> Result<Value> {
+        let one = builder.ins().iconst(types::I64, 1);
+        let is_small = builder.ins().band(a, one);
+
+        let fast_block = builder.create_block();
+        let slow_block = builder.create_block();
+        let merge_block = builder.create_block();
+        builder.append_block_param(merge_block, types::I64);
+        builder.set_cold_block(slow_block);
+
+        builder
+            .ins()
+            .brif(is_small, fast_block, &[], slow_block, &[]);
+
+        builder.switch_to_block(fast_block);
+        match op {
+            IntUnaryOp::BitNot => {
+                let mask = builder.ins().iconst(types::I64, -2);
+                let res = builder.ins().bxor(a, mask);
+                builder.ins().jump(merge_block, &[BlockArg::Value(res)]);
+            }
+            IntUnaryOp::Neg => {
+                let zero = builder.ins().iconst(types::I64, 0);
+                let a_even = builder.ins().bxor(a, one);
+                let (neg_even, overflow) = builder.ins().ssub_overflow(zero, a_even);
+                let ok_block = builder.create_block();
+                builder.ins().brif(overflow, slow_block, &[], ok_block, &[]);
+                builder.switch_to_block(ok_block);
+                let res = builder.ins().bor(neg_even, one);
+                builder.ins().jump(merge_block, &[BlockArg::Value(res)]);
+            }
+        }
+
+        builder.switch_to_block(slow_block);
+        let fallback = self.handle(builder, op.slow_symbol(), &[rt, a])?;
+        builder
+            .ins()
+            .jump(merge_block, &[BlockArg::Value(fallback)]);
+
+        builder.switch_to_block(merge_block);
+        builder
+            .block_params(merge_block)
+            .first()
+            .copied()
+            .ok_or_else(|| diagnostic("missing merge param for IntUnaryOp"))
     }
 
     fn instruction(
@@ -551,8 +871,15 @@ impl<'a, M: Module> MirToClifTranslator<'a, M> {
             Instruction::Evidence
             | Instruction::Environment
             | Instruction::StackLoad(_)
-            | Instruction::StackStore { .. } => {
-                Err(diagnostic("missing native incoming parameter"))
+            | Instruction::StackStore { .. }
+            | Instruction::IntBinOp { .. }
+            | Instruction::IntUnaryOp { .. }
+            | Instruction::BoolNot(_) => Err(diagnostic("missing native incoming parameter")),
+            Instruction::ConstSmallInt(number) => {
+                let tagged = (u64::from_ne_bytes(number.to_ne_bytes()) << 1) | 1;
+                Ok(builder
+                    .ins()
+                    .iconst(types::I64, i64::from_ne_bytes(tagged.to_ne_bytes())))
             }
             Instruction::FunctionAddress(id) => {
                 let fun = self
@@ -608,7 +935,7 @@ impl<'a, M: Module> MirToClifTranslator<'a, M> {
         let block = builder.create_block();
         builder.switch_to_block(block);
         let rt = self.handle(&mut builder, "ril_rt_create", &[])?;
-        let null = builder.ins().iconst(types::I64, 0);
+        let null = builder.ins().iconst(types::I64, RIL_UNIT);
         let function = self.function_id(entry)?;
         let value = if suspend_at_entry {
             let entry = self.module.declare_func_in_func(function, builder.func);
@@ -637,10 +964,15 @@ impl<'a, M: Module> MirToClifTranslator<'a, M> {
         if cfg!(debug_assertions) {
             verify_function(&context.func, self.module.isa()).map_err(diagnostic)?;
         }
+        let text = if self.emit_text {
+            context.func.display().to_string()
+        } else {
+            String::new()
+        };
         self.module
             .define_function(id, &mut context)
             .map_err(diagnostic)?;
-        Ok((id, context.func.display().to_string()))
+        Ok((id, text))
     }
 }
 
@@ -701,7 +1033,7 @@ mod tests {
     fn explicitly_bound_host_import_executes_without_process_symbol_lookup() {
         static OBSERVED: AtomicU64 = AtomicU64::new(0);
         extern "C" fn enabled(_context: *mut std::ffi::c_void) -> u64 {
-            2
+            6
         }
         extern "C" fn host(_context: *mut std::ffi::c_void, value: u64) -> u64 {
             OBSERVED.store(value, Ordering::Relaxed);
@@ -726,6 +1058,12 @@ mod tests {
                 name: "main".into(),
                 arity: 0,
                 registers: 4,
+                reg_types: vec![
+                    mir::MirTy::Evidence,
+                    mir::MirTy::Bool,
+                    mir::MirTy::Unit,
+                    mir::MirTy::Unit,
+                ],
                 stack_slots: 0,
                 blocks: vec![
                     mir::Block {
@@ -783,6 +1121,6 @@ mod tests {
         }
         .unwrap();
         assert_eq!(exit, 0);
-        assert_eq!(OBSERVED.load(Ordering::Relaxed), 2);
+        assert_eq!(OBSERVED.load(Ordering::Relaxed), 6);
     }
 }

@@ -1,4 +1,4 @@
-use crate::{GcRuntime, Object, Value};
+use crate::{GcRuntime, Object, Value, gc::RootFrameHeader};
 
 #[derive(Default)]
 #[repr(C)]
@@ -10,6 +10,15 @@ pub struct Runtime {
     #[cfg(not(miri))]
     pub(crate) fiber: crate::fiber::native::State,
 }
+
+const _: () = {
+    assert!(std::mem::offset_of!(Runtime, unwinding) == 0);
+    assert!(std::mem::offset_of!(Runtime, gc) == 8);
+    assert!(std::mem::offset_of!(GcRuntime, top_frame) == 0);
+    assert!(std::mem::offset_of!(RootFrameHeader, prev) == 0);
+    assert!(std::mem::offset_of!(RootFrameHeader, count) == 8);
+    assert!(std::mem::size_of::<RootFrameHeader>() == 16);
+};
 
 impl Runtime {
     pub fn raise(&mut self, message: impl Into<String>) {

@@ -11,8 +11,8 @@ pub struct Value(pub u64);
 
 impl Value {
     pub const UNIT: Self = Self(0);
-    pub const FALSE: Self = Self(1);
-    pub const TRUE: Self = Self(2);
+    pub const FALSE: Self = Self(0b010);
+    pub const TRUE: Self = Self(0b110);
 
     pub const fn boolean(value: bool) -> Self {
         if value { Self::TRUE } else { Self::FALSE }
@@ -25,6 +25,15 @@ impl Value {
             _ => None,
         }
     }
+}
+
+/// Intrusive Henderson stack-allocated GC root frame linked from `Runtime.gc.top_frame`.
+///
+/// Immediately followed in memory by `count` contiguous `Value` root slots.
+#[repr(C)]
+pub struct RootFrameHeader {
+    pub prev: *mut RootFrameHeader,
+    pub count: usize,
 }
 
 /// Describes the managed words in a native object with up to 64 data words.
@@ -108,11 +117,14 @@ impl Object {
     }
 }
 
+#[repr(C)]
 pub struct GcRuntime {
+    pub top_frame: *mut RootFrameHeader,
     objects: BTreeMap<Value, Object>,
     pub(crate) draft_nodes: BTreeMap<Value, DraftNode>,
     frames: Vec<Vec<Value>>,
     suspended_frames: BTreeMap<u64, Vec<Vec<Value>>>,
+    suspended_top_frames: BTreeMap<u64, *mut RootFrameHeader>,
     roots: BTreeMap<Value, usize>,
     #[cfg(not(miri))]
     active: u64,
@@ -130,14 +142,16 @@ impl Default for GcRuntime {
 impl GcRuntime {
     pub fn new(stress: bool) -> Self {
         Self {
+            top_frame: std::ptr::null_mut(),
             objects: BTreeMap::new(),
             draft_nodes: BTreeMap::new(),
             frames: Vec::new(),
             suspended_frames: BTreeMap::new(),
+            suspended_top_frames: BTreeMap::new(),
             roots: BTreeMap::new(),
             #[cfg(not(miri))]
             active: 0,
-            next: 3,
+            next: 8,
             next_collection: 64,
             stress,
         }
@@ -150,6 +164,14 @@ impl GcRuntime {
             let suspended = std::mem::replace(&mut self.frames, frames);
             if !suspended.is_empty() {
                 self.suspended_frames.insert(self.active, suspended);
+            }
+            let next_top = self
+                .suspended_top_frames
+                .remove(&fiber)
+                .unwrap_or(std::ptr::null_mut());
+            let prev_top = std::mem::replace(&mut self.top_frame, next_top);
+            if !prev_top.is_null() {
+                self.suspended_top_frames.insert(self.active, prev_top);
             }
             self.active = fiber;
         }
@@ -199,11 +221,11 @@ impl GcRuntime {
     }
 
     fn alloc_rooted(&mut self, object: Object) -> Value {
-        if self.next >= Value::SMALL_INT_TAG {
-            std::process::abort();
-        }
         let value = Value(self.next);
-        self.next += 1;
+        self.next = self
+            .next
+            .checked_add(8)
+            .unwrap_or_else(|| std::process::abort());
         self.objects.insert(value, object);
         value
     }
@@ -225,6 +247,32 @@ impl GcRuntime {
         }
     }
 
+    #[allow(
+        unsafe_code,
+        reason = "traverse intrusive stack-allocated RootFrameHeader chains published by generated code"
+    )]
+    fn push_stack_frames(head: *mut RootFrameHeader, pending: &mut Vec<Value>) {
+        let mut cursor = head;
+        while !cursor.is_null() {
+            // SAFETY: every linked RootFrameHeader lives on a live active or suspended
+            // fiber stack frame and is followed by `count` initialized `Value` words.
+            // Use raw field reads without creating a `&RootFrameHeader` so provenance
+            // over the trailing `[Value; count]` slots is preserved under Stacked Borrows.
+            let (prev, count, slots) = unsafe {
+                let prev = std::ptr::read(&raw const (*cursor).prev);
+                let count = std::ptr::read(&raw const (*cursor).count);
+                let slots_ptr = cursor.add(1).cast::<Value>();
+                (prev, count, slots_ptr)
+            };
+            for i in 0..count {
+                // SAFETY: generated prologues zero-initialize all `count` slots before linking.
+                let slot = unsafe { std::ptr::read(slots.add(i)) };
+                pending.push(slot);
+            }
+            cursor = prev;
+        }
+    }
+
     pub fn collect(&mut self, additional: Vec<Value>) {
         let mut visited = BTreeSet::new();
         let mut pending: Vec<_> = self
@@ -236,6 +284,10 @@ impl GcRuntime {
             .chain(self.roots.keys().copied())
             .chain(additional)
             .collect();
+        Self::push_stack_frames(self.top_frame, &mut pending);
+        for &suspended in self.suspended_top_frames.values() {
+            Self::push_stack_frames(suspended, &mut pending);
+        }
         while let Some(value) = pending.pop() {
             if !value.is_immediate()
                 && let Some(object) = self.objects.get(&value)

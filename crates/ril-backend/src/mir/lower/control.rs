@@ -6,8 +6,8 @@ use ril_sema::{
 };
 
 use super::{
-    BlockId, Builder, DraftOp, IntLowering, Loop, ManagedInt, Register, Result, Target, Terminator,
-    Work,
+    BlockId, Builder, DraftOp, Instruction, IntBinOp, IntLowering, Loop, ManagedInt, Register,
+    Result, Target, Terminator, Work,
 };
 
 impl Builder<'_, '_> {
@@ -76,10 +76,18 @@ impl Builder<'_, '_> {
             let mut right = self.expr(right)?;
             if let Some(current) = current {
                 let token = token.strip_suffix('=').unwrap_or_default();
-                let op = ManagedInt
-                    .binary(token)
-                    .ok_or_else(|| self.unsupported(operator.span, "compound operator"))?;
-                right = self.runtime(op, vec![current, right]);
+                right = if let Some(op) = IntBinOp::from_token(token) {
+                    self.instruction(Instruction::IntBinOp {
+                        op,
+                        left: current,
+                        right,
+                    })
+                } else {
+                    let op = ManagedInt
+                        .binary(token)
+                        .ok_or_else(|| self.unsupported(operator.span, "compound operator"))?;
+                    self.runtime(op, vec![current, right])
+                };
             }
             match target {
                 Destination::Local(slot) => {
@@ -103,6 +111,9 @@ impl Builder<'_, '_> {
         }
         let left = self.expr(left)?;
         let right = self.expr(right)?;
+        if let Some(op) = IntBinOp::from_token(token) {
+            return Ok(self.instruction(Instruction::IntBinOp { op, left, right }));
+        }
         let name = ManagedInt
             .binary(token)
             .ok_or_else(|| self.unsupported(operator.span, "binary operator"))?;

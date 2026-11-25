@@ -8,7 +8,7 @@ use std::{
 
 use clap::{Parser, Subcommand, ValueEnum};
 use ril_base::diag::Diagnostic;
-use ril_driver::{AVAILABLE, CompileOptions, Driver, infer_unit, load_package};
+use ril_driver::{AVAILABLE, CompileOptions, Driver, OptLevel, infer_unit, load_package};
 use ril_test::{Activation, Stage, Unit};
 
 #[derive(Parser)]
@@ -62,6 +62,10 @@ enum Action {
         link: Vec<PathBuf>,
         #[arg(long)]
         opt_stack_promote: bool,
+        #[arg(long)]
+        release: bool,
+        #[arg(short = 'O', value_name = "0|1|2|s")]
+        opt: Option<String>,
         #[arg(long, num_args = 0..=1, default_missing_value = ".ril-cache", value_name = "CACHE_DIR")]
         incremental: Option<PathBuf>,
     },
@@ -73,6 +77,10 @@ enum Action {
         link: Vec<PathBuf>,
         #[arg(long)]
         opt_stack_promote: bool,
+        #[arg(long)]
+        release: bool,
+        #[arg(short = 'O', value_name = "0|1|2|s")]
+        opt: Option<String>,
         #[arg(long, num_args = 0..=1, default_missing_value = ".ril-cache", value_name = "CACHE_DIR")]
         incremental: Option<PathBuf>,
     },
@@ -82,6 +90,10 @@ enum Action {
         format: IrFormat,
         #[arg(long)]
         opt_stack_promote: bool,
+        #[arg(long)]
+        release: bool,
+        #[arg(short = 'O', value_name = "0|1|2|s")]
+        opt: Option<String>,
         #[arg(long, num_args = 0..=1, default_missing_value = ".ril-cache", value_name = "CACHE_DIR")]
         incremental: Option<PathBuf>,
     },
@@ -96,8 +108,28 @@ enum Action {
     },
 }
 
-fn compiler_for(opt_stack_promote: bool, incremental: Option<PathBuf>) -> ril_driver::Compiler {
-    let options = CompileOptions { opt_stack_promote };
+fn parse_opt_level(release: bool, opt: Option<&str>) -> Result<(OptLevel, bool), String> {
+    match opt {
+        Some("0") => Ok((OptLevel::None, false)),
+        Some("1" | "2") => Ok((OptLevel::Speed, true)),
+        Some("s" | "z") => Ok((OptLevel::SpeedAndSize, true)),
+        Some(other) => Err(format!(
+            "invalid optimization level `-O {other}` (expected 0, 1, 2, or s)"
+        )),
+        None if release => Ok((OptLevel::Speed, true)),
+        None => Ok((OptLevel::None, false)),
+    }
+}
+
+fn compiler_for(
+    opt_stack_promote: bool,
+    opt_level: OptLevel,
+    incremental: Option<PathBuf>,
+) -> ril_driver::Compiler {
+    let options = CompileOptions {
+        opt_stack_promote,
+        opt_level,
+    };
     match incremental {
         Some(dir) => Driver.with_disk_cache(options, dir),
         None => Driver.with_options(options),
@@ -128,7 +160,7 @@ fn run(action: Action) -> Result<ExitCode, String> {
             incremental,
             message_format,
         } => {
-            let compiler = compiler_for(opt_stack_promote, incremental);
+            let compiler = compiler_for(opt_stack_promote, OptLevel::None, incremental);
             let package = load_package(&path, unit.unwrap_or_else(|| infer_unit(&path)))?;
             let checked = compiler.check(&package, stage);
             let use_color = std::io::stderr().is_terminal();
@@ -167,9 +199,13 @@ fn run(action: Action) -> Result<ExitCode, String> {
             output,
             link,
             opt_stack_promote,
+            release,
+            opt,
             incremental,
         } => {
-            let compiler = compiler_for(opt_stack_promote, incremental);
+            let (opt_level, default_promote) = parse_opt_level(release, opt.as_deref())?;
+            let compiler =
+                compiler_for(opt_stack_promote || default_promote, opt_level, incremental);
             let package = load_package(&path, Unit::Bin)?;
             let output =
                 output.unwrap_or_else(|| path.with_extension(std::env::consts::EXE_EXTENSION));
@@ -185,12 +221,16 @@ fn run(action: Action) -> Result<ExitCode, String> {
             backend,
             link,
             opt_stack_promote,
+            release,
+            opt,
             incremental,
         } => {
             if matches!(backend, Backend::Jit) && !link.is_empty() {
                 return Err("select --backend aot to use --link".into());
             }
-            let compiler = compiler_for(opt_stack_promote, incremental);
+            let (opt_level, default_promote) = parse_opt_level(release, opt.as_deref())?;
+            let compiler =
+                compiler_for(opt_stack_promote || default_promote, opt_level, incremental);
             let package = load_package(&path, Unit::Bin)?;
             let output = match backend {
                 Backend::Jit => compiler.execute_jit(&package).map_err(display)?,
@@ -218,9 +258,13 @@ fn run(action: Action) -> Result<ExitCode, String> {
             path,
             format,
             opt_stack_promote,
+            release,
+            opt,
             incremental,
         } => {
-            let compiler = compiler_for(opt_stack_promote, incremental);
+            let (opt_level, default_promote) = parse_opt_level(release, opt.as_deref())?;
+            let compiler =
+                compiler_for(opt_stack_promote || default_promote, opt_level, incremental);
             let unit = if matches!(format, IrFormat::Horn) {
                 Unit::Lib
             } else {
@@ -281,7 +325,10 @@ fn test(
     stage: Stage,
     opt_stack_promote: bool,
 ) -> Result<ExitCode, String> {
-    let compiler = Driver.with_options(CompileOptions { opt_stack_promote });
+    let compiler = Driver.with_options(CompileOptions {
+        opt_stack_promote,
+        ..CompileOptions::default()
+    });
     let suites = if sync_spec_md {
         let path = path.unwrap_or_else(|| PathBuf::from("doc/SPEC.md"));
         let source =

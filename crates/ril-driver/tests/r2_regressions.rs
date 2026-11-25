@@ -13,6 +13,7 @@ fn run_aot(source: &str, expected_stdout: &str) -> Result<(), String> {
     for (label, opt) in [("base", false), ("opt", true)] {
         let compiler = Driver.with_options(CompileOptions {
             opt_stack_promote: opt,
+            ..CompileOptions::default()
         });
         let exe = tmp
             .path()

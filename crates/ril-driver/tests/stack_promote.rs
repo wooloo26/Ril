@@ -11,9 +11,11 @@ fn check_aot_equivalence(source: &str, expected_stdout: &str) -> Result<(), Stri
 
     let base = Driver.with_options(CompileOptions {
         opt_stack_promote: false,
+        ..CompileOptions::default()
     });
     let opt = Driver.with_options(CompileOptions {
         opt_stack_promote: true,
+        ..CompileOptions::default()
     });
 
     let tmp = tempfile::tempdir().map_err(|err| err.to_string())?;
@@ -72,7 +74,8 @@ fn main() @io -> () {
         "{:#?}",
         Driver
             .with_options(CompileOptions {
-                opt_stack_promote: false
+                opt_stack_promote: false,
+                ..CompileOptions::default()
             })
             .lower(&pkg)
             .unwrap()
@@ -81,7 +84,8 @@ fn main() @io -> () {
         "{:#?}",
         Driver
             .with_options(CompileOptions {
-                opt_stack_promote: true
+                opt_stack_promote: true,
+                ..CompileOptions::default()
             })
             .lower(&pkg)
             .unwrap()
@@ -153,9 +157,11 @@ fn stack_promotion_preserves_compile_diagnostics_identically() {
     ];
     let base = Driver.with_options(CompileOptions {
         opt_stack_promote: false,
+        ..CompileOptions::default()
     });
     let opt = Driver.with_options(CompileOptions {
         opt_stack_promote: true,
+        ..CompileOptions::default()
     });
     for (unit, stage, source) in cases {
         let mut pkg = VirtualPackage::new(unit);

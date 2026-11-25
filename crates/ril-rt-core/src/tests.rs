@@ -211,3 +211,51 @@ fn cleanup_can_run_with_a_suspended_unwind() {
     assert_eq!(runtime.unwinding, 1);
     assert_eq!(runtime.take_panic().as_deref(), Some("first"));
 }
+
+#[test]
+#[allow(
+    unsafe_code,
+    reason = "verify intrusive stack RootFrameHeader tracing under Miri"
+)]
+fn intrusive_stack_root_frame_preserves_heap_objects_and_low_bit_tags() {
+    #[repr(C)]
+    struct Frame2 {
+        header: crate::RootFrameHeader,
+        slots: [Value; 2],
+    }
+
+    let mut gc = GcRuntime::new(true);
+    let min_small = -(1_i64 << 62);
+    let max_small = (1_i64 << 62) - 1;
+    assert_eq!(
+        Value::from_small_int(min_small).and_then(Value::small_int),
+        Some(min_small)
+    );
+    assert_eq!(
+        Value::from_small_int(max_small).and_then(Value::small_int),
+        Some(max_small)
+    );
+    assert_eq!(Value::from_small_int(min_small - 1), None);
+    assert_eq!(Value::from_small_int(max_small + 1), None);
+    assert_eq!(Value::UNIT.0 & 0b111, 0);
+    assert_eq!(Value::FALSE.0 & 0b111, 0b010);
+    assert_eq!(Value::TRUE.0 & 0b111, 0b110);
+
+    let keep = gc.alloc(Object::Str("kept".into()));
+    assert_eq!(keep.0 & 0b111, 0);
+    assert_ne!(keep.0, 0);
+    let mut frame = Frame2 {
+        header: crate::RootFrameHeader {
+            prev: std::ptr::null_mut(),
+            count: 2,
+        },
+        slots: [keep, Value::UNIT],
+    };
+    gc.top_frame = (&raw mut frame).cast::<crate::RootFrameHeader>();
+    let _garbage = gc.alloc(Object::Str("ephemeral".into()));
+    gc.collect(Vec::new());
+    assert!(matches!(gc.object(keep), Some(Object::Str(s)) if s == "kept"));
+    gc.top_frame = std::ptr::null_mut();
+    gc.collect(Vec::new());
+    assert!(gc.object(keep).is_none());
+}
