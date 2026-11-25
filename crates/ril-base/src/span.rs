@@ -96,7 +96,7 @@ impl SourceFile {
     }
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct SourceMap {
     files: Vec<Option<SourceFile>>,
 }

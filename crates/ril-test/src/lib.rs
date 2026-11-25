@@ -45,7 +45,7 @@ impl FromStr for Milestone {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum Stage {
     Source,
     Lex,
@@ -87,7 +87,7 @@ impl FromStr for Stage {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum Unit {
     Bin,
     Lib,

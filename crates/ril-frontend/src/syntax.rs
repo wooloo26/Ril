@@ -22,7 +22,7 @@ macro_rules! arenas {
             #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
             pub struct $id(usize);
         )*
-        #[derive(Debug, Default)]
+        #[derive(Clone, Debug, Default)]
         pub struct Ast {
             $( $field: Vec<Spanned<$node>>, )*
             grouped: HashSet<ExprId>,

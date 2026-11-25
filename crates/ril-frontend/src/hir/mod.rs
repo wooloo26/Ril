@@ -156,7 +156,7 @@ pub struct Definition {
     pub stmt: Option<StmtId>,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct File {
     pub id: FileId,
     pub path: PathBuf,

@@ -8,7 +8,7 @@ use std::{
 
 use clap::{Parser, Subcommand, ValueEnum};
 use ril_base::diag::Diagnostic;
-use ril_driver::{AVAILABLE, Driver, infer_unit, load_package};
+use ril_driver::{AVAILABLE, CompileOptions, Driver, infer_unit, load_package};
 use ril_test::{Activation, Stage, Unit};
 
 #[derive(Parser)]
@@ -41,6 +41,10 @@ enum Action {
         unit: Option<Unit>,
         #[arg(long)]
         emit_interface: Option<PathBuf>,
+        #[arg(long)]
+        opt_stack_promote: bool,
+        #[arg(long, num_args = 0..=1, default_missing_value = ".ril-cache", value_name = "CACHE_DIR")]
+        incremental: Option<PathBuf>,
     },
     Build {
         path: PathBuf,
@@ -48,6 +52,10 @@ enum Action {
         output: Option<PathBuf>,
         #[arg(long, value_name = "OBJECT_OR_LIBRARY")]
         link: Vec<PathBuf>,
+        #[arg(long)]
+        opt_stack_promote: bool,
+        #[arg(long, num_args = 0..=1, default_missing_value = ".ril-cache", value_name = "CACHE_DIR")]
+        incremental: Option<PathBuf>,
     },
     Run {
         path: PathBuf,
@@ -55,11 +63,19 @@ enum Action {
         backend: Backend,
         #[arg(long, value_name = "OBJECT_OR_LIBRARY")]
         link: Vec<PathBuf>,
+        #[arg(long)]
+        opt_stack_promote: bool,
+        #[arg(long, num_args = 0..=1, default_missing_value = ".ril-cache", value_name = "CACHE_DIR")]
+        incremental: Option<PathBuf>,
     },
     EmitIr {
         path: PathBuf,
         #[arg(long, value_enum, default_value = "mir")]
         format: IrFormat,
+        #[arg(long)]
+        opt_stack_promote: bool,
+        #[arg(long, num_args = 0..=1, default_missing_value = ".ril-cache", value_name = "CACHE_DIR")]
+        incremental: Option<PathBuf>,
     },
     Test {
         path: Option<PathBuf>,
@@ -67,7 +83,17 @@ enum Action {
         sync_spec_md: bool,
         #[arg(long, requires = "sync_spec_md", default_value = "parse")]
         stage: Stage,
+        #[arg(long)]
+        opt_stack_promote: bool,
     },
+}
+
+fn compiler_for(opt_stack_promote: bool, incremental: Option<PathBuf>) -> ril_driver::Compiler {
+    let options = CompileOptions { opt_stack_promote };
+    match incremental {
+        Some(dir) => Driver.with_disk_cache(options, dir),
+        None => Driver.with_options(options),
+    }
 }
 
 fn main() -> ExitCode {
@@ -90,9 +116,12 @@ fn run(action: Action) -> Result<ExitCode, String> {
             stage,
             unit,
             emit_interface,
+            opt_stack_promote,
+            incremental,
         } => {
+            let compiler = compiler_for(opt_stack_promote, incremental);
             let package = load_package(&path, unit.unwrap_or_else(|| infer_unit(&path)))?;
-            let checked = Driver.check(&package, stage);
+            let checked = compiler.check(&package, stage);
             for diagnostic in &checked.result.diagnostics {
                 diagnostic
                     .render(&checked.sources, std::io::stderr().lock())
@@ -102,19 +131,26 @@ fn run(action: Action) -> Result<ExitCode, String> {
                 return Ok(ExitCode::FAILURE);
             }
             if let Some(path) = emit_interface {
-                let interface = Driver.interface(&package).map_err(display)?;
+                let interface = compiler.interface_arc(&package).map_err(display)?;
                 let bytes = interface.encode().map_err(|err| err.to_string())?;
                 std::fs::write(path, bytes).map_err(|err| err.to_string())?;
             }
         }
-        Action::Build { path, output, link } => {
+        Action::Build {
+            path,
+            output,
+            link,
+            opt_stack_promote,
+            incremental,
+        } => {
+            let compiler = compiler_for(opt_stack_promote, incremental);
             let package = load_package(&path, Unit::Bin)?;
             let output =
                 output.unwrap_or_else(|| path.with_extension(std::env::consts::EXE_EXTENSION));
             if same_file(&path, &output) {
                 return Err("output would overwrite the source file".into());
             }
-            Driver
+            compiler
                 .compile_aot_with_links(&package, &output, &link)
                 .map_err(display)?;
         }
@@ -122,19 +158,22 @@ fn run(action: Action) -> Result<ExitCode, String> {
             path,
             backend,
             link,
+            opt_stack_promote,
+            incremental,
         } => {
             if matches!(backend, Backend::Jit) && !link.is_empty() {
                 return Err("select --backend aot to use --link".into());
             }
+            let compiler = compiler_for(opt_stack_promote, incremental);
             let package = load_package(&path, Unit::Bin)?;
             let output = match backend {
-                Backend::Jit => Driver.execute_jit(&package).map_err(display)?,
+                Backend::Jit => compiler.execute_jit(&package).map_err(display)?,
                 Backend::Aot => {
                     let dir = tempfile::tempdir().map_err(|err| err.to_string())?;
                     let output = dir
                         .path()
                         .join(format!("ril_program{}", std::env::consts::EXE_SUFFIX));
-                    Driver
+                    compiler
                         .compile_aot_with_links(&package, &output, &link)
                         .map_err(display)?;
                     ril_test::run_worker(&mut Command::new(output))
@@ -149,7 +188,13 @@ fn run(action: Action) -> Result<ExitCode, String> {
                 .map_err(|err| err.to_string())?;
             return Ok(exit(output.status));
         }
-        Action::EmitIr { path, format } => {
+        Action::EmitIr {
+            path,
+            format,
+            opt_stack_promote,
+            incremental,
+        } => {
+            let compiler = compiler_for(opt_stack_promote, incremental);
             let unit = if matches!(format, IrFormat::Horn) {
                 Unit::Lib
             } else {
@@ -157,9 +202,9 @@ fn run(action: Action) -> Result<ExitCode, String> {
             };
             let package = load_package(&path, unit)?;
             let text = match format {
-                IrFormat::Mir => format!("{:#?}", Driver.lower(&package).map_err(display)?),
-                IrFormat::Clif => Driver.clif(&package).map_err(display)?,
-                IrFormat::Horn => Driver.horn_json(&package).map_err(display)?,
+                IrFormat::Mir => format!("{:#?}", compiler.lower_arc(&package).map_err(display)?),
+                IrFormat::Clif => compiler.clif(&package).map_err(display)?,
+                IrFormat::Horn => compiler.horn_json(&package).map_err(display)?,
             };
             println!("{text}");
         }
@@ -167,7 +212,8 @@ fn run(action: Action) -> Result<ExitCode, String> {
             path,
             sync_spec_md,
             stage,
-        } => return test(path, sync_spec_md, stage),
+            opt_stack_promote,
+        } => return test(path, sync_spec_md, stage, opt_stack_promote),
     }
     Ok(ExitCode::SUCCESS)
 }
@@ -203,7 +249,13 @@ fn display(diagnostics: Vec<Diagnostic>) -> String {
         .join("\n")
 }
 
-fn test(path: Option<PathBuf>, sync_spec_md: bool, stage: Stage) -> Result<ExitCode, String> {
+fn test(
+    path: Option<PathBuf>,
+    sync_spec_md: bool,
+    stage: Stage,
+    opt_stack_promote: bool,
+) -> Result<ExitCode, String> {
+    let compiler = Driver.with_options(CompileOptions { opt_stack_promote });
     let suites = if sync_spec_md {
         let path = path.unwrap_or_else(|| PathBuf::from("doc/SPEC.md"));
         let source =
@@ -219,7 +271,7 @@ fn test(path: Option<PathBuf>, sync_spec_md: bool, stage: Stage) -> Result<ExitC
         for case in suite.cases {
             if case.activation(AVAILABLE) != Activation::Ready {
                 skipped += 1;
-            } else if let Err(error) = ril_test::run_case(&case, &Driver) {
+            } else if let Err(error) = ril_test::run_case(&case, &compiler) {
                 eprintln!(
                     "{}:{} {}::{}\n{error}",
                     suite.path.display(),

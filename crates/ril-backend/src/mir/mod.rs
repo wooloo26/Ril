@@ -1,12 +1,30 @@
 mod lower;
+mod promote;
 
 use std::sync::Arc;
 
 use ril_base::diag::Diagnostic;
 use ril_sema::{access::Analysis, ty::TypedProgram};
 
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+pub struct LowerOptions {
+    pub stack_promote: bool,
+}
+
 pub fn lower(program: &TypedProgram, analysis: &Analysis) -> Result<Program, Diagnostic> {
-    lower::lower(program, analysis)
+    lower_with_options(program, analysis, LowerOptions::default())
+}
+
+pub fn lower_with_options(
+    program: &TypedProgram,
+    analysis: &Analysis,
+    options: LowerOptions,
+) -> Result<Program, Diagnostic> {
+    let mut lowered = lower::lower(program, analysis)?;
+    if options.stack_promote {
+        promote::promote_program(&mut lowered);
+    }
+    Ok(lowered)
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -45,6 +63,7 @@ pub(crate) struct Function {
     pub(crate) name: String,
     pub(crate) arity: usize,
     pub(crate) registers: usize,
+    pub(crate) stack_slots: usize,
     pub(crate) blocks: Vec<Block>,
 }
 
@@ -65,6 +84,8 @@ pub(crate) enum Instruction {
     Float(u64),
     Text(Box<[u8]>),
     Bytes(Box<[u8]>),
+    StackLoad(usize),
+    StackStore { slot: usize, value: Register },
 }
 
 #[derive(Clone, Debug)]

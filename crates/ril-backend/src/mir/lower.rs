@@ -312,6 +312,7 @@ impl<'a> Lowering<'a> {
                 name,
                 arity,
                 registers: 0,
+                stack_slots: 0,
                 blocks: Vec::new(),
             },
             current: None,

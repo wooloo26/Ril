@@ -263,6 +263,15 @@ impl<'a, M: Module> MirToClifTranslator<'a, M> {
         };
         let entry = labels(BlockId(0))?;
         builder.append_block_params_for_function_params(entry);
+        let stack_slots: Vec<_> = (0..function.stack_slots)
+            .map(|_| {
+                builder.create_sized_stack_slot(ir::StackSlotData::new(
+                    ir::StackSlotKind::ExplicitSlot,
+                    8,
+                    3,
+                ))
+            })
+            .collect();
         let abi = builder.block_params(entry).to_vec();
         let [rt, evidence, environment, rest @ ..] = abi.as_slice() else {
             return Err(diagnostic("missing Ril closure ABI parameters"));
@@ -292,20 +301,54 @@ impl<'a, M: Module> MirToClifTranslator<'a, M> {
                 .ok_or_else(|| diagnostic("invalid MIR block"))?;
             builder.switch_to_block(labels(id)?);
             if id == BlockId(0) {
-                let size = number(&mut builder, function.registers)?;
+                let size = number(&mut builder, function.registers + function.stack_slots)?;
                 self.native(&mut builder, "ril_rt_roots_push", &[rt, size], None)?;
+                if !stack_slots.is_empty() {
+                    let zero = builder.ins().iconst(types::I64, 0);
+                    for &slot in &stack_slots {
+                        builder.ins().stack_store(types::I64, zero, slot, 0);
+                    }
+                }
             }
             for &parameter in &source.params {
                 self.root(&mut builder, rt, parameter, reg(&registers, parameter)?)?;
             }
             for (result, instruction) in &source.instructions {
-                let value = match instruction {
-                    Instruction::Evidence => incoming_evidence,
-                    Instruction::Environment => incoming_environment,
-                    _ => self.instruction(&mut builder, rt, instruction)?,
-                };
-                registers.insert(*result, value);
-                self.root(&mut builder, rt, *result, value)?;
+                match instruction {
+                    Instruction::StackLoad(slot) => {
+                        let clif_slot = *stack_slots
+                            .get(*slot)
+                            .ok_or_else(|| diagnostic("invalid MIR stack slot"))?;
+                        let value = builder
+                            .ins()
+                            .stack_load(types::I64, types::I64, clif_slot, 0);
+                        registers.insert(*result, value);
+                        self.root_if_heap(&mut builder, rt, result.0, value)?;
+                    }
+                    Instruction::StackStore { slot, value } => {
+                        let clif_slot = *stack_slots
+                            .get(*slot)
+                            .ok_or_else(|| diagnostic("invalid MIR stack slot"))?;
+                        let value = reg(&registers, *value)?;
+                        builder.ins().stack_store(types::I64, value, clif_slot, 0);
+                        self.root_if_heap(&mut builder, rt, function.registers + *slot, value)?;
+                        let unit = builder.ins().iconst(types::I64, 0);
+                        registers.insert(*result, unit);
+                    }
+                    Instruction::Evidence => {
+                        registers.insert(*result, incoming_evidence);
+                        self.root(&mut builder, rt, *result, incoming_evidence)?;
+                    }
+                    Instruction::Environment => {
+                        registers.insert(*result, incoming_environment);
+                        self.root(&mut builder, rt, *result, incoming_environment)?;
+                    }
+                    _ => {
+                        let value = self.instruction(&mut builder, rt, instruction)?;
+                        registers.insert(*result, value);
+                        self.root(&mut builder, rt, *result, value)?;
+                    }
+                }
             }
             match source
                 .terminator
@@ -452,6 +495,30 @@ impl<'a, M: Module> MirToClifTranslator<'a, M> {
         Ok(())
     }
 
+    fn root_if_heap(
+        &mut self,
+        builder: &mut FunctionBuilder<'_>,
+        rt: Value,
+        slot: usize,
+        value: Value,
+    ) -> Result<()> {
+        let offset = builder.ins().iadd_imm_s(value, -3);
+        let is_heap = builder
+            .ins()
+            .icmp_imm_s(IntCC::UnsignedLessThan, offset, i64::MAX - 2);
+        let root_block = builder.create_block();
+        let cont_block = builder.create_block();
+        builder
+            .ins()
+            .brif(is_heap, root_block, &[], cont_block, &[]);
+        builder.switch_to_block(root_block);
+        let slot = number(builder, slot)?;
+        self.native(builder, "ril_rt_roots_set", &[rt, slot, value], None)?;
+        builder.ins().jump(cont_block, &[]);
+        builder.switch_to_block(cont_block);
+        Ok(())
+    }
+
     fn instruction(
         &mut self,
         builder: &mut FunctionBuilder<'_>,
@@ -459,7 +526,10 @@ impl<'a, M: Module> MirToClifTranslator<'a, M> {
         instruction: &Instruction,
     ) -> Result<Value> {
         match instruction {
-            Instruction::Evidence | Instruction::Environment => {
+            Instruction::Evidence
+            | Instruction::Environment
+            | Instruction::StackLoad(_)
+            | Instruction::StackStore { .. } => {
                 Err(diagnostic("missing native incoming parameter"))
             }
             Instruction::FunctionAddress(id) => {
@@ -634,6 +704,7 @@ mod tests {
                 name: "main".into(),
                 arity: 0,
                 registers: 4,
+                stack_slots: 0,
                 blocks: vec![
                     mir::Block {
                         params: Vec::new(),
