@@ -325,7 +325,7 @@ impl Checker<'_> {
                 }
                 Ok(Value::Map(map))
             }
-            Expr::Record { fields, .. } => {
+            Expr::Record { name, fields } => {
                 let mut record = BTreeMap::new();
                 for field in fields {
                     let value = if let Some(expr) = field.value {
@@ -336,6 +336,54 @@ impl Checker<'_> {
                         return Err(nonstatic(field.name.span));
                     };
                     record.insert(field.name.value.clone(), value);
+                }
+                if let Some(path) = name
+                    && let Some(id) = self.resolve(path.span)
+                {
+                    let def = self.hir.definition(id);
+                    if let Some(stmt) = def.stmt {
+                        let def_file = def.name.span.file;
+                        let def_scope = def.scope;
+                        let defaults: Vec<(String, ExprId)> =
+                            match &self.ast(def_file).stmt(stmt).value.kind {
+                                StmtKind::Type(decl) => match decl.definition {
+                                    syntax::TypeDefinition::Data(ty_id) => {
+                                        if let syntax::Type::Record { fields, .. } =
+                                            &self.ast(def_file).ty(ty_id).value
+                                        {
+                                            fields
+                                                .iter()
+                                                .filter_map(|f| {
+                                                    f.default
+                                                        .filter(|_| {
+                                                            !record.contains_key(&f.name.value)
+                                                        })
+                                                        .map(|d| (f.name.value.clone(), d))
+                                                })
+                                                .collect()
+                                        } else {
+                                            Vec::new()
+                                        }
+                                    }
+                                    _ => Vec::new(),
+                                },
+                                _ => Vec::new(),
+                            };
+                        if !defaults.is_empty() {
+                            let mut def_env = Env::new(def_file, def_scope);
+                            def_env.phase = env.phase;
+                            let mut def_slots = Frame::default();
+                            for (field_name, default_expr) in defaults {
+                                let val = self.evaluate(
+                                    &mut def_env,
+                                    &mut def_slots,
+                                    default_expr,
+                                    fuel,
+                                )?;
+                                record.insert(field_name, val);
+                            }
+                        }
+                    }
                 }
                 Ok(Value::Record(record))
             }

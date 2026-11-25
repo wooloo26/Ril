@@ -5,7 +5,7 @@ use std::{
 
 use ril_hir::{DefinitionId, DefinitionKind};
 use ril_source::{diag::Code, span::Span};
-use ril_syntax::syntax::{self, Function, Mode, StmtId, StmtKind, TypeDefinition, Variant};
+use ril_syntax::syntax::{self, Function, Mode, StmtId, StmtKind, TypeDefinition};
 
 use super::{Checker, Env, Phase, substitute, transform, unknown_callable};
 use crate::ty::{AdtKind, Callable, GenericValue, Ty, Value};
@@ -89,7 +89,7 @@ impl Checker<'_> {
             if call.result.contains_type_value() {
                 self.error(Code::E0812, span, "meta fn cannot return a type value");
             }
-            if matches!(call.result, Ty::Callable(_) | Ty::Draft(_)) {
+            if !self.meta_exportable(&local, &call.result, &mut HashSet::new()) {
                 self.error(
                     Code::E0816,
                     span,
@@ -247,7 +247,7 @@ impl Checker<'_> {
                         node.span,
                         "type values cannot escape into runtime or meta let storage",
                     );
-                } else if *is_meta && matches!(inferred, Ty::Callable(_) | Ty::Draft(_)) {
+                } else if *is_meta && !self.meta_exportable(local, &inferred, &mut HashSet::new()) {
                     self.error(
                         Code::E0816,
                         node.span,
@@ -313,25 +313,16 @@ impl Checker<'_> {
                             self.nominal_layouts.insert(id, representation);
                         }
                     }
-                    TypeDefinition::Sum(_) if decl.generics.is_empty() => {
-                        if let Some(id) = self.resolve(decl.name.span)
-                            && let Ty::Adt(adt) = self.adt(id, decl, Vec::new())
-                        {
-                            self.sum_variants(&adt);
-                        }
-                    }
-                    TypeDefinition::Sum(variants) => {
-                        for variant in variants {
-                            match variant {
-                                Variant::Constructor { payload, .. } => {
-                                    for &ty in payload.iter().flatten() {
-                                        self.type_expr(&mut local, ty);
-                                    }
-                                }
-                                Variant::Spread(ty) => {
-                                    self.type_expr(&mut local, *ty);
-                                }
-                                Variant::Extensible => {}
+                    TypeDefinition::Sum(_) => {
+                        if let Some(id) = self.resolve(decl.name.span) {
+                            let args = decl
+                                .generics
+                                .iter()
+                                .filter_map(|p| self.resolve(p.name.span))
+                                .map(|pid| GenericValue::Type(Ty::Param(pid)))
+                                .collect();
+                            if let Ty::Adt(adt) = self.adt(id, decl, args) {
+                                self.sum_variants(&adt);
                             }
                         }
                     }
@@ -474,12 +465,57 @@ impl Checker<'_> {
             DefinitionKind::Variant(_) => self.variant(env, id, None, span),
             DefinitionKind::Type | DefinitionKind::Sum(_) if callee => Ty::Unknown,
             DefinitionKind::Type | DefinitionKind::Sum(_) => {
-                if self.hir.unit_constructor(id)
-                    && let Some(stmt) = def.stmt
+                if let Some(stmt) = def.stmt
                     && let StmtKind::Type(decl) =
                         &self.ast(def.name.span.file).stmt(stmt).value.kind
                 {
-                    return self.adt(id, decl, Vec::new());
+                    if self.hir.unit_constructor(id) {
+                        return self.adt(id, decl, Vec::new());
+                    }
+                    if def.kind == DefinitionKind::Type
+                        && (decl.kind == ril_syntax::syntax::TypeKind::Nominal
+                            || decl.kind == ril_syntax::syntax::TypeKind::Opaque
+                                && def.scope == env.scope)
+                        && self.hir.file(def.name.span.file).kind
+                            != ril_syntax::parser::FileKind::Foreign
+                    {
+                        let args = decl
+                            .generics
+                            .iter()
+                            .map(|_| GenericValue::Type(self.fresh()))
+                            .collect();
+                        let result = self.adt(id, decl, args);
+                        if let Ty::Adt(adt) = &result
+                            && let Some(rep) = self.representation(env, adt)
+                            && !matches!(rep, Ty::Unit | Ty::Record(..))
+                        {
+                            let params = match rep {
+                                Ty::Tuple(fields) => fields
+                                    .into_iter()
+                                    .map(|m| crate::ty::Parameter {
+                                        label: None,
+                                        mode: Mode::Plain,
+                                        ty: m.ty,
+                                        optional: false,
+                                        is_meta: false,
+                                    })
+                                    .collect(),
+                                one => vec![crate::ty::Parameter {
+                                    label: None,
+                                    mode: Mode::Plain,
+                                    ty: one,
+                                    optional: false,
+                                    is_meta: false,
+                                }],
+                            };
+                            return Ty::Callable(Arc::new(Callable {
+                                parameters: params,
+                                result,
+                                result_mode: Mode::New,
+                                ..unknown_callable()
+                            }));
+                        }
+                    }
                 }
                 self.error(Code::E0319, span, "bare type in value expression");
                 Ty::Unknown

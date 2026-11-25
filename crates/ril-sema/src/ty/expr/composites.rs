@@ -11,9 +11,11 @@ use crate::ty::{
 impl Checker<'_> {
     pub(super) fn navigation(&mut self, env: &mut Env, base: ExprId, steps: &[ExprId]) -> Ty {
         let mut ty = self.expr(env, base, None);
+        let mut last_was_safe_index_on_non_option = false;
         for &step in steps {
             let node = self.ast(env.file).expr(step);
             ty = self.normalize(&ty);
+            last_was_safe_index_on_non_option = false;
             ty = match &node.value {
                 Expr::Member { member, safe, .. } => {
                     if *safe {
@@ -33,8 +35,12 @@ impl Checker<'_> {
                     self.project(env, member, &ty, node.span, false)
                 }
                 Expr::Index { index, safe, .. } => {
-                    if *safe && let Ty::Option(inner) = ty {
-                        ty = *inner;
+                    if *safe {
+                        if let Ty::Option(inner) = ty {
+                            ty = *inner;
+                        } else {
+                            last_was_safe_index_on_non_option = true;
+                        }
                     }
                     self.index(env, ty, *index, *safe, node.span)
                 }
@@ -44,10 +50,12 @@ impl Checker<'_> {
             self.navigation_values.insert(node.span, ty.clone());
         }
         let ty = self.normalize(&ty);
-        if matches!(ty, Ty::Option(_) | Ty::Unknown) {
+        if ty == Ty::Unknown {
             ty
-        } else {
+        } else if last_was_safe_index_on_non_option || !matches!(ty, Ty::Option(_)) {
             Ty::Option(Box::new(ty))
+        } else {
+            ty
         }
     }
 
@@ -70,11 +78,26 @@ impl Checker<'_> {
                 "map reads require the safe index operator",
             );
         }
+        let is_record = match &base {
+            Ty::Record(..) => true,
+            Ty::Adt(adt) if matches!(adt.kind, AdtKind::Nominal | AdtKind::Opaque) => {
+                matches!(self.representation(env, adt), Some(Ty::Record(..)))
+            }
+            _ => false,
+        };
+        if is_record {
+            let _ = self.expr(env, index, None);
+            self.error(
+                Code::E0324,
+                span,
+                "record projection requires a static coordinate",
+            );
+            return Ty::Unknown;
+        }
         let (key, value) = match &base {
             Ty::Array(item) => (Ty::Int, item.ty.clone()),
             Ty::Map(key, value) => ((**key).clone(), value.ty.clone()),
-            Ty::Str => (Ty::Int, Ty::Str),
-            Ty::Bytes => (Ty::Int, Ty::Int),
+            Ty::Str | Ty::Bytes => (Ty::Int, Ty::Unknown),
             Ty::Unknown => (Ty::Unknown, Ty::Unknown),
             _ => {
                 self.error(
@@ -88,6 +111,13 @@ impl Checker<'_> {
         let index_ty = self.expr(env, index, Some(&key));
         if index_ty == Ty::Range && matches!(base, Ty::Array(_) | Ty::Str | Ty::Bytes) {
             base
+        } else if matches!(base, Ty::Str | Ty::Bytes) {
+            self.error(
+                Code::E0352,
+                span,
+                "str and bytes do not support single-element bracket indexing; use String::at or Bytes::at",
+            );
+            Ty::Unknown
         } else {
             self.require(env, self.ast(env.file).expr(index).span, &index_ty, &key);
             value
@@ -140,6 +170,12 @@ impl Checker<'_> {
                             );
                         }
                         found.mode = written;
+                    } else if name.is_none() && found.mode.variable && !written.variable {
+                        self.error(
+                            Code::E0357,
+                            field.name.span,
+                            "anonymous record literal does not synthesize var storage",
+                        );
                     } else if written != MemberMode::PLAIN && written != found.mode {
                         self.error(Code::E0357, field.name.span, "incompatible field mode");
                     }
@@ -167,10 +203,14 @@ impl Checker<'_> {
             let fields = fields
                 .iter()
                 .map(|field| {
+                    let mut mode = self.member_mode(env, &field.storage);
+                    if mode == MemberMode::PLAIN {
+                        mode = self.literal_element_mode(env, field.value);
+                    }
                     (
                         field.name.value.clone(),
                         Member {
-                            mode: self.member_mode(env, &field.storage),
+                            mode,
                             ty: self.field_expr(env, field, None),
                         },
                     )

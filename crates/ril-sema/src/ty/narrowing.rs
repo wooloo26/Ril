@@ -18,6 +18,7 @@ struct Place {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct Fact {
     depth: usize,
+    is_none: bool,
     invalidated: Option<Code>,
 }
 
@@ -85,7 +86,7 @@ impl Checker<'_> {
         {
             if let Some(code) = fact.invalidated {
                 self.narrow_errors.insert(span, code);
-            } else {
+            } else if fact.depth > 0 {
                 for _ in 0..fact.depth {
                     if let Ty::Option(inner) = ty {
                         ty = *inner;
@@ -99,6 +100,15 @@ impl Checker<'_> {
         ty
     }
 
+    pub(super) fn is_known_none(&self, env: &Env, expr: ExprId) -> bool {
+        self.place(env, expr).is_some_and(|place| {
+            env.refinements
+                .0
+                .get(&place)
+                .is_some_and(|fact| fact.invalidated.is_none() && fact.is_none)
+        })
+    }
+
     pub(super) fn assumption(&mut self, env: &mut Env, condition: &Condition, truth: bool) {
         let Condition::Expr(expr) = condition else {
             return;
@@ -106,7 +116,7 @@ impl Checker<'_> {
         self.relate(env, *expr, truth);
     }
 
-    fn relate(&mut self, env: &mut Env, test: ExprId, truth: bool) {
+    pub(super) fn relate(&mut self, env: &mut Env, test: ExprId, truth: bool) {
         let ast = self.ast(env.file);
         let node = ast.expr(test);
         match &node.value {
@@ -117,9 +127,7 @@ impl Checker<'_> {
                 self.relate(env, *left, truth);
                 self.relate(env, *right, truth);
             }
-            Expr::Binary { op, left, right }
-                if matches!((op.value.as_str(), truth), ("==", false) | ("!=", true)) =>
-            {
+            Expr::Binary { op, left, right } if matches!(op.value.as_str(), "==" | "!=") => {
                 let compared = if self.is_none(env, *left) {
                     *right
                 } else if self.is_none(env, *right) {
@@ -131,19 +139,39 @@ impl Checker<'_> {
                 if matches!(self.types.get(&span), Some(Ty::Option(_)))
                     && let Some(place) = self.place(env, compared)
                 {
-                    let depth = env
-                        .refinements
-                        .0
-                        .get(&place)
-                        .filter(|f| f.invalidated.is_none())
-                        .map_or(1, |f| f.depth + 1);
-                    env.refinements.0.insert(
-                        place,
-                        Fact {
-                            depth,
-                            invalidated: None,
-                        },
-                    );
+                    let non_none =
+                        matches!((op.value.as_str(), truth), ("==", false) | ("!=", true));
+                    if non_none {
+                        let depth = env
+                            .refinements
+                            .0
+                            .get(&place)
+                            .filter(|f| f.invalidated.is_none())
+                            .map_or(1, |f| f.depth + 1);
+                        env.refinements.0.insert(
+                            place,
+                            Fact {
+                                depth,
+                                is_none: false,
+                                invalidated: None,
+                            },
+                        );
+                    } else {
+                        let depth = env
+                            .refinements
+                            .0
+                            .get(&place)
+                            .filter(|f| f.invalidated.is_none())
+                            .map_or(0, |f| f.depth);
+                        env.refinements.0.insert(
+                            place,
+                            Fact {
+                                depth,
+                                is_none: true,
+                                invalidated: None,
+                            },
+                        );
+                    }
                 }
             }
             _ => {}
@@ -183,8 +211,16 @@ impl Checker<'_> {
         for (place, first) in &a.refinements.0 {
             if let Some(second) = b.refinements.0.get(place) {
                 let depth = first.depth.min(second.depth);
+                let is_none = first.is_none && second.is_none;
                 let invalidated = first.invalidated.or(second.invalidated);
-                result.insert(place.clone(), Fact { depth, invalidated });
+                result.insert(
+                    place.clone(),
+                    Fact {
+                        depth,
+                        is_none,
+                        invalidated,
+                    },
+                );
             }
         }
         Refinements(result)

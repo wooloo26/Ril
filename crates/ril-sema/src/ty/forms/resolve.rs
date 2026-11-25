@@ -244,35 +244,68 @@ impl Checker<'_> {
             return Ty::Unknown;
         };
         match last.name.value.as_str() {
-            "bool" => return Ty::Bool,
-            "int" => return Ty::Int,
-            "f64" => return Ty::F64,
-            "str" => return Ty::Str,
-            "bytes" => return Ty::Bytes,
-            "never" => return Ty::Never,
+            "bool" | "int" | "f64" | "str" | "bytes" | "never" => {
+                if !last.arguments.is_empty() {
+                    self.error(
+                        Code::E0340,
+                        path.span,
+                        "primitive type takes no type arguments",
+                    );
+                }
+                return match last.name.value.as_str() {
+                    "bool" => Ty::Bool,
+                    "int" => Ty::Int,
+                    "f64" => Ty::F64,
+                    "str" => Ty::Str,
+                    "bytes" => Ty::Bytes,
+                    _ => Ty::Never,
+                };
+            }
             _ => {}
         }
         let resolved = self.resolve(path.span);
         if let Some(id) = resolved {
             let std_ty = self.hir.std_type(id);
-            let is_type_prim = matches!(self.hir.definition(id).kind, DefinitionKind::Primitive(_))
-                && last.name.value == "Type";
-            let mut args = last.arguments.iter();
-            let mut ty_arg = || {
-                args.next()
-                    .map(|arg| self.type_argument(env, arg))
+            let is_prim = matches!(self.hir.definition(id).kind, DefinitionKind::Primitive(_));
+            let prim_name = self.hir.definition(id).name.value.as_str();
+            let arg0 = |checker: &mut Self, env: &mut Env| {
+                last.arguments
+                    .first()
+                    .map(|arg| checker.type_argument(env, arg))
+                    .unwrap_or(Ty::Unknown)
+            };
+            let arg1 = |checker: &mut Self, env: &mut Env| {
+                last.arguments
+                    .get(1)
+                    .map(|arg| checker.type_argument(env, arg))
                     .unwrap_or(Ty::Unknown)
             };
             if let Some(std_ty) = std_ty {
+                let expected_arity = match std_ty {
+                    StdType::Option
+                    | StdType::Set
+                    | StdType::Draft
+                    | StdType::Task
+                    | StdType::Sender
+                    | StdType::Receiver => Some(1),
+                    StdType::Result => Some(2),
+                    StdType::MemberMode | StdType::Scope => Some(0),
+                    _ => None,
+                };
+                if let Some(expected) = expected_arity
+                    && last.arguments.len() != expected
+                {
+                    self.error(Code::E0340, path.span, "incorrect number of type arguments");
+                }
                 match std_ty {
-                    StdType::Option => return Ty::Option(Box::new(ty_arg())),
+                    StdType::Option => return Ty::Option(Box::new(arg0(self, env))),
                     StdType::Result => {
-                        let ok = ty_arg();
-                        let err = ty_arg();
+                        let ok = arg0(self, env);
+                        let err = arg1(self, env);
                         return Ty::Result(Box::new(ok), Box::new(err));
                     }
                     StdType::Set => {
-                        let key = ty_arg();
+                        let key = arg0(self, env);
                         if !self.eligible_key(env, &key, &mut HashSet::new()) {
                             self.error(
                                 Code::E0328,
@@ -282,12 +315,12 @@ impl Checker<'_> {
                         }
                         return Ty::Set(Box::new(key));
                     }
-                    StdType::Draft => return Ty::Draft(Box::new(ty_arg())),
+                    StdType::Draft => return Ty::Draft(Box::new(arg0(self, env))),
                     StdType::MemberMode => return Ty::Mode,
                     StdType::Scope => return Ty::Scope,
-                    StdType::Task => return Ty::Task(Box::new(ty_arg())),
-                    StdType::Sender => return Ty::Sender(Box::new(ty_arg())),
-                    StdType::Receiver => return Ty::Receiver(Box::new(ty_arg())),
+                    StdType::Task => return Ty::Task(Box::new(arg0(self, env))),
+                    StdType::Sender => return Ty::Sender(Box::new(arg0(self, env))),
+                    StdType::Receiver => return Ty::Receiver(Box::new(arg0(self, env))),
                     StdType::PanicInfo
                     | StdType::PanicError
                     | StdType::TaskFault
@@ -297,8 +330,39 @@ impl Checker<'_> {
                     | StdType::TryRecvError => {}
                 }
             }
-            if is_type_prim {
-                return Ty::TypeValue((!last.arguments.is_empty()).then(|| Box::new(ty_arg())));
+            if is_prim {
+                match prim_name {
+                    "Type" => {
+                        if last.arguments.len() > 1 {
+                            self.error(Code::E0340, path.span, "Type takes at most one argument");
+                        }
+                        let inner = if last.arguments.is_empty() {
+                            None
+                        } else {
+                            Some(Box::new(arg0(self, env)))
+                        };
+                        return Ty::TypeValue(inner);
+                    }
+                    "Unwrap" => {
+                        if last.arguments.len() != 1 {
+                            self.error(Code::E0340, path.span, "Unwrap takes one type argument");
+                            return Ty::Unknown;
+                        }
+                        let raw = arg0(self, env);
+                        let target = self.normalize(&raw);
+                        return self.eval_unwrap_helper(env, &target, path.span);
+                    }
+                    "CoordKey" => {
+                        if last.arguments.len() != 1 {
+                            self.error(Code::E0340, path.span, "CoordKey takes one type argument");
+                            return Ty::Unknown;
+                        }
+                        let raw = arg0(self, env);
+                        let target = self.normalize(&raw);
+                        return self.eval_coord_key_helper(env, &target, path.span);
+                    }
+                    _ => {}
+                }
             }
         }
         let Some(id) = resolved else {
@@ -405,6 +469,77 @@ impl Checker<'_> {
             visibility: def.visibility,
             arguments,
         }))
+    }
+
+    fn eval_unwrap_helper(&mut self, env: &Env, target: &Ty, span: Span) -> Ty {
+        match target {
+            Ty::Unknown | Ty::Infer(_) | Ty::Param(_) => Ty::Unknown,
+            Ty::Draft(inner) => {
+                let inner = self.normalize(inner);
+                let unwrapped = self.eval_unwrap_helper(env, &inner, span);
+                if matches!(unwrapped, Ty::Unknown) {
+                    Ty::Unknown
+                } else {
+                    Ty::Draft(Box::new(unwrapped))
+                }
+            }
+            Ty::Adt(adt) if adt.kind == AdtKind::Foreign => {
+                self.error(Code::E0907, span, "foreign representation is sealed");
+                Ty::Unknown
+            }
+            Ty::Adt(adt) if adt.kind == AdtKind::Opaque && adt.defining_scope != env.scope => {
+                self.error(Code::E0308, span, "opaque representation is sealed");
+                Ty::Unknown
+            }
+            Ty::Adt(adt) if matches!(adt.kind, AdtKind::Nominal | AdtKind::Opaque) => {
+                self.representation(env, adt).unwrap_or(Ty::Unknown)
+            }
+            _ => {
+                self.error(Code::E0301, span, "Unwrap requires a nominal wrapper type");
+                Ty::Unknown
+            }
+        }
+    }
+
+    fn eval_coord_key_helper(&mut self, env: &Env, target: &Ty, span: Span) -> Ty {
+        match target {
+            Ty::Unknown | Ty::Infer(_) | Ty::Param(_) => Ty::Unknown,
+            Ty::Record(..) => Ty::Str,
+            Ty::Tuple(_) | Ty::Unit => Ty::Int,
+            Ty::Adt(adt) if adt.kind == AdtKind::Foreign => {
+                self.error(Code::E0907, span, "foreign representation is sealed");
+                Ty::Unknown
+            }
+            Ty::Adt(adt)
+                if matches!(adt.kind, AdtKind::Opaque | AdtKind::OpaqueSum)
+                    && adt.defining_scope != env.scope =>
+            {
+                self.error(Code::E0308, span, "opaque representation is sealed");
+                Ty::Unknown
+            }
+            Ty::Adt(adt) if matches!(adt.kind, AdtKind::Nominal | AdtKind::Opaque) => {
+                match self.representation(env, adt) {
+                    Some(Ty::Record(..)) => Ty::Str,
+                    Some(Ty::Tuple(_) | Ty::Unit) => Ty::Int,
+                    _ => {
+                        self.error(
+                            Code::E0358,
+                            span,
+                            "CoordKey requires a record or tuple type",
+                        );
+                        Ty::Unknown
+                    }
+                }
+            }
+            _ => {
+                self.error(
+                    Code::E0358,
+                    span,
+                    "CoordKey requires a record or tuple type",
+                );
+                Ty::Unknown
+            }
+        }
     }
 
     pub(in crate::ty) fn std_adt(&self, kind: StdType, arguments: Vec<GenericValue>) -> Ty {

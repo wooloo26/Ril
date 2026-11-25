@@ -806,8 +806,9 @@ fn main() -> new !<(), str> { Err("message on stderr") }
 -- @expect-stdout 2:β
 fn main() @io -> () {
     let text = "αβ"
-    assert(bytes"\xFF\0"[0] == 255)
-    println("{len(text)}:{text[1]}")
+    assert(Bytes::at(bytes"\xFF\0", 0) == Some(255))
+    assert(String::at(text, 1) == Some(946))
+    println("{len(text)}:{text[1..2]}")
 }
 
 -- @case managed_graph_and_clone run-pass backend=both

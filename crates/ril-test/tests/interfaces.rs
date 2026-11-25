@@ -62,7 +62,7 @@ fn generic_clone_domain_survives_separate_compilation() {
     ] {
         for (ty, expected) in [
             ("[]int", None),
-            ("int", Some(ril_source::diag::Code::E0301)),
+            ("int", Some(ril_source::diag::Code::E0306)),
         ] {
             let mut client = VirtualPackage::new(Unit::Lib);
             client.insert(mount.into(), bytes.to_vec());

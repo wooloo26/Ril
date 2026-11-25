@@ -348,10 +348,14 @@ impl Checker<'_> {
                     self.error(Code::E0907, span, "foreign representation is sealed");
                     Ty::Unknown
                 }
-                Ty::Adt(adt) if adt.kind == AdtKind::Nominal => {
+                Ty::Adt(adt) if adt.kind == AdtKind::Opaque && adt.defining_scope != env.scope => {
+                    self.error(Code::E0308, span, "opaque representation is sealed");
+                    Ty::Unknown
+                }
+                Ty::Adt(adt) if matches!(adt.kind, AdtKind::Nominal | AdtKind::Opaque) => {
                     self.representation(env, adt).unwrap_or(Ty::Unknown)
                 }
-                Ty::Unknown => Ty::Unknown,
+                Ty::Unknown | Ty::Param(_) | Ty::Infer(_) => Ty::Unknown,
                 _ => {
                     self.error(Code::E0301, span, "inner requires a nominal wrapper");
                     Ty::Unknown

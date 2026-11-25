@@ -125,10 +125,10 @@ fn check() -> () {
     assert(one == 1 && truth)
 }
 
--- @case generic_domain_is_checked_at_application compile-fail E0301
+-- @case generic_domain_is_checked_at_application compile-fail E0306
 fn number<T: int | f64>(x: T) -> T { x + x }
 let wrong = number(true)
--- ^ E0301
+-- ^ E0306
 
 -- @case sequential_and_nested_narrowing compile-pass
 fn unwrap(value: ??int) -> int {

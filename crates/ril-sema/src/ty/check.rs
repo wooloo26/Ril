@@ -426,30 +426,35 @@ impl<'a> Checker<'a> {
                     _ => None,
                 })
                 .is_some_and(|found| found != &expected && self.fits(env, &actual, found)),
-            (Ty::Option(a), Ty::Option(b))
-            | (Ty::Set(a), Ty::Set(b))
+            (Ty::Option(a), Ty::Option(b)) => self.fits(env, a, b),
+            (Ty::Set(a), Ty::Set(b))
             | (Ty::Draft(a), Ty::Draft(b))
             | (Ty::Task(a), Ty::Task(b))
             | (Ty::Sender(a), Ty::Sender(b))
-            | (Ty::Receiver(a), Ty::Receiver(b)) => self.fits(env, a, b),
+            | (Ty::Receiver(a), Ty::Receiver(b)) => self.equiv(env, a, b),
             (Ty::Result(ao, ae), Ty::Result(bo, be)) => {
                 self.fits(env, ao, bo) && self.fits(env, ae, be)
             }
             (Ty::TypeValue(Some(a)), Ty::TypeValue(Some(b))) => {
-                self.fits(env, a, b) && self.normalize(a) == self.normalize(b)
+                self.equiv(env, a, b) && self.normalize(a) == self.normalize(b)
             }
             (Ty::TypeValue(Some(_)), Ty::TypeValue(None)) => true,
-            (Ty::Array(a), Ty::Array(b)) => self.member_fits(env, a, b),
+            (Ty::Array(a), Ty::Array(b)) => self.member_fits(env, a, b, true),
             (Ty::Map(ak, a), Ty::Map(bk, b)) => {
-                self.fits(env, ak, bk) && self.member_fits(env, a, b)
+                self.equiv(env, ak, bk) && self.member_fits(env, a, b, true)
             }
             (Ty::Tuple(a), Ty::Tuple(b)) => {
-                a.len() == b.len() && a.iter().zip(b).all(|(a, b)| self.member_fits(env, a, b))
+                a.len() == b.len()
+                    && a.iter()
+                        .zip(b)
+                        .all(|(a, b)| self.member_fits(env, a, b, false))
             }
             (Ty::Record(a, a_open), Ty::Record(b, b_open)) => {
                 (*b_open || !a_open && a.len() == b.len())
-                    && b.iter()
-                        .all(|(name, b)| a.get(name).is_some_and(|a| self.member_fits(env, a, b)))
+                    && b.iter().all(|(name, b)| {
+                        a.get(name)
+                            .is_some_and(|a| self.member_fits(env, a, b, false))
+                    })
             }
             (Ty::Callable(a), Ty::Callable(b)) => self.callable_fits(env, a, b),
             (Ty::Adt(a), Ty::Adt(b)) if a.definition == b.definition => {
@@ -459,7 +464,7 @@ impl<'a> Checker<'a> {
                         .zip(&b.arguments)
                         .all(|(actual, expected)| match (actual, expected) {
                             (GenericValue::Type(actual), GenericValue::Type(expected)) => {
-                                self.fits(env, actual, expected)
+                                self.equiv(env, actual, expected)
                             }
                             _ => actual == expected,
                         })
@@ -476,10 +481,113 @@ impl<'a> Checker<'a> {
         }
     }
 
-    fn member_fits(&mut self, env: &Env, a: &Member, b: &Member) -> bool {
+    pub(super) fn equiv(&mut self, env: &Env, a: &Ty, b: &Ty) -> bool {
+        let a = self.normalize(a);
+        let b = self.normalize(b);
+        if a == b || matches!(a, Ty::Unknown) || matches!(b, Ty::Unknown) {
+            return true;
+        }
+        match (&a, &b) {
+            (Ty::Infer(var), _) => self.bind_variable(*var, &b),
+            (_, Ty::Infer(var)) => self.bind_variable(*var, &a),
+            (Ty::Param(id), _) => env
+                .generics
+                .get(id)
+                .and_then(|arg| match arg {
+                    GenericValue::Type(ty) => Some(ty),
+                    _ => None,
+                })
+                .is_some_and(|found| found != &a && self.equiv(env, found, &b)),
+            (_, Ty::Param(id)) => env
+                .generics
+                .get(id)
+                .and_then(|arg| match arg {
+                    GenericValue::Type(ty) => Some(ty),
+                    _ => None,
+                })
+                .is_some_and(|found| found != &b && self.equiv(env, &a, found)),
+            (Ty::Option(x), Ty::Option(y))
+            | (Ty::Set(x), Ty::Set(y))
+            | (Ty::Draft(x), Ty::Draft(y))
+            | (Ty::Task(x), Ty::Task(y))
+            | (Ty::Sender(x), Ty::Sender(y))
+            | (Ty::Receiver(x), Ty::Receiver(y)) => self.equiv(env, x, y),
+            (Ty::Result(ao, ae), Ty::Result(bo, be)) => {
+                self.equiv(env, ao, bo) && self.equiv(env, ae, be)
+            }
+            (Ty::TypeValue(Some(x)), Ty::TypeValue(Some(y))) => self.equiv(env, x, y),
+            (Ty::Array(x), Ty::Array(y)) => self.member_equiv(env, x, y),
+            (Ty::Map(xk, x), Ty::Map(yk, y)) => {
+                self.equiv(env, xk, yk) && self.member_equiv(env, x, y)
+            }
+            (Ty::Tuple(x), Ty::Tuple(y)) => {
+                x.len() == y.len() && x.iter().zip(y).all(|(x, y)| self.member_equiv(env, x, y))
+            }
+            (Ty::Record(x, x_open), Ty::Record(y, y_open)) => {
+                x_open == y_open
+                    && x.len() == y.len()
+                    && x.iter()
+                        .all(|(k, xv)| y.get(k).is_some_and(|yv| self.member_equiv(env, xv, yv)))
+            }
+            (Ty::Callable(x), Ty::Callable(y)) => self.callable_equiv(env, x, y),
+            (Ty::Adt(x), Ty::Adt(y)) if x.definition == y.definition => {
+                x.arguments.len() == y.arguments.len()
+                    && x.arguments
+                        .iter()
+                        .zip(&y.arguments)
+                        .all(|(xa, ya)| match (xa, ya) {
+                            (GenericValue::Type(xt), GenericValue::Type(yt)) => {
+                                self.equiv(env, xt, yt)
+                            }
+                            _ => xa == ya,
+                        })
+            }
+            (Ty::Adt(adt), _) if adt.kind == AdtKind::Opaque && adt.defining_scope == env.scope => {
+                self.representation(env, adt)
+                    .is_some_and(|ty| self.equiv(env, &ty, &b))
+            }
+            (_, Ty::Adt(adt)) if adt.kind == AdtKind::Opaque && adt.defining_scope == env.scope => {
+                self.representation(env, adt)
+                    .is_some_and(|ty| self.equiv(env, &a, &ty))
+            }
+            _ => false,
+        }
+    }
+
+    fn member_equiv(&mut self, env: &Env, a: &Member, b: &Member) -> bool {
+        a.mode.variable == b.mode.variable
+            && (a.mode.mode == b.mode.mode || a.mode.mode == Mode::Via || b.mode.mode == Mode::Via)
+            && self.equiv(env, &a.ty, &b.ty)
+    }
+
+    fn callable_equiv(&mut self, env: &Env, a: &Callable, b: &Callable) -> bool {
+        a.parameters.len() == b.parameters.len()
+            && a.open_effects == b.open_effects
+            && a.effects == b.effects
+            && a.open_state == b.open_state
+            && a.state == b.state
+            && (a.result_mode == b.result_mode
+                || a.result_mode == Mode::Infer
+                || b.result_mode == Mode::Infer)
+            && a.parameters.iter().zip(&b.parameters).all(|(p, q)| {
+                p.callable_mode() == q.callable_mode()
+                    && match (&p.label, &q.label) {
+                        (Some(x), Some(y)) => x == y,
+                        _ => true,
+                    }
+                    && self.equiv(env, &p.ty, &q.ty)
+            })
+            && self.equiv(env, &a.result, &b.result)
+    }
+
+    fn member_fits(&mut self, env: &Env, a: &Member, b: &Member, container: bool) -> bool {
         a.mode.variable == b.mode.variable
             && (a.mode.mode == b.mode.mode || b.mode.mode == Mode::Via)
-            && self.fits(env, &a.ty, &b.ty)
+            && if container || a.mode.variable || matches!(a.mode.mode, Mode::Mut | Mode::Shared) {
+                self.equiv(env, &a.ty, &b.ty)
+            } else {
+                self.fits(env, &a.ty, &b.ty)
+            }
     }
 
     fn callable_fits(&mut self, env: &Env, actual: &Callable, expected: &Callable) -> bool {
@@ -498,7 +606,9 @@ impl<'a> Checker<'a> {
                         .state
                         .iter()
                         .all(|clause| expected.state.contains(clause)))
-            && (actual.result_mode == expected.result_mode || expected.result_mode == Mode::Infer)
+            && (actual.result_mode == expected.result_mode
+                || expected.result_mode == Mode::Infer
+                || actual.result_mode == Mode::New && expected.result_mode == Mode::Plain)
             && actual
                 .parameters
                 .iter()

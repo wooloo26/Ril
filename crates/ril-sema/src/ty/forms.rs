@@ -561,12 +561,19 @@ impl Checker<'_> {
         seen: &mut HashSet<DefinitionId>,
     ) -> bool {
         let immutable = |m: &Member| m.mode == super::MemberMode::PLAIN;
-        match ty {
-            Ty::F64 | Ty::Callable(_) | Ty::Draft(_) | Ty::TypeValue(_) => false,
-            Ty::Array(member) => immutable(member) && self.eligible_key(env, &member.ty, seen),
+        match self.normalize(ty) {
+            Ty::F64
+            | Ty::Callable(_)
+            | Ty::Draft(_)
+            | Ty::TypeValue(_)
+            | Ty::Scope
+            | Ty::Task(_)
+            | Ty::Sender(_)
+            | Ty::Receiver(_) => false,
+            Ty::Array(member) => immutable(&member) && self.eligible_key(env, &member.ty, seen),
             Ty::Map(key, member) => {
-                immutable(member)
-                    && self.eligible_key(env, key, seen)
+                immutable(&member)
+                    && self.eligible_key(env, &key, seen)
                     && self.eligible_key(env, &member.ty, seen)
             }
             Ty::Record(fields, open) => {
@@ -578,14 +585,94 @@ impl Checker<'_> {
             Ty::Tuple(items) => items
                 .iter()
                 .all(|member| immutable(member) && self.eligible_key(env, &member.ty, seen)),
-            Ty::Option(inner) | Ty::Set(inner) => self.eligible_key(env, inner, seen),
+            Ty::Option(inner) | Ty::Set(inner) => self.eligible_key(env, &inner, seen),
             Ty::Result(ok, err) => {
-                self.eligible_key(env, ok, seen) && self.eligible_key(env, err, seen)
+                self.eligible_key(env, &ok, seen) && self.eligible_key(env, &err, seen)
             }
             Ty::Adt(adt) if adt.kind == AdtKind::Foreign => false,
-            Ty::Adt(adt) if seen.insert(adt.definition) => self
-                .representation(env, adt)
-                .is_none_or(|ty| self.eligible_key(env, &ty, seen)),
+            Ty::Adt(adt) if seen.insert(adt.definition) => {
+                let result = if matches!(adt.kind, AdtKind::Sum | AdtKind::OpaqueSum) {
+                    let extensible = self.hir.definition(adt.definition).stmt.is_some_and(|s| {
+                        let def = self.hir.definition(adt.definition);
+                        matches!(
+                            &self.ast(def.name.span.file).stmt(s).value.kind,
+                            StmtKind::Type(decl)
+                                if matches!(&decl.definition, TypeDefinition::Sum(variants)
+                                    if variants.iter().any(|v| matches!(v, Variant::Extensible)))
+                        )
+                    });
+                    !extensible
+                        && self
+                            .sum_variants(&adt)
+                            .values()
+                            .flatten()
+                            .all(|payload| self.eligible_key(env, payload, seen))
+                } else {
+                    self.representation(env, &adt)
+                        .is_none_or(|ty| self.eligible_key(env, &ty, seen))
+                };
+                seen.remove(&adt.definition);
+                result
+            }
+            _ => true,
+        }
+    }
+
+    pub(super) fn meta_exportable(
+        &mut self,
+        env: &Env,
+        ty: &Ty,
+        seen: &mut HashSet<DefinitionId>,
+    ) -> bool {
+        match self.normalize(ty) {
+            Ty::Callable(_)
+            | Ty::Draft(_)
+            | Ty::Scope
+            | Ty::Task(_)
+            | Ty::Sender(_)
+            | Ty::Receiver(_)
+            | Ty::TypeValue(_) => false,
+            Ty::Array(member) => self.meta_exportable(env, &member.ty, seen),
+            Ty::Map(key, member) => {
+                self.meta_exportable(env, &key, seen) && self.meta_exportable(env, &member.ty, seen)
+            }
+            Ty::Record(fields, _) => fields
+                .values()
+                .all(|member| self.meta_exportable(env, &member.ty, seen)),
+            Ty::Tuple(items) => items
+                .iter()
+                .all(|member| self.meta_exportable(env, &member.ty, seen)),
+            Ty::Option(inner) | Ty::Set(inner) => self.meta_exportable(env, &inner, seen),
+            Ty::Result(ok, err) => {
+                self.meta_exportable(env, &ok, seen) && self.meta_exportable(env, &err, seen)
+            }
+            Ty::Adt(adt) if adt.kind == AdtKind::Foreign => false,
+            Ty::Adt(adt) => {
+                let has_cleanup = self.hir.definition(adt.definition).stmt.is_some_and(|s| {
+                    let def = self.hir.definition(adt.definition);
+                    matches!(
+                        &self.ast(def.name.span.file).stmt(s).value.kind,
+                        StmtKind::Type(decl) if decl.cleanup.is_some()
+                    )
+                });
+                if has_cleanup {
+                    return false;
+                }
+                if !seen.insert(adt.definition) {
+                    return true;
+                }
+                let result = if matches!(adt.kind, AdtKind::Sum | AdtKind::OpaqueSum) {
+                    self.sum_variants(&adt)
+                        .values()
+                        .flatten()
+                        .all(|payload| self.meta_exportable(env, payload, seen))
+                } else {
+                    self.representation(env, &adt)
+                        .is_none_or(|ty| self.meta_exportable(env, &ty, seen))
+                };
+                seen.remove(&adt.definition);
+                result
+            }
             _ => true,
         }
     }

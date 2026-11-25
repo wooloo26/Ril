@@ -94,16 +94,16 @@ impl Checker<'_> {
                 }
             }
             Pattern::Or(items) => {
-                let mut domain = None;
+                let mut domain: Option<HashMap<String, (bool, Mode)>> = None;
                 let binders = self.hir.bindings_within(node.span);
                 let mut types = HashMap::new();
                 for &item in items {
-                    let names = self.pattern_names(env, item);
+                    let names = self.pattern_binding_modes(env, item);
                     if domain.as_ref().is_some_and(|expected| expected != &names) {
                         self.error(
                             Code::E0346,
                             ast.pattern(item).span,
-                            "alternative patterns must bind the same names",
+                            "alternative patterns must bind the same names with matching modes",
                         );
                     }
                     domain = Some(names);
@@ -140,6 +140,13 @@ impl Checker<'_> {
                 }
             }
             Pattern::Slice { text, elements } => {
+                if *text && elements.is_empty() {
+                    self.error(
+                        Code::E0349,
+                        node.span,
+                        "empty string slice pattern is invalid",
+                    );
+                }
                 let element = if *text {
                     self.require(env, node.span, &normalized, &Ty::Str);
                     Ty::Str
@@ -181,7 +188,9 @@ impl Checker<'_> {
                     .segments
                     .last()
                     .map_or("", |part| part.name.value.as_str());
-                let payload = self.pattern_payload(env, name, &normalized, node.span);
+                let resolved_ctor = self.resolve(path.span);
+                let payload =
+                    self.pattern_payload(env, name, resolved_ctor, &normalized, node.span);
                 let unit_payload =
                     payload.as_slice() == [Ty::Unit] && items.as_ref().is_some_and(Vec::is_empty);
                 if !unit_payload && payload.len() != items.as_ref().map_or(0, Vec::len) {
@@ -195,7 +204,30 @@ impl Checker<'_> {
                     self.pattern(env, item, &ty);
                 }
             }
-            Pattern::Record { fields, rest, .. } => {
+            Pattern::Record { name, fields, rest } => {
+                if let Some(path) = name
+                    && let Some(expected_id) = self.resolve(path.span)
+                    && !matches!(normalized, Ty::Unknown | Ty::Infer(_))
+                {
+                    let def = self.hir.definition(expected_id);
+                    let is_alias = def.stmt.is_some_and(|stmt| {
+                        matches!(
+                            &self.ast(def.name.span.file).stmt(stmt).value.kind,
+                            StmtKind::Type(decl) if decl.kind == ril_syntax::syntax::TypeKind::Alias
+                        )
+                    });
+                    if !is_alias {
+                        let matches_id =
+                            matches!(&normalized, Ty::Adt(adt) if adt.definition == expected_id);
+                        if !matches_id {
+                            self.error(
+                                Code::E0301,
+                                node.span,
+                                "record pattern type does not match the matched value",
+                            );
+                        }
+                    }
+                }
                 let ty = if let Ty::Adt(adt) = &normalized {
                     match adt.kind {
                         AdtKind::Foreign => {
@@ -216,7 +248,17 @@ impl Checker<'_> {
                     normalized
                 };
                 if let Ty::Record(known, open) = ty {
-                    if !rest && !open && fields.len() != known.len() {
+                    let mut seen_fields = HashSet::new();
+                    for field in fields {
+                        if !seen_fields.insert(field.name.value.as_str()) {
+                            self.error(
+                                Code::E0210,
+                                field.name.span,
+                                "duplicate record field in pattern",
+                            );
+                        }
+                    }
+                    if !rest && !open && seen_fields.len() != known.len() {
                         self.error(
                             Code::E0307,
                             node.span,
@@ -310,16 +352,104 @@ impl Checker<'_> {
         }
     }
 
-    fn pattern_payload(&mut self, env: &Env, name: &str, ty: &Ty, span: Span) -> Vec<Ty> {
+    fn pattern_binding_modes(&self, env: &Env, id: PatternId) -> HashMap<String, (bool, Mode)> {
+        let mut out = HashMap::new();
+        self.collect_pattern_binding_modes(env, id, &mut out);
+        out
+    }
+
+    fn collect_pattern_binding_modes(
+        &self,
+        env: &Env,
+        id: PatternId,
+        out: &mut HashMap<String, (bool, Mode)>,
+    ) {
+        let ast = self.ast(env.file);
+        match &ast.pattern(id).value {
+            Pattern::Binding(storage, name) => {
+                out.insert(name.value.clone(), (storage.variable, storage.mode));
+            }
+            Pattern::Rest(Some(name)) | Pattern::TypeBinding(name) => {
+                out.insert(name.value.clone(), (false, Mode::Plain));
+            }
+            Pattern::Tuple(items)
+            | Pattern::Slice {
+                elements: items, ..
+            }
+            | Pattern::Or(items) => {
+                for &item in items {
+                    self.collect_pattern_binding_modes(env, item, out);
+                }
+            }
+            Pattern::Constructor(_, payload) => {
+                for &item in payload.iter().flatten() {
+                    self.collect_pattern_binding_modes(env, item, out);
+                }
+            }
+            Pattern::Record { fields, .. } => {
+                for field in fields {
+                    if let Some(pattern) = field.pattern {
+                        self.collect_pattern_binding_modes(env, pattern, out);
+                    } else {
+                        out.insert(
+                            field.name.value.clone(),
+                            (field.storage.variable, field.storage.mode),
+                        );
+                    }
+                }
+            }
+            Pattern::Subset {
+                binding: Some(id), ..
+            } => self.collect_pattern_binding_modes(env, *id, out),
+            _ => {}
+        }
+    }
+
+    fn pattern_payload(
+        &mut self,
+        env: &Env,
+        name: &str,
+        resolved: Option<DefinitionId>,
+        ty: &Ty,
+        span: Span,
+    ) -> Vec<Ty> {
+        let variant_parent = resolved.and_then(|id| match self.hir.definition(id).kind {
+            ril_hir::DefinitionKind::Variant(parent) => Some(parent),
+            _ => None,
+        });
         match (name, ty) {
             ("Some", Ty::Option(inner))
-            | ("Ok", Ty::Result(inner, _))
-            | ("Err", Ty::Result(_, inner)) => vec![(**inner).clone()],
-            ("None", Ty::Option(_)) => Vec::new(),
+                if variant_parent
+                    .is_none_or(|p| self.hir.std_type(p) == Some(ril_hir::StdType::Option)) =>
+            {
+                vec![(**inner).clone()]
+            }
+            ("Ok", Ty::Result(inner, _))
+                if variant_parent
+                    .is_none_or(|p| self.hir.std_type(p) == Some(ril_hir::StdType::Result)) =>
+            {
+                vec![(**inner).clone()]
+            }
+            ("Err", Ty::Result(_, inner))
+                if variant_parent
+                    .is_none_or(|p| self.hir.std_type(p) == Some(ril_hir::StdType::Result)) =>
+            {
+                vec![(**inner).clone()]
+            }
+            ("None", Ty::Option(_))
+                if variant_parent
+                    .is_none_or(|p| self.hir.std_type(p) == Some(ril_hir::StdType::Option)) =>
+            {
+                Vec::new()
+            }
             (
                 "Let" | "Var" | "Mut" | "SharedMut" | "Ref" | "VarMut" | "VarSharedMut" | "VarRef",
                 Ty::Mode,
-            ) => Vec::new(),
+            ) if variant_parent
+                .is_none_or(|p| self.hir.std_type(p) == Some(ril_hir::StdType::MemberMode)) =>
+            {
+                Vec::new()
+            }
             (_, Ty::Adt(adt)) if adt.kind == AdtKind::Foreign => {
                 self.error(
                     Code::E0907,
@@ -329,12 +459,36 @@ impl Checker<'_> {
                 Vec::new()
             }
             (_, Ty::Adt(adt))
-                if adt.kind == AdtKind::OpaqueSum && adt.defining_scope != env.scope =>
+                if matches!(adt.kind, AdtKind::Opaque | AdtKind::OpaqueSum)
+                    && adt.defining_scope != env.scope =>
             {
-                self.error(Code::E0308, span, "opaque sum is sealed");
+                self.error(Code::E0308, span, "opaque representation is sealed");
                 Vec::new()
             }
             (_, Ty::Adt(adt)) if matches!(adt.kind, AdtKind::Sum | AdtKind::OpaqueSum) => {
+                if let Some(parent) = variant_parent
+                    && parent != adt.definition
+                {
+                    let parent_def = self.hir.definition(parent);
+                    let parent_adt = Ty::Adt(std::sync::Arc::new(super::Adt {
+                        definition: parent,
+                        kind: AdtKind::Sum,
+                        defining_scope: parent_def.scope,
+                        visibility: parent_def.visibility,
+                        arguments: adt.arguments.clone(),
+                    }));
+                    if !self.sum_subset(env, &parent_adt, ty) {
+                        self.error(
+                            Code::E0301,
+                            span,
+                            format!(
+                                "constructor {name} does not belong to {}",
+                                ty.display(self.hir)
+                            ),
+                        );
+                        return Vec::new();
+                    }
+                }
                 self.sum_variants(adt).remove(name).unwrap_or_else(|| {
                     self.error(
                         Code::E0301,
@@ -347,7 +501,11 @@ impl Checker<'_> {
                     Vec::new()
                 })
             }
-            (_, Ty::Adt(adt)) if self.hir.definition(adt.definition).name.value == name => {
+            (_, Ty::Adt(adt))
+                if resolved.is_some_and(|id| id == adt.definition)
+                    || (resolved.is_none()
+                        && self.hir.definition(adt.definition).name.value == name) =>
+            {
                 match self.representation(env, adt) {
                     Some(Ty::Tuple(items)) => items.into_iter().map(|m| m.ty).collect(),
                     Some(Ty::Unit) | None => Vec::new(),

@@ -266,7 +266,9 @@ impl Checker<'_> {
                         });
                 }
                 self.assumption(&mut body_env, condition, true);
-                let body_result = self.expr(&mut body_env, *body, None);
+                let body_result = self.expr(&mut body_env, *body, Some(&Ty::Unit));
+                let body_span = self.ast(env.file).expr(*body).span;
+                self.require(&body_env, body_span, &body_result, &Ty::Unit);
                 env.refinements = self.merge_refinements(env, &body_env, &Ty::Unit, &body_result);
                 env.effects_seen.extend(body_env.effects_seen);
                 if matches!(condition, Condition::Expr(test) if matches!(&self.ast(env.file).expr(*test).value,
@@ -290,8 +292,6 @@ impl Checker<'_> {
                     Ty::Array(item) => item.ty,
                     Ty::Map(key, value) => Ty::Tuple(vec![Member::plain(*key), *value]),
                     Ty::Set(item) => *item,
-                    Ty::Str => Ty::Str,
-                    Ty::Bytes => Ty::Int,
                     Ty::Unknown => Ty::Unknown,
                     _ => {
                         self.error(
@@ -302,8 +302,20 @@ impl Checker<'_> {
                         Ty::Unknown
                     }
                 };
+                if !matches!(item, Ty::Unknown | Ty::Never) {
+                    let shape = self.pattern_shape(env, *pattern, &item);
+                    if self.useful(env, &[shape], super::coverage::Shape::Any, &item) {
+                        self.error(
+                            Code::E0345,
+                            self.ast(env.file).pattern(*pattern).span,
+                            "for-loop pattern must be irrefutable",
+                        );
+                    }
+                }
                 self.pattern(env, *pattern, &item);
-                self.expr(env, *body, None);
+                let body_ty = self.expr(env, *body, Some(&Ty::Unit));
+                let body_span = self.ast(env.file).expr(*body).span;
+                self.require(env, body_span, &body_ty, &Ty::Unit);
                 Ty::Unit
             }
             Expr::Match { value, arms, .. } => {
@@ -504,22 +516,42 @@ impl Checker<'_> {
             _ => Some(&a),
         };
         let gate_depth = env.staging_gates.len();
-        if matches!(name, "&&" | "||")
-            && let Some(span) = self.stage_condition(env, left)
-        {
-            env.staging_gates
-                .push(super::staging::StaticGate::Condition {
-                    span,
-                    expected: name == "&&",
-                });
-        }
+        let saved_refinements = if matches!(name, "&&" | "||") {
+            let saved = env.refinements.clone();
+            self.relate(env, left, name == "&&");
+            if let Some(span) = self.stage_condition(env, left) {
+                env.staging_gates
+                    .push(super::staging::StaticGate::Condition {
+                        span,
+                        expected: name == "&&",
+                    });
+            }
+            Some(saved)
+        } else {
+            None
+        };
         let b = self.expr(env, right, right_expected);
         env.staging_gates.truncate(gate_depth);
+        if let Some(saved) = saved_refinements {
+            env.refinements = saved;
+        }
         let b = self.normalize(&b);
         if !assignment
             && matches!(
                 name,
-                "+" | "-" | "*" | "/" | "%" | "<<" | ">>" | "&" | "|" | "^"
+                "+" | "-"
+                    | "*"
+                    | "/"
+                    | "%"
+                    | "<<"
+                    | ">>"
+                    | "&"
+                    | "|"
+                    | "^"
+                    | "<"
+                    | ">"
+                    | "<="
+                    | ">="
             )
         {
             for expression in [left, right] {
@@ -589,8 +621,13 @@ impl Checker<'_> {
         if matches!(name, "==" | "!=") && [left, right].iter().any(|&expr| self.is_none(env, expr))
         {
             for (id, ty) in [(left, &a), (right, &b)] {
+                if self.is_none(env, id) {
+                    continue;
+                }
                 let span = ast.expr(id).span;
-                if self.narrowings.contains_key(&span) && !matches!(ty, Ty::Option(_) | Ty::Unknown)
+                if (self.narrowings.contains_key(&span)
+                    && !matches!(ty, Ty::Option(_) | Ty::Unknown))
+                    || self.is_known_none(env, id)
                 {
                     self.error(
                         Code::E0311,
@@ -671,9 +708,19 @@ impl Checker<'_> {
                 self.equatable(env, key, seen) && self.equatable(env, &value.ty, seen)
             }
             Ty::Adt(adt) if adt.kind == AdtKind::Foreign => false,
-            Ty::Adt(adt) if seen.insert(adt.definition) => self
-                .representation(env, adt)
-                .is_none_or(|ty| self.equatable(env, &ty, seen)),
+            Ty::Adt(adt) if seen.insert(adt.definition) => {
+                let result = if matches!(adt.kind, AdtKind::Sum | AdtKind::OpaqueSum) {
+                    self.sum_variants(adt)
+                        .values()
+                        .flatten()
+                        .all(|payload| self.equatable(env, payload, seen))
+                } else {
+                    self.representation(env, adt)
+                        .is_none_or(|ty| self.equatable(env, &ty, seen))
+                };
+                seen.remove(&adt.definition);
+                result
+            }
             _ => true,
         }
     }
@@ -740,8 +787,14 @@ impl Checker<'_> {
             Expr::Block { statements, .. } => {
                 statements
                     .iter()
-                    .any(|&stmt| match ast.stmt(stmt).value.kind {
-                        StmtKind::Expr(id) => self.has_break(env, id),
+                    .any(|&stmt| match &ast.stmt(stmt).value.kind {
+                        StmtKind::Expr(id) => self.has_break(env, *id),
+                        StmtKind::Binding {
+                            value, fallback, ..
+                        } => {
+                            value.is_some_and(|v| self.has_break(env, v))
+                                || fallback.is_some_and(|f| self.has_break(env, f))
+                        }
                         _ => false,
                     })
             }
@@ -749,6 +802,10 @@ impl Checker<'_> {
                 self.has_break(env, *yes) || no.is_some_and(|no| self.has_break(env, no))
             }
             Expr::Match { arms, .. } => arms.iter().any(|arm| self.has_break(env, arm.body)),
+            Expr::Binary { left, right, .. } => {
+                self.has_break(env, *left) || self.has_break(env, *right)
+            }
+            Expr::Unary { value, .. } => self.has_break(env, *value),
             _ => false,
         }
     }

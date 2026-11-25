@@ -509,7 +509,17 @@ impl Checker<'_> {
         {
             self.error(Code::E0314, span, "required argument is missing");
         }
-        if call.open_effects || call.open_state {
+        if call.open_effects
+            || call.open_state
+            || call
+                .effects
+                .iter()
+                .any(|eff| !matches!(eff.as_str(), "io" | "fiber"))
+            || call
+                .state
+                .iter()
+                .any(|clause| clause == "up" || clause.starts_with("up("))
+        {
             self.invalidate_live(env, Code::E0533);
         } else if call
             .state
@@ -520,7 +530,11 @@ impl Checker<'_> {
                 .iter()
                 .filter(|arg| matches!(arg.mode, Mode::Mut | Mode::Shared))
             {
-                self.writes_place(env, argument.value);
+                if argument.mode == Mode::Shared {
+                    self.invalidate_live(env, Code::E0310);
+                } else {
+                    self.writes_place(env, argument.value);
+                }
             }
         }
         let effects = if !call.effects.is_empty()
@@ -663,15 +677,38 @@ impl Checker<'_> {
         if args.len() != params.len() {
             self.error(Code::E0314, span, "invalid constructor payload arity");
         }
+        let single = params.len() == 1;
         for (arg, ty) in args.iter().zip(params) {
-            if arg.mode != Mode::Plain {
+            let arg_span = self.ast(env.file).expr(arg.value).span;
+            if arg.name.is_some() {
+                self.error(
+                    Code::E0339,
+                    arg_span,
+                    "positional constructor does not accept named arguments",
+                );
+            }
+            let allowed_mode = if single {
+                matches!(arg.mode, Mode::Plain | Mode::Ref | Mode::Shared | Mode::New)
+            } else {
+                arg.mode == Mode::Plain
+            };
+            if !allowed_mode {
                 self.error(
                     Code::E0406,
-                    self.ast(env.file).expr(arg.value).span,
-                    "constructors receive plain payloads",
+                    arg_span,
+                    "constructor argument has an unsupported access mode",
                 );
             }
             self.expect(env, arg.value, &ty);
+            if matches!(arg.mode, Mode::Mut | Mode::Shared | Mode::Ref)
+                && self.types.get(&arg_span).is_some_and(Ty::is_value)
+            {
+                self.error(
+                    Code::E0401,
+                    arg_span,
+                    "value-type argument cannot carry live authority",
+                );
+            }
         }
         ty
     }

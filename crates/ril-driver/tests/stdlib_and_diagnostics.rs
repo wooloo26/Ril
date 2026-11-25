@@ -385,3 +385,147 @@ fn wave_b_stdlib_primitives_set_sort_first_class_and_named_args() -> Result<(), 
     }
     Ok(())
 }
+
+#[test]
+fn wave_c_soundness_static_checks_narrowing_patterns_and_nominals() -> Result<(), String> {
+    let source = r#"
+        nominal type UserId = int
+        nominal type Config = .{ host: str = "localhost", port: int = 8080 }
+        meta let DEFAULT_CFG = Config.{ port: 9000 }
+
+        fn unwrap_copy<W |> NominalWrapper>(w: W) -> Unwrap<W> { inner(w) }
+        fn coord_kind<T>(k: CoordKey<T>) -> CoordKey<T> { k }
+        fn pair_only<T |> Tuple>(t: T) -> T { t }
+        fn shared_only<T |> SharedObject>(v: T) -> T { v }
+        fn len_only<T |> LenTarget>(v: T) -> int { len(v) }
+
+        fn narrow_and(x: ?int) -> bool { x != None && x > 5 }
+        fn narrow_or(x: ?int) -> bool { x == None || x > 5 }
+
+        fn break_from_let_else(xs: []?int) -> int {
+            var i = 0
+            while true {
+                let Some(v) = xs[i] else { break }
+                i += 1
+                let _ = v
+            }
+            i
+        }
+
+        fn main() @io -> () {
+            -- First-class bare nominal constructor
+            let ids = Array::map([1, 2, 3], UserId)
+            assert(inner(ids[0]) == 1 && inner(ids[2]) == 3)
+
+            -- Prelude static checks & helpers
+            assert(unwrap_copy(UserId(42)) == 42)
+            assert(coord_kind<Config>("host") == "host")
+            assert(coord_kind<(int, str)>(0) == 0)
+            assert(pair_only((1, 2)) == (1, 2))
+            assert(shared_only([1, 2]) == [1, 2])
+            assert(len_only("abc") == 3)
+
+            -- Static record defaults evaluated
+            assert(DEFAULT_CFG.host == "localhost" && DEFAULT_CFG.port == 9000)
+
+            -- Safe map indexing preserves ??int
+            let m: [str: ?int] = ["a": None, "b": Some(7)]
+            let got_a: ??int = m?["a"]
+            let got_b: ??int = m?["b"]
+            let got_c: ??int = m?["c"]
+            assert(got_a == Some(None) && got_b == Some(Some(7)) && got_c == None)
+
+            -- Narrowing across && and || + break inside let..else
+            assert(narrow_and(Some(10)) && !narrow_and(None))
+            assert(narrow_or(None) && narrow_or(Some(10)) && !narrow_or(Some(1)))
+            assert(break_from_let_else([Some(1), Some(2), None]) == 2)
+
+            println("wave-c-ok")
+        }
+    "#;
+    run_aot(source, "wave-c-ok\n")?;
+
+    for (src, code) in [
+        ("fn main() -> () { let _ = \"abc\"[0] }\n", Code::E0352),
+        ("fn main() -> () { let _ = bytes\"abc\"[0] }\n", Code::E0352),
+        (
+            "fn main() -> () { for \"abc\" as c { let _ = c } }\n",
+            Code::E0355,
+        ),
+        (
+            "fn main() -> () { let r = .{ a: 1 }; let i = 0; let _ = r[i] }\n",
+            Code::E0324,
+        ),
+        (
+            "fn f(x: int<str>) -> int { x }\nfn main() -> () {}\n",
+            Code::E0340,
+        ),
+        (
+            "fn f(x: Option<int, str>) -> () { let _ = x }\nfn main() -> () {}\n",
+            Code::E0340,
+        ),
+        (
+            "fn f<T |> SharedObject>(x: T) -> T { x }\nfn main() -> () { let _ = f(1) }\n",
+            Code::E0301,
+        ),
+        (
+            "fn f<T |> Tuple>(x: T) -> T { x }\nfn main() -> () { let _ = f(1) }\n",
+            Code::E0301,
+        ),
+        (
+            "fn f<T |> LenTarget>(x: T) -> T { x }\nfn main() -> () { let _ = f(1) }\n",
+            Code::E0301,
+        ),
+        (
+            "type BadKey { Num(f64) }\nfn f(m: [BadKey: int]) -> () { let _ = m }\nfn main() -> () {}\n",
+            Code::E0328,
+        ),
+        (
+            "type Open { A; .. }\nfn f(m: [Open: int]) -> () { let _ = m }\nfn main() -> () {}\n",
+            Code::E0328,
+        ),
+        (
+            "type FnSum { Call(fn() -> int) }\nfn f(a: FnSum, b: FnSum) -> bool { a == b }\nfn main() -> () {}\n",
+            Code::E0327,
+        ),
+        (
+            "fn main() -> () { match \"hi\" { str[] -> ()\n _ -> () } }\n",
+            Code::E0349,
+        ),
+        (
+            "fn main() -> () { let xs = [Some(1)]; for xs as Some(v) { let _ = v } }\n",
+            Code::E0345,
+        ),
+        ("fn main() -> () { while false { 42 } }\n", Code::E0301),
+        (
+            "fn f(x: ?int) -> () { if x == None { if x != None { () } } }\nfn main() -> () {}\n",
+            Code::E0311,
+        ),
+        (
+            "type A { Tag }\ntype B { Tag }\nfn f(a: A) -> () { match a { B::Tag -> ()\n _ -> () } }\nfn main() -> () {}\n",
+            Code::E0301,
+        ),
+        (
+            "nominal type U = .{ id: int }\nnominal type V = .{ id: int }\nfn f(u: U) -> int { let V.{ id } = u; id }\nfn main() -> () {}\n",
+            Code::E0301,
+        ),
+        (
+            "fn main() -> () { let _: .{ var x: int } = .{ x: 1 } }\n",
+            Code::E0357,
+        ),
+    ] {
+        let mut pkg = VirtualPackage::new(Unit::Bin);
+        pkg.insert(pkg.entry.clone(), src.as_bytes().to_vec());
+        let checked = Driver.check(&pkg, Stage::Type);
+        assert!(
+            checked
+                .result
+                .diagnostics
+                .iter()
+                .any(|d| d.code == Some(code)),
+            "expected {code:?} for `{src}`, got {:?}",
+            checked.result.diagnostics
+        );
+    }
+    Ok(())
+}

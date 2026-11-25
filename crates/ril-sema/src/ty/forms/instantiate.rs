@@ -195,7 +195,7 @@ impl Checker<'_> {
                     };
                 if !allowed {
                     self.error(
-                        Code::E0301,
+                        Code::E0306,
                         span,
                         format!(
                             "{} does not satisfy the domain of {}",
@@ -374,11 +374,85 @@ impl Checker<'_> {
         };
         let def = self.hir.definition(check);
         if matches!(def.kind, DefinitionKind::Primitive(_)) {
-            if def.name.value == "Sendable"
-                && let GenericValue::Type(ty) = input
-                && !self.is_sendable(env, ty, &mut HashSet::new())
-            {
-                self.error(Code::E0301, span, "type does not satisfy Sendable");
+            if let GenericValue::Type(ty) = input {
+                let ty = self.normalize(ty);
+                match def.name.value.as_str() {
+                    "Sendable" => {
+                        if !self.is_sendable(env, &ty, &mut HashSet::new()) {
+                            self.error(Code::E0301, span, "type does not satisfy Sendable");
+                        }
+                    }
+                    "SharedObject" => {
+                        let valid = !ty.is_value()
+                            && !matches!(
+                                &ty,
+                                Ty::Callable(_)
+                                    | Ty::TypeValue(_)
+                                    | Ty::Mode
+                                    | Ty::Range
+                                    | Ty::Draft(_)
+                                    | Ty::Scope
+                                    | Ty::Task(_)
+                                    | Ty::Sender(_)
+                                    | Ty::Receiver(_)
+                            )
+                            && !matches!(&ty, Ty::Adt(adt) if adt.kind == AdtKind::Foreign);
+                        if !valid {
+                            self.error(Code::E0301, span, "type does not satisfy SharedObject");
+                        }
+                    }
+                    "LenTarget" => {
+                        if !matches!(
+                            &ty,
+                            Ty::Str
+                                | Ty::Bytes
+                                | Ty::Array(_)
+                                | Ty::Map(..)
+                                | Ty::Set(_)
+                                | Ty::Unknown
+                                | Ty::Infer(_)
+                                | Ty::Param(_)
+                        ) {
+                            self.error(Code::E0301, span, "type does not satisfy LenTarget");
+                        }
+                    }
+                    "Tuple" => {
+                        if !matches!(
+                            &ty,
+                            Ty::Tuple(_) | Ty::Unit | Ty::Unknown | Ty::Infer(_) | Ty::Param(_)
+                        ) {
+                            self.error(Code::E0301, span, "type does not satisfy Tuple");
+                        }
+                    }
+                    "NominalWrapper" => {
+                        let target = match &ty {
+                            Ty::Draft(inner) => self.normalize(inner),
+                            other => other.clone(),
+                        };
+                        match &target {
+                            Ty::Unknown | Ty::Infer(_) | Ty::Param(_) => {}
+                            Ty::Adt(adt) if adt.kind == AdtKind::Foreign => {
+                                self.error(Code::E0907, span, "foreign representation is sealed");
+                            }
+                            Ty::Adt(adt)
+                                if adt.kind == AdtKind::Opaque
+                                    && adt.defining_scope != env.scope =>
+                            {
+                                self.error(Code::E0308, span, "opaque representation is sealed");
+                            }
+                            Ty::Adt(adt)
+                                if matches!(adt.kind, AdtKind::Nominal | AdtKind::Opaque) => {}
+                            _ => {
+                                self.error(
+                                    Code::E0301,
+                                    span,
+                                    "type does not satisfy NominalWrapper",
+                                );
+                            }
+                        }
+                    }
+                    _ => {}
+                }
             }
             if self.prelude_key(path)
                 && let GenericValue::Data(key) = input

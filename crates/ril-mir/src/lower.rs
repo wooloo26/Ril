@@ -1219,9 +1219,7 @@ impl<'a> Builder<'_, 'a> {
             return Ok(value);
         }
         let def = self.global.typed.hir.definition(source);
-        if (matches!(def.kind, DefinitionKind::Variant(_))
-            || matches!(def.kind, DefinitionKind::Primitive(_))
-                && matches!(def.name.value.as_str(), "Some" | "Ok" | "Err"))
+        if matches!(def.kind, DefinitionKind::Variant(_) | DefinitionKind::Type)
             && let Some(Ty::Callable(signature)) = self.global.typed.types.get(&span)
         {
             let arity = signature.parameters.len();

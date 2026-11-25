@@ -29,9 +29,9 @@ fn large_indexmap_and_utf8_str_metadata_under_gc_stress() -> Result<(), String> 
             assert(sum > 0)
 
             let ascii = "abcdefghij"
-            assert(len(ascii) == 10 && ascii[3] == "d" && ascii[2..6] == "cdef")
+            assert(len(ascii) == 10 && String::at(ascii, 3) == Some(100) && ascii[2..6] == "cdef")
             let utf8 = "a中b文c"
-            assert(len(utf8) == 5 && utf8[1] == "中" && utf8[1..4] == "中b文")
+            assert(len(utf8) == 5 && String::at(utf8, 1) == Some(20013) && utf8[1..4] == "中b文")
             println("r4-map-str-ok")
         }
     "#;

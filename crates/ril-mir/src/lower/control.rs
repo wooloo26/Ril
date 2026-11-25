@@ -230,8 +230,10 @@ impl Builder<'_, '_> {
         let mut value = self.collection(base)?;
         let names: Vec<_> = self.locals.keys().copied().collect();
         let join = self.block(1 + names.len());
+        let mut last_was_safe_index_on_non_option = false;
         for &step in steps {
             let node = self.ast().expr(step);
+            last_was_safe_index_on_non_option = false;
             match &node.value {
                 Expr::Member { member, safe, .. } => {
                     if *safe {
@@ -241,10 +243,12 @@ impl Builder<'_, '_> {
                     value = self.runtime("ril_rt_load", vec![value, key]);
                 }
                 Expr::Index { index, safe, .. } => {
-                    if *safe
-                        && receiver.is_some_and(|ty| matches!(self.concrete(ty), Ty::Option(_)))
-                    {
-                        value = self.navigation_payload(value, join, &names);
+                    if *safe {
+                        if receiver.is_some_and(|ty| matches!(self.concrete(ty), Ty::Option(_))) {
+                            value = self.navigation_payload(value, join, &names);
+                        } else {
+                            last_was_safe_index_on_non_option = true;
+                        }
                     }
                     value = self.index(value, *index, *safe)?;
                     if *safe {
@@ -255,12 +259,13 @@ impl Builder<'_, '_> {
             }
             receiver = self.global.typed.navigation_values.get(&node.span);
         }
-        if !self
-            .global
-            .typed
-            .navigation_values
-            .get(&span)
-            .is_some_and(|ty| matches!(self.concrete(ty), Ty::Option(_)))
+        if last_was_safe_index_on_non_option
+            || !self
+                .global
+                .typed
+                .navigation_values
+                .get(&span)
+                .is_some_and(|ty| matches!(self.concrete(ty), Ty::Option(_)))
         {
             value = self.tag("Some", vec![value]);
         }
