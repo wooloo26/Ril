@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::ty::TypedProgram;
 
-#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Eq, Hash, PartialEq, Serialize, Deserialize)]
 pub struct Summary {
     pub writes: Vec<usize>,
     pub retained: Vec<usize>,
@@ -127,7 +127,7 @@ impl Summary {
 
 /// Entry graph region that must be freezable, excluding edges that the
 /// callee definitely replaces before freezing.
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 pub struct SnapshotInput {
     pub formal: usize,
     pub path: Vec<Coordinate>,
@@ -137,7 +137,7 @@ pub struct SnapshotInput {
 /// Invocation of a callable obtained through a formal's call-entry graph.
 /// Its argument graphs are needed to discharge the chosen callback's
 /// snapshot input requirements even if its return value is discarded.
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 pub struct SnapshotCall {
     pub receiver: ModeAxis,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -148,14 +148,14 @@ pub struct SnapshotCall {
 }
 
 /// A call and projection that produce the receiver for the next step.
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 pub struct SnapshotFactoryStep {
     pub path: Vec<Coordinate>,
     pub cap: Option<Access>,
     pub arguments: Vec<SnapshotArgument>,
 }
 
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 pub struct SnapshotArgument {
     pub position: usize,
     /// A forwarded `via` argument has no fixed input mode.
@@ -165,7 +165,7 @@ pub struct SnapshotArgument {
     pub graph: SnapshotGraph,
 }
 
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 pub struct SnapshotGraph {
     pub owned: bool,
     pub environment: bool,
@@ -175,7 +175,7 @@ pub struct SnapshotGraph {
     pub members: Vec<(Coordinate, SnapshotGraph)>,
 }
 
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 pub struct SnapshotOrigin {
     pub source: Option<ModeAxis>,
     pub access: Access,
@@ -190,7 +190,7 @@ pub struct SnapshotOrigin {
 
 /// The snapshot contract of a callable supplied by this export. Provider
 /// indices refer to the enclosing summary, independently of name visibility.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
 pub struct SnapshotProvider {
     pub via_parameters: Vec<bool>,
     pub inputs: Vec<SnapshotInput>,
@@ -213,13 +213,13 @@ pub struct SnapshotProvider {
 
 /// Transfers on normal paths through a callable, including calls whose
 /// storage effects depend on the actual receiver supplied by the caller.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
 pub enum StorageTransfer {
     Paths(Vec<Vec<StorageStep>>),
     Interleaved(Vec<StorageStep>),
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
 pub enum StorageStep {
     Write(StorageUpdate),
     WriteObserved {
@@ -249,14 +249,14 @@ pub enum StorageStep {
     },
 }
 
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 pub struct StorageObservation {
     pub index: usize,
     pub path: Vec<Coordinate>,
 }
 
 /// A source of callable provenance carried by a result or a stored value.
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 pub struct SnapshotProjection {
     pub path: Vec<Coordinate>,
     pub origin: SnapshotOrigin,
@@ -289,20 +289,20 @@ impl SnapshotInput {
     }
 }
 
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 pub struct EffectUse {
     pub declaration: usize,
     pub effect: String,
     pub operation: Option<String>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 pub enum InvocationMode {
     Input(Input),
     Formal(usize),
 }
 
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 pub struct Invocation {
     pub receiver: usize,
     pub parameter: usize,
@@ -319,7 +319,7 @@ impl Invocation {
     }
 }
 
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 pub struct CallbackReturn {
     pub invocation: usize,
     pub receiver: usize,
@@ -362,7 +362,7 @@ impl CallbackReturn {
     }
 }
 
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 pub struct CallbackArgument {
     pub position: usize,
     pub modes: Vec<InvocationMode>,
@@ -374,7 +374,7 @@ pub struct CallbackArgument {
     pub constructs: bool,
 }
 
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 pub struct ReturnSource {
     pub formal: usize,
     pub source_path: Vec<Coordinate>,
@@ -384,7 +384,7 @@ pub struct ReturnSource {
 
 /// An occurrence of an allocation in a returned object graph. Occurrences
 /// with the same index denote the same abstract object, even at different paths.
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 pub struct ReturnAllocation {
     pub path: Vec<Coordinate>,
     pub index: usize,
@@ -401,13 +401,15 @@ pub struct ReturnAllocation {
 }
 
 /// Length evidence for a newly constructed array object.
-#[derive(Clone, Copy, Debug, Default, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[derive(
+    Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize,
+)]
 pub struct ArrayExtent {
     pub minimum: usize,
     pub exact: bool,
 }
 
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 pub struct StorageUpdate {
     pub formal: usize,
     pub path: Vec<Coordinate>,
@@ -479,7 +481,7 @@ impl Input {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
 pub struct Instance {
     pub modes: Vec<Input>,
     pub summary: Summary,

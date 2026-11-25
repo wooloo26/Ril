@@ -5,19 +5,19 @@ use serde::{Deserialize, Serialize};
 use super::{Access, Coordinate, Input, Invocation, InvocationMode};
 
 /// A root or member mode parameter in a callable's signature.
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 pub struct ModeAxis {
     pub parameter: usize,
     pub path: Vec<Coordinate>,
 }
 
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 pub enum ModeStep<A> {
     Axis(A),
     Fixed(Access),
 }
 
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 pub enum ModeExpression<A> {
     Input(Input),
     Axis(A),
@@ -109,7 +109,7 @@ impl<A: Ord> ModeExpression<A> {
 }
 
 /// Mode offers made together in one invocation of a callback formal.
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 pub struct CallbackModeCall {
     pub receiver: ModeAxis,
     #[serde(default, skip_serializing_if = "Option::is_none")]

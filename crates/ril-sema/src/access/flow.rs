@@ -14,7 +14,7 @@ pub(super) use storage::{
     DeferredStorageCall, StorageAction, StorageFlow, StorageRead, StorageTarget,
 };
 
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 pub enum Access {
     Immutable,
     Ref,
@@ -54,7 +54,7 @@ impl Access {
     }
 }
 
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 pub enum Coordinate {
     Field(String),
     Index(String),
@@ -3455,6 +3455,19 @@ pub(super) struct ViaConflict {
 }
 
 impl ViaConflict {
+    pub(super) fn support_regions(&self) -> Vec<Region> {
+        let mut regions = Vec::new();
+        for (origin, _, recipe) in [&self.left, &self.right] {
+            if let Some(entry) = &origin.entry_graph {
+                regions.extend(entry.via_at.iter().cloned());
+            }
+            if let Some(recipe) = recipe {
+                regions.extend(recipe.axes().cloned());
+            }
+        }
+        regions
+    }
+
     pub(super) fn mode_owner(&self) -> Option<Span> {
         let (left, _, lrecipe) = &self.left;
         let (right, _, rrecipe) = &self.right;

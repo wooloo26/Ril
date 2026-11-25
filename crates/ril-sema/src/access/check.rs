@@ -14,7 +14,7 @@ use ril_frontend::{
 };
 
 use super::{
-    Access, Analysis, CallbackModeCall, CleanupAction, EffectUse, Input, Instance, Invocation,
+    Access, Analysis, CallbackModeCall, CleanupAction, EffectUse, Input, Invocation,
     InvocationMode, ReturnSource, StorageUpdate, Summary, ViaDomain,
     flow::{
         AccessConflict, ConflictKind, Coordinate, Datum, Ledger, Origin, Reception, Region,
@@ -1258,11 +1258,118 @@ impl<'a> Analyzer<'a> {
         {
             return ViaDomain::uniform(&permitted, summary);
         }
-        let mut rows = vec![Vec::new()];
-        for domain in permitted {
-            extend_rows(&mut rows, &domain);
+        let mut relevant = BTreeSet::new();
+        let formal_axis = |formal: usize| formals.get(&formal).copied();
+        let mode_axis_idx = |axis: &super::ModeAxis| {
+            if axis.path.is_empty() {
+                formals.get(&axis.parameter).copied()
+            } else {
+                fun.member_axes
+                    .iter()
+                    .position(|(parameter, region)| {
+                        *parameter == axis.parameter && region.selection == axis.path
+                    })
+                    .map(|pos| formals.len() + pos)
+            }
+        };
+        for invocation in &summary.invocations {
+            if let InvocationMode::Formal(formal) = invocation.mode
+                && let Some(idx) = formal_axis(formal)
+            {
+                relevant.insert(idx);
+            }
         }
-        ViaDomain::from_instances(rows.into_iter().map(|modes| {
+        if let Some(calls) = &summary.mode_calls {
+            for call in calls {
+                for (_, expr) in &call.arguments {
+                    for axis in expr.axes() {
+                        if let Some(idx) = mode_axis_idx(axis) {
+                            relevant.insert(idx);
+                        }
+                    }
+                }
+            }
+        }
+        fn collect_callback_return_formals(
+            result: &super::CallbackReturn,
+            out: &mut BTreeSet<usize>,
+        ) {
+            for arg in &result.arguments {
+                for mode in &arg.modes {
+                    if let InvocationMode::Formal(formal) = *mode {
+                        out.insert(formal);
+                    }
+                }
+                for nested in &arg.callback_returns {
+                    collect_callback_return_formals(nested, out);
+                }
+            }
+        }
+        let mut cb_formals = BTreeSet::new();
+        for result in &summary.callback_returns {
+            collect_callback_return_formals(result, &mut cb_formals);
+        }
+        for update in &summary.storage_updates {
+            for result in &update.callback_returns {
+                collect_callback_return_formals(result, &mut cb_formals);
+            }
+        }
+        for formal in cb_formals {
+            if let Some(idx) = formal_axis(formal) {
+                relevant.insert(idx);
+            }
+        }
+        if fun.declared.result_mode == Mode::Infer {
+            for value in &fun.returns {
+                for origin in &value.roots {
+                    if origin.inherits_mode
+                        && origin.region.selection.is_empty()
+                        && let Some(index) = fun
+                            .formals
+                            .iter()
+                            .position(|formal| *formal == Some(origin.region.source))
+                        && let Some(idx) = formal_axis(index)
+                    {
+                        relevant.insert(idx);
+                    }
+                }
+                value.visit_origins(&mut Vec::new(), &mut |result_path, origin| {
+                    let Some(formal) = fun
+                        .formals
+                        .iter()
+                        .position(|decl| *decl == Some(origin.region.source))
+                    else {
+                        return;
+                    };
+                    if !result_path.is_empty() && origin.new {
+                        return;
+                    }
+                    if origin.inherits_mode {
+                        for (idx, decl) in axes.iter().enumerate() {
+                            if decl.matches_axis(&origin.region) {
+                                relevant.insert(idx);
+                            }
+                        }
+                    } else if origin.reception.is_empty() {
+                        if let Some(idx) = formal_axis(formal) {
+                            relevant.insert(idx);
+                        }
+                    } else {
+                        for step in &origin.reception {
+                            if let Reception::Axis(axis) = step {
+                                for (idx, decl) in axes.iter().enumerate() {
+                                    if decl.matches_axis(axis) {
+                                        relevant.insert(idx);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                });
+            }
+        }
+
+        ViaDomain::build_relevant(&permitted, &relevant, |modes| {
             let mut summary = summary.clone();
             let input = |formal| {
                 formals
@@ -1345,7 +1452,7 @@ impl<'a> Analyzer<'a> {
                         }
                         let input = |axis: &Region| {
                             axes.iter()
-                                .zip(&modes)
+                                .zip(modes)
                                 .find(|(decl, _)| decl.matches_axis(axis))
                                 .map_or(Access::Mut, |(_, mode)| mode.access())
                         };
@@ -1376,8 +1483,8 @@ impl<'a> Analyzer<'a> {
                 }
                 summary.return_sources = sources.into_iter().collect();
             }
-            Instance { modes, summary }
-        }))
+            summary
+        })
     }
 
     fn statement(
@@ -4300,19 +4407,6 @@ fn member_axes(callable: &Callable, formals: &[Option<Span>]) -> Vec<(usize, Reg
         }
     }
     axes
-}
-
-fn extend_rows(rows: &mut Vec<Vec<Input>>, domain: &[Input]) {
-    *rows = std::mem::take(rows)
-        .into_iter()
-        .flat_map(|row| {
-            domain.iter().map(move |mode| {
-                let mut result = row.clone();
-                result.push(*mode);
-                result
-            })
-        })
-        .collect();
 }
 
 fn collect_axes(ty: &Ty, path: &mut Vec<Coordinate>, output: &mut impl FnMut(&[Coordinate])) {

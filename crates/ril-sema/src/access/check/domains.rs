@@ -37,6 +37,16 @@ impl ModeTest {
                 .then_some(*code),
         }
     }
+
+    fn support_regions(&self) -> Vec<Region> {
+        match self {
+            Self::Overlap(overlap) => overlap.support_regions(),
+            Self::Immutable(expressions, _) => expressions
+                .iter()
+                .flat_map(|expr| expr.axes().cloned())
+                .collect(),
+        }
+    }
 }
 
 pub(super) type Expression = ModeExpression<Region>;
@@ -96,14 +106,15 @@ pub(super) fn mode_patterns<'a, K: Clone + Ord>(
     patterns.into_iter().map(|(pattern, _)| pattern).collect()
 }
 
-type Row = Vec<Input>;
-
 struct Domain {
     axes: Vec<(ModeAxis, Region)>,
-    modes: ViaDomain,
+    /// Remaining permitted mode tuples stored natively as an MDD DAG.
+    current: ViaDomain,
+    /// Excluded mode tuples stored natively as an MDD mask DAG.
+    excluded: ViaDomain,
     local: bool,
-    rejected: BTreeSet<Row>,
     export: Option<DefinitionId>,
+    dirty: bool,
 }
 
 impl Domain {
@@ -114,29 +125,39 @@ impl Domain {
     ) -> Self {
         Self {
             axes,
-            modes,
+            current: modes,
+            excluded: ViaDomain::default(),
             local: true,
-            rejected: BTreeSet::new(),
             export,
+            dirty: false,
         }
     }
 
-    fn allowed(&self) -> impl Iterator<Item = Row> + '_ {
-        self.modes
-            .iter()
-            .map(|row| row.modes)
-            .filter(|row| !self.rejected.contains(row))
-    }
-
     fn is_empty(&self) -> bool {
-        self.modes.len() == self.rejected.len()
+        self.current.is_empty()
     }
 
-    fn input(&self, row: &Row, axis: &Region) -> Option<Input> {
-        self.axes
-            .iter()
-            .zip(row)
-            .find_map(|(known, &input)| known.1.matches_axis(axis).then_some(input))
+    fn support_indices(&self, regions: &[Region]) -> Vec<usize> {
+        let mut indices = BTreeSet::new();
+        for region in regions {
+            for (idx, (_, known)) in self.axes.iter().enumerate() {
+                if known.matches_axis(region) {
+                    indices.insert(idx);
+                }
+            }
+        }
+        indices.into_iter().collect()
+    }
+
+    fn lookup_assigned(&self, assigned: &[(usize, Input)], axis: &Region) -> Option<Input> {
+        self.axes.iter().enumerate().find_map(|(idx, (_, known))| {
+            if !known.matches_axis(axis) {
+                return None;
+            }
+            assigned
+                .iter()
+                .find_map(|&(pos, input)| (pos == idx).then_some(input))
+        })
     }
 }
 
@@ -152,24 +173,6 @@ impl Domains {
             function.owner,
             Domain::local(axes, instances.clone(), Some(function.id)),
         );
-    }
-
-    fn exclusions(&self, application: &Application, mut reject: impl FnMut(Option<&Row>)) {
-        let Some(target) = self.tables.get(&application.target) else {
-            return;
-        };
-        if target.local && target.rejected.is_empty() {
-            return;
-        }
-        if let Some(owner) = self.tables.get(&application.owner) {
-            for row in owner.allowed() {
-                if application.excludes(target, |axis| owner.input(&row, axis)) {
-                    reject(Some(&row));
-                }
-            }
-        } else if application.excludes(target, |_| None) {
-            reject(None);
-        }
     }
 }
 
@@ -213,6 +216,13 @@ pub(super) fn axes(callable: &Callable, formals: &[Option<Span>]) -> Vec<(ModeAx
 }
 
 impl Application {
+    fn support_regions(&self) -> Vec<Region> {
+        self.arguments
+            .values()
+            .flat_map(|expr| expr.axes().cloned())
+            .collect()
+    }
+
     fn excludes(&self, target: &Domain, input: impl Fn(&Region) -> Option<Input>) -> bool {
         let pattern: Vec<_> = target
             .axes
@@ -223,36 +233,22 @@ impl Application {
                     .and_then(|mode| mode.select(&input))
             })
             .collect();
-        let matches = |row: &Row| {
-            row.len() == pattern.len()
-                && row
-                    .iter()
-                    .zip(&pattern)
-                    .all(|(mode, expect)| expect.is_none_or(|expected| *mode == expected))
-        };
         if target.local {
             // Existing unary checks report incompatible individual inputs.
-            target.rejected.iter().any(matches)
+            target.excluded.count_matching_u128(&pattern) > 0
         } else {
             // Published rows include the original unary restrictions. If
             // some modes cannot be resolved, check their combinations using
             // the published marginal domains.
-            let allowed = target.modes.count_matching(&pattern)
-                - target.rejected.iter().filter(|row| matches(row)).count();
+            let allowed = target.current.count_matching_u128(&pattern);
             let count = pattern
                 .iter()
                 .enumerate()
-                .fold(1usize, |size, (position, mode)| {
+                .fold(1_u128, |size, (position, mode)| {
                     let choices = if mode.is_some() {
-                        1
-                    } else if target.rejected.is_empty() {
-                        target.modes.marginal_len(position)
+                        1_u128
                     } else {
-                        target
-                            .allowed()
-                            .filter_map(|row| row.get(position).copied())
-                            .collect::<BTreeSet<_>>()
-                            .len()
+                        target.current.marginal_len(position) as u128
                     };
                     size.saturating_mul(choices)
                 });
@@ -387,10 +383,11 @@ impl Analyzer<'_> {
                     function.name.span,
                     Domain {
                         axes: axes(signature, &formals),
-                        modes: export.domain.clone(),
+                        current: export.domain.clone(),
+                        excluded: ViaDomain::default(),
                         local: false,
-                        rejected: BTreeSet::new(),
                         export: None,
+                        dirty: false,
                     },
                 );
             }
@@ -405,22 +402,19 @@ impl Analyzer<'_> {
                 continue;
             }
             let bad = if let Some(domain) = domains.tables.get_mut(&constraint.owner) {
-                let rejected: Vec<_> = domain
-                    .allowed()
-                    .filter_map(|row| {
+                let support = domain.support_indices(&constraint.test.support_regions());
+                let (kept, removed, first_code) =
+                    domain.current.partition_support(&support, |assigned| {
                         constraint
                             .test
-                            .violation(|axis| domain.input(&row, axis))
-                            .map(|code| (row, code))
-                    })
-                    .collect();
-                for (row, _) in &rejected {
-                    domain.rejected.insert(row.clone());
+                            .violation(|axis| domain.lookup_assigned(assigned, axis))
+                    });
+                if !removed.is_empty() {
+                    domain.current = kept;
+                    domain.excluded = domain.excluded.union_mask(&removed);
+                    domain.dirty = true;
                 }
-                domain
-                    .is_empty()
-                    .then(|| rejected.first().map(|(_, kind)| *kind))
-                    .flatten()
+                domain.is_empty().then_some(first_code).flatten()
             } else {
                 constraint.test.violation(|_| None)
             };
@@ -431,31 +425,54 @@ impl Analyzer<'_> {
         let applications = std::mem::take(&mut self.mode_applications);
         // Forwarding may remove rows at earlier call sites or across recursion.
         loop {
-            let mut removed = BTreeMap::<_, BTreeMap<Row, Span>>::new();
+            let mut changed = false;
+            let mut non_via_errors = Vec::new();
+            let mut pending: Vec<(Span, ViaDomain, ViaDomain, Span)> = Vec::new();
             for application in &applications {
-                domains.exclusions(application, |row| {
-                    if let Some(row) = row {
-                        removed
-                            .entry(application.owner)
-                            .or_default()
-                            .insert(row.clone(), application.site);
-                    } else {
-                        self.error(
-                            Code::E0520,
-                            application.site,
-                            "via application requires a compatible combination of access modes",
-                        );
+                let Some(target) = domains.tables.get(&application.target) else {
+                    continue;
+                };
+                if target.local && target.excluded.is_empty() {
+                    continue;
+                }
+                if let Some(owner) = domains.tables.get(&application.owner) {
+                    if owner.is_empty() {
+                        continue;
                     }
-                });
+                    let support = owner.support_indices(&application.support_regions());
+                    let (kept, removed, rejected_any) =
+                        owner.current.partition_support(&support, |assigned| {
+                            application
+                                .excludes(target, |axis| owner.lookup_assigned(assigned, axis))
+                                .then_some(())
+                        });
+                    if rejected_any.is_some() && !removed.is_empty() {
+                        pending.push((application.owner, kept, removed, application.site));
+                    }
+                } else if application.excludes(target, |_| None) {
+                    non_via_errors.push(application.site);
+                }
             }
-            if removed.is_empty() {
+            for site in non_via_errors {
+                self.error(
+                    Code::E0520,
+                    site,
+                    "via application requires a compatible combination of access modes",
+                );
+            }
+            if pending.is_empty() {
                 break;
             }
-            for (owner, rows) in removed {
-                if let Some(domain) = domains.tables.get_mut(&owner) {
-                    for (row, site) in rows {
-                        domain.rejected.insert(row);
-                        if domain.is_empty() {
+            for (owner_span, _kept, removed, site) in pending {
+                if let Some(domain) = domains.tables.get_mut(&owner_span) {
+                    let was_empty = domain.is_empty();
+                    let next_current = domain.current.subtract_mask(&removed);
+                    if next_current.len_u128() < domain.current.len_u128() {
+                        domain.current = next_current;
+                        domain.excluded = domain.excluded.union_mask(&removed);
+                        domain.dirty = true;
+                        changed = true;
+                        if !was_empty && domain.is_empty() {
                             self.error(
                                 Code::E0520,
                                 site,
@@ -465,13 +482,16 @@ impl Analyzer<'_> {
                     }
                 }
             }
+            if !changed {
+                break;
+            }
         }
         for domain in domains.tables.values() {
             if let Some(id) = domain.export
+                && domain.dirty
                 && let Some(instances) = analysis.via.get_mut(&id)
-                && !domain.rejected.is_empty()
             {
-                instances.exclude(&domain.rejected);
+                *instances = domain.current.clone();
             }
         }
     }

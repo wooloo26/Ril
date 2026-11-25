@@ -3537,3 +3537,42 @@ fn query(
         Err(format!("Lean oracle failed for {operation}").into())
     }
 }
+
+#[test]
+fn nine_param_via_forwarding_builds_compact_mdd_without_cartesian_explosion() {
+    let source = r#"
+pub type Box = .{ var value: int }
+
+pub fn pick_first(
+    via a: Box,
+    via _b: Box,
+    via _c: Box,
+    via _d: Box,
+    via _e: Box,
+    via _f: Box,
+    via _g: Box,
+    via _h: Box,
+    via _i: Box,
+) -> infer Box {
+    a
+}
+"#;
+    let mut pkg = VirtualPackage::new(Unit::Lib);
+    pkg.insert(pkg.entry.clone(), source.as_bytes().to_vec());
+    let start = std::time::Instant::now();
+    let iface = Driver.interface(&pkg).unwrap();
+    let elapsed = start.elapsed();
+    assert!(
+        elapsed.as_secs_f64() < 2.0,
+        "9-param via MDD should compile in milliseconds, took {elapsed:?}"
+    );
+    let export = iface
+        .functions
+        .get("pkg/main.ril::pick_first")
+        .expect("pick_first export");
+    assert_eq!(export.domain.len_u128(), 5_u128.pow(9));
+    assert!(export.domain.uses_graph());
+    let encoded = iface.encode().unwrap();
+    let decoded = Interface::decode(&encoded).unwrap();
+    assert!(iface.compare(&decoded).is_empty());
+}
