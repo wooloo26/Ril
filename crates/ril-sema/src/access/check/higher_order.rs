@@ -584,7 +584,7 @@ impl Analyzer<'_> {
                                 Diagnostic::error(
                                     Code::E0549,
                                     callback.span,
-                                    "callback consumes an input the published call still uses",
+                                    "callback hands off an input the published call still uses",
                                 ),
                             ));
                         }

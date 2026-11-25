@@ -449,7 +449,7 @@ fn work() -> int {
     callback()
 }
 
--- @case scoped_resource_cannot_be_consumed_before_cleanup compile-fail E0604
+-- @case scoped_resource_cannot_be_handed_off_before_cleanup compile-fail E0604
 opaque type Handle use(close) = .{ id: int }
 fn close(new _handle: Handle) -> () {}
 fn work() -> () {

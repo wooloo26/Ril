@@ -121,7 +121,7 @@ impl GcRuntime {
         value: Value,
     ) -> Result<Value, &'static str> {
         if self.draft_nodes.contains_key(&target) && self.draft_nodes.contains_key(&value) {
-            // A borrowed working value used as data must retain the contents
+            // A live working draft value used as data must retain the contents
             // it had at insertion, even if its source path is edited later.
             self.clone_graph(value)
         } else {

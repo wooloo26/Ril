@@ -432,19 +432,19 @@ def graphCases : List (String × Bool) :=
    ("a_nested_ref_is_readonly_under_writable_layers", canWritePath nestedSources 0 [0, 0, 2]),
    ("a_nested_snapshot_is_readonly_under_writable_layers", canWritePath nestedSources 0 [0, 0, 3]),
    ("a_new_wrapper_cannot_freeze_an_existing_writer", immutableConsistent frozenNestedSources),
-   ("snapshot_of_transferred_new_parameter_checks_call_entry_sources",
-     immutableConsistent transferredBeforeStore),
+   ("snapshot_of_handed_off_new_parameter_checks_call_entry_sources",
+     immutableConsistent handedOffBeforeStore),
    ("an_indirect_freeze_checks_retained_authority_in_the_actual_argument",
-     immutableConsistent transferredBeforeStore),
-   ("passing_a_freezing_callback_accepts_a_completely_owned_argument",
-     immutableConsistent transferredAfterStore),
+     immutableConsistent handedOffBeforeStore),
+   ("passing_a_freezing_callback_accepts_a_complete_new_argument",
+     immutableConsistent handedOffAfterStore),
    ("snapshot_checks_follow_callback_receivers_in_recursive_data",
-     immutableConsistent transferredBeforeStore),
+     immutableConsistent handedOffBeforeStore),
    ("snapshot_checks_converge_when_recursive_calls_wrap_an_argument",
      immutableConsistent frozenNestedSources),
    ("a_call_scoped_writer_cannot_be_frozen_by_handoff", immutableConsistent immutableAndWriter),
    ("conditional_store_keeps_the_original_snapshot_requirement",
-     immutableConsistent transferredBeforeStore && immutableConsistent transferredAfterStore),
+     immutableConsistent handedOffBeforeStore && immutableConsistent handedOffAfterStore),
    ("a_snapshot_can_freeze_a_completely_new_graph",
      immutableConsistent frozenRoot && !hasWriter frozenRoot 1),
    ("a_member_reached_through_a_ref_cannot_be_received_as_mutable",
@@ -470,8 +470,8 @@ open RilAccess.CoreConcurrency RilAccess.CoreConcurrency.Examples in
 def taskJoinCases : List (String × Bool) :=
   [("plain_task_join_is_memoized_and_rooted",
     ((joinTask taskScope 1 7 false).bind (joinTask · 1 7 false)).isSome),
-   ("owned_task_join_preserves_fresh_payload", (joinTask taskScope 2 7 true).isSome),
-   ("owned_join_ends_the_task_path", (joinTask afterExclusiveJoin 2 7 true).isSome),
+   ("new_handoff_task_join_preserves_fresh_payload", (joinTask taskScope 2 7 true).isSome),
+   ("new_handoff_join_ends_the_task_path", (joinTask afterExclusiveJoin 2 7 true).isSome),
    ("every_memoized_fallible_join_requires_inspection", memoizedJoinLoop false),
    ("memoized_join_loop_cannot_discard_an_earlier_result", memoizedJoinLoop false),
    ("memoized_join_loop_can_inspect_each_result", memoizedJoinLoop true)]
@@ -545,7 +545,7 @@ def scopedCases : List (String × Bool) :=
    ("scoped_resource_mutable_reception_needs_body_write", accepted scopedIdleMutRejected),
    ("scoped_resource_cannot_be_aliased_by_let", accepted scopedRebindEscapeRejected),
    ("scoped_resource_cannot_be_captured_by_closure", accepted scopedClosureCaptureRejected),
-   ("scoped_resource_cannot_be_consumed_before_cleanup", accepted scopedCallNewHandoffRejected)] ++
+   ("scoped_resource_cannot_be_handed_off_before_cleanup", accepted scopedCallNewHandoffRejected)] ++
   refScopeCases.map fun (name, anchors, slot, _) => (name, refSourcesEnclose anchors slot)
 
 open RilAccess.VisibilityModel RilAccess.Examples.VisibilityExamples in

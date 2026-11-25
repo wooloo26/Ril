@@ -123,7 +123,7 @@ def rejectsRoot (shape : RootShape) (value : Value) (source : Input) : Bool :=
 def viaSnapshotDomains : List (String × List (List String)) :=
   let memberModes : List (String × Access) :=
     [("Plain", .immutable), ("Ref", .ref), ("Mut", .mut), ("Shared", .shared)]
-  -- An owned parameter still needs explicit handoff before it is frozen.
+  -- A new-qualified parameter still needs explicit handoff before it is frozen.
   let rootModes := memberModes ++ [("New", .mut)]
   let admits := fun access =>
     let candidate := { emptyRecordInput with

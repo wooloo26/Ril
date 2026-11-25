@@ -34,7 +34,7 @@ fn run() -> int {
     }
 }
 
--- @case owned_join_ends_the_task_path compile-fail E0549
+-- @case new_handoff_join_ends_the_task_path compile-fail E0549
 use ril/fiber
 fn invalid() @fiber -> () {
     Fiber::scope \mut s -> {
@@ -73,7 +73,7 @@ fn invalid() @fiber -> () {
     }
 }
 
--- @case owned_join_does_not_thaw_existing_snapshot compile-fail E0520
+-- @case new_handoff_join_does_not_thaw_existing_snapshot compile-fail E0520
 use ril/fiber
 fn invalid() @fiber -> () {
     let snapshot = [1]

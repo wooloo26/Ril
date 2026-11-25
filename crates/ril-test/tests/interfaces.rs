@@ -2203,9 +2203,9 @@ fn run() -> int {
     let ref view = relay(identity, ref cell)
     cell.count += 1
     assert(view.count == 41)
-    let mut owned = Store::apply(identity, new cell)
-    owned.count += 1
-    let mut again = Store::apply(Store::identity, new owned)
+    let mut handed = Store::apply(identity, new cell)
+    handed.count += 1
+    let mut again = Store::apply(Store::identity, new handed)
     again.count += 1
     again.count
 }
@@ -2386,7 +2386,7 @@ fn interface_roundtrip_is_stable_and_detects_corruption() {
 }
 
 #[test]
-fn forwarded_via_identity_publishes_new_guarantee_only_for_owned_input() {
+fn forwarded_via_identity_publishes_new_guarantee_only_for_new_input() {
     use ril_sema::access::Input;
 
     let suite = parse_suite(
@@ -2576,7 +2576,9 @@ fn exported_callback_preservation_is_required_only_for_new_reception() {
     let case = suite
         .cases
         .iter()
-        .find(|case| case.id == "requiring_a_callback_to_preserve_ownership_breaks_compatibility")
+        .find(|case| {
+            case.id == "requiring_a_callback_to_preserve_new_qualification_breaks_compatibility"
+        })
         .unwrap();
     let interface = Driver.interface(&case.pkg).unwrap();
     let decoded = Interface::decode(&interface.encode().unwrap()).unwrap();

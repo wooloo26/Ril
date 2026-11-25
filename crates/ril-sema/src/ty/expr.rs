@@ -2304,16 +2304,16 @@ impl<'a> Checker<'a> {
         };
         let mut written_types = vec![(None, false); args.len()];
         for (index, (written, expected)) in order.into_iter().zip(inputs).enumerate() {
-            let borrow = index == 0 && matches!(builtin, Join | FromScalars | FromArray);
+            let allows_live_arg = index == 0 && matches!(builtin, Join | FromScalars | FromArray);
             if let Some(slot) = written_types.get_mut(written) {
-                *slot = (Some(expected), borrow);
+                *slot = (Some(expected), allows_live_arg);
             }
         }
-        for (arg, (ty, borrow)) in args.iter().zip(written_types) {
+        for (arg, (ty, allows_live_arg)) in args.iter().zip(written_types) {
             if let Some(ty) = ty {
                 self.expect(env, arg.value, &ty);
             }
-            if !(arg.mode == Mode::Plain || borrow) {
+            if !(arg.mode == Mode::Plain || allows_live_arg) {
                 self.error(
                     Code::E0406,
                     self.ast(env.file).expr(arg.value).span,

@@ -209,7 +209,7 @@ def live (r : Resolved) : Bool :=
     r.tokens.all (fun token => token.active && contains token.region r.pointer) &&
     decide (r.grant.object = r.pointer.object ∧ r.grant.source = r.pointer.source)
 
-/-- Independent shared participants can alias. A scoped reborrow of a shared
+/-- Independent shared participants can alias. Passing a shared participant as a nested call-scoped mut argument
 participant keeps this compatibility with the shared holds of its outer call. -/
 def compatibleSharedHold (r : Resolved) (holds : List Hold) (hold : Hold) : Bool :=
   decide (hold.access = .shared) && (decide (r.effective = .shared) ||

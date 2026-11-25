@@ -8,7 +8,7 @@ def FromEntry (frozen : RawFrame) (formal : Register) (object : Object) : Prop :
 theorem slot_abstract (program : Program) (object : Object) (field : Field) :
     program.slot object.abstract field = program.slot object field := rfl
 
-theorem ownedLinks_abstract (newSlots : List (Object × Field)) (heap : List Link) :
+theorem newLinks_abstract (newSlots : List (Object × Field)) (heap : List Link) :
     (newLinks newSlots heap).map Link.abstract = newLinks newSlots (heap.map Link.abstract) := by
   simp [newLinks, List.filter_map, Function.comp_def, Link.abstract, HeapLink.map]
 
@@ -19,7 +19,7 @@ theorem isolated_sound {world : World} {frame : RawFrame}
     (newObject : Reaches (newLinks world.newSlots frame.memory.heap) [root] object)
     (oldObject : Reaches frame.memory.heap concreteOutside object) : False := by
   have fresh := newObject.abstract
-  rw [ownedLinks_abstract] at fresh
+  rw [newLinks_abstract] at fresh
   have hf : object.abstract ∈ newRegion world root.abstract := by
     rw [newRegion, hw, raw_abstract_heap]
     exact reachable_exact.mpr fresh
@@ -85,7 +85,7 @@ theorem boundary_found {world : World} {frame : RawFrame}
     (old : (edge.parent.abstract, edge.field) ∉ world.newSlots) :
     (edge.child.abstract, member.access) ∈ boundaries program world root.abstract := by
   have path := inside.abstract
-  rw [ownedLinks_abstract] at path
+  rw [newLinks_abstract] at path
   have inNew : edge.parent.abstract ∈ newRegion world root.abstract := by
     rw [newRegion, hw, raw_abstract_heap]
     exact reachable_exact.mpr path

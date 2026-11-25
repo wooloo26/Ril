@@ -121,7 +121,7 @@ fn describe_graph(
             source: axis(formals, origin),
             access: origin.mode,
             new: origin.new,
-            borrowed: origin.call_borrow,
+            borrowed: origin.call_scoped_access,
             forwarded: origin.inherits_mode,
             detached: origin.detached_snapshot,
             provider: known_provider(origin).and_then(|owner| providers.get(&owner).copied()),
@@ -259,7 +259,7 @@ fn import_graph(
                 if let Some(axis) = &root.source {
                     origin.region.selection.clone_from(&axis.path);
                 }
-                origin.call_borrow = root.borrowed;
+                origin.call_scoped_access = root.borrowed;
                 origin.inherits_mode = root.forwarded;
                 origin.detached_snapshot = root.detached;
                 origin.snapshot_provider = root

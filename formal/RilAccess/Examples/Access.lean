@@ -202,7 +202,7 @@ def programs : List ProgramExample :=
    ⟨"nested member path", nestedMember, true, some "nested_writable_member_can_replace_a_scalar_slot"⟩,
    ⟨"unknown member rejected", missingMember, false, some "writes_require_a_declared_member"⟩,
    ⟨"correlated permute", permute, true, some "exclusive_arguments_remain_disjoint_when_branches_swap_them"⟩,
-   ⟨"possible overlap rejected", uncertainOverlap, false, some "a_conditional_overlapping_pair_cannot_receive_exclusive_borrows"⟩,
+   ⟨"possible overlap rejected", uncertainOverlap, false, some "a_conditional_overlapping_pair_cannot_receive_exclusive_mut_arguments"⟩,
    ⟨"scope expiry", scopeEnded, false, some "scoped_local_is_unavailable_after_its_block"⟩,
    ⟨"retention ends qualification", retainedPreventsHandoff, false, some "captured_writer_prevents_handoff"⟩,
    ⟨"retention survives scope", scopedRetention, true, some "publication_survives_in_a_caller_member"⟩,

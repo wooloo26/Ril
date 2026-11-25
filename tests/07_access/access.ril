@@ -314,7 +314,7 @@ fn update() -> () {
     -- ^ E0204
 }
 
--- @case a_conditional_overlapping_pair_cannot_receive_exclusive_borrows compile-fail E0523
+-- @case a_conditional_overlapping_pair_cannot_receive_exclusive_mut_arguments compile-fail E0523
 fn pair(mut left: Cell, mut right: Cell) &mut -> () {
     left.count += 1
     right.count += 1
@@ -582,11 +582,11 @@ fn bad(mut item: Cell) &mut -> ^mut(item) Cell {
     -- ^ E0528
 }
 
--- @case mutable_formal_cannot_return_new_ownership compile-fail E0528
+-- @case mutable_formal_cannot_return_new_qualification compile-fail E0528
 fn bad(mut item: Cell) &mut -> new Cell { new item }
 -- ^ E0528
 
--- @case anonymous_mutable_formal_cannot_return_owned_authority compile-fail E0528
+-- @case anonymous_mutable_formal_cannot_return_new_qualified_authority compile-fail E0528
 fn run() -> () {
     let bad = \mut item: Cell -> new item
     -- ^ E0528
@@ -637,7 +637,7 @@ fn run() -> int {
     pair.right.count
 }
 
--- @case shared_participant_can_yield_a_nested_scoped_mutable_borrow compile-pass
+-- @case shared_participant_can_yield_a_nested_call_scoped_mut_argument compile-pass
 type SharedPair = .{ ^mut left: Cell, ^mut right: Cell }
 fn edit(mut cell: Cell) &mut -> () { cell.count += 1 }
 fn retain_pair(^mut left: Cell, ^mut right: Cell) &mut &^mut &return(^mut left, ^mut right) -> new SharedPair {
@@ -664,7 +664,7 @@ fn run() -> int {
     cell.count
 }
 
--- @case shared_formal_and_capture_may_alias_during_a_nested_borrow compile-fail E0524
+-- @case shared_formal_and_capture_may_alias_during_a_nested_mut_call compile-fail E0524
 fn edit(mut writer: Cell, ref reader: Cell) &mut -> () { writer.count += reader.count }
 fn run() -> int {
     let mut cell = Cell.{ count: 1 }
@@ -741,7 +741,7 @@ fn retain(^mut left: Cell, ^mut right: Cell) &mut &^mut &return(^mut left, ^mut 
     Pair.{ left: ^mut left, right: ^mut right }
 }
 
--- @case separate_exclusive_fields_of_one_shared_formal_can_be_reborrowed compile-pass
+-- @case separate_exclusive_fields_of_one_shared_formal_can_be_passed_as_mut compile-pass
 type Pair = .{ mut left: Cell, mut right: Cell }
 fn edit(mut writer: Cell, ref reader: Cell) &mut -> () { writer.count += reader.count }
 fn retain(^mut pair: Pair) &mut -> ^mut(pair) Pair {
@@ -749,7 +749,7 @@ fn retain(^mut pair: Pair) &mut -> ^mut(pair) Pair {
     pair
 }
 
--- @case borrowing_separate_containers_preserves_their_shared_member_mode compile-pass
+-- @case passing_separate_containers_as_mut_preserves_their_shared_member_mode compile-pass
 type Holder = .{ ^mut item: Cell }
 fn update(mut first: Holder, mut second: Holder) &mut -> () {
     first.item.count += 1
@@ -762,7 +762,7 @@ fn run() -> () {
     update(mut first, mut second)
 }
 
--- @case separate_container_borrows_do_not_prove_their_shared_members_independent compile-fail E0524
+-- @case separate_container_mut_arguments_do_not_prove_their_shared_members_independent compile-fail E0524
 type Holder = .{ ^mut item: Cell }
 fn edit(mut writer: Cell, ref reader: Cell) &mut -> () { writer.count += reader.count }
 fn update(mut first: Holder, mut second: Holder) &mut -> () {
@@ -905,7 +905,7 @@ pub fn retain(^mut left: Cell, ^mut right: Cell) &^mut &return(^mut left, ^mut r
     Pair.{ left: ^mut left, right: ^mut right }
 }
 
--- @case published_nested_borrow_writes_only_its_formal compile-pass unit=lib no-prelude
+-- @case published_nested_mut_call_writes_only_its_formal compile-pass unit=lib no-prelude
 pub type Cell = .{ var count: int }
 pub type Pair = .{ ^mut left: Cell, ^mut right: Cell }
 fn edit(mut cell: Cell) &mut -> () { cell.count += 1 }
@@ -2331,7 +2331,7 @@ fn observe() -> int {
     snapshot.first.count + snapshot.second.count
 }
 
--- @case snapshot_of_transferred_new_parameter_checks_call_entry_sources compile-fail E0535
+-- @case snapshot_of_handed_off_new_parameter_checks_call_entry_sources compile-fail E0535
 type Shelf = .{ ^mut item: Cell }
 fn freeze(new input: Shelf) -> Shelf {
     let snapshot = new input
@@ -2370,7 +2370,7 @@ fn observe() -> int {
     before.item.count
 }
 
--- @case passing_a_freezing_callback_accepts_a_completely_owned_argument compile-pass
+-- @case passing_a_freezing_callback_accepts_a_complete_new_argument compile-pass
 type Shelf = .{ ^mut item: Cell }
 fn freeze(new source: Shelf) -> Shelf { let snapshot = new source; snapshot }
 fn apply(action: fn(new Shelf) -> Shelf, new source: Shelf) -> Shelf {

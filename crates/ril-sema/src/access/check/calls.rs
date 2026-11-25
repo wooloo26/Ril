@@ -1475,7 +1475,7 @@ impl<'program> Analyzer<'program> {
         span: Span,
     ) -> Datum {
         // Recursive calls may precede completion of their own return template.
-        // Keep every possible formal source and avoid promising fresh ownership.
+        // Keep every possible formal source and avoid promising fresh new qualification.
         values
             .iter()
             .filter_map(|(index, _, value)| {
@@ -2004,9 +2004,9 @@ impl<'program> Analyzer<'program> {
                         });
                         actual.requires_new &= origin.new;
                     }
-                    if origin.call_borrow {
+                    if origin.call_scoped_access {
                         for root in &mut actual.roots {
-                            root.call_borrow |= root.mode.writes();
+                            root.call_scoped_access |= root.mode.writes();
                         }
                     }
                     if origin.detached_snapshot {
@@ -2472,7 +2472,7 @@ impl<'program> Analyzer<'program> {
             Diagnostic::error(
                 Code::E0548,
                 span,
-                "via application requires explicit new ownership",
+                "via application requires explicit new handoff",
             ),
         ));
         for (obligation, required) in [
@@ -2552,7 +2552,7 @@ impl<'program> Analyzer<'program> {
                             obligation: Obligation::Handoff(formal),
                         },
                         Code::E0548,
-                        "via application requires new ownership",
+                        "via application requires new qualification",
                     ),
                     (
                         mode == Mode::Shared,
@@ -2692,7 +2692,7 @@ impl<'program> Analyzer<'program> {
                     self.error(Code::E0604, span, "resource authority cannot be retained");
                 }
                 if mode == Mode::Shared {
-                    if value.roots.iter().any(|origin| origin.call_borrow) {
+                    if value.roots.iter().any(|origin| origin.call_scoped_access) {
                         self.error(Code::E0528, span, "a call-scoped writer cannot be retained");
                     }
                     for root in &mut value.roots {
@@ -3253,7 +3253,7 @@ impl<'program> Analyzer<'program> {
             if let Some(name) = &p.name {
                 self.binding_scopes.insert(name.span, inner.scope);
                 if p.mode == Mode::New {
-                    inner.owned_formals.insert(name.span);
+                    inner.new_formals.insert(name.span);
                 }
                 let mode = Access::from_mode(p.mode);
                 let mut value = Datum::source(name.span, mode, p.mode == Mode::New);
@@ -3319,7 +3319,7 @@ impl<'program> Analyzer<'program> {
             locals.inspect(&output);
             self.check_results(&locals, &BTreeSet::new());
             self.storage_exit(&inner, &locals);
-            if output.returns_borrowed_writer(Mode::Infer) {
+            if output.returns_call_scoped_writer(Mode::Infer) {
                 self.error(
                     Code::E0528,
                     node.span,

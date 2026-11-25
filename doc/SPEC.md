@@ -539,7 +539,7 @@ let b = a                              -- Value copy
 
 ### Shared Object Types
 
-Records (`.{...}`), nonempty tuples `(A, B)`, arrays `[M]T`, maps `[K: M V]`, `Set<T>`, and sum instances have automatically reclaimed object identity (implementations need not heap-allocate objects whose identity or lifetime can be proven local). Shared-object status permits aliasing of immutable snapshots (`let`) and explicit shared writable bindings (`^mut`), never implicit shared mutation.
+Records (`.{...}`), nonempty tuples `(A, B)`, arrays `[M]T`, maps `[K: M V]`, `Set<T>`, and sum instances have automatically reclaimed object identity (implementations need not heap-allocate non-escaping objects whose identity remains local to a scope). Shared-object status permits aliasing of immutable snapshots (`let`) and explicit shared writable bindings (`^mut`), never implicit shared mutation.
 
 ### Record Types and Open Record Tails
 
@@ -1109,8 +1109,8 @@ assert(sample(1) == 20 && <SampleOut> == <int>)
 
 - **K-IFACE**: Module semantic interfaces retain normalized parameter/return schemas, labels and defaults, `via` mode correlations, `use` cleanup declarations, `Sendable`/`SharedObject` facts across `opaque` boundaries, effect sets, and minimal provenance relations across compilation-unit boundaries.
   - Return and storage metadata maps `new`/existing subgraphs and concrete effects/state of open `@`/`&`/`@&` callables to nested member/element paths and branch alternatives, preserved across generic substitution, aliases, record/collection storage, and module export.
-  - A callable that freezes a transferred input records which call-entry subgraphs must be freezable. An edge definitely replaced before the freeze is excluded from this requirement, and the replacement is checked where the freeze occurs.
-  - Callbacks preserve the provenance and modes of transferred arguments across module boundaries. These arguments are checked against the selected callback's snapshot requirements even when the result is discarded.
+  - A callable that freezes a new-qualified input (or a `via` input instantiated with `new`) records which call-entry subgraphs must be freezable. An edge definitely replaced before the freeze is excluded from this requirement, and the replacement is checked where the freeze occurs.
+  - Callbacks preserve the provenance and modes of passed and handed-off arguments across module boundaries. These arguments are checked against the selected callback's snapshot requirements even when the result is discarded.
   - When a callable is passed through an exported callback, its snapshot contract is part of the semantic interface. The contract is available for checking indirect calls without changing the callable's declared visibility.
   - Returning or storing a callable preserves its snapshot contract at the corresponding member or element path. A callable obtained from a callback result is checked when it is invoked.
 
@@ -1127,7 +1127,7 @@ assert(sample(1) == 20 && <SampleOut> == <int>)
 | `let mut x = e` | Pinned (`E0502`) | Writable; existing root sharing requires acknowledgment | `new`-qualified / constructor or unshared writable source; contained shared sources remain shared |
 | `var mut x = e` | Reassignable | Writable; existing root sharing requires acknowledgment | Non-foreign `new`-qualified / constructor (`E0532` on `.d.ril` handles; cannot anchor `let ref`, `E0531`) |
 | `let ^mut x = e` | Pinned (`E0502`) | Shared writable | Existing writable binding (bare or `^mut` result) or `new` `&up` closure retaining a `^mut`/shared local source |
-| `var ^mut x = e` | Reassignable | Shared writable | Writable binding (bare on init; `^mut` marker on replacement). A fresh initial object requires later shared reception. |
+| `var ^mut x = e` | Reassignable | Shared writable | Writable binding (bare on init; `^mut` marker on replacement). A fresh `new`-qualified initial object requires later shared reception. |
 | `let ref x = e` | Pinned (`E0502`) | Read-only live view (`E0520`) | Pinned `let mut`, non-`var` `ref` view, immutable shared object, or `new`-qualified composite / `&up(ref)` closure carrying live `ref` sources (`E0531` on `var` / `var ref`, `E0543` on pure/immutable temporary) |
 | `var ref x = e` | Reassignable | Read-only live view (`E0520`) | Eligible source whose scope encloses `x` (`ref expr` or `ref` view on replacement; `E0357`, `E0531`, `E0543`, `E0604`) |
 | `use [mut] x = e` | Pinned & confined (`E0502`, `E0604`) | `ref` (`use x`) or `mut` (`use mut x`) | Satisfies $\max(M_{\text{body}}, M_{\text{clean}})$ for type's `use(<fn>)` cleanup (`E0541`) |
@@ -1187,11 +1187,11 @@ assert(c.count == 6)
 
 A pinned `let mut` (fixed binding slot, independent of physical object relocation) initialized by construction, `clone`, or a `new`-qualified result retains `new` qualification while its `new` subgraphs have no independent surviving outside aliases.
 
-Contained existing sources keep their own provenance; `new x` preserves identity, ends `x` and dependent paths (`E0549`), and leaves independent existing-source paths valid. Handing off or freezing a `new`-qualified local always requires explicit `new x`—including at return boundaries (`new b`, `Ok(new out)`), never implicitly transferring on scope exit. On a named `fn`, returning a `new`-qualified `SharedObject` requires declaring `-> new T` (`E0544`); whether to freeze or mutate it is decided by the caller.
+Contained existing sources keep their own provenance; `new x` preserves identity, ends `x` and dependent paths (`E0549`), and leaves independent existing-source paths valid. Handing off or freezing a `new`-qualified local always requires explicit `new x`—including at return boundaries (`new b`, `Ok(new out)`), never implicitly handing off on scope exit. On a named `fn`, returning a `new`-qualified `SharedObject` requires declaring `-> new T` (`E0544`); whether to freeze or mutate it is decided by the caller.
 
-Receiving an existing writer in a persistent `let mut` or `var mut` binding requires an explicit `new` handoff (`E0510`). A `mut` parameter can yield another call-scoped `mut` borrow. Creating shared writable storage from that borrow fails with `E0528`. An existing `^mut` member keeps its shared authority when reached through a `mut` parameter.
+Receiving an existing writer in a local `let mut` or `var mut` binding requires an explicit `new` handoff (`E0510`). A `mut` parameter may be passed as a `mut` argument to grant nested call-scoped writable access, but creating shared writable storage from a call-scoped `mut` parameter fails with `E0528`. An existing `^mut` member keeps its shared authority when reached through a `mut` parameter.
 
-A `var ^mut` slot initialized with a fresh object must receive an existing writer in a reachable replacement (`E0527`). Applying `^mut` to a fresh object sets its mode and leaves the requirement for shared reception outstanding.
+A `var ^mut` slot initialized with a fresh `new`-qualified object must receive an existing writer in a reachable replacement (`E0527`). Applying `^mut` to a newly constructed object sets its mode and leaves the requirement for shared reception outstanding.
 
 ```ril
 type Buffer = .{ mut items: []int }
@@ -2410,11 +2410,11 @@ ReturnDependency      ::= [ "ref" | "^mut" ] QualifiedName
 
 At every call and assignment, Ril checks potentially overlapping mutable/live source sets (immutable snapshots carry zero mutable/live sources). Concrete access modes match exactly; `^mut` arguments and stored elements require `^mut` targets. Source-overlap checking does not relax mode matching.
 
-Two explicitly shared `^mut` parameters may receive the same object. Each parameter still requires surviving retention through its own provenance. A nested `mut` borrow can use one of these parameters when the nested call has no overlapping participants.
+Two explicitly shared `^mut` parameters may receive the same object. Each parameter still requires surviving retention through its own provenance. One of these parameters may be passed as a nested `mut` argument when the nested call has no overlapping participants.
 
-Shared writable captures and shared parameters may also refer to the same entry object. A nested call must account for that possibility when it borrows one participant as `mut` and passes the other as a live argument or capture. A read-only capture is checked for overlap with writable parameters at the enclosing call boundary.
+Shared writable captures and shared parameters may also refer to the same entry object. A nested call must account for that possibility when it passes one participant as `mut` and passes the other as a live argument or capture. A read-only capture is checked for overlap with writable parameters at the enclosing call boundary.
 
-Borrowing a container as `mut` preserves the mode of an existing `^mut` member. Borrowing that member directly as a `mut` argument requires exclusive access to the member's reachable writers during the call.
+Passing a container as a `mut` argument preserves the mode of an existing `^mut` member. Passing that member directly as a `mut` argument requires exclusive access to the member's reachable writers during the call.
 
 | Violation | Diagnostic |
 | :--- | :---: |
@@ -2520,7 +2520,7 @@ test_audit()
 | `ref expr` | `&up(ref)` read-only observer callable | Establishes a block-scoped read hold |
 | `mut path` | Mutable `&up` callable variable/path | Establishes a block-scoped write hold (`E0528`/`E0604` on escape) |
 | `^mut path` | Shared writable `&up` callable path | Retains shared write authority (`E0510`/`E0528` on call-scoped `mut`; escaping `@Op` closures record `&capture &^mut &return(^mut path)`) |
-| `new expr` | `new`-qualified callable | Transfers `new` qualification into the handler slot (`E0549`) while keeping active holds on contained existing sources |
+| `new expr` | `new`-qualified callable | Hands off `new` qualification into the handler slot (`E0549`) while keeping active holds on contained existing sources |
 
 - **Spreading, Generic Effects & Validation (`E0620`–`E0622`, `E0313`)**: `..SubEff` splices an accessible `eff`'s operations into `SupEff` (`E0620` non-effect, `E0313` cycle, `E0622` signature conflict); `@SupEff` covers `@SubEff`, and spliced operations share identity (`SupEff::op` and `SubEff::op` denote the same operation in `with`, so handling both in one `with` fails `E0622`). Distinct generic effect instantiations (`State<int>` vs. `State<str>`) are distinct effect labels handled independently. Arms must target declared `eff` operations (`E0621` on ordinary `fn` or `@io`/`@fiber`) without duplicates per `with` (`E0622`).
 - **Handling & Capture (`E0612`, `E0618`, `E0604`)**: Covering all operations invoked by a callee (or abstract `@Eff` parameter) handles `@Eff` (`E0612` if uncovered; block-local `eff` fails `E0618` if unhandled).

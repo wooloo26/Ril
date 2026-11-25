@@ -62,16 +62,16 @@ def examples : List (String × Bool) :=
       (resolve baseWorld (p 7)).any deepImmutable &&
       !(spawnSharedCapture baseWorld (p 6) 10).isOk &&
       !(spawnSharedCapture baseWorld (p 7) 10).isOk),
-   ("concurrency: single-shot move transfers exclusive binding and ends parent path (E0549)",
+   ("concurrency: single-shot new handoff moves exclusive binding and ends parent path (E0549)",
       (spawnHandoffCapture baseWorld 1 11).isOk &&
       !(resolve afterHandoff (p 1)).any live &&
       (resolve afterHandoff (p 11)).any live &&
       !(spawnHandoffCapture afterHandoff 1 12).isOk),
-   ("concurrency: single-shot moves across fibers reject foreign and scoped resources",
+   ("concurrency: single-shot new handoffs across fibers reject foreign and scoped resources",
       (checkAtom (.handoff 3 13) baseWorld).isOk &&
       !(spawnHandoffCapture baseWorld 3 13).isOk &&
       !(spawnHandoffCapture baseWorld 4 14).isOk),
-   ("concurrency: transfer rejects foreign handles and data containing ref or shared members",
+   ("concurrency: channel handoff rejects foreign handles and data containing ref or shared members",
       !(resolve baseWorld (p 3)).any (eligibleChannelSend true baseWorld) &&
       !(resolve baseWorld (p 8)).any (eligibleChannelSend true baseWorld) &&
       !(resolve baseWorld (p 9)).any (eligibleChannelSend true baseWorld) &&

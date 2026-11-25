@@ -38,7 +38,7 @@ impl Requirement {
         owned: bool,
         replaced: &[Path],
     ) -> Option<(Formal, Self)> {
-        let owner = origin.transferred_entry(owned)?;
+        let owner = origin.handed_off_entry(owned)?;
         let mut replaced = [ledger.overwritten_paths(&origin.region), replaced.to_vec()].concat();
         replaced.sort();
         let mut previous = Vec::<Path>::new();
@@ -173,7 +173,7 @@ impl Analyzer<'_> {
                 let mut selected = value.clone();
                 if mode == Mode::Via && !whole_graph {
                     // A transferred via input freezes only in a specialization
-                    // that takes ownership at this boundary.
+                    // that receives a new handoff at this boundary.
                     selected.detach_handed_off_paths();
                 }
                 let mut ty = self.ty(span);
@@ -225,7 +225,7 @@ impl Analyzer<'_> {
                     self.error(
                         Code::E0535,
                         span,
-                        "snapshot requires a transferred graph without retained live authority",
+                        "snapshot requires an immutable or new-qualified graph without retained live authority",
                     );
                 }
             }

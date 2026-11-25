@@ -96,24 +96,24 @@ def independentCapture := sequence [access [.allocate 0 (fixed .mut) []],
   .invoke [arg 0 10 .mutable] [0] (access [.write (p 10), .read (p 0)])]
 def aliasedRetainedWriters := sequence [access [.allocate 0 (fixed .mut) []],
   .invoke [arg 0 10 .retained, arg 0 11 .retained] [] (access [.retain (p 10), .retain (p 11)])]
-def nestedBorrowFromAliasedSharedParticipants := sequence [access [.allocate 0 (fixed .mut) []],
+def nestedMutCallFromAliasedSharedParticipants := sequence [access [.allocate 0 (fixed .mut) []],
   .invoke [arg 0 10 .retained, arg 0 11 .retained] []
     (sequence [.invoke [arg 10 20 .mutable] [] (access [.write (p 20)]),
       access [.retain (p 10), .retain (p 11)]])]
 def exclusiveAndSharedParticipantsOverlap := sequence [access [.allocate 0 (fixed .mut) []],
   .invoke [arg 0 10 .mutable, arg 0 11 .retained] [] (access [.write (p 10), .retain (p 11)])]
-def nestedBorrowOfAliasedSharedParticipantsOverlaps := sequence [access [.allocate 0 (fixed .mut) []],
+def nestedMutCallOfAliasedSharedParticipantsOverlaps := sequence [access [.allocate 0 (fixed .mut) []],
   .invoke [arg 0 10 .retained, arg 0 11 .retained] []
     (sequence [.invoke [arg 10 20 .mutable, arg 11 21 .observe] []
         (access [.write (p 20), .read (p 21)]),
       access [.retain (p 10), .retain (p 11)]])]
-def nestedBorrowFromMixedParticipants := sequence
+def nestedMutCallFromMixedParticipants := sequence
   [access [.allocate 0 (fixed .mut) [], .allocate 1 (fixed .mut) []],
   .invoke [arg 0 10 .mutable, arg 1 11 .retained] []
     (sequence [.invoke [arg 10 20 .mutable, arg 11 21 .observe] []
         (access [.write (p 20), .read (p 21)]),
       access [.retain (p 11)]])]
-def nestedBorrowWithCapture (aliased : Bool) := sequence
+def nestedMutCallWithCapture (aliased : Bool) := sequence
   [access [.allocate 0 (fixed .mut) [],
     if aliased then .bind (p 0) 1 (fixed .shared) else .allocate 1 (fixed .mut) []],
   access (if aliased then [] else [.write (p 1)]),
@@ -172,15 +172,15 @@ def programs : List ProgramExample :=
    ⟨"call: unretained sibling ^mut formal rejected (E0527)", "retaining_one_shared_formal_does_not_retain_its_sibling", formalAliasIsNotRetention, false⟩,
    ⟨"call: overwritten publication is not surviving retention", "overwritten_outer_binding_does_not_retain_a_parameter", overwrittenPublication, false⟩,
    ⟨"call: outer binding roots surviving publication", "publication_survives_in_a_replaced_outer_binding", survivingPublication, true⟩,
-   ⟨"call: an aliased shared participant can yield a nested mutable reborrow", "shared_participant_can_yield_a_nested_scoped_mutable_borrow", nestedBorrowFromAliasedSharedParticipants, true⟩,
+   ⟨"call: an aliased shared participant can yield a nested call-scoped mut argument", "shared_participant_can_yield_a_nested_call_scoped_mut_argument", nestedMutCallFromAliasedSharedParticipants, true⟩,
    ⟨"call: exclusive and shared participants cannot overlap", "exclusive_argument_cannot_overlap_a_shared_argument", exclusiveAndSharedParticipantsOverlap, false⟩,
-   ⟨"call: a nested mutable borrow conflicts with an aliased observation", "distinct_shared_formals_do_not_prove_independence_for_a_nested_call", nestedBorrowOfAliasedSharedParticipantsOverlaps, false⟩,
-   ⟨"call: a nested mutable borrow conflicts with a shared captured alias", "shared_formal_and_capture_may_alias_during_a_nested_borrow", nestedBorrowWithCapture true, false⟩,
-   ⟨"call: a nested mutable borrow can observe a disjoint capture", "read_only_capture_is_disjoint_from_shared_formal", nestedBorrowWithCapture false, true⟩,
-   ⟨"call: a nested mutable borrow excludes an aliased shared via instance", "exclusive_borrow_of_via_aliased_arguments_excludes_the_shared_pair", nestedBorrowOfAliasedSharedParticipantsOverlaps, false⟩,
-   ⟨"call: mixed via modes permit a disjoint writer and observer", "exclusive_borrow_of_via_arguments_allows_forwarding_mixed_modes", nestedBorrowFromMixedParticipants, true⟩,
-   ⟨"call: callback cannot use an aliased shared via instance", "higher_order_callback_requires_a_compatible_pair_of_root_modes", nestedBorrowOfAliasedSharedParticipantsOverlaps, false⟩,
-   ⟨"call: callback selected from a record checks its via instance", "higher_order_callback_selected_from_a_record_checks_the_mode_pair", nestedBorrowOfAliasedSharedParticipantsOverlaps, false⟩,
+   ⟨"call: a nested call-scoped mut argument conflicts with an aliased observation", "distinct_shared_formals_do_not_prove_independence_for_a_nested_call", nestedMutCallOfAliasedSharedParticipantsOverlaps, false⟩,
+   ⟨"call: a nested call-scoped mut argument conflicts with a shared captured alias", "shared_formal_and_capture_may_alias_during_a_nested_mut_call", nestedMutCallWithCapture true, false⟩,
+   ⟨"call: a nested call-scoped mut argument can observe a disjoint capture", "read_only_capture_is_disjoint_from_shared_formal", nestedMutCallWithCapture false, true⟩,
+   ⟨"call: a nested call-scoped mut argument excludes an aliased shared via instance", "exclusive_mut_argument_of_via_aliased_arguments_excludes_the_shared_pair", nestedMutCallOfAliasedSharedParticipantsOverlaps, false⟩,
+   ⟨"call: mixed via modes permit a disjoint writer and observer", "exclusive_mut_argument_of_via_arguments_allows_forwarding_mixed_modes", nestedMutCallFromMixedParticipants, true⟩,
+   ⟨"call: callback cannot use an aliased shared via instance", "higher_order_callback_requires_a_compatible_pair_of_root_modes", nestedMutCallOfAliasedSharedParticipantsOverlaps, false⟩,
+   ⟨"call: callback selected from a record checks its via instance", "higher_order_callback_selected_from_a_record_checks_the_mode_pair", nestedMutCallOfAliasedSharedParticipantsOverlaps, false⟩,
    ⟨"call: coincident shared arguments do not merge their formal obligations", "retaining_one_shared_argument_cannot_satisfy_an_aliased_formal", coincidentRetainedWritersNeedIndependentUse, false⟩]
 
 def sourceChecks : List (String × Bool) :=
@@ -195,7 +195,7 @@ def publishedObligations : List (String × (List Nat × List Nat)) :=
     [("published_mutation_has_no_retention", [arg 0 10 .mutable], access [.write (p 10)]),
      ("published_root_retention_does_not_write", [arg 0 10 .retained], access [.retain (p 10)]),
      ("published_shared_pair_retains_both_formals", sharedPair, retainPair),
-     ("published_nested_borrow_writes_only_its_formal", sharedPair,
+     ("published_nested_mut_call_writes_only_its_formal", sharedPair,
        sequence [.invoke [arg 10 20 .mutable] [] (access [.write (p 20)]), retainPair])]
   contracts.map fun (name, arguments, body) =>
     let collect := fun predicate =>

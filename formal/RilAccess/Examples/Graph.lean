@@ -66,11 +66,11 @@ def frozenSelected : Graph :=
   ⟨[⟨0, 1, .immutable⟩, ⟨1, 2, .shared⟩],
    [⟨0, 0, 1, fixed .mut, .mut⟩, ⟨0, 1, 2, fixed .shared, .shared⟩]⟩
 
-def transferredBeforeStore : Graph :=
+def handedOffBeforeStore : Graph :=
   ⟨[⟨0, 0, .immutable⟩, ⟨1, 2, .shared⟩], [⟨0, 0, 2, variableMode .shared, .shared⟩]⟩
 
-def transferredAfterStore : Graph :=
-  { transferredBeforeStore with edges := [⟨0, 0, 3, variableMode .shared, .shared⟩] }
+def handedOffAfterStore : Graph :=
+  { handedOffBeforeStore with edges := [⟨0, 0, 3, variableMode .shared, .shared⟩] }
 
 def examples : List (String × Bool) :=
   [("graph: cyclic authority closure", decide (Fact.mk 0 1 .mut ∈ analyze cycle)),
@@ -139,8 +139,8 @@ def examples : List (String × Bool) :=
    ("graph: freezing a selected child preserves a writer to its sibling",
       immutableConsistent frozenSelected && hasWriter frozenSelected 2),
    ("graph: freezing after replacement no longer reaches the previous writer",
-      !immutableConsistent transferredBeforeStore && immutableConsistent transferredAfterStore &&
-      hasWriter transferredAfterStore 2)]
+      !immutableConsistent handedOffBeforeStore && immutableConsistent handedOffAfterStore &&
+      hasWriter handedOffAfterStore 2)]
 
 theorem examples_all_pass : examples.all Prod.snd = true := by decide +kernel
 

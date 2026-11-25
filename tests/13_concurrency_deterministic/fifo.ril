@@ -34,7 +34,7 @@ fn main() @fiber -> () {
     }
 }
 
--- @case owned_task_join_preserves_fresh_payload run-pass backend=both
+-- @case new_handoff_task_join_preserves_fresh_payload run-pass backend=both
 use ril/fiber
 fn main() @fiber -> () {
     Fiber::scope \mut s -> {

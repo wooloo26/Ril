@@ -188,7 +188,7 @@ fn observe() -> int {
     before.item.count
 }
 
--- @case exclusive_borrow_of_via_aliased_arguments_excludes_the_shared_pair compile-fail E0520
+-- @case exclusive_mut_argument_of_via_aliased_arguments_excludes_the_shared_pair compile-fail E0520
 fn edit(mut writer: Cell, ref reader: Cell) &mut -> () { writer.count += reader.count }
 fn combine(via left: Cell, via right: Cell) -> () { edit(mut left, ref right) }
 fn run() -> int {
@@ -200,7 +200,7 @@ fn run() -> int {
     cell.count
 }
 
--- @case exclusive_borrow_of_via_arguments_allows_forwarding_mixed_modes compile-pass
+-- @case exclusive_mut_argument_of_via_arguments_allows_forwarding_mixed_modes compile-pass
 fn edit(mut writer: Cell, ref reader: Cell) &mut -> () { writer.count += reader.count }
 fn combine(via left: Cell, via right: Cell) -> () { edit(mut left, ref right) }
 fn relay(via left: Cell, via right: Cell) -> () { combine(left, right) }
@@ -237,7 +237,7 @@ fn run() -> int {
     twice(^mut cell) + twice(ref cell)
 }
 
--- @case a_closure_borrowing_captured_via_inputs_restricts_their_enclosing_domain compile-fail E0520
+-- @case a_closure_passing_captured_via_inputs_as_mut_restricts_their_enclosing_domain compile-fail E0520
 fn edit(mut writer: Cell, ref reader: Cell) &mut -> () { writer.count += reader.count }
 fn combine(via left: Cell, via right: Cell) -> () {
     let ^mut action = \ -> edit(mut left, ref right)
@@ -655,7 +655,7 @@ fn apply(via action: fn(via Cell) @& -> infer Cell, via cell: Cell) -> infer Cel
 fn take(via cell: Cell) -> infer Cell { new cell }
 fn run() -> int { apply(take, Cell.{ count: 41 }).count }
 
--- @case requiring_a_callback_to_preserve_ownership_breaks_compatibility compat-fail E0552
+-- @case requiring_a_callback_to_preserve_new_qualification_breaks_compatibility compat-fail E0552
 -- @baseline
 pub fn apply(via action: fn(via Cell) @& -> int, via cell: Cell) -> int { action(cell) }
 -- @revision
@@ -675,7 +675,7 @@ pub fn apply(via action: fn(via Cell) @& -> int, via cell: Cell) -> int {
 -- @revision
 pub fn apply(via action: fn(via Cell) @& -> int, via cell: Cell) -> int { action(cell) }
 
--- @case higher_order_inferred_return_cannot_freeze_a_borrowed_argument compile-fail E0535
+-- @case higher_order_inferred_return_cannot_freeze_a_call_scoped_mut_argument compile-fail E0535
 fn through(via cell: Cell) -> infer Cell { cell }
 fn apply(via action: fn(via Cell) @& -> infer Cell, via cell: Cell) -> infer Cell {
     let via value = action(cell)
@@ -714,7 +714,7 @@ fn run() -> int {
     snapshot.count + count + moved.count
 }
 
--- @case higher_order_return_cannot_recover_ownership_after_attenuation compile-fail E0520
+-- @case higher_order_return_cannot_recover_new_qualification_after_attenuation compile-fail E0520
 fn observe(via action: fn() @& -> infer Cell) -> infer Cell { ref action() }
 fn invalid() -> int {
     let mut view = observe(\-> Cell.{ count: 41 })

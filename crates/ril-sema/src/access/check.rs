@@ -104,7 +104,7 @@ struct Context {
     caller_slots: BTreeSet<Span>,
     caller_sources: BTreeSet<Span>,
     capture_modes: Option<BTreeMap<Span, Mode>>,
-    owned_formals: BTreeSet<Span>,
+    new_formals: BTreeSet<Span>,
     via: BTreeSet<Span>,
     member_via: bool,
     handlers: BTreeMap<Operation, Datum>,
@@ -130,7 +130,7 @@ impl Context {
             caller_slots: BTreeSet::new(),
             caller_sources: BTreeSet::new(),
             capture_modes: None,
-            owned_formals: BTreeSet::new(),
+            new_formals: BTreeSet::new(),
             via: BTreeSet::new(),
             member_via: false,
             handlers: BTreeMap::new(),
@@ -418,7 +418,11 @@ pub(super) fn analyze(program: &TypedProgram) -> (Analysis, Vec<Diagnostic>) {
                     .get(&use_site.callee)
                     .is_some_and(|owned| owned.contains(&index))
             {
-                analyzer.error(Code::E0548, span, "via application requires new ownership");
+                analyzer.error(
+                    Code::E0548,
+                    span,
+                    "via application requires new qualification",
+                );
             } else if mode != Input::Shared
                 && (summary.retained.contains(&index)
                     || sharing_inputs
@@ -806,7 +810,7 @@ impl<'a> Analyzer<'a> {
                 self.error(Code::E0411, span, "new parameter requires a shared object");
             }
             if param.mode == Mode::New {
-                ctx.owned_formals.insert(span);
+                ctx.new_formals.insert(span);
             }
             let mut value = if param.ty.is_value() {
                 Datum::default()
@@ -1221,7 +1225,7 @@ impl<'a> Analyzer<'a> {
                 self.error(
                     Code::E0548,
                     fun.owner,
-                    "via source cannot be both transferred and retained as shared",
+                    "via source cannot be both handed off as new and retained as shared",
                 );
                 return ViaDomain::default();
             }
@@ -1714,7 +1718,7 @@ impl<'a> Analyzer<'a> {
         if value
             .roots
             .iter()
-            .any(|root| root.call_borrow && root.mode.writes())
+            .any(|root| root.call_scoped_access && root.mode.writes())
         {
             self.error(Code::E0528, span, "a call-scoped writer cannot be shared");
         }
@@ -1799,7 +1803,7 @@ impl<'a> Analyzer<'a> {
             self.error(
                 Code::E0604,
                 span,
-                "ref source must outlive the reassignable binding's scope",
+                "ref source scope must enclose the reassignable binding's scope",
             );
         }
     }
@@ -1817,7 +1821,7 @@ impl<'a> Analyzer<'a> {
         if value.creates_environment() {
             self.seed(ctx, Obligation::Capture);
         }
-        if value.returns_borrowed_writer(ctx.expected) {
+        if value.returns_call_scoped_writer(ctx.expected) {
             self.error(
                 Code::E0528,
                 span,
@@ -1920,7 +1924,7 @@ impl<'a> Analyzer<'a> {
             let Some(slot) = ledger.slots.get(&slot) else {
                 continue;
             };
-            let caller_root = !ctx.owned_formals.contains(&slot.decl);
+            let caller_root = !ctx.new_formals.contains(&slot.decl);
             let value = ledger.snapshot(&slot.value);
             value.surviving_publications(ctx.owner, caller_root, &mut |stored| {
                 if stored.creates_environment() {
@@ -1955,7 +1959,7 @@ impl<'a> Analyzer<'a> {
         self.check_stored_views(&value, false, span);
         if value
             .origins()
-            .any(|origin| origin.call_borrow && origin.mode.writes())
+            .any(|origin| origin.call_scoped_access && origin.mode.writes())
         {
             self.error(
                 Code::E0528,
@@ -1975,8 +1979,8 @@ impl<'a> Analyzer<'a> {
     fn check_stored_views(&mut self, value: &Datum, root_as_ref: bool, span: Span) {
         if value
             .origins()
-            .any(|origin| origin.mode == Access::Ref && origin.call_borrow)
-            || root_as_ref && value.roots.iter().any(|origin| origin.call_borrow)
+            .any(|origin| origin.mode == Access::Ref && origin.call_scoped_access)
+            || root_as_ref && value.roots.iter().any(|origin| origin.call_scoped_access)
         {
             self.error(
                 Code::E0604,
@@ -2049,7 +2053,11 @@ impl<'a> Analyzer<'a> {
         }
         if matches!(self.ty(value_span), Ty::Sender(_)) {
             if !value.requires_new {
-                self.error(Code::E0548, binding, "cleanup requires an owned sender");
+                self.error(
+                    Code::E0548,
+                    binding,
+                    "cleanup requires a new-qualified sender",
+                );
             }
             value.transform(&mut |origin| {
                 origin.confined = Some(binding);
@@ -2115,7 +2123,7 @@ impl<'a> Analyzer<'a> {
             self.error(
                 Code::E0541,
                 binding,
-                "cleanup must consume, mutate, or observe Self and return ()",
+                "cleanup must take new, mut, or ref Self and return ()",
             );
         }
         if signature.effects.iter().any(|effect| effect == "fiber") {
@@ -2133,7 +2141,7 @@ impl<'a> Analyzer<'a> {
             self.error(
                 Code::E0548,
                 binding,
-                "cleanup requires an owned new resource",
+                "cleanup requires a new-qualified resource",
             );
         }
         if parameter.mode == Mode::Mut || mode == Mode::Mut {
@@ -3314,7 +3322,7 @@ impl<'a> Analyzer<'a> {
             self.error(
                 Code::E0548,
                 span,
-                "new requires qualified ownership or a pinned exclusive writer",
+                "new requires a new-qualified source or a pinned exclusive writer",
             );
             return;
         }
@@ -3539,7 +3547,7 @@ impl<'a> Analyzer<'a> {
             let source = origin.region.source;
             ctx.caller_sources.contains(&source)
                 || ctx.formals.contains(&Some(source))
-                    && (!ctx.owned_formals.contains(&source) || !origin.new)
+                    && (!ctx.new_formals.contains(&source) || !origin.new)
         }) {
             self.check_publication_source(ctx, ledger, &value, span);
         }

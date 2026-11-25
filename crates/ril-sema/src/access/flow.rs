@@ -246,7 +246,7 @@ pub(super) struct Origin {
     pub explicit_share: bool,
     // A direct read of a replaceable slot cannot anchor a ref binding.
     pub from_variable: bool,
-    pub call_borrow: bool,
+    pub call_scoped_access: bool,
     entry_graph: Option<EntryGraph>,
     capture: Option<CaptureEntry>,
     pub dependencies: BTreeSet<Occurrence>,
@@ -260,7 +260,7 @@ pub(super) struct Origin {
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 struct EntryGraph {
     callable: Span,
-    ownership: bool,
+    new_qualified: bool,
     shared_at: Option<usize>,
     via_at: Vec<Region>,
 }
@@ -287,16 +287,16 @@ pub(super) struct CallbackOrigin {
 
 impl Origin {
     pub(super) fn can_freeze(&self, owned: bool) -> bool {
-        self.mode == Access::Immutable || owned && self.new && !self.call_borrow
+        self.mode == Access::Immutable || owned && self.new && !self.call_scoped_access
     }
 
     pub(super) fn enter_formal(&mut self, callable: Span, mode: Mode) {
         self.inherits_mode = mode == Mode::Via;
-        self.call_borrow = mode == Mode::Mut;
+        self.call_scoped_access = mode == Mode::Mut;
         self.entry_graph =
             matches!(mode, Mode::Mut | Mode::Shared | Mode::New | Mode::Via).then(|| EntryGraph {
                 callable,
-                ownership: matches!(mode, Mode::New | Mode::Via),
+                new_qualified: matches!(mode, Mode::New | Mode::Via),
                 shared_at: (mode == Mode::Shared).then_some(0),
                 via_at: if mode == Mode::Via {
                     vec![Region::root(self.region.source)]
@@ -318,7 +318,7 @@ impl Origin {
 
     pub(super) fn project_mode(&mut self, member: Mode) {
         if member == Mode::Shared {
-            self.call_borrow = false;
+            self.call_scoped_access = false;
             if let Some(entry) = &mut self.entry_graph {
                 entry.shared_at = Some(self.region.selection.len());
                 entry.via_at.clear();
@@ -380,10 +380,12 @@ impl Origin {
         self.entry_graph.as_ref().map(|entry| entry.callable)
     }
 
-    pub(super) fn transferred_entry(&self, owned: bool) -> Option<Span> {
+    pub(super) fn handed_off_entry(&self, owned: bool) -> Option<Span> {
         self.entry_graph
             .as_ref()
-            .filter(|entry| entry.ownership && owned && self.new && self.mode != Access::Immutable)
+            .filter(|entry| {
+                entry.new_qualified && owned && self.new && self.mode != Access::Immutable
+            })
             .map(|entry| entry.callable)
     }
 
@@ -508,7 +510,7 @@ impl Datum {
                 new,
                 explicit_share: false,
                 from_variable: false,
-                call_borrow: false,
+                call_scoped_access: false,
                 entry_graph: None,
                 capture: None,
                 dependencies: BTreeSet::new(),
@@ -841,13 +843,13 @@ impl Datum {
             let new = owned && origin.new;
             let mut source = Self::source(origin.region.source, origin.mode, new);
             for root in &mut source.roots {
-                root.call_borrow = origin.call_borrow;
+                root.call_scoped_access = origin.call_scoped_access;
                 root.snapshot_provider = origin.snapshot_provider;
                 root.detached_snapshot = origin.detached_snapshot;
                 root.inherits_mode = origin.inherits_mode;
                 root.entry_graph = origin.entry_graph.as_ref().map(|entry| EntryGraph {
                     callable: entry.callable,
-                    ownership: entry.ownership,
+                    new_qualified: entry.new_qualified,
                     shared_at: None,
                     via_at: Vec::new(),
                 });
@@ -1555,15 +1557,16 @@ impl Datum {
         !self.roots.is_empty() && self.roots.iter().all(|root| root.mode.writes())
     }
 
-    pub(super) fn returns_borrowed_writer(&self, mode: Mode) -> bool {
-        let writable_loan = |origin: &Origin| origin.call_borrow && origin.mode.writes();
+    pub(super) fn returns_call_scoped_writer(&self, mode: Mode) -> bool {
+        let call_scoped_writer =
+            |origin: &Origin| origin.call_scoped_access && origin.mode.writes();
         (matches!(mode, Mode::Infer | Mode::New | Mode::Shared)
-            && self.roots.iter().any(writable_loan))
+            && self.roots.iter().any(call_scoped_writer))
             || self
                 .members
                 .values()
                 .flat_map(Self::origins)
-                .any(writable_loan)
+                .any(call_scoped_writer)
     }
 
     pub(super) fn detach_handed_off_paths(&mut self) {
