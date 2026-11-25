@@ -144,10 +144,12 @@ impl Builder<'_, '_> {
         }
         let left_span = self.ast().expr(left).span;
         let result_fallback = op == "??"
-            && matches!(
-                self.global.typed.types.get(&left_span),
-                Some(Ty::Result(..))
-            );
+            && self
+                .global
+                .typed
+                .types
+                .get(&left_span)
+                .is_some_and(|ty| ty.is_result(&self.global.typed.hir));
         let value = self.expr(left)?;
         let names: Vec<_> = self.locals.keys().copied().collect();
         let rhs = self.block(0);
@@ -244,7 +246,9 @@ impl Builder<'_, '_> {
                 }
                 Expr::Index { index, safe, .. } => {
                     if *safe {
-                        if receiver.is_some_and(|ty| matches!(self.concrete(ty), Ty::Option(_))) {
+                        if receiver
+                            .is_some_and(|ty| self.concrete(ty).is_option(&self.global.typed.hir))
+                        {
                             value = self.navigation_payload(value, join, &names);
                         } else {
                             last_was_safe_index_on_non_option = true;
@@ -265,7 +269,7 @@ impl Builder<'_, '_> {
                 .typed
                 .navigation_values
                 .get(&span)
-                .is_some_and(|ty| matches!(self.concrete(ty), Ty::Option(_)))
+                .is_some_and(|ty| self.concrete(ty).is_option(&self.global.typed.hir))
         {
             value = self.tag("Some", vec![value]);
         }
@@ -676,10 +680,14 @@ impl Builder<'_, '_> {
                 }
                 true
             }
-            (Type::Result(ok, err), Ty::Result(a, b)) => {
-                self.static_type_pattern(*ok, a) && self.static_type_pattern(*err, b)
-            }
-            (Type::Option(item), Ty::Option(expected)) => self.static_type_pattern(*item, expected),
+            (Type::Result(ok, err), target) => target
+                .as_result(&self.global.typed.hir)
+                .is_some_and(|(a, b)| {
+                    self.static_type_pattern(*ok, a) && self.static_type_pattern(*err, b)
+                }),
+            (Type::Option(item), target) => target
+                .as_option(&self.global.typed.hir)
+                .is_some_and(|expected| self.static_type_pattern(*item, expected)),
             (Type::Array(_, item), Ty::Array(expected)) => {
                 self.static_type_pattern(*item, &expected.ty)
             }

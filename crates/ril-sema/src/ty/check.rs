@@ -428,14 +428,10 @@ impl<'a> Checker<'a> {
                     _ => None,
                 })
                 .is_some_and(|found| found != &expected && self.fits(env, &actual, found)),
-            (Ty::Option(a), Ty::Option(b)) => self.fits(env, a, b),
             (Ty::Draft(a), Ty::Draft(b))
             | (Ty::Task(a), Ty::Task(b))
             | (Ty::Sender(a), Ty::Sender(b))
             | (Ty::Receiver(a), Ty::Receiver(b)) => self.equiv(env, a, b),
-            (Ty::Result(ao, ae), Ty::Result(bo, be)) => {
-                self.fits(env, ao, bo) && self.fits(env, ae, be)
-            }
             (Ty::TypeValue(Some(a)), Ty::TypeValue(Some(b))) => {
                 self.equiv(env, a, b) && self.normalize(a) == self.normalize(b)
             }
@@ -459,13 +455,21 @@ impl<'a> Checker<'a> {
             }
             (Ty::Callable(a), Ty::Callable(b)) => self.callable_fits(env, a, b),
             (Ty::Adt(a), Ty::Adt(b)) if a.definition == b.definition => {
+                let covariant = matches!(
+                    self.hir.std_type(a.definition),
+                    Some(ril_hir::StdType::Option | ril_hir::StdType::Result)
+                );
                 a.arguments.len() == b.arguments.len()
                     && a.arguments
                         .iter()
                         .zip(&b.arguments)
                         .all(|(actual, expected)| match (actual, expected) {
                             (GenericValue::Type(actual), GenericValue::Type(expected)) => {
-                                self.equiv(env, actual, expected)
+                                if covariant {
+                                    self.fits(env, actual, expected)
+                                } else {
+                                    self.equiv(env, actual, expected)
+                                }
                             }
                             _ => actual == expected,
                         })
@@ -507,14 +511,10 @@ impl<'a> Checker<'a> {
                     _ => None,
                 })
                 .is_some_and(|found| found != &b && self.equiv(env, &a, found)),
-            (Ty::Option(x), Ty::Option(y))
-            | (Ty::Draft(x), Ty::Draft(y))
+            (Ty::Draft(x), Ty::Draft(y))
             | (Ty::Task(x), Ty::Task(y))
             | (Ty::Sender(x), Ty::Sender(y))
             | (Ty::Receiver(x), Ty::Receiver(y)) => self.equiv(env, x, y),
-            (Ty::Result(ao, ae), Ty::Result(bo, be)) => {
-                self.equiv(env, ao, bo) && self.equiv(env, ae, be)
-            }
             (Ty::TypeValue(Some(x)), Ty::TypeValue(Some(y))) => self.equiv(env, x, y),
             (Ty::Array(x), Ty::Array(y)) => self.member_equiv(env, x, y),
             (Ty::Map(xk, x), Ty::Map(yk, y)) => {
@@ -769,8 +769,6 @@ pub(super) fn transform(ty: &Ty, f: &mut impl FnMut(&Ty) -> Option<Ty>) -> Ty {
         ),
         Ty::Array(item) => Ty::Array(Box::new(member(item, f))),
         Ty::Map(key, item) => Ty::Map(wrap(key, f), Box::new(member(item, f))),
-        Ty::Option(item) => Ty::Option(wrap(item, f)),
-        Ty::Result(ok, err) => Ty::Result(wrap(ok, f), wrap(err, f)),
         Ty::Draft(ty) => Ty::Draft(wrap(ty, f)),
         Ty::Projection(ty, key) => Ty::Projection(wrap(ty, f), *key),
         Ty::Task(ty) => Ty::Task(wrap(ty, f)),

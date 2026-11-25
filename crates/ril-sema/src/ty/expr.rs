@@ -135,7 +135,7 @@ impl Checker<'_> {
             }
             Expr::Member { base, member, .. } => {
                 let receiver = self.expr(env, *base, None);
-                if matches!(receiver, Ty::Option(_))
+                if receiver.is_option(self.hir)
                     && let Some(code) = self
                         .narrow_errors
                         .get(&self.ast(env.file).expr(*base).span)
@@ -353,12 +353,12 @@ impl Checker<'_> {
                 let mut optional = false;
                 for (safe, coordinate) in segments {
                     optional |= *safe;
-                    base = if optional && let Ty::Option(inner) = base {
+                    base = if optional && let Some(inner) = base.as_option(self.hir).cloned() {
                         let next = self.project(env, coordinate, &inner, span, false);
-                        if *safe && matches!(next, Ty::Option(_)) {
+                        if *safe && next.is_option(self.hir) {
                             next
                         } else {
-                            Ty::Option(Box::new(next))
+                            self.make_option(next)
                         }
                     } else {
                         self.project(env, coordinate, &base, span, false)
@@ -498,26 +498,31 @@ impl Checker<'_> {
         env.map_store = previous_map_store;
         let a = self.normalize(&a);
         let fallback;
-        let right_expected = match (&a, name) {
-            (Ty::Option(item), "??") => Some(item.as_ref()),
-            (Ty::Result(ok, error), "??") => {
+        let right_expected = if name == "??" {
+            if let Some(item) = a.as_option(self.hir) {
+                Some(item)
+            } else if let Some((ok, error)) = a.as_result(self.hir) {
                 fallback = Ty::Callable(Arc::new(Callable {
                     parameters: vec![Parameter {
                         label: None,
                         mode: Mode::Plain,
-                        ty: (**error).clone(),
+                        ty: error.clone(),
                         optional: false,
                         is_meta: false,
                     }],
-                    result: (**ok).clone(),
+                    result: ok.clone(),
                     open_effects: true,
                     open_state: true,
                     ..unknown_callable()
                 }));
                 Some(&fallback)
+            } else {
+                None
             }
-            (_, "??" | "<<" | ">>") => None,
-            _ => Some(&a),
+        } else if matches!(name, "<<" | ">>") {
+            None
+        } else {
+            Some(&a)
         };
         let gate_depth = env.staging_gates.len();
         let saved_refinements = if matches!(name, "&&" | "||") {
@@ -576,39 +581,38 @@ impl Checker<'_> {
         }
         let a = self.normalize(&a);
         if name == "??" {
-            return match &a {
-                Ty::Option(ty) => {
-                    self.require(env, op.span, &b, ty);
-                    (**ty).clone()
-                }
-                Ty::Result(..) => {
-                    if let Ty::Callable(call) = b
-                        && call.parameters.len() == 1
-                        && let Ty::Result(ok, err) = a
-                    {
-                        if let Some(param) = call.parameters.first() {
-                            self.require(env, op.span, &err, &param.ty);
-                        }
-                        self.require(env, op.span, &call.result, &ok);
-                        return *ok;
+            if let Some(ty) = a.as_option(self.hir) {
+                let ty = ty.clone();
+                self.require(env, op.span, &b, &ty);
+                return ty;
+            }
+            if let Some((ok, err)) = a.as_result(self.hir) {
+                let (ok, err) = (ok.clone(), err.clone());
+                if let Ty::Callable(call) = b
+                    && call.parameters.len() == 1
+                {
+                    if let Some(param) = call.parameters.first() {
+                        self.require(env, op.span, &err, &param.ty);
                     }
-                    self.error(
-                        Code::E0711,
-                        op.span,
-                        "result fallback requires a one-argument callable",
-                    );
-                    Ty::Unknown
+                    self.require(env, op.span, &call.result, &ok);
+                    return ok;
                 }
-                Ty::Unknown | Ty::Never => Ty::Unknown,
-                _ => {
-                    self.error(
-                        Code::E0714,
-                        op.span,
-                        "fallback requires an option or result",
-                    );
-                    Ty::Unknown
-                }
-            };
+                self.error(
+                    Code::E0711,
+                    op.span,
+                    "result fallback requires a one-argument callable",
+                );
+                return Ty::Unknown;
+            }
+            if matches!(a, Ty::Unknown | Ty::Never) {
+                return Ty::Unknown;
+            }
+            self.error(
+                Code::E0714,
+                op.span,
+                "fallback requires an option or result",
+            );
+            return Ty::Unknown;
         }
         if matches!(name, "&&" | "||") {
             let valid = self.fits(env, &a, &Ty::Bool) && self.fits(env, &b, &Ty::Bool);
@@ -630,7 +634,8 @@ impl Checker<'_> {
                 }
                 let span = ast.expr(id).span;
                 if (self.narrowings.contains_key(&span)
-                    && !matches!(ty, Ty::Option(_) | Ty::Unknown))
+                    && !ty.is_option(self.hir)
+                    && !matches!(ty, Ty::Unknown))
                     || self.is_known_none(env, id)
                 {
                     self.error(
@@ -706,8 +711,6 @@ impl Checker<'_> {
             Ty::Record(fields, _) => fields
                 .values()
                 .all(|field| self.equatable(env, &field.ty, seen)),
-            Ty::Result(ok, err) => self.equatable(env, ok, seen) && self.equatable(env, err, seen),
-            Ty::Option(ty) => self.equatable(env, ty, seen),
             Ty::Map(key, value) => {
                 self.equatable(env, key, seen) && self.equatable(env, &value.ty, seen)
             }

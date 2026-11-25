@@ -473,11 +473,13 @@ impl Analyzer<'_> {
     fn contains_panic_unsafe_handle(ty: &Ty) -> bool {
         match ty {
             Ty::Sender(_) | Ty::Receiver(_) | Ty::Scope | Ty::Task(_) => true,
-            Ty::Adt(adt) => adt.kind == crate::ty::AdtKind::Foreign,
-            Ty::Option(inner) | Ty::Draft(inner) => Self::contains_panic_unsafe_handle(inner),
-            Ty::Result(ok, err) => {
-                Self::contains_panic_unsafe_handle(ok) || Self::contains_panic_unsafe_handle(err)
+            Ty::Adt(adt) => {
+                adt.kind == crate::ty::AdtKind::Foreign
+                    || adt.arguments.iter().any(|arg| {
+                        matches!(arg, crate::ty::GenericValue::Type(inner) if Self::contains_panic_unsafe_handle(inner))
+                    })
             }
+            Ty::Draft(inner) => Self::contains_panic_unsafe_handle(inner),
             Ty::Array(item) => Self::contains_panic_unsafe_handle(&item.ty),
             Ty::Map(k, v) => {
                 Self::contains_panic_unsafe_handle(k) || Self::contains_panic_unsafe_handle(&v.ty)

@@ -164,7 +164,8 @@ impl Analyzer<'_> {
                     (op.value.as_str(), literal),
                     ("&&", Some(false)) | ("||", Some(true))
                 );
-                let fallible = op.value == "??" && self.ty(ast.expr(*left).span).is_result();
+                let fallible =
+                    op.value == "??" && self.ty(ast.expr(*left).span).is_result(&self.program.hir);
                 if fallible {
                     ledger.inspect_root(&lhs);
                 }
@@ -659,8 +660,8 @@ impl Analyzer<'_> {
         };
         ctx.reachable &= !ledger.no_continuation;
         if ctx.reachable
-            && (self.ty(span).is_result()
-                || matches!(self.ty(span), Ty::Task(inner) if inner.is_result()))
+            && (self.ty(span).is_result(&self.program.hir)
+                || matches!(self.ty(span), Ty::Task(inner) if inner.is_result(&self.program.hir)))
             && !value.has_root_result()
             && !matches!(node.value, Expr::Path(_))
         {
@@ -725,8 +726,7 @@ impl Analyzer<'_> {
             value
         } else if self.program.hir.unit_constructor(id)
             || matches!(definition.kind, DefinitionKind::Variant(_))
-                && (matches!(self.ty(span), Ty::Option(_))
-                    || matches!(self.ty(span), Ty::Adt(adt) if matches!(adt.kind, AdtKind::Sum | AdtKind::OpaqueSum)))
+                && matches!(self.ty(span), Ty::Adt(adt) if matches!(adt.kind, AdtKind::Sum | AdtKind::OpaqueSum))
         {
             let mut value = Datum::source(span, Access::Mut, true);
             value.set_variant(&definition.name.value);

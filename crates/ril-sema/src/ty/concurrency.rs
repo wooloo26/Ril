@@ -77,10 +77,7 @@ impl Checker<'_> {
         match (name, args) {
             ("run" | "uncancellable" | "supervise", [action]) => {
                 let target = if name == "supervise" {
-                    expected.and_then(|ty| match ty {
-                        Ty::Result(ok, _) => Some(ok.as_ref()),
-                        _ => None,
-                    })
+                    expected.and_then(|ty| ty.as_result(self.hir).map(|(ok, _)| ok))
                 } else {
                     expected
                 };
@@ -92,23 +89,20 @@ impl Checker<'_> {
                 }
                 if name == "supervise" {
                     self.reject_nested_result(&result, span);
-                    Ty::Result(
-                        Box::new(result),
-                        Box::new(self.std_adt(StdType::TaskFault, Vec::new())),
-                    )
+                    self.make_result(result, self.std_adt(StdType::TaskFault, Vec::new()))
                 } else {
                     result
                 }
             }
             ("scope" | "try_scope", [body]) => {
                 let result = self.callback(env, body, Some((Mode::Mut, Ty::Scope)), expected, true);
-                if name == "try_scope"
-                    && !matches!(
-                        self.normalize(&result),
-                        Ty::Result(..) | Ty::Unknown | Ty::Infer(_) | Ty::Never
-                    )
-                {
-                    self.error(Code::E0301, span, "try_scope body must return Result");
+                if name == "try_scope" {
+                    let normalized = self.normalize(&result);
+                    if !normalized.is_result(self.hir)
+                        && !matches!(normalized, Ty::Unknown | Ty::Infer(_) | Ty::Never)
+                    {
+                        self.error(Code::E0301, span, "try_scope body must return Result");
+                    }
                 }
                 result
             }
@@ -130,7 +124,7 @@ impl Checker<'_> {
                 let task = self.expr(env, task.value, None);
                 if let Ty::Task(output) = task {
                     if name == "cancel" {
-                        Ty::Option(output)
+                        self.make_option(*output)
                     } else {
                         *output
                     }
@@ -146,10 +140,7 @@ impl Checker<'_> {
                     self.error(Code::E0301, span, "timeout_ms result is not Sendable");
                 }
                 self.reject_nested_result(&result, span);
-                Ty::Result(
-                    Box::new(result),
-                    Box::new(self.std_adt(StdType::TimeoutError, Vec::new())),
-                )
+                self.make_result(result, self.std_adt(StdType::TimeoutError, Vec::new()))
             }
             ("zip" | "try_zip" | "race", [left, right]) => {
                 let a = self.callback(env, left, None, None, true);
@@ -174,7 +165,10 @@ impl Checker<'_> {
                         )
                     };
                     if name == "try_zip" {
-                        if let (Ty::Result(a, e), Ty::Result(b, f)) = (a, b) {
+                        if let (Some((a, e)), Some((b, f))) =
+                            (a.as_result(self.hir), b.as_result(self.hir))
+                        {
+                            let (a, e, b, f) = (a.clone(), e.clone(), b.clone(), f.clone());
                             if !self.is_sendable(env, &a, &mut HashSet::new())
                                 || !self.is_sendable(env, &b, &mut HashSet::new())
                                 || !self.is_sendable(env, &e, &mut HashSet::new())
@@ -184,8 +178,8 @@ impl Checker<'_> {
                             }
                             self.reject_nested_result(&a, span);
                             self.reject_nested_result(&b, span);
-                            let err = self.join(env, span, *e, *f);
-                            Ty::Result(Box::new(record(*a, *b)), Box::new(err))
+                            let err = self.join(env, span, e, f);
+                            self.make_result(record(a, b), err)
                         } else {
                             self.error(Code::E0301, span, "try_zip actions must return Result");
                             Ty::Unknown
@@ -220,14 +214,15 @@ impl Checker<'_> {
                 let result = self.callback(env, work, Some((Mode::Plain, item)), None, false);
                 let array = |ty| Ty::Array(Box::new(Member::plain(ty)));
                 if name == "try_map" {
-                    if let Ty::Result(ok, err) = result {
+                    if let Some((ok, err)) = result.as_result(self.hir) {
+                        let (ok, err) = (ok.clone(), err.clone());
                         if !self.is_sendable(env, &ok, &mut HashSet::new())
                             || !self.is_sendable(env, &err, &mut HashSet::new())
                         {
                             self.error(Code::E0301, span, "try_map result is not Sendable");
                         }
                         self.reject_nested_result(&ok, span);
-                        Ty::Result(Box::new(array(*ok)), err)
+                        self.make_result(array(ok), err)
                     } else {
                         self.error(Code::E0301, span, "try_map action must return Result");
                         Ty::Unknown
@@ -385,7 +380,7 @@ impl Checker<'_> {
     }
 
     pub(super) fn reject_nested_result(&mut self, ty: &Ty, span: Span) {
-        if ty.is_result() {
+        if ty.is_result(self.hir) {
             self.error(Code::E0720, span, "operation would hide a fallible payload");
         }
     }
@@ -434,10 +429,7 @@ impl Checker<'_> {
             Ty::Map(key, item) => {
                 self.is_sendable(env, &key, active) && self.sendable_member(env, &item, active)
             }
-            Ty::Option(t) | Ty::Sender(t) | Ty::Receiver(t) => self.is_sendable(env, &t, active),
-            Ty::Result(a, b) => {
-                self.is_sendable(env, &a, active) && self.is_sendable(env, &b, active)
-            }
+            Ty::Sender(t) | Ty::Receiver(t) => self.is_sendable(env, &t, active),
             Ty::Callable(sig) => !sig.open_effects && !sig.open_state && sig.state.is_empty(),
             _ => true,
         }

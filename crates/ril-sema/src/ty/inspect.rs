@@ -195,14 +195,6 @@ impl Builder<'_, '_> {
                     .collect(),
             ),
             Ty::Record(fields, _) => self.record(fields, depth),
-            Ty::Option(item) => Node::Tags(BTreeMap::from([(
-                "Some".into(),
-                vec![self.visit(item, depth)],
-            )])),
-            Ty::Result(ok, err) => Node::Tags(BTreeMap::from([
-                ("Ok".into(), vec![self.visit(ok, depth)]),
-                ("Err".into(), vec![self.visit(err, depth)]),
-            ])),
             Ty::Adt(adt) => {
                 if self.checker.hir.std_type(adt.definition) == Some(ril_hir::StdType::Set)
                     && let [super::GenericValue::Type(elem)] = adt.arguments.as_slice()

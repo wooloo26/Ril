@@ -34,9 +34,13 @@ pub(super) fn receive_results(
 
 pub(super) fn carries_result(program: &TypedProgram, ty: &Ty) -> bool {
     fn visit(program: &TypedProgram, ty: &Ty, active: &mut BTreeSet<DefinitionId>) -> bool {
+        if ty.is_result(&program.hir) {
+            return true;
+        }
+        if let Some(inner) = ty.as_option(&program.hir) {
+            return visit(program, inner, active);
+        }
         match ty {
-            Ty::Result(..) => true,
-            Ty::Option(inner) => visit(program, inner, active),
             Ty::Array(member) => visit(program, &member.ty, active),
             Ty::Map(key, member) => {
                 visit(program, key, active) || visit(program, &member.ty, active)
@@ -82,33 +86,36 @@ impl BoundaryResults<'_> {
         mut value: Datum,
         choices: &Choices,
     ) -> Datum {
-        match ty {
-            Ty::Result(ok, error) => {
-                let next = self.part();
-                let part = value.result_object().map_or(next, |object| {
-                    *self
-                        .objects
-                        .entry((object.clone(), choices.clone()))
-                        .or_insert(next)
-                });
-                ledger.record_result_part(&mut value, self.span, part, choices, false);
-                if carries_result(self.program, ok) || carries_result(self.program, error) {
-                    return self.sum(
-                        ledger,
-                        value,
-                        [("Ok", Some(ok)), ("Err", Some(error))],
-                        choices,
-                    );
-                }
-            }
-            Ty::Option(inner) if carries_result(self.program, inner) => {
+        if let Some((ok, error)) = ty.as_result(&self.program.hir) {
+            let next = self.part();
+            let part = value.result_object().map_or(next, |object| {
+                *self
+                    .objects
+                    .entry((object.clone(), choices.clone()))
+                    .or_insert(next)
+            });
+            ledger.record_result_part(&mut value, self.span, part, choices, false);
+            if carries_result(self.program, ok) || carries_result(self.program, error) {
                 return self.sum(
                     ledger,
                     value,
-                    [("Some", Some(inner)), ("None", None)],
+                    [("Ok", Some(ok)), ("Err", Some(error))],
                     choices,
                 );
             }
+            return value;
+        }
+        if let Some(inner) = ty.as_option(&self.program.hir)
+            && carries_result(self.program, inner)
+        {
+            return self.sum(
+                ledger,
+                value,
+                [("Some", Some(inner)), ("None", None)],
+                choices,
+            );
+        }
+        match ty {
             Ty::Tuple(items) => {
                 for (index, member) in items.iter().enumerate() {
                     self.member(
@@ -364,7 +371,11 @@ impl Analyzer<'_> {
         let Some(ty) = self.program.propagation_inputs.get(&site) else {
             return Datum::default();
         };
-        let success = if ty.is_result() { "Ok" } else { "Some" };
+        let success = if ty.is_result(&self.program.hir) {
+            "Ok"
+        } else {
+            "Some"
+        };
         let member = Coordinate::Index("0".into());
         if !ctx.reachable {
             return ledger.project(&value, member, Access::Immutable);
@@ -390,9 +401,12 @@ impl Analyzer<'_> {
                 }
                 // An unknown Result can stop here. A payload known to occur
                 // only in Err leaves with the returned error.
-                let transfer = match ty {
-                    Ty::Result(ok, _) if ok.is_value() => path.snapshot(&value).results(),
-                    _ => Inspections::new(),
+                let transfer = if let Some((ok, _)) = ty.as_result(&self.program.hir)
+                    && ok.is_value()
+                {
+                    path.snapshot(&value).results()
+                } else {
+                    Inspections::new()
                 };
                 self.check_results(&path, &transfer);
                 self.storage_exit(ctx, &path);
@@ -455,7 +469,7 @@ impl Analyzer<'_> {
                     .map_or("", |seg| seg.name.value.as_str());
                 let input = self.ty(node.span);
                 let tag = value.known_variant().map(|variant| variant == name);
-                let tests = if input.is_result() {
+                let tests = if input.is_result(&self.program.hir) {
                     PatternTests::test(tag, ledger.tested_results(value))
                 } else {
                     PatternTests::test(tag, Inspections::new())

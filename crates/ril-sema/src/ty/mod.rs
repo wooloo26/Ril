@@ -47,8 +47,6 @@ pub enum Ty {
     Record(BTreeMap<String, Member>, bool),
     Array(Box<Member>),
     Map(Box<Ty>, Box<Member>),
-    Option(Box<Ty>),
-    Result(Box<Ty>, Box<Ty>),
     Range,
     Callable(Arc<Callable>),
     TypeValue(Option<Box<Ty>>),
@@ -79,12 +77,10 @@ impl Ty {
             Self::Tuple(items) => items.iter().any(|m| m.ty.contains_type_value()),
             Self::Record(items, _) => items.values().any(|m| m.ty.contains_type_value()),
             Self::Projection(inner, _)
-            | Self::Option(inner)
             | Self::Draft(inner)
             | Self::Task(inner)
             | Self::Sender(inner)
             | Self::Receiver(inner) => inner.contains_type_value(),
-            Self::Result(ok, err) => ok.contains_type_value() || err.contains_type_value(),
             Self::Adt(adt) => adt
                 .arguments
                 .iter()
@@ -104,8 +100,34 @@ impl Ty {
         )
     }
 
-    pub const fn is_result(&self) -> bool {
-        matches!(self, Self::Result(_, _))
+    pub fn as_option(&self, hir: &Program) -> Option<&Ty> {
+        if let Self::Adt(adt) = self
+            && hir.std_type(adt.definition) == Some(ril_hir::StdType::Option)
+            && let [GenericValue::Type(inner)] = adt.arguments.as_slice()
+        {
+            Some(inner)
+        } else {
+            None
+        }
+    }
+
+    pub fn is_option(&self, hir: &Program) -> bool {
+        self.as_option(hir).is_some()
+    }
+
+    pub fn as_result(&self, hir: &Program) -> Option<(&Ty, &Ty)> {
+        if let Self::Adt(adt) = self
+            && hir.std_type(adt.definition) == Some(ril_hir::StdType::Result)
+            && let [GenericValue::Type(ok), GenericValue::Type(err)] = adt.arguments.as_slice()
+        {
+            Some((ok, err))
+        } else {
+            None
+        }
+    }
+
+    pub fn is_result(&self, hir: &Program) -> bool {
+        self.as_result(hir).is_some()
     }
 
     pub fn as_set(&self, hir: &Program) -> Option<&Ty> {
@@ -376,6 +398,12 @@ impl fmt::Display for Display<'_> {
                 self.hir.definition(*key).name.value
             ),
             Ty::Adt(adt) => {
+                if let Some(inner) = self.ty.as_option(self.hir) {
+                    return write!(f, "?{}", show(inner));
+                }
+                if let Some((ok, err)) = self.ty.as_result(self.hir) {
+                    return write!(f, "!<{}, {}>", show(ok), show(err));
+                }
                 if self.qualified {
                     f.write_str(&self.hir.export_name(adt.definition))?;
                 } else {
@@ -425,8 +453,6 @@ impl fmt::Display for Display<'_> {
                 member_mode(f, member.mode)?;
                 write!(f, "{}]", show(&member.ty))
             }
-            Ty::Option(inner) => write!(f, "?{}", show(inner)),
-            Ty::Result(ok, err) => write!(f, "!<{}, {}>", show(ok), show(err)),
             Ty::Callable(call) => {
                 f.write_str("fn(")?;
                 for (index, p) in call.parameters.iter().enumerate() {

@@ -205,14 +205,6 @@ impl Checker<'_> {
             Ty::Never => Vec::new(),
             Ty::Bool => vec![("true".into(), vec![]), ("false".into(), vec![])],
             Ty::Unit => vec![("()".into(), vec![])],
-            Ty::Option(inner) => vec![
-                ("Some".into(), vec![(**inner).clone()]),
-                ("None".into(), vec![]),
-            ],
-            Ty::Result(ok, err) => vec![
-                ("Ok".into(), vec![(**ok).clone()]),
-                ("Err".into(), vec![(**err).clone()]),
-            ],
             Ty::Mode => vec![
                 ("Let".into(), vec![]),
                 ("Var".into(), vec![]),

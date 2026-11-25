@@ -221,7 +221,7 @@ impl Analyzer<'_> {
             };
             // Packing preserves inspection obligations in the payload.
             if !is_constructor {
-                if parameter.is_some_and(|p| p.ty.is_result()) {
+                if parameter.is_some_and(|p| p.ty.is_result(&self.program.hir)) {
                     ledger.inspect(&value);
                 } else if !value.results().is_empty()
                     && (!primitive
@@ -361,9 +361,7 @@ impl Analyzer<'_> {
         }
         if let Some(fields) = fields {
             let mut result = constructor(span, fields);
-            if matches!(self.ty(span), Ty::Option(_) | Ty::Result(_, _))
-                || def.is_some_and(|def| matches!(def.kind, DefinitionKind::Variant(_)))
-            {
+            if def.is_some_and(|def| matches!(def.kind, DefinitionKind::Variant(_))) {
                 result.set_variant(name);
             }
             return result;

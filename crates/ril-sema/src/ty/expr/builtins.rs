@@ -157,11 +157,6 @@ impl Checker<'_> {
                 self.nonclonable(env, &key, false, proof)
                     || self.nonclonable(env, &item.ty, false, proof)
             }
-            Ty::Result(ok, error) => {
-                self.nonclonable(env, &ok, false, proof)
-                    || self.nonclonable(env, &error, false, proof)
-            }
-            Ty::Option(item) => self.nonclonable(env, &item, false, proof),
             _ => false,
         }
     }
@@ -289,7 +284,7 @@ impl Checker<'_> {
             },
             "convert" => {
                 self.require(env, span, &first, &Ty::F64);
-                Ty::Option(Box::new(Ty::Int))
+                self.make_option(Ty::Int)
             }
             "fields" => {
                 let key = if let Ty::TypeValue(Some(ty)) = first {
@@ -366,11 +361,7 @@ impl Checker<'_> {
                                 );
                             }
                         }
-                        Ty::Option(_)
-                        | Ty::Result(..)
-                        | Ty::Param(_)
-                        | Ty::Unknown
-                        | Ty::Infer(_) => {}
+                        Ty::Param(_) | Ty::Unknown | Ty::Infer(_) => {}
                         _ => {
                             self.error(Code::E0301, span, "variants requires a sum type");
                         }
@@ -429,9 +420,9 @@ impl Checker<'_> {
                             "panic action requires a closed empty effect set",
                         );
                     }
-                    Ty::Result(
-                        Box::new(call.result.clone()),
-                        Box::new(self.std_adt(StdType::PanicError, Vec::new())),
+                    self.make_result(
+                        call.result.clone(),
+                        self.std_adt(StdType::PanicError, Vec::new()),
                     )
                 }
                 Ty::Callable(_) => {

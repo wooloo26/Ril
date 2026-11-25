@@ -19,25 +19,25 @@ impl Checker<'_> {
             ty = match &node.value {
                 Expr::Member { member, safe, .. } => {
                     if *safe {
-                        ty = match ty {
-                            Ty::Option(inner) => *inner,
-                            Ty::Unknown | Ty::Never => Ty::Unknown,
-                            _ => {
-                                self.error(
-                                    Code::E0715,
-                                    node.span,
-                                    "safe member access requires an option",
-                                );
-                                Ty::Unknown
-                            }
+                        ty = if let Some(inner) = ty.as_option(self.hir) {
+                            inner.clone()
+                        } else if matches!(ty, Ty::Unknown | Ty::Never) {
+                            Ty::Unknown
+                        } else {
+                            self.error(
+                                Code::E0715,
+                                node.span,
+                                "safe member access requires an option",
+                            );
+                            Ty::Unknown
                         };
                     }
                     self.project(env, member, &ty, node.span, false)
                 }
                 Expr::Index { index, safe, .. } => {
                     if *safe {
-                        if let Ty::Option(inner) = ty {
-                            ty = *inner;
+                        if let Some(inner) = ty.as_option(self.hir) {
+                            ty = inner.clone();
                         } else {
                             last_was_safe_index_on_non_option = true;
                         }
@@ -52,8 +52,8 @@ impl Checker<'_> {
         let ty = self.normalize(&ty);
         if ty == Ty::Unknown {
             ty
-        } else if last_was_safe_index_on_non_option || !matches!(ty, Ty::Option(_)) {
-            Ty::Option(Box::new(ty))
+        } else if last_was_safe_index_on_non_option || !ty.is_option(self.hir) {
+            self.make_option(ty)
         } else {
             ty
         }

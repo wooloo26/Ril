@@ -16,37 +16,48 @@ impl Checker<'_> {
     pub(super) fn propagate(&mut self, env: &Env, actual: Ty, span: Span) -> Ty {
         let actual = self.normalize(&actual);
         self.propagation_inputs.insert(span, actual.clone());
+        if let Some((ok, error)) = actual.as_result(self.hir) {
+            let (ok, error) = (ok.clone(), error.clone());
+            if let Some(index) = env.inferred_return {
+                if !env.shadow {
+                    self.closure_exits(index).errors.push(error);
+                }
+            } else if !env
+                .expected_return
+                .as_ref()
+                .and_then(|ty| ty.as_result(self.hir))
+                .is_some_and(|(_, target)| {
+                    self.fits(env, &error, target) || self.sum_subset(env, &error, target)
+                })
+            {
+                self.error(
+                    Code::E0713,
+                    span,
+                    "enclosing function cannot propagate this error type",
+                );
+            }
+            return ok;
+        }
+        if let Some(ok) = actual.as_option(self.hir) {
+            let ok = ok.clone();
+            if let Some(index) = env.inferred_return {
+                if !env.shadow {
+                    self.closure_exits(index).none = true;
+                }
+            } else if !env
+                .expected_return
+                .as_ref()
+                .is_some_and(|ty| ty.is_option(self.hir))
+            {
+                self.error(
+                    Code::E0713,
+                    span,
+                    "enclosing function cannot propagate None",
+                );
+            }
+            return ok;
+        }
         match actual {
-            Ty::Result(ok, error) => {
-                if let Some(index) = env.inferred_return {
-                    if !env.shadow {
-                        self.closure_exits(index).errors.push(*error);
-                    }
-                } else if !matches!(&env.expected_return, Some(Ty::Result(_, target))
-                    if self.fits(env, &error, target) || self.sum_subset(env, &error, target))
-                {
-                    self.error(
-                        Code::E0713,
-                        span,
-                        "enclosing function cannot propagate this error type",
-                    );
-                }
-                *ok
-            }
-            Ty::Option(ok) => {
-                if let Some(index) = env.inferred_return {
-                    if !env.shadow {
-                        self.closure_exits(index).none = true;
-                    }
-                } else if !matches!(env.expected_return, Some(Ty::Option(_))) {
-                    self.error(
-                        Code::E0713,
-                        span,
-                        "enclosing function cannot propagate None",
-                    );
-                }
-                *ok
-            }
             Ty::Unknown | Ty::Never => actual,
             _ => {
                 self.error(Code::E0712, span, "propagation requires Result or Option");
@@ -97,7 +108,8 @@ impl Checker<'_> {
         }
         if exits.none {
             if exits.errors.is_empty() {
-                let target = Ty::Option(Box::new(self.fresh()));
+                let fresh = self.fresh();
+                let target = self.make_option(fresh);
                 if self.fits(env, &result, &target) {
                     return self.normalize(&target);
                 }
@@ -127,7 +139,8 @@ impl Checker<'_> {
                 }
             }
             if let Some(error) = greatest {
-                let target = Ty::Result(Box::new(self.fresh()), Box::new(error));
+                let fresh = self.fresh();
+                let target = self.make_result(fresh, error);
                 if self.fits(env, &result, &target) {
                     return self.normalize(&target);
                 }

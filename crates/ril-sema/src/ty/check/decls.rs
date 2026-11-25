@@ -176,10 +176,13 @@ impl Checker<'_> {
                 }
             }
         }
-        let return_subject = match self.normalize(&call.result) {
-            Ty::Option(inner) => *inner,
-            Ty::Result(ok, _) => *ok,
-            other => other,
+        let normalized = self.normalize(&call.result);
+        let return_subject = if let Some(inner) = normalized.as_option(self.hir) {
+            inner.clone()
+        } else if let Some((ok, _)) = normalized.as_result(self.hir) {
+            ok.clone()
+        } else {
+            normalized
         };
         for &guard in &fun.signature.guards {
             self.check_guard(&mut local, guard, &return_subject, &call.result);
@@ -295,7 +298,7 @@ impl Checker<'_> {
             }
             StmtKind::Expr(expr) => {
                 let ty = self.expr(env, *expr, None);
-                if !tail && env.shadow && ty.is_result() {
+                if !tail && env.shadow && ty.is_result(self.hir) {
                     self.error(Code::E0720, node.span, "fallible result must be inspected");
                 }
                 return ty;

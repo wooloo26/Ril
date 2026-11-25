@@ -144,22 +144,25 @@ impl Checker<'_> {
             self.expect(env, arg.value, &expected_arg);
         }
         let guard_result = super::check::substitute(&signature.result, &fresh_generics);
-        let compatible = match (&guard_result, output) {
-            (Ty::Option(inner), Ty::Option(_)) if inner.as_ref() == &Ty::Unit => true,
-            (Ty::Result(ok, err), Ty::Result(_, expected)) if ok.as_ref() == &Ty::Unit => {
+        let compatible = if let Some(inner) = guard_result.as_option(self.hir)
+            && *inner == Ty::Unit
+        {
+            output.is_option(self.hir)
+        } else if let Some((ok, err)) = guard_result.as_result(self.hir)
+            && *ok == Ty::Unit
+        {
+            output.as_result(self.hir).is_some_and(|(_, expected)| {
                 self.fits(env, err, expected) || self.sum_subset(env, err, expected)
-            }
-            (Ty::Option(inner), _) if inner.as_ref() == &Ty::Unit => false,
-            (Ty::Result(ok, _), _) if ok.as_ref() == &Ty::Unit => false,
-            (Ty::Unknown, _) => return,
-            _ => {
-                self.error(
-                    Code::E0712,
-                    original.span,
-                    "signature guard must return fallible unit",
-                );
-                return;
-            }
+            })
+        } else if guard_result == Ty::Unknown {
+            return;
+        } else {
+            self.error(
+                Code::E0712,
+                original.span,
+                "signature guard must return fallible unit",
+            );
+            return;
         };
         if !compatible {
             self.error(
@@ -655,10 +658,6 @@ impl Checker<'_> {
             Ty::Tuple(items) => items
                 .iter()
                 .all(|member| immutable(member) && self.eligible_key(env, &member.ty, seen)),
-            Ty::Option(inner) => self.eligible_key(env, &inner, seen),
-            Ty::Result(ok, err) => {
-                self.eligible_key(env, &ok, seen) && self.eligible_key(env, &err, seen)
-            }
             Ty::Adt(adt) if adt.kind == AdtKind::Foreign => false,
             Ty::Adt(adt) if seen.insert(adt.definition) => {
                 let result = if matches!(adt.kind, AdtKind::Sum | AdtKind::OpaqueSum) {
@@ -712,10 +711,6 @@ impl Checker<'_> {
             Ty::Tuple(items) => items
                 .iter()
                 .all(|member| self.meta_exportable(env, &member.ty, seen)),
-            Ty::Option(inner) => self.meta_exportable(env, &inner, seen),
-            Ty::Result(ok, err) => {
-                self.meta_exportable(env, &ok, seen) && self.meta_exportable(env, &err, seen)
-            }
             Ty::Adt(adt) if adt.kind == AdtKind::Foreign => false,
             Ty::Adt(adt) => {
                 let has_cleanup = self.hir.definition(adt.definition).stmt.is_some_and(|s| {

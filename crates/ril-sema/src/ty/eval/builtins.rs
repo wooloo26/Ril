@@ -153,14 +153,6 @@ impl Checker<'_> {
             ("type_name", [Value::Type(ty)]) => Ok(Value::Str(ty.display(self.hir).to_string())),
             ("fields", [Value::Type(ty)]) => self.eval_coords(env, ty, span),
             ("variants", [Value::Type(ty)]) => match self.normalize(ty) {
-                Ty::Option(_) => Ok(Value::Array(vec![
-                    Value::Str("Some".into()),
-                    Value::Str("None".into()),
-                ])),
-                Ty::Result(..) => Ok(Value::Array(vec![
-                    Value::Str("Ok".into()),
-                    Value::Str("Err".into()),
-                ])),
                 Ty::Adt(adt) => {
                     if adt.kind == AdtKind::Foreign {
                         return Err(Signal::Error(

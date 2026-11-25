@@ -62,11 +62,15 @@ impl Checker<'_> {
                 }
                 Ty::Map(Box::new(key), Box::new(member))
             }
-            Type::Result(ok, err) => Ty::Result(
-                Box::new(self.type_expr(env, *ok)),
-                Box::new(self.type_expr(env, *err)),
-            ),
-            Type::Option(item) => Ty::Option(Box::new(self.type_expr(env, *item))),
+            Type::Result(ok, err) => {
+                let ok = self.type_expr(env, *ok);
+                let err = self.type_expr(env, *err);
+                self.make_result(ok, err)
+            }
+            Type::Option(item) => {
+                let item = self.type_expr(env, *item);
+                self.make_option(item)
+            }
             Type::Record { fields, tail } => {
                 let mut map = BTreeMap::new();
                 let nominal = env.nominal_fields == Some(node.span);
@@ -305,20 +309,9 @@ impl Checker<'_> {
                     .map(|arg| checker.type_argument(env, arg))
                     .unwrap_or(Ty::Unknown)
             };
-            let arg1 = |checker: &mut Self, env: &mut Env| {
-                last.arguments
-                    .get(1)
-                    .map(|arg| checker.type_argument(env, arg))
-                    .unwrap_or(Ty::Unknown)
-            };
             if let Some(std_ty) = std_ty {
                 let expected_arity = match std_ty {
-                    StdType::Option
-                    | StdType::Draft
-                    | StdType::Task
-                    | StdType::Sender
-                    | StdType::Receiver => Some(1),
-                    StdType::Result => Some(2),
+                    StdType::Draft | StdType::Task | StdType::Sender | StdType::Receiver => Some(1),
                     StdType::FieldMode | StdType::Scope => Some(0),
                     _ => None,
                 };
@@ -328,13 +321,7 @@ impl Checker<'_> {
                     self.error(Code::E0340, path.span, "incorrect number of type arguments");
                 }
                 match std_ty {
-                    StdType::Option => return Ty::Option(Box::new(arg0(self, env))),
-                    StdType::Result => {
-                        let ok = arg0(self, env);
-                        let err = arg1(self, env);
-                        return Ty::Result(Box::new(ok), Box::new(err));
-                    }
-                    StdType::Set => {}
+                    StdType::Option | StdType::Result | StdType::Set => {}
                     StdType::Draft => return Ty::Draft(Box::new(arg0(self, env))),
                     StdType::FieldMode => return Ty::Mode,
                     StdType::Scope => return Ty::Scope,
@@ -607,6 +594,17 @@ impl Checker<'_> {
         }))
     }
 
+    pub(in crate::ty) fn make_option(&self, inner: Ty) -> Ty {
+        self.std_adt(StdType::Option, vec![GenericValue::Type(inner)])
+    }
+
+    pub(in crate::ty) fn make_result(&self, ok: Ty, err: Ty) -> Ty {
+        self.std_adt(
+            StdType::Result,
+            vec![GenericValue::Type(ok), GenericValue::Type(err)],
+        )
+    }
+
     pub(in crate::ty) fn variant(
         &mut self,
         env: &mut Env,
@@ -618,56 +616,8 @@ impl Checker<'_> {
         let DefinitionKind::Variant(parent) = def.kind else {
             return Ty::Unknown;
         };
-        match self.hir.std_type(parent) {
-            Some(StdType::Option) => {
-                let inner = if let Some(Ty::Option(ty)) = expected {
-                    (**ty).clone()
-                } else {
-                    self.fresh()
-                };
-                let result = Ty::Option(Box::new(inner.clone()));
-                if def.name.value == "None" {
-                    return result;
-                }
-                return Ty::Callable(Arc::new(Callable {
-                    parameters: vec![Parameter {
-                        label: None,
-                        mode: Mode::Via,
-                        ty: inner,
-                        optional: false,
-                        is_meta: false,
-                    }],
-                    result,
-                    result_mode: Mode::New,
-                    ..unknown_callable()
-                }));
-            }
-            Some(StdType::Result) => {
-                let (ok, err) = if let Some(Ty::Result(ok, err)) = expected {
-                    ((**ok).clone(), (**err).clone())
-                } else {
-                    (self.fresh(), self.fresh())
-                };
-                let payload = if def.name.value == "Ok" {
-                    ok.clone()
-                } else {
-                    err.clone()
-                };
-                return Ty::Callable(Arc::new(Callable {
-                    parameters: vec![Parameter {
-                        label: None,
-                        mode: Mode::Via,
-                        ty: payload,
-                        optional: false,
-                        is_meta: false,
-                    }],
-                    result: Ty::Result(Box::new(ok), Box::new(err)),
-                    result_mode: Mode::New,
-                    ..unknown_callable()
-                }));
-            }
-            Some(StdType::FieldMode) => return Ty::Mode,
-            _ => {}
+        if self.hir.std_type(parent) == Some(StdType::FieldMode) {
+            return Ty::Mode;
         }
         let owner = self.hir.definition(parent);
         let Some(stmt) = owner.stmt else {

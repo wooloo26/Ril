@@ -418,30 +418,6 @@ impl Checker<'_> {
             _ => None,
         });
         match (name, ty) {
-            ("Some", Ty::Option(inner))
-                if variant_parent
-                    .is_none_or(|p| self.hir.std_type(p) == Some(ril_hir::StdType::Option)) =>
-            {
-                vec![(**inner).clone()]
-            }
-            ("Ok", Ty::Result(inner, _))
-                if variant_parent
-                    .is_none_or(|p| self.hir.std_type(p) == Some(ril_hir::StdType::Result)) =>
-            {
-                vec![(**inner).clone()]
-            }
-            ("Err", Ty::Result(_, inner))
-                if variant_parent
-                    .is_none_or(|p| self.hir.std_type(p) == Some(ril_hir::StdType::Result)) =>
-            {
-                vec![(**inner).clone()]
-            }
-            ("None", Ty::Option(_))
-                if variant_parent
-                    .is_none_or(|p| self.hir.std_type(p) == Some(ril_hir::StdType::Option)) =>
-            {
-                Vec::new()
-            }
             (
                 "Let" | "Var" | "Mut" | "SharedMut" | "Ref" | "VarMut" | "VarSharedMut" | "VarRef",
                 Ty::Mode,
@@ -583,8 +559,6 @@ impl Checker<'_> {
     pub(super) fn match_domain(&mut self, env: &Env, input: &Ty) -> Option<HashSet<String>> {
         Some(match input {
             Ty::Bool => ["true", "false"].into_iter().map(str::to_owned).collect(),
-            Ty::Option(_) => ["Some", "None"].into_iter().map(str::to_owned).collect(),
-            Ty::Result(..) => ["Ok", "Err"].into_iter().map(str::to_owned).collect(),
             Ty::Unit => HashSet::from(["()".into()]),
             Ty::Adt(adt) if matches!(adt.kind, AdtKind::Sum | AdtKind::OpaqueSum) => {
                 let def = self.hir.definition(adt.definition);
@@ -751,10 +725,16 @@ impl Checker<'_> {
                 true
             }
             (_, Ty::Param(_) | Ty::Unknown) => true,
-            (Type::Option(item), Ty::Option(target)) => self.match_type_pattern(env, *item, target),
-            (Type::Result(ok, err), Ty::Result(a, b)) => {
-                self.match_type_pattern(env, *ok, a) && self.match_type_pattern(env, *err, b)
-            }
+            (Type::Option(item), target) => target
+                .as_option(self.hir)
+                .cloned()
+                .is_some_and(|target| self.match_type_pattern(env, *item, &target)),
+            (Type::Result(ok, err), target) => target
+                .as_result(self.hir)
+                .map(|(a, b)| (a.clone(), b.clone()))
+                .is_some_and(|(a, b)| {
+                    self.match_type_pattern(env, *ok, &a) && self.match_type_pattern(env, *err, &b)
+                }),
             (Type::Array(storage, item), Ty::Array(target)) => {
                 self.match_member_mode(env, storage, target.mode)
                     && self.match_type_pattern(env, *item, &target.ty)
@@ -816,29 +796,15 @@ impl Checker<'_> {
                 if let Some(std_ty) = self.hir.std_type(id)
                     && matches!(
                         std_ty,
-                        StdType::Option
-                            | StdType::Result
-                            | StdType::Draft
-                            | StdType::Task
-                            | StdType::Sender
-                            | StdType::Receiver
+                        StdType::Draft | StdType::Task | StdType::Sender | StdType::Receiver
                     )
                 {
                     return match (std_ty, args, &target) {
-                        (StdType::Option, [GenericArg::Type(p)], Ty::Option(t))
-                        | (StdType::Draft, [GenericArg::Type(p)], Ty::Draft(t))
+                        (StdType::Draft, [GenericArg::Type(p)], Ty::Draft(t))
                         | (StdType::Task, [GenericArg::Type(p)], Ty::Task(t))
                         | (StdType::Sender, [GenericArg::Type(p)], Ty::Sender(t))
                         | (StdType::Receiver, [GenericArg::Type(p)], Ty::Receiver(t)) => {
                             self.match_type_pattern(env, *p, t)
-                        }
-                        (
-                            StdType::Result,
-                            [GenericArg::Type(pa), GenericArg::Type(pb)],
-                            Ty::Result(ta, tb),
-                        ) => {
-                            self.match_type_pattern(env, *pa, ta)
-                                && self.match_type_pattern(env, *pb, tb)
                         }
                         _ => false,
                     };

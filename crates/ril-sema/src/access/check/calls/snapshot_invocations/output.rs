@@ -546,6 +546,13 @@ fn carries_callable_at(
     };
     match (ty, member) {
         (Ty::Adt(adt), _) => {
+            if let Some(item) = ty.as_option(&program.hir) {
+                return carries_callable_at(program, item, rest, seen);
+            }
+            if let Some((ok, error)) = ty.as_result(&program.hir) {
+                return carries_callable_at(program, ok, rest, seen)
+                    || carries_callable_at(program, error, rest, seen);
+            }
             let point = (adt.definition, path.len());
             if !seen.insert(point) {
                 return false;
@@ -570,11 +577,6 @@ fn carries_callable_at(
         (Ty::Map(key, _), Coordinate::MapKey) => carries_callable_at(program, key, rest, seen),
         (Ty::Array(item) | Ty::Map(_, item), _) => {
             carries_callable_at(program, &item.ty, rest, seen)
-        }
-        (Ty::Option(item), _) => carries_callable_at(program, item, rest, seen),
-        (Ty::Result(ok, error), _) => {
-            carries_callable_at(program, ok, rest, seen)
-                || carries_callable_at(program, error, rest, seen)
         }
         (Ty::Param(_) | Ty::Infer(_) | Ty::Projection(..) | Ty::Unknown, _) => true,
         _ => false,

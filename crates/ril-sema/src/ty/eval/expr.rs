@@ -8,7 +8,7 @@ use ril_syntax::syntax::{
 
 use super::{Budget, Eval, Frame, Signal, Values, defect, none, nonstatic, optional_payload};
 use crate::ty::{
-    GenericValue, MemberMode, Ty, Value, arithmetic,
+    GenericValue, MemberMode, Value, arithmetic,
     check::{Checker, Env},
     literal, render,
     value::{decode_text, ieee_equal},
@@ -58,7 +58,7 @@ impl Checker<'_> {
             return if self
                 .navigation_values
                 .get(&span)
-                .is_some_and(|ty| matches!(self.normalize(ty), Ty::Option(_)))
+                .is_some_and(|ty| self.normalize(ty).is_option(self.hir))
             {
                 Ok(value)
             } else {

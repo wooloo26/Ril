@@ -88,8 +88,8 @@ impl Checker<'_> {
                 self.narrow_errors.insert(span, code);
             } else if fact.depth > 0 {
                 for _ in 0..fact.depth {
-                    if let Ty::Option(inner) = ty {
-                        ty = *inner;
+                    if let Some(inner) = ty.as_option(self.hir) {
+                        ty = inner.clone();
                     } else {
                         return ty;
                     }
@@ -136,7 +136,10 @@ impl Checker<'_> {
                     return;
                 };
                 let span = ast.expr(compared).span;
-                if matches!(self.types.get(&span), Some(Ty::Option(_)))
+                if self
+                    .types
+                    .get(&span)
+                    .is_some_and(|ty| ty.is_option(self.hir))
                     && let Some(place) = self.place(env, compared)
                 {
                     let non_none =

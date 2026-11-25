@@ -324,7 +324,7 @@ impl Analyzer<'_> {
                 Expr::Index { safe, index, .. } => (*safe, Some(*index)),
                 _ => ril_source::ice!("unexpected navigation step"),
             };
-            if safe && let Ty::Option(inner) = ty {
+            if safe && let Some(inner) = ty.as_option(&self.program.hir) {
                 let mut absent = ledger.clone();
                 absent.take_choice(step.span, 1);
                 missing.push(absent);
@@ -355,7 +355,7 @@ impl Analyzer<'_> {
         missing.push(ledger.clone());
         ledger.merge(&entry, &missing);
         ctx.reachable &= !ledger.no_continuation;
-        if matches!(ty, Ty::Option(_)) {
+        if ty.is_option(&self.program.hir) {
             value
         } else {
             let mut option = Datum::source(span, Access::Mut, true);
