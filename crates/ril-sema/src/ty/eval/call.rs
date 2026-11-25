@@ -46,31 +46,6 @@ impl Checker<'_> {
                     span,
                     "runtime primitive in static evaluation",
                 )),
-                DefinitionKind::Primitive(_) if matches!(name, "filter" | "map") => {
-                    let [array, callback] = args else {
-                        return Err(nonstatic(span));
-                    };
-                    let Value::Array(items) = self.evaluate(env, slots, array.value, fuel)? else {
-                        return Err(nonstatic(span));
-                    };
-                    let mut result = Vec::new();
-                    for item in items {
-                        let answer = self.eval_closure(
-                            env,
-                            slots,
-                            callback.value,
-                            vec![item.clone()],
-                            span,
-                            fuel,
-                        )?;
-                        if name == "map" {
-                            result.push(answer);
-                        } else if answer == Value::Bool(true) {
-                            result.push(item);
-                        }
-                    }
-                    Ok(Value::Array(result))
-                }
                 DefinitionKind::Primitive(_) if name == "derive" => {
                     self.eval_derive(env, slots, args, span, fuel)
                 }

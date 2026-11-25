@@ -273,7 +273,7 @@ impl GcRuntime {
                 Some(Object::Closure { .. }) => "<fn>".into(),
                 Some(Object::Task { .. }) => "<Task>".into(),
                 Some(Object::Scope(_)) => "<Scope>".into(),
-                Some(Object::Sender(_)) => "<Sender>".into(),
+                Some(Object::Sender(_) | Object::ClosedSender) => "<Sender>".into(),
                 Some(Object::Receiver(_)) => "<Receiver>".into(),
                 Some(Object::Draft { .. }) => "<Draft>".into(),
                 Some(Object::Bytes(bytes)) => text::inspect_bytes(bytes),

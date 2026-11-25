@@ -15,7 +15,7 @@ fn promote_function(function: &mut Function) {
         let promoted = promote_pass(function);
         let simplified = simplify_stack_slots(function);
         let coalesced = coalesce_blocks(function);
-        let cleaned = remove_dead_instructions(function);
+        let cleaned = super::opt::eliminate_dead_instructions(function);
         if !promoted && !simplified && !coalesced && !cleaned {
             break;
         }
@@ -114,24 +114,7 @@ struct Cfg {
 
 impl Cfg {
     fn build(function: &Function) -> Self {
-        let mut order = Vec::new();
-        let mut visited = BTreeSet::new();
-        let mut stack = vec![(BlockId(0), false)];
-        while let Some((id, done)) = stack.pop() {
-            if done {
-                order.push(id);
-            } else if visited.insert(id) {
-                stack.push((id, true));
-                if let Some(block) = function.blocks.get(id.0)
-                    && let Some(term) = &block.terminator
-                {
-                    for succ in successors(term) {
-                        stack.push((succ, false));
-                    }
-                }
-            }
-        }
-        order.reverse();
+        let order = function.rpo();
         let n = order.len();
         let pos: HashMap<_, _> = order.iter().enumerate().map(|(i, &b)| (b, i)).collect();
         let mut preds = vec![Vec::new(); n];
@@ -140,7 +123,7 @@ impl Cfg {
             if let Some(block) = function.blocks.get(block_id.0)
                 && let Some(term) = &block.terminator
             {
-                for succ in successors(term) {
+                for succ in term.successors() {
                     if let Some(&j) = pos.get(&succ)
                         && !succs.get(i).is_some_and(|list| list.contains(&j))
                     {
@@ -281,15 +264,6 @@ fn has_bit(words: &[u64], index: usize) -> bool {
     words
         .get(index / 64)
         .is_some_and(|word| (*word & (1_u64 << (index % 64))) != 0)
-}
-
-fn successors(term: &Terminator) -> Vec<BlockId> {
-    match term {
-        Terminator::Unreachable | Terminator::Return(_) => Vec::new(),
-        Terminator::Jump(target, _) => vec![*target],
-        Terminator::Branch { yes, no, .. } => vec![*yes, *no],
-        Terminator::Invoke { normal, unwind, .. } => vec![*normal, *unwind],
-    }
 }
 
 fn promote_pass(function: &mut Function) -> bool {
@@ -1060,47 +1034,13 @@ fn coalesce_blocks(function: &mut Function) -> bool {
     changed_any
 }
 
-fn remove_dead_instructions(function: &mut Function) -> bool {
-    let cfg = Cfg::build(function);
-    let mut used = BTreeSet::new();
-    for &block_id in &cfg.order {
-        let Some(block) = function.blocks.get(block_id.0) else {
-            continue;
-        };
-        for (_, inst) in &block.instructions {
-            inst.visit_reads(|reg| {
-                used.insert(reg);
-            });
-        }
-        if let Some(term) = &block.terminator {
-            visit_terminator_reads(term, |reg| {
-                used.insert(reg);
-            });
-        }
-    }
-    let mut removed = false;
-    for &block_id in &cfg.order {
-        let Some(block) = function.blocks.get_mut(block_id.0) else {
-            continue;
-        };
-        let before = block.instructions.len();
-        block.instructions.retain(|(reg, inst)| {
-            matches!(inst, Instruction::StackStore { .. }) || used.contains(reg)
-        });
-        if block.instructions.len() != before {
-            removed = true;
-        }
-    }
-    removed
-}
-
 fn compact_stack_slots(function: &mut Function) {
     if function.stack_slots == 0 {
         return;
     }
-    let cfg = Cfg::build(function);
+    let order = function.rpo();
     let mut remap = BTreeMap::new();
-    for &block_id in &cfg.order {
+    for &block_id in &order {
         let Some(block) = function.blocks.get_mut(block_id.0) else {
             continue;
         };
@@ -1133,79 +1073,7 @@ fn substitute_registers(function: &mut Function, map: &HashMap<Register, Registe
             inst.remap_reads(|reg| *reg = resolve_reg(map, *reg));
         }
         if let Some(term) = &mut block.terminator {
-            match term {
-                Terminator::Unreachable => {}
-                Terminator::Return(reg) => *reg = resolve_reg(map, *reg),
-                Terminator::Jump(_, args) => {
-                    for arg in args {
-                        *arg = resolve_reg(map, *arg);
-                    }
-                }
-                Terminator::Branch { condition, .. } => *condition = resolve_reg(map, *condition),
-                Terminator::Invoke {
-                    target,
-                    evidence,
-                    arguments,
-                    ..
-                } => {
-                    *evidence = resolve_reg(map, *evidence);
-                    match target {
-                        Target::FunctionWithEnv { environment, .. } => {
-                            *environment = resolve_reg(map, *environment);
-                        }
-                        Target::Indirect {
-                            address,
-                            evidence,
-                            environment,
-                        } => {
-                            *address = resolve_reg(map, *address);
-                            *evidence = resolve_reg(map, *evidence);
-                            *environment = resolve_reg(map, *environment);
-                        }
-                        _ => {}
-                    }
-                    for arg in arguments {
-                        *arg = resolve_reg(map, *arg);
-                    }
-                }
-            }
-        }
-    }
-}
-
-fn visit_terminator_reads(term: &Terminator, mut visit: impl FnMut(Register)) {
-    match term {
-        Terminator::Unreachable => {}
-        Terminator::Return(reg) => visit(*reg),
-        Terminator::Jump(_, args) => {
-            for &arg in args {
-                visit(arg);
-            }
-        }
-        Terminator::Branch { condition, .. } => visit(*condition),
-        Terminator::Invoke {
-            target,
-            evidence,
-            arguments,
-            ..
-        } => {
-            visit(*evidence);
-            match target {
-                Target::FunctionWithEnv { environment, .. } => visit(*environment),
-                Target::Indirect {
-                    address,
-                    evidence,
-                    environment,
-                } => {
-                    visit(*address);
-                    visit(*evidence);
-                    visit(*environment);
-                }
-                _ => {}
-            }
-            for &arg in arguments {
-                visit(arg);
-            }
+            term.remap_reads(|reg| *reg = resolve_reg(map, *reg));
         }
     }
 }

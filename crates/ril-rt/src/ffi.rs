@@ -7,7 +7,7 @@ use std::{collections::BTreeMap, io::Write as _};
 use num_bigint::BigInt;
 use num_traits::{FromPrimitive as _, ToPrimitive as _};
 
-use crate::{Object, RilMap, RilStr, Runtime, TypeDesc, Value, draft::DraftSlot, text};
+use crate::{Object, RilMap, RilStr, Runtime, Value, draft::DraftSlot, text};
 
 macro_rules! runtime_functions {
     ($(fn $name:ident($ctx:ident $(, $arg:ident: $ty:ty)*) $(-> $ret:ty)? $body:block)*) => {
@@ -50,16 +50,8 @@ fn read_text(rt: &Runtime, value: Value) -> Result<String, &'static str> {
 }
 
 runtime_functions! {
-    fn ril_rt_roots_push(rt, count: usize) { rt.gc.push_frame(count); }
-    fn ril_rt_roots_set(rt, slot: usize, value: Value) { rt.gc.set_root(slot, value); }
-    fn ril_rt_roots_pop(rt) { rt.gc.pop_frame(); }
     fn ril_rt_cleanup_enter(rt) { rt.enter_cleanup(); }
     fn ril_rt_cleanup_leave(rt) { rt.leave_cleanup(); }
-    fn ril_rt_safepoint(rt) { rt.gc.safepoint(); }
-    fn ril_rt_alloc_words(rt, count: usize, desc: TypeDesc) -> Value {
-        if count > 64 { rt.raise("invalid runtime type descriptor"); return Value::UNIT; }
-        rt.gc.alloc(Object::Words { layout: desc, words: vec![Value::UNIT; count] })
-    }
     fn ril_rt_int_literal(rt, data: *const u8, len: usize) -> Value {
         // SAFETY: generated code passes the address and length of the literal's data symbol.
         let data = unsafe { raw_bytes(data, len) };

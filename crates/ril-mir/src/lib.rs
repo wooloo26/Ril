@@ -231,6 +231,32 @@ pub struct Function {
     pub blocks: Vec<Block>,
 }
 
+impl Function {
+    /// Returns all blocks reachable from the entry block (`BlockId(0)`) in reverse post-order.
+    pub fn rpo(&self) -> Vec<BlockId> {
+        let mut order = Vec::new();
+        let mut visited = std::collections::BTreeSet::new();
+        let mut stack = vec![(BlockId(0), false)];
+        while let Some((id, done)) = stack.pop() {
+            if done {
+                order.push(id);
+            } else if visited.insert(id) {
+                let Some(block) = self.blocks.get(id.0) else {
+                    continue;
+                };
+                stack.push((id, true));
+                if let Some(term) = &block.terminator {
+                    for succ in term.successors() {
+                        stack.push((succ, false));
+                    }
+                }
+            }
+        }
+        order.reverse();
+        order
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct Block {
     pub params: Vec<Register>,
@@ -351,6 +377,97 @@ pub enum Terminator {
         keep_result: bool,
     },
     Return(Register),
+}
+
+impl Terminator {
+    pub fn successors(&self) -> Vec<BlockId> {
+        match self {
+            Self::Unreachable | Self::Return(_) => Vec::new(),
+            Self::Jump(target, _) => vec![*target],
+            Self::Branch { yes, no, .. } => vec![*yes, *no],
+            Self::Invoke { normal, unwind, .. } => vec![*normal, *unwind],
+        }
+    }
+
+    pub fn visit_reads(&self, mut visit: impl FnMut(Register)) {
+        match self {
+            Self::Unreachable => {}
+            Self::Return(reg) => visit(*reg),
+            Self::Jump(_, args) => {
+                for &arg in args {
+                    visit(arg);
+                }
+            }
+            Self::Branch { condition, .. } => visit(*condition),
+            Self::Invoke {
+                target,
+                evidence,
+                arguments,
+                ..
+            } => {
+                visit(*evidence);
+                match target {
+                    Target::FunctionWithEnv { environment, .. } => visit(*environment),
+                    Target::Indirect {
+                        address,
+                        evidence,
+                        environment,
+                    } => {
+                        visit(*address);
+                        visit(*evidence);
+                        visit(*environment);
+                    }
+                    Target::Function(_)
+                    | Target::Runtime(_)
+                    | Target::Draft(_)
+                    | Target::Foreign(_) => {}
+                }
+                for &arg in arguments {
+                    visit(arg);
+                }
+            }
+        }
+    }
+
+    pub fn remap_reads(&mut self, mut remap: impl FnMut(&mut Register)) {
+        match self {
+            Self::Unreachable => {}
+            Self::Return(reg) => remap(reg),
+            Self::Jump(_, args) => {
+                for arg in args {
+                    remap(arg);
+                }
+            }
+            Self::Branch { condition, .. } => remap(condition),
+            Self::Invoke {
+                target,
+                evidence,
+                arguments,
+                ..
+            } => {
+                remap(evidence);
+                match target {
+                    Target::FunctionWithEnv { environment, .. } => remap(environment),
+                    Target::Indirect {
+                        address,
+                        evidence,
+                        environment,
+                    } => {
+                        remap(address);
+                        remap(evidence);
+                        remap(environment);
+                    }
+                    Target::Function(_)
+                    | Target::Runtime(_)
+                    | Target::Draft(_)
+                    | Target::Foreign(_) => {}
+                }
+                for arg in arguments {
+                    remap(arg);
+                }
+            }
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug)]

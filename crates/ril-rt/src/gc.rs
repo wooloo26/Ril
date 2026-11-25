@@ -60,13 +60,6 @@ pub struct RootFrameHeader {
     pub count: usize,
 }
 
-/// Describes the managed words in a native object with up to 64 data words.
-#[derive(Clone, Copy, Debug)]
-#[repr(C)]
-pub struct TypeDesc {
-    pub reference_mask: u64,
-}
-
 #[derive(Clone, Debug)]
 pub enum Object {
     Int(BigInt),
@@ -76,6 +69,7 @@ pub enum Object {
         scope: u64,
     },
     Sender(u64),
+    ClosedSender,
     Receiver(u64),
     F64(u64),
     Str(RilStr),
@@ -100,10 +94,6 @@ pub enum Object {
     },
     Draft {
         copy: Value,
-    },
-    Words {
-        layout: TypeDesc,
-        words: Vec<Value>,
     },
 }
 
@@ -146,16 +136,10 @@ impl Object {
                 visit(*parent);
                 visit(*handler);
             }
-            Self::Words { layout, words } => {
-                for (i, &word) in words.iter().enumerate().take(64) {
-                    if layout.reference_mask & (1_u64 << i) != 0 {
-                        visit(word);
-                    }
-                }
-            }
             Self::Scope(_)
             | Self::Task { .. }
             | Self::Sender(_)
+            | Self::ClosedSender
             | Self::Receiver(_)
             | Self::Int(_)
             | Self::F64(_)
@@ -185,8 +169,6 @@ pub struct GcRuntime {
     free_head: usize,
     live_count: usize,
     pub(crate) draft_nodes: BTreeMap<Value, DraftNode>,
-    frames: Vec<Vec<Value>>,
-    suspended_frames: BTreeMap<u64, Vec<Vec<Value>>>,
     suspended_top_frames: BTreeMap<u64, *mut RootFrameHeader>,
     roots: BTreeMap<Value, usize>,
     #[cfg(not(miri))]
@@ -209,8 +191,6 @@ impl GcRuntime {
             free_head: FREE_END,
             live_count: 0,
             draft_nodes: BTreeMap::new(),
-            frames: Vec::new(),
-            suspended_frames: BTreeMap::new(),
             suspended_top_frames: BTreeMap::new(),
             roots: BTreeMap::new(),
             #[cfg(not(miri))]
@@ -223,11 +203,6 @@ impl GcRuntime {
     #[cfg(not(miri))]
     pub(crate) fn switch_fiber(&mut self, fiber: u64) {
         if fiber != self.active {
-            let frames = self.suspended_frames.remove(&fiber).unwrap_or_default();
-            let suspended = std::mem::replace(&mut self.frames, frames);
-            if !suspended.is_empty() {
-                self.suspended_frames.insert(self.active, suspended);
-            }
             let next_top = self
                 .suspended_top_frames
                 .remove(&fiber)
@@ -242,7 +217,6 @@ impl GcRuntime {
 
     #[cfg(not(miri))]
     pub(crate) fn clear_fiber_frames(&mut self, fiber: u64) {
-        self.suspended_frames.remove(&fiber);
         self.suspended_top_frames.remove(&fiber);
     }
 
@@ -257,23 +231,6 @@ impl GcRuntime {
                 self.roots.remove(&value);
             }
         }
-    }
-
-    pub fn push_frame(&mut self, slots: usize) {
-        self.frames.push(vec![Value::UNIT; slots]);
-    }
-
-    pub fn set_root(&mut self, slot: usize, value: Value) -> bool {
-        if let Some(root) = self.frames.last_mut().and_then(|frame| frame.get_mut(slot)) {
-            *root = value;
-            true
-        } else {
-            false
-        }
-    }
-
-    pub fn pop_frame(&mut self) {
-        self.frames.pop();
     }
 
     pub fn alloc(&mut self, object: Object) -> Value {
@@ -376,15 +333,7 @@ impl GcRuntime {
     }
 
     pub fn collect(&mut self, additional: Vec<Value>) {
-        let mut pending: Vec<Value> = self
-            .frames
-            .iter()
-            .flatten()
-            .chain(self.suspended_frames.values().flatten().flatten())
-            .copied()
-            .chain(self.roots.keys().copied())
-            .chain(additional)
-            .collect();
+        let mut pending: Vec<Value> = self.roots.keys().copied().chain(additional).collect();
         Self::push_stack_frames(self.top_frame, &mut pending);
         for &suspended in self.suspended_top_frames.values() {
             Self::push_stack_frames(suspended, &mut pending);
@@ -417,13 +366,11 @@ impl GcRuntime {
                 continue;
             };
             match &mut entry.state {
-                SlotState::Occupied { marked: true, .. } => {
-                    if let SlotState::Occupied { marked, .. } = &mut entry.state {
-                        *marked = false;
-                    }
+                SlotState::Occupied { marked, .. } if *marked => {
+                    *marked = false;
                     surviving += 1;
                 }
-                SlotState::Occupied { marked: false, .. } => {
+                SlotState::Occupied { .. } => {
                     entry.generation = entry.generation.wrapping_add(1);
                     entry.state = SlotState::Free {
                         next: self.free_head,

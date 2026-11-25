@@ -1,8 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-use super::{
-    BlockId, Function, Instruction, IntBinOp, IntUnaryOp, Program, Register, Target, Terminator,
-};
+use super::{BlockId, Function, Instruction, IntBinOp, IntUnaryOp, Program, Register, Terminator};
 
 const SMALL_MIN: i64 = i64::MIN >> 1;
 const SMALL_MAX: i64 = i64::MAX >> 1;
@@ -31,40 +29,11 @@ fn optimize_function(function: &mut Function) {
     }
 }
 
-fn reachable(function: &Function) -> Vec<BlockId> {
-    let mut order = Vec::new();
-    let mut visited = BTreeSet::new();
-    let mut stack = vec![(BlockId(0), false)];
-    while let Some((id, done)) = stack.pop() {
-        if done {
-            order.push(id);
-            continue;
-        }
-        if !visited.insert(id) {
-            continue;
-        }
-        let Some(block) = function.blocks.get(id.0) else {
-            continue;
-        };
-        stack.push((id, true));
-        match &block.terminator {
-            Some(Terminator::Return(_) | Terminator::Unreachable) | None => {}
-            Some(Terminator::Jump(target, _)) => stack.push((*target, false)),
-            Some(Terminator::Branch { yes, no, .. }) => stack.extend([(*yes, false), (*no, false)]),
-            Some(Terminator::Invoke { normal, unwind, .. }) => {
-                stack.extend([(*normal, false), (*unwind, false)]);
-            }
-        }
-    }
-    order.reverse();
-    order
-}
-
 /// Removes any block parameter `p` of a Jump-targeted block `B` where every incoming edge
 /// passes either the same register `r` or `p` itself (e.g. immutable `let` bindings carried
 /// across `if`/`match`/`while`/`for` merge blocks).
 fn eliminate_redundant_block_params(function: &mut Function) -> bool {
-    let order = reachable(function);
+    let order = function.rpo();
     let mut invoke_targets = BTreeSet::new();
     let mut incoming: BTreeMap<BlockId, Vec<Vec<Register>>> = BTreeMap::new();
 
@@ -175,7 +144,7 @@ enum ConstVal {
 }
 
 fn fold_constants(function: &mut Function) -> bool {
-    let order = reachable(function);
+    let order = function.rpo();
     let mut constants: HashMap<Register, ConstVal> = HashMap::new();
     let mut changed = false;
 
@@ -288,8 +257,8 @@ fn fold_constants(function: &mut Function) -> bool {
     changed
 }
 
-fn eliminate_dead_instructions(function: &mut Function) -> bool {
-    let order = reachable(function);
+pub(super) fn eliminate_dead_instructions(function: &mut Function) -> bool {
+    let order = function.rpo();
     let mut used = BTreeSet::new();
     for &bid in &order {
         let Some(block) = function.blocks.get(bid.0) else {
@@ -301,7 +270,7 @@ fn eliminate_dead_instructions(function: &mut Function) -> bool {
             });
         }
         if let Some(term) = &block.terminator {
-            visit_terminator_reads(term, |reg| {
+            term.visit_reads(|reg| {
                 used.insert(reg);
             });
         }
@@ -322,46 +291,6 @@ fn eliminate_dead_instructions(function: &mut Function) -> bool {
     removed
 }
 
-fn visit_terminator_reads(term: &Terminator, mut visit: impl FnMut(Register)) {
-    match term {
-        Terminator::Unreachable => {}
-        Terminator::Return(reg) => visit(*reg),
-        Terminator::Jump(_, args) => {
-            for &arg in args {
-                visit(arg);
-            }
-        }
-        Terminator::Branch { condition, .. } => visit(*condition),
-        Terminator::Invoke {
-            target,
-            evidence,
-            arguments,
-            ..
-        } => {
-            visit(*evidence);
-            match target {
-                Target::FunctionWithEnv { environment, .. } => visit(*environment),
-                Target::Indirect {
-                    address,
-                    evidence,
-                    environment,
-                } => {
-                    visit(*address);
-                    visit(*evidence);
-                    visit(*environment);
-                }
-                Target::Function(_)
-                | Target::Runtime(_)
-                | Target::Draft(_)
-                | Target::Foreign(_) => {}
-            }
-            for &arg in arguments {
-                visit(arg);
-            }
-        }
-    }
-}
-
 fn resolve_reg(map: &HashMap<Register, Register>, mut reg: Register) -> Register {
     let mut steps = 0;
     while let Some(&next) = map.get(&reg) {
@@ -380,45 +309,7 @@ fn substitute_registers(function: &mut Function, map: &HashMap<Register, Registe
             inst.remap_reads(|reg| *reg = resolve_reg(map, *reg));
         }
         if let Some(term) = &mut block.terminator {
-            match term {
-                Terminator::Unreachable => {}
-                Terminator::Return(reg) => *reg = resolve_reg(map, *reg),
-                Terminator::Jump(_, args) => {
-                    for arg in args {
-                        *arg = resolve_reg(map, *arg);
-                    }
-                }
-                Terminator::Branch { condition, .. } => *condition = resolve_reg(map, *condition),
-                Terminator::Invoke {
-                    target,
-                    evidence,
-                    arguments,
-                    ..
-                } => {
-                    *evidence = resolve_reg(map, *evidence);
-                    match target {
-                        Target::FunctionWithEnv { environment, .. } => {
-                            *environment = resolve_reg(map, *environment);
-                        }
-                        Target::Indirect {
-                            address,
-                            evidence,
-                            environment,
-                        } => {
-                            *address = resolve_reg(map, *address);
-                            *evidence = resolve_reg(map, *evidence);
-                            *environment = resolve_reg(map, *environment);
-                        }
-                        Target::Function(_)
-                        | Target::Runtime(_)
-                        | Target::Draft(_)
-                        | Target::Foreign(_) => {}
-                    }
-                    for arg in arguments {
-                        *arg = resolve_reg(map, *arg);
-                    }
-                }
-            }
+            term.remap_reads(|reg| *reg = resolve_reg(map, *reg));
         }
     }
 }

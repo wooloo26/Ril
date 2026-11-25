@@ -74,13 +74,8 @@ fn verify_function(function: &Function, function_count: usize) -> Result<(), Dia
             ));
         };
         stack.push((id, true));
-        match term {
-            Terminator::Return(_) | Terminator::Unreachable => {}
-            Terminator::Jump(target, _) => stack.push((*target, false)),
-            Terminator::Branch { yes, no, .. } => stack.extend([(*yes, false), (*no, false)]),
-            Terminator::Invoke { normal, unwind, .. } => {
-                stack.extend([(*normal, false), (*unwind, false)]);
-            }
+        for succ in term.successors() {
+            stack.push((succ, false));
         }
     }
     order.reverse();

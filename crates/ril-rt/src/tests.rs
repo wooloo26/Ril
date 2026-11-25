@@ -1,4 +1,4 @@
-use crate::{GcRuntime, Object, Runtime, TypeDesc, Value};
+use crate::{GcRuntime, Object, Runtime, Value};
 use num_bigint::BigInt;
 
 #[test]
@@ -29,11 +29,10 @@ fn small_int_arithmetic_promotes_and_demotes_without_allocating_in_range() {
 }
 
 #[test]
-fn rooted_cycle_survives_allocations_and_reclaims_after_pop() {
+fn rooted_cycle_survives_allocations_and_reclaims_after_unpin() {
     let mut gc = GcRuntime::new(true);
-    gc.push_frame(2);
     let first = gc.alloc(Object::Array(Vec::new()));
-    assert!(gc.set_root(0, first));
+    gc.pin(first);
     let second = gc.alloc(Object::Array(vec![first]));
     if let Some(Object::Array(values)) = gc.object_mut(first) {
         values.push(second);
@@ -43,7 +42,7 @@ fn rooted_cycle_survives_allocations_and_reclaims_after_pop() {
     gc.safepoint();
     assert_eq!(gc.live_objects(), 2);
     let copy = gc.clone_graph(first).unwrap();
-    assert!(gc.set_root(1, copy));
+    gc.pin(copy);
     assert_ne!(copy, first);
     assert!(gc.equal(copy, first).unwrap());
     let Some(Object::Array(parts)) = gc.object(copy) else {
@@ -58,7 +57,8 @@ fn rooted_cycle_survives_allocations_and_reclaims_after_pop() {
     };
     assert_eq!(children, &[copy]);
     assert_eq!(gc.inspect(copy), "[[...]]");
-    gc.pop_frame();
+    gc.unpin(first);
+    gc.unpin(copy);
     gc.safepoint();
     assert_eq!(gc.live_objects(), 0);
 }
@@ -81,7 +81,6 @@ fn deep_graph_clone_and_equality_use_explicit_worklists() {
 #[test]
 fn cloned_data_keeps_a_callable_and_its_environment_alive() {
     let mut gc = GcRuntime::new(true);
-    gc.push_frame(1);
     let handler = gc.alloc(Object::Closure {
         function: std::ptr::without_provenance(1),
         arity: 0,
@@ -93,7 +92,7 @@ fn cloned_data_keeps_a_callable_and_its_environment_alive() {
         operation: 1,
         handler,
     });
-    assert!(gc.set_root(0, evidence));
+    gc.pin(evidence);
     let captured = gc.alloc(Object::Tuple(vec![Value::TRUE]));
     let closure = gc.alloc(Object::Closure {
         function: std::ptr::without_provenance(2),
@@ -104,55 +103,40 @@ fn cloned_data_keeps_a_callable_and_its_environment_alive() {
     assert!(gc.clone_graph(closure).is_err());
     let original = gc.alloc(Object::Array(vec![closure]));
     let copy = gc.clone_graph(original).unwrap();
-    assert!(gc.set_root(0, copy));
+    gc.unpin(evidence);
+    gc.pin(copy);
     gc.safepoint();
     assert!(gc.object(original).is_none());
     assert!(matches!(gc.object(copy), Some(Object::Array(values)) if values == &[closure]));
     assert!(gc.object(captured).is_some());
     assert!(gc.object(evidence).is_some());
     assert!(gc.object(handler).is_some());
-    gc.pop_frame();
+    gc.unpin(copy);
     gc.safepoint();
     assert_eq!(gc.live_objects(), 0);
 }
 
 #[test]
-fn descriptors_trace_only_managed_words() {
-    let mut gc = GcRuntime::new(true);
-    gc.push_frame(2);
-    let kept = gc.alloc(Object::Str("kept".into()));
-    assert!(gc.set_root(0, kept));
-    let dead = gc.alloc(Object::Str("dead".into()));
-    let object = gc.alloc(Object::Words {
-        layout: TypeDesc { reference_mask: 1 },
-        words: vec![kept, dead],
-    });
-    assert!(gc.set_root(0, Value::UNIT));
-    assert!(gc.set_root(1, object));
-    gc.safepoint();
-    assert!(gc.object(kept).is_some());
-    assert!(gc.object(dead).is_none());
-}
-
-#[test]
 fn drafts_update_an_isolated_graph() {
     let mut gc = GcRuntime::new(true);
-    gc.push_frame(3);
     let base = gc.alloc(Object::Array(vec![Value::TRUE]));
-    assert!(gc.set_root(0, base));
+    gc.pin(base);
     let draft = gc.draft_begin(base).unwrap();
-    assert!(gc.set_root(1, draft));
+    gc.pin(draft);
     let copy = gc.draft_read(draft).unwrap();
     let Some(Object::Array(items)) = gc.object_mut(copy) else {
         panic!("draft is not a copy of the array")
     };
     items.push(Value::FALSE);
     let committed = gc.draft_commit(draft).unwrap();
-    assert!(gc.set_root(2, committed));
+    gc.pin(committed);
     gc.safepoint();
     assert_eq!(gc.inspect(base), "[true]");
     assert_eq!(gc.inspect(committed), "[true, false]");
     assert!(gc.draft_read(draft).is_err());
+    gc.unpin(base);
+    gc.unpin(draft);
+    gc.unpin(committed);
 }
 
 #[test]
@@ -160,16 +144,15 @@ fn draft_copy_through_a_cycle_keeps_the_original_suffix() {
     use crate::draft::DraftSlot;
 
     let mut gc = GcRuntime::new(true);
-    gc.push_frame(3);
     let base = gc.alloc(Object::Tuple(vec![Value::UNIT, Value::FALSE]));
-    assert!(gc.set_root(0, base));
+    gc.pin(base);
     let Some(Object::Tuple(slots)) = gc.object_mut(base) else {
         panic!("base is not a tuple");
     };
     slots[0] = base;
 
     let draft = gc.draft_begin(base).unwrap();
-    assert!(gc.set_root(1, draft));
+    gc.pin(draft);
     let root = gc.draft_read(draft).unwrap();
     let nested = gc.draft_child(root, DraftSlot::Element(0), base).unwrap();
     assert_ne!(root, nested);
@@ -184,7 +167,7 @@ fn draft_copy_through_a_cycle_keeps_the_original_suffix() {
     slots[1] = Value::TRUE;
 
     let published = gc.draft_commit(draft).unwrap();
-    assert!(gc.set_root(2, published));
+    gc.pin(published);
     gc.safepoint();
     assert!(
         matches!(gc.object(base), Some(Object::Tuple(slots)) if slots == &[base, Value::FALSE])
@@ -196,6 +179,9 @@ fn draft_copy_through_a_cycle_keeps_the_original_suffix() {
         matches!(gc.object(published), Some(Object::Tuple(slots)) if slots == &[nested, Value::FALSE])
     );
     assert!(gc.draft_nodes.is_empty());
+    gc.unpin(base);
+    gc.unpin(draft);
+    gc.unpin(published);
 }
 
 #[test]
@@ -263,18 +249,17 @@ fn intrusive_stack_root_frame_preserves_heap_objects_and_low_bit_tags() {
 #[test]
 fn bisimulation_invariant_map_hash_and_slab_recycling() {
     let mut gc = GcRuntime::new(false);
-    gc.push_frame(4);
 
     // 1-node cycle `a = [a]` and 2-node cycle `b1 = [b2], b2 = [b1]` are coinductively equal.
     let a = gc.alloc(Object::Array(Vec::new()));
-    gc.set_root(0, a);
+    gc.pin(a);
     if let Some(Object::Array(items)) = gc.object_mut(a) {
         items.push(a);
     }
     let b1 = gc.alloc(Object::Array(Vec::new()));
-    gc.set_root(1, b1);
+    gc.pin(b1);
     let b2 = gc.alloc(Object::Array(Vec::new()));
-    gc.set_root(2, b2);
+    gc.pin(b2);
     if let Some(Object::Array(items)) = gc.object_mut(b1) {
         items.push(b2);
     }
@@ -309,7 +294,9 @@ fn bisimulation_invariant_map_hash_and_slab_recycling() {
     assert_eq!(utf8.slice_scalars(1, 3).as_deref(), Some("中b"));
 
     // Verify slab slot recycling reclaims unreachable objects without unbounded growth.
-    gc.pop_frame();
+    gc.unpin(a);
+    gc.unpin(b1);
+    gc.unpin(b2);
     gc.collect(Vec::new());
     assert_eq!(gc.live_objects(), 0);
     for _ in 0..200 {

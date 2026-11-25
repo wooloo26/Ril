@@ -286,3 +286,104 @@ fn lsp_real_workspace_cross_file_and_stdlib_definition() -> Result<(), String> {
     assert!(hover.contains("fn map"), "unexpected hover: {hover}");
     Ok(())
 }
+
+#[test]
+fn lsp_prelude_definitions_jump_to_std_prelude_ril() -> Result<(), String> {
+    let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .canonicalize()
+        .map_err(|e| e.to_string())?;
+    let root_uri = format!("file://{}", repo_root.display());
+    let doc_uri = format!("file://{}/pkg/prelude_jump.ril", repo_root.display());
+    let source = concat!(
+        "fn check(x: Option<int>, y: Result<int, PanicError>) -> int {\n",
+        "    let fallback = match y {\n",
+        "        Ok(n) -> n\n",
+        "        Err(_) -> 0\n",
+        "    }\n",
+        "    match x {\n",
+        "        Some(v) -> len([v]) + fallback\n",
+        "        None -> fallback\n",
+        "    }\n",
+        "}\n",
+    );
+
+    let locate = |needle: &str| -> Result<(usize, usize), String> {
+        for (line_idx, line) in source.lines().enumerate() {
+            if let Some(col) = line.find(needle) {
+                return Ok((line_idx, col + 1));
+            }
+        }
+        Err(format!("needle {needle:?} not found"))
+    };
+    let (opt_line, opt_col) = locate("Option")?;
+    let (res_line, res_col) = locate("Result")?;
+    let (panic_line, panic_col) = locate("PanicError")?;
+    let (len_line, len_col) = locate("len(")?;
+
+    let mut input = Vec::new();
+    input.extend(frame_lsp(&json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": { "rootUri": root_uri }
+    })));
+    input.extend(frame_lsp(&json!({
+        "jsonrpc": "2.0",
+        "method": "textDocument/didOpen",
+        "params": {
+            "textDocument": { "uri": doc_uri, "languageId": "ril", "version": 1, "text": source }
+        }
+    })));
+    for (req_id, (line, col)) in [
+        (2, (opt_line, opt_col)),
+        (3, (res_line, res_col)),
+        (4, (panic_line, panic_col)),
+        (5, (len_line, len_col)),
+    ] {
+        input.extend(frame_lsp(&json!({
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "method": "textDocument/definition",
+            "params": {
+                "textDocument": { "uri": doc_uri },
+                "position": { "line": line, "character": col }
+            }
+        })));
+    }
+    input.extend(frame_lsp(&json!({
+        "jsonrpc": "2.0",
+        "id": 6,
+        "method": "shutdown",
+        "params": null
+    })));
+    input.extend(frame_lsp(&json!({
+        "jsonrpc": "2.0",
+        "method": "exit"
+    })));
+
+    let mut output = Vec::new();
+    ril_lsp::handle_session(Cursor::new(input), &mut output)?;
+    let frames = parse_lsp_frames(&output)?;
+    assert_eq!(frames.len(), 7, "expected 7 LSP messages, got {frames:#?}");
+
+    let diags = frames
+        .get(1)
+        .and_then(|v| v.pointer("/params/diagnostics"))
+        .and_then(Value::as_array)
+        .ok_or("missing diagnostics")?;
+    assert!(diags.is_empty(), "expected clean diagnostics: {diags:?}");
+
+    for (idx, label) in [(2, "Option"), (3, "Result"), (4, "PanicError"), (5, "len")] {
+        let uri = frames
+            .get(idx)
+            .and_then(|v| v.pointer("/result/uri"))
+            .and_then(Value::as_str)
+            .ok_or_else(|| format!("missing definition uri for {label}: {:?}", frames.get(idx)))?;
+        assert!(
+            uri.ends_with("std/prelude.ril"),
+            "expected {label} definition in std/prelude.ril, got {uri}"
+        );
+    }
+    Ok(())
+}

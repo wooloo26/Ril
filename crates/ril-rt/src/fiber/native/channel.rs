@@ -117,7 +117,7 @@ unsafe extern "C" fn ril_channel_close(raw: Raw, sender: Value) -> Value {
         channel.senders = channel.senders.saturating_sub(1);
     }
     if let Some(value) = rt.gc.object_mut(sender) {
-        *value = Object::Array(Vec::new());
+        *value = Object::ClosedSender;
     }
     rt.fiber.wake.insert(id);
     maybe_reap_channel(rt, id);
