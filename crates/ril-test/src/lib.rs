@@ -5,7 +5,7 @@ mod runner;
 mod shield;
 mod spec;
 
-pub use protocol::{Activation, Case, CaseMode, Suite, SuiteError, parse_suite};
+pub use protocol::{Case, CaseMode, Suite, SuiteError, parse_suite};
 pub use runner::{discover, run_case, run_harness, run_worker, trials};
 pub use spec::spec_suite;
 
@@ -19,32 +19,6 @@ use std::{
 
 use ril_base::{diag::Diagnostic, span::FileId};
 
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub enum Milestone {
-    M0,
-    M1,
-    M2,
-    M3,
-    M4,
-    M5,
-}
-
-impl FromStr for Milestone {
-    type Err = String;
-
-    fn from_str(text: &str) -> Result<Self, Self::Err> {
-        match text {
-            "m0" => Ok(Self::M0),
-            "m1" => Ok(Self::M1),
-            "m2" => Ok(Self::M2),
-            "m3" => Ok(Self::M3),
-            "m4" => Ok(Self::M4),
-            "m5" => Ok(Self::M5),
-            _ => Err(format!("unknown milestone {text:?}")),
-        }
-    }
-}
-
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum Stage {
     Source,
@@ -55,18 +29,6 @@ pub enum Stage {
     Access,
     Mir,
     Run,
-}
-
-impl Stage {
-    pub const fn milestone(self) -> Milestone {
-        match self {
-            Self::Source => Milestone::M0,
-            Self::Lex | Self::Parse | Self::Hir => Milestone::M1,
-            Self::Type => Milestone::M2,
-            Self::Access => Milestone::M3,
-            Self::Mir | Self::Run => Milestone::M4,
-        }
-    }
 }
 
 impl FromStr for Stage {

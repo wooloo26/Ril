@@ -2311,60 +2311,8 @@ pub fn total(via a: Item, via b: Item, via c: Item, via d: Item, via e: Item,
 }
 
 #[test]
-fn expanded_via_interfaces_keep_their_hash_and_compatibility() {
-    use ril_base::diag::Code;
-
-    let bytes = include_bytes!("fixtures/via-v30.rili");
-    let legacy = Interface::decode(bytes).unwrap();
-    assert_eq!(legacy.format_version, 30);
-    assert_eq!(legacy.encode().unwrap(), bytes);
-    let mut provider = VirtualPackage::new(Unit::Lib);
-    provider.entry = "pkg/legacy.ril".into();
-    let source = b"pub type Item = .{ var count: int }\npub fn lookup(via item: Item) -> int { item.count }\n";
-    provider.insert(provider.entry.clone(), source.to_vec());
-    let current = Driver.interface(&provider).unwrap();
-    assert!(legacy.compare(&current).is_empty());
-    assert!(current.compare(&legacy).is_empty());
-
-    provider.insert(
-        provider.entry.clone(),
-        b"pub type Item = .{ var count: int }\npub fn lookup(via item: Item) -> int { item.count += 1; item.count }\n".to_vec(),
-    );
-    let tightened = Driver.interface(&provider).unwrap();
-    assert_eq!(
-        legacy
-            .compare(&tightened)
-            .first()
-            .and_then(|item| item.code),
-        Some(Code::E0552)
-    );
-    assert!(tightened.compare(&legacy).is_empty());
-
-    let mut client = VirtualPackage::new(Unit::Lib);
-    client.insert("library/legacy.rili".into(), bytes.to_vec());
-    client.insert(
-        client.entry.clone(),
-        b"use library/legacy\nfn read() -> int { Legacy::lookup(Legacy::Item.{ count: 6 }) }"
-            .to_vec(),
-    );
-    assert!(Driver.analyze(&client).is_ok());
-    let republished = Driver.interface(&client).unwrap().encode_json().unwrap();
-    let republished: serde_json::Value = serde_json::from_slice(&republished).unwrap();
-    let functions = republished["functions"].as_object().unwrap();
-    assert!(
-        functions
-            .values()
-            .any(|export| export["domain"]["nodes"].is_array())
-    );
-}
-
-#[test]
 fn interface_roundtrip_is_stable_and_detects_corruption() {
-    let suite = parse_suite(
-        Path::new("via.ril"),
-        include_str!("../../../tests/08_via_compat/via.ril"),
-    )
-    .unwrap();
+    let suite = parse_suite(Path::new("via.ril"), include_str!("../../../tests/via.ril")).unwrap();
     let baseline = suite
         .cases
         .iter()
@@ -2396,11 +2344,7 @@ fn interface_roundtrip_is_stable_and_detects_corruption() {
 fn forwarded_via_identity_publishes_new_guarantee_only_for_new_input() {
     use ril_sema::access::Input;
 
-    let suite = parse_suite(
-        Path::new("via.ril"),
-        include_str!("../../../tests/08_via_compat/via.ril"),
-    )
-    .unwrap();
+    let suite = parse_suite(Path::new("via.ril"), include_str!("../../../tests/via.ril")).unwrap();
     let case = suite
         .cases
         .iter()
@@ -2422,11 +2366,7 @@ fn forwarded_via_identity_publishes_new_guarantee_only_for_new_input() {
 fn composite_via_rows_publish_the_attenuated_member_source() {
     use ril_sema::access::{Coordinate, Input, ReturnSource};
 
-    let suite = parse_suite(
-        Path::new("via.ril"),
-        include_str!("../../../tests/08_via_compat/via.ril"),
-    )
-    .unwrap();
+    let suite = parse_suite(Path::new("via.ril"), include_str!("../../../tests/via.ril")).unwrap();
     let case = suite
         .cases
         .iter()
@@ -2464,11 +2404,7 @@ fn composite_via_rows_publish_the_attenuated_member_source() {
 fn published_storage_updates_keep_the_destination_and_written_source() {
     use ril_sema::access::{Coordinate, ReturnSource};
 
-    let suite = parse_suite(
-        Path::new("via.ril"),
-        include_str!("../../../tests/08_via_compat/via.ril"),
-    )
-    .unwrap();
+    let suite = parse_suite(Path::new("via.ril"), include_str!("../../../tests/via.ril")).unwrap();
     let case = suite
         .cases
         .iter()
@@ -2501,11 +2437,7 @@ fn storage_contracts_agree_with_lean() {
     let Some(oracle) = std::env::var_os("RIL_HORN_ORACLE") else {
         return;
     };
-    let suite = parse_suite(
-        Path::new("via.ril"),
-        include_str!("../../../tests/08_via_compat/via.ril"),
-    )
-    .unwrap();
+    let suite = parse_suite(Path::new("via.ril"), include_str!("../../../tests/via.ril")).unwrap();
     let output = query(&oracle, "recursive-storage", b"[]").unwrap();
     let contracts = serde_json::from_slice::<Vec<(String, (bool, Vec<usize>))>>(&output).unwrap();
     assert_eq!(contracts.len(), 5);
@@ -2538,11 +2470,7 @@ fn storage_contracts_agree_with_lean() {
 fn higher_order_via_rows_publish_callback_reception() {
     use ril_sema::access::{Input, Invocation, InvocationMode};
 
-    let suite = parse_suite(
-        Path::new("via.ril"),
-        include_str!("../../../tests/08_via_compat/via.ril"),
-    )
-    .unwrap();
+    let suite = parse_suite(Path::new("via.ril"), include_str!("../../../tests/via.ril")).unwrap();
     let case = suite
         .cases
         .iter()
@@ -2575,11 +2503,7 @@ fn higher_order_via_rows_publish_callback_reception() {
 fn exported_callback_preservation_is_required_only_for_new_reception() {
     use ril_sema::access::Input;
 
-    let suite = parse_suite(
-        Path::new("via.ril"),
-        include_str!("../../../tests/08_via_compat/via.ril"),
-    )
-    .unwrap();
+    let suite = parse_suite(Path::new("via.ril"), include_str!("../../../tests/via.ril")).unwrap();
     let case = suite
         .cases
         .iter()
@@ -2607,11 +2531,7 @@ fn exported_callback_preservation_is_required_only_for_new_reception() {
 fn exported_callback_results_retain_their_call_entry_sources() {
     use ril_sema::access::{Input, InvocationMode, ReturnSource};
 
-    let suite = parse_suite(
-        Path::new("via.ril"),
-        include_str!("../../../tests/08_via_compat/via.ril"),
-    )
-    .unwrap();
+    let suite = parse_suite(Path::new("via.ril"), include_str!("../../../tests/via.ril")).unwrap();
     let case = suite
         .cases
         .iter()
@@ -2713,7 +2633,7 @@ fn exported_summaries_and_via_domains_agree_with_lean() {
     let Some(oracle) = std::env::var_os("RIL_HORN_ORACLE") else {
         return;
     };
-    let source = include_str!("../../../tests/08_via_compat/via.ril");
+    let source = include_str!("../../../tests/via.ril");
     let suite = parse_suite(Path::new("via.ril"), source).unwrap();
     let mut summaries = vec![
         Summary::default(),
@@ -3293,7 +3213,7 @@ fn call_entry_examples_agree_with_lean() {
     };
     let suite = parse_suite(
         Path::new("access.ril"),
-        include_str!("../../../tests/07_access/access.ril"),
+        include_str!("../../../tests/access.ril"),
     )
     .unwrap();
     let output = query(&oracle, "call-entry", b"[]").unwrap();
@@ -3313,12 +3233,12 @@ fn task_join_examples_agree_with_lean() {
     };
     let compile = parse_suite(
         Path::new("isolation.ril"),
-        include_str!("../../../tests/12_concurrency_isolation/isolation.ril"),
+        include_str!("../../../tests/concurrency_isolation.ril"),
     )
     .unwrap();
     let runtime = parse_suite(
         Path::new("fifo.ril"),
-        include_str!("../../../tests/13_concurrency_deterministic/fifo.ril"),
+        include_str!("../../../tests/concurrency_fifo.ril"),
     )
     .unwrap();
     let output = query(&oracle, "task-joins", b"[]").unwrap();
@@ -3356,7 +3276,7 @@ fn draft_path_updates_agree_with_lean() {
     };
     let runtime = parse_suite(
         Path::new("effects.ril"),
-        include_str!("../../../tests/11_runtime_effects_panic/effects.ril"),
+        include_str!("../../../tests/runtime_effects.ril"),
     )
     .unwrap();
     let output = query(&oracle, "draft", b"[]").unwrap();
@@ -3427,7 +3347,7 @@ fn published_call_obligations_agree_with_lean() -> Result<(), Box<dyn std::error
     };
     let suite = parse_suite(
         Path::new("access.ril"),
-        include_str!("../../../tests/07_access/access.ril"),
+        include_str!("../../../tests/access.ril"),
     )?;
     let output = query(&oracle, "call-obligations", b"[]")?;
     type Obligations = (Vec<usize>, Vec<usize>);

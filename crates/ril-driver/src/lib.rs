@@ -50,8 +50,6 @@ pub fn format_file(path: &std::path::Path) -> Result<String, String> {
 
 use incremental::{CheckKey, ContentDigest, FileFingerprint, MirKey, PackageKey, TypeKey, sha256};
 
-pub const AVAILABLE: ril_test::Milestone = ril_test::Milestone::M5;
-
 #[derive(
     Clone, Copy, Debug, Default, Eq, Hash, PartialEq, serde::Serialize, serde::Deserialize,
 )]

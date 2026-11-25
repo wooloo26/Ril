@@ -5,7 +5,7 @@ use std::{
 
 use ril_base::diag::Code;
 
-use crate::{Milestone, Stage, Unit, VirtualFile, VirtualPackage, shield::Shield};
+use crate::{Stage, Unit, VirtualFile, VirtualPackage, shield::Shield};
 
 #[derive(Clone, Debug)]
 pub enum CaseMode {
@@ -19,12 +19,8 @@ pub enum CaseMode {
 }
 
 impl CaseMode {
-    const fn milestone(&self) -> Milestone {
-        match self {
-            Self::CompilePass | Self::CompileFail(_) => Milestone::M0,
-            Self::CompatPass | Self::CompatFail(_) => Milestone::M3,
-            Self::RunPass | Self::RunPanic(_) | Self::RunAbort => Milestone::M4,
-        }
+    const fn is_run(&self) -> bool {
+        matches!(self, Self::RunPass | Self::RunPanic(_) | Self::RunAbort)
     }
 
     const fn is_compat(&self) -> bool {
@@ -55,13 +51,6 @@ pub struct Case {
     pub(super) backend: Backend,
     pub(super) stdout: Option<Vec<u8>>,
     pub(super) exit: Option<i32>,
-    required: Milestone,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Activation {
-    Ready,
-    KnownPending(Milestone),
 }
 
 impl Case {
@@ -71,7 +60,6 @@ impl Case {
         mode: CaseMode,
         stage: Stage,
         pkg: VirtualPackage,
-        required: Milestone,
     ) -> Self {
         Self {
             id,
@@ -87,15 +75,6 @@ impl Case {
             backend: Backend::Both,
             stdout: None,
             exit: None,
-            required,
-        }
-    }
-
-    pub fn activation(&self, enabled: Milestone) -> Activation {
-        if self.required <= enabled {
-            Activation::Ready
-        } else {
-            Activation::KnownPending(self.required)
         }
     }
 }
@@ -261,7 +240,7 @@ impl CaseBuilder {
             "run-abort" => CaseMode::RunAbort,
             mode => return Err(format!("unknown case mode {mode:?}")),
         };
-        let mut stage = if mode.milestone() == Milestone::M4 {
+        let mut stage = if mode.is_run() {
             Stage::Run
         } else {
             default_stage
@@ -275,7 +254,6 @@ impl CaseBuilder {
         let mut raw = false;
         let mut budget = None;
         let mut backend = Backend::default();
-        let mut required = mode.milestone();
         let mut seen = std::collections::HashSet::new();
         for field in fields {
             let (key, value) = field.split_once('=').unwrap_or((field, ""));
@@ -284,15 +262,11 @@ impl CaseBuilder {
             }
             match (key, value) {
                 ("no-prelude", "") => no_prelude = true,
-                ("raw-slice", "") => {
-                    raw = true;
-                    required = required.max(Milestone::M1);
-                }
+                ("raw-slice", "") => raw = true,
                 ("stage", value) => stage = value.parse()?,
                 ("unit", value) => unit = value.parse()?,
                 ("budget", value) => {
                     budget = Some(value.parse().map_err(|_| "invalid step budget")?);
-                    required = required.max(Milestone::M2);
                 }
                 ("backend", value) => {
                     backend = match value {
@@ -301,7 +275,6 @@ impl CaseBuilder {
                         "aot" => Backend::Aot,
                         _ => return Err(format!("unknown backend {value:?}")),
                     };
-                    required = required.max(Milestone::M4);
                 }
                 _ => return Err(format!("unknown case option {field:?}")),
             }
@@ -326,7 +299,6 @@ impl CaseBuilder {
                 backend,
                 stdout: None,
                 exit: None,
-                required: required.max(stage.milestone()),
             },
             current: FileSet::new(unit, budget),
             no_prelude,
@@ -364,17 +336,14 @@ impl CaseBuilder {
             }
             "bytes-hex" => {
                 self.require_source()?;
-                self.case.required = self.case.required.max(Milestone::M1);
                 self.current.bytes(value, line)?;
                 self.previous_line = Some(line);
                 self.whole_bytes = true;
             }
             "expect-primary" => {
-                self.case.required = self.case.required.max(Milestone::M1);
                 set_once(&mut self.case.primary, parse_code(value)?, key)?;
             }
             "expect-sig" => {
-                self.case.required = self.case.required.max(Milestone::M3);
                 let (name, sig) = split_word(value);
                 let quoted = sig
                     .strip_prefix('"')
@@ -386,13 +355,11 @@ impl CaseBuilder {
                 self.case.signatures.push((name.into(), quoted.into()));
             }
             "expect-stdout" => {
-                self.case.required = self.case.required.max(Milestone::M4);
                 let output = self.case.stdout.get_or_insert_with(Vec::new);
                 output.extend_from_slice(unquote(value).as_bytes());
                 output.push(b'\n');
             }
             "expect-exit" => {
-                self.case.required = self.case.required.max(Milestone::M4);
                 set_once(
                     &mut self.case.exit,
                     value.parse().map_err(|_| "invalid exit status")?,
@@ -591,16 +558,6 @@ pub fn parse_suite(path: &Path, source: &str) -> Result<Suite, SuiteError> {
     }
     if cases.is_empty() {
         return Err(error(1, "suite has no cases".into()));
-    }
-    if path
-        .ancestors()
-        .filter_map(Path::file_name)
-        .filter_map(std::ffi::OsStr::to_str)
-        .any(|category| category.starts_with("12_") || category.starts_with("13_"))
-    {
-        for case in &mut cases {
-            case.required = Milestone::M5;
-        }
     }
     Ok(Suite {
         name: name.ok_or_else(|| error(1, "missing @suite".into()))?,

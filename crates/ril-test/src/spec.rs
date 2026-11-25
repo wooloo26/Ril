@@ -3,7 +3,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use crate::{Case, CaseMode, Milestone, Stage, Suite, Unit, VirtualPackage};
+use crate::{Case, CaseMode, Stage, Suite, Unit, VirtualPackage};
 
 pub fn spec_suite(path: &Path, source: &str, stage: Stage) -> Result<Suite, String> {
     let mut open = None;
@@ -104,7 +104,6 @@ fn make_case(stage: Stage, line: usize, text: &[(usize, &str)]) -> Case {
         CaseMode::CompilePass,
         stage,
         pkg,
-        Milestone::M1,
     )
 }
 

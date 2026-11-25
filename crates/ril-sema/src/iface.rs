@@ -22,10 +22,7 @@ use crate::{
 };
 
 const BINARY_MAGIC: &[u8; 5] = b"RILI\x00";
-const VIA_GRAPH_VERSION: u32 = 31;
-const BINARY_FORMAT_VERSION: u32 = 32;
-pub const FORMAT_VERSION: u32 = BINARY_FORMAT_VERSION;
-const OLDEST_FORMAT_VERSION: u32 = 12;
+pub const FORMAT_VERSION: u32 = 1;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Interface {
@@ -282,13 +279,12 @@ impl Interface {
     }
 
     fn compute_hash(&self) -> String {
-        let sealed = (self.format_version >= BINARY_FORMAT_VERSION).then(|| self.sealed_modules());
-        let modules_for_hash = sealed.as_ref().unwrap_or(&self.modules);
+        let sealed = self.sealed_modules();
         let data = serde_json::to_vec(&(
             self.format_version,
             &self.functions,
             &self.declarations,
-            modules_for_hash,
+            &sealed,
         ))
         .unwrap_or_else(|err| ril_base::ice!("interface export serialization failed: {err}"));
         format!("{:x}", Sha256::digest(data))
@@ -307,13 +303,8 @@ impl Interface {
         format!("{:x}", Sha256::digest(data))
     }
 
-    /// Encodes the interface into the canonical wire format:
-    /// - v32+: compact binary `RILI\x00` envelope with header SHA-256 for single-pass decoding
-    /// - legacy v12..=31: pretty JSON for backward-compatible roundtripping
+    /// Encodes the interface into the canonical binary `RILI\x00` envelope with header SHA-256.
     pub fn encode(&self) -> Result<Vec<u8>, serde_json::Error> {
-        if self.format_version < BINARY_FORMAT_VERSION {
-            return self.encode_json();
-        }
         let payload = serde_json::to_vec(self)?;
         let digest = Sha256::digest(&payload);
         let len = u32::try_from(payload.len()).unwrap_or(u32::MAX);
@@ -347,7 +338,7 @@ impl Interface {
                     .try_into()
                     .map_err(|_| "invalid binary .rili version".to_owned())?,
             );
-            if !(BINARY_FORMAT_VERSION..=FORMAT_VERSION).contains(&version) {
+            if version != FORMAT_VERSION {
                 return Err(format!("unsupported .rili format version {version}"));
             }
             let payload_len = u32::from_le_bytes(
@@ -363,7 +354,7 @@ impl Interface {
                 return Err(".rili binary payload checksum mismatch".into());
             }
             let value: Self = serde_json::from_slice(payload).map_err(|err| err.to_string())?;
-            if value.format_version != version {
+            if value.format_version != FORMAT_VERSION {
                 return Err(".rili header version does not match payload version".into());
             }
             return Ok(value);
@@ -374,18 +365,10 @@ impl Interface {
         }
         let Version { format_version } =
             serde_json::from_slice(bytes).map_err(|err| err.to_string())?;
-        if !(OLDEST_FORMAT_VERSION..=FORMAT_VERSION).contains(&format_version) {
+        if format_version != FORMAT_VERSION {
             return Err(format!("unsupported .rili format version {format_version}"));
         }
         let value: Self = serde_json::from_slice(bytes).map_err(|err| err.to_string())?;
-        if format_version < VIA_GRAPH_VERSION
-            && value
-                .functions
-                .values()
-                .any(|export| export.domain.uses_graph())
-        {
-            return Err("compressed via domains require a newer .rili format".into());
-        }
         if value.compute_hash() != value.abi_hash {
             return Err(".rili ABI hash does not match its contents".into());
         }

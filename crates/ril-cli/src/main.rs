@@ -9,8 +9,8 @@ use std::{
 
 use clap::{Parser, Subcommand, ValueEnum};
 use ril_base::diag::Diagnostic;
-use ril_driver::{AVAILABLE, CompileOptions, Driver, OptLevel, infer_unit, load_package};
-use ril_test::{Activation, Stage, Unit};
+use ril_driver::{CompileOptions, Driver, OptLevel, infer_unit, load_package};
+use ril_test::{Stage, Unit};
 
 #[derive(Parser)]
 #[command(version, about = "Ril compiler")]
@@ -437,12 +437,9 @@ fn test(
     };
     let mut failed = 0;
     let mut passed = 0;
-    let mut skipped = 0;
     for suite in suites {
         for case in suite.cases {
-            if case.activation(AVAILABLE) != Activation::Ready {
-                skipped += 1;
-            } else if let Err(error) = ril_test::run_case(&case, &compiler) {
+            if let Err(error) = ril_test::run_case(&case, &compiler) {
                 eprintln!(
                     "{}:{} {}::{}\n{error}",
                     suite.path.display(),
@@ -456,7 +453,7 @@ fn test(
             }
         }
     }
-    println!("{passed} passed, {failed} failed, {skipped} pending");
+    println!("{passed} passed, {failed} failed");
     Ok(if failed == 0 {
         ExitCode::SUCCESS
     } else {

@@ -49,7 +49,7 @@ pub(crate) struct Register(pub usize);
 /// Static type of a MIR SSA register, separating GC-managed values from raw/immediate words.
 #[allow(
     dead_code,
-    reason = "typed MIR variants used progressively across R3 passes"
+    reason = "typed MIR classification used by verifier and codegen"
 )]
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
 pub(crate) enum MirTy {

@@ -685,7 +685,7 @@ dependencies = [
 
 [[package]]
 name = "ril-backend"
-version = "0.2.0"
+version = "0.1.0"
 dependencies = [
  "cranelift-codegen",
  "cranelift-frontend",
@@ -700,14 +700,14 @@ dependencies = [
 
 [[package]]
 name = "ril-base"
-version = "0.2.0"
+version = "0.1.0"
 dependencies = [
  "ariadne",
 ]
 
 [[package]]
 name = "ril-cli"
-version = "0.2.0"
+version = "0.1.0"
 dependencies = [
  "clap",
  "ril-base",
@@ -718,7 +718,7 @@ dependencies = [
 
 [[package]]
 name = "ril-driver"
-version = "0.2.0"
+version = "0.1.0"
 dependencies = [
  "ril-backend",
  "ril-base",
@@ -733,14 +733,14 @@ dependencies = [
 
 [[package]]
 name = "ril-frontend"
-version = "0.2.0"
+version = "0.1.0"
 dependencies = [
  "ril-base",
 ]
 
 [[package]]
 name = "ril-rt-core"
-version = "0.2.0"
+version = "0.1.0"
 dependencies = [
  "corosensei",
  "num-bigint",
@@ -749,7 +749,7 @@ dependencies = [
 
 [[package]]
 name = "ril-sema"
-version = "0.2.0"
+version = "0.1.0"
 dependencies = [
  "num-bigint",
  "num-traits",
@@ -762,7 +762,7 @@ dependencies = [
 
 [[package]]
 name = "ril-test"
-version = "0.2.0"
+version = "0.1.0"
 dependencies = [
  "libtest-mimic",
  "ril-base",

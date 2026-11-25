@@ -1,3 +1,4 @@
 /.local/
-
+/.mypy_cache/
+/.ril-cache/
 /target/

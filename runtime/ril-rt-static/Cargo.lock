@@ -63,7 +63,7 @@ dependencies = [
 
 [[package]]
 name = "ril-rt-core"
-version = "0.2.0"
+version = "0.1.0"
 dependencies = [
  "corosensei",
  "num-bigint",
@@ -72,7 +72,7 @@ dependencies = [
 
 [[package]]
 name = "ril-rt-static"
-version = "0.2.0"
+version = "0.1.0"
 dependencies = [
  "ril-rt-core",
 ]

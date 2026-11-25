@@ -2,7 +2,7 @@
 
 use std::{path::PathBuf, sync::Arc};
 
-use ril_driver::{AVAILABLE, Driver};
+use ril_driver::Driver;
 
 fn main() {
     if let Some(status) = ril_driver::worker_entry() {
@@ -10,5 +10,5 @@ fn main() {
     }
     let root =
         std::env::var_os("RIL_TEST_ROOT").map_or_else(|| PathBuf::from("tests"), PathBuf::from);
-    ril_test::run_harness(&root, Arc::new(Driver), AVAILABLE)
+    ril_test::run_harness(&root, Arc::new(Driver))
 }

@@ -19,19 +19,19 @@ use ril_base::{
 };
 
 use crate::{
-    Activation, Case, CaseMode, CheckResult, ExecOutput, Milestone, Suite, TestDriver,
-    VirtualPackage, WorkerError, parse_suite, protocol::Backend,
+    Case, CaseMode, CheckResult, ExecOutput, Stage, Suite, TestDriver, VirtualPackage, WorkerError,
+    parse_suite, protocol::Backend,
 };
 
-pub fn run_harness(path: &Path, driver: Arc<dyn TestDriver>, enabled: Milestone) -> ! {
+pub fn run_harness(path: &Path, driver: Arc<dyn TestDriver>) -> ! {
     let args = Arguments::from_args();
     let cases = (|| {
-        let milestone = match std::env::var("RIL_TEST_STAGE") {
-            Ok(text) => text.parse::<Milestone>()?,
-            Err(std::env::VarError::NotPresent) => enabled,
+        let max_stage = match std::env::var("RIL_TEST_STAGE") {
+            Ok(text) => text.parse::<Stage>()?,
+            Err(std::env::VarError::NotPresent) => Stage::Run,
             Err(err) => return Err(err.to_string()),
         };
-        Ok(trials(discover(path)?, driver, milestone))
+        Ok(trials(discover(path)?, driver, max_stage))
     })()
     .unwrap_or_else(|error: String| {
         vec![Trial::test("suite_discovery", move || {
@@ -80,7 +80,7 @@ fn collect_paths(path: &Path, paths: &mut Vec<PathBuf>) -> io::Result<()> {
     Ok(())
 }
 
-pub fn trials(suites: Vec<Suite>, driver: Arc<dyn TestDriver>, milestone: Milestone) -> Vec<Trial> {
+pub fn trials(suites: Vec<Suite>, driver: Arc<dyn TestDriver>, max_stage: Stage) -> Vec<Trial> {
     suites
         .into_iter()
         .flat_map(|suite| {
@@ -89,7 +89,7 @@ pub fn trials(suites: Vec<Suite>, driver: Arc<dyn TestDriver>, milestone: Milest
                 let driver = Arc::clone(&driver);
                 let location = format!("{}:{}", suite.path.display(), case.line);
                 let name = format!("{}::{}", suite.name, case.id);
-                let pending = matches!(case.activation(milestone), Activation::KnownPending(_));
+                let pending = case.stage > max_stage;
                 Trial::test(name, move || {
                     run_case(&case, driver.as_ref())
                         .map_err(|err| Failed::from(format!("{location}: {err}")))

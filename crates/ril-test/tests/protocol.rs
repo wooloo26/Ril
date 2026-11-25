@@ -6,9 +6,7 @@ use ril_base::{
     diag::{Code, Diagnostic},
     span::{FileId, Span},
 };
-use ril_test::{
-    Activation, CheckResult, Milestone, Stage, TestDriver, VirtualPackage, parse_suite, run_case,
-};
+use ril_test::{CheckResult, Stage, TestDriver, VirtualPackage, parse_suite, run_case};
 
 struct FakeDriver;
 
@@ -57,12 +55,8 @@ invalid
     let [first, pending] = suite.cases.as_slice() else {
         panic!("expected two cases")
     };
-    assert_eq!(first.activation(Milestone::M0), Activation::Ready);
-    assert_eq!(
-        pending.activation(Milestone::M0),
-        Activation::KnownPending(Milestone::M2)
-    );
-    assert_eq!(pending.activation(Milestone::M2), Activation::Ready);
+    assert_eq!(first.stage, Stage::Source);
+    assert_eq!(pending.pkg.budget, Some(3));
     assert_eq!(
         first.pkg.files[Path::new("pkg/main.ril")].suite_line(1),
         Some(4)
