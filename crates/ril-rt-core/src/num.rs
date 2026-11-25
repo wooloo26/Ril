@@ -137,7 +137,9 @@ impl GcRuntime {
                         (Some(Object::F64(a)), Some(Object::F64(b))) => {
                             f64::from_bits(*a).partial_cmp(&f64::from_bits(*b))
                         }
-                        (Some(Object::Str(a)), Some(Object::Str(b))) => Some(a.cmp(b)),
+                        (Some(Object::Str(a)), Some(Object::Str(b))) => {
+                            Some(a.as_str().cmp(b.as_str()))
+                        }
                         (Some(Object::Bytes(a)), Some(Object::Bytes(b))) => Some(a.cmp(b)),
                         _ => return Err("invalid comparison operands"),
                     }

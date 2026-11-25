@@ -5,12 +5,14 @@ mod ffi;
 mod fiber;
 mod gc;
 mod graph;
+mod map;
 mod num;
 mod text;
 mod unwind;
 
 pub use ffi::symbols;
 pub use gc::{GcRuntime, Object, RootFrameHeader, TypeDesc, Value};
+pub use map::{RilMap, RilStr};
 pub use num::RilInt;
 pub use unwind::Runtime;
 

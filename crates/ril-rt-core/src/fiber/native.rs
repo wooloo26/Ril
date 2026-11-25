@@ -76,7 +76,7 @@ fn suspend(event: Event) -> bool {
 
 #[derive(Clone, Copy)]
 struct Closure {
-    function: u64,
+    function: *const u8,
     arity: u64,
     evidence: Value,
     env: Value,
@@ -111,10 +111,10 @@ unsafe fn invoke(raw: Raw, value: Value, arguments: Option<Value>) -> Value {
         unsafe { context(raw) }.raise("incorrect fiber callback arity");
         return Value::UNIT;
     }
-    let Ok(address) = usize::try_from(closure.function) else {
+    let address = closure.function;
+    if address.is_null() {
         return Value::UNIT;
-    };
-    let address = std::ptr::with_exposed_provenance::<u8>(address);
+    }
     if let Some(arg) = arguments {
         // SAFETY: lowered scope bodies have the closure ABI with one Scope argument.
         let run = unsafe {
@@ -141,13 +141,19 @@ struct Job {
 struct StackBackend {
     stack_size: usize,
     jobs: BTreeMap<Task, Coroutine<(), Event, Completion>>,
+    stack_pool: Vec<DefaultStack>,
 }
+
+const MAX_POOLED_STACKS: usize = 64;
 
 impl FiberBackend for StackBackend {
     type Job = Job;
 
     fn create(&mut self, task: Task, job: Job) -> Result<(), String> {
-        let stack = DefaultStack::new(self.stack_size).map_err(|error| error.to_string())?;
+        let stack = match self.stack_pool.pop() {
+            Some(stack) => stack,
+            None => DefaultStack::new(self.stack_size).map_err(|error| error.to_string())?,
+        };
         let coro = Coroutine::with_stack(stack, move |yielder, ()| {
             let Job {
                 runtime,
@@ -180,7 +186,11 @@ impl FiberBackend for StackBackend {
         Ok(match result {
             CoroutineResult::Yield(event) => Step::Suspended(event),
             CoroutineResult::Return(value) => {
-                self.jobs.remove(&task);
+                if let Some(done) = self.jobs.remove(&task)
+                    && self.stack_pool.len() < MAX_POOLED_STACKS
+                {
+                    self.stack_pool.push(done.into_stack());
+                }
                 Step::Complete(value)
             }
         })
@@ -200,6 +210,7 @@ unsafe fn schedule(raw: Raw, action: Value) -> Result<Value, String> {
     let mut backend = StackBackend {
         stack_size,
         jobs: BTreeMap::new(),
+        stack_pool: Vec::new(),
     };
     let mut ready = Ready::default();
     let mut inputs = BTreeMap::new();
@@ -252,6 +263,7 @@ unsafe fn schedule(raw: Raw, action: Value) -> Result<Value, String> {
                 rt.fiber.completion_order.push_back(task);
                 rt.fiber.cancelled.remove(&task);
                 rt.fiber.shielded.remove(&task);
+                rt.gc.clear_fiber_frames(task);
                 ready.complete(task);
             }
         }

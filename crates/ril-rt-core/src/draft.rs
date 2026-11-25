@@ -15,9 +15,7 @@ impl DraftSlot {
                 Self::Element(index),
                 Object::Array(values) | Object::Tuple(values) | Object::Tag(_, values),
             ) => values.get_mut(*index),
-            (Self::MapValue(index), Object::Map(entries)) => {
-                entries.get_mut(*index).map(|(_, value)| value)
-            }
+            (Self::MapValue(index), Object::Map(map)) => map.value_mut(*index),
             _ => None,
         }
     }

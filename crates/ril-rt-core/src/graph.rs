@@ -56,9 +56,12 @@ impl GcRuntime {
                     }
                 }
                 (Some(Object::Map(a)), Some(Object::Map(b))) if a.len() == b.len() => {
-                    for &(key, value) in a {
+                    for &(hash, key, value) in a.entries() {
                         let mut found = false;
-                        for &(other, candidate) in b {
+                        for cand_idx in b.indices_with_hash(hash) {
+                            let Some((other, candidate)) = b.get_entry(cand_idx) else {
+                                continue;
+                            };
                             let mut trial = seen.clone();
                             if self.equal_from(key, other, &mut trial)?
                                 && self.equal_from(value, candidate, &mut trial)?
@@ -126,12 +129,15 @@ impl GcRuntime {
                         .map(|(key, value)| Ok((key, copy(value)?)))
                         .collect::<Result<_, _>>()?,
                 ),
-                Object::Map(entries) => Object::Map(
-                    entries
-                        .into_iter()
-                        .map(|(key, value)| Ok((copy(key)?, copy(value)?)))
-                        .collect::<Result<_, _>>()?,
-                ),
+                Object::Map(map) => {
+                    let mut cloned = crate::RilMap::new();
+                    for &(hash, key, value) in map.entries() {
+                        let k = copy(key)?;
+                        let v = copy(value)?;
+                        cloned.push_new(hash, k, v);
+                    }
+                    Object::Map(cloned)
+                }
                 _ => return Err("object cannot be cloned"),
             };
             *self.object_mut(target).ok_or("missing pinned graph copy")? = result;
@@ -200,7 +206,7 @@ impl GcRuntime {
         let descriptor_handle = descriptor;
         let descriptor = self.object(descriptor_handle);
         if let Some(Object::Str(text)) = descriptor {
-            return text.clone();
+            return text.as_str().to_owned();
         }
         if depth > 96 {
             return "...".into();
@@ -271,11 +277,11 @@ impl GcRuntime {
                         .collect::<Vec<_>>()
                         .join(", ")
                 ),
-                Some(Object::Map(fields)) => format!(
+                Some(Object::Map(map)) => format!(
                     "[{}]",
-                    fields
+                    map.entries()
                         .iter()
-                        .map(|&(key, value)| format!(
+                        .map(|&(_, key, value)| format!(
                             "{}: {}",
                             render(key, index_at(0)),
                             render(value, index_at(1))

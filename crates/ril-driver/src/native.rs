@@ -176,12 +176,34 @@ pub(crate) fn link_object(object: &[u8], links: &[PathBuf], output: &Path) -> Re
     let object_path = tmp.path().join("ril.o");
     fs::write(&object_path, object).map_err(failure)?;
     let runtime = runtime_archive()?;
-    let mut command = Command::new(std::env::var_os("CC").unwrap_or_else(|| "cc".into()));
-    command.arg(&object_path).args(links).arg(runtime);
-    if cfg!(target_os = "linux") {
-        command.args(["-ldl", "-lpthread", "-lm"]);
-    }
-    let link = command.arg("-o").arg(output).output().map_err(failure)?;
+    let mut command = if cfg!(target_env = "msvc") && std::env::var_os("CC").is_none() {
+        let mut cmd = Command::new("link.exe");
+        cmd.arg("/NOLOGO")
+            .arg("/OPT:REF")
+            .arg(&object_path)
+            .args(links)
+            .arg(&runtime)
+            .args([
+                "ws2_32.lib",
+                "userenv.lib",
+                "bcrypt.lib",
+                "ntdll.lib",
+                "advapi32.lib",
+            ])
+            .arg(format!("/OUT:{}", output.display()));
+        cmd
+    } else {
+        let mut cmd = Command::new(std::env::var_os("CC").unwrap_or_else(|| "cc".into()));
+        cmd.arg(&object_path).args(links).arg(&runtime);
+        if cfg!(target_os = "linux") {
+            cmd.args(["-Wl,--gc-sections", "-ldl", "-lpthread", "-lm"]);
+        } else if cfg!(target_os = "macos") {
+            cmd.arg("-Wl,-dead_strip");
+        }
+        cmd.arg("-o").arg(output);
+        cmd
+    };
+    let link = command.output().map_err(failure)?;
     if link.status.success() {
         Ok(())
     } else {
@@ -217,7 +239,37 @@ fn runtime_archive() -> Result<PathBuf> {
     if let Some(path) = std::env::var_os("RIL_RUNTIME_ARCHIVE") {
         return Ok(path.into());
     }
+    let archive_name = if cfg!(target_env = "msvc") {
+        "ril_rt.lib"
+    } else {
+        "libril_rt.a"
+    };
+    // 1. Check alongside the running `ril` executable (standalone distribution).
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(dir) = exe.parent()
+    {
+        let sibling = dir.join(archive_name);
+        if sibling.is_file() {
+            return Ok(sibling);
+        }
+    }
+    // 2. Content-addressed cached build keyed on runtime sources + rustc version.
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let digest = runtime_source_digest(&root)?;
+    let cache_dir = root.join("target/ril-runtime-cache");
+    let cached = cache_dir.join(format!("{digest}-{archive_name}"));
+    if cached.is_file() {
+        return Ok(cached);
+    }
+
+    // Serialize first-time build across parallel processes with a lock file + atomic rename.
+    fs::create_dir_all(&cache_dir).map_err(failure)?;
+    let lock_path = cache_dir.join(format!("{digest}.lock"));
+    let _lock = acquire_lock(&lock_path)?;
+    if cached.is_file() {
+        return Ok(cached);
+    }
+
     let manifest = root.join("runtime/ril-rt-static/Cargo.toml");
     let target = root.join("target/ril-runtime");
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
@@ -234,11 +286,89 @@ fn runtime_archive() -> Result<PathBuf> {
             String::from_utf8_lossy(&build.stderr)
         )));
     }
-    Ok(target.join("release").join(if cfg!(target_env = "msvc") {
-        "ril_rt.lib"
-    } else {
-        "libril_rt.a"
-    }))
+    let built = target.join("release").join(archive_name);
+    let seq = ARCHIVE_TMP_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let tmp = cache_dir.join(format!("{digest}.tmp.{}.{seq}", std::process::id()));
+    fs::copy(&built, &tmp).map_err(failure)?;
+    fs::rename(&tmp, &cached).map_err(failure)?;
+    Ok(cached)
+}
+
+static ARCHIVE_TMP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+struct LockGuard(PathBuf);
+
+impl Drop for LockGuard {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.0);
+    }
+}
+
+fn acquire_lock(path: &Path) -> Result<LockGuard> {
+    for _ in 0..600 {
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)
+        {
+            Ok(_) => return Ok(LockGuard(path.to_owned())),
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            Err(err) => return Err(failure(err)),
+        }
+    }
+    // Stale lock recovery after 30s wait.
+    let _ = fs::remove_file(path);
+    Ok(LockGuard(path.to_owned()))
+}
+
+fn runtime_source_digest(root: &Path) -> Result<String> {
+    use sha2::{Digest as _, Sha256};
+
+    let mut hasher = Sha256::new();
+    hasher.update(std::env::consts::ARCH.as_bytes());
+    hasher.update(b"-");
+    hasher.update(std::env::consts::OS.as_bytes());
+    if let Ok(out) = Command::new(std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into()))
+        .arg("-vV")
+        .output()
+    {
+        hasher.update(&out.stdout);
+    }
+    let mut files = Vec::new();
+    collect_files(&root.join("crates/ril-rt-core"), &mut files);
+    collect_files(&root.join("runtime/ril-rt-static"), &mut files);
+    files.sort();
+    for path in files {
+        if let Ok(bytes) = fs::read(&path) {
+            hasher.update(path.to_string_lossy().as_bytes());
+            hasher.update(b"\0");
+            hasher.update(&bytes);
+        }
+    }
+    let hex = format!("{:x}", hasher.finalize());
+    Ok(hex.chars().take(16).collect())
+}
+
+fn collect_files(dir: &Path, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            if path.file_name().is_some_and(|n| n == "target") {
+                continue;
+            }
+            collect_files(&path, out);
+        } else if path
+            .extension()
+            .is_some_and(|ext| ext == "rs" || ext == "toml" || ext == "lock")
+        {
+            out.push(path);
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize)]

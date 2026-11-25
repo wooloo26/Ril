@@ -1,9 +1,12 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use num_bigint::BigInt;
 use num_traits::ToPrimitive as _;
 
-use crate::draft::DraftNode;
+use crate::{
+    draft::DraftNode,
+    map::{RilMap, RilStr},
+};
 
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
 #[repr(transparent)]
@@ -24,6 +27,27 @@ impl Value {
             Self::FALSE => Some(false),
             _ => None,
         }
+    }
+
+    #[inline]
+    pub(crate) fn from_slot(index: usize, generation: u32) -> Self {
+        let low = u32::try_from(index)
+            .ok()
+            .and_then(|i| i.checked_add(1))
+            .and_then(|i| i.checked_shl(3))
+            .unwrap_or_else(|| std::process::abort());
+        Self((u64::from(generation) << 32) | u64::from(low))
+    }
+
+    #[inline]
+    pub(crate) fn slot_parts(self) -> Option<(usize, u32)> {
+        if self.is_immediate() {
+            return None;
+        }
+        let low = (self.0 as u32) >> 3;
+        let index = usize::try_from(low.checked_sub(1)?).ok()?;
+        let generation = (self.0 >> 32) as u32;
+        Some((index, generation))
     }
 }
 
@@ -54,16 +78,16 @@ pub enum Object {
     Sender(u64),
     Receiver(u64),
     F64(u64),
-    Str(String),
+    Str(RilStr),
     PanicInfo(String),
     Bytes(Vec<u8>),
     Array(Vec<Value>),
     Tuple(Vec<Value>),
     Record(BTreeMap<String, Value>),
-    Map(Vec<(Value, Value)>),
+    Map(RilMap),
     Tag(String, Vec<Value>),
     Closure {
-        function: u64,
+        function: *const u8,
         arity: u64,
         environment: Value,
         evidence: Value,
@@ -83,27 +107,46 @@ pub enum Object {
 }
 
 impl Object {
-    pub(crate) fn children(&self) -> Vec<Value> {
+    pub(crate) fn visit_children(&self, mut visit: impl FnMut(Value)) {
         match self {
-            Self::Array(values) | Self::Tuple(values) | Self::Tag(_, values) => values.clone(),
-            Self::Record(fields) => fields.values().copied().collect(),
-            Self::Map(entries) => entries.iter().flat_map(|&(k, v)| [k, v]).collect(),
+            Self::Array(values) | Self::Tuple(values) | Self::Tag(_, values) => {
+                for &v in values {
+                    visit(v);
+                }
+            }
+            Self::Record(fields) => {
+                for &v in fields.values() {
+                    visit(v);
+                }
+            }
+            Self::Map(map) => {
+                for &(_, k, v) in map.entries() {
+                    visit(k);
+                    visit(v);
+                }
+            }
             Self::Closure {
                 environment,
                 evidence,
                 ..
-            } => vec![*environment, *evidence],
-            Self::Draft { copy } => vec![*copy],
+            } => {
+                visit(*environment);
+                visit(*evidence);
+            }
+            Self::Draft { copy } => visit(*copy),
             Self::Evidence {
                 parent, handler, ..
-            } => vec![*parent, *handler],
-            Self::Words { layout, words } => words
-                .iter()
-                .enumerate()
-                .take(64)
-                .filter(|(i, _)| layout.reference_mask & (1_u64 << i) != 0)
-                .map(|(_, &word)| word)
-                .collect(),
+            } => {
+                visit(*parent);
+                visit(*handler);
+            }
+            Self::Words { layout, words } => {
+                for (i, &word) in words.iter().enumerate().take(64) {
+                    if layout.reference_mask & (1_u64 << i) != 0 {
+                        visit(word);
+                    }
+                }
+            }
             Self::Scope(_)
             | Self::Task { .. }
             | Self::Sender(_)
@@ -112,15 +155,29 @@ impl Object {
             | Self::F64(_)
             | Self::Str(_)
             | Self::PanicInfo(_)
-            | Self::Bytes(_) => Vec::new(),
+            | Self::Bytes(_) => {}
         }
     }
 }
 
+struct SlotEntry {
+    generation: u32,
+    state: SlotState,
+}
+
+enum SlotState {
+    Free { next: usize },
+    Occupied { object: Object, marked: bool },
+}
+
+const FREE_END: usize = usize::MAX;
+
 #[repr(C)]
 pub struct GcRuntime {
     pub top_frame: *mut RootFrameHeader,
-    objects: BTreeMap<Value, Object>,
+    slots: Vec<SlotEntry>,
+    free_head: usize,
+    live_count: usize,
     pub(crate) draft_nodes: BTreeMap<Value, DraftNode>,
     frames: Vec<Vec<Value>>,
     suspended_frames: BTreeMap<u64, Vec<Vec<Value>>>,
@@ -128,7 +185,6 @@ pub struct GcRuntime {
     roots: BTreeMap<Value, usize>,
     #[cfg(not(miri))]
     active: u64,
-    next: u64,
     next_collection: usize,
     stress: bool,
 }
@@ -143,7 +199,9 @@ impl GcRuntime {
     pub fn new(stress: bool) -> Self {
         Self {
             top_frame: std::ptr::null_mut(),
-            objects: BTreeMap::new(),
+            slots: Vec::new(),
+            free_head: FREE_END,
+            live_count: 0,
             draft_nodes: BTreeMap::new(),
             frames: Vec::new(),
             suspended_frames: BTreeMap::new(),
@@ -151,7 +209,6 @@ impl GcRuntime {
             roots: BTreeMap::new(),
             #[cfg(not(miri))]
             active: 0,
-            next: 8,
             next_collection: 64,
             stress,
         }
@@ -175,6 +232,12 @@ impl GcRuntime {
             }
             self.active = fiber;
         }
+    }
+
+    #[cfg(not(miri))]
+    pub(crate) fn clear_fiber_frames(&mut self, fiber: u64) {
+        self.suspended_frames.remove(&fiber);
+        self.suspended_top_frames.remove(&fiber);
     }
 
     pub(crate) fn pin(&mut self, value: Value) {
@@ -214,35 +277,68 @@ impl GcRuntime {
         {
             return value;
         }
-        if self.stress || self.objects.len() >= self.next_collection {
-            self.collect(object.children());
+        if self.stress || self.live_count >= self.next_collection {
+            let mut extra = Vec::new();
+            object.visit_children(|child| extra.push(child));
+            self.collect(extra);
         }
         self.alloc_rooted(object)
     }
 
     fn alloc_rooted(&mut self, object: Object) -> Value {
-        let value = Value(self.next);
-        self.next = self
-            .next
-            .checked_add(8)
-            .unwrap_or_else(|| std::process::abort());
-        self.objects.insert(value, object);
-        value
-    }
-
-    pub fn object(&self, value: Value) -> Option<&Object> {
-        if value.is_immediate() {
-            return None;
+        self.live_count += 1;
+        if self.free_head != FREE_END {
+            let index = self.free_head;
+            if let Some(entry) = self.slots.get_mut(index) {
+                let next = match entry.state {
+                    SlotState::Free { next } => next,
+                    SlotState::Occupied { .. } => std::process::abort(),
+                };
+                self.free_head = next;
+                entry.state = SlotState::Occupied {
+                    object,
+                    marked: false,
+                };
+                return Value::from_slot(index, entry.generation);
+            }
         }
-        self.objects.get(&value)
+        let index = self.slots.len();
+        self.slots.push(SlotEntry {
+            generation: 0,
+            state: SlotState::Occupied {
+                object,
+                marked: false,
+            },
+        });
+        Value::from_slot(index, 0)
     }
 
+    #[inline]
+    pub fn object(&self, value: Value) -> Option<&Object> {
+        let (index, generation) = value.slot_parts()?;
+        match self.slots.get(index) {
+            Some(SlotEntry {
+                generation: slot_gen,
+                state: SlotState::Occupied { object, .. },
+            }) if *slot_gen == generation => Some(object),
+            _ => None,
+        }
+    }
+
+    #[inline]
     pub fn object_mut(&mut self, value: Value) -> Option<&mut Object> {
-        self.objects.get_mut(&value)
+        let (index, generation) = value.slot_parts()?;
+        match self.slots.get_mut(index) {
+            Some(SlotEntry {
+                generation: slot_gen,
+                state: SlotState::Occupied { object, .. },
+            }) if *slot_gen == generation => Some(object),
+            _ => None,
+        }
     }
 
     pub fn safepoint(&mut self) {
-        if self.stress || self.objects.len() >= self.next_collection {
+        if self.stress || self.live_count >= self.next_collection {
             self.collect(Vec::new());
         }
     }
@@ -274,8 +370,7 @@ impl GcRuntime {
     }
 
     pub fn collect(&mut self, additional: Vec<Value>) {
-        let mut visited = BTreeSet::new();
-        let mut pending: Vec<_> = self
+        let mut pending: Vec<Value> = self
             .frames
             .iter()
             .flatten()
@@ -288,21 +383,70 @@ impl GcRuntime {
         for &suspended in self.suspended_top_frames.values() {
             Self::push_stack_frames(suspended, &mut pending);
         }
+
         while let Some(value) = pending.pop() {
-            if !value.is_immediate()
-                && let Some(object) = self.objects.get(&value)
-                && visited.insert(value)
-            {
-                pending.extend(object.children());
+            let Some((index, generation)) = value.slot_parts() else {
+                continue;
+            };
+            let Some(SlotEntry {
+                generation: slot_gen,
+                state: SlotState::Occupied { object, marked },
+            }) = self.slots.get_mut(index)
+            else {
+                continue;
+            };
+            if *slot_gen == generation && !*marked {
+                *marked = true;
+                object.visit_children(|child| {
+                    if !child.is_immediate() {
+                        pending.push(child);
+                    }
+                });
             }
         }
-        self.objects.retain(|value, _| visited.contains(value));
-        self.draft_nodes
-            .retain(|value, node| visited.contains(value) && visited.contains(&node.draft));
-        self.next_collection = self.objects.len().saturating_mul(2).max(64);
+
+        let mut surviving = 0usize;
+        for index in 0..self.slots.len() {
+            let Some(entry) = self.slots.get_mut(index) else {
+                continue;
+            };
+            match &mut entry.state {
+                SlotState::Occupied { marked: true, .. } => {
+                    if let SlotState::Occupied { marked, .. } = &mut entry.state {
+                        *marked = false;
+                    }
+                    surviving += 1;
+                }
+                SlotState::Occupied { marked: false, .. } => {
+                    entry.generation = entry.generation.wrapping_add(1);
+                    entry.state = SlotState::Free {
+                        next: self.free_head,
+                    };
+                    self.free_head = index;
+                }
+                SlotState::Free { .. } => {}
+            }
+        }
+        self.live_count = surviving;
+        if !self.draft_nodes.is_empty() {
+            let slots = &self.slots;
+            let is_live = |v: Value| {
+                v.slot_parts()
+                    .and_then(|(idx, generation)| {
+                        slots.get(idx).map(|entry| {
+                            entry.generation == generation
+                                && matches!(entry.state, SlotState::Occupied { .. })
+                        })
+                    })
+                    .unwrap_or(false)
+            };
+            self.draft_nodes
+                .retain(|&value, node| is_live(value) && is_live(node.draft));
+        }
+        self.next_collection = self.live_count.saturating_mul(2).max(64);
     }
 
     pub fn live_objects(&self) -> usize {
-        self.objects.len()
+        self.live_count
     }
 }
