@@ -71,6 +71,7 @@ impl Checker<'_> {
             }
             Expr::Unit => Ok(Value::Unit),
             Expr::Path(path) => self.eval_path(env, slots, path, fuel),
+            Expr::Meta(inner) => self.evaluate(env, slots, *inner, fuel),
             Expr::Quote(ty) => {
                 let mut quoted = env.clone();
                 quoted.generics.extend(
@@ -176,7 +177,9 @@ impl Checker<'_> {
                             Value::Unit
                         }
                         StmtKind::Expr(expr) => self.evaluate(env, slots, *expr, fuel)?,
-                        StmtKind::Type(_) | StmtKind::Import(_) => Value::Unit,
+                        StmtKind::Type(_) | StmtKind::Import(_) | StmtKind::Function(_) => {
+                            Value::Unit
+                        }
                         _ => return Err(nonstatic(node.span)),
                     };
                 }

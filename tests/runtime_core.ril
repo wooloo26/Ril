@@ -854,7 +854,7 @@ pub fn ril_test_symbol_that_is_not_linked() @io -> ()
 -- @expect-stdout 6
 meta fn values(scale: int) -> []int { [scale, scale * 2, scale * 3] }
 fn main() @io -> () {
-    let vector = values(2)
+    let vector = meta values(2)
     println("{vector[2]}")
 }
 
@@ -1045,7 +1045,7 @@ type Role(str)
 meta(Role::("admin"))
 type Request(.{ email: str })
 fn main() -> () {
-    let roles: []Role = Reflect::attrs(<Request>)
+    let roles: []Role = meta Reflect::attrs(<Request>)
     assert(len(roles) == 1 && inner(roles[0]) == "admin")
 }
 
@@ -1151,7 +1151,7 @@ fn main() @io -> () {
 -- @case static_arguments_are_evaluated_with_the_callers_specialization run-pass backend=both
 meta fn square(x: int) -> int { x * x }
 fn selected(meta n: int, meta doubled: int = n * 2, tail: int = doubled) -> int {
-    square(n) + tail
+    meta square(n) + tail
 }
 fn forward(meta n: int) -> int {
     let direct = selected(n + 1)

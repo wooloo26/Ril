@@ -264,7 +264,11 @@ pub(crate) fn render_definition_hover(
                 )
             }
             DefinitionKind::Generic => format!("type parameter {}", def.name.value),
-            DefinitionKind::Primitive(_) => format!("primitive {}", def.name.value),
+            DefinitionKind::Primitive(_) => crate::protocol::builtin_doc(&def.name.value)
+                .map_or_else(
+                    || format!("primitive {}", def.name.value),
+                    |b| b.signature.into(),
+                ),
             _ => return None,
         }
     };
@@ -279,7 +283,7 @@ pub(crate) fn render_definition_hover(
         };
         extract_doc_comment(file.source_text(), decl_start)
     } else {
-        None
+        crate::protocol::builtin_doc(&def.name.value).map(|b| b.doc.to_owned())
     };
 
     let mut out = format!("```ril\n{code_block}\n```");

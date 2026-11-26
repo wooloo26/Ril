@@ -173,6 +173,10 @@ fn needs_space(left: Item<'_>, right: Item<'_>) -> bool {
             if is_string_left_inside(lt.kind) || is_string_right_inside(rt.kind) {
                 return false;
             }
+            // Keep space after `meta` except tight declaration metadata `meta(...)`.
+            if ltext == "meta" && !(rt.tight_left && rtext == "(") {
+                return true;
+            }
             // Never split Ril's syntactically tight-left constructs:
             // `Ok(42)`, `User.{ ... }`, `arr[0]`, `x?`, `a.b`, `a::b`, `x: T`, `a, b`, `a; b`.
             if rt.tight_left && matches!(rtext, "(" | ".{" | "[" | "?" | "?.") {

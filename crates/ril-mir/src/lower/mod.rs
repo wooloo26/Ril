@@ -986,7 +986,7 @@ impl<'a> Builder<'_, 'a> {
             .global
             .typed
             .static_value(span, &self.statics, &self.types)?
-            && !matches!(constant, Value::Type(_) | Value::Mode(_))
+            && !matches!(constant, Value::Type(_))
         {
             return self.constant(&constant, span);
         }
@@ -1196,6 +1196,7 @@ impl<'a> Builder<'_, 'a> {
                     }
                 }
             }
+            Expr::Meta(_) => Err(self.unsupported(span, "unresolved meta expression")),
             _ => Err(self.unsupported(span, "this expression form")),
         }
     }

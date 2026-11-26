@@ -685,19 +685,19 @@ fn wave_e_introspection_type_patterns_and_parser_conformance() -> Result<(), Str
             assert(r == 3.5 && d?["x"] == Some(1))
 
             -- Runtime static folding of type_name, fields, sum_tags, type_kind, Reflect::has_default
-            assert(type_name(<int>) == "int")
-            assert(len(fields(<()>)) == 0)
-            assert(len(fields(<Pair>)) == 2)
-            assert(len(sum_tags(<Shape>)) == 3)
-            assert(type_kind(<int>) == TypeKind::Value)
-            assert(type_kind(<()>) == TypeKind::Value)
-            assert(type_kind(<(int, str)>) == TypeKind::Tuple)
-            assert(type_kind(<Shape>) == TypeKind::Sum)
-            assert(type_kind(<Set<int>>) == TypeKind::OpaqueShared)
-            assert(type_kind(<PanicReport>) == TypeKind::OpaqueValue)
-            assert(type_kind(<Type<int>>) == TypeKind::Meta)
-            assert(Reflect::has_default(<Config>, "host"))
-            assert(!Reflect::has_default(<Config>, "port"))
+            assert(meta type_name(<int>) == "int")
+            assert(len(meta fields(<()>)) == 0)
+            assert(len(meta fields(<Pair>)) == 2)
+            assert(len(meta sum_tags(<Shape>)) == 3)
+            assert(meta type_kind(<int>) == TypeKind::Value)
+            assert(meta type_kind(<()>) == TypeKind::Value)
+            assert(meta type_kind(<(int, str)>) == TypeKind::Tuple)
+            assert(meta type_kind(<Shape>) == TypeKind::Sum)
+            assert(meta type_kind(<Set<int>>) == TypeKind::OpaqueShared)
+            assert(meta type_kind(<PanicReport>) == TypeKind::OpaqueValue)
+            assert(meta type_kind(<Type<int>>) == TypeKind::Meta)
+            assert(meta Reflect::has_default(<Config>, "host"))
+            assert(!meta Reflect::has_default(<Config>, "port"))
 
             -- for xs as mut x
             let mut boxes: [mut].{ var n: int } = [.{ var n: 1 }, .{ var n: 2 }]
@@ -970,9 +970,59 @@ fn de_magification_self_hosted_set_stdlib_convert_compile_error_and_wrapper_synt
             Code::E0301,
         ),
         (
-            "fn main() -> () { let _ = fields(<int>) }\n",
+            "fn main() -> () { let _ = meta fields(<int>) }\n",
             Stage::Type,
             Code::E0358,
+        ),
+        (
+            "fn main() -> () { let _ = fields(<int>) }\n",
+            Stage::Type,
+            Code::E0810,
+        ),
+        (
+            "fn main() -> () { let _ = type_name(<int>) }\n",
+            Stage::Type,
+            Code::E0810,
+        ),
+        (
+            "fn main() -> () { let _ = meta(1 + 2) }\n",
+            Stage::Parse,
+            Code::E0120,
+        ),
+        (
+            "fn f(x: int) -> int { meta { if false { x } else { 1 } } }\nfn main() -> () {}\n",
+            Stage::Type,
+            Code::E0814,
+        ),
+        (
+            "fn f() -> str { let _: int = meta { return \"hi\" }; \"ok\" }\nfn main() -> () {}\n",
+            Stage::Hir,
+            Code::E0707,
+        ),
+        (
+            "fn main() -> () { let _ = meta <int> }\n",
+            Stage::Type,
+            Code::E0816,
+        ),
+        (
+            "fn main() -> () { let _ = meta (\\x: int -> x) }\n",
+            Stage::Type,
+            Code::E0816,
+        ),
+        (
+            "fn main() -> () { let mut xs = meta [1, 2]; Array::push(mut xs, 3) }\n",
+            Stage::Access,
+            Code::E0520,
+        ),
+        (
+            "fn main() -> () { let xs: [mut][]int = meta [[1]]; let _ = xs }\n",
+            Stage::Access,
+            Code::E0522,
+        ),
+        (
+            "fn f<T |> Tuple>(x: T) -> () { let _ = x }\nfn main() -> () { f(()) }\n",
+            Stage::Type,
+            Code::E0301,
         ),
         (
             "type BadKey = FieldKey<int>\nfn main() -> () {}\n",
@@ -1071,10 +1121,33 @@ fn de_magification_self_hosted_set_stdlib_convert_compile_error_and_wrapper_synt
         fn check_len<T |> LenTarget>(via x: T) -> int { len(x) }
         fn generic_kind<T>(x: Option<T>) -> int {
             let _ = x
-            assert(type_kind(<Option<T>>) == TypeKind::Sum)
-            assert(type_kind(<Set<T>>) == TypeKind::OpaqueShared)
-            1
+            meta assert(type_kind(<Option<T>>) == TypeKind::Sum)
+            meta assert(type_kind(<Set<T>>) == TypeKind::OpaqueShared)
+            meta if <T> == <str> {
+                meta compile_error("unreachable str branch")
+            } else {
+                meta {
+                    var sum = 0
+                    for 1..=4 as i {
+                        sum += i
+                    }
+                    sum
+                }
+            }
         }
+
+        type AnyRecMode = \T -> match <T> {
+            <.{ let _ host: str, .. }> -> <str>
+            _ -> <never>
+        }
+        meta let _ = assert(<AnyRecMode<.{ var host: str, port: int }>> == <str>)
+        meta let _ = assert(<AnyRecMode<.{ host: str }>> == <str>)
+        type IsNonEmptyTuple = \T -> match <T> {
+            <(..)> -> <int>
+            _ -> <never>
+        }
+        meta let _ = assert(<IsNonEmptyTuple<(int, str)>> == <int>)
+        meta let _ = assert(<IsNonEmptyTuple<()>> == <never>)
 
         type InspectNominal = \T -> match <T> {
             <Nominal<let Inner>> -> <Inner>
@@ -1125,7 +1198,11 @@ fn de_magification_self_hosted_set_stdlib_convert_compile_error_and_wrapper_synt
                 Array::push(mut d, 3)
             })
             assert(len(updated) == 3)
-            assert(generic_kind(Some(1)) == 1)
+            assert(generic_kind(Some(1)) == 10)
+            let spaced = meta (1 + 2) * 3
+            assert(spaced == 9)
+            let fm = meta FieldMode::Var
+            assert(fm == FieldMode::Var)
             println("self-hosted-ok")
         }
     "#;

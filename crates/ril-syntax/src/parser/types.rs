@@ -284,7 +284,14 @@ impl Parser<'_> {
         if pattern && self.is("let") {
             let checkpoint = (self.pos, self.split, self.last, self.delimiters.len());
             self.bump();
-            if let Ok(path) = self.path(Angle::None, false) {
+            let parsed = if self.eat("_") {
+                Some(None)
+            } else if let Ok(path) = self.path(Angle::None, false) {
+                Some(Some(path))
+            } else {
+                None
+            };
+            if let Some(mode_path) = parsed {
                 let is_mode = if record {
                     true
                 } else if allow_bracket_mode {
@@ -297,7 +304,7 @@ impl Parser<'_> {
                 };
                 if is_mode {
                     return Ok(Storage {
-                        mode_path: Some(path),
+                        mode_path,
                         bind_mode: true,
                         ..Storage::default()
                     });

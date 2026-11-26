@@ -58,12 +58,12 @@ pub type LenTarget = \T -> match <T> {
         <T>
     }
     <str> | <bytes> | <Set<_>> -> <T>
-    <[let M]_> -> <T>
-    <[_: let M _]> -> <T>
+    <[let _]_> -> <T>
+    <[_: let _ _]> -> <T>
     _ -> compile_error_code("E0301", "len requires text, bytes, or a collection")
 }
 
--- Static check accepting tuple types (`(A, B, ...)` and `()`).
+-- Static check accepting nonempty tuple types `(A, B, ...)`.
 pub type Tuple = \T -> match <T> {
     <(..)> -> <T>
     _ -> compile_error_code("E0301", "type does not satisfy Tuple")

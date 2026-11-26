@@ -196,7 +196,13 @@ impl Checker<'_> {
                 self.define_name(name, ty.clone());
             }
             if let Some(default) = item.default {
-                self.expect(&mut local, default, &ty);
+                if item.is_meta {
+                    let mut meta_env = local.clone();
+                    meta_env.phase = Phase::MetaValue;
+                    self.expect(&mut meta_env, default, &ty);
+                } else {
+                    self.expect(&mut local, default, &ty);
+                }
             }
             let is_wildcard = item.name.as_ref().is_some_and(|name| name.value == "_")
                 || item.pattern.is_some_and(|pat| {
@@ -296,11 +302,25 @@ impl Checker<'_> {
         } else {
             Default::default()
         };
-        let mut pending_meta = false;
         let (ty, generics) = if let Some(id) = def_id {
             let def = self.hir.definition(id);
             match def.kind {
                 DefinitionKind::Primitive(phase) => {
+                    if !env.shadow {
+                        if phase == PrimitivePhase::Runtime && env.phase != Phase::Runtime {
+                            self.error(
+                                Code::E0810,
+                                callee.span,
+                                "runtime primitive called in static computation",
+                            );
+                        } else if phase == PrimitivePhase::Static && env.phase == Phase::Runtime {
+                            self.error(
+                                Code::E0810,
+                                callee.span,
+                                "calling a meta fn in runtime code requires 'meta'",
+                            );
+                        }
+                    }
                     if self.hir.primitive_module(id) == Some("Reflect")
                         && matches!(
                             def.name.value.as_str(),
@@ -309,16 +329,6 @@ impl Checker<'_> {
                         && let Some(path) = path
                     {
                         return self.reflect_call(env, path, args, expected, span);
-                    }
-                    if !env.shadow
-                        && phase == PrimitivePhase::Runtime
-                        && env.phase != Phase::Runtime
-                    {
-                        self.error(
-                            Code::E0810,
-                            callee.span,
-                            "runtime primitive called in static computation",
-                        );
                     }
                     if self
                         .hir
@@ -347,8 +357,13 @@ impl Checker<'_> {
                 }
                 DefinitionKind::Function => {
                     let is_stdlib = self.hir.is_stdlib_file(def.name.span.file);
-                    pending_meta =
-                        self.is_meta_fn(id) && env.phase == Phase::Runtime && !env.shadow;
+                    if !env.shadow && self.is_meta_fn(id) && env.phase == Phase::Runtime {
+                        self.error(
+                            Code::E0810,
+                            callee.span,
+                            "calling a meta fn in runtime code requires 'meta'",
+                        );
+                    }
                     if !env.shadow
                         && !self.is_meta_fn(id)
                         && !is_stdlib
@@ -473,6 +488,13 @@ impl Checker<'_> {
                 } else {
                     self.require(env, arg_span, &normalized, &param_ty);
                 }
+            } else if parameter.is_meta {
+                let mut arg_env = env.clone();
+                arg_env.phase = Phase::MetaValue;
+                if env.phase == Phase::Runtime {
+                    arg_env.static_boundary = Some(arg_span);
+                }
+                self.expect(&mut arg_env, arg.value, &param_ty);
             } else {
                 self.expect(env, arg.value, &param_ty);
             }
@@ -498,7 +520,6 @@ impl Checker<'_> {
                 );
             }
             if parameter.is_meta
-                && !pending_meta
                 && env.phase == Phase::Runtime
                 && !env.shadow
                 && let Some(value) = self.stage_static_argument(env, arg.value, true)
@@ -563,37 +584,27 @@ impl Checker<'_> {
         }
         if let Some(known) = def_id {
             self.validate_generic_uses(env, known, &generics, span);
-            if let Some(intrinsic) = self.hir.intrinsic(known) {
-                match intrinsic {
-                    ril_hir::Intrinsic::TypeName => {
-                        if env.phase == Phase::Runtime && !env.shadow {
-                            self.eval_introspection_root(env, "type_name", args, span);
-                        }
+            if self.hir.intrinsic(known) == Some(ril_hir::Intrinsic::StringInspect) {
+                if let Some(arg) = args.first()
+                    && arg.mode != Mode::Plain
+                {
+                    let arg_span = ast.expr(arg.value).span;
+                    let first = self.types.get(&arg_span).cloned().unwrap_or(Ty::Unknown);
+                    if self.is_value_ty(env, &first) {
+                        self.error(
+                            Code::E0401,
+                            arg_span,
+                            "value-type argument cannot carry live authority",
+                        );
+                    } else if arg.mode != Mode::Ref {
+                        self.error(
+                            Code::E0406,
+                            arg_span,
+                            "String::inspect accepts plain or ref access",
+                        );
                     }
-                    ril_hir::Intrinsic::StringInspect => {
-                        if let Some(arg) = args.first()
-                            && arg.mode != Mode::Plain
-                        {
-                            let arg_span = ast.expr(arg.value).span;
-                            let first = self.types.get(&arg_span).cloned().unwrap_or(Ty::Unknown);
-                            if self.is_value_ty(env, &first) {
-                                self.error(
-                                    Code::E0401,
-                                    arg_span,
-                                    "value-type argument cannot carry live authority",
-                                );
-                            } else if arg.mode != Mode::Ref {
-                                self.error(
-                                    Code::E0406,
-                                    arg_span,
-                                    "String::inspect accepts plain or ref access",
-                                );
-                            }
-                        }
-                        self.inspection_scopes.insert(span, env.scope);
-                    }
-                    _ => {}
                 }
+                self.inspection_scopes.insert(span, env.scope);
             }
             if self.hir.primitive_module(known) == Some("Array")
                 && self.hir.definition(known).name.value == "sort"
@@ -640,36 +651,30 @@ impl Checker<'_> {
         if !env.shadow && !generics.is_empty() {
             self.generic_arguments.insert(span, generics.clone());
         }
-        if pending_meta && let Some(id) = def_id {
-            self.stage_static_call(env, id, args, span);
-        }
-        let result = if (has_meta || !generics.is_empty())
-            && !env.shadow
-            && !pending_meta
-            && env.phase == Phase::Runtime
-        {
-            let application = crate::ty::staging::Application {
-                span,
-                supplied: &used,
-                inputs: &metadata,
-            };
-            if let Some(id) = def_id {
-                self.specialize_meta_call(env, id, &generics, &application, &result)
-            } else if let Expr::Closure { params, .. } = &callee.value {
-                self.specialize_meta_parameters(
-                    env,
-                    env.clone(),
-                    callee.span,
-                    params,
-                    &application,
-                    &result,
-                )
+        let result =
+            if (has_meta || !generics.is_empty()) && !env.shadow && env.phase == Phase::Runtime {
+                let application = crate::ty::staging::Application {
+                    span,
+                    supplied: &used,
+                    inputs: &metadata,
+                };
+                if let Some(id) = def_id {
+                    self.specialize_meta_call(env, id, &generics, &application, &result)
+                } else if let Expr::Closure { params, .. } = &callee.value {
+                    self.specialize_meta_parameters(
+                        env,
+                        env.clone(),
+                        callee.span,
+                        params,
+                        &application,
+                        &result,
+                    )
+                } else {
+                    result
+                }
             } else {
                 result
-            }
-        } else {
-            result
-        };
+            };
         self.normalize(&result)
     }
 

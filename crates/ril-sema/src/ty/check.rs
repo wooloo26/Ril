@@ -242,6 +242,7 @@ pub(super) struct Env {
     pub(super) staging_owner: Option<Span>,
     pub(super) staging_gates: Vec<super::staging::StaticGate>,
     pub(super) require_concrete_types: bool,
+    pub(super) static_boundary: Option<Span>,
 }
 
 impl Env {
@@ -270,6 +271,7 @@ impl Env {
             staging_owner: None,
             staging_gates: Vec::new(),
             require_concrete_types: false,
+            static_boundary: None,
         }
     }
 

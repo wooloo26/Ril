@@ -379,7 +379,7 @@ impl Analyzer<'_> {
         }
     }
 
-    pub(super) fn snapshot_value(&self, span: Span) -> Datum {
+    pub(in crate::access::check) fn snapshot_value(&self, span: Span) -> Datum {
         if self.program.is_value(self.ty(span)) {
             Datum::default()
         } else {

@@ -5,7 +5,7 @@ use ril_source::{
     diag::{Code, Diagnostic},
     span::Span,
 };
-use ril_syntax::syntax::{Argument, Expr, ExprId, MatchArm, PatternId};
+use ril_syntax::syntax::{Expr, ExprId, MatchArm, PatternId};
 
 use super::{
     GenericValue, Ty, TypedProgram, Value,
@@ -60,8 +60,7 @@ pub(super) struct MetaCall {
 
 pub(super) struct StaticFold {
     pub caller: Env,
-    pub target: DefinitionId,
-    pub args: Vec<Argument>,
+    pub expr: ExprId,
 }
 
 #[derive(Clone, Default, PartialEq, Eq)]
@@ -127,7 +126,7 @@ impl TypedProgram {
         if let Some(plan) = self.static_folds.get(&span) {
             let caller = realize(&plan.caller, statics, types);
             let mut checker = self.static_checker();
-            let result = checker.evaluate_static_call(&caller, plan.target, &plan.args, span);
+            let result = checker.evaluate_static(&caller, plan.expr);
             if let Some(diagnostic) = checker.diagnostics.into_iter().next() {
                 return Err(diagnostic);
             }
@@ -154,13 +153,13 @@ impl TypedProgram {
     }
 
     /// Select an arm when the subject and the guards needed for selection are static,
-    /// returning the arm index alongside any type-pattern bindings (`<let X>`).
+    /// returning the arm index, type-pattern bindings (`<let X>`), and evaluated subject value.
     pub fn static_selected_arm_with_bindings(
         &self,
         span: Span,
         statics: &BTreeMap<DefinitionId, Value>,
         types: &BTreeMap<DefinitionId, Ty>,
-    ) -> Option<(usize, BTreeMap<DefinitionId, Ty>)> {
+    ) -> Option<(usize, BTreeMap<DefinitionId, Ty>, Value)> {
         let plan = self.static_matches.get(&span)?;
         let env = realize(&plan.caller, statics, types);
         let mut checker = self.static_checker();
@@ -192,7 +191,7 @@ impl TypedProgram {
                     _ => None,
                 })
                 .collect();
-            return Some((index, bound_types));
+            return Some((index, bound_types, value));
         }
         None
     }
@@ -205,7 +204,7 @@ impl TypedProgram {
         types: &BTreeMap<DefinitionId, Ty>,
     ) -> Option<usize> {
         self.static_selected_arm_with_bindings(span, statics, types)
-            .map(|(index, _)| index)
+            .map(|(index, _, _)| index)
     }
 
     fn gate_excludes(&self, gate: StaticGate, context: &StaticContext) -> bool {
@@ -378,14 +377,18 @@ impl Checker<'_> {
         expression: ExprId,
         is_meta: bool,
     ) -> Option<Span> {
-        if caller.shadow || caller.phase != Phase::Runtime {
+        if caller.shadow || (!is_meta && caller.phase != Phase::Runtime) {
             return None;
         }
         let span = self.ast(caller.file).expr(expression).span;
+        let mut staged = caller.clone();
+        if is_meta {
+            staged.phase = Phase::MetaValue;
+        }
         self.static_conditions.insert(
             span,
             StaticCondition {
-                caller: caller.clone(),
+                caller: staged,
                 expression,
                 is_meta,
             },
@@ -403,10 +406,12 @@ impl Checker<'_> {
         if env.shadow || env.phase != Phase::Runtime {
             return false;
         }
+        let mut staged = env.clone();
+        staged.phase = Phase::MetaValue;
         self.static_matches.insert(
             span,
             StaticMatch {
-                caller: env.clone(),
+                caller: staged,
                 expression,
                 arms: arms.iter().map(|arm| (arm.pattern, arm.guard)).collect(),
             },
@@ -421,8 +426,10 @@ impl Checker<'_> {
         statics: &BTreeMap<DefinitionId, Value>,
         types: &BTreeMap<DefinitionId, Ty>,
     ) -> Result<BTreeMap<DefinitionId, Value>, Diagnostic> {
-        let caller = realize(&plan.caller, statics, types);
+        let mut caller = realize(&plan.caller, statics, types);
+        caller.phase = Phase::MetaValue;
         let mut callee = realize(&plan.callee, statics, types);
+        callee.phase = Phase::MetaValue;
         let mut supplied: Vec<_> = plan
             .bindings
             .iter()
@@ -523,6 +530,11 @@ impl Signal {
     pub(super) fn diagnostic(self, root: Span) -> Diagnostic {
         match self {
             Signal::Error(code, span, message) => Diagnostic::error(code, span, message),
+            Signal::CompileError {
+                code,
+                span,
+                message,
+            } => Diagnostic::error(code, span, message),
             Signal::Dependent(span) => Diagnostic::error(
                 Code::E0814,
                 span,

@@ -676,6 +676,17 @@ impl Walk<'_> {
                 }
             }
             Expr::Quote(ty) => self.ty(*ty),
+            Expr::Meta(inner) => {
+                let prev_funcs = std::mem::take(&mut self.funcs);
+                let prev_loops = std::mem::take(&mut self.loops);
+                let prev_top = std::mem::replace(&mut self.fn_top_block, false);
+                self.in_barrier += 1;
+                self.expr(*inner);
+                self.in_barrier -= 1;
+                self.fn_top_block = prev_top;
+                self.loops = prev_loops;
+                self.funcs = prev_funcs;
+            }
             Expr::If {
                 condition, yes, no, ..
             } => {

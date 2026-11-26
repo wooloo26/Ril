@@ -202,7 +202,10 @@ impl Checker<'_> {
         field: TypeId,
         span: Span,
     ) -> Ty {
-        let Some(iterable) = self.eval_root(env, iterable, !env.checking_type_template) else {
+        let mut meta_env = env.clone();
+        meta_env.phase = Phase::MetaValue;
+        let Some(iterable) = self.eval_root(&meta_env, iterable, !env.checking_type_template)
+        else {
             return Ty::Unknown;
         };
         let items: Vec<_> = match iterable {

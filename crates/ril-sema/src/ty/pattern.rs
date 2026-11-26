@@ -614,9 +614,14 @@ impl Checker<'_> {
                 );
             }
             let mut concrete = env.clone();
+            concrete.phase = super::check::Phase::MetaValue;
             concrete.require_concrete_types = true;
             match self.evaluate_static(&concrete, value) {
                 Ok(val) => {
+                    if !matches!(val, Value::Type(_)) {
+                        let val_span = self.ast(env.file).expr(value).span;
+                        self.static_values.insert(val_span, val.clone());
+                    }
                     let mut dependent = false;
                     for (index, arm) in arms.iter().enumerate() {
                         let mut local = env.clone();
@@ -636,11 +641,23 @@ impl Checker<'_> {
                             }
                         }
                         if let Some(guard) = arm.guard {
-                            match self.evaluate_with_bindings(&local, guard, &mut bindings) {
+                            let mut guard_eval = local.clone();
+                            guard_eval.phase = super::check::Phase::MetaValue;
+                            match self.evaluate_with_bindings(&guard_eval, guard, &mut bindings) {
                                 Ok(Value::Bool(true)) => {}
                                 Ok(Value::Bool(false)) => continue,
                                 Ok(_) => {
-                                    self.expect(&mut local, guard, &Ty::Bool);
+                                    let mut guard_env = local.clone();
+                                    guard_env.phase = super::check::Phase::MetaValue;
+                                    if env.phase == super::check::Phase::Runtime {
+                                        let arm_span = self
+                                            .ast(env.file)
+                                            .pattern(arm.pattern)
+                                            .span
+                                            .join(self.ast(env.file).expr(guard).span);
+                                        guard_env.static_boundary = Some(arm_span);
+                                    }
+                                    self.expect(&mut guard_env, guard, &Ty::Bool);
                                     return Ty::Unknown;
                                 }
                                 Err(super::eval::Signal::Dependent(_)) => {
@@ -659,7 +676,17 @@ impl Checker<'_> {
                         self.pattern(&mut local, arm.pattern, input);
                         self.refine_type_arm(&mut local, arm.pattern, input, &HashSet::new());
                         if let Some(guard) = arm.guard {
-                            self.expect(&mut local, guard, &Ty::Bool);
+                            let mut guard_env = local.clone();
+                            guard_env.phase = super::check::Phase::MetaValue;
+                            if env.phase == super::check::Phase::Runtime {
+                                let arm_span = self
+                                    .ast(env.file)
+                                    .pattern(arm.pattern)
+                                    .span
+                                    .join(self.ast(env.file).expr(guard).span);
+                                guard_env.static_boundary = Some(arm_span);
+                            }
+                            self.expect(&mut guard_env, guard, &Ty::Bool);
                         }
                         let found = self.expr(&mut local, arm.body, expected);
                         env.effects_seen.extend(local.effects_seen);
@@ -720,7 +747,21 @@ impl Checker<'_> {
                 );
             }
             if let Some(guard) = arm.guard {
-                self.expect(&mut local, guard, &Ty::Bool);
+                if is_meta {
+                    let mut guard_env = local.clone();
+                    guard_env.phase = super::check::Phase::MetaValue;
+                    if env.phase == super::check::Phase::Runtime {
+                        let arm_span = self
+                            .ast(env.file)
+                            .pattern(arm.pattern)
+                            .span
+                            .join(self.ast(env.file).expr(guard).span);
+                        guard_env.static_boundary = Some(arm_span);
+                    }
+                    self.expect(&mut guard_env, guard, &Ty::Bool);
+                } else {
+                    self.expect(&mut local, guard, &Ty::Bool);
+                }
             } else {
                 covered.extend(pattern_tags);
                 prior.push(shape);
@@ -1193,7 +1234,7 @@ impl Checker<'_> {
                     && self.match_member_mode(env, storage, tv.mode)
                     && self.match_type_pattern_inner(env, *val, &tv.ty, strict_eval)?)
             }
-            (Type::TupleAny, Ty::Tuple(_) | Ty::Unit) => Ok(true),
+            (Type::TupleAny, Ty::Tuple(_)) => Ok(true),
             (Type::Tuple(items), Ty::Tuple(targets)) => {
                 if items.len() != targets.len() {
                     return Ok(false);

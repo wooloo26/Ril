@@ -175,6 +175,75 @@ pub(crate) fn extract_position(params: &Value) -> Option<(&str, usize, usize)> {
     Some((uri, line, character))
 }
 
+/// Static hover and completion metadata for built-in symbols (`FileId::BUILTIN`).
+pub(crate) struct BuiltinDoc {
+    pub signature: &'static str,
+    pub detail: &'static str,
+    pub kind: u32,
+    pub doc: &'static str,
+}
+
+/// Returns hover/completion documentation for built-in language primitives.
+pub(crate) fn builtin_doc(name: &str) -> Option<BuiltinDoc> {
+    Some(match name {
+        "bool" => BuiltinDoc {
+            signature: "primitive type bool",
+            detail: "built-in value type",
+            kind: 7,
+            doc: "Copy-by-value boolean type (`true` / `false`). Forbids `ref`, `mut`, and `^mut` access modes.",
+        },
+        "int" => BuiltinDoc {
+            signature: "primitive type int",
+            detail: "built-in value type",
+            kind: 7,
+            doc: "Copy-by-value arbitrary-precision signed integer. Overflow cannot wrap; division or shift defects panic (or fail static evaluation with `E0831`). Forbids `ref`, `mut`, and `^mut` access modes.",
+        },
+        "f64" => BuiltinDoc {
+            signature: "primitive type f64",
+            detail: "built-in value type",
+            kind: 7,
+            doc: "Copy-by-value IEEE 754 binary64 floating-point number. Convert explicitly with `Numeric::to_f64`, `Numeric::trunc`, or `Numeric::convert`. Not eligible as a `Map` key or `Set` element (`E0328`).",
+        },
+        "str" => BuiltinDoc {
+            signature: "primitive type str",
+            detail: "built-in value type",
+            kind: 7,
+            doc: "Copy-by-value immutable UTF-8 string. `len(s)` counts Unicode scalar values; helpers live in `ril/string`.",
+        },
+        "bytes" => BuiltinDoc {
+            signature: "primitive type bytes",
+            detail: "built-in value type",
+            kind: 7,
+            doc: "Copy-by-value immutable byte sequence (`bytes\"...\"`). `len(b)` counts bytes; helpers live in `ril/bytes`.",
+        },
+        "never" => BuiltinDoc {
+            signature: "primitive type never",
+            detail: "built-in bottom type",
+            kind: 7,
+            doc: "Uninhabited bottom type for expressions that never complete normally (`panic`, `compile_error`, `return`, `break`, `continue`, or infinite loops without a targeting `break`). Coerces to any expected type.",
+        },
+        "Type" => BuiltinDoc {
+            signature: "primitive type Type<T>",
+            detail: "static type-value kind / Type<T>",
+            kind: 7,
+            doc: "Static-only type value. Bare `Type` is the kind of any type value; `Type<T>` is the exact type of quoted `<T>`. Unquote in type position with `<tv>`. Forbidden in runtime storage (`E0816`).",
+        },
+        "KeyOf" => BuiltinDoc {
+            signature: "static check KeyOf<T>",
+            detail: "built-in static coordinate check",
+            kind: 22,
+            doc: "Built-in static value check (`meta key: str |> KeyOf<T>` or `int |> KeyOf<T>`) verifying that `key` is a valid field label or tuple index of accessible record/tuple `T` (`E0323`). Enables `T.(key)` and `x.(key)`.",
+        },
+        "Nominal" => BuiltinDoc {
+            signature: "type pattern Nominal<Inner>",
+            detail: "built-in type pattern",
+            kind: 22,
+            doc: "Compile-time type pattern used in `match <T>` arms (`<Nominal<let Inner>>`) to match accessible `.ril` nominal wrappers and in-scope `opaque` wrappers, binding their single-layer payload type `Inner`. Does not match sealed opaque types, sums, or foreign handles.",
+        },
+        _ => return None,
+    })
+}
+
 /// Extracts contiguous leading `--` doc comments immediately above `decl_offset`.
 pub(crate) fn extract_doc_comment(text: &str, decl_offset: usize) -> Option<String> {
     let (decl_line, _) = offset_to_line_col(text, decl_offset);
@@ -232,7 +301,7 @@ pub(crate) fn import_insert_line(text: &str) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use super::extract_doc_comment;
+    use super::{builtin_doc, extract_doc_comment};
 
     #[test]
     fn extract_doc_comment_preserves_blank_paragraphs_and_fenced_examples() {
@@ -243,5 +312,18 @@ mod tests {
             doc,
             "Computes length.\n\n```ril\n    let n = len([1, 2])\n```"
         );
+    }
+
+    #[test]
+    fn builtin_doc_covers_all_language_primitives() {
+        for name in [
+            "bool", "int", "f64", "str", "bytes", "never", "Type", "KeyOf", "Nominal",
+        ] {
+            let info =
+                builtin_doc(name).unwrap_or_else(|| panic!("missing builtin_doc for {name}"));
+            assert!(!info.signature.is_empty());
+            assert!(!info.detail.is_empty());
+            assert!(!info.doc.is_empty());
+        }
     }
 }

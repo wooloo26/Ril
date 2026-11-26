@@ -604,15 +604,14 @@ impl Builder<'_, '_> {
                 .typed
                 .meta_match_decisions
                 .get(&span)
-                .map(|&idx| (idx, std::collections::BTreeMap::new()))
+                .map(|&idx| (idx, std::collections::BTreeMap::new(), None))
                 .or_else(|| {
-                    self.global.typed.static_selected_arm_with_bindings(
-                        span,
-                        &self.statics,
-                        &self.types,
-                    )
+                    self.global
+                        .typed
+                        .static_selected_arm_with_bindings(span, &self.statics, &self.types)
+                        .map(|(idx, bound, val)| (idx, bound, Some(val)))
                 });
-            if let Some((index, bound_types)) = chosen
+            if let Some((index, bound_types, folded_value)) = chosen
                 && let Some(arm) = arms.get(index)
             {
                 let old_types = self.types.clone();
@@ -624,7 +623,11 @@ impl Builder<'_, '_> {
                 let result = if is_type_value {
                     self.expr(arm.body)
                 } else {
-                    let evaluated = self.expr(value)?;
+                    let evaluated = if let Some(val) = folded_value {
+                        self.constant(&val, self.ast().expr(value).span)?
+                    } else {
+                        self.expr(value)?
+                    };
                     let prior = self.locals.clone();
                     self.bind(arm.pattern, evaluated)?;
                     let res = self.expr(arm.body);

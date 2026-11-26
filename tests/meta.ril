@@ -41,7 +41,7 @@ meta fn align(n: int, size: int = 16) -> int {
 }
 meta let COUNT = align(22)
 meta let _ = assert(COUNT == 32)
-fn get() -> int { align(size: 8, n: 17) }
+fn get() -> int { meta align(size: 8, n: 17) }
 meta let _ = assert(<typeof get()> == <int>)
 
 -- @case recursive_meta compile-pass budget=100
@@ -76,8 +76,17 @@ meta let BAD = runtime()
 
 -- @case meta_argument_must_be_static compile-fail E0814
 meta fn twice(n: int) -> int { n * 2 }
-fn bad(n: int) -> int { twice(n) }
+fn bad(n: int) -> int { meta twice(n) }
 -- ^ E0814
+
+-- @case runtime_bare_meta_fn_call_requires_meta compile-fail E0810
+meta fn twice(n: int) -> int { n * 2 }
+fn bad() -> int { twice(3) }
+-- ^ E0810
+
+-- @case nested_meta_expr_inside_meta_fn_rejected compile-fail E0810
+meta fn bad() -> int { meta (1 + 2) }
+-- ^ E0810
 
 -- @case typeof_is_unevaluated compile-pass
 meta fn doomed() -> int { panic("never evaluated") }
@@ -255,7 +264,7 @@ meta fn positive(n: int) -> int {
     -- ^ E0830
     n
 }
-fn relay(meta n: int) -> int { positive(n - 1) }
+fn relay(meta n: int) -> int { meta positive(n - 1) }
 fn use_relay() -> int { relay(1) }
 
 -- @case changing_static_recursion_exhausts_compilation_budget compile-fail E0811 budget=12

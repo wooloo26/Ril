@@ -151,6 +151,21 @@ impl Parser<'_> {
     }
 
     fn prefix(&mut self, context: ExprContext) -> Result<ExprId> {
+        if self.is("meta") && !matches!(self.next_text(), "if" | "match") {
+            let token = self.bump();
+            if self.tight("(") {
+                return Err(self.error(
+                    Code::E0120,
+                    self.current().span,
+                    "meta expression requires whitespace before '('; tight 'meta(...)' is reserved for declaration metadata",
+                ));
+            }
+            self.skip_lines();
+            let value = self.expression(UNARY, context)?;
+            return Ok(self
+                .ast
+                .add_expr(token.span.join(self.last), Expr::Meta(value)));
+        }
         if matches!(self.text(), "-" | "!" | "~" | "ref" | "^mut" | "new") {
             let token = self.bump();
             let op = self.owned(token);

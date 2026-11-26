@@ -64,7 +64,11 @@ impl Checker<'_> {
             .starts_with(|c: char| c.is_ascii_lowercase() || c == '_')
         {
             let evaluated = match arg {
-                GenericArg::Value(expr) => self.eval_root(env, *expr, true),
+                GenericArg::Value(expr) => {
+                    let mut meta_env = env.clone();
+                    meta_env.phase = Phase::MetaValue;
+                    self.eval_root(&meta_env, *expr, true)
+                }
                 GenericArg::Type(ty) => {
                     let expects_type_value = param.bound.first().is_some_and(|&bound| {
                         matches!(&self.ast(param.name.span.file).ty(bound).value,

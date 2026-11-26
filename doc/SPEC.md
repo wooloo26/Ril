@@ -1096,7 +1096,7 @@ assert(read_id(.{ id: 1, name: "a" }) + read_id(.{ id: 2, ok: true }) == 3)
 - **K-PHASE**:
   - `TypeEval` and `MetaValue` run under the root step budget (`E0811` exhaustion; `E0830` failed `assert`; `E0831` `panic` or arithmetic defect).
   - Runtime values and storage cannot hold `Type<T>` values (`E0816`). `meta fn` returns, `meta let` constants, and `meta(...)` attributes must be type-value-free (`E0812` / `E0816`), callable-free (`E0816`), and must-consume-resource-free (`E0816`) deeply immutable values (`E0813` on `@Eff` / `&State` on `meta fn`). `ctl` declarations, `ctl` operations, `ctl` handlers, and `unwind_ctl` are prohibited in `TypeEval` and `MetaValue` (`E0810`).
-  - Direct saturated `meta fn` calls with static arguments (`E0814` on runtime arguments) evaluate at compile time in runtime code to deeply immutable snapshots with `new` stripped (`E0520` on `let mut`; use `clone(...)` for a mutable copy). First-class runtime references to a `meta fn` fail `E0810`.
+  - Runtime code enters compile-time evaluation explicitly via `meta expr` / `meta { ... }` (`E0810` on unprefixed runtime calls to `meta fn` or nested `meta` inside static phases; `E0814` on outer runtime locals or non-static arguments). A `meta` expression evaluates at compile time to a deeply immutable snapshot with `new` stripped (`E0520` on `let mut`; use `clone(...)` for a mutable copy), forbids escaping `Type<T>`, callables, must-consume resources, or live-mode containers (`E0816`), and acts as a control-transfer barrier (`E0707`). First-class runtime references to a `meta fn` fail `E0810`.
   - `typeof expr` checks `expr` in an isolated shadow scope without evaluating it or running compile-time `meta fn` evaluation (carrying the baseline schema without `new` or source authority).
     - Internal `E0549` and statement `E0720` apply (root `Result` is exempt from `E0720`); outward `@Eff`, `&State`, `E0527` uses, and caller `E0549` endings are empty.
 
@@ -1107,9 +1107,10 @@ meta fn build_lookup(scale: int) -> []int {
 -- meta let BAD_FN = \x: int -> x      -- Error [E0816]: callable cannot escape 'meta let'
 
 fn sample(i: int) -> int {
-    let table = build_lookup(10)       -- OK: compile-time evaluated immutable []int snapshot
-    -- let mut bad = build_lookup(10)  -- Error [E0520]: compile-time 'meta fn' strips 'new' qualification
-    -- let fn_ref = build_lookup       -- Error [E0810]: 'meta fn' is not a runtime function value
+    let table = meta build_lookup(10)      -- OK: compile-time evaluated immutable []int snapshot
+    -- let bare = build_lookup(10)         -- Error [E0810]: calling 'meta fn' in runtime code requires 'meta'
+    -- let mut bad = meta build_lookup(10) -- Error [E0520]: compile-time 'meta' strips 'new' qualification
+    -- let fn_ref = build_lookup           -- Error [E0810]: 'meta fn' is not a runtime function value
     table[i]
 }
 type SampleOut = typeof(sample(0))     -- int (unevaluated)
@@ -1422,7 +1423,7 @@ DeclLet         ::= [ Visibility ] "let" ValueName ":" TypeExpression
 | Precedence (high → low) | Operators / forms | Associativity |
 | :---: | :--- | :---: |
 | 1 | `.` `?.` `f(...)` `Tag(...)` `f \...` `a[i]` `a?[i]` `?` `Type.{...}` `::` | Left |
-| 2 | Unary `-` `!` `~` `ref e` `^mut e` `new x` | Right |
+| 2 | Unary `-` `!` `~` `ref e` `^mut e` `new x` `meta e` | Right |
 | 3 | `*` `/` `%` | Left |
 | 4 | `+` `-` | Left |
 | 5 | `<<` `>>` | Left |
@@ -1475,10 +1476,12 @@ ShiftExpr                ::= AdditiveExpr { ( "<<" | ">>" ) AdditiveExpr }
 AdditiveExpr             ::= MultiplicativeExpr { ( "+" | "-" ) MultiplicativeExpr }
 MultiplicativeExpr       ::= UnaryExpr { ( "*" | "/" | "%" ) UnaryExpr }
 UnaryExpr                ::= ( "-" | "!" | "~" ) UnaryExpr
+                           | MetaExpr
                            | NewHandoffExpr
                            | ObserveExpr
                            | SharingExpr
                            | PostfixExpr
+MetaExpr                 ::= "meta" UnaryExpr
 NewHandoffExpr           ::= "new" ValueName
 ObserveExpr              ::= "ref" PostfixExpr
 SharingExpr              ::= "^mut" PostfixExpr
@@ -2812,11 +2815,12 @@ assert(describe(7) == "int:7" && describe(true) == "true")
 | :--- | :--- |
 | `TypeEval` (type functions, static checks) | Type functions, `meta fn`, confined closures, static reflection, and dual-phase core ops (`len`, `inner`, `clone`, `derive`, `assert`, `panic`, `String::inspect`, plus pure `Array`/`Map`/`Set`/`String`/`Bytes`/`Numeric`) |
 | `MetaValue` (`meta fn`, `meta let`, `meta(...)`) | `meta fn`, confined closures, static reflection, and dual-phase core operations |
-| `RunTime` (`fn`, closures) | Ordinary `fn`, closures, foreign `.d.ril` `fn`, built-ins, plus direct saturated `meta fn` calls with static arguments (evaluated at compile time to immutable snapshots) |
+| `RunTime` (`fn`, closures) | Ordinary `fn`, closures, foreign `.d.ril` `fn`, and runtime/dual-phase built-ins. Compile-time evaluation and `meta fn` calls enter `MetaValue` explicitly via `meta expr` / `meta { ... }` (yielding immutable snapshots) |
 
-- **Explicit runtime-only `meta if` / `meta match` (`E0810`, `E0814`, `E0816`)**:
-  - `meta if` and `meta match` are permitted **only** inside runtime functions and closures (`E0810` inside `meta fn`, `meta let`, `meta(...)`, or type functions, where plain `if`/`match` already execute at compile time).
-  - The condition of `meta if` and the scrutinee (plus arm guards) of `meta match` must be compile-time known (`E0814` on runtime values, `E0810` on runtime calls).
+- **Explicit runtime-only `meta` expressions, `meta if`, and `meta match` (`E0810`, `E0814`, `E0816`)**:
+  - `meta expr` / `meta { ... }`, `meta if`, and `meta match` are permitted **only** inside runtime functions and closures (`E0810` inside `meta fn`, `meta let`, `meta(...)`, `meta` expressions, or type functions, where code already executes at compile time). Calling a `meta fn` directly in runtime code outside a `meta` context fails `E0810`.
+  - Tight `meta(...)` is reserved for declaration metadata attributes; parenthesized `meta` expressions require whitespace (`meta (a + b)`, `E0120` on tight `meta(...)` in expression position).
+  - The operand of `meta expr`, the condition of `meta if`, and the scrutinee (plus arm guards) of `meta match` must be compile-time known (`E0814` on outer runtime locals or non-static values, `E0810` on runtime calls).
   - When statically concrete (e.g., over `Platform::OS` or a `meta let` constant), only the selected branch is type-, access-, and codegen-checked; untaken branches are skipped and `.d.ril` foreign symbols referenced solely within them need not resolve at link time.
   - Plain `if` / `match` in runtime code execute at runtime: they never silently prune `meta let` branches, and matching `Type<T>` with plain `match` in runtime code fails `E0816` (write `meta match <T>`).
 - **Generic `meta match <T>` resolution**: `meta match <T>` over an uninstantiated type parameter checks each arm under its static type fact and resolves to the single matching arm for each concrete instantiation of `T` (implementations may achieve this via specialization/monomorphization or any semantically equivalent mechanism).
@@ -2876,7 +2880,7 @@ ModeModifier              ::= RecordFieldMode | ValueName
 
 ### Structural Type Pattern Matching
 
-`let U` binds an exact type variable (or `FieldMode` in `let M field: ...`); bare `PascalCase` heads match concrete nominal, sum, or opaque type constructors (`E0306` on type-constructor pattern variables like `<(let F)<let X>>`). The static-only pattern `Nominal<pat>` matches any transparent `.ril` nominal wrapper (or in-scope `.ril` `opaque` wrapper, honoring the caller's defining scope) and matches its unwrapped representation against `pat` (never matching sealed `opaque` wrappers, `.d.ril` foreign handles, or sum types; `Nominal<...>` outside type patterns fails `E0306`, bare value `Nominal` fails `E0319`, and wrong arity fails `E0340`):
+`let U` binds an exact type variable (or `FieldMode` in `let M field: ...`; `let _` ignores the mode without binding a name); `<(..)>` and `Tuple` match nonempty tuples `(A, B, ...)` (matching `TypeKind::Tuple`, distinct from unit `()`); bare `PascalCase` heads match concrete nominal, sum, or opaque type constructors (`E0306` on type-constructor pattern variables like `<(let F)<let X>>`). The static-only pattern `Nominal<pat>` matches any transparent `.ril` nominal wrapper (or in-scope `.ril` `opaque` wrapper, honoring the caller's defining scope) and matches its unwrapped representation against `pat` (never matching sealed `opaque` wrappers, `.d.ril` foreign handles, or sum types; `Nominal<...>` outside type patterns fails `E0306`, bare value `Nominal` fails `E0319`, and wrong arity fails `E0340`):
 
 ```ril
 type UnwrapResult = \T -> match <T> {
@@ -2910,9 +2914,9 @@ TypeRecordPattern     ::= ".{" [ TypeRecordPatternList ] "}"
 TypeRecordPatternList ::= TypeRestPattern [ "," ]
                         | TypePatternField { "," TypePatternField } [ "," TypeRestPattern ] [ "," ]
 TypePatternField      ::= [ FieldMode ] FieldLabel ":" TypePatternInner
-                        | "let" PascalCase FieldLabel ":" TypePatternInner
+                        | "let" ( PascalCase | "_" ) FieldLabel ":" TypePatternInner
 TypeRestPattern       ::= ".." [ "let" PascalCase ]
-TypePatternAccessMode ::= "mut" | "^mut" | "ref" | "let" PascalCase | StorageModeExpression
+TypePatternAccessMode ::= "mut" | "^mut" | "ref" | "let" ( PascalCase | "_" ) | StorageModeExpression
 TypeArrayPattern      ::= "[" [ TypePatternAccessMode ] "]" TypePatternInner
 TypeMapPattern        ::= "[" TypePatternInner ":" [ TypePatternAccessMode ] TypePatternInner "]"
 RigidNominalPattern   ::= { "Super" "::" } { RigidPatternSegment "::" } RigidPatternSegment
@@ -2949,7 +2953,7 @@ pub sub UnitCircle {
 -- Rejected module, sub-scope, and top-level purity forms:
 -- sub UnitCircle { let _ = PI }                   -- Error [E0204]: 'PI' not in scope without 'Super::'
 -- let _r: UnitCircle::Rad = 1.0                   -- Error [E0301]: expected 'UnitCircle::Rad', found 'f64'
--- let _k = fields(<UnitCircle::Rad>)              -- Error [E0308]: 'Rad' representation is sealed outside 'UnitCircle'
+-- meta let _K = fields(<UnitCircle::Rad>)         -- Error [E0308]: 'Rad' representation is sealed outside 'UnitCircle'
 -- use Super::PI                                   -- Error [E0208]: file root has no enclosing 'Super'
 -- pub fn leak() -> new Hidden { Hidden.{ r: 1.0 } } -- Error [E0910]: 'pub' signature leaks private 'Hidden'
 -- var global_hits = 0                             -- Error [E0906]: top-level mutable state is prohibited

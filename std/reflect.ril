@@ -62,8 +62,8 @@ pub meta fn type_kind<T>(target: Type<T>) -> TypeKind {
         <bool> | <int> | <f64> | <str> | <bytes> | <()> | <never> -> TypeKind::Value
         <.{ ..}> -> TypeKind::Record
         <(..)> -> TypeKind::Tuple
-        <[let M]_> -> TypeKind::Array
-        <[_: let M _]> -> TypeKind::Map
+        <[let _]_> -> TypeKind::Array
+        <[_: let _ _]> -> TypeKind::Map
         <Derived<_>> -> TypeKind::Derived
         <Type<_>> | <Type> | <FieldMode> -> TypeKind::Meta
         <Nominal<_>> -> TypeKind::Nominal
@@ -75,10 +75,10 @@ pub meta fn type_kind<T>(target: Type<T>) -> TypeKind {
 -- Fails with `E0308` on sealed opaque types, `E0907` on foreign handles, and `E0358` otherwise.
 pub type FieldKey = \T -> match <T> {
     <.{ ..}> -> <str>
-    <(..)> -> <int>
+    <(..)> | <()> -> <int>
     <Nominal<let Inner>> -> match <Inner> {
         <.{ ..}> -> <str>
-        <(..)> -> <int>
+        <(..)> | <()> -> <int>
         _ -> compile_error_code("E0358", "FieldKey requires a record or tuple type")
     }
     _ -> match type_kind(<T>) {

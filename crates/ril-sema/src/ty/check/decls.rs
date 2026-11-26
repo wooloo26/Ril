@@ -213,7 +213,13 @@ impl Checker<'_> {
                         }
                     }
                 }
-                self.check_pure_default(&local, default, &ty.ty);
+                if p.is_meta {
+                    let mut meta_env = local.clone();
+                    meta_env.phase = Phase::MetaValue;
+                    self.check_pure_default(&meta_env, default, &ty.ty);
+                } else {
+                    self.check_pure_default(&local, default, &ty.ty);
+                }
             }
         }
         for &helper in &fun.helpers {
@@ -263,6 +269,9 @@ impl Checker<'_> {
                 let local = if *is_meta {
                     env_meta = env.clone();
                     env_meta.phase = Phase::MetaValue;
+                    if env.phase == Phase::Runtime {
+                        env_meta.static_boundary = Some(node.span);
+                    }
                     &mut env_meta
                 } else {
                     env
@@ -632,6 +641,22 @@ impl Checker<'_> {
             DefinitionKind::Local | DefinitionKind::Generic => {
                 if let Some(GenericValue::Type(ty)) = env.generics.get(&id) {
                     return ty.clone();
+                }
+                if def.kind == DefinitionKind::Local
+                    && env.phase != Phase::Runtime
+                    && !env.shadow
+                    && let Some(boundary) = env.static_boundary
+                    && !self.meta_parameters.contains(&id)
+                    && !env.generics.contains_key(&id)
+                    && (def.name.span.file != boundary.file
+                        || def.name.span.start < boundary.start
+                        || def.name.span.end > boundary.end)
+                {
+                    self.error(
+                        Code::E0814,
+                        span,
+                        "compile-time expression cannot reference an outer runtime local",
+                    );
                 }
                 let ty = self.bindings.get(&id).cloned().unwrap_or(Ty::Unknown);
                 if self.schemes.contains(&id) {

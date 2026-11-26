@@ -323,6 +323,55 @@ impl Checker<'_> {
                 Ty::Map(Box::new(key), Box::new(member))
             }
             Expr::Quote(ty) => Ty::TypeValue(Some(Box::new(self.type_expr(env, *ty)))),
+            Expr::Meta(inner) => {
+                if env.phase != Phase::Runtime {
+                    self.error(
+                        Code::E0810,
+                        span,
+                        "'meta' expression is only allowed in runtime code; compile-time code is already evaluated statically",
+                    );
+                }
+                let mut local = env.clone();
+                local.phase = Phase::MetaValue;
+                local.expected_return = None;
+                local.inferred_return = None;
+                local.return_scope = None;
+                local.effects_seen.clear();
+                if env.phase == Phase::Runtime {
+                    local.static_boundary = Some(span);
+                }
+                let stripped_expected = expected.map(Self::strip_live_modes);
+                let ty = self.expr(&mut local, *inner, stripped_expected.as_ref());
+                let norm = self.normalize(&ty);
+                if !env.shadow && !local.effects_seen.is_empty() {
+                    self.error(
+                        Code::E0810,
+                        span,
+                        "compile-time meta expression cannot perform runtime effects",
+                    );
+                }
+                let valid_output = if norm.contains_type_value() {
+                    self.error(
+                        Code::E0816,
+                        span,
+                        "type values cannot escape a compile-time meta expression into runtime code",
+                    );
+                    false
+                } else if !self.meta_exportable(&local, &norm, &mut HashSet::new()) {
+                    self.error(
+                        Code::E0816,
+                        span,
+                        "meta expression result cannot cross into runtime code",
+                    );
+                    false
+                } else {
+                    true
+                };
+                if !env.shadow && env.phase == Phase::Runtime && valid_output {
+                    self.stage_static_expr(&local, *inner, span);
+                }
+                norm
+            }
             Expr::If {
                 is_meta,
                 condition,
@@ -337,12 +386,22 @@ impl Checker<'_> {
                             "'meta if' is only allowed in runtime functions; compile-time code uses plain 'if'",
                         );
                     }
+                    let mut cond_env = env.clone();
+                    cond_env.phase = Phase::MetaValue;
+                    let cond_span = match condition {
+                        Condition::Expr(test) => self.ast(env.file).expr(*test).span,
+                        Condition::Binding { value, .. } => self.ast(env.file).expr(*value).span,
+                    };
+                    if env.phase == Phase::Runtime {
+                        cond_env.static_boundary = Some(cond_span);
+                    }
+                    self.condition(&mut cond_env, condition);
                     let mut yes_env = env.clone();
-                    self.condition(&mut yes_env, condition);
+                    yes_env.refinements = cond_env.refinements.clone();
                     let mut no_env = env.clone();
                     if let Condition::Expr(test) = condition {
                         no_env.refinements = yes_env.refinements.clone();
-                        let mut concrete = env.clone();
+                        let mut concrete = cond_env.clone();
                         concrete.require_concrete_types = true;
                         match self.evaluate_static(&concrete, *test) {
                             Ok(Value::Bool(taken)) => {
@@ -365,7 +424,9 @@ impl Checker<'_> {
                             }
                             Ok(_) => {}
                             Err(super::eval::Signal::Dependent(_)) => {
-                                if let Some(cond_span) = self.stage_condition(env, *test, true) {
+                                if let Some(cond_span) =
+                                    self.stage_condition(&cond_env, *test, true)
+                                {
                                     use super::staging::StaticGate::Condition;
                                     yes_env.staging_gates.push(Condition {
                                         span: cond_span,
@@ -383,10 +444,14 @@ impl Checker<'_> {
                             }
                         }
                     } else if let Condition::Binding { pattern, value, .. } = condition {
-                        let mut concrete = env.clone();
+                        let mut concrete = cond_env.clone();
                         concrete.require_concrete_types = true;
                         match self.evaluate_static(&concrete, *value) {
                             Ok(val) => {
+                                if !matches!(val, Value::Type(_)) {
+                                    let val_span = self.ast(env.file).expr(*value).span;
+                                    self.static_values.insert(val_span, val.clone());
+                                }
                                 let mut bindings = Default::default();
                                 match self.value_pattern(
                                     &mut yes_env,
@@ -533,7 +598,16 @@ impl Checker<'_> {
                 arms,
                 ..
             } => {
-                let input = self.expr(env, *value, None);
+                let input = if *is_meta {
+                    let mut scrut_env = env.clone();
+                    scrut_env.phase = Phase::MetaValue;
+                    if env.phase == Phase::Runtime {
+                        scrut_env.static_boundary = Some(self.ast(env.file).expr(*value).span);
+                    }
+                    self.expr(&mut scrut_env, *value, None)
+                } else {
+                    self.expr(env, *value, None)
+                };
                 self.check_match(env, *is_meta, arms, (*value, &input), expected, span)
             }
             Expr::Closure {
@@ -600,6 +674,37 @@ impl Checker<'_> {
         let ty = self.apply_refinement(env, id, ty);
         self.types.insert(span, ty.clone());
         ty
+    }
+
+    fn strip_live_modes(ty: &Ty) -> Ty {
+        match ty {
+            Ty::Array(member) => {
+                Ty::Array(Box::new(Member::plain(Self::strip_live_modes(&member.ty))))
+            }
+            Ty::Map(key, member) => Ty::Map(
+                Box::new(Self::strip_live_modes(key)),
+                Box::new(Member::plain(Self::strip_live_modes(&member.ty))),
+            ),
+            Ty::Record(fields, open) => Ty::Record(
+                fields
+                    .iter()
+                    .map(|(name, member)| {
+                        (
+                            name.clone(),
+                            Member::plain(Self::strip_live_modes(&member.ty)),
+                        )
+                    })
+                    .collect(),
+                *open,
+            ),
+            Ty::Tuple(items) => Ty::Tuple(
+                items
+                    .iter()
+                    .map(|member| Member::plain(Self::strip_live_modes(&member.ty)))
+                    .collect(),
+            ),
+            other => other.clone(),
+        }
     }
 
     pub(super) fn literal_type(&mut self, syntax: &syntax::Literal, span: Span) -> Ty {

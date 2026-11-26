@@ -6,7 +6,7 @@ use ril_syntax::syntax::{self, Argument, Expr, Mode};
 
 use crate::ty::{
     Adt, AdtKind, Callable, GenericValue, Member, Parameter, Ty,
-    check::{Checker, Env, Phase, unknown_callable},
+    check::{Checker, Env, unknown_callable},
 };
 
 #[derive(Default)]
@@ -360,9 +360,6 @@ impl Checker<'_> {
                 } else {
                     Ty::Unknown
                 };
-                if env.phase == Phase::Runtime && !env.shadow {
-                    self.eval_introspection_root(env, "fields", args, span);
-                }
                 Ty::Array(Box::new(Member::plain(Ty::Tuple(vec![
                     Member::plain(Ty::Mode),
                     Member::plain(key),
@@ -404,9 +401,6 @@ impl Checker<'_> {
                         }
                     }
                 }
-                if env.phase == Phase::Runtime && !env.shadow {
-                    self.eval_introspection_root(env, "sum_tags", args, span);
-                }
                 Ty::Array(Box::new(Member::plain(Ty::Str)))
             }
             "has_default" => {
@@ -435,9 +429,6 @@ impl Checker<'_> {
                 }
                 if let Some(key_ty) = types.get(1) {
                     self.require(env, span, key_ty, &Ty::Str);
-                }
-                if env.phase == Phase::Runtime && !env.shadow {
-                    self.eval_introspection_root(env, "has_default", args, span);
                 }
                 Ty::Bool
             }
@@ -537,9 +528,6 @@ impl Checker<'_> {
         };
         let result = Ty::Array(Box::new(Member::plain(attribute)));
         self.types.insert(span, result.clone());
-        if env.phase == Phase::Runtime && !env.shadow {
-            self.eval_metadata_root(env, path, args, span);
-        }
         result
     }
 }

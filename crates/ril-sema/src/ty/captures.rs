@@ -874,6 +874,7 @@ fn walk_expr(
         Expr::Literal(_)
         | Expr::Unit
         | Expr::Quote(_)
+        | Expr::Meta(_)
         | Expr::Accessor(_)
         | Expr::Hole
         | Expr::Transfer { value: None, .. } => {}

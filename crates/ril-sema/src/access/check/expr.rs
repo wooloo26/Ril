@@ -525,13 +525,40 @@ impl Analyzer<'_> {
             } => {
                 if *is_meta && let Some(&taken) = self.program.meta_if_decisions.get(&span) {
                     if let Condition::Expr(test) = condition {
-                        let _ = self.expr(ctx, ledger, *test);
+                        let mut meta_ctx = Context::new(ast.expr(*test).span);
+                        meta_ctx.file = ctx.file;
+                        meta_ctx.hir_scope = ctx.hir_scope;
+                        meta_ctx.runtime = false;
+                        let mut meta_ledger = Ledger::default();
+                        let _ = self.expr(&mut meta_ctx, &mut meta_ledger, *test);
                     }
                     return if taken {
                         let mut yes_ctx = ctx.clone();
                         yes_ctx.scope = ast.expr(*yes).span;
-                        if matches!(condition, Condition::Binding { .. }) {
-                            let _ = self.condition(&mut yes_ctx, ledger, condition, true);
+                        if let Condition::Binding {
+                            pattern,
+                            value,
+                            mode,
+                        } = condition
+                        {
+                            let mut meta_ctx = Context::new(ast.expr(*value).span);
+                            meta_ctx.file = ctx.file;
+                            meta_ctx.hir_scope = ctx.hir_scope;
+                            meta_ctx.runtime = false;
+                            let mut meta_ledger = Ledger::default();
+                            let _ = self.expr(&mut meta_ctx, &mut meta_ledger, *value);
+                            let snap = self.snapshot_value(ast.expr(*value).span);
+                            let _ = self.bind_on_match(
+                                &yes_ctx,
+                                ledger,
+                                *pattern,
+                                &Storage {
+                                    mode: *mode,
+                                    ..Storage::default()
+                                },
+                                &snap,
+                                BindingSite::ScopedPattern,
+                            );
                         }
                         let val = self.expr(&mut yes_ctx, ledger, *yes);
                         let count = ctx.return_values.len();
@@ -752,7 +779,18 @@ impl Analyzer<'_> {
                 value,
                 arms,
             } => {
-                let mut value = self.expr(ctx, ledger, *value);
+                let mut value = if *is_meta {
+                    let val_span = ast.expr(*value).span;
+                    let mut meta_ctx = Context::new(val_span);
+                    meta_ctx.file = ctx.file;
+                    meta_ctx.hir_scope = ctx.hir_scope;
+                    meta_ctx.runtime = false;
+                    let mut meta_ledger = Ledger::default();
+                    let _ = self.expr(&mut meta_ctx, &mut meta_ledger, *value);
+                    self.snapshot_value(val_span)
+                } else {
+                    self.expr(ctx, ledger, *value)
+                };
                 if *mode == Mode::New {
                     self.handoff(ctx, ledger, &mut value, span);
                     ledger.consume_datum_linear(&value);
@@ -864,6 +902,15 @@ impl Analyzer<'_> {
                     self.expr(ctx, ledger, id);
                 }
                 Datum::default()
+            }
+            Expr::Meta(inner) => {
+                let mut meta_ctx = Context::new(span);
+                meta_ctx.file = ctx.file;
+                meta_ctx.hir_scope = ctx.hir_scope;
+                meta_ctx.runtime = false;
+                let mut meta_ledger = Ledger::default();
+                let _ = self.expr(&mut meta_ctx, &mut meta_ledger, *inner);
+                self.snapshot_value(span)
             }
             Expr::Quote(_) | Expr::Literal(_) | Expr::Unit | Expr::Accessor(_) | Expr::Hole => {
                 Datum::default()

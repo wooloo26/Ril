@@ -112,7 +112,11 @@ impl Parser<'_> {
 
     fn statement(&mut self, context: Context) -> Result<StmtId> {
         let start = self.current().span;
-        let attrs = self.attributes()?;
+        let attrs = if matches!(context, Context::Block | Context::Snippet) {
+            self.tight_attributes()?
+        } else {
+            self.attributes()?
+        };
         let visibility = if self.eat("pub") {
             Visibility::Public
         } else if self.eat("pkg") {
@@ -249,6 +253,25 @@ impl Parser<'_> {
                 kind,
             },
         ))
+    }
+
+    fn tight_attributes(&mut self) -> Result<Vec<ExprId>> {
+        let mut attrs = Vec::new();
+        while self.is("meta")
+            && self
+                .tokens
+                .get(self.pos + 1)
+                .is_some_and(|tok| tok.tight_left && tok.text(self.file) == "(")
+        {
+            let meta = self.bump();
+            if self.kind == FileKind::Foreign {
+                return Err(self.error(Code::E0901, meta.span, "metadata in foreign declaration"));
+            }
+            self.open("(", ")", Layout::List)?;
+            attrs.extend(self.list(")", Self::expr)?);
+            self.skip_lines();
+        }
+        Ok(attrs)
     }
 
     pub(super) fn attributes(&mut self) -> Result<Vec<ExprId>> {

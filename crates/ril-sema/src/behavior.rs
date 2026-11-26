@@ -1032,6 +1032,7 @@ impl<'a> Collector<'a> {
             | Expr::Unit
             | Expr::Literal(_)
             | Expr::Quote(_)
+            | Expr::Meta(_)
             | Expr::Accessor(_)
             | Expr::Hole => {}
             Expr::Interpolated(parts) => {

@@ -53,7 +53,7 @@ const KEYWORDS: &[(&str, &str)] = &[
 ];
 
 const PRIMITIVE_TYPES: &[&str] = &[
-    "bool", "int", "f64", "str", "bytes", "never", "Type", "Super",
+    "bool", "int", "f64", "str", "bytes", "never", "Type", "KeyOf", "Nominal", "Super",
 ];
 
 pub(crate) fn complete(state: &mut LspState, params: &Value) -> Value {
@@ -492,17 +492,27 @@ fn lexical_completions(state: &mut LspState, uri: &str, text: &str, offset: usiz
         }
     }
 
-    // 3. Primitive types.
+    // 3. Primitive types & parent qualifier fallback.
     for &ty_name in PRIMITIVE_TYPES {
         if (prefix_lower.is_empty() || ty_name.to_ascii_lowercase().starts_with(&prefix_lower))
             && seen.insert(ty_name.to_owned())
         {
-            items.push(json!({
-                "label": ty_name,
-                "kind": 7, // Class / Type
-                "detail": "built-in type",
-                "sortText": format!("3_{ty_name}")
-            }));
+            if let Some(info) = crate::protocol::builtin_doc(ty_name) {
+                items.push(json!({
+                    "label": ty_name,
+                    "kind": info.kind,
+                    "detail": info.detail,
+                    "documentation": { "kind": "markdown", "value": info.doc },
+                    "sortText": format!("3_{ty_name}")
+                }));
+            } else {
+                items.push(json!({
+                    "label": ty_name,
+                    "kind": 9, // Module / Qualifier (`Super`)
+                    "detail": "parent scope qualifier",
+                    "sortText": format!("3_{ty_name}")
+                }));
+            }
         }
     }
 
@@ -553,19 +563,42 @@ fn completion_item_for_resolution(typed: &TypedProgram, name: &str, res: Resolut
         }
         Resolution::Definition(id) => {
             let def = typed.hir.definition(id);
-            let kind = match def.kind {
-                DefinitionKind::Function | DefinitionKind::Primitive(_) => 3, // Function
-                DefinitionKind::Constant => 21,                               // Constant
-                DefinitionKind::Type => 22,                                   // Struct/Type
-                DefinitionKind::Sum(_) => 13,                                 // Enum
-                DefinitionKind::Variant(_) => 20,                             // EnumMember
-                DefinitionKind::Namespace(_) => 9,                            // Module
-                DefinitionKind::Effect(_) => 23,                              // Event
-                DefinitionKind::Local => 6,                                   // Variable
-                DefinitionKind::Generic => 25,                                // TypeParameter
+            let builtin = (def.name.span.file == FileId::BUILTIN)
+                .then(|| crate::protocol::builtin_doc(&def.name.value))
+                .flatten();
+            let is_primitive_type = matches!(def.kind, DefinitionKind::Primitive(_))
+                && def.stmt.is_some_and(|stmt| {
+                    matches!(
+                        typed.hir.file(def.name.span.file).ast.stmt(stmt).value.kind,
+                        StmtKind::Type(_)
+                    )
+                });
+            let kind = if let Some(info) = &builtin {
+                info.kind
+            } else if is_primitive_type {
+                22 // Struct/Type (e.g. Derived<T>)
+            } else {
+                match def.kind {
+                    DefinitionKind::Function | DefinitionKind::Primitive(_) => 3, // Function
+                    DefinitionKind::Constant => 21,                               // Constant
+                    DefinitionKind::Type => 22,                                   // Struct/Type
+                    DefinitionKind::Sum(_) => 13,                                 // Enum
+                    DefinitionKind::Variant(_) => 20,                             // EnumMember
+                    DefinitionKind::Namespace(_) => 9,                            // Module
+                    DefinitionKind::Effect(_) => 23,                              // Event
+                    DefinitionKind::Local => 6,                                   // Variable
+                    DefinitionKind::Generic => 25,                                // TypeParameter
+                }
             };
-            let detail = summarize_def_detail(typed, id).unwrap_or_default();
-            let doc = definition_doc(typed, id);
+            let detail = builtin
+                .as_ref()
+                .map(|info| info.detail.to_owned())
+                .or_else(|| summarize_def_detail(typed, id))
+                .unwrap_or_default();
+            let doc = builtin
+                .as_ref()
+                .map(|info| info.doc.to_owned())
+                .or_else(|| definition_doc(typed, id));
             let mut item = json!({
                 "label": name,
                 "kind": kind,

@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use num_traits::ToPrimitive;
 use ril_hir::DefinitionId;
 use ril_source::{diag::Code, span::Span};
-use ril_syntax::syntax::{self, Argument, Expr, ExprId, Member as Coordinate, Mode};
+use ril_syntax::syntax::{self, Expr, ExprId, Member as Coordinate, Mode};
 
 use super::{
     Ty, Value,
@@ -170,23 +170,27 @@ impl Checker<'_> {
         }
     }
 
-    pub(super) fn stage_static_call(
-        &mut self,
-        env: &Env,
-        id: DefinitionId,
-        args: &[Argument],
-        span: Span,
-    ) {
+    pub(super) fn stage_static_expr(&mut self, env: &Env, expr: ExprId, span: Span) {
         let mut concrete = env.clone();
+        concrete.phase = Phase::MetaValue;
         concrete.require_concrete_types = true;
-        match self.evaluate_static_call(&concrete, id, args, span) {
+        if !env.staging_gates.is_empty() && env.staging_owner.is_some() {
+            self.static_folds.insert(
+                span,
+                super::staging::StaticFold {
+                    caller: concrete,
+                    expr,
+                },
+            );
+            return;
+        }
+        match self.evaluate_static(&concrete, expr) {
             Err(Signal::Dependent(_)) => {
                 self.static_folds.insert(
                     span,
                     super::staging::StaticFold {
-                        caller: env.clone(),
-                        target: id,
-                        args: args.to_vec(),
+                        caller: concrete,
+                        expr,
                     },
                 );
             }
@@ -194,23 +198,6 @@ impl Checker<'_> {
                 self.finish_eval(span, result, true);
             }
         }
-    }
-
-    pub(super) fn evaluate_static_call(
-        &mut self,
-        env: &Env,
-        id: DefinitionId,
-        args: &[Argument],
-        span: Span,
-    ) -> Eval {
-        let mut root = env.clone();
-        let mut slots = Frame::default();
-        let mut fuel = Budget {
-            remaining: self.budget,
-            depth: 0,
-        };
-        let args = self.eval_args(&mut root, &mut slots, args, &mut fuel)?;
-        self.eval_function(&root, id, args, span, &mut fuel)
     }
 
     pub(super) fn stage_static_argument(
@@ -221,6 +208,7 @@ impl Checker<'_> {
     ) -> Option<super::staging::StaticInput> {
         use super::staging::StaticInput;
         let mut concrete = env.clone();
+        concrete.phase = Phase::MetaValue;
         concrete.require_concrete_types = true;
         match self.evaluate_static(&concrete, expression) {
             Err(Signal::Dependent(_)) if supplied => Some(StaticInput::Supplied(expression)),
@@ -229,62 +217,6 @@ impl Checker<'_> {
                 .finish_eval(self.ast(env.file).expr(expression).span, result, true)
                 .map(StaticInput::Ready),
         }
-    }
-
-    pub(super) fn eval_introspection_root(
-        &mut self,
-        env: &Env,
-        name: &str,
-        args: &[Argument],
-        span: Span,
-    ) {
-        let mut local = env.clone();
-        local.phase = Phase::MetaValue;
-        local.require_concrete_types = true;
-        let mut fuel = Budget {
-            remaining: self.budget,
-            depth: 0,
-        };
-        let result = self
-            .eval_args(&mut local, &mut Frame::default(), args, &mut fuel)
-            .and_then(|values| {
-                let values = values.into_iter().map(|(_, value)| value).collect();
-                self.eval_primitive(&local, name, values, span)
-            });
-        match result {
-            Ok(value) => {
-                self.static_values.insert(span, value);
-            }
-            Err(Signal::Dependent(_)) => {}
-            other => {
-                self.finish_eval(span, other, true);
-            }
-        }
-    }
-
-    pub(super) fn eval_metadata_root(
-        &mut self,
-        env: &Env,
-        path: &syntax::Path,
-        args: &[Argument],
-        span: Span,
-    ) {
-        let mut env = env.clone();
-        env.phase = Phase::MetaValue;
-        let mut fuel = Budget {
-            remaining: self.budget,
-            depth: 0,
-        };
-        let result = self
-            .eval_args(&mut env, &mut Frame::default(), args, &mut fuel)
-            .and_then(|values| {
-                let values = values
-                    .into_iter()
-                    .map(|(_, value)| value)
-                    .collect::<Vec<_>>();
-                self.eval_metadata(&mut env, path, &values, span)
-            });
-        self.finish_eval(span, result, true);
     }
 
     pub(in crate::ty) fn finish_eval(

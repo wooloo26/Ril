@@ -510,6 +510,7 @@ pub enum Expr {
     Tuple(Vec<ExprId>),
     Map(Vec<(ExprId, ExprId)>),
     Quote(TypeId),
+    Meta(ExprId),
     If {
         is_meta: bool,
         condition: Condition,

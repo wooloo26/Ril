@@ -504,18 +504,22 @@ impl Checker<'_> {
                 AdtKind::Sum | AdtKind::OpaqueSum if type_level => {
                     let variant_name = match field {
                         Coordinate::Name(name) => Some(name.value.clone()),
-                        Coordinate::Computed(expr) => match self.eval_root(env, *expr, false) {
-                            Some(Value::Str(s)) => Some(s),
-                            Some(_) => {
-                                self.error(
-                                    Code::E0324,
-                                    span,
-                                    "sum variant projection requires a string variant name",
-                                );
-                                return Ty::Unknown;
+                        Coordinate::Computed(expr) => {
+                            let mut meta_env = env.clone();
+                            meta_env.phase = Phase::MetaValue;
+                            match self.eval_root(&meta_env, *expr, false) {
+                                Some(Value::Str(s)) => Some(s),
+                                Some(_) => {
+                                    self.error(
+                                        Code::E0324,
+                                        span,
+                                        "sum variant projection requires a string variant name",
+                                    );
+                                    return Ty::Unknown;
+                                }
+                                None => None,
                             }
-                            None => None,
-                        },
+                        }
                         Coordinate::Index(_) => None,
                     };
                     if let Some(variant_name) = variant_name {
@@ -543,7 +547,11 @@ impl Checker<'_> {
         let coordinate = match field {
             Coordinate::Name(name) => Some(Value::Str(name.value.clone())),
             Coordinate::Index(name) => name.value.parse().ok().map(Value::Int),
-            Coordinate::Computed(expr) => self.eval_root(env, *expr, false),
+            Coordinate::Computed(expr) => {
+                let mut meta_env = env.clone();
+                meta_env.phase = Phase::MetaValue;
+                self.eval_root(&meta_env, *expr, false)
+            }
         };
         match (&ty, coordinate) {
             (Ty::Draft(inner), _) => self.project(env, field, inner, span, type_level),
@@ -717,13 +725,19 @@ impl Checker<'_> {
     ) -> bool {
         match self.normalize(ty) {
             Ty::Callable(_) | Ty::Draft(_) | Ty::TypeValue(_) => false,
-            Ty::Array(member) => self.meta_exportable(env, &member.ty, seen),
-            Ty::Map(key, member) => {
-                self.meta_exportable(env, &key, seen) && self.meta_exportable(env, &member.ty, seen)
+            Ty::Array(member) => {
+                !matches!(member.mode.mode, Mode::Mut | Mode::Shared | Mode::Ref)
+                    && self.meta_exportable(env, &member.ty, seen)
             }
-            Ty::Record(fields, _) => fields
-                .values()
-                .all(|member| self.meta_exportable(env, &member.ty, seen)),
+            Ty::Map(key, member) => {
+                !matches!(member.mode.mode, Mode::Mut | Mode::Shared | Mode::Ref)
+                    && self.meta_exportable(env, &key, seen)
+                    && self.meta_exportable(env, &member.ty, seen)
+            }
+            Ty::Record(fields, _) => fields.values().all(|member| {
+                !matches!(member.mode.mode, Mode::Mut | Mode::Shared | Mode::Ref)
+                    && self.meta_exportable(env, &member.ty, seen)
+            }),
             Ty::Tuple(items) => items
                 .iter()
                 .all(|member| self.meta_exportable(env, &member.ty, seen)),
