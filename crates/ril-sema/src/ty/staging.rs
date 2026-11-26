@@ -168,7 +168,10 @@ impl TypedProgram {
         for (index, &(pattern, guard)) in plan.arms.iter().enumerate() {
             let mut local = env.clone();
             let mut bindings = Default::default();
-            if !checker.value_pattern(&mut local, pattern, &value, &mut bindings) {
+            if !checker
+                .value_pattern(&mut local, pattern, &value, &mut bindings)
+                .ok()?
+            {
                 continue;
             }
             if let Some(guard) = guard {
@@ -280,13 +283,19 @@ impl TypedProgram {
                                 for &(pattern, guard) in &plan.arms {
                                     let mut local = caller.clone();
                                     let mut bindings = Default::default();
-                                    if !checker.value_pattern(
+                                    match checker.value_pattern(
                                         &mut local,
                                         pattern,
                                         &val,
                                         &mut bindings,
                                     ) {
-                                        continue;
+                                        Ok(true) => {}
+                                        Ok(false) => continue,
+                                        Err(Signal::Dependent(_)) => break,
+                                        Err(failure) => {
+                                            outcome = Err(failure.diagnostic(span));
+                                            break;
+                                        }
                                     }
                                     if let Some(guard) = guard {
                                         match checker.evaluate_with_bindings(

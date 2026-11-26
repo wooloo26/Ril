@@ -24,7 +24,8 @@ impl Checker<'_> {
         callee: bool,
     ) -> Ty {
         match name {
-            "bool" | "int" | "f64" | "str" | "bytes" | "never" | "Type" | "Set" | "Draft"
+            "bool" | "int" | "f64" | "str" | "bytes" | "never" | "Type" | "Set" | "Derived"
+            | "Nominal" | "KeyOf"
                 if !callee =>
             {
                 self.error(Code::E0319, span, "type value requires angle quotation");
@@ -201,7 +202,7 @@ impl Checker<'_> {
         }
         let first = types.first().cloned().unwrap_or(Ty::Unknown);
         let arity = match name {
-            "len" | "clone" | "inner" | "fields" | "variants" | "convert" | "recover_panic"
+            "len" | "clone" | "inner" | "fields" | "sum_tags" | "convert" | "recover_panic"
             | "unwind_ctl" => Some(1..=1),
             "has_default" | "derive" => Some(2..=2),
             _ => None,
@@ -367,7 +368,7 @@ impl Checker<'_> {
                     Member::plain(key),
                 ]))))
             }
-            "variants" => {
+            "sum_tags" => {
                 if let Ty::TypeValue(Some(ty)) = first {
                     match self.normalize(&ty) {
                         Ty::Adt(adt) if adt.kind == AdtKind::Foreign => {
@@ -399,12 +400,12 @@ impl Checker<'_> {
                         }
                         Ty::Param(_) | Ty::Unknown | Ty::Infer(_) => {}
                         _ => {
-                            self.error(Code::E0301, span, "variants requires a sum type");
+                            self.error(Code::E0301, span, "sum_tags requires a sum type");
                         }
                     }
                 }
                 if env.phase == Phase::Runtime && !env.shadow {
-                    self.eval_introspection_root(env, "variants", args, span);
+                    self.eval_introspection_root(env, "sum_tags", args, span);
                 }
                 Ty::Array(Box::new(Member::plain(Ty::Str)))
             }

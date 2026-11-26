@@ -1,8 +1,12 @@
 -- Standard Math module: pure self-hosted numeric constants and helpers.
 
+-- Ratio of a circle's circumference to its diameter (π).
 pub meta let PI: f64 = 3.141592653589793
+
+-- Base of natural logarithms (e).
 pub meta let EULER: f64 = 2.718281828459045
 
+-- Returns the absolute value of `x`.
 pub fn abs<T: int | f64>(x: T) -> T {
     meta match <T> {
         <int> -> if x < 0 {
@@ -18,6 +22,7 @@ pub fn abs<T: int | f64>(x: T) -> T {
     }
 }
 
+-- Returns the smaller of `a` and `b`.
 pub fn min<T: int | f64>(a: T, b: T) -> T {
     if a < b {
         a
@@ -26,6 +31,7 @@ pub fn min<T: int | f64>(a: T, b: T) -> T {
     }
 }
 
+-- Returns the larger of `a` and `b`.
 pub fn max<T: int | f64>(a: T, b: T) -> T {
     if a > b {
         a
@@ -34,6 +40,7 @@ pub fn max<T: int | f64>(a: T, b: T) -> T {
     }
 }
 
+-- Restricts `value` to the inclusive range `[low, high]`.
 pub fn clamp<T: int | f64>(value: T, low: T, high: T) -> T {
     if value < low {
         low

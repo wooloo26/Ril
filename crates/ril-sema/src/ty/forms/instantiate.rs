@@ -524,8 +524,19 @@ impl Checker<'_> {
             );
             return;
         }
+        let has_unresolved = local
+            .generics
+            .values()
+            .any(|v| matches!(v, GenericValue::Type(ty) if ty.has_unresolved_static_type()));
         self.stack.push(check);
-        let result = self.eval_root_at(&local, *body, true, call_span);
+        let result = if local.shadow {
+            None
+        } else {
+            match self.evaluate_static(&local, *body) {
+                Err(crate::ty::eval::Signal::Dependent(_)) if has_unresolved => None,
+                other => self.finish_eval(call_span, other, true),
+            }
+        };
         self.stack.pop();
         let Some(result) = result else { return };
         let Value::Type(ty) = result else {

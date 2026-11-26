@@ -2,9 +2,13 @@
 
 use ril/array
 
+-- Returns the unsigned byte (`0..=255`) at 0-based `index` of `data`, or `None` if out of bounds.
 pub fn at(data: bytes, index: int) -> new ?int
+
+-- Builds `bytes` from an array of byte integers, returning `None` if any element is outside `0..=255`.
 pub fn from_array(via values: []int) -> new ?bytes
 
+-- Copies every byte of `data` into a new `[]int` (`0..=255`).
 pub fn to_array(data: bytes) -> new []int {
     let mut out: []int = []
     for 0..len(data) as i {

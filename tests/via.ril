@@ -1278,13 +1278,13 @@ pub fn extend(mut actions: []fn(new Shelf) -> int) &mut -> () {
 -- @case changing_the_base_of_a_forwarded_draft_breaks_compatibility compat-fail E0552
 -- @baseline
 pub type Action = fn() -> int
-pub type Update = fn(mut Draft<[]Action>) &mut -> ()
+pub type Update = fn(mut Derived<[]Action>) &mut -> ()
 pub fn edited(base: []Action, spare: []Action, update: Update) -> []Action {
     derive(base, update)
 }
 -- @revision
 pub type Action = fn() -> int
-pub type Update = fn(mut Draft<[]Action>) &mut -> ()
+pub type Update = fn(mut Derived<[]Action>) &mut -> ()
 pub fn edited(base: []Action, spare: []Action, update: Update) -> []Action {
 -- ^ E0552
     derive(spare, update)

@@ -588,7 +588,7 @@ impl Checker<'_> {
                 let mut bindings = Values::new();
                 for (param, value) in params.iter().zip(input) {
                     if let Some(pattern) = param.pattern {
-                        if !self.value_pattern(env, pattern, &value, &mut bindings) {
+                        if !self.value_pattern(env, pattern, &value, &mut bindings)? {
                             return Err(defect(span, "closure parameter pattern did not match"));
                         }
                     } else if let Some(id) =

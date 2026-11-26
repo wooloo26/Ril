@@ -536,11 +536,20 @@ fn completion_item_for_resolution(typed: &TypedProgram, name: &str, res: Resolut
         }),
         Resolution::TypeAndModule(id, _) => {
             let detail = summarize_def_detail(typed, id).unwrap_or_else(|| "type / module".into());
-            json!({
+            let mut item = json!({
                 "label": name,
                 "kind": 7, // Class/Type
                 "detail": detail
-            })
+            });
+            if let Some(d) = definition_doc(typed, id)
+                && let Some(obj) = item.as_object_mut()
+            {
+                obj.insert(
+                    "documentation".into(),
+                    json!({ "kind": "markdown", "value": d }),
+                );
+            }
+            item
         }
         Resolution::Definition(id) => {
             let def = typed.hir.definition(id);
@@ -556,15 +565,7 @@ fn completion_item_for_resolution(typed: &TypedProgram, name: &str, res: Resolut
                 DefinitionKind::Generic => 25,                                // TypeParameter
             };
             let detail = summarize_def_detail(typed, id).unwrap_or_default();
-            let doc = if def.name.span.file != FileId::BUILTIN {
-                let file = typed.hir.file(def.name.span.file);
-                let decl_start = def
-                    .stmt
-                    .map_or(def.name.span.start, |s| file.ast.stmt(s).span.start);
-                extract_doc_comment(file.source_text(), decl_start)
-            } else {
-                None
-            };
+            let doc = definition_doc(typed, id);
             let mut item = json!({
                 "label": name,
                 "kind": kind,
@@ -581,6 +582,21 @@ fn completion_item_for_resolution(typed: &TypedProgram, name: &str, res: Resolut
             item
         }
     }
+}
+
+fn definition_doc(typed: &TypedProgram, id: DefinitionId) -> Option<String> {
+    let def = typed.hir.definition(id);
+    if def.name.span.file == FileId::BUILTIN {
+        return None;
+    }
+    let file = typed.hir.file(def.name.span.file);
+    let decl_start = if matches!(def.kind, DefinitionKind::Variant(_)) {
+        def.name.span.start
+    } else {
+        def.stmt
+            .map_or(def.name.span.start, |s| file.ast.stmt(s).span.start)
+    };
+    extract_doc_comment(file.source_text(), decl_start)
 }
 
 pub(crate) fn summarize_def_detail(typed: &TypedProgram, id: DefinitionId) -> Option<String> {

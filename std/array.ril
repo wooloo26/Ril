@@ -1,17 +1,32 @@
 -- Standard Array module: compiler primitives plus self-hosted Ril combinators.
 
+-- Appends `item` to the end of `xs` in place.
 pub fn push<T>(mut xs: [via]T, via item: T) &mut -> ()
+
+-- Removes and returns the last element of `xs`, or `None` if empty.
+-- Supports destructive extraction from `[mut]T` arrays holding must-consume values.
 pub fn pop<T>(mut xs: [via]T) &mut -> new ?T
+
+-- Removes and returns the first element of `xs`, or `None` if empty.
+-- Supports destructive extraction from `[mut]T` arrays holding must-consume values.
 pub fn pop_front<T>(mut xs: [via]T) &mut -> new ?T
+
+-- Inserts `item` at `index` in `xs`, shifting subsequent elements right.
+-- Panics if `index < 0` or `index > len(ref xs)`.
 pub fn insert<T>(mut xs: [via]T, index: int, via item: T) &mut -> ()
+
+-- Removes and returns the element at `index` in `xs`, shifting subsequent elements left,
+-- or returns `None` if `index` is out of bounds.
 pub fn remove<T>(mut xs: [via]T, index: int) &mut -> new ?T
 
+-- Removes every element from `xs` in place.
 pub fn clear<T>(mut xs: [via]T) &mut -> () {
     for 0..len(ref xs) as _ {
         let _ = pop(mut xs)
     }
 }
 
+-- Sorts `xs` in ascending order in place (stable insertion sort; `f64` `NaN` sorts last).
 pub fn sort<T: int | f64 | str | bytes>(mut xs: []T) &mut -> () {
     var i = 1
     while i < len(ref xs) {
@@ -26,10 +41,12 @@ pub fn sort<T: int | f64 | str | bytes>(mut xs: []T) &mut -> () {
     }
 }
 
+-- Returns `Some(xs[index])` if `index` is in bounds, or `None` otherwise.
 pub fn at<T>(xs: []T, index: int) &return(xs) -> new ?T {
     xs?[index]
 }
 
+-- Reports whether `xs` contains an element equal to `target`.
 pub fn contains<T>(xs: []T, target: T) -> bool {
     for xs as x {
         if x == target {
@@ -39,6 +56,7 @@ pub fn contains<T>(xs: []T, target: T) -> bool {
     false
 }
 
+-- Returns a new array formed by applying `f` to each element of `xs` in order.
 pub fn map<T, U>(xs: []T, f: fn(T) @ -> U) -> new []U {
     let mut out: []U = []
     for xs as x {
@@ -47,6 +65,7 @@ pub fn map<T, U>(xs: []T, f: fn(T) @ -> U) -> new []U {
     new out
 }
 
+-- Returns a new array containing only the elements of `xs` for which `pred` returns `true`.
 pub fn filter<T>(xs: []T, pred: fn(T) @ -> bool) &return(xs) -> new []T {
     let mut out: []T = []
     for xs as x {

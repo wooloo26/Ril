@@ -17,9 +17,9 @@ use super::{
 };
 
 type Values = HashMap<DefinitionId, Value>;
-type Eval<T = Value> = Result<T, Signal>;
+pub(in crate::ty) type Eval<T = Value> = Result<T, Signal>;
 
-pub(super) enum Signal {
+pub(in crate::ty) enum Signal {
     Dependent(Span),
     Error(Code, Span, &'static str),
     CompileError {
@@ -143,7 +143,7 @@ impl Checker<'_> {
         self.finish_eval(span, result, required)
     }
 
-    pub(super) fn evaluate_static(&mut self, env: &Env, expr: ExprId) -> Eval {
+    pub(in crate::ty) fn evaluate_static(&mut self, env: &Env, expr: ExprId) -> Eval {
         self.evaluate_with_bindings(env, expr, &mut Values::new())
     }
 
@@ -287,7 +287,12 @@ impl Checker<'_> {
         self.finish_eval(span, result, true);
     }
 
-    fn finish_eval(&mut self, span: Span, result: Eval, required: bool) -> Option<Value> {
+    pub(in crate::ty) fn finish_eval(
+        &mut self,
+        span: Span,
+        result: Eval,
+        required: bool,
+    ) -> Option<Value> {
         match result {
             Ok(value) | Err(Signal::Return(value)) => {
                 self.static_values.insert(span, value.clone());
@@ -417,7 +422,7 @@ impl Checker<'_> {
         pattern: syntax::PatternId,
         (value, place): &(Value, Option<Place>),
         mode: Mode,
-    ) -> bool {
+    ) -> Eval<bool> {
         let mut matched = MatchedValues::default();
         if !self.value_pattern_at(
             env,
@@ -425,8 +430,8 @@ impl Checker<'_> {
             value,
             &mut matched,
             place.as_ref().map(|_| &[][..]),
-        ) {
-            return false;
+        )? {
+            return Ok(false);
         }
         for (id, value) in matched.locals {
             let alias = matched.paths.remove(&id).and_then(|(path, explicit)| {
@@ -452,7 +457,7 @@ impl Checker<'_> {
             }
             slots.locals.insert(id, value);
         }
-        true
+        Ok(true)
     }
 
     fn eval_member(

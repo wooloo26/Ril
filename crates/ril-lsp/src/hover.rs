@@ -271,9 +271,12 @@ pub(crate) fn render_definition_hover(
 
     let doc = if def.name.span.file != FileId::BUILTIN {
         let file = typed.hir.file(def.name.span.file);
-        let decl_start = def
-            .stmt
-            .map_or(def.name.span.start, |s| file.ast.stmt(s).span.start);
+        let decl_start = if matches!(def.kind, DefinitionKind::Variant(_)) {
+            def.name.span.start
+        } else {
+            def.stmt
+                .map_or(def.name.span.start, |s| file.ast.stmt(s).span.start)
+        };
         extract_doc_comment(file.source_text(), decl_start)
     } else {
         None

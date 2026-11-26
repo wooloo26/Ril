@@ -298,7 +298,7 @@ fn duplicate(ref value: Message) -> new Message {
 }
 
 -- @case clone_rejects_a_graph_containing_a_draft compile-fail E0301
-type Packet = .{ slot: Draft<[]int> }
+type Packet = .{ slot: Derived<[]int> }
 fn duplicate(packet: Packet) -> new Packet {
     clone(packet)
     -- ^ E0301

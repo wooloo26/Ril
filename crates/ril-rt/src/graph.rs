@@ -247,7 +247,7 @@ impl GcRuntime {
                 Some(Object::Str(value)) => text::inspect_string(value),
                 Some(Object::Closure { .. }) => "<fn>".into(),
                 Some(Object::Continuation(_)) => "<ctl>".into(),
-                Some(Object::Draft { .. }) => "<Draft>".into(),
+                Some(Object::Draft { .. }) => "<Derived>".into(),
                 Some(Object::Bytes(bytes)) => text::inspect_bytes(bytes),
                 Some(Object::Array(items)) => {
                     let index = self.integer(descriptor_handle).map(|_| descriptor_handle);

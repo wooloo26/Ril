@@ -568,9 +568,9 @@ fn freeze(new shelf: Shelf) -> int { let fixed = new shelf; fixed.item.count }
 fn count(new shelf: Shelf) -> int { shelf.item.count }
 fn edit(base: Holder, flag: bool) -> Holder {
     let transform = if flag {
-        \mut draft: Draft<Holder> -> { draft.action = count }
+        \mut draft: Derived<Holder> -> { draft.action = count }
     } else {
-        \mut draft: Draft<Holder> -> { draft.stamp = 2 }
+        \mut draft: Derived<Holder> -> { draft.stamp = 2 }
     }
     derive(base, transform)
 }

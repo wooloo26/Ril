@@ -68,8 +68,9 @@ pub const PRIMITIVE_TYPES: &[PrimitiveTypeSpec] = {
         ptype("Prelude", "Result", Result, false),
         ptype("Prelude", "PanicReport", PanicReport, false),
         ptype("Prelude", "PanicError", PanicError, false),
-        ptype("Prelude", "Draft", Draft, true),
+        ptype("Prelude", "Derived", Derived, true),
         ptype("Reflect", "FieldMode", FieldMode, false),
+        ptype("Reflect", "TypeKind", TypeKind, false),
         ptype("Set", "Set", Set, false),
     ]
 };
@@ -235,7 +236,14 @@ pub const PRIMITIVE_FNS: &[PrimitiveSpec] = {
         // Reflect
         prim("Reflect", "type_name", Static, None, Some(TypeName)),
         prim("Reflect", "fields", Static, None, Some(Fields)),
-        prim("Reflect", "variants", Static, None, Some(Variants)),
+        prim("Reflect", "sum_tags", Static, None, Some(SumTags)),
+        prim(
+            "Reflect",
+            "raw_type_kind",
+            Static,
+            None,
+            Some(ReflectRawTypeKind),
+        ),
         prim("Reflect", "attrs", Static, None, Some(ReflectAttrs)),
         prim(
             "Reflect",
@@ -408,7 +416,7 @@ pub(super) fn stdlib_modules() -> &'static [StdModule] {
             })
             .collect();
         let platform_src = format!(
-            "-- Target platform metadata constants.\n\npub meta let OS: str = {:?}\npub meta let ARCH: str = {:?}\npub meta let HAS_OPENAT: bool = {}\n",
+            "-- Target platform metadata constants.\n\n-- Operating system identifier of the compilation target (for example, \"linux\", \"macos\", or \"windows\").\npub meta let OS: str = {:?}\n\n-- CPU architecture identifier of the compilation target (for example, \"x86_64\" or \"aarch64\").\npub meta let ARCH: str = {:?}\n\n-- Whether the target platform supports POSIX `openat` directory-relative file operations.\npub meta let HAS_OPENAT: bool = {}\n",
             std::env::consts::OS,
             std::env::consts::ARCH,
             cfg!(unix),

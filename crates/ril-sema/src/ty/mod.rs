@@ -664,7 +664,7 @@ impl fmt::Display for Display<'_> {
             }
             Ty::TypeValue(Some(ty)) => write!(f, "Type<{}>", show(ty)),
             Ty::TypeValue(None) => f.write_str("Type"),
-            Ty::Draft(ty) => write!(f, "Draft<{}>", show(ty)),
+            Ty::Draft(ty) => write!(f, "Derived<{}>", show(ty)),
         }
     }
 }

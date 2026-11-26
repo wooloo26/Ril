@@ -318,6 +318,7 @@ impl Checker<'_> {
                 }
             }
             Pattern::Type(ty) => {
+                self.check_type_pattern_syntax(env, *ty);
                 if let Ty::TypeValue(Some(inner)) = &normalized {
                     self.match_type_pattern(env, *ty, inner);
                 } else if !matches!(normalized, Ty::Unknown | Ty::TypeValue(None)) {
@@ -616,11 +617,23 @@ impl Checker<'_> {
             concrete.require_concrete_types = true;
             match self.evaluate_static(&concrete, value) {
                 Ok(val) => {
+                    let mut dependent = false;
                     for (index, arm) in arms.iter().enumerate() {
                         let mut local = env.clone();
                         let mut bindings = Default::default();
-                        if !self.value_pattern(&mut local, arm.pattern, &val, &mut bindings) {
-                            continue;
+                        match self.value_pattern(&mut local, arm.pattern, &val, &mut bindings) {
+                            Ok(true) => {}
+                            Ok(false) => continue,
+                            Err(super::eval::Signal::Dependent(_)) => {
+                                dependent = true;
+                                break;
+                            }
+                            Err(failure) => {
+                                let diag = failure
+                                    .diagnostic(self.ast(env.file).pattern(arm.pattern).span);
+                                self.diagnostics.push(diag);
+                                return Ty::Unknown;
+                            }
                         }
                         if let Some(guard) = arm.guard {
                             match self.evaluate_with_bindings(&local, guard, &mut bindings) {
@@ -630,7 +643,10 @@ impl Checker<'_> {
                                     self.expect(&mut local, guard, &Ty::Bool);
                                     return Ty::Unknown;
                                 }
-                                Err(super::eval::Signal::Dependent(_)) => break,
+                                Err(super::eval::Signal::Dependent(_)) => {
+                                    dependent = true;
+                                    break;
+                                }
                                 Err(failure) => {
                                     let diag =
                                         failure.diagnostic(self.ast(env.file).expr(guard).span);
@@ -649,8 +665,8 @@ impl Checker<'_> {
                         env.effects_seen.extend(local.effects_seen);
                         return found;
                     }
-                    // No arm matched (unless a dependent guard broke out above).
-                    if !arms.iter().any(|a| a.guard.is_some()) {
+                    // No arm matched (unless a dependent pattern/guard broke out above).
+                    if !dependent && !arms.iter().any(|a| a.guard.is_some()) {
                         self.error(
                             Code::E0303,
                             span,
@@ -800,7 +816,7 @@ impl Checker<'_> {
             Pattern::Type(id) => {
                 let mut local = env.clone();
                 if let Ty::TypeValue(Some(inner)) = input {
-                    if matches!(**inner, Ty::Param(_)) {
+                    if matches!(**inner, Ty::Param(_)) && !self.is_pattern_only_type(env, *id) {
                         let key = self
                             .type_expr(&mut local, *id)
                             .display(self.hir)
@@ -846,11 +862,16 @@ impl Checker<'_> {
         };
         let ast = self.ast(local.file);
         let facts: Vec<_> = match &ast.pattern(pattern).value {
-            Pattern::Type(ty) => vec![self.type_expr(local, *ty)],
+            Pattern::Type(ty) if !self.is_pattern_only_type(local, *ty) => {
+                vec![self.type_expr(local, *ty)]
+            }
+            Pattern::Type(_) => Vec::new(),
             Pattern::Or(items) => items
                 .iter()
                 .filter_map(|&item| match ast.pattern(item).value {
-                    Pattern::Type(id) => Some(self.type_expr(local, id)),
+                    Pattern::Type(id) if !self.is_pattern_only_type(local, id) => {
+                        Some(self.type_expr(local, id))
+                    }
                     _ => None,
                 })
                 .collect(),
@@ -871,6 +892,218 @@ impl Checker<'_> {
             }
         } else if !facts.is_empty() {
             local.domains.insert(parameter, facts);
+        }
+    }
+
+    pub(super) fn is_pattern_only_type(&self, env: &Env, id: TypeId) -> bool {
+        use ril_syntax::syntax::GenericArg;
+        match &self.ast(env.file).ty(id).value {
+            Type::TupleAny
+            | Type::PatternBinding(_)
+            | Type::PatternWildcard
+            | Type::PatternLiteral(_) => true,
+            Type::Option(inner) => self.is_pattern_only_type(env, *inner),
+            Type::Result(ok, err) => {
+                self.is_pattern_only_type(env, *ok) || self.is_pattern_only_type(env, *err)
+            }
+            Type::Array(storage, item) => {
+                storage.bind_mode || self.is_pattern_only_type(env, *item)
+            }
+            Type::Map(key, storage, val) => {
+                storage.bind_mode
+                    || self.is_pattern_only_type(env, *key)
+                    || self.is_pattern_only_type(env, *val)
+            }
+            Type::Tuple(items) => items
+                .iter()
+                .any(|(storage, item)| storage.bind_mode || self.is_pattern_only_type(env, *item)),
+            Type::Record { fields, tail } => {
+                tail.is_some()
+                    || fields.iter().any(|field| {
+                        field.storage.bind_mode || self.is_pattern_only_type(env, field.ty)
+                    })
+            }
+            Type::Named(path) => {
+                if let Some(def_id) = self.resolve(path.span)
+                    && matches!(
+                        self.hir.definition(def_id).kind,
+                        ril_hir::DefinitionKind::Primitive(_)
+                    )
+                    && matches!(
+                        self.hir.definition(def_id).name.value.as_str(),
+                        "Nominal" | "KeyOf"
+                    )
+                {
+                    return true;
+                }
+                path.segments.last().is_some_and(|seg| {
+                    seg.arguments.iter().any(|arg| match arg {
+                        GenericArg::Type(ty) => self.is_pattern_only_type(env, *ty),
+                        GenericArg::Mode(storage) => storage.bind_mode,
+                        GenericArg::Value(_) => false,
+                    })
+                })
+            }
+            _ => false,
+        }
+    }
+
+    pub(super) fn type_pattern_shape_key(&mut self, env: &Env, id: TypeId) -> String {
+        use ril_syntax::syntax::{FieldTail, GenericArg};
+        if !self.is_pattern_only_type(env, id) {
+            return self
+                .type_expr(&mut env.clone(), id)
+                .display(self.hir)
+                .to_string();
+        }
+        let format_storage = |storage: &ril_syntax::syntax::Storage| -> String {
+            if storage.bind_mode {
+                "_".into()
+            } else {
+                let mut out = String::new();
+                if storage.variable {
+                    out.push_str("var ");
+                }
+                match storage.mode {
+                    Mode::Plain => {}
+                    Mode::Ref => out.push_str("ref"),
+                    Mode::Mut => out.push_str("mut"),
+                    Mode::Shared => out.push_str("^mut"),
+                    Mode::New => out.push_str("new"),
+                    Mode::Via => out.push_str("via"),
+                    Mode::Infer => out.push_str("infer"),
+                }
+                out.trim().to_owned()
+            }
+        };
+        match &self.ast(env.file).ty(id).value {
+            Type::PatternWildcard | Type::PatternBinding(_) => "_".into(),
+            Type::PatternLiteral(lit) => lit.text.clone(),
+            Type::Unit => "()".into(),
+            Type::TupleAny => "(..)".into(),
+            Type::Option(inner) => format!("?{}", self.type_pattern_shape_key(env, *inner)),
+            Type::Result(ok, err) => format!(
+                "!<{}, {}>",
+                self.type_pattern_shape_key(env, *ok),
+                self.type_pattern_shape_key(env, *err)
+            ),
+            Type::Array(storage, item) => format!(
+                "[{}]{}",
+                format_storage(storage),
+                self.type_pattern_shape_key(env, *item)
+            ),
+            Type::Map(key, storage, val) => format!(
+                "[{}: {} {}]",
+                self.type_pattern_shape_key(env, *key),
+                format_storage(storage),
+                self.type_pattern_shape_key(env, *val)
+            ),
+            Type::Tuple(items) => {
+                let parts: Vec<_> = items
+                    .iter()
+                    .map(|(_, item)| self.type_pattern_shape_key(env, *item))
+                    .collect();
+                format!("({})", parts.join(", "))
+            }
+            Type::Record { fields, tail } => {
+                let mut parts: Vec<_> = fields
+                    .iter()
+                    .map(|field| {
+                        let m = format_storage(&field.storage);
+                        let t = self.type_pattern_shape_key(env, field.ty);
+                        if m.is_empty() {
+                            format!("{}: {t}", field.name.value)
+                        } else {
+                            format!("{m} {}: {t}", field.name.value)
+                        }
+                    })
+                    .collect();
+                parts.sort();
+                if matches!(tail, Some(FieldTail::Open | FieldTail::Named(_))) {
+                    parts.push("..".into());
+                }
+                format!(".{{ {} }}", parts.join(", "))
+            }
+            Type::Named(path) => {
+                let name = self
+                    .resolve(path.span)
+                    .map(|def_id| self.hir.definition(def_id).name.value.clone())
+                    .or_else(|| path.segments.last().map(|s| s.name.value.clone()))
+                    .unwrap_or_default();
+                let args = path
+                    .segments
+                    .last()
+                    .map_or(&[][..], |seg| seg.arguments.as_slice());
+                if args.is_empty() {
+                    name
+                } else {
+                    let rendered: Vec<_> = args
+                        .iter()
+                        .map(|arg| match arg {
+                            GenericArg::Type(ty) => self.type_pattern_shape_key(env, *ty),
+                            GenericArg::Mode(storage) => format_storage(storage),
+                            GenericArg::Value(expr) => {
+                                format!("val:{}", self.ast(env.file).expr(*expr).span.start)
+                            }
+                        })
+                        .collect();
+                    format!("{name}<{}>", rendered.join(", "))
+                }
+            }
+            _ => "_".into(),
+        }
+    }
+
+    fn check_type_pattern_syntax(&mut self, env: &mut Env, id: TypeId) {
+        use ril_syntax::syntax::GenericArg;
+        let node = self.ast(env.file).ty(id);
+        match &node.value {
+            Type::Option(inner) => self.check_type_pattern_syntax(env, *inner),
+            Type::Result(ok, err) => {
+                self.check_type_pattern_syntax(env, *ok);
+                self.check_type_pattern_syntax(env, *err);
+            }
+            Type::Array(_, item) => self.check_type_pattern_syntax(env, *item),
+            Type::Map(key, _, val) => {
+                self.check_type_pattern_syntax(env, *key);
+                self.check_type_pattern_syntax(env, *val);
+            }
+            Type::Tuple(items) => {
+                for &(_, item) in items {
+                    self.check_type_pattern_syntax(env, item);
+                }
+            }
+            Type::Record { fields, .. } => {
+                for field in fields {
+                    self.check_type_pattern_syntax(env, field.ty);
+                }
+            }
+            Type::Named(path) => {
+                let args = path
+                    .segments
+                    .last()
+                    .map_or(&[][..], |seg| seg.arguments.as_slice());
+                if let Some(def_id) = self.resolve(path.span)
+                    && matches!(
+                        self.hir.definition(def_id).kind,
+                        ril_hir::DefinitionKind::Primitive(_)
+                    )
+                    && self.hir.definition(def_id).name.value == "Nominal"
+                    && !matches!(args, [GenericArg::Type(_)])
+                {
+                    self.error(
+                        Code::E0340,
+                        path.span,
+                        "Nominal pattern requires exactly one type argument",
+                    );
+                }
+                for arg in args {
+                    if let GenericArg::Type(ty) = arg {
+                        self.check_type_pattern_syntax(env, *ty);
+                    }
+                }
+            }
+            _ => {}
         }
     }
 
@@ -898,58 +1131,93 @@ impl Checker<'_> {
         pattern: TypeId,
         target: &Ty,
     ) -> bool {
-        use ril_hir::StdType;
+        self.match_type_pattern_inner(env, pattern, target, false)
+            .unwrap_or(true)
+    }
+
+    fn match_type_pattern_eval(
+        &mut self,
+        env: &mut Env,
+        pattern: TypeId,
+        target: &Ty,
+    ) -> super::eval::Eval<bool> {
+        self.match_type_pattern_inner(env, pattern, target, true)
+    }
+
+    fn match_type_pattern_inner(
+        &mut self,
+        env: &mut Env,
+        pattern: TypeId,
+        target: &Ty,
+        strict_eval: bool,
+    ) -> super::eval::Eval<bool> {
+        use ril_hir::{DefinitionKind, StdType};
         use ril_syntax::syntax::{FieldTail, GenericArg};
         let target = self.normalize(target);
+        let pattern_span = self.ast(env.file).ty(pattern).span;
         match (&self.ast(env.file).ty(pattern).value, &target) {
-            (Type::PatternWildcard, _) => true,
+            (Type::PatternWildcard, _) => Ok(true),
             (Type::PatternBinding(name), _) => {
                 if let Some(id) = self.resolve(name.span) {
                     env.generics.insert(id, GenericValue::Type(target.clone()));
                 }
-                true
+                Ok(true)
             }
-            (_, Ty::Param(_) | Ty::Unknown) => true,
-            (Type::Option(item), target) => target
-                .as_option(self.hir)
-                .cloned()
-                .is_some_and(|target| self.match_type_pattern(env, *item, &target)),
-            (Type::Result(ok, err), target) => target
-                .as_result(self.hir)
-                .map(|(a, b)| (a.clone(), b.clone()))
-                .is_some_and(|(a, b)| {
-                    self.match_type_pattern(env, *ok, &a) && self.match_type_pattern(env, *err, &b)
-                }),
+            (_, Ty::Param(_) | Ty::Infer(_) | Ty::Projection(..) | Ty::Unknown) => {
+                if strict_eval {
+                    Err(super::eval::Signal::Dependent(pattern_span))
+                } else {
+                    Ok(true)
+                }
+            }
+            (Type::Option(item), target) => match target.as_option(self.hir).cloned() {
+                Some(inner) => self.match_type_pattern_inner(env, *item, &inner, strict_eval),
+                None => Ok(false),
+            },
+            (Type::Result(ok, err), target) => {
+                match target
+                    .as_result(self.hir)
+                    .map(|(a, b)| (a.clone(), b.clone()))
+                {
+                    Some((a, b)) => Ok(self.match_type_pattern_inner(env, *ok, &a, strict_eval)?
+                        && self.match_type_pattern_inner(env, *err, &b, strict_eval)?),
+                    None => Ok(false),
+                }
+            }
             (Type::Array(storage, item), Ty::Array(target)) => {
-                self.match_member_mode(env, storage, target.mode)
-                    && self.match_type_pattern(env, *item, &target.ty)
+                Ok(self.match_member_mode(env, storage, target.mode)
+                    && self.match_type_pattern_inner(env, *item, &target.ty, strict_eval)?)
             }
             (Type::Map(key, storage, val), Ty::Map(tk, tv)) => {
-                self.match_type_pattern(env, *key, tk)
+                Ok(self.match_type_pattern_inner(env, *key, tk, strict_eval)?
                     && self.match_member_mode(env, storage, tv.mode)
-                    && self.match_type_pattern(env, *val, &tv.ty)
+                    && self.match_type_pattern_inner(env, *val, &tv.ty, strict_eval)?)
             }
-            (Type::TupleAny, Ty::Tuple(_) | Ty::Unit) => true,
+            (Type::TupleAny, Ty::Tuple(_) | Ty::Unit) => Ok(true),
             (Type::Tuple(items), Ty::Tuple(targets)) => {
-                items.len() == targets.len()
-                    && items
-                        .iter()
-                        .zip(targets)
-                        .all(|((_, id), target)| self.match_type_pattern(env, *id, &target.ty))
+                if items.len() != targets.len() {
+                    return Ok(false);
+                }
+                for ((_, id), target) in items.iter().zip(targets) {
+                    if !self.match_type_pattern_inner(env, *id, &target.ty, strict_eval)? {
+                        return Ok(false);
+                    }
+                }
+                Ok(true)
             }
             (Type::Record { fields, tail }, Ty::Record(target, open)) => {
                 if tail.is_none() && fields.len() != target.len() {
-                    return false;
+                    return Ok(false);
                 }
                 let mut matched = HashSet::new();
                 for field in fields {
                     let Some(member) = target.get(&field.name.value) else {
-                        return false;
+                        return Ok(false);
                     };
                     if !self.match_member_mode(env, &field.storage, member.mode)
-                        || !self.match_type_pattern(env, field.ty, &member.ty)
+                        || !self.match_type_pattern_inner(env, field.ty, &member.ty, strict_eval)?
                     {
-                        return false;
+                        return Ok(false);
                     }
                     matched.insert(field.name.value.as_str());
                 }
@@ -964,7 +1232,33 @@ impl Checker<'_> {
                     env.generics
                         .insert(id, GenericValue::Type(Ty::Record(rest, *open)));
                 }
-                true
+                Ok(true)
+            }
+            (Type::Named(path), _)
+                if self.resolve(path.span).is_some_and(|id| {
+                    matches!(self.hir.definition(id).kind, DefinitionKind::Primitive(_))
+                        && self.hir.definition(id).name.value == "Nominal"
+                }) =>
+            {
+                let args = path
+                    .segments
+                    .last()
+                    .map_or(&[][..], |s| s.arguments.as_slice());
+                let [GenericArg::Type(inner_pat)] = args else {
+                    return Ok(false);
+                };
+                let Ty::Adt(adt) = &target else {
+                    return Ok(false);
+                };
+                let accessible = adt.kind == AdtKind::Nominal
+                    || (adt.kind == AdtKind::Opaque && adt.defining_scope == env.effective_scope());
+                if !accessible {
+                    return Ok(false);
+                }
+                let Some(rep) = self.representation(env, adt) else {
+                    return Ok(false);
+                };
+                self.match_type_pattern_inner(env, *inner_pat, &rep, strict_eval)
             }
             (Type::Named(path), _)
                 if path
@@ -973,32 +1267,42 @@ impl Checker<'_> {
                     .is_some_and(|seg| !seg.arguments.is_empty()) =>
             {
                 let Some(id) = self.resolve(path.span) else {
-                    return false;
+                    return Ok(false);
                 };
                 let args = path
                     .segments
                     .last()
                     .map_or(&[][..], |s| s.arguments.as_slice());
                 if let Some(std_ty) = self.hir.std_type(id)
-                    && std_ty == StdType::Draft
+                    && std_ty == StdType::Derived
                 {
                     return match (args, &target) {
                         ([GenericArg::Type(p)], Ty::Draft(t)) => {
-                            self.match_type_pattern(env, *p, t)
+                            self.match_type_pattern_inner(env, *p, t, strict_eval)
                         }
-                        _ => false,
+                        _ => Ok(false),
+                    };
+                }
+                if matches!(self.hir.definition(id).kind, DefinitionKind::Primitive(_))
+                    && self.hir.definition(id).name.value == "Type"
+                {
+                    return match (args, &target) {
+                        ([GenericArg::Type(p)], Ty::TypeValue(Some(t))) => {
+                            self.match_type_pattern_inner(env, *p, t, strict_eval)
+                        }
+                        _ => Ok(false),
                     };
                 }
                 let Ty::Adt(adt) = &target else {
-                    return false;
+                    return Ok(false);
                 };
                 if adt.definition != id || args.len() != adt.arguments.len() {
-                    return false;
+                    return Ok(false);
                 }
                 for (pat_arg, target_arg) in args.iter().zip(&adt.arguments) {
                     let ok = match (pat_arg, target_arg) {
                         (GenericArg::Type(pat_ty), GenericValue::Type(target_ty)) => {
-                            self.match_type_pattern(env, *pat_ty, target_ty)
+                            self.match_type_pattern_inner(env, *pat_ty, target_ty, strict_eval)?
                         }
                         (GenericArg::Type(pat_ty), GenericValue::Data(target_val)) => {
                             match &self.ast(env.file).ty(*pat_ty).value {
@@ -1036,18 +1340,21 @@ impl Checker<'_> {
                         _ => false,
                     };
                     if !ok {
-                        return false;
+                        return Ok(false);
                     }
                 }
-                true
+                Ok(true)
             }
-            _ => self.type_expr(env, pattern) == target,
+            _ => Ok(self.type_expr(env, pattern) == target),
         }
     }
 
     pub(super) fn map_static_bindings(&mut self, env: &mut Env, pattern: PatternId, value: &Value) {
         let mut bindings = HashMap::new();
-        if self.value_pattern(env, pattern, value, &mut bindings) {
+        if self
+            .value_pattern(env, pattern, value, &mut bindings)
+            .unwrap_or(false)
+        {
             for (def, value) in bindings {
                 env.generics.insert(def, GenericValue::Data(value));
             }
@@ -1060,7 +1367,7 @@ impl Checker<'_> {
         pattern: PatternId,
         value: &Value,
         bindings: &mut HashMap<DefinitionId, Value>,
-    ) -> bool {
+    ) -> super::eval::Eval<bool> {
         let mut matched = MatchedValues {
             locals: std::mem::take(bindings),
             paths: HashMap::new(),
@@ -1077,37 +1384,38 @@ impl Checker<'_> {
         value: &Value,
         bindings: &mut MatchedValues,
         place: Option<&[Value]>,
-    ) -> bool {
+    ) -> super::eval::Eval<bool> {
         let ast = self.ast(env.file);
         let node = ast.pattern(pattern);
         match (&node.value, value) {
-            (Pattern::Wildcard | Pattern::Rest(None), _) => true,
+            (Pattern::Wildcard | Pattern::Rest(None), _) => Ok(true),
             (Pattern::Binding(storage, name), value) => {
                 if let Some(id) = self.resolve(name.span) {
                     bindings.bind(id, value, place, storage.mode);
                 }
-                true
+                Ok(true)
             }
             (Pattern::Rest(Some(name)), value) => {
                 if let Some(id) = self.resolve(name.span) {
                     bindings.bind(id, value, None, Mode::Plain);
                 }
-                true
+                Ok(true)
             }
-            (Pattern::Unit, Value::Unit) => true,
+            (Pattern::Unit, Value::Unit) => Ok(true),
             (Pattern::Literal(pattern), value) => {
-                literal(pattern).is_ok_and(|pattern| super::value::ieee_equal(&pattern, value))
+                Ok(literal(pattern).is_ok_and(|pattern| super::value::ieee_equal(&pattern, value)))
             }
             (Pattern::Tuple(items), Value::Tuple(values)) => {
-                items.len() == values.len()
-                    && items
-                        .iter()
-                        .zip(values)
-                        .enumerate()
-                        .all(|(index, (&id, value))| {
-                            let child = next_coordinate(place, || Value::Int(index.into()));
-                            self.value_pattern_at(env, id, value, bindings, child.as_deref())
-                        })
+                if items.len() != values.len() {
+                    return Ok(false);
+                }
+                for (index, (&id, value)) in items.iter().zip(values).enumerate() {
+                    let child = next_coordinate(place, || Value::Int(index.into()));
+                    if !self.value_pattern_at(env, id, value, bindings, child.as_deref())? {
+                        return Ok(false);
+                    }
+                }
+                Ok(true)
             }
             (
                 Pattern::Slice {
@@ -1118,34 +1426,38 @@ impl Checker<'_> {
             ) => {
                 let (before, rest, after) = ast.slice_parts(elements);
                 let Some(end) = values.len().checked_sub(after.len()) else {
-                    return false;
+                    return Ok(false);
                 };
                 let Some(middle) = values.get(before.len()..end) else {
-                    return false;
+                    return Ok(false);
                 };
                 if rest.is_none() && !middle.is_empty() {
-                    return false;
+                    return Ok(false);
                 }
-                before
+                for (id, index) in before
                     .iter()
                     .copied()
                     .zip(0..before.len())
                     .chain(after.iter().copied().zip(end..values.len()))
-                    .all(|(id, index)| {
-                        let child = next_coordinate(place, || Value::Int(index.into()));
-                        values.get(index).is_some_and(|value| {
-                            self.value_pattern_at(env, id, value, bindings, child.as_deref())
-                        })
-                    })
-                    && rest.is_none_or(|id| {
-                        self.value_pattern_at(
-                            env,
-                            id,
-                            &Value::Array(middle.to_vec()),
-                            bindings,
-                            None,
-                        )
-                    })
+                {
+                    let child = next_coordinate(place, || Value::Int(index.into()));
+                    let Some(value) = values.get(index) else {
+                        return Ok(false);
+                    };
+                    if !self.value_pattern_at(env, id, value, bindings, child.as_deref())? {
+                        return Ok(false);
+                    }
+                }
+                if let Some(id) = rest {
+                    return self.value_pattern_at(
+                        env,
+                        id,
+                        &Value::Array(middle.to_vec()),
+                        bindings,
+                        None,
+                    );
+                }
+                Ok(true)
             }
             (
                 Pattern::Slice {
@@ -1156,38 +1468,41 @@ impl Checker<'_> {
             ) => {
                 let (before, rest, after) = ast.slice_parts(elements);
                 let Some(prefix) = text_slice_fragment(ast, before) else {
-                    return false;
+                    return Ok(false);
                 };
                 let Some(suffix) = text_slice_fragment(ast, after) else {
-                    return false;
+                    return Ok(false);
                 };
                 let Some(middle) = text
                     .strip_prefix(&prefix)
                     .and_then(|tail| tail.strip_suffix(&suffix))
                 else {
-                    return false;
+                    return Ok(false);
                 };
-                rest.map_or_else(
-                    || middle.is_empty(),
-                    |id| self.value_pattern_at(env, id, &Value::Str(middle.into()), bindings, None),
-                )
+                match rest {
+                    None => Ok(middle.is_empty()),
+                    Some(id) => {
+                        self.value_pattern_at(env, id, &Value::Str(middle.into()), bindings, None)
+                    }
+                }
             }
             (Pattern::Wrap(_, parts), value) => match parts.as_slice() {
-                [] => matches!(value, Value::Unit),
+                [] => Ok(matches!(value, Value::Unit)),
                 [inner] => self.value_pattern_at(env, *inner, value, bindings, place),
                 many => {
                     let Value::Tuple(values) = value else {
-                        return false;
+                        return Ok(false);
                     };
-                    many.len() == values.len()
-                        && many
-                            .iter()
-                            .zip(values)
-                            .enumerate()
-                            .all(|(index, (&id, value))| {
-                                let child = next_coordinate(place, || Value::Int(index.into()));
-                                self.value_pattern_at(env, id, value, bindings, child.as_deref())
-                            })
+                    if many.len() != values.len() {
+                        return Ok(false);
+                    }
+                    for (index, (&id, value)) in many.iter().zip(values).enumerate() {
+                        let child = next_coordinate(place, || Value::Int(index.into()));
+                        if !self.value_pattern_at(env, id, value, bindings, child.as_deref())? {
+                            return Ok(false);
+                        }
+                    }
+                    Ok(true)
                 }
             },
             (Pattern::Constructor(path, None), Value::Unit)
@@ -1195,7 +1510,7 @@ impl Checker<'_> {
                     .resolve(path.span)
                     .is_some_and(|id| self.hir.unit_constructor(id)) =>
             {
-                true
+                Ok(true)
             }
             (Pattern::Constructor(path, parts), Value::Tag(tag, values)) => {
                 let expected = self
@@ -1206,46 +1521,66 @@ impl Checker<'_> {
                             .last()
                             .map(|segment| segment.name.value.as_str())
                     });
-                expected == Some(tag.as_str())
-                    && parts.as_ref().map_or(0, Vec::len) == values.len()
-                    && parts.iter().flatten().zip(values).enumerate().all(
-                        |(index, (&id, value))| {
-                            let child = next_coordinate(place, || Value::Int(index.into()));
-                            self.value_pattern_at(env, id, value, bindings, child.as_deref())
-                        },
-                    )
+                if expected != Some(tag.as_str())
+                    || parts.as_ref().map_or(0, Vec::len) != values.len()
+                {
+                    return Ok(false);
+                }
+                for (index, (&id, value)) in parts.iter().flatten().zip(values).enumerate() {
+                    let child = next_coordinate(place, || Value::Int(index.into()));
+                    if !self.value_pattern_at(env, id, value, bindings, child.as_deref())? {
+                        return Ok(false);
+                    }
+                }
+                Ok(true)
             }
             (Pattern::Subset { binding, .. }, Value::Tag(tag, _)) => {
-                self.subset_tags
+                if !self
+                    .subset_tags
                     .get(&node.span)
                     .is_some_and(|tags| tags.contains(tag))
-                    && binding
-                        .is_none_or(|id| self.value_pattern_at(env, id, value, bindings, place))
-            }
-            (Pattern::Or(items), value) => items.iter().any(|&id| {
-                let mut local_bindings = bindings.clone();
-                let mut local_env = env.clone();
-                if self.value_pattern_at(&mut local_env, id, value, &mut local_bindings, place) {
-                    *bindings = local_bindings;
-                    *env = local_env;
-                    true
-                } else {
-                    false
+                {
+                    return Ok(false);
                 }
-            }),
-            (Pattern::Record { fields, .. }, Value::Record(record)) => fields.iter().all(|field| {
-                record.get(&field.name.value).is_some_and(|value| {
+                match binding {
+                    Some(id) => self.value_pattern_at(env, *id, value, bindings, place),
+                    None => Ok(true),
+                }
+            }
+            (Pattern::Or(items), value) => {
+                for &id in items {
+                    let mut local_bindings = bindings.clone();
+                    let mut local_env = env.clone();
+                    if self.value_pattern_at(
+                        &mut local_env,
+                        id,
+                        value,
+                        &mut local_bindings,
+                        place,
+                    )? {
+                        *bindings = local_bindings;
+                        *env = local_env;
+                        return Ok(true);
+                    }
+                }
+                Ok(false)
+            }
+            (Pattern::Record { fields, .. }, Value::Record(record)) => {
+                for field in fields {
+                    let Some(value) = record.get(&field.name.value) else {
+                        return Ok(false);
+                    };
                     let child = next_coordinate(place, || Value::Str(field.name.value.clone()));
                     if let Some(id) = field.pattern {
-                        self.value_pattern_at(env, id, value, bindings, child.as_deref())
-                    } else {
-                        if let Some(id) = self.resolve(field.name.span) {
-                            bindings.bind(id, value, child.as_deref(), field.storage.mode);
+                        if !self.value_pattern_at(env, id, value, bindings, child.as_deref())? {
+                            return Ok(false);
                         }
-                        true
+                    } else if let Some(id) = self.resolve(field.name.span) {
+                        bindings.bind(id, value, child.as_deref(), field.storage.mode);
                     }
-                })
-            }),
+                }
+                Ok(true)
+            }
             (
                 Pattern::Range {
                     low,
@@ -1253,14 +1588,16 @@ impl Checker<'_> {
                     inclusive,
                 },
                 Value::Int(value),
-            ) => match (literal(low), literal(high)) {
+            ) => Ok(match (literal(low), literal(high)) {
                 (Ok(Value::Int(a)), Ok(Value::Int(b))) => {
                     &a <= value && (value < &b || *inclusive && value == &b)
                 }
                 _ => false,
-            },
-            (Pattern::Type(pattern), Value::Type(ty)) => self.match_type_pattern(env, *pattern, ty),
-            _ => false,
+            }),
+            (Pattern::Type(pattern), Value::Type(ty)) => {
+                self.match_type_pattern_eval(env, *pattern, ty)
+            }
+            _ => Ok(false),
         }
     }
 }

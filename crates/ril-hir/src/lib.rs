@@ -55,7 +55,7 @@ pub enum Intrinsic {
     PanicMessage,
     TypeName,
     Fields,
-    Variants,
+    SumTags,
     CompileError,
     CompileErrorCode,
     Panic,
@@ -82,6 +82,7 @@ pub enum Intrinsic {
     ReflectFieldAttrs,
     ReflectVariantAttrs,
     ReflectHasDefault,
+    ReflectRawTypeKind,
 }
 
 impl Intrinsic {
@@ -115,6 +116,7 @@ impl Intrinsic {
                 | StringDecodeUtf8
                 | BytesAt
                 | BytesFromArray
+                | ReflectRawTypeKind
         )
     }
 }
@@ -124,8 +126,9 @@ pub enum StdType {
     Option,
     Result,
     Set,
-    Draft,
+    Derived,
     FieldMode,
+    TypeKind,
     PanicReport,
     PanicError,
 }

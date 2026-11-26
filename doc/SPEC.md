@@ -893,14 +893,14 @@ assert(base.profile.email == "a@ril.dev" && len(base.profile.tags) == 1)
 assert(next.profile.email == "b@ril.dev" && next.profile.tags == ["core", "admin"])
 -- let _ = 42 |> derive \mut _d -> ()            -- Error [E0536]: value type 'int' is not a SharedObject
 -- var leak: ?(fn() &up -> str) = None
--- let _ = base |> derive \mut d -> { leak = Some(\-> d.profile.email) } -- Error [E0607]: Draft escapes derive closure
+-- let _ = base |> derive \mut d -> { leak = Some(\-> d.profile.email) } -- Error [E0607]: Derived escapes derive closure
 ```
 
 | `derive` rule | Requirement |
 | :--- | :--- |
 | Root eligibility (`E0536`, `E0308`) | `base` must be a deeply immutable `SharedObject` (including accessible `nominal` and in-scope `.ril` `opaque` shared objects; sealed `.ril` `opaque` roots fail `E0308`); value types, foreign `.d.ril` `opaque` handles, and live `mut`/`^mut`/`ref` roots fail `E0536` |
-| `Draft<T>` path operations | Confined `mut Draft<T>` paths permit `d.field = v` (regardless of `var`), tuple-slot updates `d.0 = v`, `mut` collection operations (`d.tags \|> mut Array::push(...)`), `inner(mut d)` on accessible nominal wrappers, and `match d { Tag(mut p) -> ... }` in-place variant payload updates |
-| `Draft<T>` confinement (`E0607`) | `Draft<T>` is bound to the `derive` closure activation; draft handles, derived `ref`/`mut` paths, and capturing closures cannot escape the `derive` closure, and outer `ctl` effects cannot be invoked inside `derive` (`E0607`; locally handled `ctl` inside `derive` is permitted) |
+| `Derived<T>` path operations | Confined `mut Derived<T>` paths permit `d.field = v` (regardless of `var`), tuple-slot updates `d.0 = v`, `mut` collection operations (`d.tags \|> mut Array::push(...)`), `inner(mut d)` on accessible nominal wrappers, and `match d { Tag(mut p) -> ... }` in-place variant payload updates |
+| `Derived<T>` confinement (`E0607`) | `Derived<T>` is bound to the `derive` closure activation; derived handles, derived `ref`/`mut` paths, and capturing closures cannot escape the `derive` closure, and outer `ctl` effects cannot be invoked inside `derive` (`E0607`; locally handled `ctl` inside `derive` is permitted) |
 | Inserted values (`E0535`) | Assigned values must be deeply immutable or newly allocated inside the `derive` closure and free of surviving outside writers (`E0535`) |
 | Fixed shape (`E0336`, `E0312`) | Preserves record fields, tuple arity, and active sum tags of `T`; forwards the `derive` closure's effects and outer state obligations |
 
@@ -1673,8 +1673,8 @@ assert(a == 3 && b == 3)
 
 - **Record Construction (`[Alias].{ [FieldMode] field: expr, shorthand }`)**: Must initialize every non-defaulted declared field of the target record type (`E0307` missing, `E0302` unexpected, `E0210` duplicate). Field shorthand `.{ id, name }` desugars to `.{ id: id, name: name }`. On anonymous `.{ ... }`, `[ FieldMode ]` explicitly declares the field's mode (or a `ref expr` value synthesizes a `ref` field; `var` is never synthesized implicitly, `E0357`). On transparent record alias `Alias.{ ... }`, fields inherit `Alias`'s declared modes (any written `[ FieldMode ]` must match, `E0357`, and `ref` fields require a `ref`-mode expression). Nominal and opaque records use constructor call syntax `Nominal(.{ ... })` (`Nominal.{ ... }` fails `E0338`).
 - **Assignment Semantics (`target = expr`, `target += expr`, ...)**: Assignment is a `()`-typed expression and does not chain (`a = b = 1` fails `E0701`). Compound assignments evaluate `target`'s receiver/index expression exactly once.
-- **Valid `AssignTarget`**: Must be a `var` variable, a `var` record field on a `mut`/`^mut` path, an element of a `mut`/`^mut` array/map, or a field/tuple slot on a confined `mut Draft<T>` path.
-  - Fails `E0501` on `let` or plain fields, `E0502` on pinned `let mut`/`let ref`, `E0503` on temporaries or non-draft tuple slots, and `E0352` on map compound assignment `m[k] += v`.
+- **Valid `AssignTarget`**: Must be a `var` variable, a `var` record field on a `mut`/`^mut` path, an element of a `mut`/`^mut` array/map, or a field/tuple slot on a confined `mut Derived<T>` path.
+  - Fails `E0501` on `let` or plain fields, `E0502` on pinned `let mut`/`let ref`, `E0503` on temporaries or non-`Derived` tuple slots, and `E0352` on map compound assignment `m[k] += v`.
 
 ---
 
@@ -2855,10 +2855,11 @@ test_introspection()
 ```
 
 - **Constituent Projection (`T.(k)`)**: Projects field type `T.field` / `T.("field")` on accessible records (structural, `nominal`, in-scope `opaque`), `T.0` / `T.(0)` on tuples, and payload type `T.Variant` / `T.("Variant")` on transparent sums (`()` for unit variants; `E0308` on sealed `.ril` `opaque`, `E0907` on `.d.ril`).
-- **`FieldMode` & `fields` / `variants`**:
+- **`FieldMode`, `TypeKind`, `type_kind`, `fields`, and `sum_tags`**:
   - Prelude `FieldMode` provides value constructors `FieldMode::Let`, `Var`, `Mut`, `SharedMut`, `Ref`, `VarMut`, `VarSharedMut`, and `VarRef` (corresponding to type-level `FieldModeLiteral` spellings `let`, `var`, `mut`, `^mut`, `ref`, `var mut`, `var ^mut`, `var ref`).
+  - `type_kind(<T>) -> TypeKind` classifies any `T` into one of `TypeKind`'s 17 mutually exclusive variants (`Value`, `Record`, `Tuple`, `Array`, `Map`, `Sum`, `Nominal`, `OpaqueValue`, `OpaqueShared`, `OpaqueSum`, `Opaque`, `Foreign`, `Fn`, `Ctl`, `Derived`, `Range`, `Meta`). Transparent aliases normalize first; `opaque` declarations always report their `Opaque*` kind regardless of caller scope.
   - `fields(<T>) -> [](FieldMode, FieldKey<T>)` enumerates `(mode, field_name)` pairs in UTF-8 byte order for records (`FieldKey<T>` = `str`) and `(FieldMode::Let, index)` pairs in ascending index order for tuples (`FieldKey<T>` = `int`; `()` yields `[]`; `E0358` on other types, `E0308` when sealed).
-  - `variants(<T>) -> []str` enumerates deduplicated variant names in UTF-8 byte order for closed transparent sums (`E0301` on non-sums; `E0308` when sealed or open `..`).
+  - `sum_tags(<T>) -> []str` enumerates deduplicated variant names in UTF-8 byte order for closed transparent sums (`E0301` on non-sums; `E0308` when sealed or open `..`).
 - **Mapped Record Types (`.{ [ModeModifier] [expr as pat]: Type }`)**: When `ModeModifier` is omitted or is a fixed `RecordFieldMode`, the comprehension iterable yields `str` keys directly (`E0341` otherwise); when `ModeModifier` is a `ValueName` bound by `pat`, the iterable yields `(FieldMode, str)` pairs whose first component supplies the mode and whose second component supplies the `str` key (`E0341` otherwise). Keys must be valid non-keyword `FieldLabel` syntax (`E0815`) with no duplicates (`E0210`). Value-type fields with `mut`/`^mut`/`ref` modes fail `E0402`; invalid mode values fail `E0356` / `E0357`.
 - **Metadata Introspection (`Reflect`)**:
   - `Reflect::attrs<T, A>(target: Type<T>) -> []A`
@@ -2875,7 +2876,7 @@ ModeModifier              ::= RecordFieldMode | ValueName
 
 ### Structural Type Pattern Matching
 
-`let U` binds an exact type variable (or `FieldMode` in `let M field: ...`); bare `PascalCase` heads match concrete nominal, sum, or opaque type constructors (`E0306` on type-constructor pattern variables like `<(let F)<let X>>`):
+`let U` binds an exact type variable (or `FieldMode` in `let M field: ...`); bare `PascalCase` heads match concrete nominal, sum, or opaque type constructors (`E0306` on type-constructor pattern variables like `<(let F)<let X>>`). The static-only pattern `Nominal<pat>` matches any transparent `.ril` nominal wrapper (or in-scope `.ril` `opaque` wrapper, honoring the caller's defining scope) and matches its unwrapped representation against `pat` (never matching sealed `opaque` wrappers, `.d.ril` foreign handles, or sum types; `Nominal<...>` outside type patterns fails `E0306`, bare value `Nominal` fails `E0319`, and wrong arity fails `E0340`):
 
 ```ril
 type UnwrapResult = \T -> match <T> {
@@ -3034,8 +3035,8 @@ fn main() @io -> new !<(), str> {
 ### Prelude Scope
 
 The implicit prelude encloses every compilation unit and inline `sub`:
-- **Types & effects**: Primitive types, `Option<T>` (`?T`; exports `Some`, `None`), `Result<T, E>` (`!<T, E>`; exports `Ok`, `Err`), `Set<T>`, `PanicReport` (value-backed `opaque` over `str`), `PanicError` (exports `Panicked`), `FieldMode`, `Draft<T>`, and `@io`.
-- **Static checks & type helpers**: `SharedObject`, `Tuple`, and `KeyOf` (internal signature helpers `LenTarget`, `NominalWrapper`, `Unwrap`, and `FieldKey` are stdlib-private).
+- **Types & effects**: Primitive types, `Option<T>` (`?T`; exports `Some`, `None`), `Result<T, E>` (`!<T, E>`; exports `Ok`, `Err`), `Set<T>`, `PanicReport` (value-backed `opaque` over `str`), `PanicError` (exports `Panicked`), `FieldMode`, `TypeKind`, `Derived<T>`, and `@io`.
+- **Static checks, patterns & type helpers**: `SharedObject`, `Tuple`, `LenTarget`, `NominalWrapper`, `Unwrap`, `FieldKey`, `KeyOf`, and the static-only type pattern `Nominal<pat>`.
 - **Core modules**: `Array` (including destructive extractors `Array::pop`, `Array::pop_front`, `Array::remove` returning `new ?T`), `Map` (including `Map::remove` returning `new ?V`), `Set`, `String`, `Bytes`, `Numeric`, and `Reflect`.
 - **Explicit standard imports**: `use ril/io`, `use ril/file`, `use ril/os`, `use ril/platform`, `use ril/math`, and `use ril/crypto`.
 
@@ -3043,16 +3044,17 @@ The implicit prelude encloses every compilation unit and inline `sub`:
 
 | Built-in | Canonical signature | Phase & specification |
 | :--- | :--- | :--- |
-| `len` | `pub fn len<T \|> LenTarget>(via item: T) -> int` | Dual-phase: scalar count of `str`, byte count of `bytes`, element/entry count of `[]T`, `[K: V]`, `Set<T>` (admits `ref` on collections at runtime; `E0401` on `ref str`) |
-| `inner` | `pub fn inner<W \|> NominalWrapper>(via wrapper: W) -> infer Unwrap<W>` | Dual-phase: unwraps accessible `.ril` `nominal` wrapper (or `Draft<W>`, lifting `NominalWrapper`/`Unwrap`) to its payload (`()` for unit nominals; `inner(mut x)` is a scoped path projection usable on `Draft<W>` or as an immediate `mut` path receiver, unable to bind a second unshared `let mut` alias, `E0510`; `E0907` on `.d.ril` nominals, `E0301` on non-nominals) |
-| `clone` | `pub fn clone<T \|> SharedObject>(via value: T) -> new T` | Dual-phase: deep copy of a clonable `SharedObject` graph into isolated `new T` (`E0301` on value-type or callable roots and graphs containing `.d.ril` `opaque` / `&once` / `ctl(...)` / `Draft` handles, `E0530` on live callable environments) |
-| `derive` | `pub fn derive<T \|> SharedObject>(base: T, via update: fn(mut Draft<T>) @& -> ()) -> T` | Dual-phase: path-targeted functional update on immutable `SharedObject` (`E0536`, `E0308`, `E0607`) |
+| `len` | `pub fn len<T \|> LenTarget>(via item: T) -> int` | Dual-phase: scalar count of `str`, byte count of `bytes`, element/entry count of `[]T`, `[K: V]`, `Set<T>` (and `Derived` wrappers thereof; admits `ref` on collections at runtime; `E0401` on `ref str`) |
+| `inner` | `pub fn inner<W \|> NominalWrapper>(via wrapper: W) -> infer Unwrap<W>` | Dual-phase: unwraps accessible `.ril` `nominal` wrapper (or `Derived<W>`, lifting `NominalWrapper`/`Unwrap`) to its payload (`()` for unit nominals; `inner(mut x)` is a scoped path projection usable on `Derived<W>` or as an immediate `mut` path receiver, unable to bind a second unshared `let mut` alias, `E0510`; `E0907` on `.d.ril` nominals, `E0301` on non-nominals) |
+| `clone` | `pub fn clone<T \|> SharedObject>(via value: T) -> new T` | Dual-phase: deep copy of a clonable `SharedObject` graph into isolated `new T` (`E0301` on value-type or callable roots and graphs containing `.d.ril` `opaque` / `&once` / `ctl(...)` / `Derived` handles, `E0530` on live callable environments) |
+| `derive` | `pub fn derive<T \|> SharedObject>(base: T, via update: fn(mut Derived<T>) @& -> ()) -> T` | Dual-phase: path-targeted functional update on immutable `SharedObject` (`E0536`, `E0308`, `E0607`) |
 | `unwind_ctl` | Built-in over `new k: ctl(...) [@E] [&S] -> R` | Runtime: synchronously unwinds `k`'s armed `defer` stack frames LIFO and returns `()` (`E0810` in static eval; `E0301` on non-`ctl(...)`; `no_ctl`, legal inside `defer`; charges residual `&S`, `@io`, and `fn`-op `@Eff` labels) |
 | `recover_panic` | `pub fn recover_panic<T>(via action: fn() @& -> infer T) -> infer !<T, PanicError>` | Runtime: panic-isolated containment (`E0608`) |
 | `panic_message` | `pub fn panic_message(report: PanicReport) -> str` | Runtime: extracts human-readable message from `PanicReport` (`E0810` in static eval) |
-| `type_name` | `pub meta fn type_name<T>(tv: Type<T>) -> str` | Static only: diagnostic display string of `T` |
-| `fields` | `pub meta fn fields<T>(tv: Type<T>) -> [](FieldMode, FieldKey<T>)` | Static only: `(mode, key)` pairs of accessible record (`str` keys) or tuple (`int` keys) `T` (`E0358` non-record/non-tuple, `E0308` sealed) |
-| `variants` | `pub meta fn variants<T>(tv: Type<T>) -> []str` | Static only: variant tags of closed transparent sum `T` (`E0301` non-sum, `E0308` sealed/open) |
+| `type_name` | `pub meta fn type_name<T>(target: Type<T>) -> str` | Static only: diagnostic display string of `T` |
+| `type_kind` | `pub meta fn type_kind<T>(target: Type<T>) -> TypeKind` | Static only: coarse `TypeKind` classification of `T` |
+| `fields` | `pub meta fn fields<T>(target: Type<T>) -> [](FieldMode, FieldKey<T>)` | Static only: `(mode, key)` pairs of accessible record (`str` keys) or tuple (`int` keys) `T` (`E0358` non-record/non-tuple, `E0308` sealed) |
+| `sum_tags` | `pub meta fn sum_tags<T>(target: Type<T>) -> []str` | Static only: variant tags of closed transparent sum `T` (`E0301` non-sum, `E0308` sealed/open) |
 | `compile_error` | `pub meta fn compile_error(message: str) -> never` | Static only: emits compile-time diagnostic `E0832` with `message`, anchored at the enclosing type/meta instantiation site |
 | `panic` | `pub fn panic(message: str) -> never` | Dual-phase: LIFO panic unwinding at runtime; `E0831` in static eval |
 | `assert` | `pub fn assert(condition: bool, message: str = "assertion failed") -> ()` | Dual-phase: panics with `message` when `false` at runtime; `E0830` when `false` in static eval |
@@ -3265,7 +3267,7 @@ An early return through `?` exits normally with `Err` or `None`. An outstanding 
 | Code | Diagnostic and defining rule |
 | :---: | :--- |
 | **`E0604`** | [`ScopedValueEscapeError`](#deferred-cleanup-statements-defer); [Effect Declarations and Handlers](#effect-declarations-and-handlers) |
-| **`E0607`** | [`DeriveDraftEscapeError`](#functional-updates-via-derive) |
+| **`E0607`** | [`DerivedEscapeError`](#functional-updates-via-derive) |
 | **`E0608`** | [`PanicIsolationViolationError`](#panic-recovery-with-recover_panic) |
 | **`E0612`** | [`UnhandledEffectError`](#effect-declarations-and-handlers) |
 | **`E0613`** | [`ValueEffectAnnotationError`](#type-definition-boundaries) |

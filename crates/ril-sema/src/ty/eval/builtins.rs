@@ -124,7 +124,58 @@ impl Checker<'_> {
             }
             ("type_name", [Value::Type(ty)]) => Ok(Value::Str(ty.display(self.hir).to_string())),
             ("fields", [Value::Type(ty)]) => self.eval_coords(env, ty, span),
-            ("variants", [Value::Type(ty)]) => match self.normalize(ty) {
+            ("raw_type_kind", [Value::Type(ty)]) => {
+                let target = self.normalize(ty);
+                let variant = match &target {
+                    Ty::Param(_) | Ty::Infer(_) | Ty::Projection(..) | Ty::Unknown => {
+                        return Err(Signal::Dependent(span));
+                    }
+                    Ty::Unit | Ty::Bool | Ty::Int | Ty::F64 | Ty::Str | Ty::Bytes | Ty::Never => {
+                        "Value"
+                    }
+                    Ty::Record(..) => "Record",
+                    Ty::Tuple(_) => "Tuple",
+                    Ty::Array(_) => "Array",
+                    Ty::Map(..) => "Map",
+                    Ty::Callable(c) if c.is_ctl => "Ctl",
+                    Ty::Callable(_) => "Fn",
+                    Ty::Draft(_) => "Derived",
+                    Ty::Range => "Range",
+                    Ty::TypeValue(_) | Ty::Mode => "Meta",
+                    Ty::Adt(adt) => match adt.kind {
+                        AdtKind::Sum => "Sum",
+                        AdtKind::OpaqueSum => "OpaqueSum",
+                        AdtKind::Nominal => "Nominal",
+                        AdtKind::Foreign => "Foreign",
+                        AdtKind::Opaque => {
+                            let underlying = self.unwrap_wrapper(env, &target);
+                            match &underlying {
+                                Ty::Param(_) | Ty::Infer(_) | Ty::Projection(..) | Ty::Unknown => {
+                                    return Err(Signal::Dependent(span));
+                                }
+                                Ty::Tuple(_) | Ty::Record(..) | Ty::Array(_) | Ty::Map(..) => {
+                                    "OpaqueShared"
+                                }
+                                Ty::Adt(inner)
+                                    if matches!(inner.kind, AdtKind::Sum | AdtKind::OpaqueSum) =>
+                                {
+                                    "OpaqueShared"
+                                }
+                                Ty::Unit
+                                | Ty::Bool
+                                | Ty::Int
+                                | Ty::F64
+                                | Ty::Str
+                                | Ty::Bytes
+                                | Ty::Never => "OpaqueValue",
+                                _ => "Opaque",
+                            }
+                        }
+                    },
+                };
+                Ok(Value::Tag(variant.into(), Vec::new()))
+            }
+            ("sum_tags", [Value::Type(ty)]) => match self.normalize(ty) {
                 Ty::Adt(adt) => {
                     if adt.kind == AdtKind::Foreign {
                         return Err(Signal::Error(
@@ -144,7 +195,7 @@ impl Checker<'_> {
                         return Err(Signal::Error(
                             Code::E0301,
                             span,
-                            "variants requires a sum type",
+                            "sum_tags requires a sum type",
                         ));
                     }
                     let def = self.hir.definition(adt.definition);
@@ -173,7 +224,7 @@ impl Checker<'_> {
                 _ => Err(Signal::Error(
                     Code::E0301,
                     span,
-                    "variants requires a sum type",
+                    "sum_tags requires a sum type",
                 )),
             },
             ("has_default", [Value::Type(ty), Value::Str(field)]) => {

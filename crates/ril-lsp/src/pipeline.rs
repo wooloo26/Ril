@@ -973,7 +973,7 @@ fn ast_type_matches_concrete(
                 "str" => matches!(actual, Ty::Str),
                 "bytes" => matches!(actual, Ty::Bytes),
                 "never" => matches!(actual, Ty::Never),
-                "Draft" => matches!(actual, Ty::Draft(_)),
+                "Derived" => matches!(actual, Ty::Draft(_)),
                 "Range" => matches!(actual, Ty::Range),
                 _ => match actual {
                     Ty::Adt(adt) => hir.definition(adt.definition).name.value == name,

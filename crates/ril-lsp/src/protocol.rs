@@ -229,3 +229,19 @@ pub(crate) fn import_insert_line(text: &str) -> usize {
         first_non_comment.unwrap_or(0)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::extract_doc_comment;
+
+    #[test]
+    fn extract_doc_comment_preserves_blank_paragraphs_and_fenced_examples() {
+        let src = "-- Module header\n\n-- Computes length.\n--\n-- ```ril\n--     let n = len([1, 2])\n-- ```\npub fn len() -> int\n";
+        let decl_offset = src.find("pub fn len").unwrap();
+        let doc = extract_doc_comment(src, decl_offset).unwrap();
+        assert_eq!(
+            doc,
+            "Computes length.\n\n```ril\n    let n = len([1, 2])\n```"
+        );
+    }
+}

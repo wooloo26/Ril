@@ -5,10 +5,22 @@ use ril/array
 fn raw_encode_utf8(text: str) -> bytes
 fn raw_decode_utf8(data: bytes) -> new ?str
 
+-- Dual-phase canonical debug formatter rendering any Ril value (including cycles) as `str`.
+--
+-- ```ril
+-- let s = String::inspect(.{ id: 1, tags: ["a", "b"] })
+-- ```
 pub fn inspect<T>(via value: T) -> str
+
+-- Returns the Unicode scalar code point (`int`) at 0-based scalar `index` of `text`,
+-- or `None` if `index` is out of bounds.
 pub fn at(text: str, index: int) -> new ?int
+
+-- Builds a `str` from an array of Unicode scalar code points, returning `None` if any
+-- entry is not a valid Unicode scalar value (`0..=0x10FFFF` excluding surrogates).
 pub fn from_scalars(via values: []int) -> new ?str
 
+-- Concatenates `parts` into a single `str` separated by `separator`.
 pub fn join(via parts: []str, separator: str) -> str {
     var out = ""
     var first = true
@@ -22,6 +34,7 @@ pub fn join(via parts: []str, separator: str) -> str {
     out
 }
 
+-- Splits `text` on every non-overlapping occurrence of `separator`.
 pub fn split(text: str, separator: str) -> new []str {
     let mut out: []str = []
     let n = len(text)
@@ -51,6 +64,7 @@ pub fn split(text: str, separator: str) -> new []str {
     new out
 }
 
+-- Reports whether `text` begins with `prefix`.
 pub fn starts_with(text: str, prefix: str) -> bool {
     let n = len(prefix)
     if n > len(text) {
@@ -59,6 +73,7 @@ pub fn starts_with(text: str, prefix: str) -> bool {
     text[..n] == prefix
 }
 
+-- Reports whether `text` ends with `suffix`.
 pub fn ends_with(text: str, suffix: str) -> bool {
     let n = len(suffix)
     let m = len(text)
@@ -68,6 +83,7 @@ pub fn ends_with(text: str, suffix: str) -> bool {
     text[m - n..] == suffix
 }
 
+-- Returns all Unicode scalar code points of `text` as a new `[]int`.
 pub fn scalars(text: str) -> new []int {
     let mut out: []int = []
     for 0..len(text) as i {
@@ -78,10 +94,12 @@ pub fn scalars(text: str) -> new []int {
     new out
 }
 
+-- Encodes `text` into its UTF-8 `bytes` representation.
 pub fn encode_utf8(text: str) -> bytes {
     raw_encode_utf8(text)
 }
 
+-- Decodes UTF-8 `data` into `Some(str)`, returning `None` if `data` is not valid UTF-8.
 pub fn decode_utf8(data: bytes) -> new ?str {
     raw_decode_utf8(data)
 }

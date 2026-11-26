@@ -320,8 +320,8 @@ impl Checker<'_> {
             };
             if let Some(std_ty) = std_ty {
                 let expected_arity = match std_ty {
-                    StdType::Draft => Some(1),
-                    StdType::FieldMode => Some(0),
+                    StdType::Derived => Some(1),
+                    StdType::FieldMode | StdType::TypeKind => Some(0),
                     _ => None,
                 };
                 if let Some(expected) = expected_arity
@@ -330,8 +330,8 @@ impl Checker<'_> {
                     self.error(Code::E0340, path.span, "incorrect number of type arguments");
                 }
                 match std_ty {
-                    StdType::Option | StdType::Result | StdType::Set => {}
-                    StdType::Draft => return Ty::Draft(Box::new(arg0(self, env))),
+                    StdType::Option | StdType::Result | StdType::Set | StdType::TypeKind => {}
+                    StdType::Derived => return Ty::Draft(Box::new(arg0(self, env))),
                     StdType::FieldMode => return Ty::Mode,
                     StdType::PanicReport | StdType::PanicError => {}
                 }
@@ -349,31 +349,21 @@ impl Checker<'_> {
                         };
                         return Ty::TypeValue(inner);
                     }
-                    "UnwrapNominal" => {
-                        let raw = arg0(self, env);
-                        let target = self.normalize(&raw);
-                        return self.eval_unwrap_nominal_kernel(env, &target, path.span, true);
+                    "Nominal" => {
+                        self.error(
+                            Code::E0306,
+                            path.span,
+                            "Nominal is only valid as a type pattern",
+                        );
+                        return Ty::Unknown;
                     }
-                    "TryUnwrapNominal" => {
-                        let raw = arg0(self, env);
-                        let target = self.normalize(&raw);
-                        return self.eval_unwrap_nominal_kernel(env, &target, path.span, false);
-                    }
-                    "SharedObjectKernel" => {
-                        let raw = arg0(self, env);
-                        let target = self.normalize(&raw);
-                        let unwrapped = self.unwrap_wrapper(env, &target);
-                        let valid = !unwrapped.is_primitive_value()
-                            && !matches!(
-                                &unwrapped,
-                                Ty::Callable(_)
-                                    | Ty::TypeValue(_)
-                                    | Ty::Mode
-                                    | Ty::Range
-                                    | Ty::Draft(_)
-                            )
-                            && !matches!(&unwrapped, Ty::Adt(adt) if adt.kind == AdtKind::Foreign);
-                        return if valid { target } else { Ty::Never };
+                    "KeyOf" => {
+                        self.error(
+                            Code::E0306,
+                            path.span,
+                            "KeyOf is only valid as a static check",
+                        );
+                        return Ty::Unknown;
                     }
                     _ => {}
                 }
@@ -439,11 +429,21 @@ impl Checker<'_> {
                     return Ty::Unknown;
                 }
                 let call_span = env.error_span.unwrap_or(path.span);
+                let has_unresolved = arguments.iter().any(
+                    |v| matches!(v, GenericValue::Type(ty) if ty.has_unresolved_static_type()),
+                );
                 self.stack.push(id);
                 local.phase = Phase::TypeEval;
                 local.caller_scope = Some(env.effective_scope());
                 local.error_span = Some(call_span);
-                let value = self.eval_root_at(&local, *body, true, call_span);
+                let value = if local.shadow {
+                    None
+                } else {
+                    match self.evaluate_static(&local, *body) {
+                        Err(crate::ty::eval::Signal::Dependent(_)) if has_unresolved => None,
+                        other => self.finish_eval(call_span, other, true),
+                    }
+                };
                 self.stack.pop();
                 match value {
                     Some(Value::Type(ty)) => *ty,
@@ -500,44 +500,6 @@ impl Checker<'_> {
             visibility: def.visibility,
             arguments,
         }))
-    }
-
-    fn eval_unwrap_nominal_kernel(
-        &mut self,
-        env: &Env,
-        target: &Ty,
-        span: Span,
-        strict: bool,
-    ) -> Ty {
-        let err_span = env.error_span.unwrap_or(span);
-        let caller_scope = env.effective_scope();
-        match target {
-            Ty::Unknown | Ty::Infer(_) | Ty::Param(_) => Ty::Unknown,
-            Ty::Adt(adt) if adt.kind == AdtKind::Foreign => {
-                self.error(Code::E0907, err_span, "foreign representation is sealed");
-                Ty::Unknown
-            }
-            Ty::Adt(adt)
-                if matches!(adt.kind, AdtKind::Opaque | AdtKind::OpaqueSum)
-                    && adt.defining_scope != caller_scope
-                    && (adt.kind == AdtKind::Opaque || !strict) =>
-            {
-                self.error(Code::E0308, err_span, "opaque representation is sealed");
-                Ty::Unknown
-            }
-            Ty::Adt(adt) if matches!(adt.kind, AdtKind::Nominal | AdtKind::Opaque) => {
-                self.representation(env, adt).unwrap_or(Ty::Unknown)
-            }
-            _ if strict => {
-                self.error(
-                    Code::E0301,
-                    err_span,
-                    "Unwrap requires a nominal wrapper type",
-                );
-                Ty::Unknown
-            }
-            _ => Ty::Never,
-        }
     }
 
     pub(in crate::ty) fn std_adt(&self, kind: StdType, arguments: Vec<GenericValue>) -> Ty {

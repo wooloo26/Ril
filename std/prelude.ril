@@ -6,11 +6,13 @@ pub use ril/io::(print, println)
 pub use ril/map
 pub use ril/numeric
 pub use ril/reflect
-pub use ril/reflect::(FieldMode, type_name, fields, variants)
+pub use ril/reflect::(FieldKey, FieldMode, TypeKind, fields, sum_tags, type_kind, type_name)
 pub use ril/set
 pub use ril/set::Set
 pub use ril/string
 
+-- Optional value representing either `Some(value)` or absence (`None`).
+-- Written with shorthand syntax `?T`.
 pub type Option<T> {
     Some(T)
     None
@@ -18,6 +20,8 @@ pub type Option<T> {
 
 pub use Option::(Some, None)
 
+-- Fallible result representing either success (`Ok(value)`) or error (`Err(error)`).
+-- Written with shorthand syntax `!<T, E>` and must be inspected, handled, or propagated (`E0720`).
 pub type Result<T, E> {
     Ok(T)
     Err(E)
@@ -25,75 +29,156 @@ pub type Result<T, E> {
 
 pub use Result::(Ok, Err)
 
+-- Opaque value-backed diagnostic report produced when `recover_panic` catches a panic.
+-- Extract its message with `panic_message`.
 pub opaque type PanicReport(str)
 
+-- Error sum returned by `recover_panic` when the guarded action panics.
 pub type PanicError {
     Panicked(PanicReport)
 }
 
 pub use PanicError::Panicked
 
-pub opaque type Draft<T>
+-- Confined mutable handle to a `SharedObject` snapshot inside a `derive` callback.
+-- Permits path-targeted field, tuple-slot, collection, and variant updates without mutating
+-- the original snapshot; cannot escape the `derive` closure (`E0607`).
+pub opaque type Derived<T>
 
 pkg meta fn compile_error_code(code: str, message: str) -> never
+
+-- Aborts compilation at static evaluation time with diagnostic `E0832` and `message`.
 pub meta fn compile_error(message: str) -> never
 
-type LenTarget = \T -> match <T> {
+-- Static check accepting types that support `len`: `str`, `bytes`, `Set<T>`, arrays, maps,
+-- and `Derived<T>` wrapping any of them.
+pub type LenTarget = \T -> match <T> {
+    <Derived<let Inner>> -> {
+        let _ = <LenTarget<Inner>>
+        <T>
+    }
     <str> | <bytes> | <Set<_>> -> <T>
     <[let M]_> -> <T>
     <[_: let M _]> -> <T>
     _ -> compile_error_code("E0301", "len requires text, bytes, or a collection")
 }
 
+-- Static check accepting tuple types (`(A, B, ...)` and `()`).
 pub type Tuple = \T -> match <T> {
     <(..)> -> <T>
     _ -> compile_error_code("E0301", "type does not satisfy Tuple")
 }
 
-type Unwrap = \W -> match <W> {
-    <Draft<let Inner>> -> <Draft<Unwrap<Inner>>>
-    _ -> <UnwrapNominal<W>>
+-- Unwraps an accessible nominal wrapper `W` (or lifts across `Derived<W>`) to its payload type.
+-- Fails `E0308` on sealed opaque types, `E0907` on foreign handles, and `E0301` on non-wrappers.
+pub type Unwrap = \W -> match <W> {
+    <Derived<let Inner>> -> <Derived<Unwrap<Inner>>>
+    <Nominal<let Inner>> -> <Inner>
+    _ -> match type_kind(<W>) {
+        TypeKind::Foreign -> compile_error_code("E0907", "foreign representation is sealed")
+        TypeKind::OpaqueValue | TypeKind::OpaqueShared | TypeKind::Opaque -> compile_error_code("E0308", "opaque representation is sealed")
+        _ -> compile_error_code("E0301", "Unwrap requires a nominal wrapper type")
+    }
 }
 
-type NominalWrapper = \W -> match <W> {
-    <Draft<let Inner>> -> {
+-- Static check accepting accessible `.ril` nominal wrappers (and `Derived<W>` wrapping one).
+pub type NominalWrapper = \W -> match <W> {
+    <Derived<let Inner>> -> {
         let _ = <NominalWrapper<Inner>>
         <W>
     }
-    _ -> {
-        let _ = <UnwrapNominal<W>>
-        <W>
+    <Nominal<_>> -> <W>
+    _ -> match type_kind(<W>) {
+        TypeKind::Foreign -> compile_error_code("E0907", "foreign representation is sealed")
+        TypeKind::OpaqueValue | TypeKind::OpaqueShared | TypeKind::Opaque -> compile_error_code("E0308", "opaque representation is sealed")
+        _ -> compile_error_code("E0301", "inner requires a nominal wrapper")
     }
 }
 
-pkg type FieldKey = \T -> match <T> {
-    <.{ ..}> -> <str>
-    <(..)> -> <int>
-    _ -> match <TryUnwrapNominal<T>> {
-        <.{ ..}> -> <str>
-        <(..)> -> <int>
-        _ -> compile_error_code("E0358", "FieldKey requires a record or tuple type")
-    }
-}
-
+-- Static check accepting GC-managed shared-object data types (records, nonempty tuples,
+-- arrays, maps, sums, shared-backed opaque types, and nominal wrappers over them).
+-- Rejects value types, callables, foreign handles, `Derived<T>`, ranges, and static meta types.
 pub type SharedObject = \T -> match <T> {
-    <bool> | <int> | <f64> | <str> | <bytes> | <()> | <never> -> compile_error_code("E0301", "type does not satisfy SharedObject")
-    <FieldMode> | <Draft<_>> | <Type> | <Type<_>> -> compile_error_code("E0301", "type does not satisfy SharedObject")
-    <[let M]_> | <[_: let M _]> | <.{ ..}> | <(..)> -> <T>
-    _ -> match <SharedObjectKernel<T>> {
+    <Nominal<let Inner>> -> match <SharedObject<Inner>> {
         <never> -> compile_error_code("E0301", "type does not satisfy SharedObject")
-        <let Ok> -> <Ok>
+        _ -> <T>
+    }
+    _ -> match type_kind(<T>) {
+        TypeKind::Record | TypeKind::Tuple | TypeKind::Array | TypeKind::Map | TypeKind::Sum | TypeKind::OpaqueShared | TypeKind::OpaqueSum -> <T>
+        _ -> compile_error_code("E0301", "type does not satisfy SharedObject")
     }
 }
 
+-- Dual-phase length query returning scalar count for `str`, byte count for `bytes`,
+-- or element/entry count for arrays, maps, `Set<T>`, and `Derived` collections.
+-- Accepts plain or `ref` access on collections (`E0401` on `ref str` / `ref bytes`).
 pub fn len<T |> LenTarget>(via item: T) -> int
+
+-- Dual-phase unwrapper projecting an accessible `.ril` nominal wrapper (or `Derived<W>`)
+-- to its payload (`()` for unit nominals). `inner(mut x)` is a scoped path projection.
+--
+-- ```ril
+-- type UserId(int)
+-- let id = UserId::(42)
+-- let raw: int = inner(id) -- 42
+-- ```
 pub fn inner<W |> NominalWrapper>(via wrapper: W) -> infer Unwrap<W>
+
+-- Dual-phase deep copy of a clonable `SharedObject` graph into an isolated `new T`,
+-- preserving internal aliases and cycles. Rejects value roots, callables, and graphs
+-- containing foreign handles, `&once`, `ctl(...)`, or `Derived<T>`.
+--
+-- ```ril
+-- let base = [1, 2, 3]
+-- let mut copy = clone(base)
+-- Array::push(mut copy, 4) -- base remains [1, 2, 3]
+-- ```
 pub fn clone<T |> SharedObject>(via value: T) -> new T
-pub fn derive<T |> SharedObject>(base: T, via update: fn(mut Draft<T>) @& -> ()) -> T
+
+-- Dual-phase functional update on an immutable `SharedObject` snapshot via a confined
+-- `mut Derived<T>` handle. Leaves `base` unchanged and returns the updated snapshot.
+--
+-- ```ril
+-- let user = .{ name: "Ada", tags: ["dev"] }
+-- let updated = derive(user, \mut d -> {
+--     d.name = "Ada Lovelace"
+--     Array::push(mut d.tags, "ril")
+-- })
+-- ```
+pub fn derive<T |> SharedObject>(base: T, via update: fn(mut Derived<T>) @& -> ()) -> T
+
+-- Synchronously discards a one-shot `ctl(...)` delimited continuation by unwinding its
+-- suspended frames and running their registered `defer` cleanups in LIFO order.
+--
+-- ```ril
+-- with ctl Abort::stop = \_ k -> {
+--     unwind_ctl(new k)
+--     "aborted"
+-- }
+-- ```
 pub fn unwind_ctl<T>(new k: T) -> ()
+
+-- Executes a zero-argument action inside a panic boundary, unwinding `defer` cleanups
+-- and returning `Err(Panicked(report))` if a panic occurs. Forbids outer live state,
+-- outer `ctl` handlers, must-consume captures, and unhandled effects.
+--
+-- ```ril
+-- match recover_panic(\-> panic("boom")) {
+--     Ok(_) -> ()
+--     Err(Panicked(report)) -> println(panic_message(report))
+-- }
+-- ```
 pub fn recover_panic<T>(via action: fn() @& -> infer T) -> infer !<T, PanicError>
+
+-- Extracts the diagnostic message text from a `PanicReport`.
 pub fn panic_message(report: PanicReport) -> str
+
+-- Dual-phase defect trap that unwinds active `defer` cleanups (or fails static evaluation
+-- with `E0831`) and never completes normally.
 pub fn panic(message: str) -> never
+
+-- Dual-phase assertion that calls `panic(message)` (or fails static evaluation with `E0830`)
+-- when `condition` is `false`.
 pub fn assert(condition: bool, message: str = "assertion failed") -> () {
     if !condition {
         panic(message)

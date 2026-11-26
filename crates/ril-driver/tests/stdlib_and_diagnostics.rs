@@ -469,8 +469,8 @@ fn wave_c_soundness_static_checks_narrowing_patterns_and_nominals() -> Result<()
         ),
         ("fn main() -> () { let _ = len(1) }\n", Code::E0301),
         (
-            "fn f<T |> LenTarget>(x: T) -> T { x }\nfn main() -> () {}\n",
-            Code::E0204,
+            "fn f<T |> LenTarget>(x: T) -> T { x }\nfn main() -> () { let _ = f(1) }\n",
+            Code::E0301,
         ),
         (
             "type BadKey { Num(f64) }\nfn f(m: [BadKey: int]) -> () { let _ = m }\nfn main() -> () {}\n",
@@ -684,11 +684,18 @@ fn wave_e_introspection_type_patterns_and_parser_conformance() -> Result<(), Str
             assert(b == "unboxed" && s == 99 && kv.0 == "k" && kv.1 == 7 && rest.port == 80)
             assert(r == 3.5 && d?["x"] == Some(1))
 
-            -- Runtime static folding of type_name, fields, variants, Reflect::has_default
+            -- Runtime static folding of type_name, fields, sum_tags, type_kind, Reflect::has_default
             assert(type_name(<int>) == "int")
             assert(len(fields(<()>)) == 0)
             assert(len(fields(<Pair>)) == 2)
-            assert(len(variants(<Shape>)) == 3)
+            assert(len(sum_tags(<Shape>)) == 3)
+            assert(type_kind(<int>) == TypeKind::Value)
+            assert(type_kind(<()>) == TypeKind::Value)
+            assert(type_kind(<(int, str)>) == TypeKind::Tuple)
+            assert(type_kind(<Shape>) == TypeKind::Sum)
+            assert(type_kind(<Set<int>>) == TypeKind::OpaqueShared)
+            assert(type_kind(<PanicReport>) == TypeKind::OpaqueValue)
+            assert(type_kind(<Type<int>>) == TypeKind::Meta)
             assert(Reflect::has_default(<Config>, "host"))
             assert(!Reflect::has_default(<Config>, "port"))
 
@@ -776,7 +783,7 @@ fn wave_e_introspection_type_patterns_and_parser_conformance() -> Result<(), Str
             Code::E0344,
         ),
         (
-            "meta let BAD = variants(<int>)\nfn main() -> () {}\n",
+            "meta let BAD = sum_tags(<int>)\nfn main() -> () {}\n",
             Stage::Type,
             Code::E0301,
         ),
@@ -969,8 +976,68 @@ fn de_magification_self_hosted_set_stdlib_convert_compile_error_and_wrapper_synt
         ),
         (
             "type BadKey = FieldKey<int>\nfn main() -> () {}\n",
-            Stage::Hir,
-            Code::E0204,
+            Stage::Type,
+            Code::E0358,
+        ),
+        (
+            "type BadNominal = Nominal<int>\nfn main() -> () {}\n",
+            Stage::Type,
+            Code::E0306,
+        ),
+        (
+            "fn main() -> () { let _ = Nominal }\n",
+            Stage::Type,
+            Code::E0319,
+        ),
+        (
+            "type BadKeyOf = KeyOf<.{ a: int }>\nfn main() -> () {}\n",
+            Stage::Type,
+            Code::E0306,
+        ),
+        (
+            "type BadArity = \\T -> match <T> { <Nominal> -> <int>; _ -> <str> }\ntype X = BadArity<int>\nfn main() -> () {}\n",
+            Stage::Type,
+            Code::E0340,
+        ),
+        (
+            "type BadArity2 = \\T -> match <T> { <Nominal<int, str>> -> <int>; _ -> <str> }\ntype X = BadArity2<int>\nfn main() -> () {}\n",
+            Stage::Type,
+            Code::E0340,
+        ),
+        (
+            "sub Secret { pub opaque type Hidden(int) }\ntype U = Unwrap<Secret::Hidden>\nfn main() -> () {}\n",
+            Stage::Type,
+            Code::E0308,
+        ),
+        (
+            "sub Secret { pub opaque type Hidden(.{ x: int }) }\ntype K = FieldKey<Secret::Hidden>\nfn main() -> () {}\n",
+            Stage::Type,
+            Code::E0308,
+        ),
+        (
+            "opaque type LocalInt(int)\ntype K = FieldKey<LocalInt>\nfn main() -> () {}\n",
+            Stage::Type,
+            Code::E0358,
+        ),
+        (
+            "sub Secret { pub opaque type Hook(fn() -> ()) }\nfn f<T |> SharedObject>(x: T) -> T { x }\nfn g(h: Secret::Hook) -> Secret::Hook { f(h) }\nfn main() -> () {}\n",
+            Stage::Type,
+            Code::E0301,
+        ),
+        (
+            "type Marker\nfn f<T |> SharedObject>(x: T) -> T { x }\nfn main() -> () { let _ = f(Marker) }\n",
+            Stage::Type,
+            Code::E0301,
+        ),
+        (
+            "type UserId(int)\nfn f<T |> SharedObject>(x: T) -> T { x }\nfn main() -> () { let _ = f(UserId::(1)) }\n",
+            Stage::Type,
+            Code::E0301,
+        ),
+        (
+            "fn f<T |> SharedObject>(x: T) -> T { x }\nfn g(r: PanicReport) -> PanicReport { f(r) }\nfn main() -> () {}\n",
+            Stage::Type,
+            Code::E0301,
         ),
     ] {
         let mut pkg = VirtualPackage::new(Unit::Bin);
@@ -986,6 +1053,83 @@ fn de_magification_self_hosted_set_stdlib_convert_compile_error_and_wrapper_synt
             checked.result.diagnostics
         );
     }
+
+    // Positive self-hosted type-function & Nominal<pat> & TypeKind soundness tests
+    let self_hosted_ok = r#"
+        type UserId(int)
+        type Box<T>(T)
+        type Node(.{ val: int, next: ?Node })
+        opaque type LocalRec(.{ host: str })
+        sub Secret {
+            pub opaque type HiddenShared(.{ n: int })
+            pub opaque type HiddenValue(int)
+            pub opaque type Hook(fn() -> ())
+        }
+
+        fn unwrap_box<T>(b: Box<T>) -> Unwrap<Box<T>> { inner(b) }
+        fn check_shared<T |> SharedObject>(x: T) -> T { x }
+        fn check_len<T |> LenTarget>(via x: T) -> int { len(x) }
+        fn generic_kind<T>(x: Option<T>) -> int {
+            let _ = x
+            assert(type_kind(<Option<T>>) == TypeKind::Sum)
+            assert(type_kind(<Set<T>>) == TypeKind::OpaqueShared)
+            1
+        }
+
+        type InspectNominal = \T -> match <T> {
+            <Nominal<let Inner>> -> <Inner>
+            _ -> <never>
+        }
+
+        -- Nominal<pat> respects scope transparency
+        meta let _ = assert(<InspectNominal<UserId>> == <int>)
+        meta let _ = assert(<InspectNominal<LocalRec>> == <.{ host: str }>)
+        meta let _ = assert(<InspectNominal<Secret::HiddenShared>> == <never>)
+
+        -- TypeKind classification
+        meta let _ = assert(type_kind(<int>) == TypeKind::Value)
+        meta let _ = assert(type_kind(<()>) == TypeKind::Value)
+        meta let _ = assert(type_kind(<(int, str)>) == TypeKind::Tuple)
+        meta let _ = assert(type_kind(<.{ a: int }>) == TypeKind::Record)
+        meta let _ = assert(type_kind(<[]int>) == TypeKind::Array)
+        meta let _ = assert(type_kind(<[str: int]>) == TypeKind::Map)
+        meta let _ = assert(type_kind(<Option<int>>) == TypeKind::Sum)
+        meta let _ = assert(type_kind(<UserId>) == TypeKind::Nominal)
+        meta let _ = assert(type_kind(<LocalRec>) == TypeKind::OpaqueShared)
+        meta let _ = assert(type_kind(<Secret::HiddenShared>) == TypeKind::OpaqueShared)
+        meta let _ = assert(type_kind(<Secret::HiddenValue>) == TypeKind::OpaqueValue)
+        meta let _ = assert(type_kind(<Secret::Hook>) == TypeKind::Opaque)
+        meta let _ = assert(type_kind(<fn(int) -> int>) == TypeKind::Fn)
+        meta let _ = assert(type_kind(<Derived<[]int>>) == TypeKind::Derived)
+        meta let _ = assert(type_kind(<Type<int>>) == TypeKind::Meta)
+        meta let _ = assert(type_kind(<FieldMode>) == TypeKind::Meta)
+
+        fn main() @io -> () {
+            -- Unwrap / NominalWrapper / FieldKey / LenTarget are public and self-hosted
+            let u: Unwrap<UserId> = 42
+            assert(u == 42)
+            assert(unwrap_box(Box::(7)) == 7)
+            let k: FieldKey<LocalRec> = "host"
+            assert(k == "host")
+            let _: FieldKey<.{ a: int }> = "a"
+            let _: FieldKey<(int, str)> = 0
+            let _: FieldKey<()> = 0
+
+            -- SharedObject accepts recursive nominals and shared-backed opaques
+            let node = check_shared(Node::(.{ val: 1, next: None }))
+            assert(inner(node).val == 1)
+            let s = check_shared(Set::from_array([1, 2]))
+            assert(check_len(s) == 2)
+            let updated = derive([1, 2], \mut d -> {
+                assert(len(ref d) == 2)
+                Array::push(mut d, 3)
+            })
+            assert(len(updated) == 3)
+            assert(generic_kind(Some(1)) == 1)
+            println("self-hosted-ok")
+        }
+    "#;
+    run_aot(self_hosted_ok, "self-hosted-ok\n")?;
 
     Ok(())
 }

@@ -388,22 +388,35 @@ impl Checker<'_> {
                         match self.evaluate_static(&concrete, *value) {
                             Ok(val) => {
                                 let mut bindings = Default::default();
-                                let taken =
-                                    self.value_pattern(&mut yes_env, *pattern, &val, &mut bindings);
-                                self.meta_if_decisions.insert(span, taken);
-                                return if taken {
-                                    let ty = self.expr(&mut yes_env, *yes, expected);
-                                    env.refinements = yes_env.refinements;
-                                    env.effects_seen.extend(yes_env.effects_seen);
-                                    ty
-                                } else {
-                                    let ty = no
-                                        .map(|no| self.expr(&mut no_env, no, expected))
-                                        .unwrap_or(Ty::Unit);
-                                    env.refinements = no_env.refinements;
-                                    env.effects_seen.extend(no_env.effects_seen);
-                                    ty
-                                };
+                                match self.value_pattern(
+                                    &mut yes_env,
+                                    *pattern,
+                                    &val,
+                                    &mut bindings,
+                                ) {
+                                    Ok(taken) => {
+                                        self.meta_if_decisions.insert(span, taken);
+                                        return if taken {
+                                            let ty = self.expr(&mut yes_env, *yes, expected);
+                                            env.refinements = yes_env.refinements;
+                                            env.effects_seen.extend(yes_env.effects_seen);
+                                            ty
+                                        } else {
+                                            let ty = no
+                                                .map(|no| self.expr(&mut no_env, no, expected))
+                                                .unwrap_or(Ty::Unit);
+                                            env.refinements = no_env.refinements;
+                                            env.effects_seen.extend(no_env.effects_seen);
+                                            ty
+                                        };
+                                    }
+                                    Err(super::eval::Signal::Dependent(_)) => {}
+                                    Err(failure) => {
+                                        let diag = failure
+                                            .diagnostic(self.ast(env.file).pattern(*pattern).span);
+                                        self.diagnostics.push(diag);
+                                    }
+                                }
                             }
                             Err(super::eval::Signal::Dependent(_)) => {}
                             Err(failure) => {

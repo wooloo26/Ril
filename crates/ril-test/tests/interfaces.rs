@@ -1290,24 +1290,24 @@ pub type Cell = .{ var count: int }
 pub type Shelf = .{ ^mut item: Cell }
 pub type Action = fn(new Shelf) -> int
 pub type Pair = .{ left: []Action, right: []Action }
-pub type Update = fn(mut Draft<Pair>) &mut -> ()
+pub type Update = fn(mut Derived<Pair>) &mut -> ()
 pub type EditItems = fn(mut []Action) &mut -> ()
 pub type Slot = .{ var action: Action }
-pub type StateUpdate = fn(mut Draft<[]int>) &mut &up -> ()
+pub type StateUpdate = fn(mut Derived<[]int>) &mut &up -> ()
 pub fn count(new shelf: Shelf) -> int { shelf.item.count }
 fn freeze(new shelf: Shelf) -> int { let fixed = new shelf; fixed.item.count }
-pub fn extend(mut draft: Draft<Pair>) &mut -> () {
+pub fn extend(mut draft: Derived<Pair>) &mut -> () {
     Array::push(mut draft.left, count)
     Array::push(mut draft.left, freeze)
 }
-pub fn extend_safe(mut draft: Draft<Pair>) &mut -> () {
+pub fn extend_safe(mut draft: Derived<Pair>) &mut -> () {
     Array::push(mut draft.left, count)
 }
 pub fn forward(base: Pair, edit: Update) -> Pair { derive(base, edit) }
 pub fn twice(base: Pair, first: Update, second: Update) -> Pair {
     forward(forward(base, first), second)
 }
-fn update_draft(mut draft: Draft<Pair>, edit: Update) &mut -> () { edit(mut draft) }
+fn update_draft(mut draft: Derived<Pair>, edit: Update) &mut -> () { edit(mut draft) }
 pub fn forward_inside(base: Pair, edit: Update) -> Pair {
     derive(base) \mut draft -> {
         Array::push(mut draft.left, count)
@@ -1315,7 +1315,7 @@ pub fn forward_inside(base: Pair, edit: Update) -> Pair {
     }
 }
 pub fn append_freeze(mut items: []Action) &mut -> () { Array::push(mut items, freeze) }
-fn update_items(mut draft: Draft<Pair>, edit: EditItems) &mut -> () {
+fn update_items(mut draft: Derived<Pair>, edit: EditItems) &mut -> () {
     Array::push(mut draft.left, count)
     edit(mut draft.left)
 }
@@ -1326,14 +1326,14 @@ pub fn forwarder() -> fn(Pair, Update) -> Pair {
     \base: Pair, edit: Update -> derive(base, edit)
 }
 pub fn updater(first: Action) &capture &return(first) -> new Update {
-    \mut draft: Draft<Pair> -> { Array::push(mut draft.left, first); Array::push(mut draft.left, freeze) }
+    \mut draft: Derived<Pair> -> { Array::push(mut draft.left, first); Array::push(mut draft.left, freeze) }
 }
 pub fn finished() -> Pair {
     let shared = [count]
     derive(Pair.{ left: shared, right: shared }, extend)
 }
 pub fn slot_updater(^mut slot: Slot, action: Action) &capture &^mut &return(^mut slot, action) -> new StateUpdate {
-    \mut draft: Draft<[]int> -> { Array::push(mut draft, 2); slot.action = action }
+    \mut draft: Derived<[]int> -> { Array::push(mut draft, 2); slot.action = action }
 }
 pub fn edit_slot(mut slot: Slot, action: Action) &mut -> []int {
     derive([1]) \mut draft -> { Array::push(mut draft, 2); slot.action = action }

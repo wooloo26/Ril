@@ -2,12 +2,16 @@
 
 use ril/map
 
+-- Ordered set of unique keys supporting stable equality (`E0328` on ineligible element types).
+-- Supports `len` and `for` iteration in insertion order.
 pub opaque type Set<T>([T: ()])
 
+-- Creates a new empty `Set<T>`.
 pub fn empty<T>() -> new Set<T> {
     Set::([:])
 }
 
+-- Builds a new `Set<T>` from `items`, deduplicating while preserving first-seen order.
 pub fn from_array<T>(via items: []T) -> new Set<T> {
     let mut m: [T: ()] = [:]
     for items as item {
@@ -16,10 +20,12 @@ pub fn from_array<T>(via items: []T) -> new Set<T> {
     Set::(new m)
 }
 
+-- Inserts `value` into `set` in place (no-op if already present).
 pub fn insert<T>(mut set: Set<T>, value: T) &mut -> () {
     inner(mut set)[value] = ()
 }
 
+-- Removes `value` from `set` in place, returning `true` if it was present.
 pub fn remove<T>(mut set: Set<T>, value: T) &mut -> bool {
     match Map::remove(mut inner(mut set), value) {
         Some(_) -> true
@@ -27,6 +33,7 @@ pub fn remove<T>(mut set: Set<T>, value: T) &mut -> bool {
     }
 }
 
+-- Reports whether `set` contains `value`.
 pub fn contains<T>(via set: Set<T>, value: T) -> bool {
     match inner(set)?[value] {
         Some(_) -> true

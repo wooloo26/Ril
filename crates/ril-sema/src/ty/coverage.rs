@@ -115,6 +115,10 @@ impl Checker<'_> {
             }
             Pattern::Type(ty) => match &self.ast(env.file).ty(*ty).value {
                 Type::PatternWildcard | Type::PatternBinding(_) => Any,
+                _ if self.is_pattern_only_type(env, *ty) => {
+                    let key = self.type_pattern_shape_key(env, *ty);
+                    Constructor(format!("<{key}>"), Vec::new())
+                }
                 _ => {
                     let typed = self.type_expr(&mut env.clone(), *ty);
                     Constructor(format!("<{}>", typed.display(self.hir)), Vec::new())

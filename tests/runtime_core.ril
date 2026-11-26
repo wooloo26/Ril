@@ -191,11 +191,11 @@ fn main() -> () {
 type Cell = .{ var count: int }
 type Shelf = .{ ^mut item: Cell }
 type Action = fn(new Shelf) -> int
-type Update = fn(mut Draft<[]Action>) &mut -> ()
+type Update = fn(mut Derived<[]Action>) &mut -> ()
 fn count(new shelf: Shelf) -> int { shelf.item.count }
 fn freeze(new shelf: Shelf) -> int { let fixed = new shelf; fixed.item.count + 100 }
-fn append_count(mut draft: Draft<[]Action>) &mut -> () { Array::push(mut draft, count) }
-fn append_freeze(mut draft: Draft<[]Action>) &mut -> () { Array::push(mut draft, freeze) }
+fn append_count(mut draft: Derived<[]Action>) &mut -> () { Array::push(mut draft, count) }
+fn append_freeze(mut draft: Derived<[]Action>) &mut -> () { Array::push(mut draft, freeze) }
 fn forward(base: []Action, edit: Update) -> []Action { derive(base, edit) }
 fn inspect(base: []Action, edit: Update, new input: Shelf) -> int {
     forward(base, edit)[1](new input)

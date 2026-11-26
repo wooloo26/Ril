@@ -163,7 +163,7 @@ impl Checker<'_> {
                                 *pattern,
                                 &subject,
                                 storage.mode,
-                            ) {
+                            )? {
                                 if let Some(fallback) = fallback {
                                     self.evaluate(env, slots, *fallback, fuel)?;
                                 } else {
@@ -267,7 +267,7 @@ impl Checker<'_> {
                 let mut subject = self.pattern_subject(env, slots, *value, fuel)?;
                 for arm in arms {
                     let mut local = env.clone();
-                    if self.bind_pattern_value(&mut local, slots, arm.pattern, &subject, *mode) {
+                    if self.bind_pattern_value(&mut local, slots, arm.pattern, &subject, *mode)? {
                         if let Some(guard) = arm.guard
                             && self.evaluate(&mut local, slots, guard, fuel)? != Value::Bool(true)
                         {
@@ -461,7 +461,7 @@ impl Checker<'_> {
     ) -> Eval<bool> {
         fuel.step(self.ast(env.file).expr(body).span)?;
         let mut bindings = Values::new();
-        if self.value_pattern(env, pattern, value, &mut bindings) {
+        if self.value_pattern(env, pattern, value, &mut bindings)? {
             slots.locals.extend(bindings);
             match self.evaluate(env, slots, body, fuel) {
                 Err(Signal::Break) => return Ok(false),
@@ -493,7 +493,7 @@ impl Checker<'_> {
                 mode,
             } => {
                 let subject = self.pattern_subject(env, slots, *value, fuel)?;
-                Ok(self.bind_pattern_value(env, slots, *pattern, &subject, *mode))
+                self.bind_pattern_value(env, slots, *pattern, &subject, *mode)
             }
         }
     }

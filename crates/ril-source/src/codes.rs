@@ -131,7 +131,7 @@ diagnostic_codes! {
     (E0551, InvalidPatternDecompositionError),
     (E0552, IncompatibleInferredInterfaceError),
     (E0604, ScopedValueEscapeError),
-    (E0607, DeriveDraftEscapeError),
+    (E0607, DerivedEscapeError),
     (E0608, PanicIsolationViolationError),
     (E0612, UnhandledEffectError),
     (E0613, ValueEffectAnnotationError),

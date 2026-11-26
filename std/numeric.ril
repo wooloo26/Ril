@@ -1,8 +1,13 @@
 -- Standard Numeric module: conversion primitives plus self-hosted checked division.
 
+-- Converts an arbitrary-precision `int` to IEEE-754 binary64 `f64` (saturating to `±inf` on overflow).
 pub fn to_f64(n: int) -> f64
+
+-- Truncates finite `x` toward zero into `Some(int)`, returning `None` for `NaN` or `±inf`.
 pub fn trunc(x: f64) -> new ?int
 
+-- Checked conversion from `f64` to `T` (`int` or `f64`).
+-- Returns `None` for `T = int` when `x` is non-finite or has a nonzero fractional part.
 pub fn convert<T: int | f64>(x: f64) -> new ?T {
     meta match <T> {
         <int> -> {
@@ -20,6 +25,7 @@ pub fn convert<T: int | f64>(x: f64) -> new ?T {
     }
 }
 
+-- Divides `a` by `b`, returning `None` when `b == 0` instead of panicking.
 pub fn checked_div(a: int, b: int) -> new ?int {
     if b == 0 {
         None
@@ -28,6 +34,7 @@ pub fn checked_div(a: int, b: int) -> new ?int {
     }
 }
 
+-- Computes `a % b`, returning `None` when `b == 0` instead of panicking.
 pub fn checked_rem(a: int, b: int) -> new ?int {
     if b == 0 {
         None

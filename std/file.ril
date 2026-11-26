@@ -1,4 +1,16 @@
 -- Standard File module: host file I/O primitives.
 
+-- Reads the entire UTF-8 contents of the file at `path` (`@io`), returning `Err(reason)` on failure.
+--
+-- ```ril
+-- let content = File::read("config.toml")?
+-- ```
 pub fn read(path: str) @io -> new !<str, str>
+
+-- Writes UTF-8 `content` to the file at `path`, creating or truncating it (`@io`),
+-- returning `Err(reason)` on failure.
+--
+-- ```ril
+-- File::write("out.txt", "hello")?
+-- ```
 pub fn write(path: str, content: str) @io -> new !<(), str>
