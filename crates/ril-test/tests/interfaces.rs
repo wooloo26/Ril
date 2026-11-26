@@ -3295,7 +3295,7 @@ fn call_entry_examples_agree_with_lean() {
 }
 
 #[test]
-fn task_join_examples_agree_with_lean() {
+fn ctl_linearity_examples_agree_with_lean() {
     let Some(oracle) = std::env::var_os("RIL_HORN_ORACLE") else {
         return;
     };
@@ -3309,9 +3309,9 @@ fn task_join_examples_agree_with_lean() {
         include_str!("../../../tests/concurrency_fifo.ril"),
     )
     .unwrap();
-    let output = query(&oracle, "task-joins", b"[]").unwrap();
+    let output = query(&oracle, "ctl-linearity", b"[]").unwrap();
     let results: Vec<(String, bool)> = serde_json::from_slice(&output).unwrap();
-    assert_eq!(results.len(), 6);
+    assert_eq!(results.len(), 11);
     let temporary = tempfile::tempdir().unwrap();
     for (name, accepted) in results {
         let case = compile
@@ -3400,7 +3400,7 @@ fn visibility_examples_agree_with_lean() -> Result<(), Box<dyn std::error::Error
 
 #[test]
 fn boundary_examples_agree_with_lean() -> Result<(), Box<dyn std::error::Error>> {
-    check_access_examples("boundary", 6)
+    check_access_examples("boundary", 7)
 }
 
 #[test]

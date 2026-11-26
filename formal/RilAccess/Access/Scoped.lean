@@ -1,13 +1,15 @@
 import RilAccess.Access.Handoff
 
-/-! Scoped `use` resource bindings (`use` / `use mut`) and foreign
-`.d.ril` `opaque type` exclusive, non-duplicable host handles:
+/-! Lexical `defer` cleanup statements and foreign `.d.ril` `opaque type`
+exclusive, must-consume host handles:
 - `.d.ril` `opaque type` handles forbid plain immutable snapshot freezing, `^mut`
-  sharing, `var mut` overwrite, and `.retain`, while permitting `new` handoff and
-  scoped `mut`/`ref` access without imposing mandatory `E0721` handoff.
-- `use` bindings forbid slot replacement (`E0532`), local rebinding, `new`
-  handoff (blocking early manual `close(new r)` double-close), and `.retain` escape
-  (`E0604`), and are deterministically deactivated at lexical `.leaveScope`. -/
+  sharing, `var mut` overwrite, and `.retain`, while permitting `new` handoff,
+  scoped `mut`/`ref` access, and `defer` cleanup.
+- Block-scoped reservations forbid slot replacement, aliasing/escape, and early
+  conflicting handoff, and are deterministically deactivated at lexical `.leaveScope`.
+- `defer` bodies must evaluate to `()` (`E0301`), forbid unhandled `ctl` (`E0616`),
+  forbid escaping `return`/`break`/`continue`/`?` (`E0707`), and require covering
+  handlers to precede the `defer` (`E0612`). -/
 namespace RilAccess.Integrated
 
 /-- A `var ref` may keep only sources whose lexical scopes enclose the slot.
@@ -92,28 +94,21 @@ theorem leaveScope_deactivates_inner_binding
     cases hmap
     omega
 
-structure ScopedCleanupSignature where
-  mode : ParameterMode
+structure DeferBodyContract where
   returnsUnit : Bool := true
-  hasFiberEffect : Bool := false
-  writes : Bool := false
-  retains : Bool := false
-  captures : Bool := false
+  hasUnhandledCtl : Bool := false
+  escapesControlFlow : Bool := false
+  handlersPrecededDefer : Bool := true
   deriving Repr, DecidableEq
 
-/-- Signature of the resolved, single-parameter cleanup function (`E0541`, `E0616`). -/
-def validScopedCleanupSignature (signature : ScopedCleanupSignature) : Bool :=
-  let mode := signature.mode
-  (decide (mode = .observe) || decide (mode = .mutable) || decide (mode = .construction)) &&
-    signature.returnsUnit && !signature.hasFiberEffect &&
-    decide (signature.writes = decide (mode = .mutable)) && !signature.retains && !signature.captures
+/-- Well-formedness of a lexical `defer` cleanup body (`E0301`, `E0616`, `E0707`, `E0612`). -/
+def validDeferBody (body : DeferBodyContract) : Bool :=
+  body.returnsUnit && !body.hasUnhandledCtl && !body.escapesControlFlow && body.handlersPrecededDefer
 
-theorem scoped_cleanup_signature_iff (signature : ScopedCleanupSignature) :
-    validScopedCleanupSignature signature = true ↔
-      (signature.mode = .observe ∨ signature.mode = .mutable ∨ signature.mode = .construction) ∧
-      signature.returnsUnit = true ∧ signature.hasFiberEffect = false ∧
-      signature.writes = decide (signature.mode = .mutable) ∧
-      signature.retains = false ∧ signature.captures = false := by
-  simp [validScopedCleanupSignature, Bool.and_eq_true, Bool.or_eq_true, and_assoc, or_assoc]
+theorem defer_body_contract_iff (body : DeferBodyContract) :
+    validDeferBody body = true ↔
+      body.returnsUnit = true ∧ body.hasUnhandledCtl = false ∧
+      body.escapesControlFlow = false ∧ body.handlersPrecededDefer = true := by
+  simp [validDeferBody, Bool.and_eq_true, and_assoc]
 
 end RilAccess.Integrated

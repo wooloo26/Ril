@@ -10,7 +10,7 @@ import RilAccess.Examples.RecursiveStorage
 import RilAccess.Examples.ResolvedProvenance
 import RilAccess.Examples.Results
 import RilAccess.Examples.Scoped
-import RilAccess.Examples.Concurrency
+import RilAccess.Examples.Ctl
 import RilAccess.Examples.Summary
 import RilAccess.Examples.Visibility
 import RilAccess.Signatures
@@ -333,6 +333,7 @@ structure JsonSummary where
   captures : Bool
   constructs : Bool
   nonreturning : Bool
+  no_ctl_params : Option (List Nat)
   deriving FromJson
 
 def JsonSummary.formal (summary : JsonSummary) : RilAccess.SummaryOf JsonSource :=
@@ -369,7 +370,8 @@ def compareSummaries (baseline revision : JsonSummary) : Bool :=
     snapshotStorageUpdatesSubsumed providers baseline.storage_updates revision.storage_updates &&
     storageFlowsSubsumed providers baseline.storage_flow revision.storage_flow &&
     (!baseline.constructs || revision.constructs) &&
-    (!baseline.nonreturning || revision.nonreturning)
+    (!baseline.nonreturning || revision.nonreturning) &&
+    (revision.no_ctl_params.getD []).all (baseline.no_ctl_params.getD []).contains
 
 structure JsonInstance where
   modes : List String
@@ -466,15 +468,22 @@ def cleanupCompositionCases : List (String × Bool) :=
    ("synchronous_cleanup_may_diverge", (check divergingCleanupProgram).isOk),
    ("a_cleanup_handler_write_requires_a_caller_state_clause", (check (cleanupProgram false)).isOk)]
 
-open RilAccess.CoreConcurrency RilAccess.CoreConcurrency.Examples in
-def taskJoinCases : List (String × Bool) :=
-  [("plain_task_join_is_memoized_and_rooted",
-    ((joinTask taskScope 1 7 false).bind (joinTask · 1 7 false)).isSome),
-   ("new_handoff_task_join_preserves_fresh_payload", (joinTask taskScope 2 7 true).isSome),
-   ("new_handoff_join_ends_the_task_path", (joinTask afterExclusiveJoin 2 7 true).isSome),
-   ("every_memoized_fallible_join_requires_inspection", memoizedJoinLoop false),
-   ("memoized_join_loop_cannot_discard_an_earlier_result", memoizedJoinLoop false),
-   ("memoized_join_loop_can_inspect_each_result", memoizedJoinLoop true)]
+open RilAccess.CoreCtl RilAccess.CoreCtl.Examples RilAccess.CoreBoundary in
+def ctlLinearityCases : List (String × Bool) :=
+  [("ctl_op_requires_ctl_arm_prefix", validHandlerArm .algebraicCtl false false),
+   ("fn_op_forbids_ctl_arm_prefix", validHandlerArm .directFn true false),
+   ("deep_handler_arm_rejects_once_rhs", validHandlerArm .directFn false true),
+   ("unconsumed_ctl_continuation_rejected", canExitLinearScope singleCont),
+   ("must_consume_across_unhandled_ctl_requires_armed_defer", canCrossUnhandledCtl singleCont),
+   ("must_consume_across_unhandled_ctl_with_armed_defer_passes",
+      canCrossUnhandledCtl armedCont && canExitLinearScope (runArmedDefers armedCont)),
+   ("ctl_continuation_forbids_projected_invocation", (consumeLinear singleCont 1 true).isSome),
+   ("ctl_continuation_forbids_double_invocation", (consumeLinear afterConsume 1 false).isSome),
+   ("once_closure_forbids_capturing_must_consume", (onceCaptureHandoff baseWorld 2 11 true false).isOk),
+   ("shared_writer_forbids_downgrade_across_unhandled_ctl", canPassSharedAs .shared .mutable true),
+   ("fifo_scheduler_runs_spawned_tasks_in_deterministic_order",
+      canCrossUnhandledCtl armedCont && canExitLinearScope (runArmedDefers armedCont) &&
+      (consumeLinear singleCont 1 false).isSome)]
 
 open RilAccess.CoreBoundary RilAccess.CoreBoundary.Examples in
 def boundaryCases : List (String × Bool) :=
@@ -482,9 +491,10 @@ def boundaryCases : List (String × Bool) :=
    ("handler_contains_effect", (handled privateBoundary 3).effects.isEmpty),
    ("installed_handler_does_not_cover_its_own_arm", (handled handlerEffect 3).effects.isEmpty),
    ("outer_handler_covers_inner_arm", (handled outerHandler 3).effects.isEmpty),
-   ("cleanup_uses_evidence_at_resource_binding", (handled cleanupEffect 3).effects.isEmpty),
-   ("stateful_handler_cannot_cross_fiber_boundary",
-     concurrentShareableFnHandler pureSources [10] { pureFnHandler with writes := [external] } [])]
+   ("defer_requires_covering_handler_before_defer", (handled cleanupEffect 3).effects.isEmpty),
+   ("absorb_panic_forbids_outer_ctl_handler",
+      absorbPanicAdmissible pureSources pureBody [] true false),
+   ("derive_forbids_outer_ctl", deriveCallbackAdmissible true false)]
 
 open RilAccess.Integrated RilAccess.Integrated.HandoffExamples in
 def handoffCases : List (String × Bool) :=
@@ -539,13 +549,13 @@ def scopedCases : List (String × Bool) :=
   [("foreign_handle_permits_mutable_call_and_chained_handoff",
     accepted resourceCallAccessAndHandoff && accepted resourceChainedHandoff),
    ("foreign_handle_plain_binding_cannot_freeze", accepted resourcePlainSnapshotRejected),
-   ("scoped_resource_can_be_observed_and_mutated_by_helpers", accepted scopedCallRefAndMutAccess),
-   ("scoped_resource_plain_use_can_be_unused", accepted scopedReadOnlyUnusedOk),
-   ("scoped_resource_read_only_view_cannot_write", accepted scopedReadOnlyRejectsWrite),
-   ("scoped_resource_mutable_reception_needs_body_write", accepted scopedIdleMutRejected),
-   ("scoped_resource_cannot_be_aliased_by_let", accepted scopedRebindEscapeRejected),
-   ("scoped_resource_cannot_be_captured_by_closure", accepted scopedClosureCaptureRejected),
-   ("scoped_resource_cannot_be_handed_off_before_cleanup", accepted scopedCallNewHandoffRejected)] ++
+   ("defer_resource_can_be_observed_and_mutated_by_helpers", accepted scopedCallRefAndMutAccess),
+   ("defer_handoff_satisfies_mut_use", accepted scopedReadOnlyUnusedOk),
+   ("defer_read_only_binding_cannot_write", accepted scopedReadOnlyRejectsWrite),
+   ("defer_cannot_be_handed_off_before_cleanup", accepted scopedCallNewHandoffRejected),
+   ("defer_forbids_unhandled_ctl", validDeferBody { hasUnhandledCtl := true }),
+   ("defer_forbids_escaping_return", validDeferBody { escapesControlFlow := true }),
+   ("defer_body_must_be_unit", validDeferBody { returnsUnit := false })] ++
   refScopeCases.map fun (name, anchors, slot, _) => (name, refSourcesEnclose anchors slot)
 
 open RilAccess.VisibilityModel RilAccess.Examples.VisibilityExamples in
@@ -554,7 +564,7 @@ def visibilityCases : List (String × Bool) :=
    ("package_item_visible_to_other_module_in_package", visibleFrom .pubPkg .samePkg),
    ("private_selection", visibleFrom .priv .samePkg),
    ("visibility_leak", signatureWellFormed publicRoot [⟨true, [], .priv⟩]),
-   ("public_cleanup_cannot_expose_package_item", signatureWellFormed publicRoot [packageRoot]),
+   ("public_signature_cannot_expose_package_item", signatureWellFormed publicRoot [packageRoot]),
    ("opaque_converts_inside_scope", representationTransparent .priv .opaqueScope .sameScope),
    ("opaque_member_outside_scope", representationTransparent .pubExport .opaqueScope .samePkg),
    ("no_top_level_var", validTopLevelBinding .mutableOrLiveState),
@@ -606,8 +616,8 @@ def main (args : List String) : IO Unit := do
   else if args == ["summary-signatures"] then
     stdout.putStrLn (toJson (RilAccess.CoreSummary.Examples.signatureCases.map
       fun (name, verdict, _) => (name, verdict))).compress
-  else if args == ["task-joins"] then
-    stdout.putStrLn (toJson taskJoinCases).compress
+  else if args == ["ctl-linearity"] then
+    stdout.putStrLn (toJson ctlLinearityCases).compress
   else if args == ["result-patterns"] then
     stdout.putStrLn (toJson (RilAccess.ResultInspection.Examples.cases.map
       fun (name, accepted, _) => (name, accepted))).compress

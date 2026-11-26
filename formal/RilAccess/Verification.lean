@@ -2,7 +2,7 @@ import RilAccess.Call.Proofs
 import RilAccess.Call.Summary
 import RilAccess.Reference.Provenance.Identity
 import RilAccess.Effects.Boundary
-import RilAccess.Effects.Concurrency
+import RilAccess.Effects.Ctl
 import RilAccess.Access.Handoff
 import RilAccess.Access.Scoped
 import RilAccess.Visibility
@@ -146,12 +146,18 @@ structure EffectGuarantees : Prop where
     Integrated.lookupToken authority id = some token →
     token.scopedHold = false →
       Integrated.lookupToken next id = some token
-  sharedFnPreservesIsolation : ∀ pureSources admissibleEffects branch handler handlerEnv effect,
-    CoreBoundary.concurrentShareableFnHandler pureSources admissibleEffects handler handlerEnv = true →
-      (CoreBoundary.dischargeSharedFnEffect branch handler effect).writes = branch.writes ∧
-      (CoreBoundary.dischargeSharedFnEffect branch handler effect).retained = branch.retained ∧
-      (∀ e ∈ (CoreBoundary.dischargeSharedFnEffect branch handler effect).effects,
-        (e ∈ branch.effects ∧ e ≠ effect) ∨ e ∈ admissibleEffects)
+  validHandlerArm : ∀ (opKind : CoreBoundary.OpKind) armHasCtlPrefix armIsOneShot,
+    CoreBoundary.validHandlerArm opKind armHasCtlPrefix armIsOneShot = true ↔
+      decide (opKind = .algebraicCtl) = armHasCtlPrefix ∧ armIsOneShot = false
+  absorbPanicIsolated : ∀ pureSources body outerEnv usesOuterCtlHandler capturesMustConsume,
+    CoreBoundary.absorbPanicAdmissible pureSources body outerEnv usesOuterCtlHandler capturesMustConsume = true →
+      Summary.isPure pureSources body = true ∧
+      (∀ o ∈ outerEnv, isPureInstance pureSources o = true) ∧
+      usesOuterCtlHandler = false ∧
+      capturesMustConsume = false
+  deriveRejectsOuterCtl : ∀ usesOuterCtl hasUnhandledCtl,
+    CoreBoundary.deriveCallbackAdmissible usesOuterCtl hasUnhandledCtl = true ↔
+      usesOuterCtl = false ∧ hasUnhandledCtl = false
 
 structure DraftGuarantees : Prop where
   preparedRoot : ∀ (shape : Draft.RootShape) value input start,
@@ -206,12 +212,10 @@ structure ScopedGuarantees : Prop where
     perm ∈ next.bindings →
     frame.parentScope < perm.scope →
       perm.alive = false
-  cleanupSignature : ∀ (signature : Integrated.ScopedCleanupSignature),
-    Integrated.validScopedCleanupSignature signature = true ↔
-      (signature.mode = .observe ∨ signature.mode = .mutable ∨ signature.mode = .construction) ∧
-      signature.returnsUnit = true ∧ signature.hasFiberEffect = false ∧
-      signature.writes = decide (signature.mode = .mutable) ∧
-      signature.retains = false ∧ signature.captures = false
+  deferBody : ∀ (body : Integrated.DeferBodyContract),
+    Integrated.validDeferBody body = true ↔
+      body.returnsUnit = true ∧ body.hasUnhandledCtl = false ∧
+      body.escapesControlFlow = false ∧ body.handlersPrecededDefer = true
 
 structure VisibilityGuarantees : Prop where
   opaqueScopeBoundary :
@@ -280,40 +284,37 @@ structure CallableMatchGuarantees : Prop where
     o.source.kind ≠ .module → o ∈ actual.namedReads → o ∉ declared.namedReads →
       Summary.exactSignature pureSources declared actual = false
 
-structure ConcurrencyGuarantees : Prop where
-  sharedCaptureRejectsMutableScopedOrResource : ∀ (world : Integrated.World) (r : Integrated.Resolved),
-    CoreConcurrency.eligibleSharedCapture world r = true →
-      r.grant.resource = false ∧ r.binding.isScoped = false ∧
-        Integrated.deepImmutable r = true ∧ Integrated.live r = true ∧
-        r.binding.mode.replaceable = false ∧ r.binding.mode.access = .immutable ∧
-        CoreConcurrency.sendableData r = true
-  sharedCaptureReadOnly : ∀ (world : Integrated.World) path (e : Integrated.AccessCheck),
-    Integrated.resolve world path = some e.resolved →
-    e.resolved.binding.mode.access = .immutable →
-    Integrated.authorized e = true →
-      e.rule = .read ∧ e.observation.kind = .read
-  spawnHandoffDisjoint : ∀ (world next : Integrated.World) source childDestination resolved,
-    CoreConcurrency.spawnHandoffCapture world source childDestination = .ok next →
+structure CtlGuarantees : Prop where
+  projectedCtlRejected : ∀ (st : CoreCtl.LinearState) targetId,
+    CoreCtl.consumeLinear st targetId true = none
+  doubleCtlRejected : ∀ (st next : CoreCtl.LinearState) targetId anyProjected,
+    CoreCtl.consumeLinear st targetId false = some next →
+      CoreCtl.consumeLinear next targetId anyProjected = none
+  unarmedBlocksUnhandledCtl : ∀ (st : CoreCtl.LinearState) entry,
+    entry ∈ st.entries → entry.consumed = false → entry.armedDefer = none →
+      CoreCtl.canCrossUnhandledCtl st = false
+  unconsumedBlocksExit : ∀ (st : CoreCtl.LinearState) entry,
+    entry ∈ st.entries → entry.consumed = false →
+      CoreCtl.canExitLinearScope st = false
+  armedDischargedOnExit : ∀ (st : CoreCtl.LinearState),
+    CoreCtl.canCrossUnhandledCtl st = true →
+      CoreCtl.canExitLinearScope (CoreCtl.runArmedDefers st) = true
+  onceRejectsMustConsume : ∀ (world : Integrated.World) r hasUninspectedResult,
+    CoreCtl.eligibleOnceCapture world r true hasUninspectedResult = false
+  onceHandoffEndsParent : ∀ (world next : Integrated.World) source destination resolved,
+    CoreCtl.onceCaptureHandoff world source destination false false = .ok next →
     Integrated.resolve world ⟨source, []⟩ = some resolved →
-      CoreConcurrency.sendableData resolved = true ∧
-      Integrated.rawLookup next.raw childDestination = some resolved.pointer ∧
+      Integrated.rawLookup next.raw destination = some resolved.pointer ∧
       (∀ dep ∈ resolved.binding.dependencies, (Integrated.lookupToken next dep).any Integrated.Token.active = false) ∧
       (∀ path derived dep, Integrated.resolve next path = some derived →
         dep ∈ derived.binding.dependencies → dep ∈ resolved.binding.dependencies →
         Integrated.live derived = false)
-  channelNoMutabilityLaundering : ∀ (world : Integrated.World) (r : Integrated.Resolved),
-    r.effective = .immutable → CoreConcurrency.eligibleChannelSend true world r = false
-  crossScopeRejected : ∀ (taskScope : CoreConcurrency.ScopeState) taskId taskSigma asHandoff,
-    taskSigma ≠ taskScope.activeSigma →
-      CoreConcurrency.joinTask taskScope taskId taskSigma asHandoff = none ∧
-        CoreConcurrency.cancelTask taskScope taskId taskSigma = none
-  singleShotTaskNoReuse : ∀ (taskScope next : CoreConcurrency.ScopeState) taskId taskSigma nextSigma anyHandoff,
-    CoreConcurrency.joinTask taskScope taskId taskSigma true = some next →
-      CoreConcurrency.joinTask next taskId nextSigma anyHandoff = none ∧
-        CoreConcurrency.cancelTask next taskId nextSigma = none
-  fallibleTaskResultRequired : ∀ (taskScope : CoreConcurrency.ScopeState) entry,
-    entry ∈ taskScope.tasks → entry.pendingResult = true →
-      CoreConcurrency.canExitScope taskScope = false ∧ CoreConcurrency.drainPlainTasks taskScope = none
+  sharedForbidsDowngradeAcrossEffect : ∀ (paramMode : Integrated.ParameterMode),
+    (paramMode = .mutable ∨ paramMode = .observe) →
+      CoreCtl.canPassSharedAs .shared paramMode true = false
+  noCtlParamRejectsCtl : ∀ noCtlParams argIdx,
+    argIdx ∈ noCtlParams →
+      CoreCtl.checkNoCtlCall noCtlParams argIdx true = false
 
 structure Guarantees : Prop where
   solver : SolverGuarantees
@@ -324,7 +325,7 @@ structure Guarantees : Prop where
   entry : EntryGuarantees
   callableMatch : CallableMatchGuarantees
   effects : EffectGuarantees
-  concurrency : ConcurrencyGuarantees
+  ctl : CtlGuarantees
   draft : DraftGuarantees
   scopedClose : ScopedGuarantees
   visibility : VisibilityGuarantees
@@ -372,16 +373,18 @@ theorem verified : Guarantees where
     fun _ _ _ _ _ _ h hr hi hd => CoreBoundary.complete_fn_op_revokes_call_binding h hr hi hd,
     fun _ _ _ _ h hl hi => CoreBoundary.complete_fn_op_ends_dependent_hold h hl hi,
     fun _ _ _ _ _ h hlook hnonTemp => CoreBoundary.complete_fn_op_preserves_non_scoped h hlook hnonTemp,
-    fun _ _ _ _ _ _ h =>
-      let hiso := CoreBoundary.shared_fn_handler_preserves_branch_isolation h
-      ⟨hiso.1, hiso.2.1, hiso.2.2.2.2.1⟩⟩
-  concurrency := ⟨fun _ _ h => CoreConcurrency.cross_fiber_capture_rejects_mutable_scoped_or_resource h,
-    fun _ _ _ hr himm hauth => CoreConcurrency.shared_capture_forbids_authorized_writes hr himm hauth,
-    fun _ _ _ _ _ h hr => CoreConcurrency.spawned_handoff_disjoint_from_parent_live_bindings h hr,
-    fun _ _ hfrozen => CoreConcurrency.frozen_object_cannot_launder_mutability_via_channel hfrozen,
-    fun _ _ _ _ hcross => CoreConcurrency.cross_scope_task_rejected hcross,
-    fun _ _ _ _ _ _ h => CoreConcurrency.duplicate_exclusive_task_handoff_rejected h,
-    fun _ _ => CoreConcurrency.pending_result_blocks_scope_exit⟩
+    CoreBoundary.valid_handler_arm_iff,
+    fun _ _ _ _ _ h => CoreBoundary.absorb_panic_isolated h,
+    CoreBoundary.derive_rejects_outer_ctl⟩
+  ctl := ⟨fun _ _ => CoreCtl.projected_ctl_invocation_rejected,
+    fun _ _ _ _ h => CoreCtl.double_ctl_consumption_rejected h,
+    fun _ _ hm hunc hunarmed => CoreCtl.unarmed_must_consume_blocks_unhandled_ctl hm hunc hunarmed,
+    fun _ _ hm hunc => CoreCtl.unconsumed_linear_blocks_exit hm hunc,
+    fun _ hcross => CoreCtl.armed_entries_discharged_on_exit hcross,
+    fun _ _ _ => CoreCtl.once_closure_rejects_must_consume_capture,
+    fun _ _ _ _ _ h hr => CoreCtl.once_handoff_ends_parent_path h hr,
+    fun _ hmode => CoreCtl.shared_writer_forbids_downgrade_across_unhandled_effect hmode,
+    fun _ _ hmem => CoreCtl.no_ctl_param_rejects_ctl_callback hmem⟩
   draft := ⟨fun _ _ _ _ => Draft.prepared_root_sound, fun _ _ _ => Draft.checked_path_recipe_prefixes,
     fun _ _ _ _ _ => Draft.publication_ends_privilege,
     fun _ _ _ _ _ _ _ _ _ _ => Draft.conforming_outside_cannot_escape⟩
@@ -392,7 +395,7 @@ theorem verified : Guarantees where
     fun _ h hr => Integrated.scoped_cannot_retain h hr,
     fun _ _ _ _ hlook hsc => Integrated.scoped_rejects_reassignment hlook hsc,
     fun _ _ _ _ h hf hp hinner => Integrated.leaveScope_deactivates_inner_binding h hf hp hinner,
-    Integrated.scoped_cleanup_signature_iff⟩
+    Integrated.defer_body_contract_iff⟩
   visibility := ⟨VisibilityModel.opaqueScope_boundary,
     VisibilityModel.signature_visibility_iff,
     VisibilityModel.topLevel_rejects_mutable_and_live_state,

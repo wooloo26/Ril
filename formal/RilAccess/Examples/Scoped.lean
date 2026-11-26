@@ -51,7 +51,7 @@ def resourceClosureCaptureRejected : Calls.Syntax :=
   seq [accessCmd [.allocateResource 0 []],
     .invoke [] [0] (accessCmd [.write (p 0)])]
 
--- `use` / `use mut` (`use(<fn>)` cleanup declaration) examples:
+-- Block-scoped `defer` reservation examples:
 def scopedReadOnlyResourceObserveOk : Calls.Syntax :=
   seq [accessCmd [.allocateScoped 0 false [] true],
     .invoke [⟨p 0, 10, .observe, .observe⟩] [] (accessCmd [.read (p 10)])]
@@ -132,20 +132,12 @@ def examples : List (String × Bool) :=
    ("scoped: accessing use binding after block exit rejected", !accepted scopedExpiredAfterBlockExit),
    ("scoped: use mut rejects idle writer without body mutation (E0527)", !accepted scopedIdleMutRejected),
    ("scoped: use mut accepts body write", accepted scopedBodyMutAccepted),
-   ("scoped: cleanup signature accepts ref/mut/new () and rejects @fiber, ^mut, plain, or non-() (E0541/E0616)",
-      validScopedCleanupSignature { mode := .observe } &&
-      validScopedCleanupSignature { mode := .mutable, writes := true } &&
-      validScopedCleanupSignature { mode := .construction } &&
-      !validScopedCleanupSignature { mode := .mutable, writes := true, hasFiberEffect := true } &&
-      !validScopedCleanupSignature { mode := .retained } &&
-      !validScopedCleanupSignature { mode := .immutable } &&
-      !validScopedCleanupSignature { mode := .mutable, writes := true, returnsUnit := false }),
-   ("scoped: cleanup writes require mut Self and retained sharing and captures are prohibited (E0541)",
-      !validScopedCleanupSignature { mode := .mutable } &&
-      !validScopedCleanupSignature { mode := .observe, writes := true } &&
-      !validScopedCleanupSignature { mode := .construction, writes := true } &&
-      !validScopedCleanupSignature { mode := .mutable, writes := true, retains := true } &&
-      !validScopedCleanupSignature { mode := .observe, captures := true })] ++
+   ("scoped: defer body accepts unit synchronous cleanup and rejects non-unit (E0301), unhandled ctl (E0616), escaping transfer (E0707), or missing prior handler (E0612)",
+      validDeferBody {} &&
+      !validDeferBody { returnsUnit := false } &&
+      !validDeferBody { hasUnhandledCtl := true } &&
+      !validDeferBody { escapesControlFlow := true } &&
+      !validDeferBody { handlersPrecededDefer := false })] ++
   refScopeCases.map fun (name, anchors, slot, expected) =>
     (name, refSourcesEnclose anchors slot == expected)
 

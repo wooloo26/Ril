@@ -35,7 +35,7 @@ theorem isolated_sound {world : World} {frame : RawFrame}
   simp [old] at absent
 
 /-- Shared proof for exclusive transfers, including a resolved single-shot
-    fiber or channel handoff supplied with its live parent footprint. -/
+    `&once` or `new` handoff supplied with its live parent footprint. -/
 theorem handoff_subgraph_isolated {world ended : World} {frame : RawFrame}
     (h : takeHandoff world register = .ok (object, handed, ended))
     (hw : world.raw = frame.abstract)

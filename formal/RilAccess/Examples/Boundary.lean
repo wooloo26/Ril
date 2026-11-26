@@ -31,9 +31,7 @@ def outerHandler : Boundary := { privateBoundary with body := handled handlerEff
 def callInstance : CoreSummary.CallInstance := ⟨(fun _ _ => localInstance), [1, 3, 9], 12, 14⟩
 
 def pureSources : List Source := [external.source, captured.source]
-def pureFnHandler : Summary := { emptySummary with namedReads := [external], effects := [10] }
-def branchSummary : Summary := { emptySummary with writes := [localInstance], effects := [3, 10] }
-def dischargedBranch : Summary := dischargeSharedFnEffect branchSummary pureFnHandler 3
+def pureBody : Summary := { emptySummary with namedReads := [external] }
 
 def atomStep (w : Integrated.World) (op : Integrated.Atom) : Integrated.World :=
   (Integrated.checkAtom op w).toOption.getD w
@@ -81,15 +79,23 @@ def examples : List (String × Bool) :=
    ("core boundary: fn op arm completion preserves outer and retained tokens",
       (Integrated.lookupToken afterFnOp 0).any Integrated.Token.active &&
       (Integrated.lookupToken afterFnOp 2).any Integrated.Token.active),
-   ("core boundary: pure stateless fn handler is concurrently shareable",
-      concurrentShareableFnHandler pureSources [10] pureFnHandler [captured]),
-   ("core boundary: stateful or foreign-reading fn handler rejected across fibers (E0615)",
-      !concurrentShareableFnHandler pureSources [10] { pureFnHandler with writes := [external] } [] &&
-      !concurrentShareableFnHandler pureSources [10] { pureFnHandler with namedReads := [foreign] } []),
-   ("core boundary: parallel boundary rejects effectful fn handler (E0615)",
-      !concurrentShareableFnHandler pureSources [] pureFnHandler [captured]),
-   ("core boundary: shared fn handler discharges effect without polluting branch writes",
-      decide (dischargedBranch.effects = [10, 10] ∧ dischargedBranch.writes = [localInstance]))]
+   ("core boundary: handler arm matches fn/ctl prefix (E0623) and rejects one-shot RHS (E0534)",
+      validHandlerArm .directFn false false &&
+      validHandlerArm .algebraicCtl true false &&
+      !validHandlerArm .algebraicCtl false false &&
+      !validHandlerArm .directFn true false &&
+      !validHandlerArm .directFn false true &&
+      !validHandlerArm .algebraicCtl true true),
+   ("core boundary: absorb_panic accepts pure body and rejects outer ctl, must-consume, or outward effects (E0608)",
+      absorbPanicAdmissible pureSources pureBody [captured] false false &&
+      !absorbPanicAdmissible pureSources pureBody [captured] true false &&
+      !absorbPanicAdmissible pureSources pureBody [captured] false true &&
+      !absorbPanicAdmissible pureSources { pureBody with effects := [3] } [captured] false false &&
+      !absorbPanicAdmissible pureSources { pureBody with writes := [external] } [] false false),
+   ("core boundary: derive callback rejects outer or unhandled ctl (E0607)",
+      deriveCallbackAdmissible false false &&
+      !deriveCallbackAdmissible true false &&
+      !deriveCallbackAdmissible false true)]
 
 theorem examples_all_pass : examples.all Prod.snd = true := by decide +kernel
 

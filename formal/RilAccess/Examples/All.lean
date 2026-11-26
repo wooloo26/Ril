@@ -8,7 +8,7 @@ import RilAccess.Examples.Draft
 import RilAccess.Examples.Handoff
 import RilAccess.Examples.Scoped
 import RilAccess.Examples.Visibility
-import RilAccess.Examples.Concurrency
+import RilAccess.Examples.Ctl
 import RilAccess.Examples.ResolvedProvenance
 import RilAccess.Examples.RecursiveStorage
 import RilAccess.Examples.Results
@@ -22,7 +22,7 @@ def allExamples : List (String × Bool) :=
     CoreSummary.Examples.examples ++ RecursiveStorage.Examples.examples ++ Draft.Examples.examples ++
     Integrated.HandoffExamples.examples ++ Draft.Examples.loweringExamples ++
     ScopedExamples.examples ++ VisibilityExamples.examples ++
-    CoreConcurrency.Examples.examples ++ ResultInspection.Examples.examples ++
+    CoreCtl.Examples.examples ++ ResultInspection.Examples.examples ++
     Provenance.Examples.examples ++ Provenance.Examples.compositionExamples
 
 end RilAccess.Examples

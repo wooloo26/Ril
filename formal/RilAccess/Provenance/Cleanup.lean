@@ -9,10 +9,10 @@ structure CleanupSlot where
   captured : List Argument := []
   deriving Repr, DecidableEq
 
-/-- Resolved synchronous cleanup dispatch. Each registration captures the
-    handler that is active at that declaration. The target accepts one mutable
-    resource parameter. The route advances to the next resource when the call
-    returns normally. Panics raised by cleanup routines are outside this model. -/
+/-- Resolved synchronous LIFO `defer` cleanup dispatch alongside sibling `with`
+    handlers. Because `with` frames and `defer` actions unwind in shared LIFO
+    order, handlers installed before a `defer` remain active when it runs,
+    while handlers installed later have already been popped. -/
 inductive ScopeDeclaration where
   | handler (effect target : Nat)
   | resource (slot : CleanupSlot) (effect : Option Nat := none)

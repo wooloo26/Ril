@@ -1,14 +1,17 @@
 import RilAccess.Signatures
 import RilAccess.Access.Scope
 
-/-! The state/provenance and direct `fn`-effect handler boundary kernel.
-Ril effects consist exclusively of direct tail-resumptive `fn` operations:
+/-! The state/provenance and unified Route 1 dynamic effect-handler boundary kernel:
+- Ril effects distinguish direct `fn` operations from one-shot algebraic `ctl`
+  operations; both dispatch dynamically along the active call stack (closures
+  and `where`-local `fn`s never implicitly capture outer `with` handlers).
 - Effect handling discharges covered `@Eff` labels while preserving handler and
-  cleanup state/environment obligations.
-- Completing a `fn` operation arm revokes temporary `mut` operation parameters and
-  dependent views/holds while preserving outer and retained authority.
-- Across concurrent boundaries (`E0615`), only pure stateless `fn` handlers with
-  admissible outward effects may cross fibers. -/
+  `defer` cleanup state/environment obligations; handler arms run against the
+  handler frame's parent stack.
+- Completing a direct `fn` operation arm revokes temporary `mut` operation
+  parameters and dependent views/holds while preserving outer and retained authority.
+- Deep handler arms match `fn`/`ctl` prefixes (`E0623`) and forbid one-shot RHS (`E0534`);
+  `absorb_panic` (`E0608`) and `derive` (`E0607`) enforce isolation against outer `ctl`. -/
 namespace RilAccess.CoreBoundary
 
 structure Boundary where
@@ -177,68 +180,62 @@ theorem complete_fn_op_preserves_non_scoped
   rw [heq, hscope, Integrated.unrelated_lookup notTemp]
   exact hlook
 
-/-- E0615 concurrent handler capture guard: only pure stateless `fn` handlers with
-no writes, retentions, or reference returns, pure immutable Ril/static reads and
-captured environments, and admissible outward effects may cross fiber boundaries. -/
-def concurrentShareableFnHandler (pureSources : List Source) (admissibleEffects : List Nat)
-    (handler : Summary) (handlerEnv : List SourceInstance) : Bool :=
-  handler.rootReturn.isEmpty &&
-  handler.contained.isEmpty &&
-  handler.writes.isEmpty &&
-  handler.retained.isEmpty &&
-  handler.namedReads.all (isPureInstance pureSources) &&
-  handler.createdEnvironments.all (isPureInstance pureSources) &&
-  handlerEnv.all (isPureInstance pureSources) &&
-  handler.effects.all (fun e => decide (e ∈ admissibleEffects))
+inductive OpKind where
+  | directFn | algebraicCtl
+  deriving Repr, DecidableEq
 
-def dischargeSharedFnEffect (branch handler : Summary) (effect : Nat) : Summary :=
-  (branch.handle effect).combine handler
+/-- Deep handler arm admissibility: `ctl` prefix must match the operation kind
+(`E0623`) and the arm RHS cannot be a one-shot `&once` closure or `ctl(...)`
+continuation (`E0534`). -/
+def validHandlerArm (opKind : OpKind) (armHasCtlPrefix armIsOneShot : Bool) : Bool :=
+  (decide (opKind = .algebraicCtl) == armHasCtlPrefix) && !armIsOneShot
 
-theorem concurrent_handler_pure_and_stateless
-    {pureSources : List Source} {admissibleEffects : List Nat}
-    {handler : Summary} {handlerEnv : List SourceInstance}
-    (h : concurrentShareableFnHandler pureSources admissibleEffects handler handlerEnv = true) :
-    Summary.isPure pureSources { handler with effects := [] } = true ∧
-    (∀ o ∈ handlerEnv, isPureInstance pureSources o = true) ∧
-    (∀ e ∈ handler.effects, e ∈ admissibleEffects) := by
-  simp only [concurrentShareableFnHandler, Bool.and_eq_true, List.all_eq_true,
-    decide_eq_true_eq] at h
-  rcases h with ⟨⟨⟨⟨⟨⟨⟨hroot, hcont⟩, hwr⟩, hret⟩, hreads⟩, hcrenv⟩, henv⟩, heff⟩
-  refine ⟨?_, henv, heff⟩
-  rw [List.isEmpty_iff.mp hroot, List.isEmpty_iff.mp hcont] at *
-  simpa [Summary.isPure, hwr, hret, List.all_eq_true] using And.intro hreads hcrenv
+theorem valid_handler_arm_iff (opKind : OpKind) (armHasCtlPrefix armIsOneShot : Bool) :
+    validHandlerArm opKind armHasCtlPrefix armIsOneShot = true ↔
+      decide (opKind = .algebraicCtl) = armHasCtlPrefix ∧ armIsOneShot = false := by
+  simp [validHandlerArm, Bool.and_eq_true]
 
-theorem shared_fn_handler_preserves_branch_isolation
-    {pureSources : List Source} {admissibleEffects : List Nat}
-    {branch handler : Summary} {handlerEnv : List SourceInstance} {effect : Nat}
-    (h : concurrentShareableFnHandler pureSources admissibleEffects handler handlerEnv = true) :
-    (dischargeSharedFnEffect branch handler effect).writes = branch.writes ∧
-    (dischargeSharedFnEffect branch handler effect).retained = branch.retained ∧
-    (dischargeSharedFnEffect branch handler effect).rootReturn = branch.rootReturn ∧
-    (dischargeSharedFnEffect branch handler effect).contained = branch.contained ∧
-    (∀ e ∈ (dischargeSharedFnEffect branch handler effect).effects,
-      (e ∈ branch.effects ∧ e ≠ effect) ∨ e ∈ admissibleEffects) ∧
-    (∀ o ∈ (dischargeSharedFnEffect branch handler effect).namedReads,
-      o ∈ branch.namedReads ∨ isPureInstance pureSources o = true) := by
-  have hstat := concurrent_handler_pure_and_stateless h
-  simp only [concurrentShareableFnHandler, Bool.and_eq_true, List.isEmpty_iff,
-    List.all_eq_true] at h
-  rcases h with ⟨⟨⟨⟨⟨⟨⟨hroot, hcont⟩, hwr⟩, hret⟩, hreads⟩, _⟩, _⟩, _⟩
-  refine ⟨?_, ?_, ?_, ?_, ?_, ?_⟩
-  · simp [dischargeSharedFnEffect, Summary.combine, Summary.handle, hwr]
-  · simp [dischargeSharedFnEffect, Summary.combine, Summary.handle, hret]
-  · simp [dischargeSharedFnEffect, Summary.combine, Summary.handle, hroot]
-  · simp [dischargeSharedFnEffect, Summary.combine, Summary.handle, hcont]
-  · intro e he
-    simp only [dischargeSharedFnEffect, Summary.combine, Summary.handle, List.mem_append,
-      List.mem_filter, bne_iff_ne, ne_eq] at he
-    rcases he with hb | hh
-    · exact Or.inl hb
-    · exact Or.inr (hstat.2.2 e hh)
-  · intro o ho
-    simp only [dischargeSharedFnEffect, Summary.combine, Summary.handle, List.mem_append] at ho
-    rcases ho with hb | hh
-    · exact Or.inl hb
-    · exact Or.inr (hreads o hh)
+/-- `absorb_panic` boundary isolation (`E0608`): forbids outer live state, outward
+effects, outer `ctl` handlers, and outer must-consume captures. Local `with { ctl ... }`
+contained inside the `absorb_panic` closure does not set `usesOuterCtlHandler`. -/
+def absorbPanicAdmissible (pureSources : List Source) (body : Summary)
+    (outerEnv : List SourceInstance) (usesOuterCtlHandler capturesMustConsume : Bool) : Bool :=
+  body.rootReturn.isEmpty &&
+  body.contained.isEmpty &&
+  body.writes.isEmpty &&
+  body.retained.isEmpty &&
+  body.effects.isEmpty &&
+  body.namedReads.all (isPureInstance pureSources) &&
+  body.createdEnvironments.all (isPureInstance pureSources) &&
+  outerEnv.all (isPureInstance pureSources) &&
+  !usesOuterCtlHandler &&
+  !capturesMustConsume
+
+theorem absorb_panic_isolated
+    {pureSources : List Source} {body : Summary} {outerEnv : List SourceInstance}
+    {usesOuterCtlHandler capturesMustConsume : Bool}
+    (h : absorbPanicAdmissible pureSources body outerEnv usesOuterCtlHandler capturesMustConsume = true) :
+    Summary.isPure pureSources body = true ∧
+    (∀ o ∈ outerEnv, isPureInstance pureSources o = true) ∧
+    usesOuterCtlHandler = false ∧
+    capturesMustConsume = false := by
+  simp only [absorbPanicAdmissible, Bool.and_eq_true, Bool.not_eq_true', List.all_eq_true] at h
+  rcases h with ⟨⟨⟨⟨⟨⟨⟨⟨⟨hroot, hcont⟩, hwr⟩, hret⟩, heff⟩, hreads⟩, hcrenv⟩, henv⟩, hctl⟩, hmc⟩
+  refine ⟨?_, henv, hctl, hmc⟩
+  have hroot' : body.rootReturn = [] := List.isEmpty_iff.mp hroot
+  have hcont' : body.contained = [] := List.isEmpty_iff.mp hcont
+  simpa [Summary.isPure, hroot', hcont', hwr, hret, heff, List.all_eq_true] using
+    And.intro hreads hcrenv
+
+/-- `derive` update callback admissibility (`E0607`): forbids invoking outer or
+unhandled `ctl` operations so a confined `Draft<T>` can never escape or persist
+across a suspended continuation. -/
+def deriveCallbackAdmissible (usesOuterCtl hasUnhandledCtl : Bool) : Bool :=
+  !usesOuterCtl && !hasUnhandledCtl
+
+theorem derive_rejects_outer_ctl (usesOuterCtl hasUnhandledCtl : Bool) :
+    deriveCallbackAdmissible usesOuterCtl hasUnhandledCtl = true ↔
+      usesOuterCtl = false ∧ hasUnhandledCtl = false := by
+  simp [deriveCallbackAdmissible, Bool.and_eq_true]
 
 end RilAccess.CoreBoundary
