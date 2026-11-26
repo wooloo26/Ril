@@ -316,20 +316,46 @@ impl Builder<'_, '_> {
 
     pub(super) fn conditional(
         &mut self,
+        is_meta: bool,
         condition: &Condition,
         yes: ExprId,
         no: Option<ExprId>,
+        span: Span,
     ) -> Result<Register> {
-        if let Condition::Expr(test) = condition
-            && let Some(Value::Bool(value)) = self.static_expr(*test)
-        {
-            return if value {
-                self.expr(yes)
-            } else if let Some(no) = no {
-                self.expr(no)
-            } else {
-                Ok(self.unit())
-            };
+        if is_meta {
+            let decision = self
+                .global
+                .typed
+                .meta_if_decisions
+                .get(&span)
+                .copied()
+                .or_else(|| match condition {
+                    Condition::Expr(test) => {
+                        let test_span = self.ast().expr(*test).span;
+                        self.global
+                            .typed
+                            .static_condition(test_span, &self.statics, &self.types)
+                            .or_else(|| match self.static_expr(*test) {
+                                Some(Value::Bool(v)) => Some(v),
+                                _ => None,
+                            })
+                    }
+                    Condition::Binding { .. } => None,
+                });
+            if let Some(value) = decision {
+                return if value {
+                    if let Condition::Binding { pattern, value, .. } = condition {
+                        let evaluated = self.expr(*value)?;
+                        self.bind(*pattern, evaluated)?;
+                    }
+                    self.expr(yes)
+                } else if let Some(no) = no {
+                    self.expr(no)
+                } else {
+                    Ok(self.unit())
+                };
+            }
+            return Err(self.unsupported(span, "unresolved meta if condition"));
         }
         let yes_block = self.block(0);
         let no_block = self.block(0);
@@ -583,38 +609,46 @@ impl Builder<'_, '_> {
 
     pub(super) fn match_expr(
         &mut self,
+        is_meta: bool,
         value: ExprId,
         arms: &[MatchArm],
         span: Span,
     ) -> Result<Register> {
-        let selected = self
-            .global
-            .typed
-            .static_selected_arm(span, &self.statics, &self.types);
-        if let Some(Value::Type(ty)) = self.static_expr(value) {
-            for (index, arm) in arms.iter().enumerate() {
-                if selected.is_some_and(|chosen| chosen != index) {
-                    continue;
-                }
-                let old = self.types.clone();
-                if self.static_pattern(arm.pattern, &ty)
-                    && (arm.guard.is_none() || selected.is_some())
-                {
-                    let result = self.expr(arm.body);
-                    self.types = old;
-                    return result;
-                }
-                self.types = old;
+        if is_meta {
+            let chosen = self
+                .global
+                .typed
+                .meta_match_decisions
+                .get(&span)
+                .map(|&idx| (idx, std::collections::BTreeMap::new()))
+                .or_else(|| {
+                    self.global
+                        .typed
+                        .static_selected_arm_with_bindings(span, &self.statics, &self.types)
+                });
+            if let Some((index, bound_types)) = chosen
+                && let Some(arm) = arms.get(index)
+            {
+                let old_types = self.types.clone();
+                self.types.extend(bound_types);
+                let is_type_value = matches!(
+                    self.global.typed.types.get(&self.ast().expr(value).span),
+                    Some(Ty::TypeValue(_))
+                );
+                let result = if is_type_value {
+                    self.expr(arm.body)
+                } else {
+                    let evaluated = self.expr(value)?;
+                    let prior = self.locals.clone();
+                    self.bind(arm.pattern, evaluated)?;
+                    let res = self.expr(arm.body);
+                    self.locals.retain(|name, _| prior.contains_key(name));
+                    res
+                };
+                self.types = old_types;
+                return result;
             }
-            return Err(self.unsupported(span, "dependent type match without a selected arm"));
-        }
-        if let Some(arm) = selected.and_then(|index| arms.get(index)) {
-            let value = self.expr(value)?;
-            let prior = self.locals.clone();
-            self.bind(arm.pattern, value)?;
-            let result = self.expr(arm.body);
-            self.locals.retain(|name, _| prior.contains_key(name));
-            return result;
+            return Err(self.unsupported(span, "unresolved meta match without a selected arm"));
         }
         let value = self.expr(value)?;
         let saved = self.locals.clone();
@@ -660,47 +694,6 @@ impl Builder<'_, '_> {
         }
     }
 
-    fn static_pattern(&mut self, pattern: PatternId, target: &Ty) -> bool {
-        match &self.ast().pattern(pattern).value {
-            Pattern::Wildcard | Pattern::Binding(..) => true,
-            Pattern::Type(ty) => self.static_type_pattern(*ty, target),
-            Pattern::Or(parts) => parts.iter().any(|&part| self.static_pattern(part, target)),
-            _ => false,
-        }
-    }
-
-    fn static_type_pattern(&mut self, ty: ril_sema::syntax::TypeId, target: &Ty) -> bool {
-        use ril_sema::syntax::Type;
-        let node = self.ast().ty(ty);
-        match (&node.value, target) {
-            (Type::PatternWildcard, _) => true,
-            (Type::PatternBinding(name), _) => {
-                if let Some(id) = self.global.resolve(name.span) {
-                    self.types.insert(id, target.clone());
-                }
-                true
-            }
-            (Type::Result(ok, err), target) => target
-                .as_result(&self.global.typed.hir)
-                .is_some_and(|(a, b)| {
-                    self.static_type_pattern(*ok, a) && self.static_type_pattern(*err, b)
-                }),
-            (Type::Option(item), target) => target
-                .as_option(&self.global.typed.hir)
-                .is_some_and(|expected| self.static_type_pattern(*item, expected)),
-            (Type::TupleAny, Ty::Tuple(_) | Ty::Unit) => true,
-            (Type::Array(_, item), Ty::Array(expected)) => {
-                self.static_type_pattern(*item, &expected.ty)
-            }
-            _ => self
-                .global
-                .typed
-                .types
-                .get(&node.span)
-                .is_some_and(|ty| self.concrete(ty) == *target),
-        }
-    }
-
     pub(super) fn test_pattern(
         &mut self,
         id: PatternId,
@@ -725,6 +718,14 @@ impl Builder<'_, '_> {
                 });
             }
             Pattern::Constructor(path, payload) => {
+                if self
+                    .global
+                    .resolve(path.span)
+                    .is_some_and(|id| self.global.typed.is_nominal_record(id))
+                    && let Some([inner]) = payload.as_deref()
+                {
+                    return self.test_pattern(*inner, value, yes, no);
+                }
                 let tag = path
                     .segments
                     .last()

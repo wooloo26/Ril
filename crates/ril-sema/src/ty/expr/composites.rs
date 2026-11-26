@@ -132,10 +132,13 @@ impl Checker<'_> {
         expected: Option<&Ty>,
         span: Span,
     ) -> Ty {
-        let data = name
-            .map(|path| self.constructor_type(env, path, expected))
-            .or_else(|| expected.cloned());
-        let mut raw = data.clone();
+        let data = if let Some(path) = name {
+            Some(self.constructor_type(env, path, expected))
+        } else {
+            // Anonymous record literal `.{ ... }` only adopts structural `Ty::Record` expectations,
+            // never silently constructing a nominal/opaque ADT.
+            expected.filter(|ty| matches!(ty, Ty::Record(..))).cloned()
+        };
         if let Some(Ty::Adt(adt)) = &data {
             if adt.kind == AdtKind::Foreign {
                 self.error(Code::E0907, span, "cannot construct a foreign handle");
@@ -145,53 +148,23 @@ impl Checker<'_> {
                 self.error(Code::E0308, span, "opaque type construction is sealed");
                 return Ty::Unknown;
             }
-            raw = self.representation(env, adt);
+            self.error(
+                Code::E0338,
+                span,
+                "nominal record construction uses parentheses, e.g. 'Type(.{ ... })'",
+            );
+            return Ty::Unknown;
         }
-        if let Some(Ty::Record(mut required, open)) = raw {
-            let mut provided = BTreeMap::new();
-            for field in fields {
-                let found = required.get_mut(&field.name.value);
-                if found.is_none() && !open {
-                    self.error(Code::E0302, field.name.span, "unexpected record field");
-                }
-                let ty = self.field_expr(env, field, found.as_ref().map(|m| &m.ty));
-                if let Some(found) = found {
-                    let fits = self.require(env, field.name.span, &ty, &found.ty);
-                    if fits && name.is_none() && found.ty.has_via_members() && ty != Ty::Never {
-                        found.ty = ty;
-                    }
-                    let written = self.member_mode(env, &field.storage);
-                    if name.is_none() && found.mode.mode == Mode::Via {
-                        if written.variable != found.mode.variable {
-                            self.error(
-                                Code::E0357,
-                                field.name.span,
-                                "incompatible field slot replaceability",
-                            );
-                        }
-                        found.mode = written;
-                    } else if name.is_none() && found.mode.variable && !written.variable {
-                        self.error(
-                            Code::E0357,
-                            field.name.span,
-                            "anonymous record literal does not synthesize var storage",
-                        );
-                    } else if written != MemberMode::PLAIN && written != found.mode {
-                        self.error(Code::E0357, field.name.span, "incompatible field mode");
-                    }
-                }
-                provided.insert(field.name.value.as_str(), ());
-            }
-            let defaults = self.record_defaults(&data);
-            for field in required.keys() {
-                if !provided.contains_key(field.as_str()) && !defaults.contains(field) && !open {
-                    self.error(Code::E0307, span, format!("missing record field {field}"));
-                }
-            }
-            match data {
-                Some(Ty::Record(..)) => Ty::Record(required, open),
-                _ => data.unwrap_or(Ty::Unknown),
-            }
+        if let Some(Ty::Record(required, open)) = data {
+            self.record_literal_against_schema(
+                env,
+                fields,
+                required,
+                open,
+                name.is_some(),
+                None,
+                span,
+            )
         } else if name.is_some() && !matches!(data, Some(Ty::Unknown)) {
             self.error(
                 Code::E0301,
@@ -218,6 +191,60 @@ impl Checker<'_> {
                 .collect();
             Ty::Record(fields, false)
         }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn record_literal_against_schema(
+        &mut self,
+        env: &mut Env,
+        fields: &[ValueField],
+        mut required: BTreeMap<String, Member>,
+        open: bool,
+        named_schema: bool,
+        nominal_adt: Option<&Ty>,
+        span: Span,
+    ) -> Ty {
+        let mut provided = BTreeMap::new();
+        for field in fields {
+            let found = required.get_mut(&field.name.value);
+            if found.is_none() && !open {
+                self.error(Code::E0302, field.name.span, "unexpected record field");
+            }
+            let ty = self.field_expr(env, field, found.as_ref().map(|m| &m.ty));
+            if let Some(found) = found {
+                let fits = self.require(env, field.name.span, &ty, &found.ty);
+                if fits && !named_schema && found.ty.has_via_members() && ty != Ty::Never {
+                    found.ty = ty;
+                }
+                let written = self.member_mode(env, &field.storage);
+                if !named_schema && found.mode.mode == Mode::Via {
+                    if written.variable != found.mode.variable {
+                        self.error(
+                            Code::E0357,
+                            field.name.span,
+                            "incompatible field slot replaceability",
+                        );
+                    }
+                    found.mode = written;
+                } else if !named_schema && found.mode.variable && !written.variable {
+                    self.error(
+                        Code::E0357,
+                        field.name.span,
+                        "anonymous record literal does not synthesize var storage",
+                    );
+                } else if written != MemberMode::PLAIN && written != found.mode {
+                    self.error(Code::E0357, field.name.span, "incompatible field mode");
+                }
+            }
+            provided.insert(field.name.value.as_str(), ());
+        }
+        let defaults = self.record_defaults(&nominal_adt.cloned());
+        for field in required.keys() {
+            if !provided.contains_key(field.as_str()) && !defaults.contains(field) && !open {
+                self.error(Code::E0307, span, format!("missing record field {field}"));
+            }
+        }
+        Ty::Record(required, open)
     }
 
     pub(in crate::ty) fn record_defaults(&self, ty: &Option<Ty>) -> HashSet<String> {

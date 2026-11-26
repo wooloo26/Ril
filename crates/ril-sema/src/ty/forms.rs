@@ -258,10 +258,17 @@ impl Checker<'_> {
                         "value-type parameter cannot carry live access",
                     );
                 }
-                if !named && param.mode == Mode::Via && ty.is_value() {
-                    let span = param.ty.map_or_else(
-                        || self.ast(env.file).ty(signature.result).span,
-                        |ty| self.ast(env.file).ty(ty).span,
+                let is_value_only = ty.is_value()
+                    || matches!(&ty, Ty::Param(id) if env.domains.get(id).is_some_and(|dom| !dom.is_empty() && dom.iter().all(Ty::is_value)));
+                if param.mode == Mode::Via && is_value_only {
+                    let span = param.name.as_ref().map_or_else(
+                        || {
+                            param.ty.map_or_else(
+                                || self.ast(env.file).ty(signature.result).span,
+                                |ty| self.ast(env.file).ty(ty).span,
+                            )
+                        },
+                        |name| name.span,
                     );
                     self.error(
                         Code::E0550,

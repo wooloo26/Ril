@@ -322,10 +322,18 @@ impl Checker<'_> {
                 match &decl.definition {
                     TypeDefinition::Data(ty) => {
                         let representation = self.type_expr(&mut local, *ty);
-                        if decl.kind == ril_syntax::syntax::TypeKind::Nominal
-                            && let Some(id) = self.resolve(decl.name.span)
+                        if matches!(
+                            decl.kind,
+                            ril_syntax::syntax::TypeKind::Nominal
+                                | ril_syntax::syntax::TypeKind::Opaque
+                        ) && let Some(id) = self.resolve(decl.name.span)
                         {
-                            self.nominal_layouts.insert(id, representation);
+                            if matches!(representation, Ty::Record(..)) {
+                                self.record_adts.insert(id);
+                            }
+                            if decl.kind == ril_syntax::syntax::TypeKind::Nominal {
+                                self.nominal_layouts.insert(id, representation);
+                            }
                         }
                     }
                     TypeDefinition::Sum(_) => {
@@ -504,8 +512,8 @@ impl Checker<'_> {
                             .collect();
                         let result = self.adt(id, decl, args);
                         if let Ty::Adt(adt) = &result
+                            && !self.hir.unit_constructor(adt.definition)
                             && let Some(rep) = self.representation(env, adt)
-                            && !matches!(rep, Ty::Unit | Ty::Record(..))
                         {
                             let params = match rep {
                                 Ty::Tuple(fields) => fields

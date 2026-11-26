@@ -71,17 +71,7 @@ impl Checker<'_> {
                 }
             }
             Pattern::Record { fields, .. } => {
-                let unwrapped = match input {
-                    Ty::Adt(adt)
-                        if adt.kind == AdtKind::Nominal
-                            || (adt.kind == AdtKind::Opaque && adt.defining_scope == env.scope) =>
-                    {
-                        self.representation(env, adt)
-                    }
-                    _ => None,
-                };
-                let target = unwrapped.as_ref().unwrap_or(input);
-                if let Ty::Record(known, _) = target {
+                if let Ty::Record(known, _) = input {
                     let fields = known
                         .iter()
                         .map(|(key, ty)| {
@@ -232,16 +222,17 @@ impl Checker<'_> {
                     || (adt.kind == AdtKind::Opaque && adt.defining_scope == env.scope) =>
             {
                 let name = self.hir.definition(adt.definition).name.value.clone();
-                match self.representation(env, adt) {
-                    Some(Ty::Record(items, false)) => vec![(
-                        "record".into(),
-                        items.values().map(|item| item.ty.clone()).collect(),
-                    )],
-                    Some(Ty::Tuple(items)) => {
-                        vec![(name, items.into_iter().map(|m| m.ty).collect())]
+                if self.hir.unit_constructor(adt.definition) {
+                    vec![(name, Vec::new())]
+                } else {
+                    match self.representation(env, adt) {
+                        Some(rep @ Ty::Record(_, false)) => vec![(name, vec![rep])],
+                        Some(Ty::Tuple(items)) => {
+                            vec![(name, items.into_iter().map(|m| m.ty).collect())]
+                        }
+                        Some(inner) => vec![(name, vec![inner])],
+                        None => vec![(name, Vec::new())],
                     }
-                    Some(Ty::Unit) | None => vec![(name, Vec::new())],
-                    Some(inner) => vec![(name, vec![inner])],
                 }
             }
             Ty::TypeValue(Some(inner)) => {

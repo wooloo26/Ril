@@ -471,24 +471,26 @@ impl Parser<'_> {
         Ok(obligations)
     }
 
+    fn use_cleanup_clause(&mut self) -> Result<Option<crate::syntax::Name>> {
+        if !self.is("use") {
+            return Ok(None);
+        }
+        self.bump();
+        if !self.tight("(") {
+            return Err(self.unexpected("cleanup name requires tightly attached parentheses"));
+        }
+        self.open("(", ")", Layout::List)?;
+        let name = self.name(Some(Word::Value), false)?;
+        self.close(")")?;
+        Ok(Some(name))
+    }
+
     fn type_decl(&mut self, opaque: bool) -> Result<TypeDecl> {
         self.require("type")?;
         let name = self.name(Some(Word::Pascal), false)?;
         let generics = self.generics()?;
-        let cleanup = if self.is("use") {
-            self.bump();
-            if !self.tight("(") {
-                return Err(self.unexpected("cleanup name requires tightly attached parentheses"));
-            }
-            self.open("(", ")", Layout::List)?;
-            let name = self.name(Some(Word::Value), false)?;
-            self.close(")")?;
-            Some(name)
-        } else {
-            None
-        };
         let foreign = self.kind == FileKind::Foreign;
-        let (kind, definition) = if self.eat("=") {
+        let (kind, definition, cleanup) = if self.eat("=") {
             if opaque {
                 if foreign {
                     return Err(self.error(
@@ -500,14 +502,7 @@ impl Parser<'_> {
                 return Err(self.error(
                     Code::E0120,
                     self.last,
-                    "opaque type does not use '='; write 'opaque type Name Underlying'",
-                ));
-            }
-            if let Some(ref cleanup_name) = cleanup {
-                return Err(self.error(
-                    Code::E0120,
-                    cleanup_name.span,
-                    "type alias cannot declare a use cleanup clause",
+                    "opaque type does not use '='; write 'opaque type Name(Underlying)'",
                 ));
             }
             self.skip_lines();
@@ -560,7 +555,14 @@ impl Parser<'_> {
             } else {
                 self.data_type_definition()?
             };
-            (TypeKind::Alias, definition)
+            if let Some(cleanup_name) = self.use_cleanup_clause()? {
+                return Err(self.error(
+                    Code::E0120,
+                    cleanup_name.span,
+                    "type alias cannot declare a use cleanup clause",
+                ));
+            }
+            (TypeKind::Alias, definition, None)
         } else if self.is("{") {
             if foreign && opaque {
                 return Err(self.error(
@@ -615,21 +617,120 @@ impl Parser<'_> {
                 }
             }
             self.close("}")?;
+            let cleanup = self.use_cleanup_clause()?;
             let kind = if opaque {
                 TypeKind::Opaque
             } else {
                 TypeKind::Alias
             };
-            (kind, TypeDefinition::Sum(variants))
-        } else if matches!(self.current().kind, Kind::Newline | Kind::Eof)
-            || matches!(self.text(), ";" | "}")
-        {
+            (kind, TypeDefinition::Sum(variants), cleanup)
+        } else if self.tight("(") {
+            if foreign {
+                return Err(self.error(
+                    Code::E0901,
+                    self.current().span,
+                    "foreign type representation is sealed",
+                ));
+            }
+            let opening = self.open("(", ")", Layout::List)?;
+            let mut elements = self.list(")", |p| {
+                if matches!(p.text(), "@" | "&") {
+                    return Err(p.error(
+                        if p.is("@") {
+                            Code::E0330
+                        } else {
+                            Code::E0331
+                        },
+                        p.current().span,
+                        "effect and state clauses cannot be used as data representations",
+                    ));
+                }
+                let storage_span = p.current().span;
+                let storage = p.storage(false)?;
+                let ty = p.ty()?;
+                if matches!(p.text(), "@" | "&") {
+                    return Err(p.error(
+                        Code::E0333,
+                        p.current().span,
+                        "element effect/state belongs on a callable type",
+                    ));
+                }
+                if p.is("|") {
+                    return Err(p.error(
+                        Code::E0318,
+                        p.current().span,
+                        "untagged union is not a data type",
+                    ));
+                }
+                Ok((storage_span, storage, ty))
+            })?;
+            let full_span = opening.join(self.last);
+            let ty = match elements.len() {
+                0 => {
+                    return Err(self.error(
+                        Code::E0120,
+                        full_span,
+                        "empty nominal payload; omit parentheses for a unit nominal type",
+                    ));
+                }
+                1 => {
+                    let (storage_span, storage, only) = elements
+                        .pop()
+                        .unwrap_or_else(|| ril_source::ice!("missing nominal payload"));
+                    if storage.variable
+                        || storage.mode != Mode::Plain
+                        || storage.mode_path.is_some()
+                    {
+                        return Err(self.error(
+                            Code::E0356,
+                            storage_span,
+                            "single nominal payload cannot carry a member storage mode",
+                        ));
+                    }
+                    only
+                }
+                _ => {
+                    let tuple = elements
+                        .into_iter()
+                        .map(|(_, storage, ty)| (storage, ty))
+                        .collect();
+                    self.ast.add_ty(full_span, crate::syntax::Type::Tuple(tuple))
+                }
+            };
+            if matches!(self.text(), "@" | "&") {
+                return Err(self.error(
+                    Code::E0613,
+                    self.current().span,
+                    "type declaration cannot carry effect or state clauses",
+                ));
+            }
+            let cleanup = self.use_cleanup_clause()?;
             let kind = if opaque {
                 TypeKind::Opaque
             } else {
                 TypeKind::Nominal
             };
-            (kind, TypeDefinition::Opaque)
+            (kind, TypeDefinition::Data(ty), cleanup)
+        } else if matches!(self.current().kind, Kind::Newline | Kind::Eof)
+            || matches!(self.text(), ";" | "}" | "use")
+        {
+            let cleanup = self.use_cleanup_clause()?;
+            if cleanup.is_some()
+                && !matches!(self.current().kind, Kind::Newline | Kind::Eof)
+                && !matches!(self.text(), ";" | "}")
+            {
+                return Err(self.error(
+                    Code::E0120,
+                    self.current().span,
+                    "use cleanup clause must appear after the type representation",
+                ));
+            }
+            let kind = if opaque {
+                TypeKind::Opaque
+            } else {
+                TypeKind::Nominal
+            };
+            (kind, TypeDefinition::Opaque, cleanup)
         } else {
             if foreign {
                 return Err(self.error(
@@ -638,12 +739,11 @@ impl Parser<'_> {
                     "foreign type representation is sealed",
                 ));
             }
-            let kind = if opaque {
-                TypeKind::Opaque
-            } else {
-                TypeKind::Nominal
-            };
-            (kind, self.data_type_definition()?)
+            return Err(self.error(
+                Code::E0120,
+                self.current().span,
+                "nominal and opaque representations require tight parentheses, e.g. 'type Name(Underlying)' or 'type Name(.{ ... })'",
+            ));
         };
         Ok(TypeDecl {
             name,

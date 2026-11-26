@@ -500,6 +500,7 @@ pub enum Expr {
     Map(Vec<(ExprId, ExprId)>),
     Quote(TypeId),
     If {
+        is_meta: bool,
         condition: Condition,
         yes: ExprId,
         no: Option<ExprId>,
@@ -515,6 +516,7 @@ pub enum Expr {
         body: ExprId,
     },
     Match {
+        is_meta: bool,
         mode: Mode,
         value: ExprId,
         arms: Vec<MatchArm>,
@@ -554,7 +556,6 @@ pub enum Pattern {
     Rest(Option<Name>),
     Constructor(Path, Option<Vec<PatternId>>),
     Record {
-        name: Option<Path>,
         fields: Vec<PatternField>,
         rest: bool,
     },

@@ -293,6 +293,8 @@ pub struct TypedProgram {
     static_folds: HashMap<Span, staging::StaticFold>,
     static_conditions: HashMap<Span, staging::StaticCondition>,
     static_matches: HashMap<Span, staging::StaticMatch>,
+    pub meta_if_decisions: HashMap<Span, bool>,
+    pub meta_match_decisions: HashMap<Span, usize>,
     static_generic_arguments: HashMap<Span, HashMap<DefinitionId, GenericValue>>,
     static_budget: u64,
     pub(crate) meta_parameters: HashSet<DefinitionId>,
@@ -301,6 +303,7 @@ pub struct TypedProgram {
     pub navigation_values: HashMap<Span, Ty>,
     pub(crate) propagation_inputs: HashMap<Span, Ty>,
     nominal_layouts: HashMap<DefinitionId, Ty>,
+    record_adts: HashSet<DefinitionId>,
     pub subset_tags: HashMap<Span, Vec<String>>,
     pub tuple_payloads: HashMap<Span, usize>,
     pub(crate) receptions: HashMap<Span, Vec<reception::Adjustment>>,
@@ -314,6 +317,10 @@ pub struct TypedProgram {
 impl TypedProgram {
     pub fn inspection_scope(&self, span: Span) -> Option<ScopeId> {
         self.inspection_scopes.get(&span).copied()
+    }
+
+    pub fn is_nominal_record(&self, id: DefinitionId) -> bool {
+        self.record_adts.contains(&id)
     }
 
     pub fn nominal_layout(&self, adt: &Adt) -> Option<Ty> {

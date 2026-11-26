@@ -13,6 +13,7 @@ impl Analyzer<'_> {
         let ast = self.ast(ctx.file);
         let callee = ast.expr(callee_id);
         let def = id.map(|id| self.program.hir.definition(id));
+        let is_nominal_record = id.is_some_and(|id| self.program.is_nominal_record(id));
         let name = def.map_or("", |def| def.name.value.as_str());
         let primitive = def.is_some_and(|def| matches!(def.kind, DefinitionKind::Primitive(_)));
         let module = id.and_then(|id| self.program.hir.primitive_module(id));
@@ -201,7 +202,13 @@ impl Analyzer<'_> {
                 ledger.inspect(&value);
             }
             let mode = if channel_payload { Mode::New } else { mode };
-            let value = if primitive && name == "derive" && index == 0 {
+            let direct_nominal_record_literal = is_nominal_record
+                && index == 0
+                && mode == Mode::Plain
+                && matches!(node.value, Expr::Record { name: None, .. });
+            let value = if direct_nominal_record_literal {
+                value
+            } else if primitive && name == "derive" && index == 0 {
                 let mut snapshot = ledger.snapshot(&value);
                 let message = "derive requires an immutable snapshot";
                 if mode != Mode::Plain {
@@ -361,6 +368,11 @@ impl Analyzer<'_> {
             }
         }
         if let Some(fields) = fields {
+            if is_nominal_record
+                && let [(_, _, record_val)] = fields.as_slice()
+            {
+                return record_val.clone();
+            }
             let mut result = constructor(span, fields);
             if def.is_some_and(|def| matches!(def.kind, DefinitionKind::Variant(_))) {
                 result.set_variant(name);

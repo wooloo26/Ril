@@ -326,24 +326,15 @@ impl Parser<'_> {
         let expression = match self.text() {
             "{" => return self.block(),
             "\\" => return self.closure(context),
-            "if" => {
+            "meta" if self.next_text() == "if" => {
                 self.bump();
-                let condition = self.condition()?;
-                self.skip_lines();
-                let yes = self.block()?;
-                self.continue_lines(|tok| tok == "else");
-                let no = if self.eat("else") {
-                    self.skip_lines();
-                    Some(if self.is("if") {
-                        self.nested(|p| p.atom(context))?
-                    } else {
-                        self.block()?
-                    })
-                } else {
-                    None
-                };
-                Expr::If { condition, yes, no }
+                self.if_expr(true, context)?
             }
+            "meta" if self.next_text() == "match" => {
+                self.bump();
+                self.match_expr(true)?
+            }
+            "if" => self.if_expr(false, context)?,
             "while" => {
                 self.bump();
                 let condition = self.condition()?;
@@ -373,36 +364,7 @@ impl Parser<'_> {
                     body: self.block()?,
                 }
             }
-            "match" => {
-                self.bump();
-                let mode = self.mode(&[Mode::Ref, Mode::Mut, Mode::Shared, Mode::Via]);
-                let value = self.expr()?;
-                self.skip_lines();
-                self.open("{", "}", Layout::Block)?;
-                self.separators();
-                let mut arms = Vec::new();
-                while !self.is("}") {
-                    let pattern = self.pattern(true)?;
-                    let guard = if self.eat("if") {
-                        Some(self.expr()?)
-                    } else {
-                        None
-                    };
-                    self.continue_lines(|tok| tok == "->");
-                    self.require("->")?;
-                    self.skip_lines();
-                    arms.push(MatchArm {
-                        pattern,
-                        guard,
-                        body: self.expr()?,
-                    });
-                    if !self.separators() {
-                        break;
-                    }
-                }
-                self.close("}")?;
-                Expr::Match { mode, value, arms }
-            }
+            "match" => self.match_expr(false)?,
             "return" | "break" | "continue" => {
                 let kind = match self.text() {
                     "return" => Transfer::Return,
@@ -476,6 +438,66 @@ impl Parser<'_> {
             },
         };
         Ok(self.ast.add_expr(start.join(self.last), expression))
+    }
+
+    fn if_expr(&mut self, is_meta: bool, context: ExprContext) -> Result<Expr> {
+        self.bump();
+        let condition = self.condition()?;
+        self.skip_lines();
+        let yes = self.block()?;
+        self.continue_lines(|tok| tok == "else");
+        let no = if self.eat("else") {
+            self.skip_lines();
+            Some(if self.is("if") || (self.is("meta") && self.next_text() == "if") {
+                self.nested(|p| p.atom(context))?
+            } else {
+                self.block()?
+            })
+        } else {
+            None
+        };
+        Ok(Expr::If {
+            is_meta,
+            condition,
+            yes,
+            no,
+        })
+    }
+
+    fn match_expr(&mut self, is_meta: bool) -> Result<Expr> {
+        self.bump();
+        let mode = self.mode(&[Mode::Ref, Mode::Mut, Mode::Shared, Mode::Via]);
+        let value = self.expr()?;
+        self.skip_lines();
+        self.open("{", "}", Layout::Block)?;
+        self.separators();
+        let mut arms = Vec::new();
+        while !self.is("}") {
+            let pattern = self.pattern(true)?;
+            let guard = if self.eat("if") {
+                Some(self.expr()?)
+            } else {
+                None
+            };
+            self.continue_lines(|tok| tok == "->");
+            self.require("->")?;
+            self.skip_lines();
+            arms.push(MatchArm {
+                pattern,
+                guard,
+                body: self.expr()?,
+            });
+            if !self.separators() {
+                break;
+            }
+        }
+        self.close("}")?;
+        Ok(Expr::Match {
+            is_meta,
+            mode,
+            value,
+            arms,
+        })
     }
 
     fn condition(&mut self) -> Result<Condition> {

@@ -601,7 +601,12 @@ fn walk_expr(
                 walk_expr(hir, ast, *e, all_var_defs, fn_up_captures, boxed, refs);
             }
         }
-        Expr::If { condition, yes, no } => {
+        Expr::If {
+            condition,
+            yes,
+            no,
+            ..
+        } => {
             walk_condition(
                 hir,
                 ast,

@@ -4,7 +4,7 @@ pub meta let PI: f64 = 3.141592653589793
 pub meta let EULER: f64 = 2.718281828459045
 
 pub fn abs<T: int | f64>(x: T) -> T {
-    match <T> {
+    meta match <T> {
         <int> -> if x < 0 {
             return -x
         } else {

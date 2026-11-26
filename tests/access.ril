@@ -1543,9 +1543,9 @@ fn run() -> () {
 }
 
 -- @case returned_nominal_field_keeps_its_result_obligation compile-fail E0720
-type Packet .{ payload: !<int, str> }
+type Packet(.{ payload: !<int, str> })
 fn get() -> new !<int, str> { Ok(1) }
-fn packet() -> new Packet { Packet.{ payload: get() } }
+fn packet() -> new Packet { Packet(.{ payload: get() }) }
 fn run() -> () {
     let value = packet()
     -- ^ E0720
@@ -1553,10 +1553,10 @@ fn run() -> () {
 }
 
 -- @case specialized_nominal_layout_exposes_the_result_to_inner compile-pass
-type Packet<T> .{ payload: T }
-type Parcel<T> T
+type Packet<T>(.{ payload: T })
+type Parcel<T>(T)
 fn get() -> new !<int, str> { Ok(1) }
-fn packet() -> new Packet<!<int, str>> { Packet.{ payload: get() } }
+fn packet() -> new Packet<!<int, str>> { Packet(.{ payload: get() }) }
 fn parcel() -> new Parcel<!<int, str>> { Parcel(get()) }
 fn run() -> () {
     assert(inner(packet()).payload == Ok(1))
@@ -2128,7 +2128,7 @@ fn edit(cell: Cell) -> int {
 -- @case destructuring_cannot_upgrade_immutable_field compile-fail E0521 no-prelude
 type Box = .{ fixed: []int }
 fn invalid() -> () {
-    let Box.{ mut fixed } = Box.{ fixed: [1, 2] }
+    let .{ mut fixed } = Box.{ fixed: [1, 2] }
     -- ^ E0521
     Array::push(mut fixed, 3)
 }
@@ -2136,7 +2136,7 @@ fn invalid() -> () {
 -- @case snapshot_blocks_writable_destructuring_even_on_mutable_schema compile-fail E0521 no-prelude
 type Box = .{ mut field: []int }
 fn invalid(snapshot: Box) -> () {
-    let Box.{ mut field } = snapshot
+    let .{ mut field } = snapshot
     -- ^ E0521
     Array::push(mut field, 3)
 }
@@ -2694,14 +2694,14 @@ fn update(swap: bool) -> () {
 }
 
 -- @case cyclic_arguments_share_a_reachable_descendant compile-fail E0523
-type Node .{ var count: int, var ^mut next: ?Node }
+type Node(.{ var count: int, var ^mut next: ?Node })
 fn edit(mut left: Node, mut right: Node) &mut -> () {
     left.count += 1
     right.count += 1
 }
 fn update() -> () {
-    let mut first = Node.{ count: 20, next: None }
-    let mut second = Node.{ count: 22, next: None }
+    let mut first = Node(.{ count: 20, next: None })
+    let mut second = Node(.{ count: 22, next: None })
     first.next = ^mut Some(^mut second)
     second.next = ^mut Some(^mut first)
     edit(mut first, mut second)
@@ -2853,17 +2853,17 @@ fn update(again: bool, swap: bool) -> () {
 
 -- @case shared_chain_keeps_deep_aliases_after_the_loop compile-fail E0524
 -- @forbid E0531
-type Node .{ var value: int, var ^mut next: ?Node }
+type Node(.{ var value: int, var ^mut next: ?Node })
 fn copy(mut target: Node, ref reader: Node) &mut -> () {
     target.value = reader.value
 }
 fn run(count: int) -> int {
-    let mut tail = Node.{ value: 4, next: None }
-    let mut initial = Node.{ value: 7, next: Some(^mut tail) }
+    let mut tail = Node(.{ value: 4, next: None })
+    let mut initial = Node(.{ value: 7, next: Some(^mut tail) })
     initial.value += 1
     var ^mut head = initial
     for 0..count as i {
-        let mut node = Node.{ value: i, next: Some(^mut head) }
+        let mut node = Node(.{ value: i, next: Some(^mut head) })
         node.value += 1
         head = ^mut node
     }
@@ -2884,7 +2884,7 @@ fn run(count: int) -> int {
 -- @case snapshot_checks_follow_callback_receivers_in_recursive_data compile-fail E0535 no-prelude
 type Cell = .{ var count: int }
 type Shelf = .{ ^mut item: Cell }
-type Node .{ action: fn(new Shelf) -> int, next: ?Node }
+type Node(.{ action: fn(new Shelf) -> int, next: ?Node })
 fn freeze(new source: Shelf) -> int { let snapshot = new source; snapshot.item.count }
 fn count(new source: Shelf) -> int { source.item.count }
 fn visit(node: Node, new input: Shelf) -> int {
@@ -2896,7 +2896,7 @@ fn visit(node: Node, new input: Shelf) -> int {
 fn observe() -> () {
     let mut live = Cell.{ count: 1 }
     live.count += 1
-    let head = Node.{ action: count, next: Some(Node.{ action: freeze, next: None }) }
+    let head = Node(.{ action: count, next: Some(Node(.{ action: freeze, next: None })) })
     let observed = visit(head, new Shelf.{ item: ^mut live })
     -- ^ E0535
     live.count += 8
@@ -2905,19 +2905,19 @@ fn observe() -> () {
 
 -- @case snapshot_checks_converge_when_recursive_calls_wrap_an_argument compile-fail E0535 no-prelude
 type Cell = .{ var count: int }
-type Node .{ ^mut value: Cell, mut next: ?Node }
+type Node(.{ ^mut value: Cell, mut next: ?Node })
 fn freeze(new source: Node) -> int { let snapshot = new source; snapshot.value.count }
 fn visit(action: fn(new Node) -> int, new input: Node, depth: int) -> int {
     if depth == 0 { action(new input) }
     else {
         let outer = Cell.{ count: 5 }
-        visit(action, new Node.{ value: ^mut Cell.{ count: outer.count }, next: Some(new input) }, depth - 1)
+        visit(action, new Node(.{ value: ^mut Cell.{ count: outer.count }, next: Some(new input) }), depth - 1)
     }
 }
 fn observe() -> () {
     let mut live = Cell.{ count: 1 }
     live.count += 1
-    let observed = visit(freeze, new Node.{ value: ^mut live, next: None }, 1)
+    let observed = visit(freeze, new Node(.{ value: ^mut live, next: None }), 1)
     -- ^ E0535
     live.count += 8
     assert(observed == 5)
@@ -2927,16 +2927,16 @@ fn observe() -> () {
 type Cell = .{ var count: int }
 type Shelf = .{ ^mut item: Cell }
 type Leaf = fn(new Shelf) -> int
-type Node .{ action: Leaf, next: ?Node }
+type Node(.{ action: Leaf, next: ?Node })
 fn count(new input: Shelf) -> int { input.item.count }
 fn apply(action: fn(Node) -> int, node: Node, depth: int) -> int {
-    if depth == 0 { action(node) } else { apply(action, Node.{ action: count, next: Some(node) }, depth - 1) }
+    if depth == 0 { action(node) } else { apply(action, Node(.{ action: count, next: Some(node) }), depth - 1) }
 }
 fn dispatch(node: Node) -> int {
     node.action(new Shelf.{ item: ^mut Cell.{ count: 1 } })
 }
 fn run() -> int {
-    apply(dispatch, Node.{ action: count, next: None }, 2)
+    apply(dispatch, Node(.{ action: count, next: None }), 2)
 }
 
 -- @case appended_callable_keeps_its_snapshot_requirement compile-fail E0535

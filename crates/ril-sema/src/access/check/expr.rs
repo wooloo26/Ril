@@ -62,6 +62,7 @@ impl Analyzer<'_> {
                 } else {
                     BindingSite::Declaration
                 };
+                self.check_via_pattern(ctx, *pattern, storage.mode);
                 if let Some(fallback) = fallback {
                     for (mut failed, _) in self.pattern_paths(ctx, ledger, *pattern, &value, false)
                     {
@@ -369,7 +370,35 @@ impl Analyzer<'_> {
                     .extend(local_ctx.return_values.into_iter().skip(start_returns));
                 result
             }
-            Expr::If { condition, yes, no } => {
+            Expr::If {
+                is_meta,
+                condition,
+                yes,
+                no,
+            } => {
+                if *is_meta
+                    && let Some(&taken) = self.program.meta_if_decisions.get(&span)
+                {
+                    if let Condition::Expr(test) = condition {
+                        let _ = self.expr(ctx, ledger, *test);
+                    }
+                    return if taken {
+                        let mut yes_ctx = ctx.clone();
+                        yes_ctx.scope = ast.expr(*yes).span;
+                        if matches!(condition, Condition::Binding { .. }) {
+                            let _ = self.condition(&mut yes_ctx, ledger, condition, true);
+                        }
+                        let val = self.expr(&mut yes_ctx, ledger, *yes);
+                        let count = ctx.return_values.len();
+                        ctx.return_values
+                            .extend(yes_ctx.return_values.into_iter().skip(count));
+                        val
+                    } else if let Some(no_expr) = no {
+                        self.expr(ctx, ledger, *no_expr)
+                    } else {
+                        Datum::default()
+                    };
+                }
                 let before = ledger.clone();
                 let literal = match condition {
                     Condition::Expr(test) => self.literal_bool(ctx, *test),
@@ -461,6 +490,7 @@ impl Analyzer<'_> {
                 body,
                 mode,
             } => {
+                self.check_via_pattern(ctx, *pattern, *mode);
                 let value = self.expr(ctx, ledger, *iterable);
                 let storage = Storage {
                     mode: *mode,
@@ -563,8 +593,20 @@ impl Analyzer<'_> {
                 }
                 Datum::default()
             }
-            Expr::Match { mode, value, arms } => {
+            Expr::Match {
+                is_meta,
+                mode,
+                value,
+                arms,
+            } => {
                 let value = self.expr(ctx, ledger, *value);
+                if *is_meta
+                    && let Some(&chosen) = self.program.meta_match_decisions.get(&span)
+                    && let Some(arm) = arms.get(chosen)
+                {
+                    let single = std::slice::from_ref(arm);
+                    return self.match_value(ctx, ledger, *mode, &value, single, span);
+                }
                 let paths = ledger.variant_paths(&value);
                 if paths.is_empty() {
                     self.match_value(ctx, ledger, *mode, &value, arms, span)

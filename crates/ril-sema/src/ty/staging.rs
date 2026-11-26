@@ -35,6 +35,7 @@ pub(super) enum StaticGate {
 pub(super) struct StaticCondition {
     caller: Env,
     expression: ExprId,
+    is_meta: bool,
 }
 
 pub(super) struct StaticMatch {
@@ -73,6 +74,8 @@ struct StaticContext {
 enum Site<'a> {
     Bind(&'a MetaCall),
     Fold(&'a StaticFold),
+    MetaCondition(&'a StaticCondition),
+    MetaMatch(&'a StaticMatch),
 }
 
 impl Site<'_> {
@@ -80,6 +83,8 @@ impl Site<'_> {
         match self {
             Self::Bind(plan) => &plan.caller,
             Self::Fold(plan) => &plan.caller,
+            Self::MetaCondition(plan) => &plan.caller,
+            Self::MetaMatch(plan) => &plan.caller,
         }
     }
 }
@@ -131,7 +136,7 @@ impl TypedProgram {
         Ok(self.static_condition(span, statics, types).map(Value::Bool))
     }
 
-    fn static_condition(
+    pub fn static_condition(
         &self,
         span: Span,
         statics: &BTreeMap<DefinitionId, Value>,
@@ -148,13 +153,14 @@ impl TypedProgram {
         }
     }
 
-    /// Select an arm when the subject and the guards needed for selection are static.
-    pub fn static_selected_arm(
+    /// Select an arm when the subject and the guards needed for selection are static,
+    /// returning the arm index alongside any type-pattern bindings (`<let X>`).
+    pub fn static_selected_arm_with_bindings(
         &self,
         span: Span,
         statics: &BTreeMap<DefinitionId, Value>,
         types: &BTreeMap<DefinitionId, Ty>,
-    ) -> Option<usize> {
+    ) -> Option<(usize, BTreeMap<DefinitionId, Ty>)> {
         let plan = self.static_matches.get(&span)?;
         let env = realize(&plan.caller, statics, types);
         let mut checker = self.static_checker();
@@ -175,9 +181,28 @@ impl TypedProgram {
                     _ => return None,
                 }
             }
-            return Some(index);
+            let bound_types = local
+                .generics
+                .into_iter()
+                .filter_map(|(id, gv)| match gv {
+                    GenericValue::Type(ty) => Some((id, ty)),
+                    _ => None,
+                })
+                .collect();
+            return Some((index, bound_types));
         }
         None
+    }
+
+    /// Select an arm when the subject and the guards needed for selection are static.
+    pub fn static_selected_arm(
+        &self,
+        span: Span,
+        statics: &BTreeMap<DefinitionId, Value>,
+        types: &BTreeMap<DefinitionId, Ty>,
+    ) -> Option<usize> {
+        self.static_selected_arm_with_bindings(span, statics, types)
+            .map(|(index, _)| index)
     }
 
     fn gate_excludes(&self, gate: StaticGate, context: &StaticContext) -> bool {
@@ -201,7 +226,16 @@ impl TypedProgram {
             .static_folds
             .iter()
             .map(|(&span, plan)| (span, Site::Fold(plan)));
-        for (span, site) in calls.chain(folds) {
+        let conds = self
+            .static_conditions
+            .iter()
+            .filter(|(_, plan)| plan.is_meta)
+            .map(|(&span, plan)| (span, Site::MetaCondition(plan)));
+        let matches = self
+            .static_matches
+            .iter()
+            .map(|(&span, plan)| (span, Site::MetaMatch(plan)));
+        for (span, site) in calls.chain(folds).chain(conds).chain(matches) {
             sites
                 .entry(site.caller().staging_owner)
                 .or_default()
@@ -227,6 +261,47 @@ impl TypedProgram {
                     Site::Fold(_) => self
                         .static_value(span, &context.values, &context.types)
                         .map(|_| ()),
+                    Site::MetaCondition(plan) => {
+                        let caller = realize(&plan.caller, &context.values, &context.types);
+                        match self
+                            .static_checker()
+                            .evaluate_static(&caller, plan.expression)
+                        {
+                            Ok(_) | Err(Signal::Dependent(_)) => Ok(()),
+                            Err(failure) => Err(failure.diagnostic(span)),
+                        }
+                    }
+                    Site::MetaMatch(plan) => {
+                        let caller = realize(&plan.caller, &context.values, &context.types);
+                        let mut checker = self.static_checker();
+                        match checker.evaluate_static(&caller, plan.expression) {
+                            Ok(val) => {
+                                let mut outcome = Ok(());
+                                for &(pattern, guard) in &plan.arms {
+                                    let mut local = caller.clone();
+                                    let mut bindings = Default::default();
+                                    if !checker.value_pattern(&mut local, pattern, &val, &mut bindings) {
+                                        continue;
+                                    }
+                                    if let Some(guard) = guard {
+                                        match checker.evaluate_with_bindings(&local, guard, &mut bindings) {
+                                            Ok(Value::Bool(true)) => break,
+                                            Ok(Value::Bool(false)) => continue,
+                                            Ok(_) | Err(Signal::Dependent(_)) => break,
+                                            Err(failure) => {
+                                                outcome = Err(failure.diagnostic(span));
+                                                break;
+                                            }
+                                        }
+                                    }
+                                    break;
+                                }
+                                outcome
+                            }
+                            Err(Signal::Dependent(_)) => Ok(()),
+                            Err(failure) => Err(failure.diagnostic(span)),
+                        }
+                    }
                     Site::Bind(plan) => self
                         .static_arguments(span, &context.values, &context.types)
                         .and_then(|values| {
@@ -279,7 +354,12 @@ impl TypedProgram {
 }
 
 impl Checker<'_> {
-    pub(super) fn stage_condition(&mut self, caller: &Env, expression: ExprId) -> Option<Span> {
+    pub(super) fn stage_condition(
+        &mut self,
+        caller: &Env,
+        expression: ExprId,
+        is_meta: bool,
+    ) -> Option<Span> {
         if caller.shadow || caller.phase != Phase::Runtime {
             return None;
         }
@@ -289,6 +369,7 @@ impl Checker<'_> {
             StaticCondition {
                 caller: caller.clone(),
                 expression,
+                is_meta,
             },
         );
         Some(span)
@@ -421,7 +502,7 @@ fn realize(
 }
 
 impl Signal {
-    fn diagnostic(self, root: Span) -> Diagnostic {
+    pub(super) fn diagnostic(self, root: Span) -> Diagnostic {
         match self {
             Signal::Error(code, span, message) => Diagnostic::error(code, span, message),
             Signal::Dependent(span) => Diagnostic::error(

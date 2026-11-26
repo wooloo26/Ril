@@ -81,6 +81,7 @@ impl Parser<'_> {
                     Type::TupleAny
                 } else {
                     let mut elements = self.list(")", |p| {
+                        let storage_span = p.current().span;
                         let storage = p.storage(false)?;
                         let ty = p.type_expr(pattern)?;
                         if matches!(p.text(), "@" | "&") {
@@ -90,17 +91,32 @@ impl Parser<'_> {
                                 "element effect/state belongs on a callable type",
                             ));
                         }
-                        Ok((storage, ty))
+                        Ok((storage_span, storage, ty))
                     })?;
                     match elements.len() {
                         0 => Type::Unit,
                         1 => {
-                            let (_, only) = elements
+                            let (storage_span, storage, only) = elements
                                 .pop()
                                 .unwrap_or_else(|| ril_source::ice!("missing grouped type"));
+                            if storage.variable
+                                || storage.mode != Mode::Plain
+                                || storage.mode_path.is_some()
+                            {
+                                return Err(self.error(
+                                    Code::E0356,
+                                    storage_span,
+                                    "parenthesized single type cannot carry a member storage mode",
+                                ));
+                            }
                             self.ast.ty(only).value.clone()
                         }
-                        _ => Type::Tuple(elements),
+                        _ => Type::Tuple(
+                            elements
+                                .into_iter()
+                                .map(|(_, storage, ty)| (storage, ty))
+                                .collect(),
+                        ),
                     }
                 }
             }

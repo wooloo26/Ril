@@ -122,6 +122,7 @@ impl Checker<'_> {
                 span,
                 "clone requires a clonable shared object",
             )),
+            ("inner", [Value::Record(_)]) => Ok(args.pop().unwrap_or(Value::Unit)),
             ("inner", [Value::Tag(_, values)]) if values.len() == 1 => {
                 values.first().cloned().ok_or_else(|| nonstatic(span))
             }

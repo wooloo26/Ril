@@ -439,6 +439,17 @@
     "keywords": {
       "patterns": [
         {
+          "match": "\\b(meta)\\s+(if|match)\\b",
+          "captures": {
+            "1": {
+              "name": "storage.modifier.ril"
+            },
+            "2": {
+              "name": "keyword.control.flow.ril"
+            }
+          }
+        },
+        {
           "name": "keyword.control.flow.ril",
           "match": "\\b(?:if|else|match|while|for|break|continue|return)\\b"
         },

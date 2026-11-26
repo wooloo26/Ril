@@ -71,6 +71,7 @@ impl Analyzer<'_> {
                 "named definitions require closed effect and state sets",
             );
         }
+        let body_span = self.ast(ctx.file).expr(body).span;
         for (ast_param, param) in fun.signature.params.iter().zip(&callable.parameters) {
             let span = ast_param.name.as_ref().map_or(ctx.owner, |name| name.span);
             self.binding_scopes.insert(span, ctx.scope);
@@ -81,6 +82,26 @@ impl Analyzer<'_> {
                         Code::E0550,
                         span,
                         "via is redundant on a value-type parameter",
+                    );
+                }
+            }
+            if param.mode == Mode::Via || param.ty.has_via_members() {
+                let used = ast_param
+                    .name
+                    .as_ref()
+                    .filter(|name| name.value != "_")
+                    .and_then(|name| self.definition(name.span))
+                    .is_some_and(|def_id| {
+                        self.program
+                            .hir
+                            .references_within(body_span)
+                            .any(|(_, id)| id == def_id)
+                    });
+                if !used {
+                    self.error(
+                        Code::E0550,
+                        span,
+                        "via is redundant on an unused parameter",
                     );
                 }
             }

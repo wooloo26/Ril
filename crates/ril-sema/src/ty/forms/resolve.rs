@@ -271,6 +271,15 @@ impl Checker<'_> {
                 self.ast(env.file).ty(ty).span,
                 "value-type members cannot carry live access",
             );
+        } else if mode.mode == Mode::Via
+            && (typed.is_value()
+                || matches!(&typed, Ty::Param(id) if env.domains.get(id).is_some_and(|dom| !dom.is_empty() && dom.iter().all(Ty::is_value))))
+        {
+            self.error(
+                Code::E0550,
+                self.ast(env.file).ty(ty).span,
+                "via is redundant on a value-type member",
+            );
         }
         Member { mode, ty: typed }
     }

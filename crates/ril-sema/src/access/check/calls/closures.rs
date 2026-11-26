@@ -246,6 +246,23 @@ impl Analyzer<'_> {
                     },
                 );
                 let exempt = contextual && name.value.starts_with('_');
+                if p.mode == Mode::Via && !exempt {
+                    let body_span = self.ast(inner.file).expr(*body).span;
+                    let used = name.value != "_"
+                        && self.definition(name.span).is_some_and(|def_id| {
+                            self.program
+                                .hir
+                                .references_within(body_span)
+                                .any(|(_, id)| id == def_id)
+                        });
+                    if !used {
+                        self.error(
+                            Code::E0550,
+                            name.span,
+                            "via is redundant on an unused closure parameter",
+                        );
+                    }
+                }
                 if matches!(p.mode, Mode::Mut | Mode::Shared) && !exempt {
                     self.requirement(
                         &inner,

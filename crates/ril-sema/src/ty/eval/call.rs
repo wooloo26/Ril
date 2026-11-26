@@ -206,6 +206,61 @@ impl Checker<'_> {
                         .into_iter()
                         .map(|(_, value)| value)
                         .collect();
+                    if def.kind == DefinitionKind::Type
+                        && self.record_adts.contains(&id)
+                        && let [Value::Record(record)] = values.as_mut_slice()
+                    {
+                        if let [arg] = args
+                            && matches!(
+                                self.ast(env.file).expr(arg.value).value,
+                                Expr::Record { name: None, .. }
+                            )
+                            && let Some(stmt) = def.stmt
+                        {
+                            let def_file = def.name.span.file;
+                            let def_scope = def.scope;
+                            let defaults: Vec<(String, ExprId)> =
+                                match &self.ast(def_file).stmt(stmt).value.kind {
+                                    StmtKind::Type(decl) => match decl.definition {
+                                        syntax::TypeDefinition::Data(ty_id) => {
+                                            if let syntax::Type::Record { fields, .. } =
+                                                &self.ast(def_file).ty(ty_id).value
+                                            {
+                                                fields
+                                                    .iter()
+                                                    .filter_map(|f| {
+                                                        f.default
+                                                            .filter(|_| {
+                                                                !record.contains_key(&f.name.value)
+                                                            })
+                                                            .map(|d| (f.name.value.clone(), d))
+                                                    })
+                                                    .collect()
+                                            } else {
+                                                Vec::new()
+                                            }
+                                        }
+                                        _ => Vec::new(),
+                                    },
+                                    _ => Vec::new(),
+                                };
+                            if !defaults.is_empty() {
+                                let mut def_env = Env::new(def_file, def_scope);
+                                def_env.phase = env.phase;
+                                let mut def_slots = Frame::default();
+                                for (field_name, default_expr) in defaults {
+                                    let val = self.evaluate(
+                                        &mut def_env,
+                                        &mut def_slots,
+                                        default_expr,
+                                        fuel,
+                                    )?;
+                                    record.insert(field_name, val);
+                                }
+                            }
+                        }
+                        return Ok(Value::Record(std::mem::take(record)));
+                    }
                     if values.is_empty()
                         && matches!(self.types.get(&self.ast(env.file).expr(callee).span),
                             Some(Ty::Callable(call)) if matches!(call.parameters.as_slice(), [parameter] if self.normalize(&parameter.ty) == Ty::Unit))

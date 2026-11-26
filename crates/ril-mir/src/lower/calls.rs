@@ -72,6 +72,32 @@ impl Builder<'_, '_> {
             return Ok(self.invoke_closure(closure, args));
         }
         if matches!(def.kind, DefinitionKind::Variant(_) | DefinitionKind::Type) {
+            if def.kind == DefinitionKind::Type && self.global.typed.is_nominal_record(id) {
+                let [arg] = args else {
+                    return Err(self.unsupported(span, "nominal record constructor arity"));
+                };
+                if let Expr::Record { name: None, fields } = &self.ast().expr(arg.value).value {
+                    let fields = fields.clone();
+                    let record = self.runtime("ril_rt_record", Vec::new());
+                    let mut provided = BTreeMap::new();
+                    for field in &fields {
+                        let key = self.string(&field.name.value);
+                        let value = if let Some(value) = field.value {
+                            self.expr(value)?
+                        } else {
+                            let def = self.global.resolve(field.name.span).ok_or_else(|| {
+                                self.unsupported(field.name.span, "record shorthand")
+                            })?;
+                            self.read(def, field.name.span)?
+                        };
+                        self.runtime("ril_rt_store", vec![record, key, value]);
+                        provided.insert(field.name.value.clone(), value);
+                    }
+                    self.defaults(path, record, &provided)?;
+                    return Ok(record);
+                }
+                return self.expr(arg.value);
+            }
             let unit_payload = args.is_empty() && matches!(def.kind, DefinitionKind::Variant(_));
             let mut args = args
                 .iter()

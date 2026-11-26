@@ -357,10 +357,10 @@ fn main() -> () {
 }
 
 -- @case nominal_inner_preserves_record_payloads run-pass backend=both
-type Packet<T> .{ payload: T }
-type Parcel<T> T
+type Packet<T>(.{ payload: T })
+type Parcel<T>(T)
 fn get() -> new !<int, str> { Ok(42) }
-fn packet() -> new Packet<!<int, str>> { Packet.{ payload: get() } }
+fn packet() -> new Packet<!<int, str>> { Packet(.{ payload: get() }) }
 fn parcel() -> new Parcel<!<int, str>> { Parcel(get()) }
 fn main() -> () {
     assert(inner(packet()).payload == Ok(42))
@@ -399,21 +399,21 @@ fn main() -> () {
 }
 
 -- @case loops_can_grow_shared_recursive_data run-pass backend=both
-type Node .{ var value: int, var ^mut next: ?Node }
+type Node(.{ var value: int, var ^mut next: ?Node })
 fn copy(mut target: Node, ref reader: Node) &mut -> () { target.value = reader.value }
 fn read(count: int) -> int {
-    let mut tail = Node.{ value: 4, next: None }
+    let mut tail = Node(.{ value: 4, next: None })
     tail.value += 1
-    let mut initial = Node.{ value: 7, next: Some(^mut tail) }
+    let mut initial = Node(.{ value: 7, next: Some(^mut tail) })
     initial.value += 1
     var ^mut head = initial
     for 0..count as i {
-        let mut node = Node.{ value: i, next: Some(^mut head) }
+        let mut node = Node(.{ value: i, next: Some(^mut head) })
         node.value += 1
         head = ^mut node
     }
     head.value += 1
-    let mut spare = Node.{ value: 0, next: None }
+    let mut spare = Node(.{ value: 0, next: None })
     match ref head.next {
         Some(first) -> match ref first.next {
             Some(second) -> copy(mut spare, ref second)
@@ -426,16 +426,16 @@ fn read(count: int) -> int {
 fn main() -> () { assert(read(80) == 78) }
 
 -- @case callback_forwarded_chain_keeps_the_callers_tail run-pass backend=both
-type Link .{ var value: int, var ^mut next: ?Link }
+type Link(.{ var value: int, var ^mut next: ?Link })
 fn build(^mut tail: Link, count: int) &mut &^mut &return(^mut tail) -> new Link {
     var ^mut head = tail
     for 0..count as i {
-        let mut node = Link.{ value: i, next: Some(^mut head) }
+        let mut node = Link(.{ value: i, next: Some(^mut head) })
         node.value += 1
         head = ^mut node
     }
     head.value += 1
-    Link.{ value: 0, next: Some(^mut head) }
+    Link(.{ value: 0, next: Some(^mut head) })
 }
 fn forward(via action: fn(via Link) @& -> infer Link, ^mut tail: Link, count: int) &mut &^mut -> infer Link {
     let mut chain = build(^mut tail, count)
@@ -451,7 +451,7 @@ fn read(ref head: Link, depth: int) -> int {
     }
 }
 fn main() -> () {
-    let mut tail = Link.{ value: 41, next: None }
+    let mut tail = Link(.{ value: 41, next: None })
     let mut head = forward(identity, ^mut tail, 8)
     head.value += 1
     tail.value += 1
@@ -459,10 +459,10 @@ fn main() -> () {
 }
 
 -- @case a_cyclic_graph_can_be_cloned_compared_and_inspected run-pass backend=both
-type Node .{ var value: int, var ^mut next: ?Node }
+type Node(.{ var value: int, var ^mut next: ?Node })
 fn main() -> () {
-    let mut first = Node.{ value: 20, next: None }
-    let mut second = Node.{ value: 22, next: None }
+    let mut first = Node(.{ value: 20, next: None })
+    let mut second = Node(.{ value: 22, next: None })
     first.next = ^mut Some(^mut second)
     second.next = ^mut Some(^mut first)
     let snapshot = clone(ref first)
@@ -554,14 +554,14 @@ fn apply(via action: fn(via Cell) @& -> infer Cell, via cell: Cell) -> infer Cel
     assert(result.count == 41)
     result
 }
-fn take(via cell: Cell) -> infer Cell { new cell }
+fn bump(via cell: Cell) -> infer Cell { cell.count += 1; cell }
 fn read(via cell: Cell) -> infer Cell { cell }
 fn main() -> () {
     let mut original = Cell.{ count: 41 }
     let ref observer = apply(read, ref original)
     original.count += 1
     assert(observer.count == 42)
-    let mut owned = apply(take, Cell.{ count: 41 })
+    let mut owned = apply(bump, Cell.{ count: 40 })
     owned.count += 1
     assert(owned.count == 42)
 }
@@ -862,7 +862,7 @@ fn main() @io -> () {
 type Counter = .{ count: int }
 fn duplicate<T: Counter | []int>(value: T) -> new T { clone(value) }
 fn count<T: Counter | int>(value: T) -> int {
-    match <T> {
+    meta match <T> {
         <Counter> -> { let copied = clone(value); copied.count }
         _ -> value
     }
@@ -878,7 +878,7 @@ fn main() -> () {
 -- @expect-stdout int:7
 -- @expect-stdout true
 fn describe<T>(item: T) -> str {
-    match <T> {
+    meta match <T> {
         <int> -> "int:{item}"
         _ -> String::inspect(item)
     }
@@ -936,9 +936,9 @@ fn main() @io -> () {
 
 -- @case record_defaults_are_evaluated_in_order run-pass backend=both
 -- @expect-stdout 22
-type Settings .{ start: int, finish: int = start + 10 }
+type Settings(.{ start: int, finish: int = start + 10 })
 fn main() @io -> () {
-    let settings = Settings.{ start: 12 }
+    let settings = Settings(.{ start: 12 })
     println("{settings.finish}")
 }
 
@@ -1041,9 +1041,9 @@ fn main() -> () {
 }
 
 -- @case direct_reflection_call_becomes_runtime_snapshot run-pass backend=both
-type Role str
+type Role(str)
 meta(Role("admin"))
-type Request .{ email: str }
+type Request(.{ email: str })
 fn main() -> () {
     let roles: []Role = Reflect::attrs(<Request>)
     assert(len(roles) == 1 && inner(roles[0]) == "admin")
@@ -1051,7 +1051,7 @@ fn main() -> () {
 
 -- @case tuple_payload_accepts_tuple_or_separate_arguments run-pass backend=both
 type Shape { Rect(int, int) }
-type Size (int, int)
+type Size(int, int)
 type Empty
 meta let STATIC_RECT = Shape::Rect((9, 2))
 fn main() -> () {
@@ -1064,12 +1064,12 @@ fn main() -> () {
 
 -- @case contextual_opaque_constructor_instantiates_generic_type run-pass backend=both
 type Open
-opaque type Resource<Flag> .{ value: int }
-fn make() -> new Resource<Open> { Resource.{ value: 42 } }
+opaque type Resource<Flag>(.{ value: int })
+fn make() -> new Resource<Open> { Resource(.{ value: 42 }) }
 fn main() -> () { assert(make().value == 42) }
 
 -- @case draft_nominal_inner_projects_into_working_copy run-pass backend=both
-type Bag []int
+type Bag([]int)
 fn main() -> () {
     let base = Bag([1, 2])
     let next = base |> derive \mut draft -> {
@@ -1127,7 +1127,7 @@ fn main() -> () {
 
 -- @case inspection_obeys_opaque_boundaries_in_nested_values run-pass backend=both
 -- @file pkg/secret.ril
-pub opaque type Token int
+pub opaque type Token(int)
 pub opaque type Packet { Hidden(int) }
 pub fn token(value: int) -> Token { value }
 pub fn packet() -> new Packet { Hidden(72) }
@@ -1164,7 +1164,7 @@ fn main() -> () {
 
 -- @case recursive_static_arguments_stop_at_the_selected_branch run-pass backend=both
 fn accumulate(meta n: int) -> int {
-    if n == 0 { 0 } else { n + accumulate(n - 1) }
+    meta if n == 0 { 0 } else { n + accumulate(n - 1) }
 }
 fn main() -> () {
     assert(accumulate(0) == 0 && accumulate(9) == 45)
@@ -1179,7 +1179,7 @@ fn main() -> () {
 
 -- @case static_match_prunes_dependent_recursive_arguments run-pass backend=both
 fn accumulate(meta n: int) -> int {
-    match n {
+    meta match n {
         0 -> 0
         _ -> n + accumulate(n - 1)
     }
@@ -1191,7 +1191,7 @@ fn main() -> () { assert(accumulate(5) == 15) }
 use pkg/host
 meta let READY = Some(42)
 fn main() -> () {
-    let output = match READY {
+    let output = meta match READY {
         Some(value) if value > 0 -> value
         Some(_) | None -> Host::unreachable()
     }
@@ -1238,12 +1238,11 @@ fn main() -> () {
 
 -- @case via_handoff_returns_live_new_qualified_path_after_nested_forwarding run-pass backend=both
 type Cell = .{ var count: int }
-fn take(via cell: Cell) -> infer Cell { new cell }
-fn relay(via cell: Cell) -> infer Cell { take(cell) }
+fn identity(via cell: Cell) -> infer Cell { cell }
+fn relay(via cell: Cell) -> infer Cell { identity(cell) }
 fn adjust(via cell: Cell) -> infer Cell {
-    let mut moved = relay(cell)
-    moved.count += 1
-    new moved
+    cell.count += 1
+    relay(cell)
 }
 fn main() -> () {
     let mut original = Cell.{ count: 41 }
@@ -1254,11 +1253,11 @@ fn main() -> () {
 -- @case via_forwarding_propagates_shared_retention_to_the_caller run-pass backend=both
 type Cell = .{ var count: int }
 type Shelf = .{ var ^mut item: Cell }
-fn store(via value: Cell, mut shelf: Shelf) &mut -> () {
+fn store(^mut value: Cell, mut shelf: Shelf) &mut &^mut -> () {
     shelf.item = ^mut value
 }
-fn relay(via value: Cell, mut shelf: Shelf) &mut -> () {
-    store(value, mut shelf)
+fn relay(^mut value: Cell, mut shelf: Shelf) &mut &^mut -> () {
+    store(^mut value, mut shelf)
 }
 fn main() -> () {
     let mut previous = Cell.{ count: 0 }
@@ -1281,7 +1280,7 @@ fn freeze_cell(new input: Cell) -> Cell {
     snapshot
 }
 
-fn select(via root: Branch) -> Cell {
+fn select(new root: Branch) -> Cell {
     let mut current = new root
     freeze_cell(new current.owned)
 }
@@ -1293,13 +1292,13 @@ fn replace(new input: Holder) -> Holder {
     snapshot
 }
 
-fn freeze(via input: Holder) -> Holder {
+fn freeze(new input: Holder) -> Holder {
     let snapshot = new input
     snapshot
 }
 
-fn relay(via input: Holder) -> Holder {
-    freeze(input)
+fn relay(new input: Holder) -> Holder {
+    freeze(new input)
 }
 
 fn main() -> () {
@@ -1317,19 +1316,19 @@ fn main() -> () {
 
 -- @case recursively_wrapping_a_complete_new_graph_preserves_snapshot_reception run-pass backend=both no-prelude
 type Cell = .{ var count: int }
-type Node .{ ^mut value: Cell, mut next: ?Node }
+type Node(.{ ^mut value: Cell, mut next: ?Node })
 fn freeze(new source: Node) -> int { let snapshot = new source; snapshot.value.count }
 fn visit(action: fn(new Node) -> int, new input: Node, depth: int) -> int {
     if depth == 0 { action(new input) }
     else {
         let outer = Cell.{ count: 5 }
-        visit(action, new Node.{ value: ^mut Cell.{ count: outer.count }, next: Some(new input) }, depth - 1)
+        visit(action, new Node(.{ value: ^mut Cell.{ count: outer.count }, next: Some(new input) }), depth - 1)
     }
 }
 fn main() -> () {
     let mut live = Cell.{ count: 1 }
     live.count += 1
-    let observed = visit(freeze, new Node.{ value: ^mut Cell.{ count: 2 }, next: None }, 1)
+    let observed = visit(freeze, new Node(.{ value: ^mut Cell.{ count: 2 }, next: None }), 1)
     live.count += 8
     assert(observed == 5)
 }
@@ -1348,4 +1347,52 @@ fn select(make_action: fn() -> Action, new shelf: Shelf) -> int {
 fn main() -> () {
     let actions = .{ table: [make] }
     assert(select(actions.table[0], new Shelf.{ item: ^mut Cell.{ count: 42 } }) == 42)
+}
+
+-- @case unified_nominal_parenthesized_syntax_and_destructuring run-pass backend=both
+type Marker
+type UserId(int)
+type Point(int, int)
+type User(.{ id: int, name: str = "anon" })
+type AliasRec = .{ tag: str, count: int }
+opaque type Token(.{ code: int }) use(drop_token)
+fn drop_token(new _t: Token) -> () {}
+fn main() -> () {
+    let u1 = User(.{ id: 1 })
+    let raw = .{ id: 2, name: "ada" }
+    let u2 = User(raw)
+    let mapped = [.{ id: 3, name: "bob" }, .{ id: 4, name: "cat" }] |> Array::map(User)
+    let User(.{ id: id1, name: name1 }) = u1
+    let User(.{ id: id2, name: name2 }) = u2
+    let p1 = Point(3, 4)
+    let p2 = Point((3, 4))
+    let Point(px, py) = p1
+    let uid = UserId(7)
+    let UserId(raw_id) = uid
+    let alias = AliasRec.{ tag: "ok", count: 5 }
+    let .{ tag, count } = alias
+    use tok = Token(.{ code: 9 })
+    let matched = match u2 {
+        User(.{ id: 2, name }) -> name
+        _ -> ""
+    }
+    assert(inner(Marker) == () && id1 == 1 && name1 == "anon" && id2 == 2 && name2 == "ada")
+    assert(mapped[0].id == 3 && mapped[1].name == "cat")
+    assert(p1 == p2 && px == 3 && py == 4 && raw_id == 7)
+    assert(tag == "ok" && count == 5 && tok.code == 9 && matched == "ada")
+}
+
+-- @case meta_if_and_else_meta_if_skip_untaken_branches run-pass backend=both
+meta let MODE = 2
+fn pick() -> int {
+    meta if MODE == 1 {
+        "wrong_type_skipped" + 1
+    } else meta if MODE == 2 {
+        42
+    } else {
+        1 + "also_skipped"
+    }
+}
+fn main() -> () {
+    assert(pick() == 42)
 }

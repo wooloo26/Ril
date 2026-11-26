@@ -230,8 +230,19 @@ impl Analyzer<'_> {
                     );
                 }
             }
-            Pattern::Constructor(_, payload) => {
+            Pattern::Constructor(path, payload) => {
                 let items = payload.as_deref().unwrap_or(&[]);
+                if self
+                    .program
+                    .hir
+                    .resolve(path.span)
+                    .and_then(Resolution::definition)
+                    .is_some_and(|id| self.program.is_nominal_record(id))
+                    && let [inner] = items
+                {
+                    self.bind(ctx, ledger, *inner, storage, value, site);
+                    return;
+                }
                 for (i, &item) in items.iter().enumerate() {
                     let child = self.project_observed(
                         ctx,
@@ -298,10 +309,36 @@ impl Analyzer<'_> {
                         );
                     }
                     if let Some(pattern) = field.pattern {
+                        if field.storage.mode == Mode::Via {
+                            self.check_via_pattern(ctx, pattern, Mode::Via);
+                        }
                         self.bind(ctx, ledger, pattern, &received, child, site);
                     } else {
                         let mut child = child;
                         let decl = self.declaration(field.name.span).unwrap_or(field.name.span);
+                        if requested == Mode::Via {
+                            if ctx.via.is_empty() && !ctx.member_via {
+                                self.error(
+                                    Code::E0412,
+                                    field.name.span,
+                                    "let via requires a mode template",
+                                );
+                            } else if !child.origins().any(|origin| {
+                                origin.inherits_mode
+                                    || origin
+                                        .callback_result
+                                        .is_some_and(|result| result.cap.is_none())
+                                    || !origin.reception.is_empty()
+                            }) {
+                                self.error(
+                                    Code::E0550,
+                                    field.name.span,
+                                    "let via requires mode-dependent provenance",
+                                );
+                            } else {
+                                child.forget_collection_layout();
+                            }
+                        }
                         if child.writers() {
                             match requested {
                                 Mode::Mut if site == BindingSite::Declaration => {
@@ -349,6 +386,52 @@ impl Analyzer<'_> {
         }
     }
 
+    pub(super) fn pattern_has_binding(ast: &Ast, id: PatternId) -> bool {
+        match &ast.pattern(id).value {
+            Pattern::Binding(..) | Pattern::Rest(Some(_)) => true,
+            Pattern::Wildcard
+            | Pattern::Unit
+            | Pattern::Literal(_)
+            | Pattern::Range { .. }
+            | Pattern::Type(_)
+            | Pattern::TypeBinding(_)
+            | Pattern::Rest(None) => false,
+            Pattern::Tuple(items) | Pattern::Slice { elements: items, .. } | Pattern::Or(items) => {
+                items.iter().any(|&item| Self::pattern_has_binding(ast, item))
+            }
+            Pattern::Constructor(_, payload) => payload
+                .as_deref()
+                .unwrap_or(&[])
+                .iter()
+                .any(|&item| Self::pattern_has_binding(ast, item)),
+            Pattern::Record { fields, .. } => fields
+                .iter()
+                .any(|field| field.pattern.is_none_or(|p| Self::pattern_has_binding(ast, p))),
+            Pattern::Subset { binding, .. } => {
+                binding.is_some_and(|p| Self::pattern_has_binding(ast, p))
+            }
+        }
+    }
+
+    pub(super) fn check_via_pattern(&mut self, ctx: &Context, id: PatternId, mode: Mode) {
+        if mode != Mode::Via {
+            return;
+        }
+        let ast = self.ast(ctx.file);
+        if !Self::pattern_has_binding(ast, id) {
+            let span = ast.pattern(id).span;
+            if ctx.via.is_empty() && !ctx.member_via {
+                self.error(Code::E0412, span, "via pattern requires a mode template");
+            } else {
+                self.error(
+                    Code::E0550,
+                    span,
+                    "via is redundant on a pattern that introduces no bindings",
+                );
+            }
+        }
+    }
+
     pub(super) fn match_value(
         &mut self,
         ctx: &mut Context,
@@ -359,6 +442,21 @@ impl Analyzer<'_> {
         span: Span,
     ) -> Datum {
         let ast = self.ast(ctx.file);
+        if mode == Mode::Via
+            && !arms
+                .iter()
+                .any(|arm| Self::pattern_has_binding(ast, arm.pattern))
+        {
+            if ctx.via.is_empty() && !ctx.member_via {
+                self.error(Code::E0412, span, "match via requires a mode template");
+            } else {
+                self.error(
+                    Code::E0550,
+                    span,
+                    "via is redundant on a match that introduces no bindings",
+                );
+            }
+        }
         let before = ledger.clone();
         let mut missed = Some(BTreeSet::new());
         let mut alternatives = Vec::new();
@@ -452,6 +550,7 @@ impl Analyzer<'_> {
             } => {
                 let value = self.expr(ctx, ledger, *value);
                 if matched {
+                    self.check_via_pattern(ctx, *pattern, *mode);
                     return self.bind_on_match(
                         ctx,
                         ledger,

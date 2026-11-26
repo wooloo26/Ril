@@ -107,7 +107,7 @@ use ril/fiber
 use ril/channel
 fn pipeline() @fiber -> int {
     Fiber::scope \mut s -> {
-        let Channel::ChannelPair.{ mut tx, mut rx } = Channel::bounded(1)
+        let .{ mut tx, mut rx } = Channel::bounded(1)
         let task = Fiber::spawn(mut s) \-> {
             use mut sender = new tx
             for 1..=4 as i {
@@ -129,12 +129,12 @@ fn main() @io -> () { println("{Fiber::run(\-> pipeline())}") }
 -- @expect-stdout cleanup
 -- @expect-stdout done
 use ril/fiber
-opaque type Resource use(close) .{ id: int }
+opaque type Resource(.{ id: int }) use(close)
 fn close(new resource: Resource) @io -> () { println("cleanup") }
 fn main() @io -> () {
     Fiber::run \-> Fiber::scope \mut s -> {
         let mut child = Fiber::spawn(mut s) \-> {
-            use resource = Resource.{ id: 1 }
+            use resource = Resource(.{ id: 1 })
             Fiber::yield_now()
             println("unexpected")
         }
@@ -177,7 +177,7 @@ use ril/fiber
 use ril/channel
 fn main() @io -> () {
     Fiber::run \-> Fiber::scope \mut scope -> {
-        let Channel::ChannelPair.{ mut tx, mut rx } = Channel::bounded(0)
+        let .{ mut tx, mut rx } = Channel::bounded(0)
         match Channel::try_send(mut tx, 41) {
             Err(Channel::TrySendError::Full(41)) -> ()
             _ -> panic("zero-capacity send must wait for receiver")

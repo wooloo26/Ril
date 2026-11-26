@@ -116,7 +116,7 @@ fn receive(n: ?int) -> int { let Some(x) = n else {}; x }
 
 -- @case generic_type_facts compile-pass
 fn describe<T>(x: T) -> str {
-    match <T> {
+    meta match <T> {
         <int> -> "int:{x}"
         _ -> String::inspect(x)
     }

@@ -495,6 +495,23 @@ impl Analyzer<'_> {
                 *instances = domain.current.clone();
             }
         }
+        let redundant: Vec<Span> = domains
+            .tables
+            .values()
+            .filter(|domain| domain.local && !domain.is_empty())
+            .flat_map(|domain| {
+                domain.axes.iter().enumerate().filter_map(|(axis_idx, (_, region))| {
+                    (domain.current.marginal_len(axis_idx) == 1).then_some(region.source)
+                })
+            })
+            .collect();
+        for span in redundant {
+            self.error(
+                Code::E0550,
+                span,
+                "via is redundant because this parameter only admits a single access mode",
+            );
+        }
     }
 
     fn register_closure_domains(&self, facts: &BTreeSet<Fact>, domains: &mut Domains) {

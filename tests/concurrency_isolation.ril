@@ -88,7 +88,7 @@ fn invalid() @fiber -> () {
 -- @case channel_disallows_frozen_shared_payload compile-fail E0548
 use ril/channel
 fn bad() @fiber -> () {
-    let Channel::ChannelPair.{ mut tx, mut rx } = Channel::bounded(2)
+    let .{ mut tx, mut rx } = Channel::bounded(2)
     let xs = [1, 2]
     match Channel::send(mut tx, xs) { Ok() -> (); Err(_) -> () }
     -- ^ E0548
@@ -118,7 +118,7 @@ fn bad() -> int {
 -- @case channel_checks_sendable_through_nominal_representation compile-fail E0301
 use ril/channel
 type Cell = .{ var value: int }
-type Borrowed .{ ref view: Cell }
+type Borrowed(.{ ref view: Cell })
 fn bad() -> () {
     let _ = Channel::bounded<Borrowed>(1)
     -- ^ E0301

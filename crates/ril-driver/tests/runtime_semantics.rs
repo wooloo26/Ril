@@ -46,14 +46,14 @@ eff Log {
     fn emit(msg: str) -> ()
 }
 
-opaque type Res use(close_res) .{ id: int }
+opaque type Res(.{ id: int }) use(close_res)
 
 fn close_res(ref r: Res) @Log -> () {
     Log::emit("{Log::tag()}:{r.id}")
 }
 
 fn work(fail: bool) @Log -> () {
-    use r = Res.{ id: 7 }
+    use r = Res(.{ id: 7 })
     with Log::tag = \-> "inner"
     Log::emit(Log::tag())
     if fail {
@@ -183,7 +183,7 @@ fn main() @io -> () {
     let total = Fiber::run(\-> {
         var acc = 0
         for 0..100 as i {
-            let Channel::ChannelPair.{ mut tx, mut rx } = Channel::bounded(2)
+            let .{ mut tx, mut rx } = Channel::bounded(2)
             match Channel::send(mut tx, i) {
                 Ok() -> ()
                 Err(_) -> ()

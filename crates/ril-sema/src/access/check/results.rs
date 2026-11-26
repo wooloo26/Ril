@@ -463,6 +463,16 @@ impl Analyzer<'_> {
                 certain()
             }
             Pattern::Constructor(path, payload) => {
+                if self
+                    .program
+                    .hir
+                    .resolve(path.span)
+                    .and_then(ril_hir::Resolution::definition)
+                    .is_some_and(|id| self.program.is_nominal_record(id))
+                    && let Some([inner]) = payload.as_deref()
+                {
+                    return self.pattern_tests(ctx, ledger, *inner, value);
+                }
                 let name = path
                     .segments
                     .last()

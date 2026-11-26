@@ -735,17 +735,60 @@ impl Checker<'_> {
             }
             return Ty::Unknown;
         }
-        let params = match self.representation(env, adt) {
-            Some(Ty::Unit | Ty::Record(..)) | None => {
-                self.error(
-                    Code::E0338,
-                    span,
-                    "unit and record types do not use payload call syntax",
-                );
-                return Ty::Unknown;
+        let is_unit_nominal = self.hir.unit_constructor(adt.definition);
+        let rep = self.representation(env, adt);
+        if is_unit_nominal || rep.is_none() {
+            self.error(
+                Code::E0338,
+                span,
+                "unit nominal type does not use payload call syntax",
+            );
+            return Ty::Unknown;
+        }
+        if let Some(Ty::Record(required, open)) = rep {
+            if args.len() != 1 {
+                self.error(Code::E0314, span, "invalid constructor payload arity");
+                return ty;
             }
+            let Some(arg) = args.first() else {
+                return ty;
+            };
+            let arg_node = self.ast(env.file).expr(arg.value).clone();
+            if arg.name.is_some() {
+                self.error(
+                    Code::E0339,
+                    arg_node.span,
+                    "positional constructor does not accept named arguments",
+                );
+            }
+            if !matches!(arg.mode, Mode::Plain | Mode::Ref | Mode::Shared | Mode::New) {
+                self.error(
+                    Code::E0406,
+                    arg_node.span,
+                    "constructor argument has an unsupported access mode",
+                );
+            }
+            if let syntax::Expr::Record { name: None, fields } = &arg_node.value {
+                let inner_ty = self.record_literal_against_schema(
+                    env,
+                    fields,
+                    required,
+                    open,
+                    true,
+                    Some(&ty),
+                    arg_node.span,
+                );
+                self.types.insert(arg_node.span, inner_ty);
+            } else {
+                let rep_ty = Ty::Record(required, open);
+                self.expect(env, arg.value, &rep_ty);
+            }
+            return ty;
+        }
+        let params = match rep {
             Some(Ty::Tuple(fields)) => fields.into_iter().map(|m| m.ty).collect(),
             Some(one) => vec![one],
+            None => unreachable!(),
         };
         if self.check_tuple_payload(env, args, &params, span) {
             return ty;

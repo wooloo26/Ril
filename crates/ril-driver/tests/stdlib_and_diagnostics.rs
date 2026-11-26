@@ -393,9 +393,9 @@ fn wave_b_stdlib_primitives_set_sort_first_class_and_named_args() -> Result<(), 
 #[test]
 fn wave_c_soundness_static_checks_narrowing_patterns_and_nominals() -> Result<(), String> {
     let source = r#"
-        type UserId int
-        type Config .{ host: str = "localhost", port: int = 8080 }
-        meta let DEFAULT_CFG = Config.{ port: 9000 }
+        type UserId(int)
+        type Config(.{ host: str = "localhost", port: int = 8080 })
+        meta let DEFAULT_CFG = Config(.{ port: 9000 })
 
         fn unwrap_copy<W |> NominalWrapper>(w: W) -> Unwrap<W> { inner(w) }
         fn coord_kind<T>(k: FieldKey<T>) -> FieldKey<T> { k }
@@ -510,7 +510,7 @@ fn wave_c_soundness_static_checks_narrowing_patterns_and_nominals() -> Result<()
             Code::E0301,
         ),
         (
-            "type U .{ id: int }\ntype V .{ id: int }\nfn f(u: U) -> int { let V.{ id } = u; id }\nfn main() -> () {}\n",
+            "type U(.{ id: int })\ntype V(.{ id: int })\nfn f(u: U) -> int { let V(.{ id }) = u; id }\nfn main() -> () {}\n",
             Code::E0301,
         ),
         (
@@ -571,7 +571,7 @@ fn wave_d_effects_guards_absorb_panic_and_concurrency() -> Result<(), String> {
             assert(mapped == [2, 4, 6])
 
             let sum = Fiber::run \-> {
-                let Channel::ChannelPair.{ mut tx, mut rx } = Channel::bounded(4)
+                let .{ mut tx, mut rx } = Channel::bounded(4)
                 let Ok() = Channel::send(mut tx, 10) else { panic("send failed") }
                 let Ok() = Channel::send(mut tx, 20) else { panic("send failed") }
                 Channel::close(new tx)
@@ -624,7 +624,7 @@ fn wave_d_effects_guards_absorb_panic_and_concurrency() -> Result<(), String> {
             Code::E0314,
         ),
         (
-            "use ril/channel\nfn main() -> () { let Channel::ChannelPair.{ mut tx, mut rx } = Channel::bounded<int>(1); let _ = absorb_panic(\\-> Channel::close(new tx)); Channel::close_recv(new rx) }\n",
+            "use ril/channel\nfn main() -> () { let .{ mut tx, mut rx } = Channel::bounded<int>(1); let _ = absorb_panic(\\-> Channel::close(new tx)); Channel::close_recv(new rx) }\n",
             Stage::Access,
             Code::E0608,
         ),
@@ -644,7 +644,7 @@ fn wave_d_effects_guards_absorb_panic_and_concurrency() -> Result<(), String> {
             Code::E0301,
         ),
         (
-            "use ril/channel\nfn main() -> () { let Channel::ChannelPair.{ mut tx, mut rx } = Channel::bounded(1); Channel::drain(new tx, \\_ -> ()); Channel::close_recv(new rx) }\n",
+            "use ril/channel\nfn main() -> () { let .{ mut tx, mut rx } = Channel::bounded(1); Channel::drain(new tx, \\_ -> ()); Channel::close_recv(new rx) }\n",
             Stage::Type,
             Code::E0301,
         ),
@@ -673,9 +673,9 @@ fn wave_d_effects_guards_absorb_panic_and_concurrency() -> Result<(), String> {
 #[test]
 fn wave_e_introspection_type_patterns_and_parser_conformance() -> Result<(), String> {
     let source = r#"
-        type Pair (int, str)
-        type Config .{ host: str = "localhost", port: int }
-        type Box<T> .{ item: T }
+        type Pair(int, str)
+        type Config(.{ host: str = "localhost", port: int })
+        type Box<T>(.{ item: T })
         type Shape { Circle(f64); Rect(f64, f64); Unit }
 
         type UnwrapBox = \T -> match <T> {
@@ -805,7 +805,7 @@ fn wave_e_introspection_type_patterns_and_parser_conformance() -> Result<(), Str
             Code::E0301,
         ),
         (
-            "type Cfg .{ host: str = \"a\" }\nmeta let BAD = Reflect::has_default(<Cfg>, \"missing\")\nfn main() -> () {}\n",
+            "type Cfg(.{ host: str = \"a\" })\nmeta let BAD = Reflect::has_default(<Cfg>, \"missing\")\nfn main() -> () {}\n",
             Stage::Type,
             Code::E0323,
         ),
@@ -849,11 +849,11 @@ fn de_magification_self_hosted_set_stdlib_convert_compile_error_and_wrapper_synt
         use ril/fiber
         use ril/channel
 
-        type UserId int
+        type UserId(int)
         type AliasInt = int
         type Marker
-        type BoxRec .{ label: str = "def", count: int }
-        opaque type SecretTag str
+        type BoxRec(.{ label: str = "def", count: int })
+        opaque type SecretTag(str)
 
         fn make_secret(s: str) -> new SecretTag { SecretTag(s) }
         fn read_secret(t: SecretTag) -> str { inner(t) }
@@ -885,7 +885,7 @@ fn de_magification_self_hosted_set_stdlib_convert_compile_error_and_wrapper_synt
             let alias: AliasInt = 7
             let plain: int = alias
             assert(inner(uid) == plain && inner(Marker) == ())
-            let rec = BoxRec.{ count: 2 }
+            let rec = BoxRec(.{ count: 2 })
             assert(rec.label == "def" && rec.count == 2)
             assert(read_secret(make_secret("ok")) == "ok")
 
@@ -986,7 +986,7 @@ fn de_magification_self_hosted_set_stdlib_convert_compile_error_and_wrapper_synt
             Code::E0120,
         ),
         (
-            "type A int\ntype B int\nfn main() -> () { let _: B = A(1) }\n",
+            "type A(int)\ntype B(int)\nfn main() -> () { let _: B = A(1) }\n",
             Stage::Type,
             Code::E0305,
         ),

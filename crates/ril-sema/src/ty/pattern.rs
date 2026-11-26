@@ -204,50 +204,8 @@ impl Checker<'_> {
                     self.pattern(env, item, &ty);
                 }
             }
-            Pattern::Record { name, fields, rest } => {
-                if let Some(path) = name
-                    && let Some(expected_id) = self.resolve(path.span)
-                    && !matches!(normalized, Ty::Unknown | Ty::Infer(_))
-                {
-                    let def = self.hir.definition(expected_id);
-                    let is_alias = def.stmt.is_some_and(|stmt| {
-                        matches!(
-                            &self.ast(def.name.span.file).stmt(stmt).value.kind,
-                            StmtKind::Type(decl) if decl.kind == ril_syntax::syntax::TypeKind::Alias
-                        )
-                    });
-                    if !is_alias {
-                        let matches_id =
-                            matches!(&normalized, Ty::Adt(adt) if adt.definition == expected_id);
-                        if !matches_id {
-                            self.error(
-                                Code::E0301,
-                                node.span,
-                                "record pattern type does not match the matched value",
-                            );
-                        }
-                    }
-                }
-                let ty = if let Ty::Adt(adt) = &normalized {
-                    match adt.kind {
-                        AdtKind::Foreign => {
-                            self.error(
-                                Code::E0907,
-                                node.span,
-                                "foreign representation cannot be matched",
-                            );
-                            Ty::Unknown
-                        }
-                        AdtKind::Opaque if adt.defining_scope != env.scope => {
-                            self.error(Code::E0308, node.span, "opaque representation is sealed");
-                            Ty::Unknown
-                        }
-                        _ => self.representation(env, adt).unwrap_or(Ty::Unknown),
-                    }
-                } else {
-                    normalized
-                };
-                if let Ty::Record(known, open) = ty {
+            Pattern::Record { fields, rest } => {
+                if let Ty::Record(known, open) = normalized {
                     let mut seen_fields = HashSet::new();
                     for field in fields {
                         if !seen_fields.insert(field.name.value.as_str()) {
@@ -283,7 +241,7 @@ impl Checker<'_> {
                             self.define_name(&field.name, ty.clone());
                         }
                     }
-                } else if ty != Ty::Unknown {
+                } else if normalized != Ty::Unknown {
                     self.error(Code::E0301, node.span, "record pattern requires a record");
                 }
             }
@@ -506,15 +464,90 @@ impl Checker<'_> {
     pub(super) fn check_match(
         &mut self,
         env: &mut Env,
+        is_meta: bool,
         arms: &[MatchArm],
         (value, input): (ExprId, &Ty),
         expected: Option<&Ty>,
         span: Span,
     ) -> Ty {
+        let normalized_input = self.normalize(input);
+        if is_meta {
+            if env.phase != super::check::Phase::Runtime {
+                self.error(
+                    Code::E0810,
+                    span,
+                    "'meta match' is only allowed in runtime functions; compile-time code uses plain 'match'",
+                );
+            }
+            let mut concrete = env.clone();
+            concrete.require_concrete_types = true;
+            match self.evaluate_static(&concrete, value) {
+                Ok(val) => {
+                    for (index, arm) in arms.iter().enumerate() {
+                        let mut local = env.clone();
+                        let mut bindings = Default::default();
+                        if !self.value_pattern(&mut local, arm.pattern, &val, &mut bindings) {
+                            continue;
+                        }
+                        if let Some(guard) = arm.guard {
+                            match self.evaluate_with_bindings(&local, guard, &mut bindings) {
+                                Ok(Value::Bool(true)) => {}
+                                Ok(Value::Bool(false)) => continue,
+                                Ok(_) => {
+                                    self.expect(&mut local, guard, &Ty::Bool);
+                                    return Ty::Unknown;
+                                }
+                                Err(super::eval::Signal::Dependent(_)) => break,
+                                Err(failure) => {
+                                    let diag = failure.diagnostic(self.ast(env.file).expr(guard).span);
+                                    self.diagnostics.push(diag);
+                                    return Ty::Unknown;
+                                }
+                            }
+                        }
+                        self.meta_match_decisions.insert(span, index);
+                        self.pattern(&mut local, arm.pattern, input);
+                        self.refine_type_arm(&mut local, arm.pattern, input, &HashSet::new());
+                        if let Some(guard) = arm.guard {
+                            self.expect(&mut local, guard, &Ty::Bool);
+                        }
+                        let found = self.expr(&mut local, arm.body, expected);
+                        env.effects_seen.extend(local.effects_seen);
+                        return found;
+                    }
+                    // No arm matched (unless a dependent guard broke out above).
+                    if !arms.iter().any(|a| a.guard.is_some()) {
+                        self.error(
+                            Code::E0303,
+                            span,
+                            "meta match does not cover the compile-time value",
+                        );
+                        return Ty::Unknown;
+                    }
+                }
+                Err(super::eval::Signal::Dependent(_)) => {}
+                Err(failure) => {
+                    let diag = failure.diagnostic(self.ast(env.file).expr(value).span);
+                    self.diagnostics.push(diag);
+                }
+            }
+        } else if env.phase == super::check::Phase::Runtime {
+            let has_type_pat = arms
+                .iter()
+                .any(|arm| self.pattern_contains_type(env, arm.pattern));
+            if matches!(normalized_input, Ty::TypeValue(_)) || has_type_pat {
+                self.error(
+                    Code::E0816,
+                    span,
+                    "matching a type value in runtime code requires 'meta match'",
+                );
+            }
+        }
+
         let mut prior = Vec::new();
         let mut covered = HashSet::new();
         let mut result = Ty::Never;
-        let staged = self.stage_match(env, span, value, arms);
+        let staged = is_meta && self.stage_match(env, span, value, arms);
         for (index, arm) in arms.iter().enumerate() {
             let mut local = env.clone();
             if staged {
@@ -524,7 +557,9 @@ impl Checker<'_> {
                 });
             }
             self.pattern(&mut local, arm.pattern, input);
-            self.refine_type_arm(&mut local, arm.pattern, input, &covered);
+            if is_meta || env.phase != super::check::Phase::Runtime {
+                self.refine_type_arm(&mut local, arm.pattern, input, &covered);
+            }
             let (_, pattern_tags) = self.pattern_tags(env, arm.pattern, input);
             let shape = self.pattern_shape(env, arm.pattern, input);
             if !self.useful(env, &prior, shape.clone(), input) {
@@ -554,6 +589,16 @@ impl Checker<'_> {
             );
         }
         result
+    }
+
+    fn pattern_contains_type(&self, env: &Env, pattern: PatternId) -> bool {
+        match &self.ast(env.file).pattern(pattern).value {
+            Pattern::Type(_) | Pattern::TypeBinding(_) => true,
+            Pattern::Or(items) | Pattern::Tuple(items) => {
+                items.iter().any(|&item| self.pattern_contains_type(env, item))
+            }
+            _ => false,
+        }
     }
 
     pub(super) fn match_domain(&mut self, env: &Env, input: &Ty) -> Option<HashSet<String>> {
@@ -992,6 +1037,18 @@ impl Checker<'_> {
                     || middle.is_empty(),
                     |id| self.value_pattern_at(env, id, &Value::Str(middle.into()), bindings, None),
                 )
+            }
+            (Pattern::Constructor(path, Some(parts)), Value::Record(_))
+                if parts.len() == 1
+                    && self
+                        .resolve(path.span)
+                        .is_some_and(|id| {
+                            self.hir.definition(id).kind == ril_hir::DefinitionKind::Type
+                        }) =>
+            {
+                parts
+                    .first()
+                    .is_some_and(|&inner| self.value_pattern_at(env, inner, value, bindings, place))
             }
             (Pattern::Constructor(path, parts), Value::Tag(tag, values)) => {
                 path.segments

@@ -30,15 +30,19 @@ pub fn read(via c: Cell) -> int { c.count }
 -- @revision
 pub fn read(via c: Cell) -> int { c.count + 0 }
 
--- @case plain_reception_restricts_a_via_mode_in_each_snapshot_context compile-pass
+-- @case plain_reception_restricts_a_via_mode_in_each_snapshot_context compile-fail E0550
 fn plain(value: Cell) -> Cell { value }
 fn forward(via source: Cell) -> Cell { plain(source) }
+-- ^ E0550
 fn freeze(via source: Cell) -> Cell { let fixed = source; fixed }
+-- ^ E0550
 fn pack(via source: Cell) -> .{ item: Cell } {
+-- ^ E0550
     let packed = .{ item: source }
     packed
 }
 fn returned(via source: Cell) -> Cell { source }
+-- ^ E0550
 fn run() -> int {
     let item = Cell.{ count: 1 }
     forward(item).count + freeze(item).count + pack(item).item.count + returned(item).count
@@ -53,14 +57,14 @@ fn run() -> int {
 
 -- @case adding_derive_can_tighten_a_published_via_domain compat-fail E0552
 -- @baseline
-pub fn update(via base: Cell) -> Cell {
-    let copy = Cell.{ count: base.count + 1 }
+pub fn update(via box: .{ via item: Cell, var stamp: int }) -> Cell {
+    let copy = Cell.{ count: box.item.count + 1 }
     copy
 }
 -- @revision
-pub fn update(via base: Cell) -> Cell {
+pub fn update(via box: .{ via item: Cell, var stamp: int }) -> Cell {
 -- ^ E0552
-    derive(base) \mut draft -> { draft.count += 1 }
+    derive(box.item) \mut draft -> { draft.count += 1 }
 }
 
 -- @case adding_a_snapshot_requirement_on_new_input_breaks_compatibility compat-fail E0552
@@ -515,7 +519,7 @@ fn run() -> int {
 }
 
 -- @case higher_order_callback_in_a_recursive_member_checks_the_mode_pair compile-fail E0520
-type Node .{ action: fn(via Cell, via Cell) -> (), next: ?Node }
+type Node(.{ action: fn(via Cell, via Cell) -> (), next: ?Node })
 fn edit(mut writer: Cell, ref reader: Cell) &mut -> () { writer.count += reader.count }
 fn combine(via left: Cell, via right: Cell) -> () { edit(mut left, ref right) }
 fn observe(via left: Cell, via right: Cell) -> () { assert(left.count == right.count) }
@@ -527,7 +531,7 @@ fn apply(node: Node) -> int {
     match node.next { Some(tail) -> apply(tail); None -> cell.count }
 }
 fn run() -> int {
-    apply(Node.{ action: observe, next: Some(Node.{ action: combine, next: None }) })
+    apply(Node(.{ action: observe, next: Some(Node(.{ action: combine, next: None })) }))
     -- ^ E0520
 }
 
@@ -621,15 +625,15 @@ fn invalid() -> int { observe(take, Cell.{ count: 21 }) }
 
 -- @case callback_handoffs_from_separate_calls_do_not_revoke_a_readers_path compile-pass
 fn apply(via action: fn(via Cell) @& -> int, via cell: Cell) -> int { action(cell) }
-fn take(via cell: Cell) -> int {
-    let moved = new cell
-    moved.count
+fn bump(via cell: Cell) -> int {
+    cell.count += 1
+    cell.count
 }
 fn read(via cell: Cell) -> int { cell.count }
 fn sum(via cell: Cell) -> int {
     let initial = apply(read, cell)
-    let consumed = apply(take, Cell.{ count: 21 })
-    initial + cell.count + consumed
+    let updated = apply(bump, Cell.{ count: 21 })
+    initial + cell.count + updated
 }
 fn run() -> int { sum(Cell.{ count: 10 }) }
 
@@ -639,21 +643,21 @@ fn apply(via action: fn(via Cell) @& -> infer Cell, via cell: Cell) -> infer Cel
     assert(value.count == 41)
     value
 }
-fn take(via cell: Cell) -> infer Cell { new cell }
+fn bump(via cell: Cell) -> infer Cell { cell.count += 1; cell }
 fn run() -> int {
-    let mut value = apply(take, Cell.{ count: 41 })
+    let mut value = apply(bump, Cell.{ count: 40 })
     value.count += 1
     value.count
 }
 
 -- @case callback_explicit_handoff_result_survives_the_argument_path compile-pass
-fn apply(via action: fn(via Cell) @& -> infer Cell, via cell: Cell) -> infer Cell {
+fn apply(via action: fn(via Cell) @& -> infer Cell, new cell: Cell) -> infer Cell {
     let via value = action(new cell)
     assert(value.count == 41)
     value
 }
-fn take(via cell: Cell) -> infer Cell { new cell }
-fn run() -> int { apply(take, Cell.{ count: 41 }).count }
+fn identity(via cell: Cell) -> infer Cell { cell }
+fn run() -> int { apply(identity, new Cell.{ count: 41 }).count }
 
 -- @case requiring_a_callback_to_preserve_new_qualification_breaks_compatibility compat-fail E0552
 -- @baseline
@@ -725,7 +729,10 @@ fn invalid() -> int {
 
 -- @case adding_a_higher_order_mode_requirement_breaks_compatibility compat-fail E0552
 -- @baseline
-pub fn apply(via action: fn(via Cell) @& -> int, via cell: Cell) -> int { cell.count }
+pub fn apply(via action: fn(via Cell) @& -> int, via cell: Cell) -> int {
+    let _ = action(Cell.{ count: 0 })
+    cell.count
+}
 -- @revision
 pub fn apply(via action: fn(via Cell) @& -> int, via cell: Cell) -> int { action(cell) }
 -- ^ E0552
@@ -764,7 +771,7 @@ pub fn apply(via action: fn(via Cell) @& -> infer Cell, via cell: Cell) -> infer
 }
 
 -- @case higher_order_infer_can_use_an_enclosing_mode_input compile-pass
-fn accept(via callback: fn() @& -> infer Cell) -> () {}
+fn accept(via callback: fn() @& -> infer Cell) -> int { callback().count }
 
 -- @case higher_order_mode_template_rejects_a_value_type_input compile-fail E0550
 type Invalid = fn(via int) -> infer int
@@ -843,11 +850,17 @@ pub fn choose(first: bool, via a: Cell, via b: Cell) -> infer Cell {
     if first { a } else { b }
 }
 -- @revision
-pub fn choose(first: bool, via a: Cell, via b: Cell) -> infer Cell { a }
+pub fn choose(first: bool, via a: Cell, via b: Cell) -> infer Cell {
+    let _ = b.count
+    a
+}
 
 -- @case additional_inferred_root_breaks_compatibility compat-fail E0552
 -- @baseline
-pub fn choose(first: bool, via a: Cell, via b: Cell) -> infer Cell { a }
+pub fn choose(first: bool, via a: Cell, via b: Cell) -> infer Cell {
+    let _ = b.count
+    a
+}
 -- @revision
 pub fn choose(first: bool, via a: Cell, via b: Cell) -> infer Cell {
 -- ^ E0552
@@ -872,9 +885,9 @@ pub fn pack(input: Cell) &return(input) -> new []Cell { [Cell.{ count: 0 }, inpu
 
 -- @case changed_exported_member_mode_breaks_compatibility compat-fail E0552 no-prelude
 -- @baseline
-pub type Endpoint .{ port: int }
+pub type Endpoint(.{ port: int })
 -- @revision
-pub type Endpoint .{ var port: int }
+pub type Endpoint(.{ var port: int })
 -- ^ E0552
 
 -- @case narrower_generic_domain_breaks_compatibility compat-fail E0552 no-prelude
@@ -978,11 +991,20 @@ fn invalid(via cell: Cell) -> int {
 
 -- @case consuming_via_revision_restricts_published_domain compat-fail E0552
 -- @baseline
-pub fn relay(via cell: Cell) -> infer Cell { cell }
+pub fn relay(via a: Cell, via b: Cell) -> infer Cell {
+    let _ = b.count
+    a
+}
 -- @revision
-fn take(via cell: Cell) -> infer Cell { new cell }
-pub fn relay(via cell: Cell) -> infer Cell { take(cell) }
+fn mutate(via cell: Cell) -> infer Cell {
+    cell.count += 1
+    cell
+}
+pub fn relay(via a: Cell, via b: Cell) -> infer Cell {
 -- ^ E0552
+    let _ = b.count
+    mutate(a)
+}
 
 -- @case explicitly_read_only_via_result_cannot_recover_new_authority compile-fail E0520
 fn observe(via cell: Cell) -> infer Cell { ref cell }
@@ -1266,4 +1288,61 @@ pub type Update = fn(mut Draft<[]Action>) &mut -> ()
 pub fn edited(base: []Action, spare: []Action, update: Update) -> []Action {
 -- ^ E0552
     derive(spare, update)
+}
+
+-- @case member_via_on_concrete_value_array_is_rejected compile-fail E0550
+fn bad(xs: [via]int) -> int { xs[0] }
+-- ^ E0550
+
+-- @case member_via_on_concrete_value_map_is_rejected compile-fail E0550
+fn bad(m: [str: via str]) -> int { len(m) }
+-- ^ E0550
+
+-- @case via_on_closed_value_only_generic_domain_is_rejected compile-fail E0550
+fn bad<T: int | f64>(via x: T) -> T { x }
+-- ^ E0550
+
+-- @case unused_via_parameter_is_rejected compile-fail E0550
+fn bad(via a: Cell, via b: Cell) -> int { a.count }
+-- ^ E0550
+
+-- @case single_mode_new_via_parameter_is_rejected compile-fail E0550
+fn bad(via c: Cell) -> new Cell { new c }
+-- ^ E0550
+
+-- @case redundant_let_via_wildcard_is_rejected compile-fail E0550
+fn bad(via c: Cell) -> int {
+    let via _ = c
+    -- ^ E0550
+    c.count
+}
+
+-- @case redundant_if_let_via_binding_free_is_rejected compile-fail E0550
+fn bad(via opt: ?Cell) -> bool {
+    if let via None = opt {
+    -- ^ E0550
+        true
+    } else {
+        false
+    }
+}
+
+-- @case redundant_shorthand_let_via_fixed_field_is_rejected compile-fail E0550
+fn bad(via c: Cell) -> int {
+    let fixed = .{ child: Cell.{ count: 1 } }
+    let via .{ child } = fixed
+    -- ^ E0550
+    c.count + child.count
+}
+
+-- @case partial_wildcard_inside_via_record_and_match_is_allowed compile-pass
+fn pick_field(via box: .{ via first: Cell, second: Cell }) -> infer Cell {
+    let via .{ first, second: _ } = box
+    first
+}
+fn pick_match(via box: .{ via first: Cell, tag: int }, via fallback: Cell) -> infer Cell {
+    match via box {
+        .{ first, tag: 1 } -> first
+        _ -> fallback
+    }
 }

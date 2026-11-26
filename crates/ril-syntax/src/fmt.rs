@@ -151,14 +151,17 @@ fn render_line(items: &[Item<'_>], out: &mut String) {
     }
 }
 
-fn is_string_interior(kind: Kind) -> bool {
+fn is_string_left_inside(kind: Kind) -> bool {
     matches!(
         kind,
-        Kind::StringStart
-            | Kind::StringChunk
-            | Kind::StringEnd
-            | Kind::InterpolationStart
-            | Kind::InterpolationEnd
+        Kind::StringStart | Kind::StringChunk | Kind::InterpolationStart | Kind::InterpolationEnd
+    )
+}
+
+fn is_string_right_inside(kind: Kind) -> bool {
+    matches!(
+        kind,
+        Kind::StringChunk | Kind::StringEnd | Kind::InterpolationStart | Kind::InterpolationEnd
     )
 }
 
@@ -167,7 +170,7 @@ fn needs_space(left: Item<'_>, right: Item<'_>) -> bool {
         (_, Item::LineComment(_) | Item::BlockComment(_)) | (Item::BlockComment(_), _) => true,
         (Item::LineComment(_), _) => false,
         (Item::Tok(lt, ltext), Item::Tok(rt, rtext)) => {
-            if is_string_interior(lt.kind) || is_string_interior(rt.kind) {
+            if is_string_left_inside(lt.kind) || is_string_right_inside(rt.kind) {
                 return false;
             }
             // Never split Ril's syntactically tight-left constructs:
@@ -287,5 +290,39 @@ fn needs_space(left: Item<'_>, right: Item<'_>) -> bool {
                 )
             ) || !rt.tight_left
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use ril_source::span::{FileId, SourceFile};
+
+    use super::format_source;
+    use crate::parser::FileKind;
+
+    #[test]
+    fn format_preserves_spaces_before_and_after_string_literals() {
+        let input = concat!(
+            "fn demo(msg: str = \"hello\") -> str {\n",
+            "    let a = \"x\"\n",
+            "    if a == \"x\" {\n",
+            "        let pair = (\"a\", \"b\")\n",
+            "        let _ = pair\n",
+            "        \"{msg}:ok\"\n",
+            "    } else {\n",
+            "        \"fallback\"\n",
+            "    }\n",
+            "}\n",
+        );
+        let source = SourceFile::from_bytes(
+            FileId(1),
+            PathBuf::from("pkg/fmt_strings.ril"),
+            input.as_bytes(),
+        )
+        .expect("valid utf-8");
+        let formatted = format_source(&source, FileKind::Module).expect("formats cleanly");
+        assert_eq!(formatted, input);
     }
 }

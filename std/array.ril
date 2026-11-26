@@ -7,7 +7,7 @@ pub fn remove<T>(mut xs: [via]T, index: int) &mut -> new ?T
 
 pub fn clear<T>(mut xs: [via]T) &mut -> () {
     while len(ref xs) > 0 {
-        let via _ = pop(mut xs)
+        let _ = pop(mut xs)
     }
 }
 

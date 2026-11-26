@@ -10,13 +10,13 @@ pub fn at(text: str, index: int) -> new ?int
 pub fn from_scalars(via values: []int) -> new ?str
 
 pub fn join(via parts: []str, separator: str) -> str {
-    var out =""
+    var out = ""
     var i = 0
     while i < len(parts) {
         if i > 0 {
-            out ="{out}{separator}"
+            out = "{out}{separator}"
         }
-        out ="{out}{parts[i]}"
+        out = "{out}{parts[i]}"
         i += 1
     }
     out
@@ -27,13 +27,13 @@ pub fn split(text: str, separator: str) -> new []str {
     let n = len(text)
     let m = len(separator)
     if m == 0 {
-        Array::push(mut out,"")
+        Array::push(mut out, "")
         var i = 0
         while i < n {
             Array::push(mut out, text[i..i + 1])
             i += 1
         }
-        Array::push(mut out,"")
+        Array::push(mut out, "")
         return new out
     }
     var start = 0

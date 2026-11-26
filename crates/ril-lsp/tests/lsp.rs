@@ -296,7 +296,7 @@ fn lsp_prelude_definitions_jump_to_std_prelude_ril() -> Result<(), String> {
     let root_uri = format!("file://{}", repo_root.display());
     let doc_uri = format!("file://{}/pkg/prelude_jump.ril", repo_root.display());
     let source = concat!(
-        "type Rec .{ a: int }\n",
+        "type Rec(.{ a: int })\n",
         "type K = FieldKey<Rec>\n",
         "fn check<T |> Tuple>(t: T, x: Option<int>, y: Result<int, PanicError>) -> int {\n",
         "    let _ = t\n",

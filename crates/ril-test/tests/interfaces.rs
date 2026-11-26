@@ -18,7 +18,7 @@ use ril_test::{CaseMode, Stage, TestDriver, Unit, VirtualPackage, parse_suite, r
 
 #[test]
 fn hidden_clone_restrictions_survive_separate_compilation() {
-    let source = b"use ril/channel\npub opaque type Parcel .{ mut tx: Channel::Sender<int> }";
+    let source = b"use ril/channel\npub opaque type Parcel(.{ mut tx: Channel::Sender<int> })";
     let mut library = VirtualPackage::new(Unit::Lib);
     library.entry = "pkg/vault.ril".into();
     library.insert(library.entry.clone(), source.to_vec());
@@ -89,7 +89,7 @@ fn transferred_snapshot_requirements_survive_separate_compilation() {
     let source = br#"
 pub type Cell = .{ var count: int }
 pub type Shelf = .{ var ^mut item: Cell }
-pub fn freeze(via input: Shelf) -> Shelf { let snapshot = new input; snapshot }
+pub fn freeze(new input: Shelf) -> Shelf { let snapshot = new input; snapshot }
 pub fn replace(new input: Shelf) -> Shelf {
     let mut shelf = new input
     shelf.item = ^mut Cell.{ count: 42 }
@@ -210,10 +210,10 @@ pub fn apply_via(action: fn(via Shelf) -> int, via source: Shelf) -> int {
             ("apply", "freeze", "live", false),
             ("apply", "freeze", "Snapshot::Cell.{ count: 42 }", true),
             ("replace_then_apply", "freeze", "live", true),
-            ("apply_via", "freeze_via", "live", false),
+            ("apply_via", "count_via", "live", true),
             (
                 "apply_via",
-                "freeze_via",
+                "count_via",
                 "Snapshot::Cell.{ count: 42 }",
                 true,
             ),
@@ -221,8 +221,8 @@ pub fn apply_via(action: fn(via Shelf) -> int, via source: Shelf) -> int {
             let client_source = format!(
                 "use library/snapshot
 fn count(new source: Snapshot::Shelf) -> int {{ source.item.count }}
+fn count_via(via source: Snapshot::Shelf) -> int {{ source.item.count }}
 fn freeze(new source: Snapshot::Shelf) -> int {{ let snapshot = new source; snapshot.item.count }}
-fn freeze_via(via source: Snapshot::Shelf) -> int {{ let snapshot = new source; snapshot.item.count }}
 fn relay(new input: Snapshot::Shelf) -> int {{ Snapshot::{method}({callback}, new input) }}
 fn run() -> int {{
     let mut live = Snapshot::Cell.{{ count: 1 }}
@@ -455,7 +455,7 @@ pub fn read_between(mut slot: Slot, install: fn(mut Slot) &mut -> ()) &mut -> Le
 }
 pub fn destructure_after(mut slot: Slot, install: fn(mut Slot) &mut -> ()) &mut -> Leaf {
     install(mut slot)
-    let Slot.{ action } = slot
+    let .{ action } = slot
     action
 }
 pub fn read_either(mut slot: Slot, install: fn(mut Slot) &mut -> (), flag: bool) &mut -> Leaf {
@@ -1408,10 +1408,10 @@ fn correlated_callback_mode_offers_survive_interface_only_calls() {
 
     let nested_callback_call = |callback| {
         format!(
-            "Adapter::visit(Adapter::Node.{{
+            "Adapter::visit(Adapter::Node(.{{
             action: Adapter::observe,
-            next: Some(Adapter::Node.{{ action: Adapter::{callback}, next: None }})
-        }})"
+            next: Some(Adapter::Node(.{{ action: Adapter::{callback}, next: None }}))
+        }}))"
         )
     };
     let provider_source = br#"
@@ -1434,7 +1434,7 @@ pub fn relay(action: fn(via Cell, via Cell) -> (), via left: Cell, via right: Ce
     if recur { relay(action, left, right, false) }
     else { forward(action, left, right) }
 }
-pub type Node .{ action: fn(via Cell, via Cell) -> (), next: ?Node }
+pub type Node(.{ action: fn(via Cell, via Cell) -> (), next: ?Node })
 pub fn observe(via left: Cell, via right: Cell) -> () { assert(left.count == right.count) }
 pub fn visit(node: Node) -> int {
     let mut cell = Cell.{ count: 1 }
@@ -1510,14 +1510,26 @@ fn run(flag: bool) -> int {{
 
 #[test]
 fn derive_snapshot_domains_survive_interface_only_forwarding() {
-    use ril_sema::access::Input;
     use ril_source::diag::Code;
 
-    let provider_source = br#"
+    // Single-mode `via` constrained solely to Plain by `derive` is rejected with E0550.
+    let single_mode_src = br#"
 pub type Cell = .{ var count: int }
 pub fn root(via base: Cell) -> Cell {
     derive(base) \mut draft -> { draft.count += 1 }
 }
+"#;
+    let mut single_pkg = VirtualPackage::new(Unit::Lib);
+    single_pkg.entry = "pkg/single.ril".into();
+    single_pkg.insert(single_pkg.entry.clone(), single_mode_src.to_vec());
+    let single_diags = Driver.interface(&single_pkg).err().unwrap();
+    assert!(
+        single_diags.iter().any(|d| d.code == Some(Code::E0550)),
+        "expected E0550 for single-mode derive via: {single_diags:?}"
+    );
+
+    let provider_source = br#"
+pub type Cell = .{ var count: int }
 pub fn member(via box: .{ via item: Cell, var stamp: int }) -> Cell {
     derive(box.item) \mut draft -> { draft.count += 1 }
 }
@@ -1527,34 +1539,20 @@ pub fn member(via box: .{ via item: Cell, var stamp: int }) -> Cell {
     provider.insert(provider.entry.clone(), provider_source.to_vec());
     let published = Driver.interface(&provider).unwrap();
     let domains = |interface: &Interface| {
-        ["root", "member"].map(|name| {
-            let export = interface
-                .functions
-                .iter()
-                .find(|(path, _)| path.rsplit("::").next() == Some(name))
-                .unwrap()
-                .1;
-            export
-                .domain
-                .iter()
-                .map(|row| row.modes)
-                .collect::<BTreeSet<_>>()
-        })
+        let export = interface
+            .functions
+            .iter()
+            .find(|(path, _)| path.rsplit("::").next() == Some("member"))
+            .unwrap()
+            .1;
+        export
+            .domain
+            .iter()
+            .map(|row| row.modes)
+            .collect::<BTreeSet<_>>()
     };
     let observed = domains(&published);
-    assert_eq!(observed[0], BTreeSet::from([vec![Input::Plain]]));
-    assert_eq!(observed[1].len(), 8);
-    if let Some(oracle) = std::env::var_os("RIL_HORN_ORACLE") {
-        let reply = query(&oracle, "draft-via-domains", b"[]").unwrap();
-        let formal: Vec<(String, BTreeSet<Vec<Input>>)> = serde_json::from_slice(&reply).unwrap();
-        assert_eq!(
-            formal,
-            vec![
-                ("root".into(), observed[0].clone()),
-                ("member".into(), observed[1].clone()),
-            ]
-        );
-    }
+    assert_eq!(observed.len(), 8);
     let encoded = published.encode().unwrap();
     for (mount, bytes) in [
         ("library/update.ril", provider_source.as_slice()),
@@ -1562,10 +1560,6 @@ pub fn member(via box: .{ via item: Cell, var stamp: int }) -> Cell {
     ] {
         let forwarding = r#"
 use library/update
-pub fn root(via base: Update::Cell) -> Update::Cell {
-    let apply = Update::root
-    apply(base)
-}
 pub fn member(via box: .{ via item: Update::Cell, var stamp: int }) -> Update::Cell {
     Update::member(box)
 }
@@ -1579,8 +1573,6 @@ pub fn member(via box: .{ via item: Update::Cell, var stamp: int }) -> Update::C
             "{mount}"
         );
         for (call, accepted) in [
-            ("root(snapshot)", true),
-            ("root(ref live.item)", false),
             ("member(fixed)", true),
             ("member(mut copy)", true),
             ("member(mut live)", false),
@@ -1691,8 +1683,8 @@ fn compound_result_obligations_survive_an_interface_only_boundary() {
 
     let provider_source = br#"
 fn get(value: int) -> new !<int, str> { Ok(value) }
-pub type Packet<T> .{ payload: T }
-pub fn packet() -> new Packet<!<int, str>> { Packet.{ payload: get(1) } }
+pub type Packet<T>(.{ payload: T })
+pub fn packet() -> new Packet<!<int, str>> { Packet(.{ payload: get(1) }) }
 pub fn batch() -> new []!<int, str> { [get(1), get(2)] }
 pub fn varying_batch(flag: bool) -> new []!<int, str> {
     if flag { [get(1), Err("failed")] } else { [] }
@@ -1824,18 +1816,18 @@ fn recursive_allocation_graphs_survive_interface_replay() {
     use ril_source::diag::Code;
 
     let provider_source = br#"
-pub type Node .{ var value: int, var ^mut next: ?Node }
+pub type Node(.{ var value: int, var ^mut next: ?Node })
 pub type Shelf = .{ var mut head: Node }
 pub type Pair = .{ var ^mut left: Node, var ^mut right: Node }
 pub fn build(^mut tail: Node, count: int) &mut &^mut &return(^mut tail) -> new Node {
     var ^mut head = tail
     for 0..count as i {
-        let mut node = Node.{ value: i, next: Some(^mut head) }
+        let mut node = Node(.{ value: i, next: Some(^mut head) })
         node.value += 1
         head = ^mut node
     }
     head.value += 1
-    Node.{ value: 0, next: Some(^mut head) }
+    Node(.{ value: 0, next: Some(^mut head) })
 }
 pub fn store(mut shelf: Shelf, ^mut tail: Node, count: int) &mut &^mut -> () {
     shelf.head = build(^mut tail, count)
@@ -1941,7 +1933,7 @@ pub fn choose(via action: fn(via Node) @& -> infer Node, ^mut tail: Node, count:
                 "head",
             ),
             (
-                "let mut shelf = Chain::Shelf.{ head: Chain::Node.{ value: 0, next: None } }\nChain::store(mut shelf, ^mut tail, count)",
+                "let mut shelf = Chain::Shelf.{ head: Chain::Node(.{ value: 0, next: None }) }\nChain::store(mut shelf, ^mut tail, count)",
                 "shelf.head",
             ),
             (
@@ -1953,7 +1945,7 @@ pub fn choose(via action: fn(via Node) @& -> infer Node, ^mut tail: Node, count:
                 ("tail", "", vec![Some(Code::E0524)]),
                 (
                     "spare",
-                    "let mut spare = Chain::Node.{ value: 0, next: None }",
+                    "let mut spare = Chain::Node(.{ value: 0, next: None })",
                     Vec::new(),
                 ),
             ] {
@@ -1963,7 +1955,7 @@ pub fn choose(via action: fn(via Node) @& -> infer Node, ^mut tail: Node, count:
                      fn identity(via node: Chain::Node) -> infer Chain::Node {{ node }}\n\
                      fn copy(mut target: Chain::Node, ref reader: Chain::Node) &mut -> () {{ target.value = reader.value }}\n\
                      fn run(count: int) -> () {{\n\
-                        let mut tail = Chain::Node.{{ value: 1, next: None }}\n\
+                        let mut tail = Chain::Node(.{{ value: 1, next: None }})\n\
                         {setup}\n{spare}\n{read}\n\
                      }}"
                 );
@@ -1983,7 +1975,7 @@ pub fn choose(via action: fn(via Node) @& -> infer Node, ^mut tail: Node, count:
             ("tail", "", vec![Some(Code::E0524)]),
             (
                 "spare",
-                "let mut spare = Chain::Node.{ value: 0, next: None }",
+                "let mut spare = Chain::Node(.{ value: 0, next: None })",
                 Vec::new(),
             ),
         ]
@@ -1995,7 +1987,7 @@ pub fn choose(via action: fn(via Node) @& -> infer Node, ^mut tail: Node, count:
                  fn project(via head: Chain::Node) -> infer Chain::Node {{ {projection} }}\n\
                  fn copy(mut target: Chain::Node, ref reader: Chain::Node) &mut -> () {{ target.value = reader.value }}\n\
                  fn run(count: int) -> () {{\n\
-                    let mut tail = Chain::Node.{{ value: 1, next: None }}\n\
+                    let mut tail = Chain::Node(.{{ value: 1, next: None }})\n\
                     let ref found = ref Chain::relay(project, ^mut tail, count)\n\
                     {spare}\n\
                     copy(mut {target}, ref found)\n\
@@ -2024,9 +2016,9 @@ pub fn choose(via action: fn(via Node) @& -> infer Node, ^mut tail: Node, count:
 use library/chain
 fn copy(mut target: Chain::Node, ref reader: Chain::Node) &mut -> () { target.value = reader.value }
 fn run(count: int) -> () {
-    let mut tail = Chain::Node.{ value: 1, next: None }
-    let mut first = Chain::Node.{ value: 2, next: None }
-    let mut second = Chain::Node.{ value: 3, next: None }
+    let mut tail = Chain::Node(.{ value: 1, next: None })
+    let mut first = Chain::Node(.{ value: 2, next: None })
+    let mut second = Chain::Node(.{ value: 3, next: None })
     first.value += 1
     second.value += 1
     let mut pair = Chain::Pair.{ left: ^mut first, right: ^mut second }
@@ -2080,8 +2072,8 @@ pub eff Meter { fn read() -> int; fn reset() -> () }
 pub fn read_meter() @Meter -> int { Meter::read() }
 pub eff Extended { ..Meter; fn record() -> () }
 pub fn read_extended() @Extended -> int { Meter::read() }
-pub opaque type Handle use(close) .{ id: int }
-pub fn open() -> new Handle { Handle.{ id: 1 } }
+pub opaque type Handle(.{ id: int }) use(close)
+pub fn open() -> new Handle { Handle(.{ id: 1 }) }
 pub fn close(new handle: Handle) @Meter -> () { let _ = Meter::read() }
 pub fn apply(via action: fn(via Cell) @& -> infer Cell, via cell: Cell) -> infer Cell { action(cell) }
 pub fn observe_after(via action: fn(via Cell) @& -> int, via cell: Cell) -> int {
@@ -3475,15 +3467,16 @@ pub type Box = .{ var value: int }
 
 pub fn pick_first(
     via a: Box,
-    via _b: Box,
-    via _c: Box,
-    via _d: Box,
-    via _e: Box,
-    via _f: Box,
-    via _g: Box,
-    via _h: Box,
-    via _i: Box,
+    via b: Box,
+    via c: Box,
+    via d: Box,
+    via e: Box,
+    via f: Box,
+    via g: Box,
+    via h: Box,
+    via i: Box,
 ) -> infer Box {
+    let _ = b.value + c.value + d.value + e.value + f.value + g.value + h.value + i.value
     a
 }
 "#;

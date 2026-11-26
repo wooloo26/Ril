@@ -1,6 +1,6 @@
 -- Standard Set module: ordered set self-hosted over Map.
 
-pub opaque type Set<T> [T: ()]
+pub opaque type Set<T>([T: ()])
 
 pub fn empty<T>() -> new Set<T> {
     let m: [T: ()] = [:]

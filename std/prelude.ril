@@ -25,7 +25,7 @@ pub type Result<T, E> {
 
 pub use Result::(Ok, Err)
 
-pub opaque type PanicInfo str
+pub opaque type PanicInfo(str)
 
 pub type PanicError {
     Panicked(PanicInfo)
@@ -42,12 +42,12 @@ pub type LenTarget = \T -> match <T> {
     <str> | <bytes> | <Set<_>> -> <T>
     <[let M]_> -> <T>
     <[_: let M _]> -> <T>
-    _ -> compile_error_code("E0301","len requires text, bytes, or a collection")
+    _ -> compile_error_code("E0301", "len requires text, bytes, or a collection")
 }
 
 pub type Tuple = \T -> match <T> {
     <(..)> -> <T>
-    _ -> compile_error_code("E0301","type does not satisfy Tuple")
+    _ -> compile_error_code("E0301", "type does not satisfy Tuple")
 }
 
 pub type Unwrap = \W -> match <W> {
@@ -72,16 +72,16 @@ pub type FieldKey = \T -> match <T> {
     _ -> match <TryUnwrapNominal<T>> {
         <.{ ..}> -> <str>
         <(..)> -> <int>
-        _ -> compile_error_code("E0358","FieldKey requires a record or tuple type")
+        _ -> compile_error_code("E0358", "FieldKey requires a record or tuple type")
     }
 }
 
 pub type SharedObject = \T -> match <T> {
-    <bool> | <int> | <f64> | <str> | <bytes> | <()> | <never> -> compile_error_code("E0301","type does not satisfy SharedObject")
-    <FieldMode> | <Draft<_>> | <Type> | <Type<_>> -> compile_error_code("E0301","type does not satisfy SharedObject")
+    <bool> | <int> | <f64> | <str> | <bytes> | <()> | <never> -> compile_error_code("E0301", "type does not satisfy SharedObject")
+    <FieldMode> | <Draft<_>> | <Type> | <Type<_>> -> compile_error_code("E0301", "type does not satisfy SharedObject")
     <[let M]_> | <[_: let M _]> | <.{ ..}> | <(..)> -> <T>
     _ -> match <SharedObjectKernel<T>> {
-        <never> -> compile_error_code("E0301","type does not satisfy SharedObject")
+        <never> -> compile_error_code("E0301", "type does not satisfy SharedObject")
         <let Ok> -> <Ok>
     }
 }
@@ -96,7 +96,7 @@ pub meta fn type_name<T>(tv: Type<T>) -> str
 pub meta fn fields<T>(tv: Type<T>) -> [](FieldMode, FieldKey<T>)
 pub meta fn variants<T>(tv: Type<T>) -> []str
 pub fn panic(message: str) -> never
-pub fn assert(condition: bool, message: str ="assertion failed") -> () {
+pub fn assert(condition: bool, message: str = "assertion failed") -> () {
     if !condition {
         panic(message)
     }

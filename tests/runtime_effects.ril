@@ -12,8 +12,8 @@ fn main() -> () { let _ = shift(-1) }
 -- @case cleanup_runs_in_reverse_order run-pass backend=both
 -- @expect-stdout second
 -- @expect-stdout first
-opaque type Resource use(close) .{ message: str }
-fn acquire(message: str) -> new Resource { Resource.{ message } }
+opaque type Resource(.{ message: str }) use(close)
+fn acquire(message: str) -> new Resource { Resource(.{ message }) }
 fn close(new resource: Resource) @io -> () { println(resource.message) }
 fn main() @io -> () {
     use first = acquire("first")
@@ -22,10 +22,10 @@ fn main() @io -> () {
 
 -- @case panic_runs_cleanup run-panic "failure" backend=both
 -- @expect-stdout cleanup
-opaque type Resource use(close) .{ id: int }
+opaque type Resource(.{ id: int }) use(close)
 fn close(new resource: Resource) @io -> () { println("cleanup") }
 fn main() @io -> () {
-    use resource = Resource.{ id: 1 }
+    use resource = Resource(.{ id: 1 })
     panic("failure")
 }
 
@@ -33,21 +33,21 @@ fn main() @io -> () {
 -- @expect-stdout second
 -- @expect-stdout first
 eff Finalize { fn report(message: str) -> () }
-opaque type Resource use(close) .{ message: str }
+opaque type Resource(.{ message: str }) use(close)
 fn close(new resource: Resource) @Finalize -> () { Finalize::report(resource.message) }
 fn main() @io -> () {
     with Finalize::report = \message: str -> println(message)
-    use first = Resource.{ message: "first" }
-    use second = Resource.{ message: "second" }
+    use first = Resource(.{ message: "first" })
+    use second = Resource(.{ message: "second" })
     panic("failure")
 }
 
 -- @case double_panic_aborts run-abort backend=both
-opaque type Bomb use(detonate) .{ id: int }
+opaque type Bomb(.{ id: int }) use(detonate)
 fn detonate(new _b: Bomb) -> () { panic("second") }
 fn main() -> () {
     let outcome = absorb_panic \-> {
-        use _b = Bomb.{ id: 1 }
+        use _b = Bomb(.{ id: 1 })
         panic("first")
     }
     match outcome { Ok(_) -> (); Err(_) -> () }
@@ -160,27 +160,29 @@ fn main() @io -> () {
 
 -- @case derive_receives_via_snapshots_through_projections_and_callbacks run-pass backend=both
 type Cell = .{ count: int }
-fn update(via base: Cell) -> Cell {
-    let apply = \ -> derive(base) \mut draft -> { draft.count += 1 }
-    apply()
+fn forward(
+    action: fn(via .{ via item: Cell, var stamp: int }) -> Cell,
+    via box: .{ via item: Cell, var stamp: int },
+) -> Cell {
+    action(box)
 }
-fn forward(action: fn(via Cell) -> Cell, via base: Cell) -> Cell { action(base) }
 fn member(via box: .{ via item: Cell, var stamp: int }) -> Cell {
     derive(box.item) \mut draft -> { draft.count += 1 }
 }
-fn replace(via item: Cell) -> []Cell {
+fn replace(via box: .{ via item: Cell, var stamp: int }) -> []Cell {
     let base = [Cell.{ count: 1 }]
-    derive(base) \mut draft -> { draft[0] = item }
+    derive(base) \mut draft -> { draft[0] = box.item }
 }
 fn main() -> () {
     let item = Cell.{ count: 4 }
     let fixed = .{ mut item: Cell.{ count: 6 }, var stamp: 0 }
     let mut writer = .{ item, var stamp: 0 }
     writer.stamp += 1
-    assert(forward(update, item).count == 5 && item.count == 4)
+    assert(forward(member, fixed).count == 7 && fixed.item.count == 6)
+    assert(forward(member, mut writer).count == 5 && writer.item.count == 4)
     assert(member(fixed).count == 7 && fixed.item.count == 6)
     assert(member(mut writer).count == 5 && writer.item.count == 4)
-    assert(replace(item)[0].count == 4)
+    assert(replace(fixed)[0].count == 6)
 }
 
 -- @case local_effect_dispatches_through_its_handler run-pass backend=both
@@ -412,7 +414,7 @@ fn main() -> () {
 -- @case aborted_draft_dispatches_body_and_cleanup_effects run-panic "aborted draft" backend=both
 -- @expect-stdout 5:8
 eff Report { fn emit(value: int) -> () }
-opaque type Event use(record) .{ value: int }
+opaque type Event(.{ value: int }) use(record)
 fn record(new event: Event) @Report -> () { Report::emit(event.value) }
 fn main() @io -> () {
     with Report::emit = \value: int -> {
@@ -421,7 +423,7 @@ fn main() @io -> () {
     let shared = [1, 7]
     let base = (shared, shared)
     let _ = derive(base) \mut draft -> {
-        use _finish = Event.{ value: 8 }
+        use _finish = Event(.{ value: 8 })
         Report::emit(5)
         Array::push(mut draft.0, 7)
         panic("aborted draft")
@@ -443,7 +445,7 @@ fn main() -> () {
 }
 
 -- @case mutable_cleanup_changes_the_callers_resource run-pass backend=both
-opaque type Handle use(close) .{ var id: int }
+opaque type Handle(.{ var id: int }) use(close)
 fn close(mut handle: Handle) &mut -> () { handle.id = 42 }
 fn scope(mut handle: Handle) &mut -> () {
     use scoped = handle
@@ -451,13 +453,13 @@ fn scope(mut handle: Handle) &mut -> () {
     assert(before == 41)
 }
 fn main() -> () {
-    let mut handle = Handle.{ id: 41 }
+    let mut handle = Handle(.{ id: 41 })
     scope(mut handle)
     assert(handle.id == 42)
 }
 
 -- @case draft_inner_writes_nominal_tuple_coordinates run-pass backend=both
-type Pair (int, int)
+type Pair(int, int)
 fn main() -> () {
     let base = Pair(1, 2)
     let updated = derive(base) \mut draft -> {

@@ -10,7 +10,7 @@ pub fn get<K, V>(via map: [K: V], key: K) -> infer ?V {
 }
 
 pub fn contains<K, V>(via map: [K: via V], key: K) -> bool {
-    if let via Some(_) = map?[key] {
+    if let Some(_) = map?[key] {
         true
     } else {
         false

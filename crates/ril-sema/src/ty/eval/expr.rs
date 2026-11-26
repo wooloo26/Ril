@@ -183,7 +183,12 @@ impl Checker<'_> {
                 }
                 Ok(result)
             }
-            Expr::If { condition, yes, no } => {
+            Expr::If {
+                condition,
+                yes,
+                no,
+                ..
+            } => {
                 if self.eval_condition(env, slots, condition, fuel)? {
                     self.evaluate(env, slots, *yes, fuel)
                 } else if let Some(no) = no {
@@ -255,7 +260,9 @@ impl Checker<'_> {
                 }
                 Ok(Value::Unit)
             }
-            Expr::Match { value, arms, mode } => {
+            Expr::Match {
+                value, arms, mode, ..
+            } => {
                 let mut subject = self.pattern_subject(env, slots, *value, fuel)?;
                 for arm in arms {
                     let mut local = env.clone();
@@ -532,11 +539,16 @@ impl Checker<'_> {
                 let mut local = Env::new(def.name.span.file, def.scope);
                 local.phase = env.phase;
                 let StmtKind::Binding {
-                    value: Some(value), ..
+                    value: Some(value),
+                    is_meta,
+                    ..
                 } = self.ast(local.file).stmt(stmt).value.kind
                 else {
                     return Err(nonstatic(span));
                 };
+                if !is_meta && env.phase == crate::ty::check::Phase::Runtime {
+                    return Err(nonstatic(span));
+                }
                 let expr = self.ast(local.file).expr(value);
                 if let Some(value) = self.static_values.get(&expr.span) {
                     return Ok(value.clone());

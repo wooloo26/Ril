@@ -223,40 +223,136 @@ impl Checker<'_> {
                 Ty::Map(Box::new(key), Box::new(member))
             }
             Expr::Quote(ty) => Ty::TypeValue(Some(Box::new(self.type_expr(env, *ty)))),
-            Expr::If { condition, yes, no } => {
-                let mut yes_env = env.clone();
-                self.condition(&mut yes_env, condition);
-                let mut no_env = env.clone();
-                if let Condition::Expr(test) = condition {
-                    no_env.refinements = yes_env.refinements.clone();
-                    if let Some(span) = self.stage_condition(env, *test) {
-                        use super::staging::StaticGate::Condition;
-                        yes_env.staging_gates.push(Condition {
+            Expr::If {
+                is_meta,
+                condition,
+                yes,
+                no,
+            } => {
+                if *is_meta {
+                    if env.phase != Phase::Runtime {
+                        self.error(
+                            Code::E0810,
                             span,
-                            expected: true,
-                        });
-                        no_env.staging_gates.push(Condition {
-                            span,
-                            expected: false,
-                        });
+                            "'meta if' is only allowed in runtime functions; compile-time code uses plain 'if'",
+                        );
                     }
+                    let mut yes_env = env.clone();
+                    self.condition(&mut yes_env, condition);
+                    let mut no_env = env.clone();
+                    if let Condition::Expr(test) = condition {
+                        no_env.refinements = yes_env.refinements.clone();
+                        let mut concrete = env.clone();
+                        concrete.require_concrete_types = true;
+                        match self.evaluate_static(&concrete, *test) {
+                            Ok(Value::Bool(taken)) => {
+                                self.meta_if_decisions.insert(span, taken);
+                                return if taken {
+                                    self.assumption(&mut yes_env, condition, true);
+                                    let ty = self.expr(&mut yes_env, *yes, expected);
+                                    env.refinements = yes_env.refinements;
+                                    env.effects_seen.extend(yes_env.effects_seen);
+                                    ty
+                                } else {
+                                    self.assumption(&mut no_env, condition, false);
+                                    let ty = no
+                                        .map(|no| self.expr(&mut no_env, no, expected))
+                                        .unwrap_or(Ty::Unit);
+                                    env.refinements = no_env.refinements;
+                                    env.effects_seen.extend(no_env.effects_seen);
+                                    ty
+                                };
+                            }
+                            Ok(_) => {}
+                            Err(super::eval::Signal::Dependent(_)) => {
+                                if let Some(cond_span) = self.stage_condition(env, *test, true) {
+                                    use super::staging::StaticGate::Condition;
+                                    yes_env.staging_gates.push(Condition {
+                                        span: cond_span,
+                                        expected: true,
+                                    });
+                                    no_env.staging_gates.push(Condition {
+                                        span: cond_span,
+                                        expected: false,
+                                    });
+                                }
+                            }
+                            Err(failure) => {
+                                let diag = failure.diagnostic(self.ast(env.file).expr(*test).span);
+                                self.diagnostics.push(diag);
+                            }
+                        }
+                    } else if let Condition::Binding {
+                        pattern, value, ..
+                    } = condition
+                    {
+                        let mut concrete = env.clone();
+                        concrete.require_concrete_types = true;
+                        match self.evaluate_static(&concrete, *value) {
+                            Ok(val) => {
+                                let mut bindings = Default::default();
+                                let taken = self.value_pattern(
+                                    &mut yes_env,
+                                    *pattern,
+                                    &val,
+                                    &mut bindings,
+                                );
+                                self.meta_if_decisions.insert(span, taken);
+                                return if taken {
+                                    let ty = self.expr(&mut yes_env, *yes, expected);
+                                    env.refinements = yes_env.refinements;
+                                    env.effects_seen.extend(yes_env.effects_seen);
+                                    ty
+                                } else {
+                                    let ty = no
+                                        .map(|no| self.expr(&mut no_env, no, expected))
+                                        .unwrap_or(Ty::Unit);
+                                    env.refinements = no_env.refinements;
+                                    env.effects_seen.extend(no_env.effects_seen);
+                                    ty
+                                };
+                            }
+                            Err(super::eval::Signal::Dependent(_)) => {}
+                            Err(failure) => {
+                                let diag = failure.diagnostic(self.ast(env.file).expr(*value).span);
+                                self.diagnostics.push(diag);
+                            }
+                        }
+                    }
+                    self.assumption(&mut yes_env, condition, true);
+                    self.assumption(&mut no_env, condition, false);
+                    let yes = self.expr(&mut yes_env, *yes, expected);
+                    let no = no
+                        .map(|no| self.expr(&mut no_env, no, expected))
+                        .unwrap_or(Ty::Unit);
+                    env.refinements = self.merge_refinements(&yes_env, &no_env, &yes, &no);
+                    env.effects_seen.extend(yes_env.effects_seen);
+                    env.effects_seen.extend(no_env.effects_seen);
+                    self.join(env, span, yes, no)
+                } else {
+                    let mut yes_env = env.clone();
+                    self.condition(&mut yes_env, condition);
+                    let mut no_env = env.clone();
+                    if let Condition::Expr(_) = condition {
+                        no_env.refinements = yes_env.refinements.clone();
+                    }
+                    self.assumption(&mut yes_env, condition, true);
+                    self.assumption(&mut no_env, condition, false);
+                    let yes = self.expr(&mut yes_env, *yes, expected);
+                    let no = no
+                        .map(|no| self.expr(&mut no_env, no, expected))
+                        .unwrap_or(Ty::Unit);
+                    env.refinements = self.merge_refinements(&yes_env, &no_env, &yes, &no);
+                    env.effects_seen.extend(yes_env.effects_seen);
+                    env.effects_seen.extend(no_env.effects_seen);
+                    self.join(env, span, yes, no)
                 }
-                self.assumption(&mut yes_env, condition, true);
-                self.assumption(&mut no_env, condition, false);
-                let yes = self.expr(&mut yes_env, *yes, expected);
-                let no = no
-                    .map(|no| self.expr(&mut no_env, no, expected))
-                    .unwrap_or(Ty::Unit);
-                env.refinements = self.merge_refinements(&yes_env, &no_env, &yes, &no);
-                env.effects_seen.extend(yes_env.effects_seen);
-                env.effects_seen.extend(no_env.effects_seen);
-                self.join(env, span, yes, no)
             }
             Expr::While { condition, body } => {
                 let mut body_env = env.clone();
                 self.condition(&mut body_env, condition);
                 if let Condition::Expr(test) = condition
-                    && let Some(span) = self.stage_condition(env, *test)
+                    && let Some(span) = self.stage_condition(env, *test, false)
                 {
                     body_env
                         .staging_gates
@@ -322,9 +418,14 @@ impl Checker<'_> {
                 self.require(env, body_span, &body_ty, &Ty::Unit);
                 Ty::Unit
             }
-            Expr::Match { value, arms, .. } => {
+            Expr::Match {
+                is_meta,
+                value,
+                arms,
+                ..
+            } => {
                 let input = self.expr(env, *value, None);
-                self.check_match(env, arms, (*value, &input), expected, span)
+                self.check_match(env, *is_meta, arms, (*value, &input), expected, span)
             }
             Expr::Closure {
                 params,
@@ -528,7 +629,7 @@ impl Checker<'_> {
         let saved_refinements = if matches!(name, "&&" | "||") {
             let saved = env.refinements.clone();
             self.relate(env, left, name == "&&");
-            if let Some(span) = self.stage_condition(env, left) {
+            if let Some(span) = self.stage_condition(env, left, false) {
                 env.staging_gates
                     .push(super::staging::StaticGate::Condition {
                         span,

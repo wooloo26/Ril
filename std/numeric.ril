@@ -4,7 +4,7 @@ pub fn to_f64(n: int) -> f64
 pub fn trunc(x: f64) -> new ?int
 
 pub fn convert<T: int | f64>(x: f64) -> new ?T {
-    match <T> {
+    meta match <T> {
         <int> -> {
             if let Some(n) = trunc(x) {
                 if to_f64(n) == x {

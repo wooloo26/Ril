@@ -604,7 +604,12 @@ impl Walk<'_> {
                 }
             }
             Expr::Quote(ty) => self.ty(*ty),
-            Expr::If { condition, yes, no } => {
+            Expr::If {
+                condition,
+                yes,
+                no,
+                ..
+            } => {
                 self.condition(condition, *yes);
                 if let Some(no) = no {
                     self.expr(*no);
@@ -959,10 +964,7 @@ impl Walk<'_> {
                     self.bind_pattern_in(arg, alias, seen);
                 }
             }
-            Pattern::Record { name, fields, .. } => {
-                if let Some(name) = name {
-                    self.path(name);
-                }
+            Pattern::Record { fields, .. } => {
                 for field in fields {
                     self.storage(&field.storage);
                     if let Some(pattern) = field.pattern {

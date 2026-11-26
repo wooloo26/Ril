@@ -76,7 +76,7 @@ impl Parser<'_> {
                 })?;
                 Pattern::Slice { text, elements }
             }
-            ".{" => self.record_pattern(None)?,
+            ".{" => self.record_pattern()?,
             ".." => {
                 self.bump();
                 Pattern::Subset {
@@ -95,7 +95,11 @@ impl Parser<'_> {
                         self.open("(", ")", Layout::List)?;
                         Pattern::Constructor(path, Some(self.list(")", |p| p.pattern(true))?))
                     } else if self.tight(".{") {
-                        self.record_pattern(Some(path))?
+                        return Err(self.error(
+                            Code::E0120,
+                            self.current().span,
+                            "record patterns do not use 'Type.{ ... }'; write 'Type(.{ ... })' for nominal types or '.{ ... }' for records",
+                        ));
                     } else if self.eat("as") {
                         let ty = self.ast.add_ty(path.span, crate::syntax::Type::Named(path));
                         let binding = self.nested(|p| p.pattern_atom(true))?;
@@ -174,7 +178,7 @@ impl Parser<'_> {
         Ok(value)
     }
 
-    fn record_pattern(&mut self, name: Option<crate::syntax::Path>) -> Result<Pattern> {
+    fn record_pattern(&mut self) -> Result<Pattern> {
         self.open(".{", "}", Layout::List)?;
         self.skip_lines();
         let mut fields = Vec::new();
@@ -207,6 +211,6 @@ impl Parser<'_> {
             self.skip_lines();
         }
         self.close("}")?;
-        Ok(Pattern::Record { name, fields, rest })
+        Ok(Pattern::Record { fields, rest })
     }
 }
