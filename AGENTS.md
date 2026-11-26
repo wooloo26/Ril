@@ -9,6 +9,25 @@ Do not modify `README.md` or `AGENTS.md` unless the user explicitly requests it.
 Work directly on `main` and commit changes there. Do not create, switch to, or
 use other branches unless the user explicitly requests them.
 
+## Repository layout
+
+- `doc/SPEC.md` — canonical language specification and diagnostic error code table.
+- `std/` — embedded standard library (`prelude`, `array`, `map`, `set`, `string`, `bytes`, `numeric`, `reflect`, `io`, `file`, `math`, `os`, `crypto`).
+- `crates/` — compiler workspace in pipeline order:
+  - `ril-source` (spans, interner, diagnostic codes) → `ril-syntax` (lexer, lossless CST/AST, formatter) → `ril-hir` (name resolution, visibility, stdlib/primitive manifest) → `ril-sema` (type checker, static eval, access/provenance Horn solver, panic/abort/termination analysis, `.rili` interfaces) → `ril-mir` (MIR lowering, LIFO `with`/`defer` scopes, stack promotion) → `ril-codegen` (Cranelift JIT/AOT) + `ril-rt` (GC, BigInt, `corosensei` `ctl` runtime, unwind; staticlib wrapper in `runtime/ril-rt-static`).
+  - `ril-driver` (package loader, incremental cache, shared `inspect` projection), `ril-lsp` (LSP server & VS Code grammar), `ril-cli` (`ril` binary: `check`/`build`/`run`/`fmt`/`inspect`/`lsp`/`test`), `ril-test` (suite runner, protocol & Lean oracle harness).
+- `tests/` (`.ril` conformance/runtime suites), `examples/` (sample packages), `formal/` (Lean 4 proofs & `horn-oracle`), `scripts/` (`doc_check`, `formal_check`), `fuzz/` (fuzz targets).
+
+## Ril is not Rust
+
+Do not project Rust's ownership, borrowing, lifetime, or move vocabulary onto Ril:
+
+| Rust concept (avoid conflating) | Ril reality |
+| --- | --- |
+| Ownership & lifetimes (`'a`) | Ril has **no memory ownership or lifetimes**. Shared objects are GC-reclaimed (including cycles) with location-independent identity; modes govern **static access authority**, not allocation or deallocation. |
+| Borrowing & `&T` / `&mut T` | `ref`, `mut`, and `^mut` are **access modes**, not pointer/reference types (no `*x`, no borrow checker). In signatures, `&mut`/`&^mut`/`&up`/`&capture` are **state clauses**, never reference types. |
+| Move semantics | Plain bindings (`let y = x`) share deeply immutable snapshots without invalidating `x`. Explicit `new x` is an **authority handoff** (preserves identity, ends `x` and derived paths so the target picks fresh modes), not implicit Rust move. |
+
 ## Ril distinctions
 
 [SPEC](doc/SPEC.md) is canonical. Keep this guide focused on distinctions that are easily confused and affect interpretation or implementation. The table summarizes language rules and introduces no additional conformance requirements.
