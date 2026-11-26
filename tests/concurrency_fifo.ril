@@ -41,7 +41,7 @@ fn run_fifo(new entry: fn() @Sched @io &once -> ()) @io -> () {
     defer {
         while let Some(mut item) = Array::pop_front(mut ready) {
             match new item {
-                TaskItem::Cont(mut k) -> abort(new k)
+                TaskItem::Cont(mut k) -> unwind_ctl(new k)
                 TaskItem::Fresh(_) -> ()
             }
         }
@@ -88,7 +88,7 @@ fn main() @io -> () {
     with {
         ctl Yield<int>::emit = \v, new k -> {
             Array::push(mut out, v)
-            if len(ref out) < 3 { k() } else { abort(new k) }
+            if len(ref out) < 3 { k() } else { unwind_ctl(new k) }
         }
         defer println("cleanup")
         let _ = Array::map([1, 2, 3, 4, 5], \x -> { Yield<int>::emit(x * 2); x })
@@ -194,7 +194,7 @@ fn main() @io -> () {
     assert(early(mut ret_log) == 7)
     println(String::join(new ret_log, ":"))
 
-    let panic_res = absorb_panic(\-> {
+    let panic_res = recover_panic(\-> {
         var step = 0
         defer { assert(step == 2) }
         defer { step = 2 }
@@ -215,7 +215,7 @@ fn main() @io -> () {
     println(String::join(new abort_log, ":"))
 }
 
--- @case single_panic_in_defer_is_catchable_via_absorb_panic run-pass backend=both
+-- @case single_panic_in_defer_is_catchable_via_recover_panic run-pass backend=both
 -- @expect-stdout normal-defer-panic
 -- @expect-stdout abort-defer-panic
 eff Stop {
@@ -223,7 +223,7 @@ eff Stop {
 }
 
 fn main() @io -> () {
-    let r1 = absorb_panic(\-> {
+    let r1 = recover_panic(\-> {
         defer panic("normal-defer-panic")
         ()
     })
@@ -232,7 +232,7 @@ fn main() @io -> () {
         Err(Panicked(info)) -> println(panic_message(info))
     }
 
-    let r2 = absorb_panic(\-> {
+    let r2 = recover_panic(\-> {
         with {
             ctl Stop::halt = \_ -> ()
             defer panic("abort-defer-panic")

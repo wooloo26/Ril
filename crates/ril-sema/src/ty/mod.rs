@@ -164,6 +164,37 @@ impl Ty {
         })
     }
 
+    pub fn contains_writable_member_schema(&self) -> bool {
+        let mut found = false;
+        check::transform(self, &mut |ty| {
+            match ty {
+                Ty::Array(m) | Ty::Map(_, m) => {
+                    if m.mode.variable || matches!(m.mode.mode, Mode::Mut | Mode::Shared) {
+                        found = true;
+                    }
+                }
+                Ty::Tuple(ms) => {
+                    if ms
+                        .iter()
+                        .any(|m| m.mode.variable || matches!(m.mode.mode, Mode::Mut | Mode::Shared))
+                    {
+                        found = true;
+                    }
+                }
+                Ty::Record(fields, _)
+                    if fields.values().any(|m| {
+                        m.mode.variable || matches!(m.mode.mode, Mode::Mut | Mode::Shared)
+                    }) =>
+                {
+                    found = true;
+                }
+                _ => {}
+            }
+            None
+        });
+        found
+    }
+
     pub fn display<'a>(&'a self, hir: &'a Program) -> Display<'a> {
         Display {
             ty: self,
@@ -290,6 +321,30 @@ impl Callable {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NarrowDropCause {
+    OverlappingWrite,
+    OpenStateCall,
+    AliasingMut,
+}
+
+impl NarrowDropCause {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::OverlappingWrite => "overlapping_write",
+            Self::OpenStateCall => "open_state_call",
+            Self::AliasingMut => "aliasing_mut",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NarrowDrop {
+    pub span: Span,
+    pub path: String,
+    pub cause: NarrowDropCause,
+}
+
 pub struct TypedProgram {
     pub hir: Program,
     pub types: HashMap<Span, Ty>,
@@ -297,7 +352,9 @@ pub struct TypedProgram {
     pub bindings: HashMap<DefinitionId, Ty>,
     pub callables: BTreeMap<DefinitionId, Arc<Callable>>,
     pub imported_functions: BTreeMap<DefinitionId, crate::iface::Export>,
+    pub imported_behaviors: BTreeMap<DefinitionId, crate::behavior::BehaviorSummary>,
     pub imported_must_consume: HashSet<DefinitionId>,
+    pub narrow_drops: Vec<NarrowDrop>,
     pub static_values: HashMap<Span, Value>,
     meta_calls: HashMap<Span, staging::MetaCall>,
     static_folds: HashMap<Span, staging::StaticFold>,

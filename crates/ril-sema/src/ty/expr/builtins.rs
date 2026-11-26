@@ -201,8 +201,8 @@ impl Checker<'_> {
         }
         let first = types.first().cloned().unwrap_or(Ty::Unknown);
         let arity = match name {
-            "len" | "clone" | "inner" | "fields" | "variants" | "convert" | "absorb_panic"
-            | "abort" => Some(1..=1),
+            "len" | "clone" | "inner" | "fields" | "variants" | "convert" | "recover_panic"
+            | "unwind_ctl" => Some(1..=1),
             "has_default" | "derive" => Some(2..=2),
             _ => None,
         };
@@ -250,17 +250,21 @@ impl Checker<'_> {
                 self.check_clone(env, &first, span, true);
                 first
             }
-            "abort" => {
+            "unwind_ctl" => {
                 if let Some(arg) = args.first() {
                     let arg_span = self.ast(env.file).expr(arg.value).span;
                     if arg.mode == Mode::Plain {
                         self.error(
                             Code::E0405,
                             arg_span,
-                            "abort requires explicit 'new' argument mode",
+                            "unwind_ctl requires explicit 'new' argument mode",
                         );
                     } else if arg.mode != Mode::New {
-                        self.error(Code::E0406, arg_span, "abort requires 'new' argument mode");
+                        self.error(
+                            Code::E0406,
+                            arg_span,
+                            "unwind_ctl requires 'new' argument mode",
+                        );
                     }
                     let norm = self.normalize(&first);
                     if !matches!(&norm, Ty::Callable(c) if c.is_ctl)
@@ -269,7 +273,7 @@ impl Checker<'_> {
                         self.error(
                             Code::E0301,
                             arg_span,
-                            "abort requires a ctl(...) continuation",
+                            "unwind_ctl requires a ctl(...) continuation",
                         );
                     }
                 }
@@ -437,7 +441,7 @@ impl Checker<'_> {
                 Ty::Bool
             }
             "derive" => first,
-            "absorb_panic" => match self.normalize(&first) {
+            "recover_panic" => match self.normalize(&first) {
                 Ty::Callable(call) if call.parameters.is_empty() => {
                     if args.first().is_some_and(|arg| {
                         !matches!(
@@ -461,7 +465,7 @@ impl Checker<'_> {
                     self.error(
                         Code::E0314,
                         span,
-                        "absorb_panic action must take zero arguments",
+                        "recover_panic action must take zero arguments",
                     );
                     Ty::Unknown
                 }
@@ -470,7 +474,7 @@ impl Checker<'_> {
                     self.error(
                         Code::E0338,
                         span,
-                        "absorb_panic requires a zero-argument callable",
+                        "recover_panic requires a zero-argument callable",
                     );
                     Ty::Unknown
                 }

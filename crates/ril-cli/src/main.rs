@@ -86,6 +86,27 @@ enum Action {
         #[arg(long)]
         check: bool,
     },
+    Inspect {
+        path: PathBuf,
+        #[arg(long)]
+        unit: Option<Unit>,
+        #[arg(long = "file", value_name = "PATH")]
+        files: Vec<String>,
+        #[arg(long = "symbol", value_name = "NAME")]
+        symbols: Vec<String>,
+        #[arg(long = "at", value_name = "LOC")]
+        at: Vec<String>,
+        #[arg(long)]
+        symbols_only: bool,
+        #[arg(long = "include", value_name = "SECTION")]
+        includes: Vec<String>,
+        #[arg(long, num_args = 0..=1, default_missing_value = ".ril-cache", value_name = "CACHE_DIR")]
+        incremental: Option<PathBuf>,
+        #[arg(long)]
+        pretty: bool,
+        #[arg(long)]
+        fail_on_error: bool,
+    },
     Lsp,
     Run {
         path: PathBuf,
@@ -319,6 +340,63 @@ fn run(action: Action) -> Result<ExitCode, String> {
             if check && needs_formatting {
                 return Ok(ExitCode::FAILURE);
             }
+        }
+        Action::Inspect {
+            path,
+            unit,
+            files,
+            symbols,
+            at,
+            symbols_only,
+            includes,
+            incremental,
+            pretty,
+            fail_on_error,
+        } => {
+            let mut parsed_at = Vec::with_capacity(at.len());
+            for raw in &at {
+                match ril_driver::inspect::AtQuery::parse(raw) {
+                    Ok(loc) => parsed_at.push(loc),
+                    Err(err) => {
+                        println!(
+                            "{}",
+                            ril_driver::inspect::InspectReport::fatal_json(&err, pretty)
+                        );
+                        return Ok(ExitCode::from(2));
+                    }
+                }
+            }
+            let query = ril_driver::inspect::InspectQuery {
+                files,
+                symbols,
+                at: parsed_at,
+                symbols_only,
+                includes,
+            };
+            if let Err(err) = query.validate() {
+                println!(
+                    "{}",
+                    ril_driver::inspect::InspectReport::fatal_json(&err, pretty)
+                );
+                return Ok(ExitCode::from(2));
+            }
+            let package = match load_package(&path, unit.unwrap_or_else(|| infer_unit(&path))) {
+                Ok(pkg) => pkg,
+                Err(err) => {
+                    println!(
+                        "{}",
+                        ril_driver::inspect::InspectReport::fatal_json(&err, pretty)
+                    );
+                    return Ok(ExitCode::from(2));
+                }
+            };
+            let compiler = compiler_for(false, OptLevel::None, incremental);
+            let report = compiler.inspect_package(&package, &query);
+            println!("{}", report.to_json(pretty));
+            if fail_on_error && !report.ok {
+                return Ok(ExitCode::FAILURE);
+            }
+            return Ok(ExitCode::SUCCESS);
         }
         Action::Lsp => {
             ril_lsp::serve_stdio()?;

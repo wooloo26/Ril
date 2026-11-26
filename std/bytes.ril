@@ -7,13 +7,10 @@ pub fn from_array(via values: []int) -> new ?bytes
 
 pub fn to_array(data: bytes) -> new []int {
     let mut out: []int = []
-    var i = 0
-    let n = len(data)
-    while i < n {
+    for 0..len(data) as i {
         if let Some(b) = at(data, i) {
             Array::push(mut out, b)
         }
-        i += 1
     }
     new out
 }

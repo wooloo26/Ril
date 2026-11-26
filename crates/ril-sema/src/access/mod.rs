@@ -505,11 +505,21 @@ impl Instance {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ViaCallSite {
+    pub span: ril_source::span::Span,
+    pub callee: DefinitionId,
+    pub choices: Vec<(usize, Input)>,
+}
+
 #[derive(Default)]
 pub struct Analysis {
     pub summaries: BTreeMap<DefinitionId, Summary>,
     pub via: BTreeMap<DefinitionId, ViaDomain>,
     pub horn_rules: Vec<horn::Rule<usize>>,
+    pub behavior: crate::behavior::BehaviorAnalysis,
+    pub via_calls: Vec<ViaCallSite>,
+    pub closure_captures: BTreeMap<ril_source::span::Span, Vec<(ril_source::span::Span, Mode)>>,
 }
 
 pub fn check(program: &TypedProgram) -> Result<Analysis, Vec<Diagnostic>> {
@@ -519,6 +529,10 @@ pub fn check(program: &TypedProgram) -> Result<Analysis, Vec<Diagnostic>> {
     } else {
         Err(diagnostics)
     }
+}
+
+pub fn check_partial(program: &TypedProgram) -> (Analysis, Vec<Diagnostic>) {
+    check::analyze(program)
 }
 
 pub fn horn_rules(program: &TypedProgram) -> Vec<horn::Rule<usize>> {

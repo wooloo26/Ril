@@ -11,13 +11,13 @@ pub fn from_scalars(via values: []int) -> new ?str
 
 pub fn join(via parts: []str, separator: str) -> str {
     var out = ""
-    var i = 0
-    while i < len(parts) {
-        if i > 0 {
+    var first = true
+    for parts as part {
+        if !first {
             out = "{out}{separator}"
         }
-        out = "{out}{parts[i]}"
-        i += 1
+        first = false
+        out = "{out}{part}"
     }
     out
 }
@@ -70,13 +70,10 @@ pub fn ends_with(text: str, suffix: str) -> bool {
 
 pub fn scalars(text: str) -> new []int {
     let mut out: []int = []
-    var i = 0
-    let n = len(text)
-    while i < n {
+    for 0..len(text) as i {
         if let Some(cp) = at(text, i) {
             Array::push(mut out, cp)
         }
-        i += 1
     }
     new out
 }

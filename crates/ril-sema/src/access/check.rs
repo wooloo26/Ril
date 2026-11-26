@@ -241,6 +241,7 @@ struct DefinitionCheck {
 }
 
 struct ModeUse {
+    span: Span,
     callee: DefinitionId,
     choices: Vec<(usize, Input, Span)>,
 }
@@ -283,6 +284,7 @@ struct Analyzer<'a> {
     mode_uses: Vec<ModeUse>,
     member_schemas: BTreeMap<Span, Vec<Region>>,
     closure_modes: BTreeMap<Span, ClosureModes>,
+    closure_captures: BTreeMap<Span, Vec<(Span, Mode)>>,
     higher_order: higher_order::Calls,
     snapshots: snapshots::Checks,
     snapshot_invocations: Vec<calls::SnapshotInvocation>,
@@ -322,6 +324,7 @@ fn collect(
         mode_uses: Vec::new(),
         member_schemas: BTreeMap::new(),
         closure_modes: BTreeMap::new(),
+        closure_captures: BTreeMap::new(),
         higher_order: higher_order::Calls::default(),
         snapshots: snapshots::Checks::default(),
         snapshot_invocations: Vec::new(),
@@ -440,6 +443,17 @@ pub(super) fn analyze(program: &TypedProgram) -> (Analysis, Vec<Diagnostic>) {
         analysis.summaries.insert(function.id, summary);
     }
     for use_site in std::mem::take(&mut analyzer.mode_uses) {
+        if !program.hir.is_stdlib_file(use_site.span.file) {
+            analysis.via_calls.push(super::ViaCallSite {
+                span: use_site.span,
+                callee: use_site.callee,
+                choices: use_site
+                    .choices
+                    .iter()
+                    .map(|&(idx, mode, _)| (idx, mode))
+                    .collect(),
+            });
+        }
         let Some(summary) = analysis.summaries.get(&use_site.callee) else {
             continue;
         };
@@ -475,6 +489,8 @@ pub(super) fn analyze(program: &TypedProgram) -> (Analysis, Vec<Diagnostic>) {
         }
     }
     analyzer.restrict_mode_domains(&facts, &mut domains, &mut analysis);
+    analysis.closure_captures = std::mem::take(&mut analyzer.closure_captures);
+    analysis.behavior = crate::behavior::analyze(program, &analysis);
     (analysis, analyzer.diagnostics)
 }
 

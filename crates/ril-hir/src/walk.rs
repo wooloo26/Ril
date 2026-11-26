@@ -1453,7 +1453,7 @@ impl Walk<'_> {
             let kind = self.program.definition(def).kind;
             if self.exposure > self.program.definition(def).visibility
                 && !matches!(kind, DefinitionKind::Generic | DefinitionKind::Local)
-                && !(matches!(kind, DefinitionKind::Primitive(_))
+                && !(matches!(kind, DefinitionKind::Primitive(_) | DefinitionKind::Type)
                     && self.program.is_stdlib_file(name.span.file))
                 && !self.local_types.contains(&def)
             {

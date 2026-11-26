@@ -50,8 +50,8 @@ pub enum Intrinsic {
     Inner,
     Clone,
     Derive,
-    Abort,
-    AbsorbPanic,
+    UnwindCtl,
+    RecoverPanic,
     PanicMessage,
     TypeName,
     Fields,
@@ -126,7 +126,7 @@ pub enum StdType {
     Set,
     Draft,
     FieldMode,
-    PanicInfo,
+    PanicReport,
     PanicError,
 }
 

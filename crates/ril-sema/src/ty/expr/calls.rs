@@ -522,7 +522,12 @@ impl Checker<'_> {
                 .iter()
                 .any(|clause| clause == "up" || clause.starts_with("up("))
         {
-            self.invalidate_live(env, Code::E0533);
+            self.invalidate_live(
+                env,
+                Code::E0533,
+                span,
+                crate::ty::NarrowDropCause::OpenStateCall,
+            );
         } else if call
             .state
             .iter()
@@ -533,9 +538,14 @@ impl Checker<'_> {
                 .filter(|arg| matches!(arg.mode, Mode::Mut | Mode::Shared))
             {
                 if argument.mode == Mode::Shared {
-                    self.invalidate_live(env, Code::E0310);
+                    self.invalidate_live(
+                        env,
+                        Code::E0310,
+                        span,
+                        crate::ty::NarrowDropCause::AliasingMut,
+                    );
                 } else {
-                    self.writes_place(env, argument.value);
+                    self.writes_place(env, argument.value, span);
                 }
             }
         }
@@ -721,8 +731,12 @@ impl Checker<'_> {
             for arg in args {
                 self.expr(env, arg.value, None);
             }
-            if self.hir.std_type(adt.definition) == Some(ril_hir::StdType::PanicInfo) {
-                self.error(Code::E0301, span, "PanicInfo has no accessible constructor");
+            if self.hir.std_type(adt.definition) == Some(ril_hir::StdType::PanicReport) {
+                self.error(
+                    Code::E0301,
+                    span,
+                    "PanicReport has no accessible constructor",
+                );
             } else {
                 self.error(Code::E0308, span, "opaque constructor is sealed");
             }

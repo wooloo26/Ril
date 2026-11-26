@@ -33,6 +33,8 @@ pub struct Interface {
     pub functions: BTreeMap<String, Export>,
     pub declarations: BTreeMap<String, Declaration>,
     pub modules: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub behavior: BTreeMap<String, crate::behavior::BehaviorSummary>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -72,6 +74,7 @@ pub struct Generic {
 impl Interface {
     pub fn build(program: &TypedProgram, analysis: &Analysis) -> Self {
         let mut functions = BTreeMap::new();
+        let mut behavior = BTreeMap::new();
         for (&id, callable) in &program.callables {
             let def = program.hir.definition(id);
             if def.kind != DefinitionKind::Function
@@ -88,6 +91,11 @@ impl Interface {
                 continue;
             };
             let key = program.hir.export_name(id);
+            if let Some(beh) = analysis.behavior.summaries.get(&id)
+                && !beh.is_empty()
+            {
+                behavior.insert(key.clone(), beh.clone());
+            }
             let signature = format!("{}", Ty::Callable(callable.clone()).display(&program.hir));
             let mut shape = (**callable).clone();
             if function.body.is_some() || program.imported_functions.contains_key(&id) {
@@ -354,6 +362,7 @@ impl Interface {
                 })
                 .map(|file| (file.path.display().to_string(), declaration_source(file)))
                 .collect(),
+            behavior,
         };
         result.abi_hash = result.compute_hash();
         result.codegen_abi_hash = result.compute_codegen_hash(&opaque_layouts);

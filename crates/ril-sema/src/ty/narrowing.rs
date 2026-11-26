@@ -5,7 +5,7 @@ use ril_source::diag::Code;
 use ril_syntax::syntax::{Condition, Expr, ExprId, Member};
 
 use super::{
-    Ty, Value,
+    NarrowDrop, NarrowDropCause, Ty, Value,
     check::{Checker, Env},
 };
 
@@ -19,7 +19,7 @@ struct Place {
 struct Fact {
     depth: usize,
     is_none: bool,
-    invalidated: Option<Code>,
+    invalidated: Option<(Code, ril_source::span::Span)>,
 }
 
 #[derive(Clone, Default)]
@@ -84,8 +84,8 @@ impl Checker<'_> {
         if let Some(place) = self.place(env, expr)
             && let Some(fact) = env.refinements.0.get(&place)
         {
-            if let Some(code) = fact.invalidated {
-                self.narrow_errors.insert(span, code);
+            if let Some((code, cause_span)) = fact.invalidated {
+                self.narrow_errors.insert(span, (code, cause_span));
             } else if fact.depth > 0 {
                 for _ in 0..fact.depth {
                     if let Some(inner) = ty.as_option(self.hir) {
@@ -181,26 +181,73 @@ impl Checker<'_> {
         }
     }
 
-    pub(super) fn writes_place(&self, env: &mut Env, expr: ExprId) {
+    pub(super) fn writes_place(
+        &mut self,
+        env: &mut Env,
+        expr: ExprId,
+        cause_span: ril_source::span::Span,
+    ) {
         if let Some(place) = self.place(env, expr) {
+            let mut dropped = Vec::new();
             for (candidate, fact) in &mut env.refinements.0 {
                 if candidate.root == place.root
                     && candidate.path.iter().zip(&place.path).all(|(a, b)| a == b)
                 {
-                    fact.invalidated = Some(Code::E0310);
+                    if fact.invalidated.is_none() && fact.depth > 0 {
+                        dropped.push(self.format_place(candidate));
+                    }
+                    fact.invalidated = Some((Code::E0310, cause_span));
                 }
             }
+            for path in dropped {
+                self.narrow_drops.push(NarrowDrop {
+                    span: cause_span,
+                    path,
+                    cause: NarrowDropCause::OverlappingWrite,
+                });
+            }
         } else {
-            self.invalidate_live(env, Code::E0310);
+            self.invalidate_live(
+                env,
+                Code::E0310,
+                cause_span,
+                NarrowDropCause::OverlappingWrite,
+            );
         }
     }
 
-    pub(super) fn invalidate_live(&self, env: &mut Env, code: Code) {
+    pub(super) fn invalidate_live(
+        &mut self,
+        env: &mut Env,
+        code: Code,
+        cause_span: ril_source::span::Span,
+        cause: NarrowDropCause,
+    ) {
+        let mut dropped = Vec::new();
         for (place, fact) in &mut env.refinements.0 {
             if self.live.contains(&place.root) && fact.invalidated.is_none() {
-                fact.invalidated = Some(code);
+                if fact.depth > 0 {
+                    dropped.push(self.format_place(place));
+                }
+                fact.invalidated = Some((code, cause_span));
             }
         }
+        for path in dropped {
+            self.narrow_drops.push(NarrowDrop {
+                span: cause_span,
+                path,
+                cause,
+            });
+        }
+    }
+
+    fn format_place(&self, place: &Place) -> String {
+        let mut out = self.hir.definition(place.root).name.value.clone();
+        for seg in &place.path {
+            out.push('.');
+            out.push_str(seg);
+        }
+        out
     }
 
     pub(super) fn merge_refinements(&self, a: &Env, b: &Env, a_ty: &Ty, b_ty: &Ty) -> Refinements {

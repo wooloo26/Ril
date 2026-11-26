@@ -398,11 +398,16 @@ impl Analyzer<'_> {
             if all_aliases_known {
                 self.mode_uses
                     .extend(aliases.values().map(|&(callee, _)| ModeUse {
+                        span,
                         callee,
                         choices: choices.clone(),
                     }));
             } else if let Some(callee) = id {
-                self.mode_uses.push(ModeUse { callee, choices });
+                self.mode_uses.push(ModeUse {
+                    span,
+                    callee,
+                    choices,
+                });
             }
         }
         if let Some(target) = &target {

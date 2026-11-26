@@ -297,7 +297,7 @@ fn lsp_prelude_definitions_jump_to_std_prelude_ril() -> Result<(), String> {
     let doc_uri = format!("file://{}/pkg/prelude_jump.ril", repo_root.display());
     let source = concat!(
         "type Rec(.{ a: int })\n",
-        "type K = FieldKey<Rec>\n",
+        "type S = SharedObject<Rec>\n",
         "fn check<T |> Tuple>(t: T, x: Option<int>, y: Result<int, PanicError>) -> int {\n",
         "    let _ = t\n",
         "    let fallback = match y {\n",
@@ -323,7 +323,7 @@ fn lsp_prelude_definitions_jump_to_std_prelude_ril() -> Result<(), String> {
     let (res_line, res_col) = locate("Result")?;
     let (panic_line, panic_col) = locate("PanicError")?;
     let (len_line, len_col) = locate("len(")?;
-    let (fk_line, fk_col) = locate("FieldKey")?;
+    let (so_line, so_col) = locate("SharedObject")?;
     let (tup_line, tup_col) = locate("Tuple")?;
 
     let mut input = Vec::new();
@@ -345,7 +345,7 @@ fn lsp_prelude_definitions_jump_to_std_prelude_ril() -> Result<(), String> {
         (3, (res_line, res_col)),
         (4, (panic_line, panic_col)),
         (5, (len_line, len_col)),
-        (6, (fk_line, fk_col)),
+        (6, (so_line, so_col)),
         (7, (tup_line, tup_col)),
     ] {
         input.extend(frame_lsp(&json!({
@@ -386,7 +386,7 @@ fn lsp_prelude_definitions_jump_to_std_prelude_ril() -> Result<(), String> {
         (3, "Result"),
         (4, "PanicError"),
         (5, "len"),
-        (6, "FieldKey"),
+        (6, "SharedObject"),
         (7, "Tuple"),
     ] {
         let uri = frames
@@ -845,6 +845,140 @@ fn main() -> () {
                 .is_some_and(|t| t.contains("ril/file"))
         }),
         "expected Import ril/file code action, got: {actions:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn lsp_hover_inlay_and_w0601_surface_behavior_and_provenance() -> Result<(), String> {
+    let uri = "file:///workspace/provenance.ril";
+    let source = concat!(
+        "fn clamp(x: int, lo: int, hi: int) -> int {\n",
+        "    if x < lo { lo } else if x > hi { hi } else { x }\n",
+        "}\n",
+        "fn flush_batch(mut buf: []int, idx: int) &mut -> int {\n",
+        "    defer assert(len(ref buf) == 0, \"unflushed\")\n",
+        "    let head = buf[idx]\n",
+        "    Array::clear(mut buf)\n",
+        "    head\n",
+        "}\n",
+        "fn main() @io -> () {\n",
+        "    let mut out = [1, 2]\n",
+        "    let log_push = \\x: int -> {\n",
+        "        println(String::inspect(x))\n",
+        "        Array::push(mut out, x)\n",
+        "    }\n",
+        "    log_push(clamp(3, 0, 5))\n",
+        "    let _ = flush_batch(mut out, 0)\n",
+        "}\n",
+    );
+
+    let mut input = Vec::new();
+    input.extend(frame_lsp(&json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {}
+    })));
+    input.extend(frame_lsp(&json!({
+        "jsonrpc": "2.0",
+        "method": "textDocument/didOpen",
+        "params": {
+            "textDocument": { "uri": uri, "languageId": "ril", "version": 1, "text": source }
+        }
+    })));
+    // id 2: hover on `clamp` (pure + total)
+    input.extend(frame_lsp(&json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "textDocument/hover",
+        "params": { "textDocument": { "uri": uri }, "position": { "line": 0, "character": 4 } }
+    })));
+    // id 3: hover on `flush_batch` (&mut(buf) + May panic + May abort process)
+    input.extend(frame_lsp(&json!({
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "textDocument/hover",
+        "params": { "textDocument": { "uri": uri }, "position": { "line": 3, "character": 5 } }
+    })));
+    // id 4: inlayHint over the whole file
+    input.extend(frame_lsp(&json!({
+        "jsonrpc": "2.0",
+        "id": 4,
+        "method": "textDocument/inlayHint",
+        "params": {
+            "textDocument": { "uri": uri },
+            "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 18, "character": 0 } }
+        }
+    })));
+    input.extend(frame_lsp(
+        &json!({ "jsonrpc": "2.0", "id": 5, "method": "shutdown", "params": null }),
+    ));
+    input.extend(frame_lsp(&json!({ "jsonrpc": "2.0", "method": "exit" })));
+
+    let mut output = Vec::new();
+    ril_lsp::handle_session(Cursor::new(input), &mut output)?;
+    let frames = parse_lsp_frames(&output)?;
+
+    // W0601 warning published for `defer assert(...)` in `flush_batch`
+    let diags = frames
+        .get(1)
+        .and_then(|v| v.pointer("/params/diagnostics"))
+        .and_then(Value::as_array)
+        .ok_or("missing publishDiagnostics")?;
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.get("code").and_then(Value::as_str) == Some("W0601")
+                && d.get("severity").and_then(Value::as_u64) == Some(2)),
+        "expected W0601 warning diagnostic, got: {diags:?}"
+    );
+
+    // Hover on `clamp` shows `pure` and `total`, and no panic noise
+    let clamp_hover = frames
+        .get(2)
+        .and_then(|v| v.pointer("/result/contents/value"))
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    assert!(
+        clamp_hover.contains("`pure`")
+            && clamp_hover.contains("`total`")
+            && !clamp_hover.contains("May panic"),
+        "unexpected clamp hover: {clamp_hover}"
+    );
+
+    // Hover on `flush_batch` expands `&mut(buf)`, shows May panic and May abort process
+    let flush_hover = frames
+        .get(3)
+        .and_then(|v| v.pointer("/result/contents/value"))
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    assert!(
+        flush_hover.contains("&mut(buf)")
+            && flush_hover.contains("May panic")
+            && flush_hover.contains("May abort process"),
+        "unexpected flush_batch hover: {flush_hover}"
+    );
+
+    // Inlay hints expand `(buf)` after `&mut` and show `@io &up(mut out)` on closure
+    let hints = frames
+        .get(4)
+        .and_then(|v| v.get("result"))
+        .and_then(Value::as_array)
+        .ok_or("missing inlay hints")?;
+    let labels: Vec<&str> = hints
+        .iter()
+        .filter_map(|h| h.get("label").and_then(Value::as_str))
+        .collect();
+    assert!(
+        labels.contains(&"(buf)"),
+        "expected `(buf)` &mut expansion hint, got: {labels:?}"
+    );
+    assert!(
+        labels
+            .iter()
+            .any(|l| l.contains("@io") && l.contains("&up(mut out)")),
+        "expected closure effect/capture tail hint, got: {labels:?}"
     );
     Ok(())
 }

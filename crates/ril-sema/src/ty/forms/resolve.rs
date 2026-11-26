@@ -333,7 +333,7 @@ impl Checker<'_> {
                     StdType::Option | StdType::Result | StdType::Set => {}
                     StdType::Draft => return Ty::Draft(Box::new(arg0(self, env))),
                     StdType::FieldMode => return Ty::Mode,
-                    StdType::PanicInfo | StdType::PanicError => {}
+                    StdType::PanicReport | StdType::PanicError => {}
                 }
             }
             if is_prim {
@@ -546,7 +546,7 @@ impl Checker<'_> {
         };
         let def = self.hir.definition(definition);
         let adt_kind = match kind {
-            StdType::PanicInfo => AdtKind::Opaque,
+            StdType::PanicReport => AdtKind::Opaque,
             _ => AdtKind::Sum,
         };
         Ty::Adt(Arc::new(Adt {

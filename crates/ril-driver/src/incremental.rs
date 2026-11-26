@@ -22,7 +22,7 @@ use sha2::{Digest as _, Sha256};
 
 use crate::CompileOptions;
 
-const DISK_SCHEMA_VERSION: u32 = 2;
+const DISK_SCHEMA_VERSION: u32 = 3;
 
 pub(crate) type ContentDigest = [u8; 32];
 

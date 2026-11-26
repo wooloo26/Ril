@@ -7,7 +7,7 @@ pub fn insert<T>(mut xs: [via]T, index: int, via item: T) &mut -> ()
 pub fn remove<T>(mut xs: [via]T, index: int) &mut -> new ?T
 
 pub fn clear<T>(mut xs: [via]T) &mut -> () {
-    while len(ref xs) > 0 {
+    for 0..len(ref xs) as _ {
         let _ = pop(mut xs)
     }
 }
@@ -27,42 +27,32 @@ pub fn sort<T: int | f64 | str | bytes>(mut xs: []T) &mut -> () {
 }
 
 pub fn at<T>(xs: []T, index: int) &return(xs) -> new ?T {
-    if index < 0 || index >= len(xs) {
-        None
-    } else {
-        Some(xs[index])
-    }
+    xs?[index]
 }
 
 pub fn contains<T>(xs: []T, target: T) -> bool {
-    var i = 0
-    while i < len(xs) {
-        if xs[i] == target {
+    for xs as x {
+        if x == target {
             return true
         }
-        i += 1
     }
     false
 }
 
 pub fn map<T, U>(xs: []T, f: fn(T) @ -> U) -> new []U {
     let mut out: []U = []
-    var i = 0
-    while i < len(xs) {
-        push(mut out, f(xs[i]))
-        i += 1
+    for xs as x {
+        push(mut out, f(x))
     }
     new out
 }
 
 pub fn filter<T>(xs: []T, pred: fn(T) @ -> bool) &return(xs) -> new []T {
     let mut out: []T = []
-    var i = 0
-    while i < len(xs) {
-        if pred(xs[i]) {
-            push(mut out, xs[i])
+    for xs as x {
+        if pred(x) {
+            push(mut out, x)
         }
-        i += 1
     }
     new out
 }

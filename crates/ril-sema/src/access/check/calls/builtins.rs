@@ -49,7 +49,7 @@ impl Analyzer<'_> {
                 }
                 self.publish_at_exit(ctx, ledger, false);
             }
-            "abort" => {
+            "unwind_ctl" => {
                 if let Some(k) = first {
                     self.link_invocation(ctx, k);
                     ledger.consume_datum_linear(k);
@@ -122,7 +122,7 @@ impl Analyzer<'_> {
                     }
                 }
             }
-            "absorb_panic" => {
+            "recover_panic" => {
                 let has_forbidden_outer_handle = syntax.first().is_some_and(|arg| {
                     let arg_span = self.ast(ctx.file).expr(arg.value).span;
                     self.program

@@ -6,7 +6,7 @@ pub use ril/io::(print, println)
 pub use ril/map
 pub use ril/numeric
 pub use ril/reflect
-pub use ril/reflect::FieldMode
+pub use ril/reflect::(FieldMode, type_name, fields, variants)
 pub use ril/set
 pub use ril/set::Set
 pub use ril/string
@@ -25,20 +25,20 @@ pub type Result<T, E> {
 
 pub use Result::(Ok, Err)
 
-pub opaque type PanicInfo(str)
+pub opaque type PanicReport(str)
 
 pub type PanicError {
-    Panicked(PanicInfo)
+    Panicked(PanicReport)
 }
 
 pub use PanicError::Panicked
 
 pub opaque type Draft<T>
 
-meta fn compile_error_code(code: str, message: str) -> never
+pkg meta fn compile_error_code(code: str, message: str) -> never
 pub meta fn compile_error(message: str) -> never
 
-pub type LenTarget = \T -> match <T> {
+type LenTarget = \T -> match <T> {
     <str> | <bytes> | <Set<_>> -> <T>
     <[let M]_> -> <T>
     <[_: let M _]> -> <T>
@@ -50,12 +50,12 @@ pub type Tuple = \T -> match <T> {
     _ -> compile_error_code("E0301", "type does not satisfy Tuple")
 }
 
-pub type Unwrap = \W -> match <W> {
+type Unwrap = \W -> match <W> {
     <Draft<let Inner>> -> <Draft<Unwrap<Inner>>>
     _ -> <UnwrapNominal<W>>
 }
 
-pub type NominalWrapper = \W -> match <W> {
+type NominalWrapper = \W -> match <W> {
     <Draft<let Inner>> -> {
         let _ = <NominalWrapper<Inner>>
         <W>
@@ -66,7 +66,7 @@ pub type NominalWrapper = \W -> match <W> {
     }
 }
 
-pub type FieldKey = \T -> match <T> {
+pkg type FieldKey = \T -> match <T> {
     <.{ ..}> -> <str>
     <(..)> -> <int>
     _ -> match <TryUnwrapNominal<T>> {
@@ -90,12 +90,9 @@ pub fn len<T |> LenTarget>(via item: T) -> int
 pub fn inner<W |> NominalWrapper>(via wrapper: W) -> infer Unwrap<W>
 pub fn clone<T |> SharedObject>(via value: T) -> new T
 pub fn derive<T |> SharedObject>(base: T, via update: fn(mut Draft<T>) @& -> ()) -> T
-pub fn abort<T>(new k: T) -> ()
-pub fn absorb_panic<T>(via action: fn() @& -> infer T) -> infer !<T, PanicError>
-pub fn panic_message(info: PanicInfo) -> str
-pub meta fn type_name<T>(tv: Type<T>) -> str
-pub meta fn fields<T>(tv: Type<T>) -> [](FieldMode, FieldKey<T>)
-pub meta fn variants<T>(tv: Type<T>) -> []str
+pub fn unwind_ctl<T>(new k: T) -> ()
+pub fn recover_panic<T>(via action: fn() @& -> infer T) -> infer !<T, PanicError>
+pub fn panic_message(report: PanicReport) -> str
 pub fn panic(message: str) -> never
 pub fn assert(condition: bool, message: str = "assertion failed") -> () {
     if !condition {

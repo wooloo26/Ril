@@ -66,7 +66,7 @@ fn main() @io -> () {
     with Log::tag = \-> "outer"
     with Log::emit = \msg -> println(msg)
     work(false)
-    let outcome = absorb_panic(\-> {
+    let outcome = recover_panic(\-> {
         with Log::tag = \-> "outer"
         with Log::emit = \msg -> {
             if msg == "inner:7" {
@@ -91,7 +91,7 @@ type Box = .{ x: int }
 
 fn main() @io -> () {
     let base = Box.{ x: 10 }
-    let res = absorb_panic(\-> {
+    let res = recover_panic(\-> {
         derive(base, \mut d -> {
             d.x = 99
             panic("abort draft")
@@ -187,7 +187,7 @@ fn main() @io -> () {
         var cleaned = 0
         let v = with {
             ctl Stop::halt = \n, new k -> {
-                abort(new k)
+                unwind_ctl(new k)
                 n
             }
             defer { cleaned += 1 }

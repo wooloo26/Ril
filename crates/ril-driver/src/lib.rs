@@ -9,6 +9,7 @@ use std::{
 use ril_hir::{self as hir, Program};
 use ril_sema::{
     access::{self, Analysis},
+    behavior::BehaviorSummary,
     iface::{self, Export, Interface},
     ty::{self, TypedProgram},
 };
@@ -23,6 +24,7 @@ use ril_syntax::{
 use ril_test::{CheckResult, ExecOutput, Stage, TestDriver, Unit, VirtualPackage};
 
 mod incremental;
+pub mod inspect;
 mod native;
 mod package;
 
@@ -231,13 +233,34 @@ impl Compiler {
         pkg: &VirtualPackage,
     ) -> Result<(TypedProgram, Analysis), Vec<Diagnostic>> {
         let prepared = prepare_inputs(pkg, self.cache());
-        let (_, program, imports, must_consume) =
+        let (_, program, imports, behaviors, must_consume) =
             run_frontend_full(pkg, Stage::Hir, prepared, self.cache())?;
         let program =
             program.ok_or_else(|| vec![Diagnostic::unsupported("missing frontend program")])?;
-        let typed = check_types(program, pkg.budget, imports, &must_consume)?;
+        let typed = check_types(program, pkg.budget, imports, behaviors, &must_consume)?;
         let analysis = access::check(&typed)?;
         Ok((typed, analysis))
+    }
+
+    pub fn inspect_package(
+        &self,
+        pkg: &VirtualPackage,
+        query: &inspect::InspectQuery,
+    ) -> inspect::InspectReport {
+        let partial = self.analyze_partial(pkg);
+        let entry = partial
+            .typed
+            .as_ref()
+            .and_then(|t| t.hir.files().find(|f| f.path == pkg.entry).map(|f| f.id))
+            .or_else(|| {
+                partial
+                    .sources
+                    .file_paths()
+                    .into_iter()
+                    .find(|(_, p)| p == &pkg.entry)
+                    .map(|(id, _)| id)
+            });
+        inspect::build_report(&partial, entry, query)
     }
 
     pub fn analyze_cached(
@@ -258,6 +281,7 @@ impl Compiler {
         let sources = prepared.sources.clone();
         let entry = prepared.entry;
         let imports = prepared.imports.clone();
+        let behaviors = prepared.behaviors.clone();
         let must_consume = prepared.must_consume_types.clone();
         let mut diagnostics = prepared.diagnostics.clone();
 
@@ -299,14 +323,18 @@ impl Compiler {
             return PartialAnalysis {
                 sources,
                 typed: None,
+                analysis: None,
+                stage: "parse",
                 diagnostics,
             };
         };
 
         let had_syntax_errors = !diagnostics.is_empty();
         let (hir_prog, hir_diags) = hir::lower_partial(parsed, entry);
+        let had_hir_errors = !hir_diags.is_empty();
         diagnostics.extend(hir_diags);
         let (mut typed, type_diags) = ty::check_partial(hir_prog, pkg.budget);
+        let had_type_errors = !type_diags.is_empty();
         diagnostics.extend(type_diags);
         if !imports.is_empty() {
             let mut imports = imports;
@@ -321,6 +349,19 @@ impl Compiler {
                 })
                 .collect();
         }
+        if !behaviors.is_empty() {
+            let mut behaviors = behaviors;
+            typed.imported_behaviors = typed
+                .callables
+                .keys()
+                .filter(|&&id| typed.hir.operation_effect(id).is_none())
+                .filter_map(|&id| {
+                    behaviors
+                        .remove(&typed.hir.export_name(id))
+                        .map(|beh| (id, beh))
+                })
+                .collect();
+        }
         if !must_consume.is_empty() {
             typed.imported_must_consume = typed
                 .hir
@@ -329,15 +370,22 @@ impl Compiler {
                 .map(|(id, _)| id)
                 .collect();
         }
-        if !had_syntax_errors
-            && diagnostics.is_empty()
-            && let Err(access_diags) = access::check(&typed)
-        {
+        let (analysis, stage) = if !had_syntax_errors && !had_hir_errors && !had_type_errors {
+            let (analysis, access_diags) = access::check_partial(&typed);
             diagnostics.extend(access_diags);
-        }
+            (Some(Arc::new(analysis)), "access")
+        } else if had_syntax_errors {
+            (None, "parse")
+        } else if had_hir_errors {
+            (None, "hir")
+        } else {
+            (None, "type")
+        };
         PartialAnalysis {
             sources,
             typed: Some(Arc::new(typed)),
+            analysis,
+            stage,
             diagnostics,
         }
     }
@@ -366,11 +414,11 @@ impl Compiler {
             return hit;
         }
         let result = (|| {
-            let (_, program, imports, must_consume) =
+            let (_, program, imports, behaviors, must_consume) =
                 run_frontend_full(pkg, Stage::Hir, prepared, self.cache())?;
             let program =
                 program.ok_or_else(|| vec![Diagnostic::unsupported("missing frontend program")])?;
-            check_types(program, pkg.budget, imports, &must_consume).map(Arc::new)
+            check_types(program, pkg.budget, imports, behaviors, &must_consume).map(Arc::new)
         })();
         if let Some(cache) = &self.cache {
             cache.put_typed(key, result.clone());
@@ -463,6 +511,8 @@ pub struct Checked {
 pub struct PartialAnalysis {
     pub sources: SourceMap,
     pub typed: Option<Arc<TypedProgram>>,
+    pub analysis: Option<Arc<Analysis>>,
+    pub stage: &'static str,
     pub diagnostics: Vec<Diagnostic>,
 }
 
@@ -507,6 +557,7 @@ fn check_types(
     program: Program,
     budget: Option<u64>,
     imports: BTreeMap<String, Export>,
+    behaviors: BTreeMap<String, BehaviorSummary>,
     must_consume: &BTreeSet<String>,
 ) -> Result<TypedProgram, Vec<Diagnostic>> {
     let mut typed = ty::check(program, budget)?;
@@ -520,6 +571,19 @@ fn check_types(
                 imports
                     .remove(&typed.hir.export_name(id))
                     .map(|export| (id, export))
+            })
+            .collect();
+    }
+    if !behaviors.is_empty() {
+        let mut behaviors = behaviors;
+        typed.imported_behaviors = typed
+            .callables
+            .keys()
+            .filter(|&&id| typed.hir.operation_effect(id).is_none())
+            .filter_map(|&id| {
+                behaviors
+                    .remove(&typed.hir.export_name(id))
+                    .map(|beh| (id, beh))
             })
             .collect();
     }
@@ -547,6 +611,7 @@ struct PreparedInputs {
     valid: Vec<PreparedFile>,
     entry: Option<FileId>,
     imports: BTreeMap<String, Export>,
+    behaviors: BTreeMap<String, BehaviorSummary>,
     must_consume_types: BTreeSet<String>,
     diagnostics: Vec<Diagnostic>,
     package_key: PackageKey,
@@ -559,6 +624,7 @@ fn prepare_inputs(pkg: &VirtualPackage, cache: Option<&IncrementalCache>) -> Pre
     let mut valid = Vec::new();
     let mut entry = None;
     let mut imports = BTreeMap::new();
+    let mut behaviors = BTreeMap::new();
     let mut must_consume_types = BTreeSet::new();
     let mut fingerprints = Vec::new();
     let mut codegen_hashes = Vec::new();
@@ -585,6 +651,10 @@ fn prepare_inputs(pkg: &VirtualPackage, cache: Option<&IncrementalCache>) -> Pre
                 imports.extend(interface.functions.iter().filter_map(|(name, export)| {
                     name.strip_prefix(&prefix)
                         .map(|local| (format!("{}::{local}", logical.display()), export.clone()))
+                }));
+                behaviors.extend(interface.behavior.iter().filter_map(|(name, beh)| {
+                    name.strip_prefix(&prefix)
+                        .map(|local| (format!("{}::{local}", logical.display()), beh.clone()))
                 }));
                 must_consume_types.extend(interface.declarations.iter().filter_map(
                     |(name, decl)| {
@@ -656,6 +726,7 @@ fn prepare_inputs(pkg: &VirtualPackage, cache: Option<&IncrementalCache>) -> Pre
         valid,
         entry,
         imports,
+        behaviors,
         must_consume_types,
         diagnostics,
         package_key: PackageKey::new(pkg.unit, pkg.entry.clone(), fingerprints),
@@ -669,13 +740,14 @@ fn run_frontend(
     prepared: PreparedInputs,
     cache: Option<&IncrementalCache>,
 ) -> Result<Option<Program>, Vec<Diagnostic>> {
-    run_frontend_full(pkg, stage, prepared, cache).map(|(_, program, _, _)| program)
+    run_frontend_full(pkg, stage, prepared, cache).map(|(_, program, _, _, _)| program)
 }
 
 type FrontendOutput = (
     SourceMap,
     Option<Program>,
     BTreeMap<String, Export>,
+    BTreeMap<String, BehaviorSummary>,
     BTreeSet<String>,
 );
 
@@ -690,13 +762,14 @@ fn run_frontend_full(
         valid,
         entry,
         imports,
+        behaviors,
         must_consume_types,
         mut diagnostics,
         ..
     } = prepared;
     if stage == Stage::Source || !diagnostics.is_empty() {
         return if diagnostics.is_empty() {
-            Ok((sources, None, imports, must_consume_types))
+            Ok((sources, None, imports, behaviors, must_consume_types))
         } else {
             Err(diagnostics)
         };
@@ -757,7 +830,7 @@ fn run_frontend_full(
         return Err(diagnostics);
     }
     if stage < Stage::Hir {
-        return Ok((sources, None, imports, must_consume_types));
+        return Ok((sources, None, imports, behaviors, must_consume_types));
     }
     let Some(entry) = entry else {
         let missing_id = FileId::from_path(&pkg.entry);
@@ -768,7 +841,13 @@ fn run_frontend_full(
         )]);
     };
     let program = hir::lower(parsed, entry)?;
-    Ok((sources, Some(program), imports, must_consume_types))
+    Ok((
+        sources,
+        Some(program),
+        imports,
+        behaviors,
+        must_consume_types,
+    ))
 }
 
 impl TestDriver for Compiler {

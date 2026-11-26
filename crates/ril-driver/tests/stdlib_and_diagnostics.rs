@@ -221,7 +221,7 @@ fn prelude_real_sums_platform_math_and_removed_aliases() -> Result<(), String> {
             let err_val: Result<int, str> = Result::Err("boom")
             assert(err_val == Err("boom"))
 
-            let caught = absorb_panic(\-> { panic("oops"); 1 })
+            let caught = recover_panic(\-> { panic("oops"); 1 })
             match caught {
                 Result::Ok(_) -> panic("expected panic")
                 Result::Err(Panicked(info)) -> assert(panic_message(info) == "oops")
@@ -394,11 +394,8 @@ fn wave_c_soundness_static_checks_narrowing_patterns_and_nominals() -> Result<()
         type Config(.{ host: str = "localhost", port: int = 8080 })
         meta let DEFAULT_CFG = Config::(.{ port: 9000 })
 
-        fn unwrap_copy<W |> NominalWrapper>(w: W) -> Unwrap<W> { inner(w) }
-        fn coord_kind<T>(k: FieldKey<T>) -> FieldKey<T> { k }
         fn pair_only<T |> Tuple>(t: T) -> T { t }
         fn shared_only<T |> SharedObject>(v: T) -> T { v }
-        fn len_only<T |> LenTarget>(v: T) -> int { len(v) }
 
         fn narrow_and(x: ?int) -> bool { x != None && x > 5 }
         fn narrow_or(x: ?int) -> bool { x == None || x > 5 }
@@ -419,12 +416,9 @@ fn wave_c_soundness_static_checks_narrowing_patterns_and_nominals() -> Result<()
             assert(inner(ids[0]) == 1 && inner(ids[2]) == 3)
 
             -- Prelude static checks & helpers
-            assert(unwrap_copy(UserId::(42)) == 42)
-            assert(coord_kind<Config>("host") == "host")
-            assert(coord_kind<(int, str)>(0) == 0)
             assert(pair_only((1, 2)) == (1, 2))
             assert(shared_only([1, 2]) == [1, 2])
-            assert(len_only("abc") == 3)
+            assert(len("abc") == 3)
 
             -- Static record defaults evaluated
             assert(DEFAULT_CFG.host == "localhost" && DEFAULT_CFG.port == 9000)
@@ -473,9 +467,10 @@ fn wave_c_soundness_static_checks_narrowing_patterns_and_nominals() -> Result<()
             "fn f<T |> Tuple>(x: T) -> T { x }\nfn main() -> () { let _ = f(1) }\n",
             Code::E0301,
         ),
+        ("fn main() -> () { let _ = len(1) }\n", Code::E0301),
         (
-            "fn f<T |> LenTarget>(x: T) -> T { x }\nfn main() -> () { let _ = f(1) }\n",
-            Code::E0301,
+            "fn f<T |> LenTarget>(x: T) -> T { x }\nfn main() -> () {}\n",
+            Code::E0204,
         ),
         (
             "type BadKey { Num(f64) }\nfn f(m: [BadKey: int]) -> () { let _ = m }\nfn main() -> () {}\n",
@@ -532,7 +527,7 @@ fn wave_c_soundness_static_checks_narrowing_patterns_and_nominals() -> Result<()
 }
 
 #[test]
-fn wave_d_effects_guards_absorb_panic_and_ctl() -> Result<(), String> {
+fn wave_d_effects_guards_recover_panic_and_ctl() -> Result<(), String> {
     let source = r#"
         type Box = .{ var v: int }
         eff Tag { fn mark() -> int }
@@ -559,13 +554,13 @@ fn wave_d_effects_guards_absorb_panic_and_ctl() -> Result<(), String> {
             assert(take_up(mut up_fn) == 11)
             assert(ref_alias(ref b) == 11)
 
-            -- ctl Yield + abort(new k) + defer cleanup
+            -- ctl Yield + unwind_ctl(new k) + defer cleanup
             let mut out: []int = []
             var unwound = false
             with {
                 ctl Yield::emit = \v, new k -> {
                     Array::push(mut out, v)
-                    if len(ref out) < 2 { k() } else { abort(new k) }
+                    if len(ref out) < 2 { k() } else { unwind_ctl(new k) }
                 }
                 defer { unwound = true }
                 let _ = Array::map([10, 20, 30], \x -> { Yield::emit(x); x })
@@ -605,17 +600,17 @@ fn wave_d_effects_guards_absorb_panic_and_ctl() -> Result<(), String> {
             Code::E0549,
         ),
         (
-            "fn main() -> () { let _ = absorb_panic(42) }\n",
+            "fn main() -> () { let _ = recover_panic(42) }\n",
             Stage::Type,
             Code::E0338,
         ),
         (
-            "fn main() -> () { let _ = absorb_panic(\\x: int -> x) }\n",
+            "fn main() -> () { let _ = recover_panic(\\x: int -> x) }\n",
             Stage::Type,
             Code::E0314,
         ),
         (
-            "eff Y { ctl step() -> () }\nfn main() -> () { with { ctl Y::step = \\new k -> { let _ = absorb_panic(\\-> abort(new k)); () }; Y::step() } }\n",
+            "eff Y { ctl step() -> () }\nfn main() -> () { with { ctl Y::step = \\new k -> { let _ = recover_panic(\\-> unwind_ctl(new k)); () }; Y::step() } }\n",
             Stage::Access,
             Code::E0608,
         ),
@@ -968,9 +963,14 @@ fn de_magification_self_hosted_set_stdlib_convert_compile_error_and_wrapper_synt
             Code::E0301,
         ),
         (
-            "type BadKey = FieldKey<int>\nfn main() -> () {}\n",
+            "fn main() -> () { let _ = fields(<int>) }\n",
             Stage::Type,
             Code::E0358,
+        ),
+        (
+            "type BadKey = FieldKey<int>\nfn main() -> () {}\n",
+            Stage::Hir,
+            Code::E0204,
         ),
     ] {
         let mut pkg = VirtualPackage::new(Unit::Bin);

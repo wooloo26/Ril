@@ -519,7 +519,7 @@ mod native {
             // SAFETY: raw is live and unique.
             let rt = unsafe { ctx(raw) };
             let Some(&Object::Continuation(coro_id)) = rt.gc.object(k) else {
-                rt.raise("expected ctl continuation in abort");
+                rt.raise("expected ctl continuation in unwind_ctl");
                 return Value::UNIT;
             };
             let Some(cont) = rt.ctl.continuations.remove(&coro_id) else {

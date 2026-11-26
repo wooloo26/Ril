@@ -5,7 +5,10 @@ use std::{
 };
 
 use ril_driver::{CompileOptions, Compiler, PartialAnalysis};
-use ril_sema::ty::{Ty, TypedProgram};
+use ril_sema::{
+    access::Analysis,
+    ty::{Ty, TypedProgram},
+};
 use ril_source::span::{FileId, Span};
 
 use crate::workspace::{LspConfig, WorkspacePackage, build_package_with_override};
@@ -14,6 +17,8 @@ use crate::workspace::{LspConfig, WorkspacePackage, build_package_with_override}
 pub(crate) struct CachedDoc {
     pub(crate) latest_typed: Option<Arc<TypedProgram>>,
     pub(crate) last_good_typed: Option<Arc<TypedProgram>>,
+    pub(crate) latest_analysis: Option<Arc<Analysis>>,
+    pub(crate) last_good_analysis: Option<Arc<Analysis>>,
 }
 
 pub(crate) struct LspState {
@@ -51,8 +56,10 @@ impl LspState {
         let entry = self.cache.entry(uri.to_owned()).or_default();
         if let Some(ref typed) = partial.typed {
             entry.latest_typed = Some(Arc::clone(typed));
+            entry.latest_analysis = partial.analysis.clone();
             if partial.diagnostics.is_empty() {
                 entry.last_good_typed = Some(Arc::clone(typed));
+                entry.last_good_analysis = partial.analysis.clone();
             }
         }
         Some((ws, partial))
@@ -64,22 +71,36 @@ impl LspState {
         &mut self,
         uri: &str,
     ) -> Option<(WorkspacePackage, Arc<TypedProgram>)> {
+        let (ws, typed, _) = self.best_analysis(uri)?;
+        Some((ws, typed))
+    }
+
+    /// Returns the best available `(TypedProgram, Option<Analysis>)` snapshot for `uri`.
+    pub(crate) fn best_analysis(
+        &mut self,
+        uri: &str,
+    ) -> Option<(WorkspacePackage, Arc<TypedProgram>, Option<Arc<Analysis>>)> {
         let ws = self.build_package(uri)?;
         if let Some(cached) = self.cache.get(uri)
             && let Some(ref typed) = cached.latest_typed
         {
-            return Some((ws, Arc::clone(typed)));
+            return Some((ws, Arc::clone(typed), cached.latest_analysis.clone()));
         }
         let partial = self.compiler.analyze_partial(&ws.pkg);
         let entry = self.cache.entry(uri.to_owned()).or_default();
         if let Some(typed) = partial.typed {
             entry.latest_typed = Some(Arc::clone(&typed));
+            entry.latest_analysis = partial.analysis.clone();
             if partial.diagnostics.is_empty() {
                 entry.last_good_typed = Some(Arc::clone(&typed));
+                entry.last_good_analysis = partial.analysis.clone();
             }
-            return Some((ws, typed));
+            return Some((ws, typed, partial.analysis));
         }
-        entry.last_good_typed.clone().map(|typed| (ws, typed))
+        entry
+            .last_good_typed
+            .clone()
+            .map(|typed| (ws, typed, entry.last_good_analysis.clone()))
     }
 
     /// Compiles a sanitized probe version of `uri` (e.g. stripping an incomplete

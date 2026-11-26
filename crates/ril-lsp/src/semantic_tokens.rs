@@ -280,13 +280,26 @@ fn collect_ast_roles(
                     if let Some(name) = &p.name {
                         if let Some(id) = hir.resolve(name.span).and_then(|r| r.definition()) {
                             param_defs.insert(id);
+                            if matches!(
+                                p.mode,
+                                ril_syntax::syntax::Mode::Mut | ril_syntax::syntax::Mode::Shared
+                            ) {
+                                mutable_defs.insert(id);
+                            }
                         } else if name.value != "_" {
+                            let mut mods = MOD_DECLARATION;
+                            if matches!(
+                                p.mode,
+                                ril_syntax::syntax::Mode::Mut | ril_syntax::syntax::Mode::Shared
+                            ) {
+                                mods |= MOD_MODIFICATION;
+                            }
                             insert_single_line_token(
                                 tokens_by_start,
                                 text,
                                 name.span,
                                 TT_PARAMETER,
-                                MOD_DECLARATION,
+                                mods,
                             );
                         }
                     }

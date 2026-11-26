@@ -1103,7 +1103,7 @@ pub opaque type Token(.{ mut k: ctl() -> () })
 pub fn make_token(new k: ctl() -> ()) -> new Token { Token::(.{ mut k: new k }) }
 pub fn consume_token(new t: Token) -> () {
     let Token::(.{ mut k }) = new t
-    abort(new k)
+    unwind_ctl(new k)
 }
 pub fn with_defer(cb: fn() @ -> ()) -> () {
     defer cb()

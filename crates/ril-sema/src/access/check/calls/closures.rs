@@ -391,6 +391,18 @@ impl Analyzer<'_> {
                 })
                 .collect();
         }
+        let cap_info: Vec<(Span, Mode)> = used
+            .iter()
+            .filter_map(|binding| {
+                ledger
+                    .slots
+                    .get(binding)
+                    .map(|slot| (*binding, if slot.variable { Mode::Mut } else { slot.mode }))
+            })
+            .collect();
+        if !cap_info.is_empty() {
+            self.closure_captures.insert(node.span, cap_info);
+        }
         let new = ctx.expected == Mode::New;
         let mut closure = Datum::source(
             node.span,

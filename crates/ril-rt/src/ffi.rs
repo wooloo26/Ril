@@ -142,7 +142,7 @@ runtime_functions! {
     fn ril_rt_panic_message(rt, info: Value) -> Value {
         match rt.gc.object(info) {
             Some(Object::Str(_)) => info,
-            _ => rt.checked(Err("panic_message requires PanicInfo")),
+            _ => rt.checked(Err("panic_message requires PanicReport")),
         }
     }
     fn ril_rt_len(rt, value: Value) -> Value {

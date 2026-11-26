@@ -347,7 +347,54 @@ fn publish_diagnostics(state: &mut LspState, uri: &str) -> Value {
             {
                 obj.insert("code".into(), json!(code.as_str()));
             }
+            if !diag.labels().is_empty()
+                && let Some(obj) = item.as_object_mut()
+            {
+                let related: Vec<Value> = diag
+                    .labels()
+                    .iter()
+                    .filter_map(|label| {
+                        let range = span_to_lsp_range(&partial.sources, label.span)?;
+                        Some(json!({
+                            "location": { "uri": uri, "range": range },
+                            "message": label.message
+                        }))
+                    })
+                    .collect();
+                if !related.is_empty() {
+                    obj.insert("relatedInformation".into(), json!(related));
+                }
+            }
             diagnostics.push(item);
+        }
+        if let Some(ref analysis) = partial.analysis {
+            for warn in ril_driver::inspect::defer_warnings_for_file(analysis, entry_file_id) {
+                let range =
+                    span_to_lsp_range(&partial.sources, warn.defer_span).unwrap_or_else(zero_range);
+                let mut item = json!({
+                    "range": range,
+                    "severity": 2,
+                    "code": "W0601",
+                    "source": "ril",
+                    "message": "defer cleanup may panic; a panic during unwinding aborts the process and bypasses recover_panic"
+                });
+                if let Some(scope_span) = warn.scope_panic_span
+                    && let Some(scope_range) = span_to_lsp_range(&partial.sources, scope_span)
+                    && let Some(obj) = item.as_object_mut()
+                {
+                    obj.insert(
+                        "relatedInformation".into(),
+                        json!([{
+                            "location": { "uri": uri, "range": scope_range },
+                            "message": warn
+                                .scope_panic_detail
+                                .as_deref()
+                                .unwrap_or("enclosing scope may panic here")
+                        }]),
+                    );
+                }
+                diagnostics.push(item);
+            }
         }
     }
     json!({

@@ -76,10 +76,19 @@ pub fn infer_unit(path: &Path) -> Unit {
     if path.to_string_lossy().ends_with(".d.ril") {
         return Unit::Decl;
     }
+    let target = if path.is_dir() {
+        fs::read_to_string(path.join("ril.toml"))
+            .ok()
+            .and_then(|text| parse_manifest(&text).ok())
+            .and_then(|m| m.entry)
+            .map_or_else(|| path.join("src/main.ril"), |entry| path.join(entry))
+    } else {
+        path.to_owned()
+    };
     let main = (|| {
-        let bytes = fs::read(path).ok()?;
+        let bytes = fs::read(&target).ok()?;
         let source =
-            SourceFile::from_bytes(FileId::from_path(path), path.to_owned(), &bytes).ok()?;
+            SourceFile::from_bytes(FileId::from_path(&target), target.clone(), &bytes).ok()?;
         let tokens = lexer::lex(&source).ok()?;
         Some(has_top_level_main(&source, &tokens))
     })();

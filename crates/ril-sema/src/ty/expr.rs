@@ -228,12 +228,19 @@ impl Checker<'_> {
             Expr::Member { base, member, .. } => {
                 let receiver = self.expr(env, *base, None);
                 if receiver.is_option(self.hir)
-                    && let Some(code) = self
+                    && let Some((code, cause_span)) = self
                         .narrow_errors
                         .get(&self.ast(env.file).expr(*base).span)
                         .copied()
                 {
-                    self.error(code, span, "projection depends on an invalidated narrowing");
+                    self.error_diag(
+                        ril_source::diag::Diagnostic::error(
+                            code,
+                            span,
+                            "projection depends on an invalidated narrowing",
+                        )
+                        .with_label(cause_span, "narrowing invalidated here"),
+                    );
                     return Ty::Unknown;
                 }
                 self.project(env, member, &receiver, span, false)
@@ -755,8 +762,15 @@ impl Checker<'_> {
         {
             for expression in [left, right] {
                 let span = ast.expr(expression).span;
-                if let Some(code) = self.narrow_errors.get(&span).copied() {
-                    self.error(code, span, "operation depends on an invalidated narrowing");
+                if let Some((code, cause_span)) = self.narrow_errors.get(&span).copied() {
+                    self.error_diag(
+                        ril_source::diag::Diagnostic::error(
+                            code,
+                            span,
+                            "operation depends on an invalidated narrowing",
+                        )
+                        .with_label(cause_span, "narrowing invalidated here"),
+                    );
                     return Ty::Unknown;
                 }
             }
@@ -875,7 +889,7 @@ impl Checker<'_> {
             );
         }
         if assignment {
-            self.writes_place(env, left);
+            self.writes_place(env, left, ast.expr(left).span);
             Ty::Unit
         } else if comparison {
             Ty::Bool

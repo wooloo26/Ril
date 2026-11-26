@@ -49,7 +49,7 @@ fn main() @io -> () {
 
 -- @case double_panic_aborts run-abort backend=both
 fn main() -> () {
-    let outcome = absorb_panic \-> {
+    let outcome = recover_panic \-> {
         defer panic("second")
         panic("first")
     }
@@ -67,7 +67,7 @@ fn main() @io -> () {
 -- @case panic_absorption run-pass backend=both
 -- @expect-stdout survived
 fn main() @io -> () {
-    let outcome = absorb_panic \-> { panic("caught") }
+    let outcome = recover_panic \-> { panic("caught") }
     match outcome { Ok(_) -> (); Err(_) -> println("survived") }
 }
 
@@ -237,11 +237,11 @@ fn main() -> () {
 fn fail() -> int { panic("expected failure") }
 fn main() @io -> () {
     let action = fail
-    let caught: !<int, PanicError> = absorb_panic(action)
+    let caught: !<int, PanicError> = recover_panic(action)
     match caught {
         Ok(_) -> panic("panic should have been absorbed")
         Err(PanicError::Panicked(info)) -> {
-            assert(String::inspect(info) == "<PanicInfo>")
+            assert(String::inspect(info) == "<PanicReport>")
             println(panic_message(info))
         }
     }
@@ -318,7 +318,7 @@ fn main() -> () {
 
 -- @case isolated_closure_in_new_return_handles_its_own_panic run-pass backend=both
 fn protected(values: []int) -> new !<int, PanicError> {
-    absorb_panic \-> values[1]
+    recover_panic \-> values[1]
 }
 fn main() -> () {
     let Err(PanicError::Panicked(info)) = protected([1]) else { panic("expected error") }
@@ -386,7 +386,7 @@ fn main() @io -> () {
     let outside = Cell.{ count: 7 }
     let row = [Cell.{ count: 1 }, outside]
     let base = (row, row)
-    let caught = absorb_panic \-> {
+    let caught = recover_panic \-> {
         let _ = derive(base) \mut draft -> {
             Array::push(mut draft.0, outside)
             draft.0[1].count = 8

@@ -492,7 +492,7 @@ def boundaryCases : List (String × Bool) :=
    ("installed_handler_does_not_cover_its_own_arm", (handled handlerEffect 3).effects.isEmpty),
    ("outer_handler_covers_inner_arm", (handled outerHandler 3).effects.isEmpty),
    ("defer_requires_covering_handler_before_defer", (handled cleanupEffect 3).effects.isEmpty),
-   ("absorb_panic_forbids_outer_ctl_handler",
+   ("recover_panic_forbids_outer_ctl_handler",
       absorbPanicAdmissible pureSources pureBody [] true false),
    ("derive_forbids_outer_ctl", deriveCallbackAdmissible true false)]
 

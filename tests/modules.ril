@@ -156,11 +156,11 @@ use pkg/array
 pub fn pop_front<T>(mut xs: [via]T) &mut -> new ?T
 -- ^ E0902
 
--- @case registered_prelude_abort_signature_must_match compile-fail E0909 unit=lib
+-- @case registered_prelude_unwind_ctl_signature_must_match compile-fail E0909 unit=lib
 -- @file pkg/main.ril
 use ril/prelude
 -- @file ril/prelude.ril
-pub fn abort(x: int) -> ()
+pub fn unwind_ctl(x: int) -> ()
 -- ^ E0909
 
 -- @case registered_prelude_primitive_can_be_bodyless compile-pass unit=lib

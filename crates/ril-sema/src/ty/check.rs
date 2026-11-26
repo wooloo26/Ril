@@ -59,7 +59,9 @@ fn check_impl(hir: Program, budget: Option<u64>, partial: bool) -> (TypedProgram
                 bindings: HashMap::new(),
                 callables: BTreeMap::new(),
                 imported_functions: BTreeMap::new(),
+                imported_behaviors: BTreeMap::new(),
                 imported_must_consume: HashSet::new(),
+                narrow_drops: Vec::new(),
                 static_values: HashMap::new(),
                 meta_calls: HashMap::new(),
                 static_folds: HashMap::new(),
@@ -160,6 +162,7 @@ fn check_impl(hir: Program, budget: Option<u64>, partial: bool) -> (TypedProgram
         tuple_payloads,
         receptions,
         record_adts,
+        narrow_drops,
         ..
     } = ck;
     let mut program = TypedProgram {
@@ -169,7 +172,9 @@ fn check_impl(hir: Program, budget: Option<u64>, partial: bool) -> (TypedProgram
         bindings,
         callables,
         imported_functions: BTreeMap::new(),
+        imported_behaviors: BTreeMap::new(),
         imported_must_consume: HashSet::new(),
+        narrow_drops,
         static_values,
         meta_calls,
         static_folds,
@@ -308,7 +313,8 @@ pub(super) struct Checker<'a> {
     pub(super) subset_tags: HashMap<Span, Vec<String>>,
     pub(super) tuple_payloads: HashMap<Span, usize>,
     pub(super) receptions: HashMap<Span, Vec<super::reception::Adjustment>>,
-    pub(super) narrow_errors: HashMap<Span, Code>,
+    pub(super) narrow_errors: HashMap<Span, (Code, Span)>,
+    pub(super) narrow_drops: Vec<super::NarrowDrop>,
     pub(super) pending_clone_checks: Vec<(Env, Ty, Span)>,
     constants: HashSet<DefinitionId>,
     active_metadata: HashSet<Span>,
@@ -361,6 +367,7 @@ impl<'a> Checker<'a> {
             tuple_payloads: HashMap::new(),
             receptions: HashMap::new(),
             narrow_errors: HashMap::new(),
+            narrow_drops: Vec::new(),
             pending_clone_checks: Vec::new(),
             constants: HashSet::new(),
             active_metadata: HashSet::new(),
@@ -393,7 +400,10 @@ impl<'a> Checker<'a> {
     }
 
     pub(super) fn error(&mut self, code: Code, span: Span, message: impl Into<String>) {
-        let diagnostic = Diagnostic::error(code, span, message);
+        self.error_diag(Diagnostic::error(code, span, message));
+    }
+
+    pub(super) fn error_diag(&mut self, diagnostic: Diagnostic) {
         if !self.diagnostics.iter().any(|existing| {
             existing.code == diagnostic.code && existing.primary == diagnostic.primary
         }) {
@@ -719,8 +729,11 @@ impl<'a> Checker<'a> {
         if self.fits(env, actual, expected) {
             return true;
         }
-        if let Some(code) = self.narrow_errors.get(&span).copied() {
-            self.error(code, span, "previous narrowing no longer holds");
+        if let Some((code, cause_span)) = self.narrow_errors.get(&span).copied() {
+            self.error_diag(
+                Diagnostic::error(code, span, "previous narrowing no longer holds")
+                    .with_label(cause_span, "narrowing invalidated here"),
+            );
             return false;
         }
         let actual = self.normalize(actual);

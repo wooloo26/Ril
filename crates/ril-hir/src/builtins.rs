@@ -66,7 +66,7 @@ pub const PRIMITIVE_TYPES: &[PrimitiveTypeSpec] = {
     &[
         ptype("Prelude", "Option", Option, false),
         ptype("Prelude", "Result", Result, false),
-        ptype("Prelude", "PanicInfo", PanicInfo, false),
+        ptype("Prelude", "PanicReport", PanicReport, false),
         ptype("Prelude", "PanicError", PanicError, false),
         ptype("Prelude", "Draft", Draft, true),
         ptype("Reflect", "FieldMode", FieldMode, false),
@@ -89,12 +89,18 @@ pub const PRIMITIVE_FNS: &[PrimitiveSpec] = {
         prim("Prelude", "derive", Both, None, Some(Derive)),
         prim(
             "Prelude",
-            "abort",
+            "unwind_ctl",
             Runtime,
             Some("ril_rt_abort_ctl"),
-            Some(Abort),
+            Some(UnwindCtl),
         ),
-        prim("Prelude", "absorb_panic", Runtime, None, Some(AbsorbPanic)),
+        prim(
+            "Prelude",
+            "recover_panic",
+            Runtime,
+            None,
+            Some(RecoverPanic),
+        ),
         prim(
             "Prelude",
             "panic_message",
@@ -102,9 +108,6 @@ pub const PRIMITIVE_FNS: &[PrimitiveSpec] = {
             Some("ril_rt_panic_message"),
             Some(PanicMessage),
         ),
-        prim("Prelude", "type_name", Static, None, Some(TypeName)),
-        prim("Prelude", "fields", Static, None, Some(Fields)),
-        prim("Prelude", "variants", Static, None, Some(Variants)),
         prim("Prelude", "compile_error", Static, None, Some(CompileError)),
         prim(
             "Prelude",
@@ -230,6 +233,9 @@ pub const PRIMITIVE_FNS: &[PrimitiveSpec] = {
             Some(BytesFromArray),
         ),
         // Reflect
+        prim("Reflect", "type_name", Static, None, Some(TypeName)),
+        prim("Reflect", "fields", Static, None, Some(Fields)),
+        prim("Reflect", "variants", Static, None, Some(Variants)),
         prim("Reflect", "attrs", Static, None, Some(ReflectAttrs)),
         prim(
             "Reflect",

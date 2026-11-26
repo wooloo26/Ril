@@ -54,7 +54,7 @@ eff Outer { ctl ping() -> () }
 fn ok() @Outer -> () {
     with {
         ctl Yield::emit = \new k -> {
-            defer abort(new k)
+            defer unwind_ctl(new k)
             Outer::ping()
         }
         Yield::emit()
@@ -161,11 +161,11 @@ fn bad(b: Box) @Yield -> Box {
     })
 }
 
--- @case absorb_panic_forbids_outer_ctl_handler compile-fail E0608
+-- @case recover_panic_forbids_outer_ctl_handler compile-fail E0608
 eff Yield { ctl emit() -> () }
 fn bad() -> () {
     with ctl Yield::emit = \new k -> k()
-    let _ = absorb_panic(\-> Yield::emit())
+    let _ = recover_panic(\-> Yield::emit())
     -- ^ E0608
 }
 

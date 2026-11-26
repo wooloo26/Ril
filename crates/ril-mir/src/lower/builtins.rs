@@ -18,7 +18,7 @@ impl Builder<'_, '_> {
         span: Span,
     ) -> Result<Register> {
         let intrinsic = self.global.typed.hir.intrinsic(id);
-        if intrinsic == Some(Intrinsic::AbsorbPanic)
+        if intrinsic == Some(Intrinsic::RecoverPanic)
             && let [action] = args
         {
             return self.absorb(action.value, span);

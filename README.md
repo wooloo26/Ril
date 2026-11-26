@@ -87,7 +87,7 @@ fn virtual_time() -> str {
 
 ```ril
 -- One-shot algebraic effects ('ctl') compose with zero function coloring,
--- and aborting a continuation deterministically unwinds active 'defer' cleanups.
+-- and unwinding a continuation deterministically runs active 'defer' cleanups.
 eff Yield<T> { ctl emit(value: T) -> () }
 
 fn emit_doubled(xs: []int, mut trace: []str) @Yield<int> &mut -> () {
@@ -101,7 +101,7 @@ fn first_three_doubled(xs: []int) -> new []int {
     with {
         ctl Yield::emit = \v, new k -> {
             out |> mut Array::push(v)
-            if len(ref out) < 3 { k() } else { abort(new k) }
+            if len(ref out) < 3 { k() } else { unwind_ctl(new k) }
         }
 
         emit_doubled(xs, mut trace)

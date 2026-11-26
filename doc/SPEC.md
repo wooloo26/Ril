@@ -147,7 +147,7 @@ fn demo() -> str {
   - [Algebraic Effects and Panic Containment](#algebraic-effects-and-panic-containment)
     - [Effect Declarations and Handlers](#effect-declarations-and-handlers)
     - [Built-in System Effect](#built-in-system-effect)
-    - [Panic Absorption with absorb\_panic](#panic-absorption-with-absorb_panic)
+    - [Panic Absorption with absorb\_panic](#panic-recovery-with-recover_panic)
   - [Compile-Time Computation and Introspection](#compile-time-computation-and-introspection)
     - [Static Type Values and Type Quotation](#static-type-values-and-type-quotation)
     - [Pure Type Functions and Result Restrictions](#pure-type-functions-and-result-restrictions)
@@ -242,7 +242,7 @@ assert(total == 7 && trace == [1, 2, 3])
 Ril separates expected domain failures from programming defects:
 
 1. **Recoverable Errors (`!<T, E>` / `Result<T, E>` and `?T` / `Option<T>`)**: Carried as explicit values. Every `Result` must be inspected, propagated via `?`, or handled via `??` (`E0720`).
-2. **Defects (`panic` / `assert`)**: Trigger deterministic LIFO unwinding of active scopes, running active `defer` cleanup statements without requiring signature annotations. Panic-isolation boundaries (`absorb_panic`) convert panics into `!<T, PanicError>`.
+2. **Defects (`panic` / `assert`)**: Trigger deterministic LIFO unwinding of active scopes, running active `defer` cleanup statements without requiring signature annotations. Panic-isolation boundaries (`recover_panic`) convert panics into `!<T, PanicError>`.
 3. **Purity**: A callable is pure when its parameters carry no writable authority (`mut`/`^mut`), its normalized outward effect set is empty, and its outward state obligations reduce to empty after local containment. Such callables are guaranteed observationally pure (deterministic, free of host I/O and external mutation); relations to deeply immutable return sources add no state effect but remain part of return-provenance matching. `never` denotes computations that never complete normally.
 
 ```ril
@@ -265,7 +265,7 @@ fn connect_port(raw: str) -> new !<int, str> {
 | Bit shift `x << k` or `x >> k` with `k < 0` (non-constant `k`) | LIFO panic unwinding (`"negative shift count"`) |
 | Out-of-bounds array/byte index `xs[i]` or slice `xs[a..b]` | LIFO panic unwinding |
 | `panic(msg)` or false `assert(cond)` | LIFO panic unwinding |
-| Secondary panic inside `defer` cleanup during active panic unwinding | Immediate uncatchable program termination (abort; bypasses `absorb_panic`). A panic inside `defer` during normal exit or `ctl` `abort` unwinding is a normal catchable panic |
+| Secondary panic inside `defer` cleanup during active panic unwinding | Immediate uncatchable program termination (abort; bypasses `recover_panic`). A panic inside `defer` during normal exit or `ctl` `abort` unwinding is a normal catchable panic |
 | Unrecoverable execution-resource exhaustion (host memory or call depth) | Immediate uncatchable program termination (abort) |
 
 ---
@@ -529,7 +529,7 @@ TypeReference  ::= QualifiedName [ GenericArgs ]
 
 ### Value Types
 
-`bool`, `int`, `f64`, `str`, `bytes`, `()`, `never`, unit nominals (`type Marker`), and `.ril` `nominal` / `opaque` wrappers whose underlying representation is a value type (e.g., `type UserId(int)`, `opaque type PanicInfo(str)`) have no object identity and copy logically by value (implementations may share immutable backing buffers transparently).
+`bool`, `int`, `f64`, `str`, `bytes`, `()`, `never`, unit nominals (`type Marker`), and `.ril` `nominal` / `opaque` wrappers whose underlying representation is a value type (e.g., `type UserId(int)`, `opaque type PanicReport(str)`) have no object identity and copy logically by value (implementations may share immutable backing buffers transparently).
 - Value types forbid `ref`, `mut`, `^mut`, `new`, `via`, `clone`, and `derive` (`E0402` in bindings/fields/elements/expressions; `E0401`/`E0411` in parameters/call markers; `E0546` on `-> new`; `E0550` on `via`; `E0301` on `clone`; `E0536` on `derive`).
 
 ```ril
@@ -1095,7 +1095,7 @@ assert(read_id(.{ id: 1, name: "a" }) + read_id(.{ id: 2, ok: true }) == 3)
 
 - **K-PHASE**:
   - `TypeEval` and `MetaValue` run under the root step budget (`E0811` exhaustion; `E0830` failed `assert`; `E0831` `panic` or arithmetic defect).
-  - Runtime values and storage cannot hold `Type<T>` values (`E0816`). `meta fn` returns, `meta let` constants, and `meta(...)` attributes must be type-value-free (`E0812` / `E0816`), callable-free (`E0816`), and must-consume-resource-free (`E0816`) deeply immutable values (`E0813` on `@Eff` / `&State` on `meta fn`). `ctl` declarations, `ctl` operations, `ctl` handlers, and `abort` are prohibited in `TypeEval` and `MetaValue` (`E0810`).
+  - Runtime values and storage cannot hold `Type<T>` values (`E0816`). `meta fn` returns, `meta let` constants, and `meta(...)` attributes must be type-value-free (`E0812` / `E0816`), callable-free (`E0816`), and must-consume-resource-free (`E0816`) deeply immutable values (`E0813` on `@Eff` / `&State` on `meta fn`). `ctl` declarations, `ctl` operations, `ctl` handlers, and `unwind_ctl` are prohibited in `TypeEval` and `MetaValue` (`E0810`).
   - Direct saturated `meta fn` calls with static arguments (`E0814` on runtime arguments) evaluate at compile time in runtime code to deeply immutable snapshots with `new` stripped (`E0520` on `let mut`; use `clone(...)` for a mutable copy). First-class runtime references to a `meta fn` fail `E0810`.
   - `typeof expr` checks `expr` in an isolated shadow scope without evaluating it or running compile-time `meta fn` evaluation (carrying the baseline schema without `new` or source authority).
     - Internal `E0549` and statement `E0720` apply (root `Result` is exempt from `E0720`); outward `@Eff`, `&State`, `E0527` uses, and caller `E0549` endings are empty.
@@ -1322,7 +1322,7 @@ fn run_query() @io -> new !<int, str> {
 - **Lazy evaluation & flow-sensitive registration**: `defer` evaluates lazily at block exit (observing final `var` slot values) and registers flow-sensitively in `F` (early exits before a `defer` statement do not execute it and do not count it as armed). On normal block completion, `return expr`, or `expr?`, the result expression evaluates **before** active `defer`s execute.
 - **Control-flow & effect restrictions (`E0707`, `E0616`, `E0612`)**:
   - `return`, `?`, and `break`/`continue` targeting outside the `defer` block fail `E0707` (loops and closures local to `defer { ... }` may transfer locally).
-  - Unhandled `ctl` effects are prohibited inside `defer` (`E0616`; locally handled `with { ctl ... }` inside `defer` is allowed). Synchronous `@io`, user `fn` effects, and `abort(new k)` are permitted and charged at the `defer` site (`E0612`). If a `defer` invokes an open-effect (`@`) callback parameter, `K-IFACE` records a `no_ctl` constraint on that parameter (`E0616` if passed a `ctl`-using callable).
+  - Unhandled `ctl` effects are prohibited inside `defer` (`E0616`; locally handled `with { ctl ... }` inside `defer` is allowed). Synchronous `@io`, user `fn` effects, and `unwind_ctl(new k)` are permitted and charged at the `defer` site (`E0612`). If a `defer` invokes an open-effect (`@`) callback parameter, `K-IFACE` records a `no_ctl` constraint on that parameter (`E0616` if passed a `ctl`-using callable).
 - **Deferred-exit provenance & LIFO checking (`E0549`, `E0604`, `E0532`, `E0527`)**:
   - Armed `defer` bodies are checked in **reverse (LIFO) order** at every exit edge of their enclosing block.
   - A `defer` referencing `conn` (including `defer close(new conn)`) does **not** hold a concurrent body lock—subsequent sequential `ref`/`mut` uses of `conn` in the block remain legal, and `defer close(new conn)` satisfies `E0527` on `let mut conn`.
@@ -2059,7 +2059,7 @@ type AnyCall  = fn() @& -> ()              -- Open effects and open state/proven
 | `&up(ref)` | Closed empty | Read-only captured closure env (live observer invoked via `ref`; pure callables matching `&up(ref)` remain plain) |
 | `&up` | Closed empty | Mutable/abstract closure env (requires `mut`/`^mut` path, `E0520`) |
 | `&once` | Closed empty | Affine exclusive one-shot closure (droppable; forbids capturing must-consume values; invoked directly on an owned expression or bare pinned binding `f(...)`, ending `f` with `E0549`; projected `(rec.f)()` fails `E0548`) |
-| `ctl(...)` | Closed empty | Linear must-consume one-shot continuation created solely by `with ctl` (`E0625` if unconsumed; consumed by direct invocation `k(...)` or `abort(new k)`; forbids freezing, `^mut`, `clone`, `derive`, `==`) |
+| `ctl(...)` | Closed empty | Linear must-consume one-shot continuation created solely by `with ctl` (`E0625` if unconsumed; consumed by direct invocation `k(...)` or `unwind_ctl(new k)`; forbids freezing, `^mut`, `clone`, `derive`, `==`) |
 | `@` | Open effect set (tracked & charged at call) | Closed pure (live narrowings still reject handler writes, `E0533`) |
 | `&` | Closed empty | Open state/provenance set (tracked & charged at call; orthogonal to access mode) |
 | `@&` | Open effect set (tracked & charged at call) | Open state/provenance set (tracked & charged at call; orthogonal to access mode) |
@@ -2317,7 +2317,7 @@ assert(test_closures_and_accessors() == Ok(200))
 ```
 
 - **Closure Body Termination**: When `{` immediately follows `->`, `AnonFnBody` parses as a self-delimited `Block` ending at `}`; non-block bodies parse as `Expression`.
-- **Trailing Closures**: A `CallExpr` or `PipelineStep` may pass its final callable argument as a trailing `AnonFnExpr` or `AccessorExpr` after `(...)`—or omit `()` when no other arguments remain (`absorb_panic \-> { ... }`, `File::with_open(path) \mut f -> { ... }`). Postfix `?` and outer `|>` attach directly after a block-bodied trailing closure.
+- **Trailing Closures**: A `CallExpr` or `PipelineStep` may pass its final callable argument as a trailing `AnonFnExpr` or `AccessorExpr` after `(...)`—or omit `()` when no other arguments remain (`recover_panic \-> { ... }`, `File::with_open(path) \mut f -> { ... }`). Postfix `?` and outer `|>` attach directly after a block-bodied trailing closure.
 - **Shorthand Projection Accessors (`\.field`, `\.0`, `\?.field`)**: Desugar to unary pure closures (`\x -> x.field`, `\x -> x.0`, `\x -> x?.field`) over records and tuples (`E0336` unknown field, `E0312` tuple index out of bounds, `E0337` on sums, collections, or primitives). Any `?.` segment lifts the result to `?T`.
 
 ```ebnf
@@ -2537,7 +2537,7 @@ fn first_three_doubled(xs: []int) -> new []int {
     with {
         ctl Yield<int>::emit = \v, new k -> {
             out |> mut Array::push(v)
-            if len(ref out) < 3 { k() } else { abort(new k) }
+            if len(ref out) < 3 { k() } else { unwind_ctl(new k) }
         }
 
         let _ = xs |> Array::map \x -> { Yield<int>::emit(x * 2); x }
@@ -2598,7 +2598,7 @@ fn run_fifo(new entry: fn() @Sched &once -> ()) -> () {
     defer {
         while let Some(mut item) = Array::pop_front(mut ready) {
             match new item {
-                TaskItem::Cont(mut k) -> abort(new k)
+                TaskItem::Cont(mut k) -> unwind_ctl(new k)
                 TaskItem::Fresh(_)    -> ()
             }
         }
@@ -2644,8 +2644,8 @@ fn run_fifo(new entry: fn() @Sched &once -> ()) -> () {
   - For `fn` ops, returning from the arm restores frames from `H` down. For `ctl` ops, the stack and handler slice from `H` (inclusive, deep handler) down to the `op` call site is captured into `new k`; invoking `k(v)` splices that slice onto the resumer's current dynamic handler stack.
 - **`ctl` Continuation Typing, Boundaries & Escape (`E0707`, `E0625`, `E0528`, `E0604`)**:
   - Within a `with` boundary of answer type `R` (the `K-JOIN` of the governed body and all `ctl` arms), a `ctl` arm receives `new k` as its final parameter with linear type `ctl() @E_res [&S_res] -> R` when `OpRet ≡ ()` (invoked as `k()`), or `ctl(OpRet) @E_res [&S_res] -> R` otherwise (invoked as `k(val)`), where `@E_res` / `&S_res` combine residual effects/state of the body and the `with` frame's arms.
-  - Every `ctl(...)` continuation is **must-consume (`E0625`)**, discharged by invoking `k(...)` once (`E0549` on reuse) or calling synchronous `abort(new k)`. A wildcard `_` continuation parameter (`\err, _ -> ...`) automatically runs `abort(new k)` (unwinding inner `defer`s LIFO) **before** entering the arm body.
-  - `abort(new k)` accepts only `ctl(...)` continuations (`E0301` otherwise), is statically `no_ctl` (permitted inside `defer` and `fn` arms), unwinds `k`'s armed `defer`s LIFO, returns `()`, and charges `k`'s residual `&State`, `@io`, and only residual `@Eff` labels that declare at least one `fn` operation.
+  - Every `ctl(...)` continuation is **must-consume (`E0625`)**, discharged by invoking `k(...)` once (`E0549` on reuse) or calling synchronous `unwind_ctl(new k)`. A wildcard `_` continuation parameter (`\err, _ -> ...`) automatically runs `unwind_ctl(new k)` (unwinding inner `defer`s LIFO) **before** entering the arm body.
+  - `unwind_ctl(new k)` accepts only `ctl(...)` continuations (`E0301` otherwise), is statically `no_ctl` (permitted inside `defer` and `fn` arms), unwinds `k`'s armed `defer`s LIFO, returns `()`, and charges `k`'s residual `&State`, `@io`, and only residual `@Eff` labels that declare at least one `fn` operation.
   - **Control-flow boundary (`E0707`)**: A `ctl`-bearing `with { ... }` (or nested-block statement `with ctl`) forbids `return`, `break`, `continue`, and `?` targeting outside that boundary (`E0707`). In a function's top-level block, `return e` / `?` under a statement `with ctl` completes the innermost enclosing top-level `with ctl` boundary with `e` (running `defer`s up to that boundary; function `ensure` guards run only when the function returns).
   - **Escaping `new k` & holds (`E0528`, `E0510`, `E0604`)**: `k` participates in standard overlap checks (`E0523`/`E0524`/`E0526`) inside the arm. Non-escaping `with` holds release at `}`. If `new k` escapes the `with` block, all outer bindings captured by the body or any arm are checked as escaping captures (forbidding unshared `let mut`, call-scoped `mut`, `var`, `ref`, and outer `defer`-managed handles) and surviving holds transfer into `k`'s provenance.
 - **Arm Compatibility & Active Holds (`E0407`, `E0534`, `E0616`)**:
@@ -2688,24 +2688,24 @@ The prelude predeclares `@io` as the sole lowercase built-in system effect label
 | :--- | :--- |
 | `@io` | Host I/O, timers, filesystem/network access, and `.d.ril` foreign calls; irreducible host boundary serviced solely by the host runtime on `fn main` |
 
-### Panic Absorption with absorb_panic
+### Panic Recovery with recover_panic
 
-`absorb_panic` contains synchronous defects behind a panic-isolation boundary, running active `defer` cleanup statements inside the protected closure before returning `Err(PanicError::Panicked(info))`:
+`recover_panic` contains synchronous defects behind a panic-isolation boundary, running active `defer` cleanup statements inside the protected closure before returning `Err(PanicError::Panicked(info))`:
 
 ```ril
 -- File: ril/prelude.ril
-pub opaque type PanicInfo(str)
-pub type PanicError { Panicked(PanicInfo) }
+pub opaque type PanicReport(str)
+pub type PanicError { Panicked(PanicReport) }
 
-pub fn panic_message(info: PanicInfo) -> str
-pub fn absorb_panic<T>(via action: fn() @& -> infer T) -> infer !<T, PanicError>
+pub fn panic_message(report: PanicReport) -> str
+pub fn recover_panic<T>(via action: fn() @& -> infer T) -> infer !<T, PanicError>
 ```
 
 ```ril
 fn parse_header(parts: []str) -> str { parts[1] }
 
 fn isolated_parse(parts: []str) -> new !<str, PanicError> {
-    absorb_panic \-> parse_header(parts)
+    recover_panic \-> parse_header(parts)
 }
 
 fn test_absorb() -> () {
@@ -2714,14 +2714,14 @@ fn test_absorb() -> () {
     assert(len(panic_message(info)) > 0)
     let mut ext = [1, 2]
     Array::push(mut ext, 3)
-    -- let _ = absorb_panic \-> Array::push(mut ext, 4) -- Error [E0608]: panic-isolation violation on outer 'mut' access
+    -- let _ = recover_panic \-> Array::push(mut ext, 4) -- Error [E0608]: panic-isolation violation on outer 'mut' access
 }
 test_absorb()
 ```
 
 - **Panic isolation (`E0608`)**: `action` must not observe or mutate outer `var`/`mut`/`^mut`/`ref` state, capture outer `ctl(...)` continuations or must-consume handles (including `.d.ril` `opaque` handles), emit unhandled effects (`@io`, user `fn`/`ctl`), invoke **any** outer `ctl` handler (even pure/stateless ones) or stateful outer `fn` handler, or leak mutable captures.
 - **Permitted local state**: Confined local `var` / `let mut` / `defer` state, local `with` handlers (including locally handled `ctl`), and pure stateless outer `fn` handlers are allowed inside `action`.
-- **Sealed `PanicInfo` (`E0301`, `E0308`, `E0810`)**: `PanicInfo` is an opaque prelude type (`E0301` on direct construction, `E0308` on representation access); `panic_message(info)` extracts the diagnostic message at runtime (`E0810` in static evaluation).
+- **Sealed `PanicReport` (`E0301`, `E0308`, `E0810`)**: `PanicReport` is an opaque prelude type (`E0301` on direct construction, `E0308` on representation access); `panic_message(info)` extracts the diagnostic message at runtime (`E0810` in static evaluation).
 - **Double panic**: If a `defer` cleanup panics while unwinding an earlier panic, the program triggers immediate uncatchable termination (abort) without returning `Err`.
 
 ---
@@ -2780,7 +2780,7 @@ meta let _ = assert(PAGE == 4096)
 ```
 
 - **Pure Static Domain (`E0335`, `E0813`)**: `TypeFunctionExpr`, `meta fn`, and `meta let` permit local `var`/`let mut`, confined closures, loops, and recursion, while forbidding `@Eff` / `&State` annotations (`E0335` on type functions, `E0813` on `meta fn`).
-- **Static Value & Storage Boundaries (`E0812`, `E0816`)**: `meta fn` returns and `meta(...)` attributes cannot expose `Type<T>` (`E0812`). `meta fn` returns, `meta let` constants, and `meta(...)` attributes cannot export callables, `ctl(...)` continuations, or must-consume resources, and runtime values, parameters, storage, and closures cannot hold `Type<T>` (`E0816`). `ctl` declarations, `ctl` operations, `ctl` handlers, and `abort` are prohibited in `TypeEval` and `MetaValue` (`E0810`).
+- **Static Value & Storage Boundaries (`E0812`, `E0816`)**: `meta fn` returns and `meta(...)` attributes cannot expose `Type<T>` (`E0812`). `meta fn` returns, `meta let` constants, and `meta(...)` attributes cannot export callables, `ctl(...)` continuations, or must-consume resources, and runtime values, parameters, storage, and closures cannot hold `Type<T>` (`E0816`). `ctl` declarations, `ctl` operations, `ctl` handlers, and `unwind_ctl` are prohibited in `TypeEval` and `MetaValue` (`E0810`).
 - **Compiler Root Evaluation Budget (`E0811`)**: Every compile-time root (`type` application, static check, `meta let`, `meta(...)`, static value argument, compile-time `meta fn` call) runs under a deterministic step budget (1 unit per call entry and loop iteration).
   - Exhausting the budget fails compilation with uncatchable `E0811` (partial type previews in diagnostics are informational only).
 - **Static Defects (`E0830`, `E0831`)**: Failed static `assert` fails `E0830`; static `panic` or arithmetic defects fail `E0831`.
@@ -3034,8 +3034,8 @@ fn main() @io -> new !<(), str> {
 ### Prelude Scope
 
 The implicit prelude encloses every compilation unit and inline `sub`:
-- **Types & effects**: Primitive types, `Option<T>` (`?T`; exports `Some`, `None`), `Result<T, E>` (`!<T, E>`; exports `Ok`, `Err`), `Set<T>`, `PanicInfo` (value-backed `opaque` over `str`), `PanicError` (exports `Panicked`), `FieldMode`, `Draft<T>`, and `@io`.
-- **Static checks & type helpers**: `SharedObject`, `LenTarget`, `Tuple`, `NominalWrapper`, `Unwrap`, `FieldKey`, and `KeyOf`.
+- **Types & effects**: Primitive types, `Option<T>` (`?T`; exports `Some`, `None`), `Result<T, E>` (`!<T, E>`; exports `Ok`, `Err`), `Set<T>`, `PanicReport` (value-backed `opaque` over `str`), `PanicError` (exports `Panicked`), `FieldMode`, `Draft<T>`, and `@io`.
+- **Static checks & type helpers**: `SharedObject`, `Tuple`, and `KeyOf` (internal signature helpers `LenTarget`, `NominalWrapper`, `Unwrap`, and `FieldKey` are stdlib-private).
 - **Core modules**: `Array` (including destructive extractors `Array::pop`, `Array::pop_front`, `Array::remove` returning `new ?T`), `Map` (including `Map::remove` returning `new ?V`), `Set`, `String`, `Bytes`, `Numeric`, and `Reflect`.
 - **Explicit standard imports**: `use ril/io`, `use ril/file`, `use ril/os`, `use ril/platform`, `use ril/math`, and `use ril/crypto`.
 
@@ -3047,9 +3047,9 @@ The implicit prelude encloses every compilation unit and inline `sub`:
 | `inner` | `pub fn inner<W \|> NominalWrapper>(via wrapper: W) -> infer Unwrap<W>` | Dual-phase: unwraps accessible `.ril` `nominal` wrapper (or `Draft<W>`, lifting `NominalWrapper`/`Unwrap`) to its payload (`()` for unit nominals; `inner(mut x)` is a scoped path projection usable on `Draft<W>` or as an immediate `mut` path receiver, unable to bind a second unshared `let mut` alias, `E0510`; `E0907` on `.d.ril` nominals, `E0301` on non-nominals) |
 | `clone` | `pub fn clone<T \|> SharedObject>(via value: T) -> new T` | Dual-phase: deep copy of a clonable `SharedObject` graph into isolated `new T` (`E0301` on value-type or callable roots and graphs containing `.d.ril` `opaque` / `&once` / `ctl(...)` / `Draft` handles, `E0530` on live callable environments) |
 | `derive` | `pub fn derive<T \|> SharedObject>(base: T, via update: fn(mut Draft<T>) @& -> ()) -> T` | Dual-phase: path-targeted functional update on immutable `SharedObject` (`E0536`, `E0308`, `E0607`) |
-| `abort` | Built-in over `new k: ctl(...) [@E] [&S] -> R` | Runtime: synchronously unwinds `k`'s armed `defer` stack frames LIFO and returns `()` (`E0810` in static eval; `E0301` on non-`ctl(...)`; `no_ctl`, legal inside `defer`; charges residual `&S`, `@io`, and `fn`-op `@Eff` labels) |
-| `absorb_panic` | `pub fn absorb_panic<T>(via action: fn() @& -> infer T) -> infer !<T, PanicError>` | Runtime: panic-isolated containment (`E0608`) |
-| `panic_message` | `pub fn panic_message(info: PanicInfo) -> str` | Runtime: extracts human-readable message from `PanicInfo` (`E0810` in static eval) |
+| `unwind_ctl` | Built-in over `new k: ctl(...) [@E] [&S] -> R` | Runtime: synchronously unwinds `k`'s armed `defer` stack frames LIFO and returns `()` (`E0810` in static eval; `E0301` on non-`ctl(...)`; `no_ctl`, legal inside `defer`; charges residual `&S`, `@io`, and `fn`-op `@Eff` labels) |
+| `recover_panic` | `pub fn recover_panic<T>(via action: fn() @& -> infer T) -> infer !<T, PanicError>` | Runtime: panic-isolated containment (`E0608`) |
+| `panic_message` | `pub fn panic_message(report: PanicReport) -> str` | Runtime: extracts human-readable message from `PanicReport` (`E0810` in static eval) |
 | `type_name` | `pub meta fn type_name<T>(tv: Type<T>) -> str` | Static only: diagnostic display string of `T` |
 | `fields` | `pub meta fn fields<T>(tv: Type<T>) -> [](FieldMode, FieldKey<T>)` | Static only: `(mode, key)` pairs of accessible record (`str` keys) or tuple (`int` keys) `T` (`E0358` non-record/non-tuple, `E0308` sealed) |
 | `variants` | `pub meta fn variants<T>(tv: Type<T>) -> []str` | Static only: variant tags of closed transparent sum `T` (`E0301` non-sum, `E0308` sealed/open) |
@@ -3097,7 +3097,7 @@ When a branch selects between existing Results or collections, inspection applie
 An early return through `?` exits normally with `Err` or `None`. An outstanding Result on that path must already have been inspected or be part of the returned value.
 
 - **Must-Consume Linear Values (`E0625`)**: In addition to `!<T, E>` (`E0720`), `ctl(...)` continuations, foreign `.d.ril` `opaque` handles, and any composite, nominal, or `.ril` `opaque` type transitively containing them (propagated across `opaque` boundaries in `K-IFACE`) are **must-consume**:
-  - Every normal and early-exit (`return` / `?`) path must consume `new h` by direct handoff, return, `ctl(...)` invocation, `abort(new k)`, or an armed `defer` (`E0625` if discarded, bound to `_`, or left unconsumed in a dropped collection).
+  - Every normal and early-exit (`return` / `?`) path must consume `new h` by direct handoff, return, `ctl(...)` invocation, `unwind_ctl(new k)`, or an armed `defer` (`E0625` if discarded, bound to `_`, or left unconsumed in a dropped collection).
   - Across any unhandled `ctl` call, every live must-consume handle must either be handed off into that `ctl` call or already be managed by an armed `defer` inside the same `ctl` boundary (`E0625`).
   - Affine `&once` closures cannot capture must-consume values (`E0625` / `E0720`).
 
@@ -3266,7 +3266,7 @@ An early return through `?` exits normally with `Err` or `None`. An outstanding 
 | :---: | :--- |
 | **`E0604`** | [`ScopedValueEscapeError`](#deferred-cleanup-statements-defer); [Effect Declarations and Handlers](#effect-declarations-and-handlers) |
 | **`E0607`** | [`DeriveDraftEscapeError`](#functional-updates-via-derive) |
-| **`E0608`** | [`PanicIsolationViolationError`](#panic-absorption-with-absorb_panic) |
+| **`E0608`** | [`PanicIsolationViolationError`](#panic-recovery-with-recover_panic) |
 | **`E0612`** | [`UnhandledEffectError`](#effect-declarations-and-handlers) |
 | **`E0613`** | [`ValueEffectAnnotationError`](#type-definition-boundaries) |
 | **`E0616`** | [`DisallowedControlEffectError`](#deferred-cleanup-statements-defer); [Effect Declarations and Handlers](#effect-declarations-and-handlers) |
