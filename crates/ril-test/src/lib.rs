@@ -1,10 +1,12 @@
 #![forbid(unsafe_code)]
 
+mod doc;
 mod protocol;
 mod runner;
 mod shield;
 mod spec;
 
+pub use doc::{discover_doc, doc_suite};
 pub use protocol::{Case, CaseMode, Suite, SuiteError, parse_suite};
 pub use runner::{discover, run_case, run_harness, run_worker, trials};
 pub use spec::spec_suite;

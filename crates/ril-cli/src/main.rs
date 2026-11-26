@@ -138,10 +138,12 @@ enum Action {
     },
     Test {
         path: Option<PathBuf>,
-        #[arg(long)]
+        #[arg(long, conflicts_with = "doc")]
         sync_spec_md: bool,
-        #[arg(long, requires = "sync_spec_md", default_value = "parse")]
-        stage: Stage,
+        #[arg(long, conflicts_with = "sync_spec_md")]
+        doc: bool,
+        #[arg(long)]
+        stage: Option<Stage>,
         #[arg(long)]
         opt_stack_promote: bool,
     },
@@ -466,9 +468,10 @@ fn run(action: Action) -> Result<ExitCode, String> {
         Action::Test {
             path,
             sync_spec_md,
+            doc,
             stage,
             opt_stack_promote,
-        } => return test(path, sync_spec_md, stage, opt_stack_promote),
+        } => return test(path, sync_spec_md, doc, stage, opt_stack_promote),
     }
     Ok(ExitCode::SUCCESS)
 }
@@ -537,9 +540,13 @@ fn display(diagnostics: Vec<Diagnostic>) -> String {
 fn test(
     path: Option<PathBuf>,
     sync_spec_md: bool,
-    stage: Stage,
+    doc: bool,
+    stage: Option<Stage>,
     opt_stack_promote: bool,
 ) -> Result<ExitCode, String> {
+    if !sync_spec_md && !doc && stage.is_some() {
+        return Err("--stage requires --sync-spec-md or --doc".into());
+    }
     let compiler = Driver.with_options(CompileOptions {
         opt_stack_promote,
         ..CompileOptions::default()
@@ -548,7 +555,14 @@ fn test(
         let path = path.unwrap_or_else(|| PathBuf::from("doc/SPEC.md"));
         let source =
             std::fs::read_to_string(&path).map_err(|err| format!("{}: {err}", path.display()))?;
-        vec![ril_test::spec_suite(&path, &source, stage)?]
+        vec![ril_test::spec_suite(
+            &path,
+            &source,
+            stage.unwrap_or(Stage::Parse),
+        )?]
+    } else if doc {
+        let path = path.unwrap_or_else(|| PathBuf::from("std"));
+        ril_test::discover_doc(&path, stage.unwrap_or(Stage::Access))?
     } else {
         ril_test::discover(&path.unwrap_or_else(|| PathBuf::from("tests")))?
     };

@@ -152,9 +152,12 @@ pub fn derive<T |> SharedObject>(base: T, via update: fn(mut Derived<T>) @& -> (
 --
 -- ```ril
 -- eff Abort { ctl stop() -> never }
--- with ctl Abort::stop = \new k -> {
---     unwind_ctl(new k)
---     "aborted"
+-- fn run() -> str {
+--     with ctl Abort::stop = \new k -> {
+--         unwind_ctl(new k)
+--         "aborted"
+--     }
+--     Abort::stop()
 -- }
 -- ```
 pub fn unwind_ctl<T>(new k: T) -> ()
@@ -164,9 +167,11 @@ pub fn unwind_ctl<T>(new k: T) -> ()
 -- outer `ctl` handlers, must-consume captures, and unhandled effects.
 --
 -- ```ril
--- match recover_panic(\-> panic("boom")) {
---     Ok(_) -> ()
---     Err(Panicked(report)) -> println(panic_message(report))
+-- fn safe_run() @io -> () {
+--     match recover_panic(\-> panic("boom")) {
+--         Ok(_) -> ()
+--         Err(Panicked(report)) -> println(panic_message(report))
+--     }
 -- }
 -- ```
 pub fn recover_panic<T>(via action: fn() @& -> infer T) -> infer !<T, PanicError>

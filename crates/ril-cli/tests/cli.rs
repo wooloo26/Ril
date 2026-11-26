@@ -260,6 +260,71 @@ fn cli_fmt_check_std_examples_run_hello_and_spawn_lsp() {
     assert!(stdout.contains("\"diagnostics\":[]"));
 }
 
+#[test]
+fn cli_test_doc_validates_stdlib_and_rejects_broken_examples() {
+    let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap();
+    let std_dir = repo_root.join("std");
+    let std_out = Command::new(ril_bin())
+        .args(["test", "--doc"])
+        .arg(&std_dir)
+        .output()
+        .unwrap();
+    assert!(
+        std_out.status.success(),
+        "ril test --doc std failed:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&std_out.stdout),
+        String::from_utf8_lossy(&std_out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&std_out.stdout);
+    assert!(
+        stdout.contains("0 failed") && !stdout.starts_with("0 passed"),
+        "unexpected ril test --doc std output: {stdout}"
+    );
+
+    let dir = tempfile::tempdir().unwrap();
+    let bad = dir.path().join("bad_doc.ril");
+    fs::write(
+        &bad,
+        "-- Broken example\n--\n-- ```ril\n-- @Tag(\"pk\") type User(.{ id: int })\n-- ```\npub fn ok() -> () {}\n",
+    )
+    .unwrap();
+    let bad_out = Command::new(ril_bin())
+        .args(["test", "--doc"])
+        .arg(&bad)
+        .output()
+        .unwrap();
+    assert!(
+        !bad_out.status.success(),
+        "expected broken doc example to fail, got stdout: {}",
+        String::from_utf8_lossy(&bad_out.stdout)
+    );
+
+    let ignored = dir.path().join("ignored_doc.ril");
+    fs::write(
+        &ignored,
+        "-- Ignored pseudocode + checked no_run\n--\n-- ```ril,ignore\n-- @NotRealRil syntax\n-- ```\n--\n-- ```ril,no_run\n-- let x = 1 + 2\n-- ```\npub fn ok() -> () {}\n",
+    )
+    .unwrap();
+    let ok_out = Command::new(ril_bin())
+        .args(["test", "--doc"])
+        .arg(&ignored)
+        .output()
+        .unwrap();
+    assert!(
+        ok_out.status.success(),
+        "expected ignore + no_run doc test to pass: {}",
+        String::from_utf8_lossy(&ok_out.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&ok_out.stdout),
+        "1 passed, 0 failed\n"
+    );
+}
+
 fn serde_json_escape(text: &str) -> String {
     let mut out = String::with_capacity(text.len() + 2);
     out.push('"');
