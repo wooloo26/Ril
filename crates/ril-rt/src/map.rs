@@ -333,7 +333,6 @@ impl GcRuntime {
                 mix64(0x1020_u64 ^ canonical)
             }
             Some(Object::Str(s)) => hash_bytes(0x1030, s.as_bytes()),
-            Some(Object::PanicInfo(s)) => hash_bytes(0x1031, s.as_bytes()),
             Some(Object::Bytes(b)) => hash_bytes(0x1040, b),
             Some(Object::Array(items)) => {
                 let mut h = mix64(0x2001_u64 ^ (items.len() as u64));

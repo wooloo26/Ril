@@ -77,7 +77,7 @@ impl Analyzer<'_> {
             self.binding_scopes.insert(span, ctx.scope);
             if param.mode == Mode::Via {
                 ctx.via.insert(span);
-                if param.ty.is_value() {
+                if self.program.is_value(&param.ty) {
                     self.error(
                         Code::E0550,
                         span,
@@ -105,13 +105,13 @@ impl Analyzer<'_> {
                     );
                 }
             }
-            if param.mode == Mode::New && param.ty.is_value() {
+            if param.mode == Mode::New && self.program.is_value(&param.ty) {
                 self.error(Code::E0411, span, "new parameter requires a shared object");
             }
             if param.mode == Mode::New {
                 ctx.new_formals.insert(span);
             }
-            let mut value = if param.ty.is_value() {
+            let mut value = if self.program.is_value(&param.ty) {
                 Datum::default()
             } else {
                 Datum::source(span, Access::from_mode(param.mode), param.mode == Mode::New)
@@ -124,7 +124,14 @@ impl Analyzer<'_> {
                     origin.confined = Some(ctx.scope);
                 }
             });
-            value = results::receive_results(self.program, &mut ledger, &param.ty, value, span);
+            value = results::receive_results(
+                self.program,
+                self.hir_scope(&ctx),
+                &mut ledger,
+                &param.ty,
+                value,
+                span,
+            );
             ledger.slots.insert(
                 span,
                 Slot {

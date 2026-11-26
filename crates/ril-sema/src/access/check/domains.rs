@@ -168,8 +168,13 @@ pub(super) struct Domains {
 }
 
 impl Domains {
-    pub(super) fn register_function(&mut self, function: &DefinitionCheck, instances: &ViaDomain) {
-        let axes = axes(&function.declared, &function.formals);
+    pub(super) fn register_function(
+        &mut self,
+        program: &crate::ty::TypedProgram,
+        function: &DefinitionCheck,
+        instances: &ViaDomain,
+    ) {
+        let axes = axes(program, &function.declared, &function.formals);
         self.tables.insert(
             function.owner,
             Domain::local(axes, instances.clone(), Some(function.id)),
@@ -177,12 +182,12 @@ impl Domains {
     }
 }
 
-pub(super) fn mode_axes(callable: &Callable) -> Vec<ModeAxis> {
+pub(super) fn mode_axes(program: &crate::ty::TypedProgram, callable: &Callable) -> Vec<ModeAxis> {
     let mut axes: Vec<_> = callable
         .parameters
         .iter()
         .enumerate()
-        .filter(|(_, param)| param.callable_mode() == Mode::Via)
+        .filter(|(_, param)| program.parameter_callable_mode(param) == Mode::Via)
         .map(|(parameter, _)| ModeAxis {
             parameter,
             path: Vec::new(),
@@ -206,8 +211,12 @@ pub(super) fn axis_region(axis: &ModeAxis, formals: &[Option<Span>]) -> Option<R
     Some(region)
 }
 
-pub(super) fn axes(callable: &Callable, formals: &[Option<Span>]) -> Vec<(ModeAxis, Region)> {
-    mode_axes(callable)
+pub(super) fn axes(
+    program: &crate::ty::TypedProgram,
+    callable: &Callable,
+    formals: &[Option<Span>],
+) -> Vec<(ModeAxis, Region)> {
+    mode_axes(program, callable)
         .into_iter()
         .filter_map(|axis| {
             let region = axis_region(&axis, formals)?;
@@ -287,11 +296,11 @@ impl Analyzer<'_> {
         let mode = if axis.path.is_empty() {
             *actual
         } else {
-            let mut ty = self.ty(span);
+            let mut ty = self.ty(span).clone();
             let mut mode = Mode::Plain;
             for coordinate in &axis.path {
-                let member = self.schema_member(ty, coordinate)?;
-                ty = &member.ty;
+                let member = self.schema_member(&ty, coordinate)?;
+                ty = member.ty;
                 mode = member.mode.mode;
             }
             mode
@@ -333,7 +342,7 @@ impl Analyzer<'_> {
             return;
         }
         let offers = self.mode_offers(
-            mode_axes(signature)
+            mode_axes(self.program, signature)
                 .into_iter()
                 .filter(|axis| axis_region(axis, formals).is_some()),
             values,
@@ -383,7 +392,7 @@ impl Analyzer<'_> {
                 domains.tables.insert(
                     function.name.span,
                     Domain {
-                        axes: axes(signature, &formals),
+                        axes: axes(self.program, signature, &formals),
                         current: export.domain.clone(),
                         excluded: ViaDomain::default(),
                         local: false,

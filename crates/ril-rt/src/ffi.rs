@@ -137,11 +137,11 @@ runtime_functions! {
     }
     fn ril_rt_panic_take(rt) -> Value {
         let message = rt.take_panic().unwrap_or_default();
-        rt.gc.alloc(Object::PanicInfo(message))
+        rt.gc.alloc(Object::Str(RilStr::new(message)))
     }
     fn ril_rt_panic_message(rt, info: Value) -> Value {
         match rt.gc.object(info) {
-            Some(Object::PanicInfo(message)) => rt.gc.alloc(Object::Str(RilStr::new(message.clone()))),
+            Some(Object::Str(_)) => info,
             _ => rt.checked(Err("panic_message requires PanicInfo")),
         }
     }

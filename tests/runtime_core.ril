@@ -360,8 +360,8 @@ fn main() -> () {
 type Packet<T>(.{ payload: T })
 type Parcel<T>(T)
 fn get() -> new !<int, str> { Ok(42) }
-fn packet() -> new Packet<!<int, str>> { Packet(.{ payload: get() }) }
-fn parcel() -> new Parcel<!<int, str>> { Parcel(get()) }
+fn packet() -> new Packet<!<int, str>> { Packet::(.{ payload: get() }) }
+fn parcel() -> new Parcel<!<int, str>> { Parcel::(get()) }
 fn main() -> () {
     assert(inner(packet()).payload == Ok(42))
     assert(inner(parcel()) == Ok(42))
@@ -387,14 +387,14 @@ fn main() -> () {
 -- @case loops_can_grow_recursive_immutable_data run-pass backend=both
 type Tree { Leaf(int); Fork(Tree, Tree) }
 fn grow(count: int) -> Tree {
-    var tree = Leaf(1)
-    for 0..count as _ { tree = Fork(tree, tree) }
+    var tree = Tree::Leaf(1)
+    for 0..count as _ { tree = Tree::Fork(tree, tree) }
     tree
 }
 fn main() -> () {
     match grow(80) {
-        Fork(left, right) -> assert(left == right)
-        Leaf(_) -> panic("growth did not occur")
+        Tree::Fork(left, right) -> assert(left == right)
+        Tree::Leaf(_) -> panic("growth did not occur")
     }
 }
 
@@ -402,18 +402,18 @@ fn main() -> () {
 type Node(.{ var value: int, var ^mut next: ?Node })
 fn copy(mut target: Node, ref reader: Node) &mut -> () { target.value = reader.value }
 fn read(count: int) -> int {
-    let mut tail = Node(.{ value: 4, next: None })
+    let mut tail = Node::(.{ value: 4, next: None })
     tail.value += 1
-    let mut initial = Node(.{ value: 7, next: Some(^mut tail) })
+    let mut initial = Node::(.{ value: 7, next: Some(^mut tail) })
     initial.value += 1
     var ^mut head = initial
     for 0..count as i {
-        let mut node = Node(.{ value: i, next: Some(^mut head) })
+        let mut node = Node::(.{ value: i, next: Some(^mut head) })
         node.value += 1
         head = ^mut node
     }
     head.value += 1
-    let mut spare = Node(.{ value: 0, next: None })
+    let mut spare = Node::(.{ value: 0, next: None })
     match ref head.next {
         Some(first) -> match ref first.next {
             Some(second) -> copy(mut spare, ref second)
@@ -430,12 +430,12 @@ type Link(.{ var value: int, var ^mut next: ?Link })
 fn build(^mut tail: Link, count: int) &mut &^mut &return(^mut tail) -> new Link {
     var ^mut head = tail
     for 0..count as i {
-        let mut node = Link(.{ value: i, next: Some(^mut head) })
+        let mut node = Link::(.{ value: i, next: Some(^mut head) })
         node.value += 1
         head = ^mut node
     }
     head.value += 1
-    Link(.{ value: 0, next: Some(^mut head) })
+    Link::(.{ value: 0, next: Some(^mut head) })
 }
 fn forward(via action: fn(via Link) @& -> infer Link, ^mut tail: Link, count: int) &mut &^mut -> infer Link {
     let mut chain = build(^mut tail, count)
@@ -451,7 +451,7 @@ fn read(ref head: Link, depth: int) -> int {
     }
 }
 fn main() -> () {
-    let mut tail = Link(.{ value: 41, next: None })
+    let mut tail = Link::(.{ value: 41, next: None })
     let mut head = forward(identity, ^mut tail, 8)
     head.value += 1
     tail.value += 1
@@ -461,8 +461,8 @@ fn main() -> () {
 -- @case a_cyclic_graph_can_be_cloned_compared_and_inspected run-pass backend=both
 type Node(.{ var value: int, var ^mut next: ?Node })
 fn main() -> () {
-    let mut first = Node(.{ value: 20, next: None })
-    let mut second = Node(.{ value: 22, next: None })
+    let mut first = Node::(.{ value: 20, next: None })
+    let mut second = Node::(.{ value: 22, next: None })
     first.next = ^mut Some(^mut second)
     second.next = ^mut Some(^mut first)
     let snapshot = clone(ref first)
@@ -938,7 +938,7 @@ fn main() @io -> () {
 -- @expect-stdout 22
 type Settings(.{ start: int, finish: int = start + 10 })
 fn main() @io -> () {
-    let settings = Settings(.{ start: 12 })
+    let settings = Settings::(.{ start: 12 })
     println("{settings.finish}")
 }
 
@@ -1029,9 +1029,9 @@ type Account { Invalid }
 type Failure { ..Network; ..Account; Other }
 fn status(value: Failure) -> int {
     match value {
-        Network as net -> match net { Offline -> 1; Timeout(status) -> status }
+        Network as net -> match net { Network::Offline -> 1; Network::Timeout(status) -> status }
         ..Account -> 2
-        Other -> 3
+        Failure::Other -> 3
     }
 }
 fn main() -> () {
@@ -1042,7 +1042,7 @@ fn main() -> () {
 
 -- @case direct_reflection_call_becomes_runtime_snapshot run-pass backend=both
 type Role(str)
-meta(Role("admin"))
+meta(Role::("admin"))
 type Request(.{ email: str })
 fn main() -> () {
     let roles: []Role = Reflect::attrs(<Request>)
@@ -1058,20 +1058,20 @@ fn main() -> () {
     let pair = (9, 2)
     assert(Shape::Rect(pair) == STATIC_RECT)
     assert(Shape::Rect(9, 2) == STATIC_RECT)
-    assert(inner(Size(pair)) == pair)
+    assert(inner(Size::(pair)) == pair)
     assert(inner(Empty) == ())
 }
 
 -- @case contextual_opaque_constructor_instantiates_generic_type run-pass backend=both
 type Open
 opaque type Resource<Flag>(.{ value: int })
-fn make() -> new Resource<Open> { Resource(.{ value: 42 }) }
+fn make() -> new Resource<Open> { Resource::(.{ value: 42 }) }
 fn main() -> () { assert(make().value == 42) }
 
 -- @case draft_nominal_inner_projects_into_working_copy run-pass backend=both
 type Bag([]int)
 fn main() -> () {
-    let base = Bag([1, 2])
+    let base = Bag::([1, 2])
     let next = base |> derive \mut draft -> {
         inner(mut draft) |> mut Array::push(3)
     }
@@ -1130,7 +1130,7 @@ fn main() -> () {
 pub opaque type Token(int)
 pub opaque type Packet { Hidden(int) }
 pub fn token(value: int) -> Token { value }
-pub fn packet() -> new Packet { Hidden(72) }
+pub fn packet() -> new Packet { Packet::Hidden(72) }
 pub fn inside() -> str { String::inspect(token(42)) }
 -- @file pkg/main.ril
 use pkg/secret as Secret
@@ -1322,13 +1322,13 @@ fn visit(action: fn(new Node) -> int, new input: Node, depth: int) -> int {
     if depth == 0 { action(new input) }
     else {
         let outer = Cell.{ count: 5 }
-        visit(action, new Node(.{ value: ^mut Cell.{ count: outer.count }, next: Some(new input) }), depth - 1)
+        visit(action, new Node::(.{ value: ^mut Cell.{ count: outer.count }, next: Some(new input) }), depth - 1)
     }
 }
 fn main() -> () {
     let mut live = Cell.{ count: 1 }
     live.count += 1
-    let observed = visit(freeze, new Node(.{ value: ^mut Cell.{ count: 2 }, next: None }), 1)
+    let observed = visit(freeze, new Node::(.{ value: ^mut Cell.{ count: 2 }, next: None }), 1)
     live.count += 8
     assert(observed == 5)
 }
@@ -1358,22 +1358,22 @@ type AliasRec = .{ tag: str, count: int }
 opaque type Token(.{ code: int }) use(drop_token)
 fn drop_token(new _t: Token) -> () {}
 fn main() -> () {
-    let u1 = User(.{ id: 1 })
+    let u1 = User::(.{ id: 1 })
     let raw = .{ id: 2, name: "ada" }
-    let u2 = User(raw)
-    let mapped = [.{ id: 3, name: "bob" }, .{ id: 4, name: "cat" }] |> Array::map(User)
-    let User(.{ id: id1, name: name1 }) = u1
-    let User(.{ id: id2, name: name2 }) = u2
-    let p1 = Point(3, 4)
-    let p2 = Point((3, 4))
-    let Point(px, py) = p1
-    let uid = UserId(7)
-    let UserId(raw_id) = uid
+    let u2 = User::(raw)
+    let mapped = [.{ id: 3, name: "bob" }, .{ id: 4, name: "cat" }] |> Array::map(\r -> User::(r))
+    let User::(.{ id: id1, name: name1 }) = u1
+    let User::(.{ id: id2, name: name2 }) = u2
+    let p1 = Point::(3, 4)
+    let p2 = Point::((3, 4))
+    let Point::(px, py) = p1
+    let uid = UserId::(7)
+    let UserId::(raw_id) = uid
     let alias = AliasRec.{ tag: "ok", count: 5 }
     let .{ tag, count } = alias
-    use tok = Token(.{ code: 9 })
+    use tok = Token::(.{ code: 9 })
     let matched = match u2 {
-        User(.{ id: 2, name }) -> name
+        User::(.{ id: 2, name }) -> name
         _ -> ""
     }
     assert(inner(Marker) == () && id1 == 1 && name1 == "anon" && id2 == 2 && name2 == "ada")
@@ -1395,4 +1395,47 @@ fn pick() -> int {
 }
 fn main() -> () {
     assert(pick() == 42)
+}
+
+-- @case zero_cost_nominal_opaque_and_qualified_variants_runtime run-pass backend=both
+type UserId(int)
+type Point(int, int)
+type Bag([]int)
+opaque type Weight(int)
+type Shape { Circle(int); Square(int) }
+fn next_id(id: UserId) -> UserId { UserId::(inner(id) + 1) }
+fn weight_a() -> Weight { 1 }
+fn weight_b() -> Weight { Weight::(1) }
+fn main() -> () {
+    let id = next_id(UserId::(41))
+    let UserId::(n) = id
+    assert(n == 42 && String::inspect(id) == "42")
+
+    let a = weight_a()
+    let b = weight_b()
+    let Weight::(wn) = a
+    assert(a == b && b + 1 == 2 && inner(a) == 1 && wn == 1)
+
+    let p = Point::(1, 2)
+    assert(inner(p) == (1, 2))
+    let p_updated = derive(p) \mut d -> { inner(mut d).0 = 9 }
+    assert(inner(p_updated) == (9, 2))
+    let mut bag = Bag::([1])
+    Array::push(mut inner(mut bag), 3)
+    assert(inner(ref bag) == [1, 3])
+
+    let opt = 42 |> Some
+    let circ = 5 |> Shape::Circle
+    assert(opt == Some(42) && circ == Shape::Circle(5))
+
+    use Shape::Circle as C
+    let c2 = 7 |> C
+    let r = match c2 {
+        C(radius) -> radius
+        Shape::Square(w) -> w
+    }
+    assert(r == 7 && c2 == Shape::Circle(7))
+
+    let s = Set::from_array([3, 1, 3])
+    assert(len(s) == 2 && Set::contains(s, 3))
 }

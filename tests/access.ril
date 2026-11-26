@@ -1545,7 +1545,7 @@ fn run() -> () {
 -- @case returned_nominal_field_keeps_its_result_obligation compile-fail E0720
 type Packet(.{ payload: !<int, str> })
 fn get() -> new !<int, str> { Ok(1) }
-fn packet() -> new Packet { Packet(.{ payload: get() }) }
+fn packet() -> new Packet { Packet::(.{ payload: get() }) }
 fn run() -> () {
     let value = packet()
     -- ^ E0720
@@ -1556,8 +1556,8 @@ fn run() -> () {
 type Packet<T>(.{ payload: T })
 type Parcel<T>(T)
 fn get() -> new !<int, str> { Ok(1) }
-fn packet() -> new Packet<!<int, str>> { Packet(.{ payload: get() }) }
-fn parcel() -> new Parcel<!<int, str>> { Parcel(get()) }
+fn packet() -> new Packet<!<int, str>> { Packet::(.{ payload: get() }) }
+fn parcel() -> new Parcel<!<int, str>> { Parcel::(get()) }
 fn run() -> () {
     assert(inner(packet()).payload == Ok(1))
     assert(inner(parcel()) == Ok(1))
@@ -2151,9 +2151,9 @@ fn invalid() -> () {
 -- @case variant_fixed_subslots_cannot_decompose_as_mut compile-fail E0551 no-prelude
 type Shape { Rect([]int, []int) }
 fn invalid() -> () {
-    let s = Rect([1], [2])
+    let s = Shape::Rect([1], [2])
     match s {
-        Rect(mut a, _) -> Array::push(mut a, 3)
+        Shape::Rect(mut a, _) -> Array::push(mut a, 3)
         -- ^ E0551
     }
 }
@@ -2700,8 +2700,8 @@ fn edit(mut left: Node, mut right: Node) &mut -> () {
     right.count += 1
 }
 fn update() -> () {
-    let mut first = Node(.{ count: 20, next: None })
-    let mut second = Node(.{ count: 22, next: None })
+    let mut first = Node::(.{ count: 20, next: None })
+    let mut second = Node::(.{ count: 22, next: None })
     first.next = ^mut Some(^mut second)
     second.next = ^mut Some(^mut first)
     edit(mut first, mut second)
@@ -2858,12 +2858,12 @@ fn copy(mut target: Node, ref reader: Node) &mut -> () {
     target.value = reader.value
 }
 fn run(count: int) -> int {
-    let mut tail = Node(.{ value: 4, next: None })
-    let mut initial = Node(.{ value: 7, next: Some(^mut tail) })
+    let mut tail = Node::(.{ value: 4, next: None })
+    let mut initial = Node::(.{ value: 7, next: Some(^mut tail) })
     initial.value += 1
     var ^mut head = initial
     for 0..count as i {
-        let mut node = Node(.{ value: i, next: Some(^mut head) })
+        let mut node = Node::(.{ value: i, next: Some(^mut head) })
         node.value += 1
         head = ^mut node
     }
@@ -2896,7 +2896,7 @@ fn visit(node: Node, new input: Shelf) -> int {
 fn observe() -> () {
     let mut live = Cell.{ count: 1 }
     live.count += 1
-    let head = Node(.{ action: count, next: Some(Node(.{ action: freeze, next: None })) })
+    let head = Node::(.{ action: count, next: Some(Node::(.{ action: freeze, next: None })) })
     let observed = visit(head, new Shelf.{ item: ^mut live })
     -- ^ E0535
     live.count += 8
@@ -2911,13 +2911,13 @@ fn visit(action: fn(new Node) -> int, new input: Node, depth: int) -> int {
     if depth == 0 { action(new input) }
     else {
         let outer = Cell.{ count: 5 }
-        visit(action, new Node(.{ value: ^mut Cell.{ count: outer.count }, next: Some(new input) }), depth - 1)
+        visit(action, new Node::(.{ value: ^mut Cell.{ count: outer.count }, next: Some(new input) }), depth - 1)
     }
 }
 fn observe() -> () {
     let mut live = Cell.{ count: 1 }
     live.count += 1
-    let observed = visit(freeze, new Node(.{ value: ^mut live, next: None }), 1)
+    let observed = visit(freeze, new Node::(.{ value: ^mut live, next: None }), 1)
     -- ^ E0535
     live.count += 8
     assert(observed == 5)
@@ -2930,13 +2930,13 @@ type Leaf = fn(new Shelf) -> int
 type Node(.{ action: Leaf, next: ?Node })
 fn count(new input: Shelf) -> int { input.item.count }
 fn apply(action: fn(Node) -> int, node: Node, depth: int) -> int {
-    if depth == 0 { action(node) } else { apply(action, Node(.{ action: count, next: Some(node) }), depth - 1) }
+    if depth == 0 { action(node) } else { apply(action, Node::(.{ action: count, next: Some(node) }), depth - 1) }
 }
 fn dispatch(node: Node) -> int {
     node.action(new Shelf.{ item: ^mut Cell.{ count: 1 } })
 }
 fn run() -> int {
-    apply(dispatch, Node(.{ action: count, next: None }), 2)
+    apply(dispatch, Node::(.{ action: count, next: None }), 2)
 }
 
 -- @case appended_callable_keeps_its_snapshot_requirement compile-fail E0535
@@ -3229,4 +3229,62 @@ fn run() -> int {
     -- ^ E0535
     live.count += 8
     answer + live.count
+}
+
+-- @case inner_cannot_mutate_immutable_wrapped_snapshot compile-fail E0520
+type Bag([]int)
+fn bad(xs: []int) -> () {
+    let mut b = Bag::(xs)
+    -- ^ E0520
+    Array::push(mut inner(mut b), 3)
+}
+
+-- @case wrap_with_ref_clamps_mut_access compile-fail E0520
+type User(.{ var id: int })
+fn bad() -> () {
+    let mut r = .{ var id: 1 }
+    r.id += 1
+    let mut u = User::(ref r)
+    -- ^ E0520
+    u.id += 1
+}
+
+-- @case sum_variant_with_ref_clamps_mut_access compile-fail E0520
+fn bad() -> () {
+    let mut c = Cell.{ count: 1 }
+    c.count += 1
+    let mut opt = Some(ref c)
+    match mut opt {
+        Some(mut inner_c) -> { inner_c.count += 1 }
+        -- ^ E0520
+        None -> ()
+    }
+}
+
+-- @case wrap_with_ref_of_fresh_record_triggers_e0543 compile-fail E0543
+type User(.{ var id: int })
+fn bad() -> int {
+    let ref u = User::(ref .{ id: 1 })
+    -- ^ E0543
+    u.id
+}
+
+-- @case opaque_result_wrapper_enforces_e0720_in_defining_scope compile-fail E0720
+opaque type Resp(!<int, str>)
+fn fetch() -> new Resp { Resp::(Ok(1)) }
+fn bad() -> () {
+    let r = fetch()
+    -- ^ E0720
+    let _ = r
+}
+
+-- @case opaque_result_wrapper_does_not_force_e0720_outside_defining_scope compile-pass
+-- @file pkg/secret.ril
+pub opaque type Resp(!<int, str>)
+pub fn fetch() -> new Resp { Resp::(Ok(1)) }
+-- @file pkg/main.ril
+use pkg/secret as Secret
+fn main() -> () {
+    let r = Secret::fetch()
+    let _ = r
 }

@@ -382,9 +382,7 @@ impl Checker<'_> {
                 }
                 Expr::Member {
                     base, safe: false, ..
-                } => self
-                    .ast(env.file)
-                    .expr(self.tuple_inner_receiver(env, *base).unwrap_or(*base)),
+                } => self.ast(env.file).expr(*base),
                 Expr::Index {
                     base,
                     index,
@@ -406,22 +404,10 @@ impl Checker<'_> {
                     let Some((base, _)) = self.hir.inner_operand(env.file, expression) else {
                         return false;
                     };
-                    if matches!(self.types.get(&node.span), Some(Ty::Tuple(_) | Ty::Unit)) {
-                        return false;
-                    }
                     self.ast(env.file).expr(base)
                 }
             };
         }
-    }
-
-    fn tuple_inner_receiver(&self, env: &Env, base: ExprId) -> Option<ExprId> {
-        let node = self.ast(env.file).expr(base);
-        if !matches!(self.types.get(&node.span), Some(Ty::Tuple(_))) {
-            return None;
-        }
-        let (argument, mode) = self.hir.inner_operand(env.file, &node.value)?;
-        (mode == Mode::Mut).then_some(argument)
     }
 
     fn bind_pattern_value(
@@ -600,8 +586,7 @@ impl Checker<'_> {
                 member,
                 safe: false,
             } => {
-                let base = self.tuple_inner_receiver(env, *base).unwrap_or(*base);
-                let mut place = self.eval_place(env, slots, base, fuel)?;
+                let mut place = self.eval_place(env, slots, *base, fuel)?;
                 let key = match member {
                     Coordinate::Name(name) => Value::Str(name.value.clone()),
                     Coordinate::Index(index) => Value::Int(
@@ -632,13 +617,6 @@ impl Checker<'_> {
                     .inner_operand(env.file, expression)
                     .ok_or_else(|| defect(node.span, "invalid static assignment target"))?;
                 let mut place = self.eval_place(env, slots, argument, fuel)?;
-                if !matches!(place.slot(slots, false)?, Value::Tag(_, items) if items.len() == 1) {
-                    return Err(defect(
-                        node.span,
-                        "static inner place requires a single nominal payload",
-                    ));
-                }
-                place.path.push(Value::Int(0.into()));
                 place.span = node.span;
                 Ok(place)
             }

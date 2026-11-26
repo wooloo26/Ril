@@ -176,20 +176,20 @@ impl Analyzer<'_> {
                     // that receives a new handoff at this boundary.
                     selected.detach_handed_off_paths();
                 }
-                let mut ty = self.ty(span);
+                let mut ty = self.ty(span).clone();
                 let (path, replaced) = if whole_graph {
                     (&[][..], &[][..])
                 } else {
                     (requirement.path.as_slice(), requirement.replaced.as_slice())
                 };
                 for coordinate in path {
-                    let member = self.schema_member(ty, coordinate);
+                    let member = self.schema_member(&ty, coordinate);
                     selected = ledger.project_schema(
                         &selected,
                         coordinate.clone(),
-                        member.map_or(Mode::Mut, |member| member.mode.mode),
+                        member.as_ref().map_or(Mode::Mut, |member| member.mode.mode),
                     );
-                    ty = member.map_or(&crate::ty::Ty::Unknown, |member| &member.ty);
+                    ty = member.map_or(crate::ty::Ty::Unknown, |member| member.ty);
                 }
                 let selected = ledger.snapshot(&selected);
                 let valid = selected.snapshot_graph(replaced, &mut |origin, owned, replaced| {

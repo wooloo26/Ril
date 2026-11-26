@@ -882,7 +882,7 @@ fn check_generic_bounds_for_subst(
                 .segments
                 .last()
                 .map_or("", |s| s.name.value.as_str());
-            if !satisfies_known_guard(guard_name, actual, &typed.hir) {
+            if !satisfies_known_guard(guard_name, actual, typed) {
                 return false;
             }
         }
@@ -912,7 +912,7 @@ fn match_ast_first_param(
                 if !gp.guards.is_empty() {
                     let ok = gp.guards.iter().all(|g| {
                         let gname = g.segments.last().map_or("", |s| s.name.value.as_str());
-                        satisfies_known_guard(gname, lhs_ty, &typed.hir)
+                        satisfies_known_guard(gname, lhs_ty, typed)
                     });
                     return ok.then_some(65);
                 }
@@ -977,17 +977,18 @@ fn ast_type_matches_concrete(
     }
 }
 
-fn satisfies_known_guard(guard: &str, ty: &Ty, hir: &Program) -> bool {
+fn satisfies_known_guard(guard: &str, ty: &Ty, typed: &TypedProgram) -> bool {
+    let hir = &typed.hir;
     match guard {
         "LenTarget" => {
             matches!(ty, Ty::Str | Ty::Bytes | Ty::Array(_) | Ty::Map(_, _)) || ty.is_set(hir)
         }
         "SharedObject" => {
-            !ty.is_value() && !matches!(ty, Ty::Mode | Ty::Draft(_) | Ty::TypeValue(_))
+            !typed.is_value(ty) && !matches!(ty, Ty::Mode | Ty::Draft(_) | Ty::TypeValue(_))
         }
         "NominalWrapper" => match ty {
             Ty::Draft(_) => true,
-            Ty::Adt(adt) => matches!(adt.kind, AdtKind::Nominal),
+            Ty::Adt(adt) => matches!(adt.kind, AdtKind::Nominal | AdtKind::Opaque),
             _ => false,
         },
         "Tuple" => matches!(ty, Ty::Tuple(_)),

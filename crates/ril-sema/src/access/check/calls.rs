@@ -230,7 +230,14 @@ impl<'program> Analyzer<'program> {
                     .propagation_inputs
                     .get(&span)
                     .unwrap_or_else(|| self.ty(span));
-                result = super::results::receive_results(self.program, ledger, ty, result, span);
+                result = super::results::receive_results(
+                    self.program,
+                    self.hir_scope(ctx),
+                    ledger,
+                    ty,
+                    result,
+                    span,
+                );
             }
         }
         ledger.remember_return_graph(&result, span);
@@ -249,8 +256,5 @@ fn constructor(span: Span, values: impl IntoIterator<Item = (usize, Mode, Datum)
 }
 
 fn data_constructor(definition: &Definition) -> bool {
-    matches!(
-        definition.kind,
-        DefinitionKind::Type | DefinitionKind::Variant(_)
-    )
+    matches!(definition.kind, DefinitionKind::Variant(_))
 }

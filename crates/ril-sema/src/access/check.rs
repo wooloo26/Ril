@@ -109,6 +109,7 @@ struct Context {
     owner: Span,
     file: FileId,
     scope: Span,
+    hir_scope: Option<ril_hir::ScopeId>,
     formals: Vec<Option<Span>>,
     caller_slots: BTreeSet<Span>,
     caller_sources: BTreeSet<Span>,
@@ -136,6 +137,7 @@ impl Context {
             owner,
             file: owner.file,
             scope: owner,
+            hir_scope: None,
             formals: Vec::new(),
             caller_slots: BTreeSet::new(),
             caller_sources: BTreeSet::new(),
@@ -414,7 +416,7 @@ pub(super) fn analyze(program: &TypedProgram) -> (Analysis, Vec<Diagnostic>) {
             .collect();
         sharing_inputs.insert(function.id, sharing);
         if !instances.is_empty() {
-            domains.register_function(&function, &instances);
+            domains.register_function(program, &function, &instances);
             analysis.via.insert(function.id, instances);
         }
         analysis.summaries.insert(function.id, summary);

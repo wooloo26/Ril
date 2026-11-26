@@ -3,7 +3,6 @@ use std::collections::BTreeMap;
 use ril_sema::{
     hir::{DefinitionId, Intrinsic},
     syntax::{Argument, ExprId},
-    ty::Ty,
 };
 use ril_source::span::Span;
 
@@ -57,33 +56,7 @@ impl Builder<'_, '_> {
         if intrinsic == Some(Intrinsic::Inner)
             && let [arg] = args
         {
-            let wrapper = self.collection(arg.value)?;
-            return Ok(
-                match self
-                    .global
-                    .typed
-                    .types
-                    .get(&span)
-                    .map(|ty| self.concrete(ty))
-                {
-                    Some(Ty::Unit) => self.unit(),
-                    Some(Ty::Record(..)) => wrapper,
-                    Some(Ty::Tuple(_)) if arg.mode == ril_sema::syntax::Mode::Mut => wrapper,
-                    Some(Ty::Tuple(parts)) => {
-                        let tuple = self.runtime("ril_rt_tuple", Vec::new());
-                        for index in 0..parts.len() {
-                            let key = self.integer(&index.to_string());
-                            let value = self.runtime("ril_rt_load", vec![wrapper, key]);
-                            self.runtime("ril_rt_append", vec![tuple, value]);
-                        }
-                        tuple
-                    }
-                    _ => {
-                        let key = self.integer("0");
-                        self.runtime("ril_rt_load", vec![wrapper, key])
-                    }
-                },
-            );
+            return self.expr(arg.value);
         }
         if intrinsic == Some(Intrinsic::StringInspect)
             && let [argument] = args
@@ -103,22 +76,7 @@ impl Builder<'_, '_> {
         if intrinsic == Some(Intrinsic::Len)
             && let [argument] = args
         {
-            let mut value = self.collection(argument.value)?;
-            let arg_span = self.ast().expr(argument.value).span;
-            let is_set = self
-                .global
-                .typed
-                .types
-                .get(&arg_span)
-                .map(|ty| self.concrete(ty))
-                .is_some_and(|ty| match ty {
-                    Ty::Draft(inner) => inner.is_set(&self.global.typed.hir),
-                    other => other.is_set(&self.global.typed.hir),
-                });
-            if is_set {
-                let zero = self.integer("0");
-                value = self.runtime("ril_rt_load", vec![value, zero]);
-            }
+            let value = self.collection(argument.value)?;
             return Ok(self.runtime("ril_rt_len", vec![value]));
         }
         let values = if let Some(decl) = self.global.declaration(id) {

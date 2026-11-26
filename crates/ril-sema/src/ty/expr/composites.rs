@@ -151,7 +151,7 @@ impl Checker<'_> {
             self.error(
                 Code::E0338,
                 span,
-                "nominal record construction uses parentheses, e.g. 'Type(.{ ... })'",
+                "nominal record construction uses '::(...)', e.g. 'Type::(.{ ... })'",
             );
             return Ty::Unknown;
         }

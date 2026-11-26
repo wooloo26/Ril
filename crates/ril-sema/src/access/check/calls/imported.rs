@@ -303,11 +303,11 @@ impl<'program> Analyzer<'program> {
             .iter()
             .filter_map(|update| {
                 let source = formals.get(update.formal).copied().flatten()?;
-                let mut ty = &signature?.parameters.get(update.formal)?.ty;
+                let mut ty = signature?.parameters.get(update.formal)?.ty.clone();
                 for coordinate in &update.path {
                     ty = self
-                        .schema_member(ty, coordinate)
-                        .map_or(&Ty::Unknown, |member| &member.ty);
+                        .schema_member(&ty, coordinate)
+                        .map_or(Ty::Unknown, |member| member.ty);
                 }
                 let value = self.exported_value(
                     owner,
@@ -319,7 +319,7 @@ impl<'program> Analyzer<'program> {
                         allocations: &update.allocations,
                         constructs: update.constructs,
                     },
-                    ty,
+                    &ty,
                 );
                 let mut region = Region::root(source);
                 region.selection.clone_from(&update.path);
@@ -386,7 +386,7 @@ impl<'program> Analyzer<'program> {
             && summary.return_allocations.is_empty()
             && !summary.constructs
         {
-            return if ty.is_value() {
+            return if self.program.is_value(ty) {
                 Datum::default()
             } else {
                 Datum::source(entry.span, Access::Immutable, false)
@@ -491,11 +491,11 @@ impl<'program> Analyzer<'program> {
                 .iter()
                 .zip(entry.spans)
                 .find(|((position, ..), _)| *position == index)?;
-            let mut ty = self.ty(span);
+            let mut ty = self.ty(span).clone();
             let mut mode = Mode::Plain;
             for coord in &axis.selection {
-                let member = self.schema_member(ty, coord)?;
-                ty = &member.ty;
+                let member = self.schema_member(&ty, coord)?;
+                ty = member.ty;
                 mode = member.mode.mode;
             }
             actual.push(Input::from_mode(mode));
@@ -519,7 +519,7 @@ impl<'program> Analyzer<'program> {
             allocations,
             constructs,
         }: PublishedValue<'_>,
-        ty: &'program Ty,
+        ty: &Ty,
     ) -> Datum {
         let implicit = constructs && allocations.is_empty();
         let mut value = if implicit
@@ -629,19 +629,22 @@ impl<'program> Analyzer<'program> {
         &self,
         mut node: &'value mut Datum,
         path: &[Coordinate],
-        mut ty: &'program Ty,
+        ty: &Ty,
         owner: Span,
         constructs: bool,
     ) -> &'value mut Datum {
+        let mut ty = ty.clone();
         for (depth, coord) in path.iter().enumerate() {
-            let schema = self.schema_member(ty, coord);
-            ty = match (ty, coord) {
-                (Ty::Map(key, _), Coordinate::MapKey) => key,
-                _ => schema.map_or(&Ty::Unknown, |member| &member.ty),
+            let schema = self.schema_member(&ty, coord);
+            ty = match (&ty, coord) {
+                (Ty::Map(key, _), Coordinate::MapKey) => (**key).clone(),
+                _ => schema
+                    .as_ref()
+                    .map_or(Ty::Unknown, |member| member.ty.clone()),
             };
             node = node.members.entry(coord.clone()).or_insert_with(|| {
                 if constructs && depth + 1 < path.len() {
-                    let mode = schema.map_or(Mode::Mut, |member| member.mode.mode);
+                    let mode = schema.as_ref().map_or(Mode::Mut, |member| member.mode.mode);
                     Datum::source(owner, Access::from_mode(mode), true)
                 } else {
                     Datum::default()

@@ -379,12 +379,15 @@ impl Checker<'_> {
                     }
                 }
                 DefinitionKind::Type => {
-                    let ty = self.constructor_type(
-                        env,
-                        path.unwrap_or_else(|| ril_source::ice!("constructor without path")),
-                        expected,
+                    for arg in args {
+                        self.expr(env, arg.value, None);
+                    }
+                    self.error(
+                        Code::E0338,
+                        callee.span,
+                        "nominal construction requires 'Name::(...)' syntax",
                     );
-                    return self.nominal_constructor(env, ty, args, span);
+                    return Ty::Unknown;
                 }
                 DefinitionKind::Function => {
                     let is_stdlib = self.hir.is_stdlib_file(def.name.span.file);
@@ -518,7 +521,8 @@ impl Checker<'_> {
                 self.expect(env, arg.value, &param_ty);
             }
             if matches!(arg.mode, Mode::Mut | Mode::Shared | Mode::Ref)
-                && self.types.get(&arg_span).is_some_and(Ty::is_value)
+                && let Some(arg_ty) = self.types.get(&arg_span).cloned()
+                && self.is_value_ty(env, &arg_ty)
             {
                 self.error(
                     Code::E0401,
@@ -609,7 +613,7 @@ impl Checker<'_> {
                         {
                             let arg_span = ast.expr(arg.value).span;
                             let first = self.types.get(&arg_span).cloned().unwrap_or(Ty::Unknown);
-                            if first.is_value() {
+                            if self.is_value_ty(env, &first) {
                                 self.error(
                                     Code::E0401,
                                     arg_span,
@@ -716,18 +720,64 @@ impl Checker<'_> {
         self.normalize(&result)
     }
 
+    pub(super) fn wrap(
+        &mut self,
+        env: &mut Env,
+        path: &syntax::Path,
+        args: &[Argument],
+        expected: Option<&Ty>,
+        span: Span,
+    ) -> Ty {
+        if let Some(id) = self.resolve(path.span)
+            && self.hir.definition(id).kind != DefinitionKind::Type
+        {
+            for arg in args {
+                self.expr(env, arg.value, None);
+            }
+            self.error(
+                Code::E0338,
+                span,
+                "'::(...)' construction is only valid for nominal or opaque wrapper types",
+            );
+            return Ty::Unknown;
+        }
+        let ty = self.constructor_type(env, path, expected);
+        self.types.insert(path.span, ty.clone());
+        self.nominal_constructor(env, ty, args, span)
+    }
+
     fn nominal_constructor(&mut self, env: &mut Env, ty: Ty, args: &[Argument], span: Span) -> Ty {
         let Ty::Adt(adt) = &ty else {
+            for arg in args {
+                self.expr(env, arg.value, None);
+            }
             if ty != Ty::Unknown {
-                self.error(Code::E0338, span, "type is not a payload constructor");
+                self.error(Code::E0338, span, "type is not a nominal wrapper");
             }
             return Ty::Unknown;
         };
+        if matches!(adt.kind, AdtKind::Sum | AdtKind::OpaqueSum) {
+            for arg in args {
+                self.expr(env, arg.value, None);
+            }
+            self.error(
+                Code::E0338,
+                span,
+                "sum types do not use nominal '::(...)' construction",
+            );
+            return Ty::Unknown;
+        }
         if adt.kind == AdtKind::Foreign {
+            for arg in args {
+                self.expr(env, arg.value, None);
+            }
             self.error(Code::E0907, span, "foreign nominal cannot be constructed");
             return Ty::Unknown;
         }
         if adt.kind == AdtKind::Opaque && adt.defining_scope != env.scope {
+            for arg in args {
+                self.expr(env, arg.value, None);
+            }
             if self.hir.std_type(adt.definition) == Some(ril_hir::StdType::PanicInfo) {
                 self.error(Code::E0301, span, "PanicInfo has no accessible constructor");
             } else {
@@ -738,15 +788,21 @@ impl Checker<'_> {
         let is_unit_nominal = self.hir.unit_constructor(adt.definition);
         let rep = self.representation(env, adt);
         if is_unit_nominal || rep.is_none() {
+            for arg in args {
+                self.expr(env, arg.value, None);
+            }
             self.error(
                 Code::E0338,
                 span,
-                "unit nominal type does not use payload call syntax",
+                "unit nominal type does not use '::(...)' wrap syntax",
             );
             return Ty::Unknown;
         }
         if let Some(Ty::Record(required, open)) = rep {
             if args.len() != 1 {
+                for arg in args {
+                    self.expr(env, arg.value, None);
+                }
                 self.error(Code::E0314, span, "invalid constructor payload arity");
                 return ty;
             }
@@ -785,19 +841,42 @@ impl Checker<'_> {
             }
             return ty;
         }
+        if let Some(Ty::Tuple(fields)) = &rep
+            && let [arg] = args
+            && fields.len() >= 2
+        {
+            let arg_span = self.ast(env.file).expr(arg.value).span;
+            if arg.name.is_some() {
+                self.error(
+                    Code::E0339,
+                    arg_span,
+                    "positional constructor does not accept named arguments",
+                );
+            }
+            if !matches!(arg.mode, Mode::Plain | Mode::Ref | Mode::Shared | Mode::New) {
+                self.error(
+                    Code::E0406,
+                    arg_span,
+                    "constructor argument has an unsupported access mode",
+                );
+            }
+            let tuple_ty = Ty::Tuple(fields.clone());
+            self.expect(env, arg.value, &tuple_ty);
+            return ty;
+        }
+        if args.is_empty() && matches!(rep, Some(Ty::Unit)) {
+            return ty;
+        }
         let params = match rep {
             Some(Ty::Tuple(fields)) => fields.into_iter().map(|m| m.ty).collect(),
             Some(one) => vec![one],
             None => unreachable!(),
         };
-        if self.check_tuple_payload(env, args, &params, span) {
-            return ty;
-        }
         if args.len() != params.len() {
             self.error(Code::E0314, span, "invalid constructor payload arity");
         }
         let single = params.len() == 1;
-        for (arg, ty) in args.iter().zip(params) {
+        for (arg, param_ty) in args.iter().zip(params) {
             let arg_span = self.ast(env.file).expr(arg.value).span;
             if arg.name.is_some() {
                 self.error(
@@ -818,9 +897,10 @@ impl Checker<'_> {
                     "constructor argument has an unsupported access mode",
                 );
             }
-            self.expect(env, arg.value, &ty);
+            self.expect(env, arg.value, &param_ty);
             if matches!(arg.mode, Mode::Mut | Mode::Shared | Mode::Ref)
-                && self.types.get(&arg_span).is_some_and(Ty::is_value)
+                && let Some(arg_ty) = self.types.get(&arg_span).cloned()
+                && self.is_value_ty(env, &arg_ty)
             {
                 self.error(
                     Code::E0401,

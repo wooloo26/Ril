@@ -114,9 +114,7 @@ impl Plan {
                     .collect::<Vec<_>>();
                 format!("[{}]", parts.join(", "))
             }
-            (Some(Node::Set(item)), Value::Tag(_, values))
-                if let [Value::Map(entries)] = values.as_slice() =>
-            {
+            (Some(Node::Set(item)), Value::Map(entries)) => {
                 let parts = entries
                     .iter()
                     .map(|(key, _)| self.render_at(key, *item))
@@ -229,18 +227,6 @@ impl Builder<'_, '_> {
                     ),
                     AdtKind::Nominal | AdtKind::Opaque => {
                         match self.checker.representation(self.env, adt) {
-                            Some(Ty::Record(fields, _)) => self.record(&fields, depth),
-                            Some(rep) if adt.kind == AdtKind::Nominal => {
-                                let items = match rep {
-                                    Ty::Unit => Vec::new(),
-                                    Ty::Tuple(items) => items
-                                        .iter()
-                                        .map(|item| self.visit(&item.ty, depth))
-                                        .collect(),
-                                    _ => vec![self.visit(&rep, depth)],
-                                };
-                                Node::Tags(BTreeMap::from([(name, items)]))
-                            }
                             Some(rep) => {
                                 let index = self.visit(&rep, depth);
                                 self.nodes.get(index).cloned().unwrap_or_default()

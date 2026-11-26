@@ -141,16 +141,16 @@ type Invalid = Checked<bool>
 
 -- @case reflection_filters_type_field_and_variant_metadata compile-pass
 type Role(str)
-meta(Role("admin"), "ignored", Role("writer"))
-type Request(.{ meta(Role("private")) email: str })
-type ApiError { meta(Role("log")) Missing; Unused }
+meta(Role::("admin"), "ignored", Role::("writer"))
+type Request(.{ meta(Role::("private")) email: str })
+type ApiError { meta(Role::("log")) Missing; Unused }
 type NestedError { ..ApiError; Bad }
 meta let ROLES = Reflect::attrs<Request, Role>(<Request>)
 meta let FIELD_ROLES: []Role = Reflect::field_attrs(<Request>, "email")
 meta let VARIANT_ROLES = Reflect::variant_attrs<NestedError, Role>(<NestedError>, "Missing")
-meta let _ = assert(ROLES == [Role("admin"), Role("writer")])
-meta let _ = assert(FIELD_ROLES == [Role("private")])
-meta let _ = assert(VARIANT_ROLES == [Role("log")])
+meta let _ = assert(ROLES == [Role::("admin"), Role::("writer")])
+meta let _ = assert(FIELD_ROLES == [Role::("private")])
+meta let _ = assert(VARIANT_ROLES == [Role::("log")])
 
 -- @case metadata_cannot_contain_a_runtime_callable compile-fail E0816
 type Role(str)
@@ -235,8 +235,8 @@ meta let CHECK = assert(check_paths())
 type Kind { Present(); Empty }
 meta fn check_payloads() -> bool {
     let some = derive(Some()) \mut _ -> ()
-    let tagged = derive(Present()) \mut _ -> ()
-    some == Some(()) && tagged == Present(())
+    let tagged = derive(Kind::Present()) \mut _ -> ()
+    some == Some(()) && tagged == Kind::Present(())
 }
 meta let CHECK = assert(check_payloads())
 
@@ -277,12 +277,12 @@ type Item { Present(Cell); Missing }
 meta fn edit(base: Item) -> Item {
     derive(base) \mut draft -> {
         match draft {
-            Present(mut cell) -> { cell.count += 1 }
-            Missing -> ()
+            Item::Present(mut cell) -> { cell.count += 1 }
+            Item::Missing -> ()
         }
     }
 }
-meta let CHECK = assert(edit(Present(Cell.{ count: 41 })) == Present(Cell.{ count: 42 }))
+meta let CHECK = assert(edit(Item::Present(Cell.{ count: 41 })) == Item::Present(Cell.{ count: 42 }))
 
 -- @case static_draft_alternative_binding_updates_only_selected_tuple_path compile-pass stage=access
 type Cell = .{ count: int }
@@ -318,7 +318,7 @@ meta fn append(base: Bag) -> Bag {
         inner(mut draft) |> mut Array::push(42)
     }
 }
-meta let CHECK = assert(inner(append(Bag([1]))) == [1, 42])
+meta let CHECK = assert(inner(append(Bag::([1]))) == [1, 42])
 
 -- @case static_draft_later_pattern_reads_writes_from_failed_guard compile-pass
 type Cell = .{ count: int }
@@ -326,14 +326,14 @@ type Item { Present(Cell); Missing }
 meta fn edit(base: Item) -> Item {
     derive(base) \mut draft -> {
         match draft {
-            Present(mut cell) if { cell.count = 7; false } -> ()
-            Present(.{ count: 7 }) -> ()
-            Present(mut cell) -> { cell.count = 9 }
-            Missing -> ()
+            Item::Present(mut cell) if { cell.count = 7; false } -> ()
+            Item::Present(.{ count: 7 }) -> ()
+            Item::Present(mut cell) -> { cell.count = 9 }
+            Item::Missing -> ()
         }
     }
 }
-meta let CHECK = assert(edit(Present(Cell.{ count: 41 })) == Present(Cell.{ count: 7 }))
+meta let CHECK = assert(edit(Item::Present(Cell.{ count: 41 })) == Item::Present(Cell.{ count: 7 }))
 
 -- @case static_draft_inner_writes_nominal_tuple_coordinates compile-pass stage=access
 type Pair(int, int)
@@ -343,7 +343,7 @@ meta fn edit(base: Pair) -> Pair {
         (draft |> mut inner).1 += 1
     }
 }
-meta let CHECK = assert(inner(edit(Pair(1, 2))) == (41, 3))
+meta let CHECK = assert(inner(edit(Pair::(1, 2))) == (41, 3))
 
 -- @case meta_if_in_meta_fn_is_rejected compile-fail E0810
 meta fn bad(flag: bool) -> int {
@@ -391,3 +391,23 @@ fn bad<T>(x: T) -> int {
         _ -> 0
     }
 }
+
+-- @case opaque_value_wrapper_and_aliased_variant_ctfe compile-pass
+opaque type Weight(int)
+type Shape { Circle(int); Square(int) }
+meta fn make_a() -> Weight { 1 }
+meta fn make_b() -> Weight { Weight::(1) }
+meta fn check_all() -> bool {
+    let a = make_a()
+    let b = make_b()
+    let Weight::(n) = a
+    use Shape::Circle as C
+    let s = C(5)
+    let matched = match s {
+        C(r) -> r
+        Shape::Square(w) -> w
+    }
+    a == b && b + 1 == 2 && inner(a) == 1 && n == 1 && matched == 5
+}
+meta let OK = check_all()
+fn main() -> () { assert(OK) }

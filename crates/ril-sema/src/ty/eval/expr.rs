@@ -234,22 +234,27 @@ impl Checker<'_> {
                         current += 1;
                     }
                 } else {
+                    let iterable_span = ast.expr(*iterable).span;
+                    let is_set = self.types.get(&iterable_span).is_some_and(|ty| {
+                        let norm = self.normalize(ty);
+                        match &norm {
+                            crate::ty::Ty::Draft(inner) => inner.is_set(self.hir),
+                            other => other.is_set(self.hir),
+                        }
+                    });
                     let values = match self.evaluate(env, slots, *iterable, fuel)? {
                         Value::Array(items) => items,
                         Value::Str(s) => s.chars().map(|ch| Value::Str(ch.to_string())).collect(),
                         Value::Bytes(bytes) => {
                             bytes.into_iter().map(|b| Value::Int(b.into())).collect()
                         }
+                        Value::Map(entries) if is_set => {
+                            entries.into_iter().map(|(k, _)| k).collect()
+                        }
                         Value::Map(entries) => entries
                             .into_iter()
                             .map(|(k, v)| Value::Tuple(vec![k, v]))
                             .collect(),
-                        Value::Tag(tag, items) if tag == "Set" => match items.as_slice() {
-                            [Value::Map(entries)] => {
-                                entries.iter().map(|(k, _)| k.clone()).collect()
-                            }
-                            _ => return Err(defect(span, "value is not iterable")),
-                        },
                         _ => return Err(defect(span, "value is not iterable")),
                     };
                     for value in values {
@@ -281,6 +286,7 @@ impl Checker<'_> {
                 Err(defect(span, "non-exhaustive static match"))
             }
             Expr::Call { callee, args } => self.eval_call(env, slots, *callee, args, span, fuel),
+            Expr::Wrap { path, args } => self.eval_wrap(env, slots, path, args, span, fuel),
             Expr::Pipeline {
                 value,
                 mode,
@@ -591,9 +597,7 @@ impl Checker<'_> {
                 }
             }
             DefinitionKind::Variant(_) => Ok(Value::Tag(def.name.value.clone(), Vec::new())),
-            DefinitionKind::Type if self.hir.unit_constructor(id) => {
-                Ok(Value::Tag(def.name.value.clone(), Vec::new()))
-            }
+            DefinitionKind::Type if self.hir.unit_constructor(id) => Ok(Value::Unit),
             _ => Err(nonstatic(span)),
         }
     }

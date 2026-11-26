@@ -9,14 +9,14 @@ impl Analyzer<'_> {
         argument: &Datum,
         span: Span,
     ) {
-        let mut ty = self.ty(span);
+        let mut ty = self.ty(span).clone();
         let mut mode = Mode::Plain;
         for coordinate in &axis.selection {
-            let Some(member) = self.schema_member(ty, coordinate) else {
+            let Some(member) = self.schema_member(&ty, coordinate) else {
                 return;
             };
             mode = member.mode.mode;
-            ty = &member.ty;
+            ty = member.ty;
         }
         let forwarded: Option<Vec<_>> = if mode == Mode::Via && !argument.roots.is_empty() {
             argument
@@ -342,6 +342,13 @@ impl Analyzer<'_> {
                     value.requires_new = false;
                 }
             }
+            Mode::Ref => {
+                for root in &mut value.roots {
+                    root.fix_mode(Access::Ref);
+                    root.new &= value.requires_new;
+                }
+                value.requires_new = false;
+            }
             Mode::Plain
                 if matches!(self.ty(span), Ty::Callable(_)) || value.task_scope.is_some() =>
             {
@@ -360,7 +367,7 @@ impl Analyzer<'_> {
         match &ast.expr(id).value {
             Expr::Path(_) => true,
             Expr::Member { .. } | Expr::Index { .. } => ast.navigation_chain(id).is_none(),
-            Expr::Call { callee, args } if mode == Mode::Mut => {
+            Expr::Call { callee, args } if matches!(mode, Mode::Mut | Mode::Shared) => {
                 matches!(
                     &ast.expr(*callee).value,
                     Expr::Path(path)
@@ -368,14 +375,14 @@ impl Analyzer<'_> {
                             let def = self.program.hir.definition(def);
                             matches!(def.kind, DefinitionKind::Primitive(_)) && def.name.value == "inner"
                         })
-                ) && matches!(args.as_slice(), [arg] if arg.mode == Mode::Mut)
+                ) && matches!(args.as_slice(), [arg] if arg.mode == Mode::Mut || (mode == Mode::Shared && arg.mode == Mode::Shared))
             }
             _ => false,
         }
     }
 
     pub(super) fn snapshot_value(&self, span: Span) -> Datum {
-        if self.ty(span).is_value() {
+        if self.program.is_value(self.ty(span)) {
             Datum::default()
         } else {
             Datum::source(span, Access::Immutable, false)

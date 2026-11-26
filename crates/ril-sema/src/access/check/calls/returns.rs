@@ -78,12 +78,12 @@ impl Analyzer<'_> {
                         entry,
                     );
                     self.resolving_callback_results.remove(&result.template);
-                    let mut ty = self.ty(origin.region.source);
+                    let mut ty = self.ty(origin.region.source).clone();
                     for step in &origin.region.selection {
-                        let member = self.schema_member(ty, step);
-                        let mode = member.map_or(Mode::Plain, |member| member.mode.mode);
+                        let member = self.schema_member(&ty, step);
+                        let mode = member.as_ref().map_or(Mode::Plain, |member| member.mode.mode);
                         value = callback_ledger.project_schema(&value, step.clone(), mode);
-                        ty = member.map_or(&Ty::Unknown, |member| &member.ty);
+                        ty = member.map_or(Ty::Unknown, |member| member.ty);
                     }
                     if let Some(cap) = result.cap {
                         for root in &mut value.roots {
@@ -123,14 +123,14 @@ impl Analyzer<'_> {
                             actual = entry.ledger.project(&actual, coordinate.clone(), cap);
                         }
                     } else {
-                        let mut ty = self.ty(argument_span);
+                        let mut ty = self.ty(argument_span).clone();
                         for coordinate in &origin.region.selection {
-                            let member = self.schema_member(ty, coordinate);
-                            let mode = member.map_or(Mode::Plain, |member| member.mode.mode);
+                            let member = self.schema_member(&ty, coordinate);
+                            let mode = member.as_ref().map_or(Mode::Plain, |member| member.mode.mode);
                             actual = entry
                                 .ledger
                                 .project_schema(&actual, coordinate.clone(), mode);
-                            ty = member.map_or(&Ty::Unknown, |member| &member.ty);
+                            ty = member.map_or(Ty::Unknown, |member| member.ty);
                         }
                         for projected in &mut actual.roots {
                             if !origin.mode.writes() {

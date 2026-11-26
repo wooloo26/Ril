@@ -643,7 +643,7 @@ impl<'a> Checker<'a> {
                 || a.result_mode == Mode::Infer
                 || b.result_mode == Mode::Infer)
             && a.parameters.iter().zip(&b.parameters).all(|(p, q)| {
-                p.callable_mode() == q.callable_mode()
+                self.parameter_callable_mode(env, p) == self.parameter_callable_mode(env, q)
                     && match (&p.label, &q.label) {
                         (Some(x), Some(y)) => x == y,
                         _ => true,
@@ -709,7 +709,7 @@ impl<'a> Checker<'a> {
                 .iter()
                 .zip(&expected.parameters)
                 .all(|(a, b)| {
-                    a.callable_mode() == b.callable_mode()
+                    self.parameter_callable_mode(env, a) == self.parameter_callable_mode(env, b)
                         && b.label
                             .as_ref()
                             .is_none_or(|name| a.label.as_ref() == Some(name))
@@ -735,7 +735,9 @@ impl<'a> Checker<'a> {
                 .parameters
                 .iter()
                 .zip(&expected.parameters)
-                .any(|(a, b)| a.callable_mode() != b.callable_mode())
+                .any(|(a, b)| {
+                    self.parameter_callable_mode(env, a) != self.parameter_callable_mode(env, b)
+                })
             {
                 Code::E0407
             } else {

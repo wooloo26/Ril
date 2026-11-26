@@ -87,7 +87,7 @@ impl Analyzer<'_> {
                     _ => {}
                 }
                 if let Some(ty) = self.program.bindings.get(&binding) {
-                    if ty.is_value() && matches!(mode, Mode::Mut | Mode::Shared | Mode::Ref) {
+                    if self.program.is_value(ty) && matches!(mode, Mode::Mut | Mode::Shared | Mode::Ref) {
                         self.error(
                             Code::E0402,
                             name.span,
@@ -230,19 +230,42 @@ impl Analyzer<'_> {
                     );
                 }
             }
-            Pattern::Constructor(path, payload) => {
-                let items = payload.as_deref().unwrap_or(&[]);
-                if self
-                    .program
-                    .hir
-                    .resolve(path.span)
-                    .and_then(Resolution::definition)
-                    .is_some_and(|id| self.program.is_nominal_record(id))
-                    && let [inner] = items
-                {
-                    self.bind(ctx, ledger, *inner, storage, value, site);
-                    return;
+            Pattern::Wrap(_, items) => match items.as_slice() {
+                [] => {}
+                [inner] => self.bind(ctx, ledger, *inner, storage, value, site),
+                many => {
+                    for (i, &item) in many.iter().enumerate() {
+                        let coordinate = Coordinate::Index(i.to_string());
+                        let mode = self.schema_mode(self.ty(node.span), &coordinate).0;
+                        let span = self.ast(ctx.file).pattern(item).span;
+                        let child =
+                            self.project_observed(ctx, ledger, &value, (coordinate, mode, span));
+                        if let Pattern::Binding(own, name) = &self.ast(ctx.file).pattern(item).value
+                        {
+                            let requested = if own.mode == Mode::Plain {
+                                storage.mode
+                            } else {
+                                own.mode
+                            };
+                            let member_mode = Access::from_mode(mode);
+                            if matches!(requested, Mode::Mut | Mode::Shared)
+                                && mode != Mode::Via
+                                && !member_mode.writes()
+                                && !child.origins().any(|origin| origin.draft)
+                            {
+                                self.error(
+                                    Code::E0551,
+                                    name.span,
+                                    "tuple slot cannot decompose with writable authority",
+                                );
+                            }
+                        }
+                        self.bind(ctx, ledger, item, storage, child, site);
+                    }
                 }
+            },
+            Pattern::Constructor(_, payload) => {
+                let items = payload.as_deref().unwrap_or(&[]);
                 for (i, &item) in items.iter().enumerate() {
                     let child = self.project_observed(
                         ctx,
@@ -396,7 +419,12 @@ impl Analyzer<'_> {
             | Pattern::Type(_)
             | Pattern::TypeBinding(_)
             | Pattern::Rest(None) => false,
-            Pattern::Tuple(items) | Pattern::Slice { elements: items, .. } | Pattern::Or(items) => {
+            Pattern::Tuple(items)
+            | Pattern::Wrap(_, items)
+            | Pattern::Slice {
+                elements: items, ..
+            }
+            | Pattern::Or(items) => {
                 items.iter().any(|&item| Self::pattern_has_binding(ast, item))
             }
             Pattern::Constructor(_, payload) => payload

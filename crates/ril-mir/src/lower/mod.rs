@@ -36,7 +36,7 @@ enum NativeBody<'a> {
     Expression(ExprId),
     Accessor(&'a [(bool, Member)]),
     Foreign(Arc<ForeignImport>),
-    Constructor(&'a str, usize, bool),
+    Constructor(&'a str, usize),
     Primitive(&'static str, usize),
 }
 
@@ -355,13 +355,12 @@ impl<'a> Lowering<'a> {
             match work {
                 Work::Constructor(id, arity) => {
                     let def = self.typed.hir.definition(id);
-                    let is_record = self.typed.is_nominal_record(id);
                     (
                         "ctor",
                         def.name.span,
                         def.name.span.file,
                         self.typed.hir.export_name(id),
-                        NativeBody::Constructor(&def.name.value, arity, is_record),
+                        NativeBody::Constructor(&def.name.value, arity),
                         &[][..],
                         Vec::new(),
                         Vec::new(),
@@ -443,7 +442,7 @@ impl<'a> Lowering<'a> {
         let params: Vec<_> = params.iter().filter(|param| !param.is_meta).collect();
         let arity = match body {
             NativeBody::Accessor(_) => 1,
-            NativeBody::Constructor(_, arity, _) | NativeBody::Primitive(_, arity) => arity,
+            NativeBody::Constructor(_, arity) | NativeBody::Primitive(_, arity) => arity,
             _ => params.len(),
         };
         let symbol = self.mangle_symbol(kind_tag, &name, arity, &types, &statics, &captures);
@@ -509,12 +508,7 @@ impl<'a> Lowering<'a> {
                 let value = builder.result_param(entry);
                 builder.project_path(path, value)?
             }
-            NativeBody::Constructor(_, _, true) => builder
-                .params(entry)
-                .first()
-                .copied()
-                .unwrap_or_else(|| builder.unit()),
-            NativeBody::Constructor(tag, _, false) => builder.tag(tag, builder.params(entry)),
+            NativeBody::Constructor(tag, _) => builder.tag(tag, builder.params(entry)),
             NativeBody::Primitive(symbol, _) => builder.runtime(symbol, builder.params(entry)),
         };
         if builder.current.is_some() {
@@ -892,6 +886,7 @@ impl<'a> Builder<'_, 'a> {
             }
             Expr::Binary { op, left, right } => self.binary(op, *left, *right),
             Expr::Call { callee, args } => self.call(*callee, args, span),
+            Expr::Wrap { path, args } => self.wrap(path, args, span),
             Expr::Pipeline {
                 value,
                 mode,
@@ -1284,7 +1279,7 @@ impl<'a> Builder<'_, 'a> {
             }
             DefinitionKind::Variant(_) => Ok(self.tag(&def.name.value, Vec::new())),
             DefinitionKind::Type if self.global.typed.hir.unit_constructor(source) => {
-                Ok(self.tag(&def.name.value, Vec::new()))
+                Ok(self.unit())
             }
             DefinitionKind::Function if self.global.declaration(source).is_some() => {
                 let captures = self.named_captures(source);
@@ -1380,15 +1375,18 @@ impl<'a> Builder<'_, 'a> {
                     self.bind(item, next)?;
                 }
             }
-            Pattern::Constructor(path, Some(items)) => {
-                if self
-                    .global
-                    .resolve(path.span)
-                    .is_some_and(|id| self.global.typed.is_nominal_record(id))
-                    && let [inner] = items.as_slice()
-                {
-                    return self.bind(*inner, value);
+            Pattern::Wrap(_, items) => match items.as_slice() {
+                [] => {}
+                [inner] => self.bind(*inner, value)?,
+                many => {
+                    for (index, &item) in many.iter().enumerate() {
+                        let key = self.integer(&index.to_string());
+                        let next = self.runtime("ril_rt_load", vec![value, key]);
+                        self.bind(item, next)?;
+                    }
                 }
+            },
+            Pattern::Constructor(_, Some(items)) => {
                 for (index, &item) in items.iter().enumerate() {
                     let key = self.integer(&index.to_string());
                     let next = self.runtime("ril_rt_load", vec![value, key]);

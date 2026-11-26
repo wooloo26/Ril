@@ -265,16 +265,15 @@ impl Checker<'_> {
     fn member(&mut self, env: &mut Env, mode: &syntax::Storage, ty: TypeId) -> Member {
         let typed = self.type_expr(env, ty);
         let mode = self.member_mode(env, mode);
-        if typed.is_value() && matches!(mode.mode, Mode::Mut | Mode::Shared | Mode::Ref) {
+        if matches!(mode.mode, Mode::Mut | Mode::Shared | Mode::Ref)
+            && self.is_value_ty(env, &typed)
+        {
             self.error(
                 Code::E0402,
                 self.ast(env.file).ty(ty).span,
                 "value-type members cannot carry live access",
             );
-        } else if mode.mode == Mode::Via
-            && (typed.is_value()
-                || matches!(&typed, Ty::Param(id) if env.domains.get(id).is_some_and(|dom| !dom.is_empty() && dom.iter().all(Ty::is_value))))
-        {
+        } else if mode.mode == Mode::Via && self.is_value_only_ty(env, &typed) {
             self.error(
                 Code::E0550,
                 self.ast(env.file).ty(ty).span,
@@ -388,9 +387,10 @@ impl Checker<'_> {
                     "SharedObjectKernel" => {
                         let raw = arg0(self, env);
                         let target = self.normalize(&raw);
-                        let valid = !target.is_value()
+                        let unwrapped = self.unwrap_wrapper(env, &target);
+                        let valid = !unwrapped.is_primitive_value()
                             && !matches!(
-                                &target,
+                                &unwrapped,
                                 Ty::Callable(_)
                                     | Ty::TypeValue(_)
                                     | Ty::Mode
@@ -401,7 +401,7 @@ impl Checker<'_> {
                                     | Ty::Sender(_)
                                     | Ty::Receiver(_)
                             )
-                            && !matches!(&target, Ty::Adt(adt) if adt.kind == AdtKind::Foreign);
+                            && !matches!(&unwrapped, Ty::Adt(adt) if adt.kind == AdtKind::Foreign);
                         return if valid { target } else { Ty::Never };
                     }
                     _ => {}

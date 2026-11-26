@@ -395,7 +395,7 @@ fn wave_c_soundness_static_checks_narrowing_patterns_and_nominals() -> Result<()
     let source = r#"
         type UserId(int)
         type Config(.{ host: str = "localhost", port: int = 8080 })
-        meta let DEFAULT_CFG = Config(.{ port: 9000 })
+        meta let DEFAULT_CFG = Config::(.{ port: 9000 })
 
         fn unwrap_copy<W |> NominalWrapper>(w: W) -> Unwrap<W> { inner(w) }
         fn coord_kind<T>(k: FieldKey<T>) -> FieldKey<T> { k }
@@ -417,12 +417,12 @@ fn wave_c_soundness_static_checks_narrowing_patterns_and_nominals() -> Result<()
         }
 
         fn main() @io -> () {
-            -- First-class bare nominal constructor
-            let ids = Array::map([1, 2, 3], UserId)
+            -- Nominal wrap inside closure
+            let ids = Array::map([1, 2, 3], \x -> UserId::(x))
             assert(inner(ids[0]) == 1 && inner(ids[2]) == 3)
 
             -- Prelude static checks & helpers
-            assert(unwrap_copy(UserId(42)) == 42)
+            assert(unwrap_copy(UserId::(42)) == 42)
             assert(coord_kind<Config>("host") == "host")
             assert(coord_kind<(int, str)>(0) == 0)
             assert(pair_only((1, 2)) == (1, 2))
@@ -510,7 +510,7 @@ fn wave_c_soundness_static_checks_narrowing_patterns_and_nominals() -> Result<()
             Code::E0301,
         ),
         (
-            "type U(.{ id: int })\ntype V(.{ id: int })\nfn f(u: U) -> int { let V(.{ id }) = u; id }\nfn main() -> () {}\n",
+            "type U(.{ id: int })\ntype V(.{ id: int })\nfn f(u: U) -> int { let V::(.{ id }) = u; id }\nfn main() -> () {}\n",
             Code::E0301,
         ),
         (
@@ -855,7 +855,7 @@ fn de_magification_self_hosted_set_stdlib_convert_compile_error_and_wrapper_synt
         type BoxRec(.{ label: str = "def", count: int })
         opaque type SecretTag(str)
 
-        fn make_secret(s: str) -> new SecretTag { SecretTag(s) }
+        fn make_secret(s: str) -> SecretTag { SecretTag::(s) }
         fn read_secret(t: SecretTag) -> str { inner(t) }
 
         meta fn static_stdlib_check() -> int {
@@ -881,11 +881,11 @@ fn de_magification_self_hosted_set_stdlib_convert_compile_error_and_wrapper_synt
 
         fn main() @io -> () {
             -- Wrapper vs alias distinction
-            let uid = UserId(7)
+            let uid = UserId::(7)
             let alias: AliasInt = 7
             let plain: int = alias
             assert(inner(uid) == plain && inner(Marker) == ())
-            let rec = BoxRec(.{ count: 2 })
+            let rec = BoxRec::(.{ count: 2 })
             assert(rec.label == "def" && rec.count == 2)
             assert(read_secret(make_secret("ok")) == "ok")
 
@@ -986,7 +986,7 @@ fn de_magification_self_hosted_set_stdlib_convert_compile_error_and_wrapper_synt
             Code::E0120,
         ),
         (
-            "type A(int)\ntype B(int)\nfn main() -> () { let _: B = A(1) }\n",
+            "type A(int)\ntype B(int)\nfn main() -> () { let _: B = A::(1) }\n",
             Stage::Type,
             Code::E0305,
         ),

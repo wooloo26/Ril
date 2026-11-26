@@ -143,6 +143,7 @@ impl Analyzer<'_> {
         locals.clear_array_extents();
         locals.no_continuation = false;
         let mut inner = Context::new(node.span);
+        inner.hir_scope = Some(self.hir_scope(ctx));
         inner.in_function = true;
         inner.set_caller_storage(ledger);
         inner.expected = Mode::Infer;
@@ -205,13 +206,21 @@ impl Analyzer<'_> {
                     inner.new_formals.insert(name.span);
                 }
                 let mode = Access::from_mode(p.mode);
-                let mut value = Datum::source(name.span, mode, p.mode == Mode::New);
                 let param_ty = self
                     .definition(name.span)
                     .and_then(|id| self.program.bindings.get(&id));
+                let is_value = param_ty.is_some_and(|ty| self.program.is_value(ty));
+                if p.mode == Mode::New && is_value {
+                    self.error(Code::E0411, name.span, "new parameter requires a shared object");
+                }
+                let mut value = if is_value {
+                    Datum::default()
+                } else {
+                    Datum::source(name.span, mode, p.mode == Mode::New)
+                };
                 if p.mode == Mode::Via {
                     inner.via.insert(name.span);
-                    if param_ty.is_some_and(Ty::is_value) {
+                    if is_value {
                         self.error(
                             Code::E0550,
                             name.span,
@@ -222,6 +231,7 @@ impl Analyzer<'_> {
                 if let Some(ty) = param_ty {
                     value = crate::access::check::results::receive_results(
                         self.program,
+                        self.hir_scope(&inner),
                         &mut locals,
                         ty,
                         value,

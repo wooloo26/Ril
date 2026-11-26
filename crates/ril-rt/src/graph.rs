@@ -34,7 +34,6 @@ impl GcRuntime {
                 (Some(Object::F64(a)), Some(Object::F64(b)))
                     if f64::from_bits(*a) == f64::from_bits(*b) => {}
                 (Some(Object::Str(a)), Some(Object::Str(b))) if a == b => {}
-                (Some(Object::PanicInfo(a)), Some(Object::PanicInfo(b))) if a == b => {}
                 (Some(Object::Bytes(a)), Some(Object::Bytes(b))) if a == b => {}
                 (Some(Object::Array(a)), Some(Object::Array(b)))
                 | (Some(Object::Tuple(a)), Some(Object::Tuple(b)))
@@ -158,11 +157,7 @@ impl GcRuntime {
             return Ok(copy);
         }
         match self.object(value).ok_or("invalid object identity")? {
-            Object::Int(_)
-            | Object::F64(_)
-            | Object::Str(_)
-            | Object::Bytes(_)
-            | Object::PanicInfo(_) => Ok(value),
+            Object::Int(_) | Object::F64(_) | Object::Str(_) | Object::Bytes(_) => Ok(value),
             // A contained callable is a value with its original immutable
             // environment and lexical dispatch evidence. Sema checks that
             // it retains no live capture or stateful handler.
@@ -241,7 +236,6 @@ impl GcRuntime {
                 Some(Object::Int(i)) => i.to_string(),
                 Some(Object::F64(f)) => format!("{:?}", f64::from_bits(*f)),
                 Some(Object::Str(value)) => text::inspect_string(value),
-                Some(Object::PanicInfo(_)) => "<PanicInfo>".into(),
                 Some(Object::Closure { .. }) => "<fn>".into(),
                 Some(Object::Task { .. }) => "<Task>".into(),
                 Some(Object::Scope(_)) => "<Scope>".into(),
@@ -277,6 +271,20 @@ impl GcRuntime {
                         .collect::<Vec<_>>()
                         .join(", ")
                 ),
+                Some(Object::Map(map))
+                    if let Some(Object::Tag(kind, desc_args)) = descriptor
+                        && kind == "Set" =>
+                {
+                    let elem_desc = desc_args.first().copied();
+                    format!(
+                        "Set([{}])",
+                        map.entries()
+                            .iter()
+                            .map(|&(_, key, _)| render(key, elem_desc))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )
+                }
                 Some(Object::Map(map)) => format!(
                     "[{}]",
                     map.entries()
@@ -289,22 +297,6 @@ impl GcRuntime {
                         .collect::<Vec<_>>()
                         .join(", ")
                 ),
-                Some(Object::Tag(_, fields))
-                    if let Some(Object::Tag(kind, desc_args)) = descriptor
-                        && kind == "Set"
-                        && let [inner_map] = fields.as_slice()
-                        && let Some(Object::Map(map)) = self.object(*inner_map) =>
-                {
-                    let elem_desc = desc_args.first().copied();
-                    format!(
-                        "Set([{}])",
-                        map.entries()
-                            .iter()
-                            .map(|&(_, key, _)| render(key, elem_desc))
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    )
-                }
                 Some(Object::Tag(tag, fields)) if fields.is_empty() => tag.clone(),
                 Some(Object::Tag(tag, fields)) => {
                     let ids = match field(tag).and_then(|child| self.object(child)) {

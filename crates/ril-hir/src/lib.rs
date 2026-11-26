@@ -213,7 +213,6 @@ struct Scope {
     parent: Option<ScopeId>,
     cap: Visibility,
     names: BTreeMap<String, Entry>,
-    variants: BTreeMap<String, Vec<DefinitionId>>,
     primitive_module: Option<&'static str>,
 }
 
@@ -584,7 +583,6 @@ impl Program {
             parent,
             cap,
             names: BTreeMap::new(),
-            variants: BTreeMap::new(),
             primitive_module: None,
         });
         id
@@ -684,7 +682,13 @@ impl Program {
         stmt: StmtId,
         visibility: Visibility,
     ) -> Result<DefinitionId, Diagnostic> {
-        let def = self.new_def(scope, name.clone(), kind, Some(stmt), visibility);
+        let def = self.new_def(
+            scope,
+            name.clone(),
+            kind,
+            Some(stmt),
+            visibility.min(self.scope(scope).cap),
+        );
         self.insert(
             scope,
             &name,
@@ -752,22 +756,6 @@ impl Program {
                     format!("{} is private to its module", name.value),
                 ))
             };
-        }
-        match self
-            .scope(scope)
-            .variants
-            .get(&name.value)
-            .map(Vec::as_slice)
-        {
-            Some([variant]) => return Ok(Target::Def(*variant)),
-            Some(variants) if !variants.is_empty() => {
-                return Err(Diagnostic::error(
-                    Code::E0206,
-                    name.span,
-                    format!("ambiguous constructor {}", name.value),
-                ));
-            }
-            _ => {}
         }
         Err(Diagnostic::error(
             missing,

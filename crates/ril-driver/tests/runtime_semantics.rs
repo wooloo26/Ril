@@ -53,7 +53,7 @@ fn close_res(ref r: Res) @Log -> () {
 }
 
 fn work(fail: bool) @Log -> () {
-    use r = Res(.{ id: 7 })
+    use r = Res::(.{ id: 7 })
     with Log::tag = \-> "inner"
     Log::emit(Log::tag())
     if fail {

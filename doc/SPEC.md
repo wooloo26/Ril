@@ -19,9 +19,9 @@ This document defines Ril syntax, static semantics, access modes, state and prov
 | :--- | :--- |
 | Binding / access | `let`, `var`, and `use` govern slot scope and replacement; plain (unmodified), `ref`, `mut`, `^mut`, and `new` govern path access and authority |
 | Provenance / `new` subgraphs | Provenance tracks which existing sources a value references and which parts are `new`; `new` lets the target choose modes for newly constructed subgraphs while nested existing sources keep their authority and aliases |
-| Values / shared objects | `bool`, `int`, `f64`, `str`, `bytes`, and `()` copy by value; records, nonempty tuples, collections, and sums have automatically reclaimed object identity |
-| Record forms / constructors | Anonymous and transparent record aliases attach `.{...}` (`Alias.{ id: 1 }`); payload variants and all nominal/opaque constructors use tight `(...)` (`Ok(42)`, `Ok()`, `Rect(10.0, 20.0)`, `UserId(42)`, `User(.{ id: 1 })`) |
-| Aliases / nominal / opaque | `type A = B` is a structural alias; `type A(B)` has distinct public identity; `opaque type A(B)` seals representation outside its defining file or `sub` |
+| Values / shared objects | `bool`, `int`, `f64`, `str`, `bytes`, `()`, `never`, unit nominals, and `.ril` nominal/opaque wrappers over value types copy by value; records, nonempty tuples, collections, sums, and wrappers over shared objects have automatically reclaimed object identity |
+| Record forms / constructors | Anonymous and transparent record aliases attach `.{...}` (`Alias.{ id: 1 }`); sum variants are default-qualified (`Shape::Rect(10.0, 20.0)`; prelude `Ok(42)`, `Ok()`, `Some(x)`) and use tight `(...)`; payload nominal/opaque wrappers use tight `::(...)` (`UserId::(42)`, `Point::(1, 2)`, `User::(.{ id: 1 })`) |
+| Aliases / nominal / opaque | `type A = B` is a structural alias; `type A(B)` is a zero-cost erased distinct nominal wrapper; `opaque type A(B)` erases at runtime and seals representation outside its defining file or `sub` |
 | Reachable authority use | `var` requires reachable slot replacement, `mut` requires writable or `new`-handoff use, `^mut` parameters require surviving retention, and named state annotations must be minimal (`E0527`, `E0529`) |
 | `where` / checks & guards | Dual-tier `where` hoists helper declarations (`type`, `fn`, `meta fn`, block `eff`); `\|>` runs static checks on generic parameters and fallible signature guards on runtime parameters/returns |
 | Purity / defects | Purity excludes outward effects and non-pure state/provenance obligations; finite defects initiate LIFO panic unwinding |
@@ -369,7 +369,8 @@ meta let MAX_RETRY = 3                 -- OK: SCREAMING_SNAKE_CASE constant
 -- let Some(USER_ID) = Some(1)         -- Error [E0103]: uppercase identifier in pattern binding position
 -- meta let MAX_RETRY = 4              -- Error [E0203]: duplicate declaration in same scope
 -- let ghost = missing_name            -- Error [E0204]: unresolved identifier
--- type A { Dup }; type B { Dup }; let _ = Dup -- Error [E0206]: ambiguous constructor; write 'A::Dup'
+-- type A { Dup }; type B { Dup }; let _ = (A::Dup, B::Dup) -- OK: variants live in their sum's namespace
+-- let _ = Dup                         -- Error [E0204]: unqualified variant requires explicit 'use A::Dup'
 -- let _ = 1; let bad_wild = _         -- Error [E0322]: '_' cannot be read as an expression
 ```
 
@@ -380,7 +381,7 @@ meta let MAX_RETRY = 3                 -- OK: SCREAMING_SNAKE_CASE constant
 | `ScreamingSnakeCase` | Uppercase with `_` or $\ge 2$ chars (`PI`, `UTF8`, `N_MAX`). Reserved exclusively for `meta let` constants (`E0101` on `let`/other declarations; `E0103` in patterns) |
 | `Wildcard` (`_`) | Discard binding/pattern only (`E0322` if read as an expression) |
 
-- **Name resolution (`E0203`, `E0204`, `E0206`)**: Duplicate same-scope declarations fail `E0203`; inner scopes may shadow outer non-protected bindings, while `Type` and `Super` cannot be redeclared or shadowed (`E0203`). Unresolved names fail `E0204`. Ambiguous unqualified variant constructors from multiple sums fail `E0206` (qualify as `SumA::Tag`).
+- **Name resolution (`E0203`, `E0204`, `E0206`)**: Duplicate same-scope declarations fail `E0203`; inner scopes may shadow outer non-protected bindings, while `Type` and `Super` cannot be redeclared or shadowed (`E0203`). Unresolved names fail `E0204`. Sum variants live only in their defining sum's namespace (`Sum::Variant`) unless explicitly imported via `use` (at module or block scope); colliding imports fail `E0203` / `E0206`.
 
 ```ebnf
 Identifier         ::= PascalCase | ValueName | ScreamingSnakeCase
@@ -527,8 +528,8 @@ TypeReference  ::= QualifiedName [ GenericArgs ]
 
 ### Value Types
 
-`bool`, `int`, `f64`, `str`, `bytes`, `()`, and `never` have no object identity and copy logically by value (implementations may share immutable backing buffers transparently).
-- Value types forbid `ref`, `mut`, and `^mut` in bindings, record fields, collection elements, and `ref`/`^mut` expressions (`E0402`), and in parameters/call markers (`E0401`).
+`bool`, `int`, `f64`, `str`, `bytes`, `()`, `never`, unit nominals (`type Marker`), and `.ril` `nominal` / `opaque` wrappers whose underlying representation is a value type (e.g., `type UserId(int)`, `opaque type PanicInfo(str)`) have no object identity and copy logically by value (implementations may share immutable backing buffers transparently).
+- Value types forbid `ref`, `mut`, `^mut`, `new`, `via`, `clone`, `derive`, and `use(close)` (`E0402` in bindings/fields/elements/expressions; `E0401`/`E0411` in parameters/call markers; `E0546` on `-> new`; `E0550` on `via`; `E0301` on `clone`; `E0536` on `derive`; `E0541` on `use(close)`).
 
 ```ril
 let a = "hello"
@@ -539,7 +540,7 @@ let b = a                              -- Value copy
 
 ### Shared Object Types
 
-Records (`.{...}`), nonempty tuples `(A, B)`, arrays `[M]T`, maps `[K: M V]`, `Set<T>`, and sum instances have automatically reclaimed object identity (implementations need not heap-allocate non-escaping objects whose identity remains local to a scope). Shared-object status permits aliasing of immutable snapshots (`let`) and explicit shared writable bindings (`^mut`), never implicit shared mutation.
+Records (`.{...}`), nonempty tuples `(A, B)`, arrays `[M]T`, maps `[K: M V]`, `Set<T>`, sum instances, and `.ril` `nominal` / `opaque` wrappers over shared objects have automatically reclaimed object identity (implementations need not heap-allocate non-escaping objects whose identity remains local to a scope). Shared-object status permits aliasing of immutable snapshots (`let`) and explicit shared writable bindings (`^mut`), never implicit shared mutation. Foreign `.d.ril` `opaque` handles remain exclusive, non-duplicable host resources.
 
 ### Record Types and Open Record Tails
 
@@ -551,7 +552,7 @@ type ServerCfg(.{ host: str, port: int = 8080, var retries: int = 3 })
 
 fn get_id(item: .{ id: int, .. }) -> int { item.id }
 
-let cfg = ServerCfg(.{ host: "ril.dev" })
+let cfg = ServerCfg::(.{ host: "ril.dev" })
 assert(get_id(.{ id: 7, active: true }) == 7)
 assert(cfg.port == 8080 && cfg.retries == 3)
 assert(get_id(inner(cfg) |> \_ -> .{ id: 1 }) == 1)
@@ -581,7 +582,7 @@ assert(get_id(inner(cfg) |> \_ -> .{ id: 1 }) == 1)
 - **Root field defaults (`= expr`)**:
   - Allowed only on root fields of `.ril` `NominalTypeDecl` / `OpaqueTypeDecl` records (`E0359` on aliases, nested/anonymous/parameter/sum records; `E0901` in `.d.ril`). Root fields of `.ril` nominal/opaque records also admit `meta(...)` attributes.
   - Allowed only on plain or `var` fields—forbids `mut`/`^mut`/`ref`/`via` and parametric `StorageModeExpression` (`E0404`), self/forward references (`E0408`), and impure expressions (`E0409`).
-  - At construction (`ServerCfg(.{ host: "ril.dev" })`), explicit fields evaluate left-to-right first, then omitted defaults in declaration order.
+  - At construction (`ServerCfg::(.{ host: "ril.dev" })`), explicit fields evaluate left-to-right first, then omitted defaults in declaration order.
 
 ```ebnf
 RecordType      ::= ".{" [ RecordFieldList ] "}"
@@ -652,7 +653,7 @@ assert(opt == Some(99) && res == Ok(42))
 -- type BadSingleRes = !<int>          -- Error [E0120]: '!<T, E>' requires both Ok and Err types
 ```
 
-- **Construction & sugars**: Unit variants stand alone (`None`, `Origin`; `Origin()` fails `E0338`). Payload variants use tight `(...)` (`Ok(42)`, `Ok()`, `Rect(10.0, 20.0)`; named labels fail `E0339`, `mut` args fail `E0406`) and bare payload-variant names act as `fn(Payload) -> Sum` (`42 |> Ok`). `?T` ≡ `Option<T>`; `!<T, E>` ≡ `Result<T, E>`.
+- **Scoping, construction & sugars**: Sum variants are default-qualified (`Shape::Origin`, `Shape::Circle(5.0)`), residing only in their defining sum's namespace unless explicitly imported via `use` (module- or block-level; prelude exports `Some`, `None`, `Ok`, `Err`, and `Panicked`). Unit variants stand alone (`None`, `Shape::Origin`; `Shape::Origin()` fails `E0338`). Payload variants use tight `(...)` (`Ok(42)`, `Ok()`, `Shape::Rect(10.0, 20.0)`; `Some::(42)` fails `E0338`, named labels fail `E0339`, `mut` args fail `E0406`), and bare payload-variant names act as first-class callables `fn(Payload) -> Sum` (`42 |> Ok`, `5.0 |> Shape::Circle`). `?T` ≡ `Option<T>`; `!<T, E>` ≡ `Result<T, E>`.
 - **Payload modes**: Single-payload constructors (`Some(ref x)`, `Some(^mut x)`, `Some(new x)`) restrict the outer sum's authority to the payload's mode (`E0522`/`E0510` on unshared `mut`/`[mut]Sum`). Multi-arg tuple payloads (`Pair(a, b)`) have immutable slots (`E0535` on `ref`/`^mut`).
 - **Extensible sums (`..`)**: Trailing `..` marks a sum open to future variants outside its defining `pkg`, requiring a `_` wildcard arm in `match` expressions outside that package (`E0303`).
 
@@ -679,9 +680,9 @@ pub type ApiErr  { ..DbErr; ..AuthErr; BadInput(str) }
 
 fn handle_err(err: ApiErr) -> new (int, str) {
     match err {
-        DbErr as db     -> (503, match db { Deadlock -> "retry"; ConnLost(h) -> h })
-        ..AuthErr       -> (401, "unauthorized")
-        BadInput(field) -> (400, field)
+        DbErr as db              -> (503, match db { DbErr::Deadlock -> "retry"; DbErr::ConnLost(h) -> h })
+        ..AuthErr                -> (401, "unauthorized")
+        ApiErr::BadInput(field)  -> (400, field)
     }
 }
 
@@ -713,14 +714,14 @@ pub type OrgId(int)
 pub type Point(int, int)
 pub opaque type Conn<State>(.{ fd: int })
 
-pub fn open_raw() -> new Conn<Disconnected> { Conn(.{ fd: -1 }) }
+pub fn open_raw() -> new Conn<Disconnected> { Conn::(.{ fd: -1 }) }
 pub fn dial(new c: Conn<Disconnected>, fd: int) -> new Conn<Connected> {
-    Conn(.{ fd: c.fd + fd + 1 })
+    Conn::(.{ fd: c.fd + fd + 1 })
 }
 pub fn close_conn(new _c: Conn<Connected>) -> () {}
 
-let uid = UserId(42)
-let pt = Point(3, 4)
+let uid = UserId::(42)
+let pt = Point::(3, 4)
 assert(inner(uid) == 42 && inner(pt) == (3, 4) && inner(Disconnected) == ())
 let mut c0 = open_raw()
 let mut c1 = dial(new c0, 3)
@@ -730,20 +731,25 @@ close_conn(new c1)
 ```ril
 -- Rejected nominal, alias, and opaque cases:
 -- let _ = dial(new c0, 4)             -- Error [E0549]: 'c0' ended at handoff
--- let bad_nom: OrgId = UserId(1)      -- Error [E0305]: distinct nominal types
+-- let bad_nom: OrgId = UserId::(1)    -- Error [E0305]: distinct nominal types
+-- let _ = UserId(42)                  -- Error [E0338]: nominal wrapping requires '::(...)'
+-- let _ = 42 |> UserId::()            -- Error [E0338]: nominal wrap is not a direct pipeline target
+-- let _ = UserId                      -- Error [E0319]: payload nominal type is not a value; use '\x -> UserId::(x)'
+-- let _ = Disconnected::()            -- Error [E0338]: unit nominal stands alone without '::()'
 -- opaque type BadEq = int             -- Error [E0120]: opaque type does not use '='
 -- type Empty()                        -- Error [E0120]: use 'type Empty' for unit nominal or 'type Unit(())' for unit payload
 -- type BadMode(mut []int)             -- Error [E0356]: single-element nominal/parenthesized type forbids member modes
--- let _ = Conn.{ fd: 1 }              -- Error [E0338]: nominal record uses 'Conn(.{ ... })', not 'Conn.{ ... }'
+-- let _ = Conn.{ fd: 1 }              -- Error [E0338]: nominal record uses 'Conn::(.{ ... })', not 'Conn.{ ... }'
 -- type Cyc = Cyc                      -- Error [E0313]: cyclic transparent type alias
+-- type BadWrap(BadWrap)               -- Error [E0313]: cyclic nominal wrapper
 -- let bad_peek = c1.fd                -- Error [E0308]: opaque representation sealed outside defining scope
 ```
 
 | Form | Syntax | Identity & representation |
 | :--- | :--- | :--- |
 | Transparent alias | `type Point = .{ x: f64, y: f64 }` | Type-equivalent to target everywhere (`E0313` cycles; forbids `meta(...)` `E0708` and defaults `E0359`). Record aliases construct via `Point.{ x: 1.0, y: 2.0 }` and destructure structurally via `.{ x, y }` |
-| Nominal type / marker | `type Marker`<br>`type UserId(int)`<br>`type Point(int, int)`<br>`type Req(.{ k: str })` | Distinct type everywhere (`E0305`); public representation. Unit `Marker` stands alone; all payload nominals declare tight `(...)` (`(A, B)` is shorthand for a tuple payload, identical to sum variants; `type Empty()` fails `E0120`; single-element member modes fail `E0356`). Construct and destructure via tight `(...)` (`UserId(42)`, `Point(1, 2)`, `Req(.{ k: "a" })`, `Req(rec)`), and bare payload nominal names act as `fn(Payload) -> Nominal` (`42 \|> UserId`, `records \|> Array::map(Req)`, exempt from `E0319`; `Req.{ ... }` fails `E0338`). Unwrap via `inner(w)` |
-| Scope-opaque type (`.ril`) | `opaque type Token(str)`<br>`opaque type Conn(.{ fd: int }) use(close)` | Interconvertible with representation inside exact defining `sub` or root file (`<Token> != <str>`); sealed outside, including child/parent `sub`s (`E0301`, `E0308`). Bodyless `.ril` `opaque type` requires registered built-in (`E0902`) |
+| Nominal type / marker | `type Marker`<br>`type UserId(int)`<br>`type Point(int, int)`<br>`type Req(.{ k: str })` | Pure compile-time zero-cost erased wrapper (`E0305` distinct identity; `E0313` direct wrapper cycles); inherits Value vs. `SharedObject` classification recursively from its representation (`Marker` erases to `()`). Unit `Marker` stands alone (`Marker::()` fails `E0338`); all payload nominals declare tight `(...)` (`(A, B)` is tuple payload shorthand; `type Empty()` fails `E0120`; single-element member modes fail `E0356`). Wrap and destructure via tight `::(...)` (`UserId::(42)`, `Point::(1, 2)`, `Req::(.{ k: "a" })`, `Req::(rec)`, `let UserId::(n) = u`; `UserId(42)` / `Req.{ ... }` / `42 \|> UserId::()` fail `E0338`; bare payload nominal in value position fails `E0319` — write `\x -> UserId::(x)`). `Name::(x)` and `inner(w)` are exact mode-and-provenance-preserving zero-cost inverses |
+| Scope-opaque type (`.ril`) | `opaque type Token(str)`<br>`opaque type Conn(.{ fd: int }) use(close)` | Zero-cost erased wrapper that is interconvertible with its representation inside its exact defining `sub` or root file (`<Token> != <str>`) and sealed outside, including child/parent `sub`s (`E0301`, `E0308`); inherits Value vs. `SharedObject` classification (published across `.rili` interfaces). Bodyless `.ril` `opaque type` requires registered built-in (`E0902`) |
 | Sum type | `type Res<T, E> { Ok(T); Err(E) }` | Closed or extensible variant type (`opaque` seals construction, widening, and matching outside defining scope, `E0308`) |
 | Foreign opaque handle (`.d.ril`) | `pub opaque type HostFd use(close)` | Exclusive, non-duplicable host handle (`E0907` access, `E0908` snapshot/`^mut` signature); forbids `clone`, `derive`, `==`, freezing, `var mut`, and collections; admits `new`, `let mut`, `mut`, `ref`, `use` |
 
@@ -899,9 +905,9 @@ assert(next.profile.email == "b@ril.dev" && next.profile.tags == ["core", "admin
 | Fixed shape (`E0336`, `E0312`) | Preserves record fields, tuple arity, and active sum tags of `T`; forwards the `derive` closure's effects and outer state obligations |
 
 ```ril
-type Bag []int
+type Bag([]int)
 let t2 = (1, "a") |> derive \mut d -> { d.0 = 2 }
-let b2 = Bag([1, 2]) |> derive \mut d -> { inner(mut d) |> mut Array::push(3) }
+let b2 = Bag::([1, 2]) |> derive \mut d -> { inner(mut d) |> mut Array::push(3) }
 assert(t2 == (2, "a") && inner(b2) == [1, 2, 3])
 ```
 
@@ -1114,7 +1120,7 @@ assert(sample(1) == 20 && <SampleOut> == <int>)
 
 ### Semantic Interfaces and Diagnostic Boundaries
 
-- **K-IFACE**: Module semantic interfaces retain normalized parameter/return schemas, labels and defaults, `via` mode correlations, `use` cleanup declarations, `Sendable`/`SharedObject` facts across `opaque` boundaries, effect sets, and minimal provenance relations across compilation-unit boundaries.
+- **K-IFACE**: Module semantic interfaces retain normalized parameter/return schemas, labels and defaults, `via` mode correlations, `use` cleanup declarations, `Sendable`/`SharedObject`/value-vs-shared classification across `opaque` boundaries (changing a `pub opaque` type between value-backed and shared-object representation breaks interface compatibility `E0552`, whereas changing between value representations or between shared-object representations preserves it), effect sets, and minimal provenance relations across compilation-unit boundaries.
   - Return and storage metadata maps `new`/existing subgraphs and concrete effects/state of open `@`/`&`/`@&` callables to nested member/element paths and branch alternatives, preserved across generic substitution, aliases, record/collection storage, and module export.
   - A callable that freezes a new-qualified input (or a `via` input instantiated with `new`) records which call-entry subgraphs must be freezable. An edge definitely replaced before the freeze is excluded from this requirement, and the replacement is checked where the freeze occurs.
   - Callbacks preserve the provenance and modes of passed and handed-off arguments across module boundaries. These arguments are checked against the selected callback's snapshot requirements even when the result is discarded.
@@ -1285,7 +1291,7 @@ pub fn close(new c: DbConn) @io -> () {
     conn.open = false
     println("closed")
 }
-pub fn acquire() -> new DbConn { DbConn(.{ open: true, log: [] }) }
+pub fn acquire() -> new DbConn { DbConn::(.{ open: true, log: [] }) }
 
 fn run_query() @io -> new !<int, str> {
     use ro = acquire()                 -- Exposes 'ref' in body; runs close(new ro) on exit
@@ -1324,13 +1330,13 @@ Compile-time `meta(expr1, expr2)` attributes attach deeply immutable constant va
 pub type Route(str)
 pub type Role(str)
 
-meta(Route("/users"), Role("admin"))
+meta(Route::("/users"), Role::("admin"))
 pub type CreateUserReq(.{
-    meta(Role("pii"))
+    meta(Role::("pii"))
     email: str,
 })
--- meta(Route("/x")) type BadAlias = int              -- Error [E0708]: 'meta(...)' prohibited on transparent alias
--- type BadFieldMeta = .{ meta(Role("pii")) id: int } -- Error [E0708]: structural record field forbids 'meta(...)'
+-- meta(Route::("/x")) type BadAlias = int              -- Error [E0708]: 'meta(...)' prohibited on transparent alias
+-- type BadFieldMeta = .{ meta(Role::("pii")) id: int } -- Error [E0708]: structural record field forbids 'meta(...)'
 ```
 
 ```ebnf
@@ -1483,6 +1489,7 @@ PipelineTarget           ::= AtomExpr
                            | PipelineTarget [ "?" ] "[" ( Expression | SliceRangeExpr ) "]"
 AtomExpr                 ::= Literal
                            | HoleExpr
+                           | WrapExpr
                            | QualifiedName [ GenericArgs ]
                            | RecordExpr
                            | TupleExpr
@@ -1491,6 +1498,7 @@ AtomExpr                 ::= Literal
                            | TypeQuoteExpr
                            | IfExpr | MatchExpr | WhileExpr | ForExpr
                            | "(" Expression ")"
+WrapExpr                 ::= TypeReference "::(" [ ArgumentList ] ")"   -- Tight '::('; rejected as PipelineTarget (E0338)
 HoleExpr                 ::= "..."
 TypeQuoteExpr            ::= "<" TypeExpression ">"
 RecordExpr               ::= [ TypeReference ] ".{" [ RecordValueField { "," RecordValueField } [ "," ] ] "}"
@@ -1581,7 +1589,7 @@ assert(String::decode_utf8(bytes"\xC0\xAF") == None)
 ```
 
 - **`String::inspect<T>(via value: T) -> str`**: Pure dual-phase diagnostic formatter accepting plain values/snapshots or `ref` shared-object views (`E0401` on `ref` value types; `mut`/`^mut`/`new` markers rejected).
-  - Formats primitives, escaped `str`/`bytes` literals, tuples, collections, and transparent records/nominals/sums structurally (rendering runtime reference cycles as `"..."`).
+  - Formats primitives, escaped `str`/`bytes` literals, tuples, collections (`Set([...])` for `Set<T>`), transparent records/sums, and accessible `.ril` nominals / in-scope `opaque` wrappers transparently as their underlying representation (rendering runtime reference cycles as `"..."`).
   - Formats sealed `opaque` types outside their defining scope, `.d.ril` `opaque` handles, callables, and runtime concurrency/draft handles as `"<TypeName>"` (or `"<fn>"`).
 - **String helpers**: `String::join(via parts: []str, separator: str) -> str` joins parts in array order and returns an empty string for an empty array. `String::starts_with(text: str, prefix: str) -> bool`, `String::ends_with(text: str, suffix: str) -> bool`, `String::at(text: str, index: int) -> new ?int`, `String::scalars(text: str) -> new []int`, `String::from_scalars(via values: []int) -> new ?str`.
 - **UTF-8 & Bytes helpers**: `String::encode_utf8(text: str) -> bytes`, `String::decode_utf8(data: bytes) -> new ?str` (`None` on ill-formed UTF-8), `Bytes::at(data: bytes, index: int) -> new ?int`, `Bytes::to_array(data: bytes) -> new []int`, `Bytes::from_array(via values: []int) -> new ?bytes` (`None` outside `0..=255`).
@@ -1805,7 +1813,7 @@ assert(classify_packet(#"{ok}"#) == "json:ok" && classify_packet(#"{"#) == "othe
 -- let (mut bad_slot, _) = ([1], [2])             -- Error [E0551]: tuple slot cannot decompose as 'mut'
 ```
 
-- **Construction symmetry (`E0120`, `E0314`, `E0349`)**: Structural records and transparent record aliases unpack via `.{ a, b }` (`Type.{ ... }` patterns fail `E0120`); tight `Some(x)`, `Some(mut c)`, `Ok()`, `Rect(w, h)`, `UserId(id)`, `Point(x, y)`, and `User(.{ id, name })` unpack payload variants and all nominal/opaque types (`E0314` on tuple arity mismatch; `E0349` on arbitrary expressions or `{expr}` interpolations in patterns).
+- **Construction symmetry (`E0120`, `E0314`, `E0349`)**: Structural records and transparent record aliases unpack via `.{ a, b }` (`Type.{ ... }` patterns fail `E0120`); tight `Some(x)`, `Some(mut c)`, `Ok()`, and `Shape::Rect(w, h)` unpack payload sum variants (`Some::(x)` fails `E0349`); tight `::(...)` unpacks payload nominal and in-scope opaque types (`UserId::(id)`, `Point::(x, y)`, `User::(.{ id, name })`, while `UserId(id)` and unit-nominal `Marker::()` fail `E0349`; `E0314` on tuple arity mismatch; `E0349` on arbitrary expressions or `{expr}` interpolations in patterns).
 - **Or-patterns & uniqueness (`E0346`, `E0347`)**: Alternatives `P1 | P2` must bind the exact same names with identical types and modes (`E0346`); duplicate binders in one alternative fail `E0347`.
 - **Range patterns (`E0348`)**: `lo..hi` / `lo..=hi` require non-empty integer intervals (`lo < hi` for `..`, `lo <= hi` for `..=`, `E0348`).
 - **Array & `str[...]` slices (`E0349`)**: Both `[a, ..rest, z]` and `str["pre", ..rest, "suf"]` allow at most one `..` / `..rest` segment (`E0349` on multiple `..`). In `ArrayPattern`, `..rest` binds a fresh `new`-qualified array slice preserving the subject's element modes; in `str[...]`, literals must be non-empty without `{expr}` interpolations (`E0349`) and match `s` iff `s` starts with concatenated prefixes, ends with concatenated suffixes, and `len(s) >= len(prefix) + len(suffix)`.
@@ -1821,6 +1829,7 @@ UnmodifiedPattern    ::= UnmodifiedSingle { "|" UnmodifiedSingle }
 SinglePattern        ::= UnmodifiedSingle
                        | BindingModifier ValueName
 UnmodifiedSingle     ::= SubsetPattern
+                       | WrapPattern
                        | ConstructorPattern
                        | PatternAtom
                        | RangePattern
@@ -1828,7 +1837,8 @@ UnmodifiedSingle     ::= SubsetPattern
 SubsetPattern        ::= TypeReference "as" ( [ BindingModifier ] ValueName | Wildcard )
                        | ".." TypeReference
 ConstructorPath      ::= { "Super" "::" } { PathSegment "::" } PascalCase [ GenericArgs ]
-ConstructorPattern   ::= ConstructorPath "(" [ PatternList ] ")"
+WrapPattern          ::= ConstructorPath "::(" [ PatternList ] ")"      -- Tight '::(' for nominal/opaque types
+ConstructorPattern   ::= ConstructorPath "(" [ PatternList ] ")"        -- Tight '(' for sum variants
 PatternAtom          ::= LiteralPattern
                        | WildcardPattern
                        | ValueName
@@ -2985,7 +2995,7 @@ use pkg/math/circle::(PI, area, UnitCircle as Uc)
 
 - **Package Roots (`E0208`, `E0209`)**: `pkg/...` resolves inside the current package, `ril/...` resolves standard-library modules, and `<dep>/...` resolves mounted dependencies (mount names `pkg` and `ril` are prohibited; missing modules or single-segment paths fail `E0208`; absent members fail `E0209`).
 - **Default Module Binding (`E0102`, `E0203`)**: Unaliased `use pkg/http_server` binds `HttpServer` (`to_pascal_case("http_server")`), rejecting invalid acronym casings (`a_b` -> `AB`) and digit-leading segments (`sha_256`; write `sha256.ril` -> `Sha256`) with `E0102`, and rejecting `super.ril` with `E0203`.
-- **Visibility Hierarchy (`E0201`)**: `private(scope) < pkg < pub`. Reachability along an inline `sub` path is capped by every enclosing `sub`, and `pub use` cannot widen target visibility (`E0201`).
+- **Visibility Hierarchy & Local Imports (`E0201`)**: `private(scope) < pkg < pub`. Reachability along an inline `sub` path is capped by every enclosing `sub`, and `pub use` cannot widen target visibility (including `pub use PrivateSum::Variant`, `E0201`). Private `use` declarations may also appear inside function/expression blocks to import sum variants or items into the local block scope (e.g., `use Shape::(Circle, Rect)` or `use Shape::Circle as C`).
 - **Interface Consistency (`E0910`)**: Every type, non-opaque field/variant, `TypeFunctionExpr` body, parameter/field default, `use` cleanup function, and unhandled `@Eff` in a declaration must be accessible from every scope that can reach that declaration (`pub opaque` internal representations remain private).
 
 ```ebnf
@@ -3023,7 +3033,7 @@ fn main() @io @fiber -> new !<(), str> {
 ### Prelude Scope
 
 The implicit prelude encloses every compilation unit and inline `sub`:
-- **Types & effects**: Primitive types, `Option<T>` (`?T`; `Some(T); None`), `Result<T, E>` (`!<T, E>`; `Ok(T); Err(E)`), `Set<T>`, `PanicInfo`, `PanicError`, `FieldMode`, `Draft<T>`, `@io`, and `@fiber`.
+- **Types & effects**: Primitive types, `Option<T>` (`?T`; exports `Some`, `None`), `Result<T, E>` (`!<T, E>`; exports `Ok`, `Err`), `Set<T>`, `PanicInfo` (value-backed `opaque` over `str`), `PanicError` (exports `Panicked`), `FieldMode`, `Draft<T>`, `@io`, and `@fiber`.
 - **Static checks & type helpers**: `SharedObject`, `Sendable`, `LenTarget`, `Tuple`, `NominalWrapper`, `Unwrap`, `FieldKey`, and `KeyOf`.
 - **Core modules**: `Array`, `Map`, `Set`, `String`, `Bytes`, `Numeric`, and `Reflect`.
 - **Explicit standard imports**: `use ril/io`, `use ril/file`, `use ril/os`, `use ril/fiber`, `use ril/channel`, `use ril/platform`, `use ril/math`, and `use ril/crypto`.

@@ -100,7 +100,7 @@ impl Ty {
         }
     }
 
-    pub const fn is_value(&self) -> bool {
+    pub const fn is_primitive_value(&self) -> bool {
         matches!(
             self,
             Self::Unit | Self::Bool | Self::Int | Self::F64 | Self::Str | Self::Bytes | Self::Never
@@ -252,9 +252,25 @@ pub struct Parameter {
     pub is_meta: bool,
 }
 
+pub(crate) fn nested_type_argument(outer: &Adt, inner: &Adt) -> bool {
+    // A finite type argument may use the same constructor. Following
+    // that argument is distinct from expanding a recursive definition.
+    outer.arguments.iter().any(|argument| {
+        let GenericValue::Type(ty) = argument else {
+            return false;
+        };
+        let mut nested = false;
+        check::transform(ty, &mut |part| {
+            nested |= matches!(part, Ty::Adt(application) if application.as_ref() == inner);
+            None
+        });
+        nested
+    })
+}
+
 impl Parameter {
-    pub(super) fn callable_mode(&self) -> Mode {
-        if self.mode == Mode::Via && self.ty.is_value() {
+    pub(crate) fn callable_mode_with(&self, is_value: bool) -> Mode {
+        if self.mode == Mode::Via && is_value {
             Mode::Plain
         } else {
             self.mode
@@ -321,6 +337,41 @@ impl TypedProgram {
 
     pub fn is_nominal_record(&self, id: DefinitionId) -> bool {
         self.record_adts.contains(&id)
+    }
+
+    pub fn unwrap_wrapper(&self, ty: &Ty) -> Ty {
+        let mut cur = ty.clone();
+        let mut active: Vec<Arc<Adt>> = Vec::new();
+        while let Ty::Adt(adt) = &cur {
+            if !matches!(adt.kind, AdtKind::Nominal | AdtKind::Opaque) {
+                break;
+            }
+            if active
+                .iter()
+                .rev()
+                .find(|outer| outer.definition == adt.definition)
+                .is_some_and(|outer| !nested_type_argument(outer, adt))
+            {
+                break;
+            }
+            active.push(Arc::clone(adt));
+            if self.hir.unit_constructor(adt.definition) {
+                return Ty::Unit;
+            }
+            let Some(rep) = self.nominal_layout(adt) else {
+                break;
+            };
+            cur = rep;
+        }
+        cur
+    }
+
+    pub fn is_value(&self, ty: &Ty) -> bool {
+        self.unwrap_wrapper(ty).is_primitive_value()
+    }
+
+    pub(crate) fn parameter_callable_mode(&self, param: &Parameter) -> Mode {
+        param.callable_mode_with(self.is_value(&param.ty))
     }
 
     pub fn nominal_layout(&self, adt: &Adt) -> Option<Ty> {

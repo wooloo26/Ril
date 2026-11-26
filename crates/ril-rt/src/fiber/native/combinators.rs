@@ -99,7 +99,7 @@ unsafe extern "C" fn ril_fiber_supervise(raw: Raw, work: Value) -> Value {
             return tag(rt, "Ok", Some(value));
         }
         Some(Completion::Panicked(message)) => {
-            let detail = rt.gc.alloc(Object::PanicInfo(message));
+            let detail = rt.gc.alloc(Object::Str(crate::RilStr::new(message)));
             tag(rt, "Panicked", Some(detail))
         }
         Some(Completion::Cancelled) => tag(rt, "Cancelled", None),

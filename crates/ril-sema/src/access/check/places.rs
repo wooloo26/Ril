@@ -298,7 +298,7 @@ impl<'a> Analyzer<'a> {
                 .0;
             if ctx.reachable
                 && !value.roots.is_empty()
-                && results::carries_result(self.program, self.ty(node.span))
+                && results::carries_result(self.program, self.hir_scope(ctx), self.ty(node.span))
             {
                 ledger.lose_collection_elements_at(prior);
             }
@@ -535,7 +535,7 @@ impl<'a> Analyzer<'a> {
                 || self.slice_source_length(ledger, value),
                 |end| bound(end).and_then(|bound| bound.checked_add(usize::from(inclusive))),
             );
-            return self.array_slice(ctx, ledger, value, element, (start, end), span);
+            return self.array_slice(ctx, ledger, value, &element, (start, end), span);
         }
         let coordinate = self.collection_coordinate(ctx, ty, index);
         let mode = self.schema_mode(ty, &coordinate).0;
@@ -554,7 +554,7 @@ impl<'a> Analyzer<'a> {
             && ctx.runtime
             && !ctx.shadow
             && ledger.storage_flow.is_some()
-            && !self.ty(span).is_value()
+            && !self.program.is_value(self.ty(span))
             && !selected.roots.is_empty()
         {
             let index =
@@ -594,7 +594,7 @@ impl<'a> Analyzer<'a> {
         if let Some(length) = length {
             ledger.record_array_length(span, length);
         }
-        if element.ty.is_value() || length == Some(0) {
+        if self.program.is_value(&element.ty) || length == Some(0) {
             return slice;
         }
         let mut project = |ledger: &mut Ledger, coordinate| {
@@ -655,46 +655,50 @@ impl<'a> Analyzer<'a> {
         self.schema(self.ty(base), coordinate)
     }
 
-    pub(super) fn schema(&self, ty: &'a Ty, coordinate: &Coordinate) -> (Access, bool) {
+    pub(super) fn schema(&self, ty: &Ty, coordinate: &Coordinate) -> (Access, bool) {
         let (mode, variable) = self.schema_mode(ty, coordinate);
         (Access::from_mode(mode), variable)
     }
 
-    pub(super) fn schema_mode(&self, ty: &'a Ty, coordinate: &Coordinate) -> (Mode, bool) {
+    pub(super) fn schema_mode(&self, ty: &Ty, coordinate: &Coordinate) -> (Mode, bool) {
         self.schema_member(ty, coordinate)
             .map_or((Mode::Plain, false), |member| {
                 (member.mode.mode, member.mode.variable)
             })
     }
 
-    pub(super) fn schema_member(
-        &self,
-        mut ty: &'a Ty,
-        coordinate: &Coordinate,
-    ) -> Option<&'a ty::Member> {
-        if let Ty::Draft(inner) = ty {
-            ty = inner;
-        }
-        if let Ty::Adt(adt) = ty {
-            let def = self.program.hir.definition(adt.definition);
-            if let Some(id) = def.stmt
-                && let StmtKind::Type(decl) = &self.ast(def.name.span.file).stmt(id).value.kind
-                && let TypeDefinition::Data(rep) = decl.definition
-            {
-                ty = self.ty(self.ast(def.name.span.file).ty(rep).span);
+    pub(super) fn schema_member(&self, ty: &Ty, coordinate: &Coordinate) -> Option<ty::Member> {
+        let mut cur = std::borrow::Cow::Borrowed(ty);
+        let mut active: Vec<std::sync::Arc<crate::ty::Adt>> = Vec::new();
+        loop {
+            match cur.as_ref() {
+                Ty::Draft(inner) => cur = std::borrow::Cow::Owned((**inner).clone()),
+                Ty::Adt(adt) if matches!(adt.kind, AdtKind::Nominal | AdtKind::Opaque) => {
+                    if active
+                        .iter()
+                        .rev()
+                        .find(|outer| outer.definition == adt.definition)
+                        .is_some_and(|outer| !crate::ty::nested_type_argument(outer, adt))
+                    {
+                        break;
+                    }
+                    active.push(std::sync::Arc::clone(adt));
+                    let Some(layout) = self.program.nominal_layout(adt) else {
+                        break;
+                    };
+                    cur = std::borrow::Cow::Owned(layout);
+                }
+                _ => break,
             }
         }
-        if let Ty::Draft(inner) = ty {
-            ty = inner;
-        }
-        match (ty, coordinate) {
-            (Ty::Record(fields, _), Coordinate::Field(name)) => fields.get(name),
+        match (cur.as_ref(), coordinate) {
+            (Ty::Record(fields, _), Coordinate::Field(name)) => fields.get(name).cloned(),
             (Ty::Tuple(fields), Coordinate::Index(index)) => index
                 .parse::<usize>()
                 .ok()
-                .and_then(|index| fields.get(index)),
+                .and_then(|index| fields.get(index).cloned()),
             (Ty::Map(..), Coordinate::MapKey) => None,
-            (Ty::Array(member) | Ty::Map(_, member), _) => Some(member.as_ref()),
+            (Ty::Array(member) | Ty::Map(_, member), _) => Some((**member).clone()),
             _ => None,
         }
     }

@@ -3,8 +3,7 @@
 pub opaque type Set<T>([T: ()])
 
 pub fn empty<T>() -> new Set<T> {
-    let m: [T: ()] = [:]
-    Set(m)
+    Set::([:])
 }
 
 pub fn from_array<T>(via items: []T) -> new Set<T> {
@@ -12,7 +11,7 @@ pub fn from_array<T>(via items: []T) -> new Set<T> {
     for items as item {
         m[item] = ()
     }
-    Set(new m)
+    Set::(new m)
 }
 
 pub fn insert<T>(mut set: Set<T>, value: T) &mut -> () {

@@ -382,7 +382,27 @@ impl Parser<'_> {
                 Vec::new()
             };
             segments.push(Segment { name, arguments });
+            if self.is("::") && self.next_text() == "(" {
+                break;
+            }
+            if self.current().kind == Kind::Newline {
+                let mut look = self.pos;
+                while matches!(
+                    self.tokens.get(look).map(|t| t.kind),
+                    Some(Kind::Newline)
+                ) {
+                    look += 1;
+                }
+                if self.tokens.get(look).map(|t| t.text(self.file)) == Some("::")
+                    && self.tokens.get(look + 1).map(|t| t.text(self.file)) == Some("(")
+                {
+                    break;
+                }
+            }
             self.continue_lines(|token| token == "::");
+            if self.is("::") && self.next_text() == "(" {
+                break;
+            }
             if !self.eat("::") {
                 break;
             }

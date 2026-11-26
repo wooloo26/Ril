@@ -237,7 +237,11 @@ impl<'program> Analyzer<'program> {
         if matches!(
             fun.signature.result_mode,
             Mode::New | Mode::Infer | Mode::Ref | Mode::Shared
-        ) || crate::access::check::results::carries_result(self.program, self.ty(span))
+        ) || crate::access::check::results::carries_result(
+            self.program,
+            self.hir_scope(ctx),
+            self.ty(span),
+        )
             || crate::access::check::higher_order::carries_callable(self.program, self.ty(span))
         {
             self.function(fun, ledger);

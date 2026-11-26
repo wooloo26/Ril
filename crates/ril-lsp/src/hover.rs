@@ -172,9 +172,11 @@ pub(crate) fn signature_help(state: &mut LspState, params: &Value) -> Option<Val
     let (open_paren, active_commas) = find_enclosing_call_paren(&text, offset)?;
     let callee_end = open_paren;
     let before_paren = text.get(..callee_end)?.trim_end();
-    // Skip optional generic arguments `<...>` before `(`.
-    let callee_ident_end = strip_trailing_generics(before_paren);
-    let callee_text = before_paren.get(..callee_ident_end)?;
+    // Strip trailing `::` for nominal wrap `Type::(...)` / `Type<A>::(...)`.
+    let before_wrap = before_paren.strip_suffix("::").unwrap_or(before_paren);
+    // Skip optional generic arguments `<...>` before `(` or `::(`.
+    let callee_ident_end = strip_trailing_generics(before_wrap);
+    let callee_text = before_wrap.get(..callee_ident_end)?;
 
     // Scan back across `Mod::func` or `func`.
     let bytes = callee_text.as_bytes();

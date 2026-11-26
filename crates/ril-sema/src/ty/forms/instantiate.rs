@@ -131,6 +131,69 @@ impl Checker<'_> {
         env
     }
 
+    pub(in crate::ty) fn unwrap_wrapper(&mut self, env: &Env, ty: &Ty) -> Ty {
+        let mut cur = self.normalize(ty);
+        let mut active: Vec<Arc<Adt>> = Vec::new();
+        loop {
+            if let Ty::Param(id) = &cur
+                && let Some(GenericValue::Type(specialized)) = env.generics.get(id)
+                && *specialized != cur
+            {
+                cur = self.normalize(specialized);
+                continue;
+            }
+            let Ty::Adt(adt) = &cur else {
+                break;
+            };
+            if !matches!(adt.kind, AdtKind::Nominal | AdtKind::Opaque) {
+                break;
+            }
+            if active
+                .iter()
+                .rev()
+                .find(|outer| outer.definition == adt.definition)
+                .is_some_and(|outer| !crate::ty::nested_type_argument(outer, adt))
+            {
+                break;
+            }
+            active.push(Arc::clone(adt));
+            if self.hir.unit_constructor(adt.definition) {
+                return Ty::Unit;
+            }
+            let Some(rep) = self.representation(env, adt) else {
+                break;
+            };
+            cur = self.normalize(&rep);
+        }
+        cur
+    }
+
+    pub(in crate::ty) fn is_value_ty(&mut self, env: &Env, ty: &Ty) -> bool {
+        self.unwrap_wrapper(env, ty).is_primitive_value()
+    }
+
+    pub(in crate::ty) fn is_value_only_ty(&mut self, env: &Env, ty: &Ty) -> bool {
+        let unwrapped = self.unwrap_wrapper(env, ty);
+        if unwrapped.is_primitive_value() {
+            return true;
+        }
+        if let Ty::Param(id) = unwrapped
+            && let Some(dom) = env.domains.get(&id).cloned()
+        {
+            return !dom.is_empty() && dom.iter().all(|t| self.is_value_ty(env, t));
+        }
+        false
+    }
+
+    pub(in crate::ty) fn parameter_callable_mode(
+        &mut self,
+        env: &Env,
+        param: &crate::ty::Parameter,
+    ) -> ril_syntax::syntax::Mode {
+        let is_value = self.is_value_ty(env, &param.ty);
+        param.callable_mode_with(is_value)
+    }
+
     pub(in crate::ty) fn representation(&mut self, _env: &Env, adt: &Adt) -> Option<Ty> {
         let mut scope = self.instantiate_adt(adt);
         let def = self.hir.definition(adt.definition);
@@ -444,6 +507,7 @@ impl Checker<'_> {
         local.phase = Phase::TypeEval;
         local.caller_scope = Some(env.effective_scope());
         local.error_span = Some(call_span);
+        local.domains = env.domains.clone();
         if let Some(id) = self.resolve(first.name.span) {
             local.generics.insert(id, input.clone());
         }

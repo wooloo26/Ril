@@ -325,4 +325,31 @@ mod tests {
         let formatted = format_source(&source, FileKind::Module).expect("formats cleanly");
         assert_eq!(formatted, input);
     }
+
+    #[test]
+    fn format_preserves_tight_nominal_wrap_syntax() {
+        let input = concat!(
+            "use Option::(Some, None)\n",
+            "type UserId(int)\n",
+            "type Point(int, int)\n",
+            "type User(.{ id: int })\n",
+            "opaque type Conn<S>(.{ fd: int })\n",
+            "fn demo() -> () {\n",
+            "    let id = UserId::(42)\n",
+            "    let pt = Point::((1, 2))\n",
+            "    let u = User::(.{ id: 1 })\n",
+            "    let c = Conn<int>::(.{ fd: 3 })\n",
+            "    let User::(.{ id: n }) = u\n",
+            "    let _ = (id, pt, c, n)\n",
+            "}\n",
+        );
+        let source = SourceFile::from_bytes(
+            FileId(2),
+            PathBuf::from("pkg/fmt_wrap.ril"),
+            input.as_bytes(),
+        )
+        .expect("valid utf-8");
+        let formatted = format_source(&source, FileKind::Module).expect("formats cleanly");
+        assert_eq!(formatted, input);
+    }
 }

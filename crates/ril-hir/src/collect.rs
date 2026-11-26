@@ -255,21 +255,15 @@ impl Program {
                         }
                         for variant in variants {
                             if let Variant::Constructor { name, .. } = variant
-                                && let Ok(def) = self
-                                    .register(
-                                        namespace,
-                                        name.clone(),
-                                        DefinitionKind::Variant(sum),
-                                        id,
-                                        Visibility::Public,
-                                    )
-                                    .map_err(|err| errors.push(err))
+                                && let Err(err) = self.register(
+                                    namespace,
+                                    name.clone(),
+                                    DefinitionKind::Variant(sum),
+                                    id,
+                                    Visibility::Public,
+                                )
                             {
-                                self.scope_mut(scope)
-                                    .variants
-                                    .entry(name.value)
-                                    .or_default()
-                                    .push(def);
+                                errors.push(err);
                             }
                         }
                         Ok(sum)

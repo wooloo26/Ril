@@ -1,6 +1,64 @@
 use super::*;
 
 impl Analyzer<'_> {
+    pub(in crate::access::check) fn wrap(
+        &mut self,
+        ctx: &mut Context,
+        ledger: &mut Ledger,
+        _path: &ril_syntax::syntax::Path,
+        args: &[Argument],
+        span: Span,
+    ) -> Datum {
+        let ast = self.ast(ctx.file);
+        match args {
+            [] => Datum::default(),
+            [arg] => {
+                let node = ast.expr(arg.value);
+                let value = if matches!(node.value, Expr::Closure { .. }) {
+                    self.closure(ctx, ledger, arg.value, false)
+                } else {
+                    self.expr(ctx, ledger, arg.value)
+                };
+                match arg.mode {
+                    Mode::Plain if value.requires_new => value,
+                    Mode::Plain if Self::forwards_via(ctx, &value) => {
+                        self.prepare_argument(ctx, ledger, arg, value, node.span, Mode::Via)
+                    }
+                    mode => {
+                        let value = self.prepare_argument(ctx, ledger, arg, value, node.span, mode);
+                        for conflict in ledger.hold_conflicts(&value, mode) {
+                            self.check_conflict(
+                                ctx,
+                                conflict,
+                                None,
+                                node.span,
+                                "argument authority overlaps an active handler hold",
+                            );
+                        }
+                        value
+                    }
+                }
+            }
+            many => {
+                let mut tuple = Datum::source(span, Access::Mut, true);
+                for (index, arg) in many.iter().enumerate() {
+                    let node = ast.expr(arg.value);
+                    let value = if matches!(node.value, Expr::Closure { .. }) {
+                        self.closure(ctx, ledger, arg.value, false)
+                    } else {
+                        self.expr(ctx, ledger, arg.value)
+                    };
+                    let value =
+                        self.receive_member(ctx, ledger, value, Access::Immutable, node.span);
+                    tuple
+                        .members
+                        .insert(Coordinate::Index(index.to_string()), value);
+                }
+                tuple
+            }
+        }
+    }
+
     pub(super) fn call_value(
         &mut self,
         ctx: &mut Context,
@@ -13,7 +71,6 @@ impl Analyzer<'_> {
         let ast = self.ast(ctx.file);
         let callee = ast.expr(callee_id);
         let def = id.map(|id| self.program.hir.definition(id));
-        let is_nominal_record = id.is_some_and(|id| self.program.is_nominal_record(id));
         let name = def.map_or("", |def| def.name.value.as_str());
         let primitive = def.is_some_and(|def| matches!(def.kind, DefinitionKind::Primitive(_)));
         let module = id.and_then(|id| self.program.hir.primitive_module(id));
@@ -174,7 +231,7 @@ impl Analyzer<'_> {
             let channel_payload = module == Some("Channel")
                 && matches!(name, "send" | "try_send")
                 && index == 1
-                && !self.ty(node.span).is_value();
+                && !self.program.is_value(self.ty(node.span));
             if channel_payload
                 && ledger
                     .loop_snapshot(&value)
@@ -202,13 +259,7 @@ impl Analyzer<'_> {
                 ledger.inspect(&value);
             }
             let mode = if channel_payload { Mode::New } else { mode };
-            let direct_nominal_record_literal = is_nominal_record
-                && index == 0
-                && mode == Mode::Plain
-                && matches!(node.value, Expr::Record { name: None, .. });
-            let value = if direct_nominal_record_literal {
-                value
-            } else if primitive && name == "derive" && index == 0 {
+            let value = if primitive && name == "derive" && index == 0 {
                 let mut snapshot = ledger.snapshot(&value);
                 let message = "derive requires an immutable snapshot";
                 if mode != Mode::Plain {
@@ -368,11 +419,6 @@ impl Analyzer<'_> {
             }
         }
         if let Some(fields) = fields {
-            if is_nominal_record
-                && let [(_, _, record_val)] = fields.as_slice()
-            {
-                return record_val.clone();
-            }
             let mut result = constructor(span, fields);
             if def.is_some_and(|def| matches!(def.kind, DefinitionKind::Variant(_))) {
                 result.set_variant(name);
@@ -605,7 +651,7 @@ impl Analyzer<'_> {
             if (sig.result_mode == Mode::Infer || carries_callable)
                 && let Some(receiver) = target
                 && !receiver.roots.is_empty()
-                && !self.ty(span).is_value()
+                && !self.program.is_value(self.ty(span))
             {
                 let entry = CallEntry {
                     arguments: &values,

@@ -4,7 +4,7 @@
 -- @case alternative_patterns_require_consistent_binding_types compile-fail E0301
 type Value { Number(int); Text(str) }
 fn bad(input: Value) -> () {
-    match input { Number(item) | Text(item) -> () }
+    match input { Value::Number(item) | Value::Text(item) -> () }
     -- ^ E0301
 }
 
@@ -66,8 +66,8 @@ fn describe(value: ?str) -> str {
 type Message { Number(int); Reset }
 fn value(message: Message) -> int {
     match message {
-        Number(n) -> n
-        Reset -> 0
+        Message::Number(n) -> n
+        Message::Reset -> 0
     }
 }
 
@@ -155,9 +155,9 @@ type Account { Invalid }
 type Failure { ..Network; ..Account; Other }
 fn status(value: Failure) -> int {
     match value {
-        Network as net -> match net { Offline -> 1; Timeout(status) -> status }
+        Network as net -> match net { Network::Offline -> 1; Network::Timeout(status) -> status }
         ..Account -> 2
-        Other -> 3
+        Failure::Other -> 3
     }
 }
 
@@ -185,5 +185,40 @@ fn bad(pair: (int, int)) -> int {
         (x, 1) | (x, x) -> x
         -- ^ E0347
         _ -> 0
+    }
+}
+
+-- @case nominal_pattern_without_double_colon_rejected compile-fail E0349
+type UserId(int)
+fn bad(u: UserId) -> int {
+    let UserId(n) = u
+    -- ^ E0349
+    n
+}
+
+-- @case sum_variant_wrap_pattern_rejected compile-fail E0349
+fn bad(o: ?int) -> int {
+    match o {
+        Some::(x) -> x
+        -- ^ E0349
+        None -> 0
+    }
+}
+
+-- @case unit_nominal_wrap_pattern_rejected compile-fail E0349
+type Marker
+fn bad(m: Marker) -> () {
+    let Marker::() = m
+    -- ^ E0349
+}
+
+-- @case local_block_use_sum_variants_and_alias_exhaustive compile-pass
+type Shape { Circle(int); Square(int) }
+fn area(s: Shape) -> int {
+    use Shape::Circle as C
+    use Shape::Square
+    match s {
+        C(r) -> r * r
+        Square(w) -> w * w
     }
 }

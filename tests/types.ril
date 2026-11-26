@@ -46,7 +46,7 @@ let x = 1.0e999999
 -- @case nominal_wrappers_are_distinct compile-fail E0305
 type Left(int)
 type Right(int)
-fn invalid() -> new Left { Right(1) }
+fn invalid() -> Left { Right::(1) }
 -- ^ E0305
 
 -- @case opaque_converts_inside_scope compile-pass
@@ -233,11 +233,12 @@ fn combine() -> !<int, Both> {
 
 -- @case local_sum_can_be_used_in_hoisted_function compile-pass
 fn total() -> int {
+    use Tree::(Leaf, Pair)
     count(Pair(Leaf(3), Leaf(4)))
 where
     type Tree { Leaf(int); Pair(Tree, Tree) }
     fn count(tree: Tree) -> int {
-        match tree { Leaf(n) -> n; Pair(a, b) -> count(a) + count(b) }
+        match tree { Tree::Leaf(n) -> n; Tree::Pair(a, b) -> count(a) + count(b) }
     }
 }
 
@@ -247,12 +248,12 @@ fn escaped() -> Hidden
 where
     type Hidden(int)
 {
-    Hidden(1)
+    Hidden::(1)
 }
 
 -- @case local_nominal_cannot_escape_through_early_return compile-fail E0315
 fn escaped() -> int {
-    return Hidden(1)
+    return Hidden::(1)
     -- ^ E0315
 where
     type Hidden(int)
@@ -396,4 +397,136 @@ type User(.{ id: int })
 fn bad() -> () {
     let _: User = .{ id: 1 }
     -- ^ E0301
+}
+
+-- @case zero_cost_value_nominal_forbids_new_return compile-fail E0546 stage=access
+type UserId(int)
+fn next(id: UserId) -> new UserId {
+-- ^ E0546
+    UserId::(inner(id) + 1)
+}
+
+-- @case zero_cost_value_nominal_forbids_ref_mode compile-fail E0401
+type UserId(int)
+fn bad(ref id: UserId) -> int {
+-- ^ E0401
+    inner(id)
+}
+
+-- @case zero_cost_value_nominal_forbids_clone compile-fail E0301
+type UserId(int)
+fn bad() -> () {
+    let _ = clone(UserId::(1))
+    -- ^ E0301
+}
+
+-- @case unit_nominal_forbids_clone compile-fail E0301
+type Marker
+fn bad() -> () {
+    let _ = clone(Marker)
+    -- ^ E0301
+}
+
+-- @case zero_cost_value_nominal_forbids_derive compile-fail E0536
+type UserId(int)
+fn bad() -> () {
+    let _ = derive(UserId::(1)) \mut _ -> ()
+    -- ^ E0536
+}
+
+-- @case zero_cost_value_nominal_forbids_use_close compile-fail E0541
+type Bad(int) use(close)
+-- ^ E0541
+fn close(_b: Bad) -> () {}
+
+-- @case unit_nominal_forbids_use_close compile-fail E0541
+type BadUnit use(close)
+-- ^ E0541
+fn close(_b: BadUnit) -> () {}
+
+-- @case direct_nominal_wrapper_cycle_rejected compile-fail E0313
+type Bad(Bad)
+-- ^ E0313
+
+-- @case mutual_nominal_wrapper_cycle_rejected compile-fail E0313
+type A(B)
+-- ^ E0313
+type B(A)
+
+-- @case growing_generic_nominal_wrapper_cycle_rejected compile-fail E0313
+type Bad<T>(Bad<[]T>)
+-- ^ E0313
+
+-- @case finite_nested_generic_nominal_wrapper_allowed compile-pass
+type Wrap<T>(T)
+fn unwrap_twice(x: Wrap<Wrap<int>>) -> int { inner(inner(x)) }
+
+-- @case nominal_parenthesized_call_without_double_colon_rejected compile-fail E0338
+type UserId(int)
+fn bad() -> UserId {
+    UserId(42)
+    -- ^ E0338
+}
+
+-- @case sum_variant_with_wrap_syntax_rejected compile-fail E0338
+fn bad() -> new ?int {
+    Some::(42)
+    -- ^ E0338
+}
+
+-- @case unit_nominal_with_wrap_syntax_rejected compile-fail E0338
+type Marker
+fn bad() -> Marker {
+    Marker::()
+    -- ^ E0338
+}
+
+-- @case type_alias_with_wrap_syntax_rejected compile-fail E0338
+type Alias = int
+fn bad() -> Alias {
+    Alias::(1)
+    -- ^ E0338
+}
+
+-- @case nominal_wrap_rejected_as_pipeline_target compile-fail E0338
+type UserId(int)
+fn bad() -> UserId {
+    42 |> UserId::()
+    -- ^ E0338
+}
+
+-- @case bare_payload_nominal_value_rejected compile-fail E0319
+type UserId(int)
+fn bad() -> () {
+    let _ = UserId
+    -- ^ E0319
+}
+
+-- @case unqualified_custom_sum_variant_rejected compile-fail E0204
+type Color { Red; Blue }
+fn bad() -> new Color {
+    Red
+    -- ^ E0204
+}
+
+-- @case same_module_sums_may_share_variant_names compile-pass
+type Left { Empty; Val(int) }
+type Right { Empty; Val(str) }
+fn both() -> new (Left, Right) {
+    (Left::Empty, Right::Empty)
+}
+
+-- @case pub_reexport_of_private_sum_variant_rejected compile-fail E0201
+type Secret { Hidden }
+pub use Secret::Hidden
+-- ^ E0201
+
+-- @case prelude_enum_variant_import_works compile-pass
+use FieldMode::(Let, Var)
+fn check(m: FieldMode) -> bool {
+    match m {
+        Let -> true
+        Var -> false
+        _ -> false
+    }
 }

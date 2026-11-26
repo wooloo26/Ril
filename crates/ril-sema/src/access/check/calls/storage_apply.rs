@@ -377,15 +377,16 @@ impl<'program> Analyzer<'program> {
         &self,
         ledger: &Ledger,
         base: &Datum,
-        mut ty: &'program Ty,
+        ty: &Ty,
         path: &[Coordinate],
     ) -> Datum {
         let mut value = base.clone();
+        let mut ty = ty.clone();
         for coordinate in path {
-            let schema = self.schema_member(ty, coordinate);
-            let mode = schema.map_or_else(
+            let schema = self.schema_member(&ty, coordinate);
+            let mode = schema.as_ref().map_or_else(
                 || {
-                    if *ty == Ty::Unknown {
+                    if ty == Ty::Unknown {
                         Mode::Mut
                     } else {
                         Mode::Plain
@@ -394,7 +395,7 @@ impl<'program> Analyzer<'program> {
                 |member| member.mode.mode,
             );
             value = ledger.project_schema(&value, coordinate.clone(), mode);
-            ty = schema.map_or(&Ty::Unknown, |member| &member.ty);
+            ty = schema.map_or(Ty::Unknown, |member| member.ty);
         }
         value
     }

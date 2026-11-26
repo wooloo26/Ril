@@ -326,14 +326,58 @@ impl Checker<'_> {
                             decl.kind,
                             ril_syntax::syntax::TypeKind::Nominal
                                 | ril_syntax::syntax::TypeKind::Opaque
-                        ) && let Some(id) = self.resolve(decl.name.span)
+                        ) && self.hir.file(env.file).kind
+                            != ril_syntax::parser::FileKind::Foreign
+                            && let Some(id) = self.resolve(decl.name.span)
                         {
+                            let self_args = decl
+                                .generics
+                                .iter()
+                                .filter_map(|p| self.resolve(p.name.span))
+                                .map(|pid| GenericValue::Type(Ty::Param(pid)))
+                                .collect();
+                            if let Ty::Adt(self_adt) = self.adt(id, decl, self_args) {
+                                let mut active = vec![self_adt];
+                                let mut cur = self.normalize(&representation);
+                                while let Ty::Adt(adt) = &cur {
+                                    if !matches!(adt.kind, AdtKind::Nominal | AdtKind::Opaque) {
+                                        break;
+                                    }
+                                    if active
+                                        .iter()
+                                        .rev()
+                                        .find(|outer| outer.definition == adt.definition)
+                                        .is_some_and(|outer| {
+                                            !crate::ty::nested_type_argument(outer, adt)
+                                        })
+                                    {
+                                        self.error(
+                                            Code::E0313,
+                                            decl.name.span,
+                                            "cyclic nominal wrapper type",
+                                        );
+                                        break;
+                                    }
+                                    active.push(Arc::clone(adt));
+                                    let Some(next) = self.representation(&local, adt) else {
+                                        break;
+                                    };
+                                    cur = self.normalize(&next);
+                                }
+                            }
                             if matches!(representation, Ty::Record(..)) {
                                 self.record_adts.insert(id);
                             }
-                            if decl.kind == ril_syntax::syntax::TypeKind::Nominal {
-                                self.nominal_layouts.insert(id, representation);
+                            if decl.cleanup.is_some()
+                                && self.is_value_ty(&local, &representation)
+                            {
+                                self.error(
+                                    Code::E0541,
+                                    decl.name.span,
+                                    "value-backed nominal type cannot declare use(close)",
+                                );
                             }
+                            self.nominal_layouts.insert(id, representation);
                         }
                     }
                     TypeDefinition::Sum(_) => {
@@ -362,7 +406,22 @@ impl Checker<'_> {
                             &Ty::TypeValue(None),
                         );
                     }
-                    TypeDefinition::Opaque => {}
+                    TypeDefinition::Opaque => {
+                        if decl.kind == ril_syntax::syntax::TypeKind::Nominal
+                            && self.hir.file(env.file).kind
+                                != ril_syntax::parser::FileKind::Foreign
+                            && let Some(id) = self.resolve(decl.name.span)
+                        {
+                            self.nominal_layouts.insert(id, Ty::Unit);
+                            if decl.cleanup.is_some() {
+                                self.error(
+                                    Code::E0541,
+                                    decl.name.span,
+                                    "unit nominal type cannot declare use(close)",
+                                );
+                            }
+                        }
+                    }
                 }
             }
             StmtKind::Effect { operations, .. } => {
@@ -494,56 +553,15 @@ impl Checker<'_> {
                 if let Some(stmt) = def.stmt
                     && let StmtKind::Type(decl) =
                         &self.ast(def.name.span.file).stmt(stmt).value.kind
+                    && self.hir.unit_constructor(id)
                 {
-                    if self.hir.unit_constructor(id) {
-                        return self.adt(id, decl, Vec::new());
-                    }
-                    if def.kind == DefinitionKind::Type
-                        && (decl.kind == ril_syntax::syntax::TypeKind::Nominal
-                            || decl.kind == ril_syntax::syntax::TypeKind::Opaque
-                                && def.scope == env.scope)
-                        && self.hir.file(def.name.span.file).kind
-                            != ril_syntax::parser::FileKind::Foreign
-                    {
-                        let args = decl
-                            .generics
-                            .iter()
-                            .map(|_| GenericValue::Type(self.fresh()))
-                            .collect();
-                        let result = self.adt(id, decl, args);
-                        if let Ty::Adt(adt) = &result
-                            && !self.hir.unit_constructor(adt.definition)
-                            && let Some(rep) = self.representation(env, adt)
-                        {
-                            let params = match rep {
-                                Ty::Tuple(fields) => fields
-                                    .into_iter()
-                                    .map(|m| crate::ty::Parameter {
-                                        label: None,
-                                        mode: Mode::Plain,
-                                        ty: m.ty,
-                                        optional: false,
-                                        is_meta: false,
-                                    })
-                                    .collect(),
-                                one => vec![crate::ty::Parameter {
-                                    label: None,
-                                    mode: Mode::Plain,
-                                    ty: one,
-                                    optional: false,
-                                    is_meta: false,
-                                }],
-                            };
-                            return Ty::Callable(Arc::new(Callable {
-                                parameters: params,
-                                result,
-                                result_mode: Mode::New,
-                                ..unknown_callable()
-                            }));
-                        }
-                    }
+                    return self.adt(id, decl, Vec::new());
                 }
-                self.error(Code::E0319, span, "bare type in value expression");
+                self.error(
+                    Code::E0319,
+                    span,
+                    "bare type in value expression; use 'Name::(...)' or a closure",
+                );
                 Ty::Unknown
             }
             DefinitionKind::Primitive(_) => {

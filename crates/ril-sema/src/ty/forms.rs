@@ -247,7 +247,9 @@ impl Checker<'_> {
                 if param.is_meta {
                     self.declare_meta_key(env, param);
                 }
-                if matches!(param.mode, Mode::Ref | Mode::Mut | Mode::Shared) && ty.is_value() {
+                if matches!(param.mode, Mode::Ref | Mode::Mut | Mode::Shared)
+                    && self.is_value_ty(env, &ty)
+                {
                     let span = param.name.as_ref().map_or_else(
                         || self.ast(env.file).ty(signature.result).span,
                         |name| name.span,
@@ -258,9 +260,7 @@ impl Checker<'_> {
                         "value-type parameter cannot carry live access",
                     );
                 }
-                let is_value_only = ty.is_value()
-                    || matches!(&ty, Ty::Param(id) if env.domains.get(id).is_some_and(|dom| !dom.is_empty() && dom.iter().all(Ty::is_value)));
-                if param.mode == Mode::Via && is_value_only {
+                if param.mode == Mode::Via && self.is_value_only_ty(env, &ty) {
                     let span = param.name.as_ref().map_or_else(
                         || {
                             param.ty.map_or_else(

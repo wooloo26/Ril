@@ -184,11 +184,28 @@ impl Checker<'_> {
                 }
             }
             Pattern::Constructor(path, items) => {
-                let name = path
-                    .segments
-                    .last()
-                    .map_or("", |part| part.name.value.as_str());
                 let resolved_ctor = self.resolve(path.span);
+                if let Some(id) = resolved_ctor
+                    && self.hir.definition(id).kind == ril_hir::DefinitionKind::Type
+                    && (items.is_some() || !self.hir.unit_constructor(id))
+                {
+                    self.error(
+                        Code::E0349,
+                        node.span,
+                        "nominal pattern requires 'Name::(...)' syntax",
+                    );
+                    for &item in items.iter().flatten() {
+                        self.pattern(env, item, &Ty::Unknown);
+                    }
+                    return;
+                }
+                let name = resolved_ctor
+                    .map(|id| self.hir.definition(id).name.value.as_str())
+                    .unwrap_or_else(|| {
+                        path.segments
+                            .last()
+                            .map_or("", |part| part.name.value.as_str())
+                    });
                 let payload =
                     self.pattern_payload(env, name, resolved_ctor, &normalized, node.span);
                 let unit_payload =
@@ -201,6 +218,42 @@ impl Checker<'_> {
                     );
                 }
                 for (&item, ty) in items.iter().flatten().zip(payload) {
+                    self.pattern(env, item, &ty);
+                }
+            }
+            Pattern::Wrap(path, items) => {
+                let resolved_ctor = self.resolve(path.span);
+                if let Some(id) = resolved_ctor
+                    && self.hir.definition(id).kind != ril_hir::DefinitionKind::Type
+                {
+                    self.error(
+                        Code::E0349,
+                        node.span,
+                        "'::(...)' pattern is only valid for nominal or opaque wrapper types",
+                    );
+                    for &item in items {
+                        self.pattern(env, item, &Ty::Unknown);
+                    }
+                    return;
+                }
+                let name = resolved_ctor
+                    .map(|id| self.hir.definition(id).name.value.as_str())
+                    .unwrap_or_else(|| {
+                        path.segments
+                            .last()
+                            .map_or("", |part| part.name.value.as_str())
+                    });
+                let payload =
+                    self.wrap_pattern_payload(env, name, resolved_ctor, &normalized, node.span);
+                let unit_payload = payload.as_slice() == [Ty::Unit] && items.is_empty();
+                if !unit_payload && payload.len() != items.len() {
+                    self.error(
+                        Code::E0314,
+                        node.span,
+                        "nominal pattern has the wrong payload arity",
+                    );
+                }
+                for (&item, ty) in items.iter().zip(payload) {
                     self.pattern(env, item, &ty);
                 }
             }
@@ -294,6 +347,10 @@ impl Checker<'_> {
                 .flatten()
                 .flat_map(|&item| self.pattern_names(env, item))
                 .collect(),
+            Pattern::Wrap(_, payload) => payload
+                .iter()
+                .flat_map(|&item| self.pattern_names(env, item))
+                .collect(),
             Pattern::Record { fields, .. } => fields
                 .iter()
                 .flat_map(|field| {
@@ -341,6 +398,11 @@ impl Checker<'_> {
             }
             Pattern::Constructor(_, payload) => {
                 for &item in payload.iter().flatten() {
+                    self.collect_pattern_binding_modes(env, item, out);
+                }
+            }
+            Pattern::Wrap(_, payload) => {
+                for &item in payload {
                     self.collect_pattern_binding_modes(env, item, out);
                 }
             }
@@ -440,10 +502,15 @@ impl Checker<'_> {
                     || (resolved.is_none()
                         && self.hir.definition(adt.definition).name.value == name) =>
             {
-                match self.representation(env, adt) {
-                    Some(Ty::Tuple(items)) => items.into_iter().map(|m| m.ty).collect(),
-                    Some(Ty::Unit) | None => Vec::new(),
-                    Some(inner) => vec![inner],
+                if self.hir.unit_constructor(adt.definition) {
+                    Vec::new()
+                } else {
+                    self.error(
+                        Code::E0349,
+                        span,
+                        "nominal pattern requires 'Name::(...)' syntax",
+                    );
+                    Vec::new()
                 }
             }
             (_, Ty::Unknown | Ty::Infer(_)) => Vec::new(),
@@ -453,6 +520,72 @@ impl Checker<'_> {
                     span,
                     format!(
                         "constructor {name} is incompatible with {}",
+                        ty.display(self.hir)
+                    ),
+                );
+                Vec::new()
+            }
+        }
+    }
+
+    fn wrap_pattern_payload(
+        &mut self,
+        env: &Env,
+        name: &str,
+        resolved: Option<DefinitionId>,
+        ty: &Ty,
+        span: Span,
+    ) -> Vec<Ty> {
+        match ty {
+            Ty::Adt(adt) if adt.kind == AdtKind::Foreign => {
+                self.error(
+                    Code::E0907,
+                    span,
+                    "foreign representation cannot be matched",
+                );
+                Vec::new()
+            }
+            Ty::Adt(adt)
+                if matches!(adt.kind, AdtKind::Opaque | AdtKind::OpaqueSum)
+                    && adt.defining_scope != env.scope =>
+            {
+                self.error(Code::E0308, span, "opaque representation is sealed");
+                Vec::new()
+            }
+            Ty::Adt(adt) if matches!(adt.kind, AdtKind::Sum | AdtKind::OpaqueSum) => {
+                self.error(
+                    Code::E0349,
+                    span,
+                    "sum variants do not use nominal '::(...)' pattern syntax",
+                );
+                Vec::new()
+            }
+            Ty::Adt(adt)
+                if resolved.is_some_and(|id| id == adt.definition)
+                    || (resolved.is_none()
+                        && self.hir.definition(adt.definition).name.value == name) =>
+            {
+                if self.hir.unit_constructor(adt.definition) {
+                    self.error(
+                        Code::E0349,
+                        span,
+                        "unit nominal type does not use '::(...)' pattern syntax",
+                    );
+                    return Vec::new();
+                }
+                match self.representation(env, adt) {
+                    Some(Ty::Tuple(items)) => items.into_iter().map(|m| m.ty).collect(),
+                    Some(inner) => vec![inner],
+                    None => Vec::new(),
+                }
+            }
+            Ty::Unknown | Ty::Infer(_) => Vec::new(),
+            _ => {
+                self.error(
+                    Code::E0301,
+                    span,
+                    format!(
+                        "nominal pattern {name}::(...) is incompatible with {}",
                         ty.display(self.hir)
                     ),
                 );
@@ -594,7 +727,7 @@ impl Checker<'_> {
     fn pattern_contains_type(&self, env: &Env, pattern: PatternId) -> bool {
         match &self.ast(env.file).pattern(pattern).value {
             Pattern::Type(_) | Pattern::TypeBinding(_) => true,
-            Pattern::Or(items) | Pattern::Tuple(items) => {
+            Pattern::Or(items) | Pattern::Tuple(items) | Pattern::Wrap(_, items) => {
                 items.iter().any(|&item| self.pattern_contains_type(env, item))
             }
             _ => false,
@@ -638,13 +771,14 @@ impl Checker<'_> {
                     .flatten()
                     .all(|&part| self.irrefutable(env, part)) =>
             {
-                (
-                    false,
-                    path.segments
-                        .last()
-                        .map(|segment| HashSet::from([segment.name.value.clone()]))
-                        .unwrap_or_default(),
-                )
+                let tag = self
+                    .resolve(path.span)
+                    .map(|id| self.hir.definition(id).name.value.clone())
+                    .or_else(|| path.segments.last().map(|s| s.name.value.clone()));
+                (false, tag.map_or_else(HashSet::new, |name| HashSet::from([name])))
+            }
+            Pattern::Wrap(_, parts) if parts.iter().all(|&part| self.irrefutable(env, part)) => {
+                (true, HashSet::new())
             }
             Pattern::Tuple(_) | Pattern::Record { .. } if self.irrefutable(env, pattern) => {
                 (true, HashSet::new())
@@ -682,7 +816,9 @@ impl Checker<'_> {
     fn irrefutable(&self, env: &Env, pattern: PatternId) -> bool {
         match &self.ast(env.file).pattern(pattern).value {
             Pattern::Wildcard | Pattern::Binding(..) | Pattern::Unit => true,
-            Pattern::Tuple(items) => items.iter().all(|&item| self.irrefutable(env, item)),
+            Pattern::Tuple(items) | Pattern::Wrap(_, items) => {
+                items.iter().all(|&item| self.irrefutable(env, item))
+            }
             Pattern::Record { fields, .. } => fields
                 .iter()
                 .all(|field| field.pattern.is_none_or(|p| self.irrefutable(env, p))),
@@ -1038,22 +1174,37 @@ impl Checker<'_> {
                     |id| self.value_pattern_at(env, id, &Value::Str(middle.into()), bindings, None),
                 )
             }
-            (Pattern::Constructor(path, Some(parts)), Value::Record(_))
-                if parts.len() == 1
-                    && self
-                        .resolve(path.span)
-                        .is_some_and(|id| {
-                            self.hir.definition(id).kind == ril_hir::DefinitionKind::Type
-                        }) =>
+            (Pattern::Wrap(_, parts), value) => match parts.as_slice() {
+                [] => matches!(value, Value::Unit),
+                [inner] => self.value_pattern_at(env, *inner, value, bindings, place),
+                many => {
+                    let Value::Tuple(values) = value else {
+                        return false;
+                    };
+                    many.len() == values.len()
+                        && many
+                            .iter()
+                            .zip(values)
+                            .enumerate()
+                            .all(|(index, (&id, value))| {
+                                let child = next_coordinate(place, || Value::Int(index.into()));
+                                self.value_pattern_at(env, id, value, bindings, child.as_deref())
+                            })
+                }
+            },
+            (Pattern::Constructor(path, None), Value::Unit)
+                if self
+                    .resolve(path.span)
+                    .is_some_and(|id| self.hir.unit_constructor(id)) =>
             {
-                parts
-                    .first()
-                    .is_some_and(|&inner| self.value_pattern_at(env, inner, value, bindings, place))
+                true
             }
             (Pattern::Constructor(path, parts), Value::Tag(tag, values)) => {
-                path.segments
-                    .last()
-                    .is_some_and(|segment| segment.name.value == *tag)
+                let expected = self
+                    .resolve(path.span)
+                    .map(|id| self.hir.definition(id).name.value.as_str())
+                    .or_else(|| path.segments.last().map(|segment| segment.name.value.as_str()));
+                expected == Some(tag.as_str())
                     && parts.as_ref().map_or(0, Vec::len) == values.len()
                     && parts.iter().flatten().zip(values).enumerate().all(
                         |(index, (&id, value))| {

@@ -134,7 +134,7 @@ fn close(new resource: Resource) @io -> () { println("cleanup") }
 fn main() @io -> () {
     Fiber::run \-> Fiber::scope \mut s -> {
         let mut child = Fiber::spawn(mut s) \-> {
-            use resource = Resource(.{ id: 1 })
+            use resource = Resource::(.{ id: 1 })
             Fiber::yield_now()
             println("unexpected")
         }

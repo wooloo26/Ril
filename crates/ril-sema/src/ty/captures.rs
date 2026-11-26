@@ -135,7 +135,7 @@ fn collect_var_pattern_defs(
                 collect_var_pattern_defs(hir, ast, item, inherited_var, out);
             }
         }
-        Pattern::Constructor(_, Some(payload)) => {
+        Pattern::Constructor(_, Some(payload)) | Pattern::Wrap(_, payload) => {
             for &item in payload {
                 collect_var_pattern_defs(hir, ast, item, inherited_var, out);
             }
@@ -188,7 +188,7 @@ fn collect_pattern_defs(hir: &Program, ast: &Ast, pat: PatternId, out: &mut Hash
                 collect_pattern_defs(hir, ast, item, out);
             }
         }
-        Pattern::Constructor(_, Some(payload)) => {
+        Pattern::Constructor(_, Some(payload)) | Pattern::Wrap(_, payload) => {
             for &item in payload {
                 collect_pattern_defs(hir, ast, item, out);
             }
@@ -470,6 +470,19 @@ fn walk_expr(
                 refs.as_deref_mut(),
             );
             walk_expr(hir, ast, *right, all_var_defs, fn_up_captures, boxed, refs);
+        }
+        Expr::Wrap { args, .. } => {
+            for arg in args {
+                walk_expr(
+                    hir,
+                    ast,
+                    arg.value,
+                    all_var_defs,
+                    fn_up_captures,
+                    boxed,
+                    refs.as_deref_mut(),
+                );
+            }
         }
         Expr::Call { callee, args } => {
             walk_expr(

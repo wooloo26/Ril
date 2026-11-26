@@ -104,11 +104,28 @@ impl Program {
                     Diagnostic::error(Code::E0208, part.span, "no enclosing module")
                 })?;
             } else {
-                let target = self.lookup(scope, namespace, part, Code::E0209)?;
-                if let Some(entry) = self.scope(namespace).names.get(&part.value)
-                    && (import.file.is_some() || index != 0)
-                {
-                    path_vis = path_vis.min(entry.visibility);
+                let (target, entry_vis) = match self.lookup(scope, namespace, part, Code::E0209) {
+                    Ok(target) => {
+                        let vis = self
+                            .scope(namespace)
+                            .names
+                            .get(&part.value)
+                            .map(|entry| entry.visibility);
+                        (target, vis)
+                    }
+                    Err(_) if import.file.is_none() && index == 0 => {
+                        let target = self.lookup(scope, self.prelude, part, Code::E0209)?;
+                        let vis = self
+                            .scope(self.prelude)
+                            .names
+                            .get(&part.value)
+                            .map(|entry| entry.visibility);
+                        (target, vis)
+                    }
+                    Err(err) => return Err(err),
+                };
+                if let Some(vis) = entry_vis {
+                    path_vis = path_vis.min(vis);
                 }
                 namespace = self.namespace(target).ok_or_else(|| {
                     Diagnostic::error(Code::E0208, part.span, "import path does not name a module")

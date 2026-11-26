@@ -586,7 +586,7 @@ impl Analyzer<'_> {
         let value_type = self
             .definition(name)
             .and_then(|id| self.program.bindings.get(&id))
-            .is_some_and(Ty::is_value);
+            .is_some_and(|ty| self.program.is_value(ty));
         if !resource && !value_type && self.references_scoped_resource(value) {
             self.error(Code::E0604, name, "scoped resource cannot be rebound");
         }
@@ -626,6 +626,14 @@ impl Analyzer<'_> {
                 });
             });
             self.cleanups.insert(binding, CleanupAction::CloseSender);
+            return;
+        }
+        if self.program.is_value(self.ty(value_span)) {
+            self.error(
+                Code::E0541,
+                binding,
+                "value-type binding cannot be a scoped resource",
+            );
             return;
         }
         let Ty::Adt(adt) = self.ty(value_span) else {

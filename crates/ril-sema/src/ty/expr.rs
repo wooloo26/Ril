@@ -124,6 +124,14 @@ impl Checker<'_> {
                         .chain(args.iter().cloned())
                         .collect::<Vec<_>>();
                     self.call(env, *callee, &arguments, expected, span)
+                } else if matches!(target_node.value, Expr::Wrap { .. }) {
+                    self.expr(env, *value, None);
+                    self.error(
+                        Code::E0338,
+                        target_node.span,
+                        "nominal wrapper cannot be a direct pipeline target; use a closure",
+                    );
+                    Ty::Unknown
                 } else {
                     self.call(env, *target, &[argument], expected, span)
                 };
@@ -157,6 +165,7 @@ impl Checker<'_> {
                 Ty::Range
             }
             Expr::Call { callee, args } => self.call(env, *callee, args, expected, span),
+            Expr::Wrap { path, args } => self.wrap(env, path, args, expected, span),
             Expr::Record { name, fields } => {
                 self.record(env, name.as_ref(), fields, expected, span)
             }
@@ -383,7 +392,10 @@ impl Checker<'_> {
                 ..
             } => {
                 let ty = self.expr(env, *iterable, None);
-                let norm = self.normalize(&ty);
+                let norm = match self.normalize(&ty) {
+                    Ty::Draft(inner) => *inner,
+                    other => other,
+                };
                 let item = if let Some(elem) = norm.as_set(self.hir) {
                     elem.clone()
                 } else {
@@ -552,7 +564,7 @@ impl Checker<'_> {
                 ty
             }
             "?" => self.propagate(env, ty, op.span),
-            "ref" | "^mut" if ty.is_value() => {
+            "ref" | "^mut" if self.is_value_ty(env, &ty) => {
                 self.error(
                     Code::E0402,
                     op.span,
@@ -848,14 +860,25 @@ impl Checker<'_> {
     }
 
     fn require_domain(&mut self, env: &Env, actual: &Ty, valid: &[Ty], span: Span) {
-        let valid_type = match actual {
+        let mut current = actual.clone();
+        while let Ty::Adt(adt) = &current {
+            if adt.kind == AdtKind::Opaque
+                && adt.defining_scope == env.scope
+                && let Some(rep) = self.representation(env, adt)
+            {
+                current = rep;
+                continue;
+            }
+            break;
+        }
+        let valid_type = match &current {
             Ty::Param(id) => env
                 .domains
                 .get(id)
                 .is_some_and(|domain| domain.iter().all(|item| valid.contains(item))),
             Ty::Unknown | Ty::Never => true,
             Ty::Infer(_) => false,
-            _ => valid.contains(actual),
+            _ => valid.contains(&current),
         };
         if !valid_type {
             self.error(

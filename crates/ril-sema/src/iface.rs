@@ -141,7 +141,57 @@ impl Interface {
                 let (shape, params) = match (&ast.stmt(stmt).value.kind, def.kind) {
                     (StmtKind::Type(decl), DefinitionKind::Type | DefinitionKind::Sum(_)) => {
                         let body = if decl.kind == TypeKind::Opaque {
-                            "sealed".into()
+                            if program.hir.file(def.name.span.file).kind == FileKind::Foreign {
+                                "foreign".into()
+                            } else {
+                                match &decl.definition {
+                                    TypeDefinition::Sum(_) => "sealed sum".into(),
+                                    TypeDefinition::Data(_) => {
+                                        let param_ids: Vec<_> = decl
+                                            .generics
+                                            .iter()
+                                            .map(|p| match program.hir.resolve(p.name.span) {
+                                                Some(ril_hir::Resolution::Definition(pid)) => {
+                                                    Some(pid)
+                                                }
+                                                _ => None,
+                                            })
+                                            .collect();
+                                        let self_args = param_ids
+                                            .iter()
+                                            .filter_map(|opt| {
+                                                opt.map(|pid| {
+                                                    crate::ty::GenericValue::Type(
+                                                        crate::ty::Ty::Param(pid),
+                                                    )
+                                                })
+                                            })
+                                            .collect();
+                                        let adt = crate::ty::Adt {
+                                            definition: id,
+                                            kind: crate::ty::AdtKind::Opaque,
+                                            defining_scope: def.scope,
+                                            visibility: def.visibility,
+                                            arguments: self_args,
+                                        };
+                                        let unwrapped = program.unwrap_wrapper(
+                                            &crate::ty::Ty::Adt(std::sync::Arc::new(adt)),
+                                        );
+                                        if unwrapped.is_primitive_value() {
+                                            "sealed value".into()
+                                        } else if let crate::ty::Ty::Param(pid) = unwrapped
+                                            && let Some(idx) =
+                                                param_ids.iter().position(|p| *p == Some(pid))
+                                        {
+                                            format!("sealed param({idx})")
+                                        } else {
+                                            "sealed shared".into()
+                                        }
+                                    }
+                                    TypeDefinition::Opaque => "foreign".into(),
+                                    TypeDefinition::Function(..) => "sealed".into(),
+                                }
+                            }
                         } else {
                             match &decl.definition {
                                 TypeDefinition::Data(ty) => type_shape(program, ast, *ty),

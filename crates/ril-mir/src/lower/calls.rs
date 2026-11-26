@@ -11,6 +11,48 @@ use super::{Builder, Result, Work};
 use crate::{Instruction, Register, Target};
 
 impl Builder<'_, '_> {
+    pub(super) fn wrap(
+        &mut self,
+        path: &ril_sema::syntax::Path,
+        args: &[Argument],
+        _span: Span,
+    ) -> Result<Register> {
+        match args {
+            [] => Ok(self.unit()),
+            [arg] => {
+                if let Expr::Record { name: None, fields } = &self.ast().expr(arg.value).value {
+                    let fields = fields.clone();
+                    let record = self.runtime("ril_rt_record", Vec::new());
+                    let mut provided = BTreeMap::new();
+                    for field in &fields {
+                        let key = self.string(&field.name.value);
+                        let value = if let Some(value) = field.value {
+                            self.expr(value)?
+                        } else {
+                            let def = self.global.resolve(field.name.span).ok_or_else(|| {
+                                self.unsupported(field.name.span, "record shorthand")
+                            })?;
+                            self.read(def, field.name.span)?
+                        };
+                        self.runtime("ril_rt_store", vec![record, key, value]);
+                        provided.insert(field.name.value.clone(), value);
+                    }
+                    self.defaults(path, record, &provided)?;
+                    return Ok(record);
+                }
+                self.expr(arg.value)
+            }
+            many => {
+                let tuple = self.runtime("ril_rt_tuple", Vec::new());
+                for arg in many {
+                    let value = self.expr(arg.value)?;
+                    self.runtime("ril_rt_append", vec![tuple, value]);
+                }
+                Ok(tuple)
+            }
+        }
+    }
+
     pub(super) fn call(
         &mut self,
         callee: ExprId,
@@ -71,34 +113,8 @@ impl Builder<'_, '_> {
             let args = self.indirect_arguments(callee_span, args, span)?;
             return Ok(self.invoke_closure(closure, args));
         }
-        if matches!(def.kind, DefinitionKind::Variant(_) | DefinitionKind::Type) {
-            if def.kind == DefinitionKind::Type && self.global.typed.is_nominal_record(id) {
-                let [arg] = args else {
-                    return Err(self.unsupported(span, "nominal record constructor arity"));
-                };
-                if let Expr::Record { name: None, fields } = &self.ast().expr(arg.value).value {
-                    let fields = fields.clone();
-                    let record = self.runtime("ril_rt_record", Vec::new());
-                    let mut provided = BTreeMap::new();
-                    for field in &fields {
-                        let key = self.string(&field.name.value);
-                        let value = if let Some(value) = field.value {
-                            self.expr(value)?
-                        } else {
-                            let def = self.global.resolve(field.name.span).ok_or_else(|| {
-                                self.unsupported(field.name.span, "record shorthand")
-                            })?;
-                            self.read(def, field.name.span)?
-                        };
-                        self.runtime("ril_rt_store", vec![record, key, value]);
-                        provided.insert(field.name.value.clone(), value);
-                    }
-                    self.defaults(path, record, &provided)?;
-                    return Ok(record);
-                }
-                return self.expr(arg.value);
-            }
-            let unit_payload = args.is_empty() && matches!(def.kind, DefinitionKind::Variant(_));
+        if matches!(def.kind, DefinitionKind::Variant(_)) {
+            let unit_payload = args.is_empty();
             let mut args = args
                 .iter()
                 .map(|arg| self.expr(arg.value))

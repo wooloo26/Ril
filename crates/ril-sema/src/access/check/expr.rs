@@ -241,7 +241,7 @@ impl Analyzer<'_> {
                     if higher_order::carries_callable(self.program, &member.ty) {
                         ledger.record_array_length(span, items.len());
                     }
-                    if results::carries_result(self.program, &member.ty) {
+                    if results::carries_result(self.program, self.hir_scope(ctx), &member.ty) {
                         sequence.array_len = Some(items.len());
                     }
                 }
@@ -302,7 +302,7 @@ impl Analyzer<'_> {
                         *slot = std::mem::take(slot).joined(datum);
                     }
                 }
-                if results::carries_result(self.program, self.ty(span)) {
+                if results::carries_result(self.program, self.hir_scope(ctx), self.ty(span)) {
                     map.map_keys = keys.map(|_| ordered_keys);
                 }
                 map
@@ -311,7 +311,7 @@ impl Analyzer<'_> {
                 let value = self.expr(ctx, ledger, *base);
                 let coordinate = self.coordinate(ctx, ledger, member);
                 let (mode, variable) = self.schema_mode(self.ty(ast.expr(*base).span), &coordinate);
-                let mode = if variable && self.ty(span).is_value() {
+                let mode = if variable && self.program.is_value(self.ty(span)) {
                     Mode::Mut
                 } else {
                     mode
@@ -531,7 +531,7 @@ impl Analyzer<'_> {
                             let mut child = inside.project_schema(&value, coordinate, schema);
                             let pattern_span = ast.pattern(*pattern).span;
                             if let Ty::Map(key_ty, value_ty) = iterable_type {
-                                let key = if key_ty.is_value() {
+                                let key = if this.program.is_value(key_ty) {
                                     Datum::default()
                                 } else {
                                     inside.project_schema(&value, Coordinate::MapKey, Mode::Plain)
@@ -540,7 +540,7 @@ impl Analyzer<'_> {
                                 pair.members.insert(Coordinate::Index("0".into()), key);
                                 pair.members.insert(
                                     Coordinate::Index("1".into()),
-                                    if value_ty.ty.is_value() {
+                                    if this.program.is_value(&value_ty.ty) {
                                         Datum::default()
                                     } else {
                                         child
@@ -554,6 +554,7 @@ impl Analyzer<'_> {
                             {
                                 results::CollectionTraversal::enter(
                                     this.program,
+                                    this.hir_scope(local),
                                     inside,
                                     this.ty(pattern_span),
                                     &value,
@@ -630,28 +631,35 @@ impl Analyzer<'_> {
                 }
             }
             Expr::Call { callee, args } => self.call(ctx, ledger, *callee, args, span),
+            Expr::Wrap { path, args } => self.wrap(ctx, ledger, path, args, span),
             Expr::Pipeline {
                 value,
                 mode,
                 target,
                 propagate,
             } => {
-                let mut args = vec![ril_syntax::syntax::Argument {
-                    value: *value,
-                    mode: *mode,
-                    name: None,
-                }];
-                let callee = if let Expr::Call { callee, args: rest } = &ast.expr(*target).value {
-                    args.extend(rest.iter().cloned());
-                    *callee
+                if matches!(ast.expr(*target).value, Expr::Wrap { .. }) {
+                    self.expr(ctx, ledger, *value);
+                    Datum::default()
                 } else {
-                    *target
-                };
-                let result = self.call(ctx, ledger, callee, &args, span);
-                if *propagate {
-                    self.propagated(ctx, ledger, result, span)
-                } else {
-                    result
+                    let mut args = vec![ril_syntax::syntax::Argument {
+                        value: *value,
+                        mode: *mode,
+                        name: None,
+                    }];
+                    let callee = if let Expr::Call { callee, args: rest } = &ast.expr(*target).value
+                    {
+                        args.extend(rest.iter().cloned());
+                        *callee
+                    } else {
+                        *target
+                    };
+                    let result = self.call(ctx, ledger, callee, &args, span);
+                    if *propagate {
+                        self.propagated(ctx, ledger, result, span)
+                    } else {
+                        result
+                    }
                 }
             }
             Expr::Transfer { kind, value } => {
@@ -709,14 +717,18 @@ impl Analyzer<'_> {
         {
             ledger.record_result(&mut value, span);
         }
-        if self.ty(span).is_value() {
+        if self.program.is_value(self.ty(span)) {
             value.roots.clear();
             value.members.clear();
             value.requires_new = false;
         }
         if matches!(
             node.value,
-            Expr::Member { .. } | Expr::Index { .. } | Expr::Call { .. } | Expr::Pipeline { .. }
+            Expr::Member { .. }
+                | Expr::Index { .. }
+                | Expr::Call { .. }
+                | Expr::Wrap { .. }
+                | Expr::Pipeline { .. }
         ) {
             for root in &mut value.roots {
                 root.explicit_share = false;
@@ -766,14 +778,13 @@ impl Analyzer<'_> {
                 root.anchor_scopes.extend(self.binding_scopes.get(&decl));
             }
             value
-        } else if self.program.hir.unit_constructor(id)
-            || matches!(definition.kind, DefinitionKind::Variant(_))
-                && matches!(self.ty(span), Ty::Adt(adt) if matches!(adt.kind, AdtKind::Sum | AdtKind::OpaqueSum))
+        } else if matches!(definition.kind, DefinitionKind::Variant(_))
+            && matches!(self.ty(span), Ty::Adt(adt) if matches!(adt.kind, AdtKind::Sum | AdtKind::OpaqueSum))
         {
             let mut value = Datum::source(span, Access::Mut, true);
             value.set_variant(&definition.name.value);
             value
-        } else if !self.ty(span).is_value()
+        } else if !self.program.is_value(self.ty(span))
             && matches!(
                 self.program.hir.definition(id).kind,
                 DefinitionKind::Constant | DefinitionKind::Function

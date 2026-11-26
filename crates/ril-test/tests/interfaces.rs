@@ -1408,9 +1408,9 @@ fn correlated_callback_mode_offers_survive_interface_only_calls() {
 
     let nested_callback_call = |callback| {
         format!(
-            "Adapter::visit(Adapter::Node(.{{
+            "Adapter::visit(Adapter::Node::(.{{
             action: Adapter::observe,
-            next: Some(Adapter::Node(.{{ action: Adapter::{callback}, next: None }}))
+            next: Some(Adapter::Node::(.{{ action: Adapter::{callback}, next: None }}))
         }}))"
         )
     };
@@ -1684,7 +1684,7 @@ fn compound_result_obligations_survive_an_interface_only_boundary() {
     let provider_source = br#"
 fn get(value: int) -> new !<int, str> { Ok(value) }
 pub type Packet<T>(.{ payload: T })
-pub fn packet() -> new Packet<!<int, str>> { Packet(.{ payload: get(1) }) }
+pub fn packet() -> new Packet<!<int, str>> { Packet::(.{ payload: get(1) }) }
 pub fn batch() -> new []!<int, str> { [get(1), get(2)] }
 pub fn varying_batch(flag: bool) -> new []!<int, str> {
     if flag { [get(1), Err("failed")] } else { [] }
@@ -1822,12 +1822,12 @@ pub type Pair = .{ var ^mut left: Node, var ^mut right: Node }
 pub fn build(^mut tail: Node, count: int) &mut &^mut &return(^mut tail) -> new Node {
     var ^mut head = tail
     for 0..count as i {
-        let mut node = Node(.{ value: i, next: Some(^mut head) })
+        let mut node = Node::(.{ value: i, next: Some(^mut head) })
         node.value += 1
         head = ^mut node
     }
     head.value += 1
-    Node(.{ value: 0, next: Some(^mut head) })
+    Node::(.{ value: 0, next: Some(^mut head) })
 }
 pub fn store(mut shelf: Shelf, ^mut tail: Node, count: int) &mut &^mut -> () {
     shelf.head = build(^mut tail, count)
@@ -1933,7 +1933,7 @@ pub fn choose(via action: fn(via Node) @& -> infer Node, ^mut tail: Node, count:
                 "head",
             ),
             (
-                "let mut shelf = Chain::Shelf.{ head: Chain::Node(.{ value: 0, next: None }) }\nChain::store(mut shelf, ^mut tail, count)",
+                "let mut shelf = Chain::Shelf.{ head: Chain::Node::(.{ value: 0, next: None }) }\nChain::store(mut shelf, ^mut tail, count)",
                 "shelf.head",
             ),
             (
@@ -1945,7 +1945,7 @@ pub fn choose(via action: fn(via Node) @& -> infer Node, ^mut tail: Node, count:
                 ("tail", "", vec![Some(Code::E0524)]),
                 (
                     "spare",
-                    "let mut spare = Chain::Node(.{ value: 0, next: None })",
+                    "let mut spare = Chain::Node::(.{ value: 0, next: None })",
                     Vec::new(),
                 ),
             ] {
@@ -1955,7 +1955,7 @@ pub fn choose(via action: fn(via Node) @& -> infer Node, ^mut tail: Node, count:
                      fn identity(via node: Chain::Node) -> infer Chain::Node {{ node }}\n\
                      fn copy(mut target: Chain::Node, ref reader: Chain::Node) &mut -> () {{ target.value = reader.value }}\n\
                      fn run(count: int) -> () {{\n\
-                        let mut tail = Chain::Node(.{{ value: 1, next: None }})\n\
+                        let mut tail = Chain::Node::(.{{ value: 1, next: None }})\n\
                         {setup}\n{spare}\n{read}\n\
                      }}"
                 );
@@ -1975,7 +1975,7 @@ pub fn choose(via action: fn(via Node) @& -> infer Node, ^mut tail: Node, count:
             ("tail", "", vec![Some(Code::E0524)]),
             (
                 "spare",
-                "let mut spare = Chain::Node(.{ value: 0, next: None })",
+                "let mut spare = Chain::Node::(.{ value: 0, next: None })",
                 Vec::new(),
             ),
         ]
@@ -1987,7 +1987,7 @@ pub fn choose(via action: fn(via Node) @& -> infer Node, ^mut tail: Node, count:
                  fn project(via head: Chain::Node) -> infer Chain::Node {{ {projection} }}\n\
                  fn copy(mut target: Chain::Node, ref reader: Chain::Node) &mut -> () {{ target.value = reader.value }}\n\
                  fn run(count: int) -> () {{\n\
-                    let mut tail = Chain::Node(.{{ value: 1, next: None }})\n\
+                    let mut tail = Chain::Node::(.{{ value: 1, next: None }})\n\
                     let ref found = ref Chain::relay(project, ^mut tail, count)\n\
                     {spare}\n\
                     copy(mut {target}, ref found)\n\
@@ -2016,9 +2016,9 @@ pub fn choose(via action: fn(via Node) @& -> infer Node, ^mut tail: Node, count:
 use library/chain
 fn copy(mut target: Chain::Node, ref reader: Chain::Node) &mut -> () { target.value = reader.value }
 fn run(count: int) -> () {
-    let mut tail = Chain::Node(.{ value: 1, next: None })
-    let mut first = Chain::Node(.{ value: 2, next: None })
-    let mut second = Chain::Node(.{ value: 3, next: None })
+    let mut tail = Chain::Node::(.{ value: 1, next: None })
+    let mut first = Chain::Node::(.{ value: 2, next: None })
+    let mut second = Chain::Node::(.{ value: 3, next: None })
     first.value += 1
     second.value += 1
     let mut pair = Chain::Pair.{ left: ^mut first, right: ^mut second }
@@ -2073,7 +2073,7 @@ pub fn read_meter() @Meter -> int { Meter::read() }
 pub eff Extended { ..Meter; fn record() -> () }
 pub fn read_extended() @Extended -> int { Meter::read() }
 pub opaque type Handle(.{ id: int }) use(close)
-pub fn open() -> new Handle { Handle(.{ id: 1 }) }
+pub fn open() -> new Handle { Handle::(.{ id: 1 }) }
 pub fn close(new handle: Handle) @Meter -> () { let _ = Meter::read() }
 pub fn apply(via action: fn(via Cell) @& -> infer Cell, via cell: Cell) -> infer Cell { action(cell) }
 pub fn observe_after(via action: fn(via Cell) @& -> int, via cell: Cell) -> int {

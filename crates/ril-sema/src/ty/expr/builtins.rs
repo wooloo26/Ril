@@ -1,4 +1,4 @@
-use std::{collections::HashSet, sync::Arc};
+use std::sync::Arc;
 
 use ril_hir::StdType;
 use ril_source::{diag::Code, span::Span};
@@ -37,7 +37,15 @@ impl Checker<'_> {
 
     fn check_derive_root(&mut self, env: &Env, ty: &Ty, span: Span) {
         let mut ty = self.normalize(ty);
-        let mut opened = HashSet::new();
+        if self.is_value_ty(env, &ty) {
+            self.error(
+                Code::E0536,
+                span,
+                "derive requires a shared-object snapshot",
+            );
+            return;
+        }
+        let mut active: Vec<Arc<Adt>> = Vec::new();
         while let Ty::Adt(adt) = &ty {
             if matches!(adt.kind, AdtKind::Opaque | AdtKind::OpaqueSum)
                 && adt.defining_scope != env.scope
@@ -46,15 +54,24 @@ impl Checker<'_> {
                 self.error(Code::E0308, span, "opaque representation is sealed");
                 return;
             }
-            if adt.kind != AdtKind::Opaque || !opened.insert(adt.definition) {
+            if !matches!(adt.kind, AdtKind::Nominal | AdtKind::Opaque) {
                 break;
             }
+            if active
+                .iter()
+                .rev()
+                .find(|outer| outer.definition == adt.definition)
+                .is_some_and(|outer| !crate::ty::nested_type_argument(outer, adt))
+            {
+                break;
+            }
+            active.push(Arc::clone(adt));
             let Some(representation) = self.representation(env, adt) else {
                 break;
             };
             ty = self.normalize(&representation);
         }
-        if ty.is_value()
+        if ty.is_primitive_value()
             || matches!(
                 &ty,
                 Ty::Adt(adt) if adt.kind == AdtKind::Foreign
@@ -89,7 +106,7 @@ impl Checker<'_> {
 
     fn nonclonable(&mut self, env: &Env, ty: &Ty, root: bool, proof: &mut CloneProof) -> bool {
         let ty = self.normalize(ty);
-        if root && (ty.is_value() || matches!(ty, Ty::Callable(_))) {
+        if root && (ty.is_primitive_value() || matches!(ty, Ty::Callable(_))) {
             return true;
         }
         match ty {
@@ -127,7 +144,7 @@ impl Checker<'_> {
                     .iter()
                     .rev()
                     .find(|outer| outer.definition == adt.definition)
-                    .is_some_and(|outer| !Self::nested_type_argument(outer, &adt))
+                    .is_some_and(|outer| !crate::ty::nested_type_argument(outer, &adt))
                 {
                     return false;
                 }
@@ -140,7 +157,7 @@ impl Checker<'_> {
                         .any(|ty| self.nonclonable(env, ty, false, proof)),
                     _ => self
                         .representation(env, &adt)
-                        .is_some_and(|ty| self.nonclonable(env, &ty, false, proof)),
+                        .is_some_and(|ty| self.nonclonable(env, &ty, root, proof)),
                 };
                 proof.active.pop();
                 invalid
@@ -159,22 +176,6 @@ impl Checker<'_> {
             }
             _ => false,
         }
-    }
-
-    fn nested_type_argument(outer: &Adt, inner: &Adt) -> bool {
-        // A finite type argument may use the same constructor. Following
-        // that argument is distinct from expanding a recursive definition.
-        outer.arguments.iter().any(|argument| {
-            let GenericValue::Type(ty) = argument else {
-                return false;
-            };
-            let mut nested = false;
-            crate::ty::check::transform(ty, &mut |part| {
-                nested |= matches!(part, Ty::Adt(application) if application.as_ref() == inner);
-                None
-            });
-            nested
-        })
     }
 
     pub(super) fn primitive_call(
@@ -233,7 +234,7 @@ impl Checker<'_> {
                     && arg.mode != Mode::Plain
                 {
                     let arg_span = self.ast(env.file).expr(arg.value).span;
-                    if first.is_value() {
+                    if self.is_value_ty(env, &first) {
                         self.error(
                             Code::E0401,
                             arg_span,
@@ -243,10 +244,14 @@ impl Checker<'_> {
                         self.error(Code::E0406, arg_span, "len accepts plain or ref access");
                     }
                 }
+                let len_target = match &first {
+                    Ty::Draft(inner) => inner.as_ref(),
+                    other => other,
+                };
                 if !matches!(
-                    first,
+                    len_target,
                     Ty::Str | Ty::Bytes | Ty::Array(_) | Ty::Map(..) | Ty::Unknown | Ty::Param(_)
-                ) && !first.is_set(self.hir)
+                ) && !len_target.is_set(self.hir)
                 {
                     self.error(
                         Code::E0301,
@@ -260,28 +265,49 @@ impl Checker<'_> {
                 self.check_clone(env, &first, span, true);
                 first
             }
-            "inner" => match if let Ty::Draft(wrapped) = &first {
-                wrapped
-            } else {
-                &first
-            } {
-                Ty::Adt(adt) if adt.kind == AdtKind::Foreign => {
-                    self.error(Code::E0907, span, "foreign representation is sealed");
-                    Ty::Unknown
+            "inner" => {
+                if let Some(arg) = args.first()
+                    && matches!(arg.mode, Mode::Ref | Mode::Mut | Mode::Shared)
+                    && self.is_value_ty(env, &first)
+                {
+                    let arg_span = self.ast(env.file).expr(arg.value).span;
+                    self.error(
+                        Code::E0401,
+                        arg_span,
+                        "value-type argument cannot carry live authority",
+                    );
                 }
-                Ty::Adt(adt) if adt.kind == AdtKind::Opaque && adt.defining_scope != env.scope => {
-                    self.error(Code::E0308, span, "opaque representation is sealed");
-                    Ty::Unknown
+                let is_draft = matches!(first, Ty::Draft(_));
+                let target = match &first {
+                    Ty::Draft(wrapped) => wrapped.as_ref(),
+                    other => other,
+                };
+                let inner_ty = match target {
+                    Ty::Adt(adt) if adt.kind == AdtKind::Foreign => {
+                        self.error(Code::E0907, span, "foreign representation is sealed");
+                        Ty::Unknown
+                    }
+                    Ty::Adt(adt)
+                        if adt.kind == AdtKind::Opaque && adt.defining_scope != env.scope =>
+                    {
+                        self.error(Code::E0308, span, "opaque representation is sealed");
+                        Ty::Unknown
+                    }
+                    Ty::Adt(adt) if matches!(adt.kind, AdtKind::Nominal | AdtKind::Opaque) => {
+                        self.representation(env, adt).unwrap_or(Ty::Unknown)
+                    }
+                    Ty::Unknown | Ty::Param(_) | Ty::Infer(_) => Ty::Unknown,
+                    _ => {
+                        self.error(Code::E0301, span, "inner requires a nominal wrapper");
+                        Ty::Unknown
+                    }
+                };
+                if is_draft && inner_ty != Ty::Unknown {
+                    Ty::Draft(Box::new(inner_ty))
+                } else {
+                    inner_ty
                 }
-                Ty::Adt(adt) if matches!(adt.kind, AdtKind::Nominal | AdtKind::Opaque) => {
-                    self.representation(env, adt).unwrap_or(Ty::Unknown)
-                }
-                Ty::Unknown | Ty::Param(_) | Ty::Infer(_) => Ty::Unknown,
-                _ => {
-                    self.error(Code::E0301, span, "inner requires a nominal wrapper");
-                    Ty::Unknown
-                }
-            },
+            }
             "fields" => {
                 let key = if let Ty::TypeValue(Some(ty)) = first {
                     match self.normalize(&ty) {

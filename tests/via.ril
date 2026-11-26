@@ -531,7 +531,7 @@ fn apply(node: Node) -> int {
     match node.next { Some(tail) -> apply(tail); None -> cell.count }
 }
 fn run() -> int {
-    apply(Node(.{ action: observe, next: Some(Node(.{ action: combine, next: None })) }))
+    apply(Node::(.{ action: observe, next: Some(Node::(.{ action: combine, next: None })) }))
     -- ^ E0520
 }
 
@@ -1346,3 +1346,29 @@ fn pick_match(via box: .{ via first: Cell, tag: int }, via fallback: Cell) -> in
         _ -> fallback
     }
 }
+
+-- @case via_on_value_backed_nominal_rejected compile-fail E0550
+type UserId(int)
+fn bad(via x: UserId) -> UserId { x }
+-- ^ E0550
+
+-- @case via_on_value_only_nominal_union_rejected compile-fail E0550
+type UserId(int)
+fn bad<T: int | UserId>(via x: T) -> T { x }
+-- ^ E0550
+
+-- @case opaque_value_to_shared_breaks_compatibility compat-fail E0552
+-- @baseline
+pub opaque type Token(int)
+pub fn make(x: int) -> Token { Token::(x) }
+-- @revision
+pub opaque type Token(.{ id: int })
+pub fn make(x: int) -> new Token { Token::(.{ id: x }) }
+
+-- @case opaque_value_to_value_preserves_compatibility compat-pass
+-- @baseline
+pub opaque type Token(int)
+pub fn make() -> Token { Token::(1) }
+-- @revision
+pub opaque type Token(str)
+pub fn make() -> Token { Token::("one") }

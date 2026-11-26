@@ -287,7 +287,7 @@ impl Parser<'_> {
     }
 
     fn argument(&mut self) -> Result<Argument> {
-        let name = if self.next_text() == ":" {
+        let name = if matches!(self.current().kind, Kind::Word(_)) && self.next_text() == ":" {
             let name = self.name(Some(Word::Value), false)?;
             self.require(":")?;
             self.skip_lines();
@@ -432,7 +432,29 @@ impl Parser<'_> {
                     })
                 }
                 Kind::Word(Word::Pascal | Word::Constant | Word::Value | Word::Primitive) => {
-                    Expr::Path(self.path(Angle::Expression, true)?)
+                    let path = self.path(Angle::Expression, true)?;
+                    if self.is("::") && self.next_text() == "(" {
+                        if !self.tight("::") {
+                            return Err(self.error(
+                                Code::E0120,
+                                self.current().span,
+                                "nominal wrap requires tightly attached '::('",
+                            ));
+                        }
+                        self.bump();
+                        if !self.tight("(") {
+                            return Err(self.error(
+                                Code::E0120,
+                                self.current().span,
+                                "nominal wrap requires tightly attached '::('",
+                            ));
+                        }
+                        self.open("(", ")", Layout::List)?;
+                        let args = self.list(")", Self::argument)?;
+                        Expr::Wrap { path, args }
+                    } else {
+                        Expr::Path(path)
+                    }
                 }
                 _ => return Err(self.unexpected("expected expression")),
             },

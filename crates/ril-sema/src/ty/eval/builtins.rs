@@ -93,13 +93,6 @@ impl Checker<'_> {
             ("panic", _) => Err(defect(span, "static evaluation panicked")),
             ("len", [Value::Array(items)]) => Ok(integer(items.len())),
             ("len", [Value::Map(items)]) => Ok(integer(items.len())),
-            ("len", [Value::Tag(tag, items)]) if tag == "Set" => {
-                if let [Value::Map(map)] = items.as_slice() {
-                    Ok(integer(map.len()))
-                } else {
-                    Err(nonstatic(span))
-                }
-            }
             ("len", [Value::Str(str)]) => Ok(integer(str.chars().count())),
             ("len", [Value::Bytes(bytes)]) => Ok(integer(bytes.len())),
             ("split", [Value::Str(text), Value::Str(separator)]) => Ok(Value::Array(
@@ -122,12 +115,7 @@ impl Checker<'_> {
                 span,
                 "clone requires a clonable shared object",
             )),
-            ("inner", [Value::Record(_)]) => Ok(args.pop().unwrap_or(Value::Unit)),
-            ("inner", [Value::Tag(_, values)]) if values.len() == 1 => {
-                values.first().cloned().ok_or_else(|| nonstatic(span))
-            }
-            ("inner", [Value::Tag(_, values)]) if values.is_empty() => Ok(Value::Unit),
-            ("inner", [Value::Tag(_, values)]) => Ok(Value::Tuple(values.clone())),
+            ("inner", [_]) => Ok(args.pop().unwrap_or(Value::Unit)),
             ("contains", [Value::Array(values), item]) => {
                 Ok(Value::Bool(values.iter().any(|v| ieee_equal(v, item))))
             }

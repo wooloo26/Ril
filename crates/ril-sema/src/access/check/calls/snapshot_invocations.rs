@@ -553,7 +553,7 @@ impl Analyzer<'_> {
             .any(|((_, mode, value), &span)| {
                 !value.roots.is_empty()
                     && (matches!(mode, Mode::New | Mode::Via)
-                        || can_supply_snapshot_callback(self.ty(span)))
+                        || can_supply_snapshot_callback(self.program, self.ty(span)))
             })
         {
             let mut receiver = ledger.snapshot(receiver);

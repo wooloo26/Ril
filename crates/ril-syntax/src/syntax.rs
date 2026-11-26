@@ -491,6 +491,10 @@ pub enum Expr {
         callee: ExprId,
         args: Vec<Argument>,
     },
+    Wrap {
+        path: Path,
+        args: Vec<Argument>,
+    },
     Record {
         name: Option<Path>,
         fields: Vec<ValueField>,
@@ -555,6 +559,7 @@ pub enum Pattern {
     },
     Rest(Option<Name>),
     Constructor(Path, Option<Vec<PatternId>>),
+    Wrap(Path, Vec<PatternId>),
     Record {
         fields: Vec<PatternField>,
         rest: bool,

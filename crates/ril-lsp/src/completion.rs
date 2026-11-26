@@ -245,7 +245,37 @@ fn try_namespace_completion(
     let file = typed.hir.files().find(|f| f.path == ws.entry_logical)?;
     let viewer = typed.hir.module_scope(file.id);
 
-    let target_scope = resolve_namespace_scope(&typed.hir, viewer, qual)?;
+    let Some(target_scope) = resolve_namespace_scope(&typed.hir, viewer, qual) else {
+        if !prefix.is_empty() {
+            return None;
+        }
+        // Offer nominal wrap snippet `Name::(...)` when typing `Name::` on a payload nominal/opaque type.
+        for scope in [viewer, typed.hir.prelude_scope()] {
+            for (name, res, vis) in typed.hir.scope_entries(scope) {
+                if name != qual || !typed.hir.is_visible(scope, viewer, vis) {
+                    continue;
+                }
+                if let Some(id) = res.definition() {
+                    let def = typed.hir.definition(id);
+                    if def.kind == DefinitionKind::Type && !typed.hir.unit_constructor(id) {
+                        let snippet = if typed.is_nominal_record(id) {
+                            "(.{ ${1} })"
+                        } else {
+                            "(${1})"
+                        };
+                        return Some(vec![json!({
+                            "label": format!("{name}::(...)"),
+                            "kind": 4,
+                            "detail": "nominal wrap",
+                            "insertText": snippet,
+                            "insertTextFormat": 2,
+                        })]);
+                    }
+                }
+            }
+        }
+        return None;
+    };
     let mut items = Vec::new();
     for (name, res, vis) in typed.hir.scope_entries(target_scope) {
         if !typed.hir.is_visible(target_scope, viewer, vis) {

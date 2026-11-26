@@ -241,36 +241,36 @@ impl Offer {
     }
 }
 
-fn can_supply_mode_callback(ty: &Ty) -> bool {
+fn can_supply_mode_callback(program: &TypedProgram, ty: &Ty) -> bool {
     can_supply_callback(
         ty,
-        |signature| !mode_axes(signature).is_empty(),
-        None,
+        &|signature| !mode_axes(program, signature).is_empty(),
+        Some(program),
         &mut BTreeSet::new(),
     )
 }
 
-pub(super) fn can_supply_snapshot_callback(ty: &Ty) -> bool {
+pub(super) fn can_supply_snapshot_callback(program: &TypedProgram, ty: &Ty) -> bool {
     can_supply_callback(
         ty,
-        |signature| {
+        &|signature| {
             signature.parameters.iter().any(|parameter| {
-                matches!(parameter.callable_mode(), Mode::New | Mode::Via)
-                    || can_supply_snapshot_callback(&parameter.ty)
+                matches!(program.parameter_callable_mode(parameter), Mode::New | Mode::Via)
+                    || can_supply_snapshot_callback(program, &parameter.ty)
             })
         },
-        None,
+        Some(program),
         &mut BTreeSet::new(),
     )
 }
 
 pub(super) fn carries_callable(program: &TypedProgram, ty: &Ty) -> bool {
-    can_supply_callback(ty, |_| true, Some(program), &mut BTreeSet::new())
+    can_supply_callback(ty, &|_| true, Some(program), &mut BTreeSet::new())
 }
 
 fn can_supply_callback(
     ty: &Ty,
-    accepts: fn(&Callable) -> bool,
+    accepts: &dyn Fn(&Callable) -> bool,
     program: Option<&TypedProgram>,
     active: &mut BTreeSet<ril_hir::DefinitionId>,
 ) -> bool {
@@ -318,7 +318,7 @@ impl Analyzer<'_> {
         if !ctx.reachable || ctx.shadow {
             return;
         }
-        let offers = self.mode_offers(mode_axes(signature), (values, spans));
+        let offers = self.mode_offers(mode_axes(self.program, signature), (values, spans));
         for root in &target.roots {
             let receiver = root.region.source;
             if root.region.selection.is_empty() && self.closure_modes.contains_key(&receiver) {
@@ -351,7 +351,7 @@ impl Analyzer<'_> {
                 if !signature
                     .parameters
                     .get(*position)
-                    .is_some_and(|param| param.callable_mode() == Mode::Via)
+                    .is_some_and(|param| self.program.parameter_callable_mode(param) == Mode::Via)
                 {
                     continue;
                 }
@@ -389,7 +389,7 @@ impl Analyzer<'_> {
             || !signature
                 .parameters
                 .iter()
-                .any(|param| can_supply_mode_callback(&param.ty))
+                .any(|param| can_supply_mode_callback(self.program, &param.ty))
         {
             return;
         }
@@ -413,7 +413,8 @@ impl Analyzer<'_> {
                     position: *index,
                     offers: Offer::of(*mode, value),
                     targets,
-                    callback_graph: can_supply_mode_callback(ty).then(|| value.clone()),
+                    callback_graph: can_supply_mode_callback(self.program, ty)
+                        .then(|| value.clone()),
                     dependencies: value.root_dependencies().collect(),
                     existing: value
                         .roots
@@ -430,7 +431,7 @@ impl Analyzer<'_> {
             })
             .collect();
         let modes = self
-            .mode_offers(mode_axes(signature), (values, spans))
+            .mode_offers(mode_axes(self.program, signature), (values, spans))
             .into_iter()
             .filter_map(|(axis, offers)| Some((axis_region(&axis, formals)?, offers)))
             .collect();
@@ -646,7 +647,7 @@ impl Analyzer<'_> {
                 } else {
                     self.program.callables.get(&self.definition(owner)?)?
                 };
-                Some((owner, domains::axes(signature, formals)))
+                Some((owner, domains::axes(self.program, signature, formals)))
             })
             .collect();
         let mut pending: VecDeque<_> = pending

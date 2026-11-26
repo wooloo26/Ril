@@ -9,9 +9,10 @@ use ril_source::{
 };
 
 use ril_syntax::syntax::{
-    Ast, Condition, Expr, ExprId, FieldTail, Function, GenericArg, GenericParam, Member, Name,
-    Obligations, Parameter, Path, Pattern, PatternId, Signature, StmtId, StmtKind, Storage,
-    StringPart, Transfer, Type, TypeDefinition, TypeId, TypeKind, Variant, Visibility,
+    Ast, Condition, Expr, ExprId, FieldTail, Function, GenericArg, GenericParam, Import,
+    ImportTarget, Member, Name, Obligations, Parameter, Path, Pattern, PatternId, Signature,
+    StmtId, StmtKind, Storage, StringPart, Transfer, Type, TypeDefinition, TypeId, TypeKind,
+    Variant, Visibility,
 };
 
 use super::{DefinitionId, DefinitionKind, Program, Resolution, ScopeId, Target};
@@ -55,7 +56,7 @@ pub(super) fn check(program: &mut Program, errors: &mut Vec<Diagnostic>) {
 struct Frame {
     bound: BTreeMap<String, DefinitionId>,
     future: BTreeMap<String, DefinitionId>,
-    variants: BTreeMap<String, Vec<DefinitionId>>,
+    imported: BTreeMap<String, Target>,
 }
 
 struct SignatureBarrier {
@@ -250,7 +251,12 @@ impl Walk<'_> {
                 }
             }
             StmtKind::Expr(expr) => self.expr(*expr),
-            StmtKind::Import(_) | StmtKind::Error => {}
+            StmtKind::Import(import) => {
+                if !self.frames.is_empty() {
+                    self.local_import(import);
+                }
+            }
+            StmtKind::Error => {}
         }
         self.exposure = previous;
     }
@@ -457,23 +463,14 @@ impl Walk<'_> {
             let Variant::Constructor { name, .. } = variant else {
                 continue;
             };
-            match self.program.register(
+            if let Err(error) = self.program.register(
                 namespace,
                 name.clone(),
                 DefinitionKind::Variant(sum),
                 item,
                 Visibility::Public,
             ) {
-                Ok(id) => {
-                    if let Some(frame) = self.frames.last_mut() {
-                        frame
-                            .variants
-                            .entry(name.value.clone())
-                            .or_default()
-                            .push(id);
-                    }
-                }
-                Err(error) => self.errors.push(error),
+                self.errors.push(error);
             }
         }
     }
@@ -571,6 +568,12 @@ impl Walk<'_> {
             }
             Expr::Call { callee, args } => {
                 self.expr(*callee);
+                for argument in args {
+                    self.expr(argument.value);
+                }
+            }
+            Expr::Wrap { path, args } => {
+                self.path(path);
                 for argument in args {
                     self.expr(argument.value);
                 }
@@ -964,6 +967,12 @@ impl Walk<'_> {
                     self.bind_pattern_in(arg, alias, seen);
                 }
             }
+            Pattern::Wrap(path, args) => {
+                self.path(path);
+                for &arg in args {
+                    self.bind_pattern_in(arg, alias, seen);
+                }
+            }
             Pattern::Record { fields, .. } => {
                 for field in fields {
                     self.storage(&field.storage);
@@ -1046,6 +1055,11 @@ impl Walk<'_> {
             }
             Pattern::Constructor(_, args) => {
                 for &arg in args.iter().flatten() {
+                    self.reserve_pattern_in(arg, seen);
+                }
+            }
+            Pattern::Wrap(_, args) => {
+                for &arg in args {
                     self.reserve_pattern_in(arg, seen);
                 }
             }
@@ -1140,6 +1154,145 @@ impl Walk<'_> {
         parent
     }
 
+    fn local_import(&mut self, import: &Import) {
+        let mut namespace = self.scope;
+        if let Some(parts) = &import.file {
+            let path: std::path::PathBuf = parts.iter().map(|name| name.value.as_str()).collect();
+            let anchor = parts
+                .first()
+                .unwrap_or_else(|| ril_source::ice!("empty import path"));
+            let filename = parts.last().unwrap_or(anchor);
+            let key = if anchor.value == "pkg" {
+                let mut key = std::path::PathBuf::from(&self.program.scope(self.scope).package);
+                key.extend(parts.iter().skip(1).map(|name| &name.value));
+                key
+            } else {
+                path.clone()
+            };
+            let Some(&scope) = self.program.modules.get(&key) else {
+                self.report(
+                    Code::E0208,
+                    filename.span,
+                    format!("missing module {}", path.display()),
+                );
+                return;
+            };
+            if self.program.scope(scope).package != self.program.scope(self.scope).package
+                && self.program.scope(scope).cap < Visibility::Public
+            {
+                self.report(Code::E0201, filename.span, "module has package visibility");
+                return;
+            }
+            namespace = scope;
+        }
+        for (index, part) in import.modules.iter().enumerate() {
+            if import.file.is_none() && part.value == "Super" {
+                let Some(parent) = self.super_scope(namespace, part) else {
+                    return;
+                };
+                namespace = parent;
+                continue;
+            }
+            let target = if import.file.is_none() && index == 0 {
+                let Some(target) = self.resolve_name(part) else {
+                    return;
+                };
+                target
+            } else {
+                match self
+                    .program
+                    .lookup(self.scope, namespace, part, Code::E0209)
+                {
+                    Ok(target) => target,
+                    Err(err) => {
+                        self.errors.push(err);
+                        return;
+                    }
+                }
+            };
+            let Some(next) = self.program.namespace(target) else {
+                self.report(Code::E0208, part.span, "import path does not name a module");
+                return;
+            };
+            namespace = next;
+        }
+        let mut entries: Vec<(Name, Target)> = Vec::new();
+        match &import.target {
+            ImportTarget::Module(alias) => {
+                let name = if let Some(alias) = alias {
+                    alias.clone()
+                } else if let Some(name) = import.modules.last() {
+                    name.clone()
+                } else if let Some(filename) = import.file.as_ref().and_then(|parts| parts.last()) {
+                    match super::collect::module_name(filename) {
+                        Ok(name) => name,
+                        Err(err) => {
+                            self.errors.push(err);
+                            return;
+                        }
+                    }
+                } else {
+                    return;
+                };
+                entries.push((name, Target::Module(namespace)));
+            }
+            ImportTarget::Items(items) => {
+                for (name, alias) in items {
+                    match self
+                        .program
+                        .lookup(self.scope, namespace, name, Code::E0209)
+                    {
+                        Ok(target) => {
+                            self.program.resolutions.insert(name.span, target.into());
+                            entries.push((alias.as_ref().unwrap_or(name).clone(), target));
+                        }
+                        Err(err) => self.errors.push(err),
+                    }
+                }
+            }
+            ImportTarget::Glob => {
+                let items: Vec<_> = self
+                    .program
+                    .scope(namespace)
+                    .names
+                    .iter()
+                    .filter(|(_, entry)| self.program.visible(namespace, self.scope, entry.visibility))
+                    .map(|(name, entry)| (name.clone(), entry.target))
+                    .collect();
+                let span = import
+                    .modules
+                    .last()
+                    .or_else(|| import.file.as_ref()?.last())
+                    .map_or(ril_source::span::Span::new(self.program.scope(self.scope).file, 0, 0), |n| n.span);
+                for (name, target) in items {
+                    entries.push((Name::new(name, span), target));
+                }
+            }
+        }
+        if let Some(frame) = self.frames.last_mut() {
+            for (name, target) in entries {
+                if frame.bound.contains_key(&name.value)
+                    || frame.imported.contains_key(&name.value)
+                {
+                    self.errors.push(Diagnostic::error(
+                        Code::E0203,
+                        name.span,
+                        format!("duplicate local binding {}", name.value),
+                    ));
+                    continue;
+                }
+                match target {
+                    Target::Def(def) => {
+                        frame.bound.insert(name.value, def);
+                    }
+                    other => {
+                        frame.imported.insert(name.value, other);
+                    }
+                }
+            }
+        }
+    }
+
     fn resolve_name(&mut self, name: &Name) -> Option<Target> {
         let mut uninitialized = None;
         for frame in self.frames.iter().rev() {
@@ -1148,14 +1301,9 @@ impl Walk<'_> {
                 self.record(name, target);
                 return Some(target);
             }
-            if let Some(variants) = frame.variants.get(&name.value) {
-                if let [id] = variants.as_slice() {
-                    let target = Target::Def(*id);
-                    self.record(name, target);
-                    return Some(target);
-                }
-                self.report(Code::E0206, name.span, "ambiguous local constructor");
-                return None;
+            if let Some(&target) = frame.imported.get(&name.value) {
+                self.record(name, target);
+                return Some(target);
             }
             uninitialized = uninitialized.or_else(|| frame.future.get(&name.value));
         }

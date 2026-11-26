@@ -13,7 +13,7 @@ fn main() -> () { let _ = shift(-1) }
 -- @expect-stdout second
 -- @expect-stdout first
 opaque type Resource(.{ message: str }) use(close)
-fn acquire(message: str) -> new Resource { Resource(.{ message }) }
+fn acquire(message: str) -> new Resource { Resource::(.{ message }) }
 fn close(new resource: Resource) @io -> () { println(resource.message) }
 fn main() @io -> () {
     use first = acquire("first")
@@ -25,7 +25,7 @@ fn main() @io -> () {
 opaque type Resource(.{ id: int }) use(close)
 fn close(new resource: Resource) @io -> () { println("cleanup") }
 fn main() @io -> () {
-    use resource = Resource(.{ id: 1 })
+    use resource = Resource::(.{ id: 1 })
     panic("failure")
 }
 
@@ -37,8 +37,8 @@ opaque type Resource(.{ message: str }) use(close)
 fn close(new resource: Resource) @Finalize -> () { Finalize::report(resource.message) }
 fn main() @io -> () {
     with Finalize::report = \message: str -> println(message)
-    use first = Resource(.{ message: "first" })
-    use second = Resource(.{ message: "second" })
+    use first = Resource::(.{ message: "first" })
+    use second = Resource::(.{ message: "second" })
     panic("failure")
 }
 
@@ -47,7 +47,7 @@ opaque type Bomb(.{ id: int }) use(detonate)
 fn detonate(new _b: Bomb) -> () { panic("second") }
 fn main() -> () {
     let outcome = absorb_panic \-> {
-        use _b = Bomb(.{ id: 1 })
+        use _b = Bomb::(.{ id: 1 })
         panic("first")
     }
     match outcome { Ok(_) -> (); Err(_) -> () }
@@ -217,8 +217,8 @@ fn main() @io -> () {
     }
     match sum() {
         Ok(_) -> println("success")
-        Err(First) -> println("first")
-        Err(Second) -> println("second")
+        Err(Basic::First) -> println("first")
+        Err(Extended::Second) -> println("second")
     }
 }
 
@@ -402,13 +402,13 @@ type Kind { Present(); Empty }
 fn main() -> () {
     let empty = derive(.{}) \mut _ -> ()
     let some = derive(Some()) \mut _ -> ()
-    let tagged = derive(Present()) \mut _ -> ()
-    assert(empty == .{} && some == Some(()) && tagged == Present(()))
+    let tagged = derive(Kind::Present()) \mut _ -> ()
+    assert(empty == .{} && some == Some(()) && tagged == Kind::Present(()))
     let option = Some
-    let variant = Present
+    let variant = Kind::Present
     assert(option(()) == some && variant(()) == tagged)
     let Some() = some else { panic("unit payload was lost") }
-    let Present() = tagged else { panic("unit payload was lost") }
+    let Kind::Present() = tagged else { panic("unit payload was lost") }
 }
 
 -- @case aborted_draft_dispatches_body_and_cleanup_effects run-panic "aborted draft" backend=both
@@ -423,7 +423,7 @@ fn main() @io -> () {
     let shared = [1, 7]
     let base = (shared, shared)
     let _ = derive(base) \mut draft -> {
-        use _finish = Event(.{ value: 8 })
+        use _finish = Event::(.{ value: 8 })
         Report::emit(5)
         Array::push(mut draft.0, 7)
         panic("aborted draft")
@@ -434,14 +434,14 @@ fn main() @io -> () {
 type Cell = .{ count: int }
 type Kind { Present(Cell); Empty }
 fn main() -> () {
-    let base = Present(Cell.{ count: 7 })
+    let base = Kind::Present(Cell.{ count: 7 })
     let updated = derive(base) \mut draft -> {
         match draft {
-            Present(mut payload) -> { payload.count = 8 }
-            Empty -> ()
+            Kind::Present(mut payload) -> { payload.count = 8 }
+            Kind::Empty -> ()
         }
     }
-    assert(base == Present(Cell.{ count: 7 }) && updated == Present(Cell.{ count: 8 }))
+    assert(base == Kind::Present(Cell.{ count: 7 }) && updated == Kind::Present(Cell.{ count: 8 }))
 }
 
 -- @case mutable_cleanup_changes_the_callers_resource run-pass backend=both
@@ -453,7 +453,7 @@ fn scope(mut handle: Handle) &mut -> () {
     assert(before == 41)
 }
 fn main() -> () {
-    let mut handle = Handle(.{ id: 41 })
+    let mut handle = Handle::(.{ id: 41 })
     scope(mut handle)
     assert(handle.id == 42)
 }
@@ -461,7 +461,7 @@ fn main() -> () {
 -- @case draft_inner_writes_nominal_tuple_coordinates run-pass backend=both
 type Pair(int, int)
 fn main() -> () {
-    let base = Pair(1, 2)
+    let base = Pair::(1, 2)
     let updated = derive(base) \mut draft -> {
         inner(mut draft).0 = 41
         (draft |> mut inner).1 += 1

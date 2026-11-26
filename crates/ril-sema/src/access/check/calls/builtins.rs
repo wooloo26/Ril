@@ -55,28 +55,7 @@ impl Analyzer<'_> {
                 return Datum::source(span, Access::Mut, true);
             }
             "inner" => {
-                let Some(value) = first else {
-                    return Datum::default();
-                };
-                if matches!(self.ty(span), Ty::Record(..)) {
-                    return value.clone();
-                }
-                if let Ty::Tuple(parts) = self.ty(span) {
-                    if args
-                        .iter()
-                        .any(|(index, mode, _)| *index == 0 && *mode == Mode::Mut)
-                    {
-                        return value.clone();
-                    }
-                    let mut tuple = Datum::source(span, Access::Mut, true);
-                    for index in 0..parts.len() {
-                        let coordinate = Coordinate::Index(index.to_string());
-                        let member = ledger.project(value, coordinate.clone(), Access::Immutable);
-                        tuple.members.insert(coordinate, member);
-                    }
-                    return tuple;
-                }
-                return ledger.project(value, Coordinate::Index("0".into()), Access::Mut);
+                return first.cloned().unwrap_or_default();
             }
             "derive" => {
                 if let Some((_, _, callback)) = args.iter().find(|(i, _, _)| *i == 1) {
@@ -159,7 +138,9 @@ impl Analyzer<'_> {
             }
             _ => {}
         }
-        if sig.is_some_and(|sig| sig.result_mode == Mode::New) && !self.ty(span).is_value() {
+        if sig.is_some_and(|sig| sig.result_mode == Mode::New)
+            && !self.program.is_value(self.ty(span))
+        {
             return Datum::source(span, Access::Mut, true);
         }
         self.snapshot_value(span)
@@ -462,7 +443,7 @@ impl Analyzer<'_> {
             }
             "send" | "try_send" => Datum::source(span, Access::Mut, true),
             _ if sig.is_some_and(|sig| sig.result_mode == Mode::New)
-                && !self.ty(span).is_value() =>
+                && !self.program.is_value(self.ty(span)) =>
             {
                 Datum::source(span, Access::Mut, true)
             }

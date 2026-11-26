@@ -91,14 +91,32 @@ impl Parser<'_> {
             _ => match self.current().kind {
                 Kind::Word(Word::Pascal) => {
                     let path = self.path(Angle::Type, false)?;
-                    if self.tight("(") {
+                    if self.is("::") && self.next_text() == "(" {
+                        if !self.tight("::") {
+                            return Err(self.error(
+                                Code::E0120,
+                                self.current().span,
+                                "nominal wrap pattern requires tightly attached '::('",
+                            ));
+                        }
+                        self.bump();
+                        if !self.tight("(") {
+                            return Err(self.error(
+                                Code::E0120,
+                                self.current().span,
+                                "nominal wrap pattern requires tightly attached '::('",
+                            ));
+                        }
+                        self.open("(", ")", Layout::List)?;
+                        Pattern::Wrap(path, self.list(")", |p| p.pattern(true))?)
+                    } else if self.tight("(") {
                         self.open("(", ")", Layout::List)?;
                         Pattern::Constructor(path, Some(self.list(")", |p| p.pattern(true))?))
                     } else if self.tight(".{") {
                         return Err(self.error(
                             Code::E0120,
                             self.current().span,
-                            "record patterns do not use 'Type.{ ... }'; write 'Type(.{ ... })' for nominal types or '.{ ... }' for records",
+                            "record patterns do not use 'Type.{ ... }'; write 'Type::(.{ ... })' for nominal types or '.{ ... }' for records",
                         ));
                     } else if self.eat("as") {
                         let ty = self.ast.add_ty(path.span, crate::syntax::Type::Named(path));

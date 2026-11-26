@@ -43,11 +43,29 @@ impl Checker<'_> {
                 Constructor("tuple".into(), parts)
             }
             Pattern::Constructor(path, parts) => {
-                let name = path.segments.last().map_or("", |s| s.name.value.as_str());
+                let name = self
+                    .resolve(path.span)
+                    .map(|id| self.hir.definition(id).name.value.as_str())
+                    .unwrap_or_else(|| path.segments.last().map_or("", |s| s.name.value.as_str()));
                 let payload = self.constructor_payload(env, input, name);
                 let typed = parts
                     .iter()
                     .flatten()
+                    .enumerate()
+                    .map(|(i, &id)| {
+                        self.pattern_shape(env, id, payload.get(i).unwrap_or(&Ty::Unknown))
+                    })
+                    .collect();
+                Constructor(name.into(), typed)
+            }
+            Pattern::Wrap(path, parts) => {
+                let name = self
+                    .resolve(path.span)
+                    .map(|id| self.hir.definition(id).name.value.as_str())
+                    .unwrap_or_else(|| path.segments.last().map_or("", |s| s.name.value.as_str()));
+                let payload = self.constructor_payload(env, input, name);
+                let typed = parts
+                    .iter()
                     .enumerate()
                     .map(|(i, &id)| {
                         self.pattern_shape(env, id, payload.get(i).unwrap_or(&Ty::Unknown))
