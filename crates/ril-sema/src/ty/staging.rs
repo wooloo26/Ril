@@ -280,11 +280,20 @@ impl TypedProgram {
                                 for &(pattern, guard) in &plan.arms {
                                     let mut local = caller.clone();
                                     let mut bindings = Default::default();
-                                    if !checker.value_pattern(&mut local, pattern, &val, &mut bindings) {
+                                    if !checker.value_pattern(
+                                        &mut local,
+                                        pattern,
+                                        &val,
+                                        &mut bindings,
+                                    ) {
                                         continue;
                                     }
                                     if let Some(guard) = guard {
-                                        match checker.evaluate_with_bindings(&local, guard, &mut bindings) {
+                                        match checker.evaluate_with_bindings(
+                                            &local,
+                                            guard,
+                                            &mut bindings,
+                                        ) {
                                             Ok(Value::Bool(true)) => break,
                                             Ok(Value::Bool(false)) => continue,
                                             Ok(_) | Err(Signal::Dependent(_)) => break,

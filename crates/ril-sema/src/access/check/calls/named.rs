@@ -241,8 +241,7 @@ impl<'program> Analyzer<'program> {
             self.program,
             self.hir_scope(ctx),
             self.ty(span),
-        )
-            || crate::access::check::higher_order::carries_callable(self.program, self.ty(span))
+        ) || crate::access::check::higher_order::carries_callable(self.program, self.ty(span))
         {
             self.function(fun, ledger);
             let entry = CallEntry {

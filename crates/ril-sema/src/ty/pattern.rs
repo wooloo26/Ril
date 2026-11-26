@@ -632,7 +632,8 @@ impl Checker<'_> {
                                 }
                                 Err(super::eval::Signal::Dependent(_)) => break,
                                 Err(failure) => {
-                                    let diag = failure.diagnostic(self.ast(env.file).expr(guard).span);
+                                    let diag =
+                                        failure.diagnostic(self.ast(env.file).expr(guard).span);
                                     self.diagnostics.push(diag);
                                     return Ty::Unknown;
                                 }
@@ -727,9 +728,9 @@ impl Checker<'_> {
     fn pattern_contains_type(&self, env: &Env, pattern: PatternId) -> bool {
         match &self.ast(env.file).pattern(pattern).value {
             Pattern::Type(_) | Pattern::TypeBinding(_) => true,
-            Pattern::Or(items) | Pattern::Tuple(items) | Pattern::Wrap(_, items) => {
-                items.iter().any(|&item| self.pattern_contains_type(env, item))
-            }
+            Pattern::Or(items) | Pattern::Tuple(items) | Pattern::Wrap(_, items) => items
+                .iter()
+                .any(|&item| self.pattern_contains_type(env, item)),
             _ => false,
         }
     }
@@ -775,7 +776,10 @@ impl Checker<'_> {
                     .resolve(path.span)
                     .map(|id| self.hir.definition(id).name.value.clone())
                     .or_else(|| path.segments.last().map(|s| s.name.value.clone()));
-                (false, tag.map_or_else(HashSet::new, |name| HashSet::from([name])))
+                (
+                    false,
+                    tag.map_or_else(HashSet::new, |name| HashSet::from([name])),
+                )
             }
             Pattern::Wrap(_, parts) if parts.iter().all(|&part| self.irrefutable(env, part)) => {
                 (true, HashSet::new())
@@ -1203,7 +1207,11 @@ impl Checker<'_> {
                 let expected = self
                     .resolve(path.span)
                     .map(|id| self.hir.definition(id).name.value.as_str())
-                    .or_else(|| path.segments.last().map(|segment| segment.name.value.as_str()));
+                    .or_else(|| {
+                        path.segments
+                            .last()
+                            .map(|segment| segment.name.value.as_str())
+                    });
                 expected == Some(tag.as_str())
                     && parts.as_ref().map_or(0, Vec::len) == values.len()
                     && parts.iter().flatten().zip(values).enumerate().all(

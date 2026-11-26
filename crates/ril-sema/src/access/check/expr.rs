@@ -376,9 +376,7 @@ impl Analyzer<'_> {
                 yes,
                 no,
             } => {
-                if *is_meta
-                    && let Some(&taken) = self.program.meta_if_decisions.get(&span)
-                {
+                if *is_meta && let Some(&taken) = self.program.meta_if_decisions.get(&span) {
                     if let Condition::Expr(test) = condition {
                         let _ = self.expr(ctx, ledger, *test);
                     }

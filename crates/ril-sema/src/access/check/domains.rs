@@ -509,9 +509,13 @@ impl Analyzer<'_> {
             .values()
             .filter(|domain| domain.local && !domain.is_empty())
             .flat_map(|domain| {
-                domain.axes.iter().enumerate().filter_map(|(axis_idx, (_, region))| {
-                    (domain.current.marginal_len(axis_idx) == 1).then_some(region.source)
-                })
+                domain
+                    .axes
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(axis_idx, (_, region))| {
+                        (domain.current.marginal_len(axis_idx) == 1).then_some(region.source)
+                    })
             })
             .collect();
         for span in redundant {

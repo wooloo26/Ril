@@ -636,11 +636,7 @@ impl Parser<'_> {
             let mut elements = self.list(")", |p| {
                 if matches!(p.text(), "@" | "&") {
                     return Err(p.error(
-                        if p.is("@") {
-                            Code::E0330
-                        } else {
-                            Code::E0331
-                        },
+                        if p.is("@") { Code::E0330 } else { Code::E0331 },
                         p.current().span,
                         "effect and state clauses cannot be used as data representations",
                     ));
@@ -694,7 +690,8 @@ impl Parser<'_> {
                         .into_iter()
                         .map(|(_, storage, ty)| (storage, ty))
                         .collect();
-                    self.ast.add_ty(full_span, crate::syntax::Type::Tuple(tuple))
+                    self.ast
+                        .add_ty(full_span, crate::syntax::Type::Tuple(tuple))
                 }
             };
             if matches!(self.text(), "@" | "&") {

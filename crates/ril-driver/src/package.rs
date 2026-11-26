@@ -205,10 +205,7 @@ fn resolve_dep_root(base_dir: &Path, raw: &Path) -> PathBuf {
     resolved
 }
 
-fn check_manifest_cycles(
-    root_dir: &Path,
-    root_manifest: &PackageManifest,
-) -> Result<(), String> {
+fn check_manifest_cycles(root_dir: &Path, root_manifest: &PackageManifest) -> Result<(), String> {
     fn dfs(
         dir: &Path,
         manifest: &PackageManifest,

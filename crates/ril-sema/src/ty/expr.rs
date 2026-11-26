@@ -291,21 +291,14 @@ impl Checker<'_> {
                                 self.diagnostics.push(diag);
                             }
                         }
-                    } else if let Condition::Binding {
-                        pattern, value, ..
-                    } = condition
-                    {
+                    } else if let Condition::Binding { pattern, value, .. } = condition {
                         let mut concrete = env.clone();
                         concrete.require_concrete_types = true;
                         match self.evaluate_static(&concrete, *value) {
                             Ok(val) => {
                                 let mut bindings = Default::default();
-                                let taken = self.value_pattern(
-                                    &mut yes_env,
-                                    *pattern,
-                                    &val,
-                                    &mut bindings,
-                                );
+                                let taken =
+                                    self.value_pattern(&mut yes_env, *pattern, &val, &mut bindings);
                                 self.meta_if_decisions.insert(span, taken);
                                 return if taken {
                                     let ty = self.expr(&mut yes_env, *yes, expected);

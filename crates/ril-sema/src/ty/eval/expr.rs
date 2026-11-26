@@ -184,10 +184,7 @@ impl Checker<'_> {
                 Ok(result)
             }
             Expr::If {
-                condition,
-                yes,
-                no,
-                ..
+                condition, yes, no, ..
             } => {
                 if self.eval_condition(env, slots, condition, fuel)? {
                     self.evaluate(env, slots, *yes, fuel)

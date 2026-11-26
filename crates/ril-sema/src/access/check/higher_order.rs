@@ -255,8 +255,10 @@ pub(super) fn can_supply_snapshot_callback(program: &TypedProgram, ty: &Ty) -> b
         ty,
         &|signature| {
             signature.parameters.iter().any(|parameter| {
-                matches!(program.parameter_callable_mode(parameter), Mode::New | Mode::Via)
-                    || can_supply_snapshot_callback(program, &parameter.ty)
+                matches!(
+                    program.parameter_callable_mode(parameter),
+                    Mode::New | Mode::Via
+                ) || can_supply_snapshot_callback(program, &parameter.ty)
             })
         },
         Some(program),

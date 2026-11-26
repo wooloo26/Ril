@@ -340,8 +340,8 @@ fn read_label(raw: str) -> new !<str, str> {
 
 ```ril
 type Res { Ok(int); Ready }
-let a = Ok(42)                         -- OK
-let b = Ready                          -- OK
+let a = Res::Ok(42)                    -- OK
+let b = Res::Ready                     -- OK
 -- let bad_tok = @                     -- Error [E0120]: unexpected token
 -- let bad_eof = 1 +                   -- Error [E0121]: unexpected EOF
 -- let bad_open = (1 + 2               -- Error [E0122]: unclosed '('
@@ -1675,13 +1675,13 @@ A block evaluates its statements top-to-bottom and yields its trailing expressio
 ```ril
 fn compute_tree() -> int {
     let base = 10
-    sum(Node(Leaf(1), Leaf(2)))         -- Returning 'Leaf(1)' from 'compute_tree' would fail E0315
+    sum(Tree::Node(Tree::Leaf(1), Tree::Leaf(2))) -- Returning 'Tree::Leaf(1)' from 'compute_tree' would fail E0315
 where
     type Tree { Leaf(int); Node(Tree, Tree) }
     fn sum(t: Tree) &up(base) -> int {
         match t {
-            Leaf(v)    -> v + base
-            Node(l, r) -> sum(l) + sum(r)
+            Tree::Leaf(v)    -> v + base
+            Tree::Node(l, r) -> sum(l) + sum(r)
         }
     }
 }
@@ -1692,7 +1692,7 @@ assert(compute_tree() == 23)
 -- Rejected block declaration and initialization orders:
 -- let bad_self = bad_self + 1         -- Error [E0207]: 'bad_self' used before initialization
 -- fn seq_fn() -> int { 1 }            -- Error [E0703]: move local 'fn' to trailing 'where' clause
--- let early = sum(Leaf(1))            -- Error [E0207]: 'sum' captures 'base' before 'base' is initialized
+-- let early = sum(Tree::Leaf(1))      -- Error [E0207]: 'sum' captures 'base' before 'base' is initialized
 -- where let bad_where_let = 1         -- Error [E0702]: value bindings are prohibited in 'where'
 -- where eff EscEff { fn ping() -> () } -- Unhandled EscEff::ping() in block fails E0618
 ```

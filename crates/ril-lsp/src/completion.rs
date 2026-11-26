@@ -281,7 +281,10 @@ fn try_namespace_completion(
         if !typed.hir.is_visible(target_scope, viewer, vis) {
             continue;
         }
-        if !prefix.is_empty() && !name.to_ascii_lowercase().starts_with(&prefix.to_ascii_lowercase())
+        if !prefix.is_empty()
+            && !name
+                .to_ascii_lowercase()
+                .starts_with(&prefix.to_ascii_lowercase())
         {
             continue;
         }
@@ -442,7 +445,11 @@ fn lexical_completions(state: &mut LspState, uri: &str, text: &str, offset: usiz
                 && def.name.span.start <= offset
                 && def.name.value != "_"
                 && (prefix_lower.is_empty()
-                    || def.name.value.to_ascii_lowercase().starts_with(&prefix_lower))
+                    || def
+                        .name
+                        .value
+                        .to_ascii_lowercase()
+                        .starts_with(&prefix_lower))
                 && seen.insert(def.name.value.clone())
             {
                 let detail = typed
@@ -502,7 +509,8 @@ fn lexical_completions(state: &mut LspState, uri: &str, text: &str, offset: usiz
 
     // 4. Keywords & snippets.
     for &(kw, snippet) in KEYWORDS {
-        if (prefix_lower.is_empty() || kw.starts_with(&prefix_lower)) && seen.insert(kw.to_owned()) {
+        if (prefix_lower.is_empty() || kw.starts_with(&prefix_lower)) && seen.insert(kw.to_owned())
+        {
             let is_snippet = snippet.contains('$');
             let mut item = json!({
                 "label": kw,
@@ -520,11 +528,7 @@ fn lexical_completions(state: &mut LspState, uri: &str, text: &str, offset: usiz
     items
 }
 
-fn completion_item_for_resolution(
-    typed: &TypedProgram,
-    name: &str,
-    res: Resolution,
-) -> Value {
+fn completion_item_for_resolution(typed: &TypedProgram, name: &str, res: Resolution) -> Value {
     match res {
         Resolution::Module(_) => json!({
             "label": name,

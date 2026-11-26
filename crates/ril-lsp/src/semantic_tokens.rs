@@ -84,7 +84,13 @@ pub(crate) fn compute_tokens_for_file(typed: &TypedProgram, file_id: FileId) -> 
     let mut mutable_defs: HashSet<DefinitionId> = HashSet::new();
     let mut tokens_by_start: BTreeMap<usize, RawToken> = BTreeMap::new();
 
-    collect_ast_roles(hir, file, &mut param_defs, &mut mutable_defs, &mut tokens_by_start);
+    collect_ast_roles(
+        hir,
+        file,
+        &mut param_defs,
+        &mut mutable_defs,
+        &mut tokens_by_start,
+    );
 
     // 1. Classify all declarations in this file.
     for (def_id, def) in hir.definitions() {

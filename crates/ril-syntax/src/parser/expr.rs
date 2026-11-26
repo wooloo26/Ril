@@ -470,11 +470,13 @@ impl Parser<'_> {
         self.continue_lines(|tok| tok == "else");
         let no = if self.eat("else") {
             self.skip_lines();
-            Some(if self.is("if") || (self.is("meta") && self.next_text() == "if") {
-                self.nested(|p| p.atom(context))?
-            } else {
-                self.block()?
-            })
+            Some(
+                if self.is("if") || (self.is("meta") && self.next_text() == "if") {
+                    self.nested(|p| p.atom(context))?
+                } else {
+                    self.block()?
+                },
+            )
         } else {
             None
         };

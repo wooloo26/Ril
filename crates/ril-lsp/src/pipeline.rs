@@ -150,7 +150,10 @@ pub(crate) fn extract_lhs_expr_bounds(text: &str, op_start: usize) -> Option<(us
             b';' | b',' if paren == 0 && bracket == 0 && brace == 0 => break,
             b'=' if paren == 0 && bracket == 0 && brace == 0 => {
                 // Stop on assignment `=`, `+=`, etc., but not `==` or `!=` or `<=` or `>=`.
-                let prev = i.checked_sub(2).and_then(|idx| bytes.get(idx).copied()).unwrap_or(0);
+                let prev = i
+                    .checked_sub(2)
+                    .and_then(|idx| bytes.get(idx).copied())
+                    .unwrap_or(0);
                 let next = bytes.get(i).copied().unwrap_or(0);
                 if matches!(prev, b'=' | b'!' | b'<' | b'>') || next == b'=' {
                     i -= 1;
@@ -190,7 +193,10 @@ pub(crate) fn extract_lhs_expr_bounds(text: &str, op_start: usize) -> Option<(us
                     let word_end = i;
                     let mut word_start = i;
                     while word_start > 0
-                        && bytes.get(word_start - 1).copied().is_some_and(is_ident_byte)
+                        && bytes
+                            .get(word_start - 1)
+                            .copied()
+                            .is_some_and(is_ident_byte)
                     {
                         word_start -= 1;
                     }
@@ -232,9 +238,15 @@ pub(crate) fn pipeline_completions(
     offset: usize,
     ctx: &PipelineContext,
 ) -> Vec<Value> {
-    let Some((typed, file_id, raw_lhs_ty)) =
-        resolve_lhs_type(state, uri, text, ctx.op_start, offset, ctx.lhs_start, ctx.lhs_end)
-    else {
+    let Some((typed, file_id, raw_lhs_ty)) = resolve_lhs_type(
+        state,
+        uri,
+        text,
+        ctx.op_start,
+        offset,
+        ctx.lhs_start,
+        ctx.lhs_end,
+    ) else {
         return Vec::new();
     };
 
@@ -362,11 +374,7 @@ pub(crate) fn resolve_lhs_type(
 
     // Fallback to cached best_typed on original text.
     let (ws, typed) = state.best_typed(uri)?;
-    let file_id = typed
-        .hir
-        .files()
-        .find(|f| f.path == ws.entry_logical)?
-        .id;
+    let file_id = typed.hir.files().find(|f| f.path == ws.entry_logical)?.id;
     let ty = crate::analysis::lookup_expr_type_near(&typed, file_id, lhs_start, lhs_end)?;
     Some((typed, file_id, ty))
 }
@@ -445,8 +453,12 @@ fn collect_pipe_candidates(
             }
         }
         if !prefix.is_empty()
-            && !short_name.to_ascii_lowercase().contains(&prefix.to_ascii_lowercase())
-            && !call_path.to_ascii_lowercase().contains(&prefix.to_ascii_lowercase())
+            && !short_name
+                .to_ascii_lowercase()
+                .contains(&prefix.to_ascii_lowercase())
+            && !call_path
+                .to_ascii_lowercase()
+                .contains(&prefix.to_ascii_lowercase())
         {
             return;
         }
@@ -555,7 +567,11 @@ fn collect_pipe_candidates(
     }
 
     // Sort descending by score, then alphabetically by call_path.
-    candidates.sort_by(|a, b| b.score.cmp(&a.score).then_with(|| a.call_path.cmp(&b.call_path)));
+    candidates.sort_by(|a, b| {
+        b.score
+            .cmp(&a.score)
+            .then_with(|| a.call_path.cmp(&b.call_path))
+    });
 
     let insert_import_line = import_insert_line(source_text);
 
@@ -726,10 +742,7 @@ fn format_pipe_signature(
             .map(|(i, p)| {
                 let spec_ty = p.ty.specialize(&cand.subst);
                 let mode_str = mode_prefix_str(p.mode);
-                let name = p
-                    .label
-                    .clone()
-                    .unwrap_or_else(|| format!("arg{}", i + 2));
+                let name = p.label.clone().unwrap_or_else(|| format!("arg{}", i + 2));
                 let placeholder = if mode_str.is_empty() {
                     name.clone()
                 } else {
@@ -747,9 +760,10 @@ fn format_pipe_signature(
         let full_ty = Ty::Callable(callable.clone())
             .display(&typed.hir)
             .to_string();
-        let full_sig = full_ty
-            .strip_prefix("fn")
-            .map_or_else(|| full_ty.clone(), |rest| format!("fn {}{rest}", cand.call_path));
+        let full_sig = full_ty.strip_prefix("fn").map_or_else(
+            || full_ty.clone(),
+            |rest| format!("fn {}{rest}", cand.call_path),
+        );
         return (remaining, ret_display, full_sig);
     }
 
@@ -768,9 +782,11 @@ fn format_pipe_signature(
                     .as_ref()
                     .map_or_else(|| format!("arg{}", i + 2), |n| n.value.clone());
                 let mode_str = mode_prefix_str(p.mode);
-                let ty_text = p
-                    .ty
-                    .and_then(|t| file.source_text().get(file.ast.ty(t).span.start..file.ast.ty(t).span.end))
+                let ty_text =
+                    p.ty.and_then(|t| {
+                        file.source_text()
+                            .get(file.ast.ty(t).span.start..file.ast.ty(t).span.end)
+                    })
                     .unwrap_or("_");
                 ParamBrief {
                     snippet_placeholder: if mode_str.is_empty() {
@@ -878,10 +894,7 @@ fn check_generic_bounds_for_subst(
             }
         }
         for guard in &gp.guards {
-            let guard_name = guard
-                .segments
-                .last()
-                .map_or("", |s| s.name.value.as_str());
+            let guard_name = guard.segments.last().map_or("", |s| s.name.value.as_str());
             if !satisfies_known_guard(guard_name, actual, typed) {
                 return false;
             }
@@ -905,7 +918,12 @@ fn match_ast_first_param(
             if let Some(gp) = fun.generics.iter().find(|g| g.name.value == name) {
                 if !gp.bound.is_empty() {
                     let ok = gp.bound.iter().any(|&b_id| {
-                        ast_type_matches_concrete(file, &file.ast.ty(b_id).value, lhs_ty, &typed.hir)
+                        ast_type_matches_concrete(
+                            file,
+                            &file.ast.ty(b_id).value,
+                            lhs_ty,
+                            &typed.hir,
+                        )
                     });
                     return ok.then_some(70);
                 }
@@ -947,10 +965,7 @@ fn ast_type_matches_concrete(
     match ast_ty {
         AstType::Unit => matches!(actual, Ty::Unit),
         AstType::Named(path) => {
-            let name = path
-                .segments
-                .last()
-                .map_or("", |s| s.name.value.as_str());
+            let name = path.segments.last().map_or("", |s| s.name.value.as_str());
             match name {
                 "bool" => matches!(actual, Ty::Bool),
                 "int" => matches!(actual, Ty::Int),
@@ -1154,10 +1169,7 @@ pub(crate) fn callable_params_for_sig_help(
             .enumerate()
             .map(|(i, p)| {
                 let mode = mode_prefix_str(p.mode);
-                let name = p
-                    .label
-                    .clone()
-                    .unwrap_or_else(|| format!("arg{}", i + 1));
+                let name = p.label.clone().unwrap_or_else(|| format!("arg{}", i + 1));
                 format!("{mode}{name}: {}", p.ty.display(&typed.hir))
             })
             .collect();
@@ -1169,9 +1181,10 @@ pub(crate) fn callable_params_for_sig_help(
         let full = Ty::Callable(callable.clone())
             .display(&typed.hir)
             .to_string();
-        let label = full
-            .strip_prefix("fn")
-            .map_or_else(|| full.clone(), |rest| format!("fn {}{rest}", def.name.value));
+        let label = full.strip_prefix("fn").map_or_else(
+            || full.clone(),
+            |rest| format!("fn {}{rest}", def.name.value),
+        );
         return Some((label, params, ret));
     }
     let (file, fun) = ast_function_for(&typed.hir, def_id)?;
@@ -1186,9 +1199,8 @@ pub(crate) fn callable_params_for_sig_help(
                 .name
                 .as_ref()
                 .map_or_else(|| format!("arg{}", i + 1), |n| n.value.clone());
-            let ty_text = p
-                .ty
-                .and_then(|t| {
+            let ty_text =
+                p.ty.and_then(|t| {
                     file.source_text()
                         .get(file.ast.ty(t).span.start..file.ast.ty(t).span.end)
                 })

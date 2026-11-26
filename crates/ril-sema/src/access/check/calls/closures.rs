@@ -211,7 +211,11 @@ impl Analyzer<'_> {
                     .and_then(|id| self.program.bindings.get(&id));
                 let is_value = param_ty.is_some_and(|ty| self.program.is_value(ty));
                 if p.mode == Mode::New && is_value {
-                    self.error(Code::E0411, name.span, "new parameter requires a shared object");
+                    self.error(
+                        Code::E0411,
+                        name.span,
+                        "new parameter requires a shared object",
+                    );
                 }
                 let mut value = if is_value {
                     Datum::default()

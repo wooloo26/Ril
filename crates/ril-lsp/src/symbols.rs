@@ -3,11 +3,7 @@ use ril_source::span::FileId;
 use ril_syntax::syntax::{Pattern, StmtId, StmtKind, TypeDefinition, Variant};
 use serde_json::{Value, json};
 
-use crate::{
-    analysis::LspState,
-    protocol::span_to_file_range,
-    workspace::logical_path_to_uri,
-};
+use crate::{analysis::LspState, protocol::span_to_file_range, workspace::logical_path_to_uri};
 
 pub(crate) fn document_symbols(state: &mut LspState, params: &Value) -> Value {
     let Some(uri) = params.pointer("/textDocument/uri").and_then(Value::as_str) else {

@@ -315,7 +315,8 @@ impl Compiler {
                 })
                 .collect();
         }
-        if !had_syntax_errors && diagnostics.is_empty()
+        if !had_syntax_errors
+            && diagnostics.is_empty()
             && let Err(access_diags) = access::check(&typed)
         {
             diagnostics.extend(access_diags);

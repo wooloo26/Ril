@@ -28,13 +28,19 @@ use std::{
     path::PathBuf,
 };
 
-use ril_source::{diag::Severity, span::{FileId, SourceFile}};
+use ril_source::{
+    diag::Severity,
+    span::{FileId, SourceFile},
+};
 use ril_syntax::{fmt, parser::FileKind};
 use serde_json::{Value, json};
 
 use crate::{
     analysis::LspState,
-    protocol::{read_message, span_to_lsp_range, uri_to_fs_path, uri_to_logical_path, write_message, zero_range},
+    protocol::{
+        read_message, span_to_lsp_range, uri_to_fs_path, uri_to_logical_path, write_message,
+        zero_range,
+    },
 };
 
 /// Runs the LSP server over standard input / standard output.
@@ -287,12 +293,18 @@ pub fn handle_session<R: BufRead, W: Write>(mut reader: R, mut writer: W) -> Res
 }
 
 fn apply_config(state: &mut LspState, opts: &Value) {
-    if let Some(v) = opts.pointer("/completion/dotToPipe").and_then(Value::as_bool) {
+    if let Some(v) = opts
+        .pointer("/completion/dotToPipe")
+        .and_then(Value::as_bool)
+    {
         state.config.dot_to_pipe = v;
     } else if let Some(v) = opts.get("dotToPipe").and_then(Value::as_bool) {
         state.config.dot_to_pipe = v;
     }
-    if let Some(v) = opts.pointer("/completion/autoImport").and_then(Value::as_bool) {
+    if let Some(v) = opts
+        .pointer("/completion/autoImport")
+        .and_then(Value::as_bool)
+    {
         state.config.auto_import = v;
     } else if let Some(v) = opts.get("autoImport").and_then(Value::as_bool) {
         state.config.auto_import = v;

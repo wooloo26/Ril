@@ -81,7 +81,9 @@ impl Analyzer<'_> {
                     let mut ty = self.ty(origin.region.source).clone();
                     for step in &origin.region.selection {
                         let member = self.schema_member(&ty, step);
-                        let mode = member.as_ref().map_or(Mode::Plain, |member| member.mode.mode);
+                        let mode = member
+                            .as_ref()
+                            .map_or(Mode::Plain, |member| member.mode.mode);
                         value = callback_ledger.project_schema(&value, step.clone(), mode);
                         ty = member.map_or(Ty::Unknown, |member| member.ty);
                     }
@@ -126,7 +128,9 @@ impl Analyzer<'_> {
                         let mut ty = self.ty(argument_span).clone();
                         for coordinate in &origin.region.selection {
                             let member = self.schema_member(&ty, coordinate);
-                            let mode = member.as_ref().map_or(Mode::Plain, |member| member.mode.mode);
+                            let mode = member
+                                .as_ref()
+                                .map_or(Mode::Plain, |member| member.mode.mode);
                             actual = entry
                                 .ledger
                                 .project_schema(&actual, coordinate.clone(), mode);

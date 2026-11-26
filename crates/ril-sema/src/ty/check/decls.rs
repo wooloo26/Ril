@@ -368,9 +368,7 @@ impl Checker<'_> {
                             if matches!(representation, Ty::Record(..)) {
                                 self.record_adts.insert(id);
                             }
-                            if decl.cleanup.is_some()
-                                && self.is_value_ty(&local, &representation)
-                            {
+                            if decl.cleanup.is_some() && self.is_value_ty(&local, &representation) {
                                 self.error(
                                     Code::E0541,
                                     decl.name.span,
@@ -408,8 +406,7 @@ impl Checker<'_> {
                     }
                     TypeDefinition::Opaque => {
                         if decl.kind == ril_syntax::syntax::TypeKind::Nominal
-                            && self.hir.file(env.file).kind
-                                != ril_syntax::parser::FileKind::Foreign
+                            && self.hir.file(env.file).kind != ril_syntax::parser::FileKind::Foreign
                             && let Some(id) = self.resolve(decl.name.span)
                         {
                             self.nominal_layouts.insert(id, Ty::Unit);

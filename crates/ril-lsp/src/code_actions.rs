@@ -56,7 +56,8 @@ pub(crate) fn code_actions(state: &LspState, params: &Value) -> Value {
 
         // Quick-fix 2: Missing call-site mode marker (`mut`, `ref`, `^mut`).
         if let Some(start_pos) = diag.pointer("/range/start") {
-            let suggested_mode = if msg.contains("requires `mut`") || msg.contains("expected `mut`") {
+            let suggested_mode = if msg.contains("requires `mut`") || msg.contains("expected `mut`")
+            {
                 Some("mut")
             } else if msg.contains("requires `ref`") || msg.contains("expected `ref`") {
                 Some("ref")

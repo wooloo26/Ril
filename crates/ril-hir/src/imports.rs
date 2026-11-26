@@ -90,7 +90,9 @@ impl Program {
                                 errors.push(Diagnostic::error(
                                     Code::E0208,
                                     *span,
-                                    format!("cyclic package dependency involving {node} and {next}"),
+                                    format!(
+                                        "cyclic package dependency involving {node} and {next}"
+                                    ),
                                 ));
                             }
                         }
@@ -183,7 +185,8 @@ impl Program {
                 })?;
             }
         }
-        if namespace == scope || (import.file.is_some() && self.is_same_or_ancestor(namespace, scope))
+        if namespace == scope
+            || (import.file.is_some() && self.is_same_or_ancestor(namespace, scope))
         {
             return Err(Diagnostic::error(
                 Code::E0208,

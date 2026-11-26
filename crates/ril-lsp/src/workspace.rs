@@ -62,8 +62,8 @@ pub(crate) fn detect_std_file(fs_path: &Path) -> Option<(PathBuf, &'static str)>
         return None;
     }
     let repo_root = parent.parent()?;
-    let looks_like_std_repo = parent.join("prelude.ril").is_file()
-        || repo_root.join("crates").join("ril-hir").is_dir();
+    let looks_like_std_repo =
+        parent.join("prelude.ril").is_file() || repo_root.join("crates").join("ril-hir").is_dir();
     looks_like_std_repo.then(|| (parent.to_path_buf(), stem))
 }
 

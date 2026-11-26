@@ -606,9 +606,11 @@ impl Builder<'_, '_> {
                 .get(&span)
                 .map(|&idx| (idx, std::collections::BTreeMap::new()))
                 .or_else(|| {
-                    self.global
-                        .typed
-                        .static_selected_arm_with_bindings(span, &self.statics, &self.types)
+                    self.global.typed.static_selected_arm_with_bindings(
+                        span,
+                        &self.statics,
+                        &self.types,
+                    )
                 });
             if let Some((index, bound_types)) = chosen
                 && let Some(arm) = arms.get(index)

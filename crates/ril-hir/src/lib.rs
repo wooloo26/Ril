@@ -501,7 +501,13 @@ impl Program {
         self.scope(scope)
             .names
             .iter()
-            .map(|(name, entry)| (name.clone(), Resolution::from(entry.target), entry.visibility))
+            .map(|(name, entry)| {
+                (
+                    name.clone(),
+                    Resolution::from(entry.target),
+                    entry.visibility,
+                )
+            })
             .collect()
     }
 

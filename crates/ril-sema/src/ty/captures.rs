@@ -615,10 +615,7 @@ fn walk_expr(
             }
         }
         Expr::If {
-            condition,
-            yes,
-            no,
-            ..
+            condition, yes, no, ..
         } => {
             walk_condition(
                 hir,

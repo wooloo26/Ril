@@ -42,7 +42,10 @@ impl LspState {
     }
 
     /// Runs best-effort partial analysis for `uri` and refreshes `latest_typed` / `last_good_typed`.
-    pub(crate) fn refresh_document(&mut self, uri: &str) -> Option<(WorkspacePackage, PartialAnalysis)> {
+    pub(crate) fn refresh_document(
+        &mut self,
+        uri: &str,
+    ) -> Option<(WorkspacePackage, PartialAnalysis)> {
         let ws = self.build_package(uri)?;
         let partial = self.compiler.analyze_partial(&ws.pkg);
         let entry = self.cache.entry(uri.to_owned()).or_default();
@@ -57,7 +60,10 @@ impl LspState {
 
     /// Returns the best available `TypedProgram` for `uri`, preferring `latest_typed`
     /// and falling back to fresh partial analysis or `last_good_typed`.
-    pub(crate) fn best_typed(&mut self, uri: &str) -> Option<(WorkspacePackage, Arc<TypedProgram>)> {
+    pub(crate) fn best_typed(
+        &mut self,
+        uri: &str,
+    ) -> Option<(WorkspacePackage, Arc<TypedProgram>)> {
         let ws = self.build_package(uri)?;
         if let Some(cached) = self.cache.get(uri)
             && let Some(ref typed) = cached.latest_typed

@@ -285,7 +285,14 @@ impl CollectionTraversal {
         if !collections.iter().any(|item| ledger.result_pending(item)) {
             return None;
         }
-        *child = receive_results(program, scope, ledger, element, std::mem::take(child), binder);
+        *child = receive_results(
+            program,
+            scope,
+            ledger,
+            element,
+            std::mem::take(child),
+            binder,
+        );
         let samples = child.results();
         ledger.register_result_samples(&samples, &collections);
         let covered = collection.guaranteed_collection_result(&ledger.choices);

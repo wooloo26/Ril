@@ -103,7 +103,11 @@ pub(crate) fn uri_to_logical_path(uri: &str) -> PathBuf {
 }
 
 /// Converts a 0-based LSP `(line, utf16_col)` position to a byte offset in `text`.
-pub(crate) fn line_col_to_offset(text: &str, target_line: usize, target_col: usize) -> Option<usize> {
+pub(crate) fn line_col_to_offset(
+    text: &str,
+    target_line: usize,
+    target_col: usize,
+) -> Option<usize> {
     let mut line = 0usize;
     let mut col = 0usize;
     for (idx, ch) in text.char_indices() {

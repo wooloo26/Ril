@@ -87,7 +87,9 @@ impl Analyzer<'_> {
                     _ => {}
                 }
                 if let Some(ty) = self.program.bindings.get(&binding) {
-                    if self.program.is_value(ty) && matches!(mode, Mode::Mut | Mode::Shared | Mode::Ref) {
+                    if self.program.is_value(ty)
+                        && matches!(mode, Mode::Mut | Mode::Shared | Mode::Ref)
+                    {
                         self.error(
                             Code::E0402,
                             name.span,
@@ -424,17 +426,19 @@ impl Analyzer<'_> {
             | Pattern::Slice {
                 elements: items, ..
             }
-            | Pattern::Or(items) => {
-                items.iter().any(|&item| Self::pattern_has_binding(ast, item))
-            }
+            | Pattern::Or(items) => items
+                .iter()
+                .any(|&item| Self::pattern_has_binding(ast, item)),
             Pattern::Constructor(_, payload) => payload
                 .as_deref()
                 .unwrap_or(&[])
                 .iter()
                 .any(|&item| Self::pattern_has_binding(ast, item)),
-            Pattern::Record { fields, .. } => fields
-                .iter()
-                .any(|field| field.pattern.is_none_or(|p| Self::pattern_has_binding(ast, p))),
+            Pattern::Record { fields, .. } => fields.iter().any(|field| {
+                field
+                    .pattern
+                    .is_none_or(|p| Self::pattern_has_binding(ast, p))
+            }),
             Pattern::Subset { binding, .. } => {
                 binding.is_some_and(|p| Self::pattern_has_binding(ast, p))
             }

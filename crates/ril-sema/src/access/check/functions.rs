@@ -98,11 +98,7 @@ impl Analyzer<'_> {
                             .any(|(_, id)| id == def_id)
                     });
                 if !used {
-                    self.error(
-                        Code::E0550,
-                        span,
-                        "via is redundant on an unused parameter",
-                    );
+                    self.error(Code::E0550, span, "via is redundant on an unused parameter");
                 }
             }
             if param.mode == Mode::New && self.program.is_value(&param.ty) {

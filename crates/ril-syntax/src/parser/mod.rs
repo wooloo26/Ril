@@ -387,10 +387,7 @@ impl Parser<'_> {
             }
             if self.current().kind == Kind::Newline {
                 let mut look = self.pos;
-                while matches!(
-                    self.tokens.get(look).map(|t| t.kind),
-                    Some(Kind::Newline)
-                ) {
+                while matches!(self.tokens.get(look).map(|t| t.kind), Some(Kind::Newline)) {
                     look += 1;
                 }
                 if self.tokens.get(look).map(|t| t.text(self.file)) == Some("::")

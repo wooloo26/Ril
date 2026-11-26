@@ -95,7 +95,11 @@ pub(crate) fn render_definition_hover(typed: &TypedProgram, id: DefinitionId) ->
             DefinitionKind::Local => "",
             _ => "",
         };
-        format!("{kind_prefix}{}: {}", def.name.value, ty.display(&typed.hir))
+        format!(
+            "{kind_prefix}{}: {}",
+            def.name.value,
+            ty.display(&typed.hir)
+        )
     } else if def.name.span.file != FileId::BUILTIN
         && let Some(stmt) = def.stmt
     {
@@ -209,16 +213,15 @@ pub(crate) fn signature_help(state: &mut LspState, params: &Value) -> Option<Val
     let def_id = typed
         .hir
         .resolutions()
-        .filter(|(span, _)| span.file == file.id && probe_pos >= span.start && probe_pos <= span.end)
+        .filter(|(span, _)| {
+            span.file == file.id && probe_pos >= span.start && probe_pos <= span.end
+        })
         .min_by_key(|(span, _)| span.end.saturating_sub(span.start))
         .and_then(|(_, res)| res.definition())
         .or_else(|| resolve_callee_by_name(&typed.hir, viewer, callee_path))?;
 
     let (label, param_labels, _ret) = callable_params_for_sig_help(&typed, def_id)?;
-    let parameters_json: Vec<Value> = param_labels
-        .iter()
-        .map(|p| json!({ "label": p }))
-        .collect();
+    let parameters_json: Vec<Value> = param_labels.iter().map(|p| json!({ "label": p })).collect();
     let clamped_active = if parameters_json.is_empty() {
         0
     } else {

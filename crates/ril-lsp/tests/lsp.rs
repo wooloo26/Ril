@@ -539,7 +539,9 @@ fn demo() -> () {
         "method": "textDocument/signatureHelp",
         "params": { "textDocument": { "uri": uri }, "position": { "line": 11, "character": 32 } }
     })));
-    input.extend(frame_lsp(&json!({ "jsonrpc": "2.0", "id": 8, "method": "shutdown", "params": null })));
+    input.extend(frame_lsp(
+        &json!({ "jsonrpc": "2.0", "id": 8, "method": "shutdown", "params": null }),
+    ));
     input.extend(frame_lsp(&json!({ "jsonrpc": "2.0", "method": "exit" })));
 
     let mut output = Vec::new();
@@ -568,7 +570,9 @@ fn demo() -> () {
         "expected Array::map, mut Array::push, len for []int pipeline, got: {nums_labels:?}"
     );
     assert!(
-        !nums_labels.iter().any(|l| l == "String::split" || l == "double_int"),
+        !nums_labels
+            .iter()
+            .any(|l| l == "String::split" || l == "double_int"),
         "should not recommend incompatible String::split/double_int for []int: {nums_labels:?}"
     );
 
@@ -665,7 +669,9 @@ fn main() -> () {
 ";
 
     let mut input = Vec::new();
-    input.extend(frame_lsp(&json!({ "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {} })));
+    input.extend(frame_lsp(
+        &json!({ "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {} }),
+    ));
     input.extend(frame_lsp(&json!({
         "jsonrpc": "2.0",
         "method": "textDocument/didOpen",
@@ -742,7 +748,9 @@ fn main() -> () {
             }
         }
     })));
-    input.extend(frame_lsp(&json!({ "jsonrpc": "2.0", "id": 9, "method": "shutdown", "params": null })));
+    input.extend(frame_lsp(
+        &json!({ "jsonrpc": "2.0", "id": 9, "method": "shutdown", "params": null }),
+    ));
     input.extend(frame_lsp(&json!({ "jsonrpc": "2.0", "method": "exit" })));
 
     let mut output = Vec::new();
@@ -759,7 +767,10 @@ fn main() -> () {
     let has_param_token = sem_data
         .chunks_exact(5)
         .any(|c| c.get(3).and_then(Value::as_u64) == Some(4));
-    assert!(has_param_token, "expected parameter semantic token (type=4)");
+    assert!(
+        has_param_token,
+        "expected parameter semantic token (type=4)"
+    );
 
     // Hover includes doc comment
     let hover_val = frames
@@ -778,7 +789,10 @@ fn main() -> () {
         .and_then(|v| v.get("result"))
         .and_then(Value::as_array)
         .ok_or("missing references")?;
-    assert!(refs.len() >= 2, "expected >= 2 references for inc, got: {refs:?}");
+    assert!(
+        refs.len() >= 2,
+        "expected >= 2 references for inc, got: {refs:?}"
+    );
 
     // Rename produces edits at both declaration and call site
     let rename_edits = frames
@@ -787,7 +801,11 @@ fn main() -> () {
         .and_then(|c| c.get(uri))
         .and_then(Value::as_array)
         .ok_or("missing rename edits")?;
-    assert_eq!(rename_edits.len(), 2, "expected 2 rename edits: {rename_edits:?}");
+    assert_eq!(
+        rename_edits.len(),
+        2,
+        "expected 2 rename edits: {rename_edits:?}"
+    );
 
     // Document symbols contain `inc` and `main`
     let syms = frames

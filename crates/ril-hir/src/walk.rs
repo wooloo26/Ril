@@ -608,10 +608,7 @@ impl Walk<'_> {
             }
             Expr::Quote(ty) => self.ty(*ty),
             Expr::If {
-                condition,
-                yes,
-                no,
-                ..
+                condition, yes, no, ..
             } => {
                 self.condition(condition, *yes);
                 if let Some(no) = no {
@@ -1277,7 +1274,9 @@ impl Walk<'_> {
                     .iter()
                     .filter(|(_, entry)| {
                         self.program.namespace(entry.target) != Some(self.scope)
-                            && self.program.visible(namespace, self.scope, entry.visibility)
+                            && self
+                                .program
+                                .visible(namespace, self.scope, entry.visibility)
                     })
                     .map(|(name, entry)| (name.clone(), entry.target))
                     .collect();
@@ -1285,7 +1284,10 @@ impl Walk<'_> {
                     .modules
                     .last()
                     .or_else(|| import.file.as_ref()?.last())
-                    .map_or(ril_source::span::Span::new(self.program.scope(self.scope).file, 0, 0), |n| n.span);
+                    .map_or(
+                        ril_source::span::Span::new(self.program.scope(self.scope).file, 0, 0),
+                        |n| n.span,
+                    );
                 for (name, target) in items {
                     entries.push((Name::new(name, span), target));
                 }
@@ -1293,8 +1295,7 @@ impl Walk<'_> {
         }
         if let Some(frame) = self.frames.last_mut() {
             for (name, target) in entries {
-                if frame.bound.contains_key(&name.value)
-                    || frame.imported.contains_key(&name.value)
+                if frame.bound.contains_key(&name.value) || frame.imported.contains_key(&name.value)
                 {
                     self.errors.push(Diagnostic::error(
                         Code::E0203,
