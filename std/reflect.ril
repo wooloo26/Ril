@@ -115,7 +115,8 @@ pub meta fn sum_tags<T>(target: Type<T>) -> []str
 --
 -- ```ril
 -- type Doc(str)
--- @Doc("user") type User(.{ id: int })
+-- meta(Doc::("user"))
+-- type User(.{ id: int })
 -- meta let DOCS: []Doc = Reflect::attrs(<User>)
 -- ```
 pub meta fn attrs<T, A>(target: Type<T>) -> []A
@@ -125,7 +126,7 @@ pub meta fn attrs<T, A>(target: Type<T>) -> []A
 --
 -- ```ril
 -- type Tag(str)
--- type User(.{ @Tag("pk") id: int })
+-- type User(.{ meta(Tag::("pk")) id: int })
 -- meta let TAGS: []Tag = Reflect::field_attrs(<User>, "id")
 -- ```
 pub meta fn field_attrs<T, A>(target: Type<T>, meta key: str |> KeyOf<T>) -> []A
@@ -134,7 +135,7 @@ pub meta fn field_attrs<T, A>(target: Type<T>, meta key: str |> KeyOf<T>) -> []A
 --
 -- ```ril
 -- type Code(int)
--- type Status { @Code(200) Ok; @Code(404) Missing }
+-- type Status { meta(Code::(200)) Ok; meta(Code::(404)) Missing }
 -- meta let CODES: []Code = Reflect::variant_attrs(<Status>, "Ok")
 -- ```
 pub meta fn variant_attrs<T, A>(target: Type<T>, meta variant: str) -> []A

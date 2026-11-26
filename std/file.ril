@@ -3,6 +3,7 @@
 -- Reads the entire UTF-8 contents of the file at `path` (`@io`), returning `Err(reason)` on failure.
 --
 -- ```ril
+-- use ril/file
 -- let content = File::read("config.toml")?
 -- ```
 pub fn read(path: str) @io -> new !<str, str>
@@ -11,6 +12,7 @@ pub fn read(path: str) @io -> new !<str, str>
 -- returning `Err(reason)` on failure.
 --
 -- ```ril
+-- use ril/file
 -- File::write("out.txt", "hello")?
 -- ```
 pub fn write(path: str, content: str) @io -> new !<(), str>

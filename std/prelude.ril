@@ -151,7 +151,8 @@ pub fn derive<T |> SharedObject>(base: T, via update: fn(mut Derived<T>) @& -> (
 -- suspended frames and running their registered `defer` cleanups in LIFO order.
 --
 -- ```ril
--- with ctl Abort::stop = \_ k -> {
+-- eff Abort { ctl stop() -> never }
+-- with ctl Abort::stop = \new k -> {
 --     unwind_ctl(new k)
 --     "aborted"
 -- }
