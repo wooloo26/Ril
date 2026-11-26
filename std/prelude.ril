@@ -90,6 +90,7 @@ pub fn len<T |> LenTarget>(via item: T) -> int
 pub fn inner<W |> NominalWrapper>(via wrapper: W) -> infer Unwrap<W>
 pub fn clone<T |> SharedObject>(via value: T) -> new T
 pub fn derive<T |> SharedObject>(base: T, via update: fn(mut Draft<T>) @& -> ()) -> T
+pub fn abort<T>(new k: T) -> ()
 pub fn absorb_panic<T>(via action: fn() @& -> infer T) -> infer !<T, PanicError>
 pub fn panic_message(info: PanicInfo) -> str
 pub meta fn type_name<T>(tv: Type<T>) -> str

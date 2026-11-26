@@ -39,21 +39,22 @@ fn run_aot(source: &str, expected_stdout: &str) -> Result<(), String> {
 }
 
 #[test]
-fn b1_normal_exit_cleanup_uses_declaration_time_evidence() -> Result<(), String> {
+fn b1_defer_unwinds_in_lifo_order_with_sibling_handlers() -> Result<(), String> {
     let source = r#"
 eff Log {
     fn tag() -> str
     fn emit(msg: str) -> ()
 }
 
-opaque type Res(.{ id: int }) use(close_res)
+opaque type Res(.{ id: int })
 
 fn close_res(ref r: Res) @Log -> () {
     Log::emit("{Log::tag()}:{r.id}")
 }
 
 fn work(fail: bool) @Log -> () {
-    use r = Res::(.{ id: 7 })
+    let r = Res::(.{ id: 7 })
+    defer close_res(ref r)
     with Log::tag = \-> "inner"
     Log::emit(Log::tag())
     if fail {
@@ -174,38 +175,28 @@ fn main() @io -> () {
 }
 
 #[test]
-fn b6_closed_channels_reap_cleanly_and_recv_returns_none() -> Result<(), String> {
+fn b6_ctl_continuations_abort_cleanly_and_run_lifo_defers() -> Result<(), String> {
     let source = r#"
-use ril/fiber
-use ril/channel
+eff Stop {
+    ctl halt(v: int) -> never
+}
 
 fn main() @io -> () {
-    let total = Fiber::run(\-> {
-        var acc = 0
-        for 0..100 as i {
-            let .{ mut tx, mut rx } = Channel::bounded(2)
-            match Channel::send(mut tx, i) {
-                Ok() -> ()
-                Err(_) -> ()
+    var acc = 0
+    for 0..100 as i {
+        var cleaned = 0
+        let v = with {
+            ctl Stop::halt = \n, new k -> {
+                abort(new k)
+                n
             }
-            Channel::close(new tx)
-            match Channel::recv(mut rx) {
-                Some(v) -> { acc += v }
-                None -> ()
-            }
-            match Channel::recv(mut rx) {
-                Some(_) -> { acc += 100000 }
-                None -> ()
-            }
-            match Channel::try_recv(mut rx) {
-                Ok(_) -> { acc += 100000 }
-                Err(_) -> ()
-            }
-            Channel::close_recv(new rx)
+            defer { cleaned += 1 }
+            Stop::halt(i)
         }
-        acc
-    })
-    println(String::inspect(total))
+        assert(cleaned == 1)
+        acc += v
+    }
+    println(String::inspect(acc))
 }
 "#;
     run_aot(source, "4950\n")

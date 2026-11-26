@@ -23,7 +23,6 @@ impl Analyzer<'_> {
                 ty,
                 value,
                 fallback,
-                resource,
                 ..
             } => {
                 if let Some(ty) = ty {
@@ -54,14 +53,7 @@ impl Analyzer<'_> {
                 if !ctx.reachable {
                     return Datum::default();
                 }
-                if *resource {
-                    self.cleanup(ctx, ledger, &mut value, span, node.span, storage.mode);
-                }
-                let site = if *resource {
-                    BindingSite::Resource
-                } else {
-                    BindingSite::Declaration
-                };
+                let site = BindingSite::Declaration;
                 self.check_via_pattern(ctx, *pattern, storage.mode);
                 if let Some(fallback) = fallback {
                     for (mut failed, _) in self.pattern_paths(ctx, ledger, *pattern, &value, false)
@@ -80,7 +72,34 @@ impl Analyzer<'_> {
                     self.bind(ctx, ledger, *pattern, storage, value, site);
                 }
             }
-            StmtKind::With(handlers) => self.handlers(ctx, ledger, handlers),
+            StmtKind::With(handler) => {
+                self.handlers(ctx, ledger, std::slice::from_ref(handler));
+                if handler.is_ctl {
+                    ctx.ctl_boundary = Some(node.span);
+                }
+            }
+            StmtKind::Defer(defer_expr) => {
+                let defer_span = ast.expr(*defer_expr).span;
+                ctx.defers.push(DeferredAction {
+                    expr: *defer_expr,
+                    span: node.span,
+                    file: ctx.file,
+                    handlers: ctx.handlers.clone(),
+                    holds_len: ledger.holds.len(),
+                    ctl_boundary: ctx.ctl_boundary,
+                });
+                let referenced: Vec<Span> = self
+                    .program
+                    .hir
+                    .references_within(defer_span)
+                    .map(|(_, def_id)| self.program.hir.definition(def_id).name.span)
+                    .collect();
+                for decl in referenced {
+                    if let Some(slot) = ledger.slots.get(&decl).cloned() {
+                        ledger.arm_datum_linear(&slot.value, node.span);
+                    }
+                }
+            }
             StmtKind::Expr(expr) => {
                 let value = self.expr(ctx, ledger, *expr);
                 if tail {
@@ -146,6 +165,12 @@ impl Analyzer<'_> {
                         value.requires_new = false;
                     }
                     "?" => {
+                        if !ctx.defers.is_empty() && ctx.reachable && !ctx.shadow {
+                            let mut err_ledger = ledger.clone();
+                            let mut err_ctx = ctx.clone();
+                            self.run_defers(&mut err_ctx, &mut err_ledger, 0);
+                            self.check_linear(&err_ledger, &BTreeSet::new());
+                        }
                         value = self.propagated(ctx, ledger, value, op.span);
                     }
                     _ => value = Datum::default(),
@@ -343,6 +368,7 @@ impl Analyzer<'_> {
                 let prior = ledger.slots.keys().copied().collect::<BTreeSet<_>>();
                 let prior_iter = ledger.iteration.len();
                 let prior_holds = ledger.holds.len();
+                let prior_defers = local_ctx.defers.len();
                 let mut result = Datum::default();
                 for (i, &item) in statements.iter().enumerate() {
                     let is_tail = i + 1 == statements.len();
@@ -355,6 +381,127 @@ impl Analyzer<'_> {
                 }
                 for &helper in helpers {
                     self.statement(&mut local_ctx, ledger, helper, false);
+                }
+                if local_ctx.reachable && !ledger.no_continuation {
+                    self.run_defers(&mut local_ctx, ledger, prior_defers);
+                } else if local_ctx.defers.len() > prior_defers {
+                    let unchecked = local_ctx
+                        .defers
+                        .get(prior_defers..)
+                        .unwrap_or_default()
+                        .iter()
+                        .any(|d| !self.checked_defers.contains(&d.span));
+                    if unchecked {
+                        let mut unwind_ledger = ledger.clone();
+                        self.run_defers(&mut local_ctx, &mut unwind_ledger, prior_defers);
+                    }
+                }
+                local_ctx.defers.truncate(prior_defers);
+                if result.origins().any(|origin| {
+                    origin
+                        .confined
+                        .is_some_and(|id| span.start <= id.start && id.end <= span.end)
+                }) {
+                    self.error(Code::E0604, span, "resource or draft escapes its block");
+                }
+                ledger.slots.retain(|id, _| prior.contains(id));
+                ledger.iteration.truncate(prior_iter);
+                ledger.holds.truncate(prior_holds);
+                ctx.return_values
+                    .extend(local_ctx.return_values.into_iter().skip(start_returns));
+                result
+            }
+            Expr::With {
+                handlers,
+                statements,
+                helpers,
+            } => {
+                let mut local_ctx = ctx.clone();
+                local_ctx.scope = span;
+                for &helper in helpers {
+                    if let StmtKind::Effect { name, .. } = &ast.stmt(helper).value.kind
+                        && let Some(effect) = self.definition(name.span)
+                    {
+                        local_ctx
+                            .local_effects
+                            .insert(self.program.hir.effect_label(effect));
+                    }
+                }
+                let start_returns = local_ctx.return_values.len();
+                let prior = ledger.slots.keys().copied().collect::<BTreeSet<_>>();
+                let prior_iter = ledger.iteration.len();
+                let prior_holds = ledger.holds.len();
+                let prior_defers = local_ctx.defers.len();
+                let has_ctl = handlers.iter().any(|h| h.is_ctl);
+                self.handlers(&mut local_ctx, ledger, handlers);
+                if has_ctl {
+                    local_ctx.ctl_boundary = Some(span);
+                }
+                let mut result = Datum::default();
+                for (i, &item) in statements.iter().enumerate() {
+                    let is_tail = i + 1 == statements.len();
+                    result = self.statement(&mut local_ctx, ledger, item, is_tail);
+                    if let StmtKind::Expr(expr) = ast.stmt(item).value.kind
+                        && self.ty(ast.expr(expr).span) == &Ty::Never
+                    {
+                        local_ctx.reachable = false;
+                    }
+                }
+                for &helper in helpers {
+                    self.statement(&mut local_ctx, ledger, helper, false);
+                }
+                if local_ctx.reachable && !ledger.no_continuation {
+                    self.run_defers(&mut local_ctx, ledger, prior_defers);
+                } else if local_ctx.defers.len() > prior_defers {
+                    let unchecked = local_ctx
+                        .defers
+                        .get(prior_defers..)
+                        .unwrap_or_default()
+                        .iter()
+                        .any(|d| !self.checked_defers.contains(&d.span));
+                    if unchecked {
+                        let mut unwind_ledger = ledger.clone();
+                        self.run_defers(&mut local_ctx, &mut unwind_ledger, prior_defers);
+                    }
+                }
+                local_ctx.defers.truncate(prior_defers);
+                if has_ctl && Self::ty_contains_ctl(self.program, self.ty(span)) {
+                    let outer_refs: Vec<(Span, Span)> = self
+                        .program
+                        .hir
+                        .references_within(span)
+                        .filter_map(|(ref_span, def_id)| {
+                            let def = self.program.hir.definition(def_id);
+                            (def.kind == DefinitionKind::Local
+                                && (def.name.span.start < span.start
+                                    || def.name.span.end > span.end))
+                                .then_some((ref_span, def.name.span))
+                        })
+                        .collect();
+                    for (ref_span, decl) in outer_refs {
+                        if let Some(slot) = ledger.slots.get(&decl) {
+                            if slot.variable {
+                                self.error(
+                                    Code::E0528,
+                                    ref_span,
+                                    "escaping ctl continuation cannot capture a reassignable var slot",
+                                );
+                            } else if slot.mode == Mode::Ref {
+                                self.error(
+                                    Code::E0604,
+                                    ref_span,
+                                    "escaping ctl continuation cannot capture a ref binding",
+                                );
+                            } else if slot.mode == Mode::Mut && !ledger.has_direct_revocation(decl)
+                            {
+                                self.error(
+                                    Code::E0528,
+                                    ref_span,
+                                    "escaping ctl continuation cannot capture an unshared mut binding",
+                                );
+                            }
+                        }
+                    }
                 }
                 if result.origins().any(|origin| {
                     origin
@@ -463,12 +610,19 @@ impl Analyzer<'_> {
                         exact_elements: false,
                     },
                     |this, local, inside, _| {
-                        if matches!(condition, Condition::Binding { .. }) {
+                        if let Condition::Binding { value, .. } = condition {
+                            let drained_collection = this.pop_drain_target(local, *value);
                             let mut failed = inside.clone();
                             let mut failed_ctx = local.clone();
                             let exits =
                                 this.condition(&mut failed_ctx, &mut failed, condition, false)
                                     && failed_ctx.reachable;
+                            if exits
+                                && let Some(decl) = drained_collection
+                                && let Some(slot) = failed.slots.get(&decl).cloned()
+                            {
+                                failed.consume_datum_linear(&slot.value);
+                            }
                             local.reachable &= this.condition(local, inside, condition, true);
                             (exits.then_some(failed), None)
                         } else {
@@ -598,7 +752,12 @@ impl Analyzer<'_> {
                 value,
                 arms,
             } => {
-                let value = self.expr(ctx, ledger, *value);
+                let mut value = self.expr(ctx, ledger, *value);
+                if *mode == Mode::New {
+                    self.handoff(ctx, ledger, &mut value, span);
+                    ledger.consume_datum_linear(&value);
+                    value.clear_linear();
+                }
                 if *is_meta
                     && let Some(&chosen) = self.program.meta_match_decisions.get(&span)
                     && let Some(arm) = arms.get(chosen)
@@ -667,10 +826,14 @@ impl Analyzer<'_> {
                 if ctx.reachable {
                     match kind {
                         Transfer::Return => {
+                            self.run_defers(ctx, ledger, 0);
                             self.returned(ctx, ledger, value, span);
                             self.check_results(ledger, &BTreeSet::new());
+                            self.check_linear(ledger, &BTreeSet::new());
                         }
                         Transfer::Break | Transfer::Continue => {
+                            let target_depth = ctx.loop_defer_depth.unwrap_or(ctx.defers.len());
+                            self.run_defers(ctx, ledger, target_depth);
                             if let Some(owner) = ctx.loop_owner {
                                 let exits = self.loop_transfers.entry(owner).or_default();
                                 let paths = if *kind == Transfer::Break {
@@ -708,12 +871,27 @@ impl Analyzer<'_> {
         };
         ctx.reachable &= !ledger.no_continuation;
         if ctx.reachable
-            && (self.ty(span).is_result(&self.program.hir)
-                || matches!(self.ty(span), Ty::Task(inner) if inner.is_result(&self.program.hir)))
+            && self.ty(span).is_result(&self.program.hir)
             && !value.has_root_result()
             && !matches!(node.value, Expr::Path(_))
         {
             ledger.record_result(&mut value, span);
+        }
+        if ctx.reachable
+            && !ctx.shadow
+            && self.program.is_must_consume(self.ty(span))
+            && value
+                .all_linear()
+                .iter()
+                .all(|occ| ledger.linear_consumed.contains(occ))
+            && (matches!(&node.value, Expr::Call { .. } | Expr::Pipeline { .. })
+                || matches!(&node.value, Expr::Array(items) if !items.is_empty()))
+        {
+            ledger.record_linear(
+                &mut value,
+                span,
+                matches!(self.ty(span), Ty::Array(_) | Ty::Map(..)),
+            );
         }
         if self.program.is_value(self.ty(span)) {
             value.roots.clear();
@@ -739,6 +917,64 @@ impl Analyzer<'_> {
 
     pub(super) fn read(&mut self, ctx: &Context, ledger: &Ledger, path: &Path) -> Datum {
         self.read_span(ctx, ledger, path.span)
+    }
+
+    fn pop_drain_target(&self, ctx: &Context, expr: ExprId) -> Option<Span> {
+        let ast = self.ast(ctx.file);
+        let Expr::Call { callee, args } = &ast.expr(expr).value else {
+            return None;
+        };
+        let Expr::Path(callee_path) = &ast.expr(*callee).value else {
+            return None;
+        };
+        let def_id = self.definition(callee_path.span)?;
+        if self.program.hir.primitive_module(def_id) != Some("Array") {
+            return None;
+        }
+        let name = self.program.hir.definition(def_id).name.value.as_str();
+        if !matches!(name, "pop" | "pop_front") {
+            return None;
+        }
+        let first = args.first()?;
+        let Expr::Path(arg_path) = &ast.expr(first.value).value else {
+            return None;
+        };
+        self.declaration(arg_path.span)
+    }
+
+    fn ty_contains_ctl(program: &TypedProgram, ty: &Ty) -> bool {
+        fn walk(program: &TypedProgram, ty: &Ty, seen: &mut BTreeSet<DefinitionId>) -> bool {
+            match ty {
+                Ty::Callable(c) => c.is_ctl,
+                Ty::Array(item) => walk(program, &item.ty, seen),
+                Ty::Map(k, v) => walk(program, k, seen) || walk(program, &v.ty, seen),
+                Ty::Tuple(items) => items.iter().any(|m| walk(program, &m.ty, seen)),
+                Ty::Record(fields, _) => fields.values().any(|m| walk(program, &m.ty, seen)),
+                Ty::Adt(adt) => {
+                    if !seen.insert(adt.definition) {
+                        return false;
+                    }
+                    let res = program
+                        .nominal_layout(adt)
+                        .is_some_and(|rep| walk(program, &rep, seen))
+                        || adt.arguments.iter().any(|arg| {
+                            matches!(arg, crate::ty::GenericValue::Type(inner) if walk(program, inner, seen))
+                        })
+                        || program.hir.definitions().any(|(vid, def)| {
+                            def.kind == DefinitionKind::Variant(adt.definition)
+                                && program.callables.get(&vid).is_some_and(|sig| {
+                                    sig.parameters
+                                        .iter()
+                                        .any(|p| walk(program, &p.ty, seen))
+                                })
+                        });
+                    seen.remove(&adt.definition);
+                    res
+                }
+                _ => false,
+            }
+        }
+        walk(program, ty, &mut BTreeSet::new())
     }
 
     pub(super) fn read_span(&mut self, ctx: &Context, ledger: &Ledger, span: Span) -> Datum {

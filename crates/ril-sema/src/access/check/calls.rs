@@ -192,9 +192,7 @@ impl<'program> Analyzer<'program> {
             self.expr(ctx, ledger, handler)
         };
         self.link_invocation(ctx, &callable);
-        for effect in &callable.latent_effects {
-            self.effect(ctx, ledger, effect, span);
-        }
+        self.charge_latent_effects(ctx, ledger, &callable, span);
         if !inline && let Ty::Callable(signature) = self.ty(node.span) {
             for effect in &signature.effects {
                 self.effect(ctx, ledger, effect, span);

@@ -14,9 +14,9 @@ pub enum Word {
 }
 
 const KEYWORDS: &[&str] = &[
-    "as", "break", "continue", "eff", "else", "false", "fn", "for", "if", "infer", "let", "match",
-    "meta", "mut", "new", "pkg", "pub", "ref", "return", "sub", "true", "type", "typeof", "use",
-    "var", "via", "where", "while", "with",
+    "as", "break", "continue", "ctl", "defer", "eff", "else", "false", "fn", "for", "if", "infer",
+    "let", "match", "meta", "mut", "new", "pkg", "pub", "ref", "return", "sub", "true", "type",
+    "typeof", "use", "var", "via", "where", "while", "with",
 ];
 
 const PRIMITIVES: &[&str] = &["bool", "int", "f64", "str", "bytes", "never"];

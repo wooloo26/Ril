@@ -14,11 +14,7 @@ const LANGUAGE_PRIMITIVES: &[(PrimitivePhase, Visibility, &[&str])] = &[
         Visibility::Public,
         &["bool", "int", "f64", "str", "bytes", "never", "Type"],
     ),
-    (
-        PrimitivePhase::Static,
-        Visibility::Public,
-        &["Sendable", "KeyOf"],
-    ),
+    (PrimitivePhase::Static, Visibility::Public, &["KeyOf"]),
     (
         PrimitivePhase::Static,
         Visibility::Private,

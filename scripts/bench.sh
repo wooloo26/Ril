@@ -96,24 +96,25 @@ fn main() -> () {
 }
 EOF
 
-# 5. Structured concurrency: Fiber::map across 200 tasks
-cat > "$TMP/fiber_map.ril" <<'EOF'
-use ril/fiber
+# 5. One-shot algebraic ctl effect: 200 yields
+cat > "$TMP/ctl_yield.ril" <<'EOF'
+eff Yield {
+    ctl emit(value: int) -> ()
+}
 fn main() -> () {
-    Fiber::run \-> {
-        let mut xs: []int = []
+    let mut out: []int = []
+    with {
+        ctl Yield::emit = \v, new k -> {
+            Array::push(mut out, v)
+            k()
+        }
         var i = 0
         while i < 200 {
-            Array::push(mut xs, i)
+            Yield::emit(i * 2)
             i += 1
         }
-        let frozen = new xs
-        let res = Fiber::map(frozen, \n -> {
-            Fiber::yield_now()
-            n * 2
-        })
-        assert(len(res) == 200 && res[199] == 398)
     }
+    assert(len(out) == 200 && out[199] == 398)
 }
 EOF
 
@@ -122,4 +123,4 @@ run_bench "smallint_loop_1m" "$TMP/smallint_loop.ril"
 run_bench "alloc_records_100k" "$TMP/alloc_records.ril"
 run_bench "map_insert_lookup_10k" "$TMP/map_10k.ril"
 run_bench "via_9param_mdd" "$TMP/via_9param.ril"
-run_bench "fiber_map_200" "$TMP/fiber_map.ril"
+run_bench "ctl_yield_200" "$TMP/ctl_yield.ril"

@@ -129,7 +129,7 @@ impl<'program> Analyzer<'program> {
                 }
             }
         }
-        for (index, mode, value) in values {
+        for ((index, mode, value), &arg_span) in values.iter().zip(value_spans) {
             let formal = fun
                 .signature
                 .params
@@ -137,6 +137,35 @@ impl<'program> Analyzer<'program> {
                 .and_then(|param| param.name.as_ref())
                 .map(|name| name.span);
             if let Some(formal) = formal.filter(|_| has_body) {
+                let no_ctl_premise = Fact {
+                    owner: fun.name.span,
+                    obligation: Obligation::NoCtlParam(formal),
+                };
+                if ctx.reachable && !ctx.shadow {
+                    if self.has_unhandled_ctl(ctx, value, self.ty(arg_span)) {
+                        self.deferred_errors.push((
+                            vec![no_ctl_premise.clone()],
+                            Diagnostic::error(
+                                Code::E0616,
+                                arg_span,
+                                "callable using unhandled ctl effect cannot be passed to a no_ctl parameter",
+                            ),
+                        ));
+                    }
+                    if matches!(self.ty(arg_span), Ty::Callable(c) if c.open_effects) {
+                        for root in &value.roots {
+                            if ctx.formals.contains(&Some(root.region.source)) {
+                                self.rules.push(Rule {
+                                    premises: vec![no_ctl_premise.clone()],
+                                    conclusion: Fact {
+                                        owner: ctx.owner,
+                                        obligation: Obligation::NoCtlParam(root.region.source),
+                                    },
+                                });
+                            }
+                        }
+                    }
+                }
                 let invocation = Fact {
                     owner: fun.name.span,
                     obligation: Obligation::Invoke(formal),
@@ -352,9 +381,7 @@ impl<'program> Analyzer<'program> {
         for source in target.root_dependencies() {
             self.seed(ctx, Obligation::Invoke(source));
         }
-        for effect in &target.latent_effects {
-            self.effect(ctx, ledger, effect, span);
-        }
+        self.charge_latent_effects(ctx, ledger, target, span);
     }
 
     pub(super) fn check_capture_overlap(

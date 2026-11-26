@@ -193,7 +193,7 @@ impl Parser<'_> {
                         "main must be an ordinary function in the executable root",
                     ));
                 }
-                StmtKind::Function(Box::new(self.function(meta, false)?))
+                StmtKind::Function(Box::new(self.function(meta, false, false)?))
             }
             "type" => StmtKind::Type(Box::new(self.type_decl(false)?)),
             "opaque" if self.next_text() == "type" => {
@@ -209,17 +209,31 @@ impl Parser<'_> {
                 StmtKind::Sub { name, items }
             }
             "eff" => self.effect()?,
-            "use" if self.is_import() => StmtKind::Import(self.import()?),
-            "let" | "var" | "use" => self.binding(meta, top)?,
-            "with" if !top => StmtKind::With(self.handlers()?),
+            "use" => StmtKind::Import(self.import()?),
+            "let" | "var" => self.binding(meta, top)?,
+            "defer" if !top => {
+                self.bump();
+                let body = if self.is("{") {
+                    self.block()?
+                } else {
+                    self.expr()?
+                };
+                StmtKind::Defer(body)
+            }
+            "with" if !top && self.next_text() != "{" => {
+                self.bump();
+                StmtKind::With(Box::new(self.handler()?))
+            }
             _ if !top && visibility == Visibility::Private && attrs.is_empty() => {
                 StmtKind::Expr(self.expr()?)
             }
             _ => return Err(self.unexpected("expected a declaration")),
         };
         if !attrs.is_empty()
-            && (matches!(kind, StmtKind::Binding { .. } | StmtKind::Import(_))
-                || matches!(&kind, StmtKind::Type(decl) if decl.kind == TypeKind::Alias && !matches!(decl.definition, TypeDefinition::Sum(_))))
+            && (matches!(
+                kind,
+                StmtKind::Binding { .. } | StmtKind::Import(_) | StmtKind::Defer(_)
+            ) || matches!(&kind, StmtKind::Type(decl) if decl.kind == TypeKind::Alias && !matches!(decl.definition, TypeDefinition::Sum(_))))
         {
             return Err(self.error(
                 Code::E0708,
@@ -254,11 +268,15 @@ impl Parser<'_> {
         Ok(attrs)
     }
 
-    fn function(&mut self, meta: bool, operation: bool) -> Result<Function> {
-        self.require("fn")?;
+    fn function(&mut self, meta: bool, operation: bool, is_ctl: bool) -> Result<Function> {
+        if is_ctl {
+            self.require("ctl")?;
+        } else {
+            self.require("fn")?;
+        }
         let name = self.name(Some(Word::Value), false)?;
         let generics = self.generics()?;
-        let signature = self.signature(true, operation)?;
+        let signature = self.signature(true, operation, is_ctl)?;
         self.continue_lines(|tok| matches!(tok, "where" | "{"));
         let helpers = if !operation && self.eat("where") {
             if self.kind == FileKind::Foreign {
@@ -294,7 +312,12 @@ impl Parser<'_> {
         })
     }
 
-    pub(super) fn signature(&mut self, named: bool, parameter_types: bool) -> Result<Signature> {
+    pub(super) fn signature(
+        &mut self,
+        named: bool,
+        parameter_types: bool,
+        is_ctl: bool,
+    ) -> Result<Signature> {
         self.open("(", ")", Layout::List)?;
         let params = self.list(")", |p| p.parameter(named, parameter_types))?;
         let obligations = self.obligations()?;
@@ -322,6 +345,7 @@ impl Parser<'_> {
             Vec::new()
         };
         Ok(Signature {
+            is_ctl,
             params,
             obligations,
             result_mode,
@@ -432,6 +456,7 @@ impl Parser<'_> {
                     "^mut" => Some(StateKind::Share),
                     "capture" => Some(StateKind::Capture),
                     "up" => Some(StateKind::Environment),
+                    "once" => Some(StateKind::Once),
                     "return" => Some(StateKind::Return),
                     _ => None,
                 };
@@ -471,26 +496,12 @@ impl Parser<'_> {
         Ok(obligations)
     }
 
-    fn use_cleanup_clause(&mut self) -> Result<Option<crate::syntax::Name>> {
-        if !self.is("use") {
-            return Ok(None);
-        }
-        self.bump();
-        if !self.tight("(") {
-            return Err(self.unexpected("cleanup name requires tightly attached parentheses"));
-        }
-        self.open("(", ")", Layout::List)?;
-        let name = self.name(Some(Word::Value), false)?;
-        self.close(")")?;
-        Ok(Some(name))
-    }
-
     fn type_decl(&mut self, opaque: bool) -> Result<TypeDecl> {
         self.require("type")?;
         let name = self.name(Some(Word::Pascal), false)?;
         let generics = self.generics()?;
         let foreign = self.kind == FileKind::Foreign;
-        let (kind, definition, cleanup) = if self.eat("=") {
+        let (kind, definition) = if self.eat("=") {
             if opaque {
                 if foreign {
                     return Err(self.error(
@@ -555,14 +566,7 @@ impl Parser<'_> {
             } else {
                 self.data_type_definition()?
             };
-            if let Some(cleanup_name) = self.use_cleanup_clause()? {
-                return Err(self.error(
-                    Code::E0120,
-                    cleanup_name.span,
-                    "type alias cannot declare a use cleanup clause",
-                ));
-            }
-            (TypeKind::Alias, definition, None)
+            (TypeKind::Alias, definition)
         } else if self.is("{") {
             if foreign && opaque {
                 return Err(self.error(
@@ -617,13 +621,12 @@ impl Parser<'_> {
                 }
             }
             self.close("}")?;
-            let cleanup = self.use_cleanup_clause()?;
             let kind = if opaque {
                 TypeKind::Opaque
             } else {
                 TypeKind::Alias
             };
-            (kind, TypeDefinition::Sum(variants), cleanup)
+            (kind, TypeDefinition::Sum(variants))
         } else if self.tight("(") {
             if foreign {
                 return Err(self.error(
@@ -701,33 +704,21 @@ impl Parser<'_> {
                     "type declaration cannot carry effect or state clauses",
                 ));
             }
-            let cleanup = self.use_cleanup_clause()?;
             let kind = if opaque {
                 TypeKind::Opaque
             } else {
                 TypeKind::Nominal
             };
-            (kind, TypeDefinition::Data(ty), cleanup)
+            (kind, TypeDefinition::Data(ty))
         } else if matches!(self.current().kind, Kind::Newline | Kind::Eof)
-            || matches!(self.text(), ";" | "}" | "use")
+            || matches!(self.text(), ";" | "}")
         {
-            let cleanup = self.use_cleanup_clause()?;
-            if cleanup.is_some()
-                && !matches!(self.current().kind, Kind::Newline | Kind::Eof)
-                && !matches!(self.text(), ";" | "}")
-            {
-                return Err(self.error(
-                    Code::E0120,
-                    self.current().span,
-                    "use cleanup clause must appear after the type representation",
-                ));
-            }
             let kind = if opaque {
                 TypeKind::Opaque
             } else {
                 TypeKind::Nominal
             };
-            (kind, TypeDefinition::Opaque, cleanup)
+            (kind, TypeDefinition::Opaque)
         } else {
             if foreign {
                 return Err(self.error(
@@ -746,7 +737,6 @@ impl Parser<'_> {
             name,
             kind,
             generics,
-            cleanup,
             definition,
         })
     }
@@ -795,7 +785,8 @@ impl Parser<'_> {
             } else {
                 let start = self.current().span;
                 let attrs = self.attributes()?;
-                let function = self.function(false, true)?;
+                let is_ctl = self.is("ctl");
+                let function = self.function(false, true, is_ctl)?;
                 operations.push(self.ast.add_stmt(
                     start.join(self.last),
                     Stmt {
@@ -819,37 +810,22 @@ impl Parser<'_> {
     }
 
     fn binding(&mut self, is_meta: bool, top: bool) -> Result<StmtKind> {
-        let resource = self.eat("use");
-        if resource && self.is("var") {
-            return Err(self.error(
-                Code::E0532,
-                self.current().span,
-                "scoped resource binding is pinned",
-            ));
-        }
         let variable = self.eat("var");
-        if !resource && !variable {
+        if !variable {
             self.require("let")?;
         }
         let mode = self.mode(&[Mode::Mut, Mode::Ref, Mode::Shared, Mode::Via]);
         if variable && mode == Mode::Via {
             return Err(self.error(Code::E0403, self.last, "var binding cannot use via mode"));
         }
-        if resource && !matches!(mode, Mode::Plain | Mode::Mut) {
-            return Err(self.error(
-                Code::E0532,
-                self.last,
-                "scoped resource binding only permits plain or mut mode",
-            ));
-        }
-        if top && (resource || variable || mode != Mode::Plain) {
+        if top && (variable || mode != Mode::Plain) {
             return Err(self.error(
                 Code::E0906,
                 self.last,
                 "top-level bindings cannot retain mutable or live state",
             ));
         }
-        let pattern = if variable || resource || is_meta || top && self.kind == FileKind::Foreign {
+        let pattern = if variable || is_meta || top && self.kind == FileKind::Foreign {
             let name = self.name(
                 Some(if is_meta { Word::Constant } else { Word::Value }),
                 true,
@@ -902,7 +878,7 @@ impl Parser<'_> {
         };
         self.continue_lines(|tok| tok == "else");
         let fallback = if self.eat("else") {
-            if variable || resource || is_meta {
+            if variable || is_meta {
                 return Err(self.error(
                     Code::E0120,
                     self.last,
@@ -926,45 +902,81 @@ impl Parser<'_> {
             value,
             fallback,
             is_meta,
-            resource,
         })
     }
 
-    fn handlers(&mut self) -> Result<Vec<Handler>> {
-        self.require("with")?;
-        let grouped = self.is("{");
-        if grouped {
-            self.open("{", "}", Layout::Block)?;
-            self.separators();
-        }
-        let mut handlers = Vec::new();
-        while !grouped || !self.is("}") {
-            let operation = self.path(Angle::Type, false)?;
-            self.require("=")?;
-            self.skip_lines();
-            let mode = self.mode(ARGUMENT);
-            handlers.push(Handler {
-                operation,
-                mode,
-                value: self.expr()?,
-            });
-            if !grouped || !self.separators() {
-                break;
-            }
-        }
-        if grouped {
-            self.close("}")?;
-        }
-        Ok(handlers)
+    pub(super) fn handler(&mut self) -> Result<Handler> {
+        let is_ctl = self.eat("ctl");
+        let operation = self.path(Angle::Type, false)?;
+        self.require("=")?;
+        self.skip_lines();
+        let mode = self.mode(ARGUMENT);
+        Ok(Handler {
+            is_ctl,
+            operation,
+            mode,
+            value: self.expr()?,
+        })
     }
 
-    fn is_import(&self) -> bool {
-        matches!(
-            self.tokens
-                .get(self.pos + 2)
-                .map(|token| token.text(self.file)),
-            Some("/" | "::" | "as" | "\n" | ";") | None
-        ) && !matches!(self.next_text(), "mut" | "ref" | "^mut" | "via")
+    pub(super) fn is_handler_arm(&self) -> bool {
+        if self.is("ctl") {
+            return true;
+        }
+        let mut idx = self.pos;
+        let tok_text = |i: usize| self.tokens.get(i).map(|t| t.text(self.file));
+        let tok_kind = |i: usize| self.tokens.get(i).map(|t| t.kind);
+        let mut seen_sep = false;
+        loop {
+            match tok_kind(idx) {
+                Some(Kind::Word(Word::Pascal)) => {
+                    idx += 1;
+                    if tok_text(idx) == Some("<") {
+                        let mut depth = 0usize;
+                        while let Some(text) = tok_text(idx) {
+                            match text {
+                                "<" | "!<" => depth += 1,
+                                ">" => {
+                                    depth -= 1;
+                                    idx += 1;
+                                    if depth == 0 {
+                                        break;
+                                    }
+                                    continue;
+                                }
+                                ">>" => {
+                                    if depth < 2 {
+                                        return false;
+                                    }
+                                    depth -= 2;
+                                    idx += 1;
+                                    if depth == 0 {
+                                        break;
+                                    }
+                                    continue;
+                                }
+                                _ => {}
+                            }
+                            idx += 1;
+                        }
+                        if depth != 0 {
+                            return false;
+                        }
+                    }
+                    if tok_text(idx) == Some("::") {
+                        seen_sep = true;
+                        idx += 1;
+                    } else {
+                        return false;
+                    }
+                }
+                Some(Kind::Word(Word::Value)) if seen_sep => {
+                    idx += 1;
+                    return tok_text(idx) == Some("=");
+                }
+                _ => return false,
+            }
+        }
     }
 
     fn import(&mut self) -> Result<Import> {

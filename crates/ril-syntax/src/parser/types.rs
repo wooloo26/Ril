@@ -45,7 +45,11 @@ impl Parser<'_> {
             }
             "fn" if !pattern => {
                 self.bump();
-                Type::Callable(Box::new(self.signature(false, true)?))
+                Type::Callable(Box::new(self.signature(false, true, false)?))
+            }
+            "ctl" if !pattern => {
+                self.bump();
+                Type::Callable(Box::new(self.signature(false, true, true)?))
             }
             "<" if !pattern => {
                 self.open("<", ">", Layout::List)?;

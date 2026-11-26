@@ -320,8 +320,8 @@ impl Checker<'_> {
             };
             if let Some(std_ty) = std_ty {
                 let expected_arity = match std_ty {
-                    StdType::Draft | StdType::Task | StdType::Sender | StdType::Receiver => Some(1),
-                    StdType::FieldMode | StdType::Scope => Some(0),
+                    StdType::Draft => Some(1),
+                    StdType::FieldMode => Some(0),
                     _ => None,
                 };
                 if let Some(expected) = expected_arity
@@ -333,32 +333,7 @@ impl Checker<'_> {
                     StdType::Option | StdType::Result | StdType::Set => {}
                     StdType::Draft => return Ty::Draft(Box::new(arg0(self, env))),
                     StdType::FieldMode => return Ty::Mode,
-                    StdType::Scope => return Ty::Scope,
-                    StdType::Task => {
-                        let inner = arg0(self, env);
-                        if !self.is_sendable(env, &inner, &mut HashSet::new()) {
-                            self.error(Code::E0301, path.span, "Task payload must be Sendable");
-                        }
-                        return Ty::Task(Box::new(inner));
-                    }
-                    StdType::Sender => {
-                        let inner = arg0(self, env);
-                        if !self.is_sendable(env, &inner, &mut HashSet::new()) {
-                            self.error(Code::E0301, path.span, "Sender payload must be Sendable");
-                        }
-                        return Ty::Sender(Box::new(inner));
-                    }
-                    StdType::Receiver => {
-                        let inner = arg0(self, env);
-                        if !self.is_sendable(env, &inner, &mut HashSet::new()) {
-                            self.error(Code::E0301, path.span, "Receiver payload must be Sendable");
-                        }
-                        return Ty::Receiver(Box::new(inner));
-                    }
-                    StdType::PanicInfo
-                    | StdType::PanicError
-                    | StdType::TaskFault
-                    | StdType::TimeoutError => {}
+                    StdType::PanicInfo | StdType::PanicError => {}
                 }
             }
             if is_prim {
@@ -396,10 +371,6 @@ impl Checker<'_> {
                                     | Ty::Mode
                                     | Ty::Range
                                     | Ty::Draft(_)
-                                    | Ty::Scope
-                                    | Ty::Task(_)
-                                    | Ty::Sender(_)
-                                    | Ty::Receiver(_)
                             )
                             && !matches!(&unwrapped, Ty::Adt(adt) if adt.kind == AdtKind::Foreign);
                         return if valid { target } else { Ty::Never };

@@ -206,14 +206,12 @@ fn verify_function(function: &Function, function_count: usize) -> Result<(), Dia
                 }
                 Terminator::Invoke {
                     target,
-                    evidence,
                     arguments,
                     normal,
                     unwind,
                     keep_result,
                     ..
                 } => {
-                    check_reg(*evidence)?;
                     for &arg in arguments {
                         check_reg(arg)?;
                     }
@@ -240,11 +238,9 @@ fn verify_function(function: &Function, function_count: usize) -> Result<(), Dia
                         }
                         Target::Indirect {
                             address,
-                            evidence,
                             environment,
                         } => {
                             check_reg(*address)?;
-                            check_reg(*evidence)?;
                             check_reg(*environment)?;
                         }
                         Target::Runtime(_) | Target::Draft(_) | Target::Foreign(_) => {}

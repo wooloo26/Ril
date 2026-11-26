@@ -319,18 +319,43 @@ fn walk_stmt(
                 );
             }
         }
-        StmtKind::With(handlers) => {
-            for handler in handlers {
-                walk_expr(
-                    hir,
-                    ast,
-                    handler.value,
-                    all_var_defs,
-                    fn_up_captures,
-                    boxed,
-                    refs.as_deref_mut(),
-                );
+        StmtKind::Defer(expr) => {
+            let defer_span = ast.stmt(stmt_id).span;
+            let mut inner_refs = BTreeSet::new();
+            walk_expr(
+                hir,
+                ast,
+                *expr,
+                all_var_defs,
+                fn_up_captures,
+                boxed,
+                Some(&mut inner_refs),
+            );
+            inner_refs.retain(|def| {
+                let def_span = hir.definition(*def).name.span;
+                !(def_span.file == defer_span.file
+                    && def_span.start >= defer_span.start
+                    && def_span.end <= defer_span.end)
+            });
+            for &captured in &inner_refs {
+                if all_var_defs.contains(&captured) {
+                    boxed.insert(captured);
+                }
+                if let Some(outer) = refs.as_deref_mut() {
+                    outer.insert(captured);
+                }
             }
+        }
+        StmtKind::With(handler) => {
+            walk_expr(
+                hir,
+                ast,
+                handler.value,
+                all_var_defs,
+                fn_up_captures,
+                boxed,
+                refs,
+            );
         }
         StmtKind::Expr(expr) => {
             walk_expr(hir, ast, *expr, all_var_defs, fn_up_captures, boxed, refs);
@@ -418,27 +443,174 @@ fn walk_expr(
             statements,
             helpers,
         } => {
-            for &stmt in statements {
-                walk_stmt(
+            let mut ctl_tail_start = None;
+            for (idx, &stmt) in statements.iter().enumerate() {
+                if matches!(
+                    &ast.stmt(stmt).value.kind,
+                    StmtKind::With(h) if h.is_ctl
+                ) {
+                    ctl_tail_start = Some(idx);
+                    break;
+                }
+            }
+            if let Some(split) = ctl_tail_start {
+                for &stmt in statements.iter().take(split + 1) {
+                    walk_stmt(
+                        hir,
+                        ast,
+                        stmt,
+                        all_var_defs,
+                        fn_up_captures,
+                        boxed,
+                        refs.as_deref_mut(),
+                    );
+                }
+                let tail_start_offset = statements
+                    .get(split)
+                    .map_or(span.start, |&stmt| ast.stmt(stmt).span.end);
+                let mut inner_refs = BTreeSet::new();
+                for &stmt in statements.iter().skip(split + 1) {
+                    walk_stmt(
+                        hir,
+                        ast,
+                        stmt,
+                        all_var_defs,
+                        fn_up_captures,
+                        boxed,
+                        Some(&mut inner_refs),
+                    );
+                }
+                for &helper in helpers {
+                    walk_stmt(
+                        hir,
+                        ast,
+                        helper,
+                        all_var_defs,
+                        fn_up_captures,
+                        boxed,
+                        Some(&mut inner_refs),
+                    );
+                }
+                inner_refs.retain(|def| {
+                    let def_span = hir.definition(*def).name.span;
+                    !(def_span.file == span.file
+                        && def_span.start >= tail_start_offset
+                        && def_span.end <= span.end)
+                });
+                for &captured in &inner_refs {
+                    if all_var_defs.contains(&captured) {
+                        boxed.insert(captured);
+                    }
+                    if let Some(outer) = refs.as_deref_mut() {
+                        outer.insert(captured);
+                    }
+                }
+            } else {
+                for &stmt in statements {
+                    walk_stmt(
+                        hir,
+                        ast,
+                        stmt,
+                        all_var_defs,
+                        fn_up_captures,
+                        boxed,
+                        refs.as_deref_mut(),
+                    );
+                }
+                for &helper in helpers {
+                    walk_stmt(
+                        hir,
+                        ast,
+                        helper,
+                        all_var_defs,
+                        fn_up_captures,
+                        boxed,
+                        refs.as_deref_mut(),
+                    );
+                }
+            }
+        }
+        Expr::With {
+            handlers,
+            statements,
+            helpers,
+        } => {
+            let has_ctl = handlers.iter().any(|h| h.is_ctl);
+            for handler in handlers {
+                walk_expr(
                     hir,
                     ast,
-                    stmt,
+                    handler.value,
                     all_var_defs,
                     fn_up_captures,
                     boxed,
                     refs.as_deref_mut(),
                 );
             }
-            for &helper in helpers {
-                walk_stmt(
-                    hir,
-                    ast,
-                    helper,
-                    all_var_defs,
-                    fn_up_captures,
-                    boxed,
-                    refs.as_deref_mut(),
-                );
+            if has_ctl {
+                let body_start = statements
+                    .first()
+                    .map_or(span.start, |&s| ast.stmt(s).span.start);
+                let mut inner_refs = BTreeSet::new();
+                for &stmt in statements {
+                    walk_stmt(
+                        hir,
+                        ast,
+                        stmt,
+                        all_var_defs,
+                        fn_up_captures,
+                        boxed,
+                        Some(&mut inner_refs),
+                    );
+                }
+                for &helper in helpers {
+                    walk_stmt(
+                        hir,
+                        ast,
+                        helper,
+                        all_var_defs,
+                        fn_up_captures,
+                        boxed,
+                        Some(&mut inner_refs),
+                    );
+                }
+                inner_refs.retain(|def| {
+                    let def_span = hir.definition(*def).name.span;
+                    !(def_span.file == span.file
+                        && def_span.start >= body_start
+                        && def_span.end <= span.end)
+                });
+                for &captured in &inner_refs {
+                    if all_var_defs.contains(&captured) {
+                        boxed.insert(captured);
+                    }
+                    if let Some(outer) = refs.as_deref_mut() {
+                        outer.insert(captured);
+                    }
+                }
+            } else {
+                for &stmt in statements {
+                    walk_stmt(
+                        hir,
+                        ast,
+                        stmt,
+                        all_var_defs,
+                        fn_up_captures,
+                        boxed,
+                        refs.as_deref_mut(),
+                    );
+                }
+                for &helper in helpers {
+                    walk_stmt(
+                        hir,
+                        ast,
+                        helper,
+                        all_var_defs,
+                        fn_up_captures,
+                        boxed,
+                        refs.as_deref_mut(),
+                    );
+                }
             }
         }
         Expr::Interpolated(parts) => {

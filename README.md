@@ -75,7 +75,7 @@ fn update_snapshot() -> () {
 ```
 
 ```ril
--- Effect handlers apply to the rest of their enclosing block.
+-- Effect handlers dispatch dynamically; statement 'with' governs the rest of the block.
 eff Clock { fn now_ms() -> int }
 fn timestamp() @Clock -> str { "time={Clock::now_ms()}" }
 
@@ -86,21 +86,35 @@ fn virtual_time() -> str {
 ```
 
 ```ril
--- Structured concurrency can run with deterministic scheduling.
-use ril/fiber
+-- One-shot algebraic effects ('ctl') compose with zero function coloring,
+-- and aborting a continuation deterministically unwinds active 'defer' cleanups.
+eff Yield<T> { ctl emit(value: T) -> () }
 
-fn concurrent_sum() -> int {
-    Fiber::run \-> {
-        let pair = Fiber::zip(\-> 20, \-> 22)
-        pair.first + pair.second
+fn emit_doubled(xs: []int, mut trace: []str) @Yield<int> &mut -> () {
+    defer trace |> mut Array::push("cleanup")
+    let _ = xs |> Array::map \x -> { Yield::emit(x * 2); x }
+}
+
+fn first_three_doubled(xs: []int) -> new []int {
+    let mut out: []int = []
+    let mut trace: []str = []
+    with {
+        ctl Yield::emit = \v, new k -> {
+            out |> mut Array::push(v)
+            if len(ref out) < 3 { k() } else { abort(new k) }
+        }
+
+        emit_doubled(xs, mut trace)
     }
+    assert(trace == ["cleanup"])
+    new out
 }
 ```
 
 ```ril
 -- Schema transformations preserve both slot replacement and access modes.
 type Select = \T: .{ .. }, keys: []str -> {
-    let selected = coords(<T>) |> Array::filter(\(_, key) -> keys |> Array::contains(key))
+    let selected = fields(<T>) |> Array::filter(\(_, key) -> keys |> Array::contains(key))
     <.{ m [selected as (m, k)]: T.(k) }>
 }
 type Model = .{ id: int, var title: str, mut rows: []int }

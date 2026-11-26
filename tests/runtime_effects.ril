@@ -12,20 +12,23 @@ fn main() -> () { let _ = shift(-1) }
 -- @case cleanup_runs_in_reverse_order run-pass backend=both
 -- @expect-stdout second
 -- @expect-stdout first
-opaque type Resource(.{ message: str }) use(close)
+opaque type Resource(.{ message: str })
 fn acquire(message: str) -> new Resource { Resource::(.{ message }) }
 fn close(new resource: Resource) @io -> () { println(resource.message) }
 fn main() @io -> () {
-    use first = acquire("first")
-    use second = acquire("second")
+    let mut first = acquire("first")
+    defer close(new first)
+    let mut second = acquire("second")
+    defer close(new second)
 }
 
 -- @case panic_runs_cleanup run-panic "failure" backend=both
 -- @expect-stdout cleanup
-opaque type Resource(.{ id: int }) use(close)
-fn close(new resource: Resource) @io -> () { println("cleanup") }
+opaque type Resource(.{ id: int })
+fn close(new _resource: Resource) @io -> () { println("cleanup") }
 fn main() @io -> () {
-    use resource = Resource::(.{ id: 1 })
+    let mut resource = Resource::(.{ id: 1 })
+    defer close(new resource)
     panic("failure")
 }
 
@@ -33,21 +36,21 @@ fn main() @io -> () {
 -- @expect-stdout second
 -- @expect-stdout first
 eff Finalize { fn report(message: str) -> () }
-opaque type Resource(.{ message: str }) use(close)
+opaque type Resource(.{ message: str })
 fn close(new resource: Resource) @Finalize -> () { Finalize::report(resource.message) }
 fn main() @io -> () {
     with Finalize::report = \message: str -> println(message)
-    use first = Resource::(.{ message: "first" })
-    use second = Resource::(.{ message: "second" })
+    let mut first = Resource::(.{ message: "first" })
+    defer close(new first)
+    let mut second = Resource::(.{ message: "second" })
+    defer close(new second)
     panic("failure")
 }
 
 -- @case double_panic_aborts run-abort backend=both
-opaque type Bomb(.{ id: int }) use(detonate)
-fn detonate(new _b: Bomb) -> () { panic("second") }
 fn main() -> () {
     let outcome = absorb_panic \-> {
-        use _b = Bomb::(.{ id: 1 })
+        defer panic("second")
         panic("first")
     }
     match outcome { Ok(_) -> (); Err(_) -> () }
@@ -77,8 +80,8 @@ fn main() @io -> () {
     println("{time()}")
 }
 
--- @case escaping_closure_keeps_lexical_evidence run-pass backend=both
--- @expect-stdout 3
+-- @case escaping_closure_uses_dynamic_call_stack_handler run-pass backend=both
+-- @expect-stdout 9
 eff Clock { fn now() -> int }
 fn factory() -> fn() @Clock -> int {
     with Clock::now = \-> 3
@@ -98,19 +101,16 @@ fn main() @io -> () {
     println("{f(6)}")
 }
 
--- @case cloned_callable_keeps_its_lexical_handler run-pass backend=both
+-- @case cloned_callable_uses_dynamic_handler_at_call_site run-pass backend=both
 eff Clock { fn tick() -> int }
 eff Other { fn tick() -> int }
 fn main() -> () {
     var counter = 0
     with Other::tick = \-> { counter += 1; counter }
-    let callbacks = {
-        with Clock::tick = \-> 42
-        [\-> Clock::tick()]
-    }
+    let callbacks = [\-> Clock::tick()]
     with Clock::tick = \-> 99
     let copied = clone(callbacks)
-    assert(copied[0]() == 42)
+    assert(copied[0]() == 99)
     assert(Other::tick() == 1)
 }
 
@@ -255,9 +255,9 @@ fn main() -> () {
         State<int>::read = \-> 42
         State<str>::read = \-> "six"
         State<str>::decode = \data -> len(data)
+        assert(int_value() == 42)
+        assert(State<str>::decode(State<str>::read()) == 3)
     }
-    assert(int_value() == 42)
-    assert(State<str>::decode(State<str>::read()) == 3)
 }
 
 -- @case polymorphic_named_effect_dispatch_specializes_evidence run-pass backend=both
@@ -267,9 +267,9 @@ fn main() -> () {
     with {
         State<int>::read = \-> 40
         State<str>::read = \-> "ok"
+        assert(read<int>() == 40)
+        assert(read<str>() == "ok")
     }
-    assert(read<int>() == 40)
-    assert(read<str>() == "ok")
 }
 
 -- @case generic_effect_spread_substitutes_arguments_transitively run-pass backend=both
@@ -281,9 +281,9 @@ fn main() -> () {
     with {
         Mid<int>::read = \-> 42
         State<str>::read = \-> "value"
+        assert(read<int>() == 42)
+        assert(read<str>() == "value")
     }
-    assert(read<int>() == 42)
-    assert(read<str>() == "value")
 }
 
 -- @case escaping_closure_writes_its_callers_actual_capture run-pass backend=both
@@ -414,7 +414,7 @@ fn main() -> () {
 -- @case aborted_draft_dispatches_body_and_cleanup_effects run-panic "aborted draft" backend=both
 -- @expect-stdout 5:8
 eff Report { fn emit(value: int) -> () }
-opaque type Event(.{ value: int }) use(record)
+opaque type Event(.{ value: int })
 fn record(new event: Event) @Report -> () { Report::emit(event.value) }
 fn main() @io -> () {
     with Report::emit = \value: int -> {
@@ -423,7 +423,8 @@ fn main() @io -> () {
     let shared = [1, 7]
     let base = (shared, shared)
     let _ = derive(base) \mut draft -> {
-        use _finish = Event::(.{ value: 8 })
+        let mut finish = Event::(.{ value: 8 })
+        defer record(new finish)
         Report::emit(5)
         Array::push(mut draft.0, 7)
         panic("aborted draft")
@@ -445,11 +446,11 @@ fn main() -> () {
 }
 
 -- @case mutable_cleanup_changes_the_callers_resource run-pass backend=both
-opaque type Handle(.{ var id: int }) use(close)
+opaque type Handle(.{ var id: int })
 fn close(mut handle: Handle) &mut -> () { handle.id = 42 }
 fn scope(mut handle: Handle) &mut -> () {
-    use scoped = handle
-    let before = scoped.id
+    defer close(mut handle)
+    let before = handle.id
     assert(before == 41)
 }
 fn main() -> () {

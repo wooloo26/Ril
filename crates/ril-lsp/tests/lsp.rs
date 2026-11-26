@@ -422,8 +422,8 @@ fn lsp_stdlib_bodyless_primitives_have_zero_diagnostics() -> Result<(), String> 
         "std/array.ril",
         "std/string.ril",
         "std/io.ril",
-        "std/fiber.ril",
-        "std/channel.ril",
+        "std/file.ril",
+        "std/os.ril",
     ];
     for rel in std_files {
         let path = repo_root.join(rel);
@@ -730,7 +730,7 @@ fn main() -> () {
             "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 12, "character": 0 } }
         }
     })));
-    // id 8: codeAction quickfix for missing `use ril/fiber`
+    // id 8: codeAction quickfix for missing `use ril/file`
     input.extend(frame_lsp(&json!({
         "jsonrpc": "2.0",
         "id": 8,
@@ -743,7 +743,7 @@ fn main() -> () {
                     "range": { "start": { "line": 7, "character": 0 }, "end": { "line": 7, "character": 5 } },
                     "severity": 1,
                     "code": "E0204",
-                    "message": "cannot resolve Fiber"
+                    "message": "cannot resolve File"
                 }]
             }
         }
@@ -832,7 +832,7 @@ fn main() -> () {
         "expected `: int` inlay hint, got: {hints:?}"
     );
 
-    // Code action quickfix imports `ril/fiber`
+    // Code action quickfix imports `ril/file`
     let actions = frames
         .get(8)
         .and_then(|v| v.get("result"))
@@ -842,9 +842,9 @@ fn main() -> () {
         actions.iter().any(|a| {
             a.get("title")
                 .and_then(Value::as_str)
-                .is_some_and(|t| t.contains("ril/fiber"))
+                .is_some_and(|t| t.contains("ril/file"))
         }),
-        "expected Import ril/fiber code action, got: {actions:?}"
+        "expected Import ril/file code action, got: {actions:?}"
     );
     Ok(())
 }

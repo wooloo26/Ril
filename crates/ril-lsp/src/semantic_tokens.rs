@@ -159,7 +159,7 @@ pub(crate) fn compute_tokens_for_file(typed: &TypedProgram, file_id: FileId) -> 
         }
     }
 
-    // 3. Highlight `@io` / `@fiber` / `@Effect` annotations via lexer tokens.
+    // 3. Highlight `@io` / `@Effect` annotations via lexer tokens.
     let lex_tokens = file.tokens();
     for pair in lex_tokens.windows(2) {
         if let [at_tok, name_tok] = pair
@@ -347,7 +347,7 @@ fn classify_definition(
     match def.kind {
         DefinitionKind::Function => Some((TT_FUNCTION, std_mod)),
         DefinitionKind::Primitive(_) => {
-            // Distinguish primitive types (`int`, `str`, `Draft`, `Scope`) from primitive functions (`len`, `push`).
+            // Distinguish primitive types (`int`, `str`, `Draft`) from primitive functions (`len`, `push`).
             let first_upper = def
                 .name
                 .value

@@ -96,7 +96,6 @@ fn compute_safepoint_liveness(
                 }
                 Some(Terminator::Invoke {
                     target,
-                    evidence,
                     arguments,
                     normal,
                     unwind,
@@ -104,7 +103,6 @@ fn compute_safepoint_liveness(
                 }) => {
                     add_succ(*normal);
                     add_succ(*unwind);
-                    live.insert(*evidence);
                     live.extend(arguments.iter().copied());
                     match target {
                         Target::FunctionWithEnv { environment, .. } => {
@@ -112,11 +110,9 @@ fn compute_safepoint_liveness(
                         }
                         Target::Indirect {
                             address,
-                            evidence,
                             environment,
                         } => {
                             live.insert(*address);
-                            live.insert(*evidence);
                             live.insert(*environment);
                         }
                         Target::Function(_)

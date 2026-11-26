@@ -18,7 +18,7 @@ use ril_test::{CaseMode, Stage, TestDriver, Unit, VirtualPackage, parse_suite, r
 
 #[test]
 fn hidden_clone_restrictions_survive_separate_compilation() {
-    let source = b"use ril/channel\npub opaque type Parcel(.{ mut tx: Channel::Sender<int> })";
+    let source = b"pub opaque type Parcel(.{ mut cont: ctl() -> () })";
     let mut library = VirtualPackage::new(Unit::Lib);
     library.entry = "pkg/vault.ril".into();
     library.insert(library.entry.clone(), source.to_vec());
@@ -1050,24 +1050,16 @@ fn clone_rejects_live_callable_state_from_an_imported_factory() {
     let source = br#"
 pub eff Clock { fn now() -> int; fn tick() -> int }
 pub fn now() @Clock -> int { Clock::now() }
-pub fn make() -> new fn() @Clock &up -> int {
+pub fn make() &capture -> new fn() &up -> int {
     var counter = 0
-    with Clock::tick = \-> { counter += 1; counter }
-    \-> Clock::tick()
+    counter = 1
+    \-> { counter += 1; counter }
 }
 "#;
     let mut provider = VirtualPackage::new(Unit::Lib);
     provider.entry = "pkg/clock.ril".into();
     provider.insert(provider.entry.clone(), source.to_vec());
     let encoded = Driver.interface(&provider).unwrap().encode().unwrap();
-    let decoded = Interface::decode(&encoded).unwrap();
-    assert!(
-        decoded.functions["pkg/clock.ril::make"]
-            .summary
-            .snapshot_returns
-            .iter()
-            .any(|projection| projection.live_callable_state)
-    );
     for (mount, bytes) in [
         ("library/clock.ril", source.as_slice()),
         ("library/clock.rili", encoded.as_slice()),
@@ -1076,7 +1068,7 @@ pub fn make() -> new fn() @Clock &up -> int {
         client.insert(mount.into(), bytes.to_vec());
         client.insert(
             client.entry.clone(),
-            b"use library/clock\nfn run() -> () { let _ = clone([Clock::make()]) }".to_vec(),
+            b"use library/clock\nfn run() -> () { let mut h = .{ ^mut cb: Clock::make() }; let _ = h.cb(); let _ = clone(ref h) }".to_vec(),
         );
         let diagnostics = Driver.analyze(&client).err().unwrap_or_default();
         assert_eq!(
@@ -1099,6 +1091,86 @@ fn run() -> () {
             .to_vec(),
         );
         assert!(Driver.analyze(&client).is_ok(), "{mount}");
+    }
+}
+
+#[test]
+fn k_iface_no_ctl_params_and_opaque_must_consume_survive_separate_compilation() {
+    use ril_source::diag::Code;
+
+    let source = br#"
+pub opaque type Token(.{ mut k: ctl() -> () })
+pub fn make_token(new k: ctl() -> ()) -> new Token { Token::(.{ mut k: new k }) }
+pub fn consume_token(new t: Token) -> () {
+    let Token::(.{ mut k }) = new t
+    abort(new k)
+}
+pub fn with_defer(cb: fn() @ -> ()) -> () {
+    defer cb()
+}
+"#;
+    let mut provider = VirtualPackage::new(Unit::Lib);
+    provider.entry = "pkg/kiface.ril".into();
+    provider.insert(provider.entry.clone(), source.to_vec());
+    let encoded = Driver.interface(&provider).unwrap().encode().unwrap();
+    let decoded = Interface::decode(&encoded).unwrap();
+    assert!(
+        decoded.functions["pkg/kiface.ril::with_defer"]
+            .summary
+            .no_ctl_params
+            .contains(&0),
+        "expected no_ctl_params=[0] in published interface"
+    );
+    for (mount, bytes) in [
+        ("library/kiface.ril", source.as_slice()),
+        ("library/kiface.rili", encoded.as_slice()),
+    ] {
+        // 1. Passing a ctl-performing callback to `with_defer` is rejected with E0616.
+        let mut client1 = VirtualPackage::new(Unit::Lib);
+        client1.insert(mount.into(), bytes.to_vec());
+        client1.insert(
+            client1.entry.clone(),
+            br#"
+use library/kiface
+eff Yield { ctl step() -> () }
+fn bad() @Yield -> () {
+    Kiface::with_defer(\-> Yield::step())
+}
+"#
+            .to_vec(),
+        );
+        let diags1 = Driver.analyze(&client1).err().unwrap_or_default();
+        assert!(
+            diags1.iter().any(|d| d.code == Some(Code::E0616)),
+            "{mount}: expected E0616 for ctl callback in deferred param, got {diags1:?}"
+        );
+
+        // 2. Dropping an opaque must-consume `Token` without consuming it is rejected with E0625.
+        let mut client2 = VirtualPackage::new(Unit::Lib);
+        client2.insert(mount.into(), bytes.to_vec());
+        client2.insert(
+            client2.entry.clone(),
+            br#"
+use library/kiface
+eff Yield { ctl step() -> () }
+fn bad() -> () {
+    with {
+        ctl Yield::step = \new k -> {
+            let mut t = Kiface::make_token(new k)
+            let _ = t
+            ()
+        }
+        Yield::step()
+    }
+}
+"#
+            .to_vec(),
+        );
+        let diags2 = Driver.analyze(&client2).err().unwrap_or_default();
+        assert!(
+            diags2.iter().any(|d| d.code == Some(Code::E0625)),
+            "{mount}: expected E0625 for dropped opaque must-consume Token, got {diags2:?}"
+        );
     }
 }
 
@@ -2072,7 +2144,7 @@ pub eff Meter { fn read() -> int; fn reset() -> () }
 pub fn read_meter() @Meter -> int { Meter::read() }
 pub eff Extended { ..Meter; fn record() -> () }
 pub fn read_extended() @Extended -> int { Meter::read() }
-pub opaque type Handle(.{ id: int }) use(close)
+pub opaque type Handle(.{ id: int })
 pub fn open() -> new Handle { Handle::(.{ id: 1 }) }
 pub fn close(new handle: Handle) @Meter -> () { let _ = Meter::read() }
 pub fn apply(via action: fn(via Cell) @& -> infer Cell, via cell: Cell) -> infer Cell { action(cell) }
@@ -2173,7 +2245,8 @@ fn read() -> int {
 }
 fn clean() -> () {
     with Store::Meter::read = \-> 42
-    use handle = Store::open()
+    let mut handle = Store::open()
+    defer Store::close(new handle)
 }
 "#,
             None,

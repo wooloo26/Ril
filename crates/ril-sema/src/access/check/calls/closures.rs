@@ -67,17 +67,27 @@ impl Analyzer<'_> {
                     }
                 }
             }
-            let effects = value
-                .latent_effects
-                .iter()
-                .chain(match self.ty(rhs.span) {
-                    Ty::Callable(signature) if !inline => signature.effects.as_slice(),
-                    _ => &[],
-                })
-                .cloned()
-                .collect::<BTreeSet<_>>();
-            for effect in effects {
-                self.effect(ctx, ledger, &effect, rhs.span);
+            if value.is_once
+                || matches!(
+                    self.ty(rhs.span),
+                    Ty::Callable(signature) if signature.once || signature.is_ctl
+                )
+            {
+                self.error(
+                    Code::E0534,
+                    rhs.span,
+                    "deep handler arm cannot use a one-shot &once callable or ctl continuation",
+                );
+            }
+            let mut effect_ctx = ctx.clone();
+            if !handler.is_ctl {
+                effect_ctx.no_ctl = Some(rhs.span);
+            }
+            self.charge_latent_effects(&effect_ctx, ledger, &value, rhs.span);
+            if !inline && let Ty::Callable(signature) = self.ty(rhs.span) {
+                for effect in &signature.effects {
+                    self.effect(&effect_ctx, ledger, effect, rhs.span);
+                }
             }
             self.link_invocation(ctx, &value);
             if ctx.reachable && !ctx.shadow {
@@ -125,7 +135,7 @@ impl Analyzer<'_> {
     pub(in crate::access::check) fn closure(
         &mut self,
         ctx: &Context,
-        ledger: &Ledger,
+        ledger: &mut Ledger,
         id: ExprId,
         contextual: bool,
     ) -> Datum {
@@ -140,6 +150,7 @@ impl Analyzer<'_> {
         };
         let mut locals = ledger.clone();
         locals.clear_result_obligations();
+        locals.clear_linear_obligations();
         locals.clear_array_extents();
         locals.no_continuation = false;
         let mut inner = Context::new(node.span);
@@ -150,7 +161,6 @@ impl Analyzer<'_> {
         inner.runtime = ctx.runtime;
         inner.shadow = ctx.shadow;
         inner.reachable = ctx.reachable;
-        inner.handlers.clone_from(&ctx.handlers);
         inner.via.clone_from(&ctx.via);
         inner.member_via = ctx.member_via;
         inner.formals = params
@@ -241,13 +251,21 @@ impl Analyzer<'_> {
                         value,
                         name.span,
                     );
+                    if p.mode == Mode::New && name.value != "_" && self.program.is_must_consume(ty)
+                    {
+                        locals.record_linear(
+                            &mut value,
+                            name.span,
+                            matches!(ty, Ty::Array(_) | Ty::Map(..)),
+                        );
+                    }
                 }
                 value.transform(&mut |origin| {
                     origin.dependencies.insert(name.span.into());
                     origin.enter_formal(inner.owner, p.mode);
-                    if matches!(param_ty, Some(Ty::Scope | Ty::Draft(_))) {
+                    if matches!(param_ty, Some(Ty::Draft(_))) {
                         origin.confined = Some(node.span);
-                        origin.draft = matches!(param_ty, Some(Ty::Draft(_)));
+                        origin.draft = true;
                     }
                 });
                 locals.slots.insert(
@@ -296,8 +314,11 @@ impl Analyzer<'_> {
         let output = locals.snapshot(&output);
         let implicit = self.ty(self.ast(ctx.file).expr(*body).span) != &Ty::Never;
         if inner.reachable && implicit {
+            self.run_defers(&mut inner, &mut locals, 0);
             locals.inspect(&output);
+            locals.consume_datum_linear(&output);
             self.check_results(&locals, &BTreeSet::new());
+            self.check_linear(&locals, &BTreeSet::new());
             self.storage_exit(&inner, &locals);
             if output.returns_call_scoped_writer(Mode::Infer) {
                 self.error(
@@ -408,17 +429,70 @@ impl Analyzer<'_> {
                 .members
                 .insert(Coordinate::Index(index.to_string()), value);
         }
-        closure.latent_effects = self
+        let mut is_once = matches!(self.ty(node.span), Ty::Callable(sig) if sig.once);
+        for &decl in &used {
+            if ledger.slots.contains_key(&decl)
+                && locals.has_direct_revocation(decl)
+                && !ledger.has_direct_revocation(decl)
+            {
+                is_once = true;
+                ledger.revoke(decl.into(), None, None);
+                if self
+                    .definition(decl)
+                    .and_then(|id| self.program.bindings.get(&id))
+                    .is_some_and(|ty| self.program.is_must_consume(ty))
+                {
+                    self.error(
+                        Code::E0625,
+                        node.span,
+                        "affine &once closure cannot capture a must-consume value",
+                    );
+                }
+                if ledger
+                    .slots
+                    .get(&decl)
+                    .is_some_and(|slot| !slot.value.results().is_empty())
+                {
+                    self.error(
+                        Code::E0720,
+                        node.span,
+                        "affine &once closure cannot capture an uninspected fallible result",
+                    );
+                }
+            }
+        }
+        closure.is_once = is_once;
+        if is_once {
+            closure.requires_new = true;
+            for root in &mut closure.roots {
+                root.new = true;
+                root.mode = Access::Mut;
+            }
+        }
+        for rule in self
             .rules
             .iter()
             .skip(before)
             .filter(|rule| rule.conclusion.owner == inner.owner)
-            .filter_map(|rule| match &rule.conclusion.obligation {
-                Obligation::Effect(effect) => Some(effect.clone()),
-                Obligation::Operation(operation) => Some(operation.effect.clone()),
-                _ => None,
-            })
-            .collect();
+        {
+            match &rule.conclusion.obligation {
+                Obligation::Effect(effect) => {
+                    closure.latent_effects.insert(effect.clone());
+                }
+                Obligation::Operation(operation) => {
+                    closure
+                        .latent_operations
+                        .insert((operation.id, operation.effect.clone()));
+                }
+                Obligation::StatefulHandler => {
+                    closure.live_callable_state = true;
+                }
+                Obligation::CtlHandler => {
+                    closure.uses_ctl_handler = true;
+                }
+                _ => {}
+            }
+        }
         if !closure.members.is_empty() {
             closure.environments.insert(node.span);
             for root in &mut closure.roots {
@@ -441,10 +515,6 @@ impl Analyzer<'_> {
                 .collect();
             closure.invocations.insert(inner.owner, bindings);
         }
-        closure.live_callable_state = self.rules.iter().skip(before).any(|rule| {
-            rule.conclusion.owner == inner.owner
-                && rule.conclusion.obligation == Obligation::StatefulHandler
-        });
         closure
     }
 }

@@ -53,7 +53,7 @@ fn aot_foreign_functions_support_first_class_calls_and_cleanup() {
     package.insert(
         PathBuf::from("pkg/sys.d.ril"),
         br#"
-        pub opaque type Handle use(host_close)
+        pub opaque type Handle
         pub let host_answer: int
         pub fn host_open() @io -> new Handle
         pub fn host_live(ref handle: Handle) @io -> bool
@@ -66,7 +66,8 @@ fn aot_foreign_functions_support_first_class_calls_and_cleanup() {
         br#"
         use pkg/sys
         fn main() @io -> () {
-            use handle = Sys::host_open()
+            let mut handle = Sys::host_open()
+            defer Sys::host_close(new handle)
             let live = Sys::host_live
             assert(Sys::host_answer == 18446744073709551616 && live(ref handle))
             assert(String::inspect(ref handle) == "<Handle>")

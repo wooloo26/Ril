@@ -18,7 +18,7 @@ use super::{
 impl<M: Module> MirToClifTranslator<'_, M> {
     pub(super) fn translate(&mut self, id: FuncId, function: &ril_mir::Function) -> Result<String> {
         let mut context = self.module.make_context();
-        context.func.signature = self.signature(function.arity + 3, Some(types::I64));
+        context.func.signature = self.signature(function.arity + 2, Some(types::I64));
         let mut scratch = FunctionBuilderContext::new();
         let mut builder = FunctionBuilder::new(&mut context.func, &mut scratch);
         if let Some(loc_id) = function.source_loc {
@@ -58,10 +58,10 @@ impl<M: Module> MirToClifTranslator<'_, M> {
             None
         };
         let abi = builder.block_params(entry).to_vec();
-        let [rt, evidence, environment, rest @ ..] = abi.as_slice() else {
+        let [rt, environment, rest @ ..] = abi.as_slice() else {
             return Err(diagnostic("missing Ril closure ABI parameters"));
         };
-        let (rt, incoming_evidence, incoming_environment) = (*rt, *evidence, *environment);
+        let (rt, incoming_environment) = (*rt, *environment);
         let mut registers = BTreeMap::new();
         for &id in &order {
             let block = function
@@ -138,16 +138,6 @@ impl<M: Module> MirToClifTranslator<'_, M> {
                         let unit = builder.ins().iconst(types::I64, RIL_UNIT);
                         registers.insert(*result, unit);
                     }
-                    Instruction::Evidence => {
-                        registers.insert(*result, incoming_evidence);
-                        store_root(
-                            &mut builder,
-                            root_frame,
-                            &root_layout,
-                            *result,
-                            incoming_evidence,
-                        );
-                    }
                     Instruction::Environment => {
                         registers.insert(*result, incoming_environment);
                         store_root(
@@ -211,7 +201,6 @@ impl<M: Module> MirToClifTranslator<'_, M> {
                 }
                 Terminator::Invoke {
                     target,
-                    evidence,
                     arguments,
                     normal,
                     unwind,
@@ -233,7 +222,7 @@ impl<M: Module> MirToClifTranslator<'_, M> {
                                 } else {
                                     builder.ins().iconst(types::I64, RIL_UNIT)
                                 };
-                            let args = [rt, reg(&registers, *evidence)?, environment]
+                            let args = [rt, environment]
                                 .into_iter()
                                 .chain(args)
                                 .collect::<Vec<_>>();
@@ -250,18 +239,13 @@ impl<M: Module> MirToClifTranslator<'_, M> {
                         }
                         Target::Indirect {
                             address,
-                            evidence,
                             environment,
                         } => {
                             let address = reg(&registers, *address)?;
-                            let args = [
-                                rt,
-                                reg(&registers, *evidence)?,
-                                reg(&registers, *environment)?,
-                            ]
-                            .into_iter()
-                            .chain(args)
-                            .collect::<Vec<_>>();
+                            let args = [rt, reg(&registers, *environment)?]
+                                .into_iter()
+                                .chain(args)
+                                .collect::<Vec<_>>();
                             let sig = builder
                                 .import_signature(self.signature(args.len(), Some(types::I64)));
                             let inst = builder.ins().call_indirect(sig, address, &args);
@@ -501,8 +485,7 @@ impl<M: Module> MirToClifTranslator<'_, M> {
         instruction: &Instruction,
     ) -> Result<Value> {
         match instruction {
-            Instruction::Evidence
-            | Instruction::Environment
+            Instruction::Environment
             | Instruction::StackLoad(_)
             | Instruction::StackStore { .. }
             | Instruction::IntBinOp { .. }

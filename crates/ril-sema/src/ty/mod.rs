@@ -1,6 +1,5 @@
 mod captures;
 mod check;
-mod concurrency;
 mod coverage;
 mod effects;
 mod eval;
@@ -59,10 +58,6 @@ pub enum Ty {
     TypeValue(Option<Box<Ty>>),
     Mode,
     Draft(Box<Ty>),
-    Scope,
-    Task(Box<Ty>),
-    Sender(Box<Ty>),
-    Receiver(Box<Ty>),
 }
 
 impl Ty {
@@ -83,11 +78,7 @@ impl Ty {
             Self::Map(key, item) => key.contains_type_value() || item.ty.contains_type_value(),
             Self::Tuple(items) => items.iter().any(|m| m.ty.contains_type_value()),
             Self::Record(items, _) => items.values().any(|m| m.ty.contains_type_value()),
-            Self::Projection(inner, _)
-            | Self::Draft(inner)
-            | Self::Task(inner)
-            | Self::Sender(inner)
-            | Self::Receiver(inner) => inner.contains_type_value(),
+            Self::Projection(inner, _) | Self::Draft(inner) => inner.contains_type_value(),
             Self::Adt(adt) => adt
                 .arguments
                 .iter()
@@ -280,6 +271,8 @@ impl Parameter {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Callable {
+    pub is_ctl: bool,
+    pub once: bool,
     pub parameters: Vec<Parameter>,
     pub result: Ty,
     pub result_mode: Mode,
@@ -304,6 +297,7 @@ pub struct TypedProgram {
     pub bindings: HashMap<DefinitionId, Ty>,
     pub callables: BTreeMap<DefinitionId, Arc<Callable>>,
     pub imported_functions: BTreeMap<DefinitionId, crate::iface::Export>,
+    pub imported_must_consume: HashSet<DefinitionId>,
     pub static_values: HashMap<Span, Value>,
     meta_calls: HashMap<Span, staging::MetaCall>,
     static_folds: HashMap<Span, staging::StaticFold>,
@@ -370,6 +364,52 @@ impl TypedProgram {
         self.unwrap_wrapper(ty).is_primitive_value()
     }
 
+    pub fn is_must_consume(&self, ty: &Ty) -> bool {
+        self.is_must_consume_inner(ty, &mut HashSet::new())
+    }
+
+    fn is_must_consume_inner(&self, ty: &Ty, seen: &mut HashSet<DefinitionId>) -> bool {
+        match ty {
+            Ty::Callable(c) => c.is_ctl,
+            Ty::Adt(adt) if adt.kind == AdtKind::Foreign => true,
+            Ty::Adt(adt) => {
+                if !seen.insert(adt.definition) {
+                    return false;
+                }
+                let result = if self.imported_must_consume.contains(&adt.definition) {
+                    true
+                } else if matches!(adt.kind, AdtKind::Nominal | AdtKind::Opaque) {
+                    self.nominal_layout(adt)
+                        .is_some_and(|rep| self.is_must_consume_inner(&rep, seen))
+                } else {
+                    adt.arguments.iter().any(|arg| {
+                        matches!(arg, GenericValue::Type(inner) if self.is_must_consume_inner(inner, seen))
+                    }) || self.hir.definitions().any(|(vid, def)| {
+                        def.kind == ril_hir::DefinitionKind::Variant(adt.definition)
+                            && self.callables.get(&vid).is_some_and(|sig| {
+                                sig.parameters
+                                    .iter()
+                                    .any(|p| self.is_must_consume_inner(&p.ty, seen))
+                            })
+                    })
+                };
+                seen.remove(&adt.definition);
+                result
+            }
+            Ty::Array(item) => self.is_must_consume_inner(&item.ty, seen),
+            Ty::Map(key, item) => {
+                self.is_must_consume_inner(key, seen) || self.is_must_consume_inner(&item.ty, seen)
+            }
+            Ty::Tuple(items) => items
+                .iter()
+                .any(|item| self.is_must_consume_inner(&item.ty, seen)),
+            Ty::Record(fields, _) => fields
+                .values()
+                .any(|item| self.is_must_consume_inner(&item.ty, seen)),
+            _ => false,
+        }
+    }
+
     pub(crate) fn parameter_callable_mode(&self, param: &Parameter) -> Mode {
         param.callable_mode_with(self.is_value(&param.ty))
     }
@@ -403,6 +443,11 @@ impl TypedProgram {
             .get(label)
             .map(|instance| instance.definition)
             .or_else(|| self.hir.effect_by_label(label))
+    }
+
+    pub(crate) fn effect_has_ctl(&self, label: &str) -> bool {
+        self.effect_definition(label)
+            .is_some_and(|id| self.hir.effect_has_ctl(id))
     }
 
     pub(crate) fn effect_covers(&self, covering: &str, actual: &str) -> bool {
@@ -519,7 +564,7 @@ impl fmt::Display for Display<'_> {
                 write!(f, "{}]", show(&member.ty))
             }
             Ty::Callable(call) => {
-                f.write_str("fn(")?;
+                f.write_str(if call.is_ctl { "ctl(" } else { "fn(" })?;
                 for (index, p) in call.parameters.iter().enumerate() {
                     comma(f, index)?;
                     member_mode(
@@ -544,6 +589,9 @@ impl fmt::Display for Display<'_> {
                 if call.open_state {
                     f.write_str(" &")?;
                 }
+                if call.once {
+                    f.write_str(" &once")?;
+                }
                 for state in &call.state {
                     write!(f, " &{state}")?;
                 }
@@ -560,10 +608,6 @@ impl fmt::Display for Display<'_> {
             Ty::TypeValue(Some(ty)) => write!(f, "Type<{}>", show(ty)),
             Ty::TypeValue(None) => f.write_str("Type"),
             Ty::Draft(ty) => write!(f, "Draft<{}>", show(ty)),
-            Ty::Scope => f.write_str("Scope"),
-            Ty::Task(ty) => write!(f, "Task<{}>", show(ty)),
-            Ty::Sender(ty) => write!(f, "Sender<{}>", show(ty)),
-            Ty::Receiver(ty) => write!(f, "Receiver<{}>", show(ty)),
         }
     }
 }

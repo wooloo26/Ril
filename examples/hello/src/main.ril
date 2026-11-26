@@ -1,7 +1,16 @@
--- Multi-module Ril example showcasing stdlib combinators and structured concurrency.
+-- Multi-module Ril example showcasing stdlib combinators, algebraic `ctl` effects, and `defer`.
 
 use pkg/math
-use ril/fiber
+
+eff Emit {
+    ctl emit(value: int) -> ()
+}
+
+fn emit_squares(nums: []int) @Emit -> () {
+    for nums as n {
+        Emit::emit(Math::square(n))
+    }
+}
 
 fn main() @io -> () {
     let nums = [2, 3, 4, 5]
@@ -13,9 +22,20 @@ fn main() @io -> () {
     let raw = String::encode_utf8("hello-ril")
     assert(String::decode_utf8(raw) == Some("hello-ril"))
 
-    Fiber::run \-> {
-        let doubled = Fiber::map(squares, \n -> n * 2)
-        assert(Array::at(doubled, 3) == Some(50))
+    let mut collected: []int = []
+    var cleaned = false
+    with {
+        ctl Emit::emit = \v, new k -> {
+            Array::push(mut collected, v)
+            k()
+        }
+        defer {
+            cleaned = true
+        }
+        emit_squares(nums)
     }
+    let done = new collected
+    assert(cleaned)
+    assert(Array::at(done, 3) == Some(25))
     println("hello-ok")
 }

@@ -10,7 +10,7 @@ use crate::diag::{Code, Diagnostic};
 pub struct FileId(pub usize);
 
 impl FileId {
-    /// Dedicated sentinel for synthetic built-in declarations (`ril/prelude`, `ril/fiber`, `ril/channel`).
+    /// Dedicated sentinel for synthetic built-in declarations (`ril/prelude`, etc.).
     pub const BUILTIN: Self = Self(usize::MAX);
 
     /// Compute a deterministic, path-stable `FileId` independent of file enumeration order.

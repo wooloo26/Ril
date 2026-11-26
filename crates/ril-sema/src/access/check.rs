@@ -14,11 +14,11 @@ use ril_syntax::{
 };
 
 use super::{
-    Access, Analysis, CallbackModeCall, CleanupAction, EffectUse, Input, Invocation,
-    InvocationMode, ReturnSource, StorageUpdate, Summary, ViaDomain,
+    Access, Analysis, CallbackModeCall, EffectUse, Input, Invocation, InvocationMode, ReturnSource,
+    StorageUpdate, Summary, ViaDomain,
     flow::{
-        AccessConflict, ConflictKind, Coordinate, Datum, Ledger, Origin, Reception, Region,
-        Replacement, ResultOccurrence, Revocation, Slot, StorageFlow, conflicts,
+        AccessConflict, ConflictKind, Coordinate, Datum, Ledger, LinearOccurrence, Origin,
+        Reception, Region, Replacement, ResultOccurrence, Revocation, Slot, StorageFlow, conflicts,
     },
     horn::{self, Rule},
 };
@@ -56,8 +56,10 @@ enum Obligation {
     NeedsSharing(Span),
     ReadUp(Span),
     Invoke(Span),
+    NoCtlParam(Span),
     Capture,
     StatefulHandler,
+    CtlHandler,
     Effect(String),
     Operation(Operation),
 }
@@ -79,7 +81,6 @@ enum LoopExtent {
 enum BindingSite {
     Declaration,
     ScopedPattern,
-    Resource,
 }
 
 impl SchemaRequirement {
@@ -105,6 +106,16 @@ struct Fact {
 }
 
 #[derive(Clone)]
+struct DeferredAction {
+    expr: ExprId,
+    span: Span,
+    file: FileId,
+    handlers: BTreeMap<Operation, Datum>,
+    holds_len: usize,
+    ctl_boundary: Option<Span>,
+}
+
+#[derive(Clone)]
 struct Context {
     owner: Span,
     file: FileId,
@@ -119,6 +130,10 @@ struct Context {
     member_via: bool,
     handlers: BTreeMap<Operation, Datum>,
     local_effects: BTreeSet<String>,
+    defers: Vec<DeferredAction>,
+    no_ctl: Option<Span>,
+    ctl_boundary: Option<Span>,
+    loop_defer_depth: Option<usize>,
     expected: Mode,
     returns: Vec<Span>,
     declared_contained: Vec<(Access, Span)>,
@@ -147,6 +162,10 @@ impl Context {
             member_via: false,
             handlers: BTreeMap::new(),
             local_effects: BTreeSet::new(),
+            defers: Vec::new(),
+            no_ctl: None,
+            ctl_boundary: None,
+            loop_defer_depth: None,
             expected: Mode::Plain,
             returns: Vec::new(),
             declared_contained: Vec::new(),
@@ -283,7 +302,7 @@ struct Analyzer<'a> {
     storage_read_sites: BTreeMap<storage::ReadSite, usize>,
     functions: Vec<DefinitionCheck>,
     done: BTreeSet<DefinitionId>,
-    cleanups: BTreeMap<Span, CleanupAction>,
+    checked_defers: BTreeSet<Span>,
 }
 
 fn collect(
@@ -322,7 +341,7 @@ fn collect(
         storage_read_sites,
         functions: Vec::new(),
         done: BTreeSet::new(),
-        cleanups: BTreeMap::new(),
+        checked_defers: BTreeSet::new(),
     };
     analyzer.load_interface_calls();
     for file in program.hir.files() {
@@ -361,7 +380,6 @@ pub(super) fn analyze(program: &TypedProgram) -> (Analysis, Vec<Diagnostic>) {
     }
     let mut analysis = Analysis {
         horn_rules: horn::oracle_input(&analyzer.rules),
-        cleanups: std::mem::take(&mut analyzer.cleanups),
         ..Analysis::default()
     };
     for (&definition, import) in &program.imported_functions {

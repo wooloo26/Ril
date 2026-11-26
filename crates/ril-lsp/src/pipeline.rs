@@ -858,7 +858,7 @@ fn match_first_param(
         return Some((score, first.mode, subst));
     }
 
-    // AST fallback for special primitives (`len`, `inner`, `clone`, `derive`, `Fiber::*`, `Channel::*`).
+    // AST fallback for special primitives (`len`, `inner`, `clone`, `derive`, `abort`).
     let (file, fun) = ast_function_for(hir, def_id)?;
     let first = fun.signature.params.first()?;
     let first_ty_id = first.ty?;
@@ -936,7 +936,7 @@ fn match_ast_first_param(
                 }
                 return Some(30);
             }
-            // Special stdlib types (`Scope`, `Task<T>`, `Sender<T>`, `Receiver<T>`, `Type<T>`, primitives).
+            // Special stdlib types (`Type<T>`, primitives).
             if name == "Type" {
                 return matches!(lhs_ty, Ty::TypeValue(_)).then_some(95);
             }
@@ -973,10 +973,6 @@ fn ast_type_matches_concrete(
                 "str" => matches!(actual, Ty::Str),
                 "bytes" => matches!(actual, Ty::Bytes),
                 "never" => matches!(actual, Ty::Never),
-                "Scope" => matches!(actual, Ty::Scope),
-                "Task" => matches!(actual, Ty::Task(_)),
-                "Sender" => matches!(actual, Ty::Sender(_)),
-                "Receiver" => matches!(actual, Ty::Receiver(_)),
                 "Draft" => matches!(actual, Ty::Draft(_)),
                 "Range" => matches!(actual, Ty::Range),
                 _ => match actual {
@@ -1007,7 +1003,6 @@ fn satisfies_known_guard(guard: &str, ty: &Ty, typed: &TypedProgram) -> bool {
             _ => false,
         },
         "Tuple" => matches!(ty, Ty::Tuple(_)),
-        "Sendable" => !matches!(ty, Ty::Scope | Ty::Task(_) | Ty::Draft(_)),
         _ => true,
     }
 }
@@ -1036,8 +1031,7 @@ fn unify_ty(
         | (Ty::Str, Ty::Str)
         | (Ty::Bytes, Ty::Bytes)
         | (Ty::Range, Ty::Range)
-        | (Ty::Mode, Ty::Mode)
-        | (Ty::Scope, Ty::Scope) => Some(100),
+        | (Ty::Mode, Ty::Mode) => Some(100),
         (Ty::Array(a), Ty::Array(b)) => {
             let inner = unify_member(a, b, hir, subst)?;
             Some(if inner == 100 { 100 } else { 85 })
@@ -1082,10 +1076,7 @@ fn unify_ty(
             }
             Some(if min_s == 100 { 100 } else { 85 })
         }
-        (Ty::Draft(a), Ty::Draft(b))
-        | (Ty::Task(a), Ty::Task(b))
-        | (Ty::Sender(a), Ty::Sender(b))
-        | (Ty::Receiver(a), Ty::Receiver(b)) => {
+        (Ty::Draft(a), Ty::Draft(b)) => {
             let inner = unify_ty(a, b, hir, subst)?;
             Some(if inner == 100 { 100 } else { 85 })
         }

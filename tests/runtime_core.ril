@@ -700,12 +700,12 @@ fn main() -> () {
 -- @case static_named_parameter_specializes_before_foreign_linking run-pass backend=both
 -- @file pkg/main.ril
 use pkg/host
-fn choose(meta enabled: bool = true) -> int {
+fn choose(meta enabled: bool = true) @io -> int {
     if enabled { 42 } else { Host::unreachable() }
 }
-fn main() -> () { assert(choose() == 42 && choose(true) == 42) }
+fn main() @io -> () { assert(choose() == 42 && choose(true) == 42) }
 -- @file pkg/host.d.ril
-pub fn unreachable() -> int
+pub fn unreachable() @io -> int
 
 -- @case meta_type_values_do_not_enter_native_argument_lists run-pass backend=both
 fn classify<T>(meta witness: Type<T>) -> int {
@@ -1198,7 +1198,7 @@ fn main() -> () {
     assert(output == 42)
 }
 -- @file pkg/host.d.ril
-pub fn unreachable() -> int
+pub fn unreachable() @io -> int
 
 -- @case guarded_static_coordinate_keeps_its_dependent_return_through_a_call run-pass backend=both
 fn read<T: .{ .. }>(via item: T, meta key: str |> KeyOf<T>) -> infer T.(key) {
@@ -1355,7 +1355,7 @@ type UserId(int)
 type Point(int, int)
 type User(.{ id: int, name: str = "anon" })
 type AliasRec = .{ tag: str, count: int }
-opaque type Token(.{ code: int }) use(drop_token)
+opaque type Token(.{ code: int })
 fn drop_token(new _t: Token) -> () {}
 fn main() -> () {
     let u1 = User::(.{ id: 1 })
@@ -1371,7 +1371,8 @@ fn main() -> () {
     let UserId::(raw_id) = uid
     let alias = AliasRec.{ tag: "ok", count: 5 }
     let .{ tag, count } = alias
-    use tok = Token::(.{ code: 9 })
+    let mut tok = Token::(.{ code: 9 })
+    defer drop_token(new tok)
     let matched = match u2 {
         User::(.{ id: 2, name }) -> name
         _ -> ""

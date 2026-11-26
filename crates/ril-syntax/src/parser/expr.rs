@@ -365,6 +365,7 @@ impl Parser<'_> {
                 }
             }
             "match" => self.match_expr(false)?,
+            "with" => self.with_expr()?,
             "return" | "break" | "continue" => {
                 let kind = match self.text() {
                     "return" => Transfer::Return,
@@ -490,7 +491,7 @@ impl Parser<'_> {
 
     fn match_expr(&mut self, is_meta: bool) -> Result<Expr> {
         self.bump();
-        let mode = self.mode(&[Mode::Ref, Mode::Mut, Mode::Shared, Mode::Via]);
+        let mode = self.mode(&[Mode::Ref, Mode::Mut, Mode::Shared, Mode::New, Mode::Via]);
         let value = self.expr()?;
         self.skip_lines();
         self.open("{", "}", Layout::Block)?;
@@ -521,6 +522,41 @@ impl Parser<'_> {
             mode,
             value,
             arms,
+        })
+    }
+
+    fn with_expr(&mut self) -> Result<Expr> {
+        self.require("with")?;
+        self.open("{", "}", Layout::Block)?;
+        self.separators();
+        let mut handlers = Vec::new();
+        while self.is_handler_arm() {
+            handlers.push(self.handler()?);
+            if !self.separators() {
+                break;
+            }
+        }
+        if handlers.is_empty() {
+            return Err(self.unexpected("expected at least one handler arm in 'with { ... }'"));
+        }
+        if self.is("}") || self.is("where") {
+            return Err(self.unexpected("'with { ... }' block requires a body after handler arms"));
+        }
+        let statements = self.sequence(Some("}"), Context::Block)?;
+        if statements.is_empty() {
+            return Err(self.unexpected("'with { ... }' block requires a body after handler arms"));
+        }
+        let helpers = if self.eat("where") {
+            self.skip_lines();
+            self.sequence(Some("}"), Context::BlockWhere)?
+        } else {
+            Vec::new()
+        };
+        self.close("}")?;
+        Ok(Expr::With {
+            handlers,
+            statements,
+            helpers,
         })
     }
 

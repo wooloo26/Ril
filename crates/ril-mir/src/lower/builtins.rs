@@ -30,7 +30,7 @@ impl Builder<'_, '_> {
             let draft = self.draft(DraftOp::Begin, vec![base]);
             let abort = self.block(0);
             let done = self.block(1);
-            self.traps.push((self.cleanups.len(), abort));
+            self.traps.push((self.scopes.len(), abort));
             let callback = self.expr(update.value)?;
             self.invoke_closure(callback, vec![draft]);
             self.traps.pop();
@@ -42,7 +42,6 @@ impl Builder<'_, '_> {
                 abort,
                 Terminator::Invoke {
                     target: Target::Draft(DraftOp::Abort),
-                    evidence: self.evidence,
                     arguments: vec![draft],
                     normal: outer_unwind,
                     unwind: outer_unwind,
@@ -92,16 +91,7 @@ impl Builder<'_, '_> {
                 .map(|arg| self.expr(arg.value))
                 .collect::<Result<Vec<_>>>()?
         };
-        let symbol = if self.global.typed.hir.primitive_module(id) == Some("Fiber")
-            && name == "join"
-            && args
-                .get(1)
-                .is_some_and(|arg| arg.mode == ril_sema::syntax::Mode::New)
-        {
-            "ril_fiber_join_owned"
-        } else if let Some(symbol) = self.global.typed.hir.runtime_symbol(id) {
-            symbol
-        } else {
+        let Some(symbol) = self.global.typed.hir.runtime_symbol(id) else {
             return Err(self.unsupported(span, &format!("primitive {name}")));
         };
         Ok(self.runtime(symbol, values))
@@ -111,7 +101,7 @@ impl Builder<'_, '_> {
         let action = self.expr(action)?;
         let caught = self.block(0);
         let join = self.block(1);
-        self.traps.push((self.cleanups.len(), caught));
+        self.traps.push((self.scopes.len(), caught));
         let result = self.invoke_closure(action, Vec::new());
         self.traps.pop();
         let ok = self.tag("Ok", vec![result]);

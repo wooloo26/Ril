@@ -91,9 +91,12 @@ impl Datum {
         plain &= !self.requires_new
             && !self.result_fresh
             && !self.live_callable_state
-            && self.task_scope.is_none()
+            && !self.uses_ctl_handler
+            && !self.is_once
+            && self.linear.is_empty()
             && self.results.is_empty()
             && self.latent_effects.is_empty()
+            && self.latent_operations.is_empty()
             && self.environments.is_empty()
             && self.publications.is_empty()
             && self.invocations.is_empty()

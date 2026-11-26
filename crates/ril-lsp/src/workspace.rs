@@ -19,8 +19,6 @@ pub(crate) const STD_MODULES: &[(&str, &str)] = &[
     ("reflect", "Reflect"),
     ("io", "Io"),
     ("file", "File"),
-    ("fiber", "Fiber"),
-    ("channel", "Channel"),
     ("math", "Math"),
     ("os", "Os"),
     ("crypto", "Crypto"),

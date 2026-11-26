@@ -246,9 +246,6 @@ fn prelude_real_sums_platform_math_and_removed_aliases() -> Result<(), String> {
     run_aot(source, "wave-a-ok\n")?;
 
     for bad in [
-        "use ril/fiber\nfn main() @fiber -> () { Fiber::yield() }\n",
-        "use ril/fiber\nfn main() @io @fiber -> () { Fiber::sleep(1) }\n",
-        "use ril/channel\nfn main() -> () { let _ = Channel::mpsc(1) }\n",
         "fn main() -> () { let _ = Numeric::to_int(1.0) }\n",
         "fn main() -> () { let _ = String::from_bytes(bytes\"a\") }\n",
         "fn main() -> () { let _ = Bytes::from_str(\"a\") }\n",
@@ -535,20 +532,18 @@ fn wave_c_soundness_static_checks_narrowing_patterns_and_nominals() -> Result<()
 }
 
 #[test]
-fn wave_d_effects_guards_absorb_panic_and_concurrency() -> Result<(), String> {
+fn wave_d_effects_guards_absorb_panic_and_ctl() -> Result<(), String> {
     let source = r#"
-        use ril/fiber
-        use ril/channel
-
         type Box = .{ var v: int }
         eff Tag { fn mark() -> int }
+        eff Yield { ctl emit(value: int) -> () }
 
         fn make_box() -> new Box { .{ var v: 7 } }
         fn take_plain(f: fn() -> Box) -> int { f().v }
         fn make_ref_reader(ref b: Box) &capture &return(ref b) -> new fn() &up(ref) -> int { \-> b.v }
         fn take_up(mut f: fn() &up -> int) &mut -> int { f() }
         fn ref_alias(ref a: Box, ref b: Box = a) -> int { b.v }
-        fn sendable_eff(f: fn() @Tag -> int) -> bool {
+        fn take_eff(f: fn() @Tag -> int) -> bool {
             let _ = f
             true
         }
@@ -564,23 +559,19 @@ fn wave_d_effects_guards_absorb_panic_and_concurrency() -> Result<(), String> {
             assert(take_up(mut up_fn) == 11)
             assert(ref_alias(ref b) == 11)
 
-            -- Fiber::Zip real alias + Fiber::map + Channel::drain + Sendable user eff
-            let zipped: Fiber::Zip<int, str> = Fiber::run \-> Fiber::zip(\-> 1, \-> "ok")
-            assert(zipped.first == 1 && zipped.second == "ok")
-            let mapped = Fiber::run \-> Fiber::map([1, 2, 3], \x -> x * 2)
-            assert(mapped == [2, 4, 6])
-
-            let sum = Fiber::run \-> {
-                let .{ mut tx, mut rx } = Channel::bounded(4)
-                let Ok() = Channel::send(mut tx, 10) else { panic("send failed") }
-                let Ok() = Channel::send(mut tx, 20) else { panic("send failed") }
-                Channel::close(new tx)
-                var acc = 0
-                Channel::drain(new rx, \v -> { acc += v })
-                acc
+            -- ctl Yield + abort(new k) + defer cleanup
+            let mut out: []int = []
+            var unwound = false
+            with {
+                ctl Yield::emit = \v, new k -> {
+                    Array::push(mut out, v)
+                    if len(ref out) < 2 { k() } else { abort(new k) }
+                }
+                defer { unwound = true }
+                let _ = Array::map([10, 20, 30], \x -> { Yield::emit(x); x })
             }
-            assert(sum == 30)
-            assert(sendable_eff(\-> Tag::mark()))
+            assert(unwound && out == [10, 20])
+            assert(take_eff(\-> Tag::mark()))
 
             println("wave-d-ok")
         }
@@ -624,34 +615,24 @@ fn wave_d_effects_guards_absorb_panic_and_concurrency() -> Result<(), String> {
             Code::E0314,
         ),
         (
-            "use ril/channel\nfn main() -> () { let .{ mut tx, mut rx } = Channel::bounded<int>(1); let _ = absorb_panic(\\-> Channel::close(new tx)); Channel::close_recv(new rx) }\n",
+            "eff Y { ctl step() -> () }\nfn main() -> () { with { ctl Y::step = \\new k -> { let _ = absorb_panic(\\-> abort(new k)); () }; Y::step() } }\n",
             Stage::Access,
             Code::E0608,
         ),
         (
-            "use ril/fiber\nfn main() -> () { var n = 0; let _ = Fiber::run(\\-> Fiber::map([1, 2], \\x -> { n += x; x })) }\n",
+            "eff Y { ctl step() -> () }\nfn main() -> () { with { Y::step = \\new k -> k(); Y::step() } }\n",
+            Stage::Type,
+            Code::E0623,
+        ),
+        (
+            "eff Y { ctl step() -> () }\nfn bad() @Y -> () { defer Y::step() }\nfn main() -> () { with { ctl Y::step = \\new k -> k(); bad() } }\n",
             Stage::Access,
-            Code::E0601,
+            Code::E0616,
         ),
         (
-            "use ril/fiber\neff Tick { fn bump() -> int }\nfn main() -> () { var n = 0; with Tick::bump = \\-> { n += 1; n }; let _ = Fiber::run(\\-> Fiber::map([1, 2], \\_ -> Tick::bump())) }\n",
+            "eff Y { ctl step() -> () }\nfn main() -> () { with { ctl Y::step = \\new k -> { let _ = k; () }; Y::step() } }\n",
             Stage::Access,
-            Code::E0615,
-        ),
-        (
-            "use ril/fiber\nfn main() -> () { let _ = Fiber::run(\\-> Fiber::try_scope(\\mut _ -> 42)) }\n",
-            Stage::Type,
-            Code::E0301,
-        ),
-        (
-            "use ril/channel\nfn main() -> () { let .{ mut tx, mut rx } = Channel::bounded(1); Channel::drain(new tx, \\_ -> ()); Channel::close_recv(new rx) }\n",
-            Stage::Type,
-            Code::E0301,
-        ),
-        (
-            "use ril/fiber\nfn f(t: Fiber::Task<Fiber::Scope>) -> () { let _ = t }\nfn main() -> () {}\n",
-            Stage::Type,
-            Code::E0301,
+            Code::E0625,
         ),
     ] {
         let mut pkg = VirtualPackage::new(Unit::Bin);
@@ -762,7 +743,7 @@ fn wave_e_introspection_type_patterns_and_parser_conformance() -> Result<(), Str
         (
             "fn main() -> () { use ref x = 1; let _ = x }\n",
             Stage::Parse,
-            Code::E0532,
+            Code::E0208,
         ),
         (
             "fn main() -> () { var x = Some(1) else { return }; let _ = x }\n",
@@ -846,8 +827,7 @@ fn primitive_manifest_runtime_symbols_exist_in_ril_rt() {
 fn de_magification_self_hosted_set_stdlib_convert_compile_error_and_wrapper_syntax()
 -> Result<(), String> {
     let source = r#"
-        use ril/fiber
-        use ril/channel
+        eff Ask { ctl value() -> int }
 
         type UserId(int)
         type AliasInt = int
@@ -920,22 +900,14 @@ fn de_magification_self_hosted_set_stdlib_convert_compile_error_and_wrapper_synt
             assert(String::split("", ",") == [""])
             assert(Bytes::to_array(bytes"AZ") == [65, 90])
 
-            -- First-class Fiber/Channel named args & closure effect tracking
-            let result = Fiber::run(\-> {
-                let yield_fn = Fiber::yield_now
-                yield_fn()
-                let .{ mut tx, mut rx } = Channel::bounded<int>(capacity: 2)
-                match Channel::send(item: 41, tx: mut tx) {
-                    Ok() -> ()
-                    Err(_) -> panic("closed")
-                }
-                Channel::close(new tx)
-                match Channel::recv(mut rx) {
-                    Some(v) -> v + 1
-                    None -> 0
-                }
-            })
-            assert(result == 42)
+            -- First-class Array::pop_front & ctl effect resumption
+            let mut q = [41, 99]
+            let head = Array::pop_front(mut q) ?? 0
+            let result = with {
+                ctl Ask::value = \new k -> k(head + 1)
+                Ask::value()
+            }
+            assert(result == 42 && q == [99])
             assert(STATIC_TOTAL == 44)
             println("wave-5-ok")
         }

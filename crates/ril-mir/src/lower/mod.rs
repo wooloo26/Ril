@@ -10,11 +10,11 @@ use std::{
 };
 
 use ril_sema::{
-    access::{Analysis, CleanupAction},
+    access::Analysis,
     hir::{DefinitionId, DefinitionKind, Resolution},
     syntax::{
-        Argument, Ast, Expr, ExprId, Function as SyntaxFunction, Member, Name, Pattern, PatternId,
-        StmtId, StmtKind, StringPart, Transfer,
+        Argument, Ast, Expr, ExprId, Function as SyntaxFunction, Handler, Member, Name, Pattern,
+        PatternId, StmtId, StmtKind, StringPart, Transfer,
     },
     ty::{self, Ty, TypedProgram, Value},
 };
@@ -34,13 +34,18 @@ type Locals = BTreeMap<DefinitionId, Register>;
 
 enum NativeBody<'a> {
     Expression(ExprId),
+    Statements(Vec<StmtId>),
+    CtlArmAdapter {
+        op_arity: usize,
+        abort_k_first: bool,
+    },
     Accessor(&'a [(bool, Member)]),
     Foreign(Arc<ForeignImport>),
     Constructor(&'a str, usize),
     Primitive(&'static str, usize),
 }
 
-pub(super) fn lower(typed: &TypedProgram, analysis: &Analysis) -> Result<Program> {
+pub(super) fn lower(typed: &TypedProgram, _analysis: &Analysis) -> Result<Program> {
     let file = typed.hir.entry;
     let entry = typed
         .hir
@@ -54,22 +59,20 @@ pub(super) fn lower(typed: &TypedProgram, analysis: &Analysis) -> Result<Program
         .ok_or_else(|| Diagnostic::unsupported("native lowering requires an executable entry"))?;
     let mut lowering = Lowering {
         typed,
-        analysis,
         queued: Vec::new(),
         named_index: HashMap::new(),
         ctor_index: HashMap::new(),
         prim_index: HashMap::new(),
         closure_index: HashMap::new(),
+        defer_index: HashMap::new(),
+        stmt_thunk_index: HashMap::new(),
+        adapter_index: HashMap::new(),
         used_symbols: HashSet::new(),
         source_locs: Vec::new(),
         effect_ops: HashMap::new(),
         top_level_fns: collect_top_level_functions(typed),
         boxed: captured_slots(typed),
     };
-    let suspend_at_entry = typed
-        .callables
-        .get(&entry)
-        .is_some_and(|callable| callable.effects.iter().any(|effect| effect == "fiber"));
     let entry = lowering.queue(Work::Named(
         entry,
         BTreeMap::new(),
@@ -83,7 +86,6 @@ pub(super) fn lower(typed: &TypedProgram, analysis: &Analysis) -> Result<Program
     Ok(Program {
         entry,
         functions,
-        suspend_at_entry,
         source_locs: lowering.source_locs,
     })
 }
@@ -121,12 +123,14 @@ fn captured_slots(typed: &TypedProgram) -> BTreeSet<DefinitionId> {
 
 struct Lowering<'a> {
     typed: &'a TypedProgram,
-    analysis: &'a Analysis,
     queued: Vec<Work>,
     named_index: HashMap<DefinitionId, Vec<FunctionId>>,
     ctor_index: HashMap<(DefinitionId, usize), FunctionId>,
     prim_index: HashMap<DefinitionId, FunctionId>,
     closure_index: HashMap<(FileId, ExprId), Vec<FunctionId>>,
+    defer_index: HashMap<(FileId, ExprId), Vec<FunctionId>>,
+    stmt_thunk_index: HashMap<(FileId, Span), Vec<FunctionId>>,
+    adapter_index: HashMap<(usize, bool), FunctionId>,
     used_symbols: HashSet<String>,
     source_locs: Vec<SourceLocEntry>,
     effect_ops: HashMap<String, u64>,
@@ -150,6 +154,25 @@ enum Work {
         captures: Vec<DefinitionId>,
         types: BTreeMap<DefinitionId, Ty>,
         statics: BTreeMap<DefinitionId, Value>,
+    },
+    DeferThunk {
+        file: FileId,
+        syntax: ExprId,
+        captures: Vec<DefinitionId>,
+        types: BTreeMap<DefinitionId, Ty>,
+        statics: BTreeMap<DefinitionId, Value>,
+    },
+    StmtThunk {
+        file: FileId,
+        statements: Vec<StmtId>,
+        span: Span,
+        captures: Vec<DefinitionId>,
+        types: BTreeMap<DefinitionId, Ty>,
+        statics: BTreeMap<DefinitionId, Value>,
+    },
+    CtlArmAdapter {
+        op_arity: usize,
+        abort_k_first: bool,
     },
 }
 
@@ -209,6 +232,47 @@ impl<'a> Lowering<'a> {
                 let function = FunctionId(self.queued.len());
                 self.queued.push(work);
                 self.closure_index.entry(key).or_default().push(function);
+                function
+            }
+            Work::DeferThunk { file, syntax, .. } => {
+                let key = (*file, *syntax);
+                if let Some(bucket) = self.defer_index.get(&key)
+                    && let Some(&func) = bucket
+                        .iter()
+                        .find(|&&f| self.queued.get(f.0) == Some(&work))
+                {
+                    return func;
+                }
+                let function = FunctionId(self.queued.len());
+                self.queued.push(work);
+                self.defer_index.entry(key).or_default().push(function);
+                function
+            }
+            Work::StmtThunk { file, span, .. } => {
+                let key = (*file, *span);
+                if let Some(bucket) = self.stmt_thunk_index.get(&key)
+                    && let Some(&func) = bucket
+                        .iter()
+                        .find(|&&f| self.queued.get(f.0) == Some(&work))
+                {
+                    return func;
+                }
+                let function = FunctionId(self.queued.len());
+                self.queued.push(work);
+                self.stmt_thunk_index.entry(key).or_default().push(function);
+                function
+            }
+            Work::CtlArmAdapter {
+                op_arity,
+                abort_k_first,
+            } => {
+                let key = (*op_arity, *abort_k_first);
+                if let Some(&func) = self.adapter_index.get(&key) {
+                    return func;
+                }
+                let function = FunctionId(self.queued.len());
+                self.queued.push(work);
+                self.adapter_index.insert(key, function);
                 function
             }
         }
@@ -438,10 +502,77 @@ impl<'a> Lowering<'a> {
                         statics,
                     )
                 }
+                Work::DeferThunk {
+                    file,
+                    syntax,
+                    captures,
+                    types,
+                    statics,
+                } => {
+                    let span = self.typed.hir.file(file).ast.expr(syntax).span;
+                    (
+                        "defer",
+                        span,
+                        file,
+                        format!(
+                            "{}:defer@{}",
+                            self.typed.hir.file(file).path.display(),
+                            span.start
+                        ),
+                        NativeBody::Expression(syntax),
+                        &[][..],
+                        Vec::new(),
+                        captures,
+                        types,
+                        statics,
+                    )
+                }
+                Work::StmtThunk {
+                    file,
+                    statements,
+                    span,
+                    captures,
+                    types,
+                    statics,
+                } => (
+                    "ctl_body",
+                    span,
+                    file,
+                    format!(
+                        "{}:ctl_body@{}",
+                        self.typed.hir.file(file).path.display(),
+                        span.start
+                    ),
+                    NativeBody::Statements(statements),
+                    &[][..],
+                    Vec::new(),
+                    captures,
+                    types,
+                    statics,
+                ),
+                Work::CtlArmAdapter {
+                    op_arity,
+                    abort_k_first,
+                } => (
+                    "ctl_arm",
+                    Span::new(FileId::BUILTIN, 0, 0),
+                    self.typed.hir.entry,
+                    format!("ctl_arm_adapter_{op_arity}_{abort_k_first}"),
+                    NativeBody::CtlArmAdapter {
+                        op_arity,
+                        abort_k_first,
+                    },
+                    &[][..],
+                    Vec::new(),
+                    Vec::new(),
+                    BTreeMap::new(),
+                    BTreeMap::new(),
+                ),
             };
         let params: Vec<_> = params.iter().filter(|param| !param.is_meta).collect();
         let arity = match body {
             NativeBody::Accessor(_) => 1,
+            NativeBody::CtlArmAdapter { .. } => 2,
             NativeBody::Constructor(_, arity) | NativeBody::Primitive(_, arity) => arity,
             _ => params.len(),
         };
@@ -462,11 +593,10 @@ impl<'a> Lowering<'a> {
             },
             current: None,
             locals: BTreeMap::new(),
-            cleanups: Vec::new(),
+            scopes: Vec::new(),
             pads: HashMap::new(),
             traps: Vec::new(),
             loops: Vec::new(),
-            evidence: Register(0),
             types,
             statics,
             guards,
@@ -474,7 +604,6 @@ impl<'a> Lowering<'a> {
         };
         let entry = builder.block(arity);
         builder.current = Some(entry);
-        builder.evidence = builder.instruction(Instruction::Evidence);
         let fail = builder.block(0);
         let fail_value = builder.instruction_at(fail, Instruction::Handle(0));
         builder.term_at(fail, Terminator::Return(fail_value));
@@ -501,6 +630,34 @@ impl<'a> Lowering<'a> {
         }
         let result = match body {
             NativeBody::Expression(body) => builder.expr(body)?,
+            NativeBody::Statements(statements) => builder.lower_statements(&statements)?,
+            NativeBody::CtlArmAdapter {
+                op_arity,
+                abort_k_first,
+            } => {
+                let entry_params = builder.params(entry);
+                let args_tuple = entry_params
+                    .first()
+                    .copied()
+                    .unwrap_or_else(|| builder.unit());
+                let k = entry_params
+                    .get(1)
+                    .copied()
+                    .unwrap_or_else(|| builder.unit());
+                let env = builder.instruction(Instruction::Environment);
+                let zero = builder.integer("0");
+                let handler = builder.runtime("ril_rt_load", vec![env, zero]);
+                if abort_k_first {
+                    builder.runtime("ril_rt_abort_ctl", vec![k]);
+                }
+                let mut call_args = Vec::with_capacity(op_arity + 1);
+                for index in 0..op_arity {
+                    let idx = builder.integer(&index.to_string());
+                    call_args.push(builder.runtime("ril_rt_load", vec![args_tuple, idx]));
+                }
+                call_args.push(if abort_k_first { builder.unit() } else { k });
+                builder.invoke_closure(handler, call_args)
+            }
             NativeBody::Foreign(import) => {
                 builder.invoke(Target::Foreign(import), builder.params(entry), false)
             }
@@ -519,25 +676,13 @@ impl<'a> Lowering<'a> {
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-struct Cleanup {
-    action: Clean,
-    evidence: Register,
-    value: Register,
-}
-
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-enum Clean {
-    Function(FunctionId),
-    Sender,
-}
-
-impl Clean {
-    fn target(self) -> Target {
-        match self {
-            Self::Function(id) => Target::Function(id),
-            Self::Sender => Target::Runtime("ril_channel_close"),
-        }
-    }
+pub(super) enum ScopeAction {
+    PopHandler,
+    LeaveFnHandler,
+    Defer {
+        function: FunctionId,
+        environment: Register,
+    },
 }
 
 #[derive(Clone)]
@@ -545,7 +690,7 @@ struct Loop {
     header: BlockId,
     exit: BlockId,
     names: Vec<DefinitionId>,
-    cleanups: usize,
+    scopes: usize,
     counter: Option<Register>,
 }
 
@@ -555,11 +700,10 @@ struct Builder<'b, 'a> {
     function: Function,
     current: Option<BlockId>,
     locals: Locals,
-    cleanups: Vec<Cleanup>,
-    pads: HashMap<(BlockId, Vec<Cleanup>), BlockId>,
+    scopes: Vec<ScopeAction>,
+    pads: HashMap<(BlockId, Vec<ScopeAction>), BlockId>,
     traps: Vec<(usize, BlockId)>,
     loops: Vec<Loop>,
-    evidence: Register,
     types: BTreeMap<DefinitionId, Ty>,
     statics: BTreeMap<DefinitionId, Value>,
     guards: Vec<ExprId>,
@@ -609,7 +753,6 @@ impl<'a> Builder<'_, 'a> {
             Instruction::ConstSmallInt(_) => MirTy::SmallInt,
             Instruction::RawU64(_) => MirTy::RawU64,
             Instruction::FunctionAddress(_) => MirTy::RawFnPtr,
-            Instruction::Evidence => MirTy::Evidence,
             Instruction::Environment => MirTy::Obj,
             Instruction::Integer(_) => MirTy::Int,
             Instruction::Float(_) => MirTy::F64,
@@ -679,16 +822,6 @@ impl<'a> Builder<'_, 'a> {
     }
 
     fn invoke(&mut self, target: Target, arguments: Vec<Register>, cleanup: bool) -> Register {
-        self.invoke_with(target, arguments, cleanup, self.evidence)
-    }
-
-    fn invoke_with(
-        &mut self,
-        target: Target,
-        arguments: Vec<Register>,
-        cleanup: bool,
-        evidence: Register,
-    ) -> Register {
         let Some(block) = self.current else {
             return self.register();
         };
@@ -698,7 +831,6 @@ impl<'a> Builder<'_, 'a> {
             block,
             Terminator::Invoke {
                 target,
-                evidence,
                 arguments,
                 normal,
                 unwind,
@@ -751,40 +883,68 @@ impl<'a> Builder<'_, 'a> {
             .traps
             .last()
             .unwrap_or_else(|| ril_source::ice!("native function has no panic target"));
-        let cleanups = self.cleanups.get(depth..).unwrap_or_default().to_vec();
-        if let Some(&block) = self.pads.get(&(end, cleanups.clone())) {
+        let scopes = self.scopes.get(depth..).unwrap_or_default().to_vec();
+        if let Some(&block) = self.pads.get(&(end, scopes.clone())) {
             return block;
         }
         let mut next = end;
-        for cleanup in &cleanups {
+        for action in &scopes {
             let block = self.block(0);
+            let (target, cleanup) = match *action {
+                ScopeAction::PopHandler => (Target::Runtime("ril_rt_handler_pop"), false),
+                ScopeAction::LeaveFnHandler => (Target::Runtime("ril_rt_handler_leave_fn"), false),
+                ScopeAction::Defer {
+                    function,
+                    environment,
+                } => (
+                    Target::FunctionWithEnv {
+                        function,
+                        environment,
+                    },
+                    true,
+                ),
+            };
             self.term_at(
                 block,
                 Terminator::Invoke {
-                    target: cleanup.action.target(),
-                    evidence: cleanup.evidence,
-                    arguments: vec![cleanup.value],
+                    target,
+                    arguments: Vec::new(),
                     normal: next,
                     unwind: next,
-                    cleanup: true,
+                    cleanup,
                     keep_result: false,
                 },
             );
             next = block;
         }
-        self.pads.insert((end, cleanups), next);
+        self.pads.insert((end, scopes), next);
         next
     }
 
-    fn cleanup_to(&mut self, depth: usize) {
-        while self.cleanups.len() > depth {
-            if let Some(cleanup) = self.cleanups.pop() {
-                self.invoke_with(
-                    cleanup.action.target(),
-                    vec![cleanup.value],
-                    false,
-                    cleanup.evidence,
-                );
+    fn unwind_scopes_to(&mut self, depth: usize) {
+        while self.scopes.len() > depth {
+            if let Some(action) = self.scopes.pop() {
+                match action {
+                    ScopeAction::PopHandler => {
+                        self.runtime("ril_rt_handler_pop", Vec::new());
+                    }
+                    ScopeAction::LeaveFnHandler => {
+                        self.runtime("ril_rt_handler_leave_fn", Vec::new());
+                    }
+                    ScopeAction::Defer {
+                        function,
+                        environment,
+                    } => {
+                        self.invoke(
+                            Target::FunctionWithEnv {
+                                function,
+                                environment,
+                            },
+                            Vec::new(),
+                            false,
+                        );
+                    }
+                }
             }
         }
     }
@@ -847,22 +1007,26 @@ impl<'a> Builder<'_, 'a> {
                     .ok_or_else(|| self.unsupported(span, "namespace as a value"))?;
                 self.read(def, span)
             }
-            Expr::Block { statements, .. } => {
-                let cleanup_depth = self.cleanups.len();
-                let names: Vec<_> = self.locals.keys().copied().collect();
-                let saved_evidence = self.evidence;
-                let mut result = self.unit();
-                for &statement in statements {
-                    if self.current.is_none() {
-                        break;
-                    }
-                    result = self.statement(statement)?;
+            Expr::Block { statements, .. } => self.lower_statements(statements),
+            Expr::With {
+                handlers,
+                statements,
+                ..
+            } => {
+                if handlers.iter().any(|h| h.is_ctl) {
+                    self.lower_with_ctl(handlers, statements, span)
+                } else {
+                    let entries = self.encode_fn_frame(handlers, span)?;
+                    let scope_depth = self.scopes.len();
+                    let names: Vec<_> = self.locals.keys().copied().collect();
+                    self.runtime("ril_rt_handler_push_fn_frame", vec![entries]);
+                    self.scopes.push(ScopeAction::PopHandler);
+                    let result = self.lower_statements(statements)?;
+                    self.unwind_scopes_to(scope_depth);
+                    self.locals
+                        .retain(|&name, _| names.binary_search(&name).is_ok());
+                    Ok(result)
                 }
-                self.cleanup_to(cleanup_depth);
-                self.locals
-                    .retain(|&name, _| names.binary_search(&name).is_ok());
-                self.evidence = saved_evidence;
-                Ok(result)
             }
             Expr::Unary { op, value } => {
                 let value = self.expr(*value)?;
@@ -1036,6 +1200,121 @@ impl<'a> Builder<'_, 'a> {
         }
     }
 
+    fn lower_statements(&mut self, statements: &[StmtId]) -> Result<Register> {
+        let scope_depth = self.scopes.len();
+        let names: Vec<_> = self.locals.keys().copied().collect();
+        let mut result = self.unit();
+        for (index, &stmt_id) in statements.iter().enumerate() {
+            if self.current.is_none() {
+                break;
+            }
+            let stmt_node = self.ast().stmt(stmt_id);
+            if let StmtKind::With(handler) = &stmt_node.value.kind
+                && handler.is_ctl
+            {
+                let rest = statements.get(index + 1..).unwrap_or_default();
+                result =
+                    self.lower_with_ctl(std::slice::from_ref(handler), rest, stmt_node.span)?;
+                break;
+            }
+            result = self.statement(stmt_id)?;
+        }
+        self.unwind_scopes_to(scope_depth);
+        self.locals
+            .retain(|&name, _| names.binary_search(&name).is_ok());
+        Ok(result)
+    }
+
+    fn encode_fn_frame(&mut self, handlers: &[Handler], span: Span) -> Result<Register> {
+        let entries = self.runtime("ril_rt_array", Vec::new());
+        for handler in handlers {
+            let operation = self
+                .global
+                .resolve(handler.operation.span)
+                .ok_or_else(|| self.unsupported(span, "unresolved handler"))?;
+            let label = self
+                .global
+                .typed
+                .operation_evidence(operation, handler.operation.span, &self.types)
+                .ok_or_else(|| self.unsupported(span, "invalid handler operation"))?;
+            let op_id = self.global.effect_op_id(&label);
+            let op_key = self.integer(&op_id.to_string());
+            let is_ctl = self.boolean(false);
+            let value = self.expr(handler.value)?;
+            self.runtime("ril_rt_append", vec![entries, op_key]);
+            self.runtime("ril_rt_append", vec![entries, is_ctl]);
+            self.runtime("ril_rt_append", vec![entries, value]);
+        }
+        Ok(entries)
+    }
+
+    fn lower_with_ctl(
+        &mut self,
+        handlers: &[Handler],
+        statements: &[StmtId],
+        span: Span,
+    ) -> Result<Register> {
+        let entries = self.runtime("ril_rt_array", Vec::new());
+        for handler in handlers {
+            let operation = self
+                .global
+                .resolve(handler.operation.span)
+                .ok_or_else(|| self.unsupported(span, "unresolved handler"))?;
+            let label = self
+                .global
+                .typed
+                .operation_evidence(operation, handler.operation.span, &self.types)
+                .ok_or_else(|| self.unsupported(span, "invalid handler operation"))?;
+            let op_id = self.global.effect_op_id(&label);
+            let op_key = self.integer(&op_id.to_string());
+            let value = self.expr(handler.value)?;
+            let is_ctl = self.boolean(handler.is_ctl);
+            let stored = if handler.is_ctl {
+                let op_arity = self.global.declaration(operation).map_or(0, |decl| {
+                    decl.signature.params.iter().filter(|p| !p.is_meta).count()
+                });
+                let abort_k_first = matches!(
+                    &self.ast().expr(handler.value).value,
+                    Expr::Closure { params, .. }
+                        if params.last().is_some_and(|p| {
+                            p.name.as_ref().is_some_and(|n| n.value == "_")
+                                || p.pattern.is_some_and(|pat| {
+                                    matches!(self.ast().pattern(pat).value, Pattern::Wildcard)
+                                })
+                        })
+                );
+                let env = self.runtime("ril_rt_tuple", Vec::new());
+                self.runtime("ril_rt_append", vec![env, value]);
+                let adapter_fn = self.global.queue(Work::CtlArmAdapter {
+                    op_arity,
+                    abort_k_first,
+                });
+                self.box_closure(adapter_fn, 2, env)
+            } else {
+                value
+            };
+            self.runtime("ril_rt_append", vec![entries, op_key]);
+            self.runtime("ril_rt_append", vec![entries, is_ctl]);
+            self.runtime("ril_rt_append", vec![entries, stored]);
+        }
+        let body_spans: Vec<Span> = statements
+            .iter()
+            .map(|&stmt| self.ast().stmt(stmt).span)
+            .collect();
+        let captures = self.collect_captures_in_spans(body_spans);
+        let body_env = self.environment(&captures);
+        let body_fn = self.global.queue(Work::StmtThunk {
+            file: self.file,
+            statements: statements.to_vec(),
+            span,
+            captures,
+            types: self.types.clone(),
+            statics: self.statics.clone(),
+        });
+        let body_thunk = self.box_closure(body_fn, 0, body_env);
+        Ok(self.runtime("ril_rt_with_ctl", vec![entries, body_thunk]))
+    }
+
     fn statement(&mut self, id: StmtId) -> Result<Register> {
         let node = self.ast().stmt(id);
         match &node.value.kind {
@@ -1043,7 +1322,6 @@ impl<'a> Builder<'_, 'a> {
             StmtKind::Binding {
                 pattern,
                 value: Some(expr),
-                resource,
                 fallback,
                 is_meta,
                 ..
@@ -1057,63 +1335,49 @@ impl<'a> Builder<'_, 'a> {
                     let bad = self.block(0);
                     self.test_pattern(*pattern, value, good, bad)?;
                     let prior = self.locals.clone();
-                    let cleanups = self.cleanups.clone();
+                    let scopes = self.scopes.clone();
                     self.current = Some(bad);
                     self.expr(*fallback)?;
                     self.terminate(Terminator::Unreachable);
                     self.locals = prior;
-                    self.cleanups = cleanups;
+                    self.scopes = scopes;
                     self.current = Some(good);
                 }
                 self.bind(*pattern, value)?;
-                if *resource {
-                    let function = self
-                        .global
-                        .analysis
-                        .cleanups
-                        .get(&node.span)
-                        .copied()
-                        .ok_or_else(|| self.unsupported(node.span, "unresolved cleanup"))?;
-                    self.cleanups.push(Cleanup {
-                        action: match function {
-                            CleanupAction::Function(function) => {
-                                let (types, statics) =
-                                    self.project_callee_env(function, node.span, BTreeMap::new());
-                                Clean::Function(self.global.queue(Work::Named(
-                                    function,
-                                    types,
-                                    Vec::new(),
-                                    statics,
-                                )))
-                            }
-                            CleanupAction::CloseSender => Clean::Sender,
-                        },
-                        evidence: self.evidence,
-                        value,
-                    });
-                }
                 Ok(self.unit())
             }
-            StmtKind::With(handlers) => {
-                let mut installed = Vec::new();
-                for handler in handlers {
-                    let operation = self
-                        .global
-                        .resolve(handler.operation.span)
-                        .ok_or_else(|| self.unsupported(node.span, "unresolved handler"))?;
-                    let label = self
-                        .global
-                        .typed
-                        .operation_evidence(operation, handler.operation.span, &self.types)
-                        .ok_or_else(|| self.unsupported(node.span, "invalid handler operation"))?;
-                    let op_id = self.global.effect_op_id(&label);
-                    let key = self.instruction(Instruction::RawU64(op_id));
-                    installed.push((key, self.expr(handler.value)?));
-                }
-                for (name, handler) in installed {
-                    self.evidence =
-                        self.runtime("ril_rt_evidence_push", vec![self.evidence, name, handler]);
-                }
+            StmtKind::Defer(defer_expr) => {
+                let defer_span = self.ast().expr(*defer_expr).span;
+                let captures = self.collect_captures_in_spans(std::iter::once(defer_span));
+                let environment = self.environment(&captures);
+                let function = self.global.queue(Work::DeferThunk {
+                    file: self.file,
+                    syntax: *defer_expr,
+                    captures,
+                    types: self.types.clone(),
+                    statics: self.statics.clone(),
+                });
+                self.scopes.push(ScopeAction::Defer {
+                    function,
+                    environment,
+                });
+                Ok(self.unit())
+            }
+            StmtKind::With(handler) => {
+                let operation = self
+                    .global
+                    .resolve(handler.operation.span)
+                    .ok_or_else(|| self.unsupported(node.span, "unresolved handler"))?;
+                let label = self
+                    .global
+                    .typed
+                    .operation_evidence(operation, handler.operation.span, &self.types)
+                    .ok_or_else(|| self.unsupported(node.span, "invalid handler operation"))?;
+                let op_id = self.global.effect_op_id(&label);
+                let key = self.instruction(Instruction::RawU64(op_id));
+                let value = self.expr(handler.value)?;
+                self.runtime("ril_rt_handler_push_fn", vec![key, value]);
+                self.scopes.push(ScopeAction::PopHandler);
                 Ok(self.unit())
             }
             _ => Ok(self.unit()),

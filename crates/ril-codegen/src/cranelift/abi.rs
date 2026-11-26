@@ -71,11 +71,7 @@ impl<M: Module> MirToClifTranslator<'_, M> {
             .ok_or_else(|| diagnostic("runtime function has no return value"))
     }
 
-    pub(super) fn wrapper(
-        &mut self,
-        entry: FunctionId,
-        suspend_at_entry: bool,
-    ) -> Result<(FuncId, String)> {
+    pub(super) fn wrapper(&mut self, entry: FunctionId) -> Result<(FuncId, String)> {
         let mut context = self.module.make_context();
         context.func.signature = self.signature(0, Some(types::I32));
         let id = self
@@ -89,19 +85,9 @@ impl<M: Module> MirToClifTranslator<'_, M> {
         let rt = self.handle(&mut builder, "ril_rt_create", &[])?;
         let null = builder.ins().iconst(types::I64, RIL_UNIT);
         let function = self.function_id(entry)?;
-        let value = if suspend_at_entry {
-            let entry = self.module.declare_func_in_func(function, builder.func);
-            let address = builder.ins().func_addr(types::I64, entry);
-            let closure = self.handle(
-                &mut builder,
-                "ril_rt_closure",
-                &[rt, address, null, null, null],
-            )?;
-            self.handle(&mut builder, "ril_fiber_run", &[rt, closure])?
-        } else {
-            self.call(&mut builder, function, &[rt, null, null])
-                .ok_or_else(|| diagnostic("entry has no return value"))?
-        };
+        let value = self
+            .call(&mut builder, function, &[rt, null])
+            .ok_or_else(|| diagnostic("entry has no return value"))?;
         let exit = self
             .native(
                 &mut builder,

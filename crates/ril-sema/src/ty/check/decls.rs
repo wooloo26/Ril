@@ -44,6 +44,57 @@ impl Checker<'_> {
         }
         self.generic_env(&mut env, &function.generics);
         let call = Arc::new(self.callable(&mut env, &function.signature, true));
+        if self.hir.operation_effect(id).is_some() {
+            let mut has_open = false;
+            for param in &call.parameters {
+                transform(&param.ty, &mut |part| {
+                    if let Ty::Callable(c) = part
+                        && (c.open_effects || c.open_state)
+                    {
+                        has_open = true;
+                    }
+                    None
+                });
+            }
+            transform(&call.result, &mut |part| {
+                if let Ty::Callable(c) = part
+                    && (c.open_effects || c.open_state)
+                {
+                    has_open = true;
+                }
+                None
+            });
+            if has_open {
+                self.error(
+                    Code::E0547,
+                    function.name.span,
+                    "open '@', '&', and '@&' are prohibited in effect operation declarations",
+                );
+            }
+            if function.signature.is_ctl {
+                for (syntax_param, param) in function.signature.params.iter().zip(&call.parameters)
+                {
+                    if matches!(param.mode, Mode::Ref | Mode::Mut) {
+                        let span = syntax_param
+                            .name
+                            .as_ref()
+                            .map_or(function.name.span, |n| n.span);
+                        self.error(
+                            Code::E0401,
+                            span,
+                            "ctl effect operation forbids call-scoped ref/mut parameters",
+                        );
+                    }
+                }
+                if matches!(function.signature.result_mode, Mode::Ref | Mode::Shared) {
+                    self.error(
+                        Code::E0546,
+                        function.name.span,
+                        "ctl effect operation forbids ref(...)/^mut(...) root returns",
+                    );
+                }
+            }
+        }
         if self.exposes_type(&Ty::Callable(Arc::clone(&call)), |id| {
             let def = self.hir.definition(id);
             def.name.span.file == file
@@ -368,13 +419,6 @@ impl Checker<'_> {
                             if matches!(representation, Ty::Record(..)) {
                                 self.record_adts.insert(id);
                             }
-                            if decl.cleanup.is_some() && self.is_value_ty(&local, &representation) {
-                                self.error(
-                                    Code::E0541,
-                                    decl.name.span,
-                                    "value-backed nominal type cannot declare use(close)",
-                                );
-                            }
                             self.nominal_layouts.insert(id, representation);
                         }
                     }
@@ -410,13 +454,6 @@ impl Checker<'_> {
                             && let Some(id) = self.resolve(decl.name.span)
                         {
                             self.nominal_layouts.insert(id, Ty::Unit);
-                            if decl.cleanup.is_some() {
-                                self.error(
-                                    Code::E0541,
-                                    decl.name.span,
-                                    "unit nominal type cannot declare use(close)",
-                                );
-                            }
                         }
                     }
                 }
@@ -426,32 +463,113 @@ impl Checker<'_> {
                     self.statement(env, operation, false);
                 }
             }
-            StmtKind::With(handlers) => {
-                for handler in handlers {
-                    if let Some(operation) = self.resolve(handler.operation.span)
-                        && self.hir.operation_effect(operation).is_some()
-                    {
-                        let mut expected = (*self.declare_function(operation)).clone();
-                        let bindings = self.operation_instance(env, operation, &handler.operation);
-                        for parameter in &mut expected.parameters {
-                            parameter.label = None;
-                            parameter.ty = substitute(&parameter.ty, &bindings);
-                        }
-                        expected.result = substitute(&expected.result, &bindings);
-                        expected.open_effects = true;
-                        expected.open_state = false;
-                        if !expected.state.iter().any(|s| s == "up") {
-                            expected.state.push("up".into());
-                        }
-                        self.expect(env, handler.value, &Ty::Callable(Arc::new(expected)));
-                    } else {
-                        self.expr(env, handler.value, None);
-                    }
-                }
+            StmtKind::Defer(expr) => {
+                self.expect(env, *expr, &Ty::Unit);
+            }
+            StmtKind::With(handler) => {
+                let answer = env.expected_return.clone();
+                self.check_handler_arm(env, handler, answer.as_ref());
             }
             StmtKind::Import(_) | StmtKind::Error => {}
         }
         Ty::Unit
+    }
+
+    pub(in crate::ty) fn check_handler_arm(
+        &mut self,
+        env: &mut Env,
+        handler: &syntax::Handler,
+        answer_ty: Option<&Ty>,
+    ) -> Option<Ty> {
+        if let Some(operation) = self.resolve(handler.operation.span)
+            && self.hir.operation_effect(operation).is_some()
+        {
+            let op_is_ctl = self.hir.is_ctl_operation(operation);
+            if handler.is_ctl != op_is_ctl {
+                self.error(
+                    Code::E0623,
+                    handler.operation.span,
+                    if op_is_ctl {
+                        "ctl operation handler requires leading 'ctl' keyword"
+                    } else {
+                        "direct fn operation handler cannot use 'ctl' keyword"
+                    },
+                );
+            }
+            if op_is_ctl && env.phase != Phase::Runtime && !env.shadow {
+                self.error(
+                    Code::E0810,
+                    handler.operation.span,
+                    "ctl effect handlers are prohibited in static evaluation",
+                );
+            }
+            let mut expected = (*self.declare_function(operation)).clone();
+            let bindings = self.operation_instance(env, operation, &handler.operation);
+            for parameter in &mut expected.parameters {
+                parameter.label = None;
+                parameter.ty = substitute(&parameter.ty, &bindings);
+            }
+            let op_result = substitute(&expected.result, &bindings);
+            expected.is_ctl = false;
+            expected.once = false;
+            expected.open_effects = true;
+            expected.open_state = false;
+            if !expected.state.iter().any(|s| s == "up") {
+                expected.state.push("up".into());
+            }
+            if op_is_ctl {
+                let ans = answer_ty.cloned().unwrap_or_else(|| self.fresh());
+                let k_params = if self.normalize(&op_result) == Ty::Unit {
+                    Vec::new()
+                } else {
+                    vec![crate::ty::Parameter {
+                        label: None,
+                        mode: Mode::Plain,
+                        ty: op_result,
+                        optional: false,
+                        is_meta: false,
+                    }]
+                };
+                let norm_ans = self.normalize(&ans);
+                let k_result_mode = if self.is_value_ty(env, &norm_ans) {
+                    Mode::Plain
+                } else {
+                    Mode::New
+                };
+                let k_ty = Ty::Callable(Arc::new(Callable {
+                    is_ctl: true,
+                    once: false,
+                    parameters: k_params,
+                    result: ans.clone(),
+                    result_mode: k_result_mode,
+                    effects: Vec::new(),
+                    open_effects: false,
+                    state: Vec::new(),
+                    open_state: false,
+                }));
+                expected.parameters.push(crate::ty::Parameter {
+                    label: None,
+                    mode: Mode::New,
+                    ty: k_ty,
+                    optional: false,
+                    is_meta: false,
+                });
+                expected.result = ans.clone();
+                expected.result_mode = Mode::Infer;
+                let actual = self.expect(env, handler.value, &Ty::Callable(Arc::new(expected)));
+                if let Ty::Callable(c) = self.normalize(&actual) {
+                    return Some(c.result.clone());
+                }
+                Some(ans)
+            } else {
+                expected.result = op_result;
+                self.expect(env, handler.value, &Ty::Callable(Arc::new(expected)));
+                None
+            }
+        } else {
+            self.expr(env, handler.value, None);
+            None
+        }
     }
 
     pub(in crate::ty) fn metadata(
@@ -470,15 +588,8 @@ impl Checker<'_> {
         let ty = self.normalize(&ty);
         let mut invalid = false;
         transform(&ty, &mut |part| {
-            invalid |= matches!(
-                part,
-                Ty::Callable(_)
-                    | Ty::Draft(_)
-                    | Ty::Scope
-                    | Ty::Task(_)
-                    | Ty::Sender(_)
-                    | Ty::Receiver(_)
-            ) || matches!(part, Ty::Adt(adt) if adt.kind == AdtKind::Foreign);
+            invalid |= matches!(part, Ty::Callable(_) | Ty::Draft(_))
+                || matches!(part, Ty::Adt(adt) if adt.kind == AdtKind::Foreign);
             None
         });
         let result = if ty.contains_type_value() {

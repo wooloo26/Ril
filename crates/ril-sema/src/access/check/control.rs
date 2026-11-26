@@ -10,11 +10,9 @@ impl Analyzer<'_> {
         mut value: Datum,
         site: BindingSite,
     ) {
-        let resource = site == BindingSite::Resource;
         let node = self.ast(ctx.file).pattern(id);
         match &node.value {
             Pattern::Binding(own, name) => {
-                self.check_resource_binding(name.span, &value, resource);
                 let binding = self
                     .definition(name.span)
                     .unwrap_or_else(|| ril_source::ice!("unresolved binding pattern"));
@@ -28,11 +26,7 @@ impl Analyzer<'_> {
                     own.mode
                 };
                 let variable = own.variable || storage.variable;
-                let access = if resource && mode != Mode::Mut {
-                    Access::Ref
-                } else {
-                    Access::from_mode(mode)
-                };
+                let access = Access::from_mode(mode);
                 if variable {
                     self.requirement(
                         ctx,
@@ -60,7 +54,7 @@ impl Analyzer<'_> {
                         "binding cannot manufacture write authority",
                     ),
                     Mode::Shared => self.require_shared_local(ctx, declaration, &value),
-                    Mode::Ref if !resource => {
+                    Mode::Ref => {
                         self.check_ref_binding(name.span, &value, variable);
                         if variable {
                             self.check_ref_scope(name.span, &value, ctx.scope);
@@ -87,6 +81,8 @@ impl Analyzer<'_> {
                     _ => {}
                 }
                 if let Some(ty) = self.program.bindings.get(&binding) {
+                    let is_exclusive_linear = matches!(ty, Ty::Adt(adt) if adt.kind == AdtKind::Foreign)
+                        || matches!(ty, Ty::Callable(c) if c.is_ctl || c.once);
                     if self.program.is_value(ty)
                         && matches!(mode, Mode::Mut | Mode::Shared | Mode::Ref)
                     {
@@ -95,21 +91,27 @@ impl Analyzer<'_> {
                             name.span,
                             "value-type binding cannot carry live access",
                         );
-                    } else if matches!(ty, Ty::Adt(adt) if adt.kind == AdtKind::Foreign) && variable
-                    {
+                    } else if is_exclusive_linear && variable {
                         self.error(
                             Code::E0532,
                             name.span,
-                            "foreign handle cannot be stored in a reassignable slot",
+                            "foreign handle, ctl continuation, or &once callable cannot be stored in a reassignable slot",
                         );
-                    } else if matches!(ty, Ty::Adt(adt) if adt.kind == AdtKind::Foreign)
-                        && mode == Mode::Plain
-                        && !resource
-                    {
-                        self.error(Code::E0535, name.span, "foreign handle cannot be frozen");
+                    } else if is_exclusive_linear && mode == Mode::Plain {
+                        self.error(
+                            Code::E0535,
+                            name.span,
+                            "foreign handle, ctl continuation, or &once callable cannot be frozen",
+                        );
+                    } else if is_exclusive_linear && mode == Mode::Shared {
+                        self.error(
+                            Code::E0510,
+                            name.span,
+                            "foreign handle, ctl continuation, or &once callable cannot be shared",
+                        );
                     }
                 }
-                if mode == Mode::Plain && !resource {
+                if mode == Mode::Plain {
                     self.freeze_value(ctx, ledger, &mut value, name.span);
                 } else if mode != Mode::Via {
                     value.receive_binding(access);
@@ -131,13 +133,6 @@ impl Analyzer<'_> {
                 );
             }
             Pattern::Wildcard => {
-                if resource && storage.mode == Mode::Mut {
-                    self.error(
-                        Code::E0527,
-                        node.span,
-                        "use mut _ cannot use write authority",
-                    );
-                }
                 self.discard(ledger, &value);
             }
             Pattern::Tuple(items) => {
@@ -217,7 +212,6 @@ impl Analyzer<'_> {
                     } else {
                         Datum::default()
                     };
-                    self.check_resource_binding(name.span, &slice, resource);
                     slice.transform(&mut |origin| {
                         origin.dependencies.insert(decl.into());
                     });
@@ -268,22 +262,45 @@ impl Analyzer<'_> {
             },
             Pattern::Constructor(_, payload) => {
                 let items = payload.as_deref().unwrap_or(&[]);
+                let destructive = storage.mode == Mode::New;
+                let inner_storage = if destructive {
+                    Storage::default()
+                } else {
+                    storage.clone()
+                };
                 for (i, &item) in items.iter().enumerate() {
-                    let child = self.project_observed(
+                    let item_span = self.ast(ctx.file).pattern(item).span;
+                    let proj_mode = if destructive && items.len() == 1 {
+                        Mode::Mut
+                    } else {
+                        Mode::Plain
+                    };
+                    let mut child = self.project_observed(
                         ctx,
                         ledger,
                         &value,
-                        (
-                            Coordinate::Index(i.to_string()),
-                            Mode::Plain,
-                            self.ast(ctx.file).pattern(item).span,
-                        ),
+                        (Coordinate::Index(i.to_string()), proj_mode, item_span),
                     );
+                    if destructive && items.len() == 1 {
+                        child.requires_new = true;
+                        for root in &mut child.roots {
+                            root.new = true;
+                            root.mode = Access::Mut;
+                        }
+                        let item_ty = self.ty(item_span);
+                        if self.program.is_must_consume(item_ty) && child.all_linear().is_empty() {
+                            ledger.record_linear(
+                                &mut child,
+                                item_span,
+                                matches!(item_ty, Ty::Array(_) | Ty::Map(..)),
+                            );
+                        }
+                    }
                     if items.len() > 1
                         && let Pattern::Binding(own, name) = &self.ast(ctx.file).pattern(item).value
                     {
                         let requested = if own.mode == Mode::Plain {
-                            storage.mode
+                            inner_storage.mode
                         } else {
                             own.mode
                         };
@@ -297,10 +314,33 @@ impl Analyzer<'_> {
                             );
                         }
                     }
-                    self.bind(ctx, ledger, item, storage, child, site);
+                    self.bind(ctx, ledger, item, &inner_storage, child, site);
                 }
             }
             Pattern::Record { fields, .. } => {
+                let record_ty = self.ty(node.span).clone();
+                let mut all_must_consume_bound = true;
+                if let Ty::Record(schema_fields, _) = &record_ty {
+                    for (fname, member) in schema_fields {
+                        if self.program.is_must_consume(&member.ty) {
+                            let bound = fields.iter().any(|f| {
+                                f.name.value == *fname
+                                    && !f.pattern.is_some_and(|p| {
+                                        matches!(
+                                            self.ast(ctx.file).pattern(p).value,
+                                            Pattern::Wildcard
+                                        )
+                                    })
+                            });
+                            if !bound {
+                                all_must_consume_bound = false;
+                            }
+                        }
+                    }
+                }
+                if value.requires_new && all_must_consume_bound {
+                    ledger.consume_datum_linear(&value);
+                }
                 for field in fields {
                     let coordinate = Coordinate::Field(field.name.value.clone());
                     let mode = self.schema_mode(self.ty(node.span), &coordinate).0;
@@ -308,7 +348,7 @@ impl Analyzer<'_> {
                     let span = field.pattern.map_or(field.name.span, |item| {
                         self.ast(ctx.file).pattern(item).span
                     });
-                    let child =
+                    let mut child =
                         self.project_observed(ctx, ledger, &value, (coordinate, mode, span));
                     let mut received = field.storage.clone();
                     if received.mode == Mode::Plain {
@@ -337,9 +377,24 @@ impl Analyzer<'_> {
                         if field.storage.mode == Mode::Via {
                             self.check_via_pattern(ctx, pattern, Mode::Via);
                         }
+                        if value.requires_new && requested == Mode::Mut {
+                            child.requires_new = true;
+                            for root in &mut child.roots {
+                                root.new = true;
+                                root.mode = Access::Mut;
+                            }
+                            let pat_ty = self.ty(span);
+                            if self.program.is_must_consume(pat_ty) && child.all_linear().is_empty()
+                            {
+                                ledger.record_linear(
+                                    &mut child,
+                                    span,
+                                    matches!(pat_ty, Ty::Array(_) | Ty::Map(..)),
+                                );
+                            }
+                        }
                         self.bind(ctx, ledger, pattern, &received, child, site);
                     } else {
-                        let mut child = child;
                         let decl = self.declaration(field.name.span).unwrap_or(field.name.span);
                         if requested == Mode::Via {
                             if ctx.via.is_empty() && !ctx.member_via {
@@ -376,7 +431,25 @@ impl Analyzer<'_> {
                         if ctx.in_function {
                             self.binding_scopes.insert(decl, ctx.scope);
                         }
-                        self.check_resource_binding(field.name.span, &child, resource);
+                        if value.requires_new && requested == Mode::Mut {
+                            child.requires_new = true;
+                            for root in &mut child.roots {
+                                root.new = true;
+                                root.mode = Access::Mut;
+                            }
+                            if let Some(ty) = self
+                                .definition(field.name.span)
+                                .and_then(|id| self.program.bindings.get(&id))
+                                && self.program.is_must_consume(ty)
+                                && child.all_linear().is_empty()
+                            {
+                                ledger.record_linear(
+                                    &mut child,
+                                    field.name.span,
+                                    matches!(ty, Ty::Array(_) | Ty::Map(..)),
+                                );
+                            }
+                        }
                         child.transform(&mut |origin| {
                             origin.dependencies.insert(decl.into());
                         });
@@ -660,6 +733,7 @@ impl Analyzer<'_> {
             let mut inside = head.clone();
             let mut local = ctx.clone();
             local.scope = body_span;
+            local.loop_defer_depth = Some(local.defers.len());
             let index = (exact.is_some() && exact_elements).then_some(iteration - 1);
             let (mut exit, traversal) = prepare(self, &mut local, &mut inside, index);
             local.loop_owner = Some(owner);

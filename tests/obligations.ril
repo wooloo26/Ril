@@ -62,58 +62,63 @@ fn read() -> int {
         Clock::now = \-> 2
         Clock::now = \-> 4
         -- ^ E0622
+        Clock::now()
     }
-    Clock::now()
 }
 
--- @case resource_needs_cleanup compile-fail E0541
+-- @case use_is_import_only compile-fail E0208 stage=parse
 fn use_number() -> () { use number = 0 }
--- ^ E0541
+-- ^ E0208
 
 -- @case synchronous_cleanup compile-pass
-opaque type Handle(.{ id: int }) use(close)
-fn close(new resource: Handle) @io -> () { println("closed") }
+opaque type Handle(.{ id: int })
+fn close(new _resource: Handle) @io -> () { println("closed") }
 fn acquire() -> new Handle { Handle::(.{ id: 42 }) }
 fn scoped() @io -> int {
-    use handle = acquire()
+    let mut handle = acquire()
+    defer close(new handle)
     handle.id
 }
 
 -- @case synchronous_cleanup_may_diverge compile-pass
-opaque type Handle(.{ id: int }) use(close)
+opaque type Handle(.{ id: int })
 fn close(new _resource: Handle) -> () { while true {} }
 fn scoped() -> () {
-    use handle = Handle::(.{ id: 1 })
+    let mut handle = Handle::(.{ id: 1 })
+    defer close(new handle)
 }
 
 -- @case a_cleanup_handler_write_requires_a_caller_state_clause compile-fail E0510
 type Cell = .{ var count: int }
 eff Finalize { fn record(id: int) -> () }
-opaque type Handle(.{ id: int }) use(close)
+opaque type Handle(.{ id: int })
 fn close(new resource: Handle) @Finalize -> () { Finalize::record(resource.id) }
 fn scoped(mut target: Cell) -> () {
 -- ^ E0510
     with Finalize::record = \id: int -> { target.count += id }
-    use handle = Handle::(.{ id: 1 })
+    let mut handle = Handle::(.{ id: 1 })
+    defer close(new handle)
 }
 
--- @case resource_does_not_escape compile-fail E0604
-opaque type Handle(.{ id: int }) use(close)
-fn close(new resource: Handle) -> () {}
+-- @case defer_reserves_handoff_until_block_exit compile-fail E0549
+opaque type Handle(.{ id: int })
+fn close(new _resource: Handle) -> () {}
 fn acquire() -> new Handle { Handle::(.{ id: 42 }) }
 fn scoped() -> new Handle {
-    use handle = acquire()
+    let mut handle = acquire()
+    defer close(new handle)
+    -- ^ E0549
     new handle
-    -- ^ E0604
 }
 
--- @case cleanup_cannot_suspend compile-fail E0616
-use ril/fiber
-opaque type Handle(.{ id: int }) use(close)
-fn close(new resource: Handle) @fiber -> () { Fiber::yield_now() }
+-- @case cleanup_cannot_perform_unhandled_ctl compile-fail E0616
+eff Yield { ctl step() -> () }
+opaque type Handle(.{ id: int })
+fn close(new _resource: Handle) @Yield -> () { Yield::step() }
 fn acquire() -> new Handle { Handle::(.{ id: 42 }) }
-fn scoped() @fiber -> int {
-    use handle = acquire()
+fn scoped() @Yield -> int {
+    let mut handle = acquire()
+    defer close(new handle)
     -- ^ E0616
     handle.id
 }
@@ -172,8 +177,8 @@ fn invalid() -> int {
         Base::operation = \-> 1
         Larger::operation = \-> 2
         -- ^ E0622
+        Larger::operation()
     }
-    Larger::operation()
 }
 
 -- @case effect_spreads_cannot_cycle compile-fail E0313 stage=hir
@@ -239,13 +244,14 @@ fn read() -> int {
     }
 }
 
--- @case cleanup_uses_evidence_at_resource_binding compile-fail E0612
+-- @case defer_requires_covering_handler_before_defer compile-fail E0612
 eff Notify { fn stop() -> () }
-opaque type Handle(.{ id: int }) use(close)
-fn close(new resource: Handle) @Notify -> () { Notify::stop() }
+opaque type Handle(.{ id: int })
+fn close(new _resource: Handle) @Notify -> () { Notify::stop() }
 fn acquire() -> new Handle { Handle::(.{ id: 42 }) }
 fn read() -> int {
-    use handle = acquire()
+    let mut handle = acquire()
+    defer close(new handle)
     with Notify::stop = \-> ()
     handle.id
 }
@@ -395,85 +401,64 @@ fn update() -> []int {
     }
 }
 
--- @case scoped_resource_can_be_observed_and_mutated_by_helpers compile-pass
-opaque type Handle(.{ var id: int }) use(close)
+-- @case defer_resource_can_be_observed_and_mutated_by_helpers compile-pass
+opaque type Handle(.{ var id: int })
 fn close(new _handle: Handle) -> () {}
 fn observe(ref handle: Handle) -> int { handle.id }
 fn update(mut handle: Handle) &mut -> () { handle.id += 1 }
 fn work() -> int {
-    use mut handle = Handle::(.{ id: 41 })
+    let mut handle = Handle::(.{ id: 41 })
+    defer close(new handle)
     update(mut handle)
     observe(ref handle)
 }
 
--- @case scoped_resource_plain_use_can_be_unused compile-pass
-opaque type Handle(.{ id: int }) use(close)
-fn close(new _handle: Handle) -> () {}
-fn work() -> () { use handle = Handle::(.{ id: 42 }) }
-
--- @case scoped_resource_read_only_view_cannot_write compile-fail E0520
-opaque type Handle(.{ var id: int }) use(close)
+-- @case defer_handoff_satisfies_mut_use compile-pass
+opaque type Handle(.{ id: int })
 fn close(new _handle: Handle) -> () {}
 fn work() -> () {
-    use handle = Handle::(.{ id: 42 })
+    let mut handle = Handle::(.{ id: 42 })
+    defer close(new handle)
+}
+
+-- @case defer_read_only_binding_cannot_write compile-fail E0520
+opaque type Handle(.{ var id: int })
+fn close(ref _handle: Handle) -> () {}
+fn work() -> () {
+    let handle = Handle::(.{ id: 42 })
+    defer close(ref handle)
     handle.id = 43
     -- ^ E0520
 }
 
--- @case scoped_resource_mutable_reception_needs_body_write compile-fail E0527
-opaque type Handle(.{ var id: int }) use(close)
-fn close(new _handle: Handle) -> () {}
-fn work() -> int {
-    use mut handle = Handle::(.{ id: 42 })
-    -- ^ E0527
-    handle.id
-}
-
--- @case scoped_resource_cannot_be_aliased_by_let compile-fail E0604
-opaque type Handle(.{ id: int }) use(close)
-fn close(new _handle: Handle) -> () {}
-fn work() -> int {
-    use handle = Handle::(.{ id: 42 })
-    let ref alias = ref handle
-    -- ^ E0604
-    alias.id
-}
-
--- @case scoped_resource_cannot_be_captured_by_closure compile-fail E0604
-opaque type Handle(.{ id: int }) use(close)
-fn close(new _handle: Handle) -> () {}
-fn work() -> int {
-    use handle = Handle::(.{ id: 42 })
-    let callback = \-> handle.id
-    -- ^ E0604
-    callback()
-}
-
--- @case scoped_resource_cannot_be_handed_off_before_cleanup compile-fail E0604
-opaque type Handle(.{ id: int }) use(close)
+-- @case defer_cannot_be_handed_off_before_cleanup compile-fail E0549
+opaque type Handle(.{ id: int })
 fn close(new _handle: Handle) -> () {}
 fn work() -> () {
-    use handle = Handle::(.{ id: 42 })
+    let mut handle = Handle::(.{ id: 42 })
+    defer close(new handle)
+    -- ^ E0549
     close(new handle)
-    -- ^ E0604
 }
 
--- @case cleanup_mutation_requires_writable_reception compile-fail E0520
-opaque type Handle(.{ var id: int }) use(close)
+-- @case defer_lifo_order_rejects_use_after_handoff compile-fail E0549
+opaque type Handle(.{ var id: int })
+fn flush(mut handle: Handle) &mut -> () { handle.id += 1 }
+fn close(new _handle: Handle) -> () {}
+fn work() -> () {
+    let mut handle = Handle::(.{ id: 42 })
+    defer flush(mut handle)
+    -- ^ E0549
+    defer close(new handle)
+}
+
+-- @case defer_mutation_requires_writable_binding compile-fail E0520
+opaque type Handle(.{ var id: int })
 fn close(mut handle: Handle) &mut -> () { handle.id = 42 }
 fn work() -> () {
     let frozen = Handle::(.{ id: 41 })
-    use scoped = frozen
+    defer close(mut frozen)
     -- ^ E0520
-}
-
--- @case an_observing_resource_cannot_be_registered_twice compile-fail E0604
-opaque type Handle(.{ id: int }) use(close)
-fn close(ref handle: Handle) -> () { assert(handle.id == 42) }
-fn work() -> () {
-    use original = Handle::(.{ id: 42 })
-    use duplicate = original
-    -- ^ E0604
 }
 
 -- @case deriving_without_replacing_a_callable_preserves_its_snapshot_contract compile-fail E0535 no-prelude

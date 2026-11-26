@@ -75,8 +75,14 @@ impl GcRuntime {
                         }
                     }
                 }
-                (Some(Object::Closure { .. } | Object::Draft { .. }), _)
-                | (_, Some(Object::Closure { .. } | Object::Draft { .. })) => {
+                (
+                    Some(Object::Closure { .. } | Object::Continuation(_) | Object::Draft { .. }),
+                    _,
+                )
+                | (
+                    _,
+                    Some(Object::Closure { .. } | Object::Continuation(_) | Object::Draft { .. }),
+                ) => {
                     return Err("object does not support equality");
                 }
                 _ => return Ok(false),
@@ -86,7 +92,10 @@ impl GcRuntime {
     }
 
     pub fn clone_graph(&mut self, root: Value) -> Result<Value, &'static str> {
-        if matches!(self.object(root), Some(Object::Closure { .. })) {
+        if matches!(
+            self.object(root),
+            Some(Object::Closure { .. } | Object::Continuation(_))
+        ) {
             return Err("object cannot be cloned");
         }
         self.pin(root);
@@ -237,10 +246,7 @@ impl GcRuntime {
                 Some(Object::F64(f)) => format!("{:?}", f64::from_bits(*f)),
                 Some(Object::Str(value)) => text::inspect_string(value),
                 Some(Object::Closure { .. }) => "<fn>".into(),
-                Some(Object::Task { .. }) => "<Task>".into(),
-                Some(Object::Scope(_)) => "<Scope>".into(),
-                Some(Object::Sender(_) | Object::ClosedSender) => "<Sender>".into(),
-                Some(Object::Receiver(_)) => "<Receiver>".into(),
+                Some(Object::Continuation(_)) => "<ctl>".into(),
                 Some(Object::Draft { .. }) => "<Draft>".into(),
                 Some(Object::Bytes(bytes)) => text::inspect_bytes(bytes),
                 Some(Object::Array(items)) => {

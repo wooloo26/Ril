@@ -49,10 +49,7 @@ impl Builder<'_, '_> {
         let arity = self.instruction(Instruction::RawU64(
             u64::try_from(arity).unwrap_or(u64::MAX),
         ));
-        self.runtime(
-            "ril_rt_closure",
-            vec![address, arity, self.evidence, environment],
-        )
+        self.runtime("ril_rt_closure", vec![address, arity, environment])
     }
 
     pub(super) fn invoke_closure(&mut self, closure: Register, args: Vec<Register>) -> Register {
@@ -60,12 +57,10 @@ impl Builder<'_, '_> {
             u64::try_from(args.len()).unwrap_or(u64::MAX),
         ));
         let address = self.runtime("ril_rt_closure_address", vec![closure, arity]);
-        let evidence = self.runtime("ril_rt_closure_evidence", vec![closure]);
         let environment = self.runtime("ril_rt_closure_environment", vec![closure]);
         self.invoke(
             Target::Indirect {
                 address,
-                evidence,
                 environment,
             },
             args,
@@ -73,17 +68,13 @@ impl Builder<'_, '_> {
         )
     }
 
-    pub(super) fn lift(
-        &mut self,
-        id: ExprId,
-        arguments: Option<&BTreeMap<DefinitionId, Value>>,
-    ) -> Result<Register> {
-        let span = self.ast().expr(id).span;
-        let mut referenced: Vec<DefinitionId> = self
-            .global
-            .typed
-            .hir
-            .references_within(span)
+    pub(super) fn collect_captures_in_spans(
+        &self,
+        spans: impl IntoIterator<Item = ril_source::span::Span>,
+    ) -> Vec<DefinitionId> {
+        let mut referenced: Vec<DefinitionId> = spans
+            .into_iter()
+            .flat_map(|span| self.global.typed.hir.references_within(span))
             .map(|(_, def)| def)
             .collect();
         let mut capture = BTreeSet::new();
@@ -111,7 +102,16 @@ impl Builder<'_, '_> {
                 }
             }
         }
-        let capture: Vec<_> = capture.into_iter().collect();
+        capture.into_iter().collect()
+    }
+
+    pub(super) fn lift(
+        &mut self,
+        id: ExprId,
+        arguments: Option<&BTreeMap<DefinitionId, Value>>,
+    ) -> Result<Register> {
+        let span = self.ast().expr(id).span;
+        let capture = self.collect_captures_in_spans(std::iter::once(span));
         let environment = self.environment(&capture);
         let mut statics = self.statics.clone();
         if let Some(arguments) = arguments {

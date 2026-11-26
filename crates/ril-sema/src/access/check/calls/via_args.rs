@@ -349,9 +349,7 @@ impl Analyzer<'_> {
                 }
                 value.requires_new = false;
             }
-            Mode::Plain
-                if matches!(self.ty(span), Ty::Callable(_)) || value.task_scope.is_some() =>
-            {
+            Mode::Plain if matches!(self.ty(span), Ty::Callable(_)) => {
                 for root in &mut value.roots {
                     root.inherits_mode = false;
                 }

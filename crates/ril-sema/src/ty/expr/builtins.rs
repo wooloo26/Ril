@@ -25,7 +25,6 @@ impl Checker<'_> {
     ) -> Ty {
         match name {
             "bool" | "int" | "f64" | "str" | "bytes" | "never" | "Type" | "Set" | "Draft"
-            | "Scope" | "Task" | "Sender" | "Receiver"
                 if !callee =>
             {
                 self.error(Code::E0319, span, "type value requires angle quotation");
@@ -76,15 +75,7 @@ impl Checker<'_> {
                 &ty,
                 Ty::Adt(adt) if adt.kind == AdtKind::Foreign
             )
-            || matches!(
-                ty,
-                Ty::Callable(_)
-                    | Ty::Draft(_)
-                    | Ty::Scope
-                    | Ty::Task(_)
-                    | Ty::Sender(_)
-                    | Ty::Receiver(_)
-            )
+            || matches!(ty, Ty::Callable(_) | Ty::Draft(_))
         {
             self.error(
                 Code::E0536,
@@ -110,13 +101,8 @@ impl Checker<'_> {
             return true;
         }
         match ty {
-            Ty::Draft(_)
-            | Ty::Scope
-            | Ty::Task(_)
-            | Ty::Sender(_)
-            | Ty::Receiver(_)
-            | Ty::TypeValue(_)
-            | Ty::Mode => true,
+            Ty::Draft(_) | Ty::TypeValue(_) | Ty::Mode => true,
+            Ty::Callable(c) if c.is_ctl || c.once => true,
             Ty::Param(id) => {
                 // A type match can select one type from the declared domain.
                 if let Some(GenericValue::Type(ty)) = env.generics.get(&id)
@@ -215,9 +201,8 @@ impl Checker<'_> {
         }
         let first = types.first().cloned().unwrap_or(Ty::Unknown);
         let arity = match name {
-            "len" | "clone" | "inner" | "fields" | "variants" | "convert" | "absorb_panic" => {
-                Some(1..=1)
-            }
+            "len" | "clone" | "inner" | "fields" | "variants" | "convert" | "absorb_panic"
+            | "abort" => Some(1..=1),
             "has_default" | "derive" => Some(2..=2),
             _ => None,
         };
@@ -264,6 +249,31 @@ impl Checker<'_> {
             "clone" => {
                 self.check_clone(env, &first, span, true);
                 first
+            }
+            "abort" => {
+                if let Some(arg) = args.first() {
+                    let arg_span = self.ast(env.file).expr(arg.value).span;
+                    if arg.mode == Mode::Plain {
+                        self.error(
+                            Code::E0405,
+                            arg_span,
+                            "abort requires explicit 'new' argument mode",
+                        );
+                    } else if arg.mode != Mode::New {
+                        self.error(Code::E0406, arg_span, "abort requires 'new' argument mode");
+                    }
+                    let norm = self.normalize(&first);
+                    if !matches!(&norm, Ty::Callable(c) if c.is_ctl)
+                        && !matches!(norm, Ty::Unknown | Ty::Infer(_))
+                    {
+                        self.error(
+                            Code::E0301,
+                            arg_span,
+                            "abort requires a ctl(...) continuation",
+                        );
+                    }
+                }
+                Ty::Unit
             }
             "inner" => {
                 if let Some(arg) = args.first()

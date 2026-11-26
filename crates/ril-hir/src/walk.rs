@@ -44,6 +44,8 @@ pub(super) fn check(program: &mut Program, errors: &mut Vec<Diagnostic>) {
             exposure: Visibility::Private,
             funcs: 0,
             loops: 0,
+            in_barrier: 0,
+            fn_top_block: false,
             field_default: false,
         };
         for &item in &ast.items {
@@ -77,6 +79,8 @@ struct Walk<'a> {
     exposure: Visibility,
     funcs: usize,
     loops: usize,
+    in_barrier: usize,
+    fn_top_block: bool,
     field_default: bool,
 }
 
@@ -150,9 +154,6 @@ impl Walk<'_> {
             StmtKind::Type(decl) => {
                 self.frames.push(Frame::default());
                 self.generics(&decl.generics);
-                if let Some(cleanup) = &decl.cleanup {
-                    self.resolve_name(cleanup);
-                }
                 match &decl.definition {
                     TypeDefinition::Data(ty) => {
                         if decl.kind == TypeKind::Opaque {
@@ -244,11 +245,22 @@ impl Walk<'_> {
                 }
                 self.bind_pattern(*pattern, false);
             }
-            StmtKind::With(handlers) => {
-                for handler in handlers {
-                    self.path(&handler.operation);
-                    self.expr(handler.value);
-                }
+            StmtKind::Defer(expr) => {
+                let prev_funcs = std::mem::take(&mut self.funcs);
+                let prev_loops = std::mem::take(&mut self.loops);
+                let prev_top = std::mem::replace(&mut self.fn_top_block, false);
+                self.in_barrier += 1;
+                self.expr(*expr);
+                self.in_barrier -= 1;
+                self.fn_top_block = prev_top;
+                self.loops = prev_loops;
+                self.funcs = prev_funcs;
+            }
+            StmtKind::With(handler) => {
+                self.path(&handler.operation);
+                let prev_top = std::mem::replace(&mut self.fn_top_block, false);
+                self.expr(handler.value);
+                self.fn_top_block = prev_top;
             }
             StmtKind::Expr(expr) => self.expr(*expr),
             StmtKind::Import(import) => {
@@ -307,7 +319,11 @@ impl Walk<'_> {
         self.signature = previous_barrier;
         self.exposure = Visibility::Private;
         if let Some(body) = function.body {
+            let prev_top = std::mem::replace(&mut self.fn_top_block, true);
+            let prev_barrier = std::mem::take(&mut self.in_barrier);
             self.expr(body);
+            self.in_barrier = prev_barrier;
+            self.fn_top_block = prev_top;
         }
         self.frames.pop();
         self.funcs -= 1;
@@ -365,8 +381,7 @@ impl Walk<'_> {
 
     fn obligations(&mut self, obligations: &Obligations) {
         for effect in &obligations.effects {
-            if !matches!(effect.segments.as_slice(), [seg] if matches!(seg.name.value.as_str(), "io" | "fiber"))
-            {
+            if !matches!(effect.segments.as_slice(), [seg] if seg.name.value == "io") {
                 let before = self.errors.len();
                 self.path(effect);
                 if let Some(def) = self.definition_at(effect.span) {
@@ -476,6 +491,7 @@ impl Walk<'_> {
     }
 
     fn block(&mut self, statements: &[StmtId], helpers: &[StmtId]) {
+        let is_fn_top = std::mem::replace(&mut self.fn_top_block, false);
         self.frames.push(Frame::default());
         self.hoist(helpers);
         for &item in statements {
@@ -501,9 +517,30 @@ impl Walk<'_> {
                 self.frames.push(saved);
             }
         }
+        let saved_funcs = self.funcs;
+        let saved_loops = self.loops;
+        let saved_barrier = self.in_barrier;
+        let mut entered_nested_ctl = false;
         for &item in statements {
-            self.statement(item);
+            if !is_fn_top
+                && !entered_nested_ctl
+                && matches!(
+                    &self.ast.stmt(item).value.kind,
+                    StmtKind::With(handler) if handler.is_ctl
+                )
+            {
+                self.statement(item);
+                self.funcs = 0;
+                self.loops = 0;
+                self.in_barrier += 1;
+                entered_nested_ctl = true;
+            } else {
+                self.statement(item);
+            }
         }
+        self.funcs = saved_funcs;
+        self.loops = saved_loops;
+        self.in_barrier = saved_barrier;
         self.frames.pop();
     }
 
@@ -515,13 +552,45 @@ impl Walk<'_> {
                 statements,
                 helpers,
             } => self.block(statements, helpers),
+            Expr::With {
+                handlers,
+                statements,
+                helpers,
+            } => {
+                let prev_top = std::mem::replace(&mut self.fn_top_block, false);
+                let has_ctl = handlers.iter().any(|handler| handler.is_ctl);
+                for handler in handlers {
+                    self.path(&handler.operation);
+                    self.expr(handler.value);
+                }
+                if has_ctl {
+                    let prev_funcs = std::mem::take(&mut self.funcs);
+                    let prev_loops = std::mem::take(&mut self.loops);
+                    self.in_barrier += 1;
+                    self.block(statements, helpers);
+                    self.in_barrier -= 1;
+                    self.loops = prev_loops;
+                    self.funcs = prev_funcs;
+                } else {
+                    self.block(statements, helpers);
+                }
+                self.fn_top_block = prev_top;
+            }
             Expr::Unary { op, value } => {
                 if op.value == "?" && self.funcs == 0 {
-                    self.report(
-                        Code::E0205,
-                        op.span,
-                        "propagation requires an enclosing function",
-                    );
+                    if self.in_barrier > 0 {
+                        self.report(
+                            Code::E0707,
+                            op.span,
+                            "propagation cannot escape a defer or ctl handler boundary",
+                        );
+                    } else {
+                        self.report(
+                            Code::E0205,
+                            op.span,
+                            "propagation requires an enclosing function",
+                        );
+                    }
                 }
                 self.expr(*value);
             }

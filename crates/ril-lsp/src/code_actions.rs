@@ -23,7 +23,7 @@ pub(crate) fn code_actions(state: &LspState, params: &Value) -> Value {
         let code = diag.get("code").and_then(Value::as_str).unwrap_or("");
         let msg = diag.get("message").and_then(Value::as_str).unwrap_or("");
 
-        // Quick-fix 1: Unresolved stdlib module (e.g. `cannot resolve Fiber` / `File` / `Channel`).
+        // Quick-fix 1: Unresolved stdlib module (e.g. `cannot resolve File` / `Os`).
         if matches!(code, "E0204" | "E0209")
             && let Some(sym) = msg.strip_prefix("cannot resolve ")
         {

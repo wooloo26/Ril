@@ -283,7 +283,7 @@ fn can_supply_callback(
         Ty::Tuple(fields) => fields.iter().any(|field| visit(&field.ty)),
         Ty::Array(item) => visit(&item.ty),
         Ty::Map(key, item) => visit(key) || visit(&item.ty),
-        Ty::Draft(item) | Ty::Task(item) => visit(item),
+        Ty::Draft(item) => visit(item),
         Ty::Adt(adt) if let Some(program) = program => {
             if let Some(item) = ty.as_option(&program.hir) {
                 return visit(item);

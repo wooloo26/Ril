@@ -195,6 +195,23 @@ impl Checker<'_> {
                         .map_or_else(none, |item| Value::Tag("Some".into(), vec![item])))
                 }
                 DefinitionKind::Primitive(_)
+                    if name == "pop_front" && self.hir.primitive_module(id) == Some("Array") =>
+                {
+                    let [array] = args else {
+                        return Err(nonstatic(span));
+                    };
+                    fuel.step(span)?;
+                    let place = self.eval_place(env, slots, array.value, fuel)?;
+                    let Value::Array(items) = place.slot(slots, false)? else {
+                        return Err(defect(span, "static Array::pop_front requires an array"));
+                    };
+                    Ok(if items.is_empty() {
+                        none()
+                    } else {
+                        Value::Tag("Some".into(), vec![items.remove(0)])
+                    })
+                }
+                DefinitionKind::Primitive(_)
                     if name == "insert" && self.hir.primitive_module(id) == Some("Map") =>
                 {
                     let [map, key, value] = args else {

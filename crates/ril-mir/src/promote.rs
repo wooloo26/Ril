@@ -447,25 +447,21 @@ fn promote_pass(function: &mut Function) -> bool {
             }
             Some(Terminator::Invoke {
                 target,
-                evidence,
                 arguments,
                 normal,
                 cleanup,
                 keep_result,
                 ..
             }) => {
-                invalidate(&mut candidates, *evidence);
                 match target {
                     Target::FunctionWithEnv { environment, .. } => {
                         invalidate(&mut candidates, *environment);
                     }
                     Target::Indirect {
                         address,
-                        evidence,
                         environment,
                     } => {
                         invalidate(&mut candidates, *address);
-                        invalidate(&mut candidates, *evidence);
                         invalidate(&mut candidates, *environment);
                     }
                     _ => {}

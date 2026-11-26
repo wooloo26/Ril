@@ -154,7 +154,6 @@ impl Checker<'_> {
                             storage,
                             value: Some(value),
                             fallback,
-                            resource: false,
                             ..
                         } => {
                             let subject = self.pattern_subject(env, slots, *value, fuel)?;
@@ -323,7 +322,7 @@ impl Checker<'_> {
                 self.eval_index(env, slots, base, *index, fuel)?
                     .ok_or_else(|| defect(span, "static index is out of bounds"))
             }
-            Expr::Range { .. } => Err(nonstatic(span)),
+            Expr::Range { .. } | Expr::With { .. } => Err(nonstatic(span)),
             Expr::Tuple(items) => self.eval_list(env, slots, items, fuel).map(Value::Tuple),
             Expr::Array(items) => self.eval_list(env, slots, items, fuel).map(Value::Array),
             Expr::Map(entries) => {

@@ -2,6 +2,7 @@
 
 pub fn push<T>(mut xs: [via]T, via item: T) &mut -> ()
 pub fn pop<T>(mut xs: [via]T) &mut -> new ?T
+pub fn pop_front<T>(mut xs: [via]T) &mut -> new ?T
 pub fn insert<T>(mut xs: [via]T, index: int, via item: T) &mut -> ()
 pub fn remove<T>(mut xs: [via]T, index: int) &mut -> new ?T
 
@@ -44,7 +45,7 @@ pub fn contains<T>(xs: []T, target: T) -> bool {
     false
 }
 
-pub fn map<T, U>(xs: []T, f: fn(T) -> U) -> new []U {
+pub fn map<T, U>(xs: []T, f: fn(T) @ -> U) -> new []U {
     let mut out: []U = []
     var i = 0
     while i < len(xs) {
@@ -54,7 +55,7 @@ pub fn map<T, U>(xs: []T, f: fn(T) -> U) -> new []U {
     new out
 }
 
-pub fn filter<T>(xs: []T, pred: fn(T) -> bool) &return(xs) -> new []T {
+pub fn filter<T>(xs: []T, pred: fn(T) @ -> bool) &return(xs) -> new []T {
     let mut out: []T = []
     var i = 0
     while i < len(xs) {

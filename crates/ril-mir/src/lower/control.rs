@@ -351,7 +351,7 @@ impl Builder<'_, '_> {
         let saved = self.locals.clone();
         let names: Vec<_> = saved.keys().copied().collect();
         let join = self.block(1 + names.len());
-        let cleanups = self.cleanups.clone();
+        let scopes = self.scopes.clone();
         self.current = Some(yes_block);
         if let Some((pattern, value)) = bindings {
             self.bind(pattern, value)?;
@@ -360,7 +360,7 @@ impl Builder<'_, '_> {
         let yes_normal = self.current.is_some();
         self.join_with(join, &names, result);
         self.locals.clone_from(&saved);
-        self.cleanups.clone_from(&cleanups);
+        self.scopes.clone_from(&scopes);
         self.current = Some(no_block);
         let result = if let Some(no) = no {
             self.expr(no)?
@@ -369,7 +369,7 @@ impl Builder<'_, '_> {
         };
         let no_normal = self.current.is_some();
         self.join_with(join, &names, result);
-        self.cleanups = cleanups;
+        self.scopes = scopes;
         self.locals = saved;
         if yes_normal || no_normal {
             self.current = Some(join);
@@ -426,8 +426,8 @@ impl Builder<'_, '_> {
         let body_start = self.block(0);
         let exit_source = self.block(0);
         let exit = self.block(names.len());
-        let prior_cleanups = self.cleanups.clone();
-        let cleanups = prior_cleanups.len();
+        let prior_scopes = self.scopes.clone();
+        let scopes = prior_scopes.len();
         self.terminate(Terminator::Jump(header, before.values().copied().collect()));
         self.current = Some(header);
         for (&name, param) in names.iter().zip(self.params(header)) {
@@ -443,7 +443,7 @@ impl Builder<'_, '_> {
             header,
             exit,
             names: names.clone(),
-            cleanups,
+            scopes,
             counter: None,
         });
         self.current = Some(body_start);
@@ -453,7 +453,7 @@ impl Builder<'_, '_> {
         self.expr(body)?;
         self.loop_transfer(Transfer::Continue, self.ast().expr(body).span)?;
         self.loops.pop();
-        self.cleanups = prior_cleanups;
+        self.scopes = prior_scopes;
         self.locals = before;
         self.current = Some(exit);
         for (name, param) in names.into_iter().zip(self.params(exit)) {
@@ -496,8 +496,8 @@ impl Builder<'_, '_> {
         let body_start = self.block(0);
         let exit_source = self.block(0);
         let exit = self.block(names.len());
-        let prior_cleanups = self.cleanups.clone();
-        let cleanups = prior_cleanups.len();
+        let prior_scopes = self.scopes.clone();
+        let scopes = prior_scopes.len();
         self.terminate(Terminator::Jump(
             header,
             std::iter::once(start)
@@ -530,7 +530,7 @@ impl Builder<'_, '_> {
             header,
             exit,
             names: names.clone(),
-            cleanups,
+            scopes,
             counter: Some(current),
         });
         self.current = Some(body_start);
@@ -549,7 +549,7 @@ impl Builder<'_, '_> {
         self.expr(body)?;
         self.loop_transfer(Transfer::Continue, self.ast().expr(body).span)?;
         self.loops.pop();
-        self.cleanups = prior_cleanups;
+        self.scopes = prior_scopes;
         self.locals = before;
         self.current = Some(exit);
         for (name, value) in names.into_iter().zip(self.params(exit)) {
@@ -567,7 +567,7 @@ impl Builder<'_, '_> {
             .last()
             .cloned()
             .ok_or_else(|| self.unsupported(span, "loop control outside a loop"))?;
-        self.cleanup_to(target.cleanups);
+        self.unwind_scopes_to(target.scopes);
         let mut args = Vec::new();
         if transfer == Transfer::Continue
             && let Some(counter) = target.counter
@@ -639,7 +639,7 @@ impl Builder<'_, '_> {
         let value = self.expr(value)?;
         let saved = self.locals.clone();
         let names: Vec<_> = saved.keys().copied().collect();
-        let cleanups = self.cleanups.clone();
+        let scopes = self.scopes.clone();
         let end = self.block(names.len() + 1);
         let mut active = false;
         for arm in arms {
@@ -662,13 +662,13 @@ impl Builder<'_, '_> {
             active |= self.current.is_some();
             self.join_with(end, &names, result);
             self.locals.clone_from(&saved);
-            self.cleanups.clone_from(&cleanups);
+            self.scopes.clone_from(&scopes);
             self.current = Some(failure);
         }
         let message = self.string("non-exhaustive match reached");
         self.runtime("ril_rt_panic", vec![message]);
         self.terminate(Terminator::Unreachable);
-        self.cleanups = cleanups;
+        self.scopes = scopes;
         if active {
             self.current = Some(end);
             for (id, register) in names.into_iter().zip(self.params(end).into_iter().skip(1)) {
@@ -904,16 +904,16 @@ impl Builder<'_, '_> {
             no: continue_,
         });
         self.current = Some(fail);
-        let prior = self.cleanups.clone();
+        let prior = self.scopes.clone();
         self.return_value(value)?;
-        self.cleanups = prior;
+        self.scopes = prior;
         self.current = Some(continue_);
         let key = self.integer("0");
         Ok(self.runtime("ril_rt_load", vec![value, key]))
     }
 
     pub(super) fn return_value(&mut self, value: Register) -> Result<()> {
-        self.cleanup_to(0);
+        self.unwind_scopes_to(0);
         if !self.running_guard && !self.guards.is_empty() {
             self.run_exit_guards(value)?;
         }

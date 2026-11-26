@@ -18,6 +18,7 @@ use crate::{
 
 const KEYWORDS: &[(&str, &str)] = &[
     ("fn", "fn ${1:name}(${2}) -> ${3:()} {\n    $0\n}"),
+    ("ctl", "ctl ${1:op}(${2}) -> ${3:()}"),
     ("let", "let ${1:name} = $0"),
     ("var", "var ${1:name} = $0"),
     ("type", "type ${1:Name} $0"),
@@ -27,8 +28,9 @@ const KEYWORDS: &[(&str, &str)] = &[
     ("else", "else {\n    $0\n}"),
     ("match", "match ${1:value} {\n    ${2:_} -> $0\n}"),
     ("while", "while ${1:cond} {\n    $0\n}"),
-    ("for", "for ${1:item} in ${2:items} {\n    $0\n}"),
+    ("for", "for ${1:items} as ${2:item} {\n    $0\n}"),
     ("return", "return $0"),
+    ("defer", "defer $0"),
     ("use", "use $0"),
     ("with", "with ${1:Eff::op} = $0"),
     ("where", "where $0"),
@@ -76,7 +78,7 @@ pub(crate) fn complete(state: &mut LspState, params: &Value) -> Value {
         return json!({ "isIncomplete": false, "items": items });
     }
 
-    // 3. Effect completion (`@io`, `@fiber`, `@UserEff`).
+    // 3. Effect completion (`@io`, `@UserEff`).
     if let Some(items) = try_effect_completion(state, uri, &text, offset) {
         return json!({ "isIncomplete": false, "items": items });
     }
@@ -183,10 +185,7 @@ fn try_effect_completion(
     }
     let prefix = before.get(i..offset)?;
     let mut items = Vec::new();
-    for (name, desc) in [
-        ("io", "Built-in I/O system effect"),
-        ("fiber", "Built-in structured concurrency effect"),
-    ] {
+    for (name, desc) in [("io", "Built-in I/O system effect")] {
         if name.starts_with(prefix) {
             items.push(json!({
                 "label": name,
@@ -313,7 +312,7 @@ fn resolve_namespace_scope(hir: &Program, viewer: ScopeId, qual: &str) -> Option
             }
         }
     }
-    // Fallback: match stdlib module alias (e.g. `Array`, `String`, `Fiber`).
+    // Fallback: match stdlib module alias (e.g. `Array`, `String`, `File`).
     for &(stem, pascal) in STD_MODULES {
         if pascal == qual {
             let key = std::path::PathBuf::from(format!("ril/{stem}"));

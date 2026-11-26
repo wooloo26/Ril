@@ -319,7 +319,7 @@ impl<'a, M: Module> MirToClifTranslator<'a, M> {
             cgu_partition.is_none_or(|(owners, cgu)| owners.get(index).copied() == Some(cgu))
         };
         for (index, function) in program.functions.iter().enumerate() {
-            let signature = compiler.signature(function.arity + 3, Some(types::I64));
+            let signature = compiler.signature(function.arity + 2, Some(types::I64));
             let linkage = match cgu_partition {
                 None => Linkage::Local,
                 Some(_) if owned(index) => Linkage::Export,
@@ -349,7 +349,7 @@ impl<'a, M: Module> MirToClifTranslator<'a, M> {
             }
         }
         let entry = if cgu_partition.is_none_or(|(_, cgu)| cgu == 0) {
-            let (entry, wrapper) = compiler.wrapper(program.entry, program.suspend_at_entry)?;
+            let (entry, wrapper) = compiler.wrapper(program.entry)?;
             if emit_text {
                 use std::fmt::Write as _;
                 writeln!(ir, "\n; executable entry\n{wrapper}").map_err(diagnostic)?;
@@ -398,16 +398,14 @@ mod tests {
         });
         let program = ril_mir::Program {
             entry: FunctionId(0),
-            suspend_at_entry: false,
             source_locs: Vec::new(),
             functions: vec![ril_mir::Function {
                 name: "main".into(),
                 symbol: "_Ril_main_test".into(),
                 source_loc: None,
                 arity: 0,
-                registers: 4,
+                registers: 3,
                 reg_types: vec![
-                    ril_mir::MirTy::Evidence,
                     ril_mir::MirTy::Bool,
                     ril_mir::MirTy::Unit,
                     ril_mir::MirTy::Unit,
@@ -416,13 +414,9 @@ mod tests {
                 blocks: vec![
                     ril_mir::Block {
                         params: Vec::new(),
-                        instructions: vec![
-                            (Register(0), Instruction::Evidence),
-                            (Register(2), Instruction::Handle(0)),
-                        ],
+                        instructions: vec![(Register(1), Instruction::Handle(0))],
                         terminator: Some(Terminator::Invoke {
                             target: Target::Foreign(Arc::clone(&constant)),
-                            evidence: Register(0),
                             arguments: Vec::new(),
                             normal: BlockId(1),
                             unwind: BlockId(3),
@@ -431,11 +425,10 @@ mod tests {
                         }),
                     },
                     ril_mir::Block {
-                        params: vec![Register(1)],
+                        params: vec![Register(0)],
                         terminator: Some(Terminator::Invoke {
                             target: Target::Foreign(Arc::clone(&import)),
-                            evidence: Register(0),
-                            arguments: vec![Register(1)],
+                            arguments: vec![Register(0)],
                             normal: BlockId(2),
                             unwind: BlockId(3),
                             cleanup: false,
@@ -444,12 +437,12 @@ mod tests {
                         ..ril_mir::Block::default()
                     },
                     ril_mir::Block {
-                        params: vec![Register(3)],
-                        terminator: Some(Terminator::Return(Register(3))),
+                        params: vec![Register(2)],
+                        terminator: Some(Terminator::Return(Register(2))),
                         ..ril_mir::Block::default()
                     },
                     ril_mir::Block {
-                        terminator: Some(Terminator::Return(Register(2))),
+                        terminator: Some(Terminator::Return(Register(1))),
                         ..ril_mir::Block::default()
                     },
                 ],

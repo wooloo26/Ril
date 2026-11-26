@@ -50,6 +50,7 @@ pub enum Intrinsic {
     Inner,
     Clone,
     Derive,
+    Abort,
     AbsorbPanic,
     PanicMessage,
     TypeName,
@@ -65,6 +66,7 @@ pub enum Intrinsic {
     NumericTrunc,
     ArrayPush,
     ArrayPop,
+    ArrayPopFront,
     ArrayInsert,
     ArrayRemove,
     MapInsert,
@@ -102,6 +104,7 @@ impl Intrinsic {
                 | NumericTrunc
                 | ArrayPush
                 | ArrayPop
+                | ArrayPopFront
                 | ArrayInsert
                 | ArrayRemove
                 | MapInsert
@@ -125,12 +128,6 @@ pub enum StdType {
     FieldMode,
     PanicInfo,
     PanicError,
-    Scope,
-    Task,
-    Sender,
-    Receiver,
-    TaskFault,
-    TimeoutError,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -405,6 +402,27 @@ impl Program {
     pub fn operation_effect(&self, operation: DefinitionId) -> Option<DefinitionId> {
         let scope = self.definition(operation).scope;
         self.effect_owner.get(&scope).copied()
+    }
+
+    pub fn is_ctl_operation(&self, operation: DefinitionId) -> bool {
+        let def = self.definition(operation);
+        let Some(stmt) = def.stmt else {
+            return false;
+        };
+        matches!(
+            &self.file(def.name.span.file).ast.stmt(stmt).value.kind,
+            StmtKind::Function(fun) if fun.signature.is_ctl
+        )
+    }
+
+    pub fn effect_has_ctl(&self, effect: DefinitionId) -> bool {
+        self.effect_operations(effect)
+            .any(|op| self.is_ctl_operation(op))
+    }
+
+    pub fn effect_has_fn(&self, effect: DefinitionId) -> bool {
+        self.effect_operations(effect)
+            .any(|op| !self.is_ctl_operation(op))
     }
 
     pub fn effect_label(&self, effect: DefinitionId) -> String {

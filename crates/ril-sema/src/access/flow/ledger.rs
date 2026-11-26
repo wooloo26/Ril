@@ -164,6 +164,11 @@ impl Ledger {
             self.obligations.clone_from(&prior.obligations);
         }
         self.lost_results = prior.lost_results.clone();
+        self.linear_obligations.clear();
+        if alternatives.is_empty() {
+            self.linear_obligations
+                .clone_from(&prior.linear_obligations);
+        }
         for branch in &alternatives {
             for (&token, revoked) in &branch.revoked {
                 let merged = self.revoked.entry(token).or_default();
@@ -175,7 +180,43 @@ impl Ledger {
             }
             self.obligations.extend(branch.obligations.iter().cloned());
             self.lost_results.extend(&branch.lost_results);
+            self.linear_obligations
+                .extend(branch.linear_obligations.iter().cloned());
         }
+        self.linear_consumed = if alternatives.is_empty() {
+            prior.linear_consumed.clone()
+        } else {
+            alternatives
+                .iter()
+                .flat_map(|branch| &branch.linear_consumed)
+                .filter(|item| {
+                    alternatives.iter().all(|branch| {
+                        branch.linear_consumed.contains(item)
+                            || !branch.linear_obligations.contains(item)
+                    })
+                })
+                .cloned()
+                .collect()
+        };
+        self.linear_armed = if alternatives.is_empty() {
+            prior.linear_armed.clone()
+        } else {
+            alternatives
+                .first()
+                .map(|first| {
+                    first
+                        .linear_armed
+                        .iter()
+                        .filter(|(item, _)| {
+                            alternatives
+                                .iter()
+                                .all(|branch| branch.linear_armed.contains_key(*item))
+                        })
+                        .map(|(item, &scope)| (item.clone(), scope))
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
         self.inspected = if alternatives.is_empty() {
             prior.inspected.clone()
         } else {
@@ -757,5 +798,50 @@ impl Ledger {
             projected = join_member(projected, fallback.project_opaque(coordinate, mode));
         }
         projected.unwrap_or_default()
+    }
+
+    pub(in crate::access) fn clear_linear_obligations(&mut self) {
+        self.linear_obligations.clear();
+        self.linear_consumed.clear();
+        self.linear_armed.clear();
+    }
+
+    pub(in crate::access) fn record_linear(
+        &mut self,
+        value: &mut Datum,
+        span: Span,
+        is_collection: bool,
+    ) {
+        let occ = LinearOccurrence {
+            span,
+            created_in: self.choices.clone(),
+            is_collection,
+        };
+        self.linear_obligations.insert(occ.clone());
+        value.linear.insert(occ);
+    }
+
+    pub(in crate::access) fn consume_datum_linear(&mut self, value: &Datum) {
+        for occ in value.all_linear() {
+            self.linear_consumed.insert(occ);
+        }
+    }
+
+    pub(in crate::access) fn arm_datum_linear(&mut self, value: &Datum, boundary: Span) {
+        for occ in value.all_linear() {
+            self.linear_armed.insert(occ, boundary);
+        }
+    }
+
+    pub(in crate::access) fn pending_linear(&self) -> impl Iterator<Item = &LinearOccurrence> {
+        self.linear_obligations
+            .difference(&self.linear_consumed)
+            .filter(|occ| compatible(&occ.created_in, &self.choices))
+    }
+
+    pub(in crate::access) fn has_direct_revocation(&self, decl: Span) -> bool {
+        self.revoked
+            .get(&Occurrence::from(decl))
+            .is_some_and(|triggers| triggers.contains_key(&None))
     }
 }

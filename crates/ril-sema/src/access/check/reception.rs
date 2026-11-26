@@ -365,6 +365,7 @@ impl Analyzer<'_> {
     ) {
         let mut value = ledger.snapshot_call_graph(&value);
         ledger.inspect(&value);
+        ledger.consume_datum_linear(&value);
         if value.origins().any(|origin| origin.confined.is_some()) {
             self.error(Code::E0604, span, "confined authority cannot be returned");
         }
@@ -564,6 +565,21 @@ impl Analyzer<'_> {
         }
     }
 
+    pub(super) fn check_linear(&mut self, ledger: &Ledger, except: &BTreeSet<LinearOccurrence>) {
+        let pending: BTreeSet<_> = ledger
+            .pending_linear()
+            .filter(|item| !except.contains(*item))
+            .map(|item| item.span)
+            .collect();
+        for span in pending {
+            self.error(
+                Code::E0625,
+                span,
+                "must-consume linear value has not been consumed on exit",
+            );
+        }
+    }
+
     pub(super) fn discard(&mut self, ledger: &Ledger, value: &Datum) {
         for item in value
             .results()
@@ -572,164 +588,45 @@ impl Analyzer<'_> {
         {
             self.error(Code::E0720, item.span, "discarded fallible result");
         }
-    }
-
-    pub(super) fn references_scoped_resource(&self, value: &Datum) -> bool {
-        value.origins().any(|origin| {
-            origin
-                .confined
-                .is_some_and(|scope| self.cleanups.contains_key(&scope))
-        })
-    }
-
-    pub(super) fn check_resource_binding(&mut self, name: Span, value: &Datum, resource: bool) {
-        let value_type = self
-            .definition(name)
-            .and_then(|id| self.program.bindings.get(&id))
-            .is_some_and(|ty| self.program.is_value(ty));
-        if !resource && !value_type && self.references_scoped_resource(value) {
-            self.error(Code::E0604, name, "scoped resource cannot be rebound");
-        }
-    }
-
-    pub(super) fn cleanup(
-        &mut self,
-        ctx: &Context,
-        ledger: &Ledger,
-        value: &mut Datum,
-        value_span: Span,
-        binding: Span,
-        mode: Mode,
-    ) {
-        if self.references_scoped_resource(value) {
-            self.error(
-                Code::E0604,
-                binding,
-                "scoped resource already has a cleanup binding",
-            );
-            return;
-        }
-        if matches!(self.ty(value_span), Ty::Sender(_)) {
-            if !value.requires_new {
-                self.error(
-                    Code::E0548,
-                    binding,
-                    "cleanup requires a new-qualified sender",
-                );
-            }
-            value.transform(&mut |origin| {
-                origin.confined = Some(binding);
-                origin.fix_mode(if mode == Mode::Mut {
-                    Access::Mut
-                } else {
-                    Access::Ref
-                });
-            });
-            self.cleanups.insert(binding, CleanupAction::CloseSender);
-            return;
-        }
-        if self.program.is_value(self.ty(value_span)) {
-            self.error(
-                Code::E0541,
-                binding,
-                "value-type binding cannot be a scoped resource",
-            );
-            return;
-        }
-        let Ty::Adt(adt) = self.ty(value_span) else {
-            self.error(
-                Code::E0541,
-                binding,
-                "resource type has no cleanup declaration",
-            );
-            return;
-        };
-        let def = self.program.hir.definition(adt.definition);
-        let ast = self.ast(def.name.span.file);
-        let cleanup = def
-            .stmt
-            .and_then(|id| match &ast.stmt(id).value.kind {
-                StmtKind::Type(decl) => decl.cleanup.as_ref(),
-                _ => None,
-            })
-            .and_then(|name| self.definition(name.span));
-        let Some(cleanup) = cleanup else {
-            self.error(
-                Code::E0541,
-                binding,
-                "resource type has no cleanup function",
-            );
-            return;
-        };
-        let Some(signature) = self.program.callables.get(&cleanup) else {
-            self.error(
-                Code::E0541,
-                binding,
-                "cleanup is not a callable declaration",
-            );
-            return;
-        };
-        let [parameter] = signature.parameters.as_slice() else {
-            self.error(
-                Code::E0541,
-                binding,
-                "cleanup must take one resource argument",
-            );
-            return;
-        };
-        if signature.result != Ty::Unit
-            || !matches!(parameter.mode, Mode::Ref | Mode::Mut | Mode::New)
-            || signature
-                .state
-                .iter()
-                .any(|clause| matches!(clause.as_str(), "^mut" | "capture" | "up"))
-            || (parameter.mode == Mode::Mut) != signature.state.iter().any(|clause| clause == "mut")
-            || !matches!(&parameter.ty, Ty::Adt(owner) if owner.definition == adt.definition)
+        for item in value
+            .all_linear()
+            .iter()
+            .filter(|item| !ledger.linear_consumed.contains(*item))
         {
-            self.error(
-                Code::E0541,
-                binding,
-                "cleanup must take new, mut, or ref Self and return ()",
-            );
+            self.error(Code::E0625, item.span, "discarded must-consume value");
         }
-        if signature.effects.iter().any(|effect| effect == "fiber") {
-            self.error(Code::E0616, binding, "@fiber is prohibited on cleanup");
+    }
+
+    pub(super) fn run_defers(
+        &mut self,
+        ctx: &mut Context,
+        ledger: &mut Ledger,
+        target_depth: usize,
+    ) {
+        if ctx.defers.len() <= target_depth {
+            return;
         }
-        if let Some(export) = self.program.imported_functions.get(&cleanup) {
-            let owner = self.program.hir.definition(cleanup).name.span;
-            self.charge_imported_effects(ctx, ledger, owner, signature, &export.summary, binding);
-        } else {
-            for effect in &signature.effects {
-                self.effect(ctx, ledger, effect, binding);
-            }
+        let actions: Vec<_> = ctx
+            .defers
+            .get(target_depth..)
+            .unwrap_or_default()
+            .iter()
+            .rev()
+            .cloned()
+            .collect();
+        for action in actions {
+            ledger.holds.truncate(action.holds_len);
+            let mut defer_ctx = ctx.clone();
+            defer_ctx.file = action.file;
+            defer_ctx.scope = action.span;
+            defer_ctx.handlers = action.handlers;
+            defer_ctx.no_ctl = Some(action.span);
+            defer_ctx.ctl_boundary = action.ctl_boundary;
+            defer_ctx.defers.clear();
+            defer_ctx.reachable = true;
+            let result = self.expr(&mut defer_ctx, ledger, action.expr);
+            self.discard(ledger, &result);
+            self.checked_defers.insert(action.span);
         }
-        if parameter.mode == Mode::New && !value.requires_new {
-            self.error(
-                Code::E0548,
-                binding,
-                "cleanup requires a new-qualified resource",
-            );
-        }
-        if parameter.mode == Mode::Mut || mode == Mode::Mut {
-            if !value.writers() {
-                self.error(
-                    Code::E0520,
-                    binding,
-                    "cleanup requires writable resource authority",
-                );
-            } else if parameter.mode == Mode::Mut {
-                self.mutate(ctx, ledger, value, binding);
-            }
-        }
-        value.transform(&mut |origin| {
-            origin.confined = Some(binding);
-            origin.fix_mode(if mode == Mode::Mut {
-                Access::Mut
-            } else {
-                Access::Ref
-            });
-        });
-        self.cleanups
-            .insert(binding, CleanupAction::Function(cleanup));
     }
 }

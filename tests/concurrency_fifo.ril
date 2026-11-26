@@ -1,198 +1,263 @@
 -- @suite concurrency_deterministic
 -- @default_stage run
 
--- @case plain_task_join_is_memoized_and_rooted run-pass backend=both
--- @expect-stdout once
--- @expect-stdout 42
-use ril/fiber
-fn main() @io @fiber -> () {
-    Fiber::scope \mut s -> {
-        let task = Fiber::spawn(mut s) \-> {
-            println("once")
-            [20, 22]
-        }
-        assert(Fiber::join(mut s, task)[0] == 20)
-        let other = [1, 2, 3]
-        assert(len(other) == 3)
-        let again = Fiber::join(mut s, task)
-        println("{again[0] + again[1]}")
-    }
-}
-
--- @case memoized_join_loop_can_inspect_each_result run-pass backend=both
-use ril/fiber
-fn work() -> new !<int, str> { Ok(1) }
-fn main() @fiber -> () {
-    Fiber::scope \mut s -> {
-        let task = Fiber::spawn(mut s) \-> work()
-        var pending = Fiber::join(mut s, task)
-        for 0..2 as _index {
-            assert(pending == Ok(1))
-            pending = Fiber::join(mut s, task)
-        }
-        assert(pending == Ok(1))
-    }
-}
-
--- @case new_handoff_task_join_preserves_fresh_payload run-pass backend=both
-use ril/fiber
-fn main() @fiber -> () {
-    Fiber::scope \mut s -> {
-        let mut task = Fiber::spawn(mut s) \-> [1]
-        let mut output = Fiber::join(mut s, new task)
-        Array::push(mut output, 2)
-        assert(output == [1, 2])
-    }
-}
-
--- @case bodyless_fiber_module_uses_registered_runtime run-pass backend=both
--- @expect-stdout 42
--- @file pkg/main.ril
-use ril/fiber
-fn main() @io -> () {
-    let value = Fiber::run \-> { Fiber::yield_now(); 42 }
-    println("{value}")
-}
--- @file ril/fiber.ril
-pub fn run<Output |> Sendable>(via action: fn() @& -> infer Output) -> infer Output
-pub fn yield_now() @fiber -> ()
-
--- @case executable_fiber_effect_drives_the_scheduler run-pass backend=both
--- @expect-stdout parent
--- @expect-stdout child
--- @expect-stdout 42
-use ril/fiber
-fn main() @io @fiber -> () {
-    let answer = Fiber::scope \mut s -> {
-        let child = Fiber::spawn(mut s) \-> {
-            println("child")
-            Fiber::run \-> { Fiber::yield_now(); 40 }
-        }
-        println("parent")
-        Fiber::yield_now()
-        Fiber::join(mut s, child) + 2
-    }
-    println("{answer}")
-}
-
--- @case fifo_yield_order run-pass backend=both
+-- @case fifo_scheduler_runs_spawned_tasks_in_deterministic_order run-pass backend=both
 -- @expect-stdout a1
 -- @expect-stdout b1
 -- @expect-stdout a2
 -- @expect-stdout b2
--- @expect-stdout 30
-use ril/fiber
-fn main() @io -> () {
-    let answer = Fiber::run \-> Fiber::scope \mut s -> {
-        let a = Fiber::spawn(mut s) \-> {
-            println("a1")
-            Fiber::yield_now()
-            println("a2")
-            10
-        }
-        let b = Fiber::spawn(mut s) \-> {
-            println("b1")
-            Fiber::yield_now()
-            println("b2")
-            20
-        }
-        Fiber::join(mut s, a) + Fiber::join(mut s, b)
-    }
-    println("{answer}")
+-- @expect-stdout done
+eff Sched {
+    ctl yield_now() -> ()
+    ctl spawn(new work: fn() @Sched @io &once -> ()) -> ()
 }
 
--- @case channel_pipeline_backpressure run-pass backend=both
--- @expect-stdout 30
-use ril/fiber
-use ril/channel
-fn pipeline() @fiber -> int {
-    Fiber::scope \mut s -> {
-        let .{ mut tx, mut rx } = Channel::bounded(1)
-        let task = Fiber::spawn(mut s) \-> {
-            use mut sender = new tx
-            for 1..=4 as i {
-                match Channel::send(mut sender, i * i) {
-                    Ok() -> ()
-                    Err(_) -> break
-                }
+type Step {
+    Done
+    Yielded(ctl() @io -> new Step)
+    Spawned(.{ mut child: fn() @Sched @io &once -> (), mut cont: ctl() @io -> new Step })
+}
+
+type TaskItem {
+    Fresh(fn() @Sched @io &once -> ())
+    Cont(ctl() @io -> new Step)
+}
+
+fn step_fresh(new work: fn() @Sched @io &once -> ()) @io -> new Step {
+    with {
+        ctl Sched::yield_now = \new k -> Step::Yielded(new k)
+        ctl Sched::spawn = \new child, new k -> Step::Spawned(.{
+            mut child: new child,
+            mut cont: new k,
+        })
+
+        work()
+        Step::Done
+    }
+}
+
+fn run_fifo(new entry: fn() @Sched @io &once -> ()) @io -> () {
+    let mut ready: [mut]TaskItem = [TaskItem::Fresh(new entry)]
+    defer {
+        while let Some(mut item) = Array::pop_front(mut ready) {
+            match new item {
+                TaskItem::Cont(mut k) -> abort(new k)
+                TaskItem::Fresh(_) -> ()
             }
         }
-        var sum = 0
-        while let Some(value) = Channel::recv(mut rx) { sum += value }
-        Fiber::join(mut s, task)
-        sum
+    }
+    while let Some(mut item) = Array::pop_front(mut ready) {
+        let mut outcome = match new item {
+            TaskItem::Fresh(mut f) -> step_fresh(new f)
+            TaskItem::Cont(mut k) -> k()
+        }
+        match new outcome {
+            Step::Done -> ()
+            Step::Yielded(mut k) -> Array::push(mut ready, new TaskItem::Cont(new k))
+            Step::Spawned(.{ mut child, mut cont }) -> {
+                Array::push(mut ready, new TaskItem::Cont(new cont))
+                Array::push(mut ready, new TaskItem::Fresh(new child))
+            }
+        }
     }
 }
-fn main() @io -> () { println("{Fiber::run(\-> pipeline())}") }
 
--- @case early_scope_cancel_drains_cleanup run-pass backend=both
--- @expect-stdout cleanup
--- @expect-stdout done
-use ril/fiber
-opaque type Resource(.{ id: int }) use(close)
-fn close(new resource: Resource) @io -> () { println("cleanup") }
 fn main() @io -> () {
-    Fiber::run \-> Fiber::scope \mut s -> {
-        let mut child = Fiber::spawn(mut s) \-> {
-            use resource = Resource::(.{ id: 1 })
-            Fiber::yield_now()
-            println("unexpected")
-        }
-        Fiber::yield_now()
-        let _ = Fiber::cancel(mut s, new child)
-    }
+    run_fifo(new \-> {
+        Sched::spawn(new \-> {
+            println("b1")
+            Sched::yield_now()
+            println("b2")
+        })
+        println("a1")
+        Sched::yield_now()
+        println("a2")
+    })
     println("done")
 }
 
--- @case zip_race_and_map run-pass backend=both
--- @expect-stdout 42:8:9
-use ril/fiber
-fn main() @io -> () {
-    Fiber::run \-> {
-        let both = Fiber::zip(\-> 18, \-> 24)
-        let winner = Fiber::race(\-> { Fiber::yield_now(); 7 }, \-> 8)
-        let results = Fiber::map([1, 2, 3], \x -> x * x)
-        println("{both.first + both.second}:{winner}:{results[2]}")
-    }
+-- @case ctl_yield_over_array_map_and_abort_runs_defer run-pass backend=both
+-- @expect-stdout cleanup
+-- @expect-stdout 2:4:6
+eff Yield<T> {
+    ctl emit(value: T) -> ()
 }
 
--- @case supervise_absorbs_child_panic run-pass backend=both
--- @expect-stdout recovered
-use ril/fiber
 fn main() @io -> () {
-    Fiber::run \-> {
-        let outcome = Fiber::supervise \-> {
-            Fiber::yield_now()
-            panic("child")
+    let mut out: []int = []
+    with {
+        ctl Yield<int>::emit = \v, new k -> {
+            Array::push(mut out, v)
+            if len(ref out) < 3 { k() } else { abort(new k) }
         }
-        match outcome { Ok(_) -> (); Err(_) -> println("recovered") }
+        defer println("cleanup")
+        let _ = Array::map([1, 2, 3, 4, 5], \x -> { Yield<int>::emit(x * 2); x })
     }
+    println("{out[0]}:{out[1]}:{out[2]}")
 }
 
--- @case zero_capacity_send_waits_for_receiver run-pass backend=both
--- @expect-stdout sending
--- @expect-stdout receiving
--- @expect-stdout sent
-use ril/fiber
-use ril/channel
+-- @case wildcard_ctl_arm_eagerly_aborts_and_unwinds_defer run-pass backend=both
+-- @expect-stdout defer-before-arm
+-- @expect-stdout arm-body
+-- @expect-stdout 80
+eff Fail<E> {
+    ctl raise(err: E) -> never
+}
+
+fn run_fail(flag: bool) @io -> int {
+    with ctl Fail<str>::raise = \_err, _ -> {
+        println("arm-body")
+        80
+    }
+    defer println("defer-before-arm")
+    if flag { Fail<str>::raise("bad") }
+    10
+}
+
 fn main() @io -> () {
-    Fiber::run \-> Fiber::scope \mut scope -> {
-        let .{ mut tx, mut rx } = Channel::bounded(0)
-        match Channel::try_send(mut tx, 41) {
-            Err(Channel::TrySendError::Full(41)) -> ()
-            _ -> panic("zero-capacity send must wait for receiver")
+    println("{run_fail(true)}")
+}
+
+-- @case nested_ctl_prompts_forward_outer_ops_correctly run-pass backend=both
+-- @expect-stdout 10:20:30:done
+eff Outer {
+    ctl emit(v: int) -> ()
+}
+
+eff Inner {
+    ctl ask() -> int
+}
+
+fn main() @io -> () {
+    let mut out: []int = []
+    with {
+        ctl Outer::emit = \v, new k -> {
+            Array::push(mut out, v)
+            k()
         }
-        let sender = Fiber::spawn(mut scope) \-> {
-            use mut outlet = new tx
-            println("sending")
-            match Channel::send(mut outlet, 42) {
-                Ok() -> println("sent")
-                Err(_) -> panic("channel closed early")
+        var step = 10
+        with {
+            ctl Inner::ask = \new k -> {
+                let cur = step
+                step += 10
+                k(cur)
             }
+            Outer::emit(Inner::ask())
+            Outer::emit(Inner::ask())
+            Outer::emit(Inner::ask())
         }
-        Fiber::yield_now()
-        println("receiving")
-        assert(Channel::recv(mut rx) == Some(42))
-        Fiber::join(mut scope, sender)
     }
+    println("{out[0]}:{out[1]}:{out[2]}:done")
+}
+
+-- @case route1_dynamic_dispatch_and_parent_stack_handler_arms run-pass backend=both
+-- @expect-stdout inner:outer
+eff Tag {
+    fn get() -> str
+}
+
+fn main() @io -> () {
+    let read = \-> Tag::get()
+    with Tag::get = \-> "outer"
+    let result = with {
+        Tag::get = \-> "inner:{Tag::get()}"
+        read()
+    }
+    println(result)
+}
+
+-- @case defer_lifo_order_on_normal_return_panic_and_abort run-pass backend=both
+-- @expect-stdout n3:n2:n1
+-- @expect-stdout r2:r1
+-- @expect-stdout p-caught
+-- @expect-stdout a2:a1
+eff Abort {
+    ctl stop() -> never
+}
+
+fn early(mut log: []str) &mut -> int {
+    defer Array::push(mut log, "r1")
+    defer Array::push(mut log, "r2")
+    return 7
+}
+
+fn main() @io -> () {
+    let mut normal: []str = []
+    {
+        defer Array::push(mut normal, "n1")
+        defer Array::push(mut normal, "n2")
+        defer Array::push(mut normal, "n3")
+    }
+    println(String::join(new normal, ":"))
+
+    let mut ret_log: []str = []
+    assert(early(mut ret_log) == 7)
+    println(String::join(new ret_log, ":"))
+
+    let panic_res = absorb_panic(\-> {
+        var step = 0
+        defer { assert(step == 2) }
+        defer { step = 2 }
+        panic("boom")
+    })
+    match panic_res {
+        Ok(_) -> panic("expected panic")
+        Err(_) -> println("p-caught")
+    }
+
+    let mut abort_log: []str = []
+    with {
+        ctl Abort::stop = \_ -> ()
+        defer Array::push(mut abort_log, "a1")
+        defer Array::push(mut abort_log, "a2")
+        Abort::stop()
+    }
+    println(String::join(new abort_log, ":"))
+}
+
+-- @case single_panic_in_defer_is_catchable_via_absorb_panic run-pass backend=both
+-- @expect-stdout normal-defer-panic
+-- @expect-stdout abort-defer-panic
+eff Stop {
+    ctl halt() -> never
+}
+
+fn main() @io -> () {
+    let r1 = absorb_panic(\-> {
+        defer panic("normal-defer-panic")
+        ()
+    })
+    match r1 {
+        Ok(_) -> panic("expected panic")
+        Err(Panicked(info)) -> println(panic_message(info))
+    }
+
+    let r2 = absorb_panic(\-> {
+        with {
+            ctl Stop::halt = \_ -> ()
+            defer panic("abort-defer-panic")
+            Stop::halt()
+        }
+    })
+    match r2 {
+        Ok(_) -> panic("expected panic")
+        Err(Panicked(info)) -> println(panic_message(info))
+    }
+}
+
+-- @case ctl_stack_pool_reuses_stacks_across_many_prompts run-pass backend=both
+-- @expect-stdout 4950
+eff Tick {
+    ctl step(v: int) -> int
+}
+
+fn main() @io -> () {
+    var total = 0
+    for 0..100 as i {
+        total += with {
+            ctl Tick::step = \v, new k -> k(v)
+            Tick::step(i)
+        }
+    }
+    println("{total}")
 }

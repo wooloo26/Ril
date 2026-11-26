@@ -12,7 +12,7 @@ pub use via::{ViaDomain, ViaRow, ViaRows};
 use std::{borrow::Cow, collections::BTreeMap};
 
 use ril_hir::DefinitionId;
-use ril_source::{diag::Diagnostic, span::Span};
+use ril_source::diag::Diagnostic;
 use ril_syntax::syntax::Mode;
 use serde::{Deserialize, Serialize};
 
@@ -43,6 +43,8 @@ pub struct Summary {
     pub storage_updates: Vec<StorageUpdate>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub storage_flow: Option<StorageTransfer>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub no_ctl_params: Vec<usize>,
     pub captures: bool,
     pub constructs: bool,
     pub nonreturning: bool,
@@ -118,6 +120,10 @@ impl Summary {
                 .invoked
                 .iter()
                 .all(|position| self.invoked.contains(position))
+            && revised
+                .no_ctl_params
+                .iter()
+                .all(|param| self.no_ctl_params.contains(param))
             && revised
                 .return_sources
                 .iter()
@@ -499,18 +505,11 @@ impl Instance {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
-pub enum CleanupAction {
-    Function(DefinitionId),
-    CloseSender,
-}
-
 #[derive(Default)]
 pub struct Analysis {
     pub summaries: BTreeMap<DefinitionId, Summary>,
     pub via: BTreeMap<DefinitionId, ViaDomain>,
     pub horn_rules: Vec<horn::Rule<usize>>,
-    pub cleanups: BTreeMap<Span, CleanupAction>,
 }
 
 pub fn check(program: &TypedProgram) -> Result<Analysis, Vec<Diagnostic>> {

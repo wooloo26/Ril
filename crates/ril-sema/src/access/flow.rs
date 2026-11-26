@@ -475,6 +475,13 @@ pub(super) fn compatible(a: &Choices, b: &Choices) -> bool {
         .all(|(branch, arm)| b.get(branch).is_none_or(|other| arm == other))
 }
 
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub(super) struct LinearOccurrence {
+    pub span: Span,
+    pub created_in: Choices,
+    pub is_collection: bool,
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(super) struct Datum {
     pub roots: Vec<Origin>,
@@ -482,17 +489,20 @@ pub(super) struct Datum {
     pub array_len: Option<usize>,
     pub map_keys: Option<Vec<Coordinate>>,
     pub(super) results: BTreeSet<ResultReference>,
+    pub(super) linear: BTreeSet<LinearOccurrence>,
     pub requires_new: bool,
     pub latent_effects: BTreeSet<String>,
+    pub latent_operations: BTreeSet<(ril_hir::DefinitionId, String)>,
     pub environments: BTreeSet<Span>,
     pub publications: BTreeMap<Span, bool>,
     // Paths in the environment at callable entry. A true entry identifies
     // the value on every incoming path, while false marks a possible source.
     pub capture_paths: BTreeMap<CapturePath, bool>,
     pub invocations: BTreeMap<Span, BTreeMap<Span, BTreeSet<Span>>>,
-    // Live named captures or lexical handlers outside the member graph.
+    // Live named captures outside the member graph.
     pub live_callable_state: bool,
-    pub task_scope: Option<Span>,
+    pub uses_ctl_handler: bool,
+    pub is_once: bool,
     pub result_fresh: bool,
 }
 
@@ -530,6 +540,9 @@ pub(super) struct Ledger {
     pending_result_paths: BTreeMap<ResultOccurrence, BTreeSet<Choices>>,
     result_samples: BTreeMap<ResultOccurrence, BTreeSet<ResultOccurrence>>,
     pub lost_results: BTreeSet<Span>,
+    pub linear_obligations: BTreeSet<LinearOccurrence>,
+    pub linear_consumed: BTreeSet<LinearOccurrence>,
+    pub linear_armed: BTreeMap<LinearOccurrence, Span>,
     pub iteration: Vec<Datum>,
     pub holds: Vec<(Mode, Datum)>,
     pub choices: Choices,

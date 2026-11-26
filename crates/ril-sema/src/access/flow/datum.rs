@@ -163,6 +163,7 @@ impl Datum {
             *slot = std::mem::take(slot).joined(value);
         }
         self.results.append(&mut other.results);
+        self.linear.append(&mut other.linear);
         if self.array_len != other.array_len {
             self.array_len = None;
         }
@@ -171,6 +172,7 @@ impl Datum {
         }
         self.requires_new &= other.requires_new;
         self.latent_effects.append(&mut other.latent_effects);
+        self.latent_operations.append(&mut other.latent_operations);
         self.environments.append(&mut other.environments);
         for (owner, existing_storage) in other.publications {
             *self.publications.entry(owner).or_default() |= existing_storage;
@@ -182,10 +184,9 @@ impl Datum {
             }
         }
         self.live_callable_state |= other.live_callable_state;
+        self.uses_ctl_handler |= other.uses_ctl_handler;
+        self.is_once |= other.is_once;
         self.result_fresh &= other.result_fresh;
-        if self.task_scope != other.task_scope {
-            self.task_scope = None;
-        }
         self
     }
 
@@ -512,6 +513,21 @@ impl Datum {
             root.reception.clear();
         }
         self.requires_new = true;
+    }
+
+    pub(in crate::access) fn all_linear(&self) -> BTreeSet<LinearOccurrence> {
+        let mut out = self.linear.clone();
+        for member in self.members.values() {
+            out.extend(member.all_linear());
+        }
+        out
+    }
+
+    pub(in crate::access) fn clear_linear(&mut self) {
+        self.linear.clear();
+        for member in self.members.values_mut() {
+            member.clear_linear();
+        }
     }
 
     pub(in crate::access) fn root_dependencies(&self) -> impl Iterator<Item = Span> + '_ {

@@ -63,14 +63,6 @@ pub struct RootFrameHeader {
 #[derive(Clone, Debug)]
 pub enum Object {
     Int(BigInt),
-    Scope(u64),
-    Task {
-        task: u64,
-        scope: u64,
-    },
-    Sender(u64),
-    ClosedSender,
-    Receiver(u64),
     F64(u64),
     Str(RilStr),
     Bytes(Vec<u8>),
@@ -83,13 +75,8 @@ pub enum Object {
         function: *const u8,
         arity: u64,
         environment: Value,
-        evidence: Value,
     },
-    Evidence {
-        parent: Value,
-        operation: u64,
-        handler: Value,
-    },
+    Continuation(u64),
     Draft {
         copy: Value,
     },
@@ -114,30 +101,12 @@ impl Object {
                     visit(v);
                 }
             }
-            Self::Closure {
-                environment,
-                evidence,
-                ..
-            } => {
+            Self::Closure { environment, .. } => {
                 visit(*environment);
-                visit(*evidence);
             }
             Self::Draft { copy } => visit(*copy),
-            Self::Evidence {
-                parent, handler, ..
-            } => {
-                visit(*parent);
-                visit(*handler);
+            Self::Continuation(_) | Self::Int(_) | Self::F64(_) | Self::Str(_) | Self::Bytes(_) => {
             }
-            Self::Scope(_)
-            | Self::Task { .. }
-            | Self::Sender(_)
-            | Self::ClosedSender
-            | Self::Receiver(_)
-            | Self::Int(_)
-            | Self::F64(_)
-            | Self::Str(_)
-            | Self::Bytes(_) => {}
         }
     }
 }
@@ -193,23 +162,25 @@ impl GcRuntime {
     }
 
     #[cfg(not(miri))]
-    pub(crate) fn switch_fiber(&mut self, fiber: u64) {
-        if fiber != self.active {
+    pub(crate) fn switch_coro(&mut self, coro: u64) -> u64 {
+        let prev = self.active;
+        if coro != prev {
             let next_top = self
                 .suspended_top_frames
-                .remove(&fiber)
+                .remove(&coro)
                 .unwrap_or(std::ptr::null_mut());
             let prev_top = std::mem::replace(&mut self.top_frame, next_top);
             if !prev_top.is_null() {
-                self.suspended_top_frames.insert(self.active, prev_top);
+                self.suspended_top_frames.insert(prev, prev_top);
             }
-            self.active = fiber;
+            self.active = coro;
         }
+        prev
     }
 
     #[cfg(not(miri))]
-    pub(crate) fn clear_fiber_frames(&mut self, fiber: u64) {
-        self.suspended_top_frames.remove(&fiber);
+    pub(crate) fn clear_coro_frames(&mut self, coro: u64) {
+        self.suspended_top_frames.remove(&coro);
     }
 
     pub(crate) fn pin(&mut self, value: Value) {

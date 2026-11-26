@@ -81,36 +81,20 @@ fn deep_graph_clone_and_equality_use_explicit_worklists() {
 #[test]
 fn cloned_data_keeps_a_callable_and_its_environment_alive() {
     let mut gc = GcRuntime::new(true);
-    let handler = gc.alloc(Object::Closure {
-        function: std::ptr::without_provenance(1),
-        arity: 0,
-        environment: Value::UNIT,
-        evidence: Value::UNIT,
-    });
-    let evidence = gc.alloc(Object::Evidence {
-        parent: Value::UNIT,
-        operation: 1,
-        handler,
-    });
-    gc.pin(evidence);
     let captured = gc.alloc(Object::Tuple(vec![Value::TRUE]));
     let closure = gc.alloc(Object::Closure {
         function: std::ptr::without_provenance(2),
         arity: 0,
         environment: captured,
-        evidence,
     });
     assert!(gc.clone_graph(closure).is_err());
     let original = gc.alloc(Object::Array(vec![closure]));
     let copy = gc.clone_graph(original).unwrap();
-    gc.unpin(evidence);
     gc.pin(copy);
     gc.safepoint();
     assert!(gc.object(original).is_none());
     assert!(matches!(gc.object(copy), Some(Object::Array(values)) if values == &[closure]));
     assert!(gc.object(captured).is_some());
-    assert!(gc.object(evidence).is_some());
-    assert!(gc.object(handler).is_some());
     gc.unpin(copy);
     gc.safepoint();
     assert_eq!(gc.live_objects(), 0);

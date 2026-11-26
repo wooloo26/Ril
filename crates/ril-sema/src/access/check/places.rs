@@ -217,13 +217,6 @@ impl<'a> Analyzer<'a> {
                     self.error_diag(diag);
                     return;
                 }
-                if self.references_scoped_resource(&value) {
-                    self.error(
-                        Code::E0604,
-                        span,
-                        "scoped resource cannot be assigned to a slot",
-                    );
-                }
                 self.seed(ctx, Obligation::Replace(decl));
                 for origin in value.origins().filter(|origin| origin.draft) {
                     if origin

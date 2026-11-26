@@ -68,12 +68,8 @@ pub enum MirTy {
     Array,
     Map,
     Closure,
-    Evidence,
+    Continuation,
     Draft,
-    Scope,
-    Task,
-    Sender,
-    Receiver,
     Foreign,
     RawFnPtr,
     RawU64,
@@ -188,7 +184,6 @@ pub struct SourceLocEntry {
 pub struct Program {
     pub functions: Vec<Function>,
     pub entry: FunctionId,
-    pub suspend_at_entry: bool,
     pub source_locs: Vec<SourceLocEntry>,
 }
 
@@ -269,7 +264,6 @@ pub enum Instruction {
     Handle(u64),
     ConstSmallInt(i64),
     RawU64(u64),
-    Evidence,
     Environment,
     FunctionAddress(FunctionId),
     Integer(Box<[u8]>),
@@ -306,7 +300,6 @@ impl Instruction {
             Self::Handle(_)
             | Self::ConstSmallInt(_)
             | Self::RawU64(_)
-            | Self::Evidence
             | Self::Environment
             | Self::FunctionAddress(_)
             | Self::Integer(_)
@@ -329,7 +322,6 @@ impl Instruction {
             Self::Handle(_)
             | Self::ConstSmallInt(_)
             | Self::RawU64(_)
-            | Self::Evidence
             | Self::Environment
             | Self::FunctionAddress(_)
             | Self::Integer(_)
@@ -353,7 +345,6 @@ pub enum Target {
     Foreign(Arc<ForeignImport>),
     Indirect {
         address: Register,
-        evidence: Register,
         environment: Register,
     },
 }
@@ -369,7 +360,6 @@ pub enum Terminator {
     },
     Invoke {
         target: Target,
-        evidence: Register,
         arguments: Vec<Register>,
         normal: BlockId,
         unwind: BlockId,
@@ -400,21 +390,15 @@ impl Terminator {
             }
             Self::Branch { condition, .. } => visit(*condition),
             Self::Invoke {
-                target,
-                evidence,
-                arguments,
-                ..
+                target, arguments, ..
             } => {
-                visit(*evidence);
                 match target {
                     Target::FunctionWithEnv { environment, .. } => visit(*environment),
                     Target::Indirect {
                         address,
-                        evidence,
                         environment,
                     } => {
                         visit(*address);
-                        visit(*evidence);
                         visit(*environment);
                     }
                     Target::Function(_)
@@ -440,21 +424,15 @@ impl Terminator {
             }
             Self::Branch { condition, .. } => remap(condition),
             Self::Invoke {
-                target,
-                evidence,
-                arguments,
-                ..
+                target, arguments, ..
             } => {
-                remap(evidence);
                 match target {
                     Target::FunctionWithEnv { environment, .. } => remap(environment),
                     Target::Indirect {
                         address,
-                        evidence,
                         environment,
                     } => {
                         remap(address);
-                        remap(evidence);
                         remap(environment);
                     }
                     Target::Function(_)

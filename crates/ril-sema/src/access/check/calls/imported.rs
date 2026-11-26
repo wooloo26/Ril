@@ -61,6 +61,10 @@ impl<'program> Analyzer<'program> {
                             export.summary.retained.contains(&index),
                             Obligation::StoreShare(formal),
                         ),
+                        (
+                            export.summary.no_ctl_params.contains(&index),
+                            Obligation::NoCtlParam(formal),
+                        ),
                     ] {
                         if selected {
                             self.rules.push(Rule {
@@ -212,12 +216,26 @@ impl<'program> Analyzer<'program> {
                     for source in argument.root_dependencies() {
                         self.seed(ctx, Obligation::Invoke(source));
                     }
-                    for effect in &argument.latent_effects {
-                        self.effect(ctx, &frozen, effect, argument_span);
-                    }
+                    self.charge_latent_effects(ctx, &frozen, argument, argument_span);
                     if let Ty::Callable(actual) = self.ty(argument_span) {
                         for effect in &actual.effects {
                             self.effect(ctx, &frozen, effect, argument_span);
+                        }
+                    }
+                }
+                if summary.no_ctl_params.contains(position) {
+                    if self.has_unhandled_ctl(ctx, argument, self.ty(argument_span)) {
+                        self.error(
+                            Code::E0616,
+                            argument_span,
+                            "callable using unhandled ctl effect cannot be passed to a no_ctl parameter",
+                        );
+                    }
+                    if matches!(self.ty(argument_span), Ty::Callable(c) if c.open_effects) {
+                        for root in &argument.roots {
+                            if ctx.formals.contains(&Some(root.region.source)) {
+                                self.seed(ctx, Obligation::NoCtlParam(root.region.source));
+                            }
                         }
                     }
                 }

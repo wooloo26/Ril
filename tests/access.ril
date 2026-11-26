@@ -3077,14 +3077,14 @@ fn run() -> () {
     -- ^ E0530
 }
 
--- @case clone_rejects_a_callable_with_a_stateful_handler compile-fail E0530
+-- @case clone_accepts_callable_under_stateful_dynamic_handler compile-pass
 eff Clock { fn tick() -> int }
 fn run() -> () {
     var ticks = 0
     with Clock::tick = \-> { ticks += 1; ticks }
     let callbacks = [\-> Clock::tick()]
-    let _ = clone(callbacks)
-    -- ^ E0530
+    let copy = clone(callbacks)
+    assert(copy[0]() == 1)
 }
 
 -- @case forwarded_clone_checks_the_callers_closure_environment compile-fail E0530 no-prelude
@@ -3118,14 +3118,13 @@ where
     fn step() &up(ref view) -> int { view.count }
 }
 
--- @case clone_rejects_a_named_callable_with_live_lexical_evidence compile-fail E0530
+-- @case clone_accepts_named_callable_under_stateful_dynamic_handler compile-pass
 eff Clock { fn tick() -> int }
 fn tick() @Clock -> int { Clock::tick() }
 fn run() -> int {
     var counter = 0
     with Clock::tick = \-> { counter += 1; counter }
     let copy = clone([tick])
-    -- ^ E0530
     copy[0]()
 }
 

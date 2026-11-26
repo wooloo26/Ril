@@ -75,6 +75,10 @@ impl Builder<'_, '_> {
             let callee_span = self.ast().expr(callee).span;
             let value = self.expr(callee)?;
             let args = self.indirect_arguments(callee_span, args, span)?;
+            if self.is_ctl_callable(callee_span) {
+                let arg = args.first().copied().unwrap_or_else(|| self.unit());
+                return Ok(self.runtime("ril_rt_resume_ctl", vec![value, arg]));
+            }
             return Ok(self.invoke_closure(value, args));
         };
         let id = self
@@ -104,13 +108,33 @@ impl Builder<'_, '_> {
             )?;
             let op_id = self.global.effect_op_id(&label);
             let key = self.instruction(Instruction::RawU64(op_id));
-            let handler = self.runtime("ril_rt_evidence_find", vec![self.evidence, key]);
-            return Ok(self.invoke_closure(handler, args));
+            if self.global.typed.hir.is_ctl_operation(id) {
+                let packed = if args.is_empty() {
+                    self.unit()
+                } else {
+                    let tuple = self.runtime("ril_rt_tuple", Vec::new());
+                    for arg in args {
+                        self.runtime("ril_rt_append", vec![tuple, arg]);
+                    }
+                    tuple
+                };
+                return Ok(self.runtime("ril_rt_perform_ctl", vec![key, packed]));
+            }
+            let handler = self.runtime("ril_rt_handler_enter_fn", vec![key]);
+            self.scopes.push(super::ScopeAction::LeaveFnHandler);
+            let result = self.invoke_closure(handler, args);
+            self.scopes.pop();
+            self.runtime("ril_rt_handler_leave_fn", Vec::new());
+            return Ok(result);
         }
         if def.kind == DefinitionKind::Local {
             let callee_span = self.ast().expr(callee).span;
             let closure = self.read(id, span)?;
             let args = self.indirect_arguments(callee_span, args, span)?;
+            if self.is_ctl_callable(callee_span) {
+                let arg = args.first().copied().unwrap_or_else(|| self.unit());
+                return Ok(self.runtime("ril_rt_resume_ctl", vec![closure, arg]));
+            }
             return Ok(self.invoke_closure(closure, args));
         }
         if matches!(def.kind, DefinitionKind::Variant(_)) {
@@ -200,6 +224,15 @@ impl Builder<'_, '_> {
 
     pub(super) fn concrete(&self, ty: &Ty) -> Ty {
         ty.specialize(&self.types)
+    }
+
+    fn is_ctl_callable(&self, callee_span: Span) -> bool {
+        self.global
+            .typed
+            .types
+            .get(&callee_span)
+            .map(|ty| self.concrete(ty))
+            .is_some_and(|ty| matches!(ty, Ty::Callable(sig) if sig.is_ctl))
     }
 
     pub(super) fn arguments(

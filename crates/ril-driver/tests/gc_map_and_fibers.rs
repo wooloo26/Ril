@@ -62,26 +62,29 @@ fn large_indexmap_and_utf8_str_metadata_under_gc_stress() -> Result<(), String> 
 }
 
 #[test]
-fn fiber_stack_pool_reuses_stacks_across_many_tasks_under_gc_stress() -> Result<(), String> {
+fn ctl_stack_pool_reuses_stacks_across_many_prompts_under_gc_stress() -> Result<(), String> {
     let source = r#"
-        use ril/fiber
+        eff Yield {
+            ctl emit(v: int) -> ()
+        }
 
         fn main() @io -> () {
-            Fiber::run \-> {
-                let mut xs: []int = []
-                var i = 0
-                while i < 120 {
-                    Array::push(mut xs, i)
-                    i += 1
+            let mut out: []int = []
+            var i = 0
+            while i < 120 {
+                let v = with {
+                    ctl Yield::emit = \n, new k -> {
+                        Array::push(mut out, n)
+                        k()
+                    }
+                    Yield::emit(i * 2)
+                    i * 2
                 }
-                let frozen = new xs
-                let out = Fiber::map(frozen, \n -> {
-                    Fiber::yield_now()
-                    n * 2
-                })
-                assert(len(out) == 120 && out[0] == 0 && out[119] == 238)
-                println("r4-fiber-pool-ok")
+                assert(v == i * 2)
+                i += 1
             }
+            assert(len(ref out) == 120 && out[0] == 0 && out[119] == 238)
+            println("r4-ctl-pool-ok")
         }
     "#;
     let mut pkg = VirtualPackage::new(Unit::Bin);
@@ -89,7 +92,7 @@ fn fiber_stack_pool_reuses_stacks_across_many_tasks_under_gc_stress() -> Result<
     let tmp = tempfile::tempdir().map_err(|err| err.to_string())?;
     let exe = tmp
         .path()
-        .join(format!("r4_fiber{}", std::env::consts::EXE_SUFFIX));
+        .join(format!("r4_ctl{}", std::env::consts::EXE_SUFFIX));
     Driver
         .with_options(CompileOptions {
             opt_stack_promote: false,
@@ -102,10 +105,10 @@ fn fiber_stack_pool_reuses_stacks_across_many_tasks_under_gc_stress() -> Result<
     let output = run_worker(&mut cmd).map_err(|err| err.to_string())?;
     if !output.status.success() {
         return Err(format!(
-            "r4_fiber failed: {}",
+            "r4_ctl failed: {}",
             String::from_utf8_lossy(&output.stderr)
         ));
     }
-    assert_eq!(output.stdout, b"r4-fiber-pool-ok\n");
+    assert_eq!(output.stdout, b"r4-ctl-pool-ok\n");
     Ok(())
 }

@@ -348,7 +348,9 @@ impl Program {
                     imports.push((scope, id));
                     continue;
                 }
-                StmtKind::With(_) | StmtKind::Expr(_) | StmtKind::Error => continue,
+                StmtKind::Defer(_) | StmtKind::With(_) | StmtKind::Expr(_) | StmtKind::Error => {
+                    continue;
+                }
             };
             if let Err(err) = declaration {
                 errors.push(err);

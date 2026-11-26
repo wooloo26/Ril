@@ -67,19 +67,44 @@ impl Checker<'_> {
                         self.statement(env, helper, false);
                     }
                 }
+                let has_ctl_stmt = statements.iter().any(|&item| {
+                    matches!(
+                        &self.ast(env.file).stmt(item).value.kind,
+                        StmtKind::With(h) if h.is_ctl
+                    )
+                });
+                let ctl_answer = if has_ctl_stmt {
+                    Some(expected.cloned().unwrap_or_else(|| self.fresh()))
+                } else {
+                    None
+                };
+                let mut ctl_arm_results = Vec::new();
                 let mut result = Ty::Unit;
                 for (index, &item) in statements.iter().enumerate() {
                     let last = index + 1 == statements.len();
-                    let right = if last
+                    let right = if let StmtKind::With(handler) =
+                        &self.ast(env.file).stmt(item).value.kind
+                        && handler.is_ctl
+                    {
+                        if let Some(arm_res) =
+                            self.check_handler_arm(env, handler, ctl_answer.as_ref())
+                        {
+                            ctl_arm_results.push(arm_res);
+                        }
+                        Ty::Unit
+                    } else if last
                         && let StmtKind::Expr(expr) = self.ast(env.file).stmt(item).value.kind
                     {
-                        self.expr(env, expr, expected)
+                        self.expr(env, expr, ctl_answer.as_ref().or(expected))
                     } else {
                         self.statement(env, item, last)
                     };
                     if result != Ty::Never {
                         result = right;
                     }
+                }
+                for arm_res in ctl_arm_results {
+                    result = self.join(env, span, result, arm_res);
                 }
                 for &helper in helpers {
                     if let StmtKind::Function(fun) = &self.ast(env.file).stmt(helper).value.kind {
@@ -92,6 +117,65 @@ impl Checker<'_> {
                         && def.stmt.is_some_and(|stmt| helpers.contains(&stmt))
                 }) {
                     self.error(Code::E0315, span, "block result exposes a local type");
+                    Ty::Unknown
+                } else {
+                    result
+                }
+            }
+            Expr::With {
+                handlers,
+                statements,
+                helpers,
+            } => {
+                let has_ctl = handlers.iter().any(|h| h.is_ctl);
+                let answer_ty = if has_ctl {
+                    Some(expected.cloned().unwrap_or_else(|| self.fresh()))
+                } else {
+                    None
+                };
+                let mut arm_results = Vec::new();
+                for handler in handlers {
+                    if let Some(arm_res) = self.check_handler_arm(env, handler, answer_ty.as_ref())
+                    {
+                        arm_results.push(arm_res);
+                    }
+                }
+                for &helper in helpers {
+                    if !matches!(
+                        &self.ast(env.file).stmt(helper).value.kind,
+                        StmtKind::Function(_)
+                    ) {
+                        self.statement(env, helper, false);
+                    }
+                }
+                let mut result = Ty::Unit;
+                for (index, &item) in statements.iter().enumerate() {
+                    let last = index + 1 == statements.len();
+                    let right = if last
+                        && let StmtKind::Expr(expr) = self.ast(env.file).stmt(item).value.kind
+                    {
+                        self.expr(env, expr, answer_ty.as_ref().or(expected))
+                    } else {
+                        self.statement(env, item, last)
+                    };
+                    if result != Ty::Never {
+                        result = right;
+                    }
+                }
+                for arm_res in arm_results {
+                    result = self.join(env, span, result, arm_res);
+                }
+                for &helper in helpers {
+                    if let StmtKind::Function(fun) = &self.ast(env.file).stmt(helper).value.kind {
+                        self.function(env, fun);
+                    }
+                }
+                if self.exposes_type(&result, |id| {
+                    let def = self.hir.definition(id);
+                    def.name.span.file == env.file
+                        && def.stmt.is_some_and(|stmt| helpers.contains(&stmt))
+                }) {
+                    self.error(Code::E0315, span, "with block result exposes a local type");
                     Ty::Unknown
                 } else {
                     result
@@ -806,12 +890,7 @@ impl Checker<'_> {
 
     fn equatable(&mut self, env: &Env, ty: &Ty, seen: &mut HashSet<DefinitionId>) -> bool {
         match ty {
-            Ty::Callable(_)
-            | Ty::Draft(_)
-            | Ty::Scope
-            | Ty::Task(_)
-            | Ty::Sender(_)
-            | Ty::Receiver(_) => false,
+            Ty::Callable(_) | Ty::Draft(_) => false,
             Ty::Array(item) => self.equatable(env, &item.ty, seen),
             Ty::Tuple(items) => items.iter().all(|item| self.equatable(env, &item.ty, seen)),
             Ty::Record(fields, _) => fields

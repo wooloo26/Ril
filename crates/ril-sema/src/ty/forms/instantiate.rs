@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{BTreeMap, HashMap},
     sync::Arc,
 };
 
@@ -24,7 +24,6 @@ impl Checker<'_> {
     ) -> (Vec<GenericValue>, Env) {
         let def = self.hir.definition(id);
         let mut local = Env::new(def.name.span.file, def.scope);
-        local.sendable_guards = env.sendable_guards.clone();
         local.domains = env.domains.clone();
         if args.len() > params.len() {
             self.error(Code::E0340, span, "too many generic arguments");
@@ -443,13 +442,6 @@ impl Checker<'_> {
         };
         let def = self.hir.definition(check);
         if matches!(def.kind, DefinitionKind::Primitive(_)) {
-            if let GenericValue::Type(ty) = input {
-                let ty = self.normalize(ty);
-                if def.name.value == "Sendable" && !self.is_sendable(env, &ty, &mut HashSet::new())
-                {
-                    self.error(Code::E0301, span, "type does not satisfy Sendable");
-                }
-            }
             if self.prelude_key(path)
                 && let GenericValue::Data(key) = input
                 && let Some(arg) = path

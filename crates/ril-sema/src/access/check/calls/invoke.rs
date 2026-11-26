@@ -74,7 +74,6 @@ impl Analyzer<'_> {
         let name = def.map_or("", |def| def.name.value.as_str());
         let primitive = def.is_some_and(|def| matches!(def.kind, DefinitionKind::Primitive(_)));
         let module = id.and_then(|id| self.program.hir.primitive_module(id));
-        let concurrent = matches!(module, Some("Fiber" | "Channel"));
         let sig = id
             .and_then(|id| self.program.callables.get(&id).map(|s| s.as_ref()))
             .or_else(|| match self.ty(callee.span) {
@@ -128,7 +127,34 @@ impl Analyzer<'_> {
                             && aliases.contains_key(&root.region.source)
                 })
             });
+        let mut consume_oneshot_target = false;
         if let Some(target) = &target {
+            let is_oneshot = sig.is_some_and(|sig| sig.is_ctl || sig.once) || target.is_once;
+            if is_oneshot {
+                let projected = matches!(callee.value, Expr::Member { .. } | Expr::Index { .. });
+                if projected {
+                    self.error(
+                        Code::E0548,
+                        callee.span,
+                        "one-shot callable or continuation cannot be invoked through a projected path",
+                    );
+                } else if !target.requires_new && !target.writers() {
+                    self.error(
+                        Code::E0548,
+                        callee.span,
+                        "one-shot callable or continuation requires exclusive authority",
+                    );
+                } else {
+                    consume_oneshot_target = true;
+                }
+            }
+            if ctx.no_ctl.is_some() && sig.is_some_and(|sig| sig.open_effects) {
+                for root in &target.roots {
+                    if ctx.formals.contains(&Some(root.region.source)) {
+                        self.seed(ctx, Obligation::NoCtlParam(root.region.source));
+                    }
+                }
+            }
             let requires_writer = sig.is_some_and(|sig| sig.state.iter().any(|s| s == "up"));
             if requires_writer && target.invocations.is_empty() {
                 self.mutate(ctx, ledger, target, callee.span);
@@ -165,7 +191,13 @@ impl Analyzer<'_> {
         for (position, arg) in args.iter().enumerate() {
             let node = ast.expr(arg.value);
             let value = if matches!(node.value, Expr::Closure { .. }) {
-                self.closure(ctx, ledger, arg.value, true)
+                if arg.mode == Mode::New {
+                    let mut arg_ctx = ctx.clone();
+                    arg_ctx.expected = Mode::New;
+                    self.closure(&arg_ctx, ledger, arg.value, true)
+                } else {
+                    self.closure(ctx, ledger, arg.value, true)
+                }
             } else if refining_assert && position == 0 {
                 self.expr_with_truth(ctx, ledger, arg.value, Some(true))
             } else {
@@ -226,39 +258,6 @@ impl Analyzer<'_> {
             } else {
                 parameter.map_or(arg.mode, |p| p.mode)
             };
-            let mut value = value;
-            let movable_task = concurrent && matches!(name, "join" | "cancel") && index == 1;
-            let channel_payload = module == Some("Channel")
-                && matches!(name, "send" | "try_send")
-                && index == 1
-                && !self.program.is_value(self.ty(node.span));
-            if channel_payload
-                && ledger
-                    .loop_snapshot(&value)
-                    .origins()
-                    .any(|origin| !origin.new)
-            {
-                self.error(
-                    Code::E0548,
-                    node.span,
-                    "channel payload requires a complete new graph",
-                );
-            }
-            if movable_task {
-                if mode == Mode::New {
-                    value.transform(&mut |origin| {
-                        origin.confined = None;
-                    });
-                } else if value.writers() {
-                    self.error(
-                        Code::E0535,
-                        node.span,
-                        "exclusive task handles require a new handoff",
-                    );
-                }
-                ledger.inspect(&value);
-            }
-            let mode = if channel_payload { Mode::New } else { mode };
             let value = if primitive && name == "derive" && index == 0 {
                 let mut snapshot = ledger.snapshot(&value);
                 let message = "derive requires an immutable snapshot";
@@ -278,16 +277,15 @@ impl Analyzer<'_> {
             } else {
                 self.prepare_argument(ctx, ledger, arg, value, node.span, mode)
             };
-            // Packing preserves inspection obligations in the payload.
+            // Packing preserves inspection and linear obligations in the payload.
             if !is_constructor {
+                if mode == Mode::New && !(primitive && name == "inner") {
+                    ledger.consume_datum_linear(&value);
+                }
                 if parameter.is_some_and(|p| p.ty.is_result(&self.program.hir)) {
                     ledger.inspect(&value);
                 } else if !value.results().is_empty()
-                    && (!primitive
-                        || !matches!(
-                            name,
-                            "inner" | "len" | "join" | "cancel" | "send" | "try_send"
-                        ))
+                    && (!primitive || !matches!(name, "inner" | "len"))
                 {
                     self.discard(ledger, &value);
                 }
@@ -326,6 +324,54 @@ impl Analyzer<'_> {
                 environment: None,
             },
         );
+        let may_perform_unhandled_effect = sig.is_some_and(|sig| {
+            sig.open_effects
+                || sig.effects.iter().any(|eff| {
+                    eff != "io"
+                        && self
+                            .effect_operations(eff)
+                            .iter()
+                            .any(|op| !ctx.handlers.contains_key(op))
+                })
+        }) || target.as_ref().is_some_and(|t| {
+            t.latent_effects.iter().any(|eff| {
+                eff != "io"
+                    && self
+                        .effect_operations(eff)
+                        .iter()
+                        .any(|op| !ctx.handlers.contains_key(op))
+            }) || t.latent_operations.iter().any(|(op_id, eff)| {
+                !ctx.handlers.contains_key(&crate::access::check::Operation {
+                    id: *op_id,
+                    effect: eff.clone(),
+                })
+            })
+        }) || id.is_some_and(|id| {
+            if let Expr::Path(path) = &callee.value
+                && let Some(op) = self.operation(id, path.span)
+            {
+                !ctx.handlers.contains_key(&op)
+            } else {
+                false
+            }
+        });
+        if may_perform_unhandled_effect && ctx.reachable && !ctx.shadow {
+            for ((_, mode, value), &argument_span) in values.iter().zip(&value_spans) {
+                if matches!(mode, Mode::Mut | Mode::Ref)
+                    && value.roots.iter().any(|root| root.mode == Access::Shared)
+                {
+                    self.error(
+                        if *mode == Mode::Mut {
+                            Code::E0523
+                        } else {
+                            Code::E0524
+                        },
+                        argument_span,
+                        "shared writable source cannot downgrade to mut/ref across an unhandled effect or open @",
+                    );
+                }
+            }
+        }
         for (i, ((_, mode, value), &argument_span)) in values.iter().zip(&value_spans).enumerate() {
             for conflict in ledger.hold_conflicts(value, *mode) {
                 self.check_conflict(
@@ -367,6 +413,19 @@ impl Analyzer<'_> {
                 callee.span,
                 "argument handoff ended the callable path",
             );
+            if consume_oneshot_target {
+                if ctx.reachable {
+                    for root in &target.roots {
+                        for &dep in &root.dependencies {
+                            ledger.revoke(dep, Some(root), None);
+                        }
+                    }
+                }
+                for source in target.root_dependencies().collect::<BTreeSet<_>>() {
+                    self.seed(ctx, Obligation::Write(source));
+                }
+                ledger.consume_datum_linear(target);
+            }
         }
         if !all_aliases_known && let (Some(target), Some(signature)) = (&target, sig) {
             self.record_snapshot_invocation(ctx, ledger, target, (&values, &value_spans), span);
@@ -425,9 +484,6 @@ impl Analyzer<'_> {
             }
             return result;
         }
-        if let Some(module @ ("Fiber" | "Channel")) = module {
-            return self.concurrent(ctx, ledger, (module, name, sig), &values, args, span);
-        }
         if primitive {
             let inserted = match (module, name) {
                 (Some("Array"), "push") => Some(1),
@@ -447,11 +503,25 @@ impl Analyzer<'_> {
                     .find(|((index, ..), _)| *index == 0)
                 {
                     self.check_draft_insertion(ctx, ledger, target, value, value_span);
+                    if self.program.is_must_consume(self.ty(value_span)) {
+                        for decl in target.root_dependencies().collect::<BTreeSet<_>>() {
+                            if let Some(slot) = ledger.slots.get(&decl).cloned()
+                                && slot.value.all_linear().is_empty()
+                            {
+                                let mut updated = slot.value;
+                                ledger.record_linear(&mut updated, target_span, true);
+                                if let Some(slot_mut) = ledger.slots.get_mut(&decl) {
+                                    slot_mut.value = updated;
+                                }
+                            }
+                        }
+                    }
                     if module == Some("Array") && name == "push" {
                         self.mutate(ctx, ledger, target, span);
                         if ctx.reachable
                             && let Some(member) =
                                 self.schema_member(self.ty(target_span), &Coordinate::Dynamic)
+                            && member.mode.mode != Mode::Mut
                             && crate::access::check::higher_order::carries_callable(
                                 self.program,
                                 &member.ty,
@@ -648,7 +718,7 @@ impl Analyzer<'_> {
                     }
                 }
             }
-            if (sig.result_mode == Mode::Infer || carries_callable)
+            if (sig.result_mode == Mode::Infer || (carries_callable && !sig.is_ctl))
                 && let Some(receiver) = target
                 && !receiver.roots.is_empty()
                 && !self.program.is_value(self.ty(span))

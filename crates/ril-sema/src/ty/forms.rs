@@ -176,15 +176,6 @@ impl Checker<'_> {
     pub(super) fn generic_env(&mut self, env: &mut Env, params: &[GenericParam]) {
         for param in params {
             if let Some(id) = self.resolve(param.name.span) {
-                if param.guards.iter().any(|guard| {
-                    self.resolve(guard.span).is_some_and(|symbol| {
-                        let symbol = self.hir.definition(symbol);
-                        matches!(symbol.kind, DefinitionKind::Primitive(_))
-                            && symbol.name.value == "Sendable"
-                    })
-                }) {
-                    env.sendable_guards.insert(id);
-                }
                 if param
                     .name
                     .value
@@ -325,42 +316,73 @@ impl Checker<'_> {
             .iter()
             .map(|path| self.effect_label(env, path))
             .collect();
-        let state = signature
-            .obligations
-            .state
-            .iter()
-            .map(|clause| {
-                let name = match clause.kind {
-                    StateKind::Write => "mut",
-                    StateKind::Share => "^mut",
-                    StateKind::Capture => "capture",
-                    StateKind::Environment => "up",
-                    StateKind::Return => "return",
-                };
-                if clause.bindings.is_empty() {
-                    name.into()
-                } else {
-                    let bindings = clause
-                        .bindings
-                        .iter()
-                        .map(|(storage, path)| {
-                            let mode = super::mode_name(self.member_mode(env, storage));
-                            let name = path_name(path);
-                            if mode.is_empty() {
-                                name
-                            } else if name.is_empty() {
-                                mode.into()
-                            } else {
-                                format!("{mode} {name}")
-                            }
-                        })
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    format!("{name}({bindings})")
+        let mut once = false;
+        let mut state = Vec::new();
+        for clause in &signature.obligations.state {
+            if clause.kind == StateKind::Once {
+                if named || once || signature.is_ctl {
+                    self.error(
+                        Code::E0538,
+                        clause.span,
+                        "&once is only valid once on fn(...) callable types",
+                    );
                 }
-            })
-            .collect();
+                once = true;
+                continue;
+            }
+            let name = match clause.kind {
+                StateKind::Write => "mut",
+                StateKind::Share => "^mut",
+                StateKind::Capture => "capture",
+                StateKind::Environment => "up",
+                StateKind::Once => "once",
+                StateKind::Return => "return",
+            };
+            if clause.bindings.is_empty() {
+                state.push(name.into());
+            } else {
+                let bindings = clause
+                    .bindings
+                    .iter()
+                    .map(|(storage, path)| {
+                        let mode = super::mode_name(self.member_mode(env, storage));
+                        let name = path_name(path);
+                        if mode.is_empty() {
+                            name
+                        } else if name.is_empty() {
+                            mode.into()
+                        } else {
+                            format!("{mode} {name}")
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                state.push(format!("{name}({bindings})"));
+            }
+        }
+        if once
+            && signature
+                .obligations
+                .state
+                .iter()
+                .any(|c| c.kind == StateKind::Environment)
+        {
+            self.error(
+                Code::E0538,
+                self.ast(env.file).ty(signature.result).span,
+                "&once cannot be combined with &up or &up(ref)",
+            );
+        }
+        if !named && signature.is_ctl && env.phase != Phase::Runtime && !env.shadow {
+            self.error(
+                Code::E0810,
+                self.ast(env.file).ty(signature.result).span,
+                "ctl(...) continuation types are prohibited in static evaluation",
+            );
+        }
         let callable = Callable {
+            is_ctl: !named && signature.is_ctl,
+            once,
             parameters: params,
             result,
             result_mode: signature.result_mode,
@@ -642,14 +664,7 @@ impl Checker<'_> {
     ) -> bool {
         let immutable = |m: &Member| m.mode == super::MemberMode::PLAIN;
         match self.normalize(ty) {
-            Ty::F64
-            | Ty::Callable(_)
-            | Ty::Draft(_)
-            | Ty::TypeValue(_)
-            | Ty::Scope
-            | Ty::Task(_)
-            | Ty::Sender(_)
-            | Ty::Receiver(_) => false,
+            Ty::F64 | Ty::Callable(_) | Ty::Draft(_) | Ty::TypeValue(_) => false,
             Ty::Array(member) => immutable(&member) && self.eligible_key(env, &member.ty, seen),
             Ty::Map(key, member) => {
                 immutable(&member)
@@ -701,13 +716,7 @@ impl Checker<'_> {
         seen: &mut HashSet<DefinitionId>,
     ) -> bool {
         match self.normalize(ty) {
-            Ty::Callable(_)
-            | Ty::Draft(_)
-            | Ty::Scope
-            | Ty::Task(_)
-            | Ty::Sender(_)
-            | Ty::Receiver(_)
-            | Ty::TypeValue(_) => false,
+            Ty::Callable(_) | Ty::Draft(_) | Ty::TypeValue(_) => false,
             Ty::Array(member) => self.meta_exportable(env, &member.ty, seen),
             Ty::Map(key, member) => {
                 self.meta_exportable(env, &key, seen) && self.meta_exportable(env, &member.ty, seen)
@@ -720,16 +729,6 @@ impl Checker<'_> {
                 .all(|member| self.meta_exportable(env, &member.ty, seen)),
             Ty::Adt(adt) if adt.kind == AdtKind::Foreign => false,
             Ty::Adt(adt) => {
-                let has_cleanup = self.hir.definition(adt.definition).stmt.is_some_and(|s| {
-                    let def = self.hir.definition(adt.definition);
-                    matches!(
-                        &self.ast(def.name.span.file).stmt(s).value.kind,
-                        StmtKind::Type(decl) if decl.cleanup.is_some()
-                    )
-                });
-                if has_cleanup {
-                    return false;
-                }
                 if !seen.insert(adt.definition) {
                     return true;
                 }

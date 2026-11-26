@@ -22,7 +22,7 @@ use crate::{
 };
 
 const BINARY_MAGIC: &[u8; 5] = b"RILI\x00";
-pub const FORMAT_VERSION: u32 = 1;
+pub const FORMAT_VERSION: u32 = 2;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Interface {
@@ -55,6 +55,8 @@ pub struct Declaration {
     pub shape: String,
     pub generics: Vec<Generic>,
     pub public: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub must_consume: bool,
     #[serde(skip)]
     span: Span,
 }
@@ -138,44 +140,56 @@ impl Interface {
                 }
                 let stmt = def.stmt?;
                 let ast = &program.hir.file(def.name.span.file).ast;
-                let (shape, params) = match (&ast.stmt(stmt).value.kind, def.kind) {
+                let (shape, params, must_consume) = match (&ast.stmt(stmt).value.kind, def.kind) {
                     (StmtKind::Type(decl), DefinitionKind::Type | DefinitionKind::Sum(_)) => {
+                        let param_ids: Vec<_> = decl
+                            .generics
+                            .iter()
+                            .map(|p| match program.hir.resolve(p.name.span) {
+                                Some(ril_hir::Resolution::Definition(pid)) => Some(pid),
+                                _ => None,
+                            })
+                            .collect();
+                        let self_args: Vec<_> = param_ids
+                            .iter()
+                            .filter_map(|opt| {
+                                opt.map(|pid| {
+                                    crate::ty::GenericValue::Type(crate::ty::Ty::Param(pid))
+                                })
+                            })
+                            .collect();
+                        let adt_kind = if decl.kind == TypeKind::Opaque {
+                            if program.hir.file(def.name.span.file).kind == FileKind::Foreign {
+                                crate::ty::AdtKind::Foreign
+                            } else if matches!(decl.definition, TypeDefinition::Sum(_)) {
+                                crate::ty::AdtKind::OpaqueSum
+                            } else {
+                                crate::ty::AdtKind::Opaque
+                            }
+                        } else if matches!(decl.definition, TypeDefinition::Sum(_)) {
+                            crate::ty::AdtKind::Sum
+                        } else {
+                            crate::ty::AdtKind::Nominal
+                        };
+                        let self_adt = crate::ty::Adt {
+                            definition: id,
+                            kind: adt_kind,
+                            defining_scope: def.scope,
+                            visibility: def.visibility,
+                            arguments: self_args,
+                        };
+                        let is_must_consume = program.is_must_consume(&crate::ty::Ty::Adt(
+                            std::sync::Arc::new(self_adt.clone()),
+                        ));
                         let body = if decl.kind == TypeKind::Opaque {
                             if program.hir.file(def.name.span.file).kind == FileKind::Foreign {
                                 "foreign".into()
                             } else {
-                                match &decl.definition {
+                                let base = match &decl.definition {
                                     TypeDefinition::Sum(_) => "sealed sum".into(),
                                     TypeDefinition::Data(_) => {
-                                        let param_ids: Vec<_> = decl
-                                            .generics
-                                            .iter()
-                                            .map(|p| match program.hir.resolve(p.name.span) {
-                                                Some(ril_hir::Resolution::Definition(pid)) => {
-                                                    Some(pid)
-                                                }
-                                                _ => None,
-                                            })
-                                            .collect();
-                                        let self_args = param_ids
-                                            .iter()
-                                            .filter_map(|opt| {
-                                                opt.map(|pid| {
-                                                    crate::ty::GenericValue::Type(
-                                                        crate::ty::Ty::Param(pid),
-                                                    )
-                                                })
-                                            })
-                                            .collect();
-                                        let adt = crate::ty::Adt {
-                                            definition: id,
-                                            kind: crate::ty::AdtKind::Opaque,
-                                            defining_scope: def.scope,
-                                            visibility: def.visibility,
-                                            arguments: self_args,
-                                        };
                                         let unwrapped = program.unwrap_wrapper(
-                                            &crate::ty::Ty::Adt(std::sync::Arc::new(adt)),
+                                            &crate::ty::Ty::Adt(std::sync::Arc::new(self_adt)),
                                         );
                                         if unwrapped.is_primitive_value() {
                                             "sealed value".into()
@@ -190,6 +204,11 @@ impl Interface {
                                     }
                                     TypeDefinition::Opaque => "foreign".into(),
                                     TypeDefinition::Function(..) => "sealed".into(),
+                                };
+                                if is_must_consume {
+                                    format!("{base} must_consume")
+                                } else {
+                                    base
                                 }
                             }
                         } else {
@@ -231,19 +250,22 @@ impl Interface {
                                 }
                             }
                         };
-                        let cleanup = decl
-                            .cleanup
-                            .as_ref()
-                            .map_or_else(String::new, |cleanup| format!(" use({})", cleanup.value));
                         let parameters = match &decl.definition {
                             TypeDefinition::Function(params, _) => params.as_slice(),
                             _ => decl.generics.as_slice(),
                         };
-                        (format!("{:?} {body}{cleanup}", decl.kind), parameters)
+                        (
+                            format!("{:?} {body}", decl.kind),
+                            parameters,
+                            is_must_consume,
+                        )
                     }
                     (
                         StmtKind::Effect {
-                            generics, spreads, ..
+                            generics,
+                            spreads,
+                            operations,
+                            ..
                         },
                         DefinitionKind::Effect(_),
                     ) => {
@@ -253,11 +275,20 @@ impl Interface {
                                 Type::Named(path) => path_shape(program, path),
                                 _ => type_shape(program, ast, spread),
                             })
+                            .chain(operations.iter().filter_map(|&stmt_id| {
+                                if let StmtKind::Function(op) = &ast.stmt(stmt_id).value.kind {
+                                    let kind = if op.signature.is_ctl { "ctl" } else { "fn" };
+                                    Some(format!("{kind} {}", op.name.value))
+                                } else {
+                                    None
+                                }
+                            }))
                             .collect();
                         members.sort();
                         (
                             format!("eff {{ {} }}", members.join("; ")),
                             generics.as_slice(),
+                            false,
                         )
                     }
                     (StmtKind::Binding { is_meta, value, .. }, DefinitionKind::Constant) => {
@@ -269,7 +300,7 @@ impl Interface {
                         {
                             shape = format!("meta {shape} = {}", crate::ty::render(value));
                         }
-                        (shape, &[][..])
+                        (shape, &[][..], false)
                     }
                     _ => return None,
                 };
@@ -279,6 +310,7 @@ impl Interface {
                         shape,
                         generics: generics(program, ast, params),
                         public: def.visibility == Visibility::Public,
+                        must_consume,
                         span: def.name.span,
                     },
                 ))
@@ -468,6 +500,7 @@ impl Interface {
             if !revised.is_some_and(|entry| {
                 baseline.shape == entry.shape
                     && baseline.generics == entry.generics
+                    && baseline.must_consume == entry.must_consume
                     && (!baseline.public || entry.public)
             }) {
                 diagnostics.push(Diagnostic::error(

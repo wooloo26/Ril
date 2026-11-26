@@ -1,125 +1,178 @@
 -- @suite concurrency_isolation
 -- @default_stage access
 
--- @case rejects_replaceable_capture compile-fail E0601
-use ril/fiber
-fn bad() @fiber -> () {
-    var count = 0
-    Fiber::scope \mut s -> {
-        let task = Fiber::spawn(mut s) \-> {
-        -- ^ E0601
-            count += 1
-        }
-        Fiber::join(mut s, task)
-    }
-}
-
--- @case run_does_not_handle_io compile-fail E0612
-use ril/fiber
+-- @case ctl_op_requires_ctl_arm_prefix compile-fail E0623 stage=type
+eff Yield { ctl emit(v: int) -> () }
 fn bad() -> () {
--- ^ E0612
-    Fiber::run \-> {
-        Fiber::yield_now()
-        println("observable")
+    with {
+        Yield::emit = \_, new k -> k()
+        -- ^ E0623
+        Yield::emit(1)
     }
 }
 
--- @case correct_scope_effects compile-pass
-use ril/fiber
-fn run() -> int {
-    Fiber::run \-> Fiber::scope \mut s -> {
-        let a = Fiber::spawn(mut s) \-> 19
-        let b = Fiber::spawn(mut s) \-> 23
-        Fiber::join(mut s, a) + Fiber::join(mut s, b)
-    }
-}
-
--- @case new_handoff_join_ends_the_task_path compile-fail E0549
-use ril/fiber
-fn invalid() @fiber -> () {
-    Fiber::scope \mut s -> {
-        let mut task = Fiber::spawn(mut s) \-> 1
-        let first = Fiber::join(mut s, new task)
-        let second = Fiber::join(mut s, new task)
-        -- ^ E0549
-    }
-}
-
--- @case every_memoized_fallible_join_requires_inspection compile-fail E0720
-use ril/fiber
-fn work() -> new !<int, str> { Ok(1) }
-fn invalid() @fiber -> () {
-    Fiber::scope \mut s -> {
-        let task = Fiber::spawn(mut s) \-> work()
-        match Fiber::join(mut s, task) { Ok(_) -> (); Err(_) -> () }
-        let ignored = Fiber::join(mut s, task)
-        -- ^ E0720
-    }
-}
-
--- @case memoized_join_loop_cannot_discard_an_earlier_result compile-fail E0720
-use ril/fiber
-fn work() -> new !<int, str> { Ok(1) }
-fn invalid() @fiber -> () {
-    Fiber::scope \mut s -> {
-        let task = Fiber::spawn(mut s) \-> work()
-        var pending = Fiber::join(mut s, task)
-        assert(pending == Ok(1))
-        for 0..2 as _index {
-            pending = Fiber::join(mut s, task)
-            -- ^ E0720
-        }
-        assert(pending == Ok(1))
-    }
-}
-
--- @case new_handoff_join_does_not_thaw_existing_snapshot compile-fail E0520
-use ril/fiber
-fn invalid() @fiber -> () {
-    let snapshot = [1]
-    Fiber::scope \mut s -> {
-        let mut task = Fiber::spawn(mut s) \-> snapshot
-        let mut values = Fiber::join(mut s, new task)
-        -- ^ E0520
-        Array::push(mut values, 2)
-    }
-}
-
--- @case channel_disallows_frozen_shared_payload compile-fail E0548
-use ril/channel
-fn bad() @fiber -> () {
-    let .{ mut tx, mut rx } = Channel::bounded(2)
-    let xs = [1, 2]
-    match Channel::send(mut tx, xs) { Ok() -> (); Err(_) -> () }
-    -- ^ E0548
-    let _ = Channel::recv(mut rx)
-}
-
--- @case nested_result_must_be_joined compile-fail E0720
-use ril/fiber
-fn job() -> new !<int, str> { Ok(5) }
-fn bad() @fiber -> () {
-    Fiber::scope \mut s -> {
-        let _ = Fiber::spawn(mut s) \-> job()
-        -- ^ E0720
-    }
-}
-
--- @case stateful_handler_cannot_cross_fiber_boundary compile-fail E0615
-use ril/fiber
-eff Clock { fn tick() -> int }
+-- @case fn_op_forbids_ctl_arm_prefix compile-fail E0623 stage=type
+eff Clock { fn now() -> int }
 fn bad() -> int {
-    var ticks = 0
-    with Clock::tick = \-> { ticks += 1; ticks }
-    Fiber::run \-> Clock::tick()
-    -- ^ E0615
+    with {
+        ctl Clock::now = \-> 1
+        -- ^ E0623
+        Clock::now()
+    }
 }
 
--- @case channel_checks_sendable_through_nominal_representation compile-fail E0301
-use ril/channel
-type Cell = .{ var value: int }
-type Borrowed(.{ ref view: Cell })
+-- @case unconsumed_ctl_continuation_rejected compile-fail E0625
+eff Yield { ctl emit() -> () }
 fn bad() -> () {
-    let _ = Channel::bounded<Borrowed>(1)
+    with {
+        ctl Yield::emit = \new k -> {
+        -- ^ E0625
+            let _ = k
+            ()
+        }
+        Yield::emit()
+    }
+}
+
+-- @case must_consume_across_unhandled_ctl_requires_armed_defer compile-fail E0625
+eff Yield { ctl emit() -> () }
+eff Outer { ctl ping() -> () }
+fn bad() @Outer -> () {
+    with {
+        ctl Yield::emit = \new k -> {
+            Outer::ping()
+            -- ^ E0625
+            k()
+        }
+        Yield::emit()
+    }
+}
+
+-- @case must_consume_across_unhandled_ctl_with_armed_defer_passes compile-pass
+eff Yield { ctl emit() -> () }
+eff Outer { ctl ping() -> () }
+fn ok() @Outer -> () {
+    with {
+        ctl Yield::emit = \new k -> {
+            defer abort(new k)
+            Outer::ping()
+        }
+        Yield::emit()
+    }
+}
+
+-- @case defer_forbids_unhandled_ctl compile-fail E0616
+eff Yield { ctl emit() -> () }
+fn bad() @Yield -> () {
+    defer Yield::emit()
+    -- ^ E0616
+}
+
+-- @case defer_forbids_escaping_return compile-fail E0707
+fn bad() -> int {
+    defer { return 1 }
+    -- ^ E0707
+    0
+}
+
+-- @case defer_body_must_be_unit compile-fail E0301 stage=type
+fn bad() -> () {
+    defer 42
     -- ^ E0301
+}
+
+-- @case deep_handler_arm_rejects_once_rhs compile-fail E0534
+eff Log { fn emit() -> () }
+fn bad(new f: fn() &once -> ()) -> () {
+    with {
+        Log::emit = new f
+        -- ^ E0534
+        Log::emit()
+    }
+}
+
+-- @case ctl_continuation_forbids_projected_invocation compile-fail E0548
+eff Yield { ctl emit() -> () }
+type Holder = .{ mut k: ctl() -> () }
+fn bad() -> () {
+    with {
+        ctl Yield::emit = \new k -> {
+            let mut h = Holder.{ mut k: new k }
+            h.k()
+            -- ^ E0548
+        }
+        Yield::emit()
+    }
+}
+
+-- @case ctl_continuation_forbids_double_invocation compile-fail E0549
+eff Yield { ctl emit() -> () }
+fn bad() -> () {
+    with {
+        ctl Yield::emit = \new k -> {
+            k()
+            k()
+            -- ^ E0549
+        }
+        Yield::emit()
+    }
+}
+
+-- @case once_closure_forbids_capturing_must_consume compile-fail E0625
+eff Yield { ctl emit() -> () }
+fn take(new f: fn() &once -> ()) -> () { f() }
+fn bad() -> () {
+    with {
+        ctl Yield::emit = \new k -> {
+            let mut f: fn() &once -> () = \-> k()
+            -- ^ E0625
+            take(new f)
+        }
+        Yield::emit()
+    }
+}
+
+-- @case shared_writer_forbids_downgrade_across_unhandled_ctl compile-fail E0523
+eff Yield { ctl emit() -> () }
+type Box = .{ var v: int }
+fn touch(mut b: Box) @Yield &mut -> () {
+    Yield::emit()
+    b.v += 1
+}
+fn bad(^mut b: Box) @Yield &^mut -> () {
+    touch(mut b)
+    -- ^ E0523
+}
+
+-- @case effect_op_decl_forbids_open_effects compile-fail E0547 stage=type
+eff Bad {
+    fn run(f: fn() @ -> ()) -> ()
+    -- ^ E0547
+}
+
+-- @case derive_forbids_outer_ctl compile-fail E0607
+eff Yield { ctl emit() -> () }
+type Box = .{ v: int }
+fn bad(b: Box) @Yield -> Box {
+    derive(b, \mut d -> {
+    -- ^ E0607
+        Yield::emit()
+        d.v = 1
+    })
+}
+
+-- @case absorb_panic_forbids_outer_ctl_handler compile-fail E0608
+eff Yield { ctl emit() -> () }
+fn bad() -> () {
+    with ctl Yield::emit = \new k -> k()
+    let _ = absorb_panic(\-> Yield::emit())
+    -- ^ E0608
+}
+
+-- @case route1_closure_does_not_capture_outer_with_handler compile-fail E0534 stage=type
+eff Clock { fn now() -> int }
+fn make() -> fn() -> int {
+-- ^ E0534
+    with Clock::now = \-> 42
+    \-> Clock::now()
 }

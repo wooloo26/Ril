@@ -47,10 +47,10 @@ fn read() -> int { answer }
 -- @file pkg/info.ril
 pkg let answer = 42
 
--- @case public_cleanup_cannot_expose_package_item compile-fail E0910 unit=lib
-pub opaque type Handle(.{ id: int }) use(cleanup)
+-- @case public_signature_cannot_expose_package_item compile-fail E0910 unit=lib
+pkg type Secret = int
+pub fn leak() -> Secret { 1 }
 -- ^ E0910
-pkg fn cleanup(new _handle: Handle) -> () {}
 
 -- @case private_selection compile-fail E0201 unit=bin
 -- @file pkg/main.ril
@@ -142,25 +142,25 @@ var value = 1
 fn bodyless() -> ()
 -- ^ E0902
 
--- @case bodyless_fiber_contract_validates_exact_effects compile-fail E0909 unit=lib
+-- @case bodyless_array_contract_validates_exact_signature compile-fail E0909 unit=lib
 -- @file pkg/main.ril
-use ril/fiber
--- @file ril/fiber.ril
-pub fn yield_now() @io -> ()
+use ril/array
+-- @file ril/array.ril
+pub fn pop_front<T>(xs: []T) -> ?T
 -- ^ E0909
 
 -- @case builtin_body_requires_the_registered_module_identity compile-fail E0902 unit=lib
 -- @file pkg/main.ril
-use pkg/fiber
--- @file pkg/fiber.ril
-pub fn yield_now() @fiber -> ()
+use pkg/array
+-- @file pkg/array.ril
+pub fn pop_front<T>(mut xs: [via]T) &mut -> new ?T
 -- ^ E0902
 
--- @case builtin_handle_representation_is_fixed compile-fail E0909 unit=lib
+-- @case registered_prelude_abort_signature_must_match compile-fail E0909 unit=lib
 -- @file pkg/main.ril
-use ril/fiber
--- @file ril/fiber.ril
-pub opaque type Scope(int)
+use ril/prelude
+-- @file ril/prelude.ril
+pub fn abort(x: int) -> ()
 -- ^ E0909
 
 -- @case registered_prelude_primitive_can_be_bodyless compile-pass unit=lib

@@ -213,6 +213,7 @@ pub enum StateKind {
     Share,
     Capture,
     Environment,
+    Once,
     Return,
 }
 
@@ -225,6 +226,7 @@ pub struct StateClause {
 
 #[derive(Clone, Debug)]
 pub struct Signature {
+    pub is_ctl: bool,
     pub params: Vec<Parameter>,
     pub obligations: Obligations,
     pub result_mode: Mode,
@@ -255,7 +257,6 @@ pub struct TypeDecl {
     pub name: Name,
     pub kind: TypeKind,
     pub generics: Vec<GenericParam>,
-    pub cleanup: Option<Name>,
     pub definition: TypeDefinition,
 }
 
@@ -294,6 +295,7 @@ pub enum ImportTarget {
 
 #[derive(Clone, Debug)]
 pub struct Handler {
+    pub is_ctl: bool,
     pub operation: Path,
     pub mode: Mode,
     pub value: ExprId,
@@ -328,9 +330,9 @@ pub enum StmtKind {
         value: Option<ExprId>,
         fallback: Option<ExprId>,
         is_meta: bool,
-        resource: bool,
     },
-    With(Vec<Handler>),
+    Defer(ExprId),
+    With(Box<Handler>),
     Expr(ExprId),
     Error,
 }
@@ -450,6 +452,11 @@ pub enum Expr {
     Literal(Literal),
     Interpolated(Vec<StringPart>),
     Block {
+        statements: Vec<StmtId>,
+        helpers: Vec<StmtId>,
+    },
+    With {
+        handlers: Vec<Handler>,
         statements: Vec<StmtId>,
         helpers: Vec<StmtId>,
     },

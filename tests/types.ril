@@ -289,12 +289,11 @@ fn copied() -> new fn() -> int {
     -- ^ E0301
 }
 
--- @case clone_rejects_endpoints_through_nested_generic_payloads compile-fail E0301
-use ril/channel
-type Box<T>(.{ item: T })
-type Message { Empty; Full(Box<Box<Channel::Sender<int>>>) }
-fn duplicate(value: Message) -> new Message {
-    clone(value)
+-- @case clone_rejects_ctl_through_nested_generic_payloads compile-fail E0301
+type Box<T>(.{ mut item: T })
+type Message { Empty; Full(Box<Box<ctl() -> ()>>) }
+fn duplicate(ref value: Message) -> new Message {
+    clone(ref value)
     -- ^ E0301
 }
 
@@ -329,10 +328,9 @@ fn duplicate<T>(value: T) -> new T {
 }
 
 -- @case clone_requires_proof_for_every_member_of_a_generic_domain compile-fail E0301
-use ril/channel
-type Parcel<T>(.{ item: T })
-fn duplicate<T: int | Channel::Sender<int>>(value: Parcel<T>) -> new Parcel<T> {
-    clone(value)
+type Parcel<T>(.{ mut item: T })
+fn duplicate<T: int | ctl() -> ()>(ref value: Parcel<T>) -> new Parcel<T> {
+    clone(ref value)
     -- ^ E0301
 }
 
@@ -434,14 +432,14 @@ fn bad() -> () {
     -- ^ E0536
 }
 
--- @case zero_cost_value_nominal_forbids_use_close compile-fail E0541
+-- @case zero_cost_value_nominal_forbids_use_close compile-fail E0120 stage=parse
 type Bad(int) use(close)
--- ^ E0541
+-- ^ E0120
 fn close(_b: Bad) -> () {}
 
--- @case unit_nominal_forbids_use_close compile-fail E0541
+-- @case unit_nominal_forbids_use_close compile-fail E0120 stage=parse
 type BadUnit use(close)
--- ^ E0541
+-- ^ E0120
 fn close(_b: BadUnit) -> () {}
 
 -- @case direct_nominal_wrapper_cycle_rejected compile-fail E0313

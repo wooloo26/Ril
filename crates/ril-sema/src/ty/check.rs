@@ -59,6 +59,7 @@ fn check_impl(hir: Program, budget: Option<u64>, partial: bool) -> (TypedProgram
                 bindings: HashMap::new(),
                 callables: BTreeMap::new(),
                 imported_functions: BTreeMap::new(),
+                imported_must_consume: HashSet::new(),
                 static_values: HashMap::new(),
                 meta_calls: HashMap::new(),
                 static_folds: HashMap::new(),
@@ -168,6 +169,7 @@ fn check_impl(hir: Program, budget: Option<u64>, partial: bool) -> (TypedProgram
         bindings,
         callables,
         imported_functions: BTreeMap::new(),
+        imported_must_consume: HashSet::new(),
         static_values,
         meta_calls,
         static_folds,
@@ -219,7 +221,6 @@ pub(super) struct Env {
     pub(super) phase: Phase,
     pub(super) generics: HashMap<DefinitionId, GenericValue>,
     pub(super) domains: HashMap<DefinitionId, Vec<Ty>>,
-    pub(super) sendable_guards: HashSet<DefinitionId>,
     pub(super) meta_keys: HashMap<DefinitionId, Ty>,
     pub(super) expected_return: Option<Ty>,
     pub(super) inferred_return: Option<usize>,
@@ -248,7 +249,6 @@ impl Env {
             phase: Phase::Runtime,
             generics: HashMap::new(),
             domains: HashMap::new(),
-            sendable_guards: HashSet::new(),
             meta_keys: HashMap::new(),
             expected_return: None,
             inferred_return: None,
@@ -501,10 +501,7 @@ impl<'a> Checker<'a> {
                     _ => None,
                 })
                 .is_some_and(|found| found != &expected && self.fits(env, &actual, found)),
-            (Ty::Draft(a), Ty::Draft(b))
-            | (Ty::Task(a), Ty::Task(b))
-            | (Ty::Sender(a), Ty::Sender(b))
-            | (Ty::Receiver(a), Ty::Receiver(b)) => self.equiv(env, a, b),
+            (Ty::Draft(a), Ty::Draft(b)) => self.equiv(env, a, b),
             (Ty::TypeValue(Some(a)), Ty::TypeValue(Some(b))) => {
                 self.equiv(env, a, b) && self.normalize(a) == self.normalize(b)
             }
@@ -584,10 +581,7 @@ impl<'a> Checker<'a> {
                     _ => None,
                 })
                 .is_some_and(|found| found != &b && self.equiv(env, &a, found)),
-            (Ty::Draft(x), Ty::Draft(y))
-            | (Ty::Task(x), Ty::Task(y))
-            | (Ty::Sender(x), Ty::Sender(y))
-            | (Ty::Receiver(x), Ty::Receiver(y)) => self.equiv(env, x, y),
+            (Ty::Draft(x), Ty::Draft(y)) => self.equiv(env, x, y),
             (Ty::TypeValue(Some(x)), Ty::TypeValue(Some(y))) => self.equiv(env, x, y),
             (Ty::Array(x), Ty::Array(y)) => self.member_equiv(env, x, y),
             (Ty::Map(xk, x), Ty::Map(yk, y)) => {
@@ -634,7 +628,9 @@ impl<'a> Checker<'a> {
     }
 
     fn callable_equiv(&mut self, env: &Env, a: &Callable, b: &Callable) -> bool {
-        a.parameters.len() == b.parameters.len()
+        a.is_ctl == b.is_ctl
+            && a.once == b.once
+            && a.parameters.len() == b.parameters.len()
             && a.open_effects == b.open_effects
             && a.effects == b.effects
             && a.open_state == b.open_state
@@ -663,15 +659,15 @@ impl<'a> Checker<'a> {
             }
     }
 
-    fn state_clause_fits(expected: &[String], clause: &str) -> bool {
+    fn state_clause_fits(expected: &[String], expected_once: bool, clause: &str) -> bool {
         if expected.iter().any(|e| e == clause) {
             return true;
         }
-        if clause == "up(ref)" || clause.starts_with("up(") {
-            if expected.iter().any(|e| e == "up") {
+        if clause == "up" || clause == "up(ref)" || clause.starts_with("up(") {
+            if expected_once || expected.iter().any(|e| e == "up") {
                 return true;
             }
-            if expected.iter().any(|e| e == "up(ref)") {
+            if clause != "up" && expected.iter().any(|e| e == "up(ref)") {
                 let inner = clause
                     .strip_prefix("up(")
                     .and_then(|s| s.strip_suffix(')'))
@@ -686,7 +682,9 @@ impl<'a> Checker<'a> {
     }
 
     fn callable_fits(&mut self, env: &Env, actual: &Callable, expected: &Callable) -> bool {
-        actual.parameters.len() == expected.parameters.len()
+        actual.is_ctl == expected.is_ctl
+            && (expected.open_state || expected.once || !actual.once)
+            && actual.parameters.len() == expected.parameters.len()
             && (expected.open_effects
                 || !actual.open_effects
                     && actual.effects.iter().all(|effect| {
@@ -697,10 +695,9 @@ impl<'a> Checker<'a> {
                     }))
             && (expected.open_state
                 || !actual.open_state
-                    && actual
-                        .state
-                        .iter()
-                        .all(|clause| Self::state_clause_fits(&expected.state, clause)))
+                    && actual.state.iter().all(|clause| {
+                        Self::state_clause_fits(&expected.state, expected.once, clause)
+                    }))
             && (actual.result_mode == expected.result_mode
                 || expected.result_mode == Mode::Infer
                 || actual.result_mode == Mode::New && expected.result_mode == Mode::Plain)
@@ -846,9 +843,6 @@ pub(super) fn transform(ty: &Ty, f: &mut impl FnMut(&Ty) -> Option<Ty>) -> Ty {
         Ty::Map(key, item) => Ty::Map(wrap(key, f), Box::new(member(item, f))),
         Ty::Draft(ty) => Ty::Draft(wrap(ty, f)),
         Ty::Projection(ty, key) => Ty::Projection(wrap(ty, f), *key),
-        Ty::Task(ty) => Ty::Task(wrap(ty, f)),
-        Ty::Sender(ty) => Ty::Sender(wrap(ty, f)),
-        Ty::Receiver(ty) => Ty::Receiver(wrap(ty, f)),
         Ty::TypeValue(Some(ty)) => Ty::TypeValue(Some(wrap(ty, f))),
         Ty::Callable(call) => Ty::Callable(Arc::new(Callable {
             result: transform(&call.result, f),
@@ -868,6 +862,8 @@ pub(super) fn transform(ty: &Ty, f: &mut impl FnMut(&Ty) -> Option<Ty>) -> Ty {
 
 pub(super) fn unknown_callable() -> Callable {
     Callable {
+        is_ctl: false,
+        once: false,
         parameters: Vec::new(),
         result: Ty::Unknown,
         result_mode: Mode::Plain,

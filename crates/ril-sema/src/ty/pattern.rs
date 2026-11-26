@@ -980,16 +980,10 @@ impl Checker<'_> {
                     .last()
                     .map_or(&[][..], |s| s.arguments.as_slice());
                 if let Some(std_ty) = self.hir.std_type(id)
-                    && matches!(
-                        std_ty,
-                        StdType::Draft | StdType::Task | StdType::Sender | StdType::Receiver
-                    )
+                    && std_ty == StdType::Draft
                 {
-                    return match (std_ty, args, &target) {
-                        (StdType::Draft, [GenericArg::Type(p)], Ty::Draft(t))
-                        | (StdType::Task, [GenericArg::Type(p)], Ty::Task(t))
-                        | (StdType::Sender, [GenericArg::Type(p)], Ty::Sender(t))
-                        | (StdType::Receiver, [GenericArg::Type(p)], Ty::Receiver(t)) => {
+                    return match (args, &target) {
+                        ([GenericArg::Type(p)], Ty::Draft(t)) => {
                             self.match_type_pattern(env, *p, t)
                         }
                         _ => false,

@@ -39,8 +39,7 @@ fn scan_use_imports(source: &SourceFile, tokens: &[Token]) -> Vec<Vec<String>> {
     while let Some(tok) = tokens.get(i) {
         if tok.text(source) == "use" {
             let mut j = i + 1;
-            // Distinguish `use a/b/c` import from `use [mut] x = expr` scoped resource binding:
-            // an import has `/` immediately after the first segment.
+            // Collect `use a/b/c` import paths (`/` immediately after the first segment).
             let mut parts = Vec::new();
             if let Some(first) = tokens.get(j)
                 && matches!(first.kind, Kind::Word(_))

@@ -251,6 +251,20 @@ runtime_functions! {
         };
         text::option(&mut rt.gc, item)
     }
+    fn ril_rt_array_pop_front(rt, target: Value) -> Value {
+        let target = rt.gc.draft_read(target).unwrap_or(target);
+        let item = match rt.gc.object_mut(target) {
+            Some(Object::Array(values)) => {
+                if values.is_empty() {
+                    None
+                } else {
+                    Some(values.remove(0))
+                }
+            }
+            _ => return rt.checked(Err("Array::pop_front requires an array")),
+        };
+        text::option(&mut rt.gc, item)
+    }
     fn ril_rt_array_insert(rt, target: Value, index: Value, value: Value) -> Value {
         let target = rt.gc.draft_read(target).unwrap_or(target);
         let value = match rt.gc.draft_insertion(target, value) {
@@ -369,32 +383,47 @@ runtime_functions! {
         let result = rt.gc.clone_graph(value);
         rt.checked(result)
     }
-    fn ril_rt_closure(rt, address: *const u8, arity: u64, evidence: Value, environment: Value) -> Value {
-        rt.gc.alloc(Object::Closure { function: address, arity, environment, evidence })
+    fn ril_rt_closure(rt, address: *const u8, arity: u64, environment: Value) -> Value {
+        rt.gc.alloc(Object::Closure { function: address, arity, environment })
     }
     fn ril_rt_closure_address(rt, closure: Value, expected: u64) -> *const u8 {
         if let Some(Object::Closure { function, arity, .. }) = rt.gc.object(closure) && *arity == expected { *function }
         else { rt.raise("invalid callable"); std::ptr::null() }
     }
-    fn ril_rt_closure_evidence(rt, closure: Value) -> Value {
-        if let Some(Object::Closure { evidence, .. }) = rt.gc.object(closure) { *evidence }
-        else { rt.raise("invalid callable"); Value::UNIT }
-    }
     fn ril_rt_closure_environment(rt, closure: Value) -> Value {
         if let Some(Object::Closure { environment, .. }) = rt.gc.object(closure) { *environment }
         else { rt.raise("invalid callable"); Value::UNIT }
     }
-    fn ril_rt_evidence_push(rt, parent: Value, operation: u64, handler: Value) -> Value {
-        rt.gc.alloc(Object::Evidence { parent, operation, handler })
-    }
-    fn ril_rt_evidence_find(rt, evidence: Value, key: u64) -> Value {
-        let mut evidence = evidence;
-        while let Some(Object::Evidence { parent, operation, handler }) = rt.gc.object(evidence) {
-            if *operation == key { return *handler; }
-            evidence = *parent;
-        }
-        rt.raise("missing lexical effect handler");
+    fn ril_rt_handler_push_fn(rt, op: u64, handler: Value) -> Value {
+        crate::ctl::push_fn_handler(rt, op, handler);
         Value::UNIT
+    }
+    fn ril_rt_handler_push_fn_frame(rt, entries: Value) -> Value {
+        crate::ctl::push_fn_frame(rt, entries);
+        Value::UNIT
+    }
+    fn ril_rt_handler_pop(rt) -> Value {
+        crate::ctl::pop_handler_frame(rt);
+        Value::UNIT
+    }
+    fn ril_rt_handler_enter_fn(rt, op: u64) -> Value {
+        crate::ctl::enter_fn_handler(rt, op)
+    }
+    fn ril_rt_handler_leave_fn(rt) -> Value {
+        crate::ctl::leave_fn_handler(rt);
+        Value::UNIT
+    }
+    fn ril_rt_with_ctl(rt, entries: Value, body_thunk: Value) -> Value {
+        crate::ctl::with_ctl(rt, entries, body_thunk)
+    }
+    fn ril_rt_perform_ctl(rt, op: u64, args: Value) -> Value {
+        crate::ctl::perform_ctl(rt, op, args)
+    }
+    fn ril_rt_resume_ctl(rt, k: Value, arg: Value) -> Value {
+        crate::ctl::resume_ctl(rt, k, arg)
+    }
+    fn ril_rt_abort_ctl(rt, k: Value) -> Value {
+        crate::ctl::abort_ctl(rt, k)
     }
     fn ril_rt_draft_begin(rt, base: Value) -> Value {
         let result = rt.gc.draft_begin(base);
@@ -607,9 +636,5 @@ pub fn symbols() -> Vec<(&'static str, *const u8)> {
         ("ril_rt_create", ril_rt_create as *const u8),
         ("ril_rt_finish", ril_rt_finish as *const u8),
     ]);
-    #[cfg(not(miri))]
-    {
-        symbols.extend(crate::fiber::native::symbols());
-    }
     symbols
 }

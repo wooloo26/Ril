@@ -65,24 +65,99 @@ impl Analyzer<'_> {
             _ => ril_source::ice!("expected effect obligation"),
         };
         if !operations.is_empty() && operations.iter().all(|id| ctx.handlers.contains_key(id)) {
-            for handler in operations.iter().filter_map(|id| ctx.handlers.get(id)) {
-                self.link_invocation_if(ctx, handler, if_exercised.as_ref());
-                self.check_handler_iteration(ledger, handler, span, if_exercised.as_ref());
-                if handler.live_callable_state
-                    || handler
-                        .origins()
-                        .any(|origin| origin.mode != Access::Immutable)
+            for op in &operations {
+                if self.program.hir.is_ctl_operation(op.id)
+                    && ctx.ctl_boundary.is_none_or(|b| {
+                        b.file != ctx.owner.file
+                            || b.start < ctx.owner.start
+                            || b.end > ctx.owner.end
+                    })
                 {
                     self.rules.push(Rule {
                         premises: if_exercised.iter().cloned().collect(),
                         conclusion: Fact {
                             owner: ctx.owner,
-                            obligation: Obligation::StatefulHandler,
+                            obligation: Obligation::CtlHandler,
                         },
                     });
                 }
+                if let Some(handler) = ctx.handlers.get(op) {
+                    self.link_invocation_if(ctx, handler, if_exercised.as_ref());
+                    self.check_handler_iteration(ledger, handler, span, if_exercised.as_ref());
+                    if handler.live_callable_state
+                        || handler
+                            .origins()
+                            .any(|origin| origin.mode != Access::Immutable)
+                    {
+                        self.rules.push(Rule {
+                            premises: if_exercised.iter().cloned().collect(),
+                            conclusion: Fact {
+                                owner: ctx.owner,
+                                obligation: Obligation::StatefulHandler,
+                            },
+                        });
+                    }
+                }
             }
             return;
+        }
+        let has_ctl = match &obligation {
+            Obligation::Operation(op) => self.program.hir.is_ctl_operation(op.id),
+            Obligation::Effect(effect) => self.program.effect_has_ctl(effect),
+            _ => false,
+        };
+        if has_ctl && ctx.no_ctl.is_some() {
+            let diag = Diagnostic::error(
+                Code::E0616,
+                span,
+                "unhandled ctl effect is prohibited in defer cleanup or fn handler arm",
+            );
+            if let Some(fact) = &if_exercised {
+                self.deferred_errors.push((vec![fact.clone()], diag));
+            } else {
+                self.error_diag(diag);
+            }
+        }
+        if has_ctl && if_exercised.is_none() {
+            let unarmed: Vec<_> = ledger
+                .pending_linear()
+                .filter(|occ| {
+                    !ledger.linear_armed.get(*occ).is_some_and(|defer_span| {
+                        ctx.ctl_boundary.is_none_or(|b| {
+                            defer_span.file == b.file
+                                && defer_span.start >= b.start
+                                && defer_span.end <= b.end
+                        })
+                    })
+                })
+                .map(|occ| occ.span)
+                .collect();
+            for handle_span in unarmed {
+                let mut diag = Diagnostic::error(
+                    Code::E0625,
+                    span,
+                    "must-consume value must be managed by an armed defer across unhandled ctl call",
+                );
+                if handle_span != span {
+                    diag = diag.with_label(handle_span, "unarmed must-consume value created here");
+                }
+                self.error_diag(diag);
+            }
+        }
+        if if_exercised.is_none()
+            && (has_ctl || label != "io")
+            && ledger.iteration.iter().any(|iterable| {
+                iterable
+                    .roots
+                    .iter()
+                    .any(|origin| origin.mode == Access::Shared)
+            })
+        {
+            self.error(
+                Code::E0526,
+                span,
+                "shared collection being iterated cannot cross an unhandled effect",
+            );
         }
         let local_effect = self
             .program
@@ -201,20 +276,70 @@ impl Analyzer<'_> {
         }
     }
 
+    pub(super) fn charge_latent_effects(
+        &mut self,
+        ctx: &Context,
+        ledger: &Ledger,
+        value: &Datum,
+        span: Span,
+    ) {
+        for (id, effect) in &value.latent_operations {
+            self.use_effect(
+                ctx,
+                ledger,
+                Obligation::Operation(Operation {
+                    id: *id,
+                    effect: effect.clone(),
+                }),
+                span,
+                None,
+            );
+        }
+        for effect in &value.latent_effects {
+            self.effect(ctx, ledger, effect, span);
+        }
+    }
+
+    pub(super) fn has_unhandled_ctl(&self, ctx: &Context, value: &Datum, ty: &Ty) -> bool {
+        if value.latent_operations.iter().any(|(id, effect)| {
+            self.program.hir.is_ctl_operation(*id)
+                && !ctx.handlers.contains_key(&Operation {
+                    id: *id,
+                    effect: effect.clone(),
+                })
+        }) {
+            return true;
+        }
+        let check_effect = |effect: &str| {
+            self.program.effect_has_ctl(effect)
+                && self.effect_operations(effect).iter().any(|op| {
+                    self.program.hir.is_ctl_operation(op.id) && !ctx.handlers.contains_key(op)
+                })
+        };
+        if value.latent_effects.iter().any(|eff| check_effect(eff)) {
+            return true;
+        }
+        if let Ty::Callable(sig) = ty
+            && sig.effects.iter().any(|eff| check_effect(eff))
+        {
+            return true;
+        }
+        false
+    }
+
     pub(super) fn named_value_has_live_state(
         &mut self,
         id: DefinitionId,
-        ctx: &Context,
+        _ctx: &Context,
         ledger: &Ledger,
     ) -> bool {
-        let function = self.function_syntax(id);
         let mut captured = self
             .function_syntax(id)
             .into_iter()
             .flat_map(|fun| &fun.signature.obligations.state)
             .filter(|clause| clause.kind == StateKind::Environment)
             .flat_map(|clause| &clause.bindings);
-        if captured.any(|(storage, path)| {
+        captured.any(|(storage, path)| {
             storage.variable
                 || storage.mode != Mode::Plain
                 || self
@@ -228,60 +353,6 @@ impl Analyzer<'_> {
                                 .origins()
                                 .any(|root| root.mode != Access::Immutable)
                     })
-        }) {
-            return true;
-        }
-        let live_handlers: Vec<_> = self
-            .program
-            .callables
-            .get(&id)
-            .into_iter()
-            .flat_map(|callable| &callable.effects)
-            .flat_map(|effect| self.effect_operations(effect))
-            .filter(|operation| {
-                ctx.handlers.get(operation).is_some_and(|handler| {
-                    handler.live_callable_state
-                        || handler
-                            .origins()
-                            .any(|origin| origin.mode != Access::Immutable)
-                })
-            })
-            .collect();
-        if live_handlers.is_empty() {
-            return false;
-        }
-        if let Some(function) = function
-            && ctx.reachable
-            && !ctx.shadow
-        {
-            self.function(function, ledger);
-        }
-        live_handlers
-            .iter()
-            .any(|operation| self.named_may_use_handler(id, operation))
-    }
-
-    pub(super) fn named_may_use_handler(&self, id: DefinitionId, operation: &Operation) -> bool {
-        let uses_handler = |obligation: &Obligation| match obligation {
-            Obligation::Operation(used) => used == operation,
-            Obligation::Effect(effect) => self.program.effect_covers(effect, &operation.effect),
-            _ => false,
-        };
-        if let Some(imported) = self.program.imported_functions.get(&id)
-            && let Some(signature) = self.program.callables.get(&id)
-        {
-            let owner = self.program.hir.definition(id).name.span;
-            return self
-                .imported_effect_obligations(owner, signature, &imported.summary, owner)
-                .iter()
-                .any(uses_handler);
-        }
-        let Some(checked) = self.functions.iter().find(|function| function.id == id) else {
-            // A foreign or currently recursive body has only its declared bound.
-            return true;
-        };
-        self.rules.iter().any(|rule| {
-            rule.conclusion.owner == checked.owner && uses_handler(&rule.conclusion.obligation)
         })
     }
 }

@@ -71,12 +71,6 @@ pub const PRIMITIVE_TYPES: &[PrimitiveTypeSpec] = {
         ptype("Prelude", "Draft", Draft, true),
         ptype("Reflect", "FieldMode", FieldMode, false),
         ptype("Set", "Set", Set, false),
-        ptype("Fiber", "Scope", Scope, true),
-        ptype("Fiber", "Task", Task, true),
-        ptype("Fiber", "TaskFault", TaskFault, false),
-        ptype("Fiber", "TimeoutError", TimeoutError, false),
-        ptype("Channel", "Sender", Sender, true),
-        ptype("Channel", "Receiver", Receiver, true),
     ]
 };
 
@@ -93,6 +87,13 @@ pub const PRIMITIVE_FNS: &[PrimitiveSpec] = {
         prim("Prelude", "inner", Both, None, Some(Inner)),
         prim("Prelude", "clone", Both, Some("ril_rt_clone"), Some(Clone)),
         prim("Prelude", "derive", Both, None, Some(Derive)),
+        prim(
+            "Prelude",
+            "abort",
+            Runtime,
+            Some("ril_rt_abort_ctl"),
+            Some(Abort),
+        ),
         prim("Prelude", "absorb_panic", Runtime, None, Some(AbsorbPanic)),
         prim(
             "Prelude",
@@ -158,6 +159,13 @@ pub const PRIMITIVE_FNS: &[PrimitiveSpec] = {
             Both,
             Some("ril_rt_array_pop"),
             Some(ArrayPop),
+        ),
+        prim(
+            "Array",
+            "pop_front",
+            Both,
+            Some("ril_rt_array_pop_front"),
+            Some(ArrayPopFront),
         ),
         prim(
             "Array",
@@ -244,102 +252,6 @@ pub const PRIMITIVE_FNS: &[PrimitiveSpec] = {
             None,
             Some(ReflectHasDefault),
         ),
-        // Fiber
-        prim("Fiber", "run", Runtime, Some("ril_fiber_run"), None),
-        prim("Fiber", "scope", Runtime, Some("ril_fiber_scope"), None),
-        prim(
-            "Fiber",
-            "try_scope",
-            Runtime,
-            Some("ril_fiber_try_scope"),
-            None,
-        ),
-        prim("Fiber", "spawn", Runtime, Some("ril_fiber_spawn"), None),
-        prim("Fiber", "join", Runtime, Some("ril_fiber_join"), None),
-        prim("Fiber", "cancel", Runtime, Some("ril_fiber_cancel"), None),
-        prim(
-            "Fiber",
-            "cancel_scope",
-            Runtime,
-            Some("ril_fiber_cancel_scope"),
-            None,
-        ),
-        prim("Fiber", "yield_now", Runtime, Some("ril_fiber_yield"), None),
-        prim("Fiber", "sleep_ms", Runtime, Some("ril_fiber_sleep"), None),
-        prim(
-            "Fiber",
-            "is_cancelled",
-            Runtime,
-            Some("ril_fiber_cancelled"),
-            None,
-        ),
-        prim(
-            "Fiber",
-            "uncancellable",
-            Runtime,
-            Some("ril_fiber_uncancellable"),
-            None,
-        ),
-        prim(
-            "Fiber",
-            "supervise",
-            Runtime,
-            Some("ril_fiber_supervise"),
-            None,
-        ),
-        prim(
-            "Fiber",
-            "timeout_ms",
-            Runtime,
-            Some("ril_fiber_timeout"),
-            None,
-        ),
-        prim("Fiber", "zip", Runtime, Some("ril_fiber_zip"), None),
-        prim("Fiber", "try_zip", Runtime, Some("ril_fiber_try_zip"), None),
-        prim("Fiber", "race", Runtime, Some("ril_fiber_race"), None),
-        prim("Fiber", "map", Runtime, Some("ril_fiber_map"), None),
-        prim("Fiber", "try_map", Runtime, Some("ril_fiber_try_map"), None),
-        // Channel
-        prim(
-            "Channel",
-            "bounded",
-            Runtime,
-            Some("ril_channel_bounded"),
-            None,
-        ),
-        prim(
-            "Channel",
-            "unbounded",
-            Runtime,
-            Some("ril_channel_unbounded"),
-            None,
-        ),
-        prim("Channel", "send", Runtime, Some("ril_channel_send"), None),
-        prim("Channel", "recv", Runtime, Some("ril_channel_recv"), None),
-        prim(
-            "Channel",
-            "try_send",
-            Runtime,
-            Some("ril_channel_try_send"),
-            None,
-        ),
-        prim(
-            "Channel",
-            "try_recv",
-            Runtime,
-            Some("ril_channel_try_recv"),
-            None,
-        ),
-        prim("Channel", "clone", Runtime, Some("ril_channel_clone"), None),
-        prim("Channel", "close", Runtime, Some("ril_channel_close"), None),
-        prim(
-            "Channel",
-            "close_recv",
-            Runtime,
-            Some("ril_channel_close_recv"),
-            None,
-        ),
-        prim("Channel", "drain", Runtime, Some("ril_channel_drain"), None),
     ]
 };
 
@@ -429,21 +341,6 @@ const STD_SOURCES: &[(&str, &str, &str, &str)] = &[
         "ril/file",
         "ril/std/file.ril",
         include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../std/file.ril")),
-    ),
-    (
-        "Fiber",
-        "ril/fiber",
-        "ril/std/fiber.ril",
-        include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../std/fiber.ril")),
-    ),
-    (
-        "Channel",
-        "ril/channel",
-        "ril/std/channel.ril",
-        include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../std/channel.ril"
-        )),
     ),
     (
         "Math",

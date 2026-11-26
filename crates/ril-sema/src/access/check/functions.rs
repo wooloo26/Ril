@@ -58,6 +58,7 @@ impl Analyzer<'_> {
             captures.contains(&binding)
         });
         ledger.clear_result_obligations();
+        ledger.clear_linear_obligations();
         ledger.clear_array_extents();
         ledger.inspected.clear();
         ledger.reset_revocations();
@@ -128,6 +129,13 @@ impl Analyzer<'_> {
                 value,
                 span,
             );
+            if param.mode == Mode::New && self.program.is_must_consume(&param.ty) {
+                ledger.record_linear(
+                    &mut value,
+                    span,
+                    matches!(param.ty, Ty::Array(_) | Ty::Map(..)),
+                );
+            }
             ledger.slots.insert(
                 span,
                 Slot {
@@ -179,8 +187,10 @@ impl Analyzer<'_> {
         let value = self.expr(&mut ctx, &mut ledger, body);
         let body_span = self.ast(ctx.file).expr(body).span;
         if ctx.reachable && self.ty(body_span) != &Ty::Never {
+            self.run_defers(&mut ctx, &mut ledger, 0);
             self.returned(&mut ctx, &mut ledger, value, body_span);
             self.check_results(&ledger, &BTreeSet::new());
+            self.check_linear(&ledger, &BTreeSet::new());
         }
         let mut return_sources = BTreeSet::new();
         for value in &ctx.return_values {
@@ -304,13 +314,22 @@ impl Analyzer<'_> {
     }
 
     pub(super) fn check_foreign(&mut self, fun: &Function, signature: &Callable) {
-        let prohibited = matches!(
-            signature.result_mode,
-            Mode::Shared | Mode::Via | Mode::Infer
-        ) || signature
-            .state
-            .iter()
-            .any(|state| matches!(state.as_str(), "^mut" | "capture"))
+        let missing_io = !signature.effects.iter().any(|effect| effect == "io");
+        let has_ctl = signature.is_ctl
+            || signature
+                .effects
+                .iter()
+                .any(|effect| self.program.effect_has_ctl(effect));
+        let prohibited = missing_io
+            || has_ctl
+            || matches!(
+                signature.result_mode,
+                Mode::Shared | Mode::Via | Mode::Infer
+            )
+            || signature
+                .state
+                .iter()
+                .any(|state| matches!(state.as_str(), "^mut" | "capture"))
             || signature.parameters.iter().any(|parameter| {
                 matches!(parameter.mode, Mode::Shared | Mode::Via)
                     || parameter.mode == Mode::Plain
@@ -322,7 +341,7 @@ impl Analyzer<'_> {
             self.error(
                 Code::E0908,
                 fun.name.span,
-                "foreign signature requires non-shared handle authority",
+                "foreign signature requires @io, forbids ctl, and requires non-shared handle authority",
             );
         }
     }
@@ -397,6 +416,11 @@ impl Analyzer<'_> {
                         summary.invoked.push(formal);
                     }
                 }
+                Obligation::NoCtlParam(span) => {
+                    if let Some(formal) = fun.formals.iter().position(|decl| *decl == Some(*span)) {
+                        summary.no_ctl_params.push(formal);
+                    }
+                }
                 Obligation::Effect(effect) => {
                     self.record_effect_use(fun, &mut summary, effect, None);
                 }
@@ -418,6 +442,8 @@ impl Analyzer<'_> {
         summary.retained.dedup();
         summary.independent_retention.sort_unstable();
         summary.invoked.sort_unstable();
+        summary.no_ctl_params.sort_unstable();
+        summary.no_ctl_params.dedup();
         summary.effects.sort();
         summary.effects.dedup();
         summary.effect_uses.sort_unstable();
