@@ -240,3 +240,53 @@ fn ril_toml_manifest_dependency_resolution() -> Result<(), String> {
     assert_eq!(status, 0);
     Ok(())
 }
+
+#[test]
+fn ril_toml_rejects_cyclic_and_self_package_dependencies() -> Result<(), String> {
+    let tmp = tempfile::tempdir().map_err(|e| e.to_string())?;
+    let pkg_a = tmp.path().join("pkg_a");
+    let pkg_b = tmp.path().join("pkg_b");
+    let self_pkg = tmp.path().join("self_pkg");
+    fs::create_dir_all(pkg_a.join("src")).map_err(|e| e.to_string())?;
+    fs::create_dir_all(pkg_b.join("src")).map_err(|e| e.to_string())?;
+    fs::create_dir_all(self_pkg.join("src")).map_err(|e| e.to_string())?;
+
+    fs::write(pkg_a.join("src/main.ril"), "fn main() -> () {}\n").map_err(|e| e.to_string())?;
+    fs::write(pkg_b.join("src/lib.ril"), "pub fn v() -> int { 1 }\n").map_err(|e| e.to_string())?;
+    fs::write(self_pkg.join("src/main.ril"), "fn main() -> () {}\n").map_err(|e| e.to_string())?;
+
+    // A -> B -> A cycle
+    fs::write(
+        pkg_a.join("ril.toml"),
+        "[package]\nname = \"pkg_a\"\nentry = \"src/main.ril\"\n\n[dependencies]\npkg_b = { path = \"../pkg_b\" }\n",
+    )
+    .map_err(|e| e.to_string())?;
+    fs::write(
+        pkg_b.join("ril.toml"),
+        "[package]\nname = \"pkg_b\"\nentry = \"src/lib.ril\"\n\n[dependencies]\npkg_a = { path = \"../pkg_a\" }\n",
+    )
+    .map_err(|e| e.to_string())?;
+
+    let err = load_package(&pkg_a, Unit::Bin)
+        .err()
+        .ok_or("expected cyclic ril.toml dependency error")?;
+    assert!(
+        err.contains("cyclic package dependency"),
+        "unexpected error: {err}"
+    );
+
+    // Self-dependency A -> A
+    fs::write(
+        self_pkg.join("ril.toml"),
+        "[package]\nname = \"self_pkg\"\nentry = \"src/main.ril\"\n\n[dependencies]\nself_pkg = { path = \".\" }\n",
+    )
+    .map_err(|e| e.to_string())?;
+    let self_err = load_package(&self_pkg, Unit::Bin)
+        .err()
+        .ok_or("expected self ril.toml dependency error")?;
+    assert!(
+        self_err.contains("cyclic package dependency"),
+        "unexpected self-dep error: {self_err}"
+    );
+    Ok(())
+}

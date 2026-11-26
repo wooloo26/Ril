@@ -1,6 +1,12 @@
-use std::path::PathBuf;
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::PathBuf,
+};
 
-use ril_source::diag::{Code, Diagnostic};
+use ril_source::{
+    diag::{Code, Diagnostic},
+    span::Span,
+};
 
 use ril_syntax::syntax::{Import, ImportTarget, Name, StmtId, StmtKind, Visibility};
 
@@ -23,8 +29,10 @@ impl Program {
                     continue;
                 };
                 let vis = stmt.value.visibility;
+                let import_span = self.import_span(import);
                 match self.import_targets(scope, import) {
-                    Ok(targets) => {
+                    Ok((target_namespace, targets)) => {
+                        self.record_package_edge(scope, target_namespace, import_span);
                         for (name, entry) in targets {
                             if vis > entry.visibility {
                                 errors.push(Diagnostic::error(
@@ -60,11 +68,54 @@ impl Program {
         }
     }
 
+    pub(super) fn check_package_cycles(&self, errors: &mut Vec<Diagnostic>) {
+        #[derive(Clone, Copy, Eq, PartialEq)]
+        enum Color {
+            Visiting,
+            Done,
+        }
+        fn dfs(
+            node: &str,
+            edges: &BTreeMap<String, Vec<(String, Span)>>,
+            colors: &mut BTreeMap<String, Color>,
+            reported: &mut BTreeSet<(String, String)>,
+            errors: &mut Vec<Diagnostic>,
+        ) {
+            colors.insert(node.to_owned(), Color::Visiting);
+            if let Some(neighbors) = edges.get(node) {
+                for (next, span) in neighbors {
+                    match colors.get(next.as_str()).copied() {
+                        Some(Color::Visiting) => {
+                            if reported.insert((node.to_owned(), next.clone())) {
+                                errors.push(Diagnostic::error(
+                                    Code::E0208,
+                                    *span,
+                                    format!("cyclic package dependency involving {node} and {next}"),
+                                ));
+                            }
+                        }
+                        None => dfs(next, edges, colors, reported, errors),
+                        Some(Color::Done) => {}
+                    }
+                }
+            }
+            colors.insert(node.to_owned(), Color::Done);
+        }
+
+        let mut colors = BTreeMap::new();
+        let mut reported = BTreeSet::new();
+        for pkg in self.package_edges.keys() {
+            if !colors.contains_key(pkg.as_str()) {
+                dfs(pkg, &self.package_edges, &mut colors, &mut reported, errors);
+            }
+        }
+    }
+
     fn import_targets(
         &self,
         scope: ScopeId,
         import: &Import,
-    ) -> Result<Vec<(Name, Entry)>, Diagnostic> {
+    ) -> Result<(ScopeId, Vec<(Name, Entry)>), Diagnostic> {
         let mut namespace = scope;
         let mut path_vis = Visibility::Public;
         if let Some(parts) = &import.file {
@@ -132,6 +183,14 @@ impl Program {
                 })?;
             }
         }
+        if namespace == scope || (import.file.is_some() && self.is_same_or_ancestor(namespace, scope))
+        {
+            return Err(Diagnostic::error(
+                Code::E0208,
+                self.import_span(import),
+                "module cannot import itself",
+            ));
+        }
         let mut bindings = Vec::new();
         match &import.target {
             ImportTarget::Module(alias) => {
@@ -158,6 +217,13 @@ impl Program {
             ImportTarget::Items(items) => {
                 for (name, alias) in items {
                     let target = self.lookup(scope, namespace, name, Code::E0209)?;
+                    if self.namespace(target) == Some(scope) {
+                        return Err(Diagnostic::error(
+                            Code::E0208,
+                            name.span,
+                            "module cannot import itself",
+                        ));
+                    }
                     let visibility = self
                         .scope(namespace)
                         .names
@@ -171,6 +237,9 @@ impl Program {
             }
             ImportTarget::Glob => {
                 for (name, entry) in &self.scope(namespace).names {
+                    if self.namespace(entry.target) == Some(scope) {
+                        continue;
+                    }
                     if self.visible(namespace, scope, entry.visibility) {
                         bindings.push((
                             Name::new(name.clone(), self.import_span(import)),
@@ -183,7 +252,7 @@ impl Program {
                 }
             }
         }
-        Ok(bindings)
+        Ok((namespace, bindings))
     }
 
     fn import_span(&self, import: &Import) -> ril_source::span::Span {

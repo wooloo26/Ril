@@ -1216,6 +1216,21 @@ impl Walk<'_> {
             };
             namespace = next;
         }
+        let import_span = import
+            .modules
+            .last()
+            .or_else(|| import.file.as_ref().and_then(|parts| parts.last()))
+            .map_or(Span::new(self.program.scope(self.scope).file, 0, 0), |n| {
+                n.span
+            });
+        if namespace == self.scope
+            || (import.file.is_some() && self.program.is_same_or_ancestor(namespace, self.scope))
+        {
+            self.report(Code::E0208, import_span, "module cannot import itself");
+            return;
+        }
+        self.program
+            .record_package_edge(self.scope, namespace, import_span);
         let mut entries: Vec<(Name, Target)> = Vec::new();
         match &import.target {
             ImportTarget::Module(alias) => {
@@ -1243,6 +1258,10 @@ impl Walk<'_> {
                         .lookup(self.scope, namespace, name, Code::E0209)
                     {
                         Ok(target) => {
+                            if self.program.namespace(target) == Some(self.scope) {
+                                self.report(Code::E0208, name.span, "module cannot import itself");
+                                continue;
+                            }
                             self.program.resolutions.insert(name.span, target.into());
                             entries.push((alias.as_ref().unwrap_or(name).clone(), target));
                         }
@@ -1256,7 +1275,10 @@ impl Walk<'_> {
                     .scope(namespace)
                     .names
                     .iter()
-                    .filter(|(_, entry)| self.program.visible(namespace, self.scope, entry.visibility))
+                    .filter(|(_, entry)| {
+                        self.program.namespace(entry.target) != Some(self.scope)
+                            && self.program.visible(namespace, self.scope, entry.visibility)
+                    })
                     .map(|(name, entry)| (name.clone(), entry.target))
                     .collect();
                 let span = import

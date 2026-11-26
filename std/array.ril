@@ -48,7 +48,7 @@ pub fn map<T, U>(xs: []T, f: fn(T) -> U) -> new []U {
     let mut out: []U = []
     var i = 0
     while i < len(xs) {
-        Array::push(mut out, f(xs[i]))
+        push(mut out, f(xs[i]))
         i += 1
     }
     new out
@@ -59,7 +59,7 @@ pub fn filter<T>(xs: []T, pred: fn(T) -> bool) &return(xs) -> new []T {
     var i = 0
     while i < len(xs) {
         if pred(xs[i]) {
-            Array::push(mut out, xs[i])
+            push(mut out, xs[i])
         }
         i += 1
     }

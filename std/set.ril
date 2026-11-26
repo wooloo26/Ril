@@ -1,5 +1,7 @@
 -- Standard Set module: ordered set self-hosted over Map.
 
+use ril/map
+
 pub opaque type Set<T>([T: ()])
 
 pub fn empty<T>() -> new Set<T> {

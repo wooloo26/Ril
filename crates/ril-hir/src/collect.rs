@@ -47,6 +47,7 @@ fn lower_impl(files: Vec<File>, entry: FileId, partial: bool) -> (Program, Vec<D
         effect_by_label_map: HashMap::new(),
         local_effects: BTreeSet::new(),
         effect_spreads: BTreeMap::new(),
+        package_edges: BTreeMap::new(),
         pending_operations: Vec::new(),
         std_types: BTreeMap::new(),
         std_type_ids: HashMap::new(),
@@ -121,6 +122,7 @@ fn lower_impl(files: Vec<File>, entry: FileId, partial: bool) -> (Program, Vec<D
     program.load_imports(imports, &mut errors);
     if errors.is_empty() || partial {
         walk::check(&mut program, &mut errors);
+        program.check_package_cycles(&mut errors);
         program.resolve_effect_spreads(&mut errors);
         program.finalize_indices();
     }

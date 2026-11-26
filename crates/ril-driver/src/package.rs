@@ -205,6 +205,47 @@ fn resolve_dep_root(base_dir: &Path, raw: &Path) -> PathBuf {
     resolved
 }
 
+fn check_manifest_cycles(
+    root_dir: &Path,
+    root_manifest: &PackageManifest,
+) -> Result<(), String> {
+    fn dfs(
+        dir: &Path,
+        manifest: &PackageManifest,
+        visiting: &mut Vec<PathBuf>,
+        visited: &mut BTreeSet<PathBuf>,
+    ) -> Result<(), String> {
+        let canonical = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
+        visiting.push(canonical.clone());
+        for (dep_name, dep_path) in &manifest.dependencies {
+            let joined = dir.join(dep_path);
+            let dep_dir = joined.canonicalize().unwrap_or(joined);
+            if visiting.contains(&dep_dir) {
+                return Err(format!(
+                    "cyclic package dependency in ril.toml involving `{dep_name}` ({})",
+                    dep_dir.display()
+                ));
+            }
+            if !visited.contains(&dep_dir) {
+                let toml_path = dep_dir.join("ril.toml");
+                if toml_path.is_file() {
+                    let text = fs::read_to_string(&toml_path)
+                        .map_err(|err| format!("{}: {err}", toml_path.display()))?;
+                    let dep_manifest = parse_manifest(&text)?;
+                    dfs(&dep_dir, &dep_manifest, visiting, visited)?;
+                }
+            }
+        }
+        visiting.pop();
+        visited.insert(canonical);
+        Ok(())
+    }
+
+    let mut visiting = Vec::new();
+    let mut visited = BTreeSet::new();
+    dfs(root_dir, root_manifest, &mut visiting, &mut visited)
+}
+
 pub fn load_package(entry: &Path, unit: Unit) -> Result<VirtualPackage, String> {
     let mut entry = entry
         .canonicalize()
@@ -266,6 +307,7 @@ pub fn load_package(entry: &Path, unit: Unit) -> Result<VirtualPackage, String> 
     package.entry = Path::new("pkg").join(local);
     let mut mounts = BTreeMap::from([("pkg".to_owned(), package_dir.clone())]);
     if let Some((manifest_dir, manifest)) = &manifest_info {
+        check_manifest_cycles(manifest_dir, manifest)?;
         for (dep_name, dep_path) in &manifest.dependencies {
             mounts.insert(dep_name.clone(), resolve_dep_root(manifest_dir, dep_path));
         }

@@ -275,6 +275,7 @@ pub struct Program {
     effect_by_label_map: HashMap<String, DefinitionId>,
     local_effects: BTreeSet<DefinitionId>,
     effect_spreads: BTreeMap<DefinitionId, BTreeSet<DefinitionId>>,
+    package_edges: BTreeMap<String, Vec<(String, Span)>>,
     pending_operations: Vec<effects::PendingOperation>,
     std_types: BTreeMap<StdType, DefinitionId>,
     std_type_ids: HashMap<DefinitionId, StdType>,
@@ -712,6 +713,29 @@ impl Program {
         }
     }
 
+    fn is_same_or_ancestor(&self, ancestor: ScopeId, mut scope: ScopeId) -> bool {
+        loop {
+            if scope == ancestor {
+                return true;
+            }
+            let Some(parent) = self.scope(scope).parent else {
+                return false;
+            };
+            scope = parent;
+        }
+    }
+
+    fn record_package_edge(&mut self, from: ScopeId, to: ScopeId, span: Span) {
+        let from_pkg = self.scope(from).package.clone();
+        let to_pkg = self.scope(to).package.clone();
+        if from_pkg != to_pkg {
+            self.package_edges
+                .entry(from_pkg)
+                .or_default()
+                .push((to_pkg, span));
+        }
+    }
+
     fn visible(&self, owner: ScopeId, viewer: ScopeId, visibility: Visibility) -> bool {
         owner == viewer
             || visibility == Visibility::Public
@@ -722,8 +746,21 @@ impl Program {
     fn lookup_prelude(&self, caller: ScopeId, name: &Name) -> Result<Target, Diagnostic> {
         let scope = self.prelude;
         if let Some(entry) = self.scope(scope).names.get(&name.value) {
+            let target = match entry.target {
+                Target::Module(target) if self.is_same_or_ancestor(target, caller) => {
+                    return Err(Diagnostic::error(
+                        Code::E0204,
+                        name.span,
+                        format!("cannot resolve {}", name.value),
+                    ));
+                }
+                Target::TypeAndModule(def, target) if self.is_same_or_ancestor(target, caller) => {
+                    Target::Def(def)
+                }
+                other => other,
+            };
             return if self.visible(scope, caller, entry.visibility) {
-                Ok(entry.target)
+                Ok(target)
             } else {
                 Err(Diagnostic::error(
                     Code::E0201,

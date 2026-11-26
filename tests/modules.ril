@@ -201,3 +201,73 @@ fn work() @io -> () {
     let snapshot = Host::open()
     -- ^ E0535
 }
+
+-- @case module_cannot_import_itself compile-fail E0208 unit=lib
+-- @file pkg/foo.ril
+use pkg/foo
+-- ^ E0208
+pub fn value() -> int { 1 }
+
+-- @case sub_cannot_import_itself compile-fail E0208 unit=lib
+-- @file pkg/foo.ril
+pub sub Inner {
+    use Super::Inner
+    -- ^ E0208
+    pub fn value() -> int { 1 }
+}
+
+-- @case sub_cannot_import_enclosing_file_by_path compile-fail E0208 unit=lib
+-- @file pkg/foo.ril
+pub fn outer() -> int { 1 }
+pub sub Inner {
+    use pkg/foo
+    -- ^ E0208
+    pub fn value() -> int { 2 }
+}
+
+-- @case local_block_cannot_import_enclosing_module compile-fail E0208 unit=lib
+-- @file pkg/foo.ril
+pub fn helper() -> int { 1 }
+pub fn work() -> int {
+    use pkg/foo
+    -- ^ E0208
+    helper()
+}
+
+-- @case same_package_mutual_module_imports_allowed compile-pass unit=lib
+-- @file pkg/main.ril
+use pkg/even
+pub fn check(n: int) -> bool { Even::is_even(n) }
+-- @file pkg/even.ril
+use pkg/odd
+pub fn is_even(n: int) -> bool {
+    if n == 0 { true } else { Odd::is_odd(n - 1) }
+}
+-- @file pkg/odd.ril
+use pkg/even
+pub fn is_odd(n: int) -> bool {
+    if n == 0 { false } else { Even::is_even(n - 1) }
+}
+
+-- @case cyclic_package_dependency_rejected compile-fail E0208 unit=lib
+-- @file pkg/main.ril
+use dep/mid
+pub fn root() -> int { Mid::step() }
+-- @file dep/mid.ril
+use pkg/leaf
+-- ^ E0208
+pub fn step() -> int { Leaf::value() }
+-- @file pkg/leaf.ril
+pub fn value() -> int { 42 }
+
+-- @case stdlib_module_cannot_self_reference_via_prelude compile-fail E0204 unit=lib
+-- @file pkg/main.ril
+use ril/array
+-- @file ril/array.ril
+pub fn push<T>(mut xs: [via]T, via item: T) &mut -> ()
+pub fn bad() -> new []int {
+    let mut out: []int = []
+    Array::push(mut out, 1)
+    -- ^ E0204
+    new out
+}
