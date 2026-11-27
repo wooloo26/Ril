@@ -1,0 +1,59 @@
+# Configuration file for `prek`, a fast Git hook manager written in Rust.
+# See https://prek.j178.dev for more information.
+#:schema https://www.schemastore.org/prek.json
+
+default_install_hook_types = ["pre-commit", "commit-msg"]
+default_stages = ["pre-commit"]
+
+[[repos]]
+repo = "builtin"
+hooks = [
+    { id = "check-merge-conflict", args = ["--assume-in-merge"] },
+    { id = "check-case-conflict" },
+    { id = "check-added-large-files" },
+    { id = "check-toml" },
+    { id = "check-yaml" },
+    { id = "check-json" },
+    { id = "check-executables-have-shebangs" },
+    { id = "check-shebang-scripts-are-executable", exclude = '\.rs$' },
+    { id = "fix-byte-order-marker" },
+    { id = "mixed-line-ending", args = ["--fix=lf"] },
+    { id = "trailing-whitespace", args = ["--markdown-linebreak-ext=md"], exclude = '^(crates/ril-lsp/tests/|tests/)' },
+    { id = "end-of-file-fixer" },
+    { id = "detect-private-key" },
+]
+
+[[repos]]
+repo = "local"
+hooks = [
+    # Commit message validation (reuses .githooks/commit-msg)
+    { id = "commit-msg", name = "Validate commit message format", entry = ".githooks/commit-msg", language = "script", stages = ["commit-msg"], always_run = true },
+
+    # Shell script syntax check
+    { id = "sh-syntax", name = "Check shell script syntax (sh -n)", entry = "sh -n", language = "system", files = '(^\.githooks/|\.sh$)', priority = 10 },
+
+    # Rust formatting & Clippy (exact CI parity)
+    { id = "rustfmt", name = "Format staged Rust files", entry = "rustfmt --edition 2024", language = "system", files = '\.rs$', priority = 20 },
+    { id = "cargo-fmt-check", name = "Check workspace Rust formatting", entry = "cargo fmt --all --check", language = "system", files = '(^crates/|^runtime/|^fuzz/|^Cargo\.(toml|lock)$)', exclude = '^crates/ril-lsp/editors/vscode/', pass_filenames = false, priority = 21 },
+    { id = "cargo-clippy", name = "Run workspace Clippy (-D warnings)", entry = "cargo clippy --workspace --all-targets --locked -- -D warnings", language = "system", files = '(^crates/|^runtime/|^fuzz/|^Cargo\.(toml|lock)$)', exclude = '^crates/ril-lsp/editors/vscode/', pass_filenames = false, priority = 22 },
+
+    # Ril CLI build, formatting, hello smoke test, stdlib doctests, and SPEC sync
+    { id = "ril-build", name = "Build ril CLI binary", entry = "cargo build --locked -p ril-cli --bin ril", language = "system", files = '(^crates/|^runtime/|^std/|^examples/|^doc/SPEC\.md$|^Cargo\.(toml|lock)$)', exclude = '^crates/ril-lsp/editors/vscode/', pass_filenames = false, priority = 30 },
+    { id = "ril-fmt", name = "Format staged Ril std/examples files", entry = "./target/debug/ril fmt", language = "system", files = '^(std|examples)/.*\.ril$', priority = 31 },
+    { id = "ril-fmt-check", name = "Check Ril formatting (std & examples)", entry = "./target/debug/ril fmt --check std examples", language = "system", files = '(^crates/|^runtime/|^std/|^examples/|^Cargo\.(toml|lock)$)', exclude = '^crates/ril-lsp/editors/vscode/', pass_filenames = false, priority = 32 },
+    { id = "ril-hello", name = "Run examples/hello", entry = "./target/debug/ril run examples/hello", language = "system", files = '(^crates/|^runtime/|^std/|^examples/|^Cargo\.(toml|lock)$)', exclude = '^crates/ril-lsp/editors/vscode/', pass_filenames = false, priority = 33 },
+    { id = "ril-doc-test", name = "Run stdlib doc tests", entry = "./target/debug/ril test --doc std", language = "system", files = '(^crates/|^runtime/|^std/|^Cargo\.(toml|lock)$)', exclude = '^crates/ril-lsp/editors/vscode/', pass_filenames = false, priority = 33 },
+    { id = "ril-spec-sync", name = "Validate SPEC.md snippets (parse & access)", entry = "sh -eu -c './target/debug/ril test --sync-spec-md --stage parse && ./target/debug/ril test --sync-spec-md --stage access'", language = "system", files = '(^crates/|^runtime/|^std/|^doc/SPEC\.md$|^Cargo\.(toml|lock)$)', exclude = '^crates/ril-lsp/editors/vscode/', pass_filenames = false, priority = 33 },
+
+    # Targeted subsystem checks
+    { id = "ril-suites", name = "Run Ril conformance suites", entry = "sh -eu -c 'if command -v cargo-nextest >/dev/null 2>&1; then cargo nextest run -p ril-test --test suites --locked; else cargo test -p ril-test --test suites --locked; fi'", language = "system", files = '^tests/', pass_filenames = false, priority = 40 },
+    { id = "scripts-quality", name = "Run Python scripts quality suite", entry = "sh -eu -c 'if command -v uv >/dev/null 2>&1; then uv run --directory scripts --locked quality; elif [ -x scripts/.venv/bin/quality ]; then scripts/.venv/bin/quality; elif command -v uv.exe >/dev/null 2>&1; then uv.exe run --directory scripts --locked quality; else echo \"[skip] quality (uv not found)\"; fi'", language = "system", files = '^scripts/', pass_filenames = false, priority = 40 },
+    { id = "doc-check", name = "Run documentation validation (doc_check)", entry = "sh -eu -c 'if command -v uv >/dev/null 2>&1; then uv run --directory scripts --locked doc_check; elif [ -x scripts/.venv/bin/doc_check ]; then scripts/.venv/bin/doc_check; elif command -v uv.exe >/dev/null 2>&1; then uv.exe run --directory scripts --locked doc_check; else echo \"[skip] doc_check (uv not found)\"; fi'", language = "system", files = '(^doc/|\.md$)', pass_filenames = false, priority = 40 },
+    { id = "formal-verify", name = "Verify Lean 4 formal proofs & Horn oracle", entry = "sh -eu -c 'if command -v lake >/dev/null 2>&1; then (cd formal && lake build horn-oracle access-check audit) && ./formal/.lake/build/bin/access-check && ./formal/.lake/build/bin/audit && RIL_HORN_ORACLE=\"$PWD/formal/.lake/build/bin/horn-oracle\" cargo test -p ril-test --test interfaces --locked; else echo \"[skip] formal (lake not found)\"; fi'", language = "system", files = '^formal/', pass_filenames = false, priority = 40 },
+    { id = "vscode-typecheck", name = "Typecheck VS Code extension", entry = "sh -eu -c 'if command -v pnpm >/dev/null 2>&1; then (cd crates/ril-lsp/editors/vscode && pnpm run typecheck); elif command -v pnpm.cmd >/dev/null 2>&1; then (cd crates/ril-lsp/editors/vscode && pnpm.cmd run typecheck); else echo \"[skip] vscode typecheck (pnpm not found)\"; fi'", language = "system", files = '^crates/ril-lsp/editors/vscode/', pass_filenames = false, priority = 40 },
+
+    # Full CI stress suite (on-demand via `prek run --stage manual --all-files`)
+    { id = "ci-gc-stress-workspace", name = "Full workspace tests (RIL_GC_STRESS=1)", entry = "sh -eu -c 'export RIL_GC_STRESS=1; if command -v cargo-nextest >/dev/null 2>&1; then cargo nextest run --workspace --locked; else cargo test --workspace --locked; fi'", language = "system", stages = ["manual"], pass_filenames = false, always_run = true, priority = 50 },
+    { id = "ci-stack-promote-suites", name = "Suites with RIL_OPT_STACK_PROMOTE=1", entry = "sh -eu -c 'export RIL_GC_STRESS=1 RIL_OPT_STACK_PROMOTE=1; if command -v cargo-nextest >/dev/null 2>&1; then cargo nextest run -p ril-test --test suites --locked; else cargo test -p ril-test --test suites --locked; fi'", language = "system", stages = ["manual"], pass_filenames = false, always_run = true, priority = 51 },
+    { id = "ci-concurrency-stress", name = "Deterministic concurrency stress (10x)", entry = "sh -eu -c 'export RIL_GC_STRESS=1; if command -v cargo-nextest >/dev/null 2>&1; then cargo nextest run -p ril-test --locked --stress-count 10 -E \"test(/^concurrency_deterministic::/)\"; else echo \"[skip] concurrency stress (cargo-nextest not found)\"; fi'", language = "system", stages = ["manual"], pass_filenames = false, always_run = true, priority = 52 },
+]
