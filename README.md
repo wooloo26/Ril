@@ -13,22 +13,21 @@ fn relay<T>(via value: T) -> infer T {
     item
 }
 
-fn append<T>(mut xs: [via]T, via value: T) &mut -> () {
-    xs |> mut Array::push(relay(value))
-}
-
 fn make_cells() -> new []Cell { [Cell.{ value: 1 }] }
 
 fn receive_cells() -> () {
     let mut cells: [mut]Cell = make_cells() -- New elements receive writable access.
     let mut cell = Cell.{ value: 2 }
-    append(mut cells, new cell)
+    cells |> mut Array::push(relay(new cell))
+    cells[1].value += 1
     -- cell.value                           -- E0549: source path ended.
+    assert(cells[0].value == 1 && cells[1].value == 3)
 }
 ```
 
 ```ril
 -- New containers preserve the sources of nested shared objects.
+type Cell = .{ var value: int }
 type Shelf = .{ mut rows: [^mut]Cell }
 fn shared_shelf(^mut cell: Cell) &^mut &return(^mut cell) -> new Shelf {
     Shelf.{ rows: [^mut cell] }
@@ -45,6 +44,7 @@ fn nested_sources() -> () {
 
 ```ril
 -- A new closure records its environment and captured shared source.
+type Cell = .{ var value: int }
 type Step = fn() &up -> int
 fn make_shared_step(^mut cell: Cell)
     &capture &^mut &return(^mut cell) -> new Step {
@@ -61,6 +61,7 @@ fn sharing() -> () {
 ```
 
 ```ril
+type Cell = .{ var value: int }
 fn update_snapshot() -> () {
     let mut live = Cell.{ value: 1 }
     let snapshot = clone(ref live)
@@ -68,7 +69,7 @@ fn update_snapshot() -> () {
 
     let base = .{ left: snapshot, right: snapshot }
     var current = base
-    current = current |> derive \mut draft -> { draft.left.value += 1 }
+    current = current |> derive \mut d -> { d.left.value += 1 }
     assert(base.left.value == 1 && live.value == 3)
     assert(current.left.value == 2 && current.right.value == 1)
 }
@@ -86,25 +87,21 @@ fn virtual_time() -> str {
 ```
 
 ```ril
--- One-shot algebraic effects ('ctl') compose with zero function coloring,
+-- One-shot algebraic effects ('ctl') compose without function coloring,
 -- and unwinding a continuation deterministically runs active 'defer' cleanups.
 eff Yield<T> { ctl emit(value: T) -> () }
-
-fn emit_doubled(xs: []int, mut trace: []str) @Yield<int> &mut -> () {
-    defer trace |> mut Array::push("cleanup")
-    let _ = xs |> Array::map \x -> { Yield::emit(x * 2); x }
-}
 
 fn first_three_doubled(xs: []int) -> new []int {
     let mut out: []int = []
     let mut trace: []str = []
     with {
-        ctl Yield::emit = \v, new k -> {
+        ctl Yield<int>::emit = \v, new k -> {
             out |> mut Array::push(v)
             if len(ref out) < 3 { k() } else { unwind_ctl(new k) }
         }
 
-        emit_doubled(xs, mut trace)
+        defer trace |> mut Array::push("cleanup")
+        let _ = xs |> Array::map \x -> { Yield<int>::emit(x * 2); x }
     }
     assert(trace == ["cleanup"])
     new out
