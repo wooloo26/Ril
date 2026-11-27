@@ -9,26 +9,26 @@
 -- @expect-stdout done
 eff Sched {
     ctl yield_now() -> ()
-    ctl spawn(new work: fn() @Sched @io &once -> ()) -> ()
+    ctl spawn(work: fn() @Sched @io -> ()) -> ()
 }
 
 type Step {
     Done
     Yielded(ctl() @io -> new Step)
-    Spawned(.{ mut child: fn() @Sched @io &once -> (), mut cont: ctl() @io -> new Step })
+    Spawned(.{ child: fn() @Sched @io -> (), cont: ctl() @io -> new Step })
 }
 
 type TaskItem {
-    Fresh(fn() @Sched @io &once -> ())
+    Fresh(fn() @Sched @io -> ())
     Cont(ctl() @io -> new Step)
 }
 
-fn step_fresh(new work: fn() @Sched @io &once -> ()) @io -> new Step {
+fn step_fresh(work: fn() @Sched @io -> ()) @io -> new Step {
     with {
-        ctl Sched::yield_now = \new k -> Step::Yielded(new k)
-        ctl Sched::spawn = \new child, new k -> Step::Spawned(.{
-            mut child: new child,
-            mut cont: new k,
+        ctl Sched::yield_now = \k -> Step::Yielded(k)
+        ctl Sched::spawn = \child, k -> Step::Spawned(.{
+            child,
+            cont: k,
         })
 
         work()
@@ -36,35 +36,35 @@ fn step_fresh(new work: fn() @Sched @io &once -> ()) @io -> new Step {
     }
 }
 
-fn run_fifo(new entry: fn() @Sched @io &once -> ()) @io -> () {
-    let mut ready: [mut]TaskItem = [TaskItem::Fresh(new entry)]
+fn run_fifo(entry: fn() @Sched @io -> ()) @io -> () {
+    let mut ready: []TaskItem = [TaskItem::Fresh(entry)]
     defer {
-        while let Some(mut item) = Array::pop_front(mut ready) {
-            match new item {
-                TaskItem::Cont(mut k) -> unwind_ctl(new k)
+        while let Some(item) = Array::pop_front(mut ready) {
+            match item {
+                TaskItem::Cont(k) -> unwind_ctl(k)
                 TaskItem::Fresh(_) -> ()
             }
         }
     }
-    while let Some(mut item) = Array::pop_front(mut ready) {
-        let mut outcome = match new item {
-            TaskItem::Fresh(mut f) -> step_fresh(new f)
-            TaskItem::Cont(mut k) -> k()
+    while let Some(item) = Array::pop_front(mut ready) {
+        let outcome = match item {
+            TaskItem::Fresh(f) -> step_fresh(f)
+            TaskItem::Cont(k) -> k()
         }
-        match new outcome {
+        match outcome {
             Step::Done -> ()
-            Step::Yielded(mut k) -> Array::push(mut ready, new TaskItem::Cont(new k))
-            Step::Spawned(.{ mut child, mut cont }) -> {
-                Array::push(mut ready, new TaskItem::Cont(new cont))
-                Array::push(mut ready, new TaskItem::Fresh(new child))
+            Step::Yielded(k) -> Array::push(mut ready, TaskItem::Cont(k))
+            Step::Spawned(.{ child, cont }) -> {
+                Array::push(mut ready, TaskItem::Cont(cont))
+                Array::push(mut ready, TaskItem::Fresh(child))
             }
         }
     }
 }
 
 fn main() @io -> () {
-    run_fifo(new \-> {
-        Sched::spawn(new \-> {
+    run_fifo(\-> {
+        Sched::spawn(\-> {
             println("b1")
             Sched::yield_now()
             println("b2")
@@ -86,9 +86,9 @@ eff Yield<T> {
 fn main() @io -> () {
     let mut out: []int = []
     with {
-        ctl Yield<int>::emit = \v, new k -> {
+        ctl Yield<int>::emit = \v, k -> {
             Array::push(mut out, v)
-            if len(ref out) < 3 { k() } else { unwind_ctl(new k) }
+            if len(ref out) < 3 { k() } else { unwind_ctl(k) }
         }
         defer println("cleanup")
         let _ = Array::map([1, 2, 3, 4, 5], \x -> { Yield<int>::emit(x * 2); x })
@@ -131,13 +131,13 @@ eff Inner {
 fn main() @io -> () {
     let mut out: []int = []
     with {
-        ctl Outer::emit = \v, new k -> {
+        ctl Outer::emit = \v, k -> {
             Array::push(mut out, v)
             k()
         }
         var step = 10
         with {
-            ctl Inner::ask = \new k -> {
+            ctl Inner::ask = \k -> {
                 let cur = step
                 step += 10
                 k(cur)
@@ -171,6 +171,7 @@ fn main() @io -> () {
 -- @expect-stdout r2:r1
 -- @expect-stdout p-caught
 -- @expect-stdout a2:a1
+use ril/panic as Panic
 eff Abort {
     ctl stop() -> never
 }
@@ -188,13 +189,13 @@ fn main() @io -> () {
         defer Array::push(mut normal, "n2")
         defer Array::push(mut normal, "n3")
     }
-    println(String::join(new normal, ":"))
+    println(String::join(ref normal, ":"))
 
     let mut ret_log: []str = []
     assert(early(mut ret_log) == 7)
-    println(String::join(new ret_log, ":"))
+    println(String::join(ref ret_log, ":"))
 
-    let panic_res = recover_panic(\-> {
+    let panic_res = Panic::recover(\-> {
         var step = 0
         defer { assert(step == 2) }
         defer { step = 2 }
@@ -212,27 +213,28 @@ fn main() @io -> () {
         defer Array::push(mut abort_log, "a2")
         Abort::stop()
     }
-    println(String::join(new abort_log, ":"))
+    println(String::join(ref abort_log, ":"))
 }
 
--- @case single_panic_in_defer_is_catchable_via_recover_panic run-pass backend=both
+-- @case single_panic_in_defer_is_catchable_via_panic_recover run-pass backend=both
 -- @expect-stdout normal-defer-panic
 -- @expect-stdout abort-defer-panic
+use ril/panic as Panic
 eff Stop {
     ctl halt() -> never
 }
 
 fn main() @io -> () {
-    let r1 = recover_panic(\-> {
+    let r1 = Panic::recover(\-> {
         defer panic("normal-defer-panic")
         ()
     })
     match r1 {
         Ok(_) -> panic("expected panic")
-        Err(Panicked(info)) -> println(panic_message(info))
+        Err(Panic::Error::Panicked(info)) -> println(Panic::message(info))
     }
 
-    let r2 = recover_panic(\-> {
+    let r2 = Panic::recover(\-> {
         with {
             ctl Stop::halt = \_ -> ()
             defer panic("abort-defer-panic")
@@ -241,7 +243,7 @@ fn main() @io -> () {
     })
     match r2 {
         Ok(_) -> panic("expected panic")
-        Err(Panicked(info)) -> println(panic_message(info))
+        Err(Panic::Error::Panicked(info)) -> println(Panic::message(info))
     }
 }
 
@@ -255,7 +257,7 @@ fn main() @io -> () {
     var total = 0
     for 0..100 as i {
         total += with {
-            ctl Tick::step = \v, new k -> k(v)
+            ctl Tick::step = \v, k -> k(v)
             Tick::step(i)
         }
     }

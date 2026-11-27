@@ -70,9 +70,11 @@ pub enum Intrinsic {
     ArrayInsert,
     ArrayRemove,
     MapInsert,
+    MapReplace,
     MapRemove,
     StringInspect,
     StringAt,
+    StringScalars,
     StringFromScalars,
     StringEncodeUtf8,
     StringDecodeUtf8,
@@ -109,13 +111,18 @@ impl Intrinsic {
                 | ArrayInsert
                 | ArrayRemove
                 | MapInsert
+                | MapReplace
                 | MapRemove
                 | StringAt
+                | StringScalars
                 | StringFromScalars
                 | StringEncodeUtf8
                 | StringDecodeUtf8
                 | BytesAt
                 | BytesFromArray
+                | ReflectAttrs
+                | ReflectFieldAttrs
+                | ReflectVariantAttrs
                 | ReflectRawTypeKind
         )
     }
@@ -369,13 +376,12 @@ impl Program {
             return false;
         };
         let file = self.file(def.name.span.file);
-        file.kind != FileKind::Foreign
-            && matches!(
-                &file.ast.stmt(stmt).value.kind,
-                StmtKind::Type(declaration)
-                    if declaration.kind == ril_syntax::syntax::TypeKind::Nominal
-                    && matches!(declaration.definition, TypeDefinition::Opaque)
-            )
+        matches!(
+            &file.ast.stmt(stmt).value.kind,
+            StmtKind::Type(declaration)
+                if declaration.kind == ril_syntax::syntax::TypeKind::Nominal
+                && matches!(declaration.definition, TypeDefinition::Opaque)
+        )
     }
 
     pub fn std_type(&self, id: DefinitionId) -> Option<StdType> {

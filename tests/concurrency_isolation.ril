@@ -5,7 +5,7 @@
 eff Yield { ctl emit(v: int) -> () }
 fn bad() -> () {
     with {
-        Yield::emit = \_, new k -> k()
+        Yield::emit = \_, k -> k()
         -- ^ E0623
         Yield::emit(1)
     }
@@ -25,7 +25,7 @@ fn bad() -> int {
 eff Yield { ctl emit() -> () }
 fn bad() -> () {
     with {
-        ctl Yield::emit = \new k -> {
+        ctl Yield::emit = \k -> {
         -- ^ E0625
             let _ = k
             ()
@@ -39,7 +39,7 @@ eff Yield { ctl emit() -> () }
 eff Outer { ctl ping() -> () }
 fn bad() @Outer -> () {
     with {
-        ctl Yield::emit = \new k -> {
+        ctl Yield::emit = \k -> {
             Outer::ping()
             -- ^ E0625
             k()
@@ -53,8 +53,8 @@ eff Yield { ctl emit() -> () }
 eff Outer { ctl ping() -> () }
 fn ok() @Outer -> () {
     with {
-        ctl Yield::emit = \new k -> {
-            defer unwind_ctl(new k)
+        ctl Yield::emit = \k -> {
+            defer unwind_ctl(k)
             Outer::ping()
         }
         Yield::emit()
@@ -81,23 +81,29 @@ fn bad() -> () {
     -- ^ E0301
 }
 
--- @case deep_handler_arm_rejects_once_rhs compile-fail E0534
+-- @case deep_handler_arm_rejects_ctl_rhs compile-fail E0534
 eff Log { fn emit() -> () }
-fn bad(new f: fn() &once -> ()) -> () {
+eff Yield { ctl step() -> () }
+fn bad() -> () {
     with {
-        Log::emit = new f
-        -- ^ E0534
-        Log::emit()
+        ctl Yield::step = \k -> {
+            with {
+                Log::emit = k
+                -- ^ E0534
+                Log::emit()
+            }
+        }
+        Yield::step()
     }
 }
 
 -- @case ctl_continuation_forbids_projected_invocation compile-fail E0548
 eff Yield { ctl emit() -> () }
-type Holder = .{ mut k: ctl() -> () }
+type Holder = .{ k: ctl() -> () }
 fn bad() -> () {
     with {
-        ctl Yield::emit = \new k -> {
-            let mut h = Holder.{ mut k: new k }
+        ctl Yield::emit = \k -> {
+            let h = Holder.{ k }
             h.k()
             -- ^ E0548
         }
@@ -109,7 +115,7 @@ fn bad() -> () {
 eff Yield { ctl emit() -> () }
 fn bad() -> () {
     with {
-        ctl Yield::emit = \new k -> {
+        ctl Yield::emit = \k -> {
             k()
             k()
             -- ^ E0549
@@ -118,15 +124,15 @@ fn bad() -> () {
     }
 }
 
--- @case once_closure_forbids_capturing_must_consume compile-fail E0625
+-- @case closure_forbids_capturing_must_consume compile-fail E0625
 eff Yield { ctl emit() -> () }
-fn take(new f: fn() &once -> ()) -> () { f() }
+fn take(f: fn() &up -> ()) -> () { f() }
 fn bad() -> () {
     with {
-        ctl Yield::emit = \new k -> {
-            let mut f: fn() &once -> () = \-> k()
+        ctl Yield::emit = \k -> {
+            let f: fn() &up -> () = \-> k()
             -- ^ E0625
-            take(new f)
+            take(f)
         }
         Yield::emit()
     }
@@ -161,11 +167,12 @@ fn bad(b: Box) @Yield -> Box {
     })
 }
 
--- @case recover_panic_forbids_outer_ctl_handler compile-fail E0608
+-- @case panic_recover_forbids_outer_ctl_handler compile-fail E0608
+use ril/panic as Panic
 eff Yield { ctl emit() -> () }
 fn bad() -> () {
-    with ctl Yield::emit = \new k -> k()
-    let _ = recover_panic(\-> Yield::emit())
+    with ctl Yield::emit = \k -> k()
+    let _ = Panic::recover(\-> Yield::emit())
     -- ^ E0608
 }
 

@@ -4,29 +4,24 @@
 pub fn to_f64(n: int) -> f64
 
 -- Truncates finite `x` toward zero into `Some(int)`, returning `None` for `NaN` or `±inf`.
-pub fn trunc(x: f64) -> new ?int
+pub fn to_int_trunc(x: f64) -> new ?int
 
--- Checked conversion from `f64` to `T` (`int` or `f64`).
--- Returns `None` for `T = int` when `x` is non-finite or has a nonzero fractional part.
-pub fn convert<T: int | f64>(x: f64) -> new ?T {
-    meta match <T> {
-        <int> -> {
-            if let Some(n) = trunc(x) {
-                if to_f64(n) == x {
-                    Some(n)
-                } else {
-                    None
-                }
-            } else {
-                None
-            }
+-- Converts finite integer-valued `x` into `Some(int)`, returning `None` when `x` is
+-- non-finite or has a nonzero fractional part.
+pub fn to_int_exact(x: f64) -> new ?int {
+    if let Some(n) = to_int_trunc(x) {
+        if to_f64(n) == x {
+            Some(n)
+        } else {
+            None
         }
-        <f64> -> Some(x)
+    } else {
+        None
     }
 }
 
 -- Divides `a` by `b`, returning `None` when `b == 0` instead of panicking.
-pub fn checked_div(a: int, b: int) -> new ?int {
+pub fn div(a: int, b: int) -> new ?int {
     if b == 0 {
         None
     } else {
@@ -35,7 +30,7 @@ pub fn checked_div(a: int, b: int) -> new ?int {
 }
 
 -- Computes `a % b`, returning `None` when `b == 0` instead of panicking.
-pub fn checked_rem(a: int, b: int) -> new ?int {
+pub fn rem(a: int, b: int) -> new ?int {
     if b == 0 {
         None
     } else {

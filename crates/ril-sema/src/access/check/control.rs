@@ -80,9 +80,13 @@ impl Analyzer<'_> {
                     }
                     _ => {}
                 }
+                let mut binding_is_ctl = false;
+                let mut binding_is_must_consume = false;
+                let mut binding_is_collection = false;
                 if let Some(ty) = self.program.bindings.get(&binding) {
-                    let is_exclusive_linear = matches!(ty, Ty::Adt(adt) if adt.kind == AdtKind::Foreign)
-                        || matches!(ty, Ty::Callable(c) if c.is_ctl || c.once);
+                    binding_is_ctl = self.program.is_ctl_ty(ty);
+                    binding_is_must_consume = self.program.is_must_consume(ty);
+                    binding_is_collection = matches!(ty, Ty::Array(_) | Ty::Map(..));
                     if self.program.is_value(ty)
                         && matches!(mode, Mode::Mut | Mode::Shared | Mode::Ref)
                     {
@@ -91,28 +95,46 @@ impl Analyzer<'_> {
                             name.span,
                             "value-type binding cannot carry live access",
                         );
-                    } else if is_exclusive_linear && variable {
+                    } else if binding_is_ctl && variable {
                         self.error(
                             Code::E0532,
                             name.span,
-                            "foreign handle, ctl continuation, or &once callable cannot be stored in a reassignable slot",
+                            "ctl continuation cannot be stored in a reassignable slot",
                         );
-                    } else if is_exclusive_linear && mode == Mode::Plain {
+                    } else if binding_is_ctl && mode != Mode::Plain {
                         self.error(
-                            Code::E0535,
+                            Code::E0402,
                             name.span,
-                            "foreign handle, ctl continuation, or &once callable cannot be frozen",
+                            "ctl continuation is linear and cannot carry an access mode",
                         );
-                    } else if is_exclusive_linear && mode == Mode::Shared {
+                    } else if binding_is_must_consume && variable {
+                        self.error(
+                            Code::E0532,
+                            name.span,
+                            "container of must-consume values cannot be stored in a reassignable slot",
+                        );
+                    } else if binding_is_must_consume && mode == Mode::Shared {
                         self.error(
                             Code::E0510,
                             name.span,
-                            "foreign handle, ctl continuation, or &once callable cannot be shared",
+                            "container of must-consume values cannot be shared",
                         );
                     }
                 }
+                if binding_is_must_consume && mode != Mode::Ref {
+                    let had_linear = !value.all_linear().is_empty();
+                    let has_bound_dep = value.roots.iter().any(|r| !r.dependencies.is_empty());
+                    if had_linear || has_bound_dep {
+                        self.consume_linear(ctx, ledger, &mut value);
+                        if had_linear || !binding_is_collection {
+                            ledger.record_linear(&mut value, name.span, binding_is_collection);
+                        }
+                    }
+                }
                 if mode == Mode::Plain {
-                    self.freeze_value(ctx, ledger, &mut value, name.span);
+                    if !binding_is_ctl {
+                        self.freeze_value(ctx, ledger, &mut value, name.span);
+                    }
                 } else if mode != Mode::Via {
                     value.receive_binding(access);
                 } else {
@@ -262,30 +284,22 @@ impl Analyzer<'_> {
             },
             Pattern::Constructor(_, payload) => {
                 let items = payload.as_deref().unwrap_or(&[]);
-                let destructive = storage.mode == Mode::New;
-                let inner_storage = if destructive {
-                    Storage::default()
-                } else {
-                    storage.clone()
-                };
+                let linear_destruct =
+                    storage.mode == Mode::Plain && self.program.is_must_consume(self.ty(node.span));
+                if linear_destruct {
+                    self.consume_linear(ctx, ledger, &mut value);
+                }
                 for (i, &item) in items.iter().enumerate() {
                     let item_span = self.ast(ctx.file).pattern(item).span;
-                    let proj_mode = if destructive && items.len() == 1 {
-                        Mode::Mut
-                    } else {
-                        Mode::Plain
-                    };
                     let mut child = self.project_observed(
                         ctx,
                         ledger,
                         &value,
-                        (Coordinate::Index(i.to_string()), proj_mode, item_span),
+                        (Coordinate::Index(i.to_string()), Mode::Plain, item_span),
                     );
-                    if destructive && items.len() == 1 {
-                        child.requires_new = true;
+                    if linear_destruct {
                         for root in &mut child.roots {
-                            root.new = true;
-                            root.mode = Access::Mut;
+                            root.dependencies.clear();
                         }
                         let item_ty = self.ty(item_span);
                         if self.program.is_must_consume(item_ty) && child.all_linear().is_empty() {
@@ -300,7 +314,7 @@ impl Analyzer<'_> {
                         && let Pattern::Binding(own, name) = &self.ast(ctx.file).pattern(item).value
                     {
                         let requested = if own.mode == Mode::Plain {
-                            inner_storage.mode
+                            storage.mode
                         } else {
                             own.mode
                         };
@@ -314,11 +328,12 @@ impl Analyzer<'_> {
                             );
                         }
                     }
-                    self.bind(ctx, ledger, item, &inner_storage, child, site);
+                    self.bind(ctx, ledger, item, storage, child, site);
                 }
             }
             Pattern::Record { fields, .. } => {
                 let record_ty = self.ty(node.span).clone();
+                let record_is_linear = self.program.is_must_consume(&record_ty);
                 let mut all_must_consume_bound = true;
                 if let Ty::Record(schema_fields, _) = &record_ty {
                     for (fname, member) in schema_fields {
@@ -338,8 +353,8 @@ impl Analyzer<'_> {
                         }
                     }
                 }
-                if value.requires_new && all_must_consume_bound {
-                    ledger.consume_datum_linear(&value);
+                if record_is_linear && storage.mode == Mode::Plain && all_must_consume_bound {
+                    self.consume_linear(ctx, ledger, &mut value);
                 }
                 for field in fields {
                     let coordinate = Coordinate::Field(field.name.value.clone());
@@ -377,11 +392,9 @@ impl Analyzer<'_> {
                         if field.storage.mode == Mode::Via {
                             self.check_via_pattern(ctx, pattern, Mode::Via);
                         }
-                        if value.requires_new && requested == Mode::Mut {
-                            child.requires_new = true;
+                        if record_is_linear && storage.mode == Mode::Plain {
                             for root in &mut child.roots {
-                                root.new = true;
-                                root.mode = Access::Mut;
+                                root.dependencies.clear();
                             }
                             let pat_ty = self.ty(span);
                             if self.program.is_must_consume(pat_ty) && child.all_linear().is_empty()
@@ -431,11 +444,9 @@ impl Analyzer<'_> {
                         if ctx.in_function {
                             self.binding_scopes.insert(decl, ctx.scope);
                         }
-                        if value.requires_new && requested == Mode::Mut {
-                            child.requires_new = true;
+                        if record_is_linear && storage.mode == Mode::Plain {
                             for root in &mut child.roots {
-                                root.new = true;
-                                root.mode = Access::Mut;
+                                root.dependencies.clear();
                             }
                             if let Some(ty) = self
                                 .definition(field.name.span)
@@ -593,7 +604,15 @@ impl Analyzer<'_> {
                 BindingSite::ScopedPattern,
             );
             if let Some(guard) = arm.guard {
+                let consumed_before = inside.linear_consumed.len();
                 self.expr(&mut local_ctx, &mut inside, guard);
+                if inside.linear_consumed.len() > consumed_before {
+                    self.error(
+                        Code::E0548,
+                        ast.expr(guard).span,
+                        "match guard cannot consume a must-consume value",
+                    );
+                }
                 let truth = self.literal_bool(&local_ctx, guard);
                 if truth != Some(true) && !inside.no_continuation {
                     missed = results::alternatives(missed, Some(inside.inspected.clone()));
@@ -671,7 +690,10 @@ impl Analyzer<'_> {
                 let alternatives = self
                     .pattern_paths(ctx, ledger, *pattern, &value, false)
                     .into_iter()
-                    .map(|(ledger, _)| ledger)
+                    .map(|(mut ledger, _)| {
+                        ledger.consume_datum_linear(&value);
+                        ledger
+                    })
                     .collect();
                 return ledger.continue_at_pattern(alternatives);
             }

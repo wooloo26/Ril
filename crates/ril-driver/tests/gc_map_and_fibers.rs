@@ -9,29 +9,30 @@ use ril_test::{Unit, VirtualPackage, run_worker};
 fn large_indexmap_and_utf8_str_metadata_under_gc_stress() -> Result<(), String> {
     let source = r#"
         fn main() @io -> () {
-            let mut m: [int: int] = [:]
-            var i = 0
-            while i < 1000 {
-                m[i] = i * 3 + 1
-                i += 1
+            let frozen: [int: int] = {
+                let mut m: [int: int] = [:]
+                var i = 0
+                while i < 1000 {
+                    m[i] = i * 3 + 1
+                    i += 1
+                }
+                assert(len(ref m) == 1000)
+                assert(m?[0] == Some(1) && m?[500] == Some(1501) && m?[999] == Some(2998))
+                -- Update existing key preserves insertion order and length.
+                m[500] = 9999
+                assert(len(ref m) == 1000 && m?[500] == Some(9999))
+                m
             }
-            assert(len(ref m) == 1000)
-            assert(m?[0] == Some(1) && m?[500] == Some(1501) && m?[999] == Some(2998))
-            -- Update existing key preserves insertion order and length.
-            m[500] = 9999
-            assert(len(ref m) == 1000 && m?[500] == Some(9999))
-
             var sum = 0
-            let frozen = new m
             for frozen as (k, v) {
                 sum += k + v
             }
             assert(sum > 0)
 
             let ascii = "abcdefghij"
-            assert(len(ascii) == 10 && String::at(ascii, 3) == Some(100) && ascii[2..6] == "cdef")
+            assert(len(ascii) == 10 && String::scalar_at(ascii, 3) == Some(100) && ascii[2..6] == "cdef")
             let utf8 = "a中b文c"
-            assert(len(utf8) == 5 && String::at(utf8, 1) == Some(20013) && utf8[1..4] == "中b文")
+            assert(len(utf8) == 5 && String::scalar_at(utf8, 1) == Some(20013) && utf8[1..4] == "中b文")
             println("r4-map-str-ok")
         }
     "#;
@@ -73,7 +74,7 @@ fn ctl_stack_pool_reuses_stacks_across_many_prompts_under_gc_stress() -> Result<
             var i = 0
             while i < 120 {
                 let v = with {
-                    ctl Yield::emit = \n, new k -> {
+                    ctl Yield::emit = \n, k -> {
                         Array::push(mut out, n)
                         k()
                     }

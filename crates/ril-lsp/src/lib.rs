@@ -376,7 +376,7 @@ fn publish_diagnostics(state: &mut LspState, uri: &str) -> Value {
                     "severity": 2,
                     "code": "W0601",
                     "source": "ril",
-                    "message": "defer cleanup may panic; a panic during unwinding aborts the process and bypasses recover_panic"
+                    "message": "defer cleanup may panic; a panic during unwinding aborts the process and bypasses Panic::recover"
                 });
                 if let Some(scope_span) = warn.scope_panic_span
                     && let Some(scope_range) = span_to_lsp_range(&partial.sources, scope_span)
@@ -411,9 +411,7 @@ fn formatting(state: &LspState, params: &Value) -> Option<Value> {
     let uri = params.pointer("/textDocument/uri")?.as_str()?;
     let text = state.documents.get(uri)?;
     let logical = uri_to_logical_path(uri);
-    let kind = if uri.ends_with(".d.ril") {
-        FileKind::Foreign
-    } else if text.contains("fn main") {
+    let kind = if text.contains("fn main") {
         FileKind::Executable
     } else {
         FileKind::Module

@@ -10,28 +10,31 @@ impl<'program> Analyzer<'program> {
         (values, value_spans): (&[(usize, Mode, Datum)], &[Span]),
         (span, invocation): (Span, &[InvocationSite]),
     ) -> Datum {
-        if fun.body.is_none()
-            && let Some(id) = self.definition(fun.name.span)
-        {
-            if let Some(export) = self.program.imported_functions.get(&id) {
-                return self.imported_call(
-                    ctx,
-                    ledger,
-                    fun,
-                    sig,
-                    export,
-                    (values, value_spans, span, invocation),
-                );
+        if let Some(id) = self.definition(fun.name.span) {
+            if !fun.generics.is_empty() && ctx.reachable && !ctx.shadow {
+                self.generic_linear_calls.push((id, span));
             }
-            if self.program.hir.file(fun.name.span.file).is_interface()
-                && self.program.hir.operation_effect(id).is_none()
-            {
-                self.error(
-                    Code::E0552,
-                    span,
-                    "imported function has no published call summary",
-                );
-                return self.snapshot_value(span);
+            if fun.body.is_none() {
+                if let Some(export) = self.program.imported_functions.get(&id) {
+                    return self.imported_call(
+                        ctx,
+                        ledger,
+                        fun,
+                        sig,
+                        export,
+                        (values, value_spans, span, invocation),
+                    );
+                }
+                if self.program.hir.file(fun.name.span.file).is_interface()
+                    && self.program.hir.operation_effect(id).is_none()
+                {
+                    self.error(
+                        Code::E0552,
+                        span,
+                        "imported function has no published call summary",
+                    );
+                    return self.snapshot_value(span);
+                }
             }
         }
         if let Some(sig) = sig {
@@ -174,7 +177,74 @@ impl<'program> Analyzer<'program> {
                     self.forward_via_input(ctx, ledger, value, (fun.name.span, formal), span);
                 }
                 self.link_invocation_if(ctx, value, Some(&invocation));
+                let formal_open_effects = sig
+                    .and_then(|s| s.parameters.get(*index))
+                    .is_some_and(|p| matches!(&p.ty, Ty::Callable(c) if c.open_effects));
                 if ctx.reachable && !ctx.shadow {
+                    if formal_open_effects {
+                        self.charge_latent_effects_if(
+                            ctx,
+                            ledger,
+                            value,
+                            arg_span,
+                            Some(&invocation),
+                        );
+                        let arg_ty = self.ty(arg_span).clone();
+                        if let Ty::Callable(actual) = &arg_ty {
+                            for effect in &actual.effects {
+                                self.use_effect(
+                                    ctx,
+                                    ledger,
+                                    Obligation::Effect(effect.clone()),
+                                    arg_span,
+                                    Some(invocation.clone()),
+                                );
+                            }
+                        }
+                        let cb_unhandled = value.latent_effects.iter().any(|eff| {
+                            eff != "io"
+                                && self
+                                    .effect_operations(eff)
+                                    .iter()
+                                    .any(|op| !ctx.handlers.contains_key(op))
+                        }) || value.latent_operations.iter().any(|(op_id, eff)| {
+                            !ctx.handlers.contains_key(&crate::access::check::Operation {
+                                id: *op_id,
+                                effect: eff.clone(),
+                            })
+                        }) || matches!(&arg_ty, Ty::Callable(actual) if actual.open_effects || actual.effects.iter().any(|eff| {
+                            eff != "io"
+                                && self
+                                    .effect_operations(eff)
+                                    .iter()
+                                    .any(|op| !ctx.handlers.contains_key(op))
+                        }));
+                        if cb_unhandled {
+                            for ((_, other_mode, other_val), &other_span) in
+                                values.iter().zip(value_spans)
+                            {
+                                if matches!(other_mode, Mode::Mut | Mode::Ref)
+                                    && other_val
+                                        .roots
+                                        .iter()
+                                        .any(|root| root.mode == Access::Shared)
+                                {
+                                    self.deferred_errors.push((
+                                        vec![invocation.clone()],
+                                        Diagnostic::error(
+                                            if *other_mode == Mode::Mut {
+                                                Code::E0523
+                                            } else {
+                                                Code::E0524
+                                            },
+                                            other_span,
+                                            "shared writable source cannot downgrade to mut/ref across an unhandled effect or open @",
+                                        ),
+                                    ));
+                                }
+                            }
+                        }
+                    }
                     for source in value.root_dependencies() {
                         self.rules.push(Rule {
                             premises: vec![invocation.clone()],

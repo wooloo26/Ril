@@ -5,7 +5,6 @@ import RilAccess.Examples.Call
 import RilAccess.Examples.Composition
 import RilAccess.Examples.Draft
 import RilAccess.Examples.Graph
-import RilAccess.Examples.Handoff
 import RilAccess.Examples.RecursiveStorage
 import RilAccess.Examples.ResolvedProvenance
 import RilAccess.Examples.Results
@@ -334,6 +333,9 @@ structure JsonSummary where
   constructs : Bool
   nonreturning : Bool
   no_ctl_params : Option (List Nat)
+  forbids_linear_drop : Option (List Nat)
+  forbids_linear_dup : Option (List Nat)
+  forbids_linear_suspend : Option (List Nat)
   deriving FromJson
 
 def JsonSummary.formal (summary : JsonSummary) : RilAccess.SummaryOf JsonSource :=
@@ -371,7 +373,10 @@ def compareSummaries (baseline revision : JsonSummary) : Bool :=
     storageFlowsSubsumed providers baseline.storage_flow revision.storage_flow &&
     (!baseline.constructs || revision.constructs) &&
     (!baseline.nonreturning || revision.nonreturning) &&
-    (revision.no_ctl_params.getD []).all (baseline.no_ctl_params.getD []).contains
+    (revision.no_ctl_params.getD []).all (baseline.no_ctl_params.getD []).contains &&
+    (revision.forbids_linear_drop.getD []).all (baseline.forbids_linear_drop.getD []).contains &&
+    (revision.forbids_linear_dup.getD []).all (baseline.forbids_linear_dup.getD []).contains &&
+    (revision.forbids_linear_suspend.getD []).all (baseline.forbids_linear_suspend.getD []).contains
 
 structure JsonInstance where
   modes : List String
@@ -434,8 +439,6 @@ def graphCases : List (String × Bool) :=
    ("a_nested_ref_is_readonly_under_writable_layers", canWritePath nestedSources 0 [0, 0, 2]),
    ("a_nested_snapshot_is_readonly_under_writable_layers", canWritePath nestedSources 0 [0, 0, 3]),
    ("a_new_wrapper_cannot_freeze_an_existing_writer", immutableConsistent frozenNestedSources),
-   ("snapshot_of_handed_off_new_parameter_checks_call_entry_sources",
-     immutableConsistent handedOffBeforeStore),
    ("an_indirect_freeze_checks_retained_authority_in_the_actual_argument",
      immutableConsistent handedOffBeforeStore),
    ("passing_a_freezing_callback_accepts_a_complete_new_argument",
@@ -444,7 +447,6 @@ def graphCases : List (String × Bool) :=
      immutableConsistent handedOffBeforeStore),
    ("snapshot_checks_converge_when_recursive_calls_wrap_an_argument",
      immutableConsistent frozenNestedSources),
-   ("a_call_scoped_writer_cannot_be_frozen_by_handoff", immutableConsistent immutableAndWriter),
    ("conditional_store_keeps_the_original_snapshot_requirement",
      immutableConsistent handedOffBeforeStore && immutableConsistent handedOffAfterStore),
    ("a_snapshot_can_freeze_a_completely_new_graph",
@@ -470,16 +472,14 @@ def cleanupCompositionCases : List (String × Bool) :=
 
 open RilAccess.CoreCtl RilAccess.CoreCtl.Examples RilAccess.CoreBoundary in
 def ctlLinearityCases : List (String × Bool) :=
-  [("ctl_op_requires_ctl_arm_prefix", validHandlerArm .algebraicCtl false false),
-   ("fn_op_forbids_ctl_arm_prefix", validHandlerArm .directFn true false),
-   ("deep_handler_arm_rejects_once_rhs", validHandlerArm .directFn false true),
+  [("ctl_op_requires_ctl_arm_prefix", validHandlerArm .algebraicCtl false),
+   ("fn_op_forbids_ctl_arm_prefix", validHandlerArm .directFn true),
    ("unconsumed_ctl_continuation_rejected", canExitLinearScope singleCont),
    ("must_consume_across_unhandled_ctl_requires_armed_defer", canCrossUnhandledCtl singleCont),
    ("must_consume_across_unhandled_ctl_with_armed_defer_passes",
       canCrossUnhandledCtl armedCont && canExitLinearScope (runArmedDefers armedCont)),
    ("ctl_continuation_forbids_projected_invocation", (consumeLinear singleCont 1 true).isSome),
    ("ctl_continuation_forbids_double_invocation", (consumeLinear afterConsume 1 false).isSome),
-   ("once_closure_forbids_capturing_must_consume", (onceCaptureHandoff baseWorld 2 11 true false).isOk),
    ("shared_writer_forbids_downgrade_across_unhandled_ctl", canPassSharedAs .shared .mutable true),
    ("fifo_scheduler_runs_spawned_tasks_in_deterministic_order",
       canCrossUnhandledCtl armedCont && canExitLinearScope (runArmedDefers armedCont) &&
@@ -492,18 +492,9 @@ def boundaryCases : List (String × Bool) :=
    ("installed_handler_does_not_cover_its_own_arm", (handled handlerEffect 3).effects.isEmpty),
    ("outer_handler_covers_inner_arm", (handled outerHandler 3).effects.isEmpty),
    ("defer_requires_covering_handler_before_defer", (handled cleanupEffect 3).effects.isEmpty),
-   ("recover_panic_forbids_outer_ctl_handler",
+   ("panic_recover_forbids_outer_ctl_handler",
       absorbPanicAdmissible pureSources pureBody [] true false),
    ("derive_forbids_outer_ctl", deriveCallbackAdmissible true false)]
-
-open RilAccess.Integrated RilAccess.Integrated.HandoffExamples in
-def handoffCases : List (String × Bool) :=
-  [("explicit_handoff_keeps_unrelated_path",
-     (checkAtom (.handoff 0 2) before).isOk && currentLive after 2 && currentLive after 4),
-   ("handoff_ends_binding", currentLive after 0),
-   ("handoff_ends_dependent_view", currentLive after 1),
-   ("handoff_cannot_repeat", (checkAtom (.handoff 0 3) after).isOk)] ++
-   callbackChecks.map (fun (name, accepted, _) => (name, accepted))
 
 open RilAccess.Provenance RilAccess.Provenance.Examples in
 def provenanceCases : List (String × Bool) :=
@@ -527,13 +518,10 @@ def provenanceCases : List (String × Bool) :=
    ("cyclic_arguments_share_a_reachable_descendant", accepts cycle),
    ("replaced_member_is_in_new_call_entry", accepts (entryReturn false)),
    ("replaced_member_is_not_from_old_formal_entry", accepts (entryReturn true)),
-   ("handing_off_a_wrapper_keeps_its_independent_ref_source", accepts (wrapOld (.read 0))),
-   ("handing_off_a_wrapper_ends_views_of_its_members", accepts (wrapOld (.read 2))),
    ("a_nested_ref_is_readonly_under_writable_layers", accepts upgradeOld),
    ("a_new_wrapper_cannot_freeze_an_existing_ref", accepts freezeOldView),
    ("a_snapshot_can_freeze_a_completely_new_graph", accepts (completeNewGraph .immutable)),
    ("new_reception_can_select_mutable_element_mode", accepts (completeNewGraph .mut)),
-   ("new_argument_ends_path_before_later_arguments", accepts endedArgument),
    ("publication_survives_in_a_caller_member", accepts (retention false)),
    ("overwriting_a_publication_ends_retention", accepts (retention true)),
    ("forwarded_call_scoped_ref_cannot_be_published", accepts temporaryForward),
@@ -546,13 +534,8 @@ def provenanceCases : List (String × Bool) :=
 
 open RilAccess.Integrated RilAccess.Examples.ScopedExamples in
 def scopedCases : List (String × Bool) :=
-  [("foreign_handle_permits_mutable_call_and_chained_handoff",
-    accepted resourceCallAccessAndHandoff && accepted resourceChainedHandoff),
-   ("foreign_handle_plain_binding_cannot_freeze", accepted resourcePlainSnapshotRejected),
-   ("defer_resource_can_be_observed_and_mutated_by_helpers", accepted scopedCallRefAndMutAccess),
-   ("defer_handoff_satisfies_mut_use", accepted scopedReadOnlyUnusedOk),
+  [("defer_resource_can_be_observed_and_mutated_by_helpers", accepted scopedCallRefAndMutAccess),
    ("defer_read_only_binding_cannot_write", accepted scopedReadOnlyRejectsWrite),
-   ("defer_cannot_be_handed_off_before_cleanup", accepted scopedCallNewHandoffRejected),
    ("defer_forbids_unhandled_ctl", validDeferBody { hasUnhandledCtl := true }),
    ("defer_forbids_escaping_return", validDeferBody { escapesControlFlow := true }),
    ("defer_body_must_be_unit", validDeferBody { returnsUnit := false })] ++
@@ -571,7 +554,7 @@ def visibilityCases : List (String × Bool) :=
    ("extensible_sum_closes_inside_package", exhaustiveMatch rilExtIoError .samePkg [0, 1] false),
    ("extensible_sum_redundant_wildcard_inside_package", exhaustiveMatch rilExtIoError .samePkg [0, 1] true),
    ("extensible_sum_needs_wildcard_across_packages", exhaustiveMatch rilExtIoError .externalPkg [0, 1] false),
-   ("extensible_sum_wildcard_covers_other_packages", exhaustiveMatch foreignErrno .externalPkg [1, 2, 3] true)]
+   ("extensible_sum_wildcard_covers_other_packages", exhaustiveMatch pkgExtErrno .externalPkg [1, 2, 3] true)]
 
 def main (args : List String) : IO Unit := do
   let stdin ← IO.getStdin
@@ -629,8 +612,6 @@ def main (args : List String) : IO Unit := do
     stdout.putStrLn (toJson RilAccess.Draft.Examples.sourceChecks).compress
   else if args == ["draft-via-domains"] then
     stdout.putStrLn (toJson RilAccess.Draft.Examples.viaSnapshotDomains).compress
-  else if args == ["handoff"] then
-    stdout.putStrLn (toJson handoffCases).compress
   else if args == ["provenance"] then
     stdout.putStrLn (toJson provenanceCases).compress
   else if args == ["callback-graph"] then

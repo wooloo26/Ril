@@ -142,7 +142,7 @@ runtime_functions! {
     fn ril_rt_panic_message(rt, info: Value) -> Value {
         match rt.gc.object(info) {
             Some(Object::Str(_)) => info,
-            _ => rt.checked(Err("panic_message requires PanicReport")),
+            _ => rt.checked(Err("Panic::message requires Panic::Report")),
         }
     }
     fn ril_rt_len(rt, value: Value) -> Value {
@@ -212,6 +212,18 @@ runtime_functions! {
     fn ril_rt_str_at(rt, value: Value, index: Value) -> Value {
         let item = text::str_at(&rt.gc, value, index).map(|item| rt.gc.int_i64(i64::from(item)));
         text::option(&mut rt.gc, item)
+    }
+    fn ril_rt_str_scalars(rt, value: Value) -> Value {
+        let codes: Vec<i64> = match rt.gc.object(value) {
+            Some(Object::Str(text)) => text
+                .as_str()
+                .chars()
+                .map(|scalar| i64::from(u32::from(scalar)))
+                .collect(),
+            _ => return rt.checked(Err("String::scalars requires str")),
+        };
+        let items: Vec<Value> = codes.into_iter().map(|code| rt.gc.int_i64(code)).collect();
+        rt.gc.alloc(Object::Array(items))
     }
     fn ril_rt_bytes_at(rt, value: Value, index: Value) -> Value {
         let item = text::byte_at(&rt.gc, value, index).map(|item| rt.gc.int_i64(i64::from(item)));
@@ -296,6 +308,30 @@ runtime_functions! {
     fn ril_rt_map_insert(rt, target: Value, key: Value, value: Value) -> Value {
         let target = rt.gc.draft_read(target).unwrap_or(target);
         store(rt, target, key, value)
+    }
+    fn ril_rt_map_replace(rt, target: Value, key: Value, value: Value) -> Value {
+        let target = rt.gc.draft_read(target).unwrap_or(target);
+        let hash = rt.gc.bisim_hash(key);
+        let existing = match rt.gc.object(target) {
+            Some(Object::Map(map)) => {
+                map.find_index(hash, |stored| rt.gc.equal(stored, key).unwrap_or(false))
+            }
+            _ => return rt.checked(Err("Map::replace requires a map")),
+        };
+        let previous = match existing {
+            Some(index) => {
+                if let Some(Object::Map(map)) = rt.gc.object_mut(target) {
+                    map.value_mut(index).map(|slot| std::mem::replace(slot, value))
+                } else {
+                    None
+                }
+            }
+            None => {
+                store(rt, target, key, value);
+                None
+            }
+        };
+        text::option(&mut rt.gc, previous)
     }
     fn ril_rt_map_remove(rt, target: Value, key: Value) -> Value {
         let target = rt.gc.draft_read(target).unwrap_or(target);

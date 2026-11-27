@@ -73,18 +73,19 @@ impl<'program> Analyzer<'program> {
                             });
                         }
                     }
-                    if param.mode == Mode::Via && !export.domain.is_empty() {
-                        for (mode, obligation) in [
-                            (Input::New, Obligation::Handoff(formal)),
-                            (Input::Shared, Obligation::NeedsSharing(formal)),
-                        ] {
-                            if export.domain.all_at(via_axis, |actual| actual == mode) {
-                                self.rules.push(Rule {
-                                    premises: Vec::new(),
-                                    conclusion: Fact { owner, obligation },
-                                });
-                            }
-                        }
+                    if param.mode == Mode::Via
+                        && !export.domain.is_empty()
+                        && export
+                            .domain
+                            .all_at(via_axis, |actual| actual == Input::Shared)
+                    {
+                        self.rules.push(Rule {
+                            premises: Vec::new(),
+                            conclusion: Fact {
+                                owner,
+                                obligation: Obligation::NeedsSharing(formal),
+                            },
+                        });
                     }
                 }
                 if param.mode == Mode::Via {

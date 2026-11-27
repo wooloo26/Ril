@@ -4,9 +4,9 @@
 -- @case exact_io_asserted compile-pass
 fn emit() @io -> () { println("message") }
 
--- @case a_named_function_cannot_declare_an_unused_effect compile-fail E0612
+-- @case a_named_function_cannot_declare_an_unused_effect compile-fail E0626
 fn silent() @io -> () { () }
--- ^ E0612
+-- ^ E0626
 
 -- @case missing_io compile-fail E0612
 fn emit() -> () { println("message") }
@@ -34,7 +34,7 @@ eff Grow { fn push() -> () }
 fn blocked() -> () {
     let mut values = [1, 2]
     with Grow::push = \-> Array::push(mut values, 3)
-    let snapshot = new values
+    let snapshot = values
     -- ^ E0535
 }
 
@@ -72,53 +72,52 @@ fn use_number() -> () { use number = 0 }
 
 -- @case synchronous_cleanup compile-pass
 opaque type Handle(.{ id: int })
-fn close(new _resource: Handle) @io -> () { println("closed") }
+fn close(ref _resource: Handle) @io -> () { println("closed") }
 fn acquire() -> new Handle { Handle::(.{ id: 42 }) }
 fn scoped() @io -> int {
-    let mut handle = acquire()
-    defer close(new handle)
+    let handle = acquire()
+    defer close(ref handle)
     handle.id
 }
 
 -- @case synchronous_cleanup_may_diverge compile-pass
 opaque type Handle(.{ id: int })
-fn close(new _resource: Handle) -> () { while true {} }
+fn close(ref _resource: Handle) -> () { while true {} }
 fn scoped() -> () {
-    let mut handle = Handle::(.{ id: 1 })
-    defer close(new handle)
+    let handle = Handle::(.{ id: 1 })
+    defer close(ref handle)
 }
 
 -- @case a_cleanup_handler_write_requires_a_caller_state_clause compile-fail E0510
 type Cell = .{ var count: int }
 eff Finalize { fn record(id: int) -> () }
 opaque type Handle(.{ id: int })
-fn close(new resource: Handle) @Finalize -> () { Finalize::record(resource.id) }
+fn close(ref resource: Handle) @Finalize -> () { Finalize::record(resource.id) }
 fn scoped(mut target: Cell) -> () {
 -- ^ E0510
     with Finalize::record = \id: int -> { target.count += id }
-    let mut handle = Handle::(.{ id: 1 })
-    defer close(new handle)
+    let handle = Handle::(.{ id: 1 })
+    defer close(ref handle)
 }
 
--- @case defer_reserves_handoff_until_block_exit compile-fail E0549
-opaque type Handle(.{ id: int })
-fn close(new _resource: Handle) -> () {}
-fn acquire() -> new Handle { Handle::(.{ id: 42 }) }
-fn scoped() -> new Handle {
-    let mut handle = acquire()
-    defer close(new handle)
-    -- ^ E0549
-    new handle
+-- @case defer_blocks_exit_constructor_promotion_while_referenced compile-fail E0535
+opaque type Handle(.{ var id: int })
+fn close(mut h: Handle) &mut -> () { h.id = 0 }
+fn scoped() -> new ?Handle {
+    let mut handle = Handle::(.{ id: 42 })
+    defer close(mut handle)
+    Some(handle)
+    -- ^ E0535
 }
 
 -- @case cleanup_cannot_perform_unhandled_ctl compile-fail E0616
 eff Yield { ctl step() -> () }
 opaque type Handle(.{ id: int })
-fn close(new _resource: Handle) @Yield -> () { Yield::step() }
+fn close(ref _resource: Handle) @Yield -> () { Yield::step() }
 fn acquire() -> new Handle { Handle::(.{ id: 42 }) }
 fn scoped() @Yield -> int {
-    let mut handle = acquire()
-    defer close(new handle)
+    let handle = acquire()
+    defer close(ref handle)
     -- ^ E0616
     handle.id
 }
@@ -247,11 +246,11 @@ fn read() -> int {
 -- @case defer_requires_covering_handler_before_defer compile-fail E0612
 eff Notify { fn stop() -> () }
 opaque type Handle(.{ id: int })
-fn close(new _resource: Handle) @Notify -> () { Notify::stop() }
+fn close(ref _resource: Handle) @Notify -> () { Notify::stop() }
 fn acquire() -> new Handle { Handle::(.{ id: 42 }) }
 fn read() -> int {
-    let mut handle = acquire()
-    defer close(new handle)
+    let handle = acquire()
+    defer close(ref handle)
     with Notify::stop = \-> ()
     handle.id
 }
@@ -403,22 +402,22 @@ fn update() -> []int {
 
 -- @case defer_resource_can_be_observed_and_mutated_by_helpers compile-pass
 opaque type Handle(.{ var id: int })
-fn close(new _handle: Handle) -> () {}
+fn close(mut handle: Handle) &mut -> () { handle.id = 0 }
 fn observe(ref handle: Handle) -> int { handle.id }
 fn update(mut handle: Handle) &mut -> () { handle.id += 1 }
 fn work() -> int {
     let mut handle = Handle::(.{ id: 41 })
-    defer close(new handle)
+    defer close(mut handle)
     update(mut handle)
     observe(ref handle)
 }
 
--- @case defer_handoff_satisfies_mut_use compile-pass
-opaque type Handle(.{ id: int })
-fn close(new _handle: Handle) -> () {}
+-- @case defer_mutation_satisfies_mut_use compile-pass
+opaque type Handle(.{ var id: int })
+fn close(mut handle: Handle) &mut -> () { handle.id = 0 }
 fn work() -> () {
     let mut handle = Handle::(.{ id: 42 })
-    defer close(new handle)
+    defer close(mut handle)
 }
 
 -- @case defer_read_only_binding_cannot_write compile-fail E0520
@@ -431,25 +430,30 @@ fn work() -> () {
     -- ^ E0520
 }
 
--- @case defer_cannot_be_handed_off_before_cleanup compile-fail E0549
-opaque type Handle(.{ id: int })
-fn close(new _handle: Handle) -> () {}
+-- @case defer_cannot_consume_linear_ctl_before_cleanup compile-fail E0549
+eff Yield { ctl step() -> () }
 fn work() -> () {
-    let mut handle = Handle::(.{ id: 42 })
-    defer close(new handle)
-    -- ^ E0549
-    close(new handle)
+    with {
+        ctl Yield::step = \k -> {
+            defer unwind_ctl(k)
+            -- ^ E0549
+            unwind_ctl(k)
+        }
+        Yield::step()
+    }
 }
 
--- @case defer_lifo_order_rejects_use_after_handoff compile-fail E0549
-opaque type Handle(.{ var id: int })
-fn flush(mut handle: Handle) &mut -> () { handle.id += 1 }
-fn close(new _handle: Handle) -> () {}
+-- @case defer_lifo_order_rejects_use_after_linear_unwind compile-fail E0549
+eff Yield { ctl step() -> () }
 fn work() -> () {
-    let mut handle = Handle::(.{ id: 42 })
-    defer flush(mut handle)
-    -- ^ E0549
-    defer close(new handle)
+    with {
+        ctl Yield::step = \k -> {
+            defer k()
+            -- ^ E0549
+            defer unwind_ctl(k)
+        }
+        Yield::step()
+    }
 }
 
 -- @case defer_mutation_requires_writable_binding compile-fail E0520
@@ -464,47 +468,52 @@ fn work() -> () {
 -- @case deriving_without_replacing_a_callable_preserves_its_snapshot_contract compile-fail E0535 no-prelude
 type Cell = .{ var count: int }
 type Shelf = .{ ^mut item: Cell }
-type Action = fn(new Shelf) -> int
+type Out { Frozen(Shelf); Count(int) }
+type Action = fn(new Shelf) -> new Out
 type Holder = .{ action: Action, stamp: int }
-fn freeze(new shelf: Shelf) -> int { let fixed = new shelf; fixed.item.count }
+fn freeze(new shelf: Shelf) -> new Out { Out::Frozen(shelf) }
 fn run() -> int {
     let mut live = Cell.{ count: 1 }
     live.count += 1
     let base = Holder.{ action: freeze, stamp: 1 }
     let next = derive(base) \mut draft -> { draft.stamp = 2 }
-    let answer = next.action(new Shelf.{ item: ^mut live })
+    let _ = next.action(Shelf.{ item: ^mut live })
     -- ^ E0535
     live.count += 8
-    answer + live.count
+    live.count
 }
 
 -- @case replacing_a_callable_in_a_draft_changes_only_the_derived_snapshot compile-pass no-prelude
 type Cell = .{ var count: int }
 type Shelf = .{ ^mut item: Cell }
-type Action = fn(new Shelf) -> int
+type Out { Frozen(Shelf); Count(int) }
+type Action = fn(new Shelf) -> new Out
 type Holder = .{ var action: Action, stamp: int }
-fn freeze(new shelf: Shelf) -> int { let fixed = new shelf; fixed.item.count }
-fn count(new shelf: Shelf) -> int { shelf.item.count }
+fn freeze(new shelf: Shelf) -> new Out { Out::Frozen(shelf) }
+fn count(new shelf: Shelf) -> new Out { Out::Count(shelf.item.count) }
 fn run() -> int {
     let mut live = Cell.{ count: 1 }
     live.count += 1
-    let mut source = Holder.{ action: count, stamp: 1 }
-    source.action = freeze
-    let base = new source
+    let base: Holder = {
+        let mut source = Holder.{ action: count, stamp: 1 }
+        source.action = freeze
+        source
+    }
     let next = derive(base) \mut draft -> { draft.action = count }
-    let answer = next.action(new Shelf.{ item: ^mut live })
+    let _ = next.action(Shelf.{ item: ^mut live })
     live.count += 8
-    answer + live.count
+    live.count
 }
 
 -- @case a_draft_child_update_targets_the_replaced_parent compile-fail E0535 no-prelude
 type Cell = .{ var count: int }
 type Shelf = .{ ^mut item: Cell }
-type Action = fn(new Shelf) -> int
+type Out { Frozen(Shelf); Count(int) }
+type Action = fn(new Shelf) -> new Out
 type Leaf = .{ action: Action }
 type Holder = .{ leaf: Leaf }
-fn freeze(new shelf: Shelf) -> int { let fixed = new shelf; fixed.item.count }
-fn count(new shelf: Shelf) -> int { shelf.item.count }
+fn freeze(new shelf: Shelf) -> new Out { Out::Frozen(shelf) }
+fn count(new shelf: Shelf) -> new Out { Out::Count(shelf.item.count) }
 fn run() -> int {
     let mut live = Cell.{ count: 1 }
     live.count += 1
@@ -513,20 +522,21 @@ fn run() -> int {
         draft.leaf = Leaf.{ action: count }
         draft.leaf.action = freeze
     }
-    let answer = next.leaf.action(new Shelf.{ item: ^mut live })
+    let _ = next.leaf.action(Shelf.{ item: ^mut live })
     -- ^ E0535
     live.count += 8
-    answer + live.count
+    live.count
 }
 
 -- @case replacing_a_draft_parent_discards_older_child_updates compile-pass no-prelude
 type Cell = .{ var count: int }
 type Shelf = .{ ^mut item: Cell }
-type Action = fn(new Shelf) -> int
+type Out { Frozen(Shelf); Count(int) }
+type Action = fn(new Shelf) -> new Out
 type Leaf = .{ action: Action }
 type Holder = .{ leaf: Leaf }
-fn freeze(new shelf: Shelf) -> int { let fixed = new shelf; fixed.item.count }
-fn count(new shelf: Shelf) -> int { shelf.item.count }
+fn freeze(new shelf: Shelf) -> new Out { Out::Frozen(shelf) }
+fn count(new shelf: Shelf) -> new Out { Out::Count(shelf.item.count) }
 fn run() -> int {
     let mut live = Cell.{ count: 1 }
     live.count += 1
@@ -535,37 +545,39 @@ fn run() -> int {
         draft.leaf.action = freeze
         draft.leaf = Leaf.{ action: count }
     }
-    let answer = next.leaf.action(new Shelf.{ item: ^mut live })
+    let _ = next.leaf.action(Shelf.{ item: ^mut live })
     live.count += 8
-    answer + live.count
+    live.count
 }
 
 -- @case draft_callable_updates_distinguish_paths_to_shared_snapshots compile-pass no-prelude
 type Cell = .{ var count: int }
 type Shelf = .{ ^mut item: Cell }
-type Action = fn(new Shelf) -> int
+type Out { Frozen(Shelf); Count(int) }
+type Action = fn(new Shelf) -> new Out
 type Leaf = .{ action: Action }
 type Holder = .{ left: Leaf, right: Leaf }
-fn freeze(new shelf: Shelf) -> int { let fixed = new shelf; fixed.item.count }
-fn count(new shelf: Shelf) -> int { shelf.item.count }
+fn freeze(new shelf: Shelf) -> new Out { Out::Frozen(shelf) }
+fn count(new shelf: Shelf) -> new Out { Out::Count(shelf.item.count) }
 fn run() -> int {
     let mut live = Cell.{ count: 1 }
     live.count += 1
     let shared = Leaf.{ action: count }
     let base = Holder.{ left: shared, right: shared }
     let next = derive(base) \mut draft -> { draft.left.action = freeze }
-    let answer = next.right.action(new Shelf.{ item: ^mut live })
+    let _ = next.right.action(Shelf.{ item: ^mut live })
     live.count += 8
-    answer + live.count
+    live.count
 }
 
 -- @case a_draft_callback_alternative_preserves_an_unmodified_entry_callback compile-fail E0535 no-prelude
 type Cell = .{ var count: int }
 type Shelf = .{ ^mut item: Cell }
-type Action = fn(new Shelf) -> int
+type Out { Frozen(Shelf); Count(int) }
+type Action = fn(new Shelf) -> new Out
 type Holder = .{ action: Action, stamp: int }
-fn freeze(new shelf: Shelf) -> int { let fixed = new shelf; fixed.item.count }
-fn count(new shelf: Shelf) -> int { shelf.item.count }
+fn freeze(new shelf: Shelf) -> new Out { Out::Frozen(shelf) }
+fn count(new shelf: Shelf) -> new Out { Out::Count(shelf.item.count) }
 fn edit(base: Holder, flag: bool) -> Holder {
     let transform = if flag {
         \mut draft: Derived<Holder> -> { draft.action = count }
@@ -579,49 +591,52 @@ fn run(flag: bool) -> int {
     live.count += 1
     let base = Holder.{ action: freeze, stamp: 1 }
     let next = edit(base, flag)
-    let answer = next.action(new Shelf.{ item: ^mut live })
+    let _ = next.action(Shelf.{ item: ^mut live })
     -- ^ E0535
     live.count += 8
-    answer + live.count
+    live.count
 }
 
 -- @case draft_array_append_preserves_callable_snapshot_requirements compile-fail E0535 no-prelude
 type Cell = .{ var count: int }
 type Shelf = .{ ^mut item: Cell }
-fn freeze(new shelf: Shelf) -> int { let fixed = new shelf; fixed.item.count }
-fn count(new shelf: Shelf) -> int { shelf.item.count }
+type Out { Frozen(Shelf); Count(int) }
+fn freeze(new shelf: Shelf) -> new Out { Out::Frozen(shelf) }
+fn count(new shelf: Shelf) -> new Out { Out::Count(shelf.item.count) }
 fn run() -> int {
     let mut live = Cell.{ count: 1 }
     live.count += 1
     let base = [count]
     let next = derive(base) \mut draft -> { Array::push(mut draft, freeze) }
-    let answer = next[1](new Shelf.{ item: ^mut live })
+    let _ = next[1](Shelf.{ item: ^mut live })
     -- ^ E0535
     live.count += 8
-    answer + live.count
+    live.count
 }
 
 -- @case draft_array_append_keeps_existing_callable_positions compile-pass no-prelude
 type Cell = .{ var count: int }
 type Shelf = .{ ^mut item: Cell }
-fn freeze(new shelf: Shelf) -> int { let fixed = new shelf; fixed.item.count }
-fn count(new shelf: Shelf) -> int { shelf.item.count }
+type Out { Frozen(Shelf); Count(int) }
+fn freeze(new shelf: Shelf) -> new Out { Out::Frozen(shelf) }
+fn count(new shelf: Shelf) -> new Out { Out::Count(shelf.item.count) }
 fn run() -> int {
     let mut live = Cell.{ count: 1 }
     live.count += 1
     let base = [count]
     let next = derive(base) \mut draft -> { Array::push(mut draft, freeze) }
-    let answer = next[0](new Shelf.{ item: ^mut live })
+    let _ = next[0](Shelf.{ item: ^mut live })
     live.count += 8
-    answer + live.count
+    live.count
 }
 
 -- @case derive_applies_a_store_to_an_outer_mutable_field compile-fail E0535 no-prelude
 type Cell = .{ var count: int }
 type Shelf = .{ ^mut item: Cell }
-type Slot = .{ var action: fn(new Shelf) -> int }
-fn count(new shelf: Shelf) -> int { shelf.item.count }
-fn freeze(new shelf: Shelf) -> int { let fixed = new shelf; fixed.item.count }
+type Out { Frozen(Shelf); Count(int) }
+type Slot = .{ var action: fn(new Shelf) -> new Out }
+fn count(new shelf: Shelf) -> new Out { Out::Count(shelf.item.count) }
+fn freeze(new shelf: Shelf) -> new Out { Out::Frozen(shelf) }
 fn run() -> int {
     let mut live = Cell.{ count: 1 }
     live.count += 1
@@ -630,41 +645,44 @@ fn run() -> int {
         Array::push(mut draft, 2)
         slot.action = freeze
     }
-    slot.action(new Shelf.{ item: ^mut live }) + len(next)
+    let _ = slot.action(Shelf.{ item: ^mut live })
     -- ^ E0535
+    len(next)
 }
 
 -- @case branching_between_draft_appends_and_literals_preserves_callable_alternatives compile-fail E0535 no-prelude
 type Cell = .{ var count: int }
 type Shelf = .{ ^mut item: Cell }
-fn freeze(new shelf: Shelf) -> int { let fixed = new shelf; fixed.item.count }
-fn count(new shelf: Shelf) -> int { shelf.item.count }
+type Out { Frozen(Shelf); Count(int) }
+fn freeze(new shelf: Shelf) -> new Out { Out::Frozen(shelf) }
+fn count(new shelf: Shelf) -> new Out { Out::Count(shelf.item.count) }
 fn run(flag: bool) -> int {
     let mut live = Cell.{ count: 1 }
     live.count += 1
     let base = [count]
     let next = if flag { derive(base) \mut draft -> { Array::push(mut draft, freeze) } }
         else { [count, count] }
-    let answer = next[1](new Shelf.{ item: ^mut live })
+    let _ = next[1](Shelf.{ item: ^mut live })
     -- ^ E0535
     live.count += 8
-    answer + live.count
+    live.count
 }
 
 -- @case effect_handler_append_updates_its_captured_array compile-fail E0535 no-prelude
 type Cell = .{ var count: int }
 type Shelf = .{ ^mut item: Cell }
+type Out { Frozen(Shelf); Count(int) }
 eff Append { fn push() -> () }
-fn freeze(new shelf: Shelf) -> int { let fixed = new shelf; fixed.item.count }
-fn count(new shelf: Shelf) -> int { shelf.item.count }
+fn freeze(new shelf: Shelf) -> new Out { Out::Frozen(shelf) }
+fn count(new shelf: Shelf) -> new Out { Out::Count(shelf.item.count) }
 fn run() -> int {
     let mut live = Cell.{ count: 1 }
     live.count += 1
     let mut actions = [count]
     with Append::push = \-> Array::push(mut actions, freeze)
     Append::push()
-    let answer = actions[1](new Shelf.{ item: ^mut live })
+    let _ = actions[1](Shelf.{ item: ^mut live })
     -- ^ E0535
     live.count += 8
-    answer + live.count
+    live.count
 }

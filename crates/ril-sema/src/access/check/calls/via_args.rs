@@ -65,34 +65,26 @@ impl Analyzer<'_> {
         }
     }
 
-    pub(super) fn forward_handoff(
+    pub(super) fn forward_needs_sharing(
         &mut self,
         ctx: &Context,
-        ledger: &mut Ledger,
         value: &Datum,
-        (owner, formal): Handoff,
+        (owner, formal): (Span, Span),
     ) {
-        if !ctx.reachable {
+        if !ctx.reachable || ctx.shadow {
             return;
         }
         for root in &value.roots {
-            if !ctx.shadow {
-                for obligation in [Obligation::Handoff, Obligation::NeedsSharing] {
-                    self.rules.push(Rule {
-                        premises: vec![Fact {
-                            owner,
-                            obligation: obligation(formal),
-                        }],
-                        conclusion: Fact {
-                            owner: ctx.owner,
-                            obligation: obligation(root.region.source),
-                        },
-                    });
-                }
-            }
-            for &token in &root.dependencies {
-                ledger.revoke(token, Some(root), Some(Revocation::Formal((owner, formal))));
-            }
+            self.rules.push(Rule {
+                premises: vec![Fact {
+                    owner,
+                    obligation: Obligation::NeedsSharing(formal),
+                }],
+                conclusion: Fact {
+                    owner: ctx.owner,
+                    obligation: Obligation::NeedsSharing(root.region.source),
+                },
+            });
         }
     }
 
@@ -104,17 +96,6 @@ impl Analyzer<'_> {
         formal: Span,
         span: Span,
     ) {
-        self.deferred_errors.push((
-            vec![Fact {
-                owner,
-                obligation: Obligation::Handoff(formal),
-            }],
-            Diagnostic::error(
-                Code::E0548,
-                span,
-                "via application requires explicit new handoff",
-            ),
-        ));
         for (obligation, required) in [
             (Obligation::Write(formal), SchemaRequirement::Writable),
             (Obligation::Share(formal), SchemaRequirement::Shared),
@@ -148,13 +129,13 @@ impl Analyzer<'_> {
     pub(super) fn forward_via_input(
         &mut self,
         ctx: &Context,
-        ledger: &mut Ledger,
+        _ledger: &mut Ledger,
         value: &Datum,
-        (owner, formal): Handoff,
+        (owner, formal): (Span, Span),
         span: Span,
     ) {
         if value.roots.iter().all(|origin| origin.inherits_mode) {
-            self.forward_handoff(ctx, ledger, value, (owner, formal));
+            self.forward_needs_sharing(ctx, value, (owner, formal));
         } else {
             self.link_via_projection(ctx, value, owner, formal, span);
         }
@@ -164,9 +145,9 @@ impl Analyzer<'_> {
         &mut self,
         ctx: &Context,
         ledger: &mut Ledger,
-        (owner, formal): Handoff,
+        (owner, formal): (Span, Span),
         (mode, value, span): (Mode, &Datum, Span),
-        (via, modeled_stores): (bool, bool),
+        (via, modeled_stores, formal_open_effects): (bool, bool, bool),
     ) {
         let write = Fact {
             owner,
@@ -185,15 +166,6 @@ impl Analyzer<'_> {
                 self.forward_via_input(ctx, ledger, value, (owner, formal), span);
             } else {
                 for (allowed, cause, code, message) in [
-                    (
-                        mode == Mode::New,
-                        Fact {
-                            owner,
-                            obligation: Obligation::Handoff(formal),
-                        },
-                        Code::E0548,
-                        "via application requires new qualification",
-                    ),
                     (
                         mode == Mode::Shared,
                         share.clone(),
@@ -227,6 +199,37 @@ impl Analyzer<'_> {
                             .push((vec![cause], Diagnostic::error(code, span, message)));
                     }
                 }
+            }
+        }
+        let invocation = Fact {
+            owner,
+            obligation: Obligation::Invoke(formal),
+        };
+        self.link_invocation_if(ctx, value, Some(&invocation));
+        if ctx.reachable && !ctx.shadow {
+            if formal_open_effects {
+                self.charge_latent_effects_if(ctx, ledger, value, span, Some(&invocation));
+                let arg_ty = self.ty(span).clone();
+                if let Ty::Callable(actual) = &arg_ty {
+                    for effect in &actual.effects {
+                        self.use_effect(
+                            ctx,
+                            ledger,
+                            Obligation::Effect(effect.clone()),
+                            span,
+                            Some(invocation.clone()),
+                        );
+                    }
+                }
+            }
+            for source in value.root_dependencies().collect::<BTreeSet<_>>() {
+                self.rules.push(Rule {
+                    premises: vec![invocation.clone()],
+                    conclusion: Fact {
+                        owner: ctx.owner,
+                        obligation: Obligation::Invoke(source),
+                    },
+                });
             }
         }
         if !ctx.reachable || ctx.shadow || !Access::from_mode(mode).writes() {
@@ -280,7 +283,7 @@ impl Analyzer<'_> {
         }
     }
 
-    pub(super) fn forwards_via(ctx: &Context, value: &Datum) -> bool {
+    pub(in crate::access::check) fn forwards_via(ctx: &Context, value: &Datum) -> bool {
         !value.roots.is_empty()
             && value.roots.iter().all(|origin| {
                 (origin.inherits_mode
@@ -293,7 +296,7 @@ impl Analyzer<'_> {
             })
     }
 
-    pub(super) fn prepare_argument(
+    pub(in crate::access::check) fn prepare_argument(
         &mut self,
         ctx: &Context,
         ledger: &mut Ledger,
@@ -308,7 +311,39 @@ impl Analyzer<'_> {
             }
         }
         match mode {
-            Mode::New => self.handoff(ctx, ledger, &mut value, span),
+            Mode::New => {
+                if ledger
+                    .loop_snapshot(&value)
+                    .origins()
+                    .any(|origin| origin.confined.is_some())
+                {
+                    self.error(
+                        Code::E0604,
+                        span,
+                        "resource or draft cannot satisfy a new parameter",
+                    );
+                } else if !value.requires_new {
+                    let mut diag = Diagnostic::error(
+                        Code::E0548,
+                        span,
+                        "new parameter requires an unbound freshly created shared object",
+                    );
+                    if let Some(decl) = value
+                        .roots
+                        .first()
+                        .and_then(|root| root.dependency_spans().next())
+                    {
+                        diag = diag.with_label(
+                            decl,
+                            "binding declared here cannot be passed to a `new` parameter",
+                        );
+                    }
+                    diag = diag.with_help(
+                        "construct the shared object inline, pass a `-> new` call, or return it from an exiting block",
+                    );
+                    self.error_diag(diag);
+                }
+            }
             Mode::Mut | Mode::Shared => {
                 if !self.mutable_argument_place(ctx, arg.value, mode) {
                     self.error(

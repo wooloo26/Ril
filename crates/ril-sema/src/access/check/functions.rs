@@ -12,9 +12,6 @@ impl Analyzer<'_> {
             return;
         };
         let Some(body) = fun.body else {
-            if self.program.hir.file(fun.name.span.file).kind == FileKind::Foreign {
-                self.check_foreign(fun, callable);
-            }
             return;
         };
         let mut ctx = Context::new(fun.name.span);
@@ -102,7 +99,9 @@ impl Analyzer<'_> {
                     self.error(Code::E0550, span, "via is redundant on an unused parameter");
                 }
             }
-            if param.mode == Mode::New && self.program.is_value(&param.ty) {
+            if param.mode == Mode::New
+                && (self.program.is_value(&param.ty) || self.program.is_ctl_ty(&param.ty))
+            {
                 self.error(Code::E0411, span, "new parameter requires a shared object");
             }
             if param.mode == Mode::New {
@@ -111,7 +110,12 @@ impl Analyzer<'_> {
             let mut value = if self.program.is_value(&param.ty) {
                 Datum::default()
             } else {
-                Datum::source(span, Access::from_mode(param.mode), param.mode == Mode::New)
+                let mut datum =
+                    Datum::source(span, Access::from_mode(param.mode), param.mode == Mode::New);
+                if param.mode == Mode::New {
+                    datum.requires_new = false;
+                }
+                datum
             };
             value.transform(&mut |origin| {
                 origin.dependencies.insert(span.into());
@@ -129,7 +133,9 @@ impl Analyzer<'_> {
                 value,
                 span,
             );
-            if param.mode == Mode::New && self.program.is_must_consume(&param.ty) {
+            if matches!(param.mode, Mode::Plain | Mode::New)
+                && self.program.is_must_consume(&param.ty)
+            {
                 ledger.record_linear(
                     &mut value,
                     span,
@@ -150,7 +156,7 @@ impl Analyzer<'_> {
                     &ctx,
                     span,
                     Obligation::Write(span),
-                    "mut parameter requires reachable write, forwarding, or handoff",
+                    "mut parameter requires reachable write or forwarding",
                 );
             }
             if param.mode == Mode::Shared {
@@ -184,10 +190,14 @@ impl Analyzer<'_> {
                 self.check_guard_args(&mut ctx, &mut ledger, &ast_param.guards);
             }
         }
-        let value = self.expr(&mut ctx, &mut ledger, body);
+        let prior_slots = ctx.caller_slots.clone();
+        let prior_holds = ledger.holds.len();
+        let mut value = self.eval_exit_expr(&mut ctx, &mut ledger, body, &prior_slots, prior_holds, 0, true);
         let body_span = self.ast(ctx.file).expr(body).span;
-        if ctx.reachable && self.ty(body_span) != &Ty::Never {
+        if ctx.reachable && !ledger.no_continuation && self.ty(body_span) != &Ty::Never {
             self.run_defers(&mut ctx, &mut ledger, 0);
+            ledger.holds.truncate(prior_holds);
+            self.try_promote_exit_new(&ctx, &ledger, &mut value, &prior_slots, prior_holds, true);
             self.returned(&mut ctx, &mut ledger, value, body_span);
             self.check_results(&ledger, &BTreeSet::new());
             self.check_linear(&ledger, &BTreeSet::new());
@@ -311,39 +321,6 @@ impl Analyzer<'_> {
                     .map(|span| (Access::from_mode(storage.mode), span))
             })
             .collect()
-    }
-
-    pub(super) fn check_foreign(&mut self, fun: &Function, signature: &Callable) {
-        let missing_io = !signature.effects.iter().any(|effect| effect == "io");
-        let has_ctl = signature.is_ctl
-            || signature
-                .effects
-                .iter()
-                .any(|effect| self.program.effect_has_ctl(effect));
-        let prohibited = missing_io
-            || has_ctl
-            || matches!(
-                signature.result_mode,
-                Mode::Shared | Mode::Via | Mode::Infer
-            )
-            || signature
-                .state
-                .iter()
-                .any(|state| matches!(state.as_str(), "^mut" | "capture"))
-            || signature.parameters.iter().any(|parameter| {
-                matches!(parameter.mode, Mode::Shared | Mode::Via)
-                    || parameter.mode == Mode::Plain
-                        && matches!(&parameter.ty, Ty::Adt(adt) if adt.kind == AdtKind::Foreign)
-            })
-            || signature.result_mode == Mode::Plain
-                && matches!(&signature.result, Ty::Adt(adt) if adt.kind == AdtKind::Foreign);
-        if prohibited {
-            self.error(
-                Code::E0908,
-                fun.name.span,
-                "foreign signature requires @io, forbids ctl, and requires non-shared handle authority",
-            );
-        }
     }
 
     pub(super) fn finish_function(
@@ -487,7 +464,7 @@ impl Analyzer<'_> {
                 .any(|actual| self.program.effect_covers(effect, actual))
             {
                 self.error(
-                    Code::E0612,
+                    Code::E0626,
                     name,
                     format!("declared @{effect} is never exercised"),
                 );
@@ -498,6 +475,16 @@ impl Analyzer<'_> {
         }
         if fun.capture_names.difference(&up).next().is_some() {
             self.error(Code::E0529, name, "unused &up dependency");
+        }
+        if let Some(syntax) = self.function_syntax(fun.id)
+            && let Some(body) = syntax.body
+            && !syntax.generics.is_empty()
+        {
+            let (drop_set, dup_set, suspend_set) =
+                self.compute_generic_linearity(syntax, body, &summary);
+            summary.forbids_linear_drop = drop_set;
+            summary.forbids_linear_dup = dup_set;
+            summary.forbids_linear_suspend = suspend_set;
         }
         summary
     }
@@ -543,5 +530,737 @@ impl Analyzer<'_> {
             .collect();
         updates.sort_unstable();
         updates
+    }
+
+    fn compute_generic_linearity(
+        &self,
+        fun: &Function,
+        body: ExprId,
+        summary: &Summary,
+    ) -> (Vec<usize>, Vec<usize>, Vec<usize>) {
+        let file = fun.name.span.file;
+        let ast = self.ast(file);
+        let generic_index: BTreeMap<DefinitionId, usize> = fun
+            .generics
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, g)| self.definition(g.name.span).map(|id| (id, idx)))
+            .collect();
+        if generic_index.is_empty() {
+            return (Vec::new(), Vec::new(), Vec::new());
+        }
+        let mut forbids_drop = BTreeSet::new();
+        let mut forbids_dup = BTreeSet::new();
+        let mut forbids_suspend = BTreeSet::new();
+
+        let mark_ty = |ty: &Ty, out: &mut BTreeSet<usize>| {
+            let mut params = BTreeSet::new();
+            self.program.collect_type_params(ty, &mut params);
+            for pid in params {
+                if let Some(&idx) = generic_index.get(&pid) {
+                    out.insert(idx);
+                }
+            }
+        };
+
+        let mut param_defs: BTreeMap<DefinitionId, (Mode, BTreeSet<usize>)> = BTreeMap::new();
+        for p in &fun.signature.params {
+            if p.is_meta {
+                continue;
+            }
+            if let Some(name) = &p.name
+                && let Some(def_id) = self.definition(name.span)
+                && let Some(ty) = self.program.bindings.get(&def_id)
+            {
+                let mut indices = BTreeSet::new();
+                mark_ty(ty, &mut indices);
+                if !indices.is_empty() {
+                    if name.value == "_" {
+                        forbids_drop.extend(indices.iter().copied());
+                    } else {
+                        param_defs.insert(def_id, (p.mode, indices));
+                    }
+                }
+            }
+        }
+
+        fn walk_pattern(
+            this: &Analyzer<'_>,
+            ast: &Ast,
+            pat: PatternId,
+            mark_ty: &impl Fn(&Ty, &mut BTreeSet<usize>),
+            forbids_drop: &mut BTreeSet<usize>,
+            local_generics: &mut BTreeMap<DefinitionId, BTreeSet<usize>>,
+        ) {
+            let node = ast.pattern(pat);
+            match &node.value {
+                Pattern::Wildcard => {
+                    mark_ty(this.ty(node.span), forbids_drop);
+                }
+                Pattern::Binding(_, name) => {
+                    if let Some(id) = this.definition(name.span)
+                        && let Some(ty) = this.program.bindings.get(&id)
+                    {
+                        let mut set = BTreeSet::new();
+                        mark_ty(ty, &mut set);
+                        if !set.is_empty() {
+                            local_generics.insert(id, set);
+                        }
+                    }
+                }
+                Pattern::Tuple(items) | Pattern::Wrap(_, items) | Pattern::Or(items) => {
+                    for &item in items {
+                        walk_pattern(this, ast, item, mark_ty, forbids_drop, local_generics);
+                    }
+                }
+                Pattern::Constructor(_, Some(items)) => {
+                    for &item in items {
+                        walk_pattern(this, ast, item, mark_ty, forbids_drop, local_generics);
+                    }
+                }
+                Pattern::Slice { elements, .. } => {
+                    for &item in elements {
+                        walk_pattern(this, ast, item, mark_ty, forbids_drop, local_generics);
+                    }
+                }
+                Pattern::Record { fields, .. } => {
+                    for field in fields {
+                        if let Some(p) = field.pattern {
+                            walk_pattern(this, ast, p, mark_ty, forbids_drop, local_generics);
+                        } else if let Some(id) = this.definition(field.name.span)
+                            && let Some(ty) = this.program.bindings.get(&id)
+                        {
+                            let mut set = BTreeSet::new();
+                            mark_ty(ty, &mut set);
+                            if !set.is_empty() {
+                                local_generics.insert(id, set);
+                            }
+                        }
+                    }
+                }
+                Pattern::Subset {
+                    binding: Some(p), ..
+                } => walk_pattern(this, ast, *p, mark_ty, forbids_drop, local_generics),
+                _ => {}
+            }
+        }
+
+        fn merge_sum(dst: &mut BTreeMap<DefinitionId, usize>, src: BTreeMap<DefinitionId, usize>) {
+            for (k, v) in src {
+                *dst.entry(k).or_insert(0) += v;
+            }
+        }
+        fn merge_max(dst: &mut BTreeMap<DefinitionId, usize>, src: BTreeMap<DefinitionId, usize>) {
+            for (k, v) in src {
+                let entry = dst.entry(k).or_insert(0);
+                *entry = (*entry).max(v);
+            }
+        }
+
+        #[allow(clippy::too_many_arguments)]
+        fn walk_expr(
+            this: &Analyzer<'_>,
+            ast: &Ast,
+            id: ExprId,
+            mark_ty: &impl Fn(&Ty, &mut BTreeSet<usize>),
+            forbids_drop: &mut BTreeSet<usize>,
+            forbids_dup: &mut BTreeSet<usize>,
+            local_generics: &mut BTreeMap<DefinitionId, BTreeSet<usize>>,
+        ) -> BTreeMap<DefinitionId, usize> {
+            let node = ast.expr(id);
+            let mut reads = BTreeMap::new();
+            match &node.value {
+                Expr::Path(path) => {
+                    if let Some(def_id) = this.definition(path.span) {
+                        *reads.entry(def_id).or_insert(0) += 1;
+                    }
+                }
+                Expr::Unary { value, .. } | Expr::Cast { value, .. } => {
+                    reads = walk_expr(
+                        this,
+                        ast,
+                        *value,
+                        mark_ty,
+                        forbids_drop,
+                        forbids_dup,
+                        local_generics,
+                    );
+                }
+                Expr::Binary { op, left, right } => {
+                    if op.value == "=" && matches!(ast.expr(*left).value, Expr::Index { .. }) {
+                        mark_ty(this.ty(ast.expr(*left).span), forbids_drop);
+                    }
+                    merge_sum(
+                        &mut reads,
+                        walk_expr(
+                            this,
+                            ast,
+                            *left,
+                            mark_ty,
+                            forbids_drop,
+                            forbids_dup,
+                            local_generics,
+                        ),
+                    );
+                    merge_sum(
+                        &mut reads,
+                        walk_expr(
+                            this,
+                            ast,
+                            *right,
+                            mark_ty,
+                            forbids_drop,
+                            forbids_dup,
+                            local_generics,
+                        ),
+                    );
+                }
+                Expr::Block { statements, .. } | Expr::With { statements, .. } => {
+                    for (i, &stmt_id) in statements.iter().enumerate() {
+                        let is_tail = i + 1 == statements.len();
+                        let stmt = ast.stmt(stmt_id);
+                        match &stmt.value.kind {
+                            StmtKind::Binding {
+                                pattern,
+                                value: Some(expr),
+                                fallback,
+                                ..
+                            } => {
+                                merge_sum(
+                                    &mut reads,
+                                    walk_expr(
+                                        this,
+                                        ast,
+                                        *expr,
+                                        mark_ty,
+                                        forbids_drop,
+                                        forbids_dup,
+                                        local_generics,
+                                    ),
+                                );
+                                walk_pattern(
+                                    this,
+                                    ast,
+                                    *pattern,
+                                    mark_ty,
+                                    forbids_drop,
+                                    local_generics,
+                                );
+                                if let Some(fb) = fallback {
+                                    merge_sum(
+                                        &mut reads,
+                                        walk_expr(
+                                            this,
+                                            ast,
+                                            *fb,
+                                            mark_ty,
+                                            forbids_drop,
+                                            forbids_dup,
+                                            local_generics,
+                                        ),
+                                    );
+                                }
+                            }
+                            StmtKind::Expr(expr) => {
+                                merge_sum(
+                                    &mut reads,
+                                    walk_expr(
+                                        this,
+                                        ast,
+                                        *expr,
+                                        mark_ty,
+                                        forbids_drop,
+                                        forbids_dup,
+                                        local_generics,
+                                    ),
+                                );
+                                if !is_tail {
+                                    mark_ty(this.ty(ast.expr(*expr).span), forbids_drop);
+                                }
+                            }
+                            StmtKind::Defer(expr) => {
+                                merge_sum(
+                                    &mut reads,
+                                    walk_expr(
+                                        this,
+                                        ast,
+                                        *expr,
+                                        mark_ty,
+                                        forbids_drop,
+                                        forbids_dup,
+                                        local_generics,
+                                    ),
+                                );
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                Expr::If {
+                    condition, yes, no, ..
+                } => {
+                    match condition {
+                        Condition::Expr(e) => {
+                            merge_sum(
+                                &mut reads,
+                                walk_expr(
+                                    this,
+                                    ast,
+                                    *e,
+                                    mark_ty,
+                                    forbids_drop,
+                                    forbids_dup,
+                                    local_generics,
+                                ),
+                            );
+                        }
+                        Condition::Binding { pattern, value, .. } => {
+                            merge_sum(
+                                &mut reads,
+                                walk_expr(
+                                    this,
+                                    ast,
+                                    *value,
+                                    mark_ty,
+                                    forbids_drop,
+                                    forbids_dup,
+                                    local_generics,
+                                ),
+                            );
+                            walk_pattern(
+                                this,
+                                ast,
+                                *pattern,
+                                mark_ty,
+                                forbids_drop,
+                                local_generics,
+                            );
+                        }
+                    }
+                    let mut branch_reads = walk_expr(
+                        this,
+                        ast,
+                        *yes,
+                        mark_ty,
+                        forbids_drop,
+                        forbids_dup,
+                        local_generics,
+                    );
+                    if let Some(no_expr) = no {
+                        merge_max(
+                            &mut branch_reads,
+                            walk_expr(
+                                this,
+                                ast,
+                                *no_expr,
+                                mark_ty,
+                                forbids_drop,
+                                forbids_dup,
+                                local_generics,
+                            ),
+                        );
+                    }
+                    merge_sum(&mut reads, branch_reads);
+                }
+                Expr::While { condition, body } => {
+                    match condition {
+                        Condition::Expr(e) => {
+                            merge_sum(
+                                &mut reads,
+                                walk_expr(
+                                    this,
+                                    ast,
+                                    *e,
+                                    mark_ty,
+                                    forbids_drop,
+                                    forbids_dup,
+                                    local_generics,
+                                ),
+                            );
+                        }
+                        Condition::Binding { pattern, value, .. } => {
+                            merge_sum(
+                                &mut reads,
+                                walk_expr(
+                                    this,
+                                    ast,
+                                    *value,
+                                    mark_ty,
+                                    forbids_drop,
+                                    forbids_dup,
+                                    local_generics,
+                                ),
+                            );
+                            walk_pattern(
+                                this,
+                                ast,
+                                *pattern,
+                                mark_ty,
+                                forbids_drop,
+                                local_generics,
+                            );
+                        }
+                    }
+                    merge_sum(
+                        &mut reads,
+                        walk_expr(
+                            this,
+                            ast,
+                            *body,
+                            mark_ty,
+                            forbids_drop,
+                            forbids_dup,
+                            local_generics,
+                        ),
+                    );
+                }
+                Expr::For {
+                    iterable,
+                    pattern,
+                    body,
+                    ..
+                } => {
+                    match this.ty(ast.expr(*iterable).span) {
+                        Ty::Array(item) => mark_ty(&item.ty, forbids_dup),
+                        Ty::Map(_, item) => mark_ty(&item.ty, forbids_dup),
+                        _ => {}
+                    }
+                    merge_sum(
+                        &mut reads,
+                        walk_expr(
+                            this,
+                            ast,
+                            *iterable,
+                            mark_ty,
+                            forbids_drop,
+                            forbids_dup,
+                            local_generics,
+                        ),
+                    );
+                    walk_pattern(this, ast, *pattern, mark_ty, forbids_drop, local_generics);
+                    merge_sum(
+                        &mut reads,
+                        walk_expr(
+                            this,
+                            ast,
+                            *body,
+                            mark_ty,
+                            forbids_drop,
+                            forbids_dup,
+                            local_generics,
+                        ),
+                    );
+                }
+                Expr::Match { value, arms, .. } => {
+                    merge_sum(
+                        &mut reads,
+                        walk_expr(
+                            this,
+                            ast,
+                            *value,
+                            mark_ty,
+                            forbids_drop,
+                            forbids_dup,
+                            local_generics,
+                        ),
+                    );
+                    let mut arm_reads = BTreeMap::new();
+                    for arm in arms {
+                        walk_pattern(this, ast, arm.pattern, mark_ty, forbids_drop, local_generics);
+                        let mut one = BTreeMap::new();
+                        if let Some(g) = arm.guard {
+                            merge_sum(
+                                &mut one,
+                                walk_expr(
+                                    this,
+                                    ast,
+                                    g,
+                                    mark_ty,
+                                    forbids_drop,
+                                    forbids_dup,
+                                    local_generics,
+                                ),
+                            );
+                        }
+                        merge_sum(
+                            &mut one,
+                            walk_expr(
+                                this,
+                                ast,
+                                arm.body,
+                                mark_ty,
+                                forbids_drop,
+                                forbids_dup,
+                                local_generics,
+                            ),
+                        );
+                        merge_max(&mut arm_reads, one);
+                    }
+                    merge_sum(&mut reads, arm_reads);
+                }
+                Expr::Member { base, .. } => {
+                    mark_ty(this.ty(node.span), forbids_dup);
+                    merge_sum(
+                        &mut reads,
+                        walk_expr(
+                            this,
+                            ast,
+                            *base,
+                            mark_ty,
+                            forbids_drop,
+                            forbids_dup,
+                            local_generics,
+                        ),
+                    );
+                }
+                Expr::Index { base, index, .. } => {
+                    match this.ty(ast.expr(*base).span) {
+                        Ty::Array(item) => mark_ty(&item.ty, forbids_dup),
+                        Ty::Map(_, item) => mark_ty(&item.ty, forbids_dup),
+                        _ => mark_ty(this.ty(node.span), forbids_dup),
+                    }
+                    merge_sum(
+                        &mut reads,
+                        walk_expr(
+                            this,
+                            ast,
+                            *base,
+                            mark_ty,
+                            forbids_drop,
+                            forbids_dup,
+                            local_generics,
+                        ),
+                    );
+                    merge_sum(
+                        &mut reads,
+                        walk_expr(
+                            this,
+                            ast,
+                            *index,
+                            mark_ty,
+                            forbids_drop,
+                            forbids_dup,
+                            local_generics,
+                        ),
+                    );
+                }
+                Expr::Tuple(items) | Expr::Array(items) => {
+                    for &item in items {
+                        merge_sum(
+                            &mut reads,
+                            walk_expr(
+                                this,
+                                ast,
+                                item,
+                                mark_ty,
+                                forbids_drop,
+                                forbids_dup,
+                                local_generics,
+                            ),
+                        );
+                    }
+                }
+                Expr::Record { fields, .. } => {
+                    for f in fields {
+                        if let Some(expr) = f.value {
+                            merge_sum(
+                                &mut reads,
+                                walk_expr(
+                                    this,
+                                    ast,
+                                    expr,
+                                    mark_ty,
+                                    forbids_drop,
+                                    forbids_dup,
+                                    local_generics,
+                                ),
+                            );
+                        } else if let Some(def_id) = this.definition(f.name.span) {
+                            *reads.entry(def_id).or_insert(0) += 1;
+                        }
+                    }
+                }
+                Expr::Map(entries) => {
+                    for &(k, v) in entries {
+                        merge_sum(
+                            &mut reads,
+                            walk_expr(
+                                this,
+                                ast,
+                                k,
+                                mark_ty,
+                                forbids_drop,
+                                forbids_dup,
+                                local_generics,
+                            ),
+                        );
+                        merge_sum(
+                            &mut reads,
+                            walk_expr(
+                                this,
+                                ast,
+                                v,
+                                mark_ty,
+                                forbids_drop,
+                                forbids_dup,
+                                local_generics,
+                            ),
+                        );
+                    }
+                }
+                Expr::Call { callee, args } => {
+                    if let Expr::Path(path) = &ast.expr(*callee).value
+                        && let Some(def_id) = this.definition(path.span)
+                        && this.program.hir.primitive_module(def_id) == Some("Map")
+                        && this.program.hir.definition(def_id).name.value == "insert"
+                        && let Some(val_arg) = args.get(2)
+                    {
+                        mark_ty(this.ty(ast.expr(val_arg.value).span), forbids_drop);
+                    }
+                    merge_sum(
+                        &mut reads,
+                        walk_expr(
+                            this,
+                            ast,
+                            *callee,
+                            mark_ty,
+                            forbids_drop,
+                            forbids_dup,
+                            local_generics,
+                        ),
+                    );
+                    for arg in args {
+                        merge_sum(
+                            &mut reads,
+                            walk_expr(
+                                this,
+                                ast,
+                                arg.value,
+                                mark_ty,
+                                forbids_drop,
+                                forbids_dup,
+                                local_generics,
+                            ),
+                        );
+                    }
+                }
+                Expr::Wrap { args, .. } => {
+                    for arg in args {
+                        merge_sum(
+                            &mut reads,
+                            walk_expr(
+                                this,
+                                ast,
+                                arg.value,
+                                mark_ty,
+                                forbids_drop,
+                                forbids_dup,
+                                local_generics,
+                            ),
+                        );
+                    }
+                }
+                Expr::Pipeline { value, target, .. } => {
+                    merge_sum(
+                        &mut reads,
+                        walk_expr(
+                            this,
+                            ast,
+                            *value,
+                            mark_ty,
+                            forbids_drop,
+                            forbids_dup,
+                            local_generics,
+                        ),
+                    );
+                    merge_sum(
+                        &mut reads,
+                        walk_expr(
+                            this,
+                            ast,
+                            *target,
+                            mark_ty,
+                            forbids_drop,
+                            forbids_dup,
+                            local_generics,
+                        ),
+                    );
+                }
+                Expr::Transfer {
+                    value: Some(expr), ..
+                } => {
+                    merge_sum(
+                        &mut reads,
+                        walk_expr(
+                            this,
+                            ast,
+                            *expr,
+                            mark_ty,
+                            forbids_drop,
+                            forbids_dup,
+                            local_generics,
+                        ),
+                    );
+                }
+                Expr::Closure { body, .. } => {
+                    let body_span = ast.expr(*body).span;
+                    for (_, ref_id) in this.program.hir.references_within(body_span) {
+                        let def = this.program.hir.definition(ref_id);
+                        if def.kind == DefinitionKind::Local
+                            && (def.name.span.start < node.span.start
+                                || def.name.span.end > node.span.end)
+                            && let Some(ty) = this.program.bindings.get(&ref_id)
+                        {
+                            mark_ty(ty, forbids_dup);
+                        }
+                    }
+                }
+                _ => {}
+            }
+            reads
+        }
+
+        let mut local_generics = BTreeMap::new();
+        let reads = walk_expr(
+            self,
+            ast,
+            body,
+            &mark_ty,
+            &mut forbids_drop,
+            &mut forbids_dup,
+            &mut local_generics,
+        );
+        for (def_id, (mode, indices)) in &param_defs {
+            let count = reads.get(def_id).copied().unwrap_or(0);
+            if matches!(mode, Mode::Plain | Mode::New | Mode::Via) {
+                if count == 0 {
+                    forbids_drop.extend(indices.iter().copied());
+                } else if count > 1 {
+                    forbids_dup.extend(indices.iter().copied());
+                }
+            }
+        }
+        for (def_id, indices) in &local_generics {
+            let count = reads.get(def_id).copied().unwrap_or(0);
+            if count > 1 {
+                forbids_dup.extend(indices.iter().copied());
+            }
+        }
+        let has_ctl = summary
+            .effects
+            .iter()
+            .any(|eff| self.program.effect_has_ctl(eff));
+        if has_ctl {
+            for (mode, indices) in param_defs.values() {
+                if matches!(mode, Mode::Plain | Mode::New) {
+                    forbids_suspend.extend(indices.iter().copied());
+                }
+            }
+        }
+        (
+            forbids_drop.into_iter().collect(),
+            forbids_dup.into_iter().collect(),
+            forbids_suspend.into_iter().collect(),
+        )
     }
 }

@@ -129,20 +129,14 @@ impl Analyzer<'_> {
             });
         let mut consume_oneshot_target = false;
         if let Some(target) = &target {
-            let is_oneshot = sig.is_some_and(|sig| sig.is_ctl || sig.once) || target.is_once;
+            let is_oneshot = sig.is_some_and(|sig| sig.is_ctl);
             if is_oneshot {
                 let projected = matches!(callee.value, Expr::Member { .. } | Expr::Index { .. });
                 if projected {
                     self.error(
                         Code::E0548,
                         callee.span,
-                        "one-shot callable or continuation cannot be invoked through a projected path",
-                    );
-                } else if !target.requires_new && !target.writers() {
-                    self.error(
-                        Code::E0548,
-                        callee.span,
-                        "one-shot callable or continuation requires exclusive authority",
+                        "ctl continuation cannot be invoked through a projected path",
                     );
                 } else {
                     consume_oneshot_target = true;
@@ -190,19 +184,6 @@ impl Analyzer<'_> {
                 .is_none_or(|arg| matches!(ast.expr(arg.value).value, Expr::Literal(_)));
         for (position, arg) in args.iter().enumerate() {
             let node = ast.expr(arg.value);
-            let value = if matches!(node.value, Expr::Closure { .. }) {
-                if arg.mode == Mode::New {
-                    let mut arg_ctx = ctx.clone();
-                    arg_ctx.expected = Mode::New;
-                    self.closure(&arg_ctx, ledger, arg.value, true)
-                } else {
-                    self.closure(ctx, ledger, arg.value, true)
-                }
-            } else if refining_assert && position == 0 {
-                self.expr_with_truth(ctx, ledger, arg.value, Some(true))
-            } else {
-                self.expr(ctx, ledger, arg.value)
-            };
             let Some(index) = arg
                 .name
                 .as_ref()
@@ -221,6 +202,19 @@ impl Analyzer<'_> {
                 *given = true;
             }
             let parameter = sig.and_then(|sig| sig.parameters.get(index));
+            let value = if matches!(node.value, Expr::Closure { .. }) {
+                if parameter.is_some_and(|p| p.mode == Mode::New) {
+                    let mut arg_ctx = ctx.clone();
+                    arg_ctx.expected = Mode::New;
+                    self.closure(&arg_ctx, ledger, arg.value, true)
+                } else {
+                    self.closure(ctx, ledger, arg.value, true)
+                }
+            } else if refining_assert && position == 0 {
+                self.expr_with_truth(ctx, ledger, arg.value, Some(true))
+            } else {
+                self.expr(ctx, ledger, arg.value)
+            };
             let inferred = parameter.is_some_and(|p| p.mode == Mode::Via);
             let mode = if inferred {
                 let mode = match arg.mode {
@@ -258,7 +252,7 @@ impl Analyzer<'_> {
             } else {
                 parameter.map_or(arg.mode, |p| p.mode)
             };
-            let value = if primitive && name == "derive" && index == 0 {
+            let mut value = if primitive && name == "derive" && index == 0 {
                 let mut snapshot = ledger.snapshot(&value);
                 let message = "derive requires an immutable snapshot";
                 if mode != Mode::Plain {
@@ -277,11 +271,17 @@ impl Analyzer<'_> {
             } else {
                 self.prepare_argument(ctx, ledger, arg, value, node.span, mode)
             };
-            // Packing preserves inspection and linear obligations in the payload.
+            // Packing preserves inspection in the payload; passing a must-consume value
+            // by value (plain/new/via) consumes its linear binding (constructors mint a new
+            // LinearOccurrence on the constructed composite in expr.rs).
+            let arg_is_linear = self.program.is_must_consume(self.ty(node.span));
+            if arg_is_linear
+                && !matches!(mode, Mode::Ref | Mode::Mut | Mode::Shared)
+                && !(primitive && matches!(name, "inner" | "len"))
+            {
+                self.consume_linear(ctx, ledger, &mut value);
+            }
             if !is_constructor {
-                if mode == Mode::New && !(primitive && name == "inner") {
-                    ledger.consume_datum_linear(&value);
-                }
                 if parameter.is_some_and(|p| p.ty.is_result(&self.program.hir)) {
                     ledger.inspect(&value);
                 } else if !value.results().is_empty()
@@ -392,6 +392,46 @@ impl Analyzer<'_> {
                         "argument source overlaps incompatible live authority",
                     );
                 }
+                for (closure_arg, other_mode, other_arg) in [
+                    (value, *previous_mode, previous),
+                    (previous, *mode, value),
+                ] {
+                    for (&owner, captures) in &closure_arg.invocations {
+                        for &source in captures.keys() {
+                            let Some(slot) = ledger.slots.get(&source) else {
+                                continue;
+                            };
+                            let captured = ledger.snapshot(&slot.value);
+                            if !captured.writers() {
+                                continue;
+                            }
+                            let writable = if captured
+                                .roots
+                                .iter()
+                                .all(|root| root.mode == Access::Shared)
+                            {
+                                Mode::Shared
+                            } else {
+                                Mode::Mut
+                            };
+                            for conflict in conflicts(other_arg, other_mode, &captured, writable) {
+                                self.check_conflict(
+                                    ctx,
+                                    conflict,
+                                    Some((
+                                        Fact {
+                                            owner,
+                                            obligation: Obligation::Write(source),
+                                        },
+                                        true,
+                                    )),
+                                    argument_span,
+                                    "argument source overlaps incompatible live authority",
+                                );
+                            }
+                        }
+                    }
+                }
             }
         }
         if !choices.is_empty() {
@@ -419,17 +459,8 @@ impl Analyzer<'_> {
                 "argument handoff ended the callable path",
             );
             if consume_oneshot_target {
-                if ctx.reachable {
-                    for root in &target.roots {
-                        for &dep in &root.dependencies {
-                            ledger.revoke(dep, Some(root), None);
-                        }
-                    }
-                }
-                for source in target.root_dependencies().collect::<BTreeSet<_>>() {
-                    self.seed(ctx, Obligation::Write(source));
-                }
-                ledger.consume_datum_linear(target);
+                let mut consumed = target.clone();
+                self.consume_linear(ctx, ledger, &mut consumed);
             }
         }
         if !all_aliases_known && let (Some(target), Some(signature)) = (&target, sig) {
@@ -469,6 +500,9 @@ impl Analyzer<'_> {
                     self.link_schema_argument(ctx, owner, axis.clone(), argument, argument_span);
                 }
                 if let Some(formal) = modes.formals.get(*index).copied().flatten() {
+                    let formal_open_effects = sig
+                        .and_then(|s| s.parameters.get(*index))
+                        .is_some_and(|p| matches!(&p.ty, Ty::Callable(c) if c.open_effects));
                     self.apply_closure_input(
                         ctx,
                         ledger,
@@ -477,6 +511,7 @@ impl Analyzer<'_> {
                         (
                             modes.via.contains(&formal),
                             (all_closures_known || all_aliases_known) && modes.models_publication,
+                            formal_open_effects,
                         ),
                     );
                 }
@@ -492,7 +527,7 @@ impl Analyzer<'_> {
         if primitive {
             let inserted = match (module, name) {
                 (Some("Array"), "push") => Some(1),
-                (Some("Array" | "Map"), "insert") => Some(2),
+                (Some("Array" | "Map"), "insert") | (Some("Map"), "replace") => Some(2),
                 _ => None,
             };
             if let Some(inserted) = inserted
@@ -501,6 +536,16 @@ impl Analyzer<'_> {
                     .zip(&value_spans)
                     .find(|((index, _, _), _)| *index == inserted)
             {
+                if module == Some("Map")
+                    && name == "insert"
+                    && self.program.is_must_consume(self.ty(value_span))
+                {
+                    self.error(
+                        Code::E0625,
+                        span,
+                        "Map::insert may silently overwrite a must-consume value; use Map::replace",
+                    );
+                }
                 self.check_stored_views(value, *mode == Mode::Ref, value_span);
                 if let Some(((.., target), &target_span)) = values
                     .iter()
@@ -527,6 +572,7 @@ impl Analyzer<'_> {
                             && let Some(member) =
                                 self.schema_member(self.ty(target_span), &Coordinate::Dynamic)
                             && member.mode.mode != Mode::Mut
+                            && !self.program.is_must_consume(&member.ty)
                             && crate::access::check::higher_order::carries_callable(
                                 self.program,
                                 &member.ty,

@@ -70,14 +70,8 @@ let impossible = a = b = c
 -- @case fallback_transfer_is_syntactic compile-pass
 fn test(x: ?int) -> int { x ?? return 0 }
 
--- @case foreign_inherits_restrictions compile-fail E0901 unit=decl
-pub sub Posix {
-    pub fn get() -> int { 1 }
-    -- ^ E0901
-}
-
 -- @case argument_modes compile-pass
 fn call() -> () {
-    run(mut cell, ref snapshot, ^mut writer, new owned)
+    run(mut cell, ref snapshot, ^mut writer, owned)
     with Clock::get = ref handler
 }

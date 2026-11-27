@@ -45,15 +45,15 @@ fn run_aot(source: &str, expected_stdout: &str) -> Result<(), String> {
 fn self_hosted_stdlib_combinators_execute_under_gc_stress() -> Result<(), String> {
     let source = r#"
         fn main() @io -> () {
-            assert(Numeric::checked_div(42, 6) == Some(7))
-            assert(Numeric::checked_div(42, 0) == None)
-            assert(Numeric::checked_rem(43, 6) == Some(1))
-            assert(Numeric::checked_rem(43, 0) == None)
+            assert(Numeric::div(42, 6) == Some(7))
+            assert(Numeric::div(42, 0) == None)
+            assert(Numeric::rem(43, 6) == Some(1))
+            assert(Numeric::rem(43, 0) == None)
 
             let xs = [10, 20, 30, 40]
-            assert(Array::at(xs, 2) == Some(30))
-            assert(Array::at(xs, -1) == None)
-            assert(Array::at(xs, 4) == None)
+            assert(xs?[2] == Some(30))
+            assert(xs?[-1] == None)
+            assert(xs?[4] == None)
             assert(Array::contains(xs, 20))
             assert(!Array::contains(xs, 99))
 
@@ -62,6 +62,12 @@ fn self_hosted_stdlib_combinators_execute_under_gc_stress() -> Result<(), String
 
             let big = Array::filter(xs, \x -> x >= 25)
             assert(len(big) == 2 && big[0] == 30 && big[1] == 40)
+
+            assert(Array::fold(xs, 0, \acc, x -> acc + x) == 100)
+            assert(Array::any(xs, \x -> x == 30) && !Array::any(xs, \x -> x > 100))
+            assert(Array::all(xs, \x -> x > 0) && !Array::all(xs, \x -> x < 30))
+            assert(Array::find(xs, \x -> x > 25) == Some(30))
+            assert(Array::find(xs, \x -> x > 99) == None)
 
             let raw = String::encode_utf8("ril-std")
             assert(String::decode_utf8(raw) == Some("ril-std"))
@@ -77,7 +83,7 @@ fn private_stdlib_intrinsics_are_hidden_and_array_get_is_removed() {
     let mut private_call = VirtualPackage::new(Unit::Bin);
     private_call.insert(
         private_call.entry.clone(),
-        b"fn main() -> () { let _ = String::raw_encode_utf8(\"hi\") }\n".to_vec(),
+        b"fn main() -> () { let _ = meta Reflect::raw_type_kind(<int>) }\n".to_vec(),
     );
     let checked = Driver.check(&private_call, Stage::Hir);
     assert!(
@@ -177,10 +183,11 @@ fn access_diagnostics_attach_secondary_labels_and_help() -> Result<(), String> {
         pkg_e0548.entry.clone(),
         br#"
         type Boxed = .{ var n: int }
-        fn bad() -> new Boxed {
-            var mut b = Boxed.{ n: 1 }
-            b = Boxed.{ n: 2 }
-            new b
+        fn take(new b: Boxed) -> int { b.n += 1; b.n }
+        fn bad() -> int {
+            let mut b = Boxed.{ n: 1 }
+            b.n += 1
+            take(b)
         }
         "#
         .to_vec(),
@@ -203,9 +210,8 @@ fn access_diagnostics_attach_secondary_labels_and_help() -> Result<(), String> {
 fn prelude_real_sums_platform_math_and_removed_aliases() -> Result<(), String> {
     let source = r#"
         use ril/bytes
-        use ril/crypto
         use ril/math
-        use ril/os
+        use ril/panic as Panic
         use ril/platform
 
         fn check_set_sig(s: Set<int>) -> int { len(s) }
@@ -221,10 +227,10 @@ fn prelude_real_sums_platform_math_and_removed_aliases() -> Result<(), String> {
             let err_val: Result<int, str> = Result::Err("boom")
             assert(err_val == Err("boom"))
 
-            let caught = recover_panic(\-> { panic("oops"); 1 })
+            let caught = Panic::recover(\-> { panic("oops"); 1 })
             match caught {
                 Result::Ok(_) -> panic("expected panic")
-                Result::Err(Panicked(info)) -> assert(panic_message(info) == "oops")
+                Result::Err(Panic::Error::Panicked(info)) -> assert(Panic::message(info) == "oops")
             }
 
             assert(len(Platform::OS) > 0)
@@ -290,7 +296,7 @@ fn wave_b_stdlib_primitives_set_sort_first_class_and_named_args() -> Result<(), 
             Map::insert(mut m, "b", 2)
             assert(len(ref m) == 2)
             assert(Map::contains(ref m, "a") && !Map::contains(ref m, "z"))
-            assert(Map::get(ref m, "b") == Some(2))
+            assert(m?["b"] == Some(2))
             assert(Map::keys(ref m) == ["a", "b"])
             assert(Map::values(ref m) == [1, 2])
             assert(Map::remove(mut m, "a") == Some(1))
@@ -298,13 +304,14 @@ fn wave_b_stdlib_primitives_set_sort_first_class_and_named_args() -> Result<(), 
             Map::clear(mut m)
             assert(len(ref m) == 0)
 
-            -- Set::{empty, from_array, insert, remove, contains}, clone, ==, for
+            -- Set::{empty, from_array, insert, remove, contains, clear, to_array}, clone, ==, for
             let mut s: Set<int> = Set::empty()
             Set::insert(mut s, 10)
             Set::insert(mut s, 20)
             Set::insert(mut s, 10)
             assert(len(ref s) == 2)
             assert(Set::contains(ref s, 10) && !Set::contains(ref s, 99))
+            assert(Set::to_array(ref s) == [10, 20])
             let s2 = Set::from_array([20, 10, 20])
             assert(s == s2)
             let s3 = clone(ref s)
@@ -316,6 +323,8 @@ fn wave_b_stdlib_primitives_set_sort_first_class_and_named_args() -> Result<(), 
             assert(sum == 30)
             assert(Set::remove(mut s, 10) && !Set::remove(mut s, 10))
             assert(len(ref s) == 1)
+            Set::clear(mut s)
+            assert(len(ref s) == 0)
 
             -- String::split + named args + first-class primitives + indirect named args
             let parts = String::split(separator: ",", text: "alpha,beta,gamma")
@@ -330,7 +339,7 @@ fn wave_b_stdlib_primitives_set_sort_first_class_and_named_args() -> Result<(), 
             -- BigInt to_f64 overflow returns +-infinity rather than panicking
             let huge = 1 << 2000
             let inf = Numeric::to_f64(huge)
-            assert(inf > 1.0e300 && Numeric::trunc(inf) == None)
+            assert(inf > 1.0e300 && Numeric::to_int_trunc(inf) == None)
 
             let f_sub: fn(left: int, right: int) -> int = sub_named
             assert(f_sub(right: 3, left: 10) == 7)
@@ -394,7 +403,7 @@ fn wave_c_soundness_static_checks_narrowing_patterns_and_nominals() -> Result<()
         type Config(.{ host: str = "localhost", port: int = 8080 })
         meta let DEFAULT_CFG = Config::(.{ port: 9000 })
 
-        fn pair_only<T |> Tuple>(t: T) -> T { t }
+        fn inner_only<T |> InnerTarget>(t: T) -> T { t }
         fn shared_only<T |> SharedObject>(v: T) -> T { v }
 
         fn narrow_and(x: ?int) -> bool { x != None && x > 5 }
@@ -416,7 +425,7 @@ fn wave_c_soundness_static_checks_narrowing_patterns_and_nominals() -> Result<()
             assert(inner(ids[0]) == 1 && inner(ids[2]) == 3)
 
             -- Prelude static checks & helpers
-            assert(pair_only((1, 2)) == (1, 2))
+            assert(inner(inner_only(UserId::(4))) == 4)
             assert(shared_only([1, 2]) == [1, 2])
             assert(len("abc") == 3)
 
@@ -464,7 +473,7 @@ fn wave_c_soundness_static_checks_narrowing_patterns_and_nominals() -> Result<()
             Code::E0301,
         ),
         (
-            "fn f<T |> Tuple>(x: T) -> T { x }\nfn main() -> () { let _ = f(1) }\n",
+            "fn f<T |> InnerTarget>(x: T) -> T { x }\nfn main() -> () { let _ = f(1) }\n",
             Code::E0301,
         ),
         ("fn main() -> () { let _ = len(1) }\n", Code::E0301),
@@ -554,13 +563,13 @@ fn wave_d_effects_guards_recover_panic_and_ctl() -> Result<(), String> {
             assert(take_up(mut up_fn) == 11)
             assert(ref_alias(ref b) == 11)
 
-            -- ctl Yield + unwind_ctl(new k) + defer cleanup
+            -- ctl Yield + unwind_ctl(k) + defer cleanup
             let mut out: []int = []
             var unwound = false
             with {
-                ctl Yield::emit = \v, new k -> {
+                ctl Yield::emit = \v, k -> {
                     Array::push(mut out, v)
-                    if len(ref out) < 2 { k() } else { unwind_ctl(new k) }
+                    if len(ref out) < 2 { k() } else { unwind_ctl(k) }
                 }
                 defer { unwound = true }
                 let _ = Array::map([10, 20, 30], \x -> { Yield::emit(x); x })
@@ -595,37 +604,32 @@ fn wave_d_effects_guards_recover_panic_and_ctl() -> Result<(), String> {
             Code::E0314,
         ),
         (
-            "type Box = .{ var v: int }\nfn ok_after(res: int, b: Box) -> ?() { if res == b.v { Some(()) } else { None } }\nfn f(new b: Box) -> ?int |> ok_after(b) { let _ = new b; Some(1) }\nfn main() -> () {}\n",
-            Stage::Access,
-            Code::E0549,
-        ),
-        (
-            "fn main() -> () { let _ = recover_panic(42) }\n",
+            "use ril/panic as Panic\nfn main() -> () { let _ = Panic::recover(42) }\n",
             Stage::Type,
             Code::E0338,
         ),
         (
-            "fn main() -> () { let _ = recover_panic(\\x: int -> x) }\n",
+            "use ril/panic as Panic\nfn main() -> () { let _ = Panic::recover(\\x: int -> x) }\n",
             Stage::Type,
             Code::E0314,
         ),
         (
-            "eff Y { ctl step() -> () }\nfn main() -> () { with { ctl Y::step = \\new k -> { let _ = recover_panic(\\-> unwind_ctl(new k)); () }; Y::step() } }\n",
+            "use ril/panic as Panic\neff Y { ctl step() -> () }\nfn main() -> () { with { ctl Y::step = \\k -> { let _ = Panic::recover(\\-> unwind_ctl(k)); () }; Y::step() } }\n",
             Stage::Access,
             Code::E0608,
         ),
         (
-            "eff Y { ctl step() -> () }\nfn main() -> () { with { Y::step = \\new k -> k(); Y::step() } }\n",
+            "eff Y { ctl step() -> () }\nfn main() -> () { with { Y::step = \\k -> k(); Y::step() } }\n",
             Stage::Type,
             Code::E0623,
         ),
         (
-            "eff Y { ctl step() -> () }\nfn bad() @Y -> () { defer Y::step() }\nfn main() -> () { with { ctl Y::step = \\new k -> k(); bad() } }\n",
+            "eff Y { ctl step() -> () }\nfn bad() @Y -> () { defer Y::step() }\nfn main() -> () { with { ctl Y::step = \\k -> k(); bad() } }\n",
             Stage::Access,
             Code::E0616,
         ),
         (
-            "eff Y { ctl step() -> () }\nfn main() -> () { with { ctl Y::step = \\new k -> { let _ = k; () }; Y::step() } }\n",
+            "eff Y { ctl step() -> () }\nfn main() -> () { with { ctl Y::step = \\k -> { let _ = k; () }; Y::step() } }\n",
             Stage::Access,
             Code::E0625,
         ),
@@ -649,6 +653,7 @@ fn wave_d_effects_guards_recover_panic_and_ctl() -> Result<(), String> {
 #[test]
 fn wave_e_introspection_type_patterns_and_parser_conformance() -> Result<(), String> {
     let source = r#"
+        use ril/panic as Panic
         type Pair(int, str)
         type Config(.{ host: str = "localhost", port: int })
         type Box<T>(.{ item: T })
@@ -684,18 +689,18 @@ fn wave_e_introspection_type_patterns_and_parser_conformance() -> Result<(), Str
             assert(b == "unboxed" && s == 99 && kv.0 == "k" && kv.1 == 7 && rest.port == 80)
             assert(r == 3.5 && d?["x"] == Some(1))
 
-            -- Runtime static folding of type_name, fields, sum_tags, type_kind, Reflect::has_default
-            assert(meta type_name(<int>) == "int")
-            assert(len(meta fields(<()>)) == 0)
-            assert(len(meta fields(<Pair>)) == 2)
-            assert(len(meta sum_tags(<Shape>)) == 3)
-            assert(meta type_kind(<int>) == TypeKind::Value)
-            assert(meta type_kind(<()>) == TypeKind::Value)
-            assert(meta type_kind(<(int, str)>) == TypeKind::Tuple)
-            assert(meta type_kind(<Shape>) == TypeKind::Sum)
-            assert(meta type_kind(<Set<int>>) == TypeKind::OpaqueShared)
-            assert(meta type_kind(<PanicReport>) == TypeKind::OpaqueValue)
-            assert(meta type_kind(<Type<int>>) == TypeKind::Meta)
+            -- Runtime static folding of Reflect::{type_name, fields, sum_tags, type_kind, has_default}
+            assert(meta Reflect::type_name(<int>) == "int")
+            assert(len(meta Reflect::fields(<()>)) == 0)
+            assert(len(meta Reflect::fields(<Pair>)) == 2)
+            assert(len(meta Reflect::sum_tags(<Shape>)) == 3)
+            assert(meta Reflect::type_kind(<int>) == Reflect::TypeKind::Value)
+            assert(meta Reflect::type_kind(<()>) == Reflect::TypeKind::Value)
+            assert(meta Reflect::type_kind(<(int, str)>) == Reflect::TypeKind::Tuple)
+            assert(meta Reflect::type_kind(<Shape>) == Reflect::TypeKind::Sum)
+            assert(meta Reflect::type_kind(<Set<int>>) == Reflect::TypeKind::OpaqueShared)
+            assert(meta Reflect::type_kind(<Panic::Report>) == Reflect::TypeKind::OpaqueValue)
+            assert(meta Reflect::type_kind(<Type<int>>) == Reflect::TypeKind::Meta)
             assert(meta Reflect::has_default(<Config>, "host"))
             assert(!meta Reflect::has_default(<Config>, "port"))
 
@@ -783,7 +788,7 @@ fn wave_e_introspection_type_patterns_and_parser_conformance() -> Result<(), Str
             Code::E0344,
         ),
         (
-            "meta let BAD = sum_tags(<int>)\nfn main() -> () {}\n",
+            "meta let BAD = Reflect::sum_tags(<int>)\nfn main() -> () {}\n",
             Stage::Type,
             Code::E0301,
         ),
@@ -841,10 +846,12 @@ fn de_magification_self_hosted_set_stdlib_convert_compile_error_and_wrapper_synt
         fn read_secret(t: SecretTag) -> str { inner(t) }
 
         meta fn static_stdlib_check() -> int {
-            let mut s = Set::from_array([3, 1, 2, 1])
-            Set::insert(mut s, 4)
-            let _ = Set::remove(mut s, 2)
-            let s_snap = new s
+            let s_snap: Set<int> = {
+                let mut s = Set::from_array([3, 1, 2, 1])
+                Set::insert(mut s, 4)
+                let _ = Set::remove(mut s, 2)
+                s
+            }
             var sum = 0
             for s_snap as x {
                 sum += x
@@ -853,7 +860,7 @@ fn de_magification_self_hosted_set_stdlib_convert_compile_error_and_wrapper_synt
             Array::sort(mut xs)
             let mut m: [str: int] = ["a": 10, "b": 20]
             Map::insert(mut m, "c", 30)
-            let total = sum + xs[0] + (Map::get(ref m, "c") ?? 0) + len(String::split("x,y,z", ",")) + len(Bytes::to_array(bytes"AB"))
+            let total = sum + xs[0] + (m?["c"] ?? 0) + len(String::split("x,y,z", ",")) + len(Bytes::to_array(bytes"AB"))
             Map::clear(mut m)
             Array::clear(mut xs)
             total + len(ref m) + len(ref xs)
@@ -881,10 +888,9 @@ fn de_magification_self_hosted_set_stdlib_convert_compile_error_and_wrapper_synt
             assert(len(s1) == 2 && !Set::contains(s1, 10) && Set::contains(s1, 30))
             assert(String::inspect(s1) == "Set([20, 30])")
 
-            -- Self-hosted Numeric::convert<f64> and <int>
-            assert(Numeric::convert<f64>(3.5) == Some(3.5))
-            assert(Numeric::convert<int>(3.5) == None)
-            assert(Numeric::convert<int>(4.0) == Some(4))
+            -- Self-hosted Numeric::to_int_exact
+            assert(Numeric::to_int_exact(3.5) == None)
+            assert(Numeric::to_int_exact(4.0) == Some(4))
 
             -- Self-hosted Array::sort (including NaN), Map, String, Bytes under Draft too
             let a0 = [3, 1, 2]
@@ -897,7 +903,7 @@ fn de_magification_self_hosted_set_stdlib_convert_compile_error_and_wrapper_synt
                 Map::clear(mut d)
                 Map::insert(mut d, "n", 9)
             })
-            assert(len(m0) == 2 && Map::get(m1, "n") == Some(9) && Map::keys(m1) == ["n"] && Map::values(m1) == [9])
+            assert(len(m0) == 2 && m1?["n"] == Some(9) && Map::keys(m1) == ["n"] && Map::values(m1) == [9])
             assert(String::split("ab", "") == ["", "a", "b", ""])
             assert(String::split("", ",") == [""])
             assert(Bytes::to_array(bytes"AZ") == [65, 90])
@@ -906,7 +912,7 @@ fn de_magification_self_hosted_set_stdlib_convert_compile_error_and_wrapper_synt
             let mut q = [41, 99]
             let head = Array::pop_front(mut q) ?? 0
             let result = with {
-                ctl Ask::value = \new k -> k(head + 1)
+                ctl Ask::value = \k -> k(head + 1)
                 Ask::value()
             }
             assert(result == 42 && q == [99])
@@ -965,22 +971,22 @@ fn de_magification_self_hosted_set_stdlib_convert_compile_error_and_wrapper_synt
             Code::E0305,
         ),
         (
-            "fn f<T |> Tuple>(x: T) -> () { let _ = x }\nfn main() -> () { f(42) }\n",
+            "fn f<T |> InnerTarget>(x: T) -> () { let _ = x }\nfn main() -> () { f(42) }\n",
             Stage::Type,
             Code::E0301,
         ),
         (
-            "fn main() -> () { let _ = meta fields(<int>) }\n",
+            "fn main() -> () { let _ = meta Reflect::fields(<int>) }\n",
             Stage::Type,
             Code::E0358,
         ),
         (
-            "fn main() -> () { let _ = fields(<int>) }\n",
+            "fn main() -> () { let _ = Reflect::fields(<int>) }\n",
             Stage::Type,
             Code::E0810,
         ),
         (
-            "fn main() -> () { let _ = type_name(<int>) }\n",
+            "fn main() -> () { let _ = Reflect::type_name(<int>) }\n",
             Stage::Type,
             Code::E0810,
         ),
@@ -1020,12 +1026,12 @@ fn de_magification_self_hosted_set_stdlib_convert_compile_error_and_wrapper_synt
             Code::E0522,
         ),
         (
-            "fn f<T |> Tuple>(x: T) -> () { let _ = x }\nfn main() -> () { f(()) }\n",
+            "fn f<T |> InnerTarget>(x: T) -> () { let _ = x }\nfn main() -> () { f(()) }\n",
             Stage::Type,
             Code::E0301,
         ),
         (
-            "type BadKey = FieldKey<int>\nfn main() -> () {}\n",
+            "type BadKey = Reflect::FieldKey<int>\nfn main() -> () {}\n",
             Stage::Type,
             Code::E0358,
         ),
@@ -1055,17 +1061,17 @@ fn de_magification_self_hosted_set_stdlib_convert_compile_error_and_wrapper_synt
             Code::E0340,
         ),
         (
-            "sub Secret { pub opaque type Hidden(int) }\ntype U = Unwrap<Secret::Hidden>\nfn main() -> () {}\n",
+            "sub Secret { pub opaque type Hidden(int) }\ntype U = Inner<Secret::Hidden>\nfn main() -> () {}\n",
             Stage::Type,
             Code::E0308,
         ),
         (
-            "sub Secret { pub opaque type Hidden(.{ x: int }) }\ntype K = FieldKey<Secret::Hidden>\nfn main() -> () {}\n",
+            "sub Secret { pub opaque type Hidden(.{ x: int }) }\ntype K = Reflect::FieldKey<Secret::Hidden>\nfn main() -> () {}\n",
             Stage::Type,
             Code::E0308,
         ),
         (
-            "opaque type LocalInt(int)\ntype K = FieldKey<LocalInt>\nfn main() -> () {}\n",
+            "opaque type LocalInt(int)\ntype K = Reflect::FieldKey<LocalInt>\nfn main() -> () {}\n",
             Stage::Type,
             Code::E0358,
         ),
@@ -1085,7 +1091,7 @@ fn de_magification_self_hosted_set_stdlib_convert_compile_error_and_wrapper_synt
             Code::E0301,
         ),
         (
-            "fn f<T |> SharedObject>(x: T) -> T { x }\nfn g(r: PanicReport) -> PanicReport { f(r) }\nfn main() -> () {}\n",
+            "use ril/panic as Panic\nfn f<T |> SharedObject>(x: T) -> T { x }\nfn g(r: Panic::Report) -> Panic::Report { f(r) }\nfn main() -> () {}\n",
             Stage::Type,
             Code::E0301,
         ),
@@ -1116,13 +1122,13 @@ fn de_magification_self_hosted_set_stdlib_convert_compile_error_and_wrapper_synt
             pub opaque type Hook(fn() -> ())
         }
 
-        fn unwrap_box<T>(b: Box<T>) -> Unwrap<Box<T>> { inner(b) }
+        fn unwrap_box<T>(b: Box<T>) -> Inner<Box<T>> { inner(b) }
         fn check_shared<T |> SharedObject>(x: T) -> T { x }
         fn check_len<T |> LenTarget>(via x: T) -> int { len(x) }
         fn generic_kind<T>(x: Option<T>) -> int {
             let _ = x
-            meta assert(type_kind(<Option<T>>) == TypeKind::Sum)
-            meta assert(type_kind(<Set<T>>) == TypeKind::OpaqueShared)
+            meta assert(Reflect::type_kind(<Option<T>>) == Reflect::TypeKind::Sum)
+            meta assert(Reflect::type_kind(<Set<T>>) == Reflect::TypeKind::OpaqueShared)
             meta if <T> == <str> {
                 meta compile_error("unreachable str branch")
             } else {
@@ -1150,7 +1156,7 @@ fn de_magification_self_hosted_set_stdlib_convert_compile_error_and_wrapper_synt
         meta let _ = assert(<IsNonEmptyTuple<()>> == <never>)
 
         type InspectNominal = \T -> match <T> {
-            <Nominal<let Inner>> -> <Inner>
+            <Nominal<let Payload>> -> <Payload>
             _ -> <never>
         }
 
@@ -1160,33 +1166,33 @@ fn de_magification_self_hosted_set_stdlib_convert_compile_error_and_wrapper_synt
         meta let _ = assert(<InspectNominal<Secret::HiddenShared>> == <never>)
 
         -- TypeKind classification
-        meta let _ = assert(type_kind(<int>) == TypeKind::Value)
-        meta let _ = assert(type_kind(<()>) == TypeKind::Value)
-        meta let _ = assert(type_kind(<(int, str)>) == TypeKind::Tuple)
-        meta let _ = assert(type_kind(<.{ a: int }>) == TypeKind::Record)
-        meta let _ = assert(type_kind(<[]int>) == TypeKind::Array)
-        meta let _ = assert(type_kind(<[str: int]>) == TypeKind::Map)
-        meta let _ = assert(type_kind(<Option<int>>) == TypeKind::Sum)
-        meta let _ = assert(type_kind(<UserId>) == TypeKind::Nominal)
-        meta let _ = assert(type_kind(<LocalRec>) == TypeKind::OpaqueShared)
-        meta let _ = assert(type_kind(<Secret::HiddenShared>) == TypeKind::OpaqueShared)
-        meta let _ = assert(type_kind(<Secret::HiddenValue>) == TypeKind::OpaqueValue)
-        meta let _ = assert(type_kind(<Secret::Hook>) == TypeKind::Opaque)
-        meta let _ = assert(type_kind(<fn(int) -> int>) == TypeKind::Fn)
-        meta let _ = assert(type_kind(<Derived<[]int>>) == TypeKind::Derived)
-        meta let _ = assert(type_kind(<Type<int>>) == TypeKind::Meta)
-        meta let _ = assert(type_kind(<FieldMode>) == TypeKind::Meta)
+        meta let _ = assert(Reflect::type_kind(<int>) == Reflect::TypeKind::Value)
+        meta let _ = assert(Reflect::type_kind(<()>) == Reflect::TypeKind::Value)
+        meta let _ = assert(Reflect::type_kind(<(int, str)>) == Reflect::TypeKind::Tuple)
+        meta let _ = assert(Reflect::type_kind(<.{ a: int }>) == Reflect::TypeKind::Record)
+        meta let _ = assert(Reflect::type_kind(<[]int>) == Reflect::TypeKind::Array)
+        meta let _ = assert(Reflect::type_kind(<[str: int]>) == Reflect::TypeKind::Map)
+        meta let _ = assert(Reflect::type_kind(<Option<int>>) == Reflect::TypeKind::Sum)
+        meta let _ = assert(Reflect::type_kind(<UserId>) == Reflect::TypeKind::Nominal)
+        meta let _ = assert(Reflect::type_kind(<LocalRec>) == Reflect::TypeKind::OpaqueShared)
+        meta let _ = assert(Reflect::type_kind(<Secret::HiddenShared>) == Reflect::TypeKind::OpaqueShared)
+        meta let _ = assert(Reflect::type_kind(<Secret::HiddenValue>) == Reflect::TypeKind::OpaqueValue)
+        meta let _ = assert(Reflect::type_kind(<Secret::Hook>) == Reflect::TypeKind::Opaque)
+        meta let _ = assert(Reflect::type_kind(<fn(int) -> int>) == Reflect::TypeKind::Fn)
+        meta let _ = assert(Reflect::type_kind(<Derived<[]int>>) == Reflect::TypeKind::Derived)
+        meta let _ = assert(Reflect::type_kind(<Type<int>>) == Reflect::TypeKind::Meta)
+        meta let _ = assert(Reflect::type_kind(<FieldMode>) == Reflect::TypeKind::Meta)
 
         fn main() @io -> () {
-            -- Unwrap / NominalWrapper / FieldKey / LenTarget are public and self-hosted
-            let u: Unwrap<UserId> = 42
+            -- Inner / InnerTarget / Reflect::FieldKey / LenTarget are public and self-hosted
+            let u: Inner<UserId> = 42
             assert(u == 42)
             assert(unwrap_box(Box::(7)) == 7)
-            let k: FieldKey<LocalRec> = "host"
+            let k: Reflect::FieldKey<LocalRec> = "host"
             assert(k == "host")
-            let _: FieldKey<.{ a: int }> = "a"
-            let _: FieldKey<(int, str)> = 0
-            let _: FieldKey<()> = 0
+            let _: Reflect::FieldKey<.{ a: int }> = "a"
+            let _: Reflect::FieldKey<(int, str)> = 0
+            let _: Reflect::FieldKey<()> = 0
 
             -- SharedObject accepts recursive nominals and shared-backed opaques
             let node = check_shared(Node::(.{ val: 1, next: None }))

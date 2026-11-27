@@ -144,11 +144,7 @@ pub(crate) fn module_key(path: &Path) -> PathBuf {
         path.to_owned()
     };
     if let Some(name) = result.file_name().and_then(std::ffi::OsStr::to_str) {
-        let stem = name
-            .strip_suffix(".d.ril")
-            .or_else(|| name.strip_suffix(".ril"))
-            .unwrap_or(name)
-            .to_owned();
+        let stem = name.strip_suffix(".ril").unwrap_or(name).to_owned();
         result.set_file_name(stem);
     }
     result
@@ -194,10 +190,8 @@ impl Program {
             let declaration = match node.value.kind {
                 StmtKind::Function(function) => {
                     let kind = if function.body.is_none()
-                        && !matches!(
-                            self.file(file).kind,
-                            FileKind::Foreign | FileKind::Interface
-                        ) {
+                        && self.file(file).kind != FileKind::Interface
+                    {
                         let registered = if module_root {
                             builtins::bodyless(self.file(file), node.span, &function)
                         } else {
@@ -230,7 +224,6 @@ impl Program {
                         None => None,
                     };
                     if matches!(decl.definition, TypeDefinition::Opaque)
-                        && self.file(file).kind != FileKind::Foreign
                         && decl.kind == ril_syntax::syntax::TypeKind::Opaque
                         && contract.is_none()
                     {

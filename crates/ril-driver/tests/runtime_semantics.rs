@@ -41,6 +41,7 @@ fn run_aot(source: &str, expected_stdout: &str) -> Result<(), String> {
 #[test]
 fn b1_defer_unwinds_in_lifo_order_with_sibling_handlers() -> Result<(), String> {
     let source = r#"
+use ril/panic as Panic
 eff Log {
     fn tag() -> str
     fn emit(msg: str) -> ()
@@ -66,7 +67,7 @@ fn main() @io -> () {
     with Log::tag = \-> "outer"
     with Log::emit = \msg -> println(msg)
     work(false)
-    let outcome = recover_panic(\-> {
+    let outcome = Panic::recover(\-> {
         with Log::tag = \-> "outer"
         with Log::emit = \msg -> {
             if msg == "inner:7" {
@@ -87,11 +88,12 @@ fn main() @io -> () {
 #[test]
 fn b2_derive_abort_under_panic_preserves_base_and_recovers() -> Result<(), String> {
     let source = r#"
+use ril/panic as Panic
 type Box = .{ x: int }
 
 fn main() @io -> () {
     let base = Box.{ x: 10 }
-    let res = recover_panic(\-> {
+    let res = Panic::recover(\-> {
         derive(base, \mut d -> {
             d.x = 99
             panic("abort draft")
@@ -186,8 +188,8 @@ fn main() @io -> () {
     for 0..100 as i {
         var cleaned = 0
         let v = with {
-            ctl Stop::halt = \n, new k -> {
-                unwind_ctl(new k)
+            ctl Stop::halt = \n, k -> {
+                unwind_ctl(k)
                 n
             }
             defer { cleaned += 1 }

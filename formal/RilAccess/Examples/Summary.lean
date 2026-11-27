@@ -38,16 +38,14 @@ def allFields : Template :=
 
 def pureConst : SourceInstance := ⟨⟨.module, 50⟩, 0, 50, 0⟩
 def liveVar : SourceInstance := ⟨⟨.capture, 51⟩, 0, 51, 0⟩
-def foreignHandle : SourceInstance := ⟨⟨.foreign, 52⟩, 0, 52, 0⟩
 def pureLocal : SourceInstance := ⟨⟨.capture, 53⟩, 0, 53, 0⟩
-def pureTable : List Source := [pureConst.source, parameterCapture.source, foreignHandle.source, pureLocal.source]
+def pureTable : List Source := [pureConst.source, parameterCapture.source, pureLocal.source]
 def emptySummary : Summary := ⟨[], [], [], [], [], [], []⟩
 def pureReadSummary : Summary := { emptySummary with namedReads := [pureConst], createdEnvironments := [parameterCapture] }
 def moduleReadSummary : Summary := { emptySummary with namedReads := [pureConst] }
 def pureLocalReadSummary : Summary := { emptySummary with namedReads := [pureLocal, parameterCapture] }
 def factorySummary : Summary := { emptySummary with createdEnvironments := [parameterCapture] }
 def liveReadSummary : Summary := { emptySummary with namedReads := [liveVar] }
-def foreignReadSummary : Summary := { emptySummary with namedReads := [foreignHandle] }
 def writeSummary : Summary := { emptySummary with writes := [liveVar], effects := [6] }
 def retainedSummary : Summary := { emptySummary with retained := [liveVar], effects := [6, 7] }
 def pureReadTemplate : Template := { namedReads := [.concrete pureConst] }
@@ -153,15 +151,13 @@ def examples : List (String × Bool) :=
       let returns : Summary := { emptySummary with rootReturn := [parameterCapture], contained := [pureConst] }
       returns.isPure pureTable &&
         !returns.isPure [] &&
-        !Summary.isPure pureTable { returns with rootReturn := [foreignHandle] } &&
+        !Summary.isPure pureTable { returns with rootReturn := [saved] } &&
         !Summary.isPure pureTable { returns with contained := [liveVar] } &&
         returns.subsumes pureTable returns &&
         !Summary.subsumes pureTable { returns with rootReturn := [] } returns &&
         !Summary.subsumes pureTable { returns with contained := [] } returns),
    ("callable match: live captured var read rejected by empty callable type",
       !emptySummary.subsumes pureTable liveReadSummary),
-   ("callable match: foreign .d.ril source never qualifies as pure",
-      !emptySummary.subsumes pureTable foreignReadSummary),
    ("callable match: effect subset and write-to-retained state upper bound accepted",
       retainedSummary.subsumes pureTable writeSummary && writeSummary.subsumes pureTable liveReadSummary),
    ("callable match: retained state cannot downgrade to write-only callable type",
@@ -188,8 +184,7 @@ def examples : List (String × Bool) :=
       !Summary.exactSignature pureTable pureLocalReadSummary emptySummary),
    ("named fn signature: only verified pure module reads need no state clause",
       Summary.exactSignature pureTable emptySummary moduleReadSummary &&
-      !Summary.exactSignature [] emptySummary moduleReadSummary &&
-      !Summary.exactSignature pureTable emptySummary foreignReadSummary),
+      !Summary.exactSignature [] emptySummary moduleReadSummary),
    ("named fn signature: rows ignore ordering and duplicate provenance explanations",
       Summary.exactSignature pureTable
         { emptySummary with writes := [liveVar, liveVar], effects := [6, 7] }

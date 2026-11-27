@@ -67,16 +67,14 @@ impl Analyzer<'_> {
                     }
                 }
             }
-            if value.is_once
-                || matches!(
-                    self.ty(rhs.span),
-                    Ty::Callable(signature) if signature.once || signature.is_ctl
-                )
-            {
+            if matches!(
+                self.ty(rhs.span),
+                Ty::Callable(signature) if signature.is_ctl
+            ) {
                 self.error(
                     Code::E0534,
                     rhs.span,
-                    "deep handler arm cannot use a one-shot &once callable or ctl continuation",
+                    "deep handler arm cannot use a ctl continuation",
                 );
             }
             let mut effect_ctx = ctx.clone();
@@ -92,9 +90,6 @@ impl Analyzer<'_> {
             self.link_invocation(ctx, &value);
             if ctx.reachable && !ctx.shadow {
                 self.check_handler_iteration(ledger, &value, rhs.span, None);
-            }
-            if handler.mode == Mode::New {
-                self.handoff(ctx, ledger, &mut value, rhs.span);
             }
             let capture_mode = value
                 .members
@@ -220,7 +215,8 @@ impl Analyzer<'_> {
                     .definition(name.span)
                     .and_then(|id| self.program.bindings.get(&id));
                 let is_value = param_ty.is_some_and(|ty| self.program.is_value(ty));
-                if p.mode == Mode::New && is_value {
+                let is_ctl = param_ty.is_some_and(|ty| self.program.is_ctl_ty(ty));
+                if p.mode == Mode::New && (is_value || is_ctl) {
                     self.error(
                         Code::E0411,
                         name.span,
@@ -230,11 +226,15 @@ impl Analyzer<'_> {
                 let mut value = if is_value {
                     Datum::default()
                 } else {
-                    Datum::source(name.span, mode, p.mode == Mode::New)
+                    let mut datum = Datum::source(name.span, mode, p.mode == Mode::New);
+                    if p.mode == Mode::New {
+                        datum.requires_new = false;
+                    }
+                    datum
                 };
                 if p.mode == Mode::Via {
                     inner.via.insert(name.span);
-                    if is_value {
+                    if is_value || is_ctl {
                         self.error(
                             Code::E0550,
                             name.span,
@@ -251,7 +251,9 @@ impl Analyzer<'_> {
                         value,
                         name.span,
                     );
-                    if p.mode == Mode::New && name.value != "_" && self.program.is_must_consume(ty)
+                    if matches!(p.mode, Mode::Plain | Mode::New)
+                        && name.value != "_"
+                        && self.program.is_must_consume(ty)
                     {
                         locals.record_linear(
                             &mut value,
@@ -310,11 +312,16 @@ impl Analyzer<'_> {
             }
         }
         let before = self.rules.len();
-        let output = self.expr(&mut inner, &mut locals, *body);
-        let output = locals.snapshot(&output);
+        let prior_slots = inner.caller_slots.clone();
+        let prior_holds = locals.holds.len();
+        let mut output =
+            self.eval_exit_expr(&mut inner, &mut locals, *body, &prior_slots, prior_holds, 0, true);
         let implicit = self.ty(self.ast(ctx.file).expr(*body).span) != &Ty::Never;
         if inner.reachable && implicit {
             self.run_defers(&mut inner, &mut locals, 0);
+            locals.holds.truncate(prior_holds);
+            self.try_promote_exit_new(&inner, &locals, &mut output, &prior_slots, prior_holds, true);
+            output = locals.snapshot(&output);
             locals.inspect(&output);
             locals.consume_datum_linear(&output);
             self.check_results(&locals, &BTreeSet::new());
@@ -327,6 +334,8 @@ impl Analyzer<'_> {
                     "a call-scoped writer cannot escape in a return",
                 );
             }
+        } else {
+            output = locals.snapshot(&output);
         }
         let exits = self.storage_exits.remove(&node.span).unwrap_or_default();
         let body_span = self.ast(ctx.file).expr(*body).span;
@@ -441,25 +450,23 @@ impl Analyzer<'_> {
                 .members
                 .insert(Coordinate::Index(index.to_string()), value);
         }
-        let mut is_once = matches!(self.ty(node.span), Ty::Callable(sig) if sig.once);
         for &decl in &used {
+            let is_must_consume = self
+                .definition(decl)
+                .and_then(|id| self.program.bindings.get(&id))
+                .is_some_and(|ty| self.program.is_must_consume(ty));
+            if is_must_consume {
+                self.error(
+                    Code::E0625,
+                    node.span,
+                    "closure cannot capture a must-consume value",
+                );
+            }
             if ledger.slots.contains_key(&decl)
                 && locals.has_direct_revocation(decl)
                 && !ledger.has_direct_revocation(decl)
             {
-                is_once = true;
-                ledger.revoke(decl.into(), None, None);
-                if self
-                    .definition(decl)
-                    .and_then(|id| self.program.bindings.get(&id))
-                    .is_some_and(|ty| self.program.is_must_consume(ty))
-                {
-                    self.error(
-                        Code::E0625,
-                        node.span,
-                        "affine &once closure cannot capture a must-consume value",
-                    );
-                }
+                ledger.revoke(decl.into(), None);
                 if ledger
                     .slots
                     .get(&decl)
@@ -468,17 +475,15 @@ impl Analyzer<'_> {
                     self.error(
                         Code::E0720,
                         node.span,
-                        "affine &once closure cannot capture an uninspected fallible result",
+                        "closure cannot capture an uninspected fallible result",
+                    );
+                } else if !is_must_consume {
+                    self.error(
+                        Code::E0548,
+                        node.span,
+                        "closure cannot consume a captured binding",
                     );
                 }
-            }
-        }
-        closure.is_once = is_once;
-        if is_once {
-            closure.requires_new = true;
-            for root in &mut closure.roots {
-                root.new = true;
-                root.mode = Access::Mut;
             }
         }
         for rule in self

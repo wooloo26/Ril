@@ -411,7 +411,6 @@ impl Origin {
 }
 
 pub(super) type Choices = BTreeMap<Occurrence, usize>;
-pub(super) type Handoff = (Span, Span);
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub(super) struct Occurrence {
@@ -461,13 +460,7 @@ pub(super) struct ResultReference {
     branches: Choices,
 }
 
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub(super) enum Revocation {
-    Formal(Handoff),
-    Callback { site: Span, position: usize },
-}
-
-type Revocations = BTreeMap<Option<Revocation>, BTreeSet<Choices>>;
+type Revocations = BTreeSet<Choices>;
 const BRANCH_LIMIT: usize = 24;
 
 pub(super) fn compatible(a: &Choices, b: &Choices) -> bool {
@@ -502,7 +495,6 @@ pub(super) struct Datum {
     // Live named captures outside the member graph.
     pub live_callable_state: bool,
     pub uses_ctl_handler: bool,
-    pub is_once: bool,
     pub result_fresh: bool,
 }
 

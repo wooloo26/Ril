@@ -17,10 +17,11 @@ fn make_cells() -> new []Cell { [Cell.{ value: 1 }] }
 
 fn receive_cells() -> () {
     let mut cells: [mut]Cell = make_cells() -- New elements receive writable access.
-    let mut cell = Cell.{ value: 2 }
-    cells |> mut Array::push(relay(new cell))
-    cells[1].value += 1
-    -- cell.value                           -- E0549: source path ended.
+    cells |> mut Array::push(relay({
+        let mut cell = Cell.{ value: 2 }
+        cell.value += 1
+        cell                                -- Promotes to unbound 'new Cell' on block exit.
+    }))
     assert(cells[0].value == 1 && cells[1].value == 3)
 }
 ```
@@ -95,23 +96,23 @@ fn first_three_doubled(xs: []int) -> new []int {
     let mut out: []int = []
     let mut trace: []str = []
     with {
-        ctl Yield<int>::emit = \v, new k -> {
+        ctl Yield<int>::emit = \v, k -> {
             out |> mut Array::push(v)
-            if len(ref out) < 3 { k() } else { unwind_ctl(new k) }
+            if len(ref out) < 3 { k() } else { unwind_ctl(k) }
         }
 
         defer trace |> mut Array::push("cleanup")
         let _ = xs |> Array::map \x -> { Yield<int>::emit(x * 2); x }
     }
     assert(trace == ["cleanup"])
-    new out
+    out
 }
 ```
 
 ```ril
 -- Schema transformations preserve both slot replacement and access modes.
 type Select = \T: .{ .. }, keys: []str -> {
-    let selected = fields(<T>) |> Array::filter(\(_, key) -> keys |> Array::contains(key))
+    let selected = Reflect::fields(<T>) |> Array::filter(\(_, key) -> keys |> Array::contains(key))
     <.{ m [selected as (m, k)]: T.(k) }>
 }
 type Model = .{ id: int, var title: str, mut rows: []int }

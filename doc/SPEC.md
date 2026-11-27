@@ -11,16 +11,16 @@
 This specification defines Ril's syntax, static semantics, access modes, state and provenance tracking, one-shot algebraic effects, deferred cleanup, abstract-machine execution, and diagnostic error codes.
 
 - **Normative force**: Grammar productions, rule tables, judgment forms, and inline code comments (`-- OK`, `-- Error [EXXXX]`, `-- Panics`) are normative. **Must** / **must not** state requirements; **may** permits an alternative.
-- **Snippets**: Every ```` ```ril ```` block is a self-contained, type- and access-checked normative example unless prefixed with `-- File:` (module or `.d.ril` interface) or `-- Context:` (imports an earlier `-- File:` block). Commented `-- ... -- Error [EXXXX]` lines specify rejected forms.
+- **Snippets**: Every ```` ```ril ```` block is a self-contained, type- and access-checked normative example unless prefixed with `-- File:` (module file) or `-- Context:` (imports an earlier `-- File:` block). Commented `-- ... -- Error [EXXXX]` lines specify rejected forms.
 
 | Concept | Ril meaning |
 | :--- | :--- |
 | Slot vs. access mode | `let` (fixed/pinned) and `var` (reassignable) govern slot replacement; immutable (unmarked), `ref`, `mut`, `^mut`, and `new` govern access authority |
-| Provenance & `new` | Provenance tracks existing sources and `new` subgraphs; targets choose access modes for `new` subgraphs while nested existing sources retain their authority and aliases |
+| Provenance & `new` | `new` marks unbound newly constructed `SharedObject` graphs (plus exiting-scope promotion of pinned `let mut` locals and `new` parameters at block/function exit); targets choose access modes for `new` subgraphs while nested existing sources retain their authority and aliases |
 | Value vs. shared object | `bool`, `int`, `f64`, `str`, `bytes`, `()`, `never`, unit nominals, and `.ril` nominal/opaque wrappers over value types copy by value; records, nonempty tuples, collections, sums, and wrappers over shared objects have automatically reclaimed object identity |
 | Records & constructors | Anonymous records and record type aliases attach `.{...}` (`Alias.{ id: 1 }`); sum variants are default-qualified (`Shape::Rect(10.0, 20.0)`; prelude `Ok(42)`, `Some(x)`) with tight `(...)`; payload nominal/opaque types wrap via tight `::(...)` (`UserId::(42)`, `User::(.{ id: 1 })`) |
-| Type forms | `type A = B` is a transparent type alias; `type A` / `type A(B)` is an erased nominal type; `.ril` `opaque type A(B)` seals representation outside its defining file or `sub`; `.d.ril` `opaque type H` is an exclusive must-consume foreign handle |
-| Reachable authority use | `var` requires slot replacement, `mut` requires writable or `new`-handoff use, `^mut` parameters require surviving retention, and named state clauses must be minimal (`E0527`, `E0529`) |
+| Type forms | `type A = B` is a transparent type alias; `type A` / `type A(B)` is an erased nominal type; `opaque type A(B)` seals representation outside its defining file or `sub` |
+| Reachable authority use | `var` requires slot replacement, `mut` requires writable use, `^mut` parameters require surviving retention, and named effect/state clauses must be minimal (`E0527`, `E0529`, `E0626`) |
 | `where`, checks & guards | Braceless `where` hoists helper declarations (`type`, `fn`, `meta fn`, block `eff`); `\|>` runs compile-time static checks on generic parameters and pure fallible signature guards on runtime parameters/returns |
 | Purity, effects & defects | Purity excludes outward effects and non-pure state obligations; `eff` separates direct `fn` ops from one-shot algebraic `ctl` ops, `@io` is the built-in system effect, and defects unwind active `defer` statements LIFO |
 
@@ -43,13 +43,16 @@ fn demo() -> str {
     shared[0].count += 1                       -- Updates 'cell.count' to 3
 
     let snap = clone(ref cell)                 -- Isolated deeply immutable snapshot
-    let mut staged = Cell.{ count: snap.count }
-    let mut next = relay(new staged)           -- Single-use 'new' handoff ends 'staged'
-    bump(mut next)                             -- Updates 'next.count' to 4
-    assert(snap.count == 3 && next.count == 4)
+    let mut next = relay({
+        let mut staged = Cell.{ count: snap.count }
+        bump(mut staged)                       -- Confined local write before exiting-scope promotion
+        staged                                 -- Promotes to unbound 'new Cell' on block exit
+    })
+    bump(mut next)                             -- Updates 'next.count' to 5
+    assert(snap.count == 3 && next.count == 5)
 
     with Clock::now_ms = \-> 1700              -- Statement-level effect handler (dynamic stack dispatch)
-    stamp(ref next)                            -- "1700:4"
+    stamp(ref next)                            -- "1700:5"
 }
 ```
 
@@ -59,7 +62,7 @@ fn demo() -> str {
 | `ref` | Live read-only view | No | Observes a live or immutable object |
 | `mut` | Unshared writable (or call-scoped write) | Yes | No overlapping writes or reads during call |
 | `^mut` | Shared writable | Yes | Explicitly acknowledged surviving shared writers |
-| `new` | Newly constructed subgraph | Target chooses | No outside aliases into `new` subgraph; ends source on `new x` |
+| `new` | Unbound newly constructed `SharedObject` subgraph | Target chooses | No outside aliases into `new` subgraph; promoted on scope exit |
 
 ---
 
@@ -117,7 +120,6 @@ fn demo() -> str {
     - [Immutable, Mutable, Shared, and Read-Only View Bindings](#immutable-mutable-shared-and-read-only-view-bindings)
     - [Deferred Cleanup Statements (`defer`)](#deferred-cleanup-statements-defer)
     - [Declaration Metadata Attributes](#declaration-metadata-attributes)
-    - [Foreign Interface Declarations](#foreign-interface-declarations)
   - [Expressions and Operators](#expressions-and-operators)
     - [Expression Grammar and Precedence](#expression-grammar-and-precedence)
     - [Arithmetic, Bitwise, Relational, and Logical Operators](#arithmetic-bitwise-relational-and-logical-operators)
@@ -145,7 +147,7 @@ fn demo() -> str {
   - [Algebraic Effects and Panic Containment](#algebraic-effects-and-panic-containment)
     - [Effect Declarations and Handlers](#effect-declarations-and-handlers)
     - [Built-in System Effect](#built-in-system-effect)
-    - [Panic Recovery with recover\_panic](#panic-recovery-with-recover_panic)
+    - [Panic Recovery with `Panic::recover`](#panic-recovery-with-panicrecover)
   - [Compile-Time Computation and Introspection](#compile-time-computation-and-introspection)
     - [Static Type Values and Type Quotation](#static-type-values-and-type-quotation)
     - [Pure Type Functions and Result Restrictions](#pure-type-functions-and-result-restrictions)
@@ -167,7 +169,7 @@ fn demo() -> str {
     - [Effects, Continuations, and Escape](#effects-continuations-and-escape)
     - [Declaration Contexts, Control Flow, and Fallible Values](#declaration-contexts-control-flow-and-fallible-values)
     - [Static Computation](#static-computation)
-    - [Module Forms, Entry Points, and Foreign Interfaces](#module-forms-entry-points-and-foreign-interfaces)
+    - [Module Forms and Entry Points](#module-forms-and-entry-points)
 
 ---
 
@@ -248,7 +250,7 @@ fn connect_port(raw: str) -> new !<int, str> {
 ```
 
 1. **Fallible results (`!<T, E>` / `Result<T, E>` and `?T` / `Option<T>`)**: Expected domain failures are values. Every `Result` must be inspected, propagated via `?`, or handled via `??` (`E0720`).
-2. **Defects (`panic` / `assert`)**: Trigger deterministic LIFO unwinding of active `defer` statements without requiring signature annotations. `recover_panic` isolates panics as `!<T, PanicError>`.
+2. **Defects (`panic` / `assert`)**: Trigger deterministic LIFO unwinding of active `defer` statements without requiring signature annotations. `Panic::recover` (`use ril/panic`) isolates panics as `!<T, Panic::Error>`.
 3. **Purity**: A callable with no writable parameters (`mut`/`^mut`), empty outward effects, and empty outward state obligations after local containment is observationally pure (deterministic, free of host I/O and external mutation). Immutable return-source clauses (`&return(x)`) add no state effect. `never` denotes computations that never complete normally.
 
 ### Runtime Failure Conditions
@@ -259,7 +261,7 @@ fn connect_port(raw: str) -> new !<int, str> {
 | Non-constant bit shift `x << k` or `x >> k` with `k < 0` | LIFO panic unwinding (`"negative shift count"`) |
 | Out-of-bounds array/byte index `xs[i]` or slice `xs[a..b]` | LIFO panic unwinding |
 | `panic(msg)` or false `assert(cond)` | LIFO panic unwinding |
-| Panic inside `defer` during active panic unwinding | Uncatchable process **abort** (bypasses `recover_panic`). A panic inside `defer` during normal exit or `unwind_ctl` is a normal catchable panic |
+| Panic inside `defer` during active panic unwinding | Uncatchable process **abort** (bypasses `Panic::recover`). A panic inside `defer` during normal exit or `unwind_ctl` is a normal catchable panic |
 | Unrecoverable execution-resource exhaustion (host memory or call depth) | Uncatchable process **abort** |
 
 ---
@@ -316,7 +318,7 @@ fn read_label(raw: str) -> new !<str, str> {
 - **Tight lexical attachment** (no intervening whitespace or newline):
   - Calls/constructors `f(x)`, `Ok(42)`, `Circle(f64)`; indexing `xs[i]`, `xs?[i]`; string slice patterns `str[...]`; named records `User.{ id: 1 }`; result types `!<T, E>`.
   - Raw string/byte prefixes `#"`, `bytes"`, `bytes#"`.
-  - Effect/state annotations `@io`, `@Clock`, `&mut`, `&up`, `&up(`, `&once`, `&return(` (`@&` only when `&` is not followed by a state keyword).
+  - Effect/state annotations `@io`, `@Clock`, `&mut`, `&up`, `&up(`, `&return(` (`@&` only when `&` is not followed by a state keyword).
 - **Committed `< ... >`**:
   - `<` commits as a delimiter in type/pattern/effect positions, at the start of an expression operand (`<TypeExpression>`), and when tightly attached after an identifier (`f<T>(x)`, `State<int>::get()`) with a matching `>` at the same delimiter depth.
   - Spaced `a < b` lexes as relational `<`. Closing a committed `< ... >` or `!< ... >` consumes one `>` character.
@@ -402,11 +404,11 @@ typeof   use      var      via      where    while    with
 ```
 
 - **Protected Names (`bool`, `int`, `f64`, `str`, `bytes`, `never`, `Type`, `Super`)**: Primitive type names cannot be used as identifiers or field labels (`E0113`), `Type` and `Super` cannot be redeclared or shadowed (`E0203`), and bare type names in runtime value expressions fail `E0319` (write `<int>`, `<never>`).
-- **Contextual Identifiers (`opaque`, `ril`, `io`, `capture`, `up`, `once`)**: Ordinary `SnakeCase` identifiers in bindings, parameters, paths, and fields (`let opaque = true`, `let once = 1`, `use ril/io`). Recognized contextually only in `opaque type`, `use ril/...`, `@io`, `&capture`, `&up` / `&up(...)`, and `&once`.
+- **Contextual Identifiers (`opaque`, `ril`, `io`, `capture`, `up`)**: Ordinary `SnakeCase` identifiers in bindings, parameters, paths, and fields (`let opaque = true`, `let io = 1`, `use ril/io`). Recognized contextually only in `opaque type`, `use ril/...`, `@io`, `&capture`, and `&up` / `&up(...)`.
 
 ```ril
 let opaque = true                      -- OK: contextual outside 'opaque type'
-let once = 1                           -- OK: contextual outside '&once'
+let io = 1                             -- OK: contextual outside '@io'
 -- let ctl = 1                         -- Error [E0113]: reserved keyword
 -- let defer = 1                       -- Error [E0113]: reserved keyword
 -- let where = 1                       -- Error [E0113]: reserved keyword
@@ -523,7 +525,7 @@ TypeReference  ::= QualifiedName [ GenericArgs ]
 
 ### Value Types
 
-`bool`, `int`, `f64`, `str`, `bytes`, `()`, `never`, unit nominal types (`type Marker`), and `.ril` nominal/opaque types wrapping a value type (e.g., `type UserId(int)`, `opaque type PanicReport(str)`) copy by value and have no object identity.
+`bool`, `int`, `f64`, `str`, `bytes`, `()`, `never`, unit nominal types (`type Marker`), and nominal/opaque types wrapping a value type (e.g., `type UserId(int)`, `opaque type Report(str)`) copy by value and have no object identity.
 
 ```ril
 let a = "hello"
@@ -536,7 +538,7 @@ Value types forbid `ref`, `mut`, `^mut`, `new`, `via`, `clone`, and `derive` (`E
 
 ### Shared Object Types
 
-Records (`.{...}`), nonempty tuples `(A, B)`, arrays `[M]T`, maps `[K: M V]`, `Set<T>`, sums, and `.ril` nominal/opaque types wrapping a shared object have automatically reclaimed object identity. Immutable bindings (`let`) alias deeply immutable snapshots freely; shared write access requires explicit `^mut`. Foreign handles (`.d.ril` `opaque type`) are exclusive must-consume host resources.
+Records (`.{...}`), nonempty tuples `(A, B)`, arrays `[M]T`, maps `[K: M V]`, `Set<T>`, sums, and nominal/opaque types wrapping a shared object have automatically reclaimed object identity. Immutable bindings (`let`) alias deeply immutable snapshots freely; shared write access requires explicit `^mut`.
 
 ### Record Types and Open Record Tails
 
@@ -574,9 +576,9 @@ assert(get_id(inner(cfg) |> \_ -> .{ id: 1 }) == 1)
 ```
 
 - **Closed records**: Exact field set, order irrelevant (`E0210` duplicate, `E0307` missing, `E0302` unexpected, `E0336` unknown field read, `E0324` dynamic `rec[k]`).
-- **Open record tails (`..R` / `..`)**: Opens structural records (row polymorphism) in generic constraints, aliases, or direct callable parameters (`E0306` on non-record/nominal—unwrap via `inner`/`Unwrap<T>`; `E0212` on label overlap; `E0357` on mode mismatch). Anonymous `..` is permitted only in generic constraints and direct callable parameters (and transparent aliases expanded there); concrete storage and return types require closed records or explicit generic tail parameters (`E0344`).
+- **Open record tails (`..R` / `..`)**: Opens structural records (row polymorphism) in generic constraints, aliases, or direct callable parameters (`E0306` on non-record/nominal—unwrap via `inner`/`Inner<T>`; `E0212` on label overlap; `E0357` on mode mismatch). Anonymous `..` is permitted only in generic constraints and direct callable parameters (and transparent aliases expanded there); concrete storage and return types require closed records or explicit generic tail parameters (`E0344`).
 - **Root field defaults (`= expr`)**:
-  - Allowed only on root fields of `.ril` `NominalTypeDecl` / `OpaqueTypeDecl` records (`E0359` on aliases, nested/anonymous/parameter/sum records; `E0901` in `.d.ril`). Root fields of `.ril` nominal/opaque records also admit `meta(...)` attributes.
+  - Allowed only on root fields of `NominalTypeDecl` / `OpaqueTypeDecl` records (`E0359` on aliases, nested/anonymous/parameter/sum records). Root fields of nominal/opaque records also admit `meta(...)` attributes.
   - Allowed only on plain or `var` fields—forbids `mut`/`^mut`/`ref`/`via` and parametric `StorageModeExpression` (`E0404`), self/forward references (`E0408`), and impure expressions (`E0409`).
   - At construction (`ServerCfg::(.{ host: "ril.dev" })`), explicit fields evaluate left-to-right first, then omitted defaults in declaration order.
 
@@ -610,7 +612,7 @@ assert(xs[0] == 10 && table?["ok"] == Some(200) && pair.1 == "one")
 -- type BadElem = [var][]int           -- Error [E0356]: element mode forbids 'var'
 ```
 
-- **Element modes (`E0356`)**: Unmarked `[]T` / `[K: V]` hold deeply immutable elements. Element modes admit `mut`, `^mut`, `ref`, `via`, or a static `FieldMode` expression without `var` (`E0356`). Exclusive `new`-only types (`&once` callables, `ctl(...)` continuations, and foreign handles) may be stored in `[mut]T`, `[K: mut V]`, `.{ mut ... }`, or single/record-payload sums with destructive extraction (`match new`, `Array::pop`, `Array::pop_front`, `Array::remove`, `Map::remove`), and are forbidden in `[]T`, `[ref]T`, `[^mut]T`, `[K: V]`, `Set<T>`, and map keys (`E0301`, `E0328`, `E0535`).
+- **Element modes (`E0356`)**: Unmarked `[]T` / `[K: V]` hold deeply immutable elements. Element modes admit `mut`, `^mut`, `ref`, `via`, or a static `FieldMode` expression without `var` (`E0356`). Mode-free linear `ctl(...)` continuations (and composites containing them) live in plain mode-free containers (`[]ctl(...)`, `[K: ctl(...)]`, `.{ k: ctl(...) }`, or sums) with destructive extraction (`match`, `let`, `while let`, `Array::pop`, `Array::pop_front`, `Array::remove`, `Map::replace`, `Map::remove`) while forbidding `var`, `mut`/`ref`/`^mut` modes on `ctl(...)` itself (`E0402`/`E0532`), non-destructive indexing/iteration (`xs[i]`, `m?[k]`, `for`), `Array::clear`/`Map::clear`, `Map::insert` overwrite (`E0625`), `Set<T>`, and map keys (`E0328`).
 - **Keys, indexing & order (`E0328`, `E0352`)**: Map keys `K` and `Set<T>` elements require structural equality (`E0328`). Map reads use safe lookup `m?[k] -> ?V` (`E0352` on `m[k]` reads or `m[k] += v`); `m[k] = v` inserts/updates. Lengths and indices have type `int`. Iteration (`for`) and `String::inspect` over maps and sets follow deterministic insertion order (updating an existing key preserves position; removing and reinserting appends at the end).
 - **Tuples (`E0312`)**: Zero-element `()` or $\ge 2$ elements `(A, B)`. `(T)` is grouping. Tuple slots are immutable.
 
@@ -649,8 +651,8 @@ assert(opt == Some(99) && res == Ok(42))
 -- type BadSingleRes = !<int>          -- Error [E0120]: '!<T, E>' requires both Ok and Err types
 ```
 
-- **Scoping, construction & sugars**: Sum variants are default-qualified (`Shape::Origin`, `Shape::Circle(5.0)`), residing only in their defining sum's namespace unless explicitly imported via `use` (module- or block-level; prelude exports `Some`, `None`, `Ok`, `Err`, and `Panicked`). Unit variants stand alone (`None`, `Shape::Origin`; `Shape::Origin()` fails `E0338`). Payload variants use tight `(...)` (`Ok(42)`, `Ok()`, `Shape::Rect(10.0, 20.0)`; `Some::(42)` fails `E0338`, named labels fail `E0339`, `mut` args fail `E0406`), and bare payload-variant names act as first-class callables `fn(Payload) -> Sum` (`42 |> Ok`, `5.0 |> Shape::Circle`). `?T` ≡ `Option<T>`; `!<T, E>` ≡ `Result<T, E>`.
-- **Payload modes**: Single-payload constructors (`Some(ref x)`, `Some(^mut x)`, `Some(new x)`) restrict the outer sum's authority to the payload's mode (`E0522`/`E0510` on unshared `mut`/`[mut]Sum`). Multi-arg tuple payloads (`Pair(a, b)`) have immutable slots (`E0535` on `ref`/`^mut`).
+- **Scoping, construction & sugars**: Sum variants are default-qualified (`Shape::Origin`, `Shape::Circle(5.0)`), residing only in their defining sum's namespace unless explicitly imported via `use` (module- or block-level; prelude exports `Some`, `None`, `Ok`, and `Err`). Unit variants stand alone (`None`, `Shape::Origin`; `Shape::Origin()` fails `E0338`). Payload variants use tight `(...)` (`Ok(42)`, `Ok()`, `Shape::Rect(10.0, 20.0)`; `Some::(42)` fails `E0338`, named labels fail `E0339`, `mut` args fail `E0406`), and bare payload-variant names act as first-class callables `fn(Payload) -> Sum` (`42 |> Ok`, `5.0 |> Shape::Circle`). `?T` ≡ `Option<T>`; `!<T, E>` ≡ `Result<T, E>`.
+- **Payload modes**: Single-payload constructors (`Some(ref x)`, `Some(^mut x)`) restrict the outer sum's authority to the payload's mode (`E0522`/`E0510` on unshared `mut`/`[mut]Sum`). Multi-arg tuple payloads (`Pair(a, b)`) have immutable slots (`E0535` on `ref`/`^mut`).
 - **Extensible sums (`..`)**: Trailing `..` marks a sum open to future variants outside its defining `pkg`, requiring a `_` wildcard arm in `match` expressions outside that package (`E0303`).
 
 ```ebnf
@@ -693,13 +695,13 @@ fn widen_demo(e: DbErr) -> ApiErr { e as ApiErr } -- OK: DbErr <= ApiErr
 | Source authority of `e` | Subset re-wrap (`Sub as x` / `e as Sup`) provenance rule |
 | :--- | :--- |
 | Deeply immutable `e` (or immutable-only payloads) | Produces an ordinary deeply immutable value |
-| `new`-qualified | Hands off and ends the source path (`E0549`); produces `new` target sum |
+| `new`-qualified | Preserves unbound `new` qualification on the target sum |
 | Shared writable `^mut` (with mutable payload members) | Requires `^mut` marker (`Sub as ^mut x` / `(^mut e) as Sup`, `E0510`); returning records `&return(^mut src)` |
 | `ref` / `mut` access (with live/mutable payload members) | Scoped access bounded by source's valid scope; forbids persistent `let ref` (`E0543`) and root `-> ref(src)` (`E0545`); contained return records `&return(ref src)` |
 
 ### Nominal, Type Alias, and Opaque Types
 
-Ril defines four `.ril` type forms alongside `.d.ril` foreign opaque handles:
+Ril defines four type declaration forms:
 
 ```ril
 pub type Disconnected
@@ -718,14 +720,11 @@ pub fn close_conn(new _c: Conn<Connected>) -> () {}
 let uid = UserId::(42)
 let pt = Point::(3, 4)
 assert(inner(uid) == 42 && inner(pt) == (3, 4) && inner(Disconnected) == ())
-let mut c0 = open_raw()
-let mut c1 = dial(new c0, 3)
-close_conn(new c1)
+close_conn(dial(open_raw(), 3))
 ```
 
 ```ril
 -- Rejected nominal, alias, and opaque cases:
--- let _ = dial(new c0, 4)             -- Error [E0549]: 'c0' ended at handoff
 -- let bad_nom: OrgId = UserId::(1)    -- Error [E0305]: distinct nominal types
 -- let _ = UserId(42)                  -- Error [E0338]: nominal wrapping requires '::(...)'
 -- let _ = 42 |> UserId::()            -- Error [E0338]: nominal wrap is not a direct pipeline target
@@ -744,9 +743,8 @@ close_conn(new c1)
 | :--- | :--- | :--- |
 | Type alias | `type Point = .{ x: f64, y: f64 }` | Transparently equivalent to target (`E0313` cycles; forbids `meta(...)` `E0708` and defaults `E0359`). Record aliases construct via `Point.{ x: 1.0, y: 2.0 }` and destructure via `.{ x, y }` |
 | Nominal type | `type Marker`<br>`type UserId(int)`<br>`type Point(int, int)`<br>`type Req(.{ k: str })` | Compile-time erased distinct type (`E0305` distinct identity; `E0313` direct cycles); inherits value vs. `SharedObject` classification from its payload (`Marker` erases to `()`). Unit nominals stand alone (`Marker::()` fails `E0338`); payload nominals wrap and destructure via tight `::(...)` (`UserId::(42)`, `Point::(1, 2)`, `Req::(.{ k: "a" })`, `let UserId::(n) = u`; bare payload nominal in value position fails `E0319`). `Name::(x)` and `inner(w)` are mode- and provenance-preserving inverses |
-| Opaque type (`.ril`) | `opaque type Token(str)`<br>`opaque type Conn(.{ fd: int })` | Erased wrapper interconvertible with its representation inside its exact defining file or `sub` (`<Token> != <str>`), sealed outside including parent/child `sub`s (`E0301`, `E0308`). Inherits value vs. `SharedObject` and must-consume status across interfaces. Bodyless `.ril` `opaque type` requires a registered built-in (`E0902`) |
+| Opaque type | `opaque type Token(str)`<br>`opaque type Conn(.{ fd: int })` | Erased wrapper interconvertible with its representation inside its exact defining file or `sub` (`<Token> != <str>`), sealed outside including parent/child `sub`s (`E0301`, `E0308`). Inherits value vs. `SharedObject` and must-consume status across interfaces. Bodyless `opaque type` requires a registered built-in (`E0902`) |
 | Sum type | `type Res<T, E> { Ok(T); Err(E) }` | Closed or extensible (`..`) variant type (`opaque` seals construction, widening, and matching outside defining scope, `E0308`) |
-| Foreign handle (`.d.ril`) | `pub opaque type HostFd` | Exclusive, must-consume host handle (`E0907`, `E0908`, `E0625`); forbids `clone`, `derive`, `==`, freezing, `var mut`, and immutable/shared collections; admits `new`, `let mut`, `mut`, `ref`, `defer`, `[mut]T`, `[K: mut V]`, and exclusive `.{ mut ... }`/sums |
 
 ```ebnf
 TypeDecl        ::= TypeDeclHead "=" ( TypeExpression | TypeFunctionExpr )
@@ -779,7 +777,7 @@ assert((holder.cb)() == 2)
 ```
 
 - **`clone(value)` / `clone(ref live)`**: Deep-copies a `SharedObject` graph (preserving internal aliases and cycles) into an isolated `new T`.
-- **Clonability restrictions**: Fails `E0301` on value-type or callable roots and on graphs containing foreign handles, `&once` callables, `ctl(...)` continuations, or `Derived<T>`. A contained reusable callable copies with its immutable captures; a contained callable with a live capture fails `E0530`.
+- **Clonability restrictions**: Fails `E0301` on value-type or callable roots and on graphs containing `ctl(...)` continuations or `Derived<T>`. A contained reusable callable copies with its immutable captures; a contained callable with a live capture fails `E0530`.
 
 ### Type Identity and Subtyping
 
@@ -821,9 +819,10 @@ let plain = relay(Cell.{ count: 1 })
 let mut live = Cell.{ count: 2 }
 let ref view = relay(ref live)
 assert(view.count == 2)
-let mut handed = relay(new live)
-handed.count += 10
-assert(plain.count == 1 && handed.count == 12)
+live.count = 3
+let mut fresh = relay(Cell.{ count: 12 })
+fresh.count += 1
+assert(plain.count == 1 && live.count == 3 && fresh.count == 13)
 -- fn bad_infer(x: Cell) -> infer Cell { x }    -- Error [E0412]: 'infer' requires 'via' parameter
 -- fn bad_scalar(via n: int) -> int { n }       -- Error [E0550]: redundant 'via' on value type 'int'
 ```
@@ -901,7 +900,7 @@ assert(live.v == 7)
 
 #### Lexical Mode Templates and Closures
 
-Closures inside a `via` function specialize their captured schemas and `-> infer` returns per outer mode instantiation while enforcing standard capture, confinement, and single-use `new` handoff rules:
+Closures inside a `via` function specialize their captured schemas and `-> infer` returns per outer mode instantiation while enforcing standard capture, confinement, and exiting-scope `new` promotion rules:
 
 ```ril
 type Box = .{ var v: int }
@@ -955,7 +954,7 @@ assert((h0.f)(3) == 4 && (h1.f)(3) == 30 && h1.tag == "v2")
 
 | `derive` rule | Requirement |
 | :--- | :--- |
-| Root eligibility (`E0536`, `E0308`) | `base` must be an immutable `SharedObject` (including accessible nominal and in-scope `.ril` `opaque` shared objects; sealed `opaque` fails `E0308`; value types, foreign handles, and live `mut`/`^mut`/`ref` roots fail `E0536`) |
+| Root eligibility (`E0536`, `E0308`) | `base` must be an immutable `SharedObject` (including accessible nominal and in-scope `opaque` shared objects; sealed `opaque` fails `E0308`; value types and live `mut`/`^mut`/`ref` roots fail `E0536`) |
 | `Derived<T>` path operations | Confined `mut Derived<T>` paths permit `d.field = v` (regardless of `var`), tuple-slot updates `d.0 = v`, `mut` collection operations (`d.tags \|> mut Array::push(...)`), `inner(mut d)` on accessible nominal types, and `match d { Tag(mut p) -> ... }` in-place variant updates |
 | `Derived<T>` confinement (`E0607`) | `Derived<T>` handles, derived `ref`/`mut` paths, and capturing closures cannot escape the `derive` closure; outer `ctl` effects cannot be invoked inside `derive` (`E0607`; locally handled `ctl` is permitted) |
 | Inserted values (`E0535`) | Assigned values must be deeply immutable or newly allocated inside the `derive` closure and free of surviving outside writers (`E0535`) |
@@ -1072,7 +1071,7 @@ C |- e <= TypeResult ; J              type-producing result checking
 
 | Context component | Contents |
 | :--- | :--- |
-| `D` | Package (`pkg`) and module scopes, visibility/opacity, effect operation kinds (`fn` vs. `ctl`), primitive/foreign signatures |
+| `D` | Package (`pkg`) and module scopes, visibility/opacity, effect operation kinds (`fn` vs. `ctl`), built-in primitive signatures |
 | `Delta` | Abstract type, static value, member-mode, and record-tail parameters |
 | `Gamma` | Value bindings, slot/access modes, callable/continuation signatures, confinement scope tags |
 | `Phi` | Declared generic constraints and static `match <T>` branch type facts |
@@ -1114,7 +1113,7 @@ let _t: TokenMod::Tok = TokenMod::make("abc")
 | Call-scoped `mut` parameter (`fn(mut p: T)`) | `mut` or `^mut` path under `mut path` / `\|> mut` | `E0406` (marker mismatch), `E0523`/`E0524` (call overlap) |
 | Shared `^mut` (`let`/`var ^mut`, `^mut` field, `[^mut]T`) | Writable source with `^mut` acknowledgment on existing roots, or `new` `&up` closure retaining a `^mut` source | `E0510` |
 | `let ref` / `var ref` | Pinned `let mut` source, non-`var` `ref` view, immutable shared object, or (`let ref` only) `new`-qualified composite / `&up(ref)` closure carrying live `ref` sources | `E0531` (`var`/`var ref` root), `E0543` (unanchored pure/immutable temporary), `E0604` (scope does not enclose `var ref`) |
-| `new` target | `new`-qualified result or `new x` root handoff (ending `x`); chooses modes only for `new` subgraphs, preserving existing sources; required for `&once` callables and `ctl(...)` continuations | `E0548`, `E0549` |
+| `new` target | Unbound `new`-qualified `SharedObject` expression (or exiting-scope promotion of a pinned `let mut` local or `new` parameter); chooses modes only for `new` subgraphs while preserving existing sources | `E0548`, `E0549` |
 
 ```ril
 type Cell = .{ var v: int }
@@ -1163,7 +1162,7 @@ assert(read_id(.{ id: 1, name: "a" }) + read_id(.{ id: 2, ok: true }) == 3)
 ### Authority, Calls, and Provenance Operations
 
 - **K-CALL**: Call preparation evaluates explicit arguments left-to-right (then omitted defaults and parameter guards) and freezes the call-entry reachability graph.
-  - It immediately ends any `new arg` source path (`E0549` on later arguments), checks aliasing exclusivity (`E0523`, `E0524`), and instantiates return sources (`ref(x)`, `^mut(x)`, `&return(...)`).
+  - It consumes any linear `ctl(...)` argument (`E0549` on reuse), checks aliasing exclusivity (`E0523`, `E0524`), and instantiates return sources (`ref(x)`, `^mut(x)`, `&return(...)`).
 - **Pure Constant Sources**: Reading module/`sub`-level pure immutable constants (`let` or ordinary-valued `meta let`) introduces **zero** `&up` state or capture obligations.
 
 ### Recursive Summaries and Non-Circular Inference
@@ -1204,16 +1203,14 @@ assert(sample(1) == 20 && <SampleOut> == <int>)
 type Cell = .{ var v: int }
 type Pair = .{ var mut first: [^mut]Cell, second: Cell }
 
-fn freeze_after_replace(new p: Pair) -> Pair {
-    let mut local_p = new p
-    local_p.first = []                        -- Replaced edge drops its call-entry freeze requirement
-    let frozen: Pair = new local_p
-    frozen
+fn freeze_after_replace(new p: Pair) -> new Pair {
+    p.first = []                        -- Replaced edge drops its call-entry freeze requirement
+    p                                   -- Exiting-scope promotion returns 'new Pair'
 }
 
 let mut a = Cell.{ v: 1 }
 let b = Cell.{ v: 2 }
-let out = freeze_after_replace(new Pair.{ first: [^mut a], second: b })
+let out = freeze_after_replace(Pair.{ first: [^mut a], second: b })
 a.v = 9
 assert(len(out.first) == 0 && out.second.v == 2 && a.v == 9)
 ```
@@ -1233,8 +1230,8 @@ assert(len(out.first) == 0 && out.second.v == 2 && a.v == 9)
 | :--- | :---: | :--- | :--- |
 | `let x = e` | Fixed (`E0501`) | Deeply immutable (`E0520`) | Snapshot free of live writers/refs (`E0535`) |
 | `var x = e` | Reassignable | Deeply immutable (`E0520`) | Snapshot free of live writers/refs (`E0535`) |
-| `let mut x = e` | Pinned (`E0502`) | Writable; existing root sharing requires acknowledgment | `new`-qualified / constructor or unshared writable source; contained shared sources remain shared |
-| `var mut x = e` | Reassignable | Writable; existing root sharing requires acknowledgment | Non-foreign `new`-qualified / constructor (`E0532` on `.d.ril` handles; cannot anchor `let ref`, `E0531`) |
+| `let mut x = e` | Pinned (`E0502`) | Writable; existing root sharing requires acknowledgment | Unbound `new`-qualified / constructor `SharedObject` (forbids `ctl(...)` and value types, `E0402`); contained shared sources remain shared |
+| `var mut x = e` | Reassignable | Writable; existing root sharing requires acknowledgment | Unbound `new`-qualified / constructor `SharedObject` (forbids `ctl(...)`, `E0532`; cannot anchor `let ref`, `E0531`; cannot promote to `new` at scope exit, `E0546`) |
 | `let ^mut x = e` | Pinned (`E0502`) | Shared writable | Existing writable binding (bare or `^mut` result) or `new` `&up` closure retaining a `^mut`/shared local source |
 | `var ^mut x = e` | Reassignable | Shared writable | Writable binding (bare on init; `^mut` marker on replacement). A fresh `new`-qualified initial object requires later shared reception. |
 | `let ref x = e` | Pinned (`E0502`) | Read-only live view (`E0520`) | Pinned `let mut`, non-`var` `ref` view, immutable shared object, or `new`-qualified composite / `&up(ref)` closure carrying live `ref` sources (`E0531` on `var` / `var ref`, `E0543` on pure/immutable temporary) |
@@ -1260,8 +1257,8 @@ Every declared mutable slot, writable binding, shared-authority marker, and muta
 | Declared authority | Required reachable use (`E0527` when absent) |
 | :--- | :--- |
 | `var x` / `var ref x` | Reachable slot replacement (`x = ...` or compound assignment) |
-| `let mut x` / `mut p` parameter | Reachable interior write, `mut`/`^mut` forwarding to a non-circular writer, `new` handoff (including inside an armed `defer` or destructive `match new`), or direct invocation of an `&once` / `ctl(...)` binding |
-| `var mut x` | Both reachable slot replacement and reachable writable or `new`-handoff use |
+| `let mut x` / `mut p` parameter | Reachable interior write or `mut`/`^mut` forwarding to a non-circular writer |
+| `var mut x` | Both reachable slot replacement and reachable writable use |
 | `let ^mut x` | Both shared writable reception and reachable writable use |
 | `var ^mut x` | Reachable slot replacement, shared writable reception, and reachable writable use |
 | `^mut p` parameter / handler binder | Surviving writable retention beyond call/arm scope (root `-> ^mut(p)`, `&return(^mut p)`, `&^mut` store, or `&capture`; mutating `p` alone without retention fails `E0527`) |
@@ -1298,7 +1295,7 @@ type Cell = .{ var v: int }
 fn build_buffer() -> new Buffer {
     let mut b = Buffer.{ items: [] }
     b.items |> mut Array::push(1)
-    new b                              -- Explicit 'new' handoff at return; local write stays local
+    b                                  -- Exiting-scope promotion: local write stays local, returns 'new Buffer'
 }
 fn touch_and_keep(mut r: .{ var hits: int, ^mut c: Cell }) &mut -> ^mut(r) Cell {
     r.hits += 1
@@ -1306,10 +1303,16 @@ fn touch_and_keep(mut r: .{ var hits: int, ^mut c: Cell }) &mut -> ^mut(r) Cell 
 } -- '^mut' member stays shared through 'mut' param
 
 let mut b1 = build_buffer()
-let mut b2 = new b1                    -- Handoff ends 'b1'
--- let n = len(ref b1.items)           -- Error [E0549]: 'b1' ended at handoff
-b2.items |> mut Array::push(2)
-assert(len(ref b2.items) == 2)
+b1.items |> mut Array::push(2)
+assert(len(ref b1.items) == 2)
+
+let mut b2: Buffer = {
+    let mut staged = Buffer.{ items: [10] }
+    staged.items |> mut Array::push(20)
+    staged                             -- Block tail promotes 'staged' to unbound 'new Buffer'
+}
+b2.items |> mut Array::push(30)
+assert(len(ref b2.items) == 3)
 
 let mut c0 = Cell.{ v: 1 }
 var ^mut slot = Cell.{ v: 0 }          -- Fresh 'new' init still requires a reachable shared replacement
@@ -1317,15 +1320,14 @@ slot = ^mut c0
 slot.v += 4
 assert(c0.v == 5)
 
-let snapshot = clone(ref b2)
-let ref view = b2
--- let mut bad = new snapshot          -- Error [E0548]: immutable source
--- let mut bad_ref = new view          -- Error [E0548]: read-only source
+-- fn bad_mid_scope() -> () { let mut x = Cell.{ v: 1 }; let mut y = x } -- Error [E0510]: mid-scope alias requires '^mut'
+-- fn bad_var_exit() -> new Cell { var mut c = Cell.{ v: 1 }; c = Cell.{ v: 2 }; c } -- Error [E0546]: 'var mut' cannot promote
 -- fn bad_share(mut c: Cell) -> ^mut(c) Cell { c } -- Error [E0528]: call-scoped 'mut' cannot create '^mut'
 ```
 
-- **Pinned `let mut` & explicit `new`**: A pinned `let mut` initialized by construction, `clone`, or a `new` result retains `new` qualification while its `new` subgraphs have no outside aliases. Handing off or freezing it always requires explicit `new x`, which preserves identity, ends `x` and dependent paths (`E0549`), and leaves independent existing sources valid.
-- **Return & local reception**: Named `fn`s returning a `new` `SharedObject` declare `-> new T` (`E0544`). Receiving an existing writer into local `let mut`/`var mut` requires explicit `new` handoff (`E0510`).
+- **Pure `new` & exiting-scope promotion**: `new` designates an unbound freshly constructed `SharedObject` graph (constructors, `clone`, `-> new` calls, `new` parameters). At the tail of a block or `return` expression, a pinned `let mut` local (or `new` parameter) declared in that exiting scope whose `new` subgraphs have no surviving outside aliases automatically promotes to unbound `new` — both directly (`b`, `return b`) and inside passive exit constructors (`Ok(b)`, `Some(b)`, `.{ buf: b }`, `[b]`, `(a, b)`, `Wrap::(b)`), provided sibling arguments do not overlap (`E0510`).
+- **Mid-scope bindings**: Mid-scope `new` handoff does not exist; binding a second writable handle to an existing live local requires explicit `let ^mut` (`E0510`). Reassignable `var mut` locals never promote to `new` (`E0546`).
+- **Return & local reception**: Named `fn`s returning a `new` `SharedObject` declare `-> new T` (`E0544`).
 - **Call-scoped `mut` vs. `^mut` members**: A `mut` parameter forwards to nested `mut` arguments, cannot create shared `^mut` storage (`E0528`), and preserves the shared mode of any existing `^mut` member reached through it.
 - **`var ^mut` from `new`**: Initializing `var ^mut` with a `new` object (or applying `^mut` to one) still requires receiving an existing writer on a reachable replacement (`E0527`).
 
@@ -1393,9 +1395,8 @@ pub fn flush(mut c: DbConn) @io &mut -> () {
     Array::clear(mut c.log)
     println("flushed {count} queries")
 }
-pub fn close(new c: DbConn) @io -> () {
-    let mut conn = new c
-    conn.open = false
+pub fn close(mut c: DbConn) @io &mut -> () {
+    c.open = false
     println("closed")
 }
 pub fn acquire() @io -> new !<DbConn, str> {
@@ -1405,8 +1406,8 @@ pub fn acquire() @io -> new !<DbConn, str> {
 
 fn run_query() @io -> new !<int, str> {
     let mut conn = acquire()?
-    defer close(new conn)              -- Reserves final 'new conn' handoff at block exit
-    defer flush(mut conn)              -- Valid LIFO: flush(mut conn) runs before close(new conn)
+    defer close(mut conn)              -- Runs last on exit
+    defer flush(mut conn)              -- Valid LIFO: flush(mut conn) runs before close(mut conn)
     defer println("query finished")    -- Runs first on exit
     conn.log |> mut Array::push("SELECT 1")
     Ok(1)                              -- Evaluates Ok(1) first, then runs defers in LIFO order
@@ -1427,27 +1428,25 @@ fn run_with_cleanup(cb: fn() @ -> ()) -> new []str {
         }
         Trace::log("body")
     }
-    new events
+    events
 }
 assert(run_with_cleanup(\-> ()) == ["body", "cleanup"])
 
 -- Rejected deferred cleanup cases:
 -- defer defer println("x")            -- Error [E0120]: 'defer' is a statement, not an expression
--- defer \-> close(new conn)           -- Error [E0301]: 'defer' body must have type '()'
+-- defer \-> close(mut conn)           -- Error [E0301]: 'defer' body must have type '()'
 -- defer { return 1 }                  -- Error [E0707]: control transfer cannot escape 'defer'
 -- defer Yield::emit(1)                -- Error [E0616]: unhandled 'ctl' prohibited inside 'defer'
--- defer flush(mut conn); defer close(new conn) -- Error [E0549]: LIFO runs close before flush
--- close(new conn)                     -- Error [E0549]: 'conn' is reserved by an armed 'defer'
--- fn bad_loop(new c: DbConn) @io -> () { for 0..2 as _ { defer close(new c) } } -- Error [E0549]: outer 'new' in loop
--- fn missing_io() -> () { let mut c = DbConn::(.{ open: true, log: [] }); defer close(new c) } -- Error [E0612]
+-- fn bad_loop(k: ctl() -> int) -> () { for 0..2 as _ { defer unwind_ctl(k) } } -- Error [E0549]: outer linear 'k' in loop
+-- fn missing_io() -> () { let mut c = DbConn::(.{ open: true, log: [] }); defer close(mut c) } -- Error [E0612]
 ```
 
 | `defer` aspect | Rule |
 | :--- | :--- |
 | Syntax & type (`E0120`, `E0301`, `E0720`) | Statement only (not an expression); body checks against `()` and must inspect any `Result`. Nested `defer { ...; defer ... }` runs inner `defer`s LIFO when the outer `defer` finishes |
 | Registration & evaluation | Flow-sensitively armed when reached (early exits before `defer` skip it); evaluated lazily at exit (observing final `var` values) **after** any block/return/`?` result expression |
-| Control flow & effects (`E0707`, `E0616`, `E0612`) | Forbids outer `return`/`?`/`break`/`continue` (`E0707`) and unhandled `ctl` (`E0616`; locally handled `with { ctl ... }` is allowed). Synchronous `@io`, `fn` ops, and `unwind_ctl(new k)` are charged at the `defer` site (`E0612`); invoking an open `@` callback constrains it to `no_ctl` (`E0616`) |
-| Provenance & LIFO checking (`E0549`, `E0535`, `E0532`, `E0604`, `E0527`) | Checked in reverse (LIFO) order at every exit edge. Does not lock sequential `ref`/`mut` uses in the body; `defer close(new conn)` satisfies `E0527`. Once armed, the body and later `defer`s cannot end (`E0549`), freeze (`E0535`), escape (`E0604`), share via `^mut` (`E0510`/`E0604`), or reassign a `var mut` slot (`E0532`) |
+| Control flow & effects (`E0707`, `E0616`, `E0612`) | Forbids outer `return`/`?`/`break`/`continue` (`E0707`) and unhandled `ctl` (`E0616`; locally handled `with { ctl ... }` is allowed). Synchronous `@io`, `fn` ops, and `unwind_ctl(k)` are charged at the `defer` site (`E0612`); invoking an open `@` callback constrains it to `no_ctl` (`E0616`) |
+| Provenance & LIFO checking (`E0549`, `E0535`, `E0532`, `E0604`, `E0527`) | Checked in reverse (LIFO) order at every exit edge. Does not lock sequential `ref`/`mut` uses in the body; `defer close(mut conn)` satisfies `E0527`. Once armed, the body and later `defer`s cannot consume a linear `ctl(...)` reserved by `defer` (`E0549`), freeze (`E0535`), escape (`E0604`), share via `^mut` (`E0510`/`E0604`), or reassign a `var mut` slot (`E0532`) |
 | Unwinding & `with` stacking | Shares one block LIFO stack with statement `with` (`with` above `defer` covers it). Runs once per reached registration on normal exit, `return`, `break`, `continue`, `?`, panic unwinding, and `unwind_ctl`. A panic inside `defer` during normal exit or `unwind_ctl` is catchable; during active panic unwinding it triggers uncatchable **abort** |
 
 ```ebnf
@@ -1477,63 +1476,6 @@ MetaAttr    ::= "meta" "(" MetaArgList ")"
 MetaArgList ::= Expression { "," Expression } [ "," ]
 ```
 
-### Foreign Interface Declarations
-
-Foreign interface declarations reside in bodyless `.d.ril` files (`DeclFile`).
-
-```ril
--- File: sys/posix.d.ril
-pub opaque type HostFd
-
-pub fn open_path(path: str) @io -> new !<HostFd, str>
-pub fn read_bytes(ref fd: HostFd, max_len: int) @io -> new !<bytes, str>
-pub fn close(new fd: HostFd) @io -> ()
-pub sub Signals {
-    pub let sigint: int
-}
-```
-
-```ril
--- Rejected foreign interface and usage cases:
--- pub fn bad_body() -> int { 1 }          -- Error [E0901]: bodies prohibited in .d.ril
--- pub fn bad_pure(x: int) -> int          -- Error [E0908]: '.d.ril' functions must declare '@io'
--- pub fn bad_shared(^mut fd: HostFd) @io -> () -- Error [E0908]: '^mut' unsupported on foreign signatures
--- pub fn bad_snap(fd: HostFd) @io -> ()   -- Error [E0908]: foreign opaque handle requires ref/mut/new
--- In .ril file:
--- fn unimplemented() -> int               -- Error [E0902]: body required in standard .ril module
--- let _ = fd.internal_handle              -- Error [E0907]: foreign representation is sealed
-```
-
-- **Bodyless `.d.ril` (`E0901`, `E0902`)**: `.d.ril` forbids function bodies, initializers, field defaults, representation bodies on `opaque type`/nominal declarations, and `opaque` on sum/alias declarations (`E0901`). Bodyless functions or `opaque type` in `.ril` fail `E0902` unless matching a registered built-in.
-- **Sealing, `@io` & `ctl` restrictions (`E0907`, `E0908`, `E0906`)**:
-  - Foreign `opaque type` and bodyless nominal shapes cannot be constructed, unwrapped via `inner`, or accessed via fields, patterns, or introspection in `.ril` (`E0907`, taking precedence over `E0308`).
-  - Every `.d.ril` `DeclFunction` must declare `@io` and must not declare any `ctl`-bearing `@Eff`; `.d.ril` `DeclEffect` forbids `ctl` operations (`E0908`). Foreign signatures also forbid `^mut`, `&^mut`, `&capture`, `via`/`infer`, and unannotated plain `DeclOpaqueType` parameters/returns (`E0908`).
-  - `DeclLet` admits pure immutable data constants only (`E0906`).
-- **Foreign `opaque type` handle matrix** (e.g., `pub opaque type HostFd`):
-
-| Allowed | Forbidden |
-| :--- | :--- |
-| `new` creation, single-use `new fd` handoff (`E0549` after handoff), and must-consume tracking (`E0625`) | `clone` (`E0301`), `derive` (`E0536`), `==` (`E0327`) |
-| `let mut`, call-scoped `mut`, `ref` view, and `defer` cleanup | Immutable `let`/`var` freezing (`E0535`), `var mut` overwrite (`E0532`), `^mut` (`E0908`/`E0510`) |
-| `[mut]HostFd`, `[K: mut HostFd]`, `.{ mut ... }`, and exclusive single/record-payload sums (with destructive extraction) | `[]HostFd`, `[ref]HostFd`, `[^mut]HostFd`, `[K: HostFd]`, `Set<HostFd>`, and map keys (`E0301`, `E0328`, `E0535`) |
-
-```ebnf
-DeclUnitItem    ::= UseDecl | DeclSub | DeclFunction | DeclType | DeclEffect | DeclLet
-DeclSub         ::= { MetaAttr } [ Visibility ] "sub" PascalCase
-                    "{" { DeclUnitItem Separator } [ DeclUnitItem ] "}"
-DeclFunction    ::= { MetaAttr } [ Visibility ] "fn" ValueName [ GenericParams ]
-                    "(" [ ParameterList ] ")" ReturnSpec
-DeclType        ::= DeclSumType | DeclNominalType | DeclTypeAlias | DeclOpaqueType
-DeclTypeHead    ::= { MetaAttr } [ Visibility ] "type" PascalCase [ GenericParams ]
-DeclSumType     ::= DeclTypeHead "{" [ VariantDeclList ] "}"
-DeclNominalType ::= DeclTypeHead
-DeclTypeAlias   ::= DeclTypeHead "=" TypeExpression
-DeclOpaqueType  ::= { MetaAttr } [ Visibility ] "opaque" "type" PascalCase [ GenericParams ]
-DeclEffect      ::= { MetaAttr } [ Visibility ] "eff" PascalCase [ GenericParams ]
-                    "{" [ EffectMemberList ] "}"
-DeclLet         ::= [ Visibility ] "let" ValueName ":" TypeExpression
-```
-
 ---
 
 ## Expressions and Operators
@@ -1543,7 +1485,7 @@ DeclLet         ::= [ Visibility ] "let" ValueName ":" TypeExpression
 | Precedence (high → low) | Operators / forms | Associativity |
 | :---: | :--- | :---: |
 | 1 | `.` `?.` `f(...)` `Tag(...)` `f \...` `a[i]` `a?[i]` `?` `Type.{...}` `::` | Left |
-| 2 | Unary `-` `!` `~` `ref e` `^mut e` `new x` `meta e` | Right |
+| 2 | Unary `-` `!` `~` `ref e` `^mut e` `meta e` | Right |
 | 3 | `*` `/` `%` | Left |
 | 4 | `+` `-` | Left |
 | 5 | `<<` `>>` | Left |
@@ -1551,7 +1493,7 @@ DeclLet         ::= [ Visibility ] "let" ValueName ":" TypeExpression
 | 7 | `^` | Left |
 | 8 | `\|` | Left |
 | 9 | `..` `..=` | Non-associative |
-| 10 | `\|>` `\|> ref` `\|> mut` `\|> ^mut` `\|> new` (with optional step `?`), `e as SupType` | Left |
+| 10 | `\|>` `\|> ref` `\|> mut` `\|> ^mut` (with optional step `?`), `e as SupType` | Left |
 | 11 | `==` `!=` `<` `<=` `>` `>=` | Non-associative |
 | 12 | `&&` | Left (short-circuit) |
 | 13 | `\|\|` | Left (short-circuit) |
@@ -1561,7 +1503,7 @@ DeclLet         ::= [ Visibility ] "let" ValueName ":" TypeExpression
 *(Note: `let ... else` is a `Statement` form, and `where` (`BlockWhereClause`) is a trailing `Block` clause rather than an expression operator.)*
 
 - **Lexical Adjacency (`E0338`)**: Function and constructor calls attach `(` (`parse(s)`, `Ok(42)`, `Ok()`, `Rect(10.0, 20.0)`), array/map indexing attaches `[` (`xs[0]`), and named record constructions attach `.{` (`User.{ id: 1 }`).
-- **Call-Site Argument Markers (`E0406`, `E0338`)**: At the top level of a call `Argument`, leading `mut`, `ref`, `^mut`, or `new` always parses as `ArgumentMode` (`E0406` if mismatched against a plain parameter or constructor payload). Calling a unit variant, unit nominal, or concrete record type with `(...)` fails `E0338`.
+- **Call-Site Argument Markers (`E0406`, `E0338`)**: At the top level of a call `Argument`, leading `mut`, `ref`, or `^mut` always parses as `ArgumentMode` (`E0406` if mismatched against a plain or `new` parameter or constructor payload). Calling a unit variant, unit nominal, or concrete record type with `(...)` fails `E0338`.
 - **Expression Holes (`...`, `E0360`)**: `...` has type `never`, satisfies any expected type and access mode during partial checking, and suppresses cascading `E0527` / `E0549` diagnostics along paths ending in `...`, while failing complete builds with `E0360: UnfinishedExpressionHoleError`.
 
 ```ril
@@ -1597,12 +1539,10 @@ AdditiveExpr             ::= MultiplicativeExpr { ( "+" | "-" ) MultiplicativeEx
 MultiplicativeExpr       ::= UnaryExpr { ( "*" | "/" | "%" ) UnaryExpr }
 UnaryExpr                ::= ( "-" | "!" | "~" ) UnaryExpr
                            | MetaExpr
-                           | NewHandoffExpr
                            | ObserveExpr
                            | SharingExpr
                            | PostfixExpr
 MetaExpr                 ::= "meta" UnaryExpr
-NewHandoffExpr           ::= "new" ValueName
 ObserveExpr              ::= "ref" PostfixExpr
 SharingExpr              ::= "^mut" PostfixExpr
 PostfixExpr              ::= CallExpr | MemberExpr | IndexExpr
@@ -1614,7 +1554,7 @@ CallExpr                 ::= PostfixExpr "(" [ ArgumentList ] ")" [ TrailingClos
 TrailingClosure          ::= AnonFnExpr | AccessorExpr
 ArgumentList             ::= Argument { "," Argument } [ "," ]
 Argument                 ::= [ ValueName ":" ] [ ArgumentMode ] Expression
-ArgumentMode             ::= "mut" | "ref" | "^mut" | "new"
+ArgumentMode             ::= "mut" | "ref" | "^mut"
 TupleIndex               ::= Digit { Digit }
 MemberExpr               ::= PostfixExpr ( "." | "?." ) ( FieldLabel | TupleIndex | "(" Expression ")" )
 IndexExpr                ::= PostfixExpr [ "?" ] "[" ( Expression | SliceRangeExpr ) "]"
@@ -1665,13 +1605,13 @@ assert((~0 == -1) && ((-8 >> 2) == -2) && ((1 << 100) > 0))
 - **Arithmetic (`+`, `-`, `*`, `/`, `%`, unary `-`)**:
   - Defined exclusively on `(int, int) -> int` and `(f64, f64) -> f64` (`E0327` on `str`, `bytes`, or `bool`; strings combine via interpolation `"{a}{b}"`).
   - Integer `/` truncates toward zero and `%` satisfies `(a / b) * b + (a % b) == a`.
-  - Syntactic literal `0` divisors fail `E0361` at check time; non-literal `/ 0` or `% 0` panics (`E0831` in static evaluation; `Numeric::checked_div` / `Numeric::checked_rem` return `?int`).
-  - Explicit numeric conversions use `Numeric::to_f64(n: int) -> f64`, `Numeric::convert<int>(x: f64) -> new ?int` (exact integral conversion; `None` if fractional, NaN, or infinite), and `Numeric::trunc(x: f64) -> new ?int` (truncates finite `f64` toward zero; `None` if NaN or infinite).
+  - Syntactic literal `0` divisors fail `E0361` at check time; non-literal `/ 0` or `% 0` panics (`E0831` in static evaluation; `Numeric::div` / `Numeric::rem` return `?int`).
+  - Explicit numeric conversions use `Numeric::to_f64(n: int) -> f64`, `Numeric::to_int_exact(x: f64) -> new ?int` (exact integral conversion; `None` if fractional, NaN, or infinite), and `Numeric::to_int_trunc(x: f64) -> new ?int` (truncates finite `f64` toward zero; `None` if NaN or infinite).
 - **Bitwise & Shifts (`~`, `&`, `|`, `^`, `<<`, `>>`)**:
   - Defined exclusively on `int` (`E0327` elsewhere) with infinite-width two's-complement semantics (`~x == -x - 1`, `x >> k` arithmetic floor shift).
   - Syntactic negative literal shift counts (`-k`) fail `E0361`; non-literal `k < 0` panics (`E0831` in static evaluation).
 - **Equality & Ordering (`==`, `!=`, `<`, `<=`, `>`, `>=`)**:
-  - `==` / `!=` require same-type operands (`E0301`, `E0305` on distinct nominals) recursively excluding callables, `ctl(...)` continuations, foreign handles, and `Derived<T>` (`E0327`). Structural equality over cyclic shared-object graphs is coinductive and terminates.
+  - `==` / `!=` require same-type operands (`E0301`, `E0305` on distinct nominals) recursively excluding callables, `ctl(...)` continuations, and `Derived<T>` (`E0327`). Structural equality over cyclic shared-object graphs is coinductive and terminates.
   - `f64` follows IEEE-754 (`NaN != NaN`, `-0.0 == 0.0`); `?T == None` / `!= None` tests the option tag even when `T` lacks equality.
   - Map keys and `Set` elements additionally forbid `f64`, extensible `{ .. }` sums, and mutable member modes (`E0328`).
   - Static type-value exception: `Type<A>` and `Type<B>` may represent different types; `<A> == <B>` holds iff `A` and `B` are type-equivalent (`!=` is its complement), regardless of value equality.
@@ -1697,12 +1637,12 @@ cells |> mut Array::push(Cell.{ v: 2 }) -- OK: 'elem' last use has ended
 ```ril
 -- Rejected indexing & live-hold overlaps:
 -- let _ = m["port"]                    -- Error [E0352]: map read requires 'm?["port"]'
--- let _ = "abc"[0]                     -- Error [E0352]: 'str' element access uses 'String::at'
+-- let _ = "abc"[0]                     -- Error [E0352]: 'str' element access uses 'String::scalar_at'
 -- let _ = Some(1).0                    -- Error [E0337]: sum has no '.0' projection
 -- let ref elem = cells[0]; cells |> mut Array::push(Cell.{ v: 2 }); assert(elem.v == 1) -- Error [E0537]
 ```
 
-- **Arrays `[M]T`**: Accept `int` element indices (`xs[i]` panics out of bounds; `xs?[i] -> ?T` returns `None`). Single-element bracket indexing on `str` or `bytes` fails `E0352` (use `String::at` / `Bytes::at`); dynamic bracket indexing on records fails `E0324`.
+- **Arrays `[M]T`**: Accept `int` element indices (`xs[i]` panics out of bounds; `xs?[i] -> ?T` returns `None`). Single-element bracket indexing on `str` or `bytes` fails `E0352` (use `String::scalar_at` / `Bytes::at`); dynamic bracket indexing on records fails `E0324`.
 - **Slicing (`s[a..b]`, `s[a..=b]`, `s?[a..b]`)**: Produces a fresh `new`-qualified array on `[M]T` (preserving element modes; binding directly to `let ref` fails `E0543`), a Unicode-scalar sub-string on `str`, and a byte sub-sequence on `bytes`.
 - **Maps `[K: M V]`**: Reads require safe lookup `m?[k] -> ?V` (`E0352` on `m[k]` reads or `m[k] += v`); direct slot assignment `m[k] = v` inserts or updates key `k`.
 - **Container Element Holds (`E0537`, `E0526`)**: On live `[M]T` and `[K: M V]` containers, `xs[i]`, `xs?[i]`, and `m?[k]` establish scoped element holds bounded by the container; mutating or resizing the container while a `ref`/`mut` hold is active or during `for` iteration fails `E0537` / `E0526`.
@@ -1725,8 +1665,8 @@ assert(String::decode_utf8(bytes"\xC0\xAF") == None)
 
 - **`String::inspect<T>(via value: T) -> str`**: Pure dual-phase diagnostic formatter accepting plain values/snapshots or `ref` shared-object views (`E0401` on `ref` value types; `mut`/`^mut`/`new` markers rejected).
   - Formats primitives, escaped `str`/`bytes` literals, tuples, collections (`Set([...])` for `Set<T>`, deterministic insertion order for maps and sets), transparent records/sums, and accessible `.ril` nominals / in-scope `opaque` wrappers transparently as their underlying representation (rendering runtime reference cycles as `"..."`).
-  - Formats sealed `opaque` types outside their defining scope, foreign handles, callables, `ctl(...)` continuations, and `Derived<T>` handles as `"<TypeName>"` (or `"<fn>"` / `"<ctl>"`).
-- **String helpers**: `String::join(via parts: []str, separator: str) -> str` joins parts in array order and returns an empty string for an empty array. `String::starts_with(text: str, prefix: str) -> bool`, `String::ends_with(text: str, suffix: str) -> bool`, `String::at(text: str, index: int) -> new ?int`, `String::scalars(text: str) -> new []int`, `String::from_scalars(via values: []int) -> new ?str`.
+  - Formats sealed `opaque` types outside their defining scope, callables, `ctl(...)` continuations, and `Derived<T>` handles as `"<TypeName>"` (or `"<fn>"` / `"<ctl>"`).
+- **String helpers**: `String::join(via parts: []str, separator: str) -> str` joins parts in array order and returns an empty string for an empty array. `String::starts_with(text: str, prefix: str) -> bool`, `String::ends_with(text: str, suffix: str) -> bool`, `String::scalar_at(text: str, index: int) -> new ?int`, `String::scalars(text: str) -> new []int`, `String::from_scalars(via values: []int) -> new ?str`.
 - **UTF-8 & Bytes helpers**: `String::encode_utf8(text: str) -> bytes`, `String::decode_utf8(data: bytes) -> new ?str` (`None` on ill-formed UTF-8), `Bytes::at(data: bytes, index: int) -> new ?int`, `Bytes::to_array(data: bytes) -> new []int`, `Bytes::from_array(via values: []int) -> new ?bytes` (`None` outside `0..=255`).
 
 ### Pipeline and Fallible Operators
@@ -1770,7 +1710,6 @@ assert(load_port("80") == Ok(80) && load_port("x") == Err("bad"))
 | `x \|> ref f` / `x \|> ref f(a)` | `f(ref x)` / `f(ref x, a)` | `Expression` (scoped read-only `ref` access) |
 | `x \|> mut f` / `x \|> mut f(a)` | `f(mut x)` / `f(mut x, a)` | Addressable writable path (`E0410` on non-addressable or temporary expressions) |
 | `x \|> ^mut f` / `x \|> ^mut f(a)` | `f(^mut x)` / `f(^mut x, a)` | Addressable writable path (`E0410` on non-addressable or temporary expressions) |
-| `x \|> new f` / `x \|> new f(a)` | `f(new x)` / `f(new x, a)` | `Expression` (ends `x` before evaluating `f` or `a`, `E0549`) |
 
 - **Error/Option Propagation (`expr?`)**: Valid inside ordinary functions or closures (`E0205` at module/`sub` top-level). Preserves the `Ok`/`Some` payload's own mode, `new` qualification, and contained sources (a `new` sum wrapper does not make an existing payload `new`):
   - On `!<T, E>` (`E0712` on non-`Result`/non-`Option`): unwraps `Ok(v)` to `v`, or returns `Err(e)` (widening `e` when $E \preceq_{\text{sum}} E_{\text{ret}}$; incompatible enclosing return types fail `E0713`).
@@ -1883,14 +1822,14 @@ assert(find_odd_sum() == 16)
 - **Conditionals (`E0350`, `E0351`)**: `if cond { a } else { b }` requires `cond: bool` (`E0350`) and a common join type across normal branches (`E0351`). Without `else`, the `then` block must have type `()` or `never`. `if let [mode] pat = expr` matches a partial pattern.
 - **`while` & `while true` (`E0350`)**: `while cond { body }` (`cond: bool`) and `while let [mode] pat = expr { body }` check `body` against `()`. A bare `while true { ... }` with no `break` targeting that loop (ignoring `break`s inside nested loops) has type `never`; all other `while` loops have type `()`.
 - **`for` Loops (`E0355`, `E0345`, `E0526`)**: `for [mode] iter as pat { body }` iterates over `[]T`, `[K: V]` (yielding `(K, V)` in insertion order), `Set<T>` (in insertion order), or integer ranges `a..b` / `a..=b` (`E0355` otherwise), checks `body` against `()`, and requires an always-matching `pat` (`E0345`).
-  - Plain `for` / `for ref` holds a static read hold on live collections; `for mut` / `for ^mut` exposes element writes while forbidding structural resize/reallocation (`E0526`); `for new` hands off a `new` collection and yields `new` elements; `for via` preserves a `via`-dependent collection's instantiated mode.
+  - Plain `for` / `for ref` holds a static read hold on live collections; `for mut` / `for ^mut` exposes element writes while forbidding structural resize/reallocation (`E0526`); `for via` preserves a `via`-dependent collection's instantiated mode.
 - **Control Transfers (`E0707`)**: `break` and `continue` target the innermost enclosing `while` or `for` in the same callable (`E0707` outside a loop, or escaping a closure, `defer`, or `ctl`-handling `with` boundary). `return` exits the innermost enclosing `fn` or `\... ->` closure (`return` ≡ `return ()`; escaping a `defer` or nested `ctl`-handling `with` boundary fails `E0707`, while top-level `return`/`?` under a function-level statement `with ctl` completes the innermost enclosing top-level `with ctl` boundary).
 
 ```ebnf
 IfExpr          ::= [ "meta" ] "if" ( Expression | "let" [ "mut" | "ref" | "^mut" | "via" ] UnmodifiedPattern "=" Expression ) Block
                     [ "else" ( IfExpr | Block ) ]
 WhileExpr       ::= "while" ( Expression | "let" [ "mut" | "ref" | "^mut" | "via" ] UnmodifiedPattern "=" Expression ) Block
-ForExpr         ::= "for" [ "ref" | "mut" | "^mut" | "new" | "via" ] ForIterable "as" Pattern Block
+ForExpr         ::= "for" [ "ref" | "mut" | "^mut" | "via" ] ForIterable "as" Pattern Block
 ControlTransfer ::= "return" [ Expression ]
                   | "break"
                   | "continue"
@@ -1928,7 +1867,7 @@ Patterns mirror construction syntax across records, tuples, sum variants, nomina
 
 ```ril
 type UserId(int)
-type Job { Task(fn() &once -> int); Empty }
+type Step { Resume(ctl() -> int); Empty }
 
 fn classify_packet(raw: str) -> str {
     match raw {
@@ -1938,19 +1877,18 @@ fn classify_packet(raw: str) -> str {
     }
 }
 
-fn run_job(new j: Job) -> int {
-    match new j {                                -- Destructive 'match new' hands off exclusive payload
-        Job::Task(mut f) -> f()
-        Job::Empty       -> 0
+fn run_step(s: Step) -> int {
+    match s {                                    -- Destructive match consumes linear 'ctl(...)' payload
+        Step::Resume(k) -> k()
+        Step::Empty     -> 0
     }
 }
 
 fn test_patterns() -> () {
     let UserId::(uid) = UserId::(42)
     let [head, ..tail] = [10, 20, 30] else { panic("empty") }
-    let mut job = Job::Task(\-> 2)
     assert(classify_packet(#"{ok}"#) == "json:ok" && classify_packet(#"{"#) == "other")
-    assert(uid == 42 && head == 10 && tail == [20, 30] && run_job(new job) == 2)
+    assert(uid == 42 && head == 10 && tail == [20, 30] && run_step(Step::Empty) == 0)
 }
 test_patterns()
 ```
@@ -1972,7 +1910,7 @@ test_patterns()
 | Construction symmetry (`E0120`, `E0314`, `E0349`) | Records and record aliases unpack via `.{ a, b }`; sum variants via `Some(x)` / `Shape::Rect(w, h)`; payload nominal/opaque types via `UserId::(id)` / `User::(.{ id })` (`E0314` tuple arity; `E0349` invalid pattern expression or `{expr}` interpolation) |
 | Or-patterns, ranges & slices (`E0346`–`E0349`) | `P1 \| P2` alternatives bind identical names, types, and modes (`E0346`); no duplicate binders (`E0347`). Ranges `lo..hi` / `lo..=hi` must be non-empty (`E0348`). `[a, ..rest, z]` and `str["pre", ..rest, "suf"]` allow at most one `..` (`E0349`); array `..rest` yields a `new` slice; `str[...]` requires non-empty literal segments with `len(s) >= len(prefix) + len(suffix)` |
 | Exhaustiveness & reachability (`E0303`, `E0304`) | `match` must cover every value (`E0303`; guarded arms do not contribute coverage). Unreachable arms fail `E0304` |
-| Modes & destructive `match new` (`E0402`, `E0521`, `E0551`, `E0549`) | Value binders forbid `ref`/`mut`/`^mut` (`E0402`). Requesting `mut`/`^mut` from immutable/`ref` fails `E0521`; mutable decomposition of immutable tuple/fixed sub-slots fails `E0551`. Prefix mode applies to root and unmodified leaves (`E0412` on `via` without enclosing `via`). `match new x` ends `x` (`E0549`) and preserves `new` on `mut`-bound handed-off payloads (`&once`, `ctl(...)`, foreign handles) |
+| Modes & linear decomposition (`E0402`, `E0521`, `E0551`, `E0549`) | Value and linear `ctl(...)` binders forbid `ref`/`mut`/`^mut` (`E0402`). Requesting `mut`/`^mut` from immutable/`ref` fails `E0521`; mutable decomposition of immutable tuple/fixed sub-slots fails `E0551`. Prefix mode applies to root and unmodified leaves (`E0412` on `via` without enclosing `via`). Matching or binding a linear `ctl(...)` container destructively consumes the scrutinee (`E0549`) and transfers the inner `ctl(...)` obligation to the pattern binders |
 
 ```ebnf
 MatchExpr            ::= [ "meta" ] "match" [ "mut" | "ref" | "^mut" | "via" ] Expression "{" [ MatchArm { Separator MatchArm } [ Separator ] ] "}"
@@ -2065,11 +2003,10 @@ fn check_narrowing(mut cell: Cell, via hook: fn() & -> (), eff_cb: fn() @ -> (),
 
 | Declaration form | Syntax | Phase | Effects & state |
 | :--- | :--- | :--- | :--- |
-| Ordinary `fn` | `fn f(...) [@Eff] [&State] -> T { ... }` | Runtime (dual-phase core ops in static eval) | Explicit `@Eff` & minimal `&State` (`E0510`, `E0529`, `E0612`) |
+| Ordinary `fn` | `fn f(...) [@Eff] [&State] -> T { ... }` | Runtime (dual-phase core ops in static eval) | Explicit `@Eff` & minimal `&State` (`E0510`, `E0529`, `E0612`, `E0626`) |
 | Compile-time `meta fn` | `meta fn f(...) -> T { ... }` | Static (`TypeEval`/`MetaValue`; entered from runtime via `meta expr`) | Pure only (`E0813`); type-value/callable/resource-free (`E0812`, `E0816`) |
 | Type function | `type F = \T -> <...>` | Static (`TypeEval`) | Pure only (`E0335`); returns single `Type<U>` value |
-| Built-in bodyless `fn` | Bodyless `fn` in prelude `.ril` | Per built-in specification | Must match registered primitive identity & signature (`E0902`, `E0909`) |
-| Foreign `.d.ril` `fn` | Bodyless `pub fn` in `.d.ril` | Runtime | Body prohibited (`E0901`); must declare `@io` and forbid `ctl` (`E0908`) |
+| Built-in bodyless `fn` | Bodyless `fn` in `ril/*` stdlib `.ril` | Per built-in specification | Must match registered primitive identity & signature (`E0902`, `E0909`) |
 
 #### Dual-Tier Where Invariants
 
@@ -2082,7 +2019,7 @@ where
 {
     let mut out: []R = []
     for xs as item { Array::push(mut out, step(item)?) }
-    Ok(new out)
+    Ok(out)
 where
     fn _helper_tag() -> int { 1 }
 }
@@ -2102,7 +2039,7 @@ where
 
 #### Signature Guards
 
-`SignatureGuard` (`|> [ref] guard(args)`) attaches pure fallible entry and exit guards to `RegularParam` and declaration `ReturnSpec` (`FunctionDecl`, `MetaFnDecl`, `DeclFunction`):
+`SignatureGuard` (`|> [ref] guard(args)`) attaches pure fallible entry and exit guards to `RegularParam` and declaration `ReturnSpec` (`FunctionDecl`, `MetaFnDecl`):
 
 ```ril
 pub type Span = .{ lo: int, hi: int }
@@ -2171,35 +2108,30 @@ ReturnSources        ::= ValueName { "|" ValueName }
 #### Mandatory Signature Inference and Completion
 
 The compiler infers complete effects and provenance for every callable body:
-- **Named `fn` definitions**: Spell exact unhandled `@Eff` (`E0612`), minimal state/provenance clauses (`&mut`, `&^mut`, `&capture`, `&up(...)`, `&return(...)` — `E0510` missing, `E0529` excessive), and exact return modes (`-> new T`, `-> ref(x) T`, `-> ^mut(x) T` — `E0544`/`E0528`/`E0546`) unless encapsulated by `via`/`infer`. Named `fn`s returning a `new` `SharedObject` declare `-> new T` (`E0544`).
-- **Form separation (`E0538`)**: `&up`, `&up(ref)`, and `&once` appear only on `CallableType`; concrete `&up(x)` appears only on local named `fn`s (`E0538`). `&once` is mutually exclusive with `&up` / `&up(ref)`.
-- **Anonymous closures (`\... -> ...`)**: Infer their exact callable signature; capturing an exclusive `new`-handed-off value infers `&once` (forbidding capture of must-consume values, `E0625`/`E0720`). Written `@Eff` / `&State` / `: Type` annotations constrain inference.
+- **Named `fn` definitions**: Spell exact unhandled `@Eff` (`E0612`, unused `@Eff` fails `E0626`), minimal state/provenance clauses (`&mut`, `&^mut`, `&capture`, `&up(...)`, `&return(...)` — `E0510` missing, `E0529` excessive), and exact return modes (`-> new T`, `-> ref(x) T`, `-> ^mut(x) T` — `E0544`/`E0528`/`E0546`) unless encapsulated by `via`/`infer`. Named `fn`s returning a `new` `SharedObject` declare `-> new T` (`E0544`).
+- **Form separation (`E0538`)**: `&up` and `&up(ref)` appear only on `CallableType`; concrete `&up(x)` appears only on local named `fn`s (`E0538`).
+- **Anonymous closures (`\... -> ...`)**: Infer their exact callable signature. Closures cannot capture linear `ctl(...)` continuations (`E0625`). Written `@Eff` / `&State` / `: Type` annotations constrain inference.
 
 #### Closed and Open Effect and State Sets
 
 Omitted sets are closed empty; `@`, `&`, and `@&` open compiler-tracked effect/state bounds on `CallableType` in parameters, record fields, and collection elements (`E0547` on definitions and `EffectOpDecl`). Underlying effects, state obligations, and provenance remain tracked through bindings, records, collections, and interfaces (`K-IFACE`) and are charged at every call site.
 
-Access modes remain orthogonal to `@`/`&`/`@&`: immutable fields/bindings forbid `&up`, `&once`, and `ctl(...)` (`E0535`) while admitting any `@Eff`; mutable `&up` closures require `mut`/`^mut`/`M`/`via` storage; `&once` callables and `ctl(...)` continuations require exclusive `mut`/`new` storage (`[mut]T`, `[K: mut V]`, `.{ mut ... }`, or exclusive-payload sums).
+Access modes remain orthogonal to `@`/`&`/`@&`: immutable fields/bindings forbid `&up` (`E0535`) while admitting any `@Eff`; mutable `&up` closures require `mut`/`^mut`/`M`/`via` storage; linear `ctl(...)` continuations are mode-free (`E0402`/`E0532`) and live in plain mode-free bindings, records, sums, arrays, and maps (`[]ctl(...)`, `[K: ctl(...)]`, `.{ k: ctl(...) }`).
 
 ```ril
 type PureFn   = fn(int) -> int             -- Closed empty effects, closed pure state
 type IoFn     = fn(str) @io -> ()          -- Closed {io}, closed pure state
 type ReadObs  = fn() &up(ref) -> int       -- Pure effects, read-only closure env (invocable via ref)
 type MutStep  = fn() &up -> int            -- Pure effects, mutable closure env (requires mut/^mut path)
-type OneShot  = fn() &once -> int          -- Affine at-most-once closure (invoked by consuming 'new')
 type ContStep = ctl(int) -> str            -- Linear must-consume delimited continuation from 'with ctl'
 type AnyEff   = fn() @ -> ()               -- Open effect set, closed pure state
 type AnyState = fn() & -> ()               -- Closed empty effects, open state/provenance
 type AnyCall  = fn() @& -> ()              -- Open effects and open state/provenance
 
--- '&once' direct invocation consumes the binding; open '@&' tracks underlying effects & state:
-fn run_once(new f: OneShot) -> int { f() }
+-- Open '@&' tracks underlying effects & state across calls:
 fn call_open(via f: fn() @& -> int) -> int { f() }
 
 fn test_callables() -> () {
-    assert(run_once(new \-> 2) == 2)
-    -- let mut f: OneShot = ...; let _ = f(); let _ = f() -- Error [E0549]: '&once' binding ended at invocation
-    -- let mut box = .{ mut f: \-> 1 }; let _ = (box.f)() -- Error [E0548]: projected '&once' requires extraction
     let mut count = [0]
     let ^mut inc = \-> { Array::push(mut count, 1); len(ref count) }
     assert(call_open(^mut inc) == 2)
@@ -2213,8 +2145,7 @@ test_callables()
 | `@io` | Closed `{io}` | Closed pure |
 | `&up(ref)` | Closed empty | Read-only closure env (invoked via `ref`; pure callables matching `&up(ref)` stay immutable) |
 | `&up` | Closed empty | Mutable/abstract closure env (requires `mut`/`^mut` path, `E0520`) |
-| `&once` | Closed empty | Affine exclusive one-shot closure (droppable; forbids must-consume captures; invoked on a `new`-qualified expression or bare pinned binding `f(...)`, ending `f` with `E0549`; projected `(rec.f)()` fails `E0548`) |
-| `ctl(...)` | Closed empty | Linear must-consume one-shot continuation from `with ctl` (`E0625` if unconsumed; discharged by `k(...)` or `unwind_ctl(new k)`; forbids freezing, `^mut`, `clone`, `derive`, `==`) |
+| `ctl(...)` | Closed empty | Mode-free linear must-consume one-shot continuation from `with ctl` (`E0625` if unconsumed; discharged by `k(...)` or `unwind_ctl(k)`; forbids `mut`/`ref`/`^mut`/`new`/`var`, `clone`, `derive`, `==`, and closure capture) |
 | `@` | Open effect set (tracked & charged at call) | Closed pure (live narrowings still reject handler writes, `E0533`) |
 | `&` | Closed empty | Open state/provenance set (tracked & charged at call; orthogonal to access mode) |
 | `@&` | Open effect set (tracked & charged at call) | Open state/provenance set (tracked & charged at call; orthogonal to access mode) |
@@ -2248,8 +2179,7 @@ Under `MatchCallable`, a callable of actual signature $C_{\text{act}}$ matches e
 3. **State & captures**: Every non-pure state/capture obligation in $C_{\text{act}}$ is permitted by $C_{\text{exp}}$ (`&` / `@&` opens state obligations):
    - `&up(ref)` admits pure or read-only observer closures callable via `ref`.
    - `&up` admits mutable closure environments; invoking an `&up` callable requires a `mut` or `^mut` path and charges `&mut` when the callable is a formal parameter.
-   - `&once` admits affine one-shot callables and reusable `fn` callables (`pure <: &up(ref) <: &up <: &once`); invoking an `&once` callable requires a `new`-qualified expression or bare pinned binding `f(...)` (ending `f` with `E0549`; projected `(rec.f)()` fails `E0548`).
-   - `ctl(...)` matches only `ctl(...)` continuations (never ordinary `fn(...)`, even with `&once`), with the same contravariant parameter, covariant return, effect/state bounding, and direct-root invocation rules.
+   - `ctl(...)` matches only `ctl(...)` continuations (never ordinary `fn(...)`), with the same contravariant parameter, covariant return, effect/state bounding, and direct-root invocation rules (`k(...)` consumes `k`, `E0549` on reuse; projected `(rec.k)()` fails `E0548`).
    - Pure module constants and pure immutable captures reduce to empty state; return-source relations remain checked.
 
 ```ebnf
@@ -2262,7 +2192,7 @@ CallableAnnot       ::= "@&"
                       | CallableStateAnnot
 CallableStateAnnot  ::= "&" | ClosedCallableState
 ClosedCallableState ::= CallableStateClause { CallableStateClause }
-CallableStateClause ::= "&up" | "&up(" "ref" ")" | "&once" | "&mut" | "&^mut" | "&capture" | ReturnDependencyGroup
+CallableStateClause ::= "&up" | "&up(" "ref" ")" | "&mut" | "&^mut" | "&capture" | ReturnDependencyGroup
 ```
 
 ### Return Construction, Access Modes, and Sources
@@ -2287,7 +2217,7 @@ fn make_nodes() -> new []Node { [Node.{ val: 1 }, Node.{ val: 2 }] }
 fn make_staged() -> new []Node {
     let mut xs: []Node = [Node.{ val: 1 }]
     Array::push(mut xs, Node.{ val: 2 })
-    new xs
+    xs
 }
 fn edit_factory(factory: fn() -> new []Node) -> int {
     let mut xs: [mut]Node = factory()         -- OK: 'new' qualification survives callable storage
@@ -2318,21 +2248,19 @@ fn shared_shelf(^mut cell: Cell) &^mut &return(^mut cell) -> new Shelf {
 fn wrap_snapshot(cell: Cell) &return(cell) -> new []Cell { [cell] }
 fn wrap_view(ref cell: Cell) &return(ref cell) -> new [ref]Cell { [cell] }
 fn wrap_option(cell: Cell) &return(cell) -> new ?Cell { Some(cell) }
-fn id_new(new xs: []Cell) -> new []Cell { new xs }
+fn id_new(new xs: []Cell) -> new []Cell { xs }
 
 fn test_contained_sources() -> () {
     let mut cell = Cell.{ value: 0 }
     let mut shelf = shared_shelf(^mut cell)
-    shelf.rows[0].value += 1
-    let mut next = new shelf
-    next.rows[0].value += 1
+    shelf.rows[0].value += 2
     assert(cell.value == 2)                  -- Independent existing source remains valid and shared
 
     let snapshot = Cell.{ value: 5 }
     let wrapped = wrap_snapshot(snapshot)    -- OK: every existing boundary is deeply immutable
     let mut copied: [mut]Cell = clone(wrapped)
     copied[0].value += 1
-    assert(snapshot.value == 5 && len(id_new(new [Cell.{ value: 9 }])) == 1 && copied[0].value == 6)
+    assert(snapshot.value == 5 && len(id_new([Cell.{ value: 9 }])) == 1 && copied[0].value == 6)
 }
 fn read_wrapped(cell: Cell) -> new ?int {
     let payload = wrap_option(cell)?         -- Existing immutable payload, despite the new Some wrapper
@@ -2353,7 +2281,7 @@ test_contained_sources()
 -- let bad_factory: fn(Cell) -> new []Cell = wrap_snapshot            -- Error [E0534]: existing source cannot be erased
 -- let frozen = shared_shelf(^mut cell)                               -- Error [E0535]: surviving outside writer
 -- let mut bad_view: [mut]Cell = wrap_view(ref cell)                  -- Error [E0522]: existing read-only element
--- let _ = id_new(new wrap_snapshot(snapshot))                        -- Error [E0548]: non-'via' '-> new' rejects contained sources
+-- let _ = id_new(wrap_snapshot(snapshot))                            -- Error [E0548]: non-'via' '-> new' rejects contained sources
 -- let mut bad: [mut]Cell = wrap_snapshot(snapshot)                   -- Error [E0522]: existing element cannot gain writes
 -- let mut bad_opt = wrap_option(cell)?                               -- Error [E0520]: payload itself is not new
 ```
@@ -2373,7 +2301,7 @@ Parameters forbid `var` (`E0403`; copy into a local `var` if slot replacement is
 | `ref x: T` | `ref expr` or `\|> ref` | Call-scoped read-only access to a shared-object source (`E0401` on value type `T`) |
 | `mut x: T` | `mut path` or `\|> mut` | Call-scoped write access (accepts `mut` or `^mut` paths); requires reachable write (`E0527`, `&mut`) and source-overlap checks (`E0523`, `E0524`), and grants no retained writer |
 | `^mut x: T` | `^mut path` or `\|> ^mut` | Shared writable binding; requires reachable retention beyond call scope (`E0527`; `&^mut` beyond root return) |
-| `new x: T` | `new expr` or `\|> new` | Receives a `new`-qualified result (`E0548` on an unqualified root, or when a non-`via` `-> new` callee would erase `expr`'s contained existing sources; ends `expr` with `E0549`; `E0411` on value types). Inside the callee, `x` is a pinned `new`-qualified binding: readable directly (`x.field`), handing off via `new x`, and rebound via `let mut o = new x` for local writes |
+| `new x: T` | `expr` or `\|>` | Receives an unbound `new`-qualified `SharedObject` (`E0548` on an already-bound source or when a non-`via` `-> new` callee would erase `expr`'s contained existing sources; `E0411` on value types). Inside the callee, `x` is directly readable and writable (`x.field = ...`) and promotes back to `new` at function exit |
 | `via x: T` | Mode-dependent | Instantiates static mode template from caller's supplied mode |
 
 ```ril
@@ -2387,8 +2315,8 @@ fn test_params() -> () {
     let mut s0 = Node.{ val: 1 }
     let ^mut sh = s0
     bump_node(mut sh)                   -- OK: call-scoped 'mut' parameter accepts '^mut' path
-    assert(s0.val == 2)
-    assert(take_node(new n0) == 6)      -- OK: the completed mutable call did not retain an alias
+    assert(n0.val == 6 && s0.val == 2)
+    assert(take_node(Node.{ val: 6 }) == 6) -- OK: unbound 'new' expression satisfies 'new' parameter
 }
 test_params()
 ```
@@ -2399,7 +2327,7 @@ test_params()
 -- bump_node(ref n0)                    -- Error [E0406]: argument mode 'ref' does not match 'mut'
 -- bump_node(mut Node.{ val: 1 })       -- Error [E0410]: 'mut' requires an addressable writable path
 -- bump_node(mut n0, 1)                 -- Error [E0314]: arity mismatch (expected 1, got 2)
--- let _ = n0.val                       -- Error [E0549]: source path ended after 'new n0'
+-- let _ = take_node(n0)                -- Error [E0548]: bound local 'n0' is not an unbound 'new' expression
 -- fn bad_var(var x: int) -> () { x = 1 }  -- Error [E0403]: 'var' parameter prohibited
 -- fn bad_new_val(new x: int) -> int { x } -- Error [E0411]: 'new' prohibited on value type 'int'
 ```
@@ -2430,7 +2358,7 @@ test_defaults()
 
 - **Permitted default modes (`E0404`)**: Plain, `ref`, and `meta` parameters on `FunctionDecl`, `MetaFnDecl`, and `AnonFnExpr` may declare `= default_expr`; defaults on `mut`, `^mut`, `new`, or `via` parameters fail `E0404`.
 - **Default scope & purity (`E0408`, `E0409`, `E0910`, `E0510`)**:
-  - Defaults may reference earlier plain immutable or `meta` parameters (`ref b: T = a` may also alias an earlier `ref a: T`). Self/forward references fail `E0408`; `@Eff`, reading live `ref` fields, referencing `mut`/`^mut`/`new` parameters, or mutable/foreign state fails `E0409`.
+  - Defaults may reference earlier plain immutable or `meta` parameters (`ref b: T = a` may also alias an earlier `ref a: T`). Self/forward references fail `E0408`; `@Eff`, reading live `ref` fields, referencing `mut`/`^mut`/`new` parameters, or mutable state fails `E0409`.
   - Exported callables require referenced module bindings to satisfy `E0910`; publishing a default closure capturing an earlier parameter charges `&capture` at the caller (`E0510`).
 - **Evaluation & binding (`E0325`, `E0339`, `E0314`, `E0338`)**: Explicit arguments evaluate left-to-right in written order, then omitted defaults in parameter order.
   - Positional arguments bind the next unbound parameter; `label: expr` binds `label` (`E0339` unknown, `E0325` duplicate, `E0314` missing required, `E0338` non-callable).
@@ -2472,7 +2400,7 @@ assert(test_closures_and_accessors() == Ok(200))
 ```
 
 - **Closure Body Termination**: When `{` immediately follows `->`, `AnonFnBody` parses as a self-delimited `Block` ending at `}`; non-block bodies parse as `Expression`.
-- **Trailing Closures**: A `CallExpr` or `PipelineStep` may pass its final callable argument as a trailing `AnonFnExpr` or `AccessorExpr` after `(...)`—or omit `()` when no other arguments remain (`recover_panic \-> { ... }`, `File::with_open(path) \mut f -> { ... }`). Postfix `?` and outer `|>` attach directly after a block-bodied trailing closure.
+- **Trailing Closures**: A `CallExpr` or `PipelineStep` may pass its final callable argument as a trailing `AnonFnExpr` or `AccessorExpr` after `(...)`—or omit `()` when no other arguments remain (`Panic::recover \-> { ... }`, `File::with_open(path) \mut f -> { ... }`). Postfix `?` and outer `|>` attach directly after a block-bodied trailing closure.
 - **Shorthand Projection Accessors (`\.field`, `\.0`, `\?.field`)**: Desugar to unary pure closures (`\x -> x.field`, `\x -> x.0`, `\x -> x?.field`) over records and tuples (`E0336` unknown field, `E0312` tuple index out of bounds, `E0337` on sums, collections, or primitives). Any `?.` segment lifts the result to `?T`.
 
 ```ebnf
@@ -2514,7 +2442,7 @@ test_counter()
 
 - **Factory `&capture` (`E0510`)**: Returning or storing a newly created closure (or escaping `ctl(...)` continuation) that captures any enclosing runtime local or parameter requires `&capture` on the enclosing named `fn`. Closures never implicitly capture enclosing `with` handlers; all invoked `@Eff` effects remain in the closure's signature and dispatch dynamically on the caller's stack.
 - **Local writable captures (`E0510`)**: Binding a newly created closure that captures an outer `let mut` local in writable mode into a local variable creates a second writer alongside that local and requires explicit `let ^mut` (inline non-stored callbacks such as `derive` arguments or a single `with` arm hold scoped access directly).
-- **Callable targets**: Pure immutable captures still match pure `fn(...) -> ...` targets; live `ref` observer closures match `&up(ref)`; mutable closures match `&up`; closures capturing an exclusive `new`-handed-off value infer `&once` (forbidding capture of must-consume values, `E0625`/`E0720`).
+- **Callable targets**: Pure immutable captures still match pure `fn(...) -> ...` targets; live `ref` observer closures match `&up(ref)`; mutable closures match `&up`. Closures cannot capture linear `ctl(...)` continuations (`E0625`).
 
 ---
 
@@ -2525,21 +2453,19 @@ test_counter()
 ```ril
 type Node = .{ var val: int }
 fn reset_node(new c: Node) -> int {
-    let mut o = new c
-    o.val = 0                              -- OK: write to handed-off 'new' subgraph stays local
-    o.val
+    c.val = 0                              -- OK: write to 'new' subgraph stays local
+    c.val
 }
 fn bump_shelf(new s: .{ mut rows: [^mut]Node }) &mut -> () {
-    let mut o = new s
-    o.rows[0].val += 1                     -- OK: mutates caller-surviving '^mut' constituent
+    s.rows[0].val += 1                     -- OK: mutates caller-surviving '^mut' constituent
 }
-assert(reset_node(new Node.{ val: 9 }) == 0)
--- fn excess_new(new c: Node) &mut -> int { let mut o = new c; o.val = 0; o.val } -- Error [E0529]
--- fn excess_mut(ref c: Node) &mut -> int { c.val }                               -- Error [E0529]
--- fn dup_share(^mut c: Node) &^mut -> ^mut(c) Node { c }                         -- Error [E0529]
+assert(reset_node(Node.{ val: 9 }) == 0)
+-- fn excess_new(new c: Node) &mut -> int { c.val = 0; c.val } -- Error [E0529]
+-- fn excess_mut(ref c: Node) &mut -> int { c.val }            -- Error [E0529]
+-- fn dup_share(^mut c: Node) &^mut -> ^mut(c) Node { c }      -- Error [E0529]
 ```
 
-- **Local Containment**: Writes and `^mut` sharing confined to non-escaping local `var` / `let mut` allocations—and writes confined to the handed-off `new` subgraphs of a `new` parameter—stay local; the function remains outwardly pure.
+- **Local Containment**: Writes and `^mut` sharing confined to non-escaping local `var` / `let mut` allocations—and writes confined to the `new` subgraphs of a `new` parameter—stay local; the function remains outwardly pure.
 - **`&mut` (`E0510`)**: Required on named functions that may mutate caller-surviving writable state: a `mut` parameter, a `^mut` parameter, or a `^mut` constituent reachable inside a `new` parameter.
 - **`&^mut` (`E0510`)**: Required when a `^mut` parameter (or locally allocated shared root) is retained into another parameter, escaping closure environment, or escaping non-root structure (root `-> ^mut(x) T` already accounts for its own retention).
 - **`&capture` (`E0510`)**: Required when a named `fn` returns or stores a newly created closure environment or escaping `ctl(...)` continuation capturing any enclosing runtime local or parameter (module/`sub` constants need zero `&capture`).
@@ -2562,7 +2488,7 @@ fn scale_all(xs: []int, offset: int) -> new []int {
         Array::push(mut out, scaled)
     }
     assert(total == 17)
-    new out
+    out
 where
     fn transform(x: int) &up(offset) -> int {
         x * global_factor + offset     -- global_factor needs no '&up'; outer local 'offset' uses '&up(offset)'
@@ -2613,10 +2539,9 @@ fn pair_shared(^mut a: Box, ^mut b: Box) &mut &^mut &return(^mut a, ^mut b) -> n
     [^mut a, ^mut b]
 }
 fn take_shared(mut a: Box, new xs: [^mut]Box) &mut -> int {
-    let mut s = new xs
     a.n += 1
-    s[0].n += a.n
-    s[0].n
+    xs[0].n += a.n
+    xs[0].n
 }
 
 fn test_exclusivity() -> () {
@@ -2626,7 +2551,7 @@ fn test_exclusivity() -> () {
     assert(x.n == 3)
 
     -- swap_add(mut x, mut x)              -- Error [E0523]: overlapping mut-mut sources
-    -- let _ = take_shared(mut x, new [^mut x]) -- Error [E0523]: 'mut' overlaps 'new' carrying '^mut x'
+    -- let _ = take_shared(mut x, [^mut x]) -- Error [E0523]: 'mut' overlaps 'new' carrying '^mut x'
     -- let _ = observe_mut(mut x, ref x)   -- Error [E0524]: overlapping mut-ref hazard
     -- fn bad_downgrade(^mut b: Box) @Tick &mut &^mut -> ^mut(b) Box { bump_eff(mut b); b } -- Error [E0523]: '^mut' downgrade across '@Tick'
     -- let mut bad_elems: [mut]Box = [Box.{ n: 1 }] |> \xs: []Box -> xs -- Error [E0522]: container element mode escalation
@@ -2637,7 +2562,7 @@ fn test_exclusivity() -> () {
     Array::push(mut left, snap)
     Array::push(mut right, snap)           -- OK: shared immutable snapshot has zero live sources
     let mut y = Box.{ n: 3 }
-    assert(len(ref left) == 2 && take_shared(mut x, new [^mut y]) == 8 && y.n == 8)
+    assert(len(ref left) == 2 && take_shared(mut x, [^mut y]) == 8 && y.n == 8)
     let mut items = [1, 2, 3]
     Array::push(mut items, 4)
     -- for ref items as v { Array::push(mut items, v) } -- Error [E0526]: mutating 'items' during 'for' iteration
@@ -2700,14 +2625,14 @@ fn parse_or_default(s: str) -> int {
 fn first_three_doubled(xs: []int) -> new []int {
     let mut out: []int = []
     with {
-        ctl Yield<int>::emit = \v, new k -> {
+        ctl Yield<int>::emit = \v, k -> {
             out |> mut Array::push(v)
-            if len(ref out) < 3 { k() } else { unwind_ctl(new k) }
+            if len(ref out) < 3 { k() } else { unwind_ctl(k) }
         }
 
         let _ = xs |> Array::map \x -> { Yield<int>::emit(x * 2); x }
     }
-    new out
+    out
 }
 
 fn test_effects() -> () {
@@ -2730,27 +2655,27 @@ test_effects()
 ```
 
 ```ril
--- Pure deterministic custom scheduler using 'with { ... }', 'ctl(...)', '&once', and 'defer':
+-- Pure deterministic custom scheduler using 'with { ... }', mode-free linear 'ctl(...)', and 'defer':
 eff Sched {
     ctl yield_now() -> ()
-    ctl spawn(new work: fn() @Sched &once -> ()) -> ()
+    ctl spawn(work: fn() @Sched -> ()) -> ()
 }
 type Step {
     Done
     Yielded(ctl() -> new Step)
-    Spawned(.{ mut child: fn() @Sched &once -> (), mut cont: ctl() -> new Step })
+    Spawned(.{ child: fn() @Sched -> (), cont: ctl() -> new Step })
 }
 type TaskItem {
-    Fresh(fn() @Sched &once -> ())
+    Fresh(fn() @Sched -> ())
     Cont(ctl() -> new Step)
 }
 
-fn step_fresh(new work: fn() @Sched &once -> ()) -> new Step {
+fn step_fresh(work: fn() @Sched -> ()) -> new Step {
     with {
-        ctl Sched::yield_now = \new k -> Step::Yielded(new k)
-        ctl Sched::spawn     = \new child, new k -> Step::Spawned(.{
-            mut child: new child,
-            mut cont:  new k,
+        ctl Sched::yield_now = \k -> Step::Yielded(k)
+        ctl Sched::spawn     = \child, k -> Step::Spawned(.{
+            child,
+            cont: k,
         })
 
         work()
@@ -2758,27 +2683,27 @@ fn step_fresh(new work: fn() @Sched &once -> ()) -> new Step {
     }
 }
 
-fn run_fifo(new entry: fn() @Sched &once -> ()) -> () {
-    let mut ready: [mut]TaskItem = [TaskItem::Fresh(new entry)]
+fn run_fifo(entry: fn() @Sched -> ()) -> () {
+    let mut ready: []TaskItem = [TaskItem::Fresh(entry)]
     defer {
-        while let Some(mut item) = Array::pop_front(mut ready) {
-            match new item {
-                TaskItem::Cont(mut k) -> unwind_ctl(new k)
-                TaskItem::Fresh(_)    -> ()
+        while let Some(item) = Array::pop_front(mut ready) {
+            match item {
+                TaskItem::Cont(k)  -> unwind_ctl(k)
+                TaskItem::Fresh(_) -> ()
             }
         }
     }
-    while let Some(mut item) = Array::pop_front(mut ready) {
-        let mut outcome = match new item {
-            TaskItem::Fresh(mut f) -> step_fresh(new f)
-            TaskItem::Cont(mut k)  -> k()
+    while let Some(item) = Array::pop_front(mut ready) {
+        let outcome = match item {
+            TaskItem::Fresh(f) -> step_fresh(f)
+            TaskItem::Cont(k)  -> k()
         }
-        match new outcome {
+        match outcome {
             Step::Done -> ()
-            Step::Yielded(mut k) -> Array::push(mut ready, new TaskItem::Cont(new k))
-            Step::Spawned(.{ mut child, mut cont }) -> {
-                Array::push(mut ready, new TaskItem::Cont(new cont))
-                Array::push(mut ready, new TaskItem::Fresh(new child))
+            Step::Yielded(k) -> Array::push(mut ready, TaskItem::Cont(k))
+            Step::Spawned(.{ child, cont }) -> {
+                Array::push(mut ready, TaskItem::Cont(cont))
+                Array::push(mut ready, TaskItem::Fresh(child))
             }
         }
     }
@@ -2816,34 +2741,34 @@ assert(ints == [1] && tags == ["a"])
 -- Rejected effect declarations, handler arms, boundaries, and active-hold conflicts:
 -- with { Clock::now_ms = fixed_clock }                    -- Error [E0120]: 'with { ... }' requires a body
 -- with { Clock::now_ms = \-> 1; Clock::now_ms = \-> 2; () } -- Error [E0622]: duplicate handler arm in single 'with'
--- with Yield::emit = \v, new k -> k()                     -- Error [E0623]: 'ctl' op requires 'ctl' arm prefix
+-- with Yield::emit = \v, k -> k()                        -- Error [E0623]: 'ctl' op requires 'ctl' arm prefix
 -- with ctl Clock::now_ms = fixed_clock                    -- Error [E0623]: 'fn' op forbids 'ctl' arm prefix
--- with Array::at = \_ -> None                             -- Error [E0621]: module function is not an 'eff' op
--- with Log::warn = step                                   -- Error [E0405]: '&up' variable requires 'mut'/'^mut'/'new'
+-- with Array::push = \_ -> ()                             -- Error [E0621]: module function is not an 'eff' op
+-- with Log::warn = step                                   -- Error [E0405]: '&up' variable requires 'mut'/'^mut'
 -- eff BadOpen { fn run(cb: fn() @ -> ()) -> () }          -- Error [E0547]: open '@', '&', '@&' prohibited in 'EffectOpDecl'
 -- fn bad_eff() @int -> () {}                              -- Error [E0620]: 'int' is not a declared effect label
 -- fn bad_sys() @fiber -> () {}                            -- Error [E0620]: '@io' is the sole built-in system effect
+-- fn bad_unused() @Clock -> () {}                         -- Error [E0626]: declared '@Clock' is never exercised
 ```
 
 | Effect / handler aspect | Rule |
 | :--- | :--- |
 | Two `with` forms (`E0120`, `E0623`) | **Statement `with`** (`with [ctl] Op = [mode] expr`) governs the remaining statements of its enclosing block (prior locals, `defer`s, and outer `with`s stay outside its `with` boundary). **Expression `with { ... }`** governs strictly its own body (`E0120` if body omitted). Arm `ctl` prefix must match the op's kind (`E0623`). Arm RHSs evaluate once top-to-bottom in the outer handler environment before all arms activate together (`E0535`/`E0548`/`E0549`) |
 | `EffectOpDecl` limits (`E0412`, `E0538`, `E0547`, `E0401`, `E0546`) | Forbids `via`/`infer` (`E0412`), `&up(...)` (`E0538`), and open `@`/`&`/`@&` on parameter/return `CallableType`s (`E0547`). `ctl` ops additionally forbid call-scoped `ref`/`mut` parameters and `ref(...)`/`^mut(...)` root returns (`E0401`/`E0546`) |
-| Dynamic stack dispatch | Closures and `where`-local `fn`s do not capture outer `with` handlers; all invoked `@Eff` effects remain in their signatures and dispatch dynamically along the active call stack. When `Eff::op(args)` matches handler frame `H`, `H`'s arm runs against `H`'s **parent** stack frame. For `ctl` ops, frames from `H` (inclusive, deep handler) to the `op` call site are captured in `new k`; `k(v)` splices that slice onto the resumer's stack |
-| `ctl(...)` typing & `unwind_ctl` (`E0625`, `E0549`, `E0301`) | Within a `with` boundary of answer type `R` (`K-JOIN` of body and `ctl` arms), a `ctl` arm receives `new k` as its final parameter of type `ctl() @E_res [&S_res] -> R` (when `OpRet ≡ ()`) or `ctl(OpRet) @E_res [&S_res] -> R`. Every `ctl(...)` is **must-consume (`E0625`)**, discharged by invoking `k(...)` once (`E0549` on reuse) or calling `unwind_ctl(new k)`. A wildcard `_` continuation parameter runs `unwind_ctl(new k)` before the arm body. `unwind_ctl(new k)` (`E0301` on non-`ctl(...)`) is `no_ctl`, unwinds `k`'s armed `defer`s LIFO, returns `()`, and charges `k`'s residual `&State`, `@io`, and `fn`-op `@Eff` labels |
-| Control-flow & escape (`E0707`, `E0528`, `E0510`, `E0604`) | A `ctl`-bearing `with { ... }` or nested-block statement `with ctl` forbids outer `return`/`break`/`continue`/`?` (`E0707`). At a function's top-level block, `return e`/`?` under statement `with ctl` completes the innermost enclosing top-level `with ctl` boundary with `e` (return signature guards run only when the function returns). Inside an arm, `k` participates in overlap checks (`E0523`/`E0524`/`E0526`). If `new k` escapes the `with` boundary, outer captures are checked as escaping captures (forbidding unshared `let mut`, call-scoped `mut`, `var`, `ref`, and outer `defer`-managed handles) |
-| Arm compatibility (`E0407`, `E0534`, `E0616`) | Deep handler arms run 0..N times and reject `&once` and `ctl(...)` (`E0534`/`E0549`). A `fn` arm checks against `fn(OpParams) @ &up [Op.StateAnnot] -> Op.ReturnType`, forbidding unhandled outer `ctl` (`E0616`) while keeping parameter modes (`E0407`), return mode, and parameter `&mut`/`&^mut`/`&return(...)` exact (`E0534`). Installing a handler charges its outward `@Eff`, `&mut`, and `E0527` obligations |
-| Spreading & labels (`E0620`–`E0622`, `E0313`, `E0612`, `E0618`) | `..SubEff` splices an accessible `eff` into `SupEff` (`E0620` non-effect, `E0313` cycle, `E0622` conflict); `@SupEff` covers `@SubEff`, and spliced ops share identity (`E0622` if handled twice in one `with`). Generic instantiations (`Emit<int>` vs. `Emit<str>`) are distinct labels. Arms target declared `eff` ops (`E0621` on `fn` or `@io`) without duplicates (`E0622`). Uncovered effects fail `E0612` (block-local `eff` fails `E0618`) |
+| Dynamic stack dispatch | Closures and `where`-local `fn`s do not capture outer `with` handlers; all invoked `@Eff` effects remain in their signatures and dispatch dynamically along the active call stack. When `Eff::op(args)` matches handler frame `H`, `H`'s arm runs against `H`'s **parent** stack frame. For `ctl` ops, frames from `H` (inclusive, deep handler) to the `op` call site are captured in `k`; `k(v)` splices that slice onto the resumer's stack |
+| `ctl(...)` typing & `unwind_ctl` (`E0625`, `E0549`, `E0301`) | Within a `with` boundary of answer type `R` (`K-JOIN` of body and `ctl` arms), a `ctl` arm receives mode-free `k` as its final parameter of type `ctl() @E_res [&S_res] -> R` (when `OpRet ≡ ()`) or `ctl(OpRet) @E_res [&S_res] -> R`. Every `ctl(...)` is **must-consume (`E0625`)**, discharged by invoking `k(...)` once (`E0549` on reuse) or calling `unwind_ctl(k)`. A wildcard `_` continuation parameter runs `unwind_ctl(k)` before the arm body. `unwind_ctl(k)` (`E0301` on non-`ctl(...)`) is `no_ctl`, unwinds `k`'s armed `defer`s LIFO, returns `()`, and charges `k`'s residual `&State`, `@io`, and `fn`-op `@Eff` labels |
+| Control-flow & escape (`E0707`, `E0528`, `E0510`, `E0604`) | A `ctl`-bearing `with { ... }` or nested-block statement `with ctl` forbids outer `return`/`break`/`continue`/`?` (`E0707`). At a function's top-level block, `return e`/`?` under statement `with ctl` completes the innermost enclosing top-level `with ctl` boundary with `e` (return signature guards run only when the function returns). Inside an arm, `k` participates in overlap checks (`E0523`/`E0524`/`E0526`). If `k` escapes the `with` boundary, outer captures are checked as escaping captures (forbidding unshared `let mut`, call-scoped `mut`, `var`, and `ref`) |
+| Arm compatibility (`E0407`, `E0534`, `E0616`) | Deep handler arms run 0..N times and reject `ctl(...)` (`E0534`/`E0549`). A `fn` arm checks against `fn(OpParams) @ &up [Op.StateAnnot] -> Op.ReturnType`, forbidding unhandled outer `ctl` (`E0616`) while keeping parameter modes (`E0407`), return mode, and parameter `&mut`/`&^mut`/`&return(...)` exact (`E0534`). Installing a handler charges its outward `@Eff`, `&mut`, and `E0527` obligations |
+| Spreading & labels (`E0620`–`E0622`, `E0313`, `E0612`, `E0618`, `E0626`) | `..SubEff` splices an accessible `eff` into `SupEff` (`E0620` non-effect, `E0313` cycle, `E0622` conflict); `@SupEff` covers `@SubEff`, and spliced ops share identity (`E0622` if handled twice in one `with`). Generic instantiations (`Emit<int>` vs. `Emit<str>`) are distinct labels. Arms target declared `eff` ops (`E0621` on `fn` or `@io`) without duplicates (`E0622`). Uncovered effects fail `E0612` (block-local `eff` fails `E0618`); declared effects never exercised on any reachable path fail `E0626` |
 
-Leading `mut`/`ref`/`^mut`/`new` on an arm RHS parses as `ArgumentMode`, holding block-scoped read/write locks against freezing (`E0535`), `new` handoff (`E0548`), and overlapping mutation (`E0523`/`E0524`/`E0526`/`E0537`):
+Leading `mut`/`ref`/`^mut` on an arm RHS parses as `ArgumentMode`, holding block-scoped read/write locks against freezing (`E0535`) and overlapping mutation (`E0523`/`E0524`/`E0526`/`E0537`):
 
 | Arm RHS form | Accepted callables | Active hold & escape rules |
 | :--- | :--- | :--- |
-| *(omitted)* | Pure/stateless `fn`, `where`-local `fn`, newly constructed `new` reusable callables (`\... -> ...`, factory calls) | Activates holds on `&up(...)` of `where`-local `fn`; rejects bare `&up` variables (`E0405`/`E0520`) and `&once` (`E0534`) |
+| *(omitted)* | Pure/stateless `fn`, `where`-local `fn`, newly constructed `new` reusable callables (`\... -> ...`, factory calls) | Activates holds on `&up(...)` of `where`-local `fn`; rejects bare `&up` variables (`E0405`/`E0520`) |
 | `ref expr` | `&up(ref)` read-only observer callable | Establishes a scope-bound read hold |
 | `mut path` | Mutable `&up` callable variable/path | Establishes a scope-bound write hold (`E0528`/`E0604` on escape) |
 | `^mut path` | Shared writable `&up` callable path | Retains shared write authority (`E0510`/`E0528` on call-scoped `mut`) |
-| `new expr` | `new`-qualified reusable callable | Hands off `new` qualification into the handler slot (`E0549`) while keeping active holds on contained existing sources |
 
 ```ebnf
 EffectDecl         ::= { MetaAttr } [ Visibility ] "eff" PascalCase [ GenericParams ]
@@ -2868,41 +2793,43 @@ The prelude predeclares `@io` as the sole lowercase built-in system effect label
 
 | System effect | Purpose & handling boundary |
 | :--- | :--- |
-| `@io` | Host I/O, timers, filesystem/network access, and `.d.ril` foreign calls; serviced solely by the host runtime on `fn main` |
+| `@io` | Host I/O, timers, and filesystem/network access; serviced solely by the host runtime on `fn main` |
 
-### Panic Recovery with recover_panic
+### Panic Recovery with `Panic::recover`
 
-`recover_panic` isolates synchronous panics behind a panic boundary, unwinding active `defer` statements inside `action` before returning `Err(PanicError::Panicked(info))`:
+`Panic::recover` (from `use ril/panic`) isolates synchronous panics behind a panic boundary, unwinding active `defer` statements inside `action` before returning `Err(Panic::Error::Panicked(info))`:
 
 ```ril
--- File: ril/prelude.ril
-pub opaque type PanicReport(str)
-pub type PanicError { Panicked(PanicReport) }
+-- File: ril/panic.ril
+pub opaque type Report(str)
+pub type Error { Panicked(Report) }
 
-pub fn panic_message(report: PanicReport) -> str
-pub fn recover_panic<T>(via action: fn() @& -> infer T) -> infer !<T, PanicError>
+pub fn recover<T>(via action: fn() @& -> infer T) -> infer !<T, Error>
+pub fn message(report: Report) -> str
 ```
 
 ```ril
+use ril/panic as Panic
+
 fn parse_header(parts: []str) -> str { parts[1] }
 
-fn isolated_parse(parts: []str) -> new !<str, PanicError> {
-    recover_panic \-> parse_header(parts)
+fn isolated_parse(parts: []str) -> new !<str, Panic::Error> {
+    Panic::recover \-> parse_header(parts)
 }
 
 fn test_recover_panic() -> () {
     assert(isolated_parse(["k", "v"]) == Ok("v"))
-    let Err(PanicError::Panicked(info)) = isolated_parse(["only_one"]) else { panic("expected panic") }
-    assert(len(panic_message(info)) > 0)
+    let Err(Panic::Error::Panicked(info)) = isolated_parse(["only_one"]) else { panic("expected panic") }
+    assert(len(Panic::message(info)) > 0)
     let mut ext = [1, 2]
     Array::push(mut ext, 3)
-    -- let _ = recover_panic \-> Array::push(mut ext, 4) -- Error [E0608]: outer 'mut' violates panic boundary
+    -- let _ = Panic::recover \-> Array::push(mut ext, 4) -- Error [E0608]: outer 'mut' violates panic boundary
 }
 test_recover_panic()
 ```
 
-- **Panic boundary (`E0608`)**: `action` must not observe or mutate outer `var`/`mut`/`^mut`/`ref` state, capture outer `ctl(...)` continuations or must-consume handles, emit unhandled effects, invoke any outer `ctl` handler or stateful outer `fn` handler, or leak mutable captures. Confined local state, local `with` handlers, and stateless outer `fn` handlers are allowed.
-- **Sealed `PanicReport` (`E0301`, `E0308`, `E0810`)**: Direct construction fails `E0301`, representation access fails `E0308`, and `panic_message(info)` is runtime-only (`E0810` in static evaluation).
+- **Panic boundary (`E0608`)**: `action` must not observe or mutate outer `var`/`mut`/`^mut`/`ref` state, capture outer `ctl(...)` continuations, emit unhandled effects, invoke any outer `ctl` handler or stateful outer `fn` handler, or leak mutable captures. Confined local state, local `with` handlers, and stateless outer `fn` handlers are allowed.
+- **Sealed `Panic::Report` (`E0301`, `E0308`, `E0810`)**: Direct construction fails `E0301`, representation access fails `E0308`, and `Panic::message(info)` is runtime-only (`E0810` in static evaluation).
 - **Double panic**: A panic inside `defer` while unwinding an earlier panic triggers uncatchable **abort**.
 
 ---
@@ -2993,13 +2920,13 @@ assert(describe(7) == "int:7" && describe(true) == "true")
 | :--- | :--- |
 | `TypeEval` (type functions, static checks) | Type functions, `meta fn`, confined closures, static reflection, and dual-phase core ops (`len`, `inner`, `clone`, `derive`, `assert`, `panic`, `String::inspect`, plus pure `Array`/`Map`/`Set`/`String`/`Bytes`/`Numeric`) |
 | `MetaValue` (`meta fn`, `meta let`, `meta(...)`) | `meta fn`, confined closures, static reflection, and dual-phase core operations |
-| `RunTime` (`fn`, closures) | Ordinary `fn`, closures, foreign `.d.ril` `fn`, and runtime/dual-phase built-ins. Compile-time evaluation and `meta fn` calls enter `MetaValue` explicitly via `meta expr` / `meta { ... }` (yielding immutable snapshots) |
+| `RunTime` (`fn`, closures) | Ordinary `fn`, closures, and runtime/dual-phase built-ins. Compile-time evaluation and `meta fn` calls enter `MetaValue` explicitly via `meta expr` / `meta { ... }` (yielding immutable snapshots) |
 
 - **Explicit runtime-only `meta` expressions, `meta if`, and `meta match` (`E0810`, `E0814`, `E0816`)**:
   - `meta expr` / `meta { ... }`, `meta if`, and `meta match` are permitted **only** inside runtime functions and closures (`E0810` inside `meta fn`, `meta let`, `meta(...)`, `meta` expressions, or type functions, where code already executes at compile time). Calling a `meta fn` directly in runtime code outside a `meta` context fails `E0810`.
   - Tight `meta(...)` is reserved for declaration metadata attributes; parenthesized `meta` expressions require whitespace (`meta (a + b)`, `E0120` on tight `meta(...)` in expression position).
   - The operand of `meta expr`, the condition of `meta if`, and the scrutinee (plus arm guards) of `meta match` must be compile-time known (`E0814` on outer runtime locals or non-static values, `E0810` on runtime calls).
-  - When statically concrete (e.g., over `Platform::OS` or a `meta let` constant), only the selected branch is type-, access-, and codegen-checked; untaken branches are skipped and `.d.ril` foreign symbols referenced solely within them need not resolve at link time.
+  - When statically concrete (e.g., over `Platform::OS` or a `meta let` constant), only the selected branch is type-, access-, and codegen-checked; untaken branches are skipped.
   - Plain `if` / `match` in runtime code execute at runtime (`match` on `Type<T>` in runtime code fails `E0816`; write `meta match <T>`).
 - **Generic `meta match <T>`**: Checks each arm under its static type fact and resolves to the matching arm per concrete instantiation of `T`.
 - **Nonnegative static bounds (`E0815`)**: Negative static sizes or counts where nonnegative static values are required fail `E0815`.
@@ -3008,7 +2935,7 @@ assert(describe(7) == "int:7" && describe(true) == "true")
 
 ```ril
 type Select = \T: .{ .. }, keys: []str -> {
-    let chosen = fields(<T>) |> Array::filter(\(_, k) -> Array::contains(keys, k))
+    let chosen = Reflect::fields(<T>) |> Array::filter(\(_, k) -> Array::contains(keys, k))
     <.{ m [chosen as (m, k)]: T.(k) }>
 }
 
@@ -3016,7 +2943,7 @@ type Model = .{ id: int, var title: str, mut rows: []int }
 type Patch = Select<Model, ["title", "rows"]> -- .{ var title: str, mut rows: []int }
 type Args(.{ query: str, limit: int = 10 })
 meta let _ = assert(Reflect::has_default(<Args>, "limit") && !Reflect::has_default(<Args>, "query"))
-meta let _ = assert(len(fields(<Args>)) == 2 && fields(<(int, str)>)[0] == (FieldMode::Let, 0))
+meta let _ = assert(len(Reflect::fields(<Args>)) == 2 && Reflect::fields(<(int, str)>)[0] == (FieldMode::Let, 0))
 
 fn read_field<T: .{ .. }>(via rec: T, meta key: str |> KeyOf<T>) -> infer T.(key) {
     rec.(key)
@@ -3038,26 +2965,26 @@ type Args(.{
 })
 type Color { Red; Green; Blue }
 
-meta let _ = assert(type_kind(<Args>) == TypeKind::Nominal && type_kind(<int>) == TypeKind::Value)
-meta let _ = assert(sum_tags(<Color>) == ["Blue", "Green", "Red"])
-meta let _ = assert(len(Reflect::attrs<Args, Doc>(<Args>)) == 1)
-meta let _ = assert(len(Reflect::field_attrs<Args, Doc>(<Args>, "query")) == 1)
+meta let _ = assert(Reflect::type_kind(<Args>) == Reflect::TypeKind::Nominal && Reflect::type_kind(<int>) == Reflect::TypeKind::Value)
+meta let _ = assert(Reflect::sum_tags(<Color>) == ["Blue", "Green", "Red"])
+meta let _ = assert(len(Reflect::attrs(<Args>, <Doc>)) == 1)
+meta let _ = assert(len(Reflect::field_attrs(<Args>, "query", <Doc>)) == 1)
 
 -- Rejected introspection and mapped-record forms:
--- meta let _ = fields(<int>)            -- Error [E0358]: 'fields' requires a transparent record or tuple type
+-- meta let _ = Reflect::fields(<int>)   -- Error [E0358]: 'Reflect::fields' requires a transparent record or tuple type
 -- type BadMap = .{ [[1, 2] as k]: int } -- Error [E0341]: mapped record key must have type 'str'
 -- type BadKey = .{ [["fn"] as k]: int } -- Error [E0815]: keyword 'fn' is not a valid FieldLabel
 -- type BadIdx = (int, str).(-1)         -- Error [E0815]: negative static tuple index '-1'
 ```
 
-- **Constituent projection (`T.(k)`)**: Projects field type `T.field` / `T.("field")` on accessible records, `T.0` / `T.(0)` on tuples, and payload type `T.Variant` / `T.("Variant")` on transparent sums (`()` for unit variants; `E0308` on sealed `.ril` `opaque`, `E0907` on `.d.ril`).
-- **`FieldMode`, `TypeKind`, `type_kind`, `fields`, and `sum_tags`**:
-  - `FieldMode` constructors (`Let`, `Var`, `Mut`, `SharedMut`, `Ref`, `VarMut`, `VarSharedMut`, `VarRef`) correspond to `FieldModeLiteral` spellings (`let`, `var`, `mut`, `^mut`, `ref`, `var mut`, `var ^mut`, `var ref`).
-  - `type_kind(<T>) -> TypeKind` classifies `T` into 17 variants (`Value`, `Record`, `Tuple`, `Array`, `Map`, `Sum`, `Nominal`, `OpaqueValue`, `OpaqueShared`, `OpaqueSum`, `Opaque`, `Foreign`, `Fn`, `Ctl`, `Derived`, `Range`, `Meta`). Aliases normalize first; `opaque` types always report `Opaque*`.
-  - `fields(<T>) -> [](FieldMode, FieldKey<T>)` lists `(mode, key)` in UTF-8 byte order for records (`FieldKey<T>` = `str`) and ascending index order for tuples (`FieldKey<T>` = `int`; `()` yields `[]`; `E0358` otherwise, `E0308` when sealed).
-  - `sum_tags(<T>) -> []str` lists deduplicated variant names in UTF-8 byte order for closed transparent sums (`E0301` non-sum; `E0308` sealed or open `..`).
+- **Constituent projection (`T.(k)`)**: Projects field type `T.field` / `T.("field")` on accessible records, `T.0` / `T.(0)` on tuples, and payload type `T.Variant` / `T.("Variant")` on transparent sums (`()` for unit variants; `E0308` on sealed `opaque`).
+- **`FieldMode`, `Reflect::TypeKind`, `Reflect::type_kind`, `Reflect::fields`, and `Reflect::sum_tags`**:
+  - `FieldMode` (re-exported by the prelude from `Reflect::FieldMode`) constructors (`Let`, `Var`, `Mut`, `SharedMut`, `Ref`, `VarMut`, `VarSharedMut`, `VarRef`) correspond to `FieldModeLiteral` spellings (`let`, `var`, `mut`, `^mut`, `ref`, `var mut`, `var ^mut`, `var ref`).
+  - `Reflect::type_kind(<T>) -> Reflect::TypeKind` classifies `T` into 16 variants (`Value`, `Record`, `Tuple`, `Array`, `Map`, `Sum`, `Nominal`, `OpaqueValue`, `OpaqueShared`, `OpaqueSum`, `Opaque`, `Fn`, `Ctl`, `Derived`, `Range`, `Meta`). Aliases normalize first; `opaque` types always report `Opaque*`.
+  - `Reflect::fields(<T>) -> [](FieldMode, Reflect::FieldKey<T>)` lists `(mode, key)` in UTF-8 byte order for records (`Reflect::FieldKey<T>` = `str`) and ascending index order for tuples (`Reflect::FieldKey<T>` = `int`; `()` yields `[]`; `E0358` otherwise, `E0308` when sealed).
+  - `Reflect::sum_tags(<T>) -> []str` lists deduplicated variant names in UTF-8 byte order for closed transparent sums (`E0301` non-sum; `E0308` sealed or open `..`).
 - **Mapped records (`.{ [ModeModifier] [expr as pat]: Type }`)**: Omitted or fixed `RecordFieldMode` iterates `str` keys; a `pat`-bound `ValueName` `ModeModifier` iterates `(FieldMode, str)` pairs (`E0341` otherwise). Keys must be valid non-keyword `FieldLabel`s (`E0815`) without duplicates (`E0210`).
-- **Metadata (`Reflect`)**: `Reflect::attrs<T, A>(<T>)`, `Reflect::field_attrs<T, A>(<T>, key)`, `Reflect::variant_attrs<T, A>(<T>, variant)`, and `Reflect::has_default<T>(<T>, key)`.
+- **Metadata (`Reflect`)**: `Reflect::attrs(<T>, <A>)`, `Reflect::field_attrs(<T>, key, <A>)`, `Reflect::variant_attrs(<T>, variant, <A>)`, and `Reflect::has_default(<T>, key)`.
 
 ```ebnf
 TypeProjection            ::= ( PrimaryType | TupleType | RecordType | TypeProjection ) "." ( FieldLabel | PascalCase | TupleIndex | "(" Expression ")" )
@@ -3082,8 +3009,8 @@ meta let _ = assert(<UnwrapAny<?str>> == <str> && <UnwrapAny<UserId>> == <int>)
 meta let _ = assert(<UnwrapAny<.{ id: int, name: str }>> == <.{ name: str }>)
 ```
 
-- `let U` binds an exact type variable (or `FieldMode` in `let M field: ...`; `let _` ignores the mode). `<(..)>` matches nonempty tuples (`TypeKind::Tuple`, distinct from `()`). Bare `PascalCase` heads match concrete nominal, sum, or opaque constructors (`E0306` on type-constructor pattern variables).
-- Static-only `Nominal<pat>` matches any transparent `.ril` nominal or in-scope `.ril` `opaque` type and matches its payload against `pat` (never sealed `opaque`, foreign handles, or sums; outside type patterns fails `E0306`, bare `Nominal` fails `E0319`, wrong arity fails `E0340`).
+- `let U` binds an exact type variable (or `FieldMode` in `let M field: ...`; `let _` ignores the mode). `<(..)>` matches nonempty tuples (`Reflect::TypeKind::Tuple`, distinct from `()`). Bare `PascalCase` heads match concrete nominal, sum, or opaque constructors (`E0306` on type-constructor pattern variables).
+- Static-only `Nominal<pat>` matches any transparent nominal or in-scope `opaque` type and matches its payload against `pat` (never sealed `opaque` or sums; outside type patterns fails `E0306`, bare `Nominal` fails `E0319`, wrong arity fails `E0340`).
 
 ```ebnf
 TypePattern           ::= "<" TypePatternInner ">"
@@ -3145,7 +3072,7 @@ pub sub UnitCircle {
 -- Rejected module, sub-scope, and top-level purity forms:
 -- sub UnitCircle { let _ = PI }                   -- Error [E0204]: 'PI' not in scope without 'Super::'
 -- let _r: UnitCircle::Rad = 1.0                   -- Error [E0301]: expected 'UnitCircle::Rad', found 'f64'
--- meta let _K = fields(<UnitCircle::Rad>)         -- Error [E0308]: 'Rad' representation is sealed outside 'UnitCircle'
+-- meta let _K = Reflect::fields(<UnitCircle::Rad>) -- Error [E0308]: 'Rad' representation is sealed outside 'UnitCircle'
 -- use Super::PI                                   -- Error [E0208]: file root has no enclosing 'Super'
 -- pub fn leak() -> new Hidden { Hidden.{ r: 1.0 } } -- Error [E0910]: 'pub' signature leaks private 'Hidden'
 -- var global_hits = 0                             -- Error [E0906]: top-level mutable state is prohibited
@@ -3156,7 +3083,6 @@ pub sub UnitCircle {
 | :--- | :--- |
 | **Executable Root (`.ril`)** | Non-`sub` entry file, unimportable (`E0208`); forbids root `pub`/`pkg` (`E0905`) and requires private root `fn main` (`E0903`, `E0904`) |
 | **Library Module (`.ril`)** | Importable module named `to_pascal_case(file_stem)`; forbids `fn main` (`E0904`). Items default to file-private (`E0201`); files with zero root `pub` items have `pkg` visibility (`E0201` outside package) |
-| **Foreign Interface (`.d.ril`)** | Bodyless foreign host declarations (`E0901` on bodies or representations on `opaque type`/nominal declarations); forbids `fn main` (`E0904`); nested `sub` blocks inherit `.d.ril` rules |
 
 - **Inline `sub` (`[Visibility] sub Name`)**: Non-generic `PascalCase` namespace at file or `sub` top-level (`E0703` in statements, `E0702`/`E0704` in `where`, `E0203` on `sub Super`, `E0904` on `fn main`).
   - **Scope isolation**: Only the prelude is automatically in scope; `Super::` accesses enclosing file/`sub` items (`E0208` at file root); downward access requires `pub` or same-package `pkg` (`E0201`).
@@ -3165,9 +3091,8 @@ pub sub UnitCircle {
   - Mutable, shared, or live `ref` top-level bindings (`var`, `let mut`, `let ^mut`, `let ref`) fail `E0906`; impure initializers fail `E0202`; top-level `?` fails `E0205`.
 
 ```ebnf
-SourceFile ::= ModuleFile | DeclFile
+SourceFile ::= ModuleFile
 ModuleFile ::= { ModuleItem Separator } [ ModuleItem ] EOF
-DeclFile   ::= { DeclUnitItem Separator } [ DeclUnitItem ] EOF
 ModuleItem ::= UseDecl | SubDecl | FunctionDecl | MetaFnDecl | MetaLetDecl
              | LetDecl | TypeDecl | NominalTypeDecl | OpaqueTypeDecl
              | SumTypeDecl | EffectDecl
@@ -3231,26 +3156,26 @@ fn main() @io -> new !<(), str> {
 ### Prelude Scope
 
 The implicit prelude encloses every compilation unit and inline `sub`:
-- **Types & effects**: Primitive types, `Option<T>` (`?T`; exports `Some`, `None`), `Result<T, E>` (`!<T, E>`; exports `Ok`, `Err`), `Set<T>`, `PanicReport` (value-backed `opaque` over `str`), `PanicError` (exports `Panicked`), `FieldMode`, `TypeKind`, `Derived<T>`, and `@io`.
-- **Static checks, patterns & type helpers**: `SharedObject`, `Tuple`, `LenTarget`, `NominalWrapper`, `Unwrap`, `FieldKey`, `KeyOf`, and the static-only type pattern `Nominal<pat>`.
-- **Core modules**: `Array` (including destructive extractors `Array::pop`, `Array::pop_front`, `Array::remove` returning `new ?T`), `Map` (including `Map::remove` returning `new ?V`), `Set`, `String`, `Bytes`, `Numeric`, and `Reflect`.
-- **Explicit standard imports**: `use ril/io`, `use ril/file`, `use ril/os`, `use ril/platform`, `use ril/math`, and `use ril/crypto`.
+- **Types & effects**: Primitive types, `Option<T>` (`?T`; exports `Some`, `None`), `Result<T, E>` (`!<T, E>`; exports `Ok`, `Err`), `Set<T>`, `FieldMode`, `Derived<T>`, and `@io`.
+- **Static checks, patterns & type helpers**: `SharedObject`, `LenTarget`, `InnerTarget`, `Inner`, `KeyOf`, and the static-only type pattern `Nominal<pat>`.
+- **Core modules**: `Array` (including destructive extractors `Array::pop`, `Array::pop_front`, `Array::remove` returning `new ?T`), `Map` (including `Map::replace` and `Map::remove` returning `new ?V`), `Set`, `String`, `Bytes`, `Numeric`, and `Reflect` (providing `TypeKind`, `FieldKey`, `type_name`, `type_kind`, `fields`, `sum_tags`, `attrs`, `field_attrs`, `variant_attrs`, `has_default`).
+- **Explicit standard imports**: `use ril/panic`, `use ril/io`, `use ril/file`, `use ril/platform`, and `use ril/math`.
 
 #### Built-in Foundational Operations
 
 | Built-in | Canonical signature | Phase & specification |
 | :--- | :--- | :--- |
 | `len` | `pub fn len<T \|> LenTarget>(via item: T) -> int` | Dual-phase: scalar count of `str`, byte count of `bytes`, element/entry count of `[]T`, `[K: V]`, `Set<T>` (and `Derived` wrappers thereof; admits `ref` on collections at runtime; `E0401` on `ref str`) |
-| `inner` | `pub fn inner<W \|> NominalWrapper>(via wrapper: W) -> infer Unwrap<W>` | Dual-phase: unwraps accessible `.ril` `nominal` wrapper (or `Derived<W>`, lifting `NominalWrapper`/`Unwrap`) to its payload (`()` for unit nominals; `inner(mut x)` is a scoped path projection usable on `Derived<W>` or as an immediate `mut` path receiver, unable to bind a second unshared `let mut` alias, `E0510`; `E0907` on `.d.ril` nominals, `E0301` on non-nominals) |
-| `clone` | `pub fn clone<T \|> SharedObject>(via value: T) -> new T` | Dual-phase: deep copy of a clonable `SharedObject` graph into isolated `new T` (`E0301` on value-type or callable roots and graphs containing `.d.ril` `opaque` / `&once` / `ctl(...)` / `Derived` handles, `E0530` on live callable environments) |
+| `inner` | `pub fn inner<W \|> InnerTarget>(via wrapper: W) -> infer Inner<W>` | Dual-phase: unwraps accessible nominal wrapper (or `Derived<W>`, lifting `InnerTarget`/`Inner`) to its payload (`()` for unit nominals; `inner(mut x)` is a scoped path projection usable on `Derived<W>` or as an immediate `mut` path receiver, unable to bind a second unshared `let mut` alias, `E0510`; `E0308` on sealed `opaque`, `E0301` on non-nominals) |
+| `clone` | `pub fn clone<T \|> SharedObject>(via value: T) -> new T` | Dual-phase: deep copy of a clonable `SharedObject` graph into isolated `new T` (`E0301` on value-type or callable roots and graphs containing `ctl(...)` or `Derived` handles, `E0530` on live callable environments) |
 | `derive` | `pub fn derive<T \|> SharedObject>(base: T, via update: fn(mut Derived<T>) @& -> ()) -> T` | Dual-phase: path-targeted functional update on immutable `SharedObject` (`E0536`, `E0308`, `E0607`) |
-| `unwind_ctl` | Built-in over `new k: ctl(...) [@E] [&S] -> R` | Runtime: synchronously unwinds `k`'s armed `defer` stack frames LIFO and returns `()` (`E0810` in static eval; `E0301` on non-`ctl(...)`; `no_ctl`, legal inside `defer`; charges residual `&S`, `@io`, and `fn`-op `@Eff` labels) |
-| `recover_panic` | `pub fn recover_panic<T>(via action: fn() @& -> infer T) -> infer !<T, PanicError>` | Runtime: panic-isolated containment (`E0608`) |
-| `panic_message` | `pub fn panic_message(report: PanicReport) -> str` | Runtime: extracts human-readable message from `PanicReport` (`E0810` in static eval) |
-| `type_name` | `pub meta fn type_name<T>(target: Type<T>) -> str` | Static only: diagnostic display string of `T` |
-| `type_kind` | `pub meta fn type_kind<T>(target: Type<T>) -> TypeKind` | Static only: coarse `TypeKind` classification of `T` |
-| `fields` | `pub meta fn fields<T>(target: Type<T>) -> [](FieldMode, FieldKey<T>)` | Static only: `(mode, key)` pairs of accessible record (`str` keys) or tuple (`int` keys) `T` (`E0358` non-record/non-tuple, `E0308` sealed) |
-| `sum_tags` | `pub meta fn sum_tags<T>(target: Type<T>) -> []str` | Static only: variant tags of closed transparent sum `T` (`E0301` non-sum, `E0308` sealed/open) |
+| `unwind_ctl` | `pub fn unwind_ctl<T>(k: T) -> ()` | Runtime: synchronously unwinds `ctl(...)` continuation `k`'s armed `defer` stack frames LIFO and returns `()` (`E0810` in static eval; `E0301` on non-`ctl(...)`; `no_ctl`, legal inside `defer`; charges residual `&S`, `@io`, and `fn`-op `@Eff` labels) |
+| `Panic::recover` (`ril/panic`) | `pub fn recover<T>(via action: fn() @& -> infer T) -> infer !<T, Panic::Error>` | Runtime: panic-isolated containment (`E0608`) |
+| `Panic::message` (`ril/panic`) | `pub fn message(report: Panic::Report) -> str` | Runtime: extracts human-readable message from `Panic::Report` (`E0810` in static eval) |
+| `Reflect::type_name` | `pub meta fn type_name<T>(target: Type<T>) -> str` | Static only: diagnostic display string of `T` |
+| `Reflect::type_kind` | `pub meta fn type_kind<T>(target: Type<T>) -> Reflect::TypeKind` | Static only: coarse `Reflect::TypeKind` classification of `T` |
+| `Reflect::fields` | `pub meta fn fields<T>(target: Type<T>) -> [](FieldMode, Reflect::FieldKey<T>)` | Static only: `(mode, key)` pairs of accessible record (`str` keys) or tuple (`int` keys) `T` (`E0358` non-record/non-tuple, `E0308` sealed) |
+| `Reflect::sum_tags` | `pub meta fn sum_tags<T>(target: Type<T>) -> []str` | Static only: variant tags of closed transparent sum `T` (`E0301` non-sum, `E0308` sealed/open) |
 | `compile_error` | `pub meta fn compile_error(message: str) -> never` | Static only: emits compile-time diagnostic `E0832` with `message`, anchored at the enclosing type/meta instantiation site |
 | `panic` | `pub fn panic(message: str) -> never` | Dual-phase: LIFO panic unwinding at runtime; `E0831` in static eval |
 | `assert` | `pub fn assert(condition: bool, message: str = "assertion failed") -> ()` | Dual-phase: panics with `message` when `false` at runtime; `E0830` when `false` in static eval |
@@ -3293,8 +3218,8 @@ fn inspect_nested(opt: ?!<int, str>) -> int {
     }
 }
 
-fn safe_suspend(new k: ctl() -> int) @Pause -> int {
-    defer unwind_ctl(new k)                   -- Armed 'defer' protects must-consume 'k' across unhandled 'ctl'
+fn safe_suspend(k: ctl() -> int) @Pause -> int {
+    defer unwind_ctl(k)                       -- Armed 'defer' protects must-consume 'k' across unhandled 'ctl'
     Pause::yield_step()
     0
 }
@@ -3307,15 +3232,15 @@ fn safe_suspend(new k: ctl() -> int) @Pause -> int {
 -- let _ = Some(write_entry("wrap"))          -- Error [E0720]: wrapped Result discarded uninspected
 -- let a = write_entry("x"); let b = write_entry("y"); let _ = (a == b) -- Error [E0720]: non-constructor comparison
 -- fn bad_break(xs: []!<int, str>) -> () { for xs as r { let _ = r ?? \_ -> 0; break } } -- Error [E0720]: unvisited Results
--- fn bad_drop_k(new _k: ctl() -> int) -> () {} -- Error [E0625]: unconsumed 'ctl(...)' continuation
--- fn bad_ctl_k(new k: ctl() -> int) @Pause -> int { Pause::yield_step(); k() } -- Error [E0625]: live 'k' across unhandled 'ctl'
+-- fn bad_drop_k(_k: ctl() -> int) -> () {}   -- Error [E0625]: unconsumed 'ctl(...)' continuation
+-- fn bad_ctl_k(k: ctl() -> int) @Pause -> int { Pause::yield_step(); k() } -- Error [E0625]: live 'k' across unhandled 'ctl'
 ```
 
 - **Satisfies `E0720`**: Matching `Ok(...)`/`Err(...)` on a reached path, comparing `==`/`!=` against `Ok(...)`/`Err(...)`, propagating (`?`), handling (`??`), passing to an explicitly `!<T, E>`-typed parameter, or returning. Each `Result` in a composite or collection carries its own obligation (`break` leaves unvisited elements pending; `continue` keeps skipped elements pending; `?` requires other live Results to be inspected or returned).
-- **Must-consume linear values (`E0625`)**: `ctl(...)` continuations, foreign handles, and any composite, nominal, or `.ril` `opaque` type transitively containing them (propagated across `opaque` boundaries in `K-IFACE`):
-  - Every normal and early-exit (`return`/`?`) path must consume `new h` via handoff, return, `ctl(...)` invocation, `unwind_ctl(new k)`, or armed `defer` (`E0625` on discard, `_`, or unconsumed collection elements).
-  - Across any unhandled `ctl` call, every live must-consume value must either be handed off into that call or be managed by an armed `defer` inside the same `ctl` boundary (`E0625`).
-  - Affine `&once` closures cannot capture must-consume values (`E0625` / `E0720`).
+- **Must-consume linear values (`E0625`)**: Mode-free `ctl(...)` continuations and any composite, nominal, or `opaque` type transitively containing them (propagated across `opaque` boundaries in `K-IFACE`):
+  - Every normal and early-exit (`return`/`?`) path must consume `k` via direct invocation `k(...)`, `unwind_ctl(k)`, return, container/function transfer, or armed `defer` (`E0625` on discard, `_`, `Map::insert` overwrite, `Array::clear`/`Map::clear`, or unconsumed collection elements). Generic functions that drop, duplicate, or suspend an unconstrained `T` across unhandled `ctl` automatically record linearity flags so passing `ctl(...)` fails `E0625` while transparent generic identity (`fn id<T>(x: T) -> T { x }`) remains valid.
+  - Across any unhandled `ctl` call, every live must-consume value must either be passed into that call or be managed by an armed `defer` inside the same `ctl` boundary (`E0625`).
+  - Closures cannot capture must-consume `ctl(...)` values (`E0625`).
 
 ---
 
@@ -3417,7 +3342,7 @@ fn safe_suspend(new k: ctl() -> int) @Pause -> int {
 | **`E0355`** | [`NonIterableValueError`](#conditional-and-loop-expressions) |
 | **`E0356`** | [`InvalidMemberModeError`](#array-map-set-and-tuple-types) |
 | **`E0357`** | [`IncompatibleMemberModeError`](#record-types-and-open-record-tails); [Member Modes and Implicit Schema Parameters](#member-modes-and-implicit-schema-parameters) |
-| **`E0358`** | [`InvalidCoordsTargetError`](#static-introspection) |
+| **`E0358`** | [`InvalidFieldsTargetError`](#static-introspection) |
 | **`E0359`** | [`InvalidFieldDefaultPlacementError`](#record-types-and-open-record-tails) |
 | **`E0360`** | [`UnfinishedExpressionHoleError`](#expression-grammar-and-precedence) |
 | **`E0361`** | [`DivisionOrShiftDomainError`](#arithmetic-bitwise-relational-and-logical-operators) |
@@ -3458,7 +3383,7 @@ fn safe_suspend(new k: ctl() -> int) @Pause -> int {
 | **`E0529`** | [`ExcessiveStateAnnotationError`](#local-state-containment-parameter-mutation-and-sharing) |
 | **`E0530`** | [`IllegalNonClonableAuthorityError`](#deep-immutability) |
 | **`E0531`** | [`InvalidRefSourceError`](#subtyping-reception-and-callable-compatibility) |
-| **`E0532`** | [`ReassignableExclusiveBindingError`](#deferred-cleanup-statements-defer); [Foreign Interface Declarations](#foreign-interface-declarations) |
+| **`E0532`** | [`ReassignableExclusiveBindingError`](#deferred-cleanup-statements-defer) |
 | **`E0533`** | [`AliasedNarrowingHazardError`](#flow-sensitive-type-narrowing) |
 | **`E0534`** | [`CallableSignatureMismatchError`](#callable-compatibility) |
 | **`E0535`** | [`CannotFreezeValueError`](#deep-immutability) |
@@ -3482,7 +3407,7 @@ fn safe_suspend(new k: ctl() -> int) @Pause -> int {
 | :---: | :--- |
 | **`E0604`** | [`ScopedValueEscapeError`](#deferred-cleanup-statements-defer); [Effect Declarations and Handlers](#effect-declarations-and-handlers) |
 | **`E0607`** | [`DerivedEscapeError`](#functional-updates-via-derive) |
-| **`E0608`** | [`PanicIsolationViolationError`](#panic-recovery-with-recover_panic) |
+| **`E0608`** | [`PanicIsolationViolationError`](#panic-recovery-with-panicrecover) |
 | **`E0612`** | [`UnhandledEffectError`](#effect-declarations-and-handlers) |
 | **`E0613`** | [`ValueEffectAnnotationError`](#type-definition-boundaries) |
 | **`E0616`** | [`DisallowedControlEffectError`](#deferred-cleanup-statements-defer); [Effect Declarations and Handlers](#effect-declarations-and-handlers) |
@@ -3492,6 +3417,7 @@ fn safe_suspend(new k: ctl() -> int) @Pause -> int {
 | **`E0622`** | [`DuplicateHandlerOperationError`](#effect-declarations-and-handlers) |
 | **`E0623`** | [`EffectOperationKindMismatchError`](#effect-declarations-and-handlers) |
 | **`E0625`** | [`UnconsumedLinearValueError`](#mandatory-inspection-of-fallible-results); [Effect Declarations and Handlers](#effect-declarations-and-handlers) |
+| **`E0626`** | [`UnusedEffectError`](#effect-declarations-and-handlers) |
 
 ### Declaration Contexts, Control Flow, and Fallible Values
 
@@ -3528,17 +3454,14 @@ fn safe_suspend(new k: ctl() -> int) @Pause -> int {
 | **`E0831`** | [`StaticEvaluationPanicError`](#pure-type-functions-and-result-restrictions) |
 | **`E0832`** | [`CompileErrorDiagnostic`](#built-in-foundational-operations) |
 
-### Module Forms, Entry Points, and Foreign Interfaces
+### Module Forms and Entry Points
 
 | Code | Diagnostic and defining rule |
 | :---: | :--- |
-| **`E0901`** | [`BodyInForeignInterfaceError`](#foreign-interface-declarations) |
-| **`E0902`** | [`MissingDeclarationBodyError`](#foreign-interface-declarations) |
+| **`E0902`** | [`MissingDeclarationBodyError`](#named-function-declarations-and-contrast-matrix) |
 | **`E0903`** | [`MissingEntryPointError`](#program-entry-point) |
 | **`E0904`** | [`InvalidEntryPointError`](#program-entry-point) |
 | **`E0905`** | [`RootUnitExportProhibitedError`](#modules-and-compilation-units) |
 | **`E0906`** | [`TopLevelMutableStateProhibitedError`](#modules-and-compilation-units) |
-| **`E0907`** | [`ForeignRepresentationAccessError`](#foreign-interface-declarations) |
-| **`E0908`** | [`UnsupportedForeignAuthorityError`](#foreign-interface-declarations) |
 | **`E0909`** | [`BuiltinSignatureMismatchError`](#named-function-declarations-and-contrast-matrix) |
 | **`E0910`** | [`ExportedVisibilityLeakError`](#module-imports-and-visibility) |

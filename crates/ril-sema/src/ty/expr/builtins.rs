@@ -71,13 +71,7 @@ impl Checker<'_> {
             };
             ty = self.normalize(&representation);
         }
-        if ty.is_primitive_value()
-            || matches!(
-                &ty,
-                Ty::Adt(adt) if adt.kind == AdtKind::Foreign
-            )
-            || matches!(ty, Ty::Callable(_) | Ty::Draft(_))
-        {
+        if ty.is_primitive_value() || matches!(ty, Ty::Callable(_) | Ty::Draft(_)) {
             self.error(
                 Code::E0536,
                 span,
@@ -103,7 +97,7 @@ impl Checker<'_> {
         }
         match ty {
             Ty::Draft(_) | Ty::TypeValue(_) | Ty::Mode => true,
-            Ty::Callable(c) if c.is_ctl || c.once => true,
+            Ty::Callable(c) if c.is_ctl => true,
             Ty::Param(id) => {
                 // A type match can select one type from the declared domain.
                 if let Some(GenericValue::Type(ty)) = env.generics.get(&id)
@@ -123,9 +117,6 @@ impl Checker<'_> {
                 false
             }
             Ty::Adt(adt) => {
-                if adt.kind == AdtKind::Foreign {
-                    return true;
-                }
                 if proof
                     .active
                     .iter()
@@ -202,8 +193,9 @@ impl Checker<'_> {
         }
         let first = types.first().cloned().unwrap_or(Ty::Unknown);
         let arity = match name {
-            "len" | "clone" | "inner" | "fields" | "sum_tags" | "convert" | "recover_panic"
-            | "unwind_ctl" => Some(1..=1),
+            "len" | "clone" | "inner" | "fields" | "sum_tags" | "recover" | "unwind_ctl" => {
+                Some(1..=1)
+            }
             "has_default" | "derive" => Some(2..=2),
             _ => None,
         };
@@ -254,17 +246,11 @@ impl Checker<'_> {
             "unwind_ctl" => {
                 if let Some(arg) = args.first() {
                     let arg_span = self.ast(env.file).expr(arg.value).span;
-                    if arg.mode == Mode::Plain {
-                        self.error(
-                            Code::E0405,
-                            arg_span,
-                            "unwind_ctl requires explicit 'new' argument mode",
-                        );
-                    } else if arg.mode != Mode::New {
+                    if arg.mode != Mode::Plain {
                         self.error(
                             Code::E0406,
                             arg_span,
-                            "unwind_ctl requires 'new' argument mode",
+                            "unwind_ctl takes a plain ctl(...) continuation without an access mode",
                         );
                     }
                     let norm = self.normalize(&first);
@@ -298,10 +284,6 @@ impl Checker<'_> {
                     other => other,
                 };
                 let inner_ty = match target {
-                    Ty::Adt(adt) if adt.kind == AdtKind::Foreign => {
-                        self.error(Code::E0907, span, "foreign representation is sealed");
-                        Ty::Unknown
-                    }
                     Ty::Adt(adt)
                         if adt.kind == AdtKind::Opaque && adt.defining_scope != env.scope =>
                     {
@@ -328,10 +310,6 @@ impl Checker<'_> {
                     match self.normalize(&ty) {
                         Ty::Record(..) => Ty::Str,
                         Ty::Tuple(_) | Ty::Unit => Ty::Int,
-                        Ty::Adt(adt) if adt.kind == AdtKind::Foreign => {
-                            self.error(Code::E0907, span, "foreign representation is sealed");
-                            Ty::Unknown
-                        }
                         Ty::Adt(adt)
                             if matches!(adt.kind, AdtKind::Opaque | AdtKind::OpaqueSum)
                                 && adt.defining_scope != env.scope =>
@@ -368,9 +346,6 @@ impl Checker<'_> {
             "sum_tags" => {
                 if let Ty::TypeValue(Some(ty)) = first {
                     match self.normalize(&ty) {
-                        Ty::Adt(adt) if adt.kind == AdtKind::Foreign => {
-                            self.error(Code::E0907, span, "foreign representation is sealed");
-                        }
                         Ty::Adt(adt)
                             if adt.kind == AdtKind::OpaqueSum
                                 && adt.defining_scope != env.scope =>
@@ -406,9 +381,6 @@ impl Checker<'_> {
             "has_default" => {
                 if let Ty::TypeValue(Some(ty)) = &first {
                     match self.normalize(ty) {
-                        Ty::Adt(adt) if adt.kind == AdtKind::Foreign => {
-                            self.error(Code::E0907, span, "foreign representation is sealed");
-                        }
                         Ty::Adt(adt)
                             if matches!(adt.kind, AdtKind::Opaque | AdtKind::OpaqueSum)
                                 && adt.defining_scope != env.scope =>
@@ -433,7 +405,7 @@ impl Checker<'_> {
                 Ty::Bool
             }
             "derive" => first,
-            "recover_panic" => match self.normalize(&first) {
+            "recover" => match self.normalize(&first) {
                 Ty::Callable(call) if call.parameters.is_empty() => {
                     if args.first().is_some_and(|arg| {
                         !matches!(
@@ -457,7 +429,7 @@ impl Checker<'_> {
                     self.error(
                         Code::E0314,
                         span,
-                        "recover_panic action must take zero arguments",
+                        "Panic::recover action must take zero arguments",
                     );
                     Ty::Unknown
                 }
@@ -466,68 +438,12 @@ impl Checker<'_> {
                     self.error(
                         Code::E0338,
                         span,
-                        "recover_panic requires a zero-argument callable",
+                        "Panic::recover requires a zero-argument callable",
                     );
                     Ty::Unknown
                 }
             },
             _ => Ty::Unknown,
         }
-    }
-
-    pub(super) fn reflect_call(
-        &mut self,
-        env: &mut Env,
-        path: &syntax::Path,
-        args: &[Argument],
-        expected: Option<&Ty>,
-        span: Span,
-    ) -> Ty {
-        let Some(member) = path.segments.last() else {
-            return Ty::Unknown;
-        };
-        let arity = if member.name.value == "attrs" { 1 } else { 2 };
-        if args.len() != arity {
-            self.error(Code::E0314, span, "incorrect metadata query arity");
-            return Ty::Unknown;
-        }
-        if member.arguments.len() > 2 {
-            self.error(
-                Code::E0340,
-                span,
-                "metadata query takes target and attribute types",
-            );
-        }
-        let target = Ty::TypeValue(
-            member
-                .arguments
-                .first()
-                .map(|arg| Box::new(self.type_argument(env, arg))),
-        );
-        if let Some(value) = args.first() {
-            self.expect(env, value.value, &target);
-        }
-        if let Some(key) = args.get(1) {
-            self.expect(env, key.value, &Ty::Str);
-        }
-        let attribute = member
-            .arguments
-            .get(1)
-            .map(|arg| self.type_argument(env, arg))
-            .or_else(|| match expected {
-                Some(Ty::Array(member)) => Some(member.ty.clone()),
-                _ => None,
-            });
-        let Some(attribute) = attribute else {
-            self.error(
-                Code::E0344,
-                span,
-                "metadata query requires an attribute type",
-            );
-            return Ty::Unknown;
-        };
-        let result = Ty::Array(Box::new(Member::plain(attribute)));
-        self.types.insert(span, result.clone());
-        result
     }
 }

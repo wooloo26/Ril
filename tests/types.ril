@@ -64,16 +64,6 @@ fn main() -> () {}
 -- @file pkg/vault.ril
 pub opaque type Token(.{ code: int })
 
--- @case foreign_member_has_priority compile-fail E0907 unit=bin
--- @file pkg/main.ril
-use pkg/sys
-fn read(ref item: Sys::Token) -> int { item.code }
--- ^ E0907
--- @forbid E0301, E0308, E0336
-fn main() -> () {}
--- @file pkg/sys.d.ril
-pub opaque type Token
-
 -- @case cyclic_transparent_aliases compile-fail E0313
 type First = Second
 type Second = First
@@ -303,18 +293,6 @@ fn duplicate(packet: Packet) -> new Packet {
     clone(packet)
     -- ^ E0301
 }
-
--- @case clone_rejects_a_graph_containing_a_foreign_handle compile-fail E0301 unit=bin
--- @file pkg/main.ril
-use pkg/host
-type Packet = .{ mut port: Host::Port }
-fn duplicate(ref packet: Packet) -> new Packet {
-    clone(ref packet)
-    -- ^ E0301
-}
-fn main() -> () {}
--- @file pkg/host.d.ril
-pub opaque type Port
 
 -- @case clone_accepts_nested_ordinary_payloads compile-pass
 type Box<T>(.{ item: T })

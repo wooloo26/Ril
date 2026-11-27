@@ -247,13 +247,6 @@ impl Parser<'_> {
                 ));
             }
             let default = if !pattern && self.eat("=") {
-                if self.kind == super::FileKind::Foreign {
-                    return Err(self.error(
-                        Code::E0901,
-                        self.last,
-                        "field default in foreign declaration",
-                    ));
-                }
                 Some(self.expr()?)
             } else {
                 None

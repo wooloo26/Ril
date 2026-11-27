@@ -154,9 +154,9 @@ meta(Role::("admin"), "ignored", Role::("writer"))
 type Request(.{ meta(Role::("private")) email: str })
 type ApiError { meta(Role::("log")) Missing; Unused }
 type NestedError { ..ApiError; Bad }
-meta let ROLES = Reflect::attrs<Request, Role>(<Request>)
-meta let FIELD_ROLES: []Role = Reflect::field_attrs(<Request>, "email")
-meta let VARIANT_ROLES = Reflect::variant_attrs<NestedError, Role>(<NestedError>, "Missing")
+meta let ROLES = Reflect::attrs(<Request>, <Role>)
+meta let FIELD_ROLES = Reflect::field_attrs(<Request>, "email", <Role>)
+meta let VARIANT_ROLES = Reflect::variant_attrs(<NestedError>, "Missing", <Role>)
 meta let _ = assert(ROLES == [Role::("admin"), Role::("writer")])
 meta let _ = assert(FIELD_ROLES == [Role::("private")])
 meta let _ = assert(VARIANT_ROLES == [Role::("log")])
@@ -168,7 +168,7 @@ type Request(.{ email: str })
 
 -- @case field_metadata_requires_a_valid_key compile-fail E0323
 type Request(.{ email: str })
-meta let INVALID = Reflect::field_attrs<Request, str>(<Request>, "unknown")
+meta let INVALID = Reflect::field_attrs(<Request>, "unknown", <str>)
 -- ^ E0323
 
 -- @case static_map_updates_use_structural_keys_and_ordered_operands compile-pass
@@ -198,7 +198,7 @@ fn bad(key: str) -> int { read(.{ size: 2 }, key) }
 
 -- @case mapped_record_reads_static_locals_and_preserves_member_modes compile-pass
 type Select = \T: .{ .. }, keys: []str -> {
-    let chosen = fields(<T>) |> Array::filter(\(_, k) -> Array::contains(keys, k))
+    let chosen = Reflect::fields(<T>) |> Array::filter(\(_, k) -> Array::contains(keys, k))
     <.{ m [chosen as (m, k)]: T.(k) }>
 }
 type Model = .{ id: int, var title: str, mut rows: []int }

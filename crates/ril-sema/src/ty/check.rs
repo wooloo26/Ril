@@ -641,7 +641,6 @@ impl<'a> Checker<'a> {
 
     fn callable_equiv(&mut self, env: &Env, a: &Callable, b: &Callable) -> bool {
         a.is_ctl == b.is_ctl
-            && a.once == b.once
             && a.parameters.len() == b.parameters.len()
             && a.open_effects == b.open_effects
             && a.effects == b.effects
@@ -671,12 +670,12 @@ impl<'a> Checker<'a> {
             }
     }
 
-    fn state_clause_fits(expected: &[String], expected_once: bool, clause: &str) -> bool {
+    fn state_clause_fits(expected: &[String], clause: &str) -> bool {
         if expected.iter().any(|e| e == clause) {
             return true;
         }
         if clause == "up" || clause == "up(ref)" || clause.starts_with("up(") {
-            if expected_once || expected.iter().any(|e| e == "up") {
+            if expected.iter().any(|e| e == "up") {
                 return true;
             }
             if clause != "up" && expected.iter().any(|e| e == "up(ref)") {
@@ -695,7 +694,6 @@ impl<'a> Checker<'a> {
 
     fn callable_fits(&mut self, env: &Env, actual: &Callable, expected: &Callable) -> bool {
         actual.is_ctl == expected.is_ctl
-            && (expected.open_state || expected.once || !actual.once)
             && actual.parameters.len() == expected.parameters.len()
             && (expected.open_effects
                 || !actual.open_effects
@@ -707,9 +705,10 @@ impl<'a> Checker<'a> {
                     }))
             && (expected.open_state
                 || !actual.open_state
-                    && actual.state.iter().all(|clause| {
-                        Self::state_clause_fits(&expected.state, expected.once, clause)
-                    }))
+                    && actual
+                        .state
+                        .iter()
+                        .all(|clause| Self::state_clause_fits(&expected.state, clause)))
             && (actual.result_mode == expected.result_mode
                 || expected.result_mode == Mode::Infer
                 || actual.result_mode == Mode::New && expected.result_mode == Mode::Plain)
@@ -878,7 +877,6 @@ pub(super) fn transform(ty: &Ty, f: &mut impl FnMut(&Ty) -> Option<Ty>) -> Ty {
 pub(super) fn unknown_callable() -> Callable {
     Callable {
         is_ctl: false,
-        once: false,
         parameters: Vec::new(),
         result: Ty::Unknown,
         result_mode: Mode::Plain,

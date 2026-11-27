@@ -4,11 +4,11 @@
 pub fn push<T>(mut xs: [via]T, via item: T) &mut -> ()
 
 -- Removes and returns the last element of `xs`, or `None` if empty.
--- Supports destructive extraction from `[mut]T` arrays holding must-consume values.
+-- Supports destructive extraction from arrays holding must-consume values.
 pub fn pop<T>(mut xs: [via]T) &mut -> new ?T
 
 -- Removes and returns the first element of `xs`, or `None` if empty.
--- Supports destructive extraction from `[mut]T` arrays holding must-consume values.
+-- Supports destructive extraction from arrays holding must-consume values.
 pub fn pop_front<T>(mut xs: [via]T) &mut -> new ?T
 
 -- Inserts `item` at `index` in `xs`, shifting subsequent elements right.
@@ -41,14 +41,9 @@ pub fn sort<T: int | f64 | str | bytes>(mut xs: []T) &mut -> () {
     }
 }
 
--- Returns `Some(xs[index])` if `index` is in bounds, or `None` otherwise.
-pub fn at<T>(xs: []T, index: int) &return(xs) -> new ?T {
-    xs?[index]
-}
-
 -- Reports whether `xs` contains an element equal to `target`.
-pub fn contains<T>(xs: []T, target: T) -> bool {
-    for xs as x {
+pub fn contains<T>(via xs: [via]T, via target: T) -> bool {
+    for via xs as x {
         if x == target {
             return true
         }
@@ -57,21 +52,60 @@ pub fn contains<T>(xs: []T, target: T) -> bool {
 }
 
 -- Returns a new array formed by applying `f` to each element of `xs` in order.
-pub fn map<T, U>(xs: []T, f: fn(T) @ -> U) -> new []U {
+pub fn map<T, U>(via xs: []T, via f: fn(T) @& -> U) -> new []U {
     let mut out: []U = []
     for xs as x {
         push(mut out, f(x))
     }
-    new out
+    out
 }
 
 -- Returns a new array containing only the elements of `xs` for which `pred` returns `true`.
-pub fn filter<T>(xs: []T, pred: fn(T) @ -> bool) &return(xs) -> new []T {
+pub fn filter<T>(via xs: []T, via pred: fn(T) @& -> bool) &return(xs) -> new []T {
     let mut out: []T = []
     for xs as x {
         if pred(x) {
             push(mut out, x)
         }
     }
-    new out
+    out
+}
+
+-- Reduces `xs` from left to right starting at `init`.
+pub fn fold<T, Acc>(via xs: []T, init: Acc, via f: fn(Acc, T) @& -> Acc) -> Acc {
+    var acc = init
+    for xs as x {
+        acc = f(acc, x)
+    }
+    acc
+}
+
+-- Reports whether `pred` returns `true` for at least one element of `xs`.
+pub fn any<T>(via xs: []T, via pred: fn(T) @& -> bool) -> bool {
+    for xs as x {
+        if pred(x) {
+            return true
+        }
+    }
+    false
+}
+
+-- Reports whether `pred` returns `true` for every element of `xs`.
+pub fn all<T>(via xs: []T, via pred: fn(T) @& -> bool) -> bool {
+    for xs as x {
+        if !pred(x) {
+            return false
+        }
+    }
+    true
+}
+
+-- Returns the first element of `xs` for which `pred` returns `true`, or `None`.
+pub fn find<T>(via xs: []T, via pred: fn(T) @& -> bool) &return(xs) -> new ?T {
+    for xs as x {
+        if pred(x) {
+            return Some(x)
+        }
+    }
+    None
 }

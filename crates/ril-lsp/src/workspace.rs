@@ -20,8 +20,7 @@ pub(crate) const STD_MODULES: &[(&str, &str)] = &[
     ("io", "Io"),
     ("file", "File"),
     ("math", "Math"),
-    ("os", "Os"),
-    ("crypto", "Crypto"),
+    ("panic", "Panic"),
     ("platform", "Platform"),
 ];
 

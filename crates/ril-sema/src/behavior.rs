@@ -6,12 +6,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use ril_hir::{DefinitionId, DefinitionKind, Intrinsic, Program, Resolution};
 use ril_source::span::{FileId, Span};
-use ril_syntax::{
-    parser::FileKind,
-    syntax::{
-        Ast, Condition, Expr, ExprId, Handler, LiteralKind, Mode, Pattern, StmtId, StmtKind,
-        StringPart,
-    },
+use ril_syntax::syntax::{
+    Ast, Condition, Expr, ExprId, Handler, LiteralKind, Mode, Pattern, StmtId, StmtKind,
+    StringPart,
 };
 use serde::{Deserialize, Serialize};
 
@@ -677,49 +674,9 @@ impl<'a> Collector<'a> {
         all_fns: &mut Vec<DefinitionId>,
     ) {
         let owner = Owner::Fn(def_id);
-        let is_foreign = self.program.hir.file(file).kind == FileKind::Foreign;
 
         // Walk `where` helpers attached to the function first so helper functions are registered.
         self.walk_items(file, &function.helpers, user_file, all_fns);
-
-        if is_foreign {
-            let name = display_def_name(&self.program.hir, def_id);
-            let span = function.name.span;
-            self.seed(
-                owner,
-                BKind::Panic,
-                RuleOrigin {
-                    at: Some(span),
-                    call: Some(name.clone()),
-                    cause: Some(WitnessCause::Ffi),
-                    detail: None,
-                    follow_premise: None,
-                },
-            );
-            self.seed(
-                owner,
-                BKind::Abort,
-                RuleOrigin {
-                    at: Some(span),
-                    call: Some(name.clone()),
-                    cause: Some(WitnessCause::FfiAbort),
-                    detail: None,
-                    follow_premise: None,
-                },
-            );
-            self.seed(
-                owner,
-                BKind::Diverge,
-                RuleOrigin {
-                    at: Some(span),
-                    call: Some(name),
-                    cause: Some(WitnessCause::Ffi),
-                    detail: None,
-                    follow_premise: None,
-                },
-            );
-            return;
-        }
 
         // Bodyless stdlib primitives: seed exact runtime failure/termination traits.
         if function.body.is_none() {
@@ -1510,7 +1467,7 @@ impl<'a> Collector<'a> {
                         {
                             let origin = RuleOrigin {
                                 at: Some(call_span),
-                                call: Some("recover_panic".into()),
+                                call: Some("Panic::recover".into()),
                                 cause: None,
                                 detail: None,
                                 follow_premise: Some(0),
@@ -1563,6 +1520,7 @@ impl<'a> Collector<'a> {
                     | Intrinsic::ArrayPush
                     | Intrinsic::ArrayInsert
                     | Intrinsic::MapInsert
+                    | Intrinsic::MapReplace
                     | Intrinsic::StringFromScalars
                     | Intrinsic::BytesFromArray
                         if ctx.in_loop =>

@@ -243,10 +243,6 @@ impl Checker<'_> {
                     });
                     let values = match self.evaluate(env, slots, *iterable, fuel)? {
                         Value::Array(items) => items,
-                        Value::Str(s) => s.chars().map(|ch| Value::Str(ch.to_string())).collect(),
-                        Value::Bytes(bytes) => {
-                            bytes.into_iter().map(|b| Value::Int(b.into())).collect()
-                        }
                         Value::Map(entries) if is_set => {
                             entries.into_iter().map(|(k, _)| k).collect()
                         }

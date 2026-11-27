@@ -184,16 +184,14 @@ inductive OpKind where
   | directFn | algebraicCtl
   deriving Repr, DecidableEq
 
-/-- Deep handler arm admissibility: `ctl` prefix must match the operation kind
-(`E0623`) and the arm RHS cannot be a one-shot `&once` closure or `ctl(...)`
-continuation (`E0534`). -/
-def validHandlerArm (opKind : OpKind) (armHasCtlPrefix armIsOneShot : Bool) : Bool :=
-  (decide (opKind = .algebraicCtl) == armHasCtlPrefix) && !armIsOneShot
+/-- Deep handler arm admissibility: `ctl` prefix must match the operation kind (`E0623`). -/
+def validHandlerArm (opKind : OpKind) (armHasCtlPrefix : Bool) : Bool :=
+  decide (opKind = .algebraicCtl) == armHasCtlPrefix
 
-theorem valid_handler_arm_iff (opKind : OpKind) (armHasCtlPrefix armIsOneShot : Bool) :
-    validHandlerArm opKind armHasCtlPrefix armIsOneShot = true ↔
-      decide (opKind = .algebraicCtl) = armHasCtlPrefix ∧ armIsOneShot = false := by
-  simp [validHandlerArm, Bool.and_eq_true]
+theorem valid_handler_arm_iff (opKind : OpKind) (armHasCtlPrefix : Bool) :
+    validHandlerArm opKind armHasCtlPrefix = true ↔
+      decide (opKind = .algebraicCtl) = armHasCtlPrefix := by
+  simp [validHandlerArm]
 
 /-- `absorb_panic` boundary isolation (`E0608`): forbids outer live state, outward
 effects, outer `ctl` handlers, and outer must-consume captures. Local `with { ctl ... }`

@@ -45,6 +45,12 @@ pub struct Summary {
     pub storage_flow: Option<StorageTransfer>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub no_ctl_params: Vec<usize>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub forbids_linear_drop: Vec<usize>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub forbids_linear_dup: Vec<usize>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub forbids_linear_suspend: Vec<usize>,
     pub captures: bool,
     pub constructs: bool,
     pub nonreturning: bool,
@@ -124,6 +130,18 @@ impl Summary {
                 .no_ctl_params
                 .iter()
                 .all(|param| self.no_ctl_params.contains(param))
+            && revised
+                .forbids_linear_drop
+                .iter()
+                .all(|param| self.forbids_linear_drop.contains(param))
+            && revised
+                .forbids_linear_dup
+                .iter()
+                .all(|param| self.forbids_linear_dup.contains(param))
+            && revised
+                .forbids_linear_suspend
+                .iter()
+                .all(|param| self.forbids_linear_suspend.contains(param))
             && revised
                 .return_sources
                 .iter()

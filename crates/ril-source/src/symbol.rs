@@ -32,7 +32,6 @@ pub const PREINTERNED: &[&str] = &[
     "fn",
     "ctl",
     "defer",
-    "once",
     "meta",
     "type",
     "opaque",

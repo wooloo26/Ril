@@ -260,22 +260,12 @@ impl Ledger {
         self.revoked.clear();
     }
 
-    pub(in crate::access) fn revoke(
-        &mut self,
-        token: Occurrence,
-        origin: Option<&Origin>,
-        trigger: Option<Revocation>,
-    ) {
+    pub(in crate::access) fn revoke(&mut self, token: Occurrence, origin: Option<&Origin>) {
         let mut choices = self.choices.clone();
         if let Some(origin) = origin {
             choices.extend(origin.branches.iter().map(|(&branch, &arm)| (branch, arm)));
         }
-        let alternatives = self
-            .revoked
-            .entry(token)
-            .or_default()
-            .entry(trigger)
-            .or_default();
+        let alternatives = self.revoked.entry(token).or_default();
         alternatives.insert(choices);
         Self::widen_choices(alternatives);
     }
@@ -763,30 +753,20 @@ impl Ledger {
         }
     }
 
-    pub(in crate::access) fn revocations(&self, datum: &Datum) -> BTreeSet<Option<Revocation>> {
+    pub(in crate::access) fn is_revoked(&self, datum: &Datum) -> bool {
         if self.revoked.is_empty() {
-            return BTreeSet::new();
+            return false;
         }
-        self.loop_snapshot(datum)
-            .origins()
-            .flat_map(|origin| {
-                origin
-                    .dependencies
-                    .iter()
-                    .filter_map(|token| self.revoked.get(token))
-                    .flatten()
-                    .filter(|(trigger, branches)| {
-                        let received_here = origin.callback_result.is_some()
-                            && matches!(trigger, Some(Revocation::Callback { site, .. })
-                                if *site == origin.region.source);
-                        !received_here
-                            && branches.iter().any(|branch| {
-                                compatible(branch, &self.choices)
-                                    && compatible(branch, &origin.branches)
-                            })
+        self.loop_snapshot(datum).origins().any(|origin| {
+            origin
+                .dependencies
+                .iter()
+                .filter_map(|token| self.revoked.get(token))
+                .any(|branches| {
+                    branches.iter().any(|branch| {
+                        compatible(branch, &self.choices) && compatible(branch, &origin.branches)
                     })
-                    .map(|(&trigger, _)| trigger)
-            })
-            .collect()
+                })
+        })
     }
 }

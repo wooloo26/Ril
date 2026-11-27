@@ -447,14 +447,6 @@ impl Checker<'_> {
             {
                 Vec::new()
             }
-            (_, Ty::Adt(adt)) if adt.kind == AdtKind::Foreign => {
-                self.error(
-                    Code::E0907,
-                    span,
-                    "foreign representation cannot be matched",
-                );
-                Vec::new()
-            }
             (_, Ty::Adt(adt))
                 if matches!(adt.kind, AdtKind::Opaque | AdtKind::OpaqueSum)
                     && adt.defining_scope != env.scope =>
@@ -538,14 +530,6 @@ impl Checker<'_> {
         span: Span,
     ) -> Vec<Ty> {
         match ty {
-            Ty::Adt(adt) if adt.kind == AdtKind::Foreign => {
-                self.error(
-                    Code::E0907,
-                    span,
-                    "foreign representation cannot be matched",
-                );
-                Vec::new()
-            }
             Ty::Adt(adt)
                 if matches!(adt.kind, AdtKind::Opaque | AdtKind::OpaqueSum)
                     && adt.defining_scope != env.scope =>

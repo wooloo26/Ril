@@ -386,9 +386,7 @@ impl Checker<'_> {
                             decl.kind,
                             ril_syntax::syntax::TypeKind::Nominal
                                 | ril_syntax::syntax::TypeKind::Opaque
-                        ) && self.hir.file(env.file).kind
-                            != ril_syntax::parser::FileKind::Foreign
-                            && let Some(id) = self.resolve(decl.name.span)
+                        ) && let Some(id) = self.resolve(decl.name.span)
                         {
                             let self_args = decl
                                 .generics
@@ -459,7 +457,6 @@ impl Checker<'_> {
                     }
                     TypeDefinition::Opaque => {
                         if decl.kind == ril_syntax::syntax::TypeKind::Nominal
-                            && self.hir.file(env.file).kind != ril_syntax::parser::FileKind::Foreign
                             && let Some(id) = self.resolve(decl.name.span)
                         {
                             self.nominal_layouts.insert(id, Ty::Unit);
@@ -520,7 +517,6 @@ impl Checker<'_> {
             }
             let op_result = substitute(&expected.result, &bindings);
             expected.is_ctl = false;
-            expected.once = false;
             expected.open_effects = true;
             expected.open_state = false;
             if !expected.state.iter().any(|s| s == "up") {
@@ -547,7 +543,6 @@ impl Checker<'_> {
                 };
                 let k_ty = Ty::Callable(Arc::new(Callable {
                     is_ctl: true,
-                    once: false,
                     parameters: k_params,
                     result: ans.clone(),
                     result_mode: k_result_mode,
@@ -558,7 +553,7 @@ impl Checker<'_> {
                 }));
                 expected.parameters.push(crate::ty::Parameter {
                     label: None,
-                    mode: Mode::New,
+                    mode: Mode::Plain,
                     ty: k_ty,
                     optional: false,
                     is_meta: false,
@@ -597,8 +592,7 @@ impl Checker<'_> {
         let ty = self.normalize(&ty);
         let mut invalid = false;
         transform(&ty, &mut |part| {
-            invalid |= matches!(part, Ty::Callable(_) | Ty::Draft(_))
-                || matches!(part, Ty::Adt(adt) if adt.kind == AdtKind::Foreign);
+            invalid |= matches!(part, Ty::Callable(_) | Ty::Draft(_));
             None
         });
         let result = if ty.contains_type_value() {

@@ -5,5 +5,5 @@ pub fn square(x: int) -> int {
 }
 
 pub fn safe_ratio(a: int, b: int) -> new ?int {
-    Numeric::checked_div(a, b)
+    Numeric::div(a, b)
 }

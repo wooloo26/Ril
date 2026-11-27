@@ -12,147 +12,31 @@ impl<'a> Analyzer<'a> {
         if !ctx.reachable {
             return;
         }
-        let revocations = ledger.revocations(value);
-        if revocations.contains(&None) {
+        if ledger.is_revoked(value) {
             self.error(Code::E0549, span, message);
-        } else {
-            for trigger in revocations.into_iter().flatten() {
-                let premise = match trigger {
-                    Revocation::Formal((owner, formal)) => Fact {
-                        owner,
-                        obligation: Obligation::Handoff(formal),
-                    },
-                    Revocation::Callback { site, position } => {
-                        self.higher_order.protect_input(site, position);
-                        Fact {
-                            owner: site,
-                            obligation: Obligation::CallbackHandoff(position),
-                        }
-                    }
-                };
-                self.deferred_errors
-                    .push((vec![premise], Diagnostic::error(Code::E0549, span, message)));
-            }
         }
     }
 
-    pub(super) fn handoff(
+    pub(super) fn consume_linear(
         &mut self,
         ctx: &Context,
         ledger: &mut Ledger,
         value: &mut Datum,
-        span: Span,
     ) {
-        if let Some(hold_span) = ledger.holds.iter().find_map(|(_, held)| {
-            let held = ledger.loop_snapshot(held);
-            value.roots.iter().find_map(|moving| {
-                held.origins()
-                    .find(|active| moving.overlaps(active))
-                    .map(|active| active.region.source)
-            })
-        }) {
-            let mut diag = Diagnostic::error(
-                Code::E0535,
-                span,
-                "new handoff overlaps an active handler hold",
-            );
-            if hold_span != span {
-                diag = diag.with_label(hold_span, "active handler hold originated here");
-            }
-            self.error_diag(diag);
+        if !ctx.reachable {
             return;
         }
-        if ledger
-            .loop_snapshot(value)
-            .origins()
-            .any(|origin| origin.confined.is_some())
-        {
-            self.error(Code::E0604, span, "resource or draft cannot be handed off");
-            return;
-        }
-        if !value.requires_new
-            && (!value.writers()
-                || value
-                    .roots
-                    .iter()
-                    .any(|origin| origin.mode == Access::Shared))
-        {
-            self.error(
-                Code::E0548,
-                span,
-                "new requires a new-qualified source or a pinned exclusive writer",
-            );
-            return;
-        }
-        if let Some(shared_decl) = ledger.slots.values().find_map(|slot| {
-            (slot.mode == Mode::Shared
-                && value.roots.iter().any(|root| {
-                    ledger
-                        .loop_snapshot(&slot.value)
-                        .origins()
-                        .any(|retained| root.overlaps(retained))
-                }))
-            .then_some(slot.decl)
-        }) {
-            let mut diag = Diagnostic::error(
-                Code::E0548,
-                span,
-                "new handoff has an independently retained shared writer",
-            );
-            if shared_decl != span {
-                diag = diag.with_label(shared_decl, "shared writer retained here");
-            }
-            self.error_diag(diag);
-            return;
-        }
-        let dependencies: BTreeSet<_> = value
-            .roots
-            .iter()
-            .flat_map(Origin::dependency_spans)
-            .collect();
-        if let Some(var_decl) = value
-            .roots
-            .iter()
-            .flat_map(|origin| &origin.dependencies)
-            .find_map(|dependency| {
-                (!dependency.prior_iteration)
-                    .then(|| {
-                        ledger
-                            .slots
-                            .get(&dependency.span)
-                            .filter(|slot| slot.variable)
-                            .map(|slot| slot.decl)
-                    })
-                    .flatten()
-            })
-        {
-            let mut diag =
-                Diagnostic::error(Code::E0548, span, "reassignable slots cannot be handed off");
-            if var_decl != span {
-                diag = diag.with_label(var_decl, "replaceable `var` slot declared here");
-            }
-            self.error_diag(diag);
-            return;
-        }
-        if ctx.reachable {
-            for root in &value.roots {
-                for &dependency in &root.dependencies {
-                    ledger.revoke(dependency, Some(root), None);
-                }
-            }
-        }
-        self.require_schema(ctx, value, SchemaRequirement::Exclusive);
+        ledger.consume_datum_linear(value);
         for root in &value.roots {
-            if ctx.via.contains(&root.region.source) {
-                self.seed(ctx, Obligation::Handoff(root.region.source));
+            for &dependency in &root.dependencies {
+                ledger.revoke(dependency, Some(root));
             }
         }
-        for &id in &dependencies {
-            if !ctx.via.contains(&id) {
-                self.seed(ctx, Obligation::Write(id));
-            }
-        }
-        value.detach_handed_off_paths();
+        value.clear_linear();
+        value.transform(&mut |origin| {
+            origin.dependencies.clear();
+            origin.new = true;
+        });
     }
 
     pub(super) fn place(
@@ -279,6 +163,15 @@ impl<'a> Analyzer<'a> {
             self.error(Code::E0503, node.span, "invalid assignment target");
             return;
         };
+        if matches!(node.value, Expr::Index { .. }) && self.program.is_must_consume(self.ty(node.span))
+        {
+            self.error(
+                Code::E0625,
+                span,
+                "cannot overwrite a must-consume element; use Map::replace or remove first",
+            );
+            return;
+        }
         self.mutate(ctx, ledger, prior, span);
         self.check_draft_insertion(ctx, ledger, prior, &value, span);
         if let Some(coordinate) = prior

@@ -66,8 +66,8 @@ pub const PRIMITIVE_TYPES: &[PrimitiveTypeSpec] = {
     &[
         ptype("Prelude", "Option", Option, false),
         ptype("Prelude", "Result", Result, false),
-        ptype("Prelude", "PanicReport", PanicReport, false),
-        ptype("Prelude", "PanicError", PanicError, false),
+        ptype("Panic", "Report", PanicReport, false),
+        ptype("Panic", "Error", PanicError, false),
         ptype("Prelude", "Derived", Derived, true),
         ptype("Reflect", "FieldMode", FieldMode, false),
         ptype("Reflect", "TypeKind", TypeKind, false),
@@ -96,15 +96,15 @@ pub const PRIMITIVE_FNS: &[PrimitiveSpec] = {
             Some(UnwindCtl),
         ),
         prim(
-            "Prelude",
-            "recover_panic",
+            "Panic",
+            "recover",
             Runtime,
             None,
             Some(RecoverPanic),
         ),
         prim(
-            "Prelude",
-            "panic_message",
+            "Panic",
+            "message",
             Runtime,
             Some("ril_rt_panic_message"),
             Some(PanicMessage),
@@ -144,7 +144,7 @@ pub const PRIMITIVE_FNS: &[PrimitiveSpec] = {
         ),
         prim(
             "Numeric",
-            "trunc",
+            "to_int_trunc",
             Both,
             Some("ril_rt_trunc"),
             Some(NumericTrunc),
@@ -195,6 +195,13 @@ pub const PRIMITIVE_FNS: &[PrimitiveSpec] = {
         ),
         prim(
             "Map",
+            "replace",
+            Both,
+            Some("ril_rt_map_replace"),
+            Some(MapReplace),
+        ),
+        prim(
+            "Map",
             "remove",
             Both,
             Some("ril_rt_map_remove"),
@@ -202,7 +209,20 @@ pub const PRIMITIVE_FNS: &[PrimitiveSpec] = {
         ),
         // String
         prim("String", "inspect", Both, None, Some(StringInspect)),
-        prim("String", "at", Both, Some("ril_rt_str_at"), Some(StringAt)),
+        prim(
+            "String",
+            "scalar_at",
+            Both,
+            Some("ril_rt_str_at"),
+            Some(StringAt),
+        ),
+        prim(
+            "String",
+            "scalars",
+            Both,
+            Some("ril_rt_str_scalars"),
+            Some(StringScalars),
+        ),
         prim(
             "String",
             "from_scalars",
@@ -212,14 +232,14 @@ pub const PRIMITIVE_FNS: &[PrimitiveSpec] = {
         ),
         prim(
             "String",
-            "raw_encode_utf8",
+            "encode_utf8",
             Both,
             Some("ril_rt_encode_utf8"),
             Some(StringEncodeUtf8),
         ),
         prim(
             "String",
-            "raw_decode_utf8",
+            "decode_utf8",
             Both,
             Some("ril_rt_decode_utf8"),
             Some(StringDecodeUtf8),
@@ -363,16 +383,10 @@ const STD_SOURCES: &[(&str, &str, &str, &str)] = &[
         include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../std/math.ril")),
     ),
     (
-        "Os",
-        "ril/os",
-        "ril/std/os.ril",
-        include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../std/os.ril")),
-    ),
-    (
-        "Crypto",
-        "ril/crypto",
-        "ril/std/crypto.ril",
-        include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../std/crypto.ril")),
+        "Panic",
+        "ril/panic",
+        "ril/std/panic.ril",
+        include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../std/panic.ril")),
     ),
 ];
 

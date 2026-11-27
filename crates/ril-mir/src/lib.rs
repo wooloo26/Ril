@@ -5,8 +5,6 @@ mod opt;
 mod promote;
 mod verify;
 
-use std::sync::Arc;
-
 use ril_sema::{access::Analysis, ty::TypedProgram};
 use ril_source::diag::Diagnostic;
 
@@ -70,7 +68,6 @@ pub enum MirTy {
     Closure,
     Continuation,
     Draft,
-    Foreign,
     RawFnPtr,
     RawU64,
     #[default]
@@ -87,7 +84,6 @@ impl MirTy {
                 | Self::Bool
                 | Self::SmallInt
                 | Self::Never
-                | Self::Foreign
                 | Self::RawFnPtr
                 | Self::RawU64
         )
@@ -197,21 +193,6 @@ impl Program {
     pub fn source_locations(&self) -> &[SourceLocEntry] {
         &self.source_locs
     }
-}
-
-/// The source declaration and ABI of a host callback used by native code.
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub struct ForeignImport {
-    pub declaration: String,
-    pub signature: String,
-    pub symbol: String,
-    pub abi: ForeignAbi,
-}
-
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub enum ForeignAbi {
-    Function { arity: usize },
-    Constant,
 }
 
 #[derive(Debug)]
@@ -342,7 +323,6 @@ pub enum Target {
     },
     Runtime(&'static str),
     Draft(DraftOp),
-    Foreign(Arc<ForeignImport>),
     Indirect {
         address: Register,
         environment: Register,
@@ -401,10 +381,7 @@ impl Terminator {
                         visit(*address);
                         visit(*environment);
                     }
-                    Target::Function(_)
-                    | Target::Runtime(_)
-                    | Target::Draft(_)
-                    | Target::Foreign(_) => {}
+                    Target::Function(_) | Target::Runtime(_) | Target::Draft(_) => {}
                 }
                 for &arg in arguments {
                     visit(arg);
@@ -435,10 +412,7 @@ impl Terminator {
                         remap(address);
                         remap(environment);
                     }
-                    Target::Function(_)
-                    | Target::Runtime(_)
-                    | Target::Draft(_)
-                    | Target::Foreign(_) => {}
+                    Target::Function(_) | Target::Runtime(_) | Target::Draft(_) => {}
                 }
                 for arg in arguments {
                     remap(arg);

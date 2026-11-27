@@ -238,8 +238,9 @@ impl Checker<'_> {
                 if param.is_meta {
                     self.declare_meta_key(env, param);
                 }
+                let is_ctl = self.is_ctl_ty(env, &ty);
                 if matches!(param.mode, Mode::Ref | Mode::Mut | Mode::Shared)
-                    && self.is_value_ty(env, &ty)
+                    && (self.is_value_ty(env, &ty) || is_ctl)
                 {
                     let span = param.name.as_ref().map_or_else(
                         || self.ast(env.file).ty(signature.result).span,
@@ -248,10 +249,25 @@ impl Checker<'_> {
                     self.error(
                         Code::E0401,
                         span,
-                        "value-type parameter cannot carry live access",
+                        if is_ctl {
+                            "ctl continuation is linear and cannot carry an access mode"
+                        } else {
+                            "value-type parameter cannot carry live access"
+                        },
                     );
                 }
-                if param.mode == Mode::Via && self.is_value_only_ty(env, &ty) {
+                if param.mode == Mode::New && is_ctl {
+                    let span = param.name.as_ref().map_or_else(
+                        || self.ast(env.file).ty(signature.result).span,
+                        |name| name.span,
+                    );
+                    self.error(
+                        Code::E0411,
+                        span,
+                        "ctl continuation is linear and does not use new mode",
+                    );
+                }
+                if param.mode == Mode::Via && (self.is_value_only_ty(env, &ty) || is_ctl) {
                     let span = param.name.as_ref().map_or_else(
                         || {
                             param.ty.map_or_else(
@@ -264,7 +280,11 @@ impl Checker<'_> {
                     self.error(
                         Code::E0550,
                         span,
-                        "via is redundant on a value-type parameter",
+                        if is_ctl {
+                            "via is invalid on a mode-free ctl continuation parameter"
+                        } else {
+                            "via is redundant on a value-type parameter"
+                        },
                     );
                 }
                 if named
@@ -316,26 +336,13 @@ impl Checker<'_> {
             .iter()
             .map(|path| self.effect_label(env, path))
             .collect();
-        let mut once = false;
         let mut state = Vec::new();
         for clause in &signature.obligations.state {
-            if clause.kind == StateKind::Once {
-                if named || once || signature.is_ctl {
-                    self.error(
-                        Code::E0538,
-                        clause.span,
-                        "&once is only valid once on fn(...) callable types",
-                    );
-                }
-                once = true;
-                continue;
-            }
             let name = match clause.kind {
                 StateKind::Write => "mut",
                 StateKind::Share => "^mut",
                 StateKind::Capture => "capture",
                 StateKind::Environment => "up",
-                StateKind::Once => "once",
                 StateKind::Return => "return",
             };
             if clause.bindings.is_empty() {
@@ -360,19 +367,6 @@ impl Checker<'_> {
                 state.push(format!("{name}({bindings})"));
             }
         }
-        if once
-            && signature
-                .obligations
-                .state
-                .iter()
-                .any(|c| c.kind == StateKind::Environment)
-        {
-            self.error(
-                Code::E0538,
-                self.ast(env.file).ty(signature.result).span,
-                "&once cannot be combined with &up or &up(ref)",
-            );
-        }
         if !named && signature.is_ctl && env.phase != Phase::Runtime && !env.shadow {
             self.error(
                 Code::E0810,
@@ -380,9 +374,19 @@ impl Checker<'_> {
                 "ctl(...) continuation types are prohibited in static evaluation",
             );
         }
+        if matches!(
+            signature.result_mode,
+            Mode::New | Mode::Ref | Mode::Shared
+        ) && self.is_ctl_ty(env, &result)
+        {
+            self.error(
+                Code::E0546,
+                self.ast(env.file).ty(signature.result).span,
+                "ctl continuation is linear and cannot carry a return access mode",
+            );
+        }
         let callable = Callable {
             is_ctl: !named && signature.is_ctl,
-            once,
             parameters: params,
             result,
             result_mode: signature.result_mode,
@@ -488,10 +492,6 @@ impl Checker<'_> {
         }
         if let Ty::Adt(adt) = &ty {
             match adt.kind {
-                AdtKind::Foreign => {
-                    self.error(Code::E0907, span, "foreign representation is sealed");
-                    return Ty::Unknown;
-                }
                 AdtKind::Opaque | AdtKind::OpaqueSum if adt.defining_scope != env.scope => {
                     self.error(Code::E0308, span, "opaque representation is sealed");
                     return Ty::Unknown;
@@ -688,7 +688,6 @@ impl Checker<'_> {
             Ty::Tuple(items) => items
                 .iter()
                 .all(|member| immutable(member) && self.eligible_key(env, &member.ty, seen)),
-            Ty::Adt(adt) if adt.kind == AdtKind::Foreign => false,
             Ty::Adt(adt) if seen.insert(adt.definition) => {
                 let result = if matches!(adt.kind, AdtKind::Sum | AdtKind::OpaqueSum) {
                     let extensible = self.hir.definition(adt.definition).stmt.is_some_and(|s| {
@@ -741,7 +740,6 @@ impl Checker<'_> {
             Ty::Tuple(items) => items
                 .iter()
                 .all(|member| self.meta_exportable(env, &member.ty, seen)),
-            Ty::Adt(adt) if adt.kind == AdtKind::Foreign => false,
             Ty::Adt(adt) => {
                 if !seen.insert(adt.definition) {
                     return true;

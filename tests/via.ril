@@ -69,127 +69,140 @@ pub fn update(via box: .{ via item: Cell, var stamp: int }) -> Cell {
 
 -- @case adding_a_snapshot_requirement_on_new_input_breaks_compatibility compat-fail E0552
 -- @baseline
-pub fn read(new input: .{ ^mut item: Cell }) -> int { input.item.count }
+pub type Box = .{ ^mut item: Cell }
+pub type Out { Frozen(Box); Count(int) }
+pub fn read(new input: Box) -> new Out { Out::Count(input.item.count) }
 -- @revision
-pub fn read(new input: .{ ^mut item: Cell }) -> int {
+pub type Box = .{ ^mut item: Cell }
+pub type Out { Frozen(Box); Count(int) }
+pub fn read(new input: Box) -> new Out {
 -- ^ E0552
-    let snapshot = new input
-    snapshot.item.count
+    Out::Frozen(input)
 }
 
 -- @case freezing_only_a_child_relaxes_the_snapshot_contract compat-pass
 -- @baseline
-pub fn read(new input: .{ mut item: Cell, ^mut other: Cell }) -> int {
-    let snapshot = new input
-    snapshot.item.count
+pub type Pair = .{ mut item: Cell, ^mut other: Cell }
+pub type Out { Frozen(Pair); FrozenItem(Cell) }
+pub fn read(new input: Pair) -> new Out {
+    if input.item.count == 0 {
+        return Out::Frozen(input)
+    }
+    Out::FrozenItem(input.item)
 }
 -- @revision
-fn read_cell(new input: Cell) -> int {
-    let snapshot = new input
-    snapshot.count
-}
-pub fn read(new input: .{ mut item: Cell, ^mut other: Cell }) -> int {
-    let mut held = new input
-    read_cell(new held.item)
+pub type Pair = .{ mut item: Cell, ^mut other: Cell }
+pub type Out { Frozen(Pair); FrozenItem(Cell) }
+pub fn read(new input: Pair) -> new Out {
+    Out::FrozenItem(input.item)
 }
 
 -- @case passing_new_live_boundaries_to_an_existing_callback_breaks_compatibility compat-fail E0552
 -- @baseline
-pub fn apply(action: fn(new .{ item: Cell }) -> int, new input: .{ item: Cell }) -> int {
-    action(new .{ item: input.item })
+pub type Box = .{ ref item: Cell }
+pub type Out { Frozen(Box); Count(int) }
+pub fn apply(action: fn(new Box) -> new Out, ref _input: Cell) -> new Out {
+    action(.{ item: ref Cell.{ count: 0 } })
 }
 -- @revision
-pub fn apply(action: fn(new .{ item: Cell }) -> int, new input: .{ item: Cell }) -> int {
+pub type Box = .{ ref item: Cell }
+pub type Out { Frozen(Box); Count(int) }
+pub fn apply(action: fn(new Box) -> new Out, ref input: Cell) -> new Out {
 -- ^ E0552
-    action(new input)
+    action(.{ item: ref input })
 }
 
 -- @case strengthening_a_private_callback_snapshot_contract_breaks_compatibility compat-fail E0552
 -- @baseline
-pub type Shelf = .{ ^mut item: Cell }
-pub type Leaf = fn(new Shelf) -> int
-fn selected(new shelf: Shelf) -> int { shelf.item.count }
-pub fn supply(action: fn(Leaf, new Shelf) -> int, new shelf: Shelf) -> int {
-    action(selected, new shelf)
+pub type Shelf = .{ ref item: Cell }
+pub type Out { Frozen(Shelf); Count(int) }
+pub type Leaf = fn(new Shelf) -> new Out
+fn selected(new shelf: Shelf) -> new Out { Out::Count(shelf.item.count) }
+pub fn supply(action: fn(Leaf, ref Cell) -> int, ref cell: Cell) -> int {
+    action(selected, ref cell)
 }
 -- @revision
-pub type Shelf = .{ ^mut item: Cell }
-pub type Leaf = fn(new Shelf) -> int
-fn selected(new shelf: Shelf) -> int { let fixed = new shelf; fixed.item.count }
-pub fn supply(action: fn(Leaf, new Shelf) -> int, new shelf: Shelf) -> int {
+pub type Shelf = .{ ref item: Cell }
+pub type Out { Frozen(Shelf); Count(int) }
+pub type Leaf = fn(new Shelf) -> new Out
+fn selected(new shelf: Shelf) -> new Out { Out::Frozen(shelf) }
+pub fn supply(action: fn(Leaf, ref Cell) -> int, ref cell: Cell) -> int {
 -- ^ E0552
-    action(selected, new shelf)
+    action(selected, ref cell)
 }
 
 -- @case relaxing_a_renamed_private_callback_snapshot_contract_preserves_compatibility compat-pass
 -- @baseline
-pub type Shelf = .{ ^mut item: Cell }
-pub type Leaf = fn(new Shelf) -> int
-fn selected(new shelf: Shelf) -> int { let fixed = new shelf; fixed.item.count }
-pub fn supply(action: fn(Leaf, new Shelf) -> int, new shelf: Shelf) -> int {
-    action(selected, new shelf)
+pub type Shelf = .{ ref item: Cell }
+pub type Out { Frozen(Shelf); Count(int) }
+pub type Leaf = fn(new Shelf) -> new Out
+fn selected(new shelf: Shelf) -> new Out { Out::Frozen(shelf) }
+pub fn supply(action: fn(Leaf, ref Cell) -> int, ref cell: Cell) -> int {
+    action(selected, ref cell)
 }
 -- @revision
-pub type Shelf = .{ ^mut item: Cell }
-pub type Leaf = fn(new Shelf) -> int
+pub type Shelf = .{ ref item: Cell }
+pub type Out { Frozen(Shelf); Count(int) }
+pub type Leaf = fn(new Shelf) -> new Out
 fn unrelated() -> int { 0 }
-fn count(new shelf: Shelf) -> int { shelf.item.count }
-pub fn supply(action: fn(Leaf, new Shelf) -> int, new shelf: Shelf) -> int {
-    action(count, new shelf)
+fn count(new shelf: Shelf) -> new Out { Out::Count(shelf.item.count) }
+pub fn supply(action: fn(Leaf, ref Cell) -> int, ref cell: Cell) -> int {
+    action(count, ref cell)
 }
 
 -- @case strengthening_a_returned_callback_snapshot_contract_breaks_compatibility compat-fail E0552
 -- @baseline
 pub type Shelf = .{ ^mut item: Cell }
-pub type Leaf = fn(new Shelf) -> int
-fn selected(new shelf: Shelf) -> int { shelf.item.count }
+pub type Out { Frozen(Shelf); Count(int) }
+pub type Leaf = fn(new Shelf) -> new Out
+fn selected(new shelf: Shelf) -> new Out { Out::Count(shelf.item.count) }
 pub fn make() -> Leaf { selected }
 -- @revision
 pub type Shelf = .{ ^mut item: Cell }
-pub type Leaf = fn(new Shelf) -> int
-fn selected(new shelf: Shelf) -> int { let fixed = new shelf; fixed.item.count }
+pub type Out { Frozen(Shelf); Count(int) }
+pub type Leaf = fn(new Shelf) -> new Out
+fn selected(new shelf: Shelf) -> new Out { Out::Frozen(shelf) }
 pub fn make() -> Leaf { selected }
 -- ^ E0552
 
 -- @case relaxing_a_stored_callback_snapshot_contract_is_compatible compat-pass
 -- @baseline
 pub type Shelf = .{ ^mut item: Cell }
-pub type Slot = .{ var action: fn(new Shelf) -> int }
-fn selected(new shelf: Shelf) -> int { let fixed = new shelf; fixed.item.count }
+pub type Out { Frozen(Shelf); Count(int) }
+pub type Slot = .{ var action: fn(new Shelf) -> new Out }
+fn selected(new shelf: Shelf) -> new Out { Out::Frozen(shelf) }
 pub fn install(mut slot: Slot) &mut -> () { slot.action = selected }
 -- @revision
 pub type Shelf = .{ ^mut item: Cell }
-pub type Slot = .{ var action: fn(new Shelf) -> int }
-fn count(new shelf: Shelf) -> int { shelf.item.count }
+pub type Out { Frozen(Shelf); Count(int) }
+pub type Slot = .{ var action: fn(new Shelf) -> new Out }
+fn count(new shelf: Shelf) -> new Out { Out::Count(shelf.item.count) }
 pub fn install(mut slot: Slot) &mut -> () { slot.action = count }
 
--- @case freezing_through_nested_via_calls_preserves_existing_sources compile-fail E0535
+-- @case freezing_through_nested_new_calls_preserves_existing_sources compile-fail E0535
 type Shelf = .{ ^mut item: Cell }
-fn freeze(via input: Shelf) -> Shelf {
-    let snapshot = new input
-    snapshot
-}
-fn relay(via input: Shelf) -> Shelf { freeze(input) }
+type Out { Frozen(Shelf) }
+fn freeze(new input: Shelf) -> new Out { Out::Frozen(input) }
 fn observe() -> int {
     let mut live = Cell.{ count: 1 }
-    let mut shelf = Shelf.{ item: ^mut live }
-    shelf.item.count += 1
-    let before = relay(new shelf)
+    live.count += 1
+    let _ = freeze(Shelf.{ item: ^mut live })
     -- ^ E0535
     live.count += 8
-    before.item.count
+    live.count
 }
 
--- @case freezing_through_a_local_via_closure_checks_live_sources compile-fail E0535
+-- @case freezing_through_a_local_new_closure_checks_live_sources compile-fail E0535
 type Shelf = .{ ref item: Cell }
+type Out { Frozen(Shelf) }
 fn observe() -> int {
-    let freeze = \via input: Shelf -> { let snapshot = new input; snapshot }
+    let freeze = \new input: Shelf -> Out::Frozen(input)
     let mut live = Cell.{ count: 1 }
-    let mut shelf = Shelf.{ item: ref live }
-    let before = freeze(new shelf)
+    live.count += 1
+    let _ = freeze(Shelf.{ item: ref live })
     -- ^ E0535
     live.count += 8
-    before.item.count
+    live.count
 }
 
 -- @case exclusive_mut_argument_of_via_aliased_arguments_excludes_the_shared_pair compile-fail E0520
@@ -596,33 +609,6 @@ fn invalid() -> int {
     -- ^ E0520
 }
 
--- @case consuming_callback_revokes_the_forwarded_argument_in_the_invoker compile-fail E0549
-fn use_twice(via action: fn(via Cell) @& -> int, via cell: Cell) -> int {
-    let result = action(cell)
-    result + cell.count
-    -- ^ E0549
-}
-fn take(via cell: Cell) -> int {
-    let moved = new cell
-    moved.count
-}
-fn invalid() -> int { use_twice(take, Cell.{ count: 21 }) }
-
--- @case consuming_callback_revokes_old_views_across_wrappers compile-fail E0549
-fn apply(via action: fn(via Cell) @& -> int, via cell: Cell) -> int { action(cell) }
-fn relay(via action: fn(via Cell) @& -> int, via cell: Cell) -> int { apply(action, cell) }
-fn observe(via action: fn(via Cell) @& -> int, via cell: Cell) -> int {
-    let ref view = ref cell
-    let result = relay(action, cell)
-    result + view.count
-    -- ^ E0549
-}
-fn take(via cell: Cell) -> int {
-    let moved = new cell
-    moved.count
-}
-fn invalid() -> int { observe(take, Cell.{ count: 21 }) }
-
 -- @case callback_handoffs_from_separate_calls_do_not_revoke_a_readers_path compile-pass
 fn apply(via action: fn(via Cell) @& -> int, via cell: Cell) -> int { action(cell) }
 fn bump(via cell: Cell) -> int {
@@ -650,26 +636,6 @@ fn run() -> int {
     value.count
 }
 
--- @case callback_explicit_handoff_result_survives_the_argument_path compile-pass
-fn apply(via action: fn(via Cell) @& -> infer Cell, new cell: Cell) -> infer Cell {
-    let via value = action(new cell)
-    assert(value.count == 41)
-    value
-}
-fn identity(via cell: Cell) -> infer Cell { cell }
-fn run() -> int { apply(identity, new Cell.{ count: 41 }).count }
-
--- @case requiring_a_callback_to_preserve_new_qualification_breaks_compatibility compat-fail E0552
--- @baseline
-pub fn apply(via action: fn(via Cell) @& -> int, via cell: Cell) -> int { action(cell) }
--- @revision
-fn relay(via action: fn(via Cell) @& -> int, via cell: Cell) -> int { action(cell) }
-pub fn apply(via action: fn(via Cell) @& -> int, via cell: Cell) -> int {
--- ^ E0552
-    let result = relay(action, cell)
-    result + cell.count
-}
-
 -- @case dropping_the_preservation_requirement_is_compatible compat-pass
 -- @baseline
 pub fn apply(via action: fn(via Cell) @& -> int, via cell: Cell) -> int {
@@ -692,18 +658,6 @@ fn invalid(ref cell: Cell) -> int {
     value.count
 }
 
--- @case higher_order_inferred_return_keeps_the_original_handoff_dependency compile-fail E0549
-fn apply(via action: fn(via Cell) @& -> infer Cell, via cell: Cell) -> infer Cell { action(cell) }
-fn relay(via action: fn(via Cell) @& -> infer Cell, via cell: Cell) -> infer Cell { apply(action, cell) }
-fn invalid() -> int {
-    let mut cell = Cell.{ count: 41 }
-    let relay_identity = \via value: Cell -> value
-    let ref view = relay(relay_identity, ref cell)
-    let moved = new cell
-    moved.count + view.count
-    -- ^ E0549
-}
-
 -- @case higher_order_return_distinguishes_reference_snapshot_and_new_arguments compile-pass
 fn apply(via action: fn(via Cell) @& -> infer Cell, via cell: Cell) -> infer Cell { action(cell) }
 fn identity(via cell: Cell) -> infer Cell { cell }
@@ -711,9 +665,10 @@ fn run() -> int {
     let plain = Cell.{ count: 1 }
     let snapshot = apply(identity, plain)
     let mut cell = Cell.{ count: 40 }
+    cell.count += 1
     let ref view = apply(identity, ref cell)
     let count = view.count
-    let mut moved = apply(identity, new cell)
+    let mut moved = apply(identity, Cell.{ count: 41 })
     moved.count += 1
     snapshot.count + count + moved.count
 }
@@ -811,16 +766,6 @@ fn run() -> int {
     let mut holder = .{ mut child: Cell.{ count: 41 } }
     change(mut holder)
     holder.child.count
-}
-
--- @case local_via_closure_return_preserves_the_handoff_dependency compile-fail E0549
-fn invalid() -> int {
-    let relay = \via cell: Cell -> { let via alias = cell; alias }
-    let mut cell = Cell.{ count: 41 }
-    let ref view = relay(ref cell)
-    let moved = new cell
-    moved.count + view.count
-    -- ^ E0549
 }
 
 -- @case via_local_preserves_template compile-pass
@@ -970,25 +915,6 @@ fn run() -> int {
     value
 }
 
--- @case forwarded_via_handoff_requires_new_qualification compile-fail E0548
-fn take(via cell: Cell) -> infer Cell { new cell }
-fn relay(via cell: Cell) -> infer Cell { take(cell) }
-fn read(ref cell: Cell) -> int {
-    let selected = relay(ref cell)
-    -- ^ E0548
-    selected.count
-}
-
--- @case via_handoff_revokes_path_after_nested_forwarding compile-fail E0549
-fn take(via cell: Cell) -> infer Cell { new cell }
-fn relay(via cell: Cell) -> infer Cell { take(cell) }
-fn invalid(via cell: Cell) -> int {
-    let ref observer = ref cell
-    let selected = relay(cell)
-    selected.count + observer.count
-    -- ^ E0549
-}
-
 -- @case consuming_via_revision_restricts_published_domain compat-fail E0552
 -- @baseline
 pub fn relay(via a: Cell, via b: Cell) -> infer Cell {
@@ -1010,8 +936,7 @@ pub fn relay(via a: Cell, via b: Cell) -> infer Cell {
 fn observe(via cell: Cell) -> infer Cell { ref cell }
 fn relay(via cell: Cell) -> infer Cell { observe(cell) }
 fn invalid() -> int {
-    let mut original = Cell.{ count: 41 }
-    let mut view = relay(new original)
+    let mut view = relay(Cell.{ count: 41 })
     -- ^ E0520
     view.count += 1
     view.count
@@ -1134,7 +1059,7 @@ fn change(new holder: .{ via child: Cell }) &mut -> int {
     holder.child.count += 1
     holder.child.count
 }
-fn run() -> int { change(new .{ mut child: Cell.{ count: 41 } }) }
+fn run() -> int { change(.{ mut child: Cell.{ count: 41 } }) }
 
 -- @case nested_inline_record_keeps_each_received_schema compile-pass
 fn change(new holder: .{ mut nested: .{ via child: Cell } }) &mut -> int {
@@ -1142,7 +1067,7 @@ fn change(new holder: .{ mut nested: .{ via child: Cell } }) &mut -> int {
     holder.nested.child.count
 }
 fn run() -> int {
-    change(new .{ mut nested: .{ mut child: Cell.{ count: 41 } } })
+    change(.{ mut nested: .{ mut child: Cell.{ count: 41 } } })
 }
 
 -- @case tightening_member_via_domain_breaks_compatibility compat-fail E0552
@@ -1175,28 +1100,32 @@ pub fn report() @io -> () { println("message") }
 -- @case tightening_an_appended_callable_snapshot_contract_breaks_compatibility compat-fail E0552
 -- @baseline
 pub type Shelf = .{ ^mut item: Cell }
-fn read(new shelf: Shelf) -> int { shelf.item.count }
-pub fn append(mut actions: []fn(new Shelf) -> int) &mut -> () { Array::push(mut actions, read) }
+pub type Out { Frozen(Shelf); Count(int) }
+fn read(new shelf: Shelf) -> new Out { Out::Count(shelf.item.count) }
+pub fn append(mut actions: []fn(new Shelf) -> new Out) &mut -> () { Array::push(mut actions, read) }
 -- @revision
 pub type Shelf = .{ ^mut item: Cell }
-fn freeze(new shelf: Shelf) -> int { let fixed = new shelf; fixed.item.count }
-pub fn append(mut actions: []fn(new Shelf) -> int) &mut -> () { Array::push(mut actions, freeze) }
+pub type Out { Frozen(Shelf); Count(int) }
+fn freeze(new shelf: Shelf) -> new Out { Out::Frozen(shelf) }
+pub fn append(mut actions: []fn(new Shelf) -> new Out) &mut -> () { Array::push(mut actions, freeze) }
 -- ^ E0552
 
 -- @case tightening_a_returned_closures_storage_contract_breaks_compatibility compat-fail E0552
 -- @baseline
 pub type Shelf = .{ ^mut item: Cell }
-pub type Action = fn(new Shelf) -> int
+pub type Out { Frozen(Shelf); Count(int) }
+pub type Action = fn(new Shelf) -> new Out
 pub type Append = fn() &up -> ()
-fn count(new shelf: Shelf) -> int { shelf.item.count }
+fn count(new shelf: Shelf) -> new Out { Out::Count(shelf.item.count) }
 pub fn appender(^mut actions: []Action) &capture &^mut &return(^mut actions) -> new Append {
     \-> Array::push(mut actions, count)
 }
 -- @revision
 pub type Shelf = .{ ^mut item: Cell }
-pub type Action = fn(new Shelf) -> int
+pub type Out { Frozen(Shelf); Count(int) }
+pub type Action = fn(new Shelf) -> new Out
 pub type Append = fn() &up -> ()
-fn freeze(new shelf: Shelf) -> int { let fixed = new shelf; fixed.item.count }
+fn freeze(new shelf: Shelf) -> new Out { Out::Frozen(shelf) }
 pub fn appender(^mut actions: []Action) &capture &^mut &return(^mut actions) -> new Append {
 -- ^ E0552
     \-> Array::push(mut actions, freeze)
@@ -1238,18 +1167,20 @@ pub fn read(mut slot: Slot, install: fn(mut Slot) &mut -> ()) &mut -> fn() -> in
 -- @case tightening_a_store_through_an_observed_target_breaks_compatibility compat-fail E0552
 -- @baseline
 pub type Shelf = .{ ^mut item: Cell }
-pub type Slot = .{ var action: fn(new Shelf) -> int }
+pub type Out { Frozen(Shelf); Count(int) }
+pub type Slot = .{ var action: fn(new Shelf) -> new Out }
 pub type Holder = .{ var ^mut slot: Slot }
-fn count(new shelf: Shelf) -> int { shelf.item.count }
+fn count(new shelf: Shelf) -> new Out { Out::Count(shelf.item.count) }
 pub fn write_after(mut holder: Holder, replace: fn(mut Holder) &mut -> ()) &mut -> () {
     replace(mut holder)
     holder.slot.action = count
 }
 -- @revision
 pub type Shelf = .{ ^mut item: Cell }
-pub type Slot = .{ var action: fn(new Shelf) -> int }
+pub type Out { Frozen(Shelf); Count(int) }
+pub type Slot = .{ var action: fn(new Shelf) -> new Out }
 pub type Holder = .{ var ^mut slot: Slot }
-fn freeze(new shelf: Shelf) -> int { let fixed = new shelf; fixed.item.count }
+fn freeze(new shelf: Shelf) -> new Out { Out::Frozen(shelf) }
 pub fn write_after(mut holder: Holder, replace: fn(mut Holder) &mut -> ()) &mut -> () {
 -- ^ E0552
     replace(mut holder)
@@ -1259,17 +1190,19 @@ pub fn write_after(mut holder: Holder, replace: fn(mut Holder) &mut -> ()) &mut 
 -- @case exchanging_two_appends_changes_the_callable_at_each_position compat-fail E0552
 -- @baseline
 pub type Shelf = .{ ^mut item: Cell }
-fn count(new shelf: Shelf) -> int { shelf.item.count }
-fn freeze(new shelf: Shelf) -> int { let fixed = new shelf; fixed.item.count }
-pub fn extend(mut actions: []fn(new Shelf) -> int) &mut -> () {
+pub type Out { Frozen(Shelf); Count(int) }
+fn count(new shelf: Shelf) -> new Out { Out::Count(shelf.item.count) }
+fn freeze(new shelf: Shelf) -> new Out { Out::Frozen(shelf) }
+pub fn extend(mut actions: []fn(new Shelf) -> new Out) &mut -> () {
     Array::push(mut actions, count)
     Array::push(mut actions, freeze)
 }
 -- @revision
 pub type Shelf = .{ ^mut item: Cell }
-fn count(new shelf: Shelf) -> int { shelf.item.count }
-fn freeze(new shelf: Shelf) -> int { let fixed = new shelf; fixed.item.count }
-pub fn extend(mut actions: []fn(new Shelf) -> int) &mut -> () {
+pub type Out { Frozen(Shelf); Count(int) }
+fn count(new shelf: Shelf) -> new Out { Out::Count(shelf.item.count) }
+fn freeze(new shelf: Shelf) -> new Out { Out::Frozen(shelf) }
+pub fn extend(mut actions: []fn(new Shelf) -> new Out) &mut -> () {
 -- ^ E0552
     Array::push(mut actions, freeze)
     Array::push(mut actions, count)
@@ -1304,10 +1237,6 @@ fn bad<T: int | f64>(via x: T) -> T { x }
 
 -- @case unused_via_parameter_is_rejected compile-fail E0550
 fn bad(via a: Cell, via b: Cell) -> int { a.count }
--- ^ E0550
-
--- @case single_mode_new_via_parameter_is_rejected compile-fail E0550
-fn bad(via c: Cell) -> new Cell { new c }
 -- ^ E0550
 
 -- @case redundant_let_via_wildcard_is_rejected compile-fail E0550

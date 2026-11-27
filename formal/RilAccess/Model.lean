@@ -32,7 +32,7 @@ def Access.writes : Access → Bool
   | _ => false
 
 inductive SourceKind where
-  | parameter | module | capture | allocation | foreign
+  | parameter | module | capture | allocation
   deriving Repr, DecidableEq
 
 /-- A finite declaration/site name, not a dynamic allocation identity. -/
@@ -90,15 +90,11 @@ theorem attenuate_write (hw : (attenuate outer member).writes = true) :
 
 def SourceKind.admitsPureRil : SourceKind → Bool
   | .parameter | .module | .capture => true
-  | .allocation | .foreign => false
+  | .allocation => false
 
-/-- Verified deeply immutable `.ril` or static origins; foreign and allocation sources never qualify. -/
+/-- Verified deeply immutable `.ril` or static origins; allocation sources never qualify. -/
 def isPureInstance (pureSources : List Source) (o : SourceInstance) : Bool :=
   o.source.kind.admitsPureRil && decide (o.source ∈ pureSources)
-
-theorem foreign_instance_never_pure (h : o.source.kind = .foreign) :
-    isPureInstance pureSources o = false := by
-  simp [isPureInstance, h, SourceKind.admitsPureRil]
 
 def Separated (a b : List Nat) : Prop := ∀ x ∈ a, x ∉ b
 

@@ -125,7 +125,6 @@ impl Parser<'_> {
             Visibility::Private
         };
         let top = matches!(context, Context::Module | Context::Sub);
-        let foreign = self.kind == FileKind::Foreign;
         if matches!(
             context,
             Context::Block | Context::BlockWhere | Context::SignatureWhere
@@ -145,13 +144,6 @@ impl Parser<'_> {
                 Code::E0905,
                 start,
                 "executable root declarations are private",
-            ));
-        }
-        if foreign && (!attrs.is_empty() || self.is("meta")) {
-            return Err(self.error(
-                Code::E0901,
-                start,
-                "meta forms are prohibited in foreign declarations",
             ));
         }
         let meta = self.is("meta") && matches!(self.next_text(), "let" | "fn");
@@ -187,7 +179,6 @@ impl Parser<'_> {
             "fn" => {
                 if self.next_text() == "main"
                     && (meta
-                        || foreign
                         || context == Context::Sub
                         || context == Context::Module && self.kind != FileKind::Executable)
                 {
@@ -263,10 +254,7 @@ impl Parser<'_> {
                 .get(self.pos + 1)
                 .is_some_and(|tok| tok.tight_left && tok.text(self.file) == "(")
         {
-            let meta = self.bump();
-            if self.kind == FileKind::Foreign {
-                return Err(self.error(Code::E0901, meta.span, "metadata in foreign declaration"));
-            }
+            self.bump();
             self.open("(", ")", Layout::List)?;
             attrs.extend(self.list(")", Self::expr)?);
             self.skip_lines();
@@ -277,12 +265,9 @@ impl Parser<'_> {
     pub(super) fn attributes(&mut self) -> Result<Vec<ExprId>> {
         let mut attrs = Vec::new();
         while self.is("meta") && self.next_text() == "(" {
-            let meta = self.bump();
+            self.bump();
             if !self.tight("(") {
                 return Err(self.unexpected("metadata requires tightly attached parentheses"));
-            }
-            if self.kind == FileKind::Foreign {
-                return Err(self.error(Code::E0901, meta.span, "metadata in foreign declaration"));
             }
             self.open("(", ")", Layout::List)?;
             attrs.extend(self.list(")", Self::expr)?);
@@ -302,25 +287,11 @@ impl Parser<'_> {
         let signature = self.signature(true, operation, is_ctl)?;
         self.continue_lines(|tok| matches!(tok, "where" | "{"));
         let helpers = if !operation && self.eat("where") {
-            if self.kind == FileKind::Foreign {
-                return Err(self.error(
-                    Code::E0901,
-                    self.last,
-                    "signature helpers in foreign declaration",
-                ));
-            }
             self.sequence(Some("{"), Context::SignatureWhere)?
         } else {
             Vec::new()
         };
         let body = if self.is("{") && !operation {
-            if self.kind == FileKind::Foreign {
-                return Err(self.error(
-                    Code::E0901,
-                    self.current().span,
-                    "function body in foreign declaration",
-                ));
-            }
             Some(self.block()?)
         } else {
             None
@@ -419,13 +390,6 @@ impl Parser<'_> {
             self.guards()?
         };
         let default = if !types_only && self.eat("=") {
-            if self.kind == FileKind::Foreign {
-                return Err(self.error(
-                    Code::E0901,
-                    self.last,
-                    "parameter default in foreign declaration",
-                ));
-            }
             Some(self.expr()?)
         } else {
             None
@@ -479,7 +443,6 @@ impl Parser<'_> {
                     "^mut" => Some(StateKind::Share),
                     "capture" => Some(StateKind::Capture),
                     "up" => Some(StateKind::Environment),
-                    "once" => Some(StateKind::Once),
                     "return" => Some(StateKind::Return),
                     _ => None,
                 };
@@ -523,16 +486,8 @@ impl Parser<'_> {
         self.require("type")?;
         let name = self.name(Some(Word::Pascal), false)?;
         let generics = self.generics()?;
-        let foreign = self.kind == FileKind::Foreign;
         let (kind, definition) = if self.eat("=") {
             if opaque {
-                if foreign {
-                    return Err(self.error(
-                        Code::E0901,
-                        self.last,
-                        "foreign type representation is sealed",
-                    ));
-                }
                 return Err(self.error(
                     Code::E0120,
                     self.last,
@@ -541,13 +496,6 @@ impl Parser<'_> {
             }
             self.skip_lines();
             let definition = if self.eat("\\") {
-                if foreign {
-                    return Err(self.error(
-                        Code::E0901,
-                        self.last,
-                        "type function in foreign declaration",
-                    ));
-                }
                 if !generics.is_empty() {
                     return Err(self.error(
                         Code::E0120,
@@ -591,13 +539,6 @@ impl Parser<'_> {
             };
             (TypeKind::Alias, definition)
         } else if self.is("{") {
-            if foreign && opaque {
-                return Err(self.error(
-                    Code::E0901,
-                    self.current().span,
-                    "opaque sum in foreign declaration",
-                ));
-            }
             self.open("{", "}", Layout::Block)?;
             let mut variants = Vec::new();
             self.separators();
@@ -651,13 +592,6 @@ impl Parser<'_> {
             };
             (kind, TypeDefinition::Sum(variants))
         } else if self.tight("(") {
-            if foreign {
-                return Err(self.error(
-                    Code::E0901,
-                    self.current().span,
-                    "foreign type representation is sealed",
-                ));
-            }
             let opening = self.open("(", ")", Layout::List)?;
             let mut elements = self.list(")", |p| {
                 if matches!(p.text(), "@" | "&") {
@@ -743,13 +677,6 @@ impl Parser<'_> {
             };
             (kind, TypeDefinition::Opaque)
         } else {
-            if foreign {
-                return Err(self.error(
-                    Code::E0901,
-                    self.current().span,
-                    "foreign type representation is sealed",
-                ));
-            }
             return Err(self.error(
                 Code::E0120,
                 self.current().span,
@@ -848,7 +775,7 @@ impl Parser<'_> {
                 "top-level bindings cannot retain mutable or live state",
             ));
         }
-        let pattern = if variable || is_meta || top && self.kind == FileKind::Foreign {
+        let pattern = if variable || is_meta {
             let name = self.name(
                 Some(if is_meta { Word::Constant } else { Word::Value }),
                 true,
@@ -882,23 +809,9 @@ impl Parser<'_> {
                 "value binding cannot carry effect or state clauses",
             ));
         }
-        let value = if self.kind == FileKind::Foreign {
-            if self.is("=") {
-                return Err(self.error(
-                    Code::E0901,
-                    self.current().span,
-                    "initializer in foreign declaration",
-                ));
-            }
-            if ty.is_none() {
-                self.require(":")?;
-            }
-            None
-        } else {
-            self.require("=")?;
-            self.skip_lines();
-            Some(self.expr()?)
-        };
+        self.require("=")?;
+        self.skip_lines();
+        let value = Some(self.expr()?);
         self.continue_lines(|tok| tok == "else");
         let fallback = if self.eat("else") {
             if variable || is_meta {

@@ -131,9 +131,13 @@ fn main() @io -> () {
     }
 
     -- Escaping to function call and array keeps heap identity.
-    let mut escaped = Node.{ label: "esc", value: 5 }
-    let bumped = bump(mut escaped)
-    let items = [new escaped]
+    let escaped = {
+        let mut e = Node.{ label: "esc", value: 5 }
+        let _ = bump(mut e)
+        e
+    }
+    let bumped = escaped.value
+    let items = [escaped]
     println("{sum}:{prev.label}:{box.label}:{box.value}:{bumped}:{items[0].value}")
 }
 "#;

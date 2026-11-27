@@ -167,9 +167,7 @@ impl Interface {
                             })
                             .collect();
                         let adt_kind = if decl.kind == TypeKind::Opaque {
-                            if program.hir.file(def.name.span.file).kind == FileKind::Foreign {
-                                crate::ty::AdtKind::Foreign
-                            } else if matches!(decl.definition, TypeDefinition::Sum(_)) {
+                            if matches!(decl.definition, TypeDefinition::Sum(_)) {
                                 crate::ty::AdtKind::OpaqueSum
                             } else {
                                 crate::ty::AdtKind::Opaque
@@ -190,34 +188,30 @@ impl Interface {
                             std::sync::Arc::new(self_adt.clone()),
                         ));
                         let body = if decl.kind == TypeKind::Opaque {
-                            if program.hir.file(def.name.span.file).kind == FileKind::Foreign {
-                                "foreign".into()
-                            } else {
-                                let base = match &decl.definition {
-                                    TypeDefinition::Sum(_) => "sealed sum".into(),
-                                    TypeDefinition::Data(_) => {
-                                        let unwrapped = program.unwrap_wrapper(
-                                            &crate::ty::Ty::Adt(std::sync::Arc::new(self_adt)),
-                                        );
-                                        if unwrapped.is_primitive_value() {
-                                            "sealed value".into()
-                                        } else if let crate::ty::Ty::Param(pid) = unwrapped
-                                            && let Some(idx) =
-                                                param_ids.iter().position(|p| *p == Some(pid))
-                                        {
-                                            format!("sealed param({idx})")
-                                        } else {
-                                            "sealed shared".into()
-                                        }
+                            let base = match &decl.definition {
+                                TypeDefinition::Sum(_) => "sealed sum".into(),
+                                TypeDefinition::Data(_) => {
+                                    let unwrapped = program.unwrap_wrapper(
+                                        &crate::ty::Ty::Adt(std::sync::Arc::new(self_adt)),
+                                    );
+                                    if unwrapped.is_primitive_value() {
+                                        "sealed value".into()
+                                    } else if let crate::ty::Ty::Param(pid) = unwrapped
+                                        && let Some(idx) =
+                                            param_ids.iter().position(|p| *p == Some(pid))
+                                    {
+                                        format!("sealed param({idx})")
+                                    } else {
+                                        "sealed shared".into()
                                     }
-                                    TypeDefinition::Opaque => "foreign".into(),
-                                    TypeDefinition::Function(..) => "sealed".into(),
-                                };
-                                if is_must_consume {
-                                    format!("{base} must_consume")
-                                } else {
-                                    base
                                 }
+                                TypeDefinition::Opaque => "sealed".into(),
+                                TypeDefinition::Function(..) => "sealed".into(),
+                            };
+                            if is_must_consume {
+                                format!("{base} must_consume")
+                            } else {
+                                base
                             }
                         } else {
                             match &decl.definition {

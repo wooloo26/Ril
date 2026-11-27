@@ -115,10 +115,7 @@ fn compute_safepoint_liveness(
                             live.insert(*address);
                             live.insert(*environment);
                         }
-                        Target::Function(_)
-                        | Target::Runtime(_)
-                        | Target::Draft(_)
-                        | Target::Foreign(_) => {}
+                        Target::Function(_) | Target::Runtime(_) | Target::Draft(_) => {}
                     }
                     at_safepoint.extend(live.iter().copied());
                 }

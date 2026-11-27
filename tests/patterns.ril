@@ -51,7 +51,7 @@ use dep/domain::Color
 fn color(value: Color) -> int {
     match value { Color::Amber -> 0; Color::Green -> 1; _ -> 2 }
 }
--- @file dep/domain.d.ril
+-- @file dep/domain.ril
 pub type Color { Amber; Green; .. }
 
 -- @case option_pattern compile-pass

@@ -146,9 +146,9 @@ structure EffectGuarantees : Prop where
     Integrated.lookupToken authority id = some token →
     token.scopedHold = false →
       Integrated.lookupToken next id = some token
-  validHandlerArm : ∀ (opKind : CoreBoundary.OpKind) armHasCtlPrefix armIsOneShot,
-    CoreBoundary.validHandlerArm opKind armHasCtlPrefix armIsOneShot = true ↔
-      decide (opKind = .algebraicCtl) = armHasCtlPrefix ∧ armIsOneShot = false
+  validHandlerArm : ∀ (opKind : CoreBoundary.OpKind) armHasCtlPrefix,
+    CoreBoundary.validHandlerArm opKind armHasCtlPrefix = true ↔
+      decide (opKind = .algebraicCtl) = armHasCtlPrefix
   absorbPanicIsolated : ∀ pureSources body outerEnv usesOuterCtlHandler capturesMustConsume,
     CoreBoundary.absorbPanicAdmissible pureSources body outerEnv usesOuterCtlHandler capturesMustConsume = true →
       Summary.isPure pureSources body = true ∧
@@ -263,9 +263,6 @@ structure CallableMatchGuarantees : Prop where
       (expected.subsumes pureSources actual = true ↔
         (∀ o ∈ actual.rootReturn, o ∈ expected.rootReturn) ∧
         (∀ o ∈ actual.contained, o ∈ expected.contained))
-  foreignNeverPure : ∀ (pureSources : List Source) (expected actual : Summary) (o : SourceInstance),
-    o.source.kind = .foreign → o ∈ actual.namedReads → expected.subsumes pureSources actual = true →
-      o ∈ expected.namedReads ∨ o ∈ expected.writes ∨ o ∈ expected.retained
   retainedStrict : ∀ (pureSources : List Source) (expected actual : Summary) (o : SourceInstance),
     o ∈ actual.retained → expected.subsumes pureSources actual = true → o ∈ expected.retained
   instantiationMonotone : ∀ (pureSources : List Source) (expected actual : CoreSummary.Template) (call : CoreSummary.CallInstance),
@@ -299,16 +296,6 @@ structure CtlGuarantees : Prop where
   armedDischargedOnExit : ∀ (st : CoreCtl.LinearState),
     CoreCtl.canCrossUnhandledCtl st = true →
       CoreCtl.canExitLinearScope (CoreCtl.runArmedDefers st) = true
-  onceRejectsMustConsume : ∀ (world : Integrated.World) r hasUninspectedResult,
-    CoreCtl.eligibleOnceCapture world r true hasUninspectedResult = false
-  onceHandoffEndsParent : ∀ (world next : Integrated.World) source destination resolved,
-    CoreCtl.onceCaptureHandoff world source destination false false = .ok next →
-    Integrated.resolve world ⟨source, []⟩ = some resolved →
-      Integrated.rawLookup next.raw destination = some resolved.pointer ∧
-      (∀ dep ∈ resolved.binding.dependencies, (Integrated.lookupToken next dep).any Integrated.Token.active = false) ∧
-      (∀ path derived dep, Integrated.resolve next path = some derived →
-        dep ∈ derived.binding.dependencies → dep ∈ resolved.binding.dependencies →
-        Integrated.live derived = false)
   sharedForbidsDowngradeAcrossEffect : ∀ (paramMode : Integrated.ParameterMode),
     (paramMode = .mutable ∨ paramMode = .observe) →
       CoreCtl.canPassSharedAs .shared paramMode true = false
@@ -361,7 +348,6 @@ theorem verified : Guarantees where
     fun _ _ _ _ h => ⟨CoreSummary.checked_facts h, (CoreSummary.checked_valid h).2⟩⟩
   callableMatch := ⟨summary_subsumes_refl, fun _ _ _ _ => summary_subsumes_trans,
     fun _ _ expected hp => pure_summary_subsumes_iff hp expected,
-    fun _ _ _ _ => foreign_read_not_erased_by_pure,
     fun _ _ _ _ => retained_not_subsumed_by_write_only,
     fun _ _ _ call h => CoreSummary.template_subsumes_instantiate h call,
     fun _ _ _ _ hdecl hnoW => exactSignature_rejects_excess_write hdecl hnoW,
@@ -381,8 +367,6 @@ theorem verified : Guarantees where
     fun _ _ hm hunc hunarmed => CoreCtl.unarmed_must_consume_blocks_unhandled_ctl hm hunc hunarmed,
     fun _ _ hm hunc => CoreCtl.unconsumed_linear_blocks_exit hm hunc,
     fun _ hcross => CoreCtl.armed_entries_discharged_on_exit hcross,
-    fun _ _ _ => CoreCtl.once_closure_rejects_must_consume_capture,
-    fun _ _ _ _ _ h hr => CoreCtl.once_handoff_ends_parent_path h hr,
     fun _ hmode => CoreCtl.shared_writer_forbids_downgrade_across_unhandled_effect hmode,
     fun _ _ hmem => CoreCtl.no_ctl_param_rejects_ctl_callback hmem⟩
   draft := ⟨fun _ _ _ _ => Draft.prepared_root_sound, fun _ _ _ => Draft.checked_path_recipe_prefixes,

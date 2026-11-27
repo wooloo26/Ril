@@ -17,7 +17,7 @@ pub fn from_array<T>(via items: []T) -> new Set<T> {
     for items as item {
         m[item] = ()
     }
-    Set::(new m)
+    Set::(m)
 }
 
 -- Inserts `value` into `set` in place (no-op if already present).
@@ -27,16 +27,20 @@ pub fn insert<T>(mut set: Set<T>, value: T) &mut -> () {
 
 -- Removes `value` from `set` in place, returning `true` if it was present.
 pub fn remove<T>(mut set: Set<T>, value: T) &mut -> bool {
-    match Map::remove(mut inner(mut set), value) {
-        Some(_) -> true
-        None -> false
-    }
+    Map::remove(mut inner(mut set), value) != None
 }
 
 -- Reports whether `set` contains `value`.
 pub fn contains<T>(via set: Set<T>, value: T) -> bool {
-    match inner(set)?[value] {
-        Some(_) -> true
-        None -> false
-    }
+    inner(set)?[value] != None
+}
+
+-- Removes every element from `set` in place.
+pub fn clear<T>(mut set: Set<T>) &mut -> () {
+    Map::clear(mut inner(mut set))
+}
+
+-- Returns a new array containing all elements of `set` in insertion order.
+pub fn to_array<T>(via set: Set<T>) &return(set) -> new []T {
+    Map::keys(inner(set))
 }

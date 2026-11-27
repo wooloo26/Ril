@@ -213,7 +213,6 @@ pub enum StateKind {
     Share,
     Capture,
     Environment,
-    Once,
     Return,
 }
 

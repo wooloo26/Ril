@@ -55,14 +55,12 @@ impl FromStr for Stage {
 pub enum Unit {
     Bin,
     Lib,
-    Decl,
     Snippet,
 }
 
 impl Unit {
     const fn entry(self) -> &'static str {
         match self {
-            Self::Decl => "pkg/main.d.ril",
             Self::Bin | Self::Lib | Self::Snippet => "pkg/main.ril",
         }
     }
@@ -75,7 +73,6 @@ impl FromStr for Unit {
         match text {
             "bin" => Ok(Self::Bin),
             "lib" => Ok(Self::Lib),
-            "decl" => Ok(Self::Decl),
             "snippet" => Ok(Self::Snippet),
             _ => Err(format!("unknown unit kind {text:?}")),
         }

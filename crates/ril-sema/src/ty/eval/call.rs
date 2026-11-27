@@ -235,6 +235,30 @@ impl Checker<'_> {
                     Ok(Value::Unit)
                 }
                 DefinitionKind::Primitive(_)
+                    if name == "replace" && self.hir.primitive_module(id) == Some("Map") =>
+                {
+                    let [map, key, value] = args else {
+                        return Err(nonstatic(span));
+                    };
+                    fuel.step(span)?;
+                    let place = self.eval_place(env, slots, map.value, fuel)?;
+                    let key = self.evaluate(env, slots, key.value, fuel)?;
+                    let value = self.evaluate(env, slots, value.value, fuel)?;
+                    let Value::Map(entries) = place.slot(slots, false)? else {
+                        return Err(defect(span, "static Map::replace requires a map"));
+                    };
+                    let previous = if let Some((_, existing)) = entries
+                        .iter_mut()
+                        .find(|(stored, _)| ieee_equal(stored, &key))
+                    {
+                        Some(std::mem::replace(existing, value))
+                    } else {
+                        entries.push((key, value));
+                        None
+                    };
+                    Ok(previous.map_or_else(none, |item| Value::Tag("Some".into(), vec![item])))
+                }
+                DefinitionKind::Primitive(_)
                     if name == "remove" && self.hir.primitive_module(id) == Some("Map") =>
                 {
                     let [map, key] = args else {

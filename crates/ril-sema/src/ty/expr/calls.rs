@@ -262,16 +262,11 @@ impl Checker<'_> {
                 .map(|path| self.effect_label(&mut local, path))
                 .collect()
         };
-        let once = obligations
-            .state
-            .iter()
-            .any(|clause| clause.kind == syntax::StateKind::Once);
         Ty::Callable(Arc::new(Callable {
             parameters,
             result,
             effects,
             open_effects: obligations.open_effects,
-            once,
             ..unknown_callable()
         }))
     }
@@ -320,15 +315,6 @@ impl Checker<'_> {
                                 "calling a meta fn in runtime code requires 'meta'",
                             );
                         }
-                    }
-                    if self.hir.primitive_module(id) == Some("Reflect")
-                        && matches!(
-                            def.name.value.as_str(),
-                            "attrs" | "field_attrs" | "variant_attrs"
-                        )
-                        && let Some(path) = path
-                    {
-                        return self.reflect_call(env, path, args, expected, span);
                     }
                     if self
                         .hir
@@ -508,7 +494,15 @@ impl Checker<'_> {
                     "value-type argument cannot carry live authority",
                 );
             }
-            if !parameter.is_meta && parameter.mode != Mode::Via && parameter.mode != arg.mode {
+            let expected_arg_mode = if parameter.mode == Mode::New {
+                Mode::Plain
+            } else {
+                parameter.mode
+            };
+            if !parameter.is_meta
+                && parameter.mode != Mode::Via
+                && expected_arg_mode != arg.mode
+            {
                 self.error(
                     if arg.mode == Mode::Plain {
                         Code::E0405
@@ -725,13 +719,6 @@ impl Checker<'_> {
             );
             return Ty::Unknown;
         }
-        if adt.kind == AdtKind::Foreign {
-            for arg in args {
-                self.expr(env, arg.value, None);
-            }
-            self.error(Code::E0907, span, "foreign nominal cannot be constructed");
-            return Ty::Unknown;
-        }
         if adt.kind == AdtKind::Opaque && adt.defining_scope != env.scope {
             for arg in args {
                 self.expr(env, arg.value, None);
@@ -740,7 +727,7 @@ impl Checker<'_> {
                 self.error(
                     Code::E0301,
                     span,
-                    "PanicReport has no accessible constructor",
+                    "Panic::Report has no accessible constructor",
                 );
             } else {
                 self.error(Code::E0308, span, "opaque constructor is sealed");
@@ -779,7 +766,7 @@ impl Checker<'_> {
                     "positional constructor does not accept named arguments",
                 );
             }
-            if !matches!(arg.mode, Mode::Plain | Mode::Ref | Mode::Shared | Mode::New) {
+            if !matches!(arg.mode, Mode::Plain | Mode::Ref | Mode::Shared) {
                 self.error(
                     Code::E0406,
                     arg_node.span,
@@ -815,7 +802,7 @@ impl Checker<'_> {
                     "positional constructor does not accept named arguments",
                 );
             }
-            if !matches!(arg.mode, Mode::Plain | Mode::Ref | Mode::Shared | Mode::New) {
+            if !matches!(arg.mode, Mode::Plain | Mode::Ref | Mode::Shared) {
                 self.error(
                     Code::E0406,
                     arg_span,

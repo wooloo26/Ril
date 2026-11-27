@@ -4,10 +4,7 @@ mod closures;
 mod control;
 mod slice;
 
-use std::{
-    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
-    sync::Arc,
-};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use ril_sema::{
     access::Analysis,
@@ -24,9 +21,8 @@ use ril_source::{
 };
 
 use super::{
-    Block, BlockId, DraftOp, ForeignAbi, ForeignImport, Function, FunctionId, Instruction,
-    IntBinOp, IntLowering, IntUnaryOp, ManagedInt, MirTy, Program, Register, SourceLocEntry,
-    Target, Terminator,
+    Block, BlockId, DraftOp, Function, FunctionId, Instruction, IntBinOp, IntLowering, IntUnaryOp,
+    ManagedInt, MirTy, Program, Register, SourceLocEntry, Target, Terminator,
 };
 
 type Result<T> = std::result::Result<T, Diagnostic>;
@@ -40,7 +36,6 @@ enum NativeBody<'a> {
         abort_k_first: bool,
     },
     Accessor(&'a [(bool, Member)]),
-    Foreign(Arc<ForeignImport>),
     Constructor(&'a str, usize),
     Primitive(&'static str, usize),
 }
@@ -295,40 +290,6 @@ impl<'a> Lowering<'a> {
         }
     }
 
-    fn foreign(&self, id: DefinitionId) -> Result<Arc<ForeignImport>> {
-        let definition = self.typed.hir.definition(id);
-        if self
-            .typed
-            .hir
-            .file(definition.name.span.file)
-            .is_interface()
-        {
-            return Err(Diagnostic::unsupported(format!(
-                "native code for {} is required",
-                self.typed.hir.export_name(id)
-            )));
-        }
-        let callable = self.typed.callables.get(&id).unwrap_or_else(|| {
-            ril_source::ice!("foreign declaration requires a checked signature")
-        });
-        Ok(self.foreign_import(
-            id,
-            &Ty::Callable(callable.clone()),
-            ForeignAbi::Function {
-                arity: callable.parameters.len(),
-            },
-        ))
-    }
-
-    fn foreign_import(&self, id: DefinitionId, ty: &Ty, abi: ForeignAbi) -> Arc<ForeignImport> {
-        Arc::new(ForeignImport {
-            declaration: self.typed.hir.export_name(id),
-            signature: ty.qualified_display(&self.typed.hir).to_string(),
-            symbol: self.typed.hir.definition(id).name.value.clone(),
-            abi,
-        })
-    }
-
     fn mangle_symbol(
         &mut self,
         kind: &str,
@@ -454,7 +415,10 @@ impl<'a> Lowering<'a> {
                     let body = if let Some(body) = f.body {
                         NativeBody::Expression(body)
                     } else {
-                        NativeBody::Foreign(self.foreign(id)?)
+                        return Err(Diagnostic::unsupported(format!(
+                            "native code for {} is required",
+                            self.typed.hir.export_name(id)
+                        )));
                     };
                     (
                         "fn",
@@ -657,9 +621,6 @@ impl<'a> Lowering<'a> {
                 }
                 call_args.push(if abort_k_first { builder.unit() } else { k });
                 builder.invoke_closure(handler, call_args)
-            }
-            NativeBody::Foreign(import) => {
-                builder.invoke(Target::Foreign(import), builder.params(entry), false)
             }
             NativeBody::Accessor(path) => {
                 let value = builder.result_param(entry);
@@ -1529,14 +1490,6 @@ impl<'a> Builder<'_, 'a> {
                     Some(StmtKind::Binding {
                         value: Some(expr), ..
                     }) => self.expr(*expr),
-                    Some(StmtKind::Binding { value: None, .. }) => {
-                        let ty =
-                            self.global.typed.bindings.get(&source).ok_or_else(|| {
-                                self.unsupported(span, "unchecked foreign constant")
-                            })?;
-                        let import = self.global.foreign_import(source, ty, ForeignAbi::Constant);
-                        Ok(self.invoke(Target::Foreign(import), Vec::new(), false))
-                    }
                     _ => Err(self.unsupported(span, "uninitialized constant")),
                 };
                 self.file = prev_file;

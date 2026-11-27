@@ -997,12 +997,11 @@ fn satisfies_known_guard(guard: &str, ty: &Ty, typed: &TypedProgram) -> bool {
         "SharedObject" => {
             !typed.is_value(ty) && !matches!(ty, Ty::Mode | Ty::Draft(_) | Ty::TypeValue(_))
         }
-        "NominalWrapper" => match ty {
+        "InnerTarget" => match ty {
             Ty::Draft(_) => true,
             Ty::Adt(adt) => matches!(adt.kind, AdtKind::Nominal | AdtKind::Opaque),
             _ => false,
         },
-        "Tuple" => matches!(ty, Ty::Tuple(_)),
         _ => true,
     }
 }

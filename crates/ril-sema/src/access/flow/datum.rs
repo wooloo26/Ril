@@ -157,6 +157,25 @@ impl Datum {
             }
             self.roots.sort_unstable();
             self.roots.dedup();
+        } else if self.roots.iter().any(|root| root.branches.is_empty())
+            && self.roots.iter().any(|root| !root.branches.is_empty())
+        {
+            // An unbranched origin subsumes identical branch-tagged origins,
+            // keeping widening monotone across loop fixpoint iterations.
+            let unbranched: BTreeSet<Origin> = self
+                .roots
+                .iter()
+                .filter(|root| root.branches.is_empty())
+                .cloned()
+                .collect();
+            self.roots.retain(|root| {
+                if root.branches.is_empty() {
+                    return true;
+                }
+                let mut probe = root.clone();
+                probe.branches.clear();
+                !unbranched.contains(&probe)
+            });
         }
         for (coordinate, value) in other.members {
             let slot = self.members.entry(coordinate).or_default();
@@ -185,7 +204,6 @@ impl Datum {
         }
         self.live_callable_state |= other.live_callable_state;
         self.uses_ctl_handler |= other.uses_ctl_handler;
-        self.is_once |= other.is_once;
         self.result_fresh &= other.result_fresh;
         self
     }

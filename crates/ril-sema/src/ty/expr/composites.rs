@@ -115,7 +115,7 @@ impl Checker<'_> {
             self.error(
                 Code::E0352,
                 span,
-                "str and bytes do not support single-element bracket indexing; use String::at or Bytes::at",
+                "str and bytes do not support single-element bracket indexing; use String::scalar_at or Bytes::at",
             );
             Ty::Unknown
         } else {
@@ -140,10 +140,6 @@ impl Checker<'_> {
             expected.filter(|ty| matches!(ty, Ty::Record(..))).cloned()
         };
         if let Some(Ty::Adt(adt)) = &data {
-            if adt.kind == AdtKind::Foreign {
-                self.error(Code::E0907, span, "cannot construct a foreign handle");
-                return Ty::Unknown;
-            }
             if adt.kind == AdtKind::Opaque && adt.defining_scope != env.scope {
                 self.error(Code::E0308, span, "opaque type construction is sealed");
                 return Ty::Unknown;

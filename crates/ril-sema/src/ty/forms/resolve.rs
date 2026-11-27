@@ -7,7 +7,6 @@ use ril_hir::{DefinitionId, DefinitionKind, StdType};
 use ril_source::{diag::Code, span::Span};
 use ril_syntax::{
     lexer::{Word, word_kind},
-    parser::FileKind,
     syntax::{
         self, FieldTail, Mode, StmtKind, Type, TypeDecl, TypeDefinition, TypeId, TypeKind, Variant,
     },
@@ -268,18 +267,33 @@ impl Checker<'_> {
     fn member(&mut self, env: &mut Env, mode: &syntax::Storage, ty: TypeId) -> Member {
         let typed = self.type_expr(env, ty);
         let mode = self.member_mode(env, mode);
-        if matches!(mode.mode, Mode::Mut | Mode::Shared | Mode::Ref)
+        let span = self.ast(env.file).ty(ty).span;
+        if self.is_ctl_ty(env, &typed) {
+            if mode.variable {
+                self.error(
+                    Code::E0532,
+                    span,
+                    "ctl continuation cannot be stored in a reassignable var member",
+                );
+            } else if mode.mode != Mode::Plain {
+                self.error(
+                    Code::E0356,
+                    span,
+                    "ctl continuation is linear and cannot carry a member access mode",
+                );
+            }
+        } else if matches!(mode.mode, Mode::Mut | Mode::Shared | Mode::Ref)
             && self.is_value_ty(env, &typed)
         {
             self.error(
                 Code::E0402,
-                self.ast(env.file).ty(ty).span,
+                span,
                 "value-type members cannot carry live access",
             );
         } else if mode.mode == Mode::Via && self.is_value_only_ty(env, &typed) {
             self.error(
                 Code::E0550,
-                self.ast(env.file).ty(ty).span,
+                span,
                 "via is redundant on a value-type member",
             );
         }
@@ -484,17 +498,11 @@ impl Checker<'_> {
         arguments: Vec<GenericValue>,
     ) -> Ty {
         let def = self.hir.definition(id);
-        let kind = if self.hir.file(def.name.span.file).kind == FileKind::Foreign
-            && matches!(decl.kind, TypeKind::Opaque | TypeKind::Nominal)
-        {
-            AdtKind::Foreign
-        } else {
-            match (&decl.definition, decl.kind) {
-                (TypeDefinition::Sum(_), TypeKind::Opaque) => AdtKind::OpaqueSum,
-                (TypeDefinition::Sum(_), _) => AdtKind::Sum,
-                (_, TypeKind::Opaque) => AdtKind::Opaque,
-                _ => AdtKind::Nominal,
-            }
+        let kind = match (&decl.definition, decl.kind) {
+            (TypeDefinition::Sum(_), TypeKind::Opaque) => AdtKind::OpaqueSum,
+            (TypeDefinition::Sum(_), _) => AdtKind::Sum,
+            (_, TypeKind::Opaque) => AdtKind::Opaque,
+            _ => AdtKind::Nominal,
         };
         Ty::Adt(Arc::new(Adt {
             definition: id,

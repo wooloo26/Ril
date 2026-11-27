@@ -1,0 +1,28 @@
+-- Standard Panic module: panic recovery boundary and diagnostic reports.
+
+-- Opaque value-backed diagnostic report produced when `Panic::recover` catches a panic.
+-- Extract its message with `Panic::message`.
+pub opaque type Report(str)
+
+-- Error sum returned by `Panic::recover` when the guarded action panics.
+pub type Error {
+    Panicked(Report)
+}
+
+-- Executes a zero-argument action inside a panic boundary, unwinding `defer` cleanups
+-- and returning `Err(Panic::Error::Panicked(report))` if a panic occurs. Forbids outer live
+-- state, outer `ctl` handlers, must-consume captures, and unhandled effects.
+--
+-- ```ril
+-- use ril/panic as Panic
+-- fn safe_run() @io -> () {
+--     match Panic::recover(\-> panic("boom")) {
+--         Ok(_) -> ()
+--         Err(Panic::Error::Panicked(report)) -> println(Panic::message(report))
+--     }
+-- }
+-- ```
+pub fn recover<T>(via action: fn() @& -> infer T) -> infer !<T, Error>
+
+-- Extracts the diagnostic message text from a `Panic::Report`.
+pub fn message(report: Report) -> str

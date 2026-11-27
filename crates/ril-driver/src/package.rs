@@ -73,9 +73,6 @@ fn scan_use_imports(source: &SourceFile, tokens: &[Token]) -> Vec<Vec<String>> {
 }
 
 pub fn infer_unit(path: &Path) -> Unit {
-    if path.to_string_lossy().ends_with(".d.ril") {
-        return Unit::Decl;
-    }
     let target = if path.is_dir() {
         fs::read_to_string(path.join("ril.toml"))
             .ok()

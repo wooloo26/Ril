@@ -9,16 +9,8 @@ pub meta let EULER: f64 = 2.718281828459045
 -- Returns the absolute value of `x`.
 pub fn abs<T: int | f64>(x: T) -> T {
     meta match <T> {
-        <int> -> if x < 0 {
-            return -x
-        } else {
-            return x
-        }
-        <f64> -> if x < 0.0 {
-            return -x
-        } else {
-            return x
-        }
+        <int> -> return if x < 0 { -x } else { x }
+        <f64> -> return if x < 0.0 { -x } else { x }
     }
 }
 

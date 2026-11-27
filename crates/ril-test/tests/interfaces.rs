@@ -18,7 +18,7 @@ use ril_test::{CaseMode, Stage, TestDriver, Unit, VirtualPackage, parse_suite, r
 
 #[test]
 fn hidden_clone_restrictions_survive_separate_compilation() {
-    let source = b"pub opaque type Parcel(.{ mut cont: ctl() -> () })";
+    let source = b"pub opaque type Parcel(.{ cont: ctl() -> () })";
     let mut library = VirtualPackage::new(Unit::Lib);
     library.entry = "pkg/vault.ril".into();
     library.insert(library.entry.clone(), source.to_vec());
@@ -89,12 +89,11 @@ fn transferred_snapshot_requirements_survive_separate_compilation() {
     let source = br#"
 pub type Cell = .{ var count: int }
 pub type Shelf = .{ var ^mut item: Cell }
-pub fn freeze(new input: Shelf) -> Shelf { let snapshot = new input; snapshot }
-pub fn replace(new input: Shelf) -> Shelf {
-    let mut shelf = new input
-    shelf.item = ^mut Cell.{ count: 42 }
-    let snapshot = new shelf
-    snapshot
+pub type Out { Frozen(Shelf); Count(int) }
+pub fn freeze(new input: Shelf) -> new Out { Out::Frozen(input) }
+pub fn replace(new input: Shelf) -> new Out {
+    input.item = ^mut Cell.{ count: 42 }
+    Out::Frozen(input)
 }
 "#;
     let mut provider = VirtualPackage::new(Unit::Lib);
@@ -128,16 +127,13 @@ pub fn replace(new input: Shelf) -> Shelf {
         ] {
             let client_source = format!(
                 "use library/snapshot
-fn relay(new input: Snapshot::Shelf) -> Snapshot::Shelf {{
-    let transform = Snapshot::{name}
-    transform(new input)
-}}
 fn run() -> int {{
     let mut live = Snapshot::Cell.{{ count: 1 }}
     live.count += 1
-    let frozen = relay(new Snapshot::Shelf.{{ item: ^mut {alias} }})
+    let transform = Snapshot::{name}
+    let frozen = transform(Snapshot::Shelf.{{ item: ^mut {alias} }})
     live.count += 8
-    frozen.item.count + live.count
+    match frozen {{ Snapshot::Out::Frozen(s) -> s.item.count + live.count; Snapshot::Out::Count(n) -> n + live.count }}
 }}"
             );
             let mut client = VirtualPackage::new(Unit::Lib);
@@ -164,16 +160,23 @@ fn snapshot_callback_arguments_survive_separate_compilation() {
 
     let source = br#"
 pub type Cell = .{ var count: int }
-pub type Shelf = .{ var ^mut item: Cell }
-type Action = fn(new Shelf) -> int
-fn dispatch(action: Action, new source: Shelf) -> int { action(new source); 0 }
-pub fn apply(action: fn(new Shelf) -> int, new source: Shelf) -> int {
-    dispatch(action, new source)
+pub type Shelf = .{ var ref item: Cell }
+pub type Out { Frozen(Shelf); Count(int) }
+pub fn apply(action: fn(new Shelf) -> new Out, ref item: Cell) -> int {
+    let _ = action(Shelf.{ item: ref item })
+    0
 }
-pub fn replace_then_apply(action: fn(new Shelf) -> int, new source: Shelf) -> int {
-    let mut shelf = new source
-    shelf.item = ^mut Cell.{ count: 42 }
-    dispatch(action, new shelf)
+pub fn apply_fresh(action: fn(new Shelf) -> new Out) -> int {
+    let _ = action(Shelf.{ item: ref Cell.{ count: 42 } })
+    0
+}
+pub fn replace_then_apply(action: fn(new Shelf) -> new Out, ref item: Cell) -> int {
+    let _ = action({
+        let mut shelf = Shelf.{ item: ref item }
+        shelf.item = ref Cell.{ count: 42 }
+        shelf
+    })
+    0
 }
 pub fn apply_via(action: fn(via Shelf) -> int, via source: Shelf) -> int {
     action(source)
@@ -192,42 +195,38 @@ pub fn apply_via(action: fn(via Shelf) -> int, via source: Shelf) -> int {
         panic!("the callback invocation must be published");
     };
     assert_eq!(invocation.receiver.parameter, 0);
-    assert_eq!(
-        invocation.arguments[0].graph.roots[0]
-            .source
-            .as_ref()
-            .unwrap()
-            .parameter,
-        1
+    assert!(
+        invocation.arguments[0]
+            .graph
+            .members
+            .iter()
+            .any(|(_, member)| member.roots.iter().any(|r| r.source.as_ref().is_some_and(|s| s.parameter == 1)))
     );
 
     for (mount, bytes) in [
         ("library/snapshot.ril", source.as_slice()),
         ("library/snapshot.rili", interface.as_slice()),
     ] {
-        for (method, callback, item, accepted) in [
-            ("apply", "count", "live", true),
-            ("apply", "freeze", "live", false),
-            ("apply", "freeze", "Snapshot::Cell.{ count: 42 }", true),
-            ("replace_then_apply", "freeze", "live", true),
-            ("apply_via", "count_via", "live", true),
+        for (call_expr, accepted) in [
+            ("Snapshot::apply(count, ref live)", true),
+            ("Snapshot::apply(freeze, ref live)", false),
+            ("Snapshot::apply_fresh(freeze)", true),
+            ("Snapshot::replace_then_apply(freeze, ref live)", true),
+            ("Snapshot::apply_via(count_via, Snapshot::Shelf.{ item: ref live })", true),
             (
-                "apply_via",
-                "count_via",
-                "Snapshot::Cell.{ count: 42 }",
+                "Snapshot::apply_via(count_via, Snapshot::Shelf.{ item: ref Snapshot::Cell.{ count: 42 } })",
                 true,
             ),
         ] {
             let client_source = format!(
                 "use library/snapshot
-fn count(new source: Snapshot::Shelf) -> int {{ source.item.count }}
+fn count(new source: Snapshot::Shelf) -> new Snapshot::Out {{ Snapshot::Out::Count(source.item.count) }}
 fn count_via(via source: Snapshot::Shelf) -> int {{ source.item.count }}
-fn freeze(new source: Snapshot::Shelf) -> int {{ let snapshot = new source; snapshot.item.count }}
-fn relay(new input: Snapshot::Shelf) -> int {{ Snapshot::{method}({callback}, new input) }}
+fn freeze(new source: Snapshot::Shelf) -> new Snapshot::Out {{ Snapshot::Out::Frozen(source) }}
 fn run() -> int {{
     let mut live = Snapshot::Cell.{{ count: 1 }}
     live.count += 1
-    let count = relay(new Snapshot::Shelf.{{ item: ^mut {item} }})
+    let count = {call_expr}
     live.count += 8
     count + live.count
 }}"
@@ -241,12 +240,12 @@ fn run() -> int {{
                     assert_eq!(
                         diagnostics.len(),
                         1,
-                        "{mount} {callback} {item}: {diagnostics:?}"
+                        "{mount} {call_expr}: {diagnostics:?}"
                     );
                     assert_eq!(diagnostics[0].code, Some(Code::E0535));
                 }
-                (true, Err(diagnostics)) => panic!("{mount} {callback} {item}: {diagnostics:?}"),
-                (false, Ok(_)) => panic!("{mount} accepted {callback} with {item}"),
+                (true, Err(diagnostics)) => panic!("{mount} {call_expr}: {diagnostics:?}"),
+                (false, Ok(_)) => panic!("{mount} accepted {call_expr}"),
             }
         }
     }
@@ -258,17 +257,20 @@ fn private_snapshot_providers_survive_nested_callbacks_across_an_interface() {
 
     let source = br#"
 pub type Cell = .{ var count: int }
-pub type Shelf = .{ ^mut item: Cell }
-pub type Leaf = fn(new Shelf) -> int
-pub type Relay = fn(Leaf, new Shelf) -> int
-fn freeze_impl(new shelf: Shelf) -> int { let fixed = new shelf; fixed.item.count }
-fn freeze(new shelf: Shelf) -> int { freeze_impl(new shelf) }
-fn relay(action: Leaf, new shelf: Shelf) -> int { action(new shelf) }
-pub fn supply(action: fn(Relay, Leaf, new Shelf) -> int, new shelf: Shelf) -> int {
-    action(relay, freeze, new shelf)
+pub type Shelf = .{ ref item: Cell }
+pub type Out { Frozen(Shelf); Count(int) }
+pub type Leaf = fn(new Shelf) -> Out
+pub type Relay = fn(Leaf, ref Cell) -> int
+fn freeze(new shelf: Shelf) -> new Out { Out::Frozen(shelf) }
+fn relay(action: Leaf, ref cell: Cell) -> int {
+    let _ = action(Shelf.{ item: ref cell })
+    0
 }
-pub fn supply_closure(action: fn(Leaf, new Shelf) -> int, new shelf: Shelf) -> int {
-    action(\new input: Shelf -> { let fixed = new input; fixed.item.count }, new shelf)
+pub fn supply(action: fn(Relay, Leaf, ref Cell) -> int, ref cell: Cell) -> int {
+    action(relay, freeze, ref cell)
+}
+pub fn supply_closure(action: fn(Leaf, ref Cell) -> int, ref cell: Cell) -> int {
+    action(\new input: Shelf -> Out::Frozen(input), ref cell)
 }
 "#;
     let mut provider = VirtualPackage::new(Unit::Lib);
@@ -292,7 +294,7 @@ pub fn supply_closure(action: fn(Leaf, new Shelf) -> int, new shelf: Shelf) -> i
         client.insert(mount.into(), bytes.to_vec());
         client.insert(client.entry.clone(), br#"
 use library/snapshot
-fn test() -> int { Snapshot::freeze(new Snapshot::Shelf.{ item: ^mut Snapshot::Cell.{ count: 42 } }) }
+fn test() -> new Snapshot::Out { Snapshot::freeze(Snapshot::Shelf.{ item: ref Snapshot::Cell.{ count: 42 } }) }
 "#.to_vec());
         let diagnostics = Driver.analyze(&client).err().unwrap();
         assert!(
@@ -301,22 +303,58 @@ fn test() -> int { Snapshot::freeze(new Snapshot::Shelf.{ item: ^mut Snapshot::C
                 .any(|diagnostic| diagnostic.code == Some(Code::E0201))
         );
         for (method, callable) in [("supply", "forward"), ("supply_closure", "dispatch")] {
-            for (item, accepted) in [("live", false), ("Snapshot::Cell.{ count: 42 }", true)] {
+            for (accepted, body) in [
+                (
+                    false,
+                    format!(
+                        "let mut live = Snapshot::Cell.{{ count: 1 }}
+    live.count += 1
+    let count = Snapshot::{method}({callable}, ref live)
+    live.count += 8
+    count + live.count"
+                    ),
+                ),
+                (
+                    true,
+                    format!(
+                        "let mut fresh = Snapshot::Cell.{{ count: 42 }}
+    fresh.count += 1
+    Snapshot::{method}(dispatch_fresh, ref fresh)"
+                    ),
+                ),
+            ] {
                 let source = format!(
                     "use library/snapshot
-type Leaf = fn(new Snapshot::Shelf) -> int
-fn dispatch(action: Leaf, new shelf: Snapshot::Shelf) -> int {{ action(new shelf) }}
-fn forward(relay: fn(Leaf, new Snapshot::Shelf) -> int, action: Leaf, new shelf: Snapshot::Shelf) -> int {{
-    relay(action, new shelf)
+type Leaf = fn(new Snapshot::Shelf) -> Snapshot::Out
+fn dispatch(action: Leaf, ref cell: Snapshot::Cell) -> int {{ let _ = action(Snapshot::Shelf.{{ item: ref cell }}); 0 }}
+fn dispatch_fresh(action: Leaf, ref _cell: Snapshot::Cell) -> int {{ let _ = action(Snapshot::Shelf.{{ item: ref Snapshot::Cell.{{ count: 42 }} }}); 0 }}
+fn forward(relay: fn(Leaf, ref Snapshot::Cell) -> int, action: Leaf, ref cell: Snapshot::Cell) -> int {{
+    relay(action, ref cell)
 }}
 fn test() -> int {{
-    let mut live = Snapshot::Cell.{{ count: 1 }}
-    live.count += 1
-    let count = Snapshot::{method}({callable}, new Snapshot::Shelf.{{ item: ^mut {item} }})
-    live.count += 8
-    count + live.count
+    {body}
 }}"
                 );
+                if method == "supply" && accepted {
+                    let source = format!(
+                        "use library/snapshot
+type Leaf = fn(new Snapshot::Shelf) -> Snapshot::Out
+fn forward_fresh(_relay: fn(Leaf, ref Snapshot::Cell) -> int, action: Leaf, ref _cell: Snapshot::Cell) -> int {{
+    let _ = action(Snapshot::Shelf.{{ item: ref Snapshot::Cell.{{ count: 42 }} }})
+    0
+}}
+fn test() -> int {{
+    let mut fresh = Snapshot::Cell.{{ count: 42 }}
+    fresh.count += 1
+    Snapshot::supply(forward_fresh, ref fresh)
+}}"
+                    );
+                    let mut client = VirtualPackage::new(Unit::Lib);
+                    client.insert(mount.into(), bytes.to_vec());
+                    client.insert(client.entry.clone(), source.into_bytes());
+                    assert!(Driver.analyze(&client).is_ok(), "{mount} {method} fresh");
+                    continue;
+                }
                 let mut client = VirtualPackage::new(Unit::Lib);
                 client.insert(mount.into(), bytes.to_vec());
                 client.insert(client.entry.clone(), source.into_bytes());
@@ -326,12 +364,12 @@ fn test() -> int {{
                         assert_eq!(
                             diagnostics.len(),
                             1,
-                            "{mount} {method} {item}: {diagnostics:?}"
+                            "{mount} {method}: {diagnostics:?}"
                         );
                         assert_eq!(diagnostics[0].code, Some(Code::E0535));
                     }
-                    (true, Err(diagnostics)) => panic!("{mount} {method} {item}: {diagnostics:?}"),
-                    (false, Ok(_)) => panic!("{mount} accepted {method} with {item}"),
+                    (true, Err(diagnostics)) => panic!("{mount} {method}: {diagnostics:?}"),
+                    (false, Ok(_)) => panic!("{mount} accepted {method} with live"),
                 }
             }
         }
@@ -345,9 +383,10 @@ fn callback_snapshot_contracts_can_take_live_inputs_before_constructing_a_graph(
     let source = br#"
 pub type Cell = .{ var count: int }
 pub type View = .{ ref item: Cell }
-pub type Leaf = fn(new View) -> int
-fn freeze(new view: View) -> int { let fixed = new view; fixed.item.count }
-fn count(new view: View) -> int { view.item.count }
+pub type Out { Frozen(View); Count(int) }
+pub type Leaf = fn(new View) -> new Out
+fn freeze(new view: View) -> new Out { Out::Frozen(view) }
+fn count(new view: View) -> new Out { Out::Count(view.item.count) }
 pub fn check(action: fn(Leaf, ref Cell) -> int, ref cell: Cell) -> int { action(freeze, ref cell) }
 pub fn read(action: fn(Leaf, ref Cell) -> int, ref cell: Cell) -> int { action(count, ref cell) }
 "#;
@@ -363,7 +402,8 @@ pub fn read(action: fn(Leaf, ref Cell) -> int, ref cell: Cell) -> int { action(c
             let source = format!(
                 "use library/snapshot
 fn dispatch(action: Snapshot::Leaf, ref live: Snapshot::Cell) -> int {{
-    action(new Snapshot::View.{{ item: ref live }})
+    let _ = action(Snapshot::View.{{ item: ref live }})
+    0
 }}
 fn run() -> int {{
     let mut live = Snapshot::Cell.{{ count: 1 }}
@@ -394,14 +434,15 @@ fn returned_and_stored_snapshot_callables_survive_separate_compilation() {
     let source = br#"
 pub type Cell = .{ var count: int }
 pub type Shelf = .{ ^mut item: Cell }
-pub type Leaf = fn(new Shelf) -> int
+pub type Out { Frozen(Shelf); Count(int) }
+pub type Leaf = fn(new Shelf) -> new Out
 pub type Slot = .{ var action: Leaf }
 pub type Frame = .{ var action: Leaf, stamp: int }
 pub type Writer = fn() &up -> ()
 pub type ReadAfter = fn(mut Slot, fn(mut Slot) &mut -> ()) &mut -> Leaf
 pub type Controls = .{ ^mut select: Writer, ^mut store: Writer }
-fn freeze(new shelf: Shelf) -> int { let fixed = new shelf; fixed.item.count }
-fn count(new shelf: Shelf) -> int { shelf.item.count }
+fn freeze(new shelf: Shelf) -> new Out { Out::Frozen(shelf) }
+fn count(new shelf: Shelf) -> new Out { Out::Count(shelf.item.count) }
 fn make_private() -> Leaf { freeze }
 fn make_with_private(make: fn(Leaf) -> Leaf) -> Leaf { make(freeze) }
 pub fn make() -> Leaf { freeze }
@@ -412,8 +453,6 @@ pub fn nested() -> .{ actions: []Leaf } { let fixed = .{ actions: [freeze] }; fi
 pub fn identity(action: Leaf) -> Leaf { action }
 pub fn from_callback(make: fn() -> Leaf) -> Leaf { make() }
 pub fn from_callback_with(make: fn(Leaf) -> Leaf) -> Leaf { make(freeze) }
-pub fn apply(make: fn() -> Leaf, new shelf: Shelf) -> int { make()(new shelf) }
-pub fn apply_with(make: fn(Leaf) -> Leaf, new shelf: Shelf) -> int { make(freeze)(new shelf) }
 pub fn install(mut slot: Slot) &mut -> () { slot.action = freeze }
 pub fn append(mut actions: []Leaf) &mut -> () { Array::push(mut actions, freeze) }
 pub fn appender(^mut actions: []Leaf) &capture &^mut &return(^mut actions) -> new Writer {
@@ -437,10 +476,6 @@ pub fn reset_then_install(mut slot: Slot, install: fn(mut Slot) &mut -> ()) &mut
 pub fn read_after(mut slot: Slot, install: fn(mut Slot) &mut -> ()) &mut -> Leaf {
     install(mut slot)
     slot.action
-}
-pub fn invoke_after(mut slot: Slot, install: fn(mut Slot) &mut -> (), new input: Shelf) &mut -> int {
-    install(mut slot)
-    slot.action(new input)
 }
 pub fn read_before(mut slot: Slot, install: fn(mut Slot) &mut -> ()) &mut -> Leaf {
     let saved = slot.action
@@ -489,9 +524,11 @@ pub fn controls(^mut slot: Slot, initial: Leaf, next: Leaf) &capture &^mut &retu
     Controls.{ select: \-> { action = next }, store: \-> { slot.action = action } }
 }
 pub fn build_array() -> []Leaf {
-    let mut actions = [count]
-    Array::push(mut actions, freeze)
-    let fixed = new actions
+    let fixed: []Leaf = {
+        let mut actions = [count]
+        Array::push(mut actions, freeze)
+        actions
+    }
     fixed
 }
 pub fn section(actions: []Leaf) &return(actions) -> new []Leaf { actions[1..] }
@@ -590,14 +627,6 @@ pub fn controls(^mut slot: Snapshot::Slot, initial: Snapshot::Leaf, next: Snapsh
                 false,
             ),
             (
-                "\\new input: Snapshot::Shelf -> { let mut slot = Snapshot::Slot.{ action: count }; Snapshot::invoke_after(mut slot, install, new input) }",
-                true,
-            ),
-            (
-                "\\new input: Snapshot::Shelf -> { let mut slot = Snapshot::Slot.{ action: freeze }; Snapshot::invoke_after(mut slot, clear, new input) }",
-                false,
-            ),
-            (
                 "{ let mut slot = Snapshot::Slot.{ action: count }; Snapshot::read_before(mut slot, install) }",
                 false,
             ),
@@ -670,20 +699,12 @@ pub fn controls(^mut slot: Snapshot::Slot, initial: Snapshot::Leaf, next: Snapsh
                 true,
             ),
             (
-                "{ let mut draft_base = Snapshot::Frame.{ action: freeze, stamp: 1 }; draft_base.action = count; let base = new draft_base; Snapshot::freeze_frame(base).action }",
+                "{ let base: Snapshot::Frame = { let mut draft_base = Snapshot::Frame.{ action: freeze, stamp: 1 }; draft_base.action = count; draft_base }; Snapshot::freeze_frame(base).action }",
                 true,
             ),
             (
-                "{ let mut draft_base = Snapshot::Frame.{ action: count, stamp: 1 }; draft_base.action = freeze; let base = new draft_base; Snapshot::read_frame(base).action }",
+                "{ let base: Snapshot::Frame = { let mut draft_base = Snapshot::Frame.{ action: count, stamp: 1 }; draft_base.action = freeze; draft_base }; Snapshot::read_frame(base).action }",
                 false,
-            ),
-            (
-                "\\new input: Snapshot::Shelf -> Snapshot::apply(make, new input)",
-                true,
-            ),
-            (
-                "\\new input: Snapshot::Shelf -> Snapshot::apply_with(keep, new input)",
-                true,
             ),
             (
                 "{ let mut slot = Snapshot::Slot.{ action: count }; Snapshot::install(mut slot); slot.action }",
@@ -694,8 +715,8 @@ pub fn controls(^mut slot: Snapshot::Slot, initial: Snapshot::Leaf, next: Snapsh
                 let source = format!(
                     "use library/snapshot
 use relay/forwarding
-fn freeze(new shelf: Snapshot::Shelf) -> int {{ let fixed = new shelf; fixed.item.count }}
-fn count(new shelf: Snapshot::Shelf) -> int {{ shelf.item.count }}
+fn freeze(new shelf: Snapshot::Shelf) -> new Snapshot::Out {{ Snapshot::Out::Frozen(shelf) }}
+fn count(new shelf: Snapshot::Shelf) -> new Snapshot::Out {{ Snapshot::Out::Count(shelf.item.count) }}
 fn make() -> Snapshot::Leaf {{ freeze }}
 fn keep(action: Snapshot::Leaf) -> Snapshot::Leaf {{ action }}
 fn install(mut slot: Snapshot::Slot) &mut -> () {{ slot.action = freeze }}
@@ -704,9 +725,9 @@ fn observe() -> int {{
     let mut live = Snapshot::Cell.{{ count: 1 }}
     live.count += 1
     let action = {pick}
-    let count = action(new Snapshot::Shelf.{{ item: ^mut {item} }})
+    let _ = action(Snapshot::Shelf.{{ item: ^mut {item} }})
     live.count += 8
-    count + live.count
+    live.count
 }}"
                 );
                 let mut client = VirtualPackage::new(Unit::Lib);
@@ -739,16 +760,17 @@ fn observed_storage_targets_survive_separate_compilation() {
     let source = br#"
 pub type Cell = .{ var count: int }
 pub type Shelf = .{ ^mut item: Cell }
-pub type Slot = .{ var action: fn(new Shelf) -> int }
+pub type Out { Frozen(Shelf); Count(int) }
+pub type Action = fn(new Shelf) -> new Out
+pub type Slot = .{ var action: Action }
 pub type Holder = .{ var ^mut slot: Slot }
 pub type Swap = fn(mut Holder) &mut -> ()
 pub type Edit = fn(mut Holder, Swap) &mut -> ()
-pub type Action = fn(new Shelf) -> int
 pub type Batch = .{ var ^mut items: []Action }
 pub type ReplaceBatch = fn(mut Batch) &mut -> ()
 pub type Extend = fn() &up -> ()
-fn freeze(new shelf: Shelf) -> int { let fixed = new shelf; fixed.item.count }
-pub fn count(new shelf: Shelf) -> int { shelf.item.count }
+fn freeze(new shelf: Shelf) -> new Out { Out::Frozen(shelf) }
+pub fn count(new shelf: Shelf) -> new Out { Out::Count(shelf.item.count) }
 pub fn swap(mut holder: Holder) &mut -> () { holder.slot = Slot.{ action: count } }
 fn paint(mut slot: Slot) &mut -> () { slot.action = freeze }
 pub fn write_after(mut holder: Holder, replace: Swap) &mut -> () {
@@ -864,7 +886,8 @@ fn observe() -> int {{
     {write}(mut holder, Storage::swap)
     let mut live = Storage::Cell.{{ count: 1 }}
     live.count += 1
-    {target}.action(new Storage::Shelf.{{ item: ^mut live }})
+    let _ = {target}.action(Storage::Shelf.{{ item: ^mut live }})
+    live.count
 }}"
             );
             let mut client = VirtualPackage::new(Unit::Lib);
@@ -939,7 +962,8 @@ fn observe() -> int {{
     {setup}
     let mut live = Storage::Cell.{{ count: 1 }}
     live.count += 1
-    {target}(new Storage::Shelf.{{ item: ^mut live }})
+    let _ = {target}(Storage::Shelf.{{ item: ^mut live }})
+    live.count
 }}"
             );
             let mut client = VirtualPackage::new(Unit::Lib);
@@ -1015,7 +1039,8 @@ fn observe(times: int) -> int {{
     {setup}
     let mut live = Storage::Cell.{{ count: 1 }}
     live.count += 1
-    {target}(new Storage::Shelf.{{ item: ^mut live }})
+    let _ = {target}(Storage::Shelf.{{ item: ^mut live }})
+    live.count
 }}"
             );
             let mut client = VirtualPackage::new(Unit::Lib);
@@ -1099,11 +1124,11 @@ fn k_iface_no_ctl_params_and_opaque_must_consume_survive_separate_compilation() 
     use ril_source::diag::Code;
 
     let source = br#"
-pub opaque type Token(.{ mut k: ctl() -> () })
-pub fn make_token(new k: ctl() -> ()) -> new Token { Token::(.{ mut k: new k }) }
-pub fn consume_token(new t: Token) -> () {
-    let Token::(.{ mut k }) = new t
-    unwind_ctl(new k)
+pub opaque type Token(.{ k: ctl() -> () })
+pub fn make_token(k: ctl() -> ()) -> new Token { Token::(.{ k }) }
+pub fn consume_token(t: Token) -> () {
+    let Token::(.{ k }) = t
+    unwind_ctl(k)
 }
 pub fn with_defer(cb: fn() @ -> ()) -> () {
     defer cb()
@@ -1155,8 +1180,8 @@ use library/kiface
 eff Yield { ctl step() -> () }
 fn bad() -> () {
     with {
-        ctl Yield::step = \new k -> {
-            let mut t = Kiface::make_token(new k)
+        ctl Yield::step = \k -> {
+            let t = Kiface::make_token(k)
             let _ = t
             ()
         }
@@ -1182,10 +1207,11 @@ fn clone_replays_callable_constraints_across_interfaces() {
     let source = br#"
 pub type Cell = .{ var count: int }
 pub type Shelf = .{ ^mut item: Cell }
-pub type Action = fn(new Shelf) -> int
+pub type Out { Frozen(Shelf); Count(int) }
+pub type Action = fn(new Shelf) -> new Out
 pub type Pair = .{ item: Cell, var tag: int }
-pub fn count(new shelf: Shelf) -> int { shelf.item.count }
-pub fn freeze(new shelf: Shelf) -> int { let fixed = new shelf; fixed.item.count }
+pub fn count(new shelf: Shelf) -> new Out { Out::Count(shelf.item.count) }
+pub fn freeze(new shelf: Shelf) -> new Out { Out::Frozen(shelf) }
 pub fn duplicate(actions: []Action) -> new []Action { clone(actions) }
 pub fn twice(actions: []Action) -> new []Action { duplicate(duplicate(actions)) }
 pub fn pair() -> new Pair { clone(Pair.{ item: Cell.{ count: 1 }, tag: 0 }) }
@@ -1267,7 +1293,8 @@ fn run() -> int {{
     let mut live = Copies::Cell.{{ count: 1 }}
     live.count += 1
     {copy}
-    copied[{index}](new Copies::Shelf.{{ item: ^mut live }})
+    let _ = copied[{index}](Copies::Shelf.{{ item: ^mut live }})
+    live.count
 }}"
                     )
                     .into_bytes(),
@@ -1288,14 +1315,15 @@ fn ordered_draft_updates_survive_separate_compilation() {
     let source = br#"
 pub type Cell = .{ var count: int }
 pub type Shelf = .{ ^mut item: Cell }
-pub type Action = fn(new Shelf) -> int
+pub type Out { Frozen(Shelf); Count(int) }
+pub type Action = fn(new Shelf) -> new Out
 pub type Pair = .{ left: []Action, right: []Action }
 pub type Update = fn(mut Derived<Pair>) &mut -> ()
 pub type EditItems = fn(mut []Action) &mut -> ()
 pub type Slot = .{ var action: Action }
 pub type StateUpdate = fn(mut Derived<[]int>) &mut &up -> ()
-pub fn count(new shelf: Shelf) -> int { shelf.item.count }
-fn freeze(new shelf: Shelf) -> int { let fixed = new shelf; fixed.item.count }
+pub fn count(new shelf: Shelf) -> new Out { Out::Count(shelf.item.count) }
+fn freeze(new shelf: Shelf) -> new Out { Out::Frozen(shelf) }
 pub fn extend(mut draft: Derived<Pair>) &mut -> () {
     Array::push(mut draft.left, count)
     Array::push(mut draft.left, freeze)
@@ -1404,7 +1432,8 @@ fn observe() -> int {{
     let next = {update}
     let mut live = Updates::Cell.{{ count: len(base.left) }}
     live.count += 1
-    next.{target}(new Updates::Shelf.{{ item: ^mut live }})
+    let _ = next.{target}(Updates::Shelf.{{ item: ^mut live }})
+    live.count
 }}"
                 );
                 let mut client = VirtualPackage::new(Unit::Lib);
@@ -1447,13 +1476,14 @@ fn observe() -> int {{
                 let source = format!(
                     "use library/updates
 use relay/forwarding
-fn freeze(new shelf: Updates::Shelf) -> int {{ let fixed = new shelf; fixed.item.count }}
+fn freeze(new shelf: Updates::Shelf) -> new Updates::Out {{ Updates::Out::Frozen(shelf) }}
 fn observe() -> int {{
     let mut slot = Updates::Slot.{{ action: {initial} }}
     let numbers = {update}
     let mut live = Updates::Cell.{{ count: len(numbers) }}
     live.count += 1
-    slot.action(new Updates::Shelf.{{ item: ^mut live }})
+    let _ = slot.action(Updates::Shelf.{{ item: ^mut live }})
+    live.count
 }}"
                 );
                 let mut client = VirtualPackage::new(Unit::Lib);
@@ -1911,15 +1941,13 @@ pub fn publish(mut pair: Pair, ^mut tail: Node, count: int) &mut &^mut -> () {
     pair.right = ^mut head
 }
 pub fn through(via action: fn(via Node) @& -> infer Node, ^mut tail: Node, count: int) &mut &^mut -> infer Node {
-    let mut chain = build(^mut tail, count)
-    action(new chain)
+    action(build(^mut tail, count))
 }
 pub fn relay(via action: fn(via Node) @& -> infer Node, ^mut tail: Node, count: int) &mut &^mut -> infer Node {
     through(action, ^mut tail, count)
 }
 pub fn choose(via action: fn(via Node) @& -> infer Node, ^mut tail: Node, count: int, first: bool) &mut &^mut -> infer Node {
-    let mut chain = build(^mut tail, count)
-    if first { action(new chain) } else { action(new chain) }
+    if first { action(build(^mut tail, count)) } else { action(build(^mut tail, count)) }
 }
 "#;
     let mut provider = VirtualPackage::new(Unit::Lib);
@@ -1973,9 +2001,15 @@ pub fn choose(via action: fn(via Node) @& -> infer Node, ^mut tail: Node, count:
             panic!("expected two syntactic invocations: {:?}", row.summary);
         };
         assert_ne!(first.invocation, second.invocation);
+        let shape = |allocs: &[ril_sema::access::ReturnAllocation]| {
+            allocs
+                .iter()
+                .map(|a| (a.path.clone(), a.access, a.new, a.qualified, a.summarized))
+                .collect::<Vec<_>>()
+        };
         assert_eq!(
-            first.arguments[0].allocations,
-            second.arguments[0].allocations
+            shape(&first.arguments[0].allocations),
+            shape(&second.arguments[0].allocations)
         );
     }
 
@@ -2146,7 +2180,7 @@ pub eff Extended { ..Meter; fn record() -> () }
 pub fn read_extended() @Extended -> int { Meter::read() }
 pub opaque type Handle(.{ id: int })
 pub fn open() -> new Handle { Handle::(.{ id: 1 }) }
-pub fn close(new handle: Handle) @Meter -> () { let _ = Meter::read() }
+pub fn close(_handle: Handle) @Meter -> () { let _ = Meter::read() }
 pub fn apply(via action: fn(via Cell) @& -> infer Cell, via cell: Cell) -> infer Cell { action(cell) }
 pub fn observe_after(via action: fn(via Cell) @& -> int, via cell: Cell) -> int {
     let result = action(cell)
@@ -2177,9 +2211,8 @@ fn replace_and_read(mut shelf: Store::Shelf, ^mut next: Store::Cell) &mut &^mut 
     ref shelf.item
 }
 fn check_new() -> int {
-    let mut cell = Store::Cell.{ count: 41 }
-    Store::change(mut cell)
-    let mut received = Store::identity(new cell)
+    let mut received = Store::identity(Store::Cell.{ count: 41 })
+    Store::change(mut received)
     received.count += 1
     received.count
 }
@@ -2245,8 +2278,8 @@ fn read() -> int {
 }
 fn clean() -> () {
     with Store::Meter::read = \-> 42
-    let mut handle = Store::open()
-    defer Store::close(new handle)
+    let handle = Store::open()
+    defer Store::close(handle)
 }
 "#,
             None,
@@ -2271,9 +2304,9 @@ fn run() -> int {
     let ref view = relay(identity, ref cell)
     cell.count += 1
     assert(view.count == 41)
-    let mut handed = Store::apply(identity, new cell)
+    let mut handed = Store::apply(identity, Store::Cell.{ count: 41 })
     handed.count += 1
-    let mut again = Store::apply(Store::identity, new handed)
+    let mut again = Store::apply(Store::identity, Store::Cell.{ count: handed.count })
     again.count += 1
     again.count
 }
@@ -2286,23 +2319,6 @@ fn change(via cell: Store::Cell) -> infer Store::Cell { cell.count += 1; cell }
 fn invalid(ref cell: Store::Cell) -> int { Store::apply(change, ref cell).count }
 "#,
             Some(Code::E0520),
-        ),
-        (
-            r#"
-fn take(via cell: Store::Cell) -> int { let moved = new cell; moved.count }
-fn invalid() -> int { Store::observe_after(take, Store::Cell.{ count: 21 }) }
-"#,
-            Some(Code::E0549),
-        ),
-        (
-            r#"
-fn relay(via action: fn(via Store::Cell) @& -> int, via cell: Store::Cell) -> int {
-    Store::observe_after(action, cell)
-}
-fn take(via cell: Store::Cell) -> int { let moved = new cell; moved.count }
-fn invalid() -> int { relay(take, Store::Cell.{ count: 21 }) }
-"#,
-            Some(Code::E0549),
         ),
         (
             r#"
@@ -2564,34 +2580,6 @@ fn higher_order_via_rows_publish_callback_reception() {
             row.summary.invocations,
             [invocation(InvocationMode::Input(input))]
         );
-    }
-}
-
-#[test]
-fn exported_callback_preservation_is_required_only_for_new_reception() {
-    use ril_sema::access::Input;
-
-    let suite = parse_suite(Path::new("via.ril"), include_str!("../../../tests/via.ril")).unwrap();
-    let case = suite
-        .cases
-        .iter()
-        .find(|case| {
-            case.id == "requiring_a_callback_to_preserve_new_qualification_breaks_compatibility"
-        })
-        .unwrap();
-    let interface = Driver.interface(&case.pkg).unwrap();
-    let decoded = Interface::decode(&interface.encode().unwrap()).unwrap();
-    let export = decoded.functions.values().next().unwrap();
-    let [contract] = export.summary.invocations.as_slice() else {
-        panic!("missing callback contract");
-    };
-    assert!(contract.preserves_input);
-    for row in &export.domain {
-        let [_, input]: [Input; 2] = row.modes.as_slice().try_into().unwrap();
-        let [contract] = row.summary.invocations.as_slice() else {
-            panic!("missing specialized callback contract");
-        };
-        assert_eq!(contract.preserves_input, input == Input::New);
     }
 }
 
@@ -3168,6 +3156,10 @@ fn exported_summaries_and_via_domains_agree_with_lean() {
             "captures": summary.captures,
             "constructs": summary.constructs,
             "nonreturning": summary.nonreturning,
+            "no_ctl_params": summary.no_ctl_params,
+            "forbids_linear_drop": summary.forbids_linear_drop,
+            "forbids_linear_dup": summary.forbids_linear_dup,
+            "forbids_linear_suspend": summary.forbids_linear_suspend,
         })
     };
     let cases: Vec<_> = summaries
@@ -3311,7 +3303,7 @@ fn ctl_linearity_examples_agree_with_lean() {
     .unwrap();
     let output = query(&oracle, "ctl-linearity", b"[]").unwrap();
     let results: Vec<(String, bool)> = serde_json::from_slice(&output).unwrap();
-    assert_eq!(results.len(), 11);
+    assert_eq!(results.len(), 9);
     let temporary = tempfile::tempdir().unwrap();
     for (name, accepted) in results {
         let case = compile
@@ -3390,7 +3382,7 @@ fn draft_root_and_constructor_checks_agree_with_lean() -> Result<(), Box<dyn std
 
 #[test]
 fn access_ledger_examples_agree_with_lean() -> Result<(), Box<dyn std::error::Error>> {
-    check_access_examples("access-ledger", 53)
+    check_access_examples("access-ledger", 45)
 }
 
 #[test]
@@ -3446,18 +3438,13 @@ fn published_call_obligations_agree_with_lean() -> Result<(), Box<dyn std::error
 }
 
 #[test]
-fn handoff_examples_agree_with_lean() -> Result<(), Box<dyn std::error::Error>> {
-    check_access_examples("handoff", 9)
-}
-
-#[test]
 fn provenance_examples_agree_with_lean() -> Result<(), Box<dyn std::error::Error>> {
-    check_access_examples("provenance", 34)
+    check_access_examples("provenance", 31)
 }
 
 #[test]
 fn graph_authority_examples_agree_with_lean() -> Result<(), Box<dyn std::error::Error>> {
-    check_access_examples("graph", 25)
+    check_access_examples("graph", 23)
 }
 
 #[test]
@@ -3467,7 +3454,7 @@ fn cleanup_composition_examples_agree_with_lean() -> Result<(), Box<dyn std::err
 
 #[test]
 fn scoped_resource_examples_agree_with_lean() -> Result<(), Box<dyn std::error::Error>> {
-    check_access_examples("scoped", 12)
+    check_access_examples("scoped", 8)
 }
 
 #[test]

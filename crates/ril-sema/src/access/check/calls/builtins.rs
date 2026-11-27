@@ -122,7 +122,7 @@ impl Analyzer<'_> {
                     }
                 }
             }
-            "recover_panic" => {
+            "recover" => {
                 let has_forbidden_outer_handle = syntax.first().is_some_and(|arg| {
                     let arg_span = self.ast(ctx.file).expr(arg.value).span;
                     self.program

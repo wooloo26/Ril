@@ -4,19 +4,23 @@
 -- @case appended_callbacks_keep_their_positions_in_arrays_and_drafts run-pass backend=both
 type Cell = .{ var count: int }
 type Shelf = .{ ^mut item: Cell }
-fn freeze(new shelf: Shelf) -> int { let fixed = new shelf; fixed.item.count + 100 }
-fn count(new shelf: Shelf) -> int { shelf.item.count }
+type Out { Frozen(Shelf); Count(int) }
+fn out_val(o: Out) -> int { match o { Out::Frozen(s) -> s.item.count + 100; Out::Count(n) -> n } }
+fn freeze(new shelf: Shelf) -> new Out { Out::Frozen(shelf) }
+fn count(new shelf: Shelf) -> new Out { Out::Count(shelf.item.count) }
 fn main() -> () {
     let mut live = Cell.{ count: 1 }
     live.count += 1
-    let mut actions = [count]
-    Array::push(mut actions, freeze)
-    assert(actions[0](new Shelf.{ item: ^mut live }) == 2)
-    assert(actions[1](new Shelf.{ item: ^mut Cell.{ count: 3 } }) == 103)
-    let base = new actions
+    let base: []fn(new Shelf) -> new Out = {
+        let mut actions = [count]
+        Array::push(mut actions, freeze)
+        assert(out_val(actions[0](Shelf.{ item: ^mut live })) == 2)
+        assert(out_val(actions[1](Shelf.{ item: ^mut Cell.{ count: 3 } })) == 103)
+        actions
+    }
     let next = derive(base) \mut draft -> { Array::push(mut draft, count) }
     assert(len(base) == 2 && len(next) == 3)
-    assert(next[2](new Shelf.{ item: ^mut Cell.{ count: 4 } }) == 4)
+    assert(out_val(next[2](Shelf.{ item: ^mut Cell.{ count: 4 } })) == 4)
     live.count += 8
     assert(live.count == 10)
 }
@@ -24,18 +28,20 @@ fn main() -> () {
 -- @case slice_and_rest_index_the_selected_callable run-pass backend=both
 type Cell = .{ var count: int }
 type Shelf = .{ ^mut item: Cell }
-fn freeze(new shelf: Shelf) -> int { let fixed = new shelf; fixed.item.count + 100 }
-fn count(new shelf: Shelf) -> int { shelf.item.count }
+type Out { Frozen(Shelf); Count(int) }
+fn out_val(o: Out) -> int { match o { Out::Frozen(s) -> s.item.count + 100; Out::Count(n) -> n } }
+fn freeze(new shelf: Shelf) -> new Out { Out::Frozen(shelf) }
+fn count(new shelf: Shelf) -> new Out { Out::Count(shelf.item.count) }
 fn main() -> () {
     let mut live = Cell.{ count: 41 }
     live.count += 1
     let actions = [freeze, count, freeze]
     let section = actions[1..2]
     let [_, ..middle, _] = actions else { panic("missing middle") }
-    assert(section[0](new Shelf.{ item: ^mut live }) == 42)
-    assert(middle[0](new Shelf.{ item: ^mut live }) == 42)
+    assert(out_val(section[0](Shelf.{ item: ^mut live })) == 42)
+    assert(out_val(middle[0](Shelf.{ item: ^mut live })) == 42)
     match actions?[1..=1] {
-        Some(selected) -> assert(selected[0](new Shelf.{ item: ^mut live }) == 42)
+        Some(selected) -> assert(out_val(selected[0](Shelf.{ item: ^mut live })) == 42)
         None -> panic("missing section")
     }
     live.count += 1
@@ -45,8 +51,10 @@ fn main() -> () {
 -- @case closure_appends_to_the_current_captured_array_and_reads_the_current_callable run-pass backend=both
 type Cell = .{ var count: int }
 type Shelf = .{ ^mut item: Cell }
-fn freeze(new shelf: Shelf) -> int { let fixed = new shelf; fixed.item.count + 100 }
-fn count(new shelf: Shelf) -> int { shelf.item.count }
+type Out { Frozen(Shelf); Count(int) }
+fn out_val(o: Out) -> int { match o { Out::Frozen(s) -> s.item.count + 100; Out::Count(n) -> n } }
+fn freeze(new shelf: Shelf) -> new Out { Out::Frozen(shelf) }
+fn count(new shelf: Shelf) -> new Out { Out::Count(shelf.item.count) }
 fn main() -> () {
     let mut live = Cell.{ count: 41 }
     live.count += 1
@@ -57,8 +65,8 @@ fn main() -> () {
     action = count
     append()
     assert(len(ref actions) == 3)
-    assert(actions[0](new Shelf.{ item: ^mut live }) == 42)
-    assert(actions[2](new Shelf.{ item: ^mut live }) == 42)
+    assert(out_val(actions[0](Shelf.{ item: ^mut live })) == 42)
+    assert(out_val(actions[2](Shelf.{ item: ^mut live })) == 42)
     live.count += 1
     assert(live.count == 43)
 }
@@ -66,12 +74,14 @@ fn main() -> () {
 -- @case returned_closures_share_the_same_captured_slot run-pass backend=both
 type Cell = .{ var count: int }
 type Shelf = .{ ^mut item: Cell }
-type Action = fn(new Shelf) -> int
+type Out { Frozen(Shelf); Count(int) }
+type Action = fn(new Shelf) -> new Out
 type Slot = .{ var action: Action }
 type Writer = fn() &up -> ()
 type Controls = .{ ^mut select: Writer, ^mut store: Writer }
-fn freeze(new shelf: Shelf) -> int { let fixed = new shelf; fixed.item.count + 100 }
-fn count(new shelf: Shelf) -> int { shelf.item.count }
+fn out_val(o: Out) -> int { match o { Out::Frozen(s) -> s.item.count + 100; Out::Count(n) -> n } }
+fn freeze(new shelf: Shelf) -> new Out { Out::Frozen(shelf) }
+fn count(new shelf: Shelf) -> new Out { Out::Count(shelf.item.count) }
 fn controls(^mut slot: Slot, initial: Action) &capture &^mut &return(^mut slot, initial) -> new Controls {
     var action: Action = count
     action = initial
@@ -84,7 +94,7 @@ fn main() -> () {
     writer.store()
     let mut live = Cell.{ count: 41 }
     live.count += 1
-    assert(slot.action(new Shelf.{ item: ^mut live }) == 42)
+    assert(out_val(slot.action(Shelf.{ item: ^mut live })) == 42)
     live.count += 1
     assert(live.count == 43)
 }
@@ -92,10 +102,12 @@ fn main() -> () {
 -- @case a_direct_store_overwrites_the_previous_callback_store run-pass backend=both
 type Cell = .{ var count: int }
 type Shelf = .{ ^mut item: Cell }
-type Action = fn(new Shelf) -> int
+type Out { Frozen(Shelf); Count(int) }
+type Action = fn(new Shelf) -> new Out
 type Slot = .{ var action: Action }
-fn freeze(new shelf: Shelf) -> int { let fixed = new shelf; fixed.item.count + 100 }
-fn count(new shelf: Shelf) -> int { shelf.item.count }
+fn out_val(o: Out) -> int { match o { Out::Frozen(s) -> s.item.count + 100; Out::Count(n) -> n } }
+fn freeze(new shelf: Shelf) -> new Out { Out::Frozen(shelf) }
+fn count(new shelf: Shelf) -> new Out { Out::Count(shelf.item.count) }
 fn install(mut slot: Slot) &mut -> () { slot.action = freeze }
 fn reset(mut slot: Slot, write: fn(mut Slot) &mut -> ()) &mut -> () {
     write(mut slot)
@@ -106,7 +118,7 @@ fn main() -> () {
     reset(mut slot, install)
     let mut live = Cell.{ count: 41 }
     live.count += 1
-    assert(slot.action(new Shelf.{ item: ^mut live }) == 42)
+    assert(out_val(slot.action(Shelf.{ item: ^mut live })) == 42)
     live.count += 1
     assert(live.count == 43)
 }
@@ -114,10 +126,12 @@ fn main() -> () {
 -- @case callback_reads_capture_the_value_at_the_read run-pass backend=both
 type Cell = .{ var count: int }
 type Shelf = .{ ^mut item: Cell }
-type Action = fn(new Shelf) -> int
+type Out { Frozen(Shelf); Count(int) }
+type Action = fn(new Shelf) -> new Out
 type Slot = .{ var action: Action }
-fn freeze(new shelf: Shelf) -> int { let fixed = new shelf; fixed.item.count + 100 }
-fn count(new shelf: Shelf) -> int { shelf.item.count }
+fn out_val(o: Out) -> int { match o { Out::Frozen(s) -> s.item.count + 100; Out::Count(n) -> n } }
+fn freeze(new shelf: Shelf) -> new Out { Out::Frozen(shelf) }
+fn count(new shelf: Shelf) -> new Out { Out::Count(shelf.item.count) }
 fn install(mut slot: Slot) &mut -> () { slot.action = freeze }
 fn clear(mut slot: Slot) &mut -> () { slot.action = count }
 fn read_before(mut slot: Slot, write: fn(mut Slot) &mut -> ()) &mut -> Action {
@@ -131,30 +145,36 @@ fn read_between(mut slot: Slot, write: fn(mut Slot) &mut -> ()) &mut -> Action {
     slot.action = count
     saved
 }
-fn invoke_after(mut slot: Slot, write: fn(mut Slot) &mut -> (), new shelf: Shelf) &mut -> int {
+fn invoke_after_fresh(mut slot: Slot, write: fn(mut Slot) &mut -> (), value: int) &mut -> int {
     write(mut slot)
-    slot.action(new shelf)
+    out_val(slot.action(Shelf.{ item: ^mut Cell.{ count: value } }))
+}
+fn read_after(mut slot: Slot, write: fn(mut Slot) &mut -> ()) &mut -> Action {
+    write(mut slot)
+    slot.action
 }
 fn main() -> () {
     let mut slot = Slot.{ action: count }
     let before = read_before(mut slot, install)
     let mut live = Cell.{ count: 41 }
     live.count += 1
-    assert(before(new Shelf.{ item: ^mut live }) == 42)
+    assert(out_val(before(Shelf.{ item: ^mut live })) == 42)
     let during = read_between(mut slot, install)
-    assert(during(new Shelf.{ item: ^mut Cell.{ count: 2 } }) == 102)
-    assert(invoke_after(mut slot, install, new Shelf.{ item: ^mut Cell.{ count: 3 } }) == 103)
-    assert(invoke_after(mut slot, clear, new Shelf.{ item: ^mut live }) == 42)
+    assert(out_val(during(Shelf.{ item: ^mut Cell.{ count: 2 } })) == 102)
+    assert(invoke_after_fresh(mut slot, install, 3) == 103)
+    assert(out_val(read_after(mut slot, clear)(Shelf.{ item: ^mut live })) == 42)
 }
 
 -- @case callback_writes_follow_the_object_selected_at_each_read run-pass backend=both
 type Cell = .{ var count: int }
 type Shelf = .{ ^mut item: Cell }
-type Slot = .{ var action: fn(new Shelf) -> int }
+type Out { Frozen(Shelf); Count(int) }
+type Slot = .{ var action: fn(new Shelf) -> new Out }
 type Holder = .{ var ^mut slot: Slot }
 type Swap = fn(mut Holder) &mut -> ()
-fn freeze(new shelf: Shelf) -> int { let fixed = new shelf; fixed.item.count + 100 }
-fn count(new shelf: Shelf) -> int { shelf.item.count }
+fn out_val(o: Out) -> int { match o { Out::Frozen(s) -> s.item.count + 100; Out::Count(n) -> n } }
+fn freeze(new shelf: Shelf) -> new Out { Out::Frozen(shelf) }
+fn count(new shelf: Shelf) -> new Out { Out::Count(shelf.item.count) }
 fn swap(mut holder: Holder) &mut -> () { holder.slot = Slot.{ action: count } }
 fn write_after(mut holder: Holder, replace: Swap) &mut -> () {
     replace(mut holder)
@@ -177,29 +197,28 @@ fn main() -> () {
     let mut original = Slot.{ action: count }
     let mut holder = Holder.{ slot: ^mut original }
     write_after(mut holder, swap)
-    assert(original.action(new Shelf.{ item: ^mut live }) == 42)
-    assert(holder.slot.action(new Shelf.{ item: ^mut Cell.{ count: 3 } }) == 103)
+    assert(out_val(original.action(Shelf.{ item: ^mut live })) == 42)
+    assert(out_val(holder.slot.action(Shelf.{ item: ^mut Cell.{ count: 3 } })) == 103)
     holder.slot = ^mut original
     write_saved(mut holder, swap)
-    assert(original.action(new Shelf.{ item: ^mut Cell.{ count: 4 } }) == 104)
-    assert(holder.slot.action(new Shelf.{ item: ^mut live }) == 42)
+    assert(out_val(original.action(Shelf.{ item: ^mut Cell.{ count: 4 } })) == 104)
+    assert(out_val(holder.slot.action(Shelf.{ item: ^mut live })) == 42)
     write_between(mut holder, swap)
-    assert(holder.slot.action(new Shelf.{ item: ^mut live }) == 42)
+    assert(out_val(holder.slot.action(Shelf.{ item: ^mut live })) == 42)
 }
 
 -- @case forwarded_drafts_sample_the_committed_graph run-pass backend=both
 type Cell = .{ var count: int }
 type Shelf = .{ ^mut item: Cell }
-type Action = fn(new Shelf) -> int
+type Out { Frozen(Shelf); Count(int) }
+type Action = fn(new Shelf) -> new Out
 type Update = fn(mut Derived<[]Action>) &mut -> ()
-fn count(new shelf: Shelf) -> int { shelf.item.count }
-fn freeze(new shelf: Shelf) -> int { let fixed = new shelf; fixed.item.count + 100 }
+fn out_val(o: Out) -> int { match o { Out::Frozen(s) -> s.item.count + 100; Out::Count(n) -> n } }
+fn count(new shelf: Shelf) -> new Out { Out::Count(shelf.item.count) }
+fn freeze(new shelf: Shelf) -> new Out { Out::Frozen(shelf) }
 fn append_count(mut draft: Derived<[]Action>) &mut -> () { Array::push(mut draft, count) }
 fn append_freeze(mut draft: Derived<[]Action>) &mut -> () { Array::push(mut draft, freeze) }
 fn forward(base: []Action, edit: Update) -> []Action { derive(base, edit) }
-fn inspect(base: []Action, edit: Update, new input: Shelf) -> int {
-    forward(base, edit)[1](new input)
-}
 fn main() -> () {
     let mut live = Cell.{ count: 41 }
     live.count += 1
@@ -207,19 +226,21 @@ fn main() -> () {
     let first = forward(base, append_count)
     let second = forward(first, append_freeze)
     assert(len(base) == 1 && len(first) == 2 && len(second) == 3)
-    assert(second[0](new Shelf.{ item: ^mut live }) == 42)
-    assert(second[1](new Shelf.{ item: ^mut live }) == 42)
-    assert(second[2](new Shelf.{ item: ^mut Cell.{ count: 3 } }) == 103)
-    assert(inspect(base, append_count, new Shelf.{ item: ^mut live }) == 42)
+    assert(out_val(second[0](Shelf.{ item: ^mut live })) == 42)
+    assert(out_val(second[1](Shelf.{ item: ^mut live })) == 42)
+    assert(out_val(second[2](Shelf.{ item: ^mut Cell.{ count: 3 } })) == 103)
+    assert(out_val(forward(base, append_count)[1](Shelf.{ item: ^mut live })) == 42)
 }
 
 -- @case derive_updates_captured_fields_and_bindings run-pass backend=both
 type Cell = .{ var count: int }
 type Shelf = .{ ^mut item: Cell }
-type Action = fn(new Shelf) -> int
+type Out { Frozen(Shelf); Count(int) }
+type Action = fn(new Shelf) -> new Out
 type Slot = .{ var action: Action }
-fn count(new shelf: Shelf) -> int { shelf.item.count }
-fn freeze(new shelf: Shelf) -> int { let fixed = new shelf; fixed.item.count + 100 }
+fn out_val(o: Out) -> int { match o { Out::Frozen(s) -> s.item.count + 100; Out::Count(n) -> n } }
+fn count(new shelf: Shelf) -> new Out { Out::Count(shelf.item.count) }
+fn freeze(new shelf: Shelf) -> new Out { Out::Frozen(shelf) }
 fn main() -> () {
     let mut live = Cell.{ count: 41 }
     live.count += 1
@@ -233,18 +254,20 @@ fn main() -> () {
         action = count
     }
     assert(base == [1] && next == [1, 2])
-    assert(saved(new Shelf.{ item: ^mut Cell.{ count: 3 } }) == 103)
-    assert(slot.action(new Shelf.{ item: ^mut live }) == 42)
-    assert(action(new Shelf.{ item: ^mut live }) == 42)
+    assert(out_val(saved(Shelf.{ item: ^mut Cell.{ count: 3 } })) == 103)
+    assert(out_val(slot.action(Shelf.{ item: ^mut live })) == 42)
+    assert(out_val(action(Shelf.{ item: ^mut live })) == 42)
 }
 
 -- @case draft_appends_follow_the_current_path_and_preserve_other_occurrences run-pass backend=both
 type Cell = .{ var count: int }
 type Shelf = .{ ^mut item: Cell }
-type Action = fn(new Shelf) -> int
+type Out { Frozen(Shelf); Count(int) }
+type Action = fn(new Shelf) -> new Out
 type Pair = .{ left: []Action, right: []Action }
-fn count(new shelf: Shelf) -> int { shelf.item.count }
-fn freeze(new shelf: Shelf) -> int { let fixed = new shelf; fixed.item.count + 100 }
+fn out_val(o: Out) -> int { match o { Out::Frozen(s) -> s.item.count + 100; Out::Count(n) -> n } }
+fn count(new shelf: Shelf) -> new Out { Out::Count(shelf.item.count) }
+fn freeze(new shelf: Shelf) -> new Out { Out::Frozen(shelf) }
 fn main() -> () {
     let mut live = Cell.{ count: 41 }
     live.count += 1
@@ -260,19 +283,21 @@ fn main() -> () {
     let second = derive(first) \mut draft -> { Array::push(mut draft.left, count) }
     assert(len(base.left) == 1 && len(base.right) == 1 && len(seed) == 2)
     assert(len(first.left) == 4 && len(second.left) == 5 && len(second.right) == 1)
-    assert(second.right[0](new Shelf.{ item: ^mut live }) == 42)
-    assert(second.left[1](new Shelf.{ item: ^mut live }) == 42)
-    assert(second.left[2](new Shelf.{ item: ^mut live }) == 42)
-    assert(second.left[3](new Shelf.{ item: ^mut Cell.{ count: 3 } }) == 103)
-    assert(second.left[4](new Shelf.{ item: ^mut live }) == 42)
+    assert(out_val(second.right[0](Shelf.{ item: ^mut live })) == 42)
+    assert(out_val(second.left[1](Shelf.{ item: ^mut live })) == 42)
+    assert(out_val(second.left[2](Shelf.{ item: ^mut live })) == 42)
+    assert(out_val(second.left[3](Shelf.{ item: ^mut Cell.{ count: 3 } })) == 103)
+    assert(out_val(second.left[4](Shelf.{ item: ^mut live })) == 42)
 }
 
 -- @case calls_and_captured_writers_keep_append_order run-pass backend=both
 type Cell = .{ var count: int }
 type Shelf = .{ ^mut item: Cell }
-type Action = fn(new Shelf) -> int
-fn count(new shelf: Shelf) -> int { shelf.item.count }
-fn freeze(new shelf: Shelf) -> int { let fixed = new shelf; fixed.item.count + 100 }
+type Out { Frozen(Shelf); Count(int) }
+type Action = fn(new Shelf) -> new Out
+fn out_val(o: Out) -> int { match o { Out::Frozen(s) -> s.item.count + 100; Out::Count(n) -> n } }
+fn count(new shelf: Shelf) -> new Out { Out::Count(shelf.item.count) }
+fn freeze(new shelf: Shelf) -> new Out { Out::Frozen(shelf) }
 fn extend(mut items: []Action) &mut -> () {
     for 0..2 as _ { Array::push(mut items, count) }
     Array::push(mut items, freeze)
@@ -283,26 +308,28 @@ fn main() -> () {
     let mut direct = [count]
     extend(mut direct)
     assert(len(ref direct) == 4)
-    assert(direct[1](new Shelf.{ item: ^mut live }) == 42)
-    assert(direct[2](new Shelf.{ item: ^mut live }) == 42)
-    assert(direct[3](new Shelf.{ item: ^mut Cell.{ count: 3 } }) == 103)
+    assert(out_val(direct[1](Shelf.{ item: ^mut live })) == 42)
+    assert(out_val(direct[2](Shelf.{ item: ^mut live })) == 42)
+    assert(out_val(direct[3](Shelf.{ item: ^mut Cell.{ count: 3 } })) == 103)
     var mut captured = [freeze]
     let ^mut append = \-> { Array::push(mut captured, count); Array::push(mut captured, freeze) }
     captured = [count, count]
     append()
     assert(len(ref captured) == 4)
-    assert(captured[2](new Shelf.{ item: ^mut live }) == 42)
-    assert(captured[3](new Shelf.{ item: ^mut Cell.{ count: 4 } }) == 104)
+    assert(out_val(captured[2](Shelf.{ item: ^mut live })) == 42)
+    assert(out_val(captured[3](Shelf.{ item: ^mut Cell.{ count: 4 } })) == 104)
 }
 
 -- @case consecutive_appends_follow_the_length_of_the_replacement_array run-pass backend=both
 type Cell = .{ var count: int }
 type Shelf = .{ ^mut item: Cell }
-type Action = fn(new Shelf) -> int
+type Out { Frozen(Shelf); Count(int) }
+type Action = fn(new Shelf) -> new Out
 type Batch = .{ var ^mut items: []Action }
 type Replace = fn(mut Batch) &mut -> ()
-fn count(new shelf: Shelf) -> int { shelf.item.count }
-fn freeze(new shelf: Shelf) -> int { let fixed = new shelf; fixed.item.count + 100 }
+fn out_val(o: Out) -> int { match o { Out::Frozen(s) -> s.item.count + 100; Out::Count(n) -> n } }
+fn count(new shelf: Shelf) -> new Out { Out::Count(shelf.item.count) }
+fn freeze(new shelf: Shelf) -> new Out { Out::Frozen(shelf) }
 fn one() -> new []Action { [count] }
 fn replace_one(mut batch: Batch) &mut -> () { batch.items = one() }
 fn replace_two(mut batch: Batch) &mut -> () { batch.items = [count, count] }
@@ -317,13 +344,13 @@ fn main() -> () {
     let mut batch = Batch.{ items: [freeze, freeze, freeze] }
     append_twice(mut batch, replace_one)
     assert(len(ref batch.items) == 3)
-    assert(batch.items[0](new Shelf.{ item: ^mut live }) == 42)
-    assert(batch.items[1](new Shelf.{ item: ^mut live }) == 42)
-    assert(batch.items[2](new Shelf.{ item: ^mut Cell.{ count: 3 } }) == 103)
+    assert(out_val(batch.items[0](Shelf.{ item: ^mut live })) == 42)
+    assert(out_val(batch.items[1](Shelf.{ item: ^mut live })) == 42)
+    assert(out_val(batch.items[2](Shelf.{ item: ^mut Cell.{ count: 3 } })) == 103)
     append_twice(mut batch, replace_two)
     assert(len(ref batch.items) == 4)
-    assert(batch.items[2](new Shelf.{ item: ^mut live }) == 42)
-    assert(batch.items[3](new Shelf.{ item: ^mut Cell.{ count: 4 } }) == 104)
+    assert(out_val(batch.items[2](Shelf.{ item: ^mut live })) == 42)
+    assert(out_val(batch.items[3](Shelf.{ item: ^mut Cell.{ count: 4 } })) == 104)
 }
 
 -- @case aliased_shared_formals_preserve_identity_through_a_nested_mut_call run-pass backend=both
@@ -367,7 +394,7 @@ fn main() -> () {
     assert(inner(parcel()) == Ok(42))
 }
 
--- @case loop_allocations_are_fresh_and_bindings_can_be_handed_off_each_iteration run-pass backend=both
+-- @case loop_allocations_are_fresh_and_promote_at_block_exit_each_iteration run-pass backend=both
 type Cell = .{ var count: int }
 fn copy(mut target: Cell, ref reader: Cell) &mut -> () { target.count = reader.count }
 fn main() -> () {
@@ -375,9 +402,11 @@ fn main() -> () {
     initial.count += 1
     var ^mut previous = initial
     for 0..4 as i {
-        let mut fresh = Cell.{ count: i }
-        let mut moved = new fresh
-        copy(mut moved, ref previous)
+        let mut moved = {
+            let mut fresh = Cell.{ count: i }
+            copy(mut fresh, ref previous)
+            fresh
+        }
         previous = ^mut moved
         previous.count += 1
     }
@@ -438,8 +467,7 @@ fn build(^mut tail: Link, count: int) &mut &^mut &return(^mut tail) -> new Link 
     Link::(.{ value: 0, next: Some(^mut head) })
 }
 fn forward(via action: fn(via Link) @& -> infer Link, ^mut tail: Link, count: int) &mut &^mut -> infer Link {
-    let mut chain = build(^mut tail, count)
-    action(new chain)
+    action(build(^mut tail, count))
 }
 fn identity(via chain: Link) -> infer Link { chain }
 fn read(ref head: Link, depth: int) -> int {
@@ -512,7 +540,7 @@ fn main() -> () {
     let ref view = relay(ref cell)
     cell.count += 1
     assert(view.count == 41)
-    let mut moved = relay(new cell)
+    let mut moved = relay(Cell.{ count: 41 })
     moved.count += 1
     assert(moved.count == 42)
 }
@@ -542,7 +570,7 @@ fn main() -> () {
     let ref view = relay(identity, ref original)
     original.count += 1
     assert(view.count == 41)
-    let mut owned = relay(identity, new original)
+    let mut owned = relay(identity, Cell.{ count: 41 })
     owned.count += 1
     assert(owned.count == 42)
 }
@@ -572,7 +600,7 @@ type Shelf = .{ var ^mut item: Cell }
 fn make(^mut source: Cell) &^mut &return(^mut source) -> new Shelf {
     let mut shelf = Shelf.{ item: ^mut Cell.{ count: 0 } }
     shelf.item = ^mut source
-    new shelf
+    shelf
 }
 fn main() -> () {
     let mut source = Cell.{ count: 40 }
@@ -697,16 +725,6 @@ fn main() -> () {
     assert(from_type + from_value == 42)
 }
 
--- @case static_named_parameter_specializes_before_foreign_linking run-pass backend=both
--- @file pkg/main.ril
-use pkg/host
-fn choose(meta enabled: bool = true) @io -> int {
-    if enabled { 42 } else { Host::unreachable() }
-}
-fn main() @io -> () { assert(choose() == 42 && choose(true) == 42) }
--- @file pkg/host.d.ril
-pub fn unreachable() @io -> int
-
 -- @case meta_type_values_do_not_enter_native_argument_lists run-pass backend=both
 fn classify<T>(meta witness: Type<T>) -> int {
     if witness == <int> { 42 } else { 0 }
@@ -728,7 +746,7 @@ fn main() -> () { assert(pick(true) == 1 && pick(false) == 2) }
 -- @case native_slice_patterns_bind_rest_and_check_non_overlap run-pass backend=both
 fn interior(values: []int) -> new []int {
     match values {
-        [0, ..middle, 9] -> new middle
+        [0, ..middle, 9] -> clone(middle)
         _ -> []
     }
 }
@@ -786,10 +804,10 @@ fn main() -> () {
     assert((min << 62) >> 62 == min)
     assert(min >> 500 == -1 && max >> 500 == 0)
     assert(~min == max && (high | 3) ^ high == 3)
-    assert(Numeric::checked_div(min, -1) == Some(high))
-    assert(Numeric::checked_rem(min, 0) == None)
+    assert(Numeric::div(min, -1) == Some(high))
+    assert(Numeric::rem(min, 0) == None)
     assert(Numeric::to_f64(max) == Numeric::to_f64(high))
-    assert(Numeric::trunc(-3.5) == Some(-3))
+    assert(Numeric::to_int_trunc(-3.5) == Some(-3))
     let keys = [max: "small", high: "large"]
     assert(keys?[high - 1] == Some("small") && keys?[max + 1] == Some("large"))
     let values = clone([min, max, high])
@@ -807,7 +825,7 @@ fn main() -> new !<(), str> { Err("message on stderr") }
 fn main() @io -> () {
     let text = "αβ"
     assert(Bytes::at(bytes"\xFF\0", 0) == Some(255))
-    assert(String::at(text, 1) == Some(946))
+    assert(String::scalar_at(text, 1) == Some(946))
     println("{len(text)}:{text[1..2]}")
 }
 
@@ -837,18 +855,6 @@ fn main() @io -> () {
     let value = if choose > 10 { choose } else { 0 }
     println("{value}")
 }
-
--- @case meta_prunes_unreachable_foreign_call run-pass backend=both
--- @expect-stdout present
--- @file pkg/main.ril
-use pkg/host
-meta let AVAILABLE = false
-fn main() @io -> () {
-    if AVAILABLE { Host::ril_test_symbol_that_is_not_linked() }
-    println("present")
-}
--- @file pkg/host.d.ril
-pub fn ril_test_symbol_that_is_not_linked() @io -> ()
 
 -- @case static_snapshot run-pass backend=both
 -- @expect-stdout 6
@@ -1013,8 +1019,8 @@ fn main() -> () {
     assert(String::encode_utf8(text) == ENCODED)
     assert(String::decode_utf8(ENCODED) == DECODED)
     assert(String::decode_utf8(bytes"\xC0\xAF") == None)
-    assert(String::at(text, 0) == Some(65) && String::at(text, 1) == Some(128512))
-    assert(String::at(text, -1) == None && String::at(text, 2) == None)
+    assert(String::scalar_at(text, 0) == Some(65) && String::scalar_at(text, 1) == Some(128512))
+    assert(String::scalar_at(text, -1) == None && String::scalar_at(text, 2) == None)
     assert(String::scalars(text) == SCALARS)
     assert(String::from_scalars(SCALARS) == Some(text))
     assert(String::from_scalars([55296]) == None)
@@ -1045,7 +1051,7 @@ type Role(str)
 meta(Role::("admin"))
 type Request(.{ email: str })
 fn main() -> () {
-    let roles: []Role = meta Reflect::attrs(<Request>)
+    let roles = meta Reflect::attrs(<Request>, <Role>)
     assert(len(roles) == 1 && inner(roles[0]) == "admin")
 }
 
@@ -1186,20 +1192,6 @@ fn accumulate(meta n: int) -> int {
 }
 fn main() -> () { assert(accumulate(5) == 15) }
 
--- @case meta_constant_match_prunes_unreferenced_foreign_symbols run-pass backend=both
--- @file pkg/main.ril
-use pkg/host
-meta let READY = Some(42)
-fn main() -> () {
-    let output = meta match READY {
-        Some(value) if value > 0 -> value
-        Some(_) | None -> Host::unreachable()
-    }
-    assert(output == 42)
-}
--- @file pkg/host.d.ril
-pub fn unreachable() @io -> int
-
 -- @case guarded_static_coordinate_keeps_its_dependent_return_through_a_call run-pass backend=both
 fn read<T: .{ .. }>(via item: T, meta key: str |> KeyOf<T>) -> infer T.(key) {
     item.(key)
@@ -1231,12 +1223,12 @@ fn main() -> () {
     let ref observer = relay(ref live)
     live.count += 1
     assert(selected.count == 7 && observer.count == 41)
-    let mut moved = relay(new live)
+    let mut moved = relay(Cell.{ count: 41 })
     moved.count += 1
     assert(moved.count == 42)
 }
 
--- @case via_handoff_returns_live_new_qualified_path_after_nested_forwarding run-pass backend=both
+-- @case via_fresh_returns_live_new_qualified_path_after_nested_forwarding run-pass backend=both
 type Cell = .{ var count: int }
 fn identity(via cell: Cell) -> infer Cell { cell }
 fn relay(via cell: Cell) -> infer Cell { identity(cell) }
@@ -1245,8 +1237,7 @@ fn adjust(via cell: Cell) -> infer Cell {
     relay(cell)
 }
 fn main() -> () {
-    let mut original = Cell.{ count: 41 }
-    let updated = adjust(new original)
+    let updated = adjust(Cell.{ count: 41 })
     assert(updated.count == 42)
 }
 
@@ -1272,81 +1263,63 @@ fn main() -> () {
 
 -- @case freezing_the_selected_entry_graph_preserves_unrelated_aliases run-pass backend=both no-prelude
 type Cell = .{ var count: int }
-type Branch = .{ mut owned: Cell, ^mut external: Cell }
 type Holder = .{ var ^mut item: Cell }
+type Out { Frozen(Holder) }
 
-fn freeze_cell(new input: Cell) -> Cell {
-    let snapshot = new input
-    snapshot
+fn replace(new input: Holder) -> new Out {
+    input.item = ^mut Cell.{ count: 14 }
+    Out::Frozen(input)
 }
 
-fn select(new root: Branch) -> Cell {
-    let mut current = new root
-    freeze_cell(new current.owned)
-}
-
-fn replace(new input: Holder) -> Holder {
-    let mut held = new input
-    held.item = ^mut Cell.{ count: 14 }
-    let snapshot = new held
-    snapshot
-}
-
-fn freeze(new input: Holder) -> Holder {
-    let snapshot = new input
-    snapshot
-}
-
-fn relay(new input: Holder) -> Holder {
-    freeze(new input)
+fn freeze(new input: Holder) -> new Out {
+    Out::Frozen(input)
 }
 
 fn main() -> () {
     let mut live = Cell.{ count: 12 }
-    let mut branch = Branch.{ owned: Cell.{ count: 23 }, external: ^mut live }
-    branch.owned.count += 1
-    let selected = select(new branch)
-    let mut holder = Holder.{ item: ^mut live }
-    holder.item.count += 1
-    let replaced = replace(new holder)
-    let fresh = relay(new Holder.{ item: ^mut Cell.{ count: 36 } })
+    live.count += 1
+    let Out::Frozen(replaced) = replace(Holder.{ item: ^mut live })
+    let Out::Frozen(fresh) = freeze(Holder.{ item: ^mut Cell.{ count: 36 } })
     live.count += 2
-    assert(selected.count == 24 && replaced.item.count == 14 && fresh.item.count == 36 && live.count == 15)
+    assert(replaced.item.count == 14 && fresh.item.count == 36 && live.count == 15)
 }
 
 -- @case recursively_wrapping_a_complete_new_graph_preserves_snapshot_reception run-pass backend=both no-prelude
 type Cell = .{ var count: int }
 type Node(.{ ^mut value: Cell, mut next: ?Node })
-fn freeze(new source: Node) -> int { let snapshot = new source; snapshot.value.count }
-fn visit(action: fn(new Node) -> int, new input: Node, depth: int) -> int {
-    if depth == 0 { action(new input) }
+type Out { Frozen(Node) }
+fn freeze(new source: Node) -> new Out { Out::Frozen(source) }
+fn build(depth: int) -> new Node {
+    if depth == 0 { Node::(.{ value: ^mut Cell.{ count: 2 }, next: None }) }
     else {
         let outer = Cell.{ count: 5 }
-        visit(action, new Node::(.{ value: ^mut Cell.{ count: outer.count }, next: Some(new input) }), depth - 1)
+        Node::(.{ value: ^mut Cell.{ count: outer.count }, next: Some(build(depth - 1)) })
     }
 }
 fn main() -> () {
     let mut live = Cell.{ count: 1 }
     live.count += 1
-    let observed = visit(freeze, new Node::(.{ value: ^mut Cell.{ count: 2 }, next: None }), 1)
+    let Out::Frozen(observed) = freeze(build(1))
     live.count += 8
-    assert(observed == 5)
+    assert(observed.value.count == 5)
 }
 
 -- @case returned_snapshot_callbacks_call_their_runtime_targets run-pass backend=both no-prelude
 type Cell = .{ var count: int }
 type Shelf = .{ ^mut item: Cell }
-type Action = fn(new Shelf) -> int
-fn freeze(new shelf: Shelf) -> int { let fixed = new shelf; fixed.item.count }
+type Out { Frozen(Shelf) }
+type Action = fn(new Shelf) -> new Out
+fn freeze(new shelf: Shelf) -> new Out { Out::Frozen(shelf) }
 fn keep(action: Action) -> Action { action }
 fn make() -> Action { keep(freeze) }
-fn select(make_action: fn() -> Action, new shelf: Shelf) -> int {
+fn select(make_action: fn() -> Action) -> int {
     let action = make_action()
-    action(new shelf)
+    let Out::Frozen(s) = action(Shelf.{ item: ^mut Cell.{ count: 42 } })
+    s.item.count
 }
 fn main() -> () {
     let actions = .{ table: [make] }
-    assert(select(actions.table[0], new Shelf.{ item: ^mut Cell.{ count: 42 } }) == 42)
+    assert(select(actions.table[0]) == 42)
 }
 
 -- @case unified_nominal_parenthesized_syntax_and_destructuring run-pass backend=both
@@ -1356,7 +1329,7 @@ type Point(int, int)
 type User(.{ id: int, name: str = "anon" })
 type AliasRec = .{ tag: str, count: int }
 opaque type Token(.{ code: int })
-fn drop_token(new _t: Token) -> () {}
+fn drop_token(ref _t: Token) -> () {}
 fn main() -> () {
     let u1 = User::(.{ id: 1 })
     let raw = .{ id: 2, name: "ada" }
@@ -1371,8 +1344,8 @@ fn main() -> () {
     let UserId::(raw_id) = uid
     let alias = AliasRec.{ tag: "ok", count: 5 }
     let .{ tag, count } = alias
-    let mut tok = Token::(.{ code: 9 })
-    defer drop_token(new tok)
+    let tok = Token::(.{ code: 9 })
+    defer drop_token(ref tok)
     let matched = match u2 {
         User::(.{ id: 2, name }) -> name
         _ -> ""

@@ -1,6 +1,6 @@
 -- Standard Reflect module: compile-time type classification, shape, attribute, and default introspection.
 
--- Storage and access mode of a record or tuple field reported by `fields`.
+-- Storage and access mode of a record or tuple field reported by `Reflect::fields`.
 pub type FieldMode {
     Let
     Var
@@ -12,7 +12,7 @@ pub type FieldMode {
     VarRef
 }
 
--- Coarse compile-time classification of any Ril type, returned by `type_kind`.
+-- Coarse compile-time classification of any Ril type, returned by `Reflect::type_kind`.
 -- Transparent aliases normalize to their underlying type; `opaque` types report
 -- `OpaqueValue`, `OpaqueShared`, `OpaqueSum`, or `Opaque` regardless of caller scope.
 pub type TypeKind {
@@ -36,11 +36,9 @@ pub type TypeKind {
     OpaqueShared
     -- `.ril` `opaque` sum type.
     OpaqueSum
-    -- `.ril` `opaque` type wrapping a non-data handle (callable, foreign handle, or `Derived`).
+    -- `.ril` `opaque` type wrapping a non-data handle (callable or `Derived`).
     Opaque
-    -- Foreign `.d.ril` `opaque` host handle.
-    Foreign
-    -- Ordinary or `&once` function type `fn(...) -> ...`.
+    -- Function type `fn(...) -> ...`.
     Fn
     -- One-shot delimited continuation type `ctl(...) -> ...`.
     Ctl
@@ -56,7 +54,7 @@ meta fn raw_type_kind<T>(target: Type<T>) -> TypeKind
 
 -- Returns the coarse compile-time `TypeKind` classification of `target`.
 -- Matches structural, primitive, `Derived`, and transparent `Nominal` forms in Ril
--- before falling back to the compiler for sums, opaque types, foreign handles, and callables.
+-- before falling back to the compiler for sums, opaque types, and callables.
 pub meta fn type_kind<T>(target: Type<T>) -> TypeKind {
     match target {
         <bool> | <int> | <f64> | <str> | <bytes> | <()> | <never> -> TypeKind::Value
@@ -72,17 +70,16 @@ pub meta fn type_kind<T>(target: Type<T>) -> TypeKind {
 }
 
 -- Computes the field coordinate type of `T` (`str` for records, `int` for tuples and `()`).
--- Fails with `E0308` on sealed opaque types, `E0907` on foreign handles, and `E0358` otherwise.
+-- Fails with `E0308` on sealed opaque types and `E0358` otherwise.
 pub type FieldKey = \T -> match <T> {
     <.{ ..}> -> <str>
     <(..)> | <()> -> <int>
-    <Nominal<let Inner>> -> match <Inner> {
+    <Nominal<let Payload>> -> match <Payload> {
         <.{ ..}> -> <str>
         <(..)> | <()> -> <int>
         _ -> compile_error_code("E0358", "FieldKey requires a record or tuple type")
     }
     _ -> match type_kind(<T>) {
-        TypeKind::Foreign -> compile_error_code("E0907", "foreign representation is sealed")
         TypeKind::OpaqueValue | TypeKind::OpaqueShared | TypeKind::OpaqueSum | TypeKind::Opaque -> compile_error_code("E0308", "opaque representation is sealed")
         _ -> compile_error_code("E0358", "FieldKey requires a record or tuple type")
     }
@@ -94,11 +91,11 @@ pub meta fn type_name<T>(target: Type<T>) -> str
 -- Enumerates `(FieldMode, FieldKey<T>)` pairs for an accessible record or tuple type.
 -- Record fields are returned in UTF-8 byte order (`str` keys); tuple slots are returned
 -- in ascending index order (`int` keys, `[]` for `()`). Fails `E0358` on other types and
--- `E0308` / `E0907` when sealed.
+-- `E0308` when sealed.
 --
 -- ```ril
 -- type Point(.{ x: int, var y: int })
--- meta let FIELDS = fields(<Point>) -- [(FieldMode::Let, "x"), (FieldMode::Var, "y")]
+-- meta let FIELDS = Reflect::fields(<Point>) -- [(FieldMode::Let, "x"), (FieldMode::Var, "y")]
 -- ```
 pub meta fn fields<T>(target: Type<T>) -> [](FieldMode, FieldKey<T>)
 
@@ -107,7 +104,7 @@ pub meta fn fields<T>(target: Type<T>) -> [](FieldMode, FieldKey<T>)
 --
 -- ```ril
 -- type Shape { Circle(f64); Rect(f64, f64); Origin }
--- meta let TAGS = sum_tags(<Shape>) -- ["Circle", "Origin", "Rect"]
+-- meta let TAGS = Reflect::sum_tags(<Shape>) -- ["Circle", "Origin", "Rect"]
 -- ```
 pub meta fn sum_tags<T>(target: Type<T>) -> []str
 
@@ -117,9 +114,9 @@ pub meta fn sum_tags<T>(target: Type<T>) -> []str
 -- type Doc(str)
 -- meta(Doc::("user"))
 -- type User(.{ id: int })
--- meta let DOCS: []Doc = Reflect::attrs(<User>)
+-- meta let DOCS = Reflect::attrs(<User>, <Doc>)
 -- ```
-pub meta fn attrs<T, A>(target: Type<T>) -> []A
+pub meta fn attrs<T, A>(target: Type<T>, attr: Type<A>) -> []A
 
 -- Returns all field-level metadata attributes of type `A` attached to `key` on record `target`.
 -- Requires `key` to satisfy `KeyOf<T>`.
@@ -127,18 +124,18 @@ pub meta fn attrs<T, A>(target: Type<T>) -> []A
 -- ```ril
 -- type Tag(str)
 -- type User(.{ meta(Tag::("pk")) id: int })
--- meta let TAGS: []Tag = Reflect::field_attrs(<User>, "id")
+-- meta let TAGS = Reflect::field_attrs(<User>, "id", <Tag>)
 -- ```
-pub meta fn field_attrs<T, A>(target: Type<T>, meta key: str |> KeyOf<T>) -> []A
+pub meta fn field_attrs<T, A>(target: Type<T>, meta key: str |> KeyOf<T>, attr: Type<A>) -> []A
 
 -- Returns all variant-level metadata attributes of type `A` attached to `variant` on sum `target`.
 --
 -- ```ril
 -- type Code(int)
 -- type Status { meta(Code::(200)) Ok; meta(Code::(404)) Missing }
--- meta let CODES: []Code = Reflect::variant_attrs(<Status>, "Ok")
+-- meta let CODES = Reflect::variant_attrs(<Status>, "Ok", <Code>)
 -- ```
-pub meta fn variant_attrs<T, A>(target: Type<T>, meta variant: str) -> []A
+pub meta fn variant_attrs<T, A>(target: Type<T>, meta variant: str, attr: Type<A>) -> []A
 
 -- Reports whether field `key` on record `target` declares a default value.
 -- Requires `key` to satisfy `KeyOf<T>`.

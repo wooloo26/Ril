@@ -144,7 +144,6 @@ impl Analyzer<'_> {
                 };
                 let mut value = self.expr_with_truth(ctx, ledger, *value, operand_truth);
                 match op.value.as_str() {
-                    "new" => self.handoff(ctx, ledger, &mut value, span),
                     "ref" => {
                         for root in &mut value.roots {
                             root.fix_mode(Access::Ref);
@@ -243,19 +242,17 @@ impl Analyzer<'_> {
                 let mut record = Datum::source(span, Access::Mut, true);
                 for field in fields {
                     let coordinate = Coordinate::Field(field.name.value.clone());
-                    let value = if let Some(expr) = field.value {
+                    let field_span = field.value.map_or(field.name.span, |id| ast.expr(id).span);
+                    let mut value = if let Some(expr) = field.value {
                         self.expr(ctx, ledger, expr)
                     } else {
                         self.read_span(ctx, ledger, field.name.span)
                     };
+                    if self.program.is_must_consume(self.ty(field_span)) {
+                        self.consume_linear(ctx, ledger, &mut value);
+                    }
                     let access = self.member_schema(span, &coordinate).0;
-                    let value = self.receive_member(
-                        ctx,
-                        ledger,
-                        value,
-                        access,
-                        field.value.map_or(field.name.span, |id| ast.expr(id).span),
-                    );
+                    let value = self.receive_member(ctx, ledger, value, access, field_span);
                     record.members.insert(coordinate, value);
                 }
                 record
@@ -272,10 +269,13 @@ impl Analyzer<'_> {
                 }
                 for (i, &item) in items.iter().enumerate() {
                     let coordinate = Coordinate::Index(i.to_string());
-                    let value = self.expr(ctx, ledger, item);
+                    let item_span = ast.expr(item).span;
+                    let mut value = self.expr(ctx, ledger, item);
+                    if self.program.is_must_consume(self.ty(item_span)) {
+                        self.consume_linear(ctx, ledger, &mut value);
+                    }
                     let access = self.member_schema(span, &coordinate).0;
-                    let value =
-                        self.receive_member(ctx, ledger, value, access, ast.expr(item).span);
+                    let value = self.receive_member(ctx, ledger, value, access, item_span);
                     sequence.members.insert(coordinate, value);
                 }
                 sequence
@@ -334,6 +334,13 @@ impl Analyzer<'_> {
             }
             Expr::Member { base, member, .. } => {
                 let value = self.expr(ctx, ledger, *base);
+                if self.program.is_must_consume(self.ty(span)) {
+                    self.error(
+                        Code::E0548,
+                        span,
+                        "must-consume field cannot be projected directly; destructure its container",
+                    );
+                }
                 let coordinate = self.coordinate(ctx, ledger, member);
                 let (mode, variable) = self.schema_mode(self.ty(ast.expr(*base).span), &coordinate);
                 let mode = if variable && self.program.is_value(self.ty(span)) {
@@ -347,6 +354,18 @@ impl Analyzer<'_> {
                 let value = self.expr(ctx, ledger, *base);
                 self.expr(ctx, ledger, *index);
                 let ty = self.ty(ast.expr(*base).span);
+                let elem_linear = match ty {
+                    Ty::Array(item) => self.program.is_must_consume(&item.ty),
+                    Ty::Map(_, item) => self.program.is_must_consume(&item.ty),
+                    _ => self.program.is_must_consume(self.ty(span)),
+                };
+                if elem_linear {
+                    self.error(
+                        Code::E0548,
+                        span,
+                        "cannot index or slice a container of must-consume values; use destructive extraction",
+                    );
+                }
                 self.project_index(ctx, ledger, &value, (ty, *index, span))
             }
             Expr::Block {
@@ -372,11 +391,28 @@ impl Analyzer<'_> {
                 let mut result = Datum::default();
                 for (i, &item) in statements.iter().enumerate() {
                     let is_tail = i + 1 == statements.len();
-                    result = self.statement(&mut local_ctx, ledger, item, is_tail);
-                    if let StmtKind::Expr(expr) = ast.stmt(item).value.kind
-                        && self.ty(ast.expr(expr).span) == &Ty::Never
+                    if is_tail
+                        && let StmtKind::Expr(tail_expr) = ast.stmt(item).value.kind
                     {
-                        local_ctx.reachable = false;
+                        result = self.eval_exit_expr(
+                            &mut local_ctx,
+                            ledger,
+                            tail_expr,
+                            &prior,
+                            prior_holds,
+                            prior_defers,
+                            false,
+                        );
+                        if self.ty(ast.expr(tail_expr).span) == &Ty::Never {
+                            local_ctx.reachable = false;
+                        }
+                    } else {
+                        result = self.statement(&mut local_ctx, ledger, item, is_tail);
+                        if let StmtKind::Expr(expr) = ast.stmt(item).value.kind
+                            && self.ty(ast.expr(expr).span) == &Ty::Never
+                        {
+                            local_ctx.reachable = false;
+                        }
                     }
                 }
                 for &helper in helpers {
@@ -384,6 +420,15 @@ impl Analyzer<'_> {
                 }
                 if local_ctx.reachable && !ledger.no_continuation {
                     self.run_defers(&mut local_ctx, ledger, prior_defers);
+                    ledger.holds.truncate(prior_holds);
+                    self.try_promote_exit_new(
+                        &local_ctx,
+                        ledger,
+                        &mut result,
+                        &prior,
+                        prior_holds,
+                        false,
+                    );
                 } else if local_ctx.defers.len() > prior_defers {
                     let unchecked = local_ctx
                         .defers
@@ -440,11 +485,28 @@ impl Analyzer<'_> {
                 let mut result = Datum::default();
                 for (i, &item) in statements.iter().enumerate() {
                     let is_tail = i + 1 == statements.len();
-                    result = self.statement(&mut local_ctx, ledger, item, is_tail);
-                    if let StmtKind::Expr(expr) = ast.stmt(item).value.kind
-                        && self.ty(ast.expr(expr).span) == &Ty::Never
+                    if is_tail
+                        && let StmtKind::Expr(tail_expr) = ast.stmt(item).value.kind
                     {
-                        local_ctx.reachable = false;
+                        result = self.eval_exit_expr(
+                            &mut local_ctx,
+                            ledger,
+                            tail_expr,
+                            &prior,
+                            prior_holds,
+                            prior_defers,
+                            false,
+                        );
+                        if self.ty(ast.expr(tail_expr).span) == &Ty::Never {
+                            local_ctx.reachable = false;
+                        }
+                    } else {
+                        result = self.statement(&mut local_ctx, ledger, item, is_tail);
+                        if let StmtKind::Expr(expr) = ast.stmt(item).value.kind
+                            && self.ty(ast.expr(expr).span) == &Ty::Never
+                        {
+                            local_ctx.reachable = false;
+                        }
                     }
                 }
                 for &helper in helpers {
@@ -452,6 +514,15 @@ impl Analyzer<'_> {
                 }
                 if local_ctx.reachable && !ledger.no_continuation {
                     self.run_defers(&mut local_ctx, ledger, prior_defers);
+                    ledger.holds.truncate(prior_holds);
+                    self.try_promote_exit_new(
+                        &local_ctx,
+                        ledger,
+                        &mut result,
+                        &prior,
+                        prior_holds,
+                        false,
+                    );
                 } else if local_ctx.defers.len() > prior_defers {
                     let unchecked = local_ctx
                         .defers
@@ -676,6 +747,18 @@ impl Analyzer<'_> {
                     ..Storage::default()
                 };
                 let iterable_type = self.ty(ast.expr(*iterable).span);
+                let iter_elem_linear = match iterable_type {
+                    Ty::Array(item) => self.program.is_must_consume(&item.ty),
+                    Ty::Map(_, item) => self.program.is_must_consume(&item.ty),
+                    _ => false,
+                };
+                if iter_elem_linear {
+                    self.error(
+                        Code::E0548,
+                        span,
+                        "cannot iterate a container of must-consume values; drain with Array::pop/pop_front or Map::remove",
+                    );
+                }
                 let schema = self.schema_mode(iterable_type, &Coordinate::Dynamic).0;
                 let traverse = |this: &mut Self,
                                 ctx: &mut Context,
@@ -779,8 +862,8 @@ impl Analyzer<'_> {
                 value,
                 arms,
             } => {
+                let val_span = ast.expr(*value).span;
                 let mut value = if *is_meta {
-                    let val_span = ast.expr(*value).span;
                     let mut meta_ctx = Context::new(val_span);
                     meta_ctx.file = ctx.file;
                     meta_ctx.hir_scope = ctx.hir_scope;
@@ -791,10 +874,9 @@ impl Analyzer<'_> {
                 } else {
                     self.expr(ctx, ledger, *value)
                 };
-                if *mode == Mode::New {
-                    self.handoff(ctx, ledger, &mut value, span);
-                    ledger.consume_datum_linear(&value);
-                    value.clear_linear();
+                if !*is_meta && *mode == Mode::Plain && self.program.is_must_consume(self.ty(val_span))
+                {
+                    self.consume_linear(ctx, ledger, &mut value);
                 }
                 if *is_meta
                     && let Some(&chosen) = self.program.meta_match_decisions.get(&span)
@@ -858,13 +940,25 @@ impl Analyzer<'_> {
                 }
             }
             Expr::Transfer { kind, value } => {
-                let value = value
-                    .map(|value| self.expr(ctx, ledger, value))
-                    .unwrap_or_default();
+                let mut value = if *kind == Transfer::Return {
+                    let prior_slots = ctx.caller_slots.clone();
+                    value
+                        .map(|expr| {
+                            self.eval_exit_expr(ctx, ledger, expr, &prior_slots, 0, 0, true)
+                        })
+                        .unwrap_or_default()
+                } else {
+                    value
+                        .map(|value| self.expr(ctx, ledger, value))
+                        .unwrap_or_default()
+                };
                 if ctx.reachable {
                     match kind {
                         Transfer::Return => {
+                            let prior_slots = ctx.caller_slots.clone();
                             self.run_defers(ctx, ledger, 0);
+                            ledger.holds.clear();
+                            self.try_promote_exit_new(ctx, ledger, &mut value, &prior_slots, 0, true);
                             self.returned(ctx, ledger, value, span);
                             self.check_results(ledger, &BTreeSet::new());
                             self.check_linear(ledger, &BTreeSet::new());
@@ -931,8 +1025,15 @@ impl Analyzer<'_> {
                 .all_linear()
                 .iter()
                 .all(|occ| ledger.linear_consumed.contains(occ))
-            && (matches!(&node.value, Expr::Call { .. } | Expr::Pipeline { .. })
-                || matches!(&node.value, Expr::Array(items) if !items.is_empty()))
+            && (matches!(
+                &node.value,
+                Expr::Call { .. }
+                    | Expr::Wrap { .. }
+                    | Expr::Pipeline { .. }
+                    | Expr::Record { .. }
+                    | Expr::Tuple(_)
+            ) || matches!(&node.value, Expr::Array(items) if !items.is_empty())
+                || matches!(&node.value, Expr::Map(entries) if !entries.is_empty()))
         {
             ledger.record_linear(
                 &mut value,
@@ -1039,7 +1140,7 @@ impl Analyzer<'_> {
                 ledger,
                 &slot.value,
                 span,
-                "source path was ended by new handoff",
+                "must-consume linear value was already consumed",
             );
             if ctx.in_function
                 && decl.start < ctx.owner.start

@@ -8,7 +8,6 @@ use super::{Eval, Signal, defect, integer, none, nonstatic};
 use crate::ty::{
     Adt, AdtKind, Ty, Value,
     check::{Checker, Env},
-    value::ieee_equal,
 };
 
 pub(super) fn eval_text(intrinsic: Intrinsic, args: &[Value], span: Span) -> Option<Eval> {
@@ -22,6 +21,11 @@ pub(super) fn eval_text(intrinsic: Intrinsic, args: &[Value], span: Span) -> Opt
                 .to_usize()
                 .and_then(|index| text.chars().nth(index))
                 .map(|scalar| Value::Int(u32::from(scalar).into())),
+        )),
+        (StringScalars, [Value::Str(text)]) => Ok(Value::Array(
+            text.chars()
+                .map(|scalar| Value::Int(u32::from(scalar).into()))
+                .collect(),
         )),
         (BytesAt, [Value::Bytes(bytes), Value::Int(index)]) => Ok(option(
             index
@@ -57,8 +61,8 @@ pub(super) fn eval_text(intrinsic: Intrinsic, args: &[Value], span: Span) -> Opt
                 .map(|text| Value::Str(text.to_owned())),
         )),
         (
-            StringAt | BytesAt | StringFromScalars | BytesFromArray | StringEncodeUtf8
-            | StringDecodeUtf8,
+            StringAt | StringScalars | BytesAt | StringFromScalars | BytesFromArray
+            | StringEncodeUtf8 | StringDecodeUtf8,
             _,
         ) => Err(nonstatic(span)),
         _ => return None,
@@ -95,11 +99,6 @@ impl Checker<'_> {
             ("len", [Value::Map(items)]) => Ok(integer(items.len())),
             ("len", [Value::Str(str)]) => Ok(integer(str.chars().count())),
             ("len", [Value::Bytes(bytes)]) => Ok(integer(bytes.len())),
-            ("split", [Value::Str(text), Value::Str(separator)]) => Ok(Value::Array(
-                text.split(separator.as_str())
-                    .map(|part| Value::Str(part.to_owned()))
-                    .collect(),
-            )),
             (
                 "clone",
                 [
@@ -116,12 +115,6 @@ impl Checker<'_> {
                 "clone requires a clonable shared object",
             )),
             ("inner", [_]) => Ok(args.pop().unwrap_or(Value::Unit)),
-            ("contains", [Value::Array(values), item]) => {
-                Ok(Value::Bool(values.iter().any(|v| ieee_equal(v, item))))
-            }
-            ("contains", [Value::Map(values), item]) => {
-                Ok(Value::Bool(values.iter().any(|(k, _)| ieee_equal(k, item))))
-            }
             ("type_name", [Value::Type(ty)]) => Ok(Value::Str(ty.display(self.hir).to_string())),
             ("fields", [Value::Type(ty)]) => self.eval_coords(env, ty, span),
             ("raw_type_kind", [Value::Type(ty)]) => {
@@ -146,7 +139,6 @@ impl Checker<'_> {
                         AdtKind::Sum => "Sum",
                         AdtKind::OpaqueSum => "OpaqueSum",
                         AdtKind::Nominal => "Nominal",
-                        AdtKind::Foreign => "Foreign",
                         AdtKind::Opaque => {
                             let underlying = self.unwrap_wrapper(env, &target);
                             match &underlying {
@@ -177,13 +169,6 @@ impl Checker<'_> {
             }
             ("sum_tags", [Value::Type(ty)]) => match self.normalize(ty) {
                 Ty::Adt(adt) => {
-                    if adt.kind == AdtKind::Foreign {
-                        return Err(Signal::Error(
-                            Code::E0907,
-                            span,
-                            "foreign representation is sealed",
-                        ));
-                    }
                     if adt.kind == AdtKind::OpaqueSum && adt.defining_scope != env.scope {
                         return Err(Signal::Error(
                             Code::E0308,
@@ -230,13 +215,6 @@ impl Checker<'_> {
             ("has_default", [Value::Type(ty), Value::Str(field)]) => {
                 let target = self.normalize(ty);
                 if let Ty::Adt(adt) = &target {
-                    if adt.kind == AdtKind::Foreign {
-                        return Err(Signal::Error(
-                            Code::E0907,
-                            span,
-                            "foreign representation is sealed",
-                        ));
-                    }
                     if matches!(adt.kind, AdtKind::Opaque | AdtKind::OpaqueSum)
                         && adt.defining_scope != env.scope
                     {
@@ -290,13 +268,9 @@ impl Checker<'_> {
                     })
                     .to_bits(),
             )),
-            ("convert" | "trunc", [Value::F64(value)]) => {
+            ("to_int_trunc", [Value::F64(value)]) => {
                 let value = f64::from_bits(*value);
-                let integer = if name == "trunc" || value.fract() == 0.0 {
-                    BigInt::from_f64(value.trunc())
-                } else {
-                    None
-                };
+                let integer = BigInt::from_f64(value.trunc());
                 Ok(integer.map_or_else(
                     || Value::Tag("None".into(), Vec::new()),
                     |value| Value::Tag("Some".into(), vec![Value::Int(value)]),
@@ -323,22 +297,14 @@ impl Checker<'_> {
                 "metadata query requires a type value",
             ));
         };
-        let attribute = if let Some(argument) = member.arguments.get(1) {
-            self.type_argument(env, argument)
-        } else if let Some(Ty::Array(member)) = self.types.get(&span) {
-            self.normalize(&member.ty)
-        } else {
-            return Err(Signal::Error(
-                Code::E0344,
-                span,
-                "metadata query requires an attribute type",
-            ));
-        };
-        let key = match (member.name.value.as_str(), args.get(1)) {
-            ("attrs", None) => None,
-            ("field_attrs" | "variant_attrs", Some(Value::Str(key))) => Some(key.as_str()),
+        let (key, attr_arg) = match (member.name.value.as_str(), args) {
+            ("attrs", [_, Value::Type(attr)]) => (None, attr),
+            ("field_attrs" | "variant_attrs", [_, Value::Str(key), Value::Type(attr)]) => {
+                (Some(key.as_str()), attr)
+            }
             _ => return Err(nonstatic(span)),
         };
+        let attribute = self.normalize(attr_arg);
         let Some((local, expressions)) =
             self.metadata_source(env, target, &member.name.value, key, span)?
         else {
@@ -382,13 +348,6 @@ impl Checker<'_> {
         let Some(key) = key else {
             return Ok(Some((local, node.value.attrs.clone())));
         };
-        if adt.kind == AdtKind::Foreign {
-            return Err(Signal::Error(
-                Code::E0907,
-                span,
-                "foreign representation is sealed",
-            ));
-        }
         if matches!(adt.kind, AdtKind::Opaque | AdtKind::OpaqueSum)
             && adt.defining_scope != env.scope
         {
@@ -461,13 +420,6 @@ impl Checker<'_> {
     fn eval_coords(&mut self, env: &Env, ty: &Ty, span: Span) -> Eval {
         let rep;
         let ty = if let Ty::Adt(adt) = ty {
-            if adt.kind == AdtKind::Foreign {
-                return Err(Signal::Error(
-                    Code::E0907,
-                    span,
-                    "foreign representation is sealed",
-                ));
-            }
             if matches!(adt.kind, AdtKind::Opaque | AdtKind::OpaqueSum)
                 && adt.defining_scope != env.scope
             {
@@ -501,7 +453,7 @@ impl Checker<'_> {
                 return Err(Signal::Error(
                     Code::E0358,
                     span,
-                    "coords requires a record or tuple",
+                    "fields requires a record or tuple",
                 ));
             }
         };

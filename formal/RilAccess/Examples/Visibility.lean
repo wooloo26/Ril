@@ -5,7 +5,7 @@ namespace RilAccess.Examples.VisibilityExamples
 open VisibilityModel
 
 def rilExtIoError : SumDef := ⟨.pubExport, .transparent, true, [0, 1]⟩
-def foreignErrno : SumDef := ⟨.pubExport, .transparent, true, [1, 2, 3]⟩
+def pkgExtErrno : SumDef := ⟨.pubExport, .transparent, true, [1, 2, 3]⟩
 def emptyOpenFuture : SumDef := ⟨.pubExport, .transparent, true, []⟩
 def opaqueScopeSecret : SumDef := ⟨.pubExport, .opaqueScope, false, [0, 1]⟩
 
@@ -47,11 +47,11 @@ def examples : List (String × Bool) :=
    ("sum: .ril extensible sum requires wildcard outside package (E0303)",
       !exhaustiveMatch rilExtIoError .externalPkg [0, 1] false &&
       exhaustiveMatch rilExtIoError .externalPkg [0, 1] true),
-   ("sum: .d.ril extensible sum requires wildcard only outside the defining package when variants are covered",
-      exhaustiveMatch foreignErrno .samePkg [1, 2, 3] false &&
-      !exhaustiveMatch foreignErrno .samePkg [1, 2, 3] true &&
-      !exhaustiveMatch foreignErrno .externalPkg [1, 2, 3] false &&
-      exhaustiveMatch foreignErrno .externalPkg [1, 2, 3] true),
+   ("sum: extensible sum requires wildcard only outside the defining package when variants are covered",
+      exhaustiveMatch pkgExtErrno .samePkg [1, 2, 3] false &&
+      !exhaustiveMatch pkgExtErrno .samePkg [1, 2, 3] true &&
+      !exhaustiveMatch pkgExtErrno .externalPkg [1, 2, 3] false &&
+      exhaustiveMatch pkgExtErrno .externalPkg [1, 2, 3] true),
    ("sum: empty extensible { .. } sum admits wildcard externally",
       exhaustiveMatch emptyOpenFuture .externalPkg [] true &&
       !exhaustiveMatch emptyOpenFuture .externalPkg [] false),

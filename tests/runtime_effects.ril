@@ -14,21 +14,21 @@ fn main() -> () { let _ = shift(-1) }
 -- @expect-stdout first
 opaque type Resource(.{ message: str })
 fn acquire(message: str) -> new Resource { Resource::(.{ message }) }
-fn close(new resource: Resource) @io -> () { println(resource.message) }
+fn close(resource: Resource) @io -> () { println(resource.message) }
 fn main() @io -> () {
-    let mut first = acquire("first")
-    defer close(new first)
-    let mut second = acquire("second")
-    defer close(new second)
+    let first = acquire("first")
+    defer close(first)
+    let second = acquire("second")
+    defer close(second)
 }
 
 -- @case panic_runs_cleanup run-panic "failure" backend=both
 -- @expect-stdout cleanup
 opaque type Resource(.{ id: int })
-fn close(new _resource: Resource) @io -> () { println("cleanup") }
+fn close(_resource: Resource) @io -> () { println("cleanup") }
 fn main() @io -> () {
-    let mut resource = Resource::(.{ id: 1 })
-    defer close(new resource)
+    let resource = Resource::(.{ id: 1 })
+    defer close(resource)
     panic("failure")
 }
 
@@ -37,19 +37,20 @@ fn main() @io -> () {
 -- @expect-stdout first
 eff Finalize { fn report(message: str) -> () }
 opaque type Resource(.{ message: str })
-fn close(new resource: Resource) @Finalize -> () { Finalize::report(resource.message) }
+fn close(resource: Resource) @Finalize -> () { Finalize::report(resource.message) }
 fn main() @io -> () {
     with Finalize::report = \message: str -> println(message)
-    let mut first = Resource::(.{ message: "first" })
-    defer close(new first)
-    let mut second = Resource::(.{ message: "second" })
-    defer close(new second)
+    let first = Resource::(.{ message: "first" })
+    defer close(first)
+    let second = Resource::(.{ message: "second" })
+    defer close(second)
     panic("failure")
 }
 
 -- @case double_panic_aborts run-abort backend=both
+use ril/panic as Panic
 fn main() -> () {
-    let outcome = recover_panic \-> {
+    let outcome = Panic::recover \-> {
         defer panic("second")
         panic("first")
     }
@@ -64,10 +65,11 @@ fn main() @io -> () {
     println("{Clock::now()}")
 }
 
--- @case panic_absorption run-pass backend=both
+-- @case panic_recovery run-pass backend=both
 -- @expect-stdout survived
+use ril/panic as Panic
 fn main() @io -> () {
-    let outcome = recover_panic \-> { panic("caught") }
+    let outcome = Panic::recover \-> { panic("caught") }
     match outcome { Ok(_) -> (); Err(_) -> println("survived") }
 }
 
@@ -234,15 +236,16 @@ fn main() -> () {
 
 -- @case panic_boundary_accepts_first_class_action_and_opaque_info run-pass backend=both
 -- @expect-stdout expected failure
+use ril/panic as Panic
 fn fail() -> int { panic("expected failure") }
 fn main() @io -> () {
     let action = fail
-    let caught: !<int, PanicError> = recover_panic(action)
+    let caught: !<int, Panic::Error> = Panic::recover(action)
     match caught {
-        Ok(_) -> panic("panic should have been absorbed")
-        Err(PanicError::Panicked(info)) -> {
-            assert(String::inspect(info) == "<PanicReport>")
-            println(panic_message(info))
+        Ok(_) -> panic("panic should have been recovered")
+        Err(Panic::Error::Panicked(info)) -> {
+            assert(String::inspect(info) == "<Report>")
+            println(Panic::message(info))
         }
     }
 }
@@ -317,12 +320,13 @@ fn main() -> () {
 }
 
 -- @case isolated_closure_in_new_return_handles_its_own_panic run-pass backend=both
-fn protected(values: []int) -> new !<int, PanicError> {
-    recover_panic \-> values[1]
+use ril/panic as Panic
+fn protected(values: []int) -> new !<int, Panic::Error> {
+    Panic::recover \-> values[1]
 }
 fn main() -> () {
-    let Err(PanicError::Panicked(info)) = protected([1]) else { panic("expected error") }
-    assert(len(panic_message(info)) > 0)
+    let Err(Panic::Error::Panicked(info)) = protected([1]) else { panic("expected error") }
+    assert(len(Panic::message(info)) > 0)
 }
 
 -- @case draft_updates_only_the_selected_occurrence run-pass backend=both
@@ -379,21 +383,22 @@ fn main() @io -> () {
     println("{base.0[0].count}:{base.0[1].count}:{updated.0[0].count}:{updated.0[1].count}:{updated.1[0].count}:{updated.1[1].count}")
 }
 
--- @case aborted_draft_preserves_the_base_and_inserted_source run-pass backend=both
+-- @case aborted_derive_preserves_the_base_and_inserted_source run-pass backend=both
 -- @expect-stdout 2:1:7:7
+use ril/panic as Panic
 type Cell = .{ count: int }
 fn main() @io -> () {
     let outside = Cell.{ count: 7 }
     let row = [Cell.{ count: 1 }, outside]
     let base = (row, row)
-    let caught = recover_panic \-> {
+    let caught = Panic::recover \-> {
         let _ = derive(base) \mut draft -> {
             Array::push(mut draft.0, outside)
             draft.0[1].count = 8
-            panic("aborted draft")
+            panic("aborted derive")
         }
     }
-    let Err(PanicError::Panicked(_)) = caught else { panic("draft unexpectedly published") }
+    let Err(Panic::Error::Panicked(_)) = caught else { panic("derive unexpectedly published") }
     println("{len(base.0)}:{base.0[0].count}:{base.0[1].count}:{outside.count}")
 }
 
@@ -415,7 +420,7 @@ fn main() -> () {
 -- @expect-stdout 5:8
 eff Report { fn emit(value: int) -> () }
 opaque type Event(.{ value: int })
-fn record(new event: Event) @Report -> () { Report::emit(event.value) }
+fn record(event: Event) @Report -> () { Report::emit(event.value) }
 fn main() @io -> () {
     with Report::emit = \value: int -> {
         if value == 5 { print("5:") } else { println("{value}") }
@@ -423,8 +428,8 @@ fn main() @io -> () {
     let shared = [1, 7]
     let base = (shared, shared)
     let _ = derive(base) \mut draft -> {
-        let mut finish = Event::(.{ value: 8 })
-        defer record(new finish)
+        let finish = Event::(.{ value: 8 })
+        defer record(finish)
         Report::emit(5)
         Array::push(mut draft.0, 7)
         panic("aborted draft")

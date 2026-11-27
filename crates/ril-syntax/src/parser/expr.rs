@@ -17,7 +17,7 @@ pub(super) struct ExprContext {
     pub guard: bool,
 }
 
-pub(super) const ARGUMENT: &[Mode] = &[Mode::Mut, Mode::Ref, Mode::Shared, Mode::New];
+pub(super) const ARGUMENT: &[Mode] = &[Mode::Mut, Mode::Ref, Mode::Shared];
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum Assoc {
@@ -166,23 +166,11 @@ impl Parser<'_> {
                 .ast
                 .add_expr(token.span.join(self.last), Expr::Meta(value)));
         }
-        if matches!(self.text(), "-" | "!" | "~" | "ref" | "^mut" | "new") {
+        if matches!(self.text(), "-" | "!" | "~" | "ref" | "^mut") {
             let token = self.bump();
             let op = self.owned(token);
             self.skip_lines();
-            let value = if op.value == "new" {
-                let name = self.name(Some(Word::Value), false)?;
-                self.ast.add_expr(
-                    name.span,
-                    Expr::Path(crate::syntax::Path {
-                        span: name.span,
-                        segments: vec![crate::syntax::Segment {
-                            name,
-                            arguments: Vec::new(),
-                        }],
-                    }),
-                )
-            } else if matches!(op.value.as_str(), "ref" | "^mut") {
+            let value = if matches!(op.value.as_str(), "ref" | "^mut") {
                 let atom = self.atom(context)?;
                 self.postfix(atom, true, context)?
             } else {
@@ -361,7 +349,7 @@ impl Parser<'_> {
             }
             "for" => {
                 self.bump();
-                let mode = self.mode(&[Mode::Mut, Mode::Ref, Mode::Shared, Mode::New, Mode::Via]);
+                let mode = self.mode(&[Mode::Mut, Mode::Ref, Mode::Shared, Mode::Via]);
                 let iterable = self.expression(
                     PIPE,
                     ExprContext {
@@ -506,7 +494,7 @@ impl Parser<'_> {
 
     fn match_expr(&mut self, is_meta: bool) -> Result<Expr> {
         self.bump();
-        let mode = self.mode(&[Mode::Ref, Mode::Mut, Mode::Shared, Mode::New, Mode::Via]);
+        let mode = self.mode(&[Mode::Ref, Mode::Mut, Mode::Shared, Mode::Via]);
         let value = self.expr()?;
         self.skip_lines();
         self.open("{", "}", Layout::Block)?;

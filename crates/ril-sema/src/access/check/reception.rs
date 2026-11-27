@@ -356,6 +356,595 @@ impl Analyzer<'_> {
         }
     }
 
+    pub(super) fn collect_defer_refs(&self, ctx: &Context, prior_defers: usize) -> BTreeSet<Span> {
+        let mut refs = BTreeSet::new();
+        for action in ctx.defers.get(prior_defers..).unwrap_or_default() {
+            let defer_span = self.ast(action.file).expr(action.expr).span;
+            for (_, def_id) in self.program.hir.references_within(defer_span) {
+                refs.insert(self.program.hir.definition(def_id).name.span);
+            }
+        }
+        refs
+    }
+
+    pub(super) fn can_promote_exit_local(
+        &self,
+        ctx: &Context,
+        ledger: &Ledger,
+        value: &Datum,
+        prior_slots: &BTreeSet<Span>,
+        prior_holds: usize,
+        defer_refs: Option<&BTreeSet<Span>>,
+        exiting_function: bool,
+    ) -> bool {
+        if value.requires_new || value.roots.is_empty() || !value.writers() {
+            return false;
+        }
+        if value.roots.iter().any(|r| {
+            r.mode != Access::Mut
+                || r.confined.is_some()
+                || r.from_variable
+                || r.call_scoped_access
+        }) {
+            return false;
+        }
+        if ledger
+            .loop_snapshot(value)
+            .origins()
+            .any(|o| o.confined.is_some())
+        {
+            return false;
+        }
+        for root in &value.roots {
+            let src = root.region.source;
+            let local_to_exit = if exiting_function {
+                !ctx.caller_slots.contains(&src)
+                    && (!ctx.formals.contains(&Some(src)) || ctx.new_formals.contains(&src))
+            } else {
+                !prior_slots.contains(&src)
+                    && !ctx.caller_slots.contains(&src)
+                    && !ctx.formals.contains(&Some(src))
+            };
+            if !local_to_exit {
+                return false;
+            }
+            for dep in &root.dependencies {
+                if !dep.prior_iteration {
+                    if ledger.slots.get(&dep.span).is_some_and(|s| s.variable) {
+                        return false;
+                    }
+                    if defer_refs.is_some_and(|refs| refs.contains(&dep.span)) {
+                        return false;
+                    }
+                }
+            }
+            if ledger.holds.iter().take(prior_holds).any(|(_, held)| {
+                ledger
+                    .loop_snapshot(held)
+                    .origins()
+                    .any(|active| root.overlaps(active))
+            }) {
+                return false;
+            }
+            for (decl, slot) in &ledger.slots {
+                let outer_slot = if exiting_function {
+                    ctx.caller_slots.contains(decl)
+                        || (ctx.formals.contains(&Some(*decl)) && !ctx.new_formals.contains(decl))
+                } else {
+                    prior_slots.contains(decl)
+                };
+                if outer_slot
+                    && ledger
+                        .loop_snapshot(&slot.value)
+                        .origins()
+                        .any(|retained| root.overlaps(retained))
+                {
+                    return false;
+                }
+            }
+        }
+        true
+    }
+
+    pub(super) fn promote_datum_to_new(value: &mut Datum) {
+        value.requires_new = true;
+        for root in &mut value.roots {
+            root.new = true;
+            root.mode = Access::Mut;
+            root.explicit_share = false;
+            root.dependencies.clear();
+        }
+    }
+
+    pub(super) fn try_promote_exit_new(
+        &self,
+        ctx: &Context,
+        ledger: &Ledger,
+        value: &mut Datum,
+        prior_slots: &BTreeSet<Span>,
+        prior_holds: usize,
+        exiting_function: bool,
+    ) {
+        if self.can_promote_exit_local(
+            ctx,
+            ledger,
+            value,
+            prior_slots,
+            prior_holds,
+            None,
+            exiting_function,
+        ) {
+            Self::promote_datum_to_new(value);
+        }
+    }
+
+    pub(super) fn eval_exit_expr(
+        &mut self,
+        ctx: &mut Context,
+        ledger: &mut Ledger,
+        id: ExprId,
+        prior_slots: &BTreeSet<Span>,
+        prior_holds: usize,
+        prior_defers: usize,
+        exiting_function: bool,
+    ) -> Datum {
+        let ast = self.ast(ctx.file);
+        let node = ast.expr(id);
+        let span = node.span;
+        let defer_refs = self.collect_defer_refs(ctx, prior_defers);
+        match &node.value {
+            Expr::Block {
+                statements,
+                helpers,
+            } if exiting_function => {
+                let mut local_ctx = ctx.clone();
+                local_ctx.scope = span;
+                for &helper in helpers {
+                    if let StmtKind::Effect { name, .. } = &ast.stmt(helper).value.kind
+                        && let Some(effect) = self.definition(name.span)
+                    {
+                        local_ctx
+                            .local_effects
+                            .insert(self.program.hir.effect_label(effect));
+                    }
+                }
+                let start_returns = local_ctx.return_values.len();
+                let block_prior = ledger.slots.keys().copied().collect::<BTreeSet<_>>();
+                let prior_iter = ledger.iteration.len();
+                let block_holds = ledger.holds.len();
+                let block_defers = local_ctx.defers.len();
+                let mut result = Datum::default();
+                for (i, &item) in statements.iter().enumerate() {
+                    let is_tail = i + 1 == statements.len();
+                    if is_tail
+                        && let StmtKind::Expr(tail_expr) = ast.stmt(item).value.kind
+                    {
+                        result = self.eval_exit_expr(
+                            &mut local_ctx,
+                            ledger,
+                            tail_expr,
+                            prior_slots,
+                            prior_holds,
+                            prior_defers,
+                            true,
+                        );
+                        if self.ty(ast.expr(tail_expr).span) == &Ty::Never {
+                            local_ctx.reachable = false;
+                        }
+                    } else {
+                        result = self.statement(&mut local_ctx, ledger, item, is_tail);
+                        if let StmtKind::Expr(expr) = ast.stmt(item).value.kind
+                            && self.ty(ast.expr(expr).span) == &Ty::Never
+                        {
+                            local_ctx.reachable = false;
+                        }
+                    }
+                }
+                for &helper in helpers {
+                    self.statement(&mut local_ctx, ledger, helper, false);
+                }
+                if local_ctx.reachable && !ledger.no_continuation {
+                    self.run_defers(&mut local_ctx, ledger, block_defers);
+                    ledger.holds.truncate(block_holds);
+                    self.try_promote_exit_new(
+                        &local_ctx,
+                        ledger,
+                        &mut result,
+                        prior_slots,
+                        prior_holds,
+                        true,
+                    );
+                } else if local_ctx.defers.len() > block_defers {
+                    let unchecked = local_ctx
+                        .defers
+                        .get(block_defers..)
+                        .unwrap_or_default()
+                        .iter()
+                        .any(|d| !self.checked_defers.contains(&d.span));
+                    if unchecked {
+                        let mut unwind_ledger = ledger.clone();
+                        self.run_defers(&mut local_ctx, &mut unwind_ledger, block_defers);
+                    }
+                }
+                local_ctx.defers.truncate(block_defers);
+                if result.origins().any(|origin| {
+                    origin
+                        .confined
+                        .is_some_and(|id| span.start <= id.start && id.end <= span.end)
+                }) {
+                    self.error(Code::E0604, span, "resource or draft escapes its block");
+                }
+                ledger.slots.retain(|id, _| block_prior.contains(id));
+                ledger.iteration.truncate(prior_iter);
+                ledger.holds.truncate(block_holds);
+                ctx.return_values
+                    .extend(local_ctx.return_values.into_iter().skip(start_returns));
+                ctx.reachable &= !ledger.no_continuation;
+                result
+            }
+            Expr::Cast { value, .. } => self.eval_exit_expr(
+                ctx,
+                ledger,
+                *value,
+                prior_slots,
+                prior_holds,
+                prior_defers,
+                exiting_function,
+            ),
+            Expr::Record { fields, .. } => {
+                let mut record = Datum::source(span, Access::Mut, true);
+                let mut evaluated = Vec::with_capacity(fields.len());
+                let mut promoted_origins: Vec<(usize, Vec<Origin>)> = Vec::new();
+                for (idx, field) in fields.iter().enumerate() {
+                    let coordinate = Coordinate::Field(field.name.value.clone());
+                    let field_span = field.value.map_or(field.name.span, |e| ast.expr(e).span);
+                    let mut value = if let Some(expr) = field.value {
+                        self.eval_exit_expr(
+                            ctx,
+                            ledger,
+                            expr,
+                            prior_slots,
+                            prior_holds,
+                            prior_defers,
+                            exiting_function,
+                        )
+                    } else {
+                        self.read_span(ctx, ledger, field.name.span)
+                    };
+                    if self.can_promote_exit_local(
+                        ctx,
+                        ledger,
+                        &value,
+                        prior_slots,
+                        prior_holds,
+                        Some(&defer_refs),
+                        exiting_function,
+                    ) {
+                        promoted_origins.push((idx, value.roots.clone()));
+                        Self::promote_datum_to_new(&mut value);
+                    }
+                    let field_is_linear = self.program.is_must_consume(self.ty(field_span));
+                    if field_is_linear {
+                        self.consume_linear(ctx, ledger, &mut value);
+                    }
+                    let access = self.member_schema(span, &coordinate).0;
+                    let value = self.receive_member(ctx, ledger, value, access, field_span);
+                    evaluated.push((coordinate, value, field_span));
+                }
+                self.check_exit_sibling_overlap(ledger, &evaluated, &promoted_origins);
+                for (coordinate, value, _) in evaluated {
+                    record.members.insert(coordinate, value);
+                }
+                self.finish_exit_composite(ctx, ledger, span, &mut record);
+                record
+            }
+            Expr::Tuple(items) | Expr::Array(items) => {
+                let mut sequence = Datum::source(span, Access::Mut, true);
+                if let Ty::Array(member) = self.ty(span) {
+                    if higher_order::carries_callable(self.program, &member.ty) {
+                        ledger.record_array_length(span, items.len());
+                    }
+                    if results::carries_result(self.program, self.hir_scope(ctx), &member.ty) {
+                        sequence.array_len = Some(items.len());
+                    }
+                }
+                let mut evaluated = Vec::with_capacity(items.len());
+                let mut promoted_origins: Vec<(usize, Vec<Origin>)> = Vec::new();
+                for (i, &item) in items.iter().enumerate() {
+                    let coordinate = Coordinate::Index(i.to_string());
+                    let item_span = ast.expr(item).span;
+                    let mut value = self.eval_exit_expr(
+                        ctx,
+                        ledger,
+                        item,
+                        prior_slots,
+                        prior_holds,
+                        prior_defers,
+                        exiting_function,
+                    );
+                    if self.can_promote_exit_local(
+                        ctx,
+                        ledger,
+                        &value,
+                        prior_slots,
+                        prior_holds,
+                        Some(&defer_refs),
+                        exiting_function,
+                    ) {
+                        promoted_origins.push((i, value.roots.clone()));
+                        Self::promote_datum_to_new(&mut value);
+                    }
+                    if self.program.is_must_consume(self.ty(item_span)) {
+                        self.consume_linear(ctx, ledger, &mut value);
+                    }
+                    let access = self.member_schema(span, &coordinate).0;
+                    let value = self.receive_member(ctx, ledger, value, access, item_span);
+                    evaluated.push((coordinate, value, item_span));
+                }
+                self.check_exit_sibling_overlap(ledger, &evaluated, &promoted_origins);
+                for (coordinate, value, _) in evaluated {
+                    sequence.members.insert(coordinate, value);
+                }
+                self.finish_exit_composite(ctx, ledger, span, &mut sequence);
+                sequence
+            }
+            Expr::Wrap { path: _, args } => {
+                if let [arg] = args.as_slice() {
+                    let arg_span = ast.expr(arg.value).span;
+                    let mut value = self.eval_exit_expr(
+                        ctx,
+                        ledger,
+                        arg.value,
+                        prior_slots,
+                        prior_holds,
+                        prior_defers,
+                        exiting_function,
+                    );
+                    if arg.mode == Mode::Plain
+                        && self.can_promote_exit_local(
+                            ctx,
+                            ledger,
+                            &value,
+                            prior_slots,
+                            prior_holds,
+                            Some(&defer_refs),
+                            exiting_function,
+                        )
+                    {
+                        Self::promote_datum_to_new(&mut value);
+                    }
+                    let mut result = match arg.mode {
+                        Mode::Plain if value.requires_new => value,
+                        Mode::Plain if Self::forwards_via(ctx, &value) => {
+                            self.prepare_argument(ctx, ledger, arg, value, arg_span, Mode::Via)
+                        }
+                        mode => {
+                            let val =
+                                self.prepare_argument(ctx, ledger, arg, value, arg_span, mode);
+                            for conflict in ledger.hold_conflicts(&val, mode) {
+                                self.check_conflict(
+                                    ctx,
+                                    conflict,
+                                    None,
+                                    arg_span,
+                                    "argument authority overlaps an active handler hold",
+                                );
+                            }
+                            val
+                        }
+                    };
+                    if self.program.is_must_consume(self.ty(arg_span))
+                        && !matches!(arg.mode, Mode::Ref | Mode::Mut | Mode::Shared)
+                    {
+                        self.consume_linear(ctx, ledger, &mut result);
+                    }
+                    self.finish_exit_composite(ctx, ledger, span, &mut result);
+                    return result;
+                }
+                let mut evaluated = Vec::with_capacity(args.len());
+                let mut promoted_origins: Vec<(usize, Vec<Origin>)> = Vec::new();
+                for (index, arg) in args.iter().enumerate() {
+                    let arg_span = ast.expr(arg.value).span;
+                    let mut value = self.eval_exit_expr(
+                        ctx,
+                        ledger,
+                        arg.value,
+                        prior_slots,
+                        prior_holds,
+                        prior_defers,
+                        exiting_function,
+                    );
+                    if arg.mode == Mode::Plain
+                        && self.can_promote_exit_local(
+                            ctx,
+                            ledger,
+                            &value,
+                            prior_slots,
+                            prior_holds,
+                            Some(&defer_refs),
+                            exiting_function,
+                        )
+                    {
+                        promoted_origins.push((index, value.roots.clone()));
+                        Self::promote_datum_to_new(&mut value);
+                    }
+                    let mut value =
+                        self.receive_member(ctx, ledger, value, Access::Immutable, arg_span);
+                    if self.program.is_must_consume(self.ty(arg_span))
+                        && !matches!(arg.mode, Mode::Ref | Mode::Mut | Mode::Shared)
+                    {
+                        self.consume_linear(ctx, ledger, &mut value);
+                    }
+                    evaluated.push((Coordinate::Index(index.to_string()), value, arg_span));
+                }
+                self.check_exit_sibling_overlap(ledger, &evaluated, &promoted_origins);
+                let mut result = Datum::source(span, Access::Mut, true);
+                for (coord, val, _) in evaluated {
+                    result.members.insert(coord, val);
+                }
+                self.finish_exit_composite(ctx, ledger, span, &mut result);
+                result
+            }
+            Expr::Call { callee, args } => {
+                let is_ctor = match &ast.expr(*callee).value {
+                    Expr::Path(path) => self
+                        .definition(path.span)
+                        .map(|id| self.program.hir.definition(id))
+                        .is_some_and(|def| {
+                            matches!(def.kind, DefinitionKind::Variant(_))
+                                || matches!(def.kind, DefinitionKind::Type)
+                        }),
+                    _ => false,
+                };
+                if !is_ctor {
+                    return self.expr(ctx, ledger, id);
+                }
+                let def_id = match &ast.expr(*callee).value {
+                    Expr::Path(path) => self.definition(path.span),
+                    _ => None,
+                };
+                let def = def_id.map(|id| self.program.hir.definition(id));
+                let sig = def_id
+                    .and_then(|id| self.program.callables.get(&id).map(|s| s.as_ref()))
+                    .or_else(|| match self.ty(ast.expr(*callee).span) {
+                        Ty::Callable(sig) => Some(sig.as_ref()),
+                        _ => None,
+                    });
+                let mut evaluated = Vec::with_capacity(args.len());
+                let mut promoted_origins: Vec<(usize, Vec<Origin>)> = Vec::new();
+                for (index, arg) in args.iter().enumerate() {
+                    let arg_span = ast.expr(arg.value).span;
+                    let mut value = self.eval_exit_expr(
+                        ctx,
+                        ledger,
+                        arg.value,
+                        prior_slots,
+                        prior_holds,
+                        prior_defers,
+                        exiting_function,
+                    );
+                    let already_new = value.requires_new;
+                    let from_new_formal = value
+                        .roots
+                        .iter()
+                        .any(|r| ctx.new_formals.contains(&r.region.source));
+                    if arg.mode == Mode::Plain
+                        && self.can_promote_exit_local(
+                            ctx,
+                            ledger,
+                            &value,
+                            prior_slots,
+                            prior_holds,
+                            Some(&defer_refs),
+                            exiting_function,
+                        )
+                    {
+                        promoted_origins.push((index, value.roots.clone()));
+                        Self::promote_datum_to_new(&mut value);
+                    }
+                    let inferred = sig
+                        .and_then(|s| s.parameters.get(index))
+                        .is_some_and(|p| p.mode == Mode::Via);
+                    let effective_mode = if inferred {
+                        match arg.mode {
+                            Mode::Plain if value.requires_new && (already_new || !from_new_formal) => {
+                                Mode::New
+                            }
+                            Mode::Plain if Self::forwards_via(ctx, &value) => Mode::Via,
+                            mode => mode,
+                        }
+                    } else {
+                        sig.and_then(|s| s.parameters.get(index))
+                            .map_or(arg.mode, |p| p.mode)
+                    };
+                    let mut value =
+                        self.prepare_argument(ctx, ledger, arg, value, arg_span, effective_mode);
+                    if self.program.is_must_consume(self.ty(arg_span))
+                        && !matches!(arg.mode, Mode::Ref | Mode::Mut | Mode::Shared)
+                    {
+                        self.consume_linear(ctx, ledger, &mut value);
+                    }
+                    evaluated.push((Coordinate::Index(index.to_string()), value, arg_span));
+                }
+                self.check_exit_sibling_overlap(ledger, &evaluated, &promoted_origins);
+                let mut result = Datum::source(span, Access::Mut, true);
+                for (coord, val, _) in evaluated {
+                    result.members.insert(coord, val);
+                }
+                if let Some(def) = def
+                    && matches!(def.kind, DefinitionKind::Variant(_))
+                {
+                    result.set_variant(&def.name.value);
+                }
+                self.finish_exit_composite(ctx, ledger, span, &mut result);
+                result
+            }
+            _ => self.expr(ctx, ledger, id),
+        }
+    }
+
+    fn check_exit_sibling_overlap(
+        &mut self,
+        ledger: &Ledger,
+        evaluated: &[(Coordinate, Datum, Span)],
+        promoted_origins: &[(usize, Vec<Origin>)],
+    ) {
+        for (idx, roots) in promoted_origins {
+            for (other_idx, (_, other_val, other_span)) in evaluated.iter().enumerate() {
+                if *idx == other_idx {
+                    continue;
+                }
+                let snap = ledger.loop_snapshot(other_val);
+                if roots
+                    .iter()
+                    .any(|r| snap.origins().any(|o| r.overlaps(o)))
+                {
+                    self.error(
+                        Code::E0510,
+                        *other_span,
+                        "exiting local cannot be both promoted to new and aliased in a sibling expression",
+                    );
+                }
+            }
+        }
+    }
+
+    fn finish_exit_composite(
+        &mut self,
+        ctx: &mut Context,
+        ledger: &mut Ledger,
+        span: Span,
+        value: &mut Datum,
+    ) {
+        ctx.reachable &= !ledger.no_continuation;
+        if ctx.reachable
+            && self.ty(span).is_result(&self.program.hir)
+            && !value.has_root_result()
+        {
+            ledger.record_result(value, span);
+        }
+        if ctx.reachable
+            && !ctx.shadow
+            && self.program.is_must_consume(self.ty(span))
+            && value
+                .all_linear()
+                .iter()
+                .all(|occ| ledger.linear_consumed.contains(occ))
+        {
+            ledger.record_linear(
+                value,
+                span,
+                matches!(self.ty(span), Ty::Array(_) | Ty::Map(..)),
+            );
+        }
+        if self.program.is_value(self.ty(span)) {
+            value.roots.clear();
+            value.members.clear();
+            value.requires_new = false;
+        }
+        ledger.stamp(value);
+    }
+
     pub(super) fn returned(
         &mut self,
         ctx: &mut Context,
@@ -439,7 +1028,11 @@ impl Analyzer<'_> {
             .values()
             .filter(|_| ctx.expected != Mode::Plain)
             .flat_map(Datum::origins)
-            .filter(|origin| !origin.new && ctx.formals.contains(&Some(origin.region.source)))
+            .filter(|origin| {
+                !origin.new
+                    && ctx.formals.contains(&Some(origin.region.source))
+                    && !ctx.new_formals.contains(&origin.region.source)
+            })
             .map(|origin| (origin.mode, origin.region.source))
             .collect();
         if ctx.expected != Mode::Infer
@@ -452,6 +1045,20 @@ impl Analyzer<'_> {
         for &(_, source) in actual.iter().filter(|(mode, _)| *mode == Access::Shared) {
             self.seed(ctx, Obligation::Retain(source));
             self.seed(ctx, Obligation::Share(source));
+        }
+        if ctx.expected != Mode::Plain {
+            for origin in value
+                .members
+                .values()
+                .flat_map(Datum::origins)
+                .filter(|origin| origin.mode == Access::Shared)
+            {
+                for dep in origin.dependency_spans() {
+                    if !ctx.formals.contains(&Some(dep)) {
+                        self.seed(ctx, Obligation::Write(dep));
+                    }
+                }
+            }
         }
         ctx.return_values.push(value);
     }
@@ -493,6 +1100,11 @@ impl Analyzer<'_> {
                     .origins()
                     .filter(|origin| origin.mode == Access::Shared)
                 {
+                    for dep in origin.dependency_spans() {
+                        if !ctx.formals.contains(&Some(dep)) {
+                            self.seed(ctx, Obligation::Write(dep));
+                        }
+                    }
                     self.seed(ctx, Obligation::Retain(origin.region.source));
                     let modeled = ctx.formals.contains(&Some(slot.decl))
                         || ledger.replaces_slot(ctx.owner, slot.decl);

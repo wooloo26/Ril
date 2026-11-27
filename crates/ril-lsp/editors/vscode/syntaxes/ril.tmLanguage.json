@@ -571,7 +571,7 @@
         },
         {
           "name": "support.function.ril",
-          "match": "\\b(?:len|inner|clone|derive|unwind_ctl|recover_panic|panic_message|type_name|type_kind|fields|sum_tags|compile_error|compile_error_code|panic|assert|print|println)(?=(?:<[^>\n]*>)?\\()"
+          "match": "\\b(?:len|inner|clone|derive|unwind_ctl|compile_error|compile_error_code|panic|assert|print|println)(?=(?:<[^>\n]*>)?\\()"
         },
         {
           "name": "entity.name.function.ril",

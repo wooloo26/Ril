@@ -118,7 +118,7 @@ impl Analyzer<'_> {
                 self.error_diag(diag);
             }
         }
-        if has_ctl && if_exercised.is_none() {
+        if has_ctl {
             let unarmed: Vec<_> = ledger
                 .pending_linear()
                 .filter(|occ| {
@@ -141,11 +141,14 @@ impl Analyzer<'_> {
                 if handle_span != span {
                     diag = diag.with_label(handle_span, "unarmed must-consume value created here");
                 }
-                self.error_diag(diag);
+                if let Some(fact) = &if_exercised {
+                    self.deferred_errors.push((vec![fact.clone()], diag));
+                } else {
+                    self.error_diag(diag);
+                }
             }
         }
-        if if_exercised.is_none()
-            && (has_ctl || label != "io")
+        if (has_ctl || label != "io")
             && ledger.iteration.iter().any(|iterable| {
                 iterable
                     .roots
@@ -153,11 +156,16 @@ impl Analyzer<'_> {
                     .any(|origin| origin.mode == Access::Shared)
             })
         {
-            self.error(
+            let diag = Diagnostic::error(
                 Code::E0526,
                 span,
                 "shared collection being iterated cannot cross an unhandled effect",
             );
+            if let Some(fact) = &if_exercised {
+                self.deferred_errors.push((vec![fact.clone()], diag));
+            } else {
+                self.error_diag(diag);
+            }
         }
         let local_effect = self
             .program
@@ -283,6 +291,17 @@ impl Analyzer<'_> {
         value: &Datum,
         span: Span,
     ) {
+        self.charge_latent_effects_if(ctx, ledger, value, span, None);
+    }
+
+    pub(super) fn charge_latent_effects_if(
+        &mut self,
+        ctx: &Context,
+        ledger: &Ledger,
+        value: &Datum,
+        span: Span,
+        if_exercised: Option<&Fact>,
+    ) {
         for (id, effect) in &value.latent_operations {
             self.use_effect(
                 ctx,
@@ -292,11 +311,17 @@ impl Analyzer<'_> {
                     effect: effect.clone(),
                 }),
                 span,
-                None,
+                if_exercised.cloned(),
             );
         }
         for effect in &value.latent_effects {
-            self.effect(ctx, ledger, effect, span);
+            self.use_effect(
+                ctx,
+                ledger,
+                Obligation::Effect(effect.clone()),
+                span,
+                if_exercised.cloned(),
+            );
         }
     }
 

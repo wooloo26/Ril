@@ -86,11 +86,7 @@ fn make_case(stage: Stage, line: usize, text: &[(usize, &str)]) -> Case {
     let filename = text
         .iter()
         .find_map(|(_, line)| line.trim().strip_prefix("-- File: "));
-    let mut pkg = VirtualPackage::new(if filename.is_some_and(|name| name.ends_with(".d.ril")) {
-        Unit::Decl
-    } else {
-        Unit::Snippet
-    });
+    let mut pkg = VirtualPackage::new(Unit::Snippet);
     if let Some(filename) = filename {
         pkg.entry = virtual_path(filename);
     }

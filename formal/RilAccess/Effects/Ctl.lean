@@ -1,15 +1,15 @@
 import RilAccess.Access.Scoped
 
 /-! One-shot algebraic `ctl(...)` continuations, must-consume linearity (`E0625`),
-projected/double invocation rejection (`E0548` / `E0549`), affine `&once` capture
-restrictions (`E0625` / `E0720` / `E0549`), `^mut` downgrade prohibition across
-unhandled effects (`E0523` / `E0524`), and `K-IFACE` `no_ctl_params` (`E0616`). -/
+projected/double invocation rejection (`E0548` / `E0549`), `^mut` downgrade
+prohibition across unhandled effects (`E0523` / `E0524`), and `K-IFACE`
+`no_ctl_params` (`E0616`). -/
 namespace RilAccess.CoreCtl
 
 open Integrated
 
 inductive LinearKind where
-  | ctlContinuation | foreignHandle | opaqueMustConsume
+  | ctlContinuation | opaqueMustConsume
   deriving Repr, DecidableEq
 
 structure LinearEntry where
@@ -134,41 +134,6 @@ theorem armed_entries_discharged_on_exit {st : LinearState}
   · cases hd : entry.armedDefer with
     | none => simp [hd] at harm
     | some _ => simp
-
-/-- Affine `&once` closures forbid capturing must-consume values (`E0625`) or
-uninspected fallible results (`E0720`), while allowing single-use `new` handoff
-of ordinary owned bindings (`E0549`). -/
-def eligibleOnceCapture (world : World) (r : Resolved)
-    (isMustConsume hasUninspectedResult : Bool) : Bool :=
-  !isMustConsume && !hasUninspectedResult && eligibleHandoff world r
-
-def onceCaptureHandoff (world : World) (source destination : Nat)
-    (isMustConsume hasUninspectedResult : Bool) : Except Error World :=
-  let handoff := Atom.handoff source destination
-  if !isMustConsume && !hasUninspectedResult then checkAtom handoff world
-  else .error (.rejected handoff)
-
-theorem once_closure_rejects_must_consume_capture
-    {world : World} {r : Resolved} {hasUninspectedResult : Bool} :
-    eligibleOnceCapture world r true hasUninspectedResult = false := rfl
-
-theorem once_handoff_ends_parent_path
-    {world next : World} {source destination : Nat} {resolved : Resolved}
-    (h : onceCaptureHandoff world source destination false false = .ok next)
-    (hr : resolve world ⟨source, []⟩ = some resolved) :
-    rawLookup next.raw destination = some resolved.pointer ∧
-    (∀ dep ∈ resolved.binding.dependencies, (lookupToken next dep).any Token.active = false) ∧
-    (∀ path derived dep, resolve next path = some derived →
-      dep ∈ derived.binding.dependencies → dep ∈ resolved.binding.dependencies →
-      live derived = false) := by
-  have handed : checkAtom (.handoff source destination) world = .ok next := by
-    simpa [onceCaptureHandoff] using h
-  obtain ⟨actual, hres, hptr⟩ := handoff_preserves_identity handed
-  have eq : actual = resolved := Option.some.inj (hres.symm.trans hr)
-  subst actual
-  exact ⟨hptr,
-    fun dep hdep => handoff_revokes_dependency handed hr hdep,
-    fun path derived dep hcur hdep hold => handoff_ends_derived_access handed hr hcur hdep hold⟩
 
 /-- Across unhandled `ctl`, open `@`, or unhandled `@Eff`, a `^mut` shared writer
 cannot downgrade to exclusive `mut` (`E0523`) or read-only `ref` (`E0524`). -/

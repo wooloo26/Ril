@@ -184,7 +184,7 @@ fn lsp_real_workspace_cross_file_and_stdlib_definition() -> Result<(), String> {
         ))
     };
     let (sq_line, sq_col) = locate("Math::square")?;
-    let (at_line, at_col) = locate("Array::at")?;
+    let (at_line, at_col) = locate("Array::push")?;
     let (map_line, map_col) = locate("Array::map")?;
 
     let mut input = Vec::new();
@@ -296,9 +296,10 @@ fn lsp_prelude_definitions_jump_to_std_prelude_ril() -> Result<(), String> {
     let root_uri = format!("file://{}", repo_root.display());
     let doc_uri = format!("file://{}/pkg/prelude_jump.ril", repo_root.display());
     let source = concat!(
+        "use ril/panic as Panic\n",
         "type Rec(.{ a: int })\n",
         "type S = SharedObject<Rec>\n",
-        "fn check<T |> Tuple>(t: T, x: Option<int>, y: Result<int, PanicError>) -> int {\n",
+        "fn check<T |> InnerTarget>(t: T, x: Option<int>, y: Result<int, Panic::Error>) -> int {\n",
         "    let _ = t\n",
         "    let fallback = match y {\n",
         "        Ok(n) -> n\n",
@@ -321,10 +322,10 @@ fn lsp_prelude_definitions_jump_to_std_prelude_ril() -> Result<(), String> {
     };
     let (opt_line, opt_col) = locate("Option")?;
     let (res_line, res_col) = locate("Result")?;
-    let (panic_line, panic_col) = locate("PanicError")?;
+    let (panic_line, panic_col) = locate("Error")?;
     let (len_line, len_col) = locate("len(")?;
     let (so_line, so_col) = locate("SharedObject")?;
-    let (tup_line, tup_col) = locate("Tuple")?;
+    let (inner_line, inner_col) = locate("InnerTarget")?;
 
     let mut input = Vec::new();
     input.extend(frame_lsp(&json!({
@@ -346,7 +347,7 @@ fn lsp_prelude_definitions_jump_to_std_prelude_ril() -> Result<(), String> {
         (4, (panic_line, panic_col)),
         (5, (len_line, len_col)),
         (6, (so_line, so_col)),
-        (7, (tup_line, tup_col)),
+        (7, (inner_line, inner_col)),
     ] {
         input.extend(frame_lsp(&json!({
             "jsonrpc": "2.0",
@@ -381,13 +382,13 @@ fn lsp_prelude_definitions_jump_to_std_prelude_ril() -> Result<(), String> {
         .ok_or("missing diagnostics")?;
     assert!(diags.is_empty(), "expected clean diagnostics: {diags:?}");
 
-    for (idx, label) in [
-        (2, "Option"),
-        (3, "Result"),
-        (4, "PanicError"),
-        (5, "len"),
-        (6, "SharedObject"),
-        (7, "Tuple"),
+    for (idx, label, expected_suffix) in [
+        (2, "Option", "std/prelude.ril"),
+        (3, "Result", "std/prelude.ril"),
+        (4, "Panic::Error", "std/panic.ril"),
+        (5, "len", "std/prelude.ril"),
+        (6, "SharedObject", "std/prelude.ril"),
+        (7, "InnerTarget", "std/prelude.ril"),
     ] {
         let uri = frames
             .get(idx)
@@ -395,8 +396,8 @@ fn lsp_prelude_definitions_jump_to_std_prelude_ril() -> Result<(), String> {
             .and_then(Value::as_str)
             .ok_or_else(|| format!("missing definition uri for {label}: {:?}", frames.get(idx)))?;
         assert!(
-            uri.ends_with("std/prelude.ril"),
-            "expected {label} definition in std/prelude.ril, got {uri}"
+            uri.ends_with(expected_suffix),
+            "expected {label} definition in {expected_suffix}, got {uri}"
         );
     }
     Ok(())
@@ -423,7 +424,7 @@ fn lsp_stdlib_bodyless_primitives_have_zero_diagnostics() -> Result<(), String> 
         "std/string.ril",
         "std/io.ril",
         "std/file.ril",
-        "std/os.ril",
+        "std/panic.ril",
     ];
     for rel in std_files {
         let path = repo_root.join(rel);

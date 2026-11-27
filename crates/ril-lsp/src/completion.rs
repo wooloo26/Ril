@@ -150,10 +150,7 @@ fn try_import_path_completion(
         for logical in ws.pkg.files.keys() {
             if let Ok(rel) = logical.strip_prefix("pkg") {
                 let s = rel.to_string_lossy().replace('\\', "/");
-                let stem = s
-                    .strip_suffix(".d.ril")
-                    .or_else(|| s.strip_suffix(".ril"))
-                    .unwrap_or(&s);
+                let stem = s.strip_suffix(".ril").unwrap_or(&s);
                 if stem.starts_with(sub) {
                     items.push(json!({
                         "label": stem,

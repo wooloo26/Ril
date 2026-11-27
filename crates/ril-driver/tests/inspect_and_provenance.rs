@@ -31,7 +31,7 @@ fn map_plus_one(xs: []int) -> new []int {
 }
 
 fn safe_div(a: int, b: int) -> new ?int {
-    Numeric::checked_div(a, b)
+    Numeric::div(a, b)
 }
 
 fn main() -> () {
@@ -74,6 +74,8 @@ fn main() -> () {
 #[test]
 fn panic_propagation_defer_double_panic_and_recover_panic_sealing() {
     let src = r#"
+use ril/panic as Panic
+
 fn read_head(xs: []int) -> int {
     xs[0]
 }
@@ -82,8 +84,8 @@ fn caller_panics(xs: []int) -> int {
     read_head(xs)
 }
 
-fn sealed_panic(xs: []int) -> new !<int, PanicError> {
-    recover_panic(\-> read_head(xs))
+fn sealed_panic(xs: []int) -> new !<int, Panic::Error> {
+    Panic::recover(\-> read_head(xs))
 }
 
 fn dangerous_defer(mut buf: []int, idx: int) &mut -> int {
@@ -170,9 +172,9 @@ fn pick<T>(via xs: []T) -> infer T {
 fn run(mut items: []int) &mut -> int {
     var total = 0
     with {
-        ctl Emit::send = \v, new k -> {
+        ctl Emit::send = \v, k -> {
             total += v
-            if total < 10 { k() } else { unwind_ctl(new k); total }
+            if total < 10 { k() } else { unwind_ctl(k); total }
         }
         let h = pick(ref items)
         Array::push(mut items, h)

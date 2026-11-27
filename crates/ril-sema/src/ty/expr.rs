@@ -1031,7 +1031,6 @@ impl Checker<'_> {
             Ty::Map(key, value) => {
                 self.equatable(env, key, seen) && self.equatable(env, &value.ty, seen)
             }
-            Ty::Adt(adt) if adt.kind == AdtKind::Foreign => false,
             Ty::Adt(adt) if seen.insert(adt.definition) => {
                 let result = if matches!(adt.kind, AdtKind::Sum | AdtKind::OpaqueSum) {
                     self.sum_variants(adt)

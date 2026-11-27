@@ -2,9 +2,6 @@
 
 use ril/array
 
-fn raw_encode_utf8(text: str) -> bytes
-fn raw_decode_utf8(data: bytes) -> new ?str
-
 -- Dual-phase canonical debug formatter rendering any Ril value (including cycles) as `str`.
 --
 -- ```ril
@@ -14,11 +11,20 @@ pub fn inspect<T>(via value: T) -> str
 
 -- Returns the Unicode scalar code point (`int`) at 0-based scalar `index` of `text`,
 -- or `None` if `index` is out of bounds.
-pub fn at(text: str, index: int) -> new ?int
+pub fn scalar_at(text: str, index: int) -> new ?int
+
+-- Returns all Unicode scalar code points of `text` as a new `[]int`.
+pub fn scalars(text: str) -> new []int
 
 -- Builds a `str` from an array of Unicode scalar code points, returning `None` if any
 -- entry is not a valid Unicode scalar value (`0..=0x10FFFF` excluding surrogates).
 pub fn from_scalars(via values: []int) -> new ?str
+
+-- Encodes `text` into its UTF-8 `bytes` representation.
+pub fn encode_utf8(text: str) -> bytes
+
+-- Decodes UTF-8 `data` into `Some(str)`, returning `None` if `data` is not valid UTF-8.
+pub fn decode_utf8(data: bytes) -> new ?str
 
 -- Concatenates `parts` into a single `str` separated by `separator`.
 pub fn join(via parts: []str, separator: str) -> str {
@@ -47,7 +53,7 @@ pub fn split(text: str, separator: str) -> new []str {
             i += 1
         }
         Array::push(mut out, "")
-        return new out
+        return out
     }
     var start = 0
     var i = 0
@@ -61,7 +67,7 @@ pub fn split(text: str, separator: str) -> new []str {
         }
     }
     Array::push(mut out, text[start..n])
-    new out
+    out
 }
 
 -- Reports whether `text` begins with `prefix`.
@@ -81,25 +87,4 @@ pub fn ends_with(text: str, suffix: str) -> bool {
         return false
     }
     text[m - n..] == suffix
-}
-
--- Returns all Unicode scalar code points of `text` as a new `[]int`.
-pub fn scalars(text: str) -> new []int {
-    let mut out: []int = []
-    for 0..len(text) as i {
-        if let Some(cp) = at(text, i) {
-            Array::push(mut out, cp)
-        }
-    }
-    new out
-}
-
--- Encodes `text` into its UTF-8 `bytes` representation.
-pub fn encode_utf8(text: str) -> bytes {
-    raw_encode_utf8(text)
-}
-
--- Decodes UTF-8 `data` into `Some(str)`, returning `None` if `data` is not valid UTF-8.
-pub fn decode_utf8(data: bytes) -> new ?str {
-    raw_decode_utf8(data)
 }

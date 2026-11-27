@@ -366,15 +366,6 @@ theorem pure_summary_subsumes_iff {pureSources : List Source} {actual : Summary}
   · intro o h; exact Or.inl (hreads o h)
   · intro o h; exact Or.inl (henv o h)
 
-theorem foreign_read_not_erased_by_pure {pureSources : List Source} {expected actual : Summary} {o : SourceInstance}
-    (hf : o.source.kind = .foreign) (hr : o ∈ actual.namedReads)
-    (hsub : expected.subsumes pureSources actual = true) :
-    o ∈ expected.namedReads ∨ o ∈ expected.writes ∨ o ∈ expected.retained := by
-  have h := (summary_subsumes_iff.mp hsub).namedReads o hr
-  rcases h with hp | hrest
-  · rw [foreign_instance_never_pure hf] at hp; contradiction
-  · exact hrest
-
 theorem retained_not_subsumed_by_write_only {pureSources : List Source} {expected actual : Summary} {o : SourceInstance}
     (hr : o ∈ actual.retained) (hsub : expected.subsumes pureSources actual = true) :
     o ∈ expected.retained :=
@@ -403,7 +394,7 @@ def Summary.requiredNamedReads (pureSources : List Source) (summary : Summary) :
   summary.namedReads.filter (fun srcInst => !isPureModuleConstant pureSources srcInst)
 
 /-- Named definitions spell exact exercised obligations (`E0510`, `E0529`,
-`E0612`). Callable upper-bound matching and pure-capture reduction are separate. -/
+`E0612`, `E0626`). Callable upper-bound matching and pure-capture reduction are separate. -/
 def Summary.exactSignature (pureSources : List Source) (declared actual : Summary) : Bool :=
   sameMembers declared.effects actual.effects &&
   sameMembers declared.rootReturn actual.rootReturn &&
@@ -524,15 +515,5 @@ theorem disjoint_check_sound (h : disjointUnknownSelections left right = true) :
     Separated left right := by
   intro x hx
   exact of_decide_eq_true (List.all_eq_true.mp h x hx)
-
-structure ForeignSignature where
-  sources : List Source
-  deriving Repr, DecidableEq
-
-def ForeignConforms (signature : ForeignSignature) (trace : List Event) : Prop :=
-  ∀ e ∈ trace, e.srcInst.source ∈ signature.sources
-
-theorem foreign_sources_covered (conforms : ForeignConforms signature trace)
-    (he : e ∈ trace) : e.srcInst.source ∈ signature.sources := conforms e he
 
 end RilAccess

@@ -309,7 +309,7 @@ fn append_failure_sections(
         out.push_str(&format_witness_chain(typed, may_panic));
     }
     if !may_abort.is_empty() {
-        out.push_str("\n\n🛑 **May abort process** *(uncatchable, bypasses `recover_panic`)*\n");
+        out.push_str("\n\n🛑 **May abort process** *(uncatchable, bypasses `Panic::recover`)*\n");
         out.push_str(&format_witness_chain(typed, may_abort));
     }
 }

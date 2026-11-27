@@ -18,7 +18,6 @@ pub enum FileKind {
     Module,
     Interface,
     Executable,
-    Foreign,
     Snippet,
 }
 

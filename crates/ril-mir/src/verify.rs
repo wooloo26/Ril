@@ -243,7 +243,7 @@ fn verify_function(function: &Function, function_count: usize) -> Result<(), Dia
                             check_reg(*address)?;
                             check_reg(*environment)?;
                         }
-                        Target::Runtime(_) | Target::Draft(_) | Target::Foreign(_) => {}
+                        Target::Runtime(_) | Target::Draft(_) => {}
                     }
                     let normal_block = function.blocks.get(normal.0).ok_or_else(|| {
                         err(function, format!("invalid normal block {:?}", normal))
@@ -276,7 +276,7 @@ fn verify_function(function: &Function, function_count: usize) -> Result<(), Dia
 
     // Verify no non-GC-managed raw registers are marked managed.
     for (idx, ty) in function.reg_types.iter().enumerate() {
-        if matches!(ty, MirTy::RawFnPtr | MirTy::RawU64 | MirTy::Foreign) && ty.is_gc_managed() {
+        if matches!(ty, MirTy::RawFnPtr | MirTy::RawU64) && ty.is_gc_managed() {
             return Err(err(
                 function,
                 format!("raw register r{idx} must never be GC-managed"),

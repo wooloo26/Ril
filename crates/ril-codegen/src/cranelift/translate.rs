@@ -6,12 +6,12 @@ use cranelift_codegen::{
 };
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_module::{DataDescription, FuncId, Module};
-use ril_mir::{BlockId, ForeignAbi, Instruction, IntBinOp, IntUnaryOp, Target, Terminator};
+use ril_mir::{BlockId, Instruction, IntBinOp, IntUnaryOp, Target, Terminator};
 
 use super::{
     MirToClifTranslator, RIL_FALSE, RIL_TRUE, RIL_UNIT, Result,
     abi::{number, reg},
-    diagnostic, foreign_symbol,
+    diagnostic,
     liveness::{RootLayout, reachable, store_root},
 };
 
@@ -252,20 +252,6 @@ impl<M: Module> MirToClifTranslator<'_, M> {
                             builder.inst_results(inst).first().copied().ok_or_else(|| {
                                 diagnostic("indirect call did not produce an output")
                             })?
-                        }
-                        Target::Foreign(import) => {
-                            let arity = match import.abi {
-                                ForeignAbi::Function { arity } => arity,
-                                ForeignAbi::Constant => 0,
-                            };
-                            if arity != args.len() {
-                                return Err(diagnostic(
-                                    "foreign call arity differs from its declaration",
-                                ));
-                            }
-                            let symbol = foreign_symbol(self.foreign_names, import)?;
-                            let args = std::iter::once(rt).chain(args).collect::<Vec<_>>();
-                            self.handle(&mut builder, symbol, &args)?
                         }
                     };
                     if *cleanup {

@@ -247,7 +247,26 @@ impl Analyzer<'_> {
         }
     }
 
-    pub(super) fn defer_callback_result(&mut self, callback: CallbackResult, span: Span) -> Datum {
+    pub(super) fn defer_callback_result(
+        &mut self,
+        mut callback: CallbackResult,
+        span: Span,
+    ) -> Datum {
+        fn widen_recursive(datum: &mut Datum, span: Span) {
+            for origin in &mut datum.roots {
+                if origin.region.source == span && origin.callback_result.is_some() {
+                    origin.callback_result = None;
+                }
+            }
+            datum.roots.sort_unstable();
+            datum.roots.dedup();
+            for member in datum.members.values_mut() {
+                widen_recursive(member, span);
+            }
+        }
+        for (_, _, value) in &mut callback.arguments {
+            widen_recursive(value, span);
+        }
         let mut result = Datum::source(span, Access::Ref, false);
         let dependencies: BTreeSet<_> = callback
             .values()

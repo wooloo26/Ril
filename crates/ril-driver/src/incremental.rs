@@ -75,7 +75,6 @@ impl PackageKey {
         let unit = match unit {
             Unit::Bin => "bin",
             Unit::Lib => "lib",
-            Unit::Decl => "decl",
             Unit::Snippet => "snippet",
         };
         Self {
@@ -100,7 +99,6 @@ impl ParseKey {
             FileKind::Module => 0,
             FileKind::Interface => 1,
             FileKind::Executable => 2,
-            FileKind::Foreign => 3,
             FileKind::Snippet => 4,
         };
         Self {

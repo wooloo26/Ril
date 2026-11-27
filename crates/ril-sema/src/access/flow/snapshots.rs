@@ -92,7 +92,6 @@ impl Datum {
             && !self.result_fresh
             && !self.live_callable_state
             && !self.uses_ctl_handler
-            && !self.is_once
             && self.linear.is_empty()
             && self.results.is_empty()
             && self.latent_effects.is_empty()

@@ -176,32 +176,6 @@ use ril/prelude
 pub fn panic(message: int) -> never
 -- ^ E0909
 
--- @case foreign_handle_permits_mutable_call_and_chained_handoff compile-pass stage=access
--- @file pkg/host.d.ril
-pub opaque type Handle
-pub fn open() @io -> new Handle
-pub fn change(mut handle: Handle) @io &mut -> ()
-pub fn close(new handle: Handle) @io -> ()
--- @file pkg/main.ril
-use pkg/host
-fn work() @io -> () {
-    let mut original = Host::open()
-    Host::change(mut original)
-    let mut transferred = new original
-    Host::close(new transferred)
-}
-
--- @case foreign_handle_plain_binding_cannot_freeze compile-fail E0535 stage=access
--- @file pkg/host.d.ril
-pub opaque type Handle
-pub fn open() @io -> new Handle
--- @file pkg/main.ril
-use pkg/host
-fn work() @io -> () {
-    let snapshot = Host::open()
-    -- ^ E0535
-}
-
 -- @case module_cannot_import_itself compile-fail E0208 unit=lib
 -- @file pkg/foo.ril
 use pkg/foo
@@ -269,5 +243,5 @@ pub fn bad() -> new []int {
     let mut out: []int = []
     Array::push(mut out, 1)
     -- ^ E0204
-    new out
+    out
 }

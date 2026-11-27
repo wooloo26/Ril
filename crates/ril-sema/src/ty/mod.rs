@@ -227,7 +227,6 @@ pub enum AdtKind {
     Opaque,
     Sum,
     OpaqueSum,
-    Foreign,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -303,7 +302,6 @@ impl Parameter {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Callable {
     pub is_ctl: bool,
-    pub once: bool,
     pub parameters: Vec<Parameter>,
     pub result: Ty,
     pub result_mode: Mode,
@@ -421,6 +419,63 @@ impl TypedProgram {
         self.unwrap_wrapper(ty).is_primitive_value()
     }
 
+    pub fn is_ctl_ty(&self, ty: &Ty) -> bool {
+        matches!(self.unwrap_wrapper(ty), Ty::Callable(c) if c.is_ctl)
+    }
+
+    pub fn collect_type_params(&self, ty: &Ty, out: &mut std::collections::BTreeSet<DefinitionId>) {
+        self.collect_type_params_inner(ty, out, &mut HashSet::new());
+    }
+
+    fn collect_type_params_inner(
+        &self,
+        ty: &Ty,
+        out: &mut std::collections::BTreeSet<DefinitionId>,
+        seen: &mut HashSet<DefinitionId>,
+    ) {
+        match ty {
+            Ty::Param(id) => {
+                out.insert(*id);
+            }
+            Ty::Array(item) => self.collect_type_params_inner(&item.ty, out, seen),
+            Ty::Map(k, v) => {
+                self.collect_type_params_inner(k, out, seen);
+                self.collect_type_params_inner(&v.ty, out, seen);
+            }
+            Ty::Tuple(items) => {
+                for item in items {
+                    self.collect_type_params_inner(&item.ty, out, seen);
+                }
+            }
+            Ty::Record(fields, _) => {
+                for field in fields.values() {
+                    self.collect_type_params_inner(&field.ty, out, seen);
+                }
+            }
+            Ty::Draft(inner) => self.collect_type_params_inner(inner, out, seen),
+            Ty::Callable(c) => {
+                for p in &c.parameters {
+                    self.collect_type_params_inner(&p.ty, out, seen);
+                }
+                self.collect_type_params_inner(&c.result, out, seen);
+            }
+            Ty::Adt(adt) => {
+                for arg in &adt.arguments {
+                    if let GenericValue::Type(inner) = arg {
+                        self.collect_type_params_inner(inner, out, seen);
+                    }
+                }
+                if seen.insert(adt.definition) {
+                    if let Some(rep) = self.nominal_layout(adt) {
+                        self.collect_type_params_inner(&rep, out, seen);
+                    }
+                    seen.remove(&adt.definition);
+                }
+            }
+            _ => {}
+        }
+    }
+
     pub fn is_must_consume(&self, ty: &Ty) -> bool {
         self.is_must_consume_inner(ty, &mut HashSet::new())
     }
@@ -428,7 +483,6 @@ impl TypedProgram {
     fn is_must_consume_inner(&self, ty: &Ty, seen: &mut HashSet<DefinitionId>) -> bool {
         match ty {
             Ty::Callable(c) => c.is_ctl,
-            Ty::Adt(adt) if adt.kind == AdtKind::Foreign => true,
             Ty::Adt(adt) => {
                 if !seen.insert(adt.definition) {
                     return false;
@@ -645,9 +699,6 @@ impl fmt::Display for Display<'_> {
                 }
                 if call.open_state {
                     f.write_str(" &")?;
-                }
-                if call.once {
-                    f.write_str(" &once")?;
                 }
                 for state in &call.state {
                     write!(f, " &{state}")?;

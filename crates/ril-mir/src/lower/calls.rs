@@ -186,7 +186,13 @@ impl Builder<'_, '_> {
             });
             Ok(self.invoke(target, values, false))
         } else {
-            Ok(self.invoke(Target::Foreign(self.global.foreign(id)?), values, false))
+            Err(self.unsupported(
+                span,
+                &format!(
+                    "native code for {} is required",
+                    self.global.typed.hir.export_name(id)
+                ),
+            ))
         }
     }
 

@@ -6,7 +6,7 @@ namespace RilAccess.CoreBoundary.Examples
 def localInstance : SourceInstance := ⟨⟨.allocation, 1⟩, 7, 3, 9⟩
 def external : SourceInstance := ⟨⟨.module, 17⟩, 0, 1, 0⟩
 def captured : SourceInstance := ⟨⟨.capture, 4⟩, 5, 8, 2⟩
-def foreign : SourceInstance := ⟨⟨.foreign, 11⟩, 0, 2, 0⟩
+def cleanupTarget : SourceInstance := ⟨⟨.capture, 11⟩, 0, 2, 0⟩
 def emptySummary : Summary := ⟨[], [], [], [], [], [], []⟩
 def emptyRoots : Footprint := ⟨[], [], []⟩
 
@@ -17,7 +17,7 @@ def privateBoundary : Boundary :=
 def handlerEnvironment : Boundary := { privateBoundary with handlerEnvironment := [external] }
 def cleanupEnvironment : Boundary := { privateBoundary with cleanupEnvironment := [captured] }
 def handlerState : Boundary := { privateBoundary with handler := { emptySummary with writes := [external] } }
-def cleanupState : Boundary := { privateBoundary with cleanup := { emptySummary with writes := [foreign] } }
+def cleanupState : Boundary := { privateBoundary with cleanup := { emptySummary with writes := [cleanupTarget] } }
 
 def handlerEffect : Boundary := { privateBoundary with handler := { emptySummary with effects := [3] } }
 def cleanupEffect : Boundary := { privateBoundary with cleanup := { emptySummary with effects := [3] } }
@@ -63,10 +63,10 @@ def examples : List (String × Bool) :=
    ("core boundary: actual handler state survives handling and discharge", (outward handlerState 7 9).any
       (fun event => decide (event.kind = .write ∧ event.srcInst = external))),
    ("core boundary: actual cleanup state survives handling and discharge", (outward cleanupState 7 9).any
-      (fun event => decide (event.kind = .write ∧ event.srcInst = foreign))),
+      (fun event => decide (event.kind = .write ∧ event.srcInst = cleanupTarget))),
    ("core boundary: module identity cannot be rebound by call substitution", decide (CoreSummary.resolve callInstance (.concrete external) = external)),
    ("core boundary: selected capture identity cannot be rebound", decide (CoreSummary.resolve callInstance (.concrete captured) = captured)),
-   ("core boundary: foreign identity cannot be rebound", decide (CoreSummary.resolve callInstance (.concrete foreign) = foreign)),
+   ("core boundary: cleanup capture identity cannot be rebound", decide (CoreSummary.resolve callInstance (.concrete cleanupTarget) = cleanupTarget)),
    ("core boundary: local allocation cannot impersonate an entry object", decide ((CoreSummary.resolve callInstance (.allocated localInstance.source localInstance.object)).object ∉ callInstance.existingObjects)),
    ("core boundary: local allocation keeps its producer source", decide ((CoreSummary.resolve callInstance (.allocated localInstance.source localInstance.object)).source = localInstance.source)),
    ("core boundary: fn op arm completion revokes call-scoped mut parameter and derived view",
@@ -79,13 +79,11 @@ def examples : List (String × Bool) :=
    ("core boundary: fn op arm completion preserves outer and retained tokens",
       (Integrated.lookupToken afterFnOp 0).any Integrated.Token.active &&
       (Integrated.lookupToken afterFnOp 2).any Integrated.Token.active),
-   ("core boundary: handler arm matches fn/ctl prefix (E0623) and rejects one-shot RHS (E0534)",
-      validHandlerArm .directFn false false &&
-      validHandlerArm .algebraicCtl true false &&
-      !validHandlerArm .algebraicCtl false false &&
-      !validHandlerArm .directFn true false &&
-      !validHandlerArm .directFn false true &&
-      !validHandlerArm .algebraicCtl true true),
+   ("core boundary: handler arm matches fn/ctl prefix (E0623)",
+      validHandlerArm .directFn false &&
+      validHandlerArm .algebraicCtl true &&
+      !validHandlerArm .algebraicCtl false &&
+      !validHandlerArm .directFn true),
    ("core boundary: absorb_panic accepts pure body and rejects outer ctl, must-consume, or outward effects (E0608)",
       absorbPanicAdmissible pureSources pureBody [captured] false false &&
       !absorbPanicAdmissible pureSources pureBody [captured] true false &&

@@ -94,15 +94,29 @@ impl Ledger {
                 flow.widen();
             }
         }
-        for (token, triggers) in std::mem::take(&mut self.revoked) {
+        for (token, choices) in std::mem::take(&mut self.revoked) {
             let archived = self.revoked.entry(age(token)).or_default();
-            for (trigger, choices) in triggers {
-                let combined = archived.entry(trigger).or_default();
-                combined.extend(choices.into_iter().map(|mut branch| {
-                    age_choices(&mut branch);
-                    branch
-                }));
-                Self::widen_choices(combined);
+            archived.extend(choices.into_iter().map(|mut branch| {
+                age_choices(&mut branch);
+                branch
+            }));
+            Self::widen_choices(archived);
+        }
+        let consumed = std::mem::take(&mut self.linear_consumed);
+        let armed = std::mem::take(&mut self.linear_armed);
+        for mut occ in std::mem::take(&mut self.linear_obligations) {
+            let is_consumed = consumed.contains(&occ);
+            let is_armed = armed.get(&occ).copied();
+            if local(occ.span) && is_consumed {
+                continue;
+            }
+            age_choices(&mut occ.created_in);
+            self.linear_obligations.insert(occ.clone());
+            if is_consumed {
+                self.linear_consumed.insert(occ.clone());
+            }
+            if let Some(boundary) = is_armed {
+                self.linear_armed.insert(occ, boundary);
             }
         }
     }
@@ -171,12 +185,9 @@ impl Ledger {
         }
         for branch in &alternatives {
             for (&token, revoked) in &branch.revoked {
-                let merged = self.revoked.entry(token).or_default();
-                for (&trigger, alternatives) in revoked {
-                    let cases = merged.entry(trigger).or_default();
-                    cases.extend(alternatives.iter().cloned());
-                    Self::widen_choices(cases);
-                }
+                let cases = self.revoked.entry(token).or_default();
+                cases.extend(revoked.iter().cloned());
+                Self::widen_choices(cases);
             }
             self.obligations.extend(branch.obligations.iter().cloned());
             self.lost_results.extend(&branch.lost_results);
@@ -842,6 +853,6 @@ impl Ledger {
     pub(in crate::access) fn has_direct_revocation(&self, decl: Span) -> bool {
         self.revoked
             .get(&Occurrence::from(decl))
-            .is_some_and(|triggers| triggers.contains_key(&None))
+            .is_some_and(|branches| !branches.is_empty())
     }
 }

@@ -557,8 +557,8 @@ fn carries_callable_at(
             if !seen.insert(point) {
                 return false;
             }
-            let result = program.nominal_layout(adt).map_or_else(
-                || adt.kind != crate::ty::AdtKind::Foreign,
+            let result = program.nominal_layout(adt).map_or(
+                true,
                 |layout| carries_callable_at(program, &layout, path, seen),
             );
             seen.remove(&point);

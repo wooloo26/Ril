@@ -5,12 +5,9 @@ use ril_source::{
     diag::{Code, Diagnostic},
     span::{FileId, Span},
 };
-use ril_syntax::{
-    parser::FileKind,
-    syntax::{
-        Ast, Condition, Expr, ExprId, Function, LiteralKind, MatchArm, Member, Mode, Path, Pattern,
-        PatternId, Signature, StateKind, StmtId, StmtKind, Storage, Transfer, TypeDefinition,
-    },
+use ril_syntax::syntax::{
+    Ast, Condition, Expr, ExprId, Function, LiteralKind, MatchArm, Member, Mode, Path, Pattern,
+    PatternId, Signature, StateKind, StmtId, StmtKind, Storage, Transfer, TypeDefinition,
 };
 
 use super::{
@@ -18,7 +15,7 @@ use super::{
     StorageUpdate, Summary, ViaDomain,
     flow::{
         AccessConflict, ConflictKind, Coordinate, Datum, Ledger, LinearOccurrence, Origin,
-        Reception, Region, Replacement, ResultOccurrence, Revocation, Slot, StorageFlow, conflicts,
+        Reception, Region, Replacement, ResultOccurrence, Slot, StorageFlow, conflicts,
     },
     horn::{self, Rule},
 };
@@ -44,9 +41,6 @@ use via_summary::{collect_axes, member_axes};
 enum Obligation {
     Write(Span),
     WriteExisting(Span),
-    Handoff(Span),
-    CallbackHandoff(usize),
-    CallbackConsumes(higher_order::Invocation),
     Schema(Region, SchemaRequirement),
     Replace(Span),
     SharedReception(Span),
@@ -305,6 +299,7 @@ struct Analyzer<'a> {
     functions: Vec<DefinitionCheck>,
     done: BTreeSet<DefinitionId>,
     checked_defers: BTreeSet<Span>,
+    generic_linear_calls: Vec<(DefinitionId, Span)>,
 }
 
 fn collect(
@@ -345,6 +340,7 @@ fn collect(
         functions: Vec::new(),
         done: BTreeSet::new(),
         checked_defers: BTreeSet::new(),
+        generic_linear_calls: Vec::new(),
     };
     analyzer.load_interface_calls();
     for file in program.hir.files() {
@@ -398,28 +394,11 @@ pub(super) fn analyze(program: &TypedProgram) -> (Analysis, Vec<Diagnostic>) {
             analyzer.error(Code::E0527, requirement.span, requirement.message);
         }
     }
-    let mut consuming_inputs = BTreeMap::new();
     let mut sharing_inputs = BTreeMap::new();
     let mut domains = domains::Domains::default();
     for function in std::mem::take(&mut analyzer.functions) {
         let summary = analyzer.finish_function(&facts, &function);
-        let consumed: BTreeSet<_> = function
-            .formals
-            .iter()
-            .enumerate()
-            .filter_map(|(index, formal)| {
-                formal
-                    .filter(|decl| {
-                        facts.contains(&Fact {
-                            owner: function.owner,
-                            obligation: Obligation::Handoff(*decl),
-                        })
-                    })
-                    .map(|_| index)
-            })
-            .collect();
         let instances = analyzer.via_table(&function, &summary, &facts);
-        consuming_inputs.insert(function.id, consumed);
         let sharing: BTreeSet<_> = function
             .formals
             .iter()
@@ -458,17 +437,7 @@ pub(super) fn analyze(program: &TypedProgram) -> (Analysis, Vec<Diagnostic>) {
             continue;
         };
         for (index, mode, span) in use_site.choices {
-            if mode != Input::New
-                && consuming_inputs
-                    .get(&use_site.callee)
-                    .is_some_and(|owned| owned.contains(&index))
-            {
-                analyzer.error(
-                    Code::E0548,
-                    span,
-                    "via application requires new qualification",
-                );
-            } else if mode != Input::Shared
+            if mode != Input::Shared
                 && (summary.retained.contains(&index)
                     || sharing_inputs
                         .get(&use_site.callee)
@@ -484,6 +453,53 @@ pub(super) fn analyze(program: &TypedProgram) -> (Analysis, Vec<Diagnostic>) {
                     Code::E0520,
                     span,
                     "via application requires a writable source",
+                );
+            }
+        }
+    }
+    for (callee_id, call_span) in std::mem::take(&mut analyzer.generic_linear_calls) {
+        let Some(summary) = analysis.summaries.get(&callee_id) else {
+            continue;
+        };
+        if summary.forbids_linear_drop.is_empty()
+            && summary.forbids_linear_dup.is_empty()
+            && summary.forbids_linear_suspend.is_empty()
+        {
+            continue;
+        }
+        let Some(type_args) = program.type_arguments.get(&call_span) else {
+            continue;
+        };
+        let Some(fun) = analyzer.function_syntax(callee_id) else {
+            continue;
+        };
+        for (idx, param) in fun.generics.iter().enumerate() {
+            let Some(param_id) = analyzer.definition(param.name.span) else {
+                continue;
+            };
+            let Some(concrete) = type_args.get(&param_id) else {
+                continue;
+            };
+            if !program.is_must_consume(concrete) {
+                continue;
+            }
+            if summary.forbids_linear_dup.contains(&idx) {
+                analyzer.error(
+                    Code::E0548,
+                    call_span,
+                    "cannot instantiate generic parameter with must-consume type where value may be duplicated or projected",
+                );
+            } else if summary.forbids_linear_drop.contains(&idx) {
+                analyzer.error(
+                    Code::E0625,
+                    call_span,
+                    "cannot instantiate generic parameter with must-consume type where value may be dropped",
+                );
+            } else if summary.forbids_linear_suspend.contains(&idx) {
+                analyzer.error(
+                    Code::E0625,
+                    call_span,
+                    "cannot instantiate generic parameter with must-consume type held across unhandled ctl",
                 );
             }
         }

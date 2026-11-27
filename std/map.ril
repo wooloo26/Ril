@@ -5,44 +5,39 @@ use ril/array
 -- Inserts or overwrites the entry for `key` with `value` in `map`.
 pub fn insert<K, V>(mut map: [K: via V], key: K, via value: V) &mut -> ()
 
--- Removes the entry for `key` from `map` and returns its previous value, or `None` if absent.
--- Supports destructive extraction from `[K: mut V]` maps holding must-consume values.
-pub fn remove<K, V>(mut map: [K: via V], key: K) &mut -> new ?V
+-- Inserts `value` for `key` in `map`, returning the previous value (`Some(old)`) if present.
+-- Supports linear must-consume values without silently dropping overwritten entries.
+pub fn replace<K, V>(mut map: [K: via V], key: K, via value: V) &mut -> new ?V
 
--- Returns `Some(value)` for `key` in `map`, or `None` if absent.
-pub fn get<K, V>(via map: [K: V], key: K) -> infer ?V {
-    map?[key]
-}
+-- Removes the entry for `key` from `map` and returns its previous value, or `None` if absent.
+-- Supports destructive extraction from maps holding must-consume values.
+pub fn remove<K, V>(mut map: [K: via V], key: K) &mut -> new ?V
 
 -- Reports whether `map` contains an entry for `key`.
 pub fn contains<K, V>(via map: [K: via V], key: K) -> bool {
-    if let Some(_) = map?[key] {
-        true
-    } else {
-        false
-    }
+    map?[key] != None
 }
 
 -- Returns a new array of all keys in `map` in insertion order.
-pub fn keys<K, V>(via map: [K: V]) -> infer []K {
+pub fn keys<K, V>(via map: [K: via V]) &return(map) -> new []K {
     let mut out: []K = []
     for map as (k, _) {
         Array::push(mut out, k)
     }
-    new out
+    out
 }
 
 -- Returns a new array of all values in `map` in insertion order.
-pub fn values<K, V>(via map: [K: V]) -> infer []V {
+pub fn values<K, V>(via map: [K: V]) &return(map) -> new []V {
     let mut out: []V = []
     for map as (_, v) {
         Array::push(mut out, v)
     }
-    new out
+    out
 }
 
 -- Removes every entry from `map` in place.
-pub fn clear<K, V>(mut map: [K: V]) &mut -> () {
+pub fn clear<K, V>(mut map: [K: via V]) &mut -> () {
     let mut ks: []K = []
     for map as (k, _) {
         Array::push(mut ks, k)

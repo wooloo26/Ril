@@ -207,7 +207,6 @@ impl Builder<'_, '_> {
                     .value
                     .clone();
                 match adt.kind {
-                    AdtKind::Foreign => Node::Redacted(format!("<{name}>")),
                     AdtKind::Opaque | AdtKind::OpaqueSum
                         if adt.defining_scope != self.env.scope =>
                     {

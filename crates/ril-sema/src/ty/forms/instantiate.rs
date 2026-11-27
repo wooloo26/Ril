@@ -175,6 +175,10 @@ impl Checker<'_> {
         self.unwrap_wrapper(env, ty).is_primitive_value()
     }
 
+    pub(in crate::ty) fn is_ctl_ty(&mut self, env: &Env, ty: &Ty) -> bool {
+        matches!(self.unwrap_wrapper(env, ty), Ty::Callable(c) if c.is_ctl)
+    }
+
     pub(in crate::ty) fn is_value_only_ty(&mut self, env: &Env, ty: &Ty) -> bool {
         let unwrapped = self.unwrap_wrapper(env, ty);
         if unwrapped.is_primitive_value() {

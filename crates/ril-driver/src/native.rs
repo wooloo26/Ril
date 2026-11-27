@@ -431,7 +431,6 @@ impl PackageWire {
     fn from_package(package: &VirtualPackage, options: CompileOptions) -> Self {
         let unit = match package.unit {
             Unit::Bin => "bin",
-            Unit::Decl => "decl",
             Unit::Lib => "lib",
             Unit::Snippet => "snippet",
         };

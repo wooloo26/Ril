@@ -15,27 +15,29 @@ fn emit_squares(nums: []int) @Emit -> () {
 fn main() @io -> () {
     let nums = [2, 3, 4, 5]
     let squares = Array::map(nums, \x -> Math::square(x))
-    assert(Array::at(squares, 2) == Some(16))
+    assert(squares?[2] == Some(16))
     assert(Math::safe_ratio(42, 6) == Some(7))
     assert(Math::safe_ratio(42, 0) == None)
 
     let raw = String::encode_utf8("hello-ril")
     assert(String::decode_utf8(raw) == Some("hello-ril"))
 
-    let mut collected: []int = []
     var cleaned = false
-    with {
-        ctl Emit::emit = \v, new k -> {
-            Array::push(mut collected, v)
-            k()
+    let done: []int = {
+        let mut collected: []int = []
+        with {
+            ctl Emit::emit = \v, k -> {
+                Array::push(mut collected, v)
+                k()
+            }
+            defer {
+                cleaned = true
+            }
+            emit_squares(nums)
         }
-        defer {
-            cleaned = true
-        }
-        emit_squares(nums)
+        collected
     }
-    let done = new collected
     assert(cleaned)
-    assert(Array::at(done, 3) == Some(25))
+    assert(done?[3] == Some(25))
     println("hello-ok")
 }

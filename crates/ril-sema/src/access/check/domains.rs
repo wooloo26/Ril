@@ -574,9 +574,7 @@ pub(super) fn root_modes(facts: &BTreeSet<Fact>, owner: Span, formal: Span) -> &
     ]
     .into_iter()
     .any(exercised);
-    if exercised(Obligation::Handoff(formal)) {
-        if needs_sharing { &[] } else { &[Input::New] }
-    } else if needs_sharing {
+    if needs_sharing {
         &[Input::Shared]
     } else if exercised(Obligation::Write(formal)) || exercised(Obligation::WriteExisting(formal)) {
         &[Input::Mut, Input::Shared, Input::New]

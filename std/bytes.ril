@@ -16,5 +16,5 @@ pub fn to_array(data: bytes) -> new []int {
             Array::push(mut out, b)
         }
     }
-    new out
+    out
 }

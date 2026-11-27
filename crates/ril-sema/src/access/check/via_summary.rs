@@ -20,14 +20,6 @@ impl Analyzer<'_> {
             formals.insert(index, formals.len());
             axes.push(Region::root(source));
             let domain = domains::root_modes(facts, fun.owner, source);
-            if domain.is_empty() {
-                self.error(
-                    Code::E0548,
-                    fun.owner,
-                    "via source cannot be both handed off as new and retained as shared",
-                );
-                return ViaDomain::default();
-            }
             permitted.push(domain.to_vec());
         }
         for (_, axis) in &fun.member_axes {

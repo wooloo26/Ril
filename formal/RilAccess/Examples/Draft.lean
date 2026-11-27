@@ -221,7 +221,7 @@ def runtimeObservations : List (String × Option (List Nat)) :=
       let memory := analysis.result.memory
       return (← arrayCounts memory 2 [0]) ++
         (← arrayCounts memory output.object [0]) ++ (← arrayCounts memory output.object [1])),
-   ("aborted_draft_preserves_the_base_and_inserted_source", do
+   ("aborted_derive_preserves_the_base_and_inserted_source", do
       let analysis ← checkRecipe input [grow, mutateInserted, aborted]
       if analysis.result.output.isSome then none else
         let memory := analysis.result.memory
