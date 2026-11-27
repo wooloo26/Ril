@@ -44,6 +44,16 @@ impl Analyzer<'_> {
             .filter(|clause| clause.kind == StateKind::Environment)
             .flat_map(|clause| &clause.bindings)
             .filter_map(|(storage, path)| {
+                if let Some(def_id) = self.definition(path.span)
+                    && let Some(ty) = self.program.bindings.get(&def_id)
+                    && self.program.is_must_consume(ty)
+                {
+                    self.error(
+                        Code::E0625,
+                        path.span,
+                        "named local function cannot capture a must-consume value",
+                    );
+                }
                 self.declaration(path.span)
                     .map(|binding| (binding, storage.mode))
             })
@@ -75,11 +85,11 @@ impl Analyzer<'_> {
             self.binding_scopes.insert(span, ctx.scope);
             if param.mode == Mode::Via {
                 ctx.via.insert(span);
-                if self.program.is_value(&param.ty) {
+                if self.program.is_value(&param.ty) || self.program.is_linear_root(&param.ty) {
                     self.error(
                         Code::E0550,
                         span,
-                        "via is redundant on a value-type parameter",
+                        "via is invalid on a value-type or linear parameter",
                     );
                 }
             }
@@ -100,16 +110,17 @@ impl Analyzer<'_> {
                 }
             }
             if param.mode == Mode::New
-                && (self.program.is_value(&param.ty) || self.program.is_ctl_ty(&param.ty))
+                && (self.program.is_value(&param.ty) || self.program.is_linear_root(&param.ty))
             {
-                self.error(Code::E0411, span, "new parameter requires a shared object");
+                self.error(Code::E0411, span, "new parameter requires a non-linear shared object");
             }
             if param.mode == Mode::New {
                 ctx.new_formals.insert(span);
             }
-            let mut value = if self.program.is_value(&param.ty) {
-                Datum::default()
-            } else {
+            let mut value =
+                if self.program.is_value(&param.ty) && !self.program.is_must_consume(&param.ty) {
+                    Datum::default()
+                } else {
                 let mut datum =
                     Datum::source(span, Access::from_mode(param.mode), param.mode == Mode::New);
                 if param.mode == Mode::New {
@@ -196,6 +207,13 @@ impl Analyzer<'_> {
         let body_span = self.ast(ctx.file).expr(body).span;
         if ctx.reachable && !ledger.no_continuation && self.ty(body_span) != &Ty::Never {
             self.run_defers(&mut ctx, &mut ledger, 0);
+            self.check_live(
+                &ctx,
+                &ledger,
+                &value,
+                body_span,
+                "returned value was consumed by defer",
+            );
             ledger.holds.truncate(prior_holds);
             self.try_promote_exit_new(&ctx, &ledger, &mut value, &prior_slots, prior_holds, true);
             self.returned(&mut ctx, &mut ledger, value, body_span);
@@ -846,27 +864,60 @@ impl Analyzer<'_> {
                         forbids_dup,
                         local_generics,
                     );
+                    let yes_span = ast.expr(*yes).span;
                     if let Some(no_expr) = no {
-                        merge_max(
-                            &mut branch_reads,
-                            walk_expr(
-                                this,
-                                ast,
-                                *no_expr,
-                                mark_ty,
-                                forbids_drop,
-                                forbids_dup,
-                                local_generics,
-                            ),
+                        let no_reads = walk_expr(
+                            this,
+                            ast,
+                            *no_expr,
+                            mark_ty,
+                            forbids_drop,
+                            forbids_dup,
+                            local_generics,
                         );
+                        let no_span = ast.expr(*no_expr).span;
+                        for &def_id in branch_reads.keys() {
+                            if !no_reads.contains_key(&def_id) {
+                                let dspan = this.program.hir.definition(def_id).name.span;
+                                let inside = dspan.file == yes_span.file
+                                    && dspan.start >= yes_span.start
+                                    && dspan.end <= yes_span.end;
+                                if !inside && let Some(ty) = this.program.bindings.get(&def_id) {
+                                    mark_ty(ty, forbids_drop);
+                                }
+                            }
+                        }
+                        for &def_id in no_reads.keys() {
+                            if !branch_reads.contains_key(&def_id) {
+                                let dspan = this.program.hir.definition(def_id).name.span;
+                                let inside = dspan.file == no_span.file
+                                    && dspan.start >= no_span.start
+                                    && dspan.end <= no_span.end;
+                                if !inside && let Some(ty) = this.program.bindings.get(&def_id) {
+                                    mark_ty(ty, forbids_drop);
+                                }
+                            }
+                        }
+                        merge_max(&mut branch_reads, no_reads);
+                    } else {
+                        for &def_id in branch_reads.keys() {
+                            let dspan = this.program.hir.definition(def_id).name.span;
+                            let inside = dspan.file == yes_span.file
+                                && dspan.start >= yes_span.start
+                                && dspan.end <= yes_span.end;
+                            if !inside && let Some(ty) = this.program.bindings.get(&def_id) {
+                                mark_ty(ty, forbids_drop);
+                            }
+                        }
                     }
                     merge_sum(&mut reads, branch_reads);
                 }
                 Expr::While { condition, body } => {
+                    let mut loop_reads = BTreeMap::new();
                     match condition {
                         Condition::Expr(e) => {
                             merge_sum(
-                                &mut reads,
+                                &mut loop_reads,
                                 walk_expr(
                                     this,
                                     ast,
@@ -880,7 +931,7 @@ impl Analyzer<'_> {
                         }
                         Condition::Binding { pattern, value, .. } => {
                             merge_sum(
-                                &mut reads,
+                                &mut loop_reads,
                                 walk_expr(
                                     this,
                                     ast,
@@ -902,7 +953,7 @@ impl Analyzer<'_> {
                         }
                     }
                     merge_sum(
-                        &mut reads,
+                        &mut loop_reads,
                         walk_expr(
                             this,
                             ast,
@@ -913,6 +964,17 @@ impl Analyzer<'_> {
                             local_generics,
                         ),
                     );
+                    for &def_id in loop_reads.keys() {
+                        let dspan = this.program.hir.definition(def_id).name.span;
+                        let inside = dspan.file == node.span.file
+                            && dspan.start >= node.span.start
+                            && dspan.end <= node.span.end;
+                        if !inside && let Some(ty) = this.program.bindings.get(&def_id) {
+                            mark_ty(ty, forbids_drop);
+                            mark_ty(ty, forbids_dup);
+                        }
+                    }
+                    merge_sum(&mut reads, loop_reads);
                 }
                 Expr::For {
                     iterable,

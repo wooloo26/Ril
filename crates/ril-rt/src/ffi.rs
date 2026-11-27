@@ -351,6 +351,35 @@ runtime_functions! {
         });
         text::option(&mut rt.gc, removed)
     }
+    fn ril_rt_map_pop_entry(rt, target: Value) -> Value {
+        let target = rt.gc.draft_read(target).unwrap_or(target);
+        let removed = match rt.gc.object_mut(target) {
+            Some(Object::Map(map)) if !map.is_empty() => map.remove_at(map.len() - 1),
+            Some(Object::Map(_)) => None,
+            _ => return rt.checked(Err("Map::pop_entry requires a map")),
+        };
+        let item = removed.map(|(k, v)| rt.gc.alloc(Object::Tuple(vec![k, v])));
+        text::option(&mut rt.gc, item)
+    }
+    fn ril_rt_map_contains(rt, target: Value, key: Value) -> Value {
+        let target = rt.gc.draft_read(target).unwrap_or(target);
+        let hash = rt.gc.bisim_hash(key);
+        match rt.gc.object(target) {
+            Some(Object::Map(map)) => Value::boolean(
+                map.find_index(hash, |stored| rt.gc.equal(stored, key).unwrap_or(false))
+                    .is_some(),
+            ),
+            _ => rt.checked(Err("Map::contains requires a map")),
+        }
+    }
+    fn ril_rt_map_keys(rt, target: Value) -> Value {
+        let target = rt.gc.draft_read(target).unwrap_or(target);
+        let keys: Vec<Value> = match rt.gc.object(target) {
+            Some(Object::Map(map)) => map.entries().iter().map(|&(_, k, _)| k).collect(),
+            _ => return rt.checked(Err("Map::keys requires a map")),
+        };
+        rt.gc.alloc(Object::Array(keys))
+    }
     fn ril_rt_tag(rt, name: Value) -> Value {
         if let Ok(tag) = read_text(rt, name) { rt.gc.alloc(Object::Tag(tag, Vec::new())) }
         else { rt.raise("constructor requires a tag"); Value::UNIT }

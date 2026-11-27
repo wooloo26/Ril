@@ -216,6 +216,7 @@ impl Ty {
 pub struct Adt {
     pub definition: DefinitionId,
     pub kind: AdtKind,
+    pub is_linear: bool,
     pub defining_scope: ScopeId,
     pub visibility: Visibility,
     pub arguments: Vec<GenericValue>,
@@ -352,6 +353,7 @@ pub struct TypedProgram {
     pub imported_functions: BTreeMap<DefinitionId, crate::iface::Export>,
     pub imported_behaviors: BTreeMap<DefinitionId, crate::behavior::BehaviorSummary>,
     pub imported_must_consume: HashSet<DefinitionId>,
+    pub imported_must_consume_params: HashMap<DefinitionId, Vec<usize>>,
     pub narrow_drops: Vec<NarrowDrop>,
     pub static_values: HashMap<Span, Value>,
     meta_calls: HashMap<Span, staging::MetaCall>,
@@ -423,6 +425,39 @@ impl TypedProgram {
         matches!(self.unwrap_wrapper(ty), Ty::Callable(c) if c.is_ctl)
     }
 
+    pub fn is_linear_root(&self, ty: &Ty) -> bool {
+        if self.is_ctl_ty(ty) {
+            return true;
+        }
+        let mut cur = ty.clone();
+        let mut active: Vec<Arc<Adt>> = Vec::new();
+        while let Ty::Adt(adt) = &cur {
+            if adt.is_linear || self.imported_must_consume.contains(&adt.definition) {
+                return true;
+            }
+            if !matches!(adt.kind, AdtKind::Nominal | AdtKind::Opaque) {
+                break;
+            }
+            if active
+                .iter()
+                .rev()
+                .find(|outer| outer.definition == adt.definition)
+                .is_some_and(|outer| !nested_type_argument(outer, adt))
+            {
+                break;
+            }
+            active.push(Arc::clone(adt));
+            if self.hir.unit_constructor(adt.definition) {
+                return false;
+            }
+            let Some(rep) = self.nominal_layout(adt) else {
+                break;
+            };
+            cur = rep;
+        }
+        false
+    }
+
     pub fn collect_type_params(&self, ty: &Ty, out: &mut std::collections::BTreeSet<DefinitionId>) {
         self.collect_type_params_inner(ty, out, &mut HashSet::new());
     }
@@ -480,6 +515,62 @@ impl TypedProgram {
         self.is_must_consume_inner(ty, &mut HashSet::new())
     }
 
+    pub(crate) fn type_param_in_must_consume_position(&self, ty: &Ty, target: DefinitionId) -> bool {
+        fn walk(
+            program: &TypedProgram,
+            ty: &Ty,
+            target: DefinitionId,
+            seen: &mut HashSet<DefinitionId>,
+        ) -> bool {
+            match ty {
+                Ty::Param(id) => *id == target,
+                Ty::Callable(_) => false,
+                Ty::Array(item) => walk(program, &item.ty, target, seen),
+                Ty::Map(k, v) => {
+                    walk(program, k, target, seen) || walk(program, &v.ty, target, seen)
+                }
+                Ty::Tuple(items) => items.iter().any(|m| walk(program, &m.ty, target, seen)),
+                Ty::Record(fields, _) => fields
+                    .values()
+                    .any(|m| walk(program, &m.ty, target, seen)),
+                Ty::Adt(adt) => {
+                    if !seen.insert(adt.definition) {
+                        return false;
+                    }
+                    let res = if let Some(indices) =
+                        program.imported_must_consume_params.get(&adt.definition)
+                    {
+                        indices.iter().any(|&i| {
+                            matches!(
+                                adt.arguments.get(i),
+                                Some(GenericValue::Type(inner)) if walk(program, inner, target, seen)
+                            )
+                        })
+                    } else if matches!(adt.kind, AdtKind::Nominal | AdtKind::Opaque) {
+                        program
+                            .nominal_layout(adt)
+                            .is_some_and(|rep| walk(program, &rep, target, seen))
+                    } else {
+                        adt.arguments.iter().any(|arg| {
+                            matches!(arg, GenericValue::Type(inner) if walk(program, inner, target, seen))
+                        }) || program.hir.definitions().any(|(vid, def)| {
+                            def.kind == ril_hir::DefinitionKind::Variant(adt.definition)
+                                && program.callables.get(&vid).is_some_and(|sig| {
+                                    sig.parameters
+                                        .iter()
+                                        .any(|p| walk(program, &p.ty, target, seen))
+                                })
+                        })
+                    };
+                    seen.remove(&adt.definition);
+                    res
+                }
+                _ => false,
+            }
+        }
+        walk(self, ty, target, &mut HashSet::new())
+    }
+
     fn is_must_consume_inner(&self, ty: &Ty, seen: &mut HashSet<DefinitionId>) -> bool {
         match ty {
             Ty::Callable(c) => c.is_ctl,
@@ -487,7 +578,17 @@ impl TypedProgram {
                 if !seen.insert(adt.definition) {
                     return false;
                 }
-                let result = if self.imported_must_consume.contains(&adt.definition) {
+                let result = if adt.is_linear || self.imported_must_consume.contains(&adt.definition)
+                {
+                    true
+                } else if let Some(indices) = self.imported_must_consume_params.get(&adt.definition)
+                    && indices.iter().any(|&i| {
+                        matches!(
+                            adt.arguments.get(i),
+                            Some(GenericValue::Type(inner)) if self.is_must_consume_inner(inner, seen)
+                        )
+                    })
+                {
                     true
                 } else if matches!(adt.kind, AdtKind::Nominal | AdtKind::Opaque) {
                     self.nominal_layout(adt)
@@ -522,7 +623,9 @@ impl TypedProgram {
     }
 
     pub(crate) fn parameter_callable_mode(&self, param: &Parameter) -> Mode {
-        param.callable_mode_with(self.is_value(&param.ty))
+        let is_value = self.is_value(&param.ty)
+            && !(self.is_linear_root(&param.ty) && !self.is_ctl_ty(&param.ty));
+        param.callable_mode_with(is_value)
     }
 
     pub fn nominal_layout(&self, adt: &Adt) -> Option<Ty> {

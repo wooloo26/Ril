@@ -459,9 +459,16 @@ impl Checker<'_> {
                     && parent != adt.definition
                 {
                     let parent_def = self.hir.definition(parent);
+                    let parent_is_linear = parent_def.stmt.is_some_and(|stmt| {
+                        matches!(
+                            &self.ast(parent_def.name.span.file).stmt(stmt).value.kind,
+                            StmtKind::Type(decl) if decl.is_linear
+                        )
+                    });
                     let parent_adt = Ty::Adt(std::sync::Arc::new(super::Adt {
                         definition: parent,
                         kind: AdtKind::Sum,
+                        is_linear: parent_is_linear,
                         defining_scope: parent_def.scope,
                         visibility: parent_def.visibility,
                         arguments: adt.arguments.clone(),

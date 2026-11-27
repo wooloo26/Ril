@@ -14,12 +14,6 @@ let raw = ##"
 "# still inside the string
 "##
 
--- @case nested_comment_shields_directives compile-pass no-prelude
-{- {- -}
--- @case ignored compile-fail E0120
--}
-let independently_valid = 2
-
 -- @case virtual_files compile-pass unit=bin no-prelude
 -- @file pkg/main.ril
 fn main() -> () { () }

@@ -274,15 +274,16 @@ Source files must be valid UTF-8 (`E0104` on ill-formed UTF-8 or BOM). Disallowe
 
 ### Comments
 
+Ril uses single-line `--` comments exclusively (no `{- ... -}` block comments), avoiding delimiter ambiguity with `{` followed by unary `-` (e.g., `fn neg() -> int {-1}`). Consecutive `--` lines immediately preceding a declaration form its doc comment (supporting fenced ```` ```ril ```` examples).
+
 ```ebnf
-LineComment  ::= "--" { SourceChar } Newline
-BlockComment ::= "{-" { SourceChar | BlockComment } "-}"
+LineComment ::= "--" { SourceChar } Newline
 ```
 
 ```ril
 -- Invalid UTF-8 byte sequence or UTF-8 BOM at file start -> Error [E0104]
 -- Control character U+0007 or bidi override outside literal -> Error [E0105]
--- {- unterminated block comment                          -> Error [E0106]
+fn neg() -> int {-1}
 ```
 
 ### Whitespace and Layout Rules
@@ -404,10 +405,11 @@ typeof   use      var      via      where    while    with
 ```
 
 - **Protected Names (`bool`, `int`, `f64`, `str`, `bytes`, `never`, `Type`, `Super`)**: Primitive type names cannot be used as identifiers or field labels (`E0113`), `Type` and `Super` cannot be redeclared or shadowed (`E0203`), and bare type names in runtime value expressions fail `E0319` (write `<int>`, `<never>`).
-- **Contextual Identifiers (`opaque`, `ril`, `io`, `capture`, `up`)**: Ordinary `SnakeCase` identifiers in bindings, parameters, paths, and fields (`let opaque = true`, `let io = 1`, `use ril/io`). Recognized contextually only in `opaque type`, `use ril/...`, `@io`, `&capture`, and `&up` / `&up(...)`.
+- **Contextual Identifiers (`opaque`, `linear`, `ril`, `io`, `capture`, `up`)**: Ordinary `SnakeCase` identifiers in bindings, parameters, paths, and fields (`let opaque = true`, `let linear = true`, `let io = 1`, `use ril/io`). Recognized contextually only in `[opaque] [linear] type`, `use ril/...`, `@io`, `&capture`, and `&up` / `&up(...)`.
 
 ```ril
 let opaque = true                      -- OK: contextual outside 'opaque type'
+let linear = true                      -- OK: contextual outside '[opaque] linear type'
 let io = 1                             -- OK: contextual outside '@io'
 -- let ctl = 1                         -- Error [E0113]: reserved keyword
 -- let defer = 1                       -- Error [E0113]: reserved keyword
@@ -612,7 +614,7 @@ assert(xs[0] == 10 && table?["ok"] == Some(200) && pair.1 == "one")
 -- type BadElem = [var][]int           -- Error [E0356]: element mode forbids 'var'
 ```
 
-- **Element modes (`E0356`)**: Unmarked `[]T` / `[K: V]` hold deeply immutable elements. Element modes admit `mut`, `^mut`, `ref`, `via`, or a static `FieldMode` expression without `var` (`E0356`). Mode-free linear `ctl(...)` continuations (and composites containing them) live in plain mode-free containers (`[]ctl(...)`, `[K: ctl(...)]`, `.{ k: ctl(...) }`, or sums) with destructive extraction (`match`, `let`, `while let`, `Array::pop`, `Array::pop_front`, `Array::remove`, `Map::replace`, `Map::remove`) while forbidding `var`, `mut`/`ref`/`^mut` modes on `ctl(...)` itself (`E0402`/`E0532`), non-destructive indexing/iteration (`xs[i]`, `m?[k]`, `for`), `Array::clear`/`Map::clear`, `Map::insert` overwrite (`E0625`), `Set<T>`, and map keys (`E0328`).
+- **Element modes (`E0356`)**: Unmarked `[]T` / `[K: V]` hold deeply immutable elements. Element modes admit `mut`, `^mut`, `ref`, `via`, or a static `FieldMode` expression without `var` (`E0356`). Must-consume linear values (`ctl(...)` continuations, user-defined `[opaque] linear type`s, and composites transitively containing them) live in plain mode-free containers (`[]L`, `[K: L]`, `.{ f: L }`, or sums) with destructive extraction (`match`, `let`, `while let`, `Array::pop`, `Array::pop_front`, `Array::remove`, `Map::replace`, `Map::remove`, `Map::pop_entry`) while forbidding `var` (`E0532`), member access modes (`E0356`), non-destructive indexing/plain iteration (`xs[i]`, `m?[k]`, plain `for`, `E0548`), `Array::clear`/`Map::clear` and `Map::insert` overwrite (`E0625`), `Set<T>`, and map keys (`E0328`). User-defined linear collections additionally support non-consuming `for ref` and `for mut` traversal and linear-safe `Map::contains` / `Map::keys`.
 - **Keys, indexing & order (`E0328`, `E0352`)**: Map keys `K` and `Set<T>` elements require structural equality (`E0328`). Map reads use safe lookup `m?[k] -> ?V` (`E0352` on `m[k]` reads or `m[k] += v`); `m[k] = v` inserts/updates. Lengths and indices have type `int`. Iteration (`for`) and `String::inspect` over maps and sets follow deterministic insertion order (updating an existing key preserves position; removing and reinserting appends at the end).
 - **Tuples (`E0312`)**: Zero-element `()` or $\ge 2$ elements `(A, B)`. `(T)` is grouping. Tuple slots are immutable.
 
@@ -656,7 +658,7 @@ assert(opt == Some(99) && res == Ok(42))
 - **Extensible sums (`..`)**: Trailing `..` marks a sum open to future variants outside its defining `pkg`, requiring a `_` wildcard arm in `match` expressions outside that package (`E0303`).
 
 ```ebnf
-SumTypeDecl        ::= ( TypeDeclHead | OpaqueTypeHead ) "{" [ VariantDeclList ] "}"
+SumTypeDecl        ::= ( TypeDeclHead | LinearTypeHead | OpaqueTypeHead ) "{" [ VariantDeclList ] "}"
 VariantDeclList    ::= VariantDeclItem { Separator VariantDeclItem } [ Separator ]
 VariantDeclItem    ::= VariantSpread | VariantDecl
 VariantSpread      ::= ".." TypeReference
@@ -743,16 +745,18 @@ close_conn(dial(open_raw(), 3))
 | :--- | :--- | :--- |
 | Type alias | `type Point = .{ x: f64, y: f64 }` | Transparently equivalent to target (`E0313` cycles; forbids `meta(...)` `E0708` and defaults `E0359`). Record aliases construct via `Point.{ x: 1.0, y: 2.0 }` and destructure via `.{ x, y }` |
 | Nominal type | `type Marker`<br>`type UserId(int)`<br>`type Point(int, int)`<br>`type Req(.{ k: str })` | Compile-time erased distinct type (`E0305` distinct identity; `E0313` direct cycles); inherits value vs. `SharedObject` classification from its payload (`Marker` erases to `()`). Unit nominals stand alone (`Marker::()` fails `E0338`); payload nominals wrap and destructure via tight `::(...)` (`UserId::(42)`, `Point::(1, 2)`, `Req::(.{ k: "a" })`, `let UserId::(n) = u`; bare payload nominal in value position fails `E0319`). `Name::(x)` and `inner(w)` are mode- and provenance-preserving inverses |
-| Opaque type | `opaque type Token(str)`<br>`opaque type Conn(.{ fd: int })` | Erased wrapper interconvertible with its representation inside its exact defining file or `sub` (`<Token> != <str>`), sealed outside including parent/child `sub`s (`E0301`, `E0308`). Inherits value vs. `SharedObject` and must-consume status across interfaces. Bodyless `opaque type` requires a registered built-in (`E0902`) |
-| Sum type | `type Res<T, E> { Ok(T); Err(E) }` | Closed or extensible (`..`) variant type (`opaque` seals construction, widening, and matching outside defining scope, `E0308`) |
+| Opaque type | `opaque type Token(str)`<br>`opaque type Conn(.{ fd: int })` | Erased wrapper interconvertible with its representation inside its exact defining file or `sub` (`<Token> != <str>`), sealed outside including parent/child `sub`s (`E0301`, `E0308`). Inherits value vs. `SharedObject` and must-consume status across interfaces; wrapping a must-consume payload requires `opaque linear type` (`E0625`). Bodyless `opaque type` requires a registered built-in (`E0902`) |
+| Linear type | `linear type Ticket(int)`<br>`opaque linear type File(.{ fd: int, var pos: int })` | Contextual `linear` modifier (`[Visibility] ["opaque"] ["linear"] "type"`; forbids `=` aliases and reversed `linear opaque type`, `E0120`) marks nominal wrappers, unit nominals, opaque types, and sums as **must-consume** (`E0625` if unconsumed, `E0549` on double/post-consume use). Admits pinned `let`/`let mut` bindings, call-scoped `ref`/`mut` parameters, `for ref`/`for mut` container traversal, and plain root consumption; forbids `var` (`E0532`), `^mut` (`E0401`/`E0510`), `let ref` (`E0402`), `new` (`E0411`/`E0546`), `via` (`E0550`), member modes (`E0356`), `clone` (`E0301`), `derive` (`E0536`), `==`/`!=` (`E0327`), map/set keys (`E0328`), closure/`&up` capture (`E0625`), and `meta` export (`E0816`). Direct linear returns omit `-> new` (`-> File`); `SharedObject` wrappers over linear types keep `-> new` (`-> new !<File, IoErr>`) |
+| Sum type | `type Res<T, E> { Ok(T); Err(E) }` | Closed or extensible (`..`) variant type (`opaque` seals construction, widening, and matching outside defining scope, `E0308`; `linear` marks every variant must-consume) |
 
 ```ebnf
 TypeDecl        ::= TypeDeclHead "=" ( TypeExpression | TypeFunctionExpr )
-NominalTypeDecl ::= TypeDeclHead [ "(" NominalPayloadType ")" ]
+NominalTypeDecl ::= ( TypeDeclHead | LinearTypeHead ) [ "(" NominalPayloadType ")" ]
 OpaqueTypeDecl  ::= OpaqueTypeHead [ "(" NominalPayloadType ")" ]
 NominalPayloadType ::= TypeExpression { "," TypeExpression } [ "," ]
 TypeDeclHead    ::= { MetaAttr } [ Visibility ] "type" PascalCase [ GenericParams ]
-OpaqueTypeHead  ::= { MetaAttr } [ Visibility ] "opaque" "type" PascalCase [ GenericParams ]
+LinearTypeHead  ::= { MetaAttr } [ Visibility ] "linear" "type" PascalCase [ GenericParams ]
+OpaqueTypeHead  ::= { MetaAttr } [ Visibility ] "opaque" [ "linear" ] "type" PascalCase [ GenericParams ]
 LocalTypeDecl   ::= TypeDecl | NominalTypeDecl | OpaqueTypeDecl | SumTypeDecl
 ```
 
@@ -3158,7 +3162,7 @@ fn main() @io -> new !<(), str> {
 The implicit prelude encloses every compilation unit and inline `sub`:
 - **Types & effects**: Primitive types, `Option<T>` (`?T`; exports `Some`, `None`), `Result<T, E>` (`!<T, E>`; exports `Ok`, `Err`), `Set<T>`, `FieldMode`, `Derived<T>`, and `@io`.
 - **Static checks, patterns & type helpers**: `SharedObject`, `LenTarget`, `InnerTarget`, `Inner`, `KeyOf`, and the static-only type pattern `Nominal<pat>`.
-- **Core modules**: `Array` (including destructive extractors `Array::pop`, `Array::pop_front`, `Array::remove` returning `new ?T`), `Map` (including `Map::replace` and `Map::remove` returning `new ?V`), `Set`, `String`, `Bytes`, `Numeric`, and `Reflect` (providing `TypeKind`, `FieldKey`, `type_name`, `type_kind`, `fields`, `sum_tags`, `attrs`, `field_attrs`, `variant_attrs`, `has_default`).
+- **Core modules**: `Array` (including destructive extractors `Array::pop`, `Array::pop_front`, `Array::remove` returning `new ?T`), `Map` (including destructive extractors `Map::replace`, `Map::remove` returning `new ?V`, `Map::pop_entry` returning `new ?(K, V)`, plus linear-safe `Map::contains` and `Map::keys`), `Set`, `String`, `Bytes`, `Numeric`, and `Reflect` (providing `TypeKind`, `FieldKey`, `type_name`, `type_kind`, `fields`, `sum_tags`, `attrs`, `field_attrs`, `variant_attrs`, `has_default`).
 - **Explicit standard imports**: `use ril/panic`, `use ril/io`, `use ril/file`, `use ril/platform`, and `use ril/math`.
 
 #### Built-in Foundational Operations
@@ -3224,6 +3228,21 @@ fn safe_suspend(k: ctl() -> int) @Pause -> int {
     0
 }
 
+sub Resources {
+    pub opaque linear type File(.{ path: str, var written: int })
+    pub fn open(path: str) -> new !<File, str> { Ok(File::(.{ path, written: 0 })) }
+    pub fn path(ref f: File) -> str { inner(ref f).path }
+    pub fn write(mut f: File, n: int) &mut -> () { inner(mut f).written = inner(ref f).written + n }
+    pub fn close(f: File) -> int { let File::(.{ written, .. }) = f; written }
+}
+
+fn scoped_linear_demo() -> new !<str, str> {
+    let mut f = Resources::open("log.txt")?
+    defer { let _ = Resources::close(f) }     -- Consuming 'defer' discharges 'f' on exit and unwind
+    Resources::write(mut f, 16)               -- Call-scoped 'mut' mutates without consuming 'f'
+    Ok(Resources::path(ref f))                -- Call-scoped 'ref' observes without consuming 'f'
+}
+
 -- Rejected uninspected Results (E0720) and unconsumed linear values (E0625):
 -- fn drop_any<T>(_x: T) -> () {}
 -- write_entry("dropped")                     -- Error [E0720]: uninspected fallible Result
@@ -3237,10 +3256,11 @@ fn safe_suspend(k: ctl() -> int) @Pause -> int {
 ```
 
 - **Satisfies `E0720`**: Matching `Ok(...)`/`Err(...)` on a reached path, comparing `==`/`!=` against `Ok(...)`/`Err(...)`, propagating (`?`), handling (`??`), passing to an explicitly `!<T, E>`-typed parameter, or returning. Each `Result` in a composite or collection carries its own obligation (`break` leaves unvisited elements pending; `continue` keeps skipped elements pending; `?` requires other live Results to be inspected or returned).
-- **Must-consume linear values (`E0625`)**: Mode-free `ctl(...)` continuations and any composite, nominal, or `opaque` type transitively containing them (propagated across `opaque` boundaries in `K-IFACE`):
-  - Every normal and early-exit (`return`/`?`) path must consume `k` via direct invocation `k(...)`, `unwind_ctl(k)`, return, container/function transfer, or armed `defer` (`E0625` on discard, `_`, `Map::insert` overwrite, `Array::clear`/`Map::clear`, or unconsumed collection elements). Generic functions that drop, duplicate, or suspend an unconstrained `T` across unhandled `ctl` automatically record linearity flags so passing `ctl(...)` fails `E0625` while transparent generic identity (`fn id<T>(x: T) -> T { x }`) remains valid.
-  - Across any unhandled `ctl` call, every live must-consume value must either be passed into that call or be managed by an armed `defer` inside the same `ctl` boundary (`E0625`).
-  - Closures cannot capture must-consume `ctl(...)` values (`E0625`).
+- **Must-consume linear values (`E0625`)**: Mode-free `ctl(...)` continuations, user-defined `[opaque] linear type` declarations, and any composite, nominal, or `opaque` type transitively containing them (propagated across `opaque` boundaries and generic type parameters in `K-IFACE`):
+  - Every normal and early-exit (`return`/`?`) path must consume every live linear binding via direct root consumption (`k(...)`, `unwind_ctl(k)`, plain consuming call `File::close(f)`), return, container/function transfer, destructuring (`let Wrap::(x) = w` / `match`), or an armed consuming `defer` (`E0625` on discard, `_`, `Map::insert` overwrite, `Array::clear`/`Map::clear`, slot overwrite, or unconsumed collection elements; `E0549` on double use, post-consume use, or returning a binding consumed by `defer`). Generic functions that drop, duplicate, conditionally skip, loop over, or suspend an unconstrained `T` across unhandled `ctl` automatically record linearity flags so passing a linear type fails `E0625`/`E0548`, while transparent generic identity (`fn id<T>(x: T) -> T { x }`) remains valid.
+  - **Scoped-Access Linear**: User-defined linear types allow pinned `let`/`let mut` bindings, call-scoped `ref`/`mut` parameters (including value-backed `opaque linear type Fd(int)`), and `for ref`/`for mut` traversal over `[]L`/`[K: L]` without consuming the binding; consuming or returning a linear value through call-scoped `ref`/`mut` access is rejected (`E0528`). `ctl(...)` continuations remain strictly mode-free (`E0401`/`E0402`).
+  - Across any unhandled `ctl` call, every live must-consume value must either be passed into that call or be managed by an armed consuming `defer` inside the same `ctl` boundary (`E0625`; a read-only `defer` does not arm).
+  - Closures, named local `&up(...)` functions, top-level `let` bindings, and `meta` roots cannot capture or store must-consume linear values (`E0625` / `E0816`).
 
 ---
 
@@ -3255,7 +3275,6 @@ fn safe_suspend(k: ctl() -> int) @Pause -> int {
 | **`E0103`** | [`PatternCasingCollisionError`](#identifiers-and-casing-invariants) |
 | **`E0104`** | [`InvalidSourceEncodingError`](#character-set-and-encoding) |
 | **`E0105`** | [`InvalidSourceCharacterError`](#character-set-and-encoding) |
-| **`E0106`** | [`UnterminatedCommentError`](#comments) |
 | **`E0107`** | [`UnterminatedStringLiteralError`](#text-and-byte-literals) |
 | **`E0108`** | [`InvalidEscapeSequenceError`](#text-and-byte-literals) |
 | **`E0109`** | [`InvalidUnicodeScalarError`](#text-and-byte-literals) |

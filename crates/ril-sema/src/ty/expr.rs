@@ -1032,7 +1032,9 @@ impl Checker<'_> {
                 self.equatable(env, key, seen) && self.equatable(env, &value.ty, seen)
             }
             Ty::Adt(adt) if seen.insert(adt.definition) => {
-                let result = if matches!(adt.kind, AdtKind::Sum | AdtKind::OpaqueSum) {
+                let result = if adt.is_linear {
+                    false
+                } else if matches!(adt.kind, AdtKind::Sum | AdtKind::OpaqueSum) {
                     self.sum_variants(adt)
                         .values()
                         .flatten()

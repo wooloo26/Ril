@@ -1,10 +1,6 @@
 {
   "comments": {
-    "lineComment": "--",
-    "blockComment": [
-      "{-",
-      "-}"
-    ]
+    "lineComment": "--"
   },
   "brackets": [
     [
@@ -39,13 +35,6 @@
       "notIn": [
         "string",
         "comment"
-      ]
-    },
-    {
-      "open": "{-",
-      "close": "-}",
-      "notIn": [
-        "string"
       ]
     }
   ],

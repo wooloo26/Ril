@@ -27,6 +27,22 @@ impl Analyzer<'_> {
                 };
                 let variable = own.variable || storage.variable;
                 let access = Access::from_mode(mode);
+                let binding_ty = self.program.bindings.get(&binding);
+                let binding_is_ctl = binding_ty.is_some_and(|ty| self.program.is_ctl_ty(ty));
+                let binding_is_linear_root =
+                    binding_ty.is_some_and(|ty| self.program.is_linear_root(ty));
+                let binding_is_user_linear = binding_is_linear_root && !binding_is_ctl;
+                let binding_is_must_consume =
+                    binding_ty.is_some_and(|ty| self.program.is_must_consume(ty));
+                let binding_is_collection =
+                    binding_ty.is_some_and(|ty| matches!(ty, Ty::Array(_) | Ty::Map(..)));
+                let is_scoped_linear_borrow = site == BindingSite::ScopedPattern
+                    && binding_is_user_linear
+                    && matches!(mode, Mode::Ref | Mode::Mut)
+                    && value
+                        .roots
+                        .iter()
+                        .any(|r| r.mode == Access::Ref || r.call_scoped_access);
                 if variable {
                     self.requirement(
                         ctx,
@@ -36,7 +52,9 @@ impl Analyzer<'_> {
                     );
                 }
                 if matches!(mode, Mode::Mut | Mode::Shared) {
-                    self.require_schema(ctx, &value, SchemaRequirement::Writable);
+                    if !binding_is_user_linear {
+                        self.require_schema(ctx, &value, SchemaRequirement::Writable);
+                    }
                     self.requirement(
                         ctx,
                         name.span,
@@ -46,18 +64,26 @@ impl Analyzer<'_> {
                 }
                 match mode {
                     Mode::Mut if site == BindingSite::Declaration => {
-                        self.check_exclusive_reception(&value, name.span);
+                        if !binding_is_user_linear {
+                            self.check_exclusive_reception(&value, name.span);
+                        }
                     }
-                    Mode::Mut if !value.requires_new && !value.writers() => self.error(
-                        Code::E0520,
-                        name.span,
-                        "binding cannot manufacture write authority",
-                    ),
+                    Mode::Mut if !value.requires_new && !value.writers() => {
+                        if !binding_is_user_linear {
+                            self.error(
+                                Code::E0520,
+                                name.span,
+                                "binding cannot manufacture write authority",
+                            );
+                        }
+                    }
                     Mode::Shared => self.require_shared_local(ctx, declaration, &value),
                     Mode::Ref => {
-                        self.check_ref_binding(name.span, &value, variable);
-                        if variable {
-                            self.check_ref_scope(name.span, &value, ctx.scope);
+                        if !is_scoped_linear_borrow {
+                            self.check_ref_binding(name.span, &value, variable);
+                            if variable {
+                                self.check_ref_scope(name.span, &value, ctx.scope);
+                            }
                         }
                     }
                     Mode::Via if ctx.via.is_empty() && !ctx.member_via => {
@@ -80,14 +106,9 @@ impl Analyzer<'_> {
                     }
                     _ => {}
                 }
-                let mut binding_is_ctl = false;
-                let mut binding_is_must_consume = false;
-                let mut binding_is_collection = false;
-                if let Some(ty) = self.program.bindings.get(&binding) {
-                    binding_is_ctl = self.program.is_ctl_ty(ty);
-                    binding_is_must_consume = self.program.is_must_consume(ty);
-                    binding_is_collection = matches!(ty, Ty::Array(_) | Ty::Map(..));
+                if let Some(ty) = binding_ty {
                     if self.program.is_value(ty)
+                        && !binding_is_user_linear
                         && matches!(mode, Mode::Mut | Mode::Shared | Mode::Ref)
                     {
                         self.error(
@@ -107,21 +128,42 @@ impl Analyzer<'_> {
                             name.span,
                             "ctl continuation is linear and cannot carry an access mode",
                         );
+                    } else if binding_is_must_consume && !ctx.in_function {
+                        self.error(
+                            Code::E0625,
+                            name.span,
+                            "must-consume value cannot be stored in a top-level binding",
+                        );
                     } else if binding_is_must_consume && variable {
                         self.error(
                             Code::E0532,
                             name.span,
-                            "container of must-consume values cannot be stored in a reassignable slot",
+                            "must-consume value cannot be stored in a reassignable slot",
                         );
                     } else if binding_is_must_consume && mode == Mode::Shared {
                         self.error(
                             Code::E0510,
                             name.span,
-                            "container of must-consume values cannot be shared",
+                            "must-consume value cannot be shared",
+                        );
+                    } else if binding_is_user_linear
+                        && mode == Mode::Ref
+                        && !is_scoped_linear_borrow
+                    {
+                        self.error(
+                            Code::E0402,
+                            name.span,
+                            "linear type cannot be bound with let ref; use a ref parameter or for ref loop",
+                        );
+                    } else if binding_is_user_linear && mode == Mode::Via {
+                        self.error(
+                            Code::E0550,
+                            name.span,
+                            "linear value cannot use via",
                         );
                     }
                 }
-                if binding_is_must_consume && mode != Mode::Ref {
+                if binding_is_must_consume && mode != Mode::Ref && !is_scoped_linear_borrow {
                     let had_linear = !value.all_linear().is_empty();
                     let has_bound_dep = value.roots.iter().any(|r| !r.dependencies.is_empty());
                     if had_linear || has_bound_dep {
@@ -132,13 +174,23 @@ impl Analyzer<'_> {
                     }
                 }
                 if mode == Mode::Plain {
-                    if !binding_is_ctl {
+                    if !binding_is_must_consume {
                         self.freeze_value(ctx, ledger, &mut value, name.span);
                     }
                 } else if mode != Mode::Via {
                     value.receive_binding(access);
+                    if is_scoped_linear_borrow {
+                        for root in &mut value.roots {
+                            root.call_scoped_access = true;
+                        }
+                    }
                 } else {
                     value.forget_collection_layout();
+                }
+                if binding_is_must_consume && value.roots.is_empty() {
+                    let mut source = Datum::source(name.span, access, true);
+                    source.linear = value.linear;
+                    value = source;
                 }
                 value.transform(&mut |origin| {
                     origin.dependencies.insert(declaration.into());
@@ -158,23 +210,57 @@ impl Analyzer<'_> {
                 self.discard(ledger, &value);
             }
             Pattern::Tuple(items) => {
+                let linear_destruct =
+                    storage.mode == Mode::Plain && self.program.is_must_consume(self.ty(node.span));
+                if linear_destruct {
+                    self.consume_linear(ctx, ledger, &mut value);
+                }
                 for (i, &item) in items.iter().enumerate() {
                     let coordinate = Coordinate::Index(i.to_string());
                     let mode = self.schema_mode(self.ty(node.span), &coordinate).0;
                     let span = self.ast(ctx.file).pattern(item).span;
-                    let child =
+                    let item_ty = self.ty(span);
+                    let item_is_user_linear =
+                        self.program.is_linear_root(item_ty) && !self.program.is_ctl_ty(item_ty);
+                    let mut child =
                         self.project_observed(ctx, ledger, &value, (coordinate, mode, span));
+                    if linear_destruct {
+                        for root in &mut child.roots {
+                            root.dependencies.clear();
+                        }
+                        if self.program.is_must_consume(item_ty) && child.all_linear().is_empty() {
+                            ledger.record_linear(
+                                &mut child,
+                                span,
+                                matches!(item_ty, Ty::Array(_) | Ty::Map(..)),
+                            );
+                        }
+                    }
+                    let item_storage = if site == BindingSite::ScopedPattern
+                        && matches!(storage.mode, Mode::Ref | Mode::Mut)
+                        && self.program.is_value(item_ty)
+                        && !self.program.is_must_consume(item_ty)
+                    {
+                        Storage::default()
+                    } else {
+                        storage.clone()
+                    };
                     if let Pattern::Binding(own, name) = &self.ast(ctx.file).pattern(item).value {
                         let requested = if own.mode == Mode::Plain {
-                            storage.mode
+                            item_storage.mode
                         } else {
                             own.mode
                         };
                         let member_mode = Access::from_mode(mode);
+                        let linear_mut_ok = item_is_user_linear
+                            && requested == Mode::Mut
+                            && (linear_destruct
+                                || (site == BindingSite::ScopedPattern && child.writers()));
                         if matches!(requested, Mode::Mut | Mode::Shared)
                             && mode != Mode::Via
                             && !member_mode.writes()
                             && !child.origins().any(|origin| origin.draft)
+                            && !linear_mut_ok
                         {
                             self.error(
                                 Code::E0551,
@@ -183,7 +269,7 @@ impl Analyzer<'_> {
                             );
                         }
                     }
-                    self.bind(ctx, ledger, item, storage, child, site);
+                    self.bind(ctx, ledger, item, &item_storage, child, site);
                 }
             }
             Pattern::Slice { text, elements } => {
@@ -248,40 +334,85 @@ impl Analyzer<'_> {
                     );
                 }
             }
-            Pattern::Wrap(_, items) => match items.as_slice() {
-                [] => {}
-                [inner] => self.bind(ctx, ledger, *inner, storage, value, site),
-                many => {
-                    for (i, &item) in many.iter().enumerate() {
-                        let coordinate = Coordinate::Index(i.to_string());
-                        let mode = self.schema_mode(self.ty(node.span), &coordinate).0;
-                        let span = self.ast(ctx.file).pattern(item).span;
-                        let child =
-                            self.project_observed(ctx, ledger, &value, (coordinate, mode, span));
-                        if let Pattern::Binding(own, name) = &self.ast(ctx.file).pattern(item).value
-                        {
-                            let requested = if own.mode == Mode::Plain {
-                                storage.mode
-                            } else {
-                                own.mode
-                            };
-                            let member_mode = Access::from_mode(mode);
-                            if matches!(requested, Mode::Mut | Mode::Shared)
-                                && mode != Mode::Via
-                                && !member_mode.writes()
-                                && !child.origins().any(|origin| origin.draft)
+            Pattern::Wrap(_, items) => {
+                let linear_destruct =
+                    storage.mode == Mode::Plain && self.program.is_must_consume(self.ty(node.span));
+                if linear_destruct {
+                    self.consume_linear(ctx, ledger, &mut value);
+                }
+                match items.as_slice() {
+                    [] => {}
+                    [inner] => {
+                        if linear_destruct {
+                            for root in &mut value.roots {
+                                root.dependencies.clear();
+                            }
+                            let inner_span = self.ast(ctx.file).pattern(*inner).span;
+                            let inner_ty = self.ty(inner_span);
+                            if self.program.is_must_consume(inner_ty)
+                                && value.all_linear().is_empty()
                             {
-                                self.error(
-                                    Code::E0551,
-                                    name.span,
-                                    "tuple slot cannot decompose with writable authority",
+                                ledger.record_linear(
+                                    &mut value,
+                                    inner_span,
+                                    matches!(inner_ty, Ty::Array(_) | Ty::Map(..)),
                                 );
                             }
                         }
-                        self.bind(ctx, ledger, item, storage, child, site);
+                        self.bind(ctx, ledger, *inner, storage, value, site);
+                    }
+                    many => {
+                        for (i, &item) in many.iter().enumerate() {
+                            let coordinate = Coordinate::Index(i.to_string());
+                            let mode = self.schema_mode(self.ty(node.span), &coordinate).0;
+                            let span = self.ast(ctx.file).pattern(item).span;
+                            let mut child = self.project_observed(
+                                ctx,
+                                ledger,
+                                &value,
+                                (coordinate, mode, span),
+                            );
+                            if linear_destruct {
+                                for root in &mut child.roots {
+                                    root.dependencies.clear();
+                                }
+                                let item_ty = self.ty(span);
+                                if self.program.is_must_consume(item_ty)
+                                    && child.all_linear().is_empty()
+                                {
+                                    ledger.record_linear(
+                                        &mut child,
+                                        span,
+                                        matches!(item_ty, Ty::Array(_) | Ty::Map(..)),
+                                    );
+                                }
+                            }
+                            if let Pattern::Binding(own, name) =
+                                &self.ast(ctx.file).pattern(item).value
+                            {
+                                let requested = if own.mode == Mode::Plain {
+                                    storage.mode
+                                } else {
+                                    own.mode
+                                };
+                                let member_mode = Access::from_mode(mode);
+                                if matches!(requested, Mode::Mut | Mode::Shared)
+                                    && mode != Mode::Via
+                                    && !member_mode.writes()
+                                    && !child.origins().any(|origin| origin.draft)
+                                {
+                                    self.error(
+                                        Code::E0551,
+                                        name.span,
+                                        "tuple slot cannot decompose with writable authority",
+                                    );
+                                }
+                            }
+                            self.bind(ctx, ledger, item, storage, child, site);
+                        }
                     }
                 }
-            },
+            }
             Pattern::Constructor(_, payload) => {
                 let items = payload.as_deref().unwrap_or(&[]);
                 let linear_destruct =
@@ -318,8 +449,14 @@ impl Analyzer<'_> {
                         } else {
                             own.mode
                         };
+                        let item_ty = self.ty(item_span);
+                        let linear_mut_ok = linear_destruct
+                            && requested == Mode::Mut
+                            && self.program.is_linear_root(item_ty)
+                            && !self.program.is_ctl_ty(item_ty);
                         if matches!(requested, Mode::Mut | Mode::Shared)
                             && !child.origins().any(|origin| origin.draft)
+                            && !linear_mut_ok
                         {
                             self.error(
                                 Code::E0551,
@@ -378,7 +515,14 @@ impl Analyzer<'_> {
                             _ => None,
                         })
                         .unwrap_or(received.mode);
+                    let field_ty = self.ty(span);
+                    let linear_field_mut_ok = record_is_linear
+                        && storage.mode == Mode::Plain
+                        && requested == Mode::Mut
+                        && self.program.is_linear_root(field_ty)
+                        && !self.program.is_ctl_ty(field_ty);
                     if matches!(requested, Mode::Mut | Mode::Shared)
+                        && !linear_field_mut_ok
                         && !(child.writers()
                             && (member_mode.writes() || child.origins().any(|origin| origin.draft)))
                     {

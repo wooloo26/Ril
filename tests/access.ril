@@ -3325,3 +3325,297 @@ fn bad() -> () {
     }
     Yield::pause()
 }
+
+-- @case linear_is_contextual_identifier compile-pass
+fn ok() -> int {
+    let linear = 42
+    linear
+}
+
+-- @case linear_alias_with_equals_rejected compile-fail E0120
+linear type Alias = int
+-- ^ E0120
+
+-- @case linear_opaque_reversed_order_rejected compile-fail E0120
+linear opaque type Bad(int)
+-- ^ E0120
+
+-- @case opaque_wrapping_ctl_without_linear_rejected compile-fail E0625
+opaque type Bad(.{ k: ctl() -> () })
+-- ^ E0625
+
+-- @case linear_scoped_access_file_and_typestate_pool compile-pass
+sub Fs {
+    pub opaque linear type File(.{ path: str, var written: int })
+    pub fn open(path: str) -> new !<File, str> {
+        Ok(File::(.{ path, written: 0 }))
+    }
+    pub fn path(ref f: File) -> str { inner(ref f).path }
+    pub fn write(mut f: File, n: int) &mut -> () {
+        inner(mut f).written = inner(ref f).written + n
+    }
+    pub fn close(f: File) -> int {
+        let File::(.{ written, .. }) = f
+        written
+    }
+}
+
+sub Net {
+    pub type Disconnected
+    pub type Connected
+    pub opaque linear type Conn<S>(.{ id: int, var sent: int })
+    pub fn create(id: int) -> Conn<Disconnected> {
+        Conn::(.{ id, sent: 0 })
+    }
+    pub fn connect(c: Conn<Disconnected>) -> Conn<Connected> {
+        let Conn::(.{ id, sent }) = c
+        Conn::(.{ id, sent })
+    }
+    pub fn id(ref c: Conn<Connected>) -> int { inner(ref c).id }
+    pub fn send(mut c: Conn<Connected>, n: int) &mut -> () {
+        inner(mut c).sent = inner(ref c).sent + n
+    }
+    pub fn close_connected(c: Conn<Connected>) -> int {
+        let Conn::(.{ sent, .. }) = c
+        sent
+    }
+}
+
+fn use_file() -> new !<str, str> {
+    let mut f = Fs::open("a.txt")?
+    defer { let _ = Fs::close(f) }
+    Fs::write(mut f, 10)
+    Ok(Fs::path(ref f))
+}
+
+fn use_pool() -> int {
+    let mut pool: [str: Net::Conn<Net::Connected>] = [:]
+    defer {
+        while let Some((_, c)) = Map::pop_entry(mut pool) {
+            let _ = Net::close_connected(c)
+        }
+    }
+    let raw = Net::create(1)
+    let mut c = Net::connect(raw)
+    Net::send(mut c, 5)
+    if let Some(old) = Map::replace(mut pool, "primary", c) {
+        let _ = Net::close_connected(old)
+    }
+    let _ = Map::contains(ref pool, "primary")
+    let _ = Map::keys(ref pool)
+    var total = 0
+    for mut pool as (_, conn) {
+        Net::send(mut conn, 2)
+    }
+    for ref pool as (_, conn) {
+        total = total + Net::id(ref conn)
+    }
+    total
+}
+
+-- @case linear_unconsumed_on_exit_rejected compile-fail E0625
+linear type Ticket(int)
+fn bad() -> () {
+    let t = Ticket::(1)
+    -- ^ E0625
+}
+
+-- @case linear_value_backed_double_consume_rejected compile-fail E0549
+opaque linear type Fd(int)
+fn close_fd(f: Fd) -> int { inner(f) }
+fn bad() -> int {
+    let f = Fd::(7)
+    let a = close_fd(f)
+    let b = close_fd(f)
+    -- ^ E0549
+    a + b
+}
+
+-- @case linear_use_after_consume_rejected compile-fail E0549
+opaque linear type Fd(int)
+fn raw_fd(ref f: Fd) -> int { inner(ref f) }
+fn close_fd(f: Fd) -> int { inner(f) }
+fn bad() -> int {
+    let f = Fd::(7)
+    let a = close_fd(f)
+    a + raw_fd(ref f)
+    -- ^ E0549
+}
+
+-- @case linear_return_after_defer_consume_rejected compile-fail E0549
+linear type Ticket(int)
+fn spend(t: Ticket) -> int { inner(t) }
+fn bad() -> Ticket {
+-- ^ E0549
+    let t = Ticket::(1)
+    defer { let _ = spend(t) }
+    t
+}
+
+-- @case linear_non_consuming_defer_does_not_arm_across_ctl compile-fail E0625
+eff Yield { ctl pause() -> () }
+opaque linear type Fd(int)
+fn peek(ref f: Fd) -> int { inner(ref f) }
+fn close_fd(f: Fd) -> int { inner(f) }
+fn bad() @Yield -> int {
+    let f = Fd::(1)
+    defer { let _ = peek(ref f) }
+    Yield::pause()
+    -- ^ E0625
+    close_fd(f)
+}
+
+-- @case linear_consume_through_ref_param_rejected compile-fail E0528
+linear type Ticket(int)
+fn spend(t: Ticket) -> int { inner(t) }
+fn bad(ref t: Ticket) -> int {
+-- ^ E0528
+    spend(t)
+}
+
+-- @case linear_consume_through_mut_param_rejected compile-fail E0528
+opaque linear type File(.{ var n: int })
+fn close(f: File) -> int { inner(f).n }
+fn bad(mut f: File) &mut -> int {
+-- ^ E0528
+    inner(mut f).n = 1
+    close(f)
+}
+
+-- @case linear_return_through_ref_param_rejected compile-fail E0528
+linear type Ticket(int)
+fn bad(ref t: Ticket) -> Ticket {
+-- ^ E0528
+    t
+}
+
+-- @case linear_var_slot_rejected compile-fail E0532
+linear type Ticket(int)
+fn spend(t: Ticket) -> int { inner(t) }
+fn bad() -> int {
+    var t = Ticket::(1)
+    -- ^ E0532
+    spend(t)
+}
+
+-- @case linear_let_ref_rejected compile-fail E0402
+linear type Ticket(int)
+fn spend(t: Ticket) -> int { inner(t) }
+fn bad() -> int {
+    let t = Ticket::(1)
+    let ref r = t
+    -- ^ E0402
+    spend(t)
+}
+
+-- @case linear_shared_param_rejected compile-fail E0401
+linear type Ticket(int)
+fn bad(^mut t: Ticket) &^mut -> () { () }
+-- ^ E0401
+
+-- @case linear_new_param_rejected compile-fail E0411
+linear type Ticket(int)
+fn bad(new t: Ticket) -> int { inner(t) }
+-- ^ E0411
+
+-- @case linear_direct_new_return_rejected compile-fail E0546
+linear type Ticket(int)
+fn bad() -> new Ticket { Ticket::(1) }
+-- ^ E0546
+
+-- @case linear_via_param_rejected compile-fail E0550
+linear type Ticket(int)
+fn bad(via t: Ticket) -> int { inner(t) }
+-- ^ E0550
+
+-- @case linear_member_mode_rejected compile-fail E0356
+linear type Ticket(int)
+type Bag = [mut]Ticket
+-- ^ E0356
+
+-- @case linear_clone_rejected compile-fail E0301
+opaque linear type Boxed(.{ n: int })
+fn bad(ref b: Boxed) -> Boxed {
+    clone(ref b)
+    -- ^ E0301
+}
+
+-- @case linear_derive_rejected compile-fail E0536
+opaque linear type Boxed(.{ n: int })
+fn bad(b: Boxed) -> Boxed {
+    derive(b) \mut d -> { () }
+    -- ^ E0536
+}
+
+-- @case linear_equality_rejected compile-fail E0327
+linear type Ticket(int)
+fn bad(ref a: Ticket, ref b: Ticket) -> bool {
+    a == b
+    -- ^ E0327
+}
+
+-- @case linear_plain_inspect_rejected compile-fail E0405
+linear type Ticket(int)
+fn spend(t: Ticket) -> int { inner(t) }
+fn bad() -> str {
+    let t = Ticket::(1)
+    let s = String::inspect(t)
+    -- ^ E0405
+    let _ = spend(t)
+    s
+}
+
+-- @case linear_named_up_capture_rejected compile-fail E0625
+linear type Ticket(int)
+fn spend(t: Ticket) -> int { inner(t) }
+fn bad() -> int {
+    let t = Ticket::(1)
+    let r = f()
+    r
+    where
+    fn f() &up(t) -> int { spend(t) }
+    -- ^ E0625
+}
+
+-- @case linear_plain_for_rejected compile-fail E0548
+linear type Ticket(int)
+fn spend(t: Ticket) -> int { inner(t) }
+fn bad() -> () {
+    let mut xs: []Ticket = [Ticket::(1)]
+    for xs as t {
+    -- ^ E0548
+        let _ = spend(t)
+    }
+    while let Some(t) = Array::pop(mut xs) {
+        let _ = spend(t)
+    }
+}
+
+-- @case linear_generic_if_drop_rejected compile-fail E0625
+linear type Ticket(int)
+fn maybe_use<T>(cond: bool, x: T) -> () {
+    if cond {
+        let _ = x
+    }
+}
+fn bad() -> () {
+    let t = Ticket::(1)
+    maybe_use(false, t)
+    -- ^ E0625
+}
+
+-- @case linear_generic_while_dup_rejected compile-fail E0548
+linear type Ticket(int)
+fn loop_use<T>(n: int, x: T) -> () {
+    var i = 0
+    while i < n {
+        let y = x
+        let _ = y
+        i = i + 1
+    }
+}
+fn bad() -> () {
+    let t = Ticket::(1)
+    loop_use(2, t)
+    -- ^ E0548
+}

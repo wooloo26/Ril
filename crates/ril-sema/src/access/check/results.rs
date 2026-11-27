@@ -409,10 +409,22 @@ impl Analyzer<'_> {
         if paths.is_empty() {
             paths.push((ledger.clone(), value));
         }
+        let input_is_linear = self.program.is_must_consume(ty);
+        let payload_ty = ty
+            .as_result(&self.program.hir)
+            .map(|(ok, _)| ok)
+            .or_else(|| ty.as_option(&self.program.hir));
+        let payload_is_linear =
+            payload_ty.is_some_and(|inner| self.program.is_must_consume(inner));
+        let payload_is_collection =
+            payload_ty.is_some_and(|inner| matches!(inner, Ty::Array(_) | Ty::Map(..)));
         let mut continuing = Vec::new();
         let mut output = None;
-        for (mut path, value) in paths {
+        for (mut path, mut value) in paths {
             path.inspect_root(&value);
+            if input_is_linear {
+                self.consume_linear(ctx, &mut path, &mut value);
+            }
             let tag = value.known_variant();
             if tag != Some(success) {
                 if tag.is_some() {
@@ -436,7 +448,10 @@ impl Analyzer<'_> {
                 self.check_results(&path, &transfer);
                 self.storage_exit(ctx, &path);
             }
-            let payload = path.project(&value, member.clone(), Access::Immutable);
+            let mut payload = path.project(&value, member.clone(), Access::Immutable);
+            if payload_is_linear && payload.all_linear().is_empty() {
+                path.record_linear(&mut payload, site, payload_is_collection);
+            }
             output = Some(match output {
                 Some(prior) => payload.joined(prior),
                 None => payload,

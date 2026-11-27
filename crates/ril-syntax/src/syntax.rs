@@ -255,6 +255,7 @@ pub enum TypeKind {
 pub struct TypeDecl {
     pub name: Name,
     pub kind: TypeKind,
+    pub is_linear: bool,
     pub generics: Vec<GenericParam>,
     pub definition: TypeDefinition,
 }

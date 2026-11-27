@@ -232,11 +232,18 @@ impl Compiler {
         pkg: &VirtualPackage,
     ) -> Result<(TypedProgram, Analysis), Vec<Diagnostic>> {
         let prepared = prepare_inputs(pkg, self.cache());
-        let (_, program, imports, behaviors, must_consume) =
+        let (_, program, imports, behaviors, must_consume, must_consume_params) =
             run_frontend_full(pkg, Stage::Hir, prepared, self.cache())?;
         let program =
             program.ok_or_else(|| vec![Diagnostic::unsupported("missing frontend program")])?;
-        let typed = check_types(program, pkg.budget, imports, behaviors, &must_consume)?;
+        let typed = check_types(
+            program,
+            pkg.budget,
+            imports,
+            behaviors,
+            &must_consume,
+            &must_consume_params,
+        )?;
         let analysis = access::check(&typed)?;
         Ok((typed, analysis))
     }
@@ -282,6 +289,7 @@ impl Compiler {
         let imports = prepared.imports.clone();
         let behaviors = prepared.behaviors.clone();
         let must_consume = prepared.must_consume_types.clone();
+        let must_consume_params = prepared.must_consume_params.clone();
         let mut diagnostics = prepared.diagnostics.clone();
 
         let mut parsed = Vec::new();
@@ -364,6 +372,17 @@ impl Compiler {
                 .map(|(id, _)| id)
                 .collect();
         }
+        if !must_consume_params.is_empty() {
+            typed.imported_must_consume_params = typed
+                .hir
+                .definitions()
+                .filter_map(|(id, _)| {
+                    must_consume_params
+                        .get(&typed.hir.export_name(id))
+                        .map(|params| (id, params.clone()))
+                })
+                .collect();
+        }
         let (analysis, stage) = if !had_syntax_errors && !had_hir_errors && !had_type_errors {
             let (analysis, access_diags) = access::check_partial(&typed);
             diagnostics.extend(access_diags);
@@ -408,11 +427,19 @@ impl Compiler {
             return hit;
         }
         let result = (|| {
-            let (_, program, imports, behaviors, must_consume) =
+            let (_, program, imports, behaviors, must_consume, must_consume_params) =
                 run_frontend_full(pkg, Stage::Hir, prepared, self.cache())?;
             let program =
                 program.ok_or_else(|| vec![Diagnostic::unsupported("missing frontend program")])?;
-            check_types(program, pkg.budget, imports, behaviors, &must_consume).map(Arc::new)
+            check_types(
+                program,
+                pkg.budget,
+                imports,
+                behaviors,
+                &must_consume,
+                &must_consume_params,
+            )
+            .map(Arc::new)
         })();
         if let Some(cache) = &self.cache {
             cache.put_typed(key, result.clone());
@@ -553,6 +580,7 @@ fn check_types(
     imports: BTreeMap<String, Export>,
     behaviors: BTreeMap<String, BehaviorSummary>,
     must_consume: &BTreeSet<String>,
+    must_consume_params: &BTreeMap<String, Vec<usize>>,
 ) -> Result<TypedProgram, Vec<Diagnostic>> {
     let mut typed = ty::check(program, budget)?;
     if !imports.is_empty() {
@@ -589,6 +617,17 @@ fn check_types(
             .map(|(id, _)| id)
             .collect();
     }
+    if !must_consume_params.is_empty() {
+        typed.imported_must_consume_params = typed
+            .hir
+            .definitions()
+            .filter_map(|(id, _)| {
+                must_consume_params
+                    .get(&typed.hir.export_name(id))
+                    .map(|params| (id, params.clone()))
+            })
+            .collect();
+    }
     Ok(typed)
 }
 
@@ -607,6 +646,7 @@ struct PreparedInputs {
     imports: BTreeMap<String, Export>,
     behaviors: BTreeMap<String, BehaviorSummary>,
     must_consume_types: BTreeSet<String>,
+    must_consume_params: BTreeMap<String, Vec<usize>>,
     diagnostics: Vec<Diagnostic>,
     package_key: PackageKey,
     codegen_hashes: Vec<(PathBuf, String)>,
@@ -620,6 +660,7 @@ fn prepare_inputs(pkg: &VirtualPackage, cache: Option<&IncrementalCache>) -> Pre
     let mut imports = BTreeMap::new();
     let mut behaviors = BTreeMap::new();
     let mut must_consume_types = BTreeSet::new();
+    let mut must_consume_params = BTreeMap::new();
     let mut fingerprints = Vec::new();
     let mut codegen_hashes = Vec::new();
     for (path, file) in &pkg.files {
@@ -656,6 +697,20 @@ fn prepare_inputs(pkg: &VirtualPackage, cache: Option<&IncrementalCache>) -> Pre
                             .then(|| {
                                 name.strip_prefix(&prefix)
                                     .map(|local| format!("{}::{local}", logical.display()))
+                            })
+                            .flatten()
+                    },
+                ));
+                must_consume_params.extend(interface.declarations.iter().filter_map(
+                    |(name, decl)| {
+                        (!decl.must_consume_params.is_empty())
+                            .then(|| {
+                                name.strip_prefix(&prefix).map(|local| {
+                                    (
+                                        format!("{}::{local}", logical.display()),
+                                        decl.must_consume_params.clone(),
+                                    )
+                                })
                             })
                             .flatten()
                     },
@@ -722,6 +777,7 @@ fn prepare_inputs(pkg: &VirtualPackage, cache: Option<&IncrementalCache>) -> Pre
         imports,
         behaviors,
         must_consume_types,
+        must_consume_params,
         diagnostics,
         package_key: PackageKey::new(pkg.unit, pkg.entry.clone(), fingerprints),
         codegen_hashes,
@@ -734,7 +790,7 @@ fn run_frontend(
     prepared: PreparedInputs,
     cache: Option<&IncrementalCache>,
 ) -> Result<Option<Program>, Vec<Diagnostic>> {
-    run_frontend_full(pkg, stage, prepared, cache).map(|(_, program, _, _, _)| program)
+    run_frontend_full(pkg, stage, prepared, cache).map(|(_, program, _, _, _, _)| program)
 }
 
 type FrontendOutput = (
@@ -743,6 +799,7 @@ type FrontendOutput = (
     BTreeMap<String, Export>,
     BTreeMap<String, BehaviorSummary>,
     BTreeSet<String>,
+    BTreeMap<String, Vec<usize>>,
 );
 
 fn run_frontend_full(
@@ -758,12 +815,20 @@ fn run_frontend_full(
         imports,
         behaviors,
         must_consume_types,
+        must_consume_params,
         mut diagnostics,
         ..
     } = prepared;
     if stage == Stage::Source || !diagnostics.is_empty() {
         return if diagnostics.is_empty() {
-            Ok((sources, None, imports, behaviors, must_consume_types))
+            Ok((
+                sources,
+                None,
+                imports,
+                behaviors,
+                must_consume_types,
+                must_consume_params,
+            ))
         } else {
             Err(diagnostics)
         };
@@ -819,7 +884,14 @@ fn run_frontend_full(
         return Err(diagnostics);
     }
     if stage < Stage::Hir {
-        return Ok((sources, None, imports, behaviors, must_consume_types));
+        return Ok((
+            sources,
+            None,
+            imports,
+            behaviors,
+            must_consume_types,
+            must_consume_params,
+        ));
     }
     let Some(entry) = entry else {
         let missing_id = FileId::from_path(&pkg.entry);
@@ -836,6 +908,7 @@ fn run_frontend_full(
         imports,
         behaviors,
         must_consume_types,
+        must_consume_params,
     ))
 }
 

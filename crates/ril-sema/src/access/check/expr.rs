@@ -79,7 +79,6 @@ impl Analyzer<'_> {
                 }
             }
             StmtKind::Defer(defer_expr) => {
-                let defer_span = ast.expr(*defer_expr).span;
                 ctx.defers.push(DeferredAction {
                     expr: *defer_expr,
                     span: node.span,
@@ -88,15 +87,38 @@ impl Analyzer<'_> {
                     holds_len: ledger.holds.len(),
                     ctl_boundary: ctx.ctl_boundary,
                 });
-                let referenced: Vec<Span> = self
-                    .program
-                    .hir
-                    .references_within(defer_span)
-                    .map(|(_, def_id)| self.program.hir.definition(def_id).name.span)
-                    .collect();
-                for decl in referenced {
-                    if let Some(slot) = ledger.slots.get(&decl).cloned() {
-                        ledger.arm_datum_linear(&slot.value, node.span);
+                let pending: Vec<_> = ledger.pending_linear().cloned().collect();
+                if !pending.is_empty() && ctx.reachable && !ctx.shadow {
+                    let diag_len = self.diagnostics.len();
+                    let rules_len = self.rules.len();
+                    let req_len = self.requirements.len();
+                    let def_err_len = self.deferred_errors.len();
+                    let cc_len = self.capture_conflicts.len();
+                    let mc_len = self.mode_constraints.len();
+                    let ma_len = self.mode_applications.len();
+                    let mu_len = self.mode_uses.len();
+                    let glc_len = self.generic_linear_calls.len();
+                    let mut probe_ctx = ctx.clone();
+                    probe_ctx.shadow = true;
+                    probe_ctx.scope = node.span;
+                    probe_ctx.no_ctl = Some(node.span);
+                    probe_ctx.defers.clear();
+                    probe_ctx.reachable = true;
+                    let mut probe = ledger.clone();
+                    let _ = self.expr(&mut probe_ctx, &mut probe, *defer_expr);
+                    self.diagnostics.truncate(diag_len);
+                    self.rules.truncate(rules_len);
+                    self.requirements.truncate(req_len);
+                    self.deferred_errors.truncate(def_err_len);
+                    self.capture_conflicts.truncate(cc_len);
+                    self.mode_constraints.truncate(mc_len);
+                    self.mode_applications.truncate(ma_len);
+                    self.mode_uses.truncate(mu_len);
+                    self.generic_linear_calls.truncate(glc_len);
+                    for occ in pending {
+                        if probe.linear_consumed.contains(&occ) {
+                            ledger.linear_armed.insert(occ, node.span);
+                        }
                     }
                 }
             }
@@ -166,6 +188,7 @@ impl Analyzer<'_> {
                     "?" => {
                         if !ctx.defers.is_empty() && ctx.reachable && !ctx.shadow {
                             let mut err_ledger = ledger.clone();
+                            err_ledger.consume_datum_linear(&value);
                             let mut err_ctx = ctx.clone();
                             self.run_defers(&mut err_ctx, &mut err_ledger, 0);
                             self.check_linear(&err_ledger, &BTreeSet::new());
@@ -290,6 +313,9 @@ impl Analyzer<'_> {
                 let mut ordered_keys = Vec::new();
                 for (index, &(key, value)) in entries.iter().enumerate() {
                     let mut key_value = self.expr(ctx, ledger, key);
+                    if self.program.is_must_consume(self.ty(ast.expr(key).span)) {
+                        self.consume_linear(ctx, ledger, &mut key_value);
+                    }
                     if !key_value.roots.is_empty() {
                         // A later duplicate replaces the value while retaining the first key.
                         if index > 0 {
@@ -312,6 +338,9 @@ impl Analyzer<'_> {
                         .unwrap_or(Coordinate::Dynamic);
                     let access = self.member_schema(span, &coordinate).0;
                     let mut datum = self.expr(ctx, ledger, value);
+                    if self.program.is_must_consume(self.ty(ast.expr(value).span)) {
+                        self.consume_linear(ctx, ledger, &mut datum);
+                    }
                     if keys.is_none() && index + 1 < entries.len() {
                         // An unknown later key may replace this occurrence.
                         datum.forget_results();
@@ -747,19 +776,40 @@ impl Analyzer<'_> {
                     ..Storage::default()
                 };
                 let iterable_type = self.ty(ast.expr(*iterable).span);
-                let iter_elem_linear = match iterable_type {
-                    Ty::Array(item) => self.program.is_must_consume(&item.ty),
-                    Ty::Map(_, item) => self.program.is_must_consume(&item.ty),
-                    _ => false,
+                let iter_elem_ty = match iterable_type {
+                    Ty::Array(item) => Some(&item.ty),
+                    Ty::Map(_, item) => Some(&item.ty),
+                    _ => None,
                 };
-                if iter_elem_linear {
+                let iter_elem_linear =
+                    iter_elem_ty.is_some_and(|ty| self.program.is_must_consume(ty));
+                let iter_elem_ctl = iter_elem_ty.is_some_and(|ty| self.program.is_ctl_ty(ty));
+                let iter_linear_borrow = iter_elem_linear
+                    && !iter_elem_ctl
+                    && matches!(mode, Mode::Ref | Mode::Mut);
+                if iter_elem_linear && !iter_linear_borrow {
                     self.error(
                         Code::E0548,
                         span,
-                        "cannot iterate a container of must-consume values; drain with Array::pop/pop_front or Map::remove",
+                        if iter_elem_ctl {
+                            "cannot iterate a container of ctl continuations; drain with Array::pop/pop_front or Map::pop_entry/remove"
+                        } else {
+                            "cannot iterate a container of must-consume values by value; use 'for ref' / 'for mut' or drain with Array::pop/pop_front or Map::pop_entry/remove"
+                        },
                     );
                 }
-                let schema = self.schema_mode(iterable_type, &Coordinate::Dynamic).0;
+                if iter_linear_borrow && *mode == Mode::Mut && !value.writers() {
+                    self.error(
+                        Code::E0520,
+                        span,
+                        "for mut over a linear collection requires writable access",
+                    );
+                }
+                let schema = if iter_linear_borrow {
+                    *mode
+                } else {
+                    self.schema_mode(iterable_type, &Coordinate::Dynamic).0
+                };
                 let traverse = |this: &mut Self,
                                 ctx: &mut Context,
                                 ledger: &mut Ledger,
@@ -791,6 +841,12 @@ impl Analyzer<'_> {
                                 (_, None) => Coordinate::Dynamic,
                             };
                             let mut child = inside.project_schema(&value, coordinate, schema);
+                            if iter_linear_borrow {
+                                for root in &mut child.roots {
+                                    root.call_scoped_access = true;
+                                    root.mode = Access::from_mode(*mode);
+                                }
+                            }
                             let pattern_span = ast.pattern(*pattern).span;
                             if let Ty::Map(key_ty, value_ty) = iterable_type {
                                 let key = if this.program.is_value(key_ty) {
@@ -802,7 +858,9 @@ impl Analyzer<'_> {
                                 pair.members.insert(Coordinate::Index("0".into()), key);
                                 pair.members.insert(
                                     Coordinate::Index("1".into()),
-                                    if this.program.is_value(&value_ty.ty) {
+                                    if this.program.is_value(&value_ty.ty)
+                                        && !this.program.is_must_consume(&value_ty.ty)
+                                    {
                                         Datum::default()
                                     } else {
                                         child
@@ -957,6 +1015,13 @@ impl Analyzer<'_> {
                         Transfer::Return => {
                             let prior_slots = ctx.caller_slots.clone();
                             self.run_defers(ctx, ledger, 0);
+                            self.check_live(
+                                ctx,
+                                ledger,
+                                &value,
+                                span,
+                                "returned value was consumed by defer",
+                            );
                             ledger.holds.clear();
                             self.try_promote_exit_new(ctx, ledger, &mut value, &prior_slots, 0, true);
                             self.returned(ctx, ledger, value, span);
@@ -1004,6 +1069,7 @@ impl Analyzer<'_> {
                 meta_ctx.runtime = false;
                 let mut meta_ledger = Ledger::default();
                 let _ = self.expr(&mut meta_ctx, &mut meta_ledger, *inner);
+                self.check_linear(&meta_ledger, &BTreeSet::new());
                 self.snapshot_value(span)
             }
             Expr::Quote(_) | Expr::Literal(_) | Expr::Unit | Expr::Accessor(_) | Expr::Hole => {
@@ -1041,7 +1107,7 @@ impl Analyzer<'_> {
                 matches!(self.ty(span), Ty::Array(_) | Ty::Map(..)),
             );
         }
-        if self.program.is_value(self.ty(span)) {
+        if self.program.is_value(self.ty(span)) && !self.program.is_must_consume(self.ty(span)) {
             value.roots.clear();
             value.members.clear();
             value.requires_new = false;
@@ -1076,11 +1142,11 @@ impl Analyzer<'_> {
             return None;
         };
         let def_id = self.definition(callee_path.span)?;
-        if self.program.hir.primitive_module(def_id) != Some("Array") {
-            return None;
-        }
         let name = self.program.hir.definition(def_id).name.value.as_str();
-        if !matches!(name, "pop" | "pop_front") {
+        if !matches!(
+            (self.program.hir.primitive_module(def_id), name),
+            (Some("Array"), "pop" | "pop_front") | (Some("Map"), "pop_entry")
+        ) {
             return None;
         }
         let first = args.first()?;

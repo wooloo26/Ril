@@ -1,5 +1,5 @@
 //! Lossless concrete syntax token stream (`CstFile`) preserving every source byte,
-//! including whitespace and line/block comments, for `ril fmt` and IDE refactoring.
+//! including whitespace and line comments, for `ril fmt` and IDE refactoring.
 
 use ril_source::{
     diag::Diagnostic,

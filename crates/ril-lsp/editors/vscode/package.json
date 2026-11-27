@@ -1,7 +1,7 @@
 {
   "name": "ril-lang",
   "displayName": "Ril Language",
-  "description": "TypeScript-style Monokai syntax highlighting, semantic tokens, pipeline auto-suggestions, and local Language Server (ril lsp) for Ril (.ril / .d.ril)",
+  "description": "TypeScript-style Monokai syntax highlighting, semantic tokens, pipeline auto-suggestions, and local Language Server (ril lsp) for Ril (.ril)",
   "version": "0.1.0",
   "publisher": "ril-local",
   "engines": {
@@ -27,8 +27,7 @@
           "ril"
         ],
         "extensions": [
-          ".ril",
-          ".d.ril"
+          ".ril"
         ],
         "configuration": "./language-configuration.json"
       }
@@ -118,6 +117,11 @@
           "type": "boolean",
           "default": true,
           "description": "Show inferred type inlay hints on unannotated `let`/`var` bindings and closure parameters."
+        },
+        "ril.docExamples.subtleHighlight": {
+          "type": "boolean",
+          "default": true,
+          "description": "Apply subtle opacity and background tint to fenced `-- ```ril` doc-comment code examples to visually distinguish them from live code."
         }
       }
     }

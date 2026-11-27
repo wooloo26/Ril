@@ -282,6 +282,20 @@ impl Checker<'_> {
                     "ctl continuation is linear and cannot carry a member access mode",
                 );
             }
+        } else if self.is_must_consume_ty(env, &typed) {
+            if mode.variable {
+                self.error(
+                    Code::E0532,
+                    span,
+                    "must-consume member cannot be stored in a reassignable var slot",
+                );
+            } else if mode.mode != Mode::Plain {
+                self.error(
+                    Code::E0356,
+                    span,
+                    "must-consume member cannot carry a member access mode",
+                );
+            }
         } else if matches!(mode.mode, Mode::Mut | Mode::Shared | Mode::Ref)
             && self.is_value_ty(env, &typed)
         {
@@ -507,6 +521,7 @@ impl Checker<'_> {
         Ty::Adt(Arc::new(Adt {
             definition: id,
             kind,
+            is_linear: decl.is_linear,
             defining_scope: def.scope,
             visibility: def.visibility,
             arguments,
@@ -525,6 +540,7 @@ impl Checker<'_> {
         Ty::Adt(Arc::new(Adt {
             definition,
             kind: adt_kind,
+            is_linear: false,
             defining_scope: def.scope,
             visibility: def.visibility,
             arguments,

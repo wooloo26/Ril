@@ -486,13 +486,29 @@ impl Checker<'_> {
             }
             if matches!(arg.mode, Mode::Mut | Mode::Shared | Mode::Ref)
                 && let Some(arg_ty) = self.types.get(&arg_span).cloned()
-                && self.is_value_ty(env, &arg_ty)
             {
-                self.error(
-                    Code::E0401,
-                    arg_span,
-                    "value-type argument cannot carry live authority",
-                );
+                let is_ctl = self.is_ctl_ty(env, &arg_ty);
+                let is_linear_root = self.is_linear_root_ty(env, &arg_ty);
+                let is_user_linear = is_linear_root && !is_ctl;
+                if is_ctl {
+                    self.error(
+                        Code::E0401,
+                        arg_span,
+                        "ctl continuation cannot carry live authority",
+                    );
+                } else if is_user_linear && arg.mode == Mode::Shared {
+                    self.error(
+                        Code::E0401,
+                        arg_span,
+                        "linear type cannot carry shared ^mut authority",
+                    );
+                } else if !is_user_linear && self.is_value_ty(env, &arg_ty) {
+                    self.error(
+                        Code::E0401,
+                        arg_span,
+                        "value-type argument cannot carry live authority",
+                    );
+                }
             }
             let expected_arg_mode = if parameter.mode == Mode::New {
                 Mode::Plain
@@ -579,12 +595,26 @@ impl Checker<'_> {
         if let Some(known) = def_id {
             self.validate_generic_uses(env, known, &generics, span);
             if self.hir.intrinsic(known) == Some(ril_hir::Intrinsic::StringInspect) {
-                if let Some(arg) = args.first()
-                    && arg.mode != Mode::Plain
-                {
+                if let Some(arg) = args.first() {
                     let arg_span = ast.expr(arg.value).span;
                     let first = self.types.get(&arg_span).cloned().unwrap_or(Ty::Unknown);
-                    if self.is_value_ty(env, &first) {
+                    if arg.mode == Mode::Plain {
+                        if self.is_must_consume_ty(env, &first) {
+                            self.error(
+                                Code::E0405,
+                                arg_span,
+                                "String::inspect cannot consume a must-consume value; pass ref for borrowable linear types",
+                            );
+                        }
+                    } else if self.is_ctl_ty(env, &first) {
+                        self.error(
+                            Code::E0401,
+                            arg_span,
+                            "ctl continuation cannot carry live authority",
+                        );
+                    } else if self.is_value_ty(env, &first)
+                        && !self.is_must_consume_ty(env, &first)
+                    {
                         self.error(
                             Code::E0401,
                             arg_span,
@@ -849,13 +879,29 @@ impl Checker<'_> {
             self.expect(env, arg.value, &param_ty);
             if matches!(arg.mode, Mode::Mut | Mode::Shared | Mode::Ref)
                 && let Some(arg_ty) = self.types.get(&arg_span).cloned()
-                && self.is_value_ty(env, &arg_ty)
             {
-                self.error(
-                    Code::E0401,
-                    arg_span,
-                    "value-type argument cannot carry live authority",
-                );
+                let is_ctl = self.is_ctl_ty(env, &arg_ty);
+                let is_linear_root = self.is_linear_root_ty(env, &arg_ty);
+                let is_user_linear = is_linear_root && !is_ctl;
+                if is_ctl {
+                    self.error(
+                        Code::E0401,
+                        arg_span,
+                        "ctl continuation cannot carry live authority",
+                    );
+                } else if is_user_linear && arg.mode == Mode::Shared {
+                    self.error(
+                        Code::E0401,
+                        arg_span,
+                        "linear type cannot carry shared ^mut authority",
+                    );
+                } else if !is_user_linear && self.is_value_ty(env, &arg_ty) {
+                    self.error(
+                        Code::E0401,
+                        arg_span,
+                        "value-type argument cannot carry live authority",
+                    );
+                }
             }
         }
         ty

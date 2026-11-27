@@ -179,6 +179,55 @@ impl Checker<'_> {
         matches!(self.unwrap_wrapper(env, ty), Ty::Callable(c) if c.is_ctl)
     }
 
+    pub(in crate::ty) fn is_linear_root_ty(&mut self, env: &Env, ty: &Ty) -> bool {
+        if self.is_ctl_ty(env, ty) {
+            return true;
+        }
+        let mut cur = self.normalize(ty);
+        let mut active: Vec<Arc<Adt>> = Vec::new();
+        loop {
+            if let Ty::Param(id) = &cur
+                && let Some(GenericValue::Type(specialized)) = env.generics.get(id)
+                && *specialized != cur
+            {
+                cur = self.normalize(specialized);
+                continue;
+            }
+            let Ty::Adt(adt) = &cur else {
+                break;
+            };
+            if adt.is_linear {
+                return true;
+            }
+            if !matches!(adt.kind, AdtKind::Nominal | AdtKind::Opaque) {
+                break;
+            }
+            if self.must_consume_active.contains(&adt.definition) {
+                break;
+            }
+            if active
+                .iter()
+                .rev()
+                .find(|outer| outer.definition == adt.definition)
+                .is_some_and(|outer| !crate::ty::nested_type_argument(outer, adt))
+            {
+                break;
+            }
+            active.push(Arc::clone(adt));
+            if self.hir.unit_constructor(adt.definition) {
+                return false;
+            }
+            self.must_consume_active.insert(adt.definition);
+            let rep = self.representation(env, adt);
+            self.must_consume_active.remove(&adt.definition);
+            let Some(rep) = rep else {
+                break;
+            };
+            cur = self.normalize(&rep);
+        }
+        false
+    }
+
     pub(in crate::ty) fn is_value_only_ty(&mut self, env: &Env, ty: &Ty) -> bool {
         let unwrapped = self.unwrap_wrapper(env, ty);
         if unwrapped.is_primitive_value() {
@@ -197,7 +246,8 @@ impl Checker<'_> {
         env: &Env,
         param: &crate::ty::Parameter,
     ) -> ril_syntax::syntax::Mode {
-        let is_value = self.is_value_ty(env, &param.ty);
+        let is_value = self.is_value_ty(env, &param.ty)
+            && !(self.is_linear_root_ty(env, &param.ty) && !self.is_ctl_ty(env, &param.ty));
         param.callable_mode_with(is_value)
     }
 

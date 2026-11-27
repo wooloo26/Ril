@@ -59,6 +59,8 @@ pub struct Declaration {
     pub public: bool,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub must_consume: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub must_consume_params: Vec<usize>,
     #[serde(skip)]
     span: Span,
 }
@@ -148,7 +150,7 @@ impl Interface {
                 }
                 let stmt = def.stmt?;
                 let ast = &program.hir.file(def.name.span.file).ast;
-                let (shape, params, must_consume) = match (&ast.stmt(stmt).value.kind, def.kind) {
+                let (shape, params, must_consume, must_consume_params) = match (&ast.stmt(stmt).value.kind, def.kind) {
                     (StmtKind::Type(decl), DefinitionKind::Type | DefinitionKind::Sum(_)) => {
                         let param_ids: Vec<_> = decl
                             .generics
@@ -180,13 +182,27 @@ impl Interface {
                         let self_adt = crate::ty::Adt {
                             definition: id,
                             kind: adt_kind,
+                            is_linear: decl.is_linear,
                             defining_scope: def.scope,
                             visibility: def.visibility,
                             arguments: self_args,
                         };
-                        let is_must_consume = program.is_must_consume(&crate::ty::Ty::Adt(
-                            std::sync::Arc::new(self_adt.clone()),
-                        ));
+                        let self_ty = crate::ty::Ty::Adt(std::sync::Arc::new(self_adt.clone()));
+                        let is_must_consume = program.is_must_consume(&self_ty);
+                        let mc_params: Vec<usize> = if decl.kind == TypeKind::Opaque {
+                            param_ids
+                                .iter()
+                                .enumerate()
+                                .filter_map(|(i, opt)| {
+                                    let pid = (*opt)?;
+                                    program
+                                        .type_param_in_must_consume_position(&self_ty, pid)
+                                        .then_some(i)
+                                })
+                                .collect()
+                        } else {
+                            Vec::new()
+                        };
                         let body = if decl.kind == TypeKind::Opaque {
                             let base = match &decl.definition {
                                 TypeDefinition::Sum(_) => "sealed sum".into(),
@@ -260,6 +276,7 @@ impl Interface {
                             format!("{:?} {body}", decl.kind),
                             parameters,
                             is_must_consume,
+                            mc_params,
                         )
                     }
                     (
@@ -291,6 +308,7 @@ impl Interface {
                             format!("eff {{ {} }}", members.join("; ")),
                             generics.as_slice(),
                             false,
+                            Vec::new(),
                         )
                     }
                     (StmtKind::Binding { is_meta, value, .. }, DefinitionKind::Constant) => {
@@ -302,7 +320,7 @@ impl Interface {
                         {
                             shape = format!("meta {shape} = {}", crate::ty::render(value));
                         }
-                        (shape, &[][..], false)
+                        (shape, &[][..], false, Vec::new())
                     }
                     _ => return None,
                 };
@@ -313,6 +331,7 @@ impl Interface {
                         generics: generics(program, ast, params),
                         public: def.visibility == Visibility::Public,
                         must_consume,
+                        must_consume_params,
                         span: def.name.span,
                     },
                 ))
@@ -504,6 +523,7 @@ impl Interface {
                 baseline.shape == entry.shape
                     && baseline.generics == entry.generics
                     && baseline.must_consume == entry.must_consume
+                    && baseline.must_consume_params == entry.must_consume_params
                     && (!baseline.public || entry.public)
             }) {
                 diagnostics.push(Diagnostic::error(

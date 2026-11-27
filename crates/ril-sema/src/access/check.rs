@@ -350,6 +350,7 @@ fn collect(
             analyzer.statement(&mut context, &mut ledger, item, false);
         }
         analyzer.check_results(&ledger, &BTreeSet::new());
+        analyzer.check_linear(&ledger, &BTreeSet::new());
     }
     analyzer
 }

@@ -5,7 +5,6 @@ diagnostic_codes! {
     (E0103, PatternCasingCollisionError),
     (E0104, InvalidSourceEncodingError),
     (E0105, InvalidSourceCharacterError),
-    (E0106, UnterminatedCommentError),
     (E0107, UnterminatedStringLiteralError),
     (E0108, InvalidEscapeSequenceError),
     (E0109, InvalidUnicodeScalarError),

@@ -215,15 +215,16 @@ impl Analyzer<'_> {
                     .definition(name.span)
                     .and_then(|id| self.program.bindings.get(&id));
                 let is_value = param_ty.is_some_and(|ty| self.program.is_value(ty));
-                let is_ctl = param_ty.is_some_and(|ty| self.program.is_ctl_ty(ty));
-                if p.mode == Mode::New && (is_value || is_ctl) {
+                let is_must_consume = param_ty.is_some_and(|ty| self.program.is_must_consume(ty));
+                let is_linear_root = param_ty.is_some_and(|ty| self.program.is_linear_root(ty));
+                if p.mode == Mode::New && (is_value || is_linear_root) {
                     self.error(
                         Code::E0411,
                         name.span,
-                        "new parameter requires a shared object",
+                        "new parameter requires a non-linear shared object",
                     );
                 }
-                let mut value = if is_value {
+                let mut value = if is_value && !is_must_consume {
                     Datum::default()
                 } else {
                     let mut datum = Datum::source(name.span, mode, p.mode == Mode::New);
@@ -234,11 +235,11 @@ impl Analyzer<'_> {
                 };
                 if p.mode == Mode::Via {
                     inner.via.insert(name.span);
-                    if is_value || is_ctl {
+                    if is_value || is_linear_root {
                         self.error(
                             Code::E0550,
                             name.span,
-                            "via is redundant on a value-type parameter",
+                            "via is invalid on a value-type or linear parameter",
                         );
                     }
                 }
@@ -319,9 +320,29 @@ impl Analyzer<'_> {
         let implicit = self.ty(self.ast(ctx.file).expr(*body).span) != &Ty::Never;
         if inner.reachable && implicit {
             self.run_defers(&mut inner, &mut locals, 0);
+            self.check_live(
+                &inner,
+                &locals,
+                &output,
+                self.ast(ctx.file).expr(*body).span,
+                "returned value was consumed by defer",
+            );
             locals.holds.truncate(prior_holds);
             self.try_promote_exit_new(&inner, &locals, &mut output, &prior_slots, prior_holds, true);
             output = locals.snapshot(&output);
+            let body_span = self.ast(ctx.file).expr(*body).span;
+            if self.program.is_must_consume(self.ty(body_span))
+                && output
+                    .roots
+                    .iter()
+                    .any(|root| root.mode == Access::Ref || root.call_scoped_access)
+            {
+                self.error(
+                    Code::E0528,
+                    body_span,
+                    "cannot return a linear value through call-scoped ref or mut access",
+                );
+            }
             locals.inspect(&output);
             locals.consume_datum_linear(&output);
             self.check_results(&locals, &BTreeSet::new());

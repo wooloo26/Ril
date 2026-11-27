@@ -26,6 +26,18 @@ impl<'a> Analyzer<'a> {
         if !ctx.reachable {
             return;
         }
+        if let Some(root) = value
+            .roots
+            .iter()
+            .find(|root| root.mode == Access::Ref || root.call_scoped_access)
+        {
+            self.error(
+                Code::E0528,
+                root.region.source,
+                "cannot consume a linear value through call-scoped ref or mut access",
+            );
+            return;
+        }
         ledger.consume_datum_linear(value);
         for root in &value.roots {
             for &dependency in &root.dependencies {
@@ -163,12 +175,13 @@ impl<'a> Analyzer<'a> {
             self.error(Code::E0503, node.span, "invalid assignment target");
             return;
         };
-        if matches!(node.value, Expr::Index { .. }) && self.program.is_must_consume(self.ty(node.span))
+        if matches!(node.value, Expr::Index { .. } | Expr::Member { .. })
+            && self.program.is_must_consume(self.ty(node.span))
         {
             self.error(
                 Code::E0625,
                 span,
-                "cannot overwrite a must-consume element; use Map::replace or remove first",
+                "cannot overwrite a must-consume slot; use Map::replace or destructure first",
             );
             return;
         }

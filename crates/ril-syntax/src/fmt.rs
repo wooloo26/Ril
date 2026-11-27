@@ -29,7 +29,6 @@ pub fn format_source(source: &SourceFile, kind: FileKind) -> Result<String, Vec<
 enum Item<'a> {
     Tok(Token, &'a str),
     LineComment(&'a str),
-    BlockComment(&'a str),
 }
 
 fn format_cst(source: &SourceFile, cst: &CstFile) -> String {
@@ -57,16 +56,6 @@ fn format_cst(source: &SourceFile, cst: &CstFile) -> String {
                                 .get(triv.span.start..triv.span.end)
                                 .unwrap_or_default()
                                 .trim_end(),
-                        ));
-                    }
-                }
-                TriviaKind::BlockComment => {
-                    if let Some(line) = lines.last_mut() {
-                        line.push(Item::BlockComment(
-                            source
-                                .text()
-                                .get(triv.span.start..triv.span.end)
-                                .unwrap_or_default(),
                         ));
                     }
                 }
@@ -143,7 +132,7 @@ fn render_line(items: &[Item<'_>], out: &mut String) {
             out.push(' ');
         }
         match item {
-            Item::Tok(_, text) | Item::LineComment(text) | Item::BlockComment(text) => {
+            Item::Tok(_, text) | Item::LineComment(text) => {
                 out.push_str(text);
             }
         }
@@ -167,7 +156,7 @@ fn is_string_right_inside(kind: Kind) -> bool {
 
 fn needs_space(left: Item<'_>, right: Item<'_>) -> bool {
     match (left, right) {
-        (_, Item::LineComment(_) | Item::BlockComment(_)) | (Item::BlockComment(_), _) => true,
+        (_, Item::LineComment(_)) => true,
         (Item::LineComment(_), _) => false,
         (Item::Tok(lt, ltext), Item::Tok(rt, rtext)) => {
             if is_string_left_inside(lt.kind) || is_string_right_inside(rt.kind) {

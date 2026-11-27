@@ -302,6 +302,15 @@ structure CtlGuarantees : Prop where
   noCtlParamRejectsCtl : ∀ noCtlParams argIdx,
     argIdx ∈ noCtlParams →
       CoreCtl.checkNoCtlCall noCtlParams argIdx true = false
+  ctlForbidsScopedBorrow : ∀ (mode : Integrated.ParameterMode) (entry : CoreCtl.LinearEntry),
+    CoreCtl.canScopedBorrow .ctlContinuation mode entry = false
+  userLinearForbidsSharedBorrow : ∀ (entry : CoreCtl.LinearEntry),
+    CoreCtl.canScopedBorrow .userLinear .retained entry = false
+  nonConsumingDeferCannotArm : ∀ (st : CoreCtl.LinearState) targetId deferScope,
+    CoreCtl.armDeferIfConsumes st targetId deferScope false = none
+  returnAfterDeferRejected : ∀ (st armed : CoreCtl.LinearState) targetId deferScope,
+    CoreCtl.armDefer st targetId deferScope = some armed →
+      CoreCtl.canReturnAfterDefer armed targetId = false
 
 structure Guarantees : Prop where
   solver : SolverGuarantees
@@ -368,7 +377,11 @@ theorem verified : Guarantees where
     fun _ _ hm hunc => CoreCtl.unconsumed_linear_blocks_exit hm hunc,
     fun _ hcross => CoreCtl.armed_entries_discharged_on_exit hcross,
     fun _ hmode => CoreCtl.shared_writer_forbids_downgrade_across_unhandled_effect hmode,
-    fun _ _ hmem => CoreCtl.no_ctl_param_rejects_ctl_callback hmem⟩
+    fun _ _ hmem => CoreCtl.no_ctl_param_rejects_ctl_callback hmem,
+    fun _ _ => CoreCtl.ctl_forbids_scoped_borrow,
+    fun _ => CoreCtl.user_linear_forbids_shared_borrow,
+    fun _ _ _ => CoreCtl.non_consuming_defer_cannot_arm,
+    fun _ _ _ _ h => CoreCtl.return_after_defer_consume_rejected h⟩
   draft := ⟨fun _ _ _ _ => Draft.prepared_root_sound, fun _ _ _ => Draft.checked_path_recipe_prefixes,
     fun _ _ _ _ _ => Draft.publication_ends_privilege,
     fun _ _ _ _ _ _ _ _ _ _ => Draft.conforming_outside_cannot_escape⟩

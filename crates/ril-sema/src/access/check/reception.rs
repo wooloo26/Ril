@@ -545,6 +545,13 @@ impl Analyzer<'_> {
                 }
                 if local_ctx.reachable && !ledger.no_continuation {
                     self.run_defers(&mut local_ctx, ledger, block_defers);
+                    self.check_live(
+                        &local_ctx,
+                        ledger,
+                        &result,
+                        span,
+                        "block result was consumed by defer",
+                    );
                     ledger.holds.truncate(block_holds);
                     self.try_promote_exit_new(
                         &local_ctx,
@@ -937,7 +944,7 @@ impl Analyzer<'_> {
                 matches!(self.ty(span), Ty::Array(_) | Ty::Map(..)),
             );
         }
-        if self.program.is_value(self.ty(span)) {
+        if self.program.is_value(self.ty(span)) && !self.program.is_must_consume(self.ty(span)) {
             value.roots.clear();
             value.members.clear();
             value.requires_new = false;
@@ -953,6 +960,18 @@ impl Analyzer<'_> {
         span: Span,
     ) {
         let mut value = ledger.snapshot_call_graph(&value);
+        if self.program.is_must_consume(self.ty(span))
+            && value
+                .roots
+                .iter()
+                .any(|root| root.mode == Access::Ref || root.call_scoped_access)
+        {
+            self.error(
+                Code::E0528,
+                span,
+                "cannot return a linear value through call-scoped ref or mut access",
+            );
+        }
         ledger.inspect(&value);
         ledger.consume_datum_linear(&value);
         if value.origins().any(|origin| origin.confined.is_some()) {
@@ -976,7 +995,9 @@ impl Analyzer<'_> {
                 "a call-scoped writer cannot escape in a return",
             );
         }
+        let linear_root_return = self.program.is_linear_root(self.ty(span));
         match ctx.expected {
+            Mode::Plain if linear_root_return => {}
             Mode::Plain if value.requires_new => self.error(
                 Code::E0544,
                 ctx.owner,

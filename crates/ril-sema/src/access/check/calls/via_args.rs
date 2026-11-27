@@ -384,7 +384,10 @@ impl Analyzer<'_> {
                 }
                 value.requires_new = false;
             }
-            Mode::Plain if matches!(self.ty(span), Ty::Callable(_)) => {
+            Mode::Plain
+                if matches!(self.ty(span), Ty::Callable(_))
+                    || self.program.is_must_consume(self.ty(span)) =>
+            {
                 for root in &mut value.roots {
                     root.inherits_mode = false;
                 }
@@ -415,7 +418,7 @@ impl Analyzer<'_> {
     }
 
     pub(in crate::access::check) fn snapshot_value(&self, span: Span) -> Datum {
-        if self.program.is_value(self.ty(span)) {
+        if self.program.is_value(self.ty(span)) && !self.program.is_must_consume(self.ty(span)) {
             Datum::default()
         } else {
             Datum::source(span, Access::Immutable, false)

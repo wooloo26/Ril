@@ -18,7 +18,7 @@ use ril_test::{CaseMode, Stage, TestDriver, Unit, VirtualPackage, parse_suite, r
 
 #[test]
 fn hidden_clone_restrictions_survive_separate_compilation() {
-    let source = b"pub opaque type Parcel(.{ cont: ctl() -> () })";
+    let source = b"pub opaque linear type Parcel(.{ cont: ctl() -> () })";
     let mut library = VirtualPackage::new(Unit::Lib);
     library.entry = "pkg/vault.ril".into();
     library.insert(library.entry.clone(), source.to_vec());
@@ -31,7 +31,7 @@ fn hidden_clone_restrictions_survive_separate_compilation() {
         client.insert(mount.into(), bytes.to_vec());
         client.insert(
             client.entry.clone(),
-            b"use library/vault\nfn duplicate(ref value: Vault::Parcel) -> new Vault::Parcel { clone(ref value) }"
+            b"use library/vault\nfn duplicate(ref value: Vault::Parcel) -> Vault::Parcel { clone(ref value) }"
                 .to_vec(),
         );
         let checked = Driver.check(&client, Stage::Type);
@@ -1124,8 +1124,8 @@ fn k_iface_no_ctl_params_and_opaque_must_consume_survive_separate_compilation() 
     use ril_source::diag::Code;
 
     let source = br#"
-pub opaque type Token(.{ k: ctl() -> () })
-pub fn make_token(k: ctl() -> ()) -> new Token { Token::(.{ k }) }
+pub opaque linear type Token(.{ k: ctl() -> () })
+pub fn make_token(k: ctl() -> ()) -> Token { Token::(.{ k }) }
 pub fn consume_token(t: Token) -> () {
     let Token::(.{ k }) = t
     unwind_ctl(k)

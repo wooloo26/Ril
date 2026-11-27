@@ -35,6 +35,9 @@
     "comments": {
       "patterns": [
         {
+          "include": "#doc-code-block"
+        },
+        {
           "name": "comment.line.double-dash.ril",
           "begin": "--",
           "end": "$",
@@ -43,29 +46,32 @@
               "name": "punctuation.definition.comment.ril"
             }
           }
-        },
-        {
-          "include": "#block-comment"
         }
       ]
     },
-    "block-comment": {
-      "name": "comment.block.ril",
-      "begin": "\\{-",
-      "end": "-\\}",
+    "doc-code-block": {
+      "name": "meta.embedded.block.ril.doc-example",
+      "begin": "^(\\s*)(--)(\\s*)(`{3,})\\s*(ril(?:,(?:no_run|ignore))?)\\s*$",
       "beginCaptures": {
-        "0": {
-          "name": "punctuation.definition.comment.begin.ril"
+        "2": {
+          "name": "punctuation.definition.comment.ril"
+        },
+        "4": {
+          "name": "comment.line.double-dash.ril"
+        },
+        "5": {
+          "name": "comment.line.double-dash.ril"
         }
       },
-      "endCaptures": {
-        "0": {
-          "name": "punctuation.definition.comment.end.ril"
+      "while": "^(\\s*)(--)(?!\\s*`{3,}\\s*$)",
+      "whileCaptures": {
+        "2": {
+          "name": "punctuation.definition.comment.ril"
         }
       },
       "patterns": [
         {
-          "include": "#block-comment"
+          "include": "$self"
         }
       ]
     },
@@ -244,7 +250,24 @@
           }
         },
         {
-          "match": "\\b(opaque)\\s+(type)\\s+([A-Z][A-Za-z0-9_]*)",
+          "match": "\\b(opaque)\\s+(linear)\\s+(type)\\s+([A-Z][A-Za-z0-9_]*)",
+          "captures": {
+            "1": {
+              "name": "storage.modifier.ril"
+            },
+            "2": {
+              "name": "storage.modifier.ril"
+            },
+            "3": {
+              "name": "storage.type.type.ril"
+            },
+            "4": {
+              "name": "entity.name.type.ril"
+            }
+          }
+        },
+        {
+          "match": "\\b(opaque|linear)\\s+(type)\\s+([A-Z][A-Za-z0-9_]*)",
           "captures": {
             "1": {
               "name": "storage.modifier.ril"
@@ -428,7 +451,7 @@
         },
         {
           "name": "storage.modifier.state.ril",
-          "match": "&(?:\\^mut|mut|capture|up|return|once)\\b"
+          "match": "&(?:\\^mut|mut|capture|up|return)\\b"
         },
         {
           "name": "storage.modifier.ril",
@@ -559,7 +582,7 @@
         },
         {
           "name": "constant.other.enum.ril",
-          "match": "\\b(?:Some|None|Ok|Err|Panicked)\\b"
+          "match": "\\b(?:Some|None|Ok|Err)\\b"
         },
         {
           "name": "constant.other.constant.ril",

@@ -90,6 +90,11 @@ impl Analyzer<'_> {
                 return Datum::source(span, Access::Mut, true);
             }
             "inner" => {
+                if let Some((_, Mode::Mut, value)) = args.iter().find(|(index, _, _)| *index == 0)
+                    && self.program.is_value(self.ty(span))
+                {
+                    self.mutate(ctx, ledger, value, span);
+                }
                 return first.cloned().unwrap_or_default();
             }
             "derive" => {
@@ -183,10 +188,28 @@ impl Analyzer<'_> {
                     .insert(Coordinate::Index("0".into()), payload);
                 return result;
             }
+            "keys" => {
+                let mut out = Datum::source(span, Access::Mut, true);
+                if let Some(map_datum) = first {
+                    let mut key_datum = map_datum
+                        .members
+                        .get(&Coordinate::MapKey)
+                        .cloned()
+                        .unwrap_or_else(|| {
+                            let mut snap = ledger.snapshot(map_datum);
+                            snap.freeze();
+                            snap
+                        });
+                    key_datum.clear_linear();
+                    out.members.insert(Coordinate::Dynamic, key_datum);
+                }
+                return out;
+            }
             _ => {}
         }
         if sig.is_some_and(|sig| sig.result_mode == Mode::New)
-            && !self.program.is_value(self.ty(span))
+            && (!self.program.is_value(self.ty(span))
+                || self.program.is_must_consume(self.ty(span)))
         {
             return Datum::source(span, Access::Mut, true);
         }

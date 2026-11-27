@@ -37,6 +37,14 @@ impl Checker<'_> {
 
     fn check_derive_root(&mut self, env: &Env, ty: &Ty, span: Span) {
         let mut ty = self.normalize(ty);
+        if self.is_must_consume_ty(env, &ty) {
+            self.error(
+                Code::E0536,
+                span,
+                "derive cannot operate on a must-consume type",
+            );
+            return;
+        }
         if self.is_value_ty(env, &ty) {
             self.error(
                 Code::E0536,
@@ -117,6 +125,9 @@ impl Checker<'_> {
                 false
             }
             Ty::Adt(adt) => {
+                if adt.is_linear {
+                    return true;
+                }
                 if proof
                     .active
                     .iter()
@@ -267,16 +278,32 @@ impl Checker<'_> {
                 Ty::Unit
             }
             "inner" => {
+                let first_is_ctl = self.is_ctl_ty(env, &first);
+                let first_is_linear = self.is_linear_root_ty(env, &first);
+                let first_is_user_linear = first_is_linear && !first_is_ctl;
                 if let Some(arg) = args.first()
                     && matches!(arg.mode, Mode::Ref | Mode::Mut | Mode::Shared)
-                    && self.is_value_ty(env, &first)
                 {
                     let arg_span = self.ast(env.file).expr(arg.value).span;
-                    self.error(
-                        Code::E0401,
-                        arg_span,
-                        "value-type argument cannot carry live authority",
-                    );
+                    if first_is_ctl {
+                        self.error(
+                            Code::E0401,
+                            arg_span,
+                            "ctl continuation cannot carry live authority",
+                        );
+                    } else if first_is_user_linear && arg.mode == Mode::Shared {
+                        self.error(
+                            Code::E0401,
+                            arg_span,
+                            "linear type cannot carry shared ^mut authority",
+                        );
+                    } else if !first_is_user_linear && self.is_value_ty(env, &first) {
+                        self.error(
+                            Code::E0401,
+                            arg_span,
+                            "value-type argument cannot carry live authority",
+                        );
+                    }
                 }
                 let is_draft = matches!(first, Ty::Draft(_));
                 let target = match &first {
@@ -299,6 +326,16 @@ impl Checker<'_> {
                         Ty::Unknown
                     }
                 };
+                if let Some(arg) = args.first()
+                    && matches!(arg.mode, Mode::Ref | Mode::Mut)
+                    && self.is_must_consume_ty(env, &inner_ty)
+                {
+                    self.error(
+                        Code::E0548,
+                        span,
+                        "cannot unwrap a must-consume payload through ref or mut access",
+                    );
+                }
                 if is_draft && inner_ty != Ty::Unknown {
                     Ty::Draft(Box::new(inner_ty))
                 } else {

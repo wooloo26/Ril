@@ -117,7 +117,6 @@ impl Token {
 pub enum TriviaKind {
     Whitespace,
     LineComment,
-    BlockComment,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -291,14 +290,6 @@ impl Lexer<'_> {
             });
             return Ok(());
         }
-        if self.take("{-") {
-            let result = self.comment(start);
-            self.trivia.push(Trivia {
-                kind: TriviaKind::BlockComment,
-                span: self.source.span(start, self.pos),
-            });
-            return result;
-        }
         if matches!(ch, '\0'..='\u{1f}' | '\u{7f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
         {
             self.bump();
@@ -401,27 +392,6 @@ impl Lexer<'_> {
             self.emit(kind, start);
         }
         Ok(())
-    }
-
-    fn comment(&mut self, start: usize) -> Result<(), Diagnostic> {
-        let mut depth = 1;
-        while self.first().is_some() {
-            if self.take("{-") {
-                depth += 1;
-            } else if self.take("-}") {
-                depth -= 1;
-                if depth == 0 {
-                    return Ok(());
-                }
-            } else {
-                let offset = self.pos;
-                if self.bump() == Some('\n') {
-                    self.check_literal_newline()?;
-                    self.emit(Kind::Newline, offset);
-                }
-            }
-        }
-        Err(self.error(Code::E0106, start, "unterminated block comment"))
     }
 
     fn check_literal_newline(&self) -> Result<(), Diagnostic> {
@@ -647,7 +617,7 @@ mod tests {
         let src = SourceFile::from_bytes(
             FileId(1),
             PathBuf::from("pkg/recover.ril"),
-            b"-- header comment\nlet bad_One = 1\n{- block -}\nlet bad_Two = 2\n",
+            b"-- header comment\nlet bad_One = 1\n-- middle comment\nlet bad_Two = 2\n",
         )
         .unwrap_or_else(|e| ril_source::ice!("{e:?}"));
         let output = lex_with_recovery(&src);
@@ -662,13 +632,9 @@ mod tests {
             output
                 .trivia
                 .iter()
-                .any(|t| t.kind == TriviaKind::LineComment)
-        );
-        assert!(
-            output
-                .trivia
-                .iter()
-                .any(|t| t.kind == TriviaKind::BlockComment)
+                .filter(|t| t.kind == TriviaKind::LineComment)
+                .count()
+                == 2
         );
         assert!(
             output
@@ -676,5 +642,22 @@ mod tests {
                 .iter()
                 .any(|t| t.kind == TriviaKind::Whitespace)
         );
+    }
+
+    #[test]
+    fn tight_brace_unary_minus_lexes_as_brace_and_minus() {
+        let src = SourceFile::from_bytes(
+            FileId(2),
+            PathBuf::from("pkg/neg.ril"),
+            b"fn neg() -> int {-1}\n",
+        )
+        .unwrap_or_else(|e| ril_source::ice!("{e:?}"));
+        let tokens = lex(&src).unwrap_or_else(|e| ril_source::ice!("{e:?}"));
+        let texts: Vec<_> = tokens
+            .iter()
+            .filter(|t| t.kind != Kind::Newline && t.kind != Kind::Eof)
+            .map(|t| t.text(&src))
+            .collect();
+        assert_eq!(texts, ["fn", "neg", "(", ")", "->", "int", "{", "-", "1", "}"]);
     }
 }

@@ -207,6 +207,27 @@ pub const PRIMITIVE_FNS: &[PrimitiveSpec] = {
             Some("ril_rt_map_remove"),
             Some(MapRemove),
         ),
+        prim(
+            "Map",
+            "pop_entry",
+            Both,
+            Some("ril_rt_map_pop_entry"),
+            Some(MapPopEntry),
+        ),
+        prim(
+            "Map",
+            "contains",
+            Both,
+            Some("ril_rt_map_contains"),
+            Some(MapContains),
+        ),
+        prim(
+            "Map",
+            "keys",
+            Both,
+            Some("ril_rt_map_keys"),
+            Some(MapKeys),
+        ),
         // String
         prim("String", "inspect", Both, None, Some(StringInspect)),
         prim(
@@ -544,6 +565,7 @@ pub(super) fn registered_type(
         }
     })?;
     if actual.kind != expected.kind
+        || actual.is_linear != expected.is_linear
         || signature(file, actual.name.span, declaration, &actual.generics)
             != signature(
                 registered,

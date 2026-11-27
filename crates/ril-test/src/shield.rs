@@ -4,7 +4,6 @@
 pub(super) struct Shield(Vec<Mode>);
 
 enum Mode {
-    Block(usize),
     Raw(usize),
     String { interpolate: bool },
     Interpolation(usize),
@@ -19,20 +18,6 @@ impl Shield {
         let mut remaining = line.as_bytes();
         while let Some((&first, rest)) = remaining.split_first() {
             match self.0.last_mut() {
-                Some(Mode::Block(depth)) => {
-                    if let Some(next) = remaining.strip_prefix(b"{-") {
-                        *depth += 1;
-                        remaining = next;
-                    } else if let Some(next) = remaining.strip_prefix(b"-}") {
-                        *depth -= 1;
-                        if *depth == 0 {
-                            self.0.pop();
-                        }
-                        remaining = next;
-                    } else {
-                        remaining = rest;
-                    }
-                }
                 Some(Mode::Raw(hashes)) => {
                     remaining = rest;
                     if first == b'"'
@@ -65,11 +50,6 @@ impl Shield {
                 _ => {
                     if remaining.starts_with(b"--") {
                         break;
-                    }
-                    if let Some(next) = remaining.strip_prefix(b"{-") {
-                        self.0.push(Mode::Block(1));
-                        remaining = next;
-                        continue;
                     }
                     if let Some(next) = remaining.strip_prefix(b"bytes\"") {
                         self.0.push(Mode::String { interpolate: false });

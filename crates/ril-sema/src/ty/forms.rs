@@ -239,8 +239,12 @@ impl Checker<'_> {
                     self.declare_meta_key(env, param);
                 }
                 let is_ctl = self.is_ctl_ty(env, &ty);
+                let is_linear_root = self.is_linear_root_ty(env, &ty);
+                let is_user_linear = is_linear_root && !is_ctl;
                 if matches!(param.mode, Mode::Ref | Mode::Mut | Mode::Shared)
-                    && (self.is_value_ty(env, &ty) || is_ctl)
+                    && (is_ctl
+                        || (is_user_linear && param.mode == Mode::Shared)
+                        || (!is_user_linear && self.is_value_ty(env, &ty)))
                 {
                     let span = param.name.as_ref().map_or_else(
                         || self.ast(env.file).ty(signature.result).span,
@@ -251,12 +255,14 @@ impl Checker<'_> {
                         span,
                         if is_ctl {
                             "ctl continuation is linear and cannot carry an access mode"
+                        } else if is_user_linear {
+                            "linear type cannot carry shared ^mut access"
                         } else {
                             "value-type parameter cannot carry live access"
                         },
                     );
                 }
-                if param.mode == Mode::New && is_ctl {
+                if param.mode == Mode::New && is_linear_root {
                     let span = param.name.as_ref().map_or_else(
                         || self.ast(env.file).ty(signature.result).span,
                         |name| name.span,
@@ -264,10 +270,14 @@ impl Checker<'_> {
                     self.error(
                         Code::E0411,
                         span,
-                        "ctl continuation is linear and does not use new mode",
+                        if is_ctl {
+                            "ctl continuation is linear and does not use new mode"
+                        } else {
+                            "linear type does not use new mode"
+                        },
                     );
                 }
-                if param.mode == Mode::Via && (self.is_value_only_ty(env, &ty) || is_ctl) {
+                if param.mode == Mode::Via && (self.is_value_only_ty(env, &ty) || is_linear_root) {
                     let span = param.name.as_ref().map_or_else(
                         || {
                             param.ty.map_or_else(
@@ -282,6 +292,8 @@ impl Checker<'_> {
                         span,
                         if is_ctl {
                             "via is invalid on a mode-free ctl continuation parameter"
+                        } else if is_user_linear {
+                            "via is invalid on a linear parameter"
                         } else {
                             "via is redundant on a value-type parameter"
                         },
@@ -377,12 +389,12 @@ impl Checker<'_> {
         if matches!(
             signature.result_mode,
             Mode::New | Mode::Ref | Mode::Shared
-        ) && self.is_ctl_ty(env, &result)
+        ) && self.is_linear_root_ty(env, &result)
         {
             self.error(
                 Code::E0546,
                 self.ast(env.file).ty(signature.result).span,
-                "ctl continuation is linear and cannot carry a return access mode",
+                "linear type cannot carry a return access mode",
             );
         }
         let callable = Callable {
@@ -664,6 +676,47 @@ impl Checker<'_> {
         })
     }
 
+    pub(in crate::ty) fn is_must_consume_ty(&mut self, env: &Env, ty: &Ty) -> bool {
+        self.is_must_consume_ty_inner(env, ty)
+    }
+
+    fn is_must_consume_ty_inner(&mut self, env: &Env, ty: &Ty) -> bool {
+        match self.normalize(ty) {
+            Ty::Callable(c) => c.is_ctl,
+            Ty::Array(member) => self.is_must_consume_ty_inner(env, &member.ty),
+            Ty::Map(key, member) => {
+                self.is_must_consume_ty_inner(env, &key)
+                    || self.is_must_consume_ty_inner(env, &member.ty)
+            }
+            Ty::Tuple(items) => items
+                .iter()
+                .any(|item| self.is_must_consume_ty_inner(env, &item.ty)),
+            Ty::Record(fields, _) => fields
+                .values()
+                .any(|field| self.is_must_consume_ty_inner(env, &field.ty)),
+            Ty::Adt(adt) => {
+                if adt.is_linear {
+                    return true;
+                }
+                if !self.must_consume_active.insert(adt.definition) {
+                    return false;
+                }
+                let result = if matches!(adt.kind, AdtKind::Sum | AdtKind::OpaqueSum) {
+                    self.sum_variants(&adt)
+                        .values()
+                        .flatten()
+                        .any(|payload| self.is_must_consume_ty_inner(env, payload))
+                } else {
+                    self.representation(env, &adt)
+                        .is_some_and(|rep| self.is_must_consume_ty_inner(env, &rep))
+                };
+                self.must_consume_active.remove(&adt.definition);
+                result
+            }
+            _ => false,
+        }
+    }
+
     pub(super) fn eligible_key(
         &mut self,
         env: &Env,
@@ -689,7 +742,9 @@ impl Checker<'_> {
                 .iter()
                 .all(|member| immutable(member) && self.eligible_key(env, &member.ty, seen)),
             Ty::Adt(adt) if seen.insert(adt.definition) => {
-                let result = if matches!(adt.kind, AdtKind::Sum | AdtKind::OpaqueSum) {
+                let result = if adt.is_linear {
+                    false
+                } else if matches!(adt.kind, AdtKind::Sum | AdtKind::OpaqueSum) {
                     let extensible = self.hir.definition(adt.definition).stmt.is_some_and(|s| {
                         let def = self.hir.definition(adt.definition);
                         matches!(
@@ -741,6 +796,9 @@ impl Checker<'_> {
                 .iter()
                 .all(|member| self.meta_exportable(env, &member.ty, seen)),
             Ty::Adt(adt) => {
+                if adt.is_linear {
+                    return false;
+                }
                 if !seen.insert(adt.definition) {
                     return true;
                 }

@@ -1521,6 +1521,7 @@ impl<'a> Collector<'a> {
                     | Intrinsic::ArrayInsert
                     | Intrinsic::MapInsert
                     | Intrinsic::MapReplace
+                    | Intrinsic::MapKeys
                     | Intrinsic::StringFromScalars
                     | Intrinsic::BytesFromArray
                         if ctx.in_loop =>

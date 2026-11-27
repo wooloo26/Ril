@@ -19,7 +19,7 @@ impl Analyzer<'_> {
                 } else {
                     self.expr(ctx, ledger, arg.value)
                 };
-                match arg.mode {
+                let mut value = match arg.mode {
                     Mode::Plain if value.requires_new => value,
                     Mode::Plain if Self::forwards_via(ctx, &value) => {
                         self.prepare_argument(ctx, ledger, arg, value, node.span, Mode::Via)
@@ -37,17 +37,31 @@ impl Analyzer<'_> {
                         }
                         value
                     }
+                };
+                if self.program.is_must_consume(self.ty(node.span))
+                    && !matches!(arg.mode, Mode::Ref | Mode::Mut | Mode::Shared)
+                {
+                    self.consume_linear(ctx, ledger, &mut value);
                 }
+                if value.roots.is_empty() && self.program.is_must_consume(self.ty(span)) {
+                    let mut source = Datum::source(span, Access::Mut, true);
+                    source.linear = value.linear;
+                    value = source;
+                }
+                value
             }
             many => {
                 let mut tuple = Datum::source(span, Access::Mut, true);
                 for (index, arg) in many.iter().enumerate() {
                     let node = ast.expr(arg.value);
-                    let value = if matches!(node.value, Expr::Closure { .. }) {
+                    let mut value = if matches!(node.value, Expr::Closure { .. }) {
                         self.closure(ctx, ledger, arg.value, false)
                     } else {
                         self.expr(ctx, ledger, arg.value)
                     };
+                    if self.program.is_must_consume(self.ty(node.span)) {
+                        self.consume_linear(ctx, ledger, &mut value);
+                    }
                     let value =
                         self.receive_member(ctx, ledger, value, Access::Immutable, node.span);
                     tuple
@@ -277,7 +291,7 @@ impl Analyzer<'_> {
             let arg_is_linear = self.program.is_must_consume(self.ty(node.span));
             if arg_is_linear
                 && !matches!(mode, Mode::Ref | Mode::Mut | Mode::Shared)
-                && !(primitive && matches!(name, "inner" | "len"))
+                && !(primitive && matches!(name, "len" | "inspect"))
             {
                 self.consume_linear(ctx, ledger, &mut value);
             }
@@ -556,7 +570,11 @@ impl Analyzer<'_> {
                     if self.program.is_must_consume(self.ty(value_span)) {
                         for decl in target.root_dependencies().collect::<BTreeSet<_>>() {
                             if let Some(slot) = ledger.slots.get(&decl).cloned()
-                                && slot.value.all_linear().is_empty()
+                                && slot
+                                    .value
+                                    .all_linear()
+                                    .iter()
+                                    .all(|occ| ledger.linear_consumed.contains(occ))
                             {
                                 let mut updated = slot.value;
                                 ledger.record_linear(&mut updated, target_span, true);

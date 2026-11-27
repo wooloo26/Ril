@@ -44,6 +44,7 @@ const KEYWORDS: &[(&str, &str)] = &[
     ("via", "via "),
     ("infer", "infer "),
     ("opaque", "opaque type "),
+    ("linear", "linear type "),
     ("typeof", "typeof "),
     ("as", "as "),
     ("break", "break"),

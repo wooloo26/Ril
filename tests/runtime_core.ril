@@ -1413,3 +1413,101 @@ fn main() -> () {
     let s = Set::from_array([3, 1, 3])
     assert(len(s) == 2 && Set::contains(s, 3))
 }
+
+-- @case linear_types_scoped_access_and_map_drain_runtime run-pass backend=both
+sub Resources {
+    pub opaque linear type File(.{ path: str, var written: int })
+    pub fn open(path: str) -> new !<File, str> {
+        Ok(File::(.{ path, written: 0 }))
+    }
+    pub fn path(ref f: File) -> str { inner(ref f).path }
+    pub fn write(mut f: File, n: int) &mut -> () {
+        inner(mut f).written = inner(ref f).written + n
+    }
+    pub fn close(f: File) -> int {
+        let File::(.{ written, .. }) = f
+        written
+    }
+
+    pub opaque linear type Fd(int)
+    pub fn make_fd(n: int) -> Fd { Fd::(n) }
+    pub fn raw_fd(ref f: Fd) -> int { inner(ref f) }
+    pub fn touch_fd(mut f: Fd) &mut -> int { inner(mut f) + 1 }
+    pub fn close_fd(f: Fd) -> int { inner(f) }
+}
+
+sub Net {
+    pub type Disconnected
+    pub type Connected
+    pub opaque linear type Conn<S>(.{ id: int, var sent: int })
+    pub fn create(id: int) -> Conn<Disconnected> { Conn::(.{ id, sent: 0 }) }
+    pub fn connect(c: Conn<Disconnected>) -> Conn<Connected> {
+        let Conn::(.{ id, sent }) = c
+        Conn::(.{ id, sent })
+    }
+    pub fn id(ref c: Conn<Connected>) -> int { inner(ref c).id }
+    pub fn send(mut c: Conn<Connected>, n: int) &mut -> () {
+        inner(mut c).sent = inner(ref c).sent + n
+    }
+    pub fn close(c: Conn<Connected>) -> int {
+        let Conn::(.{ sent, .. }) = c
+        sent
+    }
+}
+
+fn run_file() -> new !<int, str> {
+    let mut f = Resources::open("demo.txt")?
+    Resources::write(mut f, 10)
+    Resources::write(mut f, 5)
+    assert(Resources::path(ref f) == "demo.txt")
+    Ok(Resources::close(f))
+}
+
+fn main() -> () {
+    let res = run_file()
+    match res {
+        Ok(n) -> assert(n == 15)
+        Err(_) -> assert(false)
+    }
+
+    let mut fd = Resources::make_fd(41)
+    assert(Resources::raw_fd(ref fd) == 41)
+    assert(Resources::touch_fd(mut fd) == 42)
+    assert(Resources::close_fd(fd) == 41)
+
+    let mut pool: [str: Net::Conn<Net::Connected>] = [:]
+    let c1 = Net::connect(Net::create(10))
+    let c2 = Net::connect(Net::create(20))
+    if let Some(old) = Map::replace(mut pool, "a", c1) {
+        let _ = Net::close(old)
+    }
+    if let Some(old) = Map::replace(mut pool, "b", c2) {
+        let _ = Net::close(old)
+    }
+    assert(Map::contains(ref pool, "a") && !Map::contains(ref pool, "z"))
+    assert(Map::keys(ref pool) == ["a", "b"])
+
+    for mut pool as (_, conn) {
+        Net::send(mut conn, 7)
+    }
+    var id_sum = 0
+    for ref pool as (_, conn) {
+        id_sum = id_sum + Net::id(ref conn)
+    }
+    assert(id_sum == 30)
+
+    var sent_sum = 0
+    while let Some((_, conn)) = Map::pop_entry(mut pool) {
+        sent_sum = sent_sum + Net::close(conn)
+    }
+    assert(sent_sum == 14 && len(ref pool) == 0)
+
+    let static_check = meta {
+        let mut m: [str: int] = ["x": 1, "y": 2]
+        let has_x = Map::contains(ref m, "x")
+        let ks = Map::keys(ref m)
+        let popped = Map::pop_entry(mut m)
+        has_x && ks == ["x", "y"] && popped == Some(("y", 2)) && len(ref m) == 1
+    }
+    assert(static_check)
+}

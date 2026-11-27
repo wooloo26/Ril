@@ -9,7 +9,7 @@ namespace RilAccess.CoreCtl
 open Integrated
 
 inductive LinearKind where
-  | ctlContinuation | opaqueMustConsume
+  | ctlContinuation | opaqueMustConsume | userLinear
   deriving Repr, DecidableEq
 
 structure LinearEntry where
@@ -158,5 +158,76 @@ theorem no_ctl_param_rejects_ctl_callback {noCtlParams : List Nat} {argIdx : Nat
     (hmem : argIdx ∈ noCtlParams) :
     checkNoCtlCall noCtlParams argIdx true = false := by
   simp [checkNoCtlCall, hmem]
+
+/-- Call-scoped `ref`/`mut` access on linear values: `ctl(...)` continuations remain
+strictly mode-free (`E0401`), while live user-defined `linear type` / `opaque linear type`
+values permit call-scoped `ref` (`.observe`) and `mut` (`.mutable`) without consuming the
+binding, and forbid shared `^mut` (`.retained`) and post-consumption access (`E0549`). -/
+def canScopedBorrow (kind : LinearKind) (mode : ParameterMode) (entry : LinearEntry) : Bool :=
+  match kind with
+  | .ctlContinuation => false
+  | .opaqueMustConsume | .userLinear =>
+    !entry.consumed && (decide (mode = .observe) || decide (mode = .mutable))
+
+/-- Arming a lexical `defer` across unhandled `ctl` requires the `defer` body to actually
+consume the linear obligation (a read-only `defer` such as `defer peek(ref f)` does not arm). -/
+def armDeferIfConsumes (st : LinearState) (targetId deferScope : Nat)
+    (deferBodyConsumes : Bool) : Option LinearState :=
+  if !deferBodyConsumes then none
+  else armDefer st targetId deferScope
+
+/-- Returning a linear binding after running scope `defer`s requires the entry to remain live
+(not consumed by `defer`, `E0549`). -/
+def canReturnAfterDefer (st : LinearState) (targetId : Nat) : Bool :=
+  match (runArmedDefers st).entries.find? (fun e => decide (e.id = targetId)) with
+  | some entry => !entry.consumed
+  | none => false
+
+theorem ctl_forbids_scoped_borrow {mode : ParameterMode} {entry : LinearEntry} :
+    canScopedBorrow .ctlContinuation mode entry = false := rfl
+
+theorem user_linear_forbids_shared_borrow {entry : LinearEntry} :
+    canScopedBorrow .userLinear .retained entry = false := by
+  simp [canScopedBorrow]
+
+theorem non_consuming_defer_cannot_arm {st : LinearState} {targetId deferScope : Nat} :
+    armDeferIfConsumes st targetId deferScope false = none := rfl
+
+theorem return_after_defer_consume_rejected
+    {st armed : LinearState} {targetId deferScope : Nat}
+    (h : armDefer st targetId deferScope = some armed) :
+    canReturnAfterDefer armed targetId = false := by
+  unfold armDefer at h
+  cases hf : st.entries.find? (fun e => decide (e.id = targetId)) with
+  | none => simp [hf] at h
+  | some entry =>
+    have hid : entry.id = targetId := of_decide_eq_true
+      (List.find?_some (p := fun candidate : LinearEntry => decide (candidate.id = targetId)) hf)
+    simp only [hf] at h
+    split at h
+    · simp only [Option.some.injEq] at h
+      subst armed
+      unfold canReturnAfterDefer runArmedDefers
+      have hfind :
+          (((st.entries.map fun e =>
+              if e.id = targetId then { e with armedDefer := some deferScope } else e).map fun e =>
+              if e.armedDefer.isSome then { e with consumed := true } else e).find?
+            (fun e => decide (e.id = targetId))) =
+            some { entry with armedDefer := some deferScope, consumed := true } := by
+        rw [List.find?_map, List.find?_map]
+        have keepId : ∀ candidate : LinearEntry,
+            (if (if candidate.id = targetId then { candidate with armedDefer := some deferScope } else candidate).armedDefer.isSome
+              then { (if candidate.id = targetId then { candidate with armedDefer := some deferScope } else candidate) with consumed := true }
+              else if candidate.id = targetId then { candidate with armedDefer := some deferScope } else candidate).id =
+              candidate.id := by
+          intro candidate
+          by_cases hc : candidate.id = targetId
+          · simp [hc]
+          · simp only [hc, ↓reduceIte]
+            split <;> rfl
+        simp only [Function.comp_def, keepId, hf, Option.map_some, hid, ↓reduceIte, Option.isSome_some]
+      rw [hfind]
+      rfl
+    · simp at h
 
 end RilAccess.CoreCtl

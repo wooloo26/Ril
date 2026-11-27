@@ -276,6 +276,54 @@ impl Checker<'_> {
                         .map(|index| entries.remove(index).1);
                     Ok(removed.map_or_else(none, |item| Value::Tag("Some".into(), vec![item])))
                 }
+                DefinitionKind::Primitive(_)
+                    if name == "pop_entry" && self.hir.primitive_module(id) == Some("Map") =>
+                {
+                    let [map] = args else {
+                        return Err(nonstatic(span));
+                    };
+                    fuel.step(span)?;
+                    let place = self.eval_place(env, slots, map.value, fuel)?;
+                    let Value::Map(entries) = place.slot(slots, false)? else {
+                        return Err(defect(span, "static Map::pop_entry requires a map"));
+                    };
+                    Ok(entries.pop().map_or_else(none, |(k, v)| {
+                        Value::Tag("Some".into(), vec![Value::Tuple(vec![k, v])])
+                    }))
+                }
+                DefinitionKind::Primitive(_)
+                    if name == "contains" && self.hir.primitive_module(id) == Some("Map") =>
+                {
+                    let [map, key] = args else {
+                        return Err(nonstatic(span));
+                    };
+                    fuel.step(span)?;
+                    let map_val = self.evaluate(env, slots, map.value, fuel)?;
+                    let key_val = self.evaluate(env, slots, key.value, fuel)?;
+                    let Value::Map(entries) = map_val else {
+                        return Err(defect(span, "static Map::contains requires a map"));
+                    };
+                    Ok(Value::Bool(
+                        entries
+                            .iter()
+                            .any(|(stored, _)| ieee_equal(stored, &key_val)),
+                    ))
+                }
+                DefinitionKind::Primitive(_)
+                    if name == "keys" && self.hir.primitive_module(id) == Some("Map") =>
+                {
+                    let [map] = args else {
+                        return Err(nonstatic(span));
+                    };
+                    fuel.step(span)?;
+                    let map_val = self.evaluate(env, slots, map.value, fuel)?;
+                    let Value::Map(entries) = map_val else {
+                        return Err(defect(span, "static Map::keys requires a map"));
+                    };
+                    Ok(Value::Array(
+                        entries.into_iter().map(|(k, _)| k).collect(),
+                    ))
+                }
                 DefinitionKind::Primitive(_) if name == "inspect" => {
                     let [argument] = args else {
                         return Err(nonstatic(span));

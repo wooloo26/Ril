@@ -238,7 +238,7 @@ pub(crate) fn builtin_doc(name: &str) -> Option<BuiltinDoc> {
             signature: "type pattern Nominal<Inner>",
             detail: "built-in type pattern",
             kind: 22,
-            doc: "Compile-time type pattern used in `match <T>` arms (`<Nominal<let Inner>>`) to match accessible `.ril` nominal wrappers and in-scope `opaque` wrappers, binding their single-layer payload type `Inner`. Does not match sealed opaque types, sums, or foreign handles.",
+            doc: "Compile-time type pattern used in `match <T>` arms (`<Nominal<let Inner>>`) to match accessible nominal wrappers and in-scope `opaque` wrappers, binding their single-layer payload type `Inner`. Does not match sealed opaque types or sums.",
         },
         _ => return None,
     })
@@ -258,7 +258,13 @@ pub(crate) fn extract_doc_comment(text: &str, decl_offset: usize) -> Option<Stri
         let trimmed = lines.get(line_idx).map(|s| s.trim()).unwrap_or("");
         if let Some(rest) = trimmed.strip_prefix("--") {
             let cleaned = rest.strip_prefix(' ').unwrap_or(rest);
-            collected.push(cleaned);
+            // Normalize doctest fence tags (`ril,no_run`, `ril,ignore`) so VS Code Markdown renders Ril highlighting.
+            let normalized = if cleaned.starts_with("```ril,") {
+                "```ril"
+            } else {
+                cleaned
+            };
+            collected.push(normalized);
         } else {
             break;
         }

@@ -838,12 +838,6 @@ impl Ledger {
         }
     }
 
-    pub(in crate::access) fn arm_datum_linear(&mut self, value: &Datum, boundary: Span) {
-        for occ in value.all_linear() {
-            self.linear_armed.insert(occ, boundary);
-        }
-    }
-
     pub(in crate::access) fn pending_linear(&self) -> impl Iterator<Item = &LinearOccurrence> {
         self.linear_obligations
             .difference(&self.linear_consumed)

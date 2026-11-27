@@ -8,7 +8,7 @@ use ril_test::{Unit, VirtualPackage};
 #[test]
 fn cst_is_byte_for_byte_lossless() -> Result<(), String> {
     let sample = "-- header comment\n\
-type Box = .{ {- inline -} var value: int }\n\n\
+type Box = .{ var value: int } -- inline note\n\n\
 fn add(a: int,   b: int) -> int {\n\
     let msg = \"hello ${a + b}\"\n\
     let _ = msg\n\
@@ -28,7 +28,7 @@ fn ril_fmt_preserves_comments_and_is_idempotent() -> Result<(), String> {
     let messy = "-- top comment\n\
 type Pair = .{   a:int,b:int   }\n\n\n\n\
 fn sum(  p:Pair ) -> int {\n\
-  {- keep me -}\n\
+  -- keep me\n\
 let x = p.a+p.b   -- trailing\n\
     x\n\
 }\n";
@@ -38,7 +38,7 @@ let x = p.a+p.b   -- trailing\n\
     let pass1 = format_source(&src1, FileKind::Module).map_err(|d| format!("{d:?}"))?;
 
     assert!(pass1.contains("-- top comment"));
-    assert!(pass1.contains("{- keep me -}"));
+    assert!(pass1.contains("-- keep me"));
     assert!(pass1.contains("-- trailing"));
     assert!(pass1.contains("    let x = p.a + p.b -- trailing"));
     assert!(

@@ -150,8 +150,18 @@ impl Parser<'_> {
         if meta {
             self.bump();
         }
-        let declaration = matches!(self.text(), "fn" | "type" | "eff" | "sub")
-            || self.is("opaque") && self.next_text() == "type";
+        let third_text = self
+            .tokens
+            .get(self.pos + 2)
+            .map_or("", |tok| tok.text(self.file));
+        let is_opaque_type = self.is("opaque")
+            && (self.next_text() == "type"
+                || (self.next_text() == "linear" && third_text == "type"));
+        let is_linear_type = self.is("linear")
+            && (self.next_text() == "type"
+                || (self.next_text() == "opaque" && third_text == "type"));
+        let declaration =
+            matches!(self.text(), "fn" | "type" | "eff" | "sub") || is_opaque_type || is_linear_type;
         if context == Context::Block && declaration {
             return Err(self.error(
                 Code::E0703,
@@ -190,10 +200,26 @@ impl Parser<'_> {
                 }
                 StmtKind::Function(Box::new(self.function(meta, false, false)?))
             }
-            "type" => StmtKind::Type(Box::new(self.type_decl(false)?)),
+            "type" => StmtKind::Type(Box::new(self.type_decl(false, false)?)),
             "opaque" if self.next_text() == "type" => {
                 self.bump();
-                StmtKind::Type(Box::new(self.type_decl(true)?))
+                StmtKind::Type(Box::new(self.type_decl(true, false)?))
+            }
+            "opaque" if self.next_text() == "linear" && third_text == "type" => {
+                self.bump();
+                self.bump();
+                StmtKind::Type(Box::new(self.type_decl(true, true)?))
+            }
+            "linear" if self.next_text() == "type" => {
+                self.bump();
+                StmtKind::Type(Box::new(self.type_decl(false, true)?))
+            }
+            "linear" if self.next_text() == "opaque" && third_text == "type" => {
+                return Err(self.error(
+                    Code::E0120,
+                    start,
+                    "write 'opaque linear type' rather than 'linear opaque type'",
+                ));
             }
             "sub" => {
                 self.bump();
@@ -482,7 +508,7 @@ impl Parser<'_> {
         Ok(obligations)
     }
 
-    fn type_decl(&mut self, opaque: bool) -> Result<TypeDecl> {
+    fn type_decl(&mut self, opaque: bool, is_linear: bool) -> Result<TypeDecl> {
         self.require("type")?;
         let name = self.name(Some(Word::Pascal), false)?;
         let generics = self.generics()?;
@@ -492,6 +518,13 @@ impl Parser<'_> {
                     Code::E0120,
                     self.last,
                     "opaque type does not use '='; write 'opaque type Name(Underlying)'",
+                ));
+            }
+            if is_linear {
+                return Err(self.error(
+                    Code::E0120,
+                    self.last,
+                    "linear type does not use '='; write 'linear type Name(Underlying)' or 'linear type Name { ... }'",
                 ));
             }
             self.skip_lines();
@@ -686,6 +719,7 @@ impl Parser<'_> {
         Ok(TypeDecl {
             name,
             kind,
+            is_linear,
             generics,
             definition,
         })

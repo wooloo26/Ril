@@ -72,6 +72,9 @@ pub enum Intrinsic {
     MapInsert,
     MapReplace,
     MapRemove,
+    MapPopEntry,
+    MapContains,
+    MapKeys,
     StringInspect,
     StringAt,
     StringScalars,
@@ -113,6 +116,9 @@ impl Intrinsic {
                 | MapInsert
                 | MapReplace
                 | MapRemove
+                | MapPopEntry
+                | MapContains
+                | MapKeys
                 | StringAt
                 | StringScalars
                 | StringFromScalars

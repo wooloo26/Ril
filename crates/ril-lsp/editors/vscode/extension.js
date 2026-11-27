@@ -36,6 +36,47 @@ let activeClient = null;
 let output = null;
 /** @type {vscode.DiagnosticCollection | null} */
 let diagnostics = null;
+/** @type {vscode.TextEditorDecorationType | null} */
+let docExampleDecoration = null;
+
+const DOC_FENCE_OPEN_RE = /^\s*--\s*`{3,}\s*ril(?:,(?:no_run|ignore))?\s*$/;
+const DOC_FENCE_CLOSE_RE = /^\s*--\s*`{3,}\s*$/;
+const DOC_LINE_RE = /^\s*--/;
+
+function updateDocExampleDecorations(editor) {
+  if (!docExampleDecoration || !editor || editor.document.languageId !== "ril") {
+    return;
+  }
+  const enabled = vscode.workspace
+    .getConfiguration("ril")
+    .get("docExamples.subtleHighlight", true);
+  if (!enabled) {
+    editor.setDecorations(docExampleDecoration, []);
+    return;
+  }
+  const ranges = [];
+  const doc = editor.document;
+  let inBlock = false;
+  for (let line = 0; line < doc.lineCount; line++) {
+    const text = doc.lineAt(line).text;
+    if (!inBlock) {
+      if (DOC_FENCE_OPEN_RE.test(text)) {
+        inBlock = true;
+      }
+    } else if (DOC_FENCE_CLOSE_RE.test(text) || !DOC_LINE_RE.test(text)) {
+      inBlock = false;
+    } else {
+      ranges.push(new vscode.Range(line, 0, line, text.length));
+    }
+  }
+  editor.setDecorations(docExampleDecoration, ranges);
+}
+
+function updateAllVisibleDocDecorations() {
+  for (const editor of vscode.window.visibleTextEditors) {
+    updateDocExampleDecorations(editor);
+  }
+}
 
 function isExecutable(filePath) {
   try {
@@ -461,7 +502,12 @@ async function ensureReady() {
 function activate(context) {
   output = vscode.window.createOutputChannel("Ril Language Server");
   diagnostics = vscode.languages.createDiagnosticCollection("ril");
-  context.subscriptions.push(output, diagnostics);
+  docExampleDecoration = vscode.window.createTextEditorDecorationType({
+    isWholeLine: true,
+    backgroundColor: "rgba(128, 128, 128, 0.06)",
+    opacity: "0.82",
+  });
+  context.subscriptions.push(output, diagnostics, docExampleDecoration);
 
   const selector = { language: "ril" };
 
@@ -470,9 +516,18 @@ function activate(context) {
       diagnostics.clear();
       await startClient();
     }),
+    vscode.window.onDidChangeActiveTextEditor((editor) => {
+      updateDocExampleDecorations(editor);
+    }),
+    vscode.window.onDidChangeVisibleTextEditors(() => {
+      updateAllVisibleDocDecorations();
+    }),
     vscode.workspace.onDidChangeConfiguration((e) => {
-      if (e.affectsConfiguration("ril") && activeClient && activeClient.initialized) {
-        activeClient.didChangeConfiguration();
+      if (e.affectsConfiguration("ril")) {
+        updateAllVisibleDocDecorations();
+        if (activeClient && activeClient.initialized) {
+          activeClient.didChangeConfiguration();
+        }
       }
     }),
     vscode.workspace.onDidOpenTextDocument((doc) => {
@@ -481,8 +536,15 @@ function activate(context) {
       }
     }),
     vscode.workspace.onDidChangeTextDocument((event) => {
-      if (event.document.languageId === "ril" && activeClient && activeClient.initialized) {
-        activeClient.didChange(event.document);
+      if (event.document.languageId === "ril") {
+        for (const editor of vscode.window.visibleTextEditors) {
+          if (editor.document === event.document) {
+            updateDocExampleDecorations(editor);
+          }
+        }
+        if (activeClient && activeClient.initialized) {
+          activeClient.didChange(event.document);
+        }
       }
     }),
     vscode.workspace.onDidCloseTextDocument((doc) => {
@@ -847,6 +909,7 @@ function activate(context) {
     })
   );
 
+  updateAllVisibleDocDecorations();
   startClient();
 }
 

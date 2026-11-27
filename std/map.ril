@@ -13,19 +13,17 @@ pub fn replace<K, V>(mut map: [K: via V], key: K, via value: V) &mut -> new ?V
 -- Supports destructive extraction from maps holding must-consume values.
 pub fn remove<K, V>(mut map: [K: via V], key: K) &mut -> new ?V
 
+-- Removes and returns the last inserted `(key, value)` entry from `map`, or `None` if empty.
+-- Supports draining maps holding must-consume values in a `while let` loop.
+pub fn pop_entry<K, V>(mut map: [K: via V]) &mut -> new ?(K, V)
+
 -- Reports whether `map` contains an entry for `key`.
-pub fn contains<K, V>(via map: [K: via V], key: K) -> bool {
-    map?[key] != None
-}
+-- Supports maps holding must-consume values without copying or projecting entries.
+pub fn contains<K, V>(via map: [K: via V], key: K) -> bool
 
 -- Returns a new array of all keys in `map` in insertion order.
-pub fn keys<K, V>(via map: [K: via V]) &return(map) -> new []K {
-    let mut out: []K = []
-    for map as (k, _) {
-        Array::push(mut out, k)
-    }
-    out
-}
+-- Supports maps holding must-consume values without copying or projecting entries.
+pub fn keys<K, V>(via map: [K: via V]) &return(map) -> new []K
 
 -- Returns a new array of all values in `map` in insertion order.
 pub fn values<K, V>(via map: [K: V]) &return(map) -> new []V {

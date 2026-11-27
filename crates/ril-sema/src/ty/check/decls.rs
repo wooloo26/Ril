@@ -423,6 +423,16 @@ impl Checker<'_> {
                                     cur = self.normalize(&next);
                                 }
                             }
+                            if decl.kind == ril_syntax::syntax::TypeKind::Opaque
+                                && !decl.is_linear
+                                && self.is_must_consume_ty(&local, &representation)
+                            {
+                                self.error(
+                                    Code::E0625,
+                                    decl.name.span,
+                                    "opaque type wrapping a must-consume payload must be declared 'opaque linear type'",
+                                );
+                            }
                             if matches!(representation, Ty::Record(..)) {
                                 self.record_adts.insert(id);
                             }
@@ -439,6 +449,16 @@ impl Checker<'_> {
                                 .collect();
                             if let Ty::Adt(adt) = self.adt(id, decl, args) {
                                 self.sum_variants(&adt);
+                                if decl.kind == ril_syntax::syntax::TypeKind::Opaque
+                                    && !decl.is_linear
+                                    && self.is_must_consume_ty(&local, &Ty::Adt(Arc::clone(&adt)))
+                                {
+                                    self.error(
+                                        Code::E0625,
+                                        decl.name.span,
+                                        "opaque sum containing a must-consume payload must be declared 'opaque linear type'",
+                                    );
+                                }
                             }
                         }
                     }
