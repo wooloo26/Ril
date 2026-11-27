@@ -17,12 +17,7 @@ impl<'a> Analyzer<'a> {
         }
     }
 
-    pub(super) fn consume_linear(
-        &mut self,
-        ctx: &Context,
-        ledger: &mut Ledger,
-        value: &mut Datum,
-    ) {
+    pub(super) fn consume_linear(&mut self, ctx: &Context, ledger: &mut Ledger, value: &mut Datum) {
         if !ctx.reachable {
             return;
         }
@@ -65,6 +60,17 @@ impl<'a> Analyzer<'a> {
                 let coordinate = self.coordinate(ctx, ledger, member);
                 let (_, variable) = self.member_schema(ast.expr(*base).span, &coordinate);
                 if variable || value.origins().any(|origin| origin.draft) {
+                    if value.origins().any(|origin| origin.draft)
+                        && let Ty::Adt(adt) = self.ty(ast.expr(*base).span)
+                        && self.program.has_type_invariants(adt.definition)
+                    {
+                        self.error(
+                            Code::E0536,
+                            ast.expr(id).span,
+                            "cannot mutate through a draft of a type with a static invariant; replace the whole value instead",
+                        );
+                        return Datum::default();
+                    }
                     value.slot_projection(coordinate)
                 } else {
                     Datum::default()

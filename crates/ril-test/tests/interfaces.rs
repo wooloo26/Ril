@@ -200,7 +200,10 @@ pub fn apply_via(action: fn(via Shelf) -> int, via source: Shelf) -> int {
             .graph
             .members
             .iter()
-            .any(|(_, member)| member.roots.iter().any(|r| r.source.as_ref().is_some_and(|s| s.parameter == 1)))
+            .any(|(_, member)| member
+                .roots
+                .iter()
+                .any(|r| r.source.as_ref().is_some_and(|s| s.parameter == 1)))
     );
 
     for (mount, bytes) in [
@@ -212,7 +215,10 @@ pub fn apply_via(action: fn(via Shelf) -> int, via source: Shelf) -> int {
             ("Snapshot::apply(freeze, ref live)", false),
             ("Snapshot::apply_fresh(freeze)", true),
             ("Snapshot::replace_then_apply(freeze, ref live)", true),
-            ("Snapshot::apply_via(count_via, Snapshot::Shelf.{ item: ref live })", true),
+            (
+                "Snapshot::apply_via(count_via, Snapshot::Shelf.{ item: ref live })",
+                true,
+            ),
             (
                 "Snapshot::apply_via(count_via, Snapshot::Shelf.{ item: ref Snapshot::Cell.{ count: 42 } })",
                 true,
@@ -237,11 +243,7 @@ fn run() -> int {{
             match (accepted, Driver.analyze(&client)) {
                 (true, Ok(_)) => {}
                 (false, Err(diagnostics)) => {
-                    assert_eq!(
-                        diagnostics.len(),
-                        1,
-                        "{mount} {call_expr}: {diagnostics:?}"
-                    );
+                    assert_eq!(diagnostics.len(), 1, "{mount} {call_expr}: {diagnostics:?}");
                     assert_eq!(diagnostics[0].code, Some(Code::E0535));
                 }
                 (true, Err(diagnostics)) => panic!("{mount} {call_expr}: {diagnostics:?}"),
@@ -336,19 +338,18 @@ fn test() -> int {{
 }}"
                 );
                 if method == "supply" && accepted {
-                    let source = format!(
-                        "use library/snapshot
+                    let source = "use library/snapshot
 type Leaf = fn(new Snapshot::Shelf) -> Snapshot::Out
-fn forward_fresh(_relay: fn(Leaf, ref Snapshot::Cell) -> int, action: Leaf, ref _cell: Snapshot::Cell) -> int {{
-    let _ = action(Snapshot::Shelf.{{ item: ref Snapshot::Cell.{{ count: 42 }} }})
+fn forward_fresh(_relay: fn(Leaf, ref Snapshot::Cell) -> int, action: Leaf, ref _cell: Snapshot::Cell) -> int {
+    let _ = action(Snapshot::Shelf.{ item: ref Snapshot::Cell.{ count: 42 } })
     0
-}}
-fn test() -> int {{
-    let mut fresh = Snapshot::Cell.{{ count: 42 }}
+}
+fn test() -> int {
+    let mut fresh = Snapshot::Cell.{ count: 42 }
     fresh.count += 1
     Snapshot::supply(forward_fresh, ref fresh)
-}}"
-                    );
+}"
+                    .to_string();
                     let mut client = VirtualPackage::new(Unit::Lib);
                     client.insert(mount.into(), bytes.to_vec());
                     client.insert(client.entry.clone(), source.into_bytes());
@@ -361,11 +362,7 @@ fn test() -> int {{
                 match (accepted, Driver.analyze(&client)) {
                     (true, Ok(_)) => {}
                     (false, Err(diagnostics)) => {
-                        assert_eq!(
-                            diagnostics.len(),
-                            1,
-                            "{mount} {method}: {diagnostics:?}"
-                        );
+                        assert_eq!(diagnostics.len(), 1, "{mount} {method}: {diagnostics:?}");
                         assert_eq!(diagnostics[0].code, Some(Code::E0535));
                     }
                     (true, Err(diagnostics)) => panic!("{mount} {method}: {diagnostics:?}"),
@@ -577,13 +574,34 @@ pub fn controls(^mut slot: Snapshot::Slot, initial: Snapshot::Leaf, next: Snapsh
             ("Snapshot::factory()()", true),
             ("Snapshot::factory_with()(keep)", true),
             ("Snapshot::read()", false),
-            ("{ let xs = Snapshot::nested().actions; if len(xs) > 0 { xs[0] } else { count } }", true),
-            ("{ let xs = Snapshot::build_array(); if len(xs) > 0 { xs[0] } else { count } }", false),
-            ("{ let xs = Snapshot::build_array(); if len(xs) > 1 { xs[1] } else { count } }", true),
-            ("{ let xs = Snapshot::section([count, freeze]); if len(xs) > 0 { xs[0] } else { count } }", true),
-            ("{ let xs = Snapshot::section([freeze, count]); if len(xs) > 0 { xs[0] } else { count } }", false),
-            ("{ let xs = Snapshot::one([freeze, count, freeze]); if len(xs) > 0 { xs[0] } else { count } }", false),
-            ("{ let xs = Snapshot::one([count, freeze, count]); if len(xs) > 0 { xs[0] } else { count } }", true),
+            (
+                "{ let xs = Snapshot::nested().actions; if len(xs) > 0 { xs[0] } else { count } }",
+                true,
+            ),
+            (
+                "{ let xs = Snapshot::build_array(); if len(xs) > 0 { xs[0] } else { count } }",
+                false,
+            ),
+            (
+                "{ let xs = Snapshot::build_array(); if len(xs) > 1 { xs[1] } else { count } }",
+                true,
+            ),
+            (
+                "{ let xs = Snapshot::section([count, freeze]); if len(xs) > 0 { xs[0] } else { count } }",
+                true,
+            ),
+            (
+                "{ let xs = Snapshot::section([freeze, count]); if len(xs) > 0 { xs[0] } else { count } }",
+                false,
+            ),
+            (
+                "{ let xs = Snapshot::one([freeze, count, freeze]); if len(xs) > 0 { xs[0] } else { count } }",
+                false,
+            ),
+            (
+                "{ let xs = Snapshot::one([count, freeze, count]); if len(xs) > 0 { xs[0] } else { count } }",
+                true,
+            ),
             (
                 "{ let mut actions = [count]; let ^mut append = Snapshot::appender(^mut actions); append(); if len(ref actions) > 0 { actions[0] } else { count } }",
                 false,

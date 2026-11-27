@@ -104,13 +104,29 @@ pub type Between = \n: int, lo: int, hi: int -> if n >= lo && n <= hi { <()> } e
 pub type NonEmpty = \T |> LenTarget, xs: T -> if len(xs) > 0 { <()> } else { <never> }
 
 -- Static proof that `len(xs) == n`.
-pub type HasLen = \T |> LenTarget, xs: T, n: int -> if len(xs) == n { <()> } else { <never> }
+pub type Len = \T |> LenTarget, xs: T, n: int -> if len(xs) == n { <()> } else { <never> }
 
 -- Static proof that `len(xs) == len(ys)`.
 pub type SameLen = \A |> LenTarget, B |> LenTarget, xs: A, ys: B -> if len(xs) == len(ys) { <()> } else { <never> }
 
 -- Static proof that `0 <= i && i < len(xs)`.
 pub type InBounds = \T |> LenTarget, i: int, xs: T -> if i >= 0 && i < len(xs) { <()> } else { <never> }
+
+-- Static check accepting types that support `In`: maps, `Set<T>`, and `Derived<T>` wrapping any of them.
+pub type InTarget = \C, K -> match <C> {
+    <Derived<let Payload>> -> {
+        let _ = <InTarget<Payload, K>>
+        <C>
+    }
+    <Set<let Elem>> -> if <Elem> == <K> { <C> } else { compile_error_code("E0301", "In key type does not match Set element type") }
+    <[let Key: let _ _]> -> if <Key> == <K> { <C> } else { compile_error_code("E0301", "In key type does not match map key type") }
+    _ -> compile_error_code("E0301", "In requires a map or Set")
+}
+
+pkg meta fn has_key<K, C |> InTarget<K>>(c: C, key: K) -> bool
+
+-- Static proof that `key` is a present member of map or `Set` `c`.
+pub type In = \K, C |> InTarget<K>, key: K, c: C -> if has_key(c, key) { <()> } else { <never> }
 
 -- Dual-phase length query returning scalar count for `str`, byte count for `bytes`,
 -- or element/entry count for arrays, maps, `Set<T>`, and `Derived` collections.
@@ -168,6 +184,10 @@ pub fn unwind_ctl<T>(k: T) -> ()
 -- Dual-phase defect trap that unwinds active `defer` cleanups (or fails static evaluation
 -- with `E0831`) and never completes normally.
 pub fn panic(message: str) -> never
+
+-- Statically proved unreachable branch. Requires the compiler's static prover to establish
+-- that the call site is unreachable (`E0323`); never introduces `@panic`, `@abort`, or `@diverge`.
+pub fn unreachable() -> never
 
 -- Dual-phase assertion that calls `panic(message)` (or fails static evaluation with `E0830`)
 -- when `condition` is `false`.

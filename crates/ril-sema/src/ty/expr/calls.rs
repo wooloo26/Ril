@@ -169,6 +169,18 @@ impl Checker<'_> {
             None
         };
         let mut local = env.clone();
+        // Closures may be invoked after outer live/var bindings are mutated; wipe all outer live facts.
+        local
+            .refinements
+            .options
+            .retain(|p, _| !self.live.contains(&p.root));
+        local.refinements.dbm.forget_matching(|a| match a {
+            crate::ty::dbm::Atom::Val(p) | crate::ty::dbm::Atom::Len(p) => {
+                self.live.contains(&p.root)
+            }
+            _ => false,
+        });
+        local.refinements.call_proofs.clear();
         if params.iter().any(|param| param.mode == Mode::Via) {
             local.mode_scope = Some(true);
         }
@@ -205,8 +217,22 @@ impl Checker<'_> {
             };
             if let Some(pattern) = item.pattern {
                 self.pattern(&mut local, pattern, &ty);
+                let mut ids = Vec::new();
+                self.collect_pattern_defs(&local, pattern, &mut ids);
+                for id in ids {
+                    if let Some(bound_ty) = self.bindings.get(&id).cloned() {
+                        self.seed_type_invariants(
+                            &mut local,
+                            &crate::ty::dbm::Place::local(id),
+                            &bound_ty,
+                        );
+                    }
+                }
             } else if let Some(name) = &item.name {
                 self.define_name(name, ty.clone());
+                if let Some(id) = self.resolve(name.span) {
+                    self.seed_type_invariants(&mut local, &crate::ty::dbm::Place::local(id), &ty);
+                }
             }
             if let Some(default) = item.default {
                 if item.is_meta {
@@ -533,10 +559,7 @@ impl Checker<'_> {
             } else {
                 parameter.mode
             };
-            if !parameter.is_meta
-                && parameter.mode != Mode::Via
-                && expected_arg_mode != arg.mode
-            {
+            if !parameter.is_meta && parameter.mode != Mode::Via && expected_arg_mode != arg.mode {
                 self.error(
                     if arg.mode == Mode::Plain {
                         Code::E0405
@@ -581,15 +604,43 @@ impl Checker<'_> {
             )
         });
         let is_array_clear = def_id.is_some_and(|id| self.is_array_clear_callee(id));
+        let is_map_insert = def_id.is_some_and(|id| {
+            matches!(
+                self.hir.intrinsic(id),
+                Some(ril_hir::Intrinsic::MapInsert | ril_hir::Intrinsic::MapReplace)
+            ) || self.is_set_stdlib_callee(id, "insert")
+        });
+        let is_map_remove = def_id.is_some_and(|id| {
+            self.hir.intrinsic(id) == Some(ril_hir::Intrinsic::MapRemove)
+                || self.is_set_stdlib_callee(id, "remove")
+        });
+        let is_map_pop_entry = def_id
+            .is_some_and(|id| self.hir.intrinsic(id) == Some(ril_hir::Intrinsic::MapPopEntry));
+        let is_map_clear = def_id.is_some_and(|id| {
+            self.is_map_clear_callee(id) || self.is_set_stdlib_callee(id, "clear")
+        });
         // 1. Check static parameter proofs on pre-call DBM (mapped by formal index!).
         if !env.shadow
             && let Some(id) = def_id
         {
+            if self.hir.intrinsic(id) == Some(ril_hir::Intrinsic::Unreachable) {
+                if env.refinements.dbm.unsat {
+                    self.proved_ops.insert(span);
+                } else {
+                    self.error(
+                        Code::E0323,
+                        span,
+                        "unreachable() is not statically proved unreachable",
+                    );
+                }
+            }
             self.check_call_param_proofs(env, id, &arg_by_formal, span);
         }
         if !env.shadow
             && let Some(id) = def_id
-            && self.hir.is_stdlib_file(self.hir.definition(id).name.span.file)
+            && self
+                .hir
+                .is_stdlib_file(self.hir.definition(id).name.span.file)
             && self.hir.primitive_module(id) == Some("Prelude")
             && self.hir.definition(id).name.value == "assert"
             && let Some(cond_arg) = args.first()
@@ -633,7 +684,9 @@ impl Checker<'_> {
                 let has_writable_schema = arg_ty
                     .as_ref()
                     .is_some_and(Ty::contains_writable_member_schema);
-                if argument.mode == Mode::Shared || (argument.mode == Mode::Plain && has_shared_schema) {
+                if argument.mode == Mode::Shared
+                    || (argument.mode == Mode::Plain && has_shared_schema)
+                {
                     self.invalidate_live(
                         env,
                         Code::E0310,
@@ -647,6 +700,32 @@ impl Checker<'_> {
                         self.note_array_pop(env, argument.value, span);
                     } else if is_array_clear {
                         self.note_array_clear(env, argument.value, span);
+                    } else if is_map_insert
+                        && arg_by_formal.first().copied().flatten() == Some(argument.value)
+                    {
+                        self.note_map_insert(
+                            env,
+                            argument.value,
+                            arg_by_formal.get(1).copied().flatten(),
+                            span,
+                        );
+                    } else if is_map_remove
+                        && arg_by_formal.first().copied().flatten() == Some(argument.value)
+                    {
+                        self.note_map_remove(
+                            env,
+                            argument.value,
+                            arg_by_formal.get(1).copied().flatten(),
+                            span,
+                        );
+                    } else if is_map_pop_entry
+                        && arg_by_formal.first().copied().flatten() == Some(argument.value)
+                    {
+                        self.note_map_pop_entry(env, argument.value, span);
+                    } else if is_map_clear
+                        && arg_by_formal.first().copied().flatten() == Some(argument.value)
+                    {
+                        self.note_map_clear(env, argument.value, span);
                     } else if is_len_preserving {
                         self.writes_place_preserving_len(env, argument.value, span);
                     } else {
@@ -695,8 +774,7 @@ impl Checker<'_> {
                             arg_span,
                             "ctl continuation cannot carry live authority",
                         );
-                    } else if self.is_value_ty(env, &first)
-                        && !self.is_must_consume_ty(env, &first)
+                    } else if self.is_value_ty(env, &first) && !self.is_must_consume_ty(env, &first)
                     {
                         self.error(
                             Code::E0401,
@@ -860,6 +938,17 @@ impl Checker<'_> {
             );
             return Ty::Unknown;
         }
+        let has_invariants = self.has_type_invariants(adt.definition);
+        if has_invariants
+            && let Some(ref rep_ty) = rep
+            && self.contains_live_member_schema_deep(env, rep_ty, &mut HashSet::new())
+        {
+            self.error(
+                Code::E0356,
+                span,
+                "type with static invariant cannot be instantiated with mutable, var, ref, or live member storage",
+            );
+        }
         if let Some(Ty::Record(required, open)) = rep {
             if args.len() != 1 {
                 for arg in args {
@@ -901,6 +990,14 @@ impl Checker<'_> {
                 let rep_ty = Ty::Record(required, open);
                 self.expect(env, arg.value, &rep_ty);
             }
+            if has_invariants && !env.shadow {
+                self.verify_type_invariants(
+                    env,
+                    adt,
+                    crate::ty::proofs::ProofArgVal::Expr(arg.value),
+                    span,
+                );
+            }
             return ty;
         }
         if let Some(Ty::Tuple(fields)) = &rep
@@ -924,6 +1021,14 @@ impl Checker<'_> {
             }
             let tuple_ty = Ty::Tuple(fields.clone());
             self.expect(env, arg.value, &tuple_ty);
+            if has_invariants && !env.shadow {
+                self.verify_type_invariants(
+                    env,
+                    adt,
+                    crate::ty::proofs::ProofArgVal::Expr(arg.value),
+                    span,
+                );
+            }
             return ty;
         }
         if args.is_empty() && matches!(rep, Some(Ty::Unit)) {
@@ -986,6 +1091,14 @@ impl Checker<'_> {
                     );
                 }
             }
+        }
+        if has_invariants && !env.shadow && !args.is_empty() {
+            let subject = if single && let Some(first) = args.first() {
+                crate::ty::proofs::ProofArgVal::Expr(first.value)
+            } else {
+                crate::ty::proofs::ProofArgVal::TupleExprs(args.iter().map(|a| a.value).collect())
+            };
+            self.verify_type_invariants(env, adt, subject, span);
         }
         ty
     }

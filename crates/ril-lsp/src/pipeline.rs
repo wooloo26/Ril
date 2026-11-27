@@ -770,7 +770,10 @@ fn format_pipe_signature(
         let full_sig = ril_driver::inspect::format_expanded_signature(typed, None, cand.def_id)
             .map(|sig| {
                 sig.strip_prefix(&format!("fn {}", def.name.value))
-                    .map_or_else(|| sig.clone(), |rest| format!("fn {}{rest}", cand.call_path))
+                    .map_or_else(
+                        || sig.clone(),
+                        |rest| format!("fn {}{rest}", cand.call_path),
+                    )
             })
             .unwrap_or_else(|| {
                 let full_ty = Ty::Callable(callable.clone())

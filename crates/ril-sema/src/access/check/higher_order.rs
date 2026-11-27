@@ -255,10 +255,9 @@ fn can_supply_callback(
             if !active.insert(adt.definition) {
                 return false;
             }
-            let result = program.nominal_layout(adt).map_or(
-                true,
-                |layout| can_supply_callback(&layout, accepts, Some(program), active),
-            );
+            let result = program
+                .nominal_layout(adt)
+                .is_none_or(|layout| can_supply_callback(&layout, accepts, Some(program), active));
             active.remove(&adt.definition);
             result
         }

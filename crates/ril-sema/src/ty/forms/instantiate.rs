@@ -550,7 +550,8 @@ impl Checker<'_> {
         local.domains = env.domains.clone();
 
         if matches!(input, GenericValue::Data(_)) {
-            let (type_params, Some(subject), trailing) = super::partition_type_fn_params(&parameters)
+            let (type_params, Some(subject), trailing) =
+                super::partition_type_fn_params(&parameters)
             else {
                 self.error(
                     Code::E0340,
@@ -579,7 +580,7 @@ impl Checker<'_> {
                     }
                     0
                 };
-                let rem = &arguments[value_args_start..];
+                let rem = arguments.get(value_args_start..).unwrap_or_default();
                 if rem.len() > trailing.len() {
                     self.error(Code::E0340, path.span, "too many static check arguments");
                     return;

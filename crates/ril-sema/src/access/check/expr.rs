@@ -377,7 +377,18 @@ impl Analyzer<'_> {
                 } else {
                     mode
                 };
-                self.project_observed(ctx, ledger, &value, (coordinate, mode, span))
+                let mut projected =
+                    self.project_observed(ctx, ledger, &value, (coordinate, mode, span));
+                if value.origins().any(|origin| origin.draft)
+                    && let Ty::Adt(adt) = self.ty(ast.expr(*base).span)
+                    && self.program.has_type_invariants(adt.definition)
+                {
+                    projected.transform(&mut |origin| {
+                        origin.draft = false;
+                        origin.mode = Access::Immutable;
+                    });
+                }
+                projected
             }
             Expr::Index { base, index, .. } => {
                 let value = self.expr(ctx, ledger, *base);
@@ -420,9 +431,7 @@ impl Analyzer<'_> {
                 let mut result = Datum::default();
                 for (i, &item) in statements.iter().enumerate() {
                     let is_tail = i + 1 == statements.len();
-                    if is_tail
-                        && let StmtKind::Expr(tail_expr) = ast.stmt(item).value.kind
-                    {
+                    if is_tail && let StmtKind::Expr(tail_expr) = ast.stmt(item).value.kind {
                         result = self.eval_exit_expr(
                             &mut local_ctx,
                             ledger,
@@ -514,9 +523,7 @@ impl Analyzer<'_> {
                 let mut result = Datum::default();
                 for (i, &item) in statements.iter().enumerate() {
                     let is_tail = i + 1 == statements.len();
-                    if is_tail
-                        && let StmtKind::Expr(tail_expr) = ast.stmt(item).value.kind
-                    {
+                    if is_tail && let StmtKind::Expr(tail_expr) = ast.stmt(item).value.kind {
                         result = self.eval_exit_expr(
                             &mut local_ctx,
                             ledger,
@@ -784,9 +791,8 @@ impl Analyzer<'_> {
                 let iter_elem_linear =
                     iter_elem_ty.is_some_and(|ty| self.program.is_must_consume(ty));
                 let iter_elem_ctl = iter_elem_ty.is_some_and(|ty| self.program.is_ctl_ty(ty));
-                let iter_linear_borrow = iter_elem_linear
-                    && !iter_elem_ctl
-                    && matches!(mode, Mode::Ref | Mode::Mut);
+                let iter_linear_borrow =
+                    iter_elem_linear && !iter_elem_ctl && matches!(mode, Mode::Ref | Mode::Mut);
                 if iter_elem_linear && !iter_linear_borrow {
                     self.error(
                         Code::E0548,
@@ -932,7 +938,9 @@ impl Analyzer<'_> {
                 } else {
                     self.expr(ctx, ledger, *value)
                 };
-                if !*is_meta && *mode == Mode::Plain && self.program.is_must_consume(self.ty(val_span))
+                if !*is_meta
+                    && *mode == Mode::Plain
+                    && self.program.is_must_consume(self.ty(val_span))
                 {
                     self.consume_linear(ctx, ledger, &mut value);
                 }
@@ -1023,7 +1031,14 @@ impl Analyzer<'_> {
                                 "returned value was consumed by defer",
                             );
                             ledger.holds.clear();
-                            self.try_promote_exit_new(ctx, ledger, &mut value, &prior_slots, 0, true);
+                            self.try_promote_exit_new(
+                                ctx,
+                                ledger,
+                                &mut value,
+                                &prior_slots,
+                                0,
+                                true,
+                            );
                             self.returned(ctx, ledger, value, span);
                             self.check_results(ledger, &BTreeSet::new());
                             self.check_linear(ledger, &BTreeSet::new());

@@ -928,3 +928,306 @@ fn bad_swap(mut xs: []int, i: int) &mut -> () {
     Array::swap(mut xs, i, 0)
     -- ^ E0362
 }
+
+-- @case proved_map_in_and_direct_indexing compile-pass
+fn lookup_proved(m: [str: int], k: str |> In(m)) -> int {
+    m[k]
+}
+
+fn lookup_via_contains(m: [str: int], k: str) -> int {
+    if Map::contains(m, k) {
+        lookup_proved(m, k) + m[k]
+    } else {
+        0
+    }
+}
+
+fn lookup_via_safe_index(m: [str: int], k: str) -> int {
+    if m?[k] != None {
+        m[k]
+    } else if let Some(_) = m?[k] {
+        unreachable()
+    } else {
+        0
+    }
+}
+
+fn mutate_proved_map(mut m: [str: int], k: str) &mut -> int {
+    m[k] = 1
+    m[k] += 2
+    let lit = ["a": 10, "b": 20]
+    let sum = lit["a"] + lit["b"]
+    var total = m[k] + sum
+    for ref m as (key, _) {
+        total += m[key]
+    }
+    for Map::keys(ref m) as key {
+        total += m[key]
+    }
+    total
+}
+
+fn set_in_proof(s: Set<str>, x: str |> In(s)) -> bool {
+    Set::contains(s, x)
+}
+
+fn set_membership_flow(mut s: Set<str>, x: str) &mut -> bool {
+    Set::insert(mut s, x)
+    let ok = set_in_proof(clone(ref s), x)
+    let snap = clone(ref s)
+    for snap as item {
+        let _ = set_in_proof(snap, item)
+    }
+    ok
+}
+
+fn remove_distinct_key_preserves_other(mut m: [str: int]) &mut -> int {
+    m["a"] = 1
+    m["b"] = 2
+    let _ = Map::remove(mut m, "b")
+    m["a"]
+}
+
+-- @case map_remove_unknown_key_invalidates_contains compile-fail E0362
+fn bad_remove(mut m: [str: int], k1: str, k2: str) &mut -> int {
+    m[k1] = 1
+    let _ = Map::remove(mut m, k2)
+    m[k1]
+    -- ^ E0362
+}
+
+-- @case map_pop_entry_invalidates_contains compile-fail E0362
+fn bad_pop(mut m: [str: int]) &mut -> int {
+    m["a"] = 1
+    let _ = Map::pop_entry(mut m)
+    m["a"]
+    -- ^ E0362
+}
+
+-- @case set_remove_invalidates_in_proof compile-fail E0323
+fn need_in(s: Set<str>, x: str |> In(s)) -> bool { Set::contains(s, x) }
+fn bad_set(mut s: Set<str>, x: str) &mut -> bool {
+    Set::insert(mut s, x)
+    let _ = Set::remove(mut s, x)
+    need_in(clone(ref s), x)
+    -- ^ E0323
+}
+
+-- @case unreachable_proved_in_dead_branches_and_defer compile-pass
+fn proved_dead(x: int, xs: []int |> NonEmpty, m: [str: int], k: str |> In(m)) -> int {
+    defer {
+        if false {
+            unreachable()
+        }
+    }
+    if x > 0 && x < 0 {
+        unreachable()
+    }
+    if len(m) == 0 {
+        unreachable()
+    }
+    let [head, ..] = xs else { unreachable() }
+    match x >= 0 {
+        true -> head
+        false -> head + 1
+    }
+}
+
+-- @case unreachable_reachable_call_is_e0323 compile-fail E0323
+fn bad_unreachable(x: int) -> int {
+    if x > 0 {
+        unreachable()
+        -- ^ E0323
+    } else {
+        0
+    }
+}
+
+-- @case unreachable_first_class_decay_is_e0534 compile-fail E0534
+fn bad_decay() -> fn() -> never {
+    unreachable
+    -- ^ E0534
+}
+
+-- @case unreachable_f64_nan_not_unsat_is_e0323 compile-fail E0323
+fn nan_guard(x: f64) -> int {
+    if !(x < 0.0) && !(x >= 0.0) {
+        unreachable()
+        -- ^ E0323
+    } else {
+        0
+    }
+}
+
+-- @case exact_slice_length_conservation compile-pass
+fn takes_len(xs: []int, n: int, s: []int |> Len(n)) -> int {
+    len(xs) + len(s)
+}
+
+fn takes_diff_len(a: int, b: int, s: []int |> Len(b - a)) -> int {
+    a + b + len(s)
+}
+
+fn takes_same(a: []int, b: []int |> SameLen(a)) -> int {
+    len(a) + len(b)
+}
+
+fn slice_conservation(xs: []int, ys: []int |> SameLen(xs), a: int, b: int) -> int {
+    var total = 0
+    if 0 <= a && a <= b && b <= len(xs) {
+        let s1 = xs[a..b]
+        let s2 = ys[a..b]
+        total += takes_diff_len(a, b, s1)
+        total += takes_same(s1, s2)
+        let left = xs[..a]
+        let right = xs[a..]
+        let _ = takes_len(xs, a, left)
+        if len(left) + len(right) != len(xs) {
+            unreachable()
+        }
+    }
+    if let Some(win) = xs?[a..b] {
+        total += takes_diff_len(a, b, win)
+    }
+    total
+}
+
+-- @case immutable_type_invariants_full_workflow compile-pass
+type ValidSpan = \s: .{ lo: int, hi: int } -> if s.lo <= s.hi { <()> } else { <never> }
+type Ordered = \p: (int, int) -> if p.0 <= p.1 { <()> } else { <never> }
+
+type Port(int) |> Between(1, 65535)
+type Span(.{ lo: int, hi: int }) |> ValidSpan
+type Pair(int, int) |> Ordered
+type NonEmptyList<T>([]T) |> NonEmpty
+opaque type NonZeroId(int) |> NonZero
+
+fn make_nz(x: int) -> new ?NonZeroId {
+    if x != 0 { Some(NonZeroId::(x)) } else { None }
+}
+
+fn use_invariants(p: Port, sp: Span, pr: Pair, xs: NonEmptyList<int>, nz: NonZeroId) -> int {
+    let a = 1000 / inner(p)
+    let b = 100 / inner(nz)
+    let c = inner(xs)[0]
+    let d = if sp.lo > sp.hi { unreachable() } else { sp.hi - sp.lo }
+    let e = if pr.0 > pr.1 { unreachable() } else { pr.1 - pr.0 }
+    let p_const = Port::(8080)
+    let sp_const = Span::(.{ lo: 1, hi: 5 })
+    let pr_const = Pair::(2, 9)
+    a + b + c + d + e + inner(p_const) + sp_const.lo + pr_const.0
+}
+
+type Holder(.{ span: Span })
+fn replace_whole_span_in_derive(h: Holder) -> Holder {
+    derive(h, \mut d -> {
+        let _ = d.span.lo
+        d.span = Span::(.{ lo: 10, hi: 20 })
+    })
+}
+
+-- @case type_invariant_const_violation_is_e0323 compile-fail E0323
+type Port(int) |> Between(1, 65535)
+fn bad() -> Port {
+    Port::(0)
+    -- ^ E0323
+}
+
+-- @case type_invariant_record_violation_is_e0323 compile-fail E0323
+type ValidSpan = \s: .{ lo: int, hi: int } -> if s.lo <= s.hi { <()> } else { <never> }
+type Span(.{ lo: int, hi: int }) |> ValidSpan
+fn bad() -> Span {
+    Span::(.{ lo: 10, hi: 5 })
+    -- ^ E0323
+}
+
+-- @case type_invariant_tuple_violation_is_e0323 compile-fail E0323
+type Ordered = \p: (int, int) -> if p.0 <= p.1 { <()> } else { <never> }
+type Pair(int, int) |> Ordered
+fn bad() -> Pair {
+    Pair::(9, 2)
+    -- ^ E0323
+}
+
+-- @case type_invariant_opaque_no_implicit_bypass compile-fail E0301
+opaque type Port(int) |> Between(1, 65535)
+fn forge(x: int) -> Port { x }
+-- ^ E0301
+
+-- @case type_invariant_forbids_mutable_payload_is_e0356 compile-fail E0356
+type Valid = \s: .{ var x: int } -> if s.x > 0 { <()> } else { <never> }
+type Bad(.{ var x: int }) |> Valid
+-- ^ E0356
+
+-- @case type_invariant_forbids_derive_root_is_e0536 compile-fail E0536
+type ValidSpan = \s: .{ lo: int, hi: int } -> if s.lo <= s.hi { <()> } else { <never> }
+type Span(.{ lo: int, hi: int }) |> ValidSpan
+fn bad(s: Span) -> Span {
+    derive(s, \mut d -> { d.lo = 100 })
+    -- ^ E0536
+}
+
+-- @case type_invariant_forbids_nested_derive_mutation_is_e0536 compile-fail E0536
+type ValidSpan = \s: .{ lo: int, hi: int } -> if s.lo <= s.hi { <()> } else { <never> }
+type Span(.{ lo: int, hi: int }) |> ValidSpan
+type Holder(.{ span: Span })
+fn bad(h: Holder) -> Holder {
+    derive(h, \mut d -> {
+        d.span.lo = 100
+        -- ^ E0536
+    })
+}
+
+-- @case type_invariant_forbids_inner_mut_is_e0406 compile-fail E0406
+type NonEmptyList([]int) |> NonEmpty
+fn bad(mut xs: NonEmptyList) &mut -> () {
+    let _ = Array::pop(mut inner(mut xs))
+    -- ^ E0406
+}
+
+-- @case type_invariant_on_alias_is_e0120 compile-fail E0120
+type BadAlias = int |> Positive
+-- ^ E0120
+
+-- @case type_invariant_on_linear_is_e0120 compile-fail E0120
+linear type BadLinear(int) |> Positive
+-- ^ E0120
+
+-- @case soundness_short_circuit_rhs_mutation_invalidates_div compile-fail E0361
+fn bad() -> int {
+    var x = 1
+    if x > 0 && { x = 0; true } {
+        10 / x
+        -- ^ E0361
+    } else {
+        0
+    }
+}
+
+-- @case soundness_closure_wipes_outer_var_fact compile-fail E0361
+fn bad() -> int {
+    var x = 1
+    let f = \-> 10 / x
+    -- ^ E0361
+    x = 0
+    f()
+}
+
+-- @case soundness_defer_wipes_var_fact compile-fail E0361
+fn bad() -> () {
+    var x = 1
+    defer {
+        let _ = 10 / x
+        -- ^ E0361
+    }
+    x = 0
+}
+
+-- @case soundness_map_insert_updates_length compile-fail E0323
+fn needs_len1(m: [str: int] |> Len(1)) -> int { len(m) }
+fn bad() -> int {
+    let mut m: [str: int] = ["a": 1]
+    m["b"] = 2
+    needs_len1(clone(ref m))
+    -- ^ E0323
+}

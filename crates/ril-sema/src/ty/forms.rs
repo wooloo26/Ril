@@ -29,8 +29,8 @@ pub(in crate::ty) fn partition_type_fn_params(
         .iter()
         .take_while(|p| !is_value_generic_param(p))
         .count();
-    let type_params = &params[..k];
-    let Some((subject, trailing)) = params[k..].split_first() else {
+    let (type_params, rest) = params.split_at(k);
+    let Some((subject, trailing)) = rest.split_first() else {
         return (type_params, None, &[]);
     };
     (type_params, Some(subject), trailing)
@@ -136,7 +136,7 @@ impl Checker<'_> {
         }
     }
 
-    fn check_static_proof_guard(
+    pub(in crate::ty) fn check_static_proof_guard(
         &mut self,
         env: &mut Env,
         guard: syntax::ExprId,
@@ -245,10 +245,14 @@ impl Checker<'_> {
                     .iter()
                     .position(|p| p.name.value == label.value)
                 else {
-                    self.error(Code::E0339, label.span, "unknown named static proof argument");
+                    self.error(
+                        Code::E0339,
+                        label.span,
+                        "unknown named static proof argument",
+                    );
                     continue;
                 };
-                if bound_args[pos].is_some() {
+                if bound_args.get(pos).is_some_and(Option::is_some) {
                     self.error(
                         Code::E0325,
                         label.span,
@@ -256,13 +260,15 @@ impl Checker<'_> {
                     );
                     continue;
                 }
-                bound_args[pos] = Some(arg.clone());
+                if let Some(slot) = bound_args.get_mut(pos) {
+                    *slot = Some(arg.clone());
+                }
             } else {
-                while positional_idx < bound_args.len() && bound_args[positional_idx].is_some() {
+                while bound_args.get(positional_idx).is_some_and(Option::is_some) {
                     positional_idx += 1;
                 }
-                if positional_idx < bound_args.len() {
-                    bound_args[positional_idx] = Some(arg.clone());
+                if let Some(slot) = bound_args.get_mut(positional_idx) {
+                    *slot = Some(arg.clone());
                     positional_idx += 1;
                 } else {
                     self.error(
@@ -274,7 +280,7 @@ impl Checker<'_> {
             }
         }
         for (idx, param) in trailing_params.iter().enumerate() {
-            if let Some(arg) = &bound_args[idx] {
+            if let Some(Some(arg)) = bound_args.get(idx) {
                 let arg_span = self.ast(env.file).expr(arg.value).span;
                 if matches!(arg.mode, Mode::Mut | Mode::Shared) {
                     self.error(
@@ -301,27 +307,23 @@ impl Checker<'_> {
                     );
                 }
                 if arg.mode == Mode::Ref && self.is_value_ty(env, &actual_arg) {
-                    self.error(
-                        Code::E0402,
-                        arg_span,
-                        "cannot take 'ref' of a value type",
-                    );
+                    self.error(Code::E0402, arg_span, "cannot take 'ref' of a value type");
                 }
             } else if param.default.is_none() {
-                self.error(
-                    Code::E0314,
-                    span,
-                    "missing required static proof argument",
-                );
+                self.error(Code::E0314, span, "missing required static proof argument");
             }
         }
 
         // Validate deduced type parameters (domain bounds & static checks like `T |> LenTarget`).
         for (idx, pid) in type_param_ids {
-            let tp = &type_params[idx];
+            let Some(tp) = type_params.get(idx) else {
+                continue;
+            };
             if let Some(GenericValue::Type(actual)) = subst.get(&pid) {
                 let actual = self.normalize(actual);
-                tf_env.generics.insert(pid, GenericValue::Type(actual.clone()));
+                tf_env
+                    .generics
+                    .insert(pid, GenericValue::Type(actual.clone()));
                 if matches!(actual, Ty::Infer(_)) {
                     self.error(
                         Code::E0344,
@@ -429,9 +431,10 @@ impl Checker<'_> {
             syntax::Expr::Quote(ty_id) => match &ast.ty(*ty_id).value {
                 Type::Unit => {}
                 Type::Named(path)
-                    if path.segments.len() == 1
-                        && path.segments[0].name.value == "never"
-                        && path.segments[0].arguments.is_empty() => {}
+                    if matches!(
+                        path.segments.as_slice(),
+                        [seg] if seg.name.value == "never" && seg.arguments.is_empty()
+                    ) => {}
                 Type::Named(path) => {
                     if let Some(target_id) = self.resolve(path.span)
                         && let Some(stmt) = self.hir.definition(target_id).stmt
@@ -797,10 +800,8 @@ impl Checker<'_> {
                 "ctl(...) continuation types are prohibited in static evaluation",
             );
         }
-        if matches!(
-            signature.result_mode,
-            Mode::New | Mode::Ref | Mode::Shared
-        ) && self.is_linear_root_ty(env, &result)
+        if matches!(signature.result_mode, Mode::New | Mode::Ref | Mode::Shared)
+            && self.is_linear_root_ty(env, &result)
         {
             self.error(
                 Code::E0546,
@@ -884,7 +885,9 @@ impl Checker<'_> {
                         .unwrap_or_default(),
                     _ => Vec::new(),
                 };
-                if let Some(inferred) = self.static_proof_subject_type(env, id, &angle_args, node_span) {
+                if let Some(inferred) =
+                    self.static_proof_subject_type(env, id, &angle_args, node_span)
+                {
                     return inferred;
                 }
             }

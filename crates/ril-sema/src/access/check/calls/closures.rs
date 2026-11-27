@@ -315,8 +315,15 @@ impl Analyzer<'_> {
         let before = self.rules.len();
         let prior_slots = inner.caller_slots.clone();
         let prior_holds = locals.holds.len();
-        let mut output =
-            self.eval_exit_expr(&mut inner, &mut locals, *body, &prior_slots, prior_holds, 0, true);
+        let mut output = self.eval_exit_expr(
+            &mut inner,
+            &mut locals,
+            *body,
+            &prior_slots,
+            prior_holds,
+            0,
+            true,
+        );
         let implicit = self.ty(self.ast(ctx.file).expr(*body).span) != &Ty::Never;
         if inner.reachable && implicit {
             self.run_defers(&mut inner, &mut locals, 0);
@@ -328,7 +335,14 @@ impl Analyzer<'_> {
                 "returned value was consumed by defer",
             );
             locals.holds.truncate(prior_holds);
-            self.try_promote_exit_new(&inner, &locals, &mut output, &prior_slots, prior_holds, true);
+            self.try_promote_exit_new(
+                &inner,
+                &locals,
+                &mut output,
+                &prior_slots,
+                prior_holds,
+                true,
+            );
             output = locals.snapshot(&output);
             let body_span = self.ast(ctx.file).expr(*body).span;
             if self.program.is_must_consume(self.ty(body_span))

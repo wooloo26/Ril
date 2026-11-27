@@ -55,6 +55,14 @@ impl Checker<'_> {
         }
         let mut active: Vec<Arc<Adt>> = Vec::new();
         while let Ty::Adt(adt) = &ty {
+            if self.has_type_invariants(adt.definition) {
+                self.error(
+                    Code::E0536,
+                    span,
+                    "derive cannot mutate a type with a static invariant; construct a new value with '::(...)'",
+                );
+                return;
+            }
             if matches!(adt.kind, AdtKind::Opaque | AdtKind::OpaqueSum)
                 && adt.defining_scope != env.scope
                 && self.hir.std_type(adt.definition) != Some(StdType::Set)
@@ -195,7 +203,8 @@ impl Checker<'_> {
                 ..unknown_callable()
             }));
             let mut cb_env = env.clone();
-            if let syntax::Expr::Closure { params, .. } = &self.ast(env.file).expr(update.value).value
+            if let syntax::Expr::Closure { params, .. } =
+                &self.ast(env.file).expr(update.value).value
                 && let Some(first_param) = params.first()
                 && let Some(param_name) = &first_param.name
                 && let Some(draft_id) = self.resolve(param_name.span)
@@ -322,6 +331,25 @@ impl Checker<'_> {
                     Ty::Draft(wrapped) => wrapped.as_ref(),
                     other => other,
                 };
+                if let Ty::Adt(adt) = target
+                    && self.has_type_invariants(adt.definition)
+                {
+                    if is_draft {
+                        self.error(
+                            Code::E0536,
+                            span,
+                            "cannot project into a draft of a type with a static invariant; replace the whole value instead",
+                        );
+                    } else if let Some(arg) = args.first()
+                        && matches!(arg.mode, Mode::Mut | Mode::Shared)
+                    {
+                        self.error(
+                            Code::E0406,
+                            self.ast(env.file).expr(arg.value).span,
+                            "cannot take mutable access to payload of a type with a static invariant",
+                        );
+                    }
+                }
                 let inner_ty = match target {
                     Ty::Adt(adt)
                         if adt.kind == AdtKind::Opaque && adt.defining_scope != env.scope =>

@@ -89,6 +89,7 @@ fn check_impl(hir: Program, budget: Option<u64>, partial: bool) -> (TypedProgram
                 receptions: HashMap::new(),
                 exported_param_proofs: BTreeMap::new(),
                 exported_return_proofs: BTreeMap::new(),
+                exported_type_invariants: BTreeMap::new(),
                 boxed_var_captures: std::collections::BTreeSet::new(),
             },
             diagnostics,
@@ -170,6 +171,7 @@ fn check_impl(hir: Program, budget: Option<u64>, partial: bool) -> (TypedProgram
         narrow_drops,
         exported_param_proofs,
         exported_return_proofs,
+        exported_type_invariants,
         ..
     } = ck;
     let mut program = TypedProgram {
@@ -209,6 +211,7 @@ fn check_impl(hir: Program, budget: Option<u64>, partial: bool) -> (TypedProgram
         receptions,
         exported_param_proofs,
         exported_return_proofs,
+        exported_type_invariants,
         boxed_var_captures: std::collections::BTreeSet::new(),
     };
     if let Err(spec_diags) = program.validate_specializations() {
@@ -329,6 +332,7 @@ pub(super) struct Checker<'a> {
         HashMap<DefinitionId, Result<super::proofs::LoweredTypeFn, super::proofs::LowerError>>,
     pub(super) exported_param_proofs: BTreeMap<DefinitionId, Vec<super::proofs::ExportProof>>,
     pub(super) exported_return_proofs: BTreeMap<DefinitionId, Vec<super::proofs::ExportProof>>,
+    pub(super) exported_type_invariants: BTreeMap<DefinitionId, Vec<super::proofs::ExportProof>>,
     pub(super) navigation_values: HashMap<Span, Ty>,
     pub(super) propagation_inputs: HashMap<Span, Ty>,
     pub(super) nominal_layouts: HashMap<DefinitionId, Ty>,
@@ -389,6 +393,7 @@ impl<'a> Checker<'a> {
             lowered_proof_preds: HashMap::new(),
             exported_param_proofs: BTreeMap::new(),
             exported_return_proofs: BTreeMap::new(),
+            exported_type_invariants: BTreeMap::new(),
             propagation_inputs: HashMap::new(),
             nominal_layouts: HashMap::new(),
             record_adts: HashSet::new(),
@@ -517,6 +522,64 @@ impl<'a> Checker<'a> {
         !occurs
     }
 
+    pub(super) fn has_type_invariants(&self, def_id: DefinitionId) -> bool {
+        let def = self.hir.definition(def_id);
+        let Some(stmt) = def.stmt else {
+            return false;
+        };
+        matches!(
+            &self.ast(def.name.span.file).stmt(stmt).value.kind,
+            syntax::StmtKind::Type(decl) if !decl.guards.is_empty()
+        )
+    }
+
+    pub(super) fn contains_live_member_schema_deep(
+        &mut self,
+        env: &Env,
+        ty: &Ty,
+        seen: &mut HashSet<DefinitionId>,
+    ) -> bool {
+        match self.normalize(ty) {
+            Ty::Draft(_) => true,
+            Ty::Array(m) | Ty::Map(_, m) => {
+                m.mode.variable
+                    || m.mode.mode != Mode::Plain
+                    || self.contains_live_member_schema_deep(env, &m.ty, seen)
+            }
+            Ty::Tuple(ms) => ms.iter().any(|m| {
+                m.mode.variable
+                    || m.mode.mode != Mode::Plain
+                    || self.contains_live_member_schema_deep(env, &m.ty, seen)
+            }),
+            Ty::Record(fields, _) => fields.values().any(|m| {
+                m.mode.variable
+                    || m.mode.mode != Mode::Plain
+                    || self.contains_live_member_schema_deep(env, &m.ty, seen)
+            }),
+            Ty::Adt(adt) => {
+                if !seen.insert(adt.definition) {
+                    return false;
+                }
+                let res = adt.arguments.iter().any(|arg| match arg {
+                    GenericValue::Type(t) => self.contains_live_member_schema_deep(env, t, seen),
+                    _ => false,
+                }) || match adt.kind {
+                    AdtKind::Nominal | AdtKind::Opaque => self
+                        .representation(env, &adt)
+                        .is_some_and(|rep| self.contains_live_member_schema_deep(env, &rep, seen)),
+                    AdtKind::Sum | AdtKind::OpaqueSum => {
+                        self.sum_variants(&adt).values().flatten().any(|payload| {
+                            self.contains_live_member_schema_deep(env, payload, seen)
+                        })
+                    }
+                };
+                seen.remove(&adt.definition);
+                res
+            }
+            _ => false,
+        }
+    }
+
     pub(super) fn fits(&mut self, env: &Env, actual: &Ty, expected: &Ty) -> bool {
         let actual = self.normalize(actual);
         let expected = self.normalize(expected);
@@ -588,11 +651,19 @@ impl<'a> Checker<'a> {
                             _ => actual == expected,
                         })
             }
-            (Ty::Adt(adt), _) if adt.kind == AdtKind::Opaque && adt.defining_scope == env.scope => {
+            (Ty::Adt(adt), _)
+                if adt.kind == AdtKind::Opaque
+                    && adt.defining_scope == env.scope
+                    && !self.has_type_invariants(adt.definition) =>
+            {
                 self.representation(env, adt)
                     .is_some_and(|ty| self.fits(env, &ty, &expected))
             }
-            (_, Ty::Adt(adt)) if adt.kind == AdtKind::Opaque && adt.defining_scope == env.scope => {
+            (_, Ty::Adt(adt))
+                if adt.kind == AdtKind::Opaque
+                    && adt.defining_scope == env.scope
+                    && !self.has_type_invariants(adt.definition) =>
+            {
                 self.representation(env, adt)
                     .is_some_and(|ty| self.fits(env, &actual, &ty))
             }
@@ -653,11 +724,19 @@ impl<'a> Checker<'a> {
                             _ => xa == ya,
                         })
             }
-            (Ty::Adt(adt), _) if adt.kind == AdtKind::Opaque && adt.defining_scope == env.scope => {
+            (Ty::Adt(adt), _)
+                if adt.kind == AdtKind::Opaque
+                    && adt.defining_scope == env.scope
+                    && !self.has_type_invariants(adt.definition) =>
+            {
                 self.representation(env, adt)
                     .is_some_and(|ty| self.equiv(env, &ty, &b))
             }
-            (_, Ty::Adt(adt)) if adt.kind == AdtKind::Opaque && adt.defining_scope == env.scope => {
+            (_, Ty::Adt(adt))
+                if adt.kind == AdtKind::Opaque
+                    && adt.defining_scope == env.scope
+                    && !self.has_type_invariants(adt.definition) =>
+            {
                 self.representation(env, adt)
                     .is_some_and(|ty| self.equiv(env, &a, &ty))
             }

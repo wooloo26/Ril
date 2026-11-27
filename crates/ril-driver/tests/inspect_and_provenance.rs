@@ -160,7 +160,10 @@ fn main() -> () {
 }
 "#;
     let bad_out = inspect_src(bad_defer_src, Unit::Bin, &InspectQuery::default());
-    assert_eq!(bad_out["ok"], false, "defer panic must be hard error E0627: {bad_out}");
+    assert_eq!(
+        bad_out["ok"], false,
+        "defer panic must be hard error E0627: {bad_out}"
+    );
     let diags = bad_out["diagnostics"].as_array().expect("diagnostics");
     assert!(
         diags
@@ -319,4 +322,47 @@ fn cross_package_behavior_propagates_via_rili_without_changing_abi_hash() {
         "expected cross-package may_panic propagation: {use_dep}"
     );
     assert!(use_dep.get("total").is_none());
+}
+
+#[test]
+fn unreachable_preserves_total_behavior_and_is_allowed_in_defer() {
+    let compiler = Driver.with_options(CompileOptions::default());
+    let mut pkg = VirtualPackage::new(Unit::Bin);
+    pkg.insert(
+        pkg.entry.clone(),
+        br#"
+fn total_with_unreachable(x: int) -> int {
+    defer {
+        if false {
+            unreachable()
+        }
+    }
+    if x > 0 && x < 0 {
+        unreachable()
+    }
+    x
+}
+
+fn main() -> () {
+    let _ = total_with_unreachable(1)
+}
+"#
+        .to_vec(),
+    );
+    let report = compiler.inspect_package(&pkg, &InspectQuery::default());
+    let out: Value = serde_json::from_str(&report.to_json(false)).unwrap();
+    assert_eq!(out["ok"], true, "expected ok inspect report: {out}");
+    let sym = out["symbols"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["sym"] == "total_with_unreachable")
+        .unwrap();
+    assert_eq!(
+        sym["total"], true,
+        "unreachable() must keep fn total: {sym}"
+    );
+    assert!(sym.get("may_panic").is_none());
+    assert!(sym.get("may_abort").is_none());
+    assert!(sym.get("may_diverge").is_none());
 }

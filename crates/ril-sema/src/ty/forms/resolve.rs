@@ -305,11 +305,7 @@ impl Checker<'_> {
                 "value-type members cannot carry live access",
             );
         } else if mode.mode == Mode::Via && self.is_value_only_ty(env, &typed) {
-            self.error(
-                Code::E0550,
-                span,
-                "via is redundant on a value-type member",
-            );
+            self.error(Code::E0550, span, "via is redundant on a value-type member");
         }
         Member { mode, ty: typed }
     }

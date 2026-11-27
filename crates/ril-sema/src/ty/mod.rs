@@ -411,10 +411,23 @@ pub struct TypedProgram {
     pub(crate) effect_applications: HashMap<Span, Vec<String>>,
     pub(crate) exported_param_proofs: BTreeMap<DefinitionId, Vec<proofs::ExportProof>>,
     pub(crate) exported_return_proofs: BTreeMap<DefinitionId, Vec<proofs::ExportProof>>,
+    pub(crate) exported_type_invariants: BTreeMap<DefinitionId, Vec<proofs::ExportProof>>,
     pub boxed_var_captures: BTreeSet<DefinitionId>,
 }
 
 impl TypedProgram {
+    pub fn has_type_invariants(&self, def_id: DefinitionId) -> bool {
+        let def = self.hir.definition(def_id);
+        let Some(stmt) = def.stmt else {
+            return false;
+        };
+        let ast = &self.hir.file(def.name.span.file).ast;
+        matches!(
+            &ast.stmt(stmt).value.kind,
+            ril_syntax::syntax::StmtKind::Type(decl) if !decl.guards.is_empty()
+        )
+    }
+
     pub fn inspection_scope(&self, span: Span) -> Option<ScopeId> {
         self.inspection_scopes.get(&span).copied()
     }
@@ -548,7 +561,11 @@ impl TypedProgram {
         self.is_must_consume_inner(ty, &mut HashSet::new())
     }
 
-    pub(crate) fn type_param_in_must_consume_position(&self, ty: &Ty, target: DefinitionId) -> bool {
+    pub(crate) fn type_param_in_must_consume_position(
+        &self,
+        ty: &Ty,
+        target: DefinitionId,
+    ) -> bool {
         fn walk(
             program: &TypedProgram,
             ty: &Ty,
@@ -563,9 +580,9 @@ impl TypedProgram {
                     walk(program, k, target, seen) || walk(program, &v.ty, target, seen)
                 }
                 Ty::Tuple(items) => items.iter().any(|m| walk(program, &m.ty, target, seen)),
-                Ty::Record(fields, _) => fields
-                    .values()
-                    .any(|m| walk(program, &m.ty, target, seen)),
+                Ty::Record(fields, _) => {
+                    fields.values().any(|m| walk(program, &m.ty, target, seen))
+                }
                 Ty::Adt(adt) => {
                     if !seen.insert(adt.definition) {
                         return false;

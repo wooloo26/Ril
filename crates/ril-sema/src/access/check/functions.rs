@@ -112,7 +112,11 @@ impl Analyzer<'_> {
             if param.mode == Mode::New
                 && (self.program.is_value(&param.ty) || self.program.is_linear_root(&param.ty))
             {
-                self.error(Code::E0411, span, "new parameter requires a non-linear shared object");
+                self.error(
+                    Code::E0411,
+                    span,
+                    "new parameter requires a non-linear shared object",
+                );
             }
             if param.mode == Mode::New {
                 ctx.new_formals.insert(span);
@@ -121,13 +125,13 @@ impl Analyzer<'_> {
                 if self.program.is_value(&param.ty) && !self.program.is_must_consume(&param.ty) {
                     Datum::default()
                 } else {
-                let mut datum =
-                    Datum::source(span, Access::from_mode(param.mode), param.mode == Mode::New);
-                if param.mode == Mode::New {
-                    datum.requires_new = false;
-                }
-                datum
-            };
+                    let mut datum =
+                        Datum::source(span, Access::from_mode(param.mode), param.mode == Mode::New);
+                    if param.mode == Mode::New {
+                        datum.requires_new = false;
+                    }
+                    datum
+                };
             value.transform(&mut |origin| {
                 origin.dependencies.insert(span.into());
                 origin.enter_formal(ctx.owner, param.mode);
@@ -203,7 +207,15 @@ impl Analyzer<'_> {
         }
         let prior_slots = ctx.caller_slots.clone();
         let prior_holds = ledger.holds.len();
-        let mut value = self.eval_exit_expr(&mut ctx, &mut ledger, body, &prior_slots, prior_holds, 0, true);
+        let mut value = self.eval_exit_expr(
+            &mut ctx,
+            &mut ledger,
+            body,
+            &prior_slots,
+            prior_holds,
+            0,
+            true,
+        );
         let body_span = self.ast(ctx.file).expr(body).span;
         if ctx.reachable && !ledger.no_continuation && self.ty(body_span) != &Ty::Never {
             self.run_defers(&mut ctx, &mut ledger, 0);
@@ -1063,7 +1075,14 @@ impl Analyzer<'_> {
                     );
                     let mut arm_reads = BTreeMap::new();
                     for arm in arms {
-                        walk_pattern(this, ast, arm.pattern, mark_ty, forbids_drop, local_generics);
+                        walk_pattern(
+                            this,
+                            ast,
+                            arm.pattern,
+                            mark_ty,
+                            forbids_drop,
+                            local_generics,
+                        );
                         let mut one = BTreeMap::new();
                         if let Some(g) = arm.guard {
                             merge_sum(

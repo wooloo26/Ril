@@ -267,10 +267,10 @@ fn widen(value: Small) -> Large { value as Large }
 type Route = .{ pair: (str, int) }
 fn port(route: ?Route) -> int { (route?.pair).1 }
 
--- @case unchecked_map_read_is_rejected compile-fail E0352
+-- @case unchecked_map_read_is_rejected compile-fail E0362
 fn read(values: [str: int]) -> int { values["key"] }
 
--- @case map_compound_assignment_is_rejected compile-fail E0352
+-- @case map_compound_assignment_is_rejected compile-fail E0362
 fn update(mut values: [str: int]) &mut -> () { values["key"] += 1 }
 
 -- @case clone_rejects_a_callable_root compile-fail E0301

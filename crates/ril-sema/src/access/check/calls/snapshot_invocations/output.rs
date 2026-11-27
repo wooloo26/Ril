@@ -557,10 +557,9 @@ fn carries_callable_at(
             if !seen.insert(point) {
                 return false;
             }
-            let result = program.nominal_layout(adt).map_or(
-                true,
-                |layout| carries_callable_at(program, &layout, path, seen),
-            );
+            let result = program
+                .nominal_layout(adt)
+                .is_none_or(|layout| carries_callable_at(program, &layout, path, seen));
             seen.remove(&point);
             result
         }

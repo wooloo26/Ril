@@ -258,6 +258,7 @@ pub struct TypeDecl {
     pub is_linear: bool,
     pub generics: Vec<GenericParam>,
     pub definition: TypeDefinition,
+    pub guards: Vec<ExprId>,
 }
 
 #[derive(Clone, Debug)]

@@ -207,12 +207,14 @@ impl<'program> Analyzer<'program> {
                                     .effect_operations(eff)
                                     .iter()
                                     .any(|op| !ctx.handlers.contains_key(op))
-                        }) || value.latent_operations.iter().any(|(op_id, eff)| {
-                            !ctx.handlers.contains_key(&crate::access::check::Operation {
-                                id: *op_id,
-                                effect: eff.clone(),
-                            })
-                        }) || matches!(&arg_ty, Ty::Callable(actual) if actual.open_effects || actual.effects.iter().any(|eff| {
+                        }) || value.latent_operations.iter().any(
+                            |(op_id, eff)| {
+                                !ctx.handlers.contains_key(&crate::access::check::Operation {
+                                    id: *op_id,
+                                    effect: eff.clone(),
+                                })
+                            },
+                        ) || matches!(&arg_ty, Ty::Callable(actual) if actual.open_effects || actual.effects.iter().any(|eff| {
                             eff != "io"
                                 && self
                                     .effect_operations(eff)

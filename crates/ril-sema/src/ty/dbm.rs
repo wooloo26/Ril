@@ -34,14 +34,25 @@ pub(crate) struct ProofPlace {
     pub(crate) path: Vec<String>,
 }
 
-/// Symbolic integer atom in a lowered Type-Function predicate.
+/// Canonical constant key used in symbolic `Contains` predicates (`In(m)` / `In(s)`).
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+pub(crate) enum KeyConst {
+    Int(i128),
+    Str(String),
+    Bool(bool),
+    Bytes(Vec<u8>),
+    Unit,
+}
+
+/// Symbolic integer/key/container atom in a lowered Type-Function predicate.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 pub(crate) enum ProofAtom {
     Val(ProofPlace),
     Len(ProofPlace),
+    Const(KeyConst),
 }
 
-/// Negation-normal-form difference-logic predicate parameterized by atom type `A`.
+/// Negation-normal-form difference-logic + membership predicate parameterized by atom type `A`.
 /// `None` in `lhs`/`rhs` denotes the constant `0` (`Atom::Zero`).
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 pub(crate) enum ProofPred<A> {
@@ -58,6 +69,13 @@ pub(crate) enum ProofPred<A> {
         lhs: Option<A>,
         rhs: Option<A>,
         offset: i128,
+    },
+    /// `key ∈ container` (when `!negated`) or `key ∉ container` (when `negated`).
+    Contains {
+        container: A,
+        key: A,
+        #[serde(default)]
+        negated: bool,
     },
     And(Vec<ProofPred<A>>),
     Or(Vec<ProofPred<A>>),
@@ -110,7 +128,7 @@ impl<A: Clone + Eq> ProofPred<A> {
         }
         match flat.len() {
             0 => Self::True,
-            1 => flat.pop().unwrap(),
+            1 => flat.pop().unwrap_or(Self::True),
             _ => Self::And(flat),
         }
     }
@@ -137,7 +155,7 @@ impl<A: Clone + Eq> ProofPred<A> {
         }
         match flat.len() {
             0 => Self::False,
-            1 => flat.pop().unwrap(),
+            1 => flat.pop().unwrap_or(Self::False),
             _ => Self::Or(flat),
         }
     }
@@ -147,11 +165,22 @@ impl<A: Clone + Eq> ProofPred<A> {
         match self {
             Self::True => Self::False,
             Self::False => Self::True,
-            Self::DiffLe { lhs, rhs, bound } => match bound.checked_neg().and_then(|n| n.checked_sub(1)) {
-                Some(neg) => Self::diff_le(rhs.clone(), lhs.clone(), neg),
-                None => Self::True,
-            },
+            Self::DiffLe { lhs, rhs, bound } => {
+                match bound.checked_neg().and_then(|n| n.checked_sub(1)) {
+                    Some(neg) => Self::diff_le(rhs.clone(), lhs.clone(), neg),
+                    None => Self::True,
+                }
+            }
             Self::DiffNe { lhs, rhs, offset } => Self::diff_eq(lhs.clone(), rhs.clone(), *offset),
+            Self::Contains {
+                container,
+                key,
+                negated,
+            } => Self::Contains {
+                container: container.clone(),
+                key: key.clone(),
+                negated: !negated,
+            },
             Self::And(ps) => Self::or(ps.iter().map(Self::negate).collect()),
             Self::Or(ps) => Self::and(ps.iter().map(Self::negate).collect()),
         }
@@ -186,6 +215,15 @@ impl<A: Clone + Eq> ProofPred<A> {
                 },
                 *offset,
             ),
+            Self::Contains {
+                container,
+                key,
+                negated,
+            } => ProofPred::Contains {
+                container: f(container)?,
+                key: f(key)?,
+                negated: *negated,
+            },
             Self::And(ps) => {
                 let mut out = Vec::with_capacity(ps.len());
                 for p in ps {
@@ -210,12 +248,14 @@ pub(super) enum Atom {
     Zero,
     Val(Place),
     Len(Place),
+    KeyConst(KeyConst),
     Proof(ProofAtom),
     Temp(u32),
 }
 
 /// Closed Difference-Bound Matrix over `{Zero} ∪ active integer/length atoms`,
-/// augmented with canonical disequalities `(u, v, k)` (`u - v != k`, `u < v`).
+/// augmented with canonical disequalities `(u, v, k)` (`u - v != k`, `u < v`),
+/// sum bounds, 3-variable difference equalities, container membership facts, and boolean facts.
 #[derive(Clone, Debug)]
 pub(super) struct Dbm {
     atoms: Vec<Atom>,
@@ -226,6 +266,14 @@ pub(super) struct Dbm {
     non_equal: HashSet<(usize, usize, i128)>,
     /// Canonical sum upper bounds `(a, b, c, k)` with `a <= b` meaning `atoms[a] + atoms[b] <= atoms[c] + k`.
     sum_le: HashSet<(usize, usize, usize, i128)>,
+    /// Exact 3-variable difference equalities `(target, hi, lo, bonus)` meaning `atoms[target] == atoms[hi] - atoms[lo] + bonus`.
+    diff_eq: HashSet<(usize, usize, usize, i128)>,
+    /// Proven membership facts: `(container_atom, key_atom)` meaning `key ∈ container`.
+    contains: HashSet<(Atom, Atom)>,
+    /// Proven absence facts: `(container_atom, key_atom)` meaning `key ∉ container`.
+    not_contains: HashSet<(Atom, Atom)>,
+    /// Proven boolean facts on boolean places: `place -> bool`.
+    bool_facts: HashMap<Place, bool>,
     pub(super) unsat: bool,
     next_temp: u32,
 }
@@ -246,9 +294,17 @@ impl Dbm {
             mat: vec![Some(0)],
             non_equal: HashSet::new(),
             sum_le: HashSet::new(),
+            diff_eq: HashSet::new(),
+            contains: HashSet::new(),
+            not_contains: HashSet::new(),
+            bool_facts: HashMap::new(),
             unsat: false,
             next_temp: 0,
         }
+    }
+
+    pub(super) fn atom_count(&self) -> usize {
+        self.atoms.len()
     }
 
     #[inline]
@@ -258,13 +314,15 @@ impl Dbm {
 
     #[inline]
     fn get(&self, u: usize, v: usize) -> Option<i128> {
-        self.mat[u * self.atoms.len() + v]
+        self.mat.get(u * self.atoms.len() + v).copied().flatten()
     }
 
     #[inline]
     fn set(&mut self, u: usize, v: usize, val: Option<i128>) {
         let n = self.atoms.len();
-        self.mat[u * n + v] = val;
+        if let Some(slot) = self.mat.get_mut(u * n + v) {
+            *slot = val;
+        }
     }
 
     pub(super) fn fresh_temp_id(&mut self) -> u32 {
@@ -297,11 +355,16 @@ impl Dbm {
         };
         let mut new_mat = vec![None; new_n * new_n];
         for i in 0..old_n {
-            let src = &self.mat[i * old_n..(i + 1) * old_n];
-            let dst = &mut new_mat[i * new_n..i * new_n + old_n];
-            dst.copy_from_slice(src);
+            if let (Some(src), Some(dst)) = (
+                self.mat.get(i * old_n..(i + 1) * old_n),
+                new_mat.get_mut(i * new_n..i * new_n + old_n),
+            ) {
+                dst.copy_from_slice(src);
+            }
         }
-        new_mat[old_n * new_n + old_n] = Some(0);
+        if let Some(diag) = new_mat.get_mut(old_n * new_n + old_n) {
+            *diag = Some(0);
+        }
         self.atoms.push(atom.clone());
         self.index.insert(atom, old_n);
         self.mat = new_mat;
@@ -348,19 +411,24 @@ impl Dbm {
         // Snapshot row `v` and col `u` to keep closure exact while updating `mat`.
         let mut col_u = [None; MAX_DBM_ATOMS];
         let mut row_v = [None; MAX_DBM_ATOMS];
-        for i in 0..n {
-            col_u[i] = self.mat[i * n + u];
-            row_v[i] = self.mat[v * n + i];
+        for (i, (cu, rv)) in col_u.iter_mut().zip(row_v.iter_mut()).take(n).enumerate() {
+            *cu = self.get(i, u);
+            *rv = self.get(v, i);
         }
-        for i in 0..n {
-            let Some(iu) = col_u[i] else { continue };
-            let Some(iu_c) = iu.checked_add(c) else { continue };
+        for (i, &cu) in col_u.iter().take(n).enumerate() {
+            let Some(iu) = cu else { continue };
+            let Some(iu_c) = iu.checked_add(c) else {
+                continue;
+            };
             let row = i * n;
-            for j in 0..n {
-                let Some(vj) = row_v[j] else { continue };
-                let Some(cand) = iu_c.checked_add(vj) else { continue };
-                let cell = &mut self.mat[row + j];
-                if cell.is_none_or(|cur| cand < cur) {
+            for (j, &rv) in row_v.iter().take(n).enumerate() {
+                let Some(vj) = rv else { continue };
+                let Some(cand) = iu_c.checked_add(vj) else {
+                    continue;
+                };
+                if let Some(cell) = self.mat.get_mut(row + j)
+                    && cell.is_none_or(|cur| cand < cur)
+                {
                     *cell = Some(cand);
                 }
             }
@@ -409,7 +477,8 @@ impl Dbm {
                     self.unsat = true;
                     return;
                 }
-                if k.checked_sub(1).is_some_and(|km1| ab.is_some_and(|x| x <= km1))
+                if k.checked_sub(1)
+                    .is_some_and(|km1| ab.is_some_and(|x| x <= km1))
                     || neg_k
                         .and_then(|nk| nk.checked_sub(1))
                         .is_some_and(|nkm1| ba.is_some_and(|x| x <= nkm1))
@@ -500,6 +569,17 @@ impl Dbm {
                 let v = rhs.clone().unwrap_or(Atom::Zero);
                 self.add_ne(u, v, *offset);
             }
+            ProofPred::Contains {
+                container,
+                key,
+                negated,
+            } => {
+                if *negated {
+                    self.add_not_contains(container.clone(), key.clone());
+                } else {
+                    self.add_contains(container.clone(), key.clone());
+                }
+            }
             ProofPred::And(ps) => {
                 for p in ps {
                     self.assume(p);
@@ -545,6 +625,17 @@ impl Dbm {
                 rhs.as_ref().unwrap_or(&Atom::Zero),
                 *offset,
             ),
+            ProofPred::Contains {
+                container,
+                key,
+                negated,
+            } => {
+                if *negated {
+                    self.entails_not_contains(container, key)
+                } else {
+                    self.entails_contains(container, key)
+                }
+            }
             ProofPred::And(ps) => ps.iter().all(|p| self.entails(p)),
             ProofPred::Or(ps) => {
                 if ps.iter().any(|p| self.entails(p)) {
@@ -567,7 +658,7 @@ impl Dbm {
         match neg_pred {
             ProofPred::True => false,
             ProofPred::False => true,
-            ProofPred::DiffLe { .. } | ProofPred::DiffNe { .. } => {
+            ProofPred::DiffLe { .. } | ProofPred::DiffNe { .. } | ProofPred::Contains { .. } => {
                 *budget -= 1;
                 let mut copy = self.clone();
                 copy.assume(neg_pred);
@@ -680,8 +771,7 @@ impl Dbm {
         if lhs == rhs {
             return Some(0);
         }
-        if matches!(lhs, Atom::Zero)
-            && matches!(rhs, Atom::Len(_) | Atom::Proof(ProofAtom::Len(_)))
+        if matches!(lhs, Atom::Zero) && matches!(rhs, Atom::Len(_) | Atom::Proof(ProofAtom::Len(_)))
         {
             return Some(
                 self.atom_idx(rhs)
@@ -735,23 +825,25 @@ impl Dbm {
         for (i, &(_, ai, bi)) in common.iter().enumerate() {
             for (j, &(_, aj, bj)) in common.iter().enumerate() {
                 if i == j {
-                    out.mat[i * n + j] = Some(0);
+                    out.set(i, j, Some(0));
                 } else if let (Some(x), Some(y)) = (a.get(ai, aj), b.get(bi, bj)) {
-                    out.mat[i * n + j] = Some(x.max(y));
+                    out.set(i, j, Some(x.max(y)));
                 }
             }
         }
         // Retain disequalities entailed by BOTH branches.
         let mut candidates: HashSet<(usize, usize, i128)> = HashSet::new();
         for &(au, av, k) in &a.non_equal {
-            if let (Some(&ou), Some(&ov)) = (out.index.get(&a.atoms[au]), out.index.get(&a.atoms[av]))
+            if let (Some(at_u), Some(at_v)) = (a.atoms.get(au), a.atoms.get(av))
+                && let (Some(&ou), Some(&ov)) = (out.index.get(at_u), out.index.get(at_v))
                 && let Some(c) = Self::canonical_ne(ou, ov, k)
             {
                 candidates.insert(c);
             }
         }
         for &(bu, bv, k) in &b.non_equal {
-            if let (Some(&ou), Some(&ov)) = (out.index.get(&b.atoms[bu]), out.index.get(&b.atoms[bv]))
+            if let (Some(at_u), Some(at_v)) = (b.atoms.get(bu), b.atoms.get(bv))
+                && let (Some(&ou), Some(&ov)) = (out.index.get(at_u), out.index.get(at_v))
                 && let Some(c) = Self::canonical_ne(ou, ov, k)
             {
                 candidates.insert(c);
@@ -761,21 +853,64 @@ impl Dbm {
             candidates.insert((0, i, 0));
         }
         for (ou, ov, k) in candidates {
-            let at_u = &out.atoms[ou];
-            let at_v = &out.atoms[ov];
-            if a.entails_ne(at_u, at_v, k) && b.entails_ne(at_u, at_v, k) && !out.entails_ne(at_u, at_v, k) {
+            if let (Some(at_u), Some(at_v)) = (out.atoms.get(ou), out.atoms.get(ov))
+                && a.entails_ne(at_u, at_v, k)
+                && b.entails_ne(at_u, at_v, k)
+                && !out.entails_ne(at_u, at_v, k)
+            {
                 out.non_equal.insert((ou, ov, k));
             }
         }
         for &(au, av, aw, k) in &a.sum_le {
-            if let (Some(&ou), Some(&ov), Some(&ow)) = (
-                out.index.get(&a.atoms[au]),
-                out.index.get(&a.atoms[av]),
-                out.index.get(&a.atoms[aw]),
-            ) && b.has_sum_le(&a.atoms[au], &a.atoms[av], &a.atoms[aw], k)
+            if let (Some(at_u), Some(at_v), Some(at_w)) =
+                (a.atoms.get(au), a.atoms.get(av), a.atoms.get(aw))
+                && let (Some(&ou), Some(&ov), Some(&ow)) = (
+                    out.index.get(at_u),
+                    out.index.get(at_v),
+                    out.index.get(at_w),
+                )
+                && b.has_sum_le(at_u, at_v, at_w, k)
             {
                 let (x, y) = if ou <= ov { (ou, ov) } else { (ov, ou) };
                 out.sum_le.insert((x, y, ow, k));
+            }
+        }
+        for &(at, ahi, alo, bonus) in &a.diff_eq {
+            if let (Some(at_t), Some(at_hi), Some(at_lo)) =
+                (a.atoms.get(at), a.atoms.get(ahi), a.atoms.get(alo))
+                && let (Some(&ot), Some(&ohi), Some(&olo)) = (
+                    out.index.get(at_t),
+                    out.index.get(at_hi),
+                    out.index.get(at_lo),
+                )
+                && b.has_diff_eq(at_t, at_hi, at_lo, bonus)
+            {
+                out.diff_eq.insert((ot, ohi, olo, bonus));
+            }
+        }
+        for (c, k) in &a.contains {
+            if b.entails_contains(c, k) {
+                out.contains.insert((c.clone(), k.clone()));
+            }
+        }
+        for (c, k) in &b.contains {
+            if a.entails_contains(c, k) {
+                out.contains.insert((c.clone(), k.clone()));
+            }
+        }
+        for (c, k) in &a.not_contains {
+            if b.entails_not_contains(c, k) {
+                out.not_contains.insert((c.clone(), k.clone()));
+            }
+        }
+        for (c, k) in &b.not_contains {
+            if a.entails_not_contains(c, k) {
+                out.not_contains.insert((c.clone(), k.clone()));
+            }
+        }
+        for (place, &val) in &a.bool_facts {
+            if b.bool_facts.get(place) == Some(&val) {
+                out.bool_facts.insert(place.clone(), val);
             }
         }
         out
@@ -809,34 +944,65 @@ impl Dbm {
         for (i, &(_, pi, ni)) in common.iter().enumerate() {
             for (j, &(_, pj, nj)) in common.iter().enumerate() {
                 if i == j {
-                    out.mat[i * n + j] = Some(0);
+                    out.set(i, j, Some(0));
                 } else if let Some(p_val) = prev.get(pi, pj)
                     && let Some(n_val) = next.get(ni, nj)
                     && n_val <= p_val
                 {
-                    out.mat[i * n + j] = Some(p_val);
+                    out.set(i, j, Some(p_val));
                 }
             }
         }
         for &(pu, pv, k) in &prev.non_equal {
-            if let (Some(&ou), Some(&ov)) = (
-                out.index.get(&prev.atoms[pu]),
-                out.index.get(&prev.atoms[pv]),
-            ) && let Some(c) = Self::canonical_ne(ou, ov, k)
-                && next.entails_ne(&out.atoms[c.0], &out.atoms[c.1], c.2)
+            if let (Some(at_u), Some(at_v)) = (prev.atoms.get(pu), prev.atoms.get(pv))
+                && let (Some(&ou), Some(&ov)) = (out.index.get(at_u), out.index.get(at_v))
+                && let Some(c) = Self::canonical_ne(ou, ov, k)
+                && let (Some(out_u), Some(out_v)) = (out.atoms.get(c.0), out.atoms.get(c.1))
+                && next.entails_ne(out_u, out_v, c.2)
             {
                 out.non_equal.insert(c);
             }
         }
         for &(pu, pv, pw, k) in &prev.sum_le {
-            if let (Some(&ou), Some(&ov), Some(&ow)) = (
-                out.index.get(&prev.atoms[pu]),
-                out.index.get(&prev.atoms[pv]),
-                out.index.get(&prev.atoms[pw]),
-            ) && next.has_sum_le(&prev.atoms[pu], &prev.atoms[pv], &prev.atoms[pw], k)
+            if let (Some(at_u), Some(at_v), Some(at_w)) =
+                (prev.atoms.get(pu), prev.atoms.get(pv), prev.atoms.get(pw))
+                && let (Some(&ou), Some(&ov), Some(&ow)) = (
+                    out.index.get(at_u),
+                    out.index.get(at_v),
+                    out.index.get(at_w),
+                )
+                && next.has_sum_le(at_u, at_v, at_w, k)
             {
                 let (x, y) = if ou <= ov { (ou, ov) } else { (ov, ou) };
                 out.sum_le.insert((x, y, ow, k));
+            }
+        }
+        for &(pt, phi, plo, bonus) in &prev.diff_eq {
+            if let (Some(at_t), Some(at_hi), Some(at_lo)) =
+                (prev.atoms.get(pt), prev.atoms.get(phi), prev.atoms.get(plo))
+                && let (Some(&ot), Some(&ohi), Some(&olo)) = (
+                    out.index.get(at_t),
+                    out.index.get(at_hi),
+                    out.index.get(at_lo),
+                )
+                && next.has_diff_eq(at_t, at_hi, at_lo, bonus)
+            {
+                out.diff_eq.insert((ot, ohi, olo, bonus));
+            }
+        }
+        for (c, k) in &prev.contains {
+            if next.entails_contains(c, k) {
+                out.contains.insert((c.clone(), k.clone()));
+            }
+        }
+        for (c, k) in &prev.not_contains {
+            if next.entails_not_contains(c, k) {
+                out.not_contains.insert((c.clone(), k.clone()));
+            }
+        }
+        for (place, &val) in &prev.bool_facts {
+            if next.bool_facts.get(place) == Some(&val) {
+                out.bool_facts.insert(place.clone(), val);
             }
         }
         out
@@ -851,30 +1017,31 @@ impl Dbm {
         let n = out.n();
         for k in 0..n {
             for i in 0..n {
-                let Some(ik) = out.mat[i * n + k] else {
+                let Some(ik) = out.get(i, k) else {
                     continue;
                 };
                 for j in 0..n {
-                    let Some(kj) = out.mat[k * n + j] else {
+                    let Some(kj) = out.get(k, j) else {
                         continue;
                     };
                     let Some(cand) = ik.checked_add(kj) else {
                         continue;
                     };
-                    let cell = &mut out.mat[i * n + j];
-                    if cell.is_none_or(|cur| cand < cur) {
+                    if let Some(cell) = out.mat.get_mut(i * n + j)
+                        && cell.is_none_or(|cur| cand < cur)
+                    {
                         *cell = Some(cand);
                     }
                 }
             }
-            if out.mat[k * n + k].is_some_and(|d| d < 0) {
+            if out.get(k, k).is_some_and(|d| d < 0) {
                 out.unsat = true;
                 return out;
             }
         }
         // Re-assert Len >= 0 axioms in case widening dropped them.
         for i in 1..n {
-            if matches!(out.atoms[i], Atom::Len(_)) {
+            if matches!(out.atoms.get(i), Some(Atom::Len(_))) {
                 out.add_le_idx(0, i, 0);
             }
         }
@@ -897,23 +1064,339 @@ impl Dbm {
                     continue;
                 }
                 if let Some(bound) = other.get(i, j)
-                    && !self.entails_le(&other.atoms[i], &other.atoms[j], bound)
+                    && let (Some(ai), Some(aj)) = (other.atoms.get(i), other.atoms.get(j))
+                    && !self.entails_le(ai, aj, bound)
                 {
                     return false;
                 }
             }
         }
         for &(u, v, k) in &other.non_equal {
-            if !self.entails_ne(&other.atoms[u], &other.atoms[v], k) {
+            if let (Some(au), Some(av)) = (other.atoms.get(u), other.atoms.get(v))
+                && !self.entails_ne(au, av, k)
+            {
                 return false;
             }
         }
         for &(u, v, w, k) in &other.sum_le {
-            if !self.has_sum_le(&other.atoms[u], &other.atoms[v], &other.atoms[w], k) {
+            if let (Some(au), Some(av), Some(aw)) =
+                (other.atoms.get(u), other.atoms.get(v), other.atoms.get(w))
+                && !self.has_sum_le(au, av, aw, k)
+            {
+                return false;
+            }
+        }
+        for &(t, hi, lo, bonus) in &other.diff_eq {
+            if let (Some(at), Some(ahi), Some(alo)) =
+                (other.atoms.get(t), other.atoms.get(hi), other.atoms.get(lo))
+                && !self.has_diff_eq(at, ahi, alo, bonus)
+            {
+                return false;
+            }
+        }
+        for (c, k) in &other.contains {
+            if !self.entails_contains(c, k) {
+                return false;
+            }
+        }
+        for (c, k) in &other.not_contains {
+            if !self.entails_not_contains(c, k) {
+                return false;
+            }
+        }
+        for (place, &val) in &other.bool_facts {
+            if self.bool_facts.get(place) != Some(&val) {
                 return false;
             }
         }
         true
+    }
+
+    fn key_const_int(&self, atom: &Atom) -> Option<i128> {
+        match atom {
+            Atom::Zero => Some(0),
+            Atom::KeyConst(KeyConst::Int(c)) | Atom::Proof(ProofAtom::Const(KeyConst::Int(c))) => {
+                Some(*c)
+            }
+            _ => self.exact(atom),
+        }
+    }
+
+    fn key_const_non_int(atom: &Atom) -> Option<&KeyConst> {
+        match atom {
+            Atom::KeyConst(k) | Atom::Proof(ProofAtom::Const(k)) => Some(k),
+            _ => None,
+        }
+    }
+
+    fn atom_same_key(&self, a: &Atom, b: &Atom) -> bool {
+        if a == b {
+            return true;
+        }
+        if let (Some(ca), Some(cb)) = (self.key_const_int(a), self.key_const_int(b)) {
+            return ca == cb;
+        }
+        if let (Some(ka), Some(kb)) = (Self::key_const_non_int(a), Self::key_const_non_int(b)) {
+            return ka == kb;
+        }
+        if self.atom_idx(a).is_some() && self.atom_idx(b).is_some() {
+            return self.entails_le(a, b, 0) && self.entails_le(b, a, 0);
+        }
+        false
+    }
+
+    fn atom_distinct_key(&self, a: &Atom, b: &Atom) -> bool {
+        if a == b {
+            return false;
+        }
+        if let (Some(ka), Some(kb)) = (Self::key_const_non_int(a), Self::key_const_non_int(b)) {
+            return ka != kb;
+        }
+        if let (Some(ca), Some(cb)) = (self.key_const_int(a), self.key_const_int(b)) {
+            return ca != cb;
+        }
+        if let Some(c) = self.key_const_int(a)
+            && self.atom_idx(b).is_some()
+        {
+            return self.entails_ne(b, &Atom::Zero, c);
+        }
+        if let Some(c) = self.key_const_int(b)
+            && self.atom_idx(a).is_some()
+        {
+            return self.entails_ne(a, &Atom::Zero, c);
+        }
+        if self.atom_idx(a).is_some() && self.atom_idx(b).is_some() {
+            return self.entails_ne(a, b, 0);
+        }
+        false
+    }
+
+    fn len_atom_for_container(container: &Atom) -> Option<Atom> {
+        match container {
+            Atom::Val(p) => Some(Atom::Len(p.clone())),
+            Atom::Proof(ProofAtom::Val(p)) => Some(Atom::Proof(ProofAtom::Len(p.clone()))),
+            _ => None,
+        }
+    }
+
+    pub(super) fn add_contains(&mut self, container: Atom, key: Atom) {
+        if self.unsat {
+            return;
+        }
+        if self
+            .not_contains
+            .iter()
+            .any(|(c, k)| c == &container && self.atom_same_key(k, &key))
+        {
+            self.unsat = true;
+            return;
+        }
+        if let Some(len_a) = Self::len_atom_for_container(&container) {
+            self.add_le(Atom::Zero, len_a, -1);
+            if self.unsat {
+                return;
+            }
+        }
+        self.contains.insert((container, key));
+    }
+
+    pub(super) fn add_not_contains(&mut self, container: Atom, key: Atom) {
+        if self.unsat {
+            return;
+        }
+        if self
+            .contains
+            .iter()
+            .any(|(c, k)| c == &container && self.atom_same_key(k, &key))
+        {
+            self.unsat = true;
+            return;
+        }
+        self.not_contains.insert((container, key));
+    }
+
+    pub(super) fn entails_contains(&self, container: &Atom, key: &Atom) -> bool {
+        if self.unsat {
+            return true;
+        }
+        self.contains
+            .iter()
+            .any(|(c, k)| c == container && self.atom_same_key(k, key))
+    }
+
+    pub(super) fn entails_not_contains(&self, container: &Atom, key: &Atom) -> bool {
+        if self.unsat {
+            return true;
+        }
+        if Self::len_atom_for_container(container).is_some_and(|la| self.ub(&la) == Some(0)) {
+            return true;
+        }
+        self.not_contains
+            .iter()
+            .any(|(c, k)| c == container && self.atom_same_key(k, key))
+    }
+
+    /// Sound update after `m[k] = v` / `Map::insert` / `Set::insert`.
+    /// Preserves existing `contains` facts, drops `not_contains` unless proved distinct from `key`,
+    /// and optionally seeds `key ∈ container` (caller skips seeding when key type can be `f64`).
+    pub(super) fn invalidate_container_insert(
+        &mut self,
+        container: &Atom,
+        key: Option<&Atom>,
+        seed_key: bool,
+    ) {
+        if self.unsat {
+            return;
+        }
+        let keep: Vec<(Atom, Atom)> = self
+            .not_contains
+            .iter()
+            .filter(|(c, k)| {
+                c != container || key.is_some_and(|ins| self.atom_distinct_key(k, ins))
+            })
+            .cloned()
+            .collect();
+        self.not_contains = keep.into_iter().collect();
+        if seed_key && let Some(ins) = key {
+            self.add_contains(container.clone(), ins.clone());
+        }
+    }
+
+    /// Sound update after `Map::remove` / `Set::remove` / `Map::pop_entry`.
+    /// Preserves existing `not_contains` facts, drops `contains` unless proved distinct from `key`,
+    /// and optionally seeds `key ∉ container`.
+    pub(super) fn invalidate_container_remove(
+        &mut self,
+        container: &Atom,
+        key: Option<&Atom>,
+        seed_absent: bool,
+    ) {
+        if self.unsat {
+            return;
+        }
+        let keep: Vec<(Atom, Atom)> = self
+            .contains
+            .iter()
+            .filter(|(c, k)| {
+                c != container || key.is_some_and(|rem| self.atom_distinct_key(k, rem))
+            })
+            .cloned()
+            .collect();
+        self.contains = keep.into_iter().collect();
+        if seed_absent && let Some(rem) = key {
+            self.add_not_contains(container.clone(), rem.clone());
+        }
+    }
+
+    pub(super) fn invalidate_container_clear(&mut self, container: &Atom) {
+        self.contains.retain(|(c, _)| c != container);
+    }
+
+    pub(super) fn copy_container_membership(&mut self, dst: &Atom, src: &Atom) {
+        if self.unsat || dst == src {
+            return;
+        }
+        let new_in: Vec<Atom> = self
+            .contains
+            .iter()
+            .filter(|(c, _)| c == src)
+            .map(|(_, k)| k.clone())
+            .collect();
+        let new_out: Vec<Atom> = self
+            .not_contains
+            .iter()
+            .filter(|(c, _)| c == src)
+            .map(|(_, k)| k.clone())
+            .collect();
+        for k in new_in {
+            self.contains.insert((dst.clone(), k));
+        }
+        for k in new_out {
+            self.not_contains.insert((dst.clone(), k));
+        }
+    }
+
+    pub(super) fn add_bool(&mut self, place: Place, val: bool) {
+        if self.unsat {
+            return;
+        }
+        if self.bool_facts.get(&place) == Some(&!val) {
+            self.unsat = true;
+            return;
+        }
+        self.bool_facts.insert(place, val);
+    }
+
+    /// Records exact 3-variable difference equality `target == hi - lo + bonus` (i.e. `target + lo == hi + bonus`),
+    /// cross-links `target + lo <= hi + bonus` into `sum_le`, and runs congruence closure against existing `diff_eq` facts.
+    pub(super) fn add_diff_eq(&mut self, target: Atom, hi: Atom, lo: Atom, bonus: i128) {
+        if self.unsat {
+            return;
+        }
+        let (Some(ut), Some(uhi), Some(ulo)) = (
+            self.ensure_atom(target),
+            self.ensure_atom(hi),
+            self.ensure_atom(lo),
+        ) else {
+            return;
+        };
+        let mut derived: Vec<(usize, usize, i128)> = Vec::new();
+        for &(t2, hi2, lo2, bonus2) in &self.diff_eq {
+            if t2 == ut {
+                continue;
+            }
+            let d_hi = self.get(uhi, hi2).filter(|&d| {
+                d.checked_neg()
+                    .is_some_and(|nd| self.get(hi2, uhi) == Some(nd))
+            });
+            let d_lo = self.get(ulo, lo2).filter(|&d| {
+                d.checked_neg()
+                    .is_some_and(|nd| self.get(lo2, ulo) == Some(nd))
+            });
+            if let (Some(dh), Some(dl)) = (d_hi, d_lo)
+                && let Some(delta) = dh
+                    .checked_sub(dl)
+                    .and_then(|d| d.checked_add(bonus))
+                    .and_then(|d| d.checked_sub(bonus2))
+            {
+                derived.push((ut, t2, delta));
+            }
+        }
+        self.diff_eq.insert((ut, uhi, ulo, bonus));
+        let (x, y) = if ut <= ulo { (ut, ulo) } else { (ulo, ut) };
+        self.sum_le.insert((x, y, uhi, bonus));
+        for (u, v, delta) in derived {
+            self.add_le_idx(u, v, delta);
+            if let Some(neg) = delta.checked_neg() {
+                self.add_le_idx(v, u, neg);
+            }
+        }
+    }
+
+    pub(super) fn has_diff_eq(&self, target: &Atom, hi: &Atom, lo: &Atom, bonus: i128) -> bool {
+        if self.unsat {
+            return true;
+        }
+        let (Some(ut), Some(uhi), Some(ulo)) =
+            (self.atom_idx(target), self.atom_idx(hi), self.atom_idx(lo))
+        else {
+            return false;
+        };
+        self.diff_eq.contains(&(ut, uhi, ulo, bonus))
+    }
+
+    /// If `a == hi - b + bonus` (or symmetric), returns `Some((hi, bonus))` so `a + b == hi + bonus`.
+    pub(super) fn find_diff_eq_sum(&self, a: &Atom, b: &Atom) -> Option<(Atom, i128)> {
+        let (ua, ub) = (self.atom_idx(a)?, self.atom_idx(b)?);
+        for &(ut, uhi, ulo, bonus) in &self.diff_eq {
+            if ut == ua && self.get(ub, ulo) == Some(0) && self.get(ulo, ub) == Some(0) {
+                return Some((self.atoms.get(uhi)?.clone(), bonus));
+            }
+            if ut == ub && self.get(ua, ulo) == Some(0) && self.get(ulo, ua) == Some(0) {
+                return Some((self.atoms.get(uhi)?.clone(), bonus));
+            }
+        }
+        None
     }
 
     /// Records `a + b <= c + k` (sliding-window upper bound).
@@ -954,7 +1437,11 @@ impl Dbm {
         self.sum_le
             .iter()
             .filter_map(|&(sx, sy, sc, sk)| {
-                (sx == x && sy == y).then(|| (self.atoms[sc].clone(), sk))
+                if sx == x && sy == y {
+                    self.atoms.get(sc).cloned().map(|atom| (atom, sk))
+                } else {
+                    None
+                }
             })
             .collect()
     }
@@ -964,6 +1451,12 @@ impl Dbm {
     pub(super) fn forget(&mut self, atom: &Atom) {
         if self.unsat || *atom == Atom::Zero {
             return;
+        }
+        // Always filter non-matrix facts BEFORE `atom_idx` early return (Map/Set/str/bool places are not in `atoms`).
+        self.contains.retain(|(c, k)| c != atom && k != atom);
+        self.not_contains.retain(|(c, k)| c != atom && k != atom);
+        if let Atom::Val(p) = atom {
+            self.bool_facts.remove(p);
         }
         let Some(idx) = self.atom_idx(atom) else {
             return;
@@ -979,6 +1472,8 @@ impl Dbm {
         self.non_equal.retain(|&(u, v, _)| u != idx && v != idx);
         self.sum_le
             .retain(|&(a, b, c, _)| a != idx && b != idx && c != idx);
+        self.diff_eq
+            .retain(|&(t, hi, lo, _)| t != idx && hi != idx && lo != idx);
         if matches!(atom, Atom::Len(_)) {
             self.add_le_idx(0, idx, 0);
         }
@@ -992,8 +1487,14 @@ impl Dbm {
         if self.unsat {
             return;
         }
-        let keep: Vec<usize> = (0..self.atoms.len())
-            .filter(|&i| i == 0 || !pred(&self.atoms[i]))
+        self.contains.retain(|(c, k)| !pred(c) && !pred(k));
+        self.not_contains.retain(|(c, k)| !pred(c) && !pred(k));
+        self.bool_facts.retain(|p, _| !pred(&Atom::Val(p.clone())));
+        let keep: Vec<usize> = self
+            .atoms
+            .iter()
+            .enumerate()
+            .filter_map(|(i, atom)| (i == 0 || !pred(atom)).then_some(i))
             .collect();
         if keep.len() == self.atoms.len() {
             return;
@@ -1004,30 +1505,45 @@ impl Dbm {
         let mut new_atoms = Vec::with_capacity(new_n);
         let mut new_index = HashMap::with_capacity(new_n);
         for (new_i, &old_i) in keep.iter().enumerate() {
-            remap[old_i] = Some(new_i);
-            let atom = self.atoms[old_i].clone();
-            new_index.insert(atom.clone(), new_i);
-            new_atoms.push(atom);
+            if let Some(slot) = remap.get_mut(old_i) {
+                *slot = Some(new_i);
+            }
+            if let Some(atom) = self.atoms.get(old_i).cloned() {
+                new_index.insert(atom.clone(), new_i);
+                new_atoms.push(atom);
+            }
         }
         let mut new_mat = vec![None; new_n * new_n];
         for (ni, &oi) in keep.iter().enumerate() {
             for (nj, &oj) in keep.iter().enumerate() {
-                new_mat[ni * new_n + nj] = self.mat[oi * old_n + oj];
+                if let Some(dst) = new_mat.get_mut(ni * new_n + nj) {
+                    *dst = self.mat.get(oi * old_n + oj).copied().flatten();
+                }
             }
         }
         let mut new_ne = HashSet::new();
         for &(ou, ov, k) in &self.non_equal {
-            if let (Some(nu), Some(nv)) = (remap[ou], remap[ov])
-                && let Some(c) = Self::canonical_ne(nu, nv, k)
+            if let (Some(Some(nu)), Some(Some(nv))) = (remap.get(ou), remap.get(ov))
+                && let Some(c) = Self::canonical_ne(*nu, *nv, k)
             {
                 new_ne.insert(c);
             }
         }
         let mut new_sum_le = HashSet::new();
         for &(oa, ob, oc, k) in &self.sum_le {
-            if let (Some(na), Some(nb), Some(nc)) = (remap[oa], remap[ob], remap[oc]) {
-                let (x, y) = if na <= nb { (na, nb) } else { (nb, na) };
-                new_sum_le.insert((x, y, nc, k));
+            if let (Some(Some(na)), Some(Some(nb)), Some(Some(nc))) =
+                (remap.get(oa), remap.get(ob), remap.get(oc))
+            {
+                let (x, y) = if na <= nb { (*na, *nb) } else { (*nb, *na) };
+                new_sum_le.insert((x, y, *nc, k));
+            }
+        }
+        let mut new_diff_eq = HashSet::new();
+        for &(ot, ohi, olo, bonus) in &self.diff_eq {
+            if let (Some(Some(nt)), Some(Some(nhi)), Some(Some(nlo))) =
+                (remap.get(ot), remap.get(ohi), remap.get(olo))
+            {
+                new_diff_eq.insert((*nt, *nhi, *nlo, bonus));
             }
         }
         self.atoms = new_atoms;
@@ -1035,6 +1551,7 @@ impl Dbm {
         self.mat = new_mat;
         self.non_equal = new_ne;
         self.sum_le = new_sum_le;
+        self.diff_eq = new_diff_eq;
     }
 
     pub(super) fn forget_temps(&mut self) {
@@ -1048,6 +1565,9 @@ impl Dbm {
         if self.unsat {
             return;
         }
+        self.contains.retain(|(c, k)| !pred(c) && !pred(k));
+        self.not_contains.retain(|(c, k)| !pred(c) && !pred(k));
+        self.bool_facts.retain(|p, _| !pred(&Atom::Val(p.clone())));
         let targets: Vec<Atom> = self
             .atoms
             .iter()
@@ -1131,6 +1651,20 @@ fn preds_entail_rec(
                 let u = lhs.unwrap_or(Atom::Zero);
                 let v = rhs.unwrap_or(Atom::Zero);
                 dbm.add_ne(u, v, offset);
+                if dbm.unsat {
+                    return true;
+                }
+            }
+            ProofPred::Contains {
+                container,
+                key,
+                negated,
+            } => {
+                if negated {
+                    dbm.add_not_contains(container, key);
+                } else {
+                    dbm.add_contains(container, key);
+                }
                 if dbm.unsat {
                     return true;
                 }

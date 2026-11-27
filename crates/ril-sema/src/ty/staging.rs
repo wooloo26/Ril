@@ -500,13 +500,7 @@ impl Checker<'_> {
                     let args = args.clone();
                     if let Expr::Path(path) = &self.ast(env.file).expr(*callee).value {
                         let path = path.clone();
-                        self.apply_static_check_with_value_args(
-                            env,
-                            &path,
-                            &input_gv,
-                            &args,
-                            span,
-                        );
+                        self.apply_static_check_with_value_args(env, &path, &input_gv, &args, span);
                     }
                 }
                 _ => {}

@@ -18,6 +18,10 @@ impl Builder<'_, '_> {
         span: Span,
     ) -> Result<Register> {
         let intrinsic = self.global.typed.hir.intrinsic(id);
+        if intrinsic == Some(Intrinsic::Unreachable) {
+            self.terminate(Terminator::Unreachable);
+            return Ok(self.register());
+        }
         if intrinsic == Some(Intrinsic::RecoverPanic)
             && let [action] = args
         {

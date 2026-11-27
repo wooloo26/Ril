@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use super::{
     GenericValue, Ty, Value,
     check::{Checker, Env, Phase},
-    dbm::{Atom, Dbm, Place, ProofAtom, ProofPlace, ProofPred, preds_entail},
+    dbm::{Atom, Dbm, KeyConst, Place, ProofAtom, ProofPlace, ProofPred, preds_entail},
     forms::partition_type_fn_params,
 };
 
@@ -29,10 +29,8 @@ pub struct ExportProof {
 
 /// Checks whether a set of exported static proofs semantically entails every target exported proof.
 pub(crate) fn export_proofs_entail(assumptions: &[ExportProof], targets: &[ExportProof]) -> bool {
-    let dbm_assumptions: Vec<ProofPred<ProofAtom>> = assumptions
-        .iter()
-        .filter_map(|p| p.pred.clone())
-        .collect();
+    let dbm_assumptions: Vec<ProofPred<ProofAtom>> =
+        assumptions.iter().filter_map(|p| p.pred.clone()).collect();
     for target in targets {
         if let Some(ref pred) = target.pred {
             if !preds_entail(&dbm_assumptions, pred) {
@@ -107,8 +105,26 @@ impl<A: Clone + Eq> LinExpr<A> {
                     offset: offset.checked_add(c)?,
                 })
             }
-            (Pos { atom: a, offset: oa }, Neg { atom: b, offset: ob })
-            | (Neg { atom: b, offset: ob }, Pos { atom: a, offset: oa }) => {
+            (
+                Pos {
+                    atom: a,
+                    offset: oa,
+                },
+                Neg {
+                    atom: b,
+                    offset: ob,
+                },
+            )
+            | (
+                Neg {
+                    atom: b,
+                    offset: ob,
+                },
+                Pos {
+                    atom: a,
+                    offset: oa,
+                },
+            ) => {
                 let offset = oa.checked_add(ob)?;
                 if a == b {
                     Some(Const(offset))
@@ -192,15 +208,18 @@ enum TfLocal {
     Place(ProofPlace),
     Lin(LinExpr<ProofAtom>),
     Pred(ProofPred<ProofAtom>),
+    Const(KeyConst),
 }
 
 /// An argument supplied to a static proof during instantiation.
 #[derive(Clone)]
-enum ProofArgVal {
+pub(super) enum ProofArgVal {
     Place(Place),
     Atom(Atom),
     Expr(ExprId),
+    TupleExprs(Vec<ExprId>),
     Const(i128),
+    KeyConst(KeyConst),
 }
 
 impl Checker<'_> {
@@ -208,7 +227,10 @@ impl Checker<'_> {
     // 1. Type-Function AST -> NNF ProofPred Lowering (cached per DefinitionId)
     // -------------------------------------------------------------------------
 
-    pub(crate) fn lower_type_fn(&mut self, tf_id: DefinitionId) -> Result<LoweredTypeFn, LowerError> {
+    pub(crate) fn lower_type_fn(
+        &mut self,
+        tf_id: DefinitionId,
+    ) -> Result<LoweredTypeFn, LowerError> {
         if let Some(cached) = self.lowered_proof_preds.get(&tf_id) {
             return cached.clone();
         }
@@ -259,7 +281,8 @@ impl Checker<'_> {
                     reason: "proof type function requires a value subject parameter",
                 });
             };
-            let mut value_params: Vec<&syntax::GenericParam> = Vec::with_capacity(1 + trailing.len());
+            let mut value_params: Vec<&syntax::GenericParam> =
+                Vec::with_capacity(1 + trailing.len());
             value_params.push(subject);
             value_params.extend(trailing.iter());
 
@@ -401,8 +424,10 @@ impl Checker<'_> {
                                     true_branch.get_or_insert(body_p);
                                 }
                                 Type::Named(path)
-                                    if path.segments.len() == 1
-                                        && path.segments[0].name.value == "never" =>
+                                    if matches!(
+                                        path.segments.as_slice(),
+                                        [seg] if seg.name.value == "never"
+                                    ) =>
                                 {
                                     false_branch.get_or_insert(body_p);
                                 }
@@ -440,8 +465,7 @@ impl Checker<'_> {
                                 reason: "guarded match arm is outside the decidable proof fragment",
                             });
                         }
-                        let pat_pred =
-                            self.lower_tf_int_pattern(file, arm.pattern, &lin)?;
+                        let pat_pred = self.lower_tf_int_pattern(file, arm.pattern, &lin)?;
                         let body_p = self.lower_tf_body(file, arm.body, locals, stack)?;
                         let mut branch = prior_neg.clone();
                         branch.push(pat_pred.clone());
@@ -457,12 +481,17 @@ impl Checker<'_> {
                 })
             }
             Expr::Call { callee, .. } => {
-                // `compile_error` / `compile_error_code` -> `False` (never).
+                // `compile_error` / `compile_error_code` / `panic` / `unreachable` -> `False` (never).
                 if let Expr::Path(path) = &self.ast(file).expr(*callee).value
                     && let Some(id) = self.resolve(path.span)
                     && matches!(
                         self.hir.intrinsic(id),
-                        Some(Intrinsic::CompileError | Intrinsic::CompileErrorCode | Intrinsic::Panic)
+                        Some(
+                            Intrinsic::CompileError
+                                | Intrinsic::CompileErrorCode
+                                | Intrinsic::Panic
+                                | Intrinsic::Unreachable
+                        )
                     )
                 {
                     return Ok(ProofPred::False);
@@ -491,9 +520,10 @@ impl Checker<'_> {
         match ty {
             Type::Unit => Ok(ProofPred::True),
             Type::Named(path)
-                if path.segments.len() == 1
-                    && path.segments[0].name.value == "never"
-                    && path.segments[0].arguments.is_empty() =>
+                if matches!(
+                    path.segments.as_slice(),
+                    [seg] if seg.name.value == "never" && seg.arguments.is_empty()
+                ) =>
             {
                 Ok(ProofPred::False)
             }
@@ -541,10 +571,61 @@ impl Checker<'_> {
         if let Ok(pred) = self.lower_tf_bool(file, expr, locals) {
             return Ok(TfLocal::Pred(pred));
         }
+        if let Some(kc) = self.lower_tf_key_const(file, expr) {
+            return Ok(TfLocal::Const(kc));
+        }
         Err(LowerError {
             span: self.ast(file).expr(expr).span,
             reason: "expression is outside the decidable symbolic proof fragment",
         })
+    }
+
+    fn lower_tf_key_const(&self, file: FileId, expr: ExprId) -> Option<KeyConst> {
+        let ast = self.ast(file);
+        match &ast.expr(expr).value {
+            Expr::Unit => Some(KeyConst::Unit),
+            Expr::Literal(lit) => match super::literal(lit).ok()? {
+                Value::Int(n) => n.to_i128().map(KeyConst::Int),
+                Value::Str(s) => Some(KeyConst::Str(s)),
+                Value::Bool(b) => Some(KeyConst::Bool(b)),
+                Value::Bytes(b) => Some(KeyConst::Bytes(b)),
+                _ => None,
+            },
+            Expr::Unary { op, value } if op.value == "-" => {
+                if let Some(KeyConst::Int(c)) = self.lower_tf_key_const(file, *value) {
+                    c.checked_neg().map(KeyConst::Int)
+                } else {
+                    None
+                }
+            }
+            Expr::Path(path) => {
+                let id = self.resolve(path.span)?;
+                match self.static_constant_value(id)? {
+                    Value::Int(n) => n.to_i128().map(KeyConst::Int),
+                    Value::Str(s) => Some(KeyConst::Str(s.clone())),
+                    Value::Bool(b) => Some(KeyConst::Bool(*b)),
+                    Value::Bytes(b) => Some(KeyConst::Bytes(b.clone())),
+                    Value::Unit => Some(KeyConst::Unit),
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    }
+
+    fn lower_tf_key_atom(
+        &self,
+        file: FileId,
+        expr: ExprId,
+        locals: &HashMap<DefinitionId, TfLocal>,
+    ) -> Option<ProofAtom> {
+        if let Some(place) = self.lower_tf_place(file, expr, locals) {
+            return Some(ProofAtom::Val(place));
+        }
+        if let Some(kc) = self.lower_tf_key_const(file, expr) {
+            return Some(ProofAtom::Const(kc));
+        }
+        None
     }
 
     fn lower_tf_int_pattern(
@@ -682,6 +763,28 @@ impl Checker<'_> {
                     reason: "unsupported boolean operator in proof type function",
                 }),
             },
+            Expr::Call { callee, args } => {
+                if let Expr::Path(path) = &ast.expr(*callee).value
+                    && let Some(id) = self.resolve(path.span)
+                    && (matches!(
+                        self.hir.intrinsic(id),
+                        Some(Intrinsic::HasKey | Intrinsic::MapContains)
+                    ) || self.is_set_stdlib_callee(id, "contains"))
+                    && let [c_arg, k_arg] = args.as_slice()
+                    && let Some(c_place) = self.lower_tf_place(file, c_arg.value, locals)
+                    && let Some(k_atom) = self.lower_tf_key_atom(file, k_arg.value, locals)
+                {
+                    return Ok(ProofPred::Contains {
+                        container: ProofAtom::Val(c_place),
+                        key: k_atom,
+                        negated: false,
+                    });
+                }
+                Err(LowerError {
+                    span,
+                    reason: "condition is outside the decidable symbolic proof fragment",
+                })
+            }
             _ => Err(LowerError {
                 span,
                 reason: "condition is outside the decidable symbolic proof fragment",
@@ -776,9 +879,9 @@ impl Checker<'_> {
                             offset: 0,
                         }),
                         TfLocal::Lin(l) => Ok(l.clone()),
-                        TfLocal::Pred(_) => Err(LowerError {
+                        TfLocal::Pred(_) | TfLocal::Const(_) => Err(LowerError {
                             span,
-                            reason: "boolean value used in integer expression",
+                            reason: "non-integer value used in integer expression",
                         }),
                     };
                 }
@@ -829,22 +932,17 @@ impl Checker<'_> {
                     reason: "call expression is outside the decidable symbolic proof fragment",
                 })
             }
-            Expr::Unary { op, value } if op.value == "-" => {
-                self.lower_tf_lin(file, *value, locals)?
-                    .neg()
-                    .ok_or(LowerError {
-                        span,
-                        reason: "arithmetic overflow in proof expression",
-                    })
-            }
+            Expr::Unary { op, value } if op.value == "-" => self
+                .lower_tf_lin(file, *value, locals)?
+                .neg()
+                .ok_or(LowerError {
+                    span,
+                    reason: "arithmetic overflow in proof expression",
+                }),
             Expr::Binary { op, left, right } if matches!(op.value.as_str(), "+" | "-") => {
                 let l = self.lower_tf_lin(file, *left, locals)?;
                 let r = self.lower_tf_lin(file, *right, locals)?;
-                let combined = if op.value == "+" {
-                    l.add(r)
-                } else {
-                    l.sub(r)
-                };
+                let combined = if op.value == "+" { l.add(r) } else { l.sub(r) };
                 combined.ok_or(LowerError {
                     span,
                     reason: "non-difference arithmetic is outside the decidable symbolic proof fragment",
@@ -897,15 +995,17 @@ impl Checker<'_> {
         let mut pos_idx = 0usize;
         for arg in extra_args {
             if let Some(label) = &arg.name {
-                if let Some(idx) = trailing.iter().position(|p| p.name.value == label.value) {
-                    bound[idx] = Some(arg.value);
+                if let Some(idx) = trailing.iter().position(|p| p.name.value == label.value)
+                    && let Some(slot) = bound.get_mut(idx)
+                {
+                    *slot = Some(arg.value);
                 }
             } else {
-                while pos_idx < bound.len() && bound[pos_idx].is_some() {
+                while bound.get(pos_idx).is_some_and(Option::is_some) {
                     pos_idx += 1;
                 }
-                if pos_idx < bound.len() {
-                    bound[pos_idx] = Some(arg.value);
+                if let Some(slot) = bound.get_mut(pos_idx) {
+                    *slot = Some(arg.value);
                     pos_idx += 1;
                 }
             }
@@ -943,7 +1043,9 @@ impl Checker<'_> {
                     }
                 }
                 let mut scratch = env.refinements.dbm.clone();
-                if let Some(pred) = self.instantiate_proof_pred(env, &mut scratch, &lowered.pred, &arg_vals) {
+                if let Some(pred) =
+                    self.instantiate_proof_pred(env, &mut scratch, &lowered.pred, &arg_vals)
+                {
                     scratch.assume(&pred);
                     scratch.forget_temps();
                     env.refinements.dbm = scratch;
@@ -960,7 +1062,9 @@ impl Checker<'_> {
         param_idx: usize,
         default_expr: ExprId,
     ) {
-        let p = &fun.signature.params[param_idx];
+        let Some(p) = fun.signature.params.get(param_idx) else {
+            return;
+        };
         if p.is_meta || env.shadow {
             return;
         }
@@ -1074,12 +1178,7 @@ impl Checker<'_> {
     fn extract_fallible_return_payload(&self, env: &Env, expr: ExprId) -> FalliblePayload {
         let ast = self.ast(env.file);
         match &ast.expr(expr).value {
-            Expr::Path(path)
-                if path
-                    .segments
-                    .last()
-                    .is_some_and(|s| s.name.value == "None") =>
-            {
+            Expr::Path(path) if path.segments.last().is_some_and(|s| s.name.value == "None") => {
                 FalliblePayload::Vacuous
             }
             Expr::Call { callee, args } => {
@@ -1310,7 +1409,7 @@ impl Checker<'_> {
             let Ok(lowered) = self.lower_type_fn(tf_id) else {
                 continue;
             };
-            // Resolve each extra arg to a caller-side `ReturnAtom` (Place / Const / Len(Place)).
+            // Resolve each extra arg to a caller-side `ReturnAtom` (Place / Const / Len(Place) / Atom).
             let mut extra_resolved: Vec<Option<CallerArgRef>> = Vec::with_capacity(extra.len());
             for opt in extra {
                 extra_resolved.push(opt.and_then(|e| {
@@ -1340,6 +1439,12 @@ impl Checker<'_> {
                             env.refinements.dbm.add_eq(t.clone(), Atom::Zero, *c);
                             Some(ReturnAtom::Caller(t))
                         }
+                        CallerArgRef::KeyConst(kc) if pp.path.is_empty() => {
+                            Some(ReturnAtom::Caller(Atom::KeyConst(kc.clone())))
+                        }
+                        CallerArgRef::Atom(a) if pp.path.is_empty() => {
+                            Some(ReturnAtom::Caller(a.clone()))
+                        }
                         _ => None,
                     }
                 }
@@ -1354,6 +1459,7 @@ impl Checker<'_> {
                         _ => None,
                     }
                 }
+                ProofAtom::Const(kc) => Some(ReturnAtom::Caller(Atom::KeyConst(kc.clone()))),
             }) {
                 instantiated.push(CallReturnProof { pred, is_payload });
             }
@@ -1501,6 +1607,13 @@ impl Checker<'_> {
         for arg in arg_vals {
             match arg {
                 ProofArgVal::Const(c) => out.push(Value::Int((*c).into())),
+                ProofArgVal::KeyConst(kc) => out.push(match kc {
+                    KeyConst::Int(c) => Value::Int((*c).into()),
+                    KeyConst::Str(s) => Value::Str(s.clone()),
+                    KeyConst::Bool(b) => Value::Bool(*b),
+                    KeyConst::Bytes(b) => Value::Bytes(b.clone()),
+                    KeyConst::Unit => Value::Unit,
+                }),
                 ProofArgVal::Atom(a) => {
                     let c = dbm.exact(a)?;
                     out.push(Value::Int(c.into()));
@@ -1512,11 +1625,36 @@ impl Checker<'_> {
                 ProofArgVal::Expr(e) => {
                     if let Some(c) = self.const_int_in_dbm(env, dbm, *e) {
                         out.push(Value::Int(c.into()));
-                    } else if let Some(val) = self.static_values.get(&self.ast(env.file).expr(*e).span) {
+                    } else if let Some(val) =
+                        self.static_values.get(&self.ast(env.file).expr(*e).span)
+                    {
                         out.push(val.clone());
+                    } else if let Expr::Literal(lit) = &self.ast(env.file).expr(*e).value
+                        && let Ok(val) = super::literal(lit)
+                    {
+                        out.push(val);
                     } else {
                         return None;
                     }
+                }
+                ProofArgVal::TupleExprs(exprs) => {
+                    let mut elems = Vec::with_capacity(exprs.len());
+                    for &e in exprs {
+                        if let Some(c) = self.const_int_in_dbm(env, dbm, e) {
+                            elems.push(Value::Int(c.into()));
+                        } else if let Some(val) =
+                            self.static_values.get(&self.ast(env.file).expr(e).span)
+                        {
+                            elems.push(val.clone());
+                        } else if let Expr::Literal(lit) = &self.ast(env.file).expr(e).value
+                            && let Ok(val) = super::literal(lit)
+                        {
+                            elems.push(val);
+                        } else {
+                            return None;
+                        }
+                    }
+                    out.push(Value::Tuple(elems));
                 }
             }
         }
@@ -1623,17 +1761,153 @@ impl Checker<'_> {
         arg_vals: &[ProofArgVal],
     ) -> Option<ProofPred<Atom>> {
         let mut cache: HashMap<ProofAtom, Atom> = HashMap::new();
-        pred.map_atoms(&mut |pa| {
-            if let Some(a) = cache.get(pa) {
-                return Some(a.clone());
+        self.instantiate_proof_pred_rec(env, dbm, pred, arg_vals, &mut cache)
+    }
+
+    fn instantiate_proof_pred_rec(
+        &self,
+        env: &Env,
+        dbm: &mut Dbm,
+        pred: &ProofPred<ProofAtom>,
+        arg_vals: &[ProofArgVal],
+        cache: &mut HashMap<ProofAtom, Atom>,
+    ) -> Option<ProofPred<Atom>> {
+        Some(match pred {
+            ProofPred::True => ProofPred::True,
+            ProofPred::False => ProofPred::False,
+            ProofPred::DiffLe { lhs, rhs, bound } => ProofPred::diff_le(
+                match lhs {
+                    Some(a) => Some(self.resolve_cached_proof_atom(env, dbm, a, arg_vals, cache)?),
+                    None => None,
+                },
+                match rhs {
+                    Some(b) => Some(self.resolve_cached_proof_atom(env, dbm, b, arg_vals, cache)?),
+                    None => None,
+                },
+                *bound,
+            ),
+            ProofPred::DiffNe { lhs, rhs, offset } => ProofPred::diff_ne(
+                match lhs {
+                    Some(a) => Some(self.resolve_cached_proof_atom(env, dbm, a, arg_vals, cache)?),
+                    None => None,
+                },
+                match rhs {
+                    Some(b) => Some(self.resolve_cached_proof_atom(env, dbm, b, arg_vals, cache)?),
+                    None => None,
+                },
+                *offset,
+            ),
+            ProofPred::Contains {
+                container,
+                key,
+                negated,
+            } => ProofPred::Contains {
+                container: self.resolve_proof_membership_atom(env, dbm, container, arg_vals)?,
+                key: self.resolve_proof_membership_atom(env, dbm, key, arg_vals)?,
+                negated: *negated,
+            },
+            ProofPred::And(ps) => {
+                let mut out = Vec::with_capacity(ps.len());
+                for p in ps {
+                    out.push(self.instantiate_proof_pred_rec(env, dbm, p, arg_vals, cache)?);
+                }
+                ProofPred::and(out)
             }
-            let atom = match pa {
-                ProofAtom::Val(pp) => self.resolve_proof_val_atom(env, dbm, pp, arg_vals)?,
-                ProofAtom::Len(pp) => self.resolve_proof_len_atom(env, dbm, pp, arg_vals)?,
-            };
-            cache.insert(pa.clone(), atom.clone());
-            Some(atom)
+            ProofPred::Or(ps) => {
+                let mut out = Vec::with_capacity(ps.len());
+                for p in ps {
+                    out.push(self.instantiate_proof_pred_rec(env, dbm, p, arg_vals, cache)?);
+                }
+                ProofPred::or(out)
+            }
         })
+    }
+
+    fn resolve_cached_proof_atom(
+        &self,
+        env: &Env,
+        dbm: &mut Dbm,
+        pa: &ProofAtom,
+        arg_vals: &[ProofArgVal],
+        cache: &mut HashMap<ProofAtom, Atom>,
+    ) -> Option<Atom> {
+        if let Some(a) = cache.get(pa) {
+            return Some(a.clone());
+        }
+        let atom = match pa {
+            ProofAtom::Val(pp) => self.resolve_proof_val_atom(env, dbm, pp, arg_vals)?,
+            ProofAtom::Len(pp) => self.resolve_proof_len_atom(env, dbm, pp, arg_vals)?,
+            ProofAtom::Const(KeyConst::Int(c)) => {
+                let t = dbm.fresh_temp();
+                dbm.add_eq(t.clone(), Atom::Zero, *c);
+                t
+            }
+            ProofAtom::Const(kc) => Atom::KeyConst(kc.clone()),
+        };
+        cache.insert(pa.clone(), atom.clone());
+        Some(atom)
+    }
+
+    /// Resolves container/key atoms for `ProofPred::Contains` without registering non-integer places in the DBM matrix.
+    fn resolve_proof_membership_atom(
+        &self,
+        env: &Env,
+        dbm: &mut Dbm,
+        pa: &ProofAtom,
+        arg_vals: &[ProofArgVal],
+    ) -> Option<Atom> {
+        match pa {
+            ProofAtom::Const(kc) => Some(Atom::KeyConst(kc.clone())),
+            ProofAtom::Len(pp) => self.resolve_proof_len_atom(env, dbm, pp, arg_vals),
+            ProofAtom::Val(pp) => {
+                let arg = arg_vals.get(pp.param_idx)?;
+                match arg {
+                    ProofArgVal::Const(c) if pp.path.is_empty() => {
+                        Some(Atom::KeyConst(KeyConst::Int(*c)))
+                    }
+                    ProofArgVal::KeyConst(kc) if pp.path.is_empty() => {
+                        Some(Atom::KeyConst(kc.clone()))
+                    }
+                    ProofArgVal::Atom(a) if pp.path.is_empty() => Some(a.clone()),
+                    ProofArgVal::Place(base) => {
+                        let mut p = base.clone();
+                        p.path.extend(pp.path.iter().cloned());
+                        Some(Atom::Val(p))
+                    }
+                    ProofArgVal::Expr(e) => {
+                        if pp.path.is_empty()
+                            && let Expr::Call { callee, args } = &self.ast(env.file).expr(*e).value
+                            && let Expr::Path(path) = &self.ast(env.file).expr(*callee).value
+                            && let Some(id) = self.resolve(path.span)
+                            && matches!(
+                                self.hir.intrinsic(id),
+                                Some(Intrinsic::Inner | Intrinsic::Clone)
+                            )
+                            && let [arg] = args.as_slice()
+                            && let Some(p) = self.resolve_place(env, arg.value)
+                        {
+                            return Some(Atom::Val(p));
+                        }
+                        if let Some(p) = self.project_expr_to_place(env, *e, &pp.path) {
+                            return Some(Atom::Val(p));
+                        }
+                        let projected = self.project_expr_path(env, *e, &pp.path)?;
+                        self.key_expr_to_atom(env, dbm, projected)
+                    }
+                    ProofArgVal::TupleExprs(items) => {
+                        let (first_seg, rest) = pp.path.split_first()?;
+                        let idx: usize = first_seg.parse().ok()?;
+                        let item = *items.get(idx)?;
+                        if let Some(p) = self.project_expr_to_place(env, item, rest) {
+                            return Some(Atom::Val(p));
+                        }
+                        let projected = self.project_expr_path(env, item, rest)?;
+                        self.key_expr_to_atom(env, dbm, projected)
+                    }
+                    _ => None,
+                }
+            }
+        }
     }
 
     fn resolve_proof_val_atom(
@@ -1666,6 +1940,23 @@ impl Checker<'_> {
                     return Some(Atom::Val(p));
                 }
                 let projected = self.project_expr_path(env, *e, &pp.path)?;
+                if let Some(p) = self.resolve_place(env, projected) {
+                    dbm.ensure_atom(Atom::Val(p.clone()));
+                    return Some(Atom::Val(p));
+                }
+                let t = dbm.fresh_temp();
+                self.constrain_expr(env, dbm, &t, projected);
+                Some(t)
+            }
+            ProofArgVal::TupleExprs(items) => {
+                let (first_seg, rest) = pp.path.split_first()?;
+                let idx: usize = first_seg.parse().ok()?;
+                let item = *items.get(idx)?;
+                if let Some(p) = self.project_expr_to_place(env, item, rest) {
+                    dbm.ensure_atom(Atom::Val(p.clone()));
+                    return Some(Atom::Val(p));
+                }
+                let projected = self.project_expr_path(env, item, rest)?;
                 if let Some(p) = self.resolve_place(env, projected) {
                     dbm.ensure_atom(Atom::Val(p.clone()));
                     return Some(Atom::Val(p));
@@ -1707,17 +1998,33 @@ impl Checker<'_> {
                         Some(Intrinsic::Inner | Intrinsic::Clone)
                     )
                     && let [arg] = args.as_slice()
+                    && let Some(p) = self.resolve_place(env, arg.value)
                 {
-                    if let Some(p) = self.resolve_place(env, arg.value) {
-                        dbm.ensure_atom(Atom::Len(p.clone()));
-                        return Some(Atom::Len(p));
-                    }
+                    dbm.ensure_atom(Atom::Len(p.clone()));
+                    return Some(Atom::Len(p));
                 }
                 if let Some(p) = self.project_expr_to_place(env, *e, &pp.path) {
                     dbm.ensure_atom(Atom::Len(p.clone()));
                     return Some(Atom::Len(p));
                 }
                 let projected = self.project_expr_path(env, *e, &pp.path)?;
+                if let Some(p) = self.resolve_place(env, projected) {
+                    dbm.ensure_atom(Atom::Len(p.clone()));
+                    return Some(Atom::Len(p));
+                }
+                let t = dbm.fresh_temp();
+                self.constrain_len_expr(env, dbm, &t, projected);
+                Some(t)
+            }
+            ProofArgVal::TupleExprs(items) => {
+                let (first_seg, rest) = pp.path.split_first()?;
+                let idx: usize = first_seg.parse().ok()?;
+                let item = *items.get(idx)?;
+                if let Some(p) = self.project_expr_to_place(env, item, rest) {
+                    dbm.ensure_atom(Atom::Len(p.clone()));
+                    return Some(Atom::Len(p));
+                }
+                let projected = self.project_expr_path(env, item, rest)?;
                 if let Some(p) = self.resolve_place(env, projected) {
                     dbm.ensure_atom(Atom::Len(p.clone()));
                     return Some(Atom::Len(p));
@@ -1737,29 +2044,34 @@ impl Checker<'_> {
             base.path.extend(path.iter().cloned());
             return Some(base);
         }
-        if path.is_empty() {
-            return None;
-        }
+        let (first_seg, rest_path) = path.split_first()?;
         let ast = self.ast(env.file);
         match &ast.expr(expr).value {
             Expr::Record { fields, .. } => {
-                let field = fields.iter().find(|f| f.name.value == path[0])?;
+                let field = fields.iter().find(|f| f.name.value == *first_seg)?;
                 if let Some(val) = field.value {
-                    self.project_expr_to_place(env, val, &path[1..])
+                    self.project_expr_to_place(env, val, rest_path)
                 } else {
                     let id = self.resolve(field.name.span)?;
                     let mut p = Place::local(id);
-                    p.path.extend(path[1..].iter().cloned());
+                    p.path.extend(rest_path.iter().cloned());
                     Some(p)
                 }
             }
-            Expr::Wrap { args, .. } if args.len() == 1 => {
-                let rest = if path[0] == "#inner" { &path[1..] } else { path };
-                self.project_expr_to_place(env, args[0].value, rest)
+            Expr::Wrap { args, .. } => {
+                let [only] = args.as_slice() else {
+                    return None;
+                };
+                let rest = if first_seg == "#inner" {
+                    rest_path
+                } else {
+                    path
+                };
+                self.project_expr_to_place(env, only.value, rest)
             }
             Expr::Tuple(items) => {
-                let idx: usize = path[0].parse().ok()?;
-                self.project_expr_to_place(env, *items.get(idx)?, &path[1..])
+                let idx: usize = first_seg.parse().ok()?;
+                self.project_expr_to_place(env, *items.get(idx)?, rest_path)
             }
             Expr::Block { statements, .. } => {
                 if let Some(&last) = statements.last()
@@ -1799,17 +2111,25 @@ impl Checker<'_> {
             }
             if seg == "#inner" {
                 match &ast.expr(expr).value {
-                    Expr::Wrap { args, .. } if args.len() == 1 => {
-                        expr = args[0].value;
+                    Expr::Wrap { args, .. } => {
+                        let [only] = args.as_slice() else {
+                            return None;
+                        };
+                        expr = only.value;
                         continue;
                     }
                     _ => return None,
                 }
             }
             match &ast.expr(expr).value {
-                Expr::Wrap { args, .. } if args.len() == 1 => {
+                Expr::Wrap { args, .. } => {
+                    let [only] = args.as_slice() else {
+                        return None;
+                    };
                     // Transparently step inside single-arg nominal wrap for field projection.
-                    if let Some(inner) = self.project_expr_path(env, args[0].value, std::slice::from_ref(seg)) {
+                    if let Some(inner) =
+                        self.project_expr_path(env, only.value, std::slice::from_ref(seg))
+                    {
                         expr = inner;
                         continue;
                     }
@@ -1817,12 +2137,7 @@ impl Checker<'_> {
                 }
                 Expr::Record { fields, .. } => {
                     let field = fields.iter().find(|f| f.name.value == *seg)?;
-                    if let Some(val) = field.value {
-                        expr = val;
-                    } else {
-                        // Shorthand field `{ rows }`: handled via `Place` in caller or resolve below.
-                        return None;
-                    }
+                    expr = field.value?;
                 }
                 Expr::Tuple(items) => {
                     let idx: usize = seg.parse().ok()?;
@@ -1849,12 +2164,14 @@ impl Checker<'_> {
             Expr::Unary { op, value } if matches!(op.value.as_str(), "ref" | "^mut") => {
                 self.eval_callee_guard_arg(env, scratch, def_file, *value, formal_to_caller)
             }
-            Expr::Literal(lit) => {
-                let Value::Int(n) = super::literal(lit).ok()? else {
-                    return None;
-                };
-                Some(ProofArgVal::Const(n.to_i128()?))
-            }
+            Expr::Literal(lit) => match super::literal(lit).ok()? {
+                Value::Int(n) => Some(ProofArgVal::Const(n.to_i128()?)),
+                Value::Str(s) => Some(ProofArgVal::KeyConst(KeyConst::Str(s))),
+                Value::Bool(b) => Some(ProofArgVal::KeyConst(KeyConst::Bool(b))),
+                Value::Bytes(b) => Some(ProofArgVal::KeyConst(KeyConst::Bytes(b))),
+                _ => None,
+            },
+            Expr::Unit => Some(ProofArgVal::KeyConst(KeyConst::Unit)),
             Expr::Path(path) => {
                 let id = self.resolve(path.span)?;
                 if let Some(&caller_expr) = formal_to_caller.get(&id) {
@@ -1886,10 +2203,14 @@ impl Checker<'_> {
                             p.path.push(seg);
                             Some(ProofArgVal::Place(p))
                         } else {
-                            self.project_expr_path(env, e, &[seg]).map(ProofArgVal::Expr)
+                            self.project_expr_path(env, e, &[seg])
+                                .map(ProofArgVal::Expr)
                         }
                     }
-                    ProofArgVal::Const(_) | ProofArgVal::Atom(_) => None,
+                    ProofArgVal::Const(_)
+                    | ProofArgVal::KeyConst(_)
+                    | ProofArgVal::Atom(_)
+                    | ProofArgVal::TupleExprs(_) => None,
                 }
             }
             Expr::Call { callee, args } => {
@@ -1923,7 +2244,9 @@ impl Checker<'_> {
                                 t
                             }
                         }
-                        ProofArgVal::Const(_) => return None,
+                        ProofArgVal::Const(_)
+                        | ProofArgVal::KeyConst(_)
+                        | ProofArgVal::TupleExprs(_) => return None,
                     };
                     if let Some(c) = scratch.exact(&len_atom) {
                         return Some(ProofArgVal::Const(c));
@@ -1968,10 +2291,40 @@ impl Checker<'_> {
                                     t
                                 }
                             }
-                            ProofArgVal::Const(_) => unreachable!(),
+                            ProofArgVal::Const(_)
+                            | ProofArgVal::KeyConst(_)
+                            | ProofArgVal::TupleExprs(_) => return None,
                         };
                         let t = scratch.fresh_temp();
                         scratch.add_eq(t.clone(), base_atom, offset);
+                        Some(ProofArgVal::Atom(t))
+                    }
+                    (lhs, rhs) if op.value == "-" => {
+                        let to_atom = |v: ProofArgVal, dbm: &mut Dbm| -> Option<Atom> {
+                            match v {
+                                ProofArgVal::Atom(a) => Some(a),
+                                ProofArgVal::Place(p) => Some(Atom::Val(p)),
+                                ProofArgVal::Expr(e) => {
+                                    if let Some(p) = self.resolve_place(env, e) {
+                                        Some(Atom::Val(p))
+                                    } else {
+                                        let t = dbm.fresh_temp();
+                                        self.constrain_expr(env, dbm, &t, e);
+                                        Some(t)
+                                    }
+                                }
+                                ProofArgVal::Const(c) => {
+                                    let t = dbm.fresh_temp();
+                                    dbm.add_eq(t.clone(), Atom::Zero, c);
+                                    Some(t)
+                                }
+                                ProofArgVal::KeyConst(_) | ProofArgVal::TupleExprs(_) => None,
+                            }
+                        };
+                        let la = to_atom(lhs, scratch)?;
+                        let ra = to_atom(rhs, scratch)?;
+                        let t = scratch.fresh_temp();
+                        scratch.add_diff_eq(t.clone(), la, ra, 0);
                         Some(ProofArgVal::Atom(t))
                     }
                     _ => None,
@@ -1983,7 +2336,7 @@ impl Checker<'_> {
 
     fn resolve_callee_guard_arg_for_return(
         &self,
-        env: &Env,
+        env: &mut Env,
         def_file: FileId,
         guard_arg: ExprId,
         formal_to_caller: &HashMap<DefinitionId, ExprId>,
@@ -1993,12 +2346,14 @@ impl Checker<'_> {
             Expr::Unary { op, value } if matches!(op.value.as_str(), "ref" | "^mut") => {
                 self.resolve_callee_guard_arg_for_return(env, def_file, *value, formal_to_caller)
             }
-            Expr::Literal(lit) => {
-                let Value::Int(n) = super::literal(lit).ok()? else {
-                    return None;
-                };
-                Some(CallerArgRef::Const(n.to_i128()?))
-            }
+            Expr::Literal(lit) => match super::literal(lit).ok()? {
+                Value::Int(n) => Some(CallerArgRef::Const(n.to_i128()?)),
+                Value::Str(s) => Some(CallerArgRef::KeyConst(KeyConst::Str(s))),
+                Value::Bool(b) => Some(CallerArgRef::KeyConst(KeyConst::Bool(b))),
+                Value::Bytes(b) => Some(CallerArgRef::KeyConst(KeyConst::Bytes(b))),
+                _ => None,
+            },
+            Expr::Unit => Some(CallerArgRef::KeyConst(KeyConst::Unit)),
             Expr::Path(path) => {
                 let id = self.resolve(path.span)?;
                 if let Some(&caller_expr) = formal_to_caller.get(&id) {
@@ -2019,6 +2374,13 @@ impl Checker<'_> {
                     }
                     if let Some(c) = self.const_int(env, caller_expr) {
                         return Some(CallerArgRef::Const(c));
+                    }
+                    if self.is_int_expr(env, caller_expr) {
+                        let t = env.refinements.dbm.fresh_temp();
+                        let mut dbm = std::mem::take(&mut env.refinements.dbm);
+                        self.constrain_expr(env, &mut dbm, &t, caller_expr);
+                        env.refinements.dbm = dbm;
+                        return Some(CallerArgRef::Atom(t));
                     }
                 } else if let Some(Value::Int(n)) = self.static_constant_value(id) {
                     return Some(CallerArgRef::Const(n.to_i128()?));
@@ -2057,6 +2419,63 @@ impl Checker<'_> {
                 };
                 Some(CallerArgRef::Const(c.checked_neg()?))
             }
+            Expr::Binary { op, left, right } if matches!(op.value.as_str(), "+" | "-") => {
+                let l = self.resolve_callee_guard_arg_for_return(
+                    env,
+                    def_file,
+                    *left,
+                    formal_to_caller,
+                )?;
+                let r = self.resolve_callee_guard_arg_for_return(
+                    env,
+                    def_file,
+                    *right,
+                    formal_to_caller,
+                )?;
+                match (l, r) {
+                    (CallerArgRef::Const(a), CallerArgRef::Const(b)) => {
+                        let v = if op.value == "+" {
+                            a.checked_add(b)?
+                        } else {
+                            a.checked_sub(b)?
+                        };
+                        Some(CallerArgRef::Const(v))
+                    }
+                    (lhs, CallerArgRef::Const(c)) => {
+                        let offset = if op.value == "+" { c } else { c.checked_neg()? };
+                        let base = match lhs {
+                            CallerArgRef::Place(p) => Atom::Val(p),
+                            CallerArgRef::LenOf(p) => Atom::Len(p),
+                            CallerArgRef::Atom(a) => a,
+                            _ => return None,
+                        };
+                        let t = env.refinements.dbm.fresh_temp();
+                        env.refinements.dbm.add_eq(t.clone(), base, offset);
+                        Some(CallerArgRef::Atom(t))
+                    }
+                    (lhs, rhs) if op.value == "-" => {
+                        let to_atom = |v: CallerArgRef, dbm: &mut Dbm| -> Option<Atom> {
+                            match v {
+                                CallerArgRef::Place(p) => Some(Atom::Val(p)),
+                                CallerArgRef::LenOf(p) => Some(Atom::Len(p)),
+                                CallerArgRef::Atom(a) => Some(a),
+                                CallerArgRef::Const(c) => {
+                                    let t = dbm.fresh_temp();
+                                    dbm.add_eq(t.clone(), Atom::Zero, c);
+                                    Some(t)
+                                }
+                                CallerArgRef::KeyConst(_) => None,
+                            }
+                        };
+                        let la = to_atom(lhs, &mut env.refinements.dbm)?;
+                        let ra = to_atom(rhs, &mut env.refinements.dbm)?;
+                        let t = env.refinements.dbm.fresh_temp();
+                        env.refinements.dbm.add_diff_eq(t.clone(), la, ra, 0);
+                        Some(CallerArgRef::Atom(t))
+                    }
+                    _ => None,
+                }
+            }
             _ => None,
         }
     }
@@ -2072,6 +2491,8 @@ enum CallerArgRef {
     Place(Place),
     LenOf(Place),
     Const(i128),
+    KeyConst(KeyConst),
+    Atom(Atom),
 }
 
 pub(super) fn instantiate_call_return_pred(
@@ -2144,6 +2565,37 @@ fn substitute_tf_pred(
                 }
                 _ => None,
             },
+            ProofAtom::Const(KeyConst::Int(c)) => Some(LinExpr::Const(*c)),
+            ProofAtom::Const(_) => None,
+        }
+    }
+    fn subst_raw_atom(atom: &ProofAtom, args: &[TfLocal]) -> Option<ProofAtom> {
+        match atom {
+            ProofAtom::Const(kc) => Some(ProofAtom::Const(kc.clone())),
+            ProofAtom::Val(pp) => match args.get(pp.param_idx)? {
+                TfLocal::Place(base) => {
+                    let mut p = base.clone();
+                    p.path.extend(pp.path.iter().cloned());
+                    Some(ProofAtom::Val(p))
+                }
+                TfLocal::Const(kc) if pp.path.is_empty() => Some(ProofAtom::Const(kc.clone())),
+                TfLocal::Lin(LinExpr::Const(c)) if pp.path.is_empty() => {
+                    Some(ProofAtom::Const(KeyConst::Int(*c)))
+                }
+                TfLocal::Lin(LinExpr::Pos {
+                    atom: ProofAtom::Val(p),
+                    offset: 0,
+                }) if pp.path.is_empty() => Some(ProofAtom::Val(p.clone())),
+                _ => None,
+            },
+            ProofAtom::Len(pp) => match args.get(pp.param_idx)? {
+                TfLocal::Place(base) => {
+                    let mut p = base.clone();
+                    p.path.extend(pp.path.iter().cloned());
+                    Some(ProofAtom::Len(p))
+                }
+                _ => None,
+            },
         }
     }
     Some(match pred {
@@ -2159,6 +2611,15 @@ fn substitute_tf_pred(
             let r = subst_atom(rhs, args)?.add(LinExpr::Const(*offset))?;
             LinExpr::compare("!=", l, r)?
         }
+        ProofPred::Contains {
+            container,
+            key,
+            negated,
+        } => ProofPred::Contains {
+            container: subst_raw_atom(container, args)?,
+            key: subst_raw_atom(key, args)?,
+            negated: *negated,
+        },
         ProofPred::And(ps) => {
             let mut out = Vec::with_capacity(ps.len());
             for p in ps {
@@ -2241,6 +2702,257 @@ impl Checker<'_> {
         }
     }
 
+    pub(super) fn collect_type_invariant_exports(
+        &mut self,
+        file: FileId,
+        type_id: DefinitionId,
+        decl: &syntax::TypeDecl,
+    ) {
+        let mut proofs = Vec::new();
+        let empty = HashMap::new();
+        for &guard in &decl.guards {
+            if !self.hir.is_static_proof_guard(file, guard) {
+                continue;
+            }
+            let subject = TfLocal::Place(ProofPlace {
+                param_idx: 0,
+                path: Vec::new(),
+            });
+            proofs.push(self.export_single_guard(file, guard, subject, &empty));
+        }
+        if !proofs.is_empty() {
+            self.exported_type_invariants.insert(type_id, proofs);
+        }
+    }
+
+    /// Verifies every static invariant `|> Guard` declared on `adt` against the constructor payload.
+    pub(super) fn verify_type_invariants(
+        &mut self,
+        env: &mut Env,
+        adt: &super::Adt,
+        subject: ProofArgVal,
+        report_span: Span,
+    ) {
+        let def = self.hir.definition(adt.definition);
+        let Some(stmt) = def.stmt else { return };
+        let def_file = def.name.span.file;
+        let StmtKind::Type(decl) = &self.ast(def_file).stmt(stmt).value.kind else {
+            return;
+        };
+        if decl.guards.is_empty() {
+            return;
+        }
+        let guards = decl.guards.clone();
+        let empty_formals = HashMap::new();
+        let mut all_ok = true;
+        for guard in guards {
+            let Some((tf_id, extra)) = self.extract_static_proof_guard(def_file, guard) else {
+                continue;
+            };
+            let guard_span = self.ast(def_file).expr(guard).span;
+            let mut scratch = env.refinements.dbm.clone();
+            let mut arg_vals = Vec::with_capacity(1 + extra.len());
+            arg_vals.push(subject.clone());
+            let mut extra_ok = true;
+            for opt in extra {
+                let Some(guard_arg_expr) = opt else {
+                    arg_vals.push(ProofArgVal::Const(0));
+                    continue;
+                };
+                match self.eval_callee_guard_arg(
+                    env,
+                    &mut scratch,
+                    def_file,
+                    guard_arg_expr,
+                    &empty_formals,
+                ) {
+                    Some(val) => arg_vals.push(val),
+                    None => {
+                        extra_ok = false;
+                        break;
+                    }
+                }
+            }
+            if !extra_ok {
+                all_ok = false;
+                let diag = Diagnostic::error(
+                    Code::E0323,
+                    report_span,
+                    format!(
+                        "constructor payload does not satisfy type invariant '{}'",
+                        self.hir.definition(tf_id).name.value
+                    ),
+                )
+                .with_label(guard_span, "required by this type invariant");
+                self.diagnostics.push(diag);
+                continue;
+            }
+            let ok = self.verify_proof_obligation_with_scratch_code(
+                env,
+                &mut scratch,
+                tf_id,
+                &arg_vals,
+                report_span,
+                guard_span,
+                "constructor payload does not satisfy type invariant",
+                Code::E0323,
+            );
+            if !ok {
+                all_ok = false;
+            }
+        }
+        if all_ok {
+            self.proved_ops.insert(report_span);
+        }
+    }
+
+    /// Auto-seeds static type invariants into `env.refinements.dbm` when a value of type `ty`
+    /// is bound or received (cycle-safe, depth-bounded, atom-cap-safe).
+    pub(super) fn seed_type_invariants(&mut self, env: &mut Env, place: &Place, ty: &Ty) {
+        let mut seen = HashSet::new();
+        self.seed_type_invariants_rec(env, place, ty, 0, &mut seen);
+    }
+
+    fn seed_type_invariants_rec(
+        &mut self,
+        env: &mut Env,
+        place: &Place,
+        ty: &Ty,
+        depth: usize,
+        seen: &mut HashSet<DefinitionId>,
+    ) {
+        if depth > 4 || env.refinements.dbm.unsat || env.refinements.dbm.atom_count() >= 56 {
+            return;
+        }
+        let norm = self.normalize(ty);
+        match norm {
+            Ty::Adt(adt) => {
+                if adt.kind == super::AdtKind::Opaque && adt.defining_scope != env.scope {
+                    return;
+                }
+                let rep = if matches!(adt.kind, super::AdtKind::Nominal | super::AdtKind::Opaque) {
+                    self.representation(env, &adt)
+                } else {
+                    None
+                };
+                if self.has_type_invariants(adt.definition) {
+                    let is_composite_rep = matches!(
+                        rep.as_ref().map(|r| self.normalize(r)),
+                        Some(Ty::Record(..) | Ty::Tuple(_))
+                    );
+                    let mut inner_place = place.clone();
+                    inner_place.path.push("#inner".to_owned());
+                    let targets: Vec<Place> = if is_composite_rep {
+                        vec![place.clone(), inner_place.clone()]
+                    } else {
+                        vec![inner_place.clone()]
+                    };
+                    let def = self.hir.definition(adt.definition);
+                    if let Some(stmt) = def.stmt {
+                        let def_file = def.name.span.file;
+                        let guards = match &self.ast(def_file).stmt(stmt).value.kind {
+                            StmtKind::Type(decl) => decl.guards.clone(),
+                            _ => Vec::new(),
+                        };
+                        let empty_formals = HashMap::new();
+                        for guard in guards {
+                            let Some((tf_id, extra)) =
+                                self.extract_static_proof_guard(def_file, guard)
+                            else {
+                                continue;
+                            };
+                            let Ok(lowered) = self.lower_type_fn(tf_id) else {
+                                continue;
+                            };
+                            for target in &targets {
+                                if env.refinements.dbm.atom_count() >= 56 {
+                                    break;
+                                }
+                                let mut scratch = env.refinements.dbm.clone();
+                                let mut arg_vals = Vec::with_capacity(1 + extra.len());
+                                arg_vals.push(ProofArgVal::Place(target.clone()));
+                                let mut ok = true;
+                                for opt in &extra {
+                                    if let Some(e) = opt {
+                                        if let Some(v) = self.eval_callee_guard_arg(
+                                            env,
+                                            &mut scratch,
+                                            def_file,
+                                            *e,
+                                            &empty_formals,
+                                        ) {
+                                            arg_vals.push(v);
+                                        } else {
+                                            ok = false;
+                                            break;
+                                        }
+                                    } else {
+                                        arg_vals.push(ProofArgVal::Const(0));
+                                    }
+                                }
+                                if ok
+                                    && let Some(pred) = self.instantiate_proof_pred(
+                                        env,
+                                        &mut scratch,
+                                        &lowered.pred,
+                                        &arg_vals,
+                                    )
+                                {
+                                    scratch.assume(&pred);
+                                    scratch.forget_temps();
+                                    env.refinements.dbm = scratch;
+                                }
+                            }
+                        }
+                    }
+                }
+                if let Some(rep_ty) = rep
+                    && seen.insert(adt.definition)
+                {
+                    let rep_norm = self.normalize(&rep_ty);
+                    match &rep_norm {
+                        Ty::Record(fields, _) => {
+                            for (fname, m) in fields {
+                                let mut sub = place.clone();
+                                sub.path.push(fname.clone());
+                                self.seed_type_invariants_rec(env, &sub, &m.ty, depth + 1, seen);
+                            }
+                        }
+                        Ty::Tuple(items) => {
+                            for (i, m) in items.iter().enumerate() {
+                                let mut sub = place.clone();
+                                sub.path.push(i.to_string());
+                                self.seed_type_invariants_rec(env, &sub, &m.ty, depth + 1, seen);
+                            }
+                        }
+                        Ty::Adt(_) => {
+                            let mut sub = place.clone();
+                            sub.path.push("#inner".to_owned());
+                            self.seed_type_invariants_rec(env, &sub, &rep_norm, depth + 1, seen);
+                        }
+                        _ => {}
+                    }
+                    seen.remove(&adt.definition);
+                }
+            }
+            Ty::Record(fields, _) => {
+                for (fname, m) in fields {
+                    let mut sub = place.clone();
+                    sub.path.push(fname);
+                    self.seed_type_invariants_rec(env, &sub, &m.ty, depth + 1, seen);
+                }
+            }
+            Ty::Tuple(items) => {
+                for (i, m) in items.into_iter().enumerate() {
+                    let mut sub = place.clone();
+                    sub.path.push(i.to_string());
+                    self.seed_type_invariants_rec(env, &sub, &m.ty, depth + 1, seen);
+                }
+            }
+            _ => {}
+        }
+    }
+
     fn export_single_guard(
         &mut self,
         file: FileId,
@@ -2264,9 +2976,7 @@ impl Checker<'_> {
                     break;
                 }
             }
-            if all_lowered
-                && let Some(pred) = substitute_tf_pred(&lowered.pred, &tf_args)
-            {
+            if all_lowered && let Some(pred) = substitute_tf_pred(&lowered.pred, &tf_args) {
                 return ExportProof {
                     pred: Some(pred),
                     fallback: String::new(),
@@ -2291,11 +3001,12 @@ impl Checker<'_> {
         expr: ExprId,
         locals: &HashMap<DefinitionId, TfLocal>,
     ) -> Option<TfLocal> {
-        let ast = self.ast(file);
         if let Some(place) = self.lower_tf_place(file, expr, locals) {
             return Some(TfLocal::Place(place));
         }
-        let _ = ast;
-        self.lower_tf_lin(file, expr, locals).ok().map(TfLocal::Lin)
+        if let Ok(lin) = self.lower_tf_lin(file, expr, locals) {
+            return Some(TfLocal::Lin(lin));
+        }
+        self.lower_tf_key_const(file, expr).map(TfLocal::Const)
     }
 }

@@ -156,11 +156,7 @@ impl Analyzer<'_> {
                             "linear type cannot be bound with let ref; use a ref parameter or for ref loop",
                         );
                     } else if binding_is_user_linear && mode == Mode::Via {
-                        self.error(
-                            Code::E0550,
-                            name.span,
-                            "linear value cannot use via",
-                        );
+                        self.error(Code::E0550, name.span, "linear value cannot use via");
                     }
                 }
                 if binding_is_must_consume && mode != Mode::Ref && !is_scoped_linear_borrow {

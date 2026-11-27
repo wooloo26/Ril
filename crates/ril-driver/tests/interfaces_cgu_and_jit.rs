@@ -392,3 +392,106 @@ pub fn after_where() -> int { 1 }
     );
     Ok(())
 }
+
+#[test]
+fn type_invariants_check_rili_equivalence_and_opaque_invariants_stay_sealed() -> Result<(), String>
+{
+    let build_iface = |src: &str| -> Result<ril_sema::iface::Interface, String> {
+        let mut pkg = VirtualPackage::new(Unit::Lib);
+        pkg.entry = "pkg/lib.ril".into();
+        pkg.insert("pkg/lib.ril".into(), src.as_bytes().to_vec());
+        Driver.interface(&pkg).map_err(|e| format!("{e:?}"))
+    };
+
+    let base = build_iface(
+        r#"
+pub type Port(int) |> Positive
+pub opaque type Token(int) |> Between(1, 100)
+pub fn make_token() -> Token { Token::(42) }
+"#,
+    )?;
+
+    // Logically equivalent non-opaque invariant (`Positive` <-> `AtLeast(1)`) AND changing opaque's
+    // internal invariant must stay compatible, and opaque change alone must not churn `abi_hash`!
+    let equiv = build_iface(
+        r#"
+pub type Port(int) |> AtLeast(1)
+pub opaque type Token(int) |> Between(1, 999)
+pub fn make_token() -> Token { Token::(42) }
+"#,
+    )?;
+    assert!(
+        base.compare(&equiv).is_empty(),
+        "expected equivalent invariant and opaque internal change to be compatible, got {:?}",
+        base.compare(&equiv)
+    );
+
+    let opaque_only_change = build_iface(
+        r#"
+pub type Port(int) |> Positive
+pub opaque type Token(int) |> Between(1, 999)
+pub fn make_token() -> Token { Token::(42) }
+"#,
+    )?;
+    assert_eq!(
+        base.abi_hash, opaque_only_change.abi_hash,
+        "changing an opaque type's internal invariant must not churn abi_hash"
+    );
+
+    // Strengthening a non-opaque type invariant (`Positive` -> `AtLeast(2)`) breaks callers constructing `Port::(1)` (`E0552`).
+    let stronger = build_iface(
+        r#"
+pub type Port(int) |> AtLeast(2)
+pub opaque type Token(int) |> Between(1, 100)
+pub fn make_token() -> Token { Token::(42) }
+"#,
+    )?;
+    assert!(
+        base.compare(&stronger)
+            .iter()
+            .any(|d| d.code == Some(ril_source::diag::Code::E0552)),
+        "expected E0552 when strengthening non-opaque type invariant"
+    );
+
+    // Weakening a non-opaque type invariant (`Positive` -> `Nat`) breaks callers unwrapping `inner(p)` (`E0552`).
+    let weaker = build_iface(
+        r#"
+pub type Port(int) |> Nat
+pub opaque type Token(int) |> Between(1, 100)
+pub fn make_token() -> Token { Token::(42) }
+"#,
+    )?;
+    assert!(
+        base.compare(&weaker)
+            .iter()
+            .any(|d| d.code == Some(ril_source::diag::Code::E0552)),
+        "expected E0552 when weakening non-opaque type invariant"
+    );
+
+    // Separate compilation against `.rili` auto-seeds `Port`'s invariant on consumption and checks construction!
+    let base_bin = base.encode().map_err(|e| e.to_string())?;
+    let mut consumer_ok = bin_package(
+        "use dep/lib\nfn use_port(p: Lib::Port) -> int { 100 / inner(p) }\nfn main() -> () { let p = Lib::Port::(80); let _ = use_port(p) }\n",
+    );
+    consumer_ok.insert("dep/lib.rili".into(), base_bin.clone());
+    let checked_ok = Driver.check(&consumer_ok, Stage::Access);
+    assert!(
+        checked_ok.result.diagnostics.is_empty(),
+        "expected imported type invariant to auto-seed, got {:?}",
+        checked_ok.result.diagnostics
+    );
+
+    let mut consumer_bad = bin_package("use dep/lib\nfn main() -> () { let _ = Lib::Port::(0) }\n");
+    consumer_bad.insert("dep/lib.rili".into(), base_bin);
+    let checked_bad = Driver.check(&consumer_bad, Stage::Access);
+    assert!(
+        checked_bad
+            .result
+            .diagnostics
+            .iter()
+            .any(|d| d.code == Some(ril_source::diag::Code::E0323)),
+        "expected E0323 for invalid imported type invariant construction, got {:?}",
+        checked_bad.result.diagnostics
+    );
+    Ok(())
+}

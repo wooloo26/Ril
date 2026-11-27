@@ -255,8 +255,8 @@ impl Checker<'_> {
                     let Value::Array(items) = place.slot(slots, false)? else {
                         return Err(defect(span, "static Array::remove requires an array"));
                     };
-                    let Some(idx) = num_traits::ToPrimitive::to_usize(&index)
-                        .filter(|&idx| idx < items.len())
+                    let Some(idx) =
+                        num_traits::ToPrimitive::to_usize(&index).filter(|&idx| idx < items.len())
                     else {
                         return Err(defect(span, "static Array::remove index out of bounds"));
                     };
@@ -371,9 +371,7 @@ impl Checker<'_> {
                     let Value::Map(entries) = map_val else {
                         return Err(defect(span, "static Map::keys requires a map"));
                     };
-                    Ok(Value::Array(
-                        entries.into_iter().map(|(k, _)| k).collect(),
-                    ))
+                    Ok(Value::Array(entries.into_iter().map(|(k, _)| k).collect()))
                 }
                 DefinitionKind::Primitive(_) if name == "inspect" => {
                     let [argument] = args else {

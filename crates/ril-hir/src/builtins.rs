@@ -95,13 +95,7 @@ pub const PRIMITIVE_FNS: &[PrimitiveSpec] = {
             Some("ril_rt_abort_ctl"),
             Some(UnwindCtl),
         ),
-        prim(
-            "Panic",
-            "recover",
-            Runtime,
-            None,
-            Some(RecoverPanic),
-        ),
+        prim("Panic", "recover", Runtime, None, Some(RecoverPanic)),
         prim(
             "Panic",
             "message",
@@ -117,7 +111,9 @@ pub const PRIMITIVE_FNS: &[PrimitiveSpec] = {
             None,
             Some(CompileErrorCode),
         ),
+        prim("Prelude", "has_key", Static, None, Some(HasKey)),
         prim("Prelude", "panic", Both, Some("ril_rt_panic"), Some(Panic)),
+        prim("Prelude", "unreachable", Both, None, Some(Unreachable)),
         // Io / File
         prim("Io", "print", Runtime, Some("ril_rt_print"), Some(Print)),
         prim(
@@ -228,13 +224,7 @@ pub const PRIMITIVE_FNS: &[PrimitiveSpec] = {
             Some("ril_rt_map_contains"),
             Some(MapContains),
         ),
-        prim(
-            "Map",
-            "keys",
-            Both,
-            Some("ril_rt_map_keys"),
-            Some(MapKeys),
-        ),
+        prim("Map", "keys", Both, Some("ril_rt_map_keys"), Some(MapKeys)),
         // String
         prim("String", "inspect", Both, None, Some(StringInspect)),
         prim(

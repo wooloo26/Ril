@@ -68,6 +68,8 @@ pub struct Declaration {
     pub must_consume: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub must_consume_params: Vec<usize>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub invariants: Vec<ExportProof>,
     #[serde(skip)]
     span: Span,
 }
@@ -167,180 +169,194 @@ impl Interface {
                 }
                 let stmt = def.stmt?;
                 let ast = &program.hir.file(def.name.span.file).ast;
-                let (shape, params, must_consume, must_consume_params) = match (&ast.stmt(stmt).value.kind, def.kind) {
-                    (StmtKind::Type(decl), DefinitionKind::Type | DefinitionKind::Sum(_)) => {
-                        let param_ids: Vec<_> = decl
-                            .generics
-                            .iter()
-                            .map(|p| match program.hir.resolve(p.name.span) {
-                                Some(ril_hir::Resolution::Definition(pid)) => Some(pid),
-                                _ => None,
-                            })
-                            .collect();
-                        let self_args: Vec<_> = param_ids
-                            .iter()
-                            .filter_map(|opt| {
-                                opt.map(|pid| {
-                                    crate::ty::GenericValue::Type(crate::ty::Ty::Param(pid))
-                                })
-                            })
-                            .collect();
-                        let adt_kind = if decl.kind == TypeKind::Opaque {
-                            if matches!(decl.definition, TypeDefinition::Sum(_)) {
-                                crate::ty::AdtKind::OpaqueSum
-                            } else {
-                                crate::ty::AdtKind::Opaque
-                            }
-                        } else if matches!(decl.definition, TypeDefinition::Sum(_)) {
-                            crate::ty::AdtKind::Sum
-                        } else {
-                            crate::ty::AdtKind::Nominal
-                        };
-                        let self_adt = crate::ty::Adt {
-                            definition: id,
-                            kind: adt_kind,
-                            is_linear: decl.is_linear,
-                            defining_scope: def.scope,
-                            visibility: def.visibility,
-                            arguments: self_args,
-                        };
-                        let self_ty = crate::ty::Ty::Adt(std::sync::Arc::new(self_adt.clone()));
-                        let is_must_consume = program.is_must_consume(&self_ty);
-                        let mc_params: Vec<usize> = if decl.kind == TypeKind::Opaque {
-                            param_ids
+                let (shape, params, must_consume, must_consume_params, invariants) =
+                    match (&ast.stmt(stmt).value.kind, def.kind) {
+                        (StmtKind::Type(decl), DefinitionKind::Type | DefinitionKind::Sum(_)) => {
+                            let param_ids: Vec<_> = decl
+                                .generics
                                 .iter()
-                                .enumerate()
-                                .filter_map(|(i, opt)| {
-                                    let pid = (*opt)?;
-                                    program
-                                        .type_param_in_must_consume_position(&self_ty, pid)
-                                        .then_some(i)
+                                .map(|p| match program.hir.resolve(p.name.span) {
+                                    Some(ril_hir::Resolution::Definition(pid)) => Some(pid),
+                                    _ => None,
                                 })
-                                .collect()
-                        } else {
-                            Vec::new()
-                        };
-                        let body = if decl.kind == TypeKind::Opaque {
-                            let base = match &decl.definition {
-                                TypeDefinition::Sum(_) => "sealed sum".into(),
-                                TypeDefinition::Data(_) => {
-                                    let unwrapped = program.unwrap_wrapper(
-                                        &crate::ty::Ty::Adt(std::sync::Arc::new(self_adt)),
-                                    );
-                                    if unwrapped.is_primitive_value() {
-                                        "sealed value".into()
-                                    } else if let crate::ty::Ty::Param(pid) = unwrapped
-                                        && let Some(idx) =
-                                            param_ids.iter().position(|p| *p == Some(pid))
-                                    {
-                                        format!("sealed param({idx})")
-                                    } else {
-                                        "sealed shared".into()
+                                .collect();
+                            let self_args: Vec<_> = param_ids
+                                .iter()
+                                .filter_map(|opt| {
+                                    opt.map(|pid| {
+                                        crate::ty::GenericValue::Type(crate::ty::Ty::Param(pid))
+                                    })
+                                })
+                                .collect();
+                            let adt_kind = if decl.kind == TypeKind::Opaque {
+                                if matches!(decl.definition, TypeDefinition::Sum(_)) {
+                                    crate::ty::AdtKind::OpaqueSum
+                                } else {
+                                    crate::ty::AdtKind::Opaque
+                                }
+                            } else if matches!(decl.definition, TypeDefinition::Sum(_)) {
+                                crate::ty::AdtKind::Sum
+                            } else {
+                                crate::ty::AdtKind::Nominal
+                            };
+                            let self_adt = crate::ty::Adt {
+                                definition: id,
+                                kind: adt_kind,
+                                is_linear: decl.is_linear,
+                                defining_scope: def.scope,
+                                visibility: def.visibility,
+                                arguments: self_args,
+                            };
+                            let self_ty = crate::ty::Ty::Adt(std::sync::Arc::new(self_adt.clone()));
+                            let is_must_consume = program.is_must_consume(&self_ty);
+                            let mc_params: Vec<usize> = if decl.kind == TypeKind::Opaque {
+                                param_ids
+                                    .iter()
+                                    .enumerate()
+                                    .filter_map(|(i, opt)| {
+                                        let pid = (*opt)?;
+                                        program
+                                            .type_param_in_must_consume_position(&self_ty, pid)
+                                            .then_some(i)
+                                    })
+                                    .collect()
+                            } else {
+                                Vec::new()
+                            };
+                            let body = if decl.kind == TypeKind::Opaque {
+                                let base = match &decl.definition {
+                                    TypeDefinition::Sum(_) => "sealed sum".into(),
+                                    TypeDefinition::Data(_) => {
+                                        let unwrapped = program.unwrap_wrapper(
+                                            &crate::ty::Ty::Adt(std::sync::Arc::new(self_adt)),
+                                        );
+                                        if unwrapped.is_primitive_value() {
+                                            "sealed value".into()
+                                        } else if let crate::ty::Ty::Param(pid) = unwrapped
+                                            && let Some(idx) =
+                                                param_ids.iter().position(|p| *p == Some(pid))
+                                        {
+                                            format!("sealed param({idx})")
+                                        } else {
+                                            "sealed shared".into()
+                                        }
+                                    }
+                                    TypeDefinition::Opaque => "sealed".into(),
+                                    TypeDefinition::Function(..) => "sealed".into(),
+                                };
+                                if is_must_consume {
+                                    format!("{base} must_consume")
+                                } else {
+                                    base
+                                }
+                            } else {
+                                match &decl.definition {
+                                    TypeDefinition::Data(ty) => type_shape(program, ast, *ty),
+                                    TypeDefinition::Opaque => "unit".into(),
+                                    TypeDefinition::Function(_, body) => format!(
+                                        "type function {}",
+                                        fingerprint(program, ast.expr(*body).span)
+                                    ),
+                                    TypeDefinition::Sum(variants) => {
+                                        let mut shape: Vec<_> = variants
+                                            .iter()
+                                            .map(|variant| match variant {
+                                                Variant::Constructor { name, payload, .. } => {
+                                                    payload.as_ref().map_or_else(
+                                                        || name.value.clone(),
+                                                        |types| {
+                                                            let fields: Vec<_> = types
+                                                                .iter()
+                                                                .map(|&ty| {
+                                                                    type_shape(program, ast, ty)
+                                                                })
+                                                                .collect();
+                                                            format!(
+                                                                "{}({})",
+                                                                name.value,
+                                                                fields.join(", ")
+                                                            )
+                                                        },
+                                                    )
+                                                }
+                                                Variant::Spread(ty) => {
+                                                    format!("..{}", type_shape(program, ast, *ty))
+                                                }
+                                                Variant::Extensible => "..".into(),
+                                            })
+                                            .collect();
+                                        shape.sort();
+                                        format!("{{ {} }}", shape.join("; "))
                                     }
                                 }
-                                TypeDefinition::Opaque => "sealed".into(),
-                                TypeDefinition::Function(..) => "sealed".into(),
                             };
-                            if is_must_consume {
-                                format!("{base} must_consume")
+                            let parameters = match &decl.definition {
+                                TypeDefinition::Function(params, _) => params.as_slice(),
+                                _ => decl.generics.as_slice(),
+                            };
+                            let invariants = if decl.kind == TypeKind::Opaque {
+                                Vec::new()
                             } else {
-                                base
-                            }
-                        } else {
-                            match &decl.definition {
-                                TypeDefinition::Data(ty) => type_shape(program, ast, *ty),
-                                TypeDefinition::Opaque => "unit".into(),
-                                TypeDefinition::Function(_, body) => format!(
-                                    "type function {}",
-                                    fingerprint(program, ast.expr(*body).span)
-                                ),
-                                TypeDefinition::Sum(variants) => {
-                                    let mut shape: Vec<_> = variants
-                                        .iter()
-                                        .map(|variant| match variant {
-                                            Variant::Constructor { name, payload, .. } => {
-                                                payload.as_ref().map_or_else(
-                                                    || name.value.clone(),
-                                                    |types| {
-                                                        let fields: Vec<_> = types
-                                                            .iter()
-                                                            .map(|&ty| type_shape(program, ast, ty))
-                                                            .collect();
-                                                        format!(
-                                                            "{}({})",
-                                                            name.value,
-                                                            fields.join(", ")
-                                                        )
-                                                    },
-                                                )
-                                            }
-                                            Variant::Spread(ty) => {
-                                                format!("..{}", type_shape(program, ast, *ty))
-                                            }
-                                            Variant::Extensible => "..".into(),
-                                        })
-                                        .collect();
-                                    shape.sort();
-                                    format!("{{ {} }}", shape.join("; "))
-                                }
-                            }
-                        };
-                        let parameters = match &decl.definition {
-                            TypeDefinition::Function(params, _) => params.as_slice(),
-                            _ => decl.generics.as_slice(),
-                        };
-                        (
-                            format!("{:?} {body}", decl.kind),
-                            parameters,
-                            is_must_consume,
-                            mc_params,
-                        )
-                    }
-                    (
-                        StmtKind::Effect {
-                            generics,
-                            spreads,
-                            operations,
-                            ..
-                        },
-                        DefinitionKind::Effect(_),
-                    ) => {
-                        let mut members: Vec<_> = spreads
-                            .iter()
-                            .map(|&spread| match &ast.ty(spread).value {
-                                Type::Named(path) => path_shape(program, path),
-                                _ => type_shape(program, ast, spread),
-                            })
-                            .chain(operations.iter().filter_map(|&stmt_id| {
-                                if let StmtKind::Function(op) = &ast.stmt(stmt_id).value.kind {
-                                    let kind = if op.signature.is_ctl { "ctl" } else { "fn" };
-                                    Some(format!("{kind} {}", op.name.value))
-                                } else {
-                                    None
-                                }
-                            }))
-                            .collect();
-                        members.sort();
-                        (
-                            format!("eff {{ {} }}", members.join("; ")),
-                            generics.as_slice(),
-                            false,
-                            Vec::new(),
-                        )
-                    }
-                    (StmtKind::Binding { is_meta, value, .. }, DefinitionKind::Constant) => {
-                        let ty = program.bindings.get(&id)?;
-                        let mut shape = ty.qualified_display(&program.hir).to_string();
-                        if *is_meta
-                            && let Some(value) =
-                                value.and_then(|id| program.static_values.get(&ast.expr(id).span))
-                        {
-                            shape = format!("meta {shape} = {}", crate::ty::render(value));
+                                program
+                                    .exported_type_invariants
+                                    .get(&id)
+                                    .cloned()
+                                    .unwrap_or_default()
+                            };
+                            (
+                                format!("{:?} {body}", decl.kind),
+                                parameters,
+                                is_must_consume,
+                                mc_params,
+                                invariants,
+                            )
                         }
-                        (shape, &[][..], false, Vec::new())
-                    }
-                    _ => return None,
-                };
+                        (
+                            StmtKind::Effect {
+                                generics,
+                                spreads,
+                                operations,
+                                ..
+                            },
+                            DefinitionKind::Effect(_),
+                        ) => {
+                            let mut members: Vec<_> = spreads
+                                .iter()
+                                .map(|&spread| match &ast.ty(spread).value {
+                                    Type::Named(path) => path_shape(program, path),
+                                    _ => type_shape(program, ast, spread),
+                                })
+                                .chain(operations.iter().filter_map(|&stmt_id| {
+                                    if let StmtKind::Function(op) = &ast.stmt(stmt_id).value.kind {
+                                        let kind = if op.signature.is_ctl { "ctl" } else { "fn" };
+                                        Some(format!("{kind} {}", op.name.value))
+                                    } else {
+                                        None
+                                    }
+                                }))
+                                .collect();
+                            members.sort();
+                            (
+                                format!("eff {{ {} }}", members.join("; ")),
+                                generics.as_slice(),
+                                false,
+                                Vec::new(),
+                                Vec::new(),
+                            )
+                        }
+                        (StmtKind::Binding { is_meta, value, .. }, DefinitionKind::Constant) => {
+                            let ty = program.bindings.get(&id)?;
+                            let mut shape = ty.qualified_display(&program.hir).to_string();
+                            if *is_meta
+                                && let Some(value) = value
+                                    .and_then(|id| program.static_values.get(&ast.expr(id).span))
+                            {
+                                shape = format!("meta {shape} = {}", crate::ty::render(value));
+                            }
+                            (shape, &[][..], false, Vec::new(), Vec::new())
+                        }
+                        _ => return None,
+                    };
                 Some((
                     program.hir.export_name(id),
                     Declaration {
@@ -349,6 +365,7 @@ impl Interface {
                         public: def.visibility == Visibility::Public,
                         must_consume,
                         must_consume_params,
+                        invariants,
                         span: def.name.span,
                     },
                 ))
@@ -543,6 +560,8 @@ impl Interface {
                     && baseline.generics == entry.generics
                     && baseline.must_consume == entry.must_consume
                     && baseline.must_consume_params == entry.must_consume_params
+                    && export_proofs_entail(&baseline.invariants, &entry.invariants)
+                    && export_proofs_entail(&entry.invariants, &baseline.invariants)
                     && (!baseline.public || entry.public)
             }) {
                 diagnostics.push(Diagnostic::error(
@@ -563,7 +582,11 @@ fn declaration_source(file: &ril_hir::File) -> String {
                 StmtKind::Function(function) if !function.is_meta => {
                     omit_bodies(ast, &function.helpers, replacements);
                     if let Some(body) = function.body {
-                        let repl = if function.helpers.is_empty() { "" } else { "{}" };
+                        let repl = if function.helpers.is_empty() {
+                            ""
+                        } else {
+                            "{}"
+                        };
                         replacements.push((ast.expr(body).span, repl));
                     }
                 }
@@ -583,15 +606,35 @@ fn declaration_source(file: &ril_hir::File) -> String {
 }
 
 fn seal_opaque_representations(path: &str, text: &str) -> String {
-    fn collect_opaque_rhs(ast: &Ast, items: &[StmtId], spans: &mut Vec<Span>) {
+    fn collect_opaque_rhs(
+        ast: &Ast,
+        items: &[StmtId],
+        replacements: &mut Vec<(Span, &'static str)>,
+    ) {
         for &item in items {
             match &ast.stmt(item).value.kind {
                 StmtKind::Type(decl) if decl.kind == TypeKind::Opaque => {
                     if let TypeDefinition::Data(ty) = decl.definition {
-                        spans.push(ast.ty(ty).span);
+                        let ty_span = ast.ty(ty).span;
+                        replacements.push((ty_span, "sealed"));
+                        if let Some(&last_guard) = decl.guards.last() {
+                            let stmt_span = ast.stmt(item).span;
+                            let guard_end = ast.expr(last_guard).span.end.min(stmt_span.end);
+                            // Strip trailing `|> ...` guards after the closing `)` of `opaque type Name(T)`.
+                            if guard_end > ty_span.end {
+                                replacements.push((
+                                    Span {
+                                        file: ty_span.file,
+                                        start: ty_span.end,
+                                        end: guard_end,
+                                    },
+                                    ")",
+                                ));
+                            }
+                        }
                     }
                 }
-                StmtKind::Sub { items, .. } => collect_opaque_rhs(ast, items, spans),
+                StmtKind::Sub { items, .. } => collect_opaque_rhs(ast, items, replacements),
                 _ => {}
             }
         }
@@ -608,15 +651,15 @@ fn seal_opaque_representations(path: &str, text: &str) -> String {
         return text.to_owned();
     }
     let parsed = parser::parse_with_recovery(&src, &lexed.tokens, FileKind::Interface);
-    let mut spans = Vec::new();
-    collect_opaque_rhs(&parsed.ast, &parsed.ast.items, &mut spans);
-    if spans.is_empty() {
+    let mut replacements = Vec::new();
+    collect_opaque_rhs(&parsed.ast, &parsed.ast.items, &mut replacements);
+    if replacements.is_empty() {
         return text.to_owned();
     }
     let mut out = text.to_owned();
-    spans.sort_unstable();
-    for span in spans.into_iter().rev() {
-        out.replace_range(span.start..span.end, "sealed");
+    replacements.sort_unstable_by_key(|(span, _)| *span);
+    for (span, repl) in replacements.into_iter().rev() {
+        out.replace_range(span.start..span.end, repl);
     }
     out
 }

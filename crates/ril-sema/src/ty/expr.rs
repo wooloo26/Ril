@@ -112,6 +112,9 @@ impl Checker<'_> {
                     if result != Ty::Never {
                         result = right;
                     }
+                    if result == Ty::Never {
+                        env.refinements.dbm.unsat = true;
+                    }
                 }
                 env.active_defers.truncate(saved_defers);
                 for arm_res in ctl_arm_results {
@@ -176,6 +179,9 @@ impl Checker<'_> {
                     };
                     if result != Ty::Never {
                         result = right;
+                    }
+                    if result == Ty::Never {
+                        env.refinements.dbm.unsat = true;
                     }
                 }
                 env.active_defers.truncate(saved_defers);
@@ -567,7 +573,8 @@ impl Checker<'_> {
                 let body_span = self.ast(env.file).expr(*body).span;
                 self.require(&body_env, body_span, &body_result, &Ty::Unit);
                 let mut exit_env = env.clone();
-                exit_env.refinements = self.merge_refinements(env, &body_env, &Ty::Unit, &body_result);
+                exit_env.refinements =
+                    self.merge_refinements(env, &body_env, &Ty::Unit, &body_result);
                 // Normal loop exit satisfies `loop_inv && !cond` (joined with any `break` exits)!
                 let mut post_dbm = loop_inv;
                 if let Condition::Expr(test) = condition {
@@ -635,6 +642,17 @@ impl Checker<'_> {
                 let (for_body_dbm, for_exit_dbm) =
                     self.compute_for_invariant(env, *iterable, *pattern, *body);
                 body_env.refinements.dbm = for_body_dbm;
+                let mut for_ids = Vec::new();
+                self.collect_pattern_defs(&body_env, *pattern, &mut for_ids);
+                for id in for_ids {
+                    if let Some(bound_ty) = self.bindings.get(&id).cloned() {
+                        self.seed_type_invariants(
+                            &mut body_env,
+                            &super::dbm::Place::local(id),
+                            &bound_ty,
+                        );
+                    }
+                }
                 let body_ty = self.expr(&mut body_env, *body, Some(&Ty::Unit));
                 let body_span = self.ast(env.file).expr(*body).span;
                 self.require(&body_env, body_span, &body_ty, &Ty::Unit);
@@ -663,7 +681,15 @@ impl Checker<'_> {
                 if check_tail {
                     tail_checked_inside = true;
                 }
-                self.check_match(env, *is_meta, arms, (*value, &input), expected, span, check_tail)
+                self.check_match(
+                    env,
+                    *is_meta,
+                    arms,
+                    (*value, &input),
+                    expected,
+                    span,
+                    check_tail,
+                )
             }
             Expr::Closure {
                 params,
@@ -916,7 +942,7 @@ impl Checker<'_> {
         let b = self.expr(env, right, right_expected);
         env.staging_gates.truncate(gate_depth);
         if let Some(saved) = saved_refinements {
-            env.refinements = saved;
+            env.refinements = self.merge_refinement_states(&saved, &env.refinements);
         }
         let b = self.normalize(&b);
         if !assignment
@@ -1087,7 +1113,7 @@ impl Checker<'_> {
             }
         }
         if assignment {
-            self.assign_place(env, &name, left, right, ast.expr(left).span);
+            self.assign_place(env, name, left, right, ast.expr(left).span);
             Ty::Unit
         } else if comparison {
             Ty::Bool
@@ -1203,25 +1229,87 @@ impl Checker<'_> {
             Expr::Block { statements, .. } => {
                 statements
                     .iter()
-                    .any(|&stmt| match &ast.stmt(stmt).value.kind {
-                        StmtKind::Expr(id) => self.has_break(env, *id),
-                        StmtKind::Binding {
-                            value, fallback, ..
-                        } => {
-                            value.is_some_and(|v| self.has_break(env, v))
-                                || fallback.is_some_and(|f| self.has_break(env, f))
-                        }
-                        _ => false,
+                    .any(|&stmt| self.stmt_has_break(env, stmt))
+            }
+            Expr::With {
+                handlers,
+                statements,
+                ..
+            } => {
+                handlers.iter().any(|h| self.has_break(env, h.value))
+                    || statements
+                        .iter()
+                        .any(|&stmt| self.stmt_has_break(env, stmt))
+            }
+            Expr::If {
+                condition, yes, no, ..
+            } => {
+                let cond_break = match condition {
+                    Condition::Expr(e) | Condition::Binding { value: e, .. } => {
+                        self.has_break(env, *e)
+                    }
+                };
+                cond_break
+                    || self.has_break(env, *yes)
+                    || no.is_some_and(|no| self.has_break(env, no))
+            }
+            Expr::Match { value, arms, .. } => {
+                self.has_break(env, *value)
+                    || arms.iter().any(|arm| {
+                        arm.guard.is_some_and(|g| self.has_break(env, g))
+                            || self.has_break(env, arm.body)
                     })
             }
-            Expr::If { yes, no, .. } => {
-                self.has_break(env, *yes) || no.is_some_and(|no| self.has_break(env, no))
-            }
-            Expr::Match { arms, .. } => arms.iter().any(|arm| self.has_break(env, arm.body)),
             Expr::Binary { left, right, .. } => {
                 self.has_break(env, *left) || self.has_break(env, *right)
             }
-            Expr::Unary { value, .. } => self.has_break(env, *value),
+            Expr::Unary { value, .. }
+            | Expr::Cast { value, .. }
+            | Expr::Member { base: value, .. }
+            | Expr::Transfer {
+                value: Some(value), ..
+            } => self.has_break(env, *value),
+            Expr::Index { base, index, .. } => {
+                self.has_break(env, *base) || self.has_break(env, *index)
+            }
+            Expr::Call { callee, args } => {
+                self.has_break(env, *callee) || args.iter().any(|a| self.has_break(env, a.value))
+            }
+            Expr::Pipeline { value, target, .. } => {
+                self.has_break(env, *value) || self.has_break(env, *target)
+            }
+            Expr::Array(items) | Expr::Tuple(items) => {
+                items.iter().any(|&item| self.has_break(env, item))
+            }
+            Expr::Record { fields, .. } => fields
+                .iter()
+                .any(|f| f.value.is_some_and(|v| self.has_break(env, v))),
+            Expr::Map(entries) => entries
+                .iter()
+                .any(|&(k, v)| self.has_break(env, k) || self.has_break(env, v)),
+            Expr::Wrap { args, .. } => args.iter().any(|a| self.has_break(env, a.value)),
+            Expr::Range { start, end, .. } => {
+                start.is_some_and(|s| self.has_break(env, s))
+                    || end.is_some_and(|e| self.has_break(env, e))
+            }
+            Expr::Interpolated(parts) => parts.iter().any(|part| {
+                matches!(part, syntax::StringPart::Interpolation(e) if self.has_break(env, *e))
+            }),
+            _ => false,
+        }
+    }
+
+    fn stmt_has_break(&self, env: &Env, stmt: syntax::StmtId) -> bool {
+        let ast = self.ast(env.file);
+        match &ast.stmt(stmt).value.kind {
+            StmtKind::Expr(id) | StmtKind::Defer(id) => self.has_break(env, *id),
+            StmtKind::Binding {
+                value, fallback, ..
+            } => {
+                value.is_some_and(|v| self.has_break(env, v))
+                    || fallback.is_some_and(|f| self.has_break(env, f))
+            }
+            StmtKind::With(h) => self.has_break(env, h.value),
             _ => false,
         }
     }

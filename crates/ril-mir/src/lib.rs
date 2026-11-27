@@ -80,12 +80,7 @@ impl MirTy {
     pub const fn is_gc_managed(self) -> bool {
         !matches!(
             self,
-            Self::Unit
-                | Self::Bool
-                | Self::SmallInt
-                | Self::Never
-                | Self::RawFnPtr
-                | Self::RawU64
+            Self::Unit | Self::Bool | Self::SmallInt | Self::Never | Self::RawFnPtr | Self::RawU64
         )
     }
 }

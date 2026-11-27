@@ -7,8 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use ril_hir::{DefinitionId, DefinitionKind, Intrinsic, Program, Resolution};
 use ril_source::span::{FileId, Span};
 use ril_syntax::syntax::{
-    Ast, Condition, Expr, ExprId, Handler, LiteralKind, Mode, Pattern, StmtId, StmtKind,
-    StringPart,
+    Ast, Condition, Expr, ExprId, Handler, LiteralKind, Mode, Pattern, StmtId, StmtKind, StringPart,
 };
 use serde::{Deserialize, Serialize};
 
@@ -1451,7 +1450,7 @@ impl<'a> Collector<'a> {
                         }
                         return;
                     }
-                    Intrinsic::UnwindCtl => {
+                    Intrinsic::UnwindCtl | Intrinsic::Unreachable => {
                         return;
                     }
                     Intrinsic::Clone

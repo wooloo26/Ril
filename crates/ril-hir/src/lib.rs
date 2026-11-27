@@ -58,7 +58,9 @@ pub enum Intrinsic {
     SumTags,
     CompileError,
     CompileErrorCode,
+    HasKey,
     Panic,
+    Unreachable,
     Print,
     FileRead,
     FileWrite,
@@ -98,6 +100,8 @@ impl Intrinsic {
         matches!(
             self,
             Panic
+                | Unreachable
+                | HasKey
                 | CompileError
                 | CompileErrorCode
                 | PanicMessage
@@ -771,7 +775,10 @@ impl Program {
                 if let Some(stmt) = def.stmt
                     && let StmtKind::Type(decl) =
                         &self.file(def.name.span.file).ast.stmt(stmt).value.kind
-                    && matches!(decl.definition, ril_syntax::syntax::TypeDefinition::Function(_, _))
+                    && matches!(
+                        decl.definition,
+                        ril_syntax::syntax::TypeDefinition::Function(_, _)
+                    )
                 {
                     GuardKind::StaticProof(id)
                 } else {

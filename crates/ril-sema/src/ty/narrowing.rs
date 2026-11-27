@@ -11,7 +11,7 @@ use ril_syntax::syntax::{
 use super::{
     NarrowDrop, NarrowDropCause, Ty, Value,
     check::{Checker, Env},
-    dbm::{Atom, Dbm, Place, ProofPred},
+    dbm::{Atom, Dbm, KeyConst, Place, ProofPred},
     proofs::{CallReturnProof, LinExpr, ReturnAtom},
 };
 
@@ -172,7 +172,7 @@ impl Checker<'_> {
         let node = ast.expr(test);
         match &node.value {
             Expr::Unary { op, value } if op.value == "!" => {
-                self.relate_option(env, *value, !truth)
+                self.relate_option(env, *value, !truth);
             }
             Expr::Binary { op, left, right }
                 if op.value == "&&" && truth || op.value == "||" && !truth =>
@@ -198,6 +198,14 @@ impl Checker<'_> {
                     let non_none =
                         matches!((op.value.as_str(), truth), ("==", false) | ("!=", true));
                     if non_none {
+                        if env
+                            .refinements
+                            .options
+                            .get(&place)
+                            .is_some_and(|f| f.invalidated.is_none() && f.is_none)
+                        {
+                            env.refinements.dbm.unsat = true;
+                        }
                         let depth = env
                             .refinements
                             .options
@@ -213,6 +221,14 @@ impl Checker<'_> {
                             },
                         );
                     } else {
+                        if env
+                            .refinements
+                            .options
+                            .get(&place)
+                            .is_some_and(|f| f.invalidated.is_none() && f.depth > 0)
+                        {
+                            env.refinements.dbm.unsat = true;
+                        }
                         let depth = env
                             .refinements
                             .options
@@ -278,16 +294,204 @@ impl Checker<'_> {
         None
     }
 
-    fn is_int_expr(&self, env: &Env, expr: ExprId) -> bool {
-        let span = self.ast(env.file).expr(expr).span;
-        match self.types.get(&span) {
-            Some(ty) => matches!(ty, Ty::Int | Ty::Unknown | Ty::Infer(_)),
-            // During pure loop abstract interpretation before body typecheck, check AST conservatively.
-            None => !matches!(
-                &self.ast(env.file).expr(expr).value,
-                Expr::Literal(lit) if !matches!(super::literal(lit), Ok(Value::Int(_)))
-            ),
+    pub(super) fn is_int_expr(&self, env: &Env, expr: ExprId) -> bool {
+        let ast = self.ast(env.file);
+        let span = ast.expr(expr).span;
+        if let Some(ty) = self.types.get(&span) {
+            return matches!(self.normalize(ty), Ty::Int);
         }
+        // During pre-typecheck loop abstract interpretation, structurally verify integer type
+        // (never treat `f64`, `str`, or unresolved expressions as `int`).
+        match &ast.expr(expr).value {
+            Expr::Literal(lit) => matches!(super::literal(lit), Ok(Value::Int(_))),
+            Expr::Path(path) => self
+                .resolve(path.span)
+                .and_then(|id| self.bindings.get(&id))
+                .is_some_and(|ty| matches!(self.normalize(ty), Ty::Int)),
+            Expr::Call { callee, .. } => {
+                if let Expr::Path(path) = &ast.expr(*callee).value
+                    && let Some(id) = self.resolve(path.span)
+                {
+                    if self.hir.intrinsic(id) == Some(Intrinsic::Len) {
+                        return true;
+                    }
+                    return self
+                        .callables
+                        .get(&id)
+                        .is_some_and(|sig| matches!(self.normalize(&sig.result), Ty::Int));
+                }
+                false
+            }
+            Expr::Unary { op, value } if op.value == "-" => self.is_int_expr(env, *value),
+            Expr::Binary { op, left, right }
+                if matches!(op.value.as_str(), "+" | "-" | "*" | "/" | "%") =>
+            {
+                self.is_int_expr(env, *left) && self.is_int_expr(env, *right)
+            }
+            _ => false,
+        }
+    }
+
+    pub(super) fn key_expr_to_atom(&self, env: &Env, dbm: &mut Dbm, expr: ExprId) -> Option<Atom> {
+        let ast = self.ast(env.file);
+        if let Some(p) = self.resolve_place(env, expr) {
+            return Some(Atom::Val(p));
+        }
+        let span = ast.expr(expr).span;
+        if let Some(val) = self.static_values.get(&span) {
+            match val {
+                Value::Int(n) => return n.to_i128().map(|c| Atom::KeyConst(KeyConst::Int(c))),
+                Value::Str(s) => return Some(Atom::KeyConst(KeyConst::Str(s.clone()))),
+                Value::Bool(b) => return Some(Atom::KeyConst(KeyConst::Bool(*b))),
+                Value::Bytes(b) => return Some(Atom::KeyConst(KeyConst::Bytes(b.clone()))),
+                Value::Unit => return Some(Atom::KeyConst(KeyConst::Unit)),
+                _ => {}
+            }
+        }
+        match &ast.expr(expr).value {
+            Expr::Unit => return Some(Atom::KeyConst(KeyConst::Unit)),
+            Expr::Literal(lit) => match super::literal(lit).ok()? {
+                Value::Int(n) => return n.to_i128().map(|c| Atom::KeyConst(KeyConst::Int(c))),
+                Value::Str(s) => return Some(Atom::KeyConst(KeyConst::Str(s))),
+                Value::Bool(b) => return Some(Atom::KeyConst(KeyConst::Bool(b))),
+                Value::Bytes(b) => return Some(Atom::KeyConst(KeyConst::Bytes(b))),
+                _ => return None,
+            },
+            Expr::Unary { op, value } if op.value == "-" => {
+                if let Some(Atom::KeyConst(KeyConst::Int(c))) =
+                    self.key_expr_to_atom(env, dbm, *value)
+                {
+                    return c.checked_neg().map(|nc| Atom::KeyConst(KeyConst::Int(nc)));
+                }
+            }
+            _ => {}
+        }
+        if self.is_int_expr(env, expr) {
+            if let Some(c) = self.const_int_in_dbm(env, dbm, expr) {
+                return Some(Atom::KeyConst(KeyConst::Int(c)));
+            }
+            return Some(self.expr_to_atom(env, dbm, expr));
+        }
+        None
+    }
+
+    pub(super) fn ty_contains_f64(&self, env: &Env, ty: &Ty) -> bool {
+        let mut seen = HashSet::new();
+        self.ty_contains_f64_rec(env, ty, &mut seen)
+    }
+
+    fn ty_contains_f64_rec(&self, env: &Env, ty: &Ty, seen: &mut HashSet<DefinitionId>) -> bool {
+        match self.normalize(ty) {
+            Ty::F64 => true,
+            Ty::Param(id) => env
+                .domains
+                .get(&id)
+                .is_none_or(|dom| dom.iter().any(|t| self.ty_contains_f64_rec(env, t, seen))),
+            Ty::Tuple(items) => items
+                .iter()
+                .any(|m| self.ty_contains_f64_rec(env, &m.ty, seen)),
+            Ty::Record(fields, _) => fields
+                .values()
+                .any(|m| self.ty_contains_f64_rec(env, &m.ty, seen)),
+            Ty::Array(item) => self.ty_contains_f64_rec(env, &item.ty, seen),
+            Ty::Map(k, v) => {
+                self.ty_contains_f64_rec(env, &k, seen)
+                    || self.ty_contains_f64_rec(env, &v.ty, seen)
+            }
+            Ty::Draft(inner) => self.ty_contains_f64_rec(env, &inner, seen),
+            Ty::Adt(adt) if seen.insert(adt.definition) => {
+                let res = adt.arguments.iter().any(|arg| match arg {
+                    super::GenericValue::Type(t) => self.ty_contains_f64_rec(env, t, seen),
+                    _ => false,
+                }) || self
+                    .nominal_layouts
+                    .get(&adt.definition)
+                    .is_some_and(|rep| self.ty_contains_f64_rec(env, rep, seen));
+                seen.remove(&adt.definition);
+                res
+            }
+            _ => false,
+        }
+    }
+
+    fn container_key_contains_f64(&self, env: &Env, container_expr: ExprId) -> bool {
+        let span = self.ast(env.file).expr(container_expr).span;
+        let ty = self.types.get(&span).cloned().or_else(|| {
+            self.resolve_local(env, container_expr)
+                .and_then(|id| self.bindings.get(&id).cloned())
+        });
+        let Some(ty) = ty else {
+            return true;
+        };
+        let mut norm = self.normalize(&ty);
+        if let Ty::Draft(inner) = norm {
+            norm = self.normalize(&inner);
+        }
+        if let Some(elem) = norm.as_set(self.hir) {
+            return self.ty_contains_f64(env, elem);
+        }
+        match norm {
+            Ty::Map(k, _) => self.ty_contains_f64(env, &k),
+            _ => true,
+        }
+    }
+
+    fn is_map_indexed_write(&self, env: &Env, expr: ExprId) -> Option<(ExprId, ExprId)> {
+        let ast = self.ast(env.file);
+        let Expr::Index {
+            base,
+            index,
+            safe: false,
+        } = &ast.expr(expr).value
+        else {
+            return None;
+        };
+        let base_span = ast.expr(*base).span;
+        let base_ty = self.types.get(&base_span).cloned().or_else(|| {
+            self.resolve_local(env, *base)
+                .and_then(|id| self.bindings.get(&id).cloned())
+        })?;
+        let mut norm = self.normalize(&base_ty);
+        if let Ty::Draft(inner) = norm {
+            norm = self.normalize(&inner);
+        }
+        matches!(norm, Ty::Map(..)).then_some((*base, *index))
+    }
+
+    fn is_map_safe_index(&self, env: &Env, expr: ExprId) -> Option<(ExprId, ExprId)> {
+        let ast = self.ast(env.file);
+        let Expr::Index {
+            base,
+            index,
+            safe: true,
+        } = &ast.expr(expr).value
+        else {
+            return None;
+        };
+        let base_span = ast.expr(*base).span;
+        let base_ty = self.types.get(&base_span).cloned().or_else(|| {
+            self.resolve_local(env, *base)
+                .and_then(|id| self.bindings.get(&id).cloned())
+        })?;
+        let mut norm = self.normalize(&base_ty);
+        if let Ty::Draft(inner) = norm {
+            norm = self.normalize(&inner);
+        }
+        matches!(norm, Ty::Map(..)).then_some((*base, *index))
+    }
+
+    pub(super) fn is_set_stdlib_callee(&self, id: DefinitionId, name: &str) -> bool {
+        let def = self.hir.definition(id);
+        self.hir.is_stdlib_file(def.name.span.file)
+            && self.hir.primitive_module(id) == Some("Set")
+            && def.name.value == name
+    }
+
+    pub(super) fn is_map_clear_callee(&self, id: DefinitionId) -> bool {
+        let def = self.hir.definition(id);
+        self.hir.is_stdlib_file(def.name.span.file)
+            && self.hir.primitive_module(id) == Some("Map")
+            && def.name.value == "clear"
     }
 
     fn lower_expr_to_lin(&self, env: &Env, dbm: &Dbm, expr: ExprId) -> Option<LinExpr<Atom>> {
@@ -337,7 +541,25 @@ impl Checker<'_> {
                 let l = self.lower_expr_to_lin(env, dbm, *left)?;
                 let r = self.lower_expr_to_lin(env, dbm, *right)?;
                 if op.value == "+" {
-                    l.add(r)
+                    if let Some(sum) = l.clone().add(r.clone()) {
+                        return Some(sum);
+                    }
+                    if let (
+                        LinExpr::Pos {
+                            atom: a,
+                            offset: oa,
+                        },
+                        LinExpr::Pos {
+                            atom: b,
+                            offset: ob,
+                        },
+                    ) = (l, r)
+                        && let Some((hi, bonus)) = dbm.find_diff_eq_sum(&a, &b)
+                        && let Some(offset) = oa.checked_add(ob).and_then(|s| s.checked_add(bonus))
+                    {
+                        return Some(LinExpr::Pos { atom: hi, offset });
+                    }
+                    None
                 } else {
                     l.sub(r)
                 }
@@ -355,6 +577,23 @@ impl Checker<'_> {
     fn relate_proofs_in_dbm(&self, env: &Env, dbm: &mut Dbm, test: ExprId, truth: bool) {
         let ast = self.ast(env.file);
         match &ast.expr(test).value {
+            Expr::Literal(lit) => {
+                if let Ok(Value::Bool(b)) = super::literal(lit)
+                    && b != truth
+                {
+                    dbm.unsat = true;
+                }
+            }
+            Expr::Path(_) | Expr::Member { safe: false, .. } => {
+                let span = ast.expr(test).span;
+                let is_bool = self
+                    .types
+                    .get(&span)
+                    .is_some_and(|t| matches!(self.normalize(t), Ty::Bool));
+                if is_bool && let Some(p) = self.resolve_place(env, test) {
+                    dbm.add_bool(p, truth);
+                }
+            }
             Expr::Unary { op, value } if op.value == "!" => {
                 self.relate_proofs_in_dbm(env, dbm, *value, !truth);
             }
@@ -362,6 +601,34 @@ impl Checker<'_> {
                 if (op.value == "&&" && truth) || (op.value == "||" && !truth) =>
             {
                 self.relate_proofs_in_dbm(env, dbm, *left, truth);
+                // Soundness: if `right` mutates any variable/collection, drop invalidated `left` facts before `right`.
+                let mut mutated_vars = HashSet::new();
+                let mut resized_colls = HashSet::new();
+                let mut has_open = false;
+                self.collect_loop_mutations(
+                    env,
+                    *right,
+                    &mut mutated_vars,
+                    &mut resized_colls,
+                    &mut has_open,
+                );
+                for var in mutated_vars {
+                    dbm.forget_matching(|a| matches!(a, Atom::Val(p) if p.root == var));
+                }
+                for coll in resized_colls {
+                    dbm.forget_matching(
+                        |a| matches!(a, Atom::Len(p) | Atom::Val(p) if p.root == coll),
+                    );
+                }
+                if has_open {
+                    dbm.forget_matching(|a| match a {
+                        Atom::Val(p) | Atom::Len(p) => {
+                            self.live.contains(&p.root)
+                                && !(p.path.is_empty() && self.confined_locals.contains(&p.root))
+                        }
+                        _ => false,
+                    });
+                }
                 self.relate_proofs_in_dbm(env, dbm, *right, truth);
             }
             Expr::Binary { op, left, right }
@@ -373,9 +640,71 @@ impl Checker<'_> {
                 self.relate_proofs_in_dbm(env, &mut right_dbm, *right, truth);
                 *dbm = Dbm::join(&left_dbm, &right_dbm);
             }
+            Expr::Call { callee, args } => {
+                if let Expr::Path(path) = &ast.expr(*callee).value
+                    && let Some(id) = self.resolve(path.span)
+                    && (matches!(
+                        self.hir.intrinsic(id),
+                        Some(Intrinsic::HasKey | Intrinsic::MapContains)
+                    ) || self.is_set_stdlib_callee(id, "contains"))
+                    && let [c_arg, k_arg] = args.as_slice()
+                    && let Some(c_place) = self.resolve_place(env, c_arg.value)
+                    && let Some(k_atom) = self.key_expr_to_atom(env, dbm, k_arg.value)
+                {
+                    if truth {
+                        dbm.add_contains(Atom::Val(c_place), k_atom);
+                    } else {
+                        dbm.add_not_contains(Atom::Val(c_place), k_atom);
+                    }
+                }
+            }
             Expr::Binary { op, left, right }
                 if matches!(op.value.as_str(), "==" | "!=" | "<" | "<=" | ">" | ">=") =>
             {
+                // Handle `m?[k] != None` / `m?[k] == None` membership tests.
+                if matches!(op.value.as_str(), "==" | "!=") {
+                    let compared = if self.is_none(env, *left) {
+                        Some(*right)
+                    } else if self.is_none(env, *right) {
+                        Some(*left)
+                    } else {
+                        None
+                    };
+                    if let Some(cmp_expr) = compared
+                        && let Some((base, index)) = self.is_map_safe_index(env, cmp_expr)
+                        && let Some(c_place) = self.resolve_place(env, base)
+                        && let Some(k_atom) = self.key_expr_to_atom(env, dbm, index)
+                    {
+                        let non_none =
+                            matches!((op.value.as_str(), truth), ("==", false) | ("!=", true));
+                        if non_none {
+                            dbm.add_contains(Atom::Val(c_place), k_atom);
+                        } else {
+                            dbm.add_not_contains(Atom::Val(c_place), k_atom);
+                        }
+                        return;
+                    }
+                    // Handle `cond == true` / `cond == false` / `cond != true` / `cond != false`.
+                    let bool_lit = |e: ExprId| -> Option<bool> {
+                        if let Expr::Literal(lit) = &ast.expr(e).value
+                            && let Ok(Value::Bool(b)) = super::literal(lit)
+                        {
+                            Some(b)
+                        } else {
+                            None
+                        }
+                    };
+                    if let Some(b) = bool_lit(*right) {
+                        let eff = (op.value == "==") == truth;
+                        self.relate_proofs_in_dbm(env, dbm, *left, if eff { b } else { !b });
+                        return;
+                    }
+                    if let Some(b) = bool_lit(*left) {
+                        let eff = (op.value == "==") == truth;
+                        self.relate_proofs_in_dbm(env, dbm, *right, if eff { b } else { !b });
+                        return;
+                    }
+                }
                 if !self.is_int_expr(env, *left) || !self.is_int_expr(env, *right) {
                     return;
                 }
@@ -589,6 +918,9 @@ impl Checker<'_> {
                         for (rhs_atom, k) in dbm.sum_upper_bounds(&a, &b) {
                             dbm.add_le(target.clone(), rhs_atom, k);
                         }
+                        if let Some((hi_atom, bonus)) = dbm.find_diff_eq_sum(&a, &b) {
+                            dbm.add_eq(target.clone(), hi_atom, bonus);
+                        }
                     }
                 }
                 "-" => {
@@ -623,6 +955,7 @@ impl Checker<'_> {
                             // target >= a - ub(b)  <=>  a - target <= ub(b)
                             dbm.add_le(a.clone(), target.clone(), ub_b);
                         }
+                        dbm.add_diff_eq(target.clone(), a, b, 0);
                     }
                 }
                 "*" => {
@@ -931,38 +1264,7 @@ impl Checker<'_> {
                     inclusive,
                 } = ast.expr(*index).value
                 {
-                    let base_len = dbm.fresh_temp();
-                    self.constrain_len_expr(env, dbm, &base_len, *base);
-                    let lo_atom = match start {
-                        Some(lo) => self.expr_to_atom(env, dbm, lo),
-                        None => Atom::Zero,
-                    };
-                    let hi_atom = match end {
-                        Some(hi) => self.expr_to_atom(env, dbm, hi),
-                        None => base_len.clone(),
-                    };
-                    let bonus: i128 = i128::from(inclusive);
-                    if let (Some(c_lo), Some(c_hi)) = (dbm.exact(&lo_atom), dbm.exact(&hi_atom))
-                        && let Some(len) = c_hi.checked_sub(c_lo).and_then(|d| d.checked_add(bonus))
-                        && len >= 0
-                    {
-                        dbm.add_eq(target.clone(), Atom::Zero, len);
-                    } else if lo_atom == Atom::Zero && !inclusive {
-                        dbm.add_eq(target.clone(), hi_atom.clone(), 0);
-                    } else if let Some(c_lo) = dbm.exact(&lo_atom)
-                        && let Some(offset) = bonus.checked_sub(c_lo)
-                    {
-                        dbm.add_eq(target.clone(), hi_atom.clone(), offset);
-                    } else if let Some(d_ub) = dbm.diff_ub(&hi_atom, &lo_atom)
-                        && let Some(u) = d_ub.checked_add(bonus)
-                    {
-                        dbm.add_le(target.clone(), Atom::Zero, u);
-                    }
-                    if let Some(d_lb) = dbm.diff_ub(&lo_atom, &hi_atom)
-                        && let Some(l) = d_lb.checked_sub(bonus)
-                    {
-                        dbm.add_le(Atom::Zero, target.clone(), l);
-                    }
+                    self.constrain_slice_len(env, dbm, target, *base, start, end, inclusive, false);
                 }
             }
             Expr::Block { statements, .. } => {
@@ -974,6 +1276,112 @@ impl Checker<'_> {
             }
             _ => {}
         }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn constrain_slice_len(
+        &self,
+        env: &Env,
+        dbm: &mut Dbm,
+        target: &Atom,
+        base: ExprId,
+        start: Option<ExprId>,
+        end: Option<ExprId>,
+        inclusive: bool,
+        assume_valid: bool,
+    ) {
+        if dbm.unsat {
+            return;
+        }
+        let base_len = if let Some(p) = self.resolve_place(env, base) {
+            let a = Atom::Len(p);
+            dbm.ensure_atom(a.clone());
+            a
+        } else if let Some(n) = self.literal_collection_len(env, base) {
+            let t = dbm.fresh_temp();
+            dbm.add_eq(t.clone(), Atom::Zero, n as i128);
+            t
+        } else {
+            let t = dbm.fresh_temp();
+            self.constrain_len_expr(env, dbm, &t, base);
+            t
+        };
+        let lo_atom = match start {
+            Some(lo) => self.expr_to_atom(env, dbm, lo),
+            None => Atom::Zero,
+        };
+        let hi_atom = match end {
+            Some(hi) => self.expr_to_atom(env, dbm, hi),
+            None => base_len.clone(),
+        };
+        let bonus: i128 = i128::from(inclusive);
+        // Soundness guard: only assert slice length equality when bounds are valid in `dbm`
+        // (or already validated at runtime by `Some(sub)` unwrap of `xs?[a..b]`).
+        // This prevents an ill-typed/out-of-bounds slice from poisoning `dbm.unsat`!
+        let valid = if assume_valid {
+            dbm.add_le(Atom::Zero, lo_atom.clone(), 0);
+            dbm.add_le(lo_atom.clone(), hi_atom.clone(), 0);
+            dbm.add_le(
+                hi_atom.clone(),
+                base_len.clone(),
+                if inclusive { -1 } else { 0 },
+            );
+            !dbm.unsat
+        } else {
+            dbm.is_nonneg(&lo_atom)
+                && dbm.entails_le(&lo_atom, &hi_atom, 0)
+                && dbm.entails_le(&hi_atom, &base_len, if inclusive { -1 } else { 0 })
+        };
+        if !valid {
+            return;
+        }
+        dbm.add_le(target.clone(), base_len.clone(), 0);
+        if let (Some(c_lo), Some(c_hi)) = (dbm.exact(&lo_atom), dbm.exact(&hi_atom))
+            && let Some(len) = c_hi.checked_sub(c_lo).and_then(|d| d.checked_add(bonus))
+            && len >= 0
+        {
+            dbm.add_eq(target.clone(), Atom::Zero, len);
+        } else if lo_atom == Atom::Zero && !inclusive {
+            dbm.add_eq(target.clone(), hi_atom.clone(), 0);
+        } else if let Some(c_lo) = dbm.exact(&lo_atom)
+            && let Some(offset) = bonus.checked_sub(c_lo)
+        {
+            dbm.add_eq(target.clone(), hi_atom.clone(), offset);
+        } else {
+            dbm.add_diff_eq(target.clone(), hi_atom.clone(), lo_atom.clone(), bonus);
+            if let Some(d_ub) = dbm.diff_ub(&hi_atom, &lo_atom)
+                && let Some(u) = d_ub.checked_add(bonus)
+            {
+                dbm.add_le(target.clone(), Atom::Zero, u);
+            }
+            if let Some(d_lb) = dbm.diff_ub(&lo_atom, &hi_atom)
+                && let Some(l) = d_lb.checked_sub(bonus)
+            {
+                dbm.add_le(Atom::Zero, target.clone(), l);
+            }
+        }
+    }
+
+    pub(super) fn is_proved_map_index(
+        &self,
+        env: &Env,
+        base_expr: Option<ExprId>,
+        key_expr: ExprId,
+    ) -> bool {
+        if env.refinements.dbm.unsat {
+            return true;
+        }
+        let Some(base_expr) = base_expr else {
+            return false;
+        };
+        let Some(base_place) = self.resolve_place(env, base_expr) else {
+            return false;
+        };
+        let mut scratch = env.refinements.dbm.clone();
+        let Some(key_atom) = self.key_expr_to_atom(env, &mut scratch, key_expr) else {
+            return false;
+        };
+        scratch.entails_contains(&Atom::Val(base_place), &key_atom)
     }
 
     // -------------------------------------------------------------------------
@@ -1100,7 +1508,12 @@ impl Checker<'_> {
         self.seed_pattern_proofs(env, pattern, expr);
     }
 
-    pub(super) fn seed_pattern_proofs(&self, env: &mut Env, pattern: PatternId, value_expr: ExprId) {
+    pub(super) fn seed_pattern_proofs(
+        &self,
+        env: &mut Env,
+        pattern: PatternId,
+        value_expr: ExprId,
+    ) {
         let ast = self.ast(env.file);
         match &ast.pattern(pattern).value {
             Pattern::Binding(_, name) => {
@@ -1153,11 +1566,18 @@ impl Checker<'_> {
                 env.refinements.dbm.forget_temps();
             }
             Pattern::Literal(lit) => {
-                if let Ok(Value::Int(n)) = super::literal(lit)
-                    && let Some(c) = n.to_i128()
-                    && let Some(p) = self.resolve_place(env, value_expr)
-                {
-                    env.refinements.dbm.add_eq(Atom::Val(p), Atom::Zero, c);
+                if let Some(p) = self.resolve_place(env, value_expr) {
+                    match super::literal(lit) {
+                        Ok(Value::Int(n)) => {
+                            if let Some(c) = n.to_i128() {
+                                env.refinements.dbm.add_eq(Atom::Val(p), Atom::Zero, c);
+                            }
+                        }
+                        Ok(Value::Bool(b)) => {
+                            env.refinements.dbm.add_bool(p, b);
+                        }
+                        _ => {}
+                    }
                 }
             }
             Pattern::Range {
@@ -1181,15 +1601,80 @@ impl Checker<'_> {
                     }
                 }
             }
-            Pattern::Constructor(path, Some(items)) => {
+            Pattern::Constructor(path, items_opt) => {
                 let tag_name = path.segments.last().map(|s| s.name.value.as_str());
-                if matches!(tag_name, Some("Some" | "Ok"))
+                if tag_name == Some("None") {
+                    if let Some((base, index)) = self.is_map_safe_index(env, value_expr)
+                        && let Some(c_place) = self.resolve_place(env, base)
+                    {
+                        let mut dbm = std::mem::take(&mut env.refinements.dbm);
+                        if let Some(k_atom) = self.key_expr_to_atom(env, &mut dbm, index) {
+                            dbm.add_not_contains(Atom::Val(c_place), k_atom);
+                        }
+                        env.refinements.dbm = dbm;
+                    } else if let Some(opt_place) = self.place(env, value_expr)
+                        && env
+                            .refinements
+                            .options
+                            .get(&opt_place)
+                            .is_some_and(|f| f.invalidated.is_none() && f.depth > 0)
+                    {
+                        env.refinements.dbm.unsat = true;
+                    }
+                } else if tag_name == Some("Some") {
+                    if let Some((base, index)) = self.is_map_safe_index(env, value_expr)
+                        && let Some(c_place) = self.resolve_place(env, base)
+                    {
+                        let mut dbm = std::mem::take(&mut env.refinements.dbm);
+                        if let Some(k_atom) = self.key_expr_to_atom(env, &mut dbm, index) {
+                            dbm.add_contains(Atom::Val(c_place), k_atom);
+                        }
+                        env.refinements.dbm = dbm;
+                    } else if let Some(opt_place) = self.place(env, value_expr)
+                        && env
+                            .refinements
+                            .options
+                            .get(&opt_place)
+                            .is_some_and(|f| f.invalidated.is_none() && f.is_none)
+                    {
+                        env.refinements.dbm.unsat = true;
+                    }
+                }
+                if let Some(items) = items_opt
+                    && matches!(tag_name, Some("Some" | "Ok"))
                     && let [inner_pat] = items.as_slice()
                     && let Pattern::Binding(_, name) = &ast.pattern(*inner_pat).value
                     && let Some(id) = self.resolve(name.span)
                 {
                     let target = Place::local(id);
                     self.apply_call_proof_to_place(env, &target, value_expr, true);
+                    // Safe slice unwrap `Some(sub) = xs?[a..b]`: seed exact slice length!
+                    if tag_name == Some("Some")
+                        && let Expr::Index {
+                            base,
+                            index,
+                            safe: true,
+                        } = &ast.expr(value_expr).value
+                        && let Expr::Range {
+                            start,
+                            end,
+                            inclusive,
+                        } = ast.expr(*index).value
+                    {
+                        let mut dbm = std::mem::take(&mut env.refinements.dbm);
+                        self.constrain_slice_len(
+                            env,
+                            &mut dbm,
+                            &Atom::Len(target.clone()),
+                            *base,
+                            start,
+                            end,
+                            inclusive,
+                            true,
+                        );
+                        dbm.forget_temps();
+                        env.refinements.dbm = dbm;
+                    }
                     if let Expr::Call { callee, args } = &ast.expr(value_expr).value
                         && let Expr::Path(cp) = &ast.expr(*callee).value
                         && cp
@@ -1204,6 +1689,25 @@ impl Checker<'_> {
             }
             Pattern::Wrap(path, items) => {
                 let tag_name = path.segments.last().map(|s| s.name.value.as_str());
+                if tag_name == Some("Some") {
+                    if let Some((base, index)) = self.is_map_safe_index(env, value_expr)
+                        && let Some(c_place) = self.resolve_place(env, base)
+                    {
+                        let mut dbm = std::mem::take(&mut env.refinements.dbm);
+                        if let Some(k_atom) = self.key_expr_to_atom(env, &mut dbm, index) {
+                            dbm.add_contains(Atom::Val(c_place), k_atom);
+                        }
+                        env.refinements.dbm = dbm;
+                    } else if let Some(opt_place) = self.place(env, value_expr)
+                        && env
+                            .refinements
+                            .options
+                            .get(&opt_place)
+                            .is_some_and(|f| f.invalidated.is_none() && f.is_none)
+                    {
+                        env.refinements.dbm.unsat = true;
+                    }
+                }
                 if matches!(tag_name, Some("Some" | "Ok"))
                     && let [inner_pat] = items.as_slice()
                     && let Pattern::Binding(_, name) = &ast.pattern(*inner_pat).value
@@ -1211,6 +1715,32 @@ impl Checker<'_> {
                 {
                     let target = Place::local(id);
                     self.apply_call_proof_to_place(env, &target, value_expr, true);
+                    if tag_name == Some("Some")
+                        && let Expr::Index {
+                            base,
+                            index,
+                            safe: true,
+                        } = &ast.expr(value_expr).value
+                        && let Expr::Range {
+                            start,
+                            end,
+                            inclusive,
+                        } = ast.expr(*index).value
+                    {
+                        let mut dbm = std::mem::take(&mut env.refinements.dbm);
+                        self.constrain_slice_len(
+                            env,
+                            &mut dbm,
+                            &Atom::Len(target.clone()),
+                            *base,
+                            start,
+                            end,
+                            inclusive,
+                            true,
+                        );
+                        dbm.forget_temps();
+                        env.refinements.dbm = dbm;
+                    }
                     // Also handle direct `Some(v)` / `Ok(v)` literal expressions.
                     if let Expr::Call { callee, args } = &ast.expr(value_expr).value
                         && let Expr::Path(cp) = &ast.expr(*callee).value
@@ -1307,15 +1837,105 @@ impl Checker<'_> {
     }
 
     /// Negate an unguarded pattern onto `env` for subsequent `match` arms (or `if let ... else`).
-    pub(super) fn negate_pattern_proofs(&self, env: &mut Env, pattern: PatternId, value_expr: ExprId) {
+    pub(super) fn negate_pattern_proofs(
+        &self,
+        env: &mut Env,
+        pattern: PatternId,
+        value_expr: ExprId,
+    ) {
         let ast = self.ast(env.file);
         match &ast.pattern(pattern).value {
             Pattern::Literal(lit) => {
-                if let Ok(Value::Int(n)) = super::literal(lit)
-                    && let Some(c) = n.to_i128()
-                    && let Some(p) = self.resolve_place(env, value_expr)
-                {
-                    env.refinements.dbm.add_ne(Atom::Val(p), Atom::Zero, c);
+                if let Some(p) = self.resolve_place(env, value_expr) {
+                    match super::literal(lit) {
+                        Ok(Value::Int(n)) => {
+                            if let Some(c) = n.to_i128() {
+                                env.refinements.dbm.add_ne(Atom::Val(p), Atom::Zero, c);
+                            }
+                        }
+                        Ok(Value::Bool(b)) => {
+                            env.refinements.dbm.add_bool(p, !b);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            Pattern::Constructor(path, items_opt) => {
+                let tag_name = path.segments.last().map(|s| s.name.value.as_str());
+                let inner_irrefutable = items_opt.as_ref().is_none_or(|items| {
+                    items.iter().all(|&p| {
+                        matches!(
+                            ast.pattern(p).value,
+                            Pattern::Wildcard | Pattern::Binding(_, _)
+                        )
+                    })
+                });
+                if inner_irrefutable {
+                    if tag_name == Some("None") {
+                        if let Some((base, index)) = self.is_map_safe_index(env, value_expr)
+                            && let Some(c_place) = self.resolve_place(env, base)
+                        {
+                            let mut dbm = std::mem::take(&mut env.refinements.dbm);
+                            if let Some(k_atom) = self.key_expr_to_atom(env, &mut dbm, index) {
+                                dbm.add_contains(Atom::Val(c_place), k_atom);
+                            }
+                            env.refinements.dbm = dbm;
+                        } else if let Some(opt_place) = self.place(env, value_expr)
+                            && env
+                                .refinements
+                                .options
+                                .get(&opt_place)
+                                .is_some_and(|f| f.invalidated.is_none() && f.is_none)
+                        {
+                            env.refinements.dbm.unsat = true;
+                        }
+                    } else if tag_name == Some("Some") {
+                        if let Some((base, index)) = self.is_map_safe_index(env, value_expr)
+                            && let Some(c_place) = self.resolve_place(env, base)
+                        {
+                            let mut dbm = std::mem::take(&mut env.refinements.dbm);
+                            if let Some(k_atom) = self.key_expr_to_atom(env, &mut dbm, index) {
+                                dbm.add_not_contains(Atom::Val(c_place), k_atom);
+                            }
+                            env.refinements.dbm = dbm;
+                        } else if let Some(opt_place) = self.place(env, value_expr)
+                            && env
+                                .refinements
+                                .options
+                                .get(&opt_place)
+                                .is_some_and(|f| f.invalidated.is_none() && f.depth > 0)
+                        {
+                            env.refinements.dbm.unsat = true;
+                        }
+                    }
+                }
+            }
+            Pattern::Wrap(path, items) => {
+                let tag_name = path.segments.last().map(|s| s.name.value.as_str());
+                let inner_irrefutable = items.iter().all(|&p| {
+                    matches!(
+                        ast.pattern(p).value,
+                        Pattern::Wildcard | Pattern::Binding(_, _)
+                    )
+                });
+                if inner_irrefutable && tag_name == Some("Some") {
+                    if let Some((base, index)) = self.is_map_safe_index(env, value_expr)
+                        && let Some(c_place) = self.resolve_place(env, base)
+                    {
+                        let mut dbm = std::mem::take(&mut env.refinements.dbm);
+                        if let Some(k_atom) = self.key_expr_to_atom(env, &mut dbm, index) {
+                            dbm.add_not_contains(Atom::Val(c_place), k_atom);
+                        }
+                        env.refinements.dbm = dbm;
+                    } else if let Some(opt_place) = self.place(env, value_expr)
+                        && env
+                            .refinements
+                            .options
+                            .get(&opt_place)
+                            .is_some_and(|f| f.invalidated.is_none() && f.depth > 0)
+                    {
+                        env.refinements.dbm.unsat = true;
+                    }
                 }
             }
             Pattern::Range {
@@ -1350,13 +1970,30 @@ impl Checker<'_> {
                 }
             }
             Pattern::Slice { elements, .. } => {
+                let fixed = elements
+                    .iter()
+                    .filter(|item| !matches!(ast.pattern(**item).value, Pattern::Rest(_)))
+                    .count();
                 let has_rest = elements
                     .iter()
                     .any(|&item| matches!(ast.pattern(item).value, Pattern::Rest(_)));
-                if !has_rest && elements.is_empty() {
-                    // Negating empty slice `[]` => `len(xs) != 0` => unit-propagates to `len(xs) >= 1`!
-                    if let Some(coll) = self.resolve_place(env, value_expr) {
+                let all_elem_irrefutable = elements.iter().all(|&item| {
+                    matches!(
+                        ast.pattern(item).value,
+                        Pattern::Wildcard | Pattern::Binding(_, _) | Pattern::Rest(_)
+                    )
+                });
+                if all_elem_irrefutable && let Some(coll) = self.resolve_place(env, value_expr) {
+                    if !has_rest && fixed == 0 {
+                        // Negating empty slice `[]` => `len(xs) != 0` => unit-propagates to `len(xs) >= 1`!
                         env.refinements.dbm.add_ne(Atom::Len(coll), Atom::Zero, 0);
+                    } else if has_rest && fixed >= 1 {
+                        // Negating `[a, ..rest]` => `len(xs) <= fixed - 1`!
+                        env.refinements.dbm.add_le(
+                            Atom::Len(coll),
+                            Atom::Zero,
+                            (fixed - 1) as i128,
+                        );
                     }
                 }
             }
@@ -1370,7 +2007,7 @@ impl Checker<'_> {
     }
 
     pub(super) fn seed_place_from_expr(&self, env: &mut Env, target: &Place, expr: ExprId) {
-        // 1. Direct call postcondition proofs (`-> new []Cell |> HasLen(1)`, `-> new Shelf |> HasRows`, etc.).
+        // 1. Direct call postcondition proofs (`-> new []Cell |> Len(1)`, `-> new Shelf |> HasRows`, etc.).
         self.apply_call_proof_to_place(env, target, expr, false);
 
         // 2. If `expr` is `?` propagation on a fallible call (`let x = f()?`), seed payload proof!
@@ -1401,10 +2038,12 @@ impl Checker<'_> {
         // Seed length if `expr` has known collection/str/bytes length.
         let expr_span = ast.expr(expr).span;
         let maybe_len_target = match self.types.get(&expr_span) {
-            Some(ty) => matches!(
-                ty,
-                Ty::Array(_) | Ty::Str | Ty::Bytes | Ty::Map(..) | Ty::Unknown | Ty::Infer(_)
-            ) || ty.as_set(self.hir).is_some(),
+            Some(ty) => {
+                matches!(
+                    ty,
+                    Ty::Array(_) | Ty::Str | Ty::Bytes | Ty::Map(..) | Ty::Unknown | Ty::Infer(_)
+                ) || ty.as_set(self.hir).is_some()
+            }
             None => matches!(
                 &ast.expr(expr).value,
                 Expr::Array(_) | Expr::Literal(_) | Expr::Index { .. } | Expr::Call { .. }
@@ -1412,18 +2051,79 @@ impl Checker<'_> {
         };
         if maybe_len_target {
             let mut dbm = std::mem::take(&mut env.refinements.dbm);
-            let t = dbm.fresh_temp();
-            self.constrain_len_expr(env, &mut dbm, &t, expr);
-            // Only attach `Len(prefix)` if we learned something beyond `>= 0` (exact, lb > 0, or equality to another atom).
-            if dbm.lb(&t).is_some_and(|l| l > 0)
-                || dbm.ub(&t).is_some()
-                || self.resolve_place(env, expr).is_some()
-                || matches!(&ast.expr(expr).value, Expr::Array(_) | Expr::Literal(_))
-                || env.refinements.call_proofs.contains_key(&expr)
-            {
-                dbm.add_eq(Atom::Len(prefix.clone()), t.clone(), 0);
+            let direct_slice = matches!(&ast.expr(expr).value, Expr::Index { safe: false, .. });
+            if direct_slice {
+                // Constrain `Atom::Len(prefix)` directly so 3-variable `diff_eq` survives temp projection!
+                let target_len = Atom::Len(prefix.clone());
+                self.constrain_len_expr(env, &mut dbm, &target_len, expr);
+                dbm.forget_temps();
+            } else {
+                let t = dbm.fresh_temp();
+                self.constrain_len_expr(env, &mut dbm, &t, expr);
+                // Only attach `Len(prefix)` if we learned something beyond `>= 0`.
+                if dbm.lb(&t).is_some_and(|l| l > 0)
+                    || dbm.ub(&t).is_some()
+                    || self.resolve_place(env, expr).is_some()
+                    || matches!(&ast.expr(expr).value, Expr::Array(_) | Expr::Literal(_))
+                    || env.refinements.call_proofs.contains_key(&expr)
+                {
+                    dbm.add_eq(Atom::Len(prefix.clone()), t.clone(), 0);
+                }
+                dbm.project_out(|a| *a == t);
             }
-            dbm.project_out(|a| *a == t);
+            env.refinements.dbm = dbm;
+        }
+        // Copy membership facts across aliasing/cloning (`let m2 = m`, `let m2 = clone(m)`).
+        if let Some(src_place) = self.resolve_place(env, expr) {
+            env.refinements
+                .dbm
+                .copy_container_membership(&Atom::Val(prefix.clone()), &Atom::Val(src_place));
+        } else if let Expr::Call { callee, args } = &ast.expr(expr).value
+            && let Expr::Path(path) = &ast.expr(*callee).value
+            && let Some(id) = self.resolve(path.span)
+            && matches!(
+                self.hir.intrinsic(id),
+                Some(Intrinsic::Clone | Intrinsic::Inner)
+            )
+            && let [arg] = args.as_slice()
+            && let Some(src_place) = self.resolve_place(env, arg.value)
+        {
+            env.refinements
+                .dbm
+                .copy_container_membership(&Atom::Val(prefix.clone()), &Atom::Val(src_place));
+        }
+        // Map literal membership & length seeding (`let m = ["a": 1, "b": 2]`).
+        if let Expr::Map(entries) = &ast.expr(expr).value {
+            let mut dbm = std::mem::take(&mut env.refinements.dbm);
+            let len_atom = Atom::Len(prefix.clone());
+            if entries.is_empty() {
+                dbm.add_eq(len_atom.clone(), Atom::Zero, 0);
+            } else {
+                dbm.add_le(Atom::Zero, len_atom.clone(), -1);
+                dbm.add_le(len_atom.clone(), Atom::Zero, entries.len() as i128);
+            }
+            let allow_seed = !self.container_key_contains_f64(env, expr);
+            let mut distinct_consts = HashSet::new();
+            let mut all_distinct_consts = true;
+            for &(k_expr, _) in entries {
+                if let Some(k_atom) = self.key_expr_to_atom(env, &mut dbm, k_expr) {
+                    if let Atom::KeyConst(ref kc) = k_atom {
+                        if !distinct_consts.insert(kc.clone()) {
+                            all_distinct_consts = false;
+                        }
+                    } else {
+                        all_distinct_consts = false;
+                    }
+                    if allow_seed {
+                        dbm.add_contains(Atom::Val(prefix.clone()), k_atom);
+                    }
+                } else {
+                    all_distinct_consts = false;
+                }
+            }
+            if all_distinct_consts && !entries.is_empty() {
+                dbm.add_eq(len_atom, Atom::Zero, distinct_consts.len() as i128);
+            }
             env.refinements.dbm = dbm;
         }
         match &ast.expr(expr).value {
@@ -1451,10 +2151,12 @@ impl Checker<'_> {
                     }
                 }
             }
-            Expr::Wrap { args, .. } if args.len() == 1 => {
-                let mut sub = prefix.clone();
-                sub.path.push("#inner".to_owned());
-                self.seed_place_from_expr(env, &sub, args[0].value);
+            Expr::Wrap { args, .. } => {
+                if let [only] = args.as_slice() {
+                    let mut sub = prefix.clone();
+                    sub.path.push("#inner".to_owned());
+                    self.seed_place_from_expr(env, &sub, only.value);
+                }
             }
             _ => {}
         }
@@ -1503,10 +2205,14 @@ impl Checker<'_> {
                 continue;
             };
             let inner_expr = match &guard_ast.expr(body_id).value {
-                Expr::Block { statements, .. } if statements.len() == 1 => {
-                    match &guard_ast.stmt(statements[0]).value.kind {
-                        StmtKind::Expr(e) => *e,
-                        _ => continue,
+                Expr::Block { statements, .. } => {
+                    if let [only] = statements.as_slice() {
+                        match &guard_ast.stmt(*only).value.kind {
+                            StmtKind::Expr(e) => *e,
+                            _ => continue,
+                        }
+                    } else {
+                        body_id
                     }
                 }
                 _ => body_id,
@@ -1522,10 +2228,14 @@ impl Checker<'_> {
             };
             let is_ok_branch = |branch: ExprId| -> bool {
                 let b = match &guard_ast.expr(branch).value {
-                    Expr::Block { statements, .. } if statements.len() == 1 => {
-                        match &guard_ast.stmt(statements[0]).value.kind {
-                            StmtKind::Expr(e) => *e,
-                            _ => return false,
+                    Expr::Block { statements, .. } => {
+                        if let [only] = statements.as_slice() {
+                            match &guard_ast.stmt(*only).value.kind {
+                                StmtKind::Expr(e) => *e,
+                                _ => return false,
+                            }
+                        } else {
+                            branch
                         }
                     }
                     _ => branch,
@@ -1679,16 +2389,62 @@ impl Checker<'_> {
         );
         let fallback_base = self.loop_fallback_dbm(env, &env.refinements.dbm, body);
 
+        // Identify membership fact seeded at the top of each `for` iteration (`for m as (k, _)`,
+        // `for s as x`, `for Map::keys(m) as k`, `for Set::to_array(s) as x`), sound when the
+        // container is not mutated/resized inside the loop body.
+        let loop_membership: Option<(Place, Place)> = (|| {
+            let iter_span = ast.expr(iterable).span;
+            let iter_ty = self.types.get(&iter_span).map(|t| {
+                let norm = self.normalize(t);
+                match norm {
+                    Ty::Draft(inner) => self.normalize(&inner),
+                    other => other,
+                }
+            });
+            let (container, key_id) = if let Some(Ty::Map(..)) = iter_ty {
+                let c = self.resolve_place(env, iterable)?;
+                let Pattern::Tuple(items) = &ast.pattern(pattern).value else {
+                    return None;
+                };
+                let Pattern::Binding(_, name) = &ast.pattern(*items.first()?).value else {
+                    return None;
+                };
+                (c, self.resolve(name.span)?)
+            } else if iter_ty
+                .as_ref()
+                .is_some_and(|t| t.as_set(self.hir).is_some())
+            {
+                let c = self.resolve_place(env, iterable)?;
+                (c, loop_var?)
+            } else if let Expr::Call { callee, args } = &ast.expr(iterable).value
+                && let Expr::Path(path) = &ast.expr(*callee).value
+                && let Some(id) = self.resolve(path.span)
+                && (self.hir.intrinsic(id) == Some(Intrinsic::MapKeys)
+                    || self.is_set_stdlib_callee(id, "to_array"))
+                && let [arg] = args.as_slice()
+            {
+                let c = self.resolve_place(env, arg.value)?;
+                (c, loop_var?)
+            } else {
+                return None;
+            };
+            if resized_colls.contains(&container.root)
+                || (has_open
+                    && self.live.contains(&container.root)
+                    && !(container.path.is_empty()
+                        && self.confined_locals.contains(&container.root)))
+            {
+                return None;
+            }
+            Some((container, Place::local(key_id)))
+        })();
+
         if let Some((start_a, end_a, inclusive, is_range)) = trip {
             // Synthetic iteration counter `iter_c` starting at `start_a`, incrementing by +1 each step.
             let iter_c = d0.fresh_temp();
             d0.add_eq(iter_c.clone(), start_a.clone(), 0);
             // If `start_a > end_a` (empty range), exit directly with `d0`; otherwise run widening with `iter_c <= end_a`.
-            let non_empty_guard = if inclusive {
-                d0.entails_le(&start_a, &end_a, 0)
-            } else {
-                d0.entails_le(&start_a, &end_a, 0)
-            };
+            let non_empty_guard = d0.entails_le(&start_a, &end_a, 0);
 
             let mut w = d0.clone();
             let mut converged: Option<(Dbm, Vec<Dbm>)> = None;
@@ -1696,7 +2452,11 @@ impl Checker<'_> {
                 let d_head = w.closed();
                 let mut d_body = d_head.clone();
                 // Loop condition: `iter_c < end_a` (or `<= end_a` if inclusive).
-                d_body.add_le(iter_c.clone(), end_a.clone(), if inclusive { 0 } else { -1 });
+                d_body.add_le(
+                    iter_c.clone(),
+                    end_a.clone(),
+                    if inclusive { 0 } else { -1 },
+                );
                 if is_range && let Some(vid) = loop_var {
                     d_body.add_eq(Atom::Val(Place::local(vid)), iter_c.clone(), 0);
                 }
@@ -1743,9 +2503,16 @@ impl Checker<'_> {
 
             if let Some((d_inv, breaks)) = converged {
                 let mut body_head = d_inv.clone();
-                body_head.add_le(iter_c.clone(), end_a.clone(), if inclusive { 0 } else { -1 });
+                body_head.add_le(
+                    iter_c.clone(),
+                    end_a.clone(),
+                    if inclusive { 0 } else { -1 },
+                );
                 if is_range && let Some(vid) = loop_var {
                     body_head.add_eq(Atom::Val(Place::local(vid)), iter_c.clone(), 0);
+                }
+                if let Some((ref c, ref k)) = loop_membership {
+                    body_head.add_contains(Atom::Val(c.clone()), Atom::Val(k.clone()));
                 }
                 // Normal loop exit: `iter_c >= end_a` (or `>= end_a + 1` if inclusive).
                 let mut normal_exit = d_inv;
@@ -1784,6 +2551,9 @@ impl Checker<'_> {
             body_head.add_le(v_atom, e, if inclusive { 0 } else { -1 });
             body_head.forget_temps();
         }
+        if let Some((ref c, ref k)) = loop_membership {
+            body_head.add_contains(Atom::Val(c.clone()), Atom::Val(k.clone()));
+        }
         (body_head, fallback_base)
     }
 
@@ -1803,7 +2573,7 @@ impl Checker<'_> {
             out.forget_matching(|a| matches!(a, Atom::Val(p) if p.root == var));
         }
         for coll in resized_colls {
-            out.forget_matching(|a| matches!(a, Atom::Len(p) if p.root == coll));
+            out.forget_matching(|a| matches!(a, Atom::Len(p) | Atom::Val(p) if p.root == coll));
         }
         if has_open {
             out.forget_matching(|a| match a {
@@ -1856,9 +2626,11 @@ impl Checker<'_> {
                             }
                             if let Some(f) = fallback {
                                 let mut fb = dbm.clone();
-                                let _ = self.step_loop_expr(env, &mut fb, *f, breaks, continues, depth);
+                                let _ =
+                                    self.step_loop_expr(env, &mut fb, *f, breaks, continues, depth);
                             }
-                            if reachable && let Pattern::Binding(_, name) = &ast.pattern(*pattern).value
+                            if reachable
+                                && let Pattern::Binding(_, name) = &ast.pattern(*pattern).value
                                 && let Some(id) = self.resolve(name.span)
                             {
                                 locals_in_block.push(id);
@@ -1871,8 +2643,7 @@ impl Checker<'_> {
                             }
                         }
                         StmtKind::Expr(e) => {
-                            reachable =
-                                self.step_loop_expr(env, dbm, *e, breaks, continues, depth);
+                            reachable = self.step_loop_expr(env, dbm, *e, breaks, continues, depth);
                         }
                         StmtKind::Defer(e) => {
                             *dbm = self.loop_fallback_dbm(env, dbm, *e);
@@ -1900,7 +2671,8 @@ impl Checker<'_> {
                     self.relate_proofs_in_dbm(env, &mut yes_dbm, *test, true);
                     self.relate_proofs_in_dbm(env, &mut no_dbm, *test, false);
                 }
-                let yes_falls = self.step_loop_expr(env, &mut yes_dbm, *yes, breaks, continues, depth);
+                let yes_falls =
+                    self.step_loop_expr(env, &mut yes_dbm, *yes, breaks, continues, depth);
                 let no_falls = if let Some(no_e) = no {
                     self.step_loop_expr(env, &mut no_dbm, *no_e, breaks, continues, depth)
                 } else {
@@ -1957,7 +2729,9 @@ impl Checker<'_> {
                     }
                     if matches!(
                         intr,
-                        Some(Intrinsic::ArrayPop | Intrinsic::ArrayPopFront | Intrinsic::ArrayRemove)
+                        Some(
+                            Intrinsic::ArrayPop | Intrinsic::ArrayPopFront | Intrinsic::ArrayRemove
+                        )
                     ) && let Some(first) = args.first()
                         && let Some(coll) = self.resolve_place(env, first.value)
                     {
@@ -1973,7 +2747,7 @@ impl Checker<'_> {
                         });
                         return true;
                     }
-                    if intr == Some(Intrinsic::Panic) {
+                    if matches!(intr, Some(Intrinsic::Panic | Intrinsic::Unreachable)) {
                         return false;
                     }
                     // Known pure user/stdlib call: check callable effects/state if already declared.
@@ -2058,14 +2832,50 @@ impl Checker<'_> {
         }
     }
 
-    fn step_assign_in_dbm(
-        &self,
-        env: &Env,
-        dbm: &mut Dbm,
-        op: &str,
-        left: ExprId,
-        right: ExprId,
-    ) {
+    fn step_assign_in_dbm(&self, env: &Env, dbm: &mut Dbm, op: &str, left: ExprId, right: ExprId) {
+        if op == "="
+            && let Some((base, index)) = self.is_map_indexed_write(env, left)
+        {
+            if let Some(map_place) = self.resolve_place(env, base) {
+                let container = Atom::Val(map_place.clone());
+                let key_atom = self.key_expr_to_atom(env, dbm, index);
+                let already_in = key_atom
+                    .as_ref()
+                    .is_some_and(|k| dbm.entails_contains(&container, k));
+                let already_out = key_atom
+                    .as_ref()
+                    .is_some_and(|k| dbm.entails_not_contains(&container, k));
+                let seed_key = !self.container_key_contains_f64(env, base);
+                // Forget sub-places `m.*` (value at old key may change).
+                dbm.forget_matching(|a| match a {
+                    Atom::Val(p) | Atom::Len(p) => {
+                        p.root == map_place.root
+                            && p.path.len() > map_place.path.len()
+                            && p.path.starts_with(&map_place.path)
+                    }
+                    _ => false,
+                });
+                let len_atom = Atom::Len(map_place);
+                if !already_in {
+                    dbm.assign_via_temp(len_atom.clone(), |d, t| {
+                        d.add_le(Atom::Zero, t.clone(), -1);
+                        if already_out {
+                            d.add_eq(t.clone(), len_atom, 1);
+                        } else {
+                            d.add_le(len_atom.clone(), t.clone(), 0);
+                            d.add_le(t.clone(), len_atom, 1);
+                        }
+                    });
+                }
+                dbm.invalidate_container_insert(&container, key_atom.as_ref(), seed_key);
+            } else {
+                dbm.forget_matching(|a| match a {
+                    Atom::Val(p) | Atom::Len(p) => self.live.contains(&p.root),
+                    _ => false,
+                });
+            }
+            return;
+        }
         let is_elem = self.is_indexed_subplace(env, left);
         if let Some(place) = self.place(env, left) {
             let target = Atom::Val(place.clone());
@@ -2124,7 +2934,9 @@ impl Checker<'_> {
             if let Some(root) = self.indexed_root_place(env, left) {
                 dbm.forget_matching(|a| match a {
                     Atom::Val(p) | Atom::Len(p) => {
-                        p.root == root.root && p.path.len() > root.path.len() && p.path.starts_with(&root.path)
+                        p.root == root.root
+                            && p.path.len() > root.path.len()
+                            && p.path.starts_with(&root.path)
                     }
                     _ => false,
                 });
@@ -2160,7 +2972,16 @@ impl Checker<'_> {
                     op.value.as_str(),
                     "=" | "+=" | "-=" | "*=" | "/=" | "%=" | "<<=" | ">>=" | "&=" | "|=" | "^="
                 ) {
-                    if let Some(p) = self.place(env, *left) {
+                    if op.value == "="
+                        && let Some((base, _)) = self.is_map_indexed_write(env, *left)
+                    {
+                        if let Some(p) = self.resolve_place(env, base) {
+                            mutated_vars.insert(p.root);
+                            resized_colls.insert(p.root);
+                        } else {
+                            *has_open = true;
+                        }
+                    } else if let Some(p) = self.place(env, *left) {
                         mutated_vars.insert(p.root);
                         if !self.is_indexed_subplace(env, *left) {
                             resized_colls.insert(p.root);
@@ -2259,7 +3080,13 @@ impl Checker<'_> {
                     if let Some(g) = arm.guard {
                         self.collect_loop_mutations(env, g, mutated_vars, resized_colls, has_open);
                     }
-                    self.collect_loop_mutations(env, arm.body, mutated_vars, resized_colls, has_open);
+                    self.collect_loop_mutations(
+                        env,
+                        arm.body,
+                        mutated_vars,
+                        resized_colls,
+                        has_open,
+                    );
                 }
             }
             Expr::Unary { value, .. }
@@ -2288,7 +3115,13 @@ impl Checker<'_> {
                 ..
             } => {
                 for h in handlers {
-                    self.collect_loop_mutations(env, h.value, mutated_vars, resized_colls, has_open);
+                    self.collect_loop_mutations(
+                        env,
+                        h.value,
+                        mutated_vars,
+                        resized_colls,
+                        has_open,
+                    );
                 }
                 for &stmt in statements {
                     self.collect_stmt_mutations(env, stmt, mutated_vars, resized_colls, has_open);
@@ -2369,9 +3202,11 @@ impl Checker<'_> {
         self.writes_place_preserving_len(env, expr, cause_span);
         if let Some(coll) = self.resolve_place(env, expr) {
             let len_atom = Atom::Len(coll);
-            env.refinements.dbm.assign_via_temp(len_atom.clone(), |d, t| {
-                d.add_eq(t.clone(), len_atom, 1);
-            });
+            env.refinements
+                .dbm
+                .assign_via_temp(len_atom.clone(), |d, t| {
+                    d.add_eq(t.clone(), len_atom, 1);
+                });
         }
     }
 
@@ -2380,7 +3215,139 @@ impl Checker<'_> {
         if let Some(coll) = self.resolve_place(env, expr) {
             let len_atom = Atom::Len(coll);
             let ge1 = env.refinements.dbm.lb(&len_atom).is_some_and(|l| l >= 1);
-            env.refinements.dbm.assign_via_temp(len_atom.clone(), |d, t| {
+            env.refinements
+                .dbm
+                .assign_via_temp(len_atom.clone(), |d, t| {
+                    d.add_le(Atom::Zero, t.clone(), 0);
+                    if ge1 {
+                        d.add_eq(t.clone(), len_atom, -1);
+                    } else {
+                        d.add_le(t.clone(), len_atom, 0);
+                    }
+                });
+        }
+    }
+
+    pub(super) fn note_array_clear(&mut self, env: &mut Env, expr: ExprId, cause_span: Span) {
+        self.writes_place(env, expr, cause_span);
+        if let Some(coll) = self.resolve_place(env, expr) {
+            env.refinements.dbm.add_eq(Atom::Len(coll), Atom::Zero, 0);
+        }
+    }
+
+    pub(super) fn note_map_insert(
+        &mut self,
+        env: &mut Env,
+        coll_expr: ExprId,
+        key_expr: Option<ExprId>,
+        cause_span: Span,
+    ) {
+        self.invalidate_option_writes(env, coll_expr, cause_span);
+        if let Some(coll) = self.resolve_place(env, coll_expr) {
+            let mut dbm = std::mem::take(&mut env.refinements.dbm);
+            let container = Atom::Val(coll.clone());
+            let key_atom = key_expr.and_then(|k| self.key_expr_to_atom(env, &mut dbm, k));
+            let already_in = key_atom
+                .as_ref()
+                .is_some_and(|k| dbm.entails_contains(&container, k));
+            let already_out = key_atom
+                .as_ref()
+                .is_some_and(|k| dbm.entails_not_contains(&container, k));
+            let seed_key = !self.container_key_contains_f64(env, coll_expr);
+            dbm.forget_matching(|a| match a {
+                Atom::Val(p) | Atom::Len(p) => {
+                    p.root == coll.root
+                        && p.path.len() > coll.path.len()
+                        && p.path.starts_with(&coll.path)
+                }
+                _ => false,
+            });
+            let len_atom = Atom::Len(coll);
+            if !already_in {
+                dbm.assign_via_temp(len_atom.clone(), |d, t| {
+                    d.add_le(Atom::Zero, t.clone(), -1);
+                    if already_out {
+                        d.add_eq(t.clone(), len_atom, 1);
+                    } else {
+                        d.add_le(len_atom.clone(), t.clone(), 0);
+                        d.add_le(t.clone(), len_atom, 1);
+                    }
+                });
+            }
+            dbm.invalidate_container_insert(&container, key_atom.as_ref(), seed_key);
+            env.refinements.dbm = dbm;
+        } else {
+            self.writes_place(env, coll_expr, cause_span);
+        }
+    }
+
+    pub(super) fn note_map_remove(
+        &mut self,
+        env: &mut Env,
+        coll_expr: ExprId,
+        key_expr: Option<ExprId>,
+        cause_span: Span,
+    ) {
+        self.invalidate_option_writes(env, coll_expr, cause_span);
+        if let Some(coll) = self.resolve_place(env, coll_expr) {
+            let mut dbm = std::mem::take(&mut env.refinements.dbm);
+            let container = Atom::Val(coll.clone());
+            let key_atom = key_expr.and_then(|k| self.key_expr_to_atom(env, &mut dbm, k));
+            let already_in = key_atom
+                .as_ref()
+                .is_some_and(|k| dbm.entails_contains(&container, k));
+            let already_out = key_atom
+                .as_ref()
+                .is_some_and(|k| dbm.entails_not_contains(&container, k));
+            let seed_absent = !self.container_key_contains_f64(env, coll_expr);
+            dbm.forget_matching(|a| match a {
+                Atom::Val(p) | Atom::Len(p) => {
+                    p.root == coll.root
+                        && p.path.len() > coll.path.len()
+                        && p.path.starts_with(&coll.path)
+                }
+                _ => false,
+            });
+            let len_atom = Atom::Len(coll);
+            if !already_out {
+                dbm.assign_via_temp(len_atom.clone(), |d, t| {
+                    d.add_le(Atom::Zero, t.clone(), 0);
+                    if already_in {
+                        d.add_eq(t.clone(), len_atom, -1);
+                    } else {
+                        d.add_le(t.clone(), len_atom.clone(), 0);
+                        d.add_le(len_atom, t.clone(), 1);
+                    }
+                });
+            }
+            dbm.invalidate_container_remove(&container, key_atom.as_ref(), seed_absent);
+            env.refinements.dbm = dbm;
+        } else {
+            self.writes_place(env, coll_expr, cause_span);
+        }
+    }
+
+    pub(super) fn note_map_pop_entry(
+        &mut self,
+        env: &mut Env,
+        coll_expr: ExprId,
+        cause_span: Span,
+    ) {
+        self.invalidate_option_writes(env, coll_expr, cause_span);
+        if let Some(coll) = self.resolve_place(env, coll_expr) {
+            let mut dbm = std::mem::take(&mut env.refinements.dbm);
+            let container = Atom::Val(coll.clone());
+            dbm.forget_matching(|a| match a {
+                Atom::Val(p) | Atom::Len(p) => {
+                    p.root == coll.root
+                        && p.path.len() > coll.path.len()
+                        && p.path.starts_with(&coll.path)
+                }
+                _ => false,
+            });
+            let len_atom = Atom::Len(coll);
+            let ge1 = dbm.lb(&len_atom).is_some_and(|l| l >= 1);
+            dbm.assign_via_temp(len_atom.clone(), |d, t| {
                 d.add_le(Atom::Zero, t.clone(), 0);
                 if ge1 {
                     d.add_eq(t.clone(), len_atom, -1);
@@ -2388,15 +3355,20 @@ impl Checker<'_> {
                     d.add_le(t.clone(), len_atom, 0);
                 }
             });
+            dbm.invalidate_container_remove(&container, None, false);
+            env.refinements.dbm = dbm;
+        } else {
+            self.writes_place(env, coll_expr, cause_span);
         }
     }
 
-    pub(super) fn note_array_clear(&mut self, env: &mut Env, expr: ExprId, cause_span: Span) {
-        self.writes_place(env, expr, cause_span);
-        if let Some(coll) = self.resolve_place(env, expr) {
+    pub(super) fn note_map_clear(&mut self, env: &mut Env, coll_expr: ExprId, cause_span: Span) {
+        self.writes_place(env, coll_expr, cause_span);
+        if let Some(coll) = self.resolve_place(env, coll_expr) {
             env.refinements
                 .dbm
-                .add_eq(Atom::Len(coll), Atom::Zero, 0);
+                .invalidate_container_clear(&Atom::Val(coll.clone()));
+            env.refinements.dbm.add_eq(Atom::Len(coll), Atom::Zero, 0);
         }
     }
 
@@ -2431,11 +3403,18 @@ impl Checker<'_> {
         let mut dbm = std::mem::take(&mut env.refinements.dbm);
         self.step_assign_in_dbm(env, &mut dbm, op, left, right);
         env.refinements.dbm = dbm;
-        // 3. Re-seed composite lengths & call return proofs on `=` assignments!
+        // 3. Re-seed composite lengths, call return proofs & type invariants on `=` assignments!
         if op == "="
             && let Some(place) = self.place(env, left)
         {
             self.seed_place_from_expr(env, &place, right);
+            if let Some(rhs_ty) = self
+                .types
+                .get(&self.ast(env.file).expr(right).span)
+                .cloned()
+            {
+                self.seed_type_invariants(env, &place, &rhs_ty);
+            }
         }
     }
 
@@ -2603,9 +3582,13 @@ impl Checker<'_> {
         if b_ty == &Ty::Never {
             return a.refinements.clone();
         }
+        self.merge_refinement_states(&a.refinements, &b.refinements)
+    }
+
+    pub(super) fn merge_refinement_states(&self, a: &Refinements, b: &Refinements) -> Refinements {
         let mut options = HashMap::new();
-        for (place, first) in &a.refinements.options {
-            if let Some(second) = b.refinements.options.get(place) {
+        for (place, first) in &a.options {
+            if let Some(second) = b.options.get(place) {
                 let depth = first.depth.min(second.depth);
                 let is_none = first.is_none && second.is_none;
                 let invalidated = first.invalidated.or(second.invalidated);
@@ -2619,7 +3602,7 @@ impl Checker<'_> {
                 );
             }
         }
-        let dbm = Dbm::join(&a.refinements.dbm, &b.refinements.dbm);
+        let dbm = Dbm::join(&a.dbm, &b.dbm);
         Refinements {
             options,
             dbm,

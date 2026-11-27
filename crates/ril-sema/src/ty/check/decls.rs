@@ -244,6 +244,18 @@ impl Checker<'_> {
             }
         }
         self.seed_fn_param_proofs(&mut local, fun);
+        for (p, ty) in fun.signature.params.iter().zip(&call.parameters) {
+            if !p.is_meta
+                && let Some(name) = &p.name
+                && let Some(param_id) = self.resolve(name.span)
+            {
+                self.seed_type_invariants(
+                    &mut local,
+                    &crate::ty::dbm::Place::local(param_id),
+                    &ty.ty,
+                );
+            }
+        }
         let normalized = self.normalize(&call.result);
         let return_subject = if let Some(inner) = normalized.as_option(self.hir) {
             inner.clone()
@@ -305,9 +317,7 @@ impl Checker<'_> {
                 self.collect_captured_locals(file, *e);
                 self.collect_captured_locals(file, *body);
             }
-            syntax::Expr::For {
-                iterable, body, ..
-            } => {
+            syntax::Expr::For { iterable, body, .. } => {
                 self.collect_captured_locals(file, *iterable);
                 self.collect_captured_locals(file, *body);
             }
@@ -347,8 +357,7 @@ impl Checker<'_> {
                 self.collect_captured_locals(file, *left);
                 self.collect_captured_locals(file, *right);
             }
-            syntax::Expr::Unary { value, .. }
-            | syntax::Expr::Cast { value, .. } => {
+            syntax::Expr::Unary { value, .. } | syntax::Expr::Cast { value, .. } => {
                 self.collect_captured_locals(file, *value);
             }
             syntax::Expr::Transfer { value: Some(v), .. } => {
@@ -462,7 +471,12 @@ impl Checker<'_> {
                     (None, None) => Ty::Unknown,
                 };
                 if let Some(fallback) = fallback {
-                    let otherwise = self.expr(local, *fallback, None);
+                    let mut fb_env = local.clone();
+                    if let Some(val_expr) = value {
+                        self.negate_pattern_proofs(&mut fb_env, *pattern, *val_expr);
+                    }
+                    let otherwise = self.expr(&mut fb_env, *fallback, None);
+                    local.effects_seen.extend(fb_env.effects_seen);
                     if otherwise != Ty::Never && otherwise != Ty::Unknown {
                         self.error(
                             Code::E0321,
@@ -512,11 +526,19 @@ impl Checker<'_> {
                 self.pattern(local, *pattern, &inferred);
                 self.seed_binding_proofs(local, *pattern, *value, storage.variable);
                 let norm_inferred = self.normalize(&inferred);
-                let force_live =
-                    storage.variable || storage.mode != Mode::Plain || norm_inferred.contains_live_member_schema();
+                let force_live = storage.variable
+                    || storage.mode != Mode::Plain
+                    || norm_inferred.contains_live_member_schema();
                 let mut bound_ids = Vec::new();
                 self.collect_pattern_defs(local, *pattern, &mut bound_ids);
                 for id in bound_ids {
+                    if let Some(bound_ty) = self.bindings.get(&id).cloned() {
+                        self.seed_type_invariants(
+                            local,
+                            &crate::ty::dbm::Place::local(id),
+                            &bound_ty,
+                        );
+                    }
                     let bound_live = force_live
                         || self
                             .bindings
@@ -633,7 +655,43 @@ impl Checker<'_> {
                             if matches!(representation, Ty::Record(..)) {
                                 self.record_adts.insert(id);
                             }
-                            self.nominal_layouts.insert(id, representation);
+                            self.nominal_layouts.insert(id, representation.clone());
+                            if !decl.guards.is_empty() {
+                                if self.contains_live_member_schema_deep(
+                                    &local,
+                                    &representation,
+                                    &mut HashSet::new(),
+                                ) {
+                                    self.error(
+                                        Code::E0356,
+                                        decl.name.span,
+                                        "type with static invariant cannot contain mutable, var, ref, or live member storage",
+                                    );
+                                }
+                                for &guard in &decl.guards {
+                                    let guard_span = self.ast(local.file).expr(guard).span;
+                                    match self.hir.classify_guard(local.file, guard) {
+                                        ril_hir::GuardKind::StaticProof(tf_id) => {
+                                            self.check_static_proof_guard(
+                                                &mut local,
+                                                guard,
+                                                tf_id,
+                                                &representation,
+                                            );
+                                        }
+                                        _ => {
+                                            self.error(
+                                                Code::E0306,
+                                                guard_span,
+                                                "type invariant must be a static proof type function",
+                                            );
+                                        }
+                                    }
+                                }
+                                if decl.kind != ril_syntax::syntax::TypeKind::Opaque {
+                                    self.collect_type_invariant_exports(local.file, id, decl);
+                                }
+                            }
                         }
                     }
                     TypeDefinition::Sum(_) => {
@@ -687,7 +745,22 @@ impl Checker<'_> {
                 }
             }
             StmtKind::Defer(expr) => {
-                self.expect(env, *expr, &Ty::Unit);
+                // Deferred cleanup executes at block/unwind exit after subsequent mutations;
+                // wipe all live/var/confined facts before typechecking the defer body.
+                let mut defer_env = env.clone();
+                defer_env
+                    .refinements
+                    .options
+                    .retain(|p, _| !self.live.contains(&p.root));
+                defer_env.refinements.dbm.forget_matching(|a| match a {
+                    crate::ty::dbm::Atom::Val(p) | crate::ty::dbm::Atom::Len(p) => {
+                        self.live.contains(&p.root)
+                    }
+                    _ => false,
+                });
+                defer_env.refinements.call_proofs.clear();
+                self.expect(&mut defer_env, *expr, &Ty::Unit);
+                env.effects_seen.extend(defer_env.effects_seen);
                 env.active_defers.push(*expr);
             }
             StmtKind::With(handler) => {
@@ -929,11 +1002,14 @@ impl Checker<'_> {
                             span,
                             "meta fn requires direct saturated application",
                         );
-                    } else if !callee && self.hir.has_static_param_proof(id) {
+                    } else if !callee
+                        && (self.hir.has_static_param_proof(id)
+                            || self.hir.intrinsic(id) == Some(ril_hir::Intrinsic::Unreachable))
+                    {
                         self.error(
                             Code::E0534,
                             span,
-                            "function with static parameter proof cannot be used as a first-class callable; call directly or wrap in a closure",
+                            "function with static proof requirement cannot be used as a first-class callable; call directly or wrap in a closure",
                         );
                     }
                     return Ty::Callable(call);
@@ -944,7 +1020,7 @@ impl Checker<'_> {
         }
     }
 
-    fn collect_pattern_defs(
+    pub(in crate::ty) fn collect_pattern_defs(
         &self,
         env: &Env,
         pattern: syntax::PatternId,
@@ -959,7 +1035,9 @@ impl Checker<'_> {
             }
             syntax::Pattern::Tuple(items)
             | syntax::Pattern::Or(items)
-            | syntax::Pattern::Slice { elements: items, .. }
+            | syntax::Pattern::Slice {
+                elements: items, ..
+            }
             | syntax::Pattern::Wrap(_, items) => {
                 for &item in items {
                     self.collect_pattern_defs(env, item, out);

@@ -658,6 +658,9 @@ mod tests {
             .filter(|t| t.kind != Kind::Newline && t.kind != Kind::Eof)
             .map(|t| t.text(&src))
             .collect();
-        assert_eq!(texts, ["fn", "neg", "(", ")", "->", "int", "{", "-", "1", "}"]);
+        assert_eq!(
+            texts,
+            ["fn", "neg", "(", ")", "->", "int", "{", "-", "1", "}"]
+        );
     }
 }

@@ -406,10 +406,9 @@ impl Analyzer<'_> {
                         "argument source overlaps incompatible live authority",
                     );
                 }
-                for (closure_arg, other_mode, other_arg) in [
-                    (value, *previous_mode, previous),
-                    (previous, *mode, value),
-                ] {
+                for (closure_arg, other_mode, other_arg) in
+                    [(value, *previous_mode, previous), (previous, *mode, value)]
+                {
                     for (&owner, captures) in &closure_arg.invocations {
                         for &source in captures.keys() {
                             let Some(slot) = ledger.slots.get(&source) else {

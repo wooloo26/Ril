@@ -37,7 +37,7 @@ pub fn last<T>(via xs: []T) &return(xs) -> new ?T {
 }
 
 -- Returns a new array containing `count` copies of `value`.
-pub fn repeat<T>(value: T, count: int |> Nat) &return(value) -> new []T |> HasLen(count) {
+pub fn repeat<T>(value: T, count: int |> Nat) &return(value) -> new []T |> Len(count) {
     let mut out: []T = []
     for 0..count as _ {
         push(mut out, value)

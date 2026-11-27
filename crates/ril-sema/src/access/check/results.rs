@@ -414,8 +414,7 @@ impl Analyzer<'_> {
             .as_result(&self.program.hir)
             .map(|(ok, _)| ok)
             .or_else(|| ty.as_option(&self.program.hir));
-        let payload_is_linear =
-            payload_ty.is_some_and(|inner| self.program.is_must_consume(inner));
+        let payload_is_linear = payload_ty.is_some_and(|inner| self.program.is_must_consume(inner));
         let payload_is_collection =
             payload_ty.is_some_and(|inner| matches!(inner, Ty::Array(_) | Ty::Map(..)));
         let mut continuing = Vec::new();

@@ -160,6 +160,9 @@ impl Walk<'_> {
                             self.exposure = Visibility::Private;
                         }
                         self.ty(*ty);
+                        for &guard in &decl.guards {
+                            self.guard(guard);
+                        }
                     }
                     TypeDefinition::Sum(variants) => {
                         if decl.kind == TypeKind::Opaque {

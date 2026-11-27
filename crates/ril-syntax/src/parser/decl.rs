@@ -160,8 +160,9 @@ impl Parser<'_> {
         let is_linear_type = self.is("linear")
             && (self.next_text() == "type"
                 || (self.next_text() == "opaque" && third_text == "type"));
-        let declaration =
-            matches!(self.text(), "fn" | "type" | "eff" | "sub") || is_opaque_type || is_linear_type;
+        let declaration = matches!(self.text(), "fn" | "type" | "eff" | "sub")
+            || is_opaque_type
+            || is_linear_type;
         if context == Context::Block && declaration {
             return Err(self.error(
                 Code::E0703,
@@ -526,7 +527,7 @@ impl Parser<'_> {
         self.require("type")?;
         let name = self.name(Some(Word::Pascal), false)?;
         let generics = self.generics()?;
-        let (kind, definition) = if self.eat("=") {
+        let (kind, definition, guards) = if self.eat("=") {
             if opaque {
                 return Err(self.error(
                     Code::E0120,
@@ -582,9 +583,17 @@ impl Parser<'_> {
                 self.skip_lines();
                 TypeDefinition::Function(params, self.expr()?)
             } else {
-                self.data_type_definition()?
+                let def = self.data_type_definition()?;
+                if self.is("|>") {
+                    return Err(self.error(
+                        Code::E0120,
+                        self.current().span,
+                        "type aliases cannot carry static invariants; use a nominal or opaque type 'type Name(T) |> ...'",
+                    ));
+                }
+                def
             };
-            (TypeKind::Alias, definition)
+            (TypeKind::Alias, definition, Vec::new())
         } else if self.is("{") {
             self.open("{", "}", Layout::Block)?;
             let mut variants = Vec::new();
@@ -632,12 +641,19 @@ impl Parser<'_> {
                 }
             }
             self.close("}")?;
+            if self.is("|>") {
+                return Err(self.error(
+                    Code::E0120,
+                    self.current().span,
+                    "sum types cannot carry static invariants",
+                ));
+            }
             let kind = if opaque {
                 TypeKind::Opaque
             } else {
                 TypeKind::Alias
             };
-            (kind, TypeDefinition::Sum(variants))
+            (kind, TypeDefinition::Sum(variants), Vec::new())
         } else if self.tight("(") {
             let opening = self.open("(", ")", Layout::List)?;
             let mut elements = self.list(")", |p| {
@@ -708,12 +724,26 @@ impl Parser<'_> {
                     "type declaration cannot carry effect or state clauses",
                 ));
             }
+            let guards = self.guards()?;
+            if is_linear && let Some(&first_guard) = guards.first() {
+                return Err(self.error(
+                    Code::E0120,
+                    self.ast.expr(first_guard).span,
+                    "linear types cannot carry static invariants",
+                ));
+            }
             let kind = if opaque {
                 TypeKind::Opaque
             } else {
                 TypeKind::Nominal
             };
-            (kind, TypeDefinition::Data(ty))
+            (kind, TypeDefinition::Data(ty), guards)
+        } else if self.is("|>") {
+            return Err(self.error(
+                Code::E0120,
+                self.current().span,
+                "unit types cannot carry static invariants",
+            ));
         } else if matches!(self.current().kind, Kind::Newline | Kind::Eof)
             || matches!(self.text(), ";" | "}")
         {
@@ -722,7 +752,7 @@ impl Parser<'_> {
             } else {
                 TypeKind::Nominal
             };
-            (kind, TypeDefinition::Opaque)
+            (kind, TypeDefinition::Opaque, Vec::new())
         } else {
             return Err(self.error(
                 Code::E0120,
@@ -736,6 +766,7 @@ impl Parser<'_> {
             is_linear,
             generics,
             definition,
+            guards,
         })
     }
 

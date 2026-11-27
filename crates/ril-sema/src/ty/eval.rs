@@ -457,7 +457,10 @@ impl Checker<'_> {
             let (Some(start), Some(mut end)) = (bound(start, 0)?, bound(end, length)?) else {
                 return Ok(None);
             };
-            if inclusive && let Some(exclusive) = end.checked_add(1) {
+            if inclusive {
+                let Some(exclusive) = end.checked_add(1) else {
+                    return Ok(None);
+                };
                 end = exclusive;
             }
             return Ok(match base {

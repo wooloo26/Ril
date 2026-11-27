@@ -33,14 +33,14 @@ eff Clock { fn now_ms() -> int }
 -- Access modes flow through generic calls ('via' / 'infer') and '&return(...)'.
 fn relay<T>(via x: T) -> infer T { let via y = x; y }
 fn bump(mut c: Cell) &mut -> () { c.count += 1 }
-fn share_in_list(^mut c: Cell) &^mut &return(^mut c) -> new [^mut]Cell |> HasLen(1) { [^mut c] }
+fn share_in_list(^mut c: Cell) &^mut &return(^mut c) -> new [^mut]Cell |> Len(1) { [^mut c] }
 fn stamp(ref c: Cell) @Clock -> str { "{Clock::now_ms()}:{c.count}" }
 
 fn demo() -> str {
     let mut cell = Cell.{ count: 1 }           -- Unshared writable 'new'-qualified local
     bump(mut cell)                             -- Call-scoped write; explicit 'mut' marker
     let mut shared = share_in_list(^mut cell)  -- Unshared 'new' list holding shared '^mut' cell
-    shared[0].count += 1                       -- Proved in-bounds by 'HasLen(1)'; updates 'cell.count' to 3
+    shared[0].count += 1                       -- Proved in-bounds by 'Len(1)'; updates 'cell.count' to 3
 
     let snap = clone(ref cell)                 -- Isolated deeply immutable snapshot
     let mut next = relay({
@@ -261,7 +261,8 @@ fn connect_port(raw: str) -> new !<int, str> {
 | Condition | Outcome |
 | :--- | :--- |
 | Integer `/` or `%` without static `b != 0` proof, or `<<`/`>>` without static `k >= 0` proof | Compile-time error `E0361` (prove via `NonZero` / `Nat` static proofs, `if`/`while`/`match` narrowing, or runtime guards) |
-| Array/bytes/slice `xs[i]`, `b[i]`, `xs[i] = v`, `s[a..b]`, `Array::{swap,insert,remove}`, or `String::scalar_at` without static bounds proof | Compile-time error `E0362` (prove via `InBounds`/`Between`/`HasLen`/`NonEmpty`, `if`/`while`/`for` narrowing, or use boundary `xs?[i]`/`b?[i]`/`s?[a..b]`/`Array::{first,last}`) |
+| Array/bytes/slice/map `xs[i]`, `b[i]`, `xs[i] = v`, `s[a..b]`, `m[k]` (read or `m[k] += v`), `Array::{swap,insert,remove}`, or `String::scalar_at` without static bounds/membership proof | Compile-time error `E0362` (prove via `InBounds`/`Between`/`Len`/`NonEmpty`/`In`, `if`/`while`/`for` narrowing, or use boundary `xs?[i]`/`b?[i]`/`s?[a..b]`/`m?[k]`/`Array::{first,last}`) |
+| `unreachable()` without static unreachability proof | Compile-time error `E0323` (`E0534` on first-class decay); proved calls introduce no `@panic`/`@abort`/`@diverge` and are legal inside `defer` |
 | `panic(msg)` or false `assert(cond)` | LIFO panic unwinding (`E0830`/`E0831` in static evaluation) |
 | Panicking operation or callee inside `defer` | Compile-time error `E0627` (statically eliminates `defer` double-panic abort) |
 | Unrecoverable execution-resource exhaustion (host memory, call depth, or huge shift allocation) | Uncatchable process **abort** (tracked as implicit `@abort`) |
@@ -610,14 +611,14 @@ let pair: (int, str) = (1, "one")
 assert(xs[0] == 10 && table?["ok"] == Some(200) && pair.1 == "one")
 
 -- Rejected:
--- let bad_map_read = table["ok"]      -- Error [E0352]: map read requires safe 'table?["ok"]'
+-- let bad_map_read = table["missing"] -- Error [E0362]: map key not statically proved present; use 'table?["missing"]' or guard 'Map::contains'
 -- let bad_idx = pair.2                -- Error [E0312]: tuple index out of bounds
 -- type BadKey = [f64: int]            -- Error [E0328]: 'f64' cannot be a map/set key
 -- type BadElem = [var][]int           -- Error [E0356]: element mode forbids 'var'
 ```
 
 - **Element modes (`E0356`)**: Unmarked `[]T` / `[K: V]` hold deeply immutable elements. Element modes admit `mut`, `^mut`, `ref`, `via`, or a static `FieldMode` expression without `var` (`E0356`). Must-consume linear values (`ctl(...)` continuations, user-defined `[opaque] linear type`s, and composites transitively containing them) live in plain mode-free containers (`[]L`, `[K: L]`, `.{ f: L }`, or sums) with destructive extraction (`match`, `let`, `while let`, `Array::pop`, `Array::pop_front`, `Array::remove`, `Map::replace`, `Map::remove`, `Map::pop_entry`) while forbidding `var` (`E0532`), member access modes (`E0356`), non-destructive indexing/plain iteration (`xs[i]`, `m?[k]`, plain `for`, `E0548`), `Array::clear`/`Map::clear` and `Map::insert` overwrite (`E0625`), `Set<T>`, and map keys (`E0328`). User-defined linear collections additionally support non-consuming `for ref` and `for mut` traversal and linear-safe `Map::contains` / `Map::keys`.
-- **Keys, indexing & order (`E0328`, `E0352`)**: Map keys `K` and `Set<T>` elements require structural equality (`E0328`). Map reads use safe lookup `m?[k] -> ?V` (`E0352` on `m[k]` reads or `m[k] += v`); `m[k] = v` inserts/updates. Lengths and indices have type `int`. Iteration (`for`) and `String::inspect` over maps and sets follow deterministic insertion order (updating an existing key preserves position; removing and reinserting appends at the end).
+- **Keys, indexing & order (`E0328`, `E0362`)**: Map keys `K` and `Set<T>` elements require structural equality (`E0328`). Direct map reads `m[k]` and compound assignments `m[k] += v` require static key membership (`k |> In(m)`, `if Map::contains(m, k)`, `if m?[k] != None`, `m[k] = v`, or `for` over `m` / `Map::keys(m)`; `E0362` otherwise); safe lookup `m?[k] -> ?V` requires no proof; `m[k] = v` inserts/updates. Lengths and indices have type `int`. Iteration (`for`) and `String::inspect` over maps and sets follow deterministic insertion order (updating an existing key preserves position; removing and reinserting appends at the end).
 - **Tuples (`E0312`)**: Zero-element `()` or $\ge 2$ elements `(A, B)`. `(T)` is grouping. Tuple slots are immutable.
 
 ```ebnf
@@ -746,15 +747,15 @@ close_conn(dial(open_raw(), 3))
 | Form | Syntax | Identity & representation |
 | :--- | :--- | :--- |
 | Type alias | `type Point = .{ x: f64, y: f64 }` | Transparently equivalent to target (`E0313` cycles; forbids `meta(...)` `E0708` and defaults `E0359`). Record aliases construct via `Point.{ x: 1.0, y: 2.0 }` and destructure via `.{ x, y }` |
-| Nominal type | `type Marker`<br>`type UserId(int)`<br>`type Point(int, int)`<br>`type Req(.{ k: str })` | Compile-time erased distinct type (`E0305` distinct identity; `E0313` direct cycles); inherits value vs. `SharedObject` classification from its payload (`Marker` erases to `()`). Unit nominals stand alone (`Marker::()` fails `E0338`); payload nominals wrap and destructure via tight `::(...)` (`UserId::(42)`, `Point::(1, 2)`, `Req::(.{ k: "a" })`, `let UserId::(n) = u`; bare payload nominal in value position fails `E0319`). `Name::(x)` and `inner(w)` are mode- and provenance-preserving inverses |
-| Opaque type | `opaque type Token(str)`<br>`opaque type Conn(.{ fd: int })` | Erased wrapper interconvertible with its representation inside its exact defining file or `sub` (`<Token> != <str>`), sealed outside including parent/child `sub`s (`E0301`, `E0308`). Inherits value vs. `SharedObject` and must-consume status across interfaces; wrapping a must-consume payload requires `opaque linear type` (`E0625`). Bodyless `opaque type` requires a registered built-in (`E0902`) |
+| Nominal type | `type Marker`<br>`type UserId(int)`<br>`type Point(int, int)`<br>`type Port(int) \|> Between(1, 65535)`<br>`type Req(.{ k: str })` | Compile-time erased distinct type (`E0305` distinct identity; `E0313` direct cycles); inherits value vs. `SharedObject` classification from its payload (`Marker` erases to `()`). Unit nominals stand alone (`Marker::()` fails `E0338`); payload nominals wrap and destructure via tight `::(...)` (`UserId::(42)`, `Point::(1, 2)`, `Req::(.{ k: "a" })`, `let UserId::(n) = u`; bare payload nominal in value position fails `E0319`). `Name::(x)` and `inner(w)` are mode- and provenance-preserving inverses. Optional trailing `\|> Guard` static proof invariants on non-linear payload nominals/opaques require deeply immutable payloads (`E0356`; forbidden on aliases, sums, units, and `linear` types, `E0120`), are verified at every `Name::(...)` construction (`E0323`), auto-seed into the static prover on consumption, forbid `derive` (`E0536`) and `inner(mut ...)`/`inner(^mut ...)` (`E0406`), and disable defining-scope implicit coercion on `opaque` invariant types. Public non-opaque invariants are bidirectional (invariant) across `.rili` interfaces (`E0552`); `opaque` invariants stay sealed |
+| Opaque type | `opaque type Token(str)`<br>`opaque type Conn(.{ fd: int })` | Erased wrapper interconvertible with its representation inside its exact defining file or `sub` (`<Token> != <str>`; implicit coercion disabled when the opaque type declares static invariants), sealed outside including parent/child `sub`s (`E0301`, `E0308`). Inherits value vs. `SharedObject` and must-consume status across interfaces; wrapping a must-consume payload requires `opaque linear type` (`E0625`). Bodyless `opaque type` requires a registered built-in (`E0902`) |
 | Linear type | `linear type Ticket(int)`<br>`opaque linear type File(.{ fd: int, var pos: int })` | Contextual `linear` modifier (`[Visibility] ["opaque"] ["linear"] "type"`; forbids `=` aliases and reversed `linear opaque type`, `E0120`) marks nominal wrappers, unit nominals, opaque types, and sums as **must-consume** (`E0625` if unconsumed, `E0549` on double/post-consume use). Admits pinned `let`/`let mut` bindings, call-scoped `ref`/`mut` parameters, `for ref`/`for mut` container traversal, and plain root consumption; forbids `var` (`E0532`), `^mut` (`E0401`/`E0510`), `let ref` (`E0402`), `new` (`E0411`/`E0546`), `via` (`E0550`), member modes (`E0356`), `clone` (`E0301`), `derive` (`E0536`), `==`/`!=` (`E0327`), map/set keys (`E0328`), closure/`&up` capture (`E0625`), and `meta` export (`E0816`). Direct linear returns omit `-> new` (`-> File`); `SharedObject` wrappers over linear types keep `-> new` (`-> new !<File, IoErr>`) |
 | Sum type | `type Res<T, E> { Ok(T); Err(E) }` | Closed or extensible (`..`) variant type (`opaque` seals construction, widening, and matching outside defining scope, `E0308`; `linear` marks every variant must-consume) |
 
 ```ebnf
 TypeDecl        ::= TypeDeclHead "=" ( TypeExpression | TypeFunctionExpr )
-NominalTypeDecl ::= ( TypeDeclHead | LinearTypeHead ) [ "(" NominalPayloadType ")" ]
-OpaqueTypeDecl  ::= OpaqueTypeHead [ "(" NominalPayloadType ")" ]
+NominalTypeDecl ::= ( TypeDeclHead | LinearTypeHead ) [ "(" NominalPayloadType ")" { SignatureGuard } ]
+OpaqueTypeDecl  ::= OpaqueTypeHead [ "(" NominalPayloadType ")" { SignatureGuard } ]
 NominalPayloadType ::= TypeExpression { "," TypeExpression } [ "," ]
 TypeDeclHead    ::= { MetaAttr } [ Visibility ] "type" PascalCase [ GenericParams ]
 LinearTypeHead  ::= { MetaAttr } [ Visibility ] "linear" "type" PascalCase [ GenericParams ]
@@ -1650,15 +1651,15 @@ cells |> mut Array::push(Cell.{ v: 2 }) -- OK: 'elem' last use has ended
 
 ```ril
 -- Rejected indexing & live-hold overlaps:
--- let _ = m["port"]                    -- Error [E0352]: map read requires 'm?["port"]'
+-- let _ = m["missing"]                 -- Error [E0362]: map key not statically proved present; use 'm?["missing"]' or 'Map::contains'
 -- let _ = "abc"[0]                     -- Error [E0352]: 'str' element access uses 'String::scalar_at'
 -- let _ = Some(1).0                    -- Error [E0337]: sum has no '.0' projection
 -- let ref elem = cells[0]; cells |> mut Array::push(Cell.{ v: 2 }); assert(elem.v == 1) -- Error [E0537]
 ```
 
 - **Arrays `[M]T`, `bytes`, and Proof-by-Narrowing (`E0362`)**: Direct indexing `xs[i]` / `b[i]`, indexed assignment `xs[i] = v`, `Array::swap(mut xs, i, j)`, `Array::remove(mut xs, i)`, `String::scalar_at(text, i)`, and `Array::insert(mut xs, i, v)` require a static bounds proof (`0 <= i < len(xs)` via `InBounds(xs)`, or `0 <= i <= len(xs)` via `Between(0, len(xs))` for `Array::insert`; `E0362: UnprovedBoundsError` otherwise). Boundary-checked alternatives require no proof: `xs?[i] -> ?T`, `b?[i] -> ?int`, `Array::first`, `Array::last`, `Array::pop`, and `Array::pop_front`. Single-element bracket indexing on `str` fails `E0352` (use `String::scalar_at` with an `InBounds` proof); dynamic bracket indexing on records fails `E0324`.
-- **Slicing (`s[a..b]`, `s[a..=b]`, `s?[a..b]`)**: Direct slicing `s[a..b]` requires static local bounds proof (`0 <= a <= b <= len(s)`, `E0362` otherwise); safe slicing `s?[a..b]` returns `?T`. Slicing produces a fresh `new`-qualified array on `[M]T` (preserving element modes; binding directly to `let ref` fails `E0543`), a Unicode-scalar sub-string on `str`, and a byte sub-sequence on `bytes`.
-- **Maps `[K: M V]`**: Reads require safe lookup `m?[k] -> ?V` (`E0352` on `m[k]` reads or `m[k] += v`); direct slot assignment `m[k] = v` inserts or updates key `k`.
+- **Slicing (`s[a..b]`, `s[a..=b]`, `s?[a..b]`)**: Direct slicing `s[a..b]` requires static local bounds proof (`0 <= a <= b <= len(s)`, `E0362` otherwise); safe slicing `s?[a..b]` returns `?T`. The static prover tracks exact slice length conservation (`len(s[a..b]) == b - a`, `len(s[a..=b]) == b - a + 1`, `len(s[..k]) == k`, `len(s[..k]) + len(s[k..]) == len(s)`, including on `Some(sub)` unwraps of `s?[a..b]`). Slicing produces a fresh `new`-qualified array on `[M]T` (preserving element modes; binding directly to `let ref` fails `E0543`), a Unicode-scalar sub-string on `str`, and a byte sub-sequence on `bytes`.
+- **Maps `[K: M V]`**: Direct map reads `m[k]` and compound assignments `m[k] += v` require a static key-membership proof (`k |> In(m)`, `if Map::contains(m, k)`, `if m?[k] != None`, `m[k] = v`, or `for` over `m` / `Map::keys(m)`; `E0362` otherwise). Boundary lookup `m?[k] -> ?V` requires no proof; direct slot assignment `m[k] = v` inserts or updates key `k`.
 - **Container Element Holds (`E0537`, `E0526`)**: On live `[M]T` and `[K: M V]` containers, `xs[i]`, `xs?[i]`, and `m?[k]` establish scoped element holds bounded by the container; mutating or resizing the container while a `ref`/`mut` hold is active or during `for` iteration fails `E0537` / `E0526`.
 - **Tuple & static field projection (`t.0`, `r.(key)`)**: `t.0` projects tuple elements (`E0312` out of bounds; `E0337` on sums, records, collections, or primitives). `r.(key)` projects an accessible record field or tuple slot using a compile-time `meta` key validated by `KeyOf<T>`.
 
@@ -1750,7 +1751,7 @@ assert(a == 3 && b == 3)
 - **Record construction (`[Alias].{ [FieldMode] field: expr, shorthand }`)**: Must initialize every non-defaulted field (`E0307` missing, `E0302` unexpected, `E0210` duplicate). Shorthand `.{ id, name }` desugars to `.{ id: id, name: name }`. On anonymous `.{ ... }`, `[ FieldMode ]` declares the field's mode (or a `ref expr` value synthesizes a `ref` field; `var` is never synthesized, `E0357`). On record aliases `Alias.{ ... }`, fields inherit `Alias`'s declared modes (written `[ FieldMode ]` must match, `E0357`; `ref` fields require a `ref`-mode expression). Nominal and opaque records wrap via `Nominal::(.{ ... })` (`Nominal.{ ... }` fails `E0338`).
 - **Assignment Semantics (`target = expr`, `target += expr`, ...)**: Assignment is a `()`-typed expression and does not chain (`a = b = 1` fails `E0701`). Compound assignments evaluate `target`'s receiver/index expression exactly once.
 - **Valid `AssignTarget`**: Must be a `var` variable, a `var` record field on a `mut`/`^mut` path, an element of a `mut`/`^mut` array/map, or a field/tuple slot on a confined `mut Derived<T>` path.
-  - Fails `E0501` on `let` or plain fields, `E0502` on pinned `let mut`/`let ref`, `E0503` on temporaries or non-`Derived` tuple slots, and `E0352` on map compound assignment `m[k] += v`.
+  - Fails `E0501` on `let` or plain fields, `E0502` on pinned `let mut`/`let ref`, `E0503` on temporaries or non-`Derived` tuple slots, and `E0362` on unproved map compound assignment `m[k] += v`.
 
 ---
 
@@ -2231,8 +2232,8 @@ type Node = .{ var val: int }
 fn pick_ref(cond: bool, ref a: Node, ref b: Node) -> ref(a | b) Node {
     if cond { a } else { b }
 }
-fn make_nodes() -> new []Node |> HasLen(2) { [Node.{ val: 1 }, Node.{ val: 2 }] }
-fn make_staged() -> new []Node |> HasLen(2) {
+fn make_nodes() -> new []Node |> Len(2) { [Node.{ val: 1 }, Node.{ val: 2 }] }
+fn make_staged() -> new []Node |> Len(2) {
     let mut xs: []Node = [Node.{ val: 1 }]
     Array::push(mut xs, Node.{ val: 2 })
     xs
@@ -2268,7 +2269,7 @@ type HasRows = \s: Shelf -> if len(s.rows) > 0 { <()> } else { <never> }
 fn shared_shelf(^mut cell: Cell) &^mut &return(^mut cell) -> new Shelf |> HasRows {
     Shelf.{ rows: [^mut cell] }
 }
-fn wrap_snapshot(cell: Cell) &return(cell) -> new []Cell |> HasLen(1) { [cell] }
+fn wrap_snapshot(cell: Cell) &return(cell) -> new []Cell |> Len(1) { [cell] }
 fn wrap_view(ref cell: Cell) &return(ref cell) -> new [ref]Cell { [cell] }
 fn wrap_option(cell: Cell) &return(cell) -> new ?Cell { Some(cell) }
 fn id_new(new xs: []Cell) -> new []Cell { xs }
@@ -2557,7 +2558,7 @@ fn swap_add(mut a: Box, mut b: Box) &mut -> () { a.n += b.n; b.n += 1 }
 fn observe_mut(mut a: Box, ref b: Box) &mut -> int { a.n += 1; b.n }
 fn bump(mut a: Box) &mut -> () { a.n += 1 }
 fn bump_eff(mut a: Box) @Tick &mut -> () { Tick::step(); a.n += 1 }
-fn pair_shared(^mut a: Box, ^mut b: Box) &mut &^mut &return(^mut a, ^mut b) -> new [^mut]Box |> HasLen(2) {
+fn pair_shared(^mut a: Box, ^mut b: Box) &mut &^mut &return(^mut a, ^mut b) -> new [^mut]Box |> Len(2) {
     bump(mut a)                            -- OK: nested 'mut' call has no overlapping live participants
     [^mut a, ^mut b]
 }
@@ -3186,7 +3187,7 @@ fn main() @io -> new !<(), str> {
 
 The implicit prelude encloses every compilation unit and inline `sub`:
 - **Types & effects**: Primitive types, `Option<T>` (`?T`; exports `Some`, `None`), `Result<T, E>` (`!<T, E>`; exports `Ok`, `Err`), `Set<T>`, `FieldMode`, `Derived<T>`, and `@io`.
-- **Static checks, proofs, patterns & type helpers**: `SharedObject`, `LenTarget`, `InnerTarget`, `Inner`, `KeyOf`, the static-only type pattern `Nominal<pat>`, and 10 orthogonal static proof Type Functions: `NonZero`, `Nat`, `Positive`, `AtLeast`, `AtMost`, `Between`, `NonEmpty`, `HasLen`, `SameLen`, and `InBounds`.
+- **Static checks, proofs, patterns & type helpers**: `SharedObject`, `LenTarget`, `InTarget`, `InnerTarget`, `Inner`, `KeyOf`, the static-only type pattern `Nominal<pat>`, and 11 orthogonal static proof Type Functions: `NonZero`, `Nat`, `Positive`, `AtLeast`, `AtMost`, `Between`, `NonEmpty`, `Len`, `SameLen`, `InBounds`, and `In`.
 - **Core modules**: `Array` (including boundary accessors `Array::first`, `Array::last`, proved mutators/extractors `Array::swap`, `Array::insert`, `Array::remove`, `Array::repeat`, `Array::map`, and destructive extractors `Array::pop`, `Array::pop_front` returning `new ?T`), `Map` (including destructive extractors `Map::replace`, `Map::remove` returning `new ?V`, `Map::pop_entry` returning `new ?(K, V)`, plus linear-safe `Map::contains`, `Map::keys`, and `Map::values`), `Set`, `String`, `Bytes`, `Numeric` (`to_f64`, `to_int_trunc`, `to_int_exact`, and proved `int` `abs`/`min`/`max`/`clamp`), and `Reflect` (providing `TypeKind`, `FieldKey`, `type_name`, `type_kind`, `fields`, `sum_tags`, `attrs`, `field_attrs`, `variant_attrs`, `has_default`).
 - **Explicit standard imports**: `use ril/panic`, `use ril/io`, `use ril/file`, `use ril/platform`, and `use ril/math`.
 
@@ -3207,6 +3208,7 @@ The implicit prelude encloses every compilation unit and inline `sub`:
 | `Reflect::sum_tags` | `pub meta fn sum_tags<T>(target: Type<T>) -> []str` | Static only: variant tags of closed transparent sum `T` (`E0301` non-sum, `E0308` sealed/open) |
 | `compile_error` | `pub meta fn compile_error(message: str) -> never` | Static only: emits compile-time diagnostic `E0832` with `message`, anchored at the enclosing type/meta instantiation site |
 | `panic` | `pub fn panic(message: str) -> never` | Dual-phase: LIFO panic unwinding at runtime; `E0831` in static eval |
+| `unreachable` | `pub fn unreachable() -> never` | Dual-phase: requires static prover unreachability (`E0323`; forbids first-class decay `E0534`); never introduces `@panic`/`@abort`/`@diverge` and is legal inside `defer` |
 | `assert` | `pub fn assert(condition: bool, message: str = "assertion failed") -> ()` | Dual-phase: panics with `message` when `false` at runtime; `E0830` when `false` in static eval |
 | `Io::print` / `Io::println` (`ril/io`) | `pub fn print(text: str) @io -> ()`<br>`pub fn println(text: str) @io -> ()` | Runtime (`@io`): best-effort non-panicking UTF-8 writes to stdout (safe inside `defer`); requires explicit `use ril/io` (not exported by prelude) |
 

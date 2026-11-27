@@ -8,6 +8,7 @@ use super::{Eval, Signal, defect, integer, none, nonstatic};
 use crate::ty::{
     Adt, AdtKind, Ty, Value,
     check::{Checker, Env},
+    value::ieee_equal,
 };
 
 pub(super) fn eval_text(intrinsic: Intrinsic, args: &[Value], span: Span) -> Option<Eval> {
@@ -87,6 +88,10 @@ impl Checker<'_> {
                 Err(Signal::Error(Code::E0830, span, "static assertion failed"))
             }
             ("panic", _) => Err(defect(span, "static evaluation panicked")),
+            ("unreachable", []) => Err(defect(span, "static evaluation reached unreachable()")),
+            ("has_key", [Value::Map(entries), key]) => Ok(Value::Bool(
+                entries.iter().any(|(stored, _)| ieee_equal(stored, key)),
+            )),
             ("len", [Value::Array(items)]) => Ok(integer(items.len())),
             ("len", [Value::Map(items)]) => Ok(integer(items.len())),
             ("len", [Value::Str(str)]) => Ok(integer(str.chars().count())),
@@ -206,16 +211,15 @@ impl Checker<'_> {
             },
             ("has_default", [Value::Type(ty), Value::Str(field)]) => {
                 let target = self.normalize(ty);
-                if let Ty::Adt(adt) = &target {
-                    if matches!(adt.kind, AdtKind::Opaque | AdtKind::OpaqueSum)
-                        && adt.defining_scope != env.scope
-                    {
-                        return Err(Signal::Error(
-                            Code::E0308,
-                            span,
-                            "opaque representation is sealed",
-                        ));
-                    }
+                if let Ty::Adt(adt) = &target
+                    && matches!(adt.kind, AdtKind::Opaque | AdtKind::OpaqueSum)
+                    && adt.defining_scope != env.scope
+                {
+                    return Err(Signal::Error(
+                        Code::E0308,
+                        span,
+                        "opaque representation is sealed",
+                    ));
                 }
                 let fields_ok = match &target {
                     Ty::Record(fields, _) => fields.contains_key(field),

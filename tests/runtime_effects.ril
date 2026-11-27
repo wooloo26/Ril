@@ -539,3 +539,37 @@ fn main() -> () {
     }
     assert(inner(base) == (1, 2) && inner(updated) == (41, 3))
 }
+
+-- @case proved_map_invariants_slice_and_unreachable_runtime run-pass backend=both
+type ValidSpan = \s: .{ lo: int, hi: int } -> if s.lo <= s.hi { <()> } else { <never> }
+type Port(int) |> Between(1, 65535)
+type Span(.{ lo: int, hi: int }) |> ValidSpan
+
+fn get_key(m: [str: int], k: str |> In(m)) -> int { m[k] }
+fn slice_window(xs: []int, a: int, b: int |> AtLeast(a)) -> new []int |> Len(b - a) {
+    if 0 <= a && b <= len(xs) {
+        xs[a..b]
+    } else {
+        Array::repeat(0, b - a)
+    }
+}
+
+fn main() -> () {
+    let mut scores: [str: int] = ["ada": 10]
+    scores["grace"] = 20
+    scores["ada"] += 5
+    var sum = 0
+    for ref scores as (k, _) {
+        sum += scores[k]
+    }
+    assert(sum == 35 && get_key(clone(ref scores), "ada") == 15)
+
+    let p = Port::(8080)
+    let sp = Span::(.{ lo: 2, hi: 5 })
+    if sp.lo > sp.hi {
+        unreachable()
+    }
+    let xs = [10, 20, 30, 40, 50]
+    let win = slice_window(xs, sp.lo, sp.hi)
+    assert(inner(p) == 8080 && len(win) == 3 && win[0] == 30 && win[2] == 50)
+}

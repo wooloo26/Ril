@@ -367,6 +367,7 @@ impl Analyzer<'_> {
         refs
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn can_promote_exit_local(
         &self,
         ctx: &Context,
@@ -381,10 +382,7 @@ impl Analyzer<'_> {
             return false;
         }
         if value.roots.iter().any(|r| {
-            r.mode != Access::Mut
-                || r.confined.is_some()
-                || r.from_variable
-                || r.call_scoped_access
+            r.mode != Access::Mut || r.confined.is_some() || r.from_variable || r.call_scoped_access
         }) {
             return false;
         }
@@ -478,6 +476,7 @@ impl Analyzer<'_> {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn eval_exit_expr(
         &mut self,
         ctx: &mut Context,
@@ -516,9 +515,7 @@ impl Analyzer<'_> {
                 let mut result = Datum::default();
                 for (i, &item) in statements.iter().enumerate() {
                     let is_tail = i + 1 == statements.len();
-                    if is_tail
-                        && let StmtKind::Expr(tail_expr) = ast.stmt(item).value.kind
-                    {
+                    if is_tail && let StmtKind::Expr(tail_expr) = ast.stmt(item).value.kind {
                         result = self.eval_exit_expr(
                             &mut local_ctx,
                             ledger,
@@ -854,7 +851,9 @@ impl Analyzer<'_> {
                         .is_some_and(|p| p.mode == Mode::Via);
                     let effective_mode = if inferred {
                         match arg.mode {
-                            Mode::Plain if value.requires_new && (already_new || !from_new_formal) => {
+                            Mode::Plain
+                                if value.requires_new && (already_new || !from_new_formal) =>
+                            {
                                 Mode::New
                             }
                             Mode::Plain if Self::forwards_via(ctx, &value) => Mode::Via,
@@ -902,10 +901,7 @@ impl Analyzer<'_> {
                     continue;
                 }
                 let snap = ledger.loop_snapshot(other_val);
-                if roots
-                    .iter()
-                    .any(|r| snap.origins().any(|o| r.overlaps(o)))
-                {
+                if roots.iter().any(|r| snap.origins().any(|o| r.overlaps(o))) {
                     self.error(
                         Code::E0510,
                         *other_span,
@@ -924,10 +920,7 @@ impl Analyzer<'_> {
         value: &mut Datum,
     ) {
         ctx.reachable &= !ledger.no_continuation;
-        if ctx.reachable
-            && self.ty(span).is_result(&self.program.hir)
-            && !value.has_root_result()
-        {
+        if ctx.reachable && self.ty(span).is_result(&self.program.hir) && !value.has_root_result() {
             ledger.record_result(value, span);
         }
         if ctx.reachable

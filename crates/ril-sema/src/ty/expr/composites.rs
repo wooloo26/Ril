@@ -72,13 +72,6 @@ impl Checker<'_> {
         if let Ty::Draft(inner) = base {
             base = *inner;
         }
-        if matches!(base, Ty::Map(..)) && !safe && env.map_store != Some(span) {
-            self.error(
-                Code::E0352,
-                span,
-                "map reads require the safe index operator",
-            );
-        }
         let is_record = match &base {
             Ty::Record(..) => true,
             Ty::Adt(adt) if matches!(adt.kind, AdtKind::Nominal | AdtKind::Opaque) => {
@@ -133,6 +126,17 @@ impl Checker<'_> {
             Ty::Unknown
         } else {
             self.require(env, self.ast(env.file).expr(index).span, &index_ty, &key);
+            if !safe && !env.shadow && env.map_store != Some(span) && matches!(base, Ty::Map(..)) {
+                if self.is_proved_map_index(env, base_expr, index) {
+                    self.proved_ops.insert(span);
+                } else {
+                    self.error(
+                        Code::E0362,
+                        span,
+                        "map key is not statically proved present; use '?[k]', 'if Map::contains(m, k)', 'if m?[k] != None', or require '|> In(m)'",
+                    );
+                }
+            }
             if !safe
                 && !env.shadow
                 && matches!(base, Ty::Array(_) | Ty::Bytes)
