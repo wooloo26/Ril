@@ -296,7 +296,7 @@ fn lsp_prelude_definitions_jump_to_std_prelude_ril() -> Result<(), String> {
     let root_uri = format!("file://{}", repo_root.display());
     let doc_uri = format!("file://{}/pkg/prelude_jump.ril", repo_root.display());
     let source = concat!(
-        "use ril/panic as Panic\n",
+        "use ril/panic\n",
         "type Rec(.{ a: int })\n",
         "type S = SharedObject<Rec>\n",
         "fn check<T |> InnerTarget>(t: T, x: Option<int>, y: Result<int, Panic::Error>) -> int {\n",
@@ -854,6 +854,7 @@ fn main() -> () {
 fn lsp_hover_inlay_and_w0601_surface_behavior_and_provenance() -> Result<(), String> {
     let uri = "file:///workspace/provenance.ril";
     let source = concat!(
+        "use ril/io\n",
         "fn clamp(x: int, lo: int, hi: int) -> int {\n",
         "    if x < lo { lo } else if x > hi { hi } else { x }\n",
         "}\n",
@@ -866,7 +867,7 @@ fn lsp_hover_inlay_and_w0601_surface_behavior_and_provenance() -> Result<(), Str
         "fn main() @io -> () {\n",
         "    let mut out = [1, 2]\n",
         "    let log_push = \\x: int -> {\n",
-        "        println(String::inspect(x))\n",
+        "        Io::println(String::inspect(x))\n",
         "        Array::push(mut out, x)\n",
         "    }\n",
         "    log_push(clamp(3, 0, 5))\n",
@@ -893,14 +894,14 @@ fn lsp_hover_inlay_and_w0601_surface_behavior_and_provenance() -> Result<(), Str
         "jsonrpc": "2.0",
         "id": 2,
         "method": "textDocument/hover",
-        "params": { "textDocument": { "uri": uri }, "position": { "line": 0, "character": 4 } }
+        "params": { "textDocument": { "uri": uri }, "position": { "line": 1, "character": 4 } }
     })));
     // id 3: hover on `flush_batch` (&mut(buf) + May panic + May abort process)
     input.extend(frame_lsp(&json!({
         "jsonrpc": "2.0",
         "id": 3,
         "method": "textDocument/hover",
-        "params": { "textDocument": { "uri": uri }, "position": { "line": 3, "character": 5 } }
+        "params": { "textDocument": { "uri": uri }, "position": { "line": 4, "character": 5 } }
     })));
     // id 4: inlayHint over the whole file
     input.extend(frame_lsp(&json!({
@@ -909,7 +910,7 @@ fn lsp_hover_inlay_and_w0601_surface_behavior_and_provenance() -> Result<(), Str
         "method": "textDocument/inlayHint",
         "params": {
             "textDocument": { "uri": uri },
-            "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 18, "character": 0 } }
+            "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 19, "character": 0 } }
         }
     })));
     input.extend(frame_lsp(

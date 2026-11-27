@@ -1,0 +1,7 @@
+.gitignore
+src/**
+tsconfig.json
+install.sh
+node_modules/**
+**/*.map
+**/*.ts

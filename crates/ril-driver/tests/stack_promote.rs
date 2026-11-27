@@ -44,6 +44,7 @@ fn check_aot_equivalence(source: &str, expected_stdout: &str) -> Result<(), Stri
 #[test]
 fn promoted_nested_records_tuples_arrays_and_tags_eliminate_heap_ops() {
     let source = r#"
+use ril/io
 type Point = .{ var x: int, var y: int }
 type Pair = .{ a: Point, b: Point }
 fn main() @io -> () {
@@ -63,7 +64,7 @@ fn main() @io -> () {
             None -> {}
         }
     }
-    println(String::inspect(total))
+    Io::println(String::inspect(total))
 }
 "#;
     check_aot_equivalence(source, "2150\n").unwrap();
@@ -104,6 +105,7 @@ fn main() @io -> () {
 #[test]
 fn escaping_and_loop_carried_objects_preserve_identity_and_gc_roots() {
     let source = r#"
+use ril/io
 type Node = .{ var label: str, var value: int }
 fn bump(mut n: Node) &mut -> int {
     n.value += 10
@@ -138,7 +140,7 @@ fn main() @io -> () {
     }
     let bumped = escaped.value
     let items = [escaped]
-    println("{sum}:{prev.label}:{box.label}:{box.value}:{bumped}:{items[0].value}")
+    Io::println("{sum}:{prev.label}:{box.label}:{box.value}:{bumped}:{items[0].value}")
 }
 "#;
     check_aot_equivalence(source, "70:step_4:iter_2:9:15:15\n").unwrap();

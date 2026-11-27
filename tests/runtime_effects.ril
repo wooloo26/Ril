@@ -12,9 +12,10 @@ fn main() -> () { let _ = shift(-1) }
 -- @case cleanup_runs_in_reverse_order run-pass backend=both
 -- @expect-stdout second
 -- @expect-stdout first
+use ril/io
 opaque type Resource(.{ message: str })
 fn acquire(message: str) -> new Resource { Resource::(.{ message }) }
-fn close(resource: Resource) @io -> () { println(resource.message) }
+fn close(resource: Resource) @io -> () { Io::println(resource.message) }
 fn main() @io -> () {
     let first = acquire("first")
     defer close(first)
@@ -24,8 +25,9 @@ fn main() @io -> () {
 
 -- @case panic_runs_cleanup run-panic "failure" backend=both
 -- @expect-stdout cleanup
+use ril/io
 opaque type Resource(.{ id: int })
-fn close(_resource: Resource) @io -> () { println("cleanup") }
+fn close(_resource: Resource) @io -> () { Io::println("cleanup") }
 fn main() @io -> () {
     let resource = Resource::(.{ id: 1 })
     defer close(resource)
@@ -35,11 +37,12 @@ fn main() @io -> () {
 -- @case panic_runs_both_cleanups_through_their_installed_handler run-panic "failure" backend=both
 -- @expect-stdout second
 -- @expect-stdout first
+use ril/io
 eff Finalize { fn report(message: str) -> () }
 opaque type Resource(.{ message: str })
 fn close(resource: Resource) @Finalize -> () { Finalize::report(resource.message) }
 fn main() @io -> () {
-    with Finalize::report = \message: str -> println(message)
+    with Finalize::report = \message: str -> Io::println(message)
     let first = Resource::(.{ message: "first" })
     defer close(first)
     let second = Resource::(.{ message: "second" })
@@ -48,7 +51,7 @@ fn main() @io -> () {
 }
 
 -- @case double_panic_aborts run-abort backend=both
-use ril/panic as Panic
+use ril/panic
 fn main() -> () {
     let outcome = Panic::recover \-> {
         defer panic("second")
@@ -59,31 +62,35 @@ fn main() -> () {
 
 -- @case lexical_user_effect run-pass backend=both
 -- @expect-stdout 42
+use ril/io
 eff Clock { fn now() -> int }
 fn main() @io -> () {
     with Clock::now = \-> 42
-    println("{Clock::now()}")
+    Io::println("{Clock::now()}")
 }
 
 -- @case panic_recovery run-pass backend=both
 -- @expect-stdout survived
-use ril/panic as Panic
+use ril/io
+use ril/panic
 fn main() @io -> () {
     let outcome = Panic::recover \-> { panic("caught") }
-    match outcome { Ok(_) -> (); Err(_) -> println("survived") }
+    match outcome { Ok(_) -> (); Err(_) -> Io::println("survived") }
 }
 
 -- @case evidence_passes_through_call run-pass backend=both
 -- @expect-stdout 41
+use ril/io
 eff Clock { fn now() -> int }
 fn time() @Clock -> int { Clock::now() }
 fn main() @io -> () {
     with Clock::now = \-> 41
-    println("{time()}")
+    Io::println("{time()}")
 }
 
 -- @case escaping_closure_uses_dynamic_call_stack_handler run-pass backend=both
 -- @expect-stdout 9
+use ril/io
 eff Clock { fn now() -> int }
 fn factory() -> fn() @Clock -> int {
     with Clock::now = \-> 3
@@ -92,15 +99,16 @@ fn factory() -> fn() @Clock -> int {
 fn main() @io -> () {
     let clock = factory()
     with Clock::now = \-> 9
-    println("{clock()}")
+    Io::println("{clock()}")
 }
 
 -- @case first_class_immutable_capture run-pass backend=both
 -- @expect-stdout 16
+use ril/io
 fn make(x: int) &capture -> fn(int) -> int { \y: int -> x + y }
 fn main() @io -> () {
     let f = make(10)
-    println("{f(6)}")
+    Io::println("{f(6)}")
 }
 
 -- @case cloned_callable_uses_dynamic_handler_at_call_site run-pass backend=both
@@ -129,16 +137,18 @@ fn now() @Clock -> int { Clock::now() }
 
 -- @case captured_variable_uses_shared_slot run-pass backend=both
 -- @expect-stdout 2:3:3
+use ril/io
 fn main() @io -> () {
     var count = 1
     let ^mut next = \-> { count += 1; count }
     let first = next()
     let second = next()
-    println("{first}:{second}:{count}")
+    Io::println("{first}:{second}:{count}")
 }
 
 -- @case local_named_fn_uses_captured_slots run-pass backend=both
 -- @expect-stdout 6
+use ril/io
 fn total(n: int) -> int {
     var sum = 1
     add(n)
@@ -146,10 +156,11 @@ fn total(n: int) -> int {
 where
     fn add(value: int) &up(var sum) -> () { sum += value }
 }
-fn main() @io -> () { println("{total(5)}") }
+fn main() @io -> () { Io::println("{total(5)}") }
 
 -- @case draft_changes_only_the_copy run-pass backend=both
 -- @expect-stdout 3:5:2
+use ril/io
 type Profile = .{ count: int, values: []int }
 fn main() @io -> () {
     let base = Profile.{ count: 3, values: [1] }
@@ -157,7 +168,7 @@ fn main() @io -> () {
         draft.count = 5
         Array::push(mut draft.values, 2)
     }
-    println("{base.count}:{updated.count}:{len(updated.values)}")
+    Io::println("{base.count}:{updated.count}:{len(updated.values)}")
 }
 
 -- @case derive_receives_via_snapshots_through_projections_and_callbacks run-pass backend=both
@@ -189,25 +200,28 @@ fn main() -> () {
 
 -- @case local_effect_dispatches_through_its_handler run-pass backend=both
 -- @expect-stdout 42
+use ril/io
 fn main() @io -> () {
     with Shift::apply = \left, right -> left - right
-    println("{Shift::apply(right: 1, left: 43)}")
+    Io::println("{Shift::apply(right: 1, left: 43)}")
 where
     eff Shift { fn apply(left: int, right: int) -> int }
 }
 
 -- @case effects_with_same_operation_names_keep_distinct_evidence run-pass backend=both
 -- @expect-stdout 12:34
+use ril/io
 eff First { fn read() -> int }
 eff Second { fn read() -> int }
 fn main() @io -> () {
     with First::read = \-> 12
     with Second::read = \-> 34
-    println("{First::read()}:{Second::read()}")
+    Io::println("{First::read()}:{Second::read()}")
 }
 
 -- @case inferred_propagation_returns_widened_error run-pass backend=both
 -- @expect-stdout first
+use ril/io
 type Basic { First }
 type Extended { ..Basic; Second }
 fn first() -> new !<int, Basic> { Err(Basic::First) }
@@ -218,9 +232,9 @@ fn main() @io -> () {
         Ok(a + second()?)
     }
     match sum() {
-        Ok(_) -> println("success")
-        Err(Basic::First) -> println("first")
-        Err(Extended::Second) -> println("second")
+        Ok(_) -> Io::println("success")
+        Err(Basic::First) -> Io::println("first")
+        Err(Extended::Second) -> Io::println("second")
     }
 }
 
@@ -236,7 +250,8 @@ fn main() -> () {
 
 -- @case panic_boundary_accepts_first_class_action_and_opaque_info run-pass backend=both
 -- @expect-stdout expected failure
-use ril/panic as Panic
+use ril/io
+use ril/panic
 fn fail() -> int { panic("expected failure") }
 fn main() @io -> () {
     let action = fail
@@ -245,7 +260,7 @@ fn main() @io -> () {
         Ok(_) -> panic("panic should have been recovered")
         Err(Panic::Error::Panicked(info)) -> {
             assert(String::inspect(info) == "<Report>")
-            println(Panic::message(info))
+            Io::println(Panic::message(info))
         }
     }
 }
@@ -320,7 +335,7 @@ fn main() -> () {
 }
 
 -- @case isolated_closure_in_new_return_handles_its_own_panic run-pass backend=both
-use ril/panic as Panic
+use ril/panic
 fn protected(values: []int) -> new !<int, Panic::Error> {
     Panic::recover \-> values[1]
 }
@@ -331,6 +346,7 @@ fn main() -> () {
 
 -- @case draft_updates_only_the_selected_occurrence run-pass backend=both
 -- @expect-stdout 1:1:3:1:8:7:7
+use ril/io
 type Cell = .{ count: int }
 fn main() @io -> () {
     let first = Cell.{ count: 1 }
@@ -345,11 +361,12 @@ fn main() @io -> () {
     assert(len(base.0) == 1 && len(base.1) == 1)
     assert(len(updated.0) == 3 && len(updated.1) == 1)
     assert(updated.0[1].count == 8 && updated.0[2].count == 7 && outside.count == 7)
-    println("{len(base.0)}:{len(base.1)}:{len(updated.0)}:{len(updated.1)}:{updated.0[1].count}:{updated.0[2].count}:{outside.count}")
+    Io::println("{len(base.0)}:{len(base.1)}:{len(updated.0)}:{len(updated.1)}:{updated.0[1].count}:{updated.0[2].count}:{outside.count}")
 }
 
 -- @case draft_inserts_map_entry_without_changing_base run-pass backend=both
 -- @expect-stdout 1:2:10:20
+use ril/io
 fn main() @io -> () {
     let base = [1: 10]
     let updated = derive(base) \mut draft -> { draft[2] = 20 }
@@ -357,21 +374,23 @@ fn main() @io -> () {
     assert(len(updated) == 2 && updated?[1] == Some(10) && updated?[2] == Some(20))
     let Some(first) = updated?[1] else { panic("missing original entry") }
     let Some(second) = updated?[2] else { panic("missing inserted entry") }
-    println("{len(base)}:{len(updated)}:{first}:{second}")
+    Io::println("{len(base)}:{len(updated)}:{first}:{second}")
 }
 
 -- @case draft_can_replace_a_fixed_tuple_member_with_a_shorter_array run-pass backend=both
 -- @expect-stdout 2:1:2:7
+use ril/io
 type Cell = .{ count: int }
 fn main() @io -> () {
     let row = [Cell.{ count: 1 }, Cell.{ count: 7 }]
     let base = (row, row)
     let updated = derive(base) \mut draft -> { draft.0 = [row[1]] }
-    println("{len(base.0)}:{len(updated.0)}:{len(updated.1)}:{updated.0[0].count}")
+    Io::println("{len(base.0)}:{len(updated.0)}:{len(updated.1)}:{updated.0[0].count}")
 }
 
 -- @case draft_writes_to_the_current_path_after_reordering run-pass backend=both
 -- @expect-stdout 1:7:7:2:1:7
+use ril/io
 type Cell = .{ count: int }
 fn main() @io -> () {
     let row = [Cell.{ count: 1 }, Cell.{ count: 7 }]
@@ -380,12 +399,13 @@ fn main() @io -> () {
         draft.0 = [row[1], row[0]]
         draft.0[1].count = 2
     }
-    println("{base.0[0].count}:{base.0[1].count}:{updated.0[0].count}:{updated.0[1].count}:{updated.1[0].count}:{updated.1[1].count}")
+    Io::println("{base.0[0].count}:{base.0[1].count}:{updated.0[0].count}:{updated.0[1].count}:{updated.1[0].count}:{updated.1[1].count}")
 }
 
 -- @case aborted_derive_preserves_the_base_and_inserted_source run-pass backend=both
 -- @expect-stdout 2:1:7:7
-use ril/panic as Panic
+use ril/io
+use ril/panic
 type Cell = .{ count: int }
 fn main() @io -> () {
     let outside = Cell.{ count: 7 }
@@ -399,7 +419,7 @@ fn main() @io -> () {
         }
     }
     let Err(Panic::Error::Panicked(_)) = caught else { panic("derive unexpectedly published") }
-    println("{len(base.0)}:{base.0[0].count}:{base.0[1].count}:{outside.count}")
+    Io::println("{len(base.0)}:{base.0[0].count}:{base.0[1].count}:{outside.count}")
 }
 
 -- @case empty_record_and_unit_payload_sums_are_draft_roots run-pass backend=both
@@ -418,12 +438,13 @@ fn main() -> () {
 
 -- @case aborted_draft_dispatches_body_and_cleanup_effects run-panic "aborted draft" backend=both
 -- @expect-stdout 5:8
+use ril/io
 eff Report { fn emit(value: int) -> () }
 opaque type Event(.{ value: int })
 fn record(event: Event) @Report -> () { Report::emit(event.value) }
 fn main() @io -> () {
     with Report::emit = \value: int -> {
-        if value == 5 { print("5:") } else { println("{value}") }
+        if value == 5 { Io::print("5:") } else { Io::println("{value}") }
     }
     let shared = [1, 7]
     let base = (shared, shared)

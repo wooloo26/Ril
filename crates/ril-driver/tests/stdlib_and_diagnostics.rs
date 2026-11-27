@@ -44,6 +44,7 @@ fn run_aot(source: &str, expected_stdout: &str) -> Result<(), String> {
 #[test]
 fn self_hosted_stdlib_combinators_execute_under_gc_stress() -> Result<(), String> {
     let source = r#"
+        use ril/io
         fn main() @io -> () {
             assert(Numeric::div(42, 6) == Some(7))
             assert(Numeric::div(42, 0) == None)
@@ -72,7 +73,7 @@ fn self_hosted_stdlib_combinators_execute_under_gc_stress() -> Result<(), String
             let raw = String::encode_utf8("ril-std")
             assert(String::decode_utf8(raw) == Some("ril-std"))
             assert(String::decode_utf8(String::encode_utf8("ril-std")) == Some("ril-std"))
-            println("std-ok")
+            Io::println("std-ok")
         }
     "#;
     run_aot(source, "std-ok\n")
@@ -116,6 +117,7 @@ fn private_stdlib_intrinsics_are_hidden_and_array_get_is_removed() {
 #[test]
 fn top_level_monomorphization_projects_out_unrelated_caller_type_params() -> Result<(), String> {
     let source = r#"
+        use ril/io
         fn helper(x: int) -> int { x + 1 }
         fn identity<U>(x: U) -> U { x }
         fn wrap<T>(x: T, n: int) -> int {
@@ -126,7 +128,7 @@ fn top_level_monomorphization_projects_out_unrelated_caller_type_params() -> Res
             assert(wrap(1, 10) == 11)
             assert(wrap("hi", 20) == 21)
             assert(wrap(true, 30) == 31)
-            println("mono-ok")
+            Io::println("mono-ok")
         }
     "#;
     let mut package = VirtualPackage::new(Unit::Bin);
@@ -209,9 +211,10 @@ fn access_diagnostics_attach_secondary_labels_and_help() -> Result<(), String> {
 #[test]
 fn prelude_real_sums_platform_math_and_removed_aliases() -> Result<(), String> {
     let source = r#"
+        use ril/io
         use ril/bytes
         use ril/math
-        use ril/panic as Panic
+        use ril/panic
         use ril/platform
 
         fn check_set_sig(s: Set<int>) -> int { len(s) }
@@ -245,7 +248,7 @@ fn prelude_real_sums_platform_math_and_removed_aliases() -> Result<(), String> {
             assert(Math::PI > 3.14 && Math::EULER > 2.71)
             assert(len(String::encode_utf8("ab")) == 2)
             let _ = check_set_sig
-            println("wave-a-ok")
+            Io::println("wave-a-ok")
             Result::Ok()
         }
     "#;
@@ -275,6 +278,7 @@ fn prelude_real_sums_platform_math_and_removed_aliases() -> Result<(), String> {
 #[test]
 fn wave_b_stdlib_primitives_set_sort_first_class_and_named_args() -> Result<(), String> {
     let source = r#"
+        use ril/io
         fn sub_named(left: int, right: int) -> int { left - right }
 
         fn main() @io -> () {
@@ -344,7 +348,7 @@ fn wave_b_stdlib_primitives_set_sort_first_class_and_named_args() -> Result<(), 
             let f_sub: fn(left: int, right: int) -> int = sub_named
             assert(f_sub(right: 3, left: 10) == 7)
 
-            println("wave-b-ok")
+            Io::println("wave-b-ok")
         }
     "#;
     run_aot(source, "wave-b-ok\n")?;
@@ -399,6 +403,7 @@ fn wave_b_stdlib_primitives_set_sort_first_class_and_named_args() -> Result<(), 
 #[test]
 fn wave_c_soundness_static_checks_narrowing_patterns_and_nominals() -> Result<(), String> {
     let source = r#"
+        use ril/io
         type UserId(int)
         type Config(.{ host: str = "localhost", port: int = 8080 })
         meta let DEFAULT_CFG = Config::(.{ port: 9000 })
@@ -444,7 +449,7 @@ fn wave_c_soundness_static_checks_narrowing_patterns_and_nominals() -> Result<()
             assert(narrow_or(None) && narrow_or(Some(10)) && !narrow_or(Some(1)))
             assert(break_from_let_else([Some(1), Some(2), None]) == 2)
 
-            println("wave-c-ok")
+            Io::println("wave-c-ok")
         }
     "#;
     run_aot(source, "wave-c-ok\n")?;
@@ -538,6 +543,7 @@ fn wave_c_soundness_static_checks_narrowing_patterns_and_nominals() -> Result<()
 #[test]
 fn wave_d_effects_guards_recover_panic_and_ctl() -> Result<(), String> {
     let source = r#"
+        use ril/io
         type Box = .{ var v: int }
         eff Tag { fn mark() -> int }
         eff Yield { ctl emit(value: int) -> () }
@@ -577,7 +583,7 @@ fn wave_d_effects_guards_recover_panic_and_ctl() -> Result<(), String> {
             assert(unwound && out == [10, 20])
             assert(take_eff(\-> Tag::mark()))
 
-            println("wave-d-ok")
+            Io::println("wave-d-ok")
         }
     "#;
     run_aot(source, "wave-d-ok\n")?;
@@ -604,17 +610,17 @@ fn wave_d_effects_guards_recover_panic_and_ctl() -> Result<(), String> {
             Code::E0314,
         ),
         (
-            "use ril/panic as Panic\nfn main() -> () { let _ = Panic::recover(42) }\n",
+            "use ril/panic\nfn main() -> () { let _ = Panic::recover(42) }\n",
             Stage::Type,
             Code::E0338,
         ),
         (
-            "use ril/panic as Panic\nfn main() -> () { let _ = Panic::recover(\\x: int -> x) }\n",
+            "use ril/panic\nfn main() -> () { let _ = Panic::recover(\\x: int -> x) }\n",
             Stage::Type,
             Code::E0314,
         ),
         (
-            "use ril/panic as Panic\neff Y { ctl step() -> () }\nfn main() -> () { with { ctl Y::step = \\k -> { let _ = Panic::recover(\\-> unwind_ctl(k)); () }; Y::step() } }\n",
+            "use ril/panic\neff Y { ctl step() -> () }\nfn main() -> () { with { ctl Y::step = \\k -> { let _ = Panic::recover(\\-> unwind_ctl(k)); () }; Y::step() } }\n",
             Stage::Access,
             Code::E0608,
         ),
@@ -653,7 +659,8 @@ fn wave_d_effects_guards_recover_panic_and_ctl() -> Result<(), String> {
 #[test]
 fn wave_e_introspection_type_patterns_and_parser_conformance() -> Result<(), String> {
     let source = r#"
-        use ril/panic as Panic
+        use ril/io
+        use ril/panic
         type Pair(int, str)
         type Config(.{ host: str = "localhost", port: int })
         type Box<T>(.{ item: T })
@@ -711,7 +718,7 @@ fn wave_e_introspection_type_patterns_and_parser_conformance() -> Result<(), Str
             }
             assert(boxes[0].n == 11 && boxes[1].n == 12)
 
-            println("wave-e-ok")
+            Io::println("wave-e-ok")
         }
     "#;
     run_aot(source, "wave-e-ok\n")?;
@@ -834,6 +841,7 @@ fn primitive_manifest_runtime_symbols_exist_in_ril_rt() {
 fn de_magification_self_hosted_set_stdlib_convert_compile_error_and_wrapper_syntax()
 -> Result<(), String> {
     let source = r#"
+        use ril/io
         eff Ask { ctl value() -> int }
 
         type UserId(int)
@@ -917,7 +925,7 @@ fn de_magification_self_hosted_set_stdlib_convert_compile_error_and_wrapper_synt
             }
             assert(result == 42 && q == [99])
             assert(STATIC_TOTAL == 44)
-            println("wave-5-ok")
+            Io::println("wave-5-ok")
         }
     "#;
     run_aot(source, "wave-5-ok\n")?;
@@ -1091,7 +1099,7 @@ fn de_magification_self_hosted_set_stdlib_convert_compile_error_and_wrapper_synt
             Code::E0301,
         ),
         (
-            "use ril/panic as Panic\nfn f<T |> SharedObject>(x: T) -> T { x }\nfn g(r: Panic::Report) -> Panic::Report { f(r) }\nfn main() -> () {}\n",
+            "use ril/panic\nfn f<T |> SharedObject>(x: T) -> T { x }\nfn g(r: Panic::Report) -> Panic::Report { f(r) }\nfn main() -> () {}\n",
             Stage::Type,
             Code::E0301,
         ),
@@ -1112,6 +1120,8 @@ fn de_magification_self_hosted_set_stdlib_convert_compile_error_and_wrapper_synt
 
     // Positive self-hosted type-function & Nominal<pat> & TypeKind soundness tests
     let self_hosted_ok = r#"
+        use ril/io
+
         type UserId(int)
         type Box<T>(T)
         type Node(.{ val: int, next: ?Node })
@@ -1209,7 +1219,7 @@ fn de_magification_self_hosted_set_stdlib_convert_compile_error_and_wrapper_synt
             assert(spaced == 9)
             let fm = meta FieldMode::Var
             assert(fm == FieldMode::Var)
-            println("self-hosted-ok")
+            Io::println("self-hosted-ok")
         }
     "#;
     run_aot(self_hosted_ok, "self-hosted-ok\n")?;

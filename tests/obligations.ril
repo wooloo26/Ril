@@ -2,18 +2,25 @@
 -- @default_stage access
 
 -- @case exact_io_asserted compile-pass
+use ril/io
+fn emit() @io -> () { Io::println("message") }
+
+-- @case prelude_does_not_export_println compile-fail E0204 stage=hir
 fn emit() @io -> () { println("message") }
+-- ^ E0204
 
 -- @case a_named_function_cannot_declare_an_unused_effect compile-fail E0626
 fn silent() @io -> () { () }
 -- ^ E0626
 
 -- @case missing_io compile-fail E0612
-fn emit() -> () { println("message") }
+use ril/io
+fn emit() -> () { Io::println("message") }
 -- ^ E0612
 
 -- @case top_level_effect compile-fail E0202 unit=lib
-let boot = println("message")
+use ril/io
+let boot = Io::println("message")
 -- ^ E0202
 
 -- @case handler_contains_effect compile-pass
@@ -24,9 +31,10 @@ fn read() -> int {
 }
 
 -- @case handler_installation_charges_outward_effects compile-pass
+use ril/io
 eff Notify { fn log() -> () }
 fn install() @io -> () {
-    with Notify::log = \-> println("registered")
+    with Notify::log = \-> Io::println("registered")
 }
 
 -- @case active_handler_cannot_lose_captured_authority compile-fail E0535
@@ -71,8 +79,9 @@ fn use_number() -> () { use number = 0 }
 -- ^ E0208
 
 -- @case synchronous_cleanup compile-pass
+use ril/io
 opaque type Handle(.{ id: int })
-fn close(ref _resource: Handle) @io -> () { println("closed") }
+fn close(ref _resource: Handle) @io -> () { Io::println("closed") }
 fn acquire() -> new Handle { Handle::(.{ id: 42 }) }
 fn scoped() @io -> int {
     let handle = acquire()

@@ -13,6 +13,7 @@ fn cli_opt_stack_promote_matches_jit_and_aot_and_emits_promoted_ir() {
     fs::write(
         &src,
         r#"
+use ril/io
 type Point = .{ var x: int, var y: int }
 fn main() @io -> () {
     var total = 0
@@ -21,7 +22,7 @@ fn main() @io -> () {
         p.x += p.y
         total += p.x
     }
-    println(String::inspect(total))
+    Io::println(String::inspect(total))
 }
 "#,
     )
@@ -143,7 +144,7 @@ fn cli_incremental_cache_reuses_and_invalidates_on_source_dep_and_option_changes
     // Build executable with --incremental, then edit source and toggle --opt-stack-promote.
     let app = pkg_dir.join("app.ril");
     let exe = dir.path().join("app_bin");
-    fs::write(&app, "fn main() @io -> () { println(\"v1\") }\n").unwrap();
+    fs::write(&app, "use ril/io\nfn main() @io -> () { Io::println(\"v1\") }\n").unwrap();
     for flag in [None, Some("--opt-stack-promote")] {
         let mut cmd = Command::new(ril_bin());
         cmd.args(["build", "--incremental"])
@@ -164,7 +165,7 @@ fn cli_incremental_cache_reuses_and_invalidates_on_source_dep_and_option_changes
         assert_eq!(String::from_utf8_lossy(&run.stdout), "v1\n");
     }
 
-    fs::write(&app, "fn main() @io -> () { println(\"v2\") }\n").unwrap();
+    fs::write(&app, "use ril/io\nfn main() @io -> () { Io::println(\"v2\") }\n").unwrap();
     let rebuilt = Command::new(ril_bin())
         .args(["build", "--incremental"])
         .arg(&cache)

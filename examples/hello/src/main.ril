@@ -1,6 +1,7 @@
 -- Multi-module Ril example showcasing stdlib combinators, algebraic `ctl` effects, and `defer`.
 
 use pkg/math
+use ril/io
 
 eff Emit {
     ctl emit(value: int) -> ()
@@ -39,5 +40,5 @@ fn main() @io -> () {
     }
     assert(cleaned)
     assert(done?[3] == Some(25))
-    println("hello-ok")
+    Io::println("hello-ok")
 }

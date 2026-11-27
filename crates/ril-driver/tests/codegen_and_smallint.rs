@@ -52,6 +52,7 @@ fn clif_uses_intrusive_root_frame_and_inline_smallint_constants() -> Result<(), 
 #[test]
 fn smallint_63bit_boundaries_overflow_and_demotion_across_opt_levels() -> Result<(), String> {
     let source = r#"
+        use ril/io
         fn main() @io -> () {
             let max = 4611686018427387903
             let min = -4611686018427387904
@@ -70,7 +71,7 @@ fn smallint_63bit_boundaries_overflow_and_demotion_across_opt_levels() -> Result
             assert(min < max && max > min && min <= min && max >= max)
             assert(!(max < min))
             assert(big_pos > max && big_neg < min)
-            println("r3-smallint-ok")
+            Io::println("r3-smallint-ok")
         }
     "#;
     let mut pkg = VirtualPackage::new(Unit::Bin);
@@ -104,6 +105,7 @@ fn smallint_63bit_boundaries_overflow_and_demotion_across_opt_levels() -> Result
 #[test]
 fn leaf_rootframe_elision_const_folding_effect_op_ids_and_concat_many() -> Result<(), String> {
     let source = r#"
+        use ril/io
         eff Counter {
             fn bump(delta: int) -> int
         }
@@ -122,7 +124,7 @@ fn leaf_rootframe_elision_const_folding_effect_op_ids_and_concat_many() -> Resul
             with Counter::bump = \d -> d + 10
             let v = Counter::bump(5)
             let msg = "v={v},f={folded()},ok={!false}"
-            println(msg)
+            Io::println(msg)
         }
     "#;
     let mut pkg = VirtualPackage::new(Unit::Bin);

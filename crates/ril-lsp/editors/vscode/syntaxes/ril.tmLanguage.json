@@ -594,7 +594,7 @@
         },
         {
           "name": "support.function.ril",
-          "match": "\\b(?:len|inner|clone|derive|unwind_ctl|compile_error|compile_error_code|panic|assert|print|println)(?=(?:<[^>\n]*>)?\\()"
+          "match": "\\b(?:len|inner|clone|derive|unwind_ctl|compile_error|compile_error_code|panic|assert)(?=(?:<[^>\n]*>)?\\()"
         },
         {
           "name": "entity.name.function.ril",

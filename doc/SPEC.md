@@ -19,7 +19,7 @@ This specification defines Ril's syntax, static semantics, access modes, state a
 | Provenance & `new` | `new` marks unbound newly constructed `SharedObject` graphs (plus exiting-scope promotion of pinned `let mut` locals and `new` parameters at block/function exit); targets choose access modes for `new` subgraphs while nested existing sources retain their authority and aliases |
 | Value vs. shared object | `bool`, `int`, `f64`, `str`, `bytes`, `()`, `never`, unit nominals, and `.ril` nominal/opaque wrappers over value types copy by value; records, nonempty tuples, collections, sums, and wrappers over shared objects have automatically reclaimed object identity |
 | Records & constructors | Anonymous records and record type aliases attach `.{...}` (`Alias.{ id: 1 }`); sum variants are default-qualified (`Shape::Rect(10.0, 20.0)`; prelude `Ok(42)`, `Some(x)`) with tight `(...)`; payload nominal/opaque types wrap via tight `::(...)` (`UserId::(42)`, `User::(.{ id: 1 })`) |
-| Type forms | `type A = B` is a transparent type alias; `type A` / `type A(B)` is an erased nominal type; `opaque type A(B)` seals representation outside its defining file or `sub` |
+| Type forms | `type A = B` is a transparent type alias; `type A` / `type A(B)` is an erased nominal type; `opaque type A(B)` seals representation outside its defining file or `sub`; `[opaque] linear type` marks must-consume linear types |
 | Reachable authority use | `var` requires slot replacement, `mut` requires writable use, `^mut` parameters require surviving retention, and named effect/state clauses must be minimal (`E0527`, `E0529`, `E0626`) |
 | `where`, checks & guards | Braceless `where` hoists helper declarations (`type`, `fn`, `meta fn`, block `eff`); `\|>` runs compile-time static checks on generic parameters and pure fallible signature guards on runtime parameters/returns |
 | Purity, effects & defects | Purity excludes outward effects and non-pure state obligations; `eff` separates direct `fn` ops from one-shot algebraic `ctl` ops, `@io` is the built-in system effect, and defects unwind active `defer` statements LIFO |
@@ -1392,19 +1392,21 @@ Array::push(mut views, ref fixed_doc)
 `defer ( Block | Expression )` registers a block-scoped cleanup statement evaluated lazily at block exit in strict LIFO order alongside sibling `with` statements:
 
 ```ril
+use ril/io
+
 pub opaque type DbConn(.{ var open: bool, mut log: []str })
 
 pub fn flush(mut c: DbConn) @io &mut -> () {
     let count = len(ref c.log)
     Array::clear(mut c.log)
-    println("flushed {count} queries")
+    Io::println("flushed {count} queries")
 }
 pub fn close(mut c: DbConn) @io &mut -> () {
     c.open = false
-    println("closed")
+    Io::println("closed")
 }
 pub fn acquire() @io -> new !<DbConn, str> {
-    println("connected")
+    Io::println("connected")
     Ok(DbConn::(.{ open: true, log: [] }))
 }
 
@@ -1412,7 +1414,7 @@ fn run_query() @io -> new !<int, str> {
     let mut conn = acquire()?
     defer close(mut conn)              -- Runs last on exit
     defer flush(mut conn)              -- Valid LIFO: flush(mut conn) runs before close(mut conn)
-    defer println("query finished")    -- Runs first on exit
+    defer Io::println("query finished") -- Runs first on exit
     conn.log |> mut Array::push("SELECT 1")
     Ok(1)                              -- Evaluates Ok(1) first, then runs defers in LIFO order
 }
@@ -1437,7 +1439,7 @@ fn run_with_cleanup(cb: fn() @ -> ()) -> new []str {
 assert(run_with_cleanup(\-> ()) == ["body", "cleanup"])
 
 -- Rejected deferred cleanup cases:
--- defer defer println("x")            -- Error [E0120]: 'defer' is a statement, not an expression
+-- defer defer Io::println("x")        -- Error [E0120]: 'defer' is a statement, not an expression
 -- defer \-> close(mut conn)           -- Error [E0301]: 'defer' body must have type '()'
 -- defer { return 1 }                  -- Error [E0707]: control transfer cannot escape 'defer'
 -- defer Yield::emit(1)                -- Error [E0616]: unhandled 'ctl' prohibited inside 'defer'
@@ -2172,7 +2174,7 @@ fn run_step(mut f: Step) &mut -> int { f() }   -- OK: '&up' invoked through 'mut
 -- fn bad_open() @ -> () {}                    -- Error [E0547]: open '@' marker prohibited on named 'fn'
 -- fn bad_ret(ref a: []int) -> []int { a }     -- Error [E0544]: missing 'ref(a)' return mode annotation
 -- fn bad_new_omit() -> []int { [1, 2] }       -- Error [E0544]: missing 'new' return mode annotation
--- let pure_cb: fn() -> () = \-> println("hi") -- Error [E0534]: '@io' incompatible with pure 'fn() -> ()'
+-- let pure_cb: fn() -> () = \-> Io::println("hi") -- Error [E0534]: '@io' incompatible with pure 'fn() -> ()'
 -- let mode_cb: fn([]int) -> () = \mut xs: []int -> Array::push(mut xs, 1) -- Error [E0407]: mode 'mut' vs plain
 -- let idle_cb = \mut _xs: []int -> ()         -- Error [E0527]: wildcard does not waive 'mut' use
 ```
@@ -2357,7 +2359,7 @@ test_defaults()
 -- connect("db.local", prt: 90)           -- Error [E0339]: unknown parameter label 'prt'
 -- fn bad_mut_def(mut n: Node = Node.{ val: 0 }) &mut -> () { n.val += 1 } -- Error [E0404]
 -- fn bad_fwd_def(a: int = b, b: int = 1) -> int { a + b }                 -- Error [E0408]
--- fn bad_io_def(s: str = { println("x"); "a" }) @io -> str { s }          -- Error [E0409]
+-- fn bad_io_def(s: str = { Io::println("x"); "a" }) @io -> str { s }      -- Error [E0409]
 ```
 
 - **Permitted default modes (`E0404`)**: Plain, `ref`, and `meta` parameters on `FunctionDecl`, `MetaFnDecl`, and `AnonFnExpr` may declare `= default_expr`; defaults on `mut`, `^mut`, `new`, or `via` parameters fail `E0404`.
@@ -2813,7 +2815,7 @@ pub fn message(report: Report) -> str
 ```
 
 ```ril
-use ril/panic as Panic
+use ril/panic
 
 fn parse_header(parts: []str) -> str { parts[1] }
 
@@ -3109,7 +3111,7 @@ Visibility ::= "pub" | "pkg"
 
 ```ril
 -- Context: math/circle.ril
-use pkg/math/circle as Circle
+use pkg/math/circle
 use pkg/math/circle::(PI, area, UnitCircle as Uc)
 ```
 
@@ -3183,15 +3185,17 @@ The implicit prelude encloses every compilation unit and inline `sub`:
 | `compile_error` | `pub meta fn compile_error(message: str) -> never` | Static only: emits compile-time diagnostic `E0832` with `message`, anchored at the enclosing type/meta instantiation site |
 | `panic` | `pub fn panic(message: str) -> never` | Dual-phase: LIFO panic unwinding at runtime; `E0831` in static eval |
 | `assert` | `pub fn assert(condition: bool, message: str = "assertion failed") -> ()` | Dual-phase: panics with `message` when `false` at runtime; `E0830` when `false` in static eval |
-| `print` / `println` | `pub fn print(text: str) @io -> ()`<br>`pub fn println(text: str) @io -> ()` | Runtime (`@io`): writes UTF-8 text (plus `\n` for `println`) to stdout |
+| `Io::print` / `Io::println` (`ril/io`) | `pub fn print(text: str) @io -> ()`<br>`pub fn println(text: str) @io -> ()` | Runtime (`@io`): writes UTF-8 text (plus `\n` for `println`) to stdout; requires explicit `use ril/io` (not exported by prelude) |
 
 ### Mandatory Inspection of Fallible Results
 
 Every `!<T, E>` (`Result<T, E>`)—including `!<T, E>` parameters—must be inspected before normal scope exit (`E0720`):
 
 ```ril
+use ril/io
+
 fn write_entry(line: str) @io -> new !<(), str> {
-    println(line)
+    Io::println(line)
     Ok()
 }
 fn handle_log() @io -> new !<(), str> {

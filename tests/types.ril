@@ -171,7 +171,8 @@ type Backward(.{ first: int = last, last: int = 4 })
 -- ^ E0408
 
 -- @case defaults_are_pure compile-fail E0409
-fn invalid(x: int = { println("effect"); 1 }) -> int { x }
+use ril/io
+fn invalid(x: int = { Io::println("effect"); 1 }) -> int { x }
 -- ^ E0409
 
 -- @case defaults_cannot_read_later_parameter compile-fail E0408

@@ -8,6 +8,7 @@ use ril_test::{Unit, VirtualPackage, run_worker};
 #[test]
 fn large_indexmap_and_utf8_str_metadata_under_gc_stress() -> Result<(), String> {
     let source = r#"
+        use ril/io
         fn main() @io -> () {
             let frozen: [int: int] = {
                 let mut m: [int: int] = [:]
@@ -33,7 +34,7 @@ fn large_indexmap_and_utf8_str_metadata_under_gc_stress() -> Result<(), String> 
             assert(len(ascii) == 10 && String::scalar_at(ascii, 3) == Some(100) && ascii[2..6] == "cdef")
             let utf8 = "a中b文c"
             assert(len(utf8) == 5 && String::scalar_at(utf8, 1) == Some(20013) && utf8[1..4] == "中b文")
-            println("r4-map-str-ok")
+            Io::println("r4-map-str-ok")
         }
     "#;
     let mut pkg = VirtualPackage::new(Unit::Bin);
@@ -65,6 +66,7 @@ fn large_indexmap_and_utf8_str_metadata_under_gc_stress() -> Result<(), String> 
 #[test]
 fn ctl_stack_pool_reuses_stacks_across_many_prompts_under_gc_stress() -> Result<(), String> {
     let source = r#"
+        use ril/io
         eff Yield {
             ctl emit(v: int) -> ()
         }
@@ -85,7 +87,7 @@ fn ctl_stack_pool_reuses_stacks_across_many_prompts_under_gc_stress() -> Result<
                 i += 1
             }
             assert(len(ref out) == 120 && out[0] == 0 && out[119] == 238)
-            println("r4-ctl-pool-ok")
+            Io::println("r4-ctl-pool-ok")
         }
     "#;
     let mut pkg = VirtualPackage::new(Unit::Bin);

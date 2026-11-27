@@ -41,11 +41,13 @@ fn run_aot(source: &str, expected_stdout: &str) -> Result<(), String> {
 #[test]
 fn b1_defer_unwinds_in_lifo_order_with_sibling_handlers() -> Result<(), String> {
     let source = r#"
-use ril/panic as Panic
+use ril/panic
 eff Log {
     fn tag() -> str
     fn emit(msg: str) -> ()
 }
+
+use ril/io
 
 opaque type Res(.{ id: int })
 
@@ -65,7 +67,7 @@ fn work(fail: bool) @Log -> () {
 
 fn main() @io -> () {
     with Log::tag = \-> "outer"
-    with Log::emit = \msg -> println(msg)
+    with Log::emit = \msg -> Io::println(msg)
     work(false)
     let outcome = Panic::recover(\-> {
         with Log::tag = \-> "outer"
@@ -77,8 +79,8 @@ fn main() @io -> () {
         work(true)
     })
     match outcome {
-        Ok(_) -> println("unexpected")
-        Err(_) -> println("recovered")
+        Ok(_) -> Io::println("unexpected")
+        Err(_) -> Io::println("recovered")
     }
 }
 "#;
@@ -88,7 +90,8 @@ fn main() @io -> () {
 #[test]
 fn b2_derive_abort_under_panic_preserves_base_and_recovers() -> Result<(), String> {
     let source = r#"
-use ril/panic as Panic
+use ril/io
+use ril/panic
 type Box = .{ x: int }
 
 fn main() @io -> () {
@@ -100,8 +103,8 @@ fn main() @io -> () {
         })
     })
     match res {
-        Ok(_) -> println("unexpected ok")
-        Err(_) -> println(String::inspect(base.x))
+        Ok(_) -> Io::println("unexpected ok")
+        Err(_) -> Io::println(String::inspect(base.x))
     }
 }
 "#;
@@ -111,6 +114,7 @@ fn main() @io -> () {
 #[test]
 fn b3_closure_captures_record_shorthand_and_transitive_local_up() -> Result<(), String> {
     let source = r#"
+use ril/io
 type Point = .{ x: int, y: int }
 type Counter = .{ var n: int }
 
@@ -127,7 +131,7 @@ fn main() @io -> () {
     let mut counter = Counter.{ n: 5 }
     counter.n += 1
     let sum = call_twice(\-> read_n())
-    println(String::inspect(p.x + p.y + sum))
+    Io::println(String::inspect(p.x + p.y + sum))
     where
         fn read_n() &up(ref counter) -> int {
             counter.n
@@ -140,6 +144,7 @@ fn main() @io -> () {
 #[test]
 fn b4_closure_captures_destructured_var_bindings() -> Result<(), String> {
     let source = r#"
+use ril/io
 fn main() @io -> () {
     let (var a, _) = (1, 2)
     let ^mut inc_a = \-> {
@@ -158,7 +163,7 @@ fn main() @io -> () {
         }
         None -> 0
     }
-    println(String::inspect(r1 + a + r2))
+    Io::println(String::inspect(r1 + a + r2))
 }
 "#;
     run_aot(source, "28\n")
@@ -167,10 +172,11 @@ fn main() @io -> () {
 #[test]
 fn b5_eight_arg_closure_does_not_root_raw_arity_or_code_address() -> Result<(), String> {
     let source = r#"
+use ril/io
 fn main() @io -> () {
     let add8 = \a: int, b: int, c: int, d: int, e: int, f: int, g: int, h: int ->
         a + b + c + d + e + f + g + h
-    println(String::inspect(add8(1, 2, 3, 4, 5, 6, 7, 8)))
+    Io::println(String::inspect(add8(1, 2, 3, 4, 5, 6, 7, 8)))
 }
 "#;
     run_aot(source, "36\n")
@@ -179,6 +185,7 @@ fn main() @io -> () {
 #[test]
 fn b6_ctl_continuations_abort_cleanly_and_run_lifo_defers() -> Result<(), String> {
     let source = r#"
+use ril/io
 eff Stop {
     ctl halt(v: int) -> never
 }
@@ -198,7 +205,7 @@ fn main() @io -> () {
         assert(cleaned == 1)
         acc += v
     }
-    println(String::inspect(acc))
+    Io::println(String::inspect(acc))
 }
 "#;
     run_aot(source, "4950\n")

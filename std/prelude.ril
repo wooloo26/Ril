@@ -2,7 +2,6 @@
 
 pub use ril/array
 pub use ril/bytes
-pub use ril/io::(print, println)
 pub use ril/map
 pub use ril/numeric
 pub use ril/reflect

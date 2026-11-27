@@ -14,11 +14,12 @@ pub type Error {
 -- state, outer `ctl` handlers, must-consume captures, and unhandled effects.
 --
 -- ```ril
--- use ril/panic as Panic
+-- use ril/io
+-- use ril/panic
 -- fn safe_run() @io -> () {
 --     match Panic::recover(\-> panic("boom")) {
 --         Ok(_) -> ()
---         Err(Panic::Error::Panicked(report)) -> println(Panic::message(report))
+--         Err(Panic::Error::Panicked(report)) -> Io::println(Panic::message(report))
 --     }
 -- }
 -- ```

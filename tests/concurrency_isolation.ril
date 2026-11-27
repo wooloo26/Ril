@@ -168,7 +168,7 @@ fn bad(b: Box) @Yield -> Box {
 }
 
 -- @case panic_recover_forbids_outer_ctl_handler compile-fail E0608
-use ril/panic as Panic
+use ril/panic
 eff Yield { ctl emit() -> () }
 fn bad() -> () {
     with ctl Yield::emit = \k -> k()

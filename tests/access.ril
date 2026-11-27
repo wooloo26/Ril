@@ -3132,7 +3132,7 @@ fn bad() -> () {
 pub opaque type Resp(!<int, str>)
 pub fn fetch() -> new Resp { Resp::(Ok(1)) }
 -- @file pkg/main.ril
-use pkg/secret as Secret
+use pkg/secret
 fn main() -> () {
     let r = Secret::fetch()
     let _ = r

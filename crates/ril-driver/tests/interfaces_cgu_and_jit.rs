@@ -133,6 +133,7 @@ fn meta_fn_body_edit_invalidates_abi_hash() -> Result<(), String> {
 #[test]
 fn canonical_symbols_and_multi_cgu_aot_link_and_run() -> Result<(), String> {
     let src = r#"
+use ril/io
 fn id<T>(x: T) -> T { x }
 fn add_one(x: int) -> int { x + 1 }
 fn mul_two(x: int) -> int { x * 2 }
@@ -144,7 +145,7 @@ fn combine(x: int) -> int {
 }
 fn main() @io -> () {
     let res = combine(20)
-    println(String::inspect(res))
+    Io::println(String::inspect(res))
 }
 "#;
     let pkg = bin_package(src);

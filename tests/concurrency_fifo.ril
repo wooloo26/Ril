@@ -7,6 +7,7 @@
 -- @expect-stdout a2
 -- @expect-stdout b2
 -- @expect-stdout done
+use ril/io
 eff Sched {
     ctl yield_now() -> ()
     ctl spawn(work: fn() @Sched @io -> ()) -> ()
@@ -65,20 +66,21 @@ fn run_fifo(entry: fn() @Sched @io -> ()) @io -> () {
 fn main() @io -> () {
     run_fifo(\-> {
         Sched::spawn(\-> {
-            println("b1")
+            Io::println("b1")
             Sched::yield_now()
-            println("b2")
+            Io::println("b2")
         })
-        println("a1")
+        Io::println("a1")
         Sched::yield_now()
-        println("a2")
+        Io::println("a2")
     })
-    println("done")
+    Io::println("done")
 }
 
 -- @case ctl_yield_over_array_map_and_abort_runs_defer run-pass backend=both
 -- @expect-stdout cleanup
 -- @expect-stdout 2:4:6
+use ril/io
 eff Yield<T> {
     ctl emit(value: T) -> ()
 }
@@ -90,36 +92,38 @@ fn main() @io -> () {
             Array::push(mut out, v)
             if len(ref out) < 3 { k() } else { unwind_ctl(k) }
         }
-        defer println("cleanup")
+        defer Io::println("cleanup")
         let _ = Array::map([1, 2, 3, 4, 5], \x -> { Yield<int>::emit(x * 2); x })
     }
-    println("{out[0]}:{out[1]}:{out[2]}")
+    Io::println("{out[0]}:{out[1]}:{out[2]}")
 }
 
 -- @case wildcard_ctl_arm_eagerly_aborts_and_unwinds_defer run-pass backend=both
 -- @expect-stdout defer-before-arm
 -- @expect-stdout arm-body
 -- @expect-stdout 80
+use ril/io
 eff Fail<E> {
     ctl raise(err: E) -> never
 }
 
 fn run_fail(flag: bool) @io -> int {
     with ctl Fail<str>::raise = \_err, _ -> {
-        println("arm-body")
+        Io::println("arm-body")
         80
     }
-    defer println("defer-before-arm")
+    defer Io::println("defer-before-arm")
     if flag { Fail<str>::raise("bad") }
     10
 }
 
 fn main() @io -> () {
-    println("{run_fail(true)}")
+    Io::println("{run_fail(true)}")
 }
 
 -- @case nested_ctl_prompts_forward_outer_ops_correctly run-pass backend=both
 -- @expect-stdout 10:20:30:done
+use ril/io
 eff Outer {
     ctl emit(v: int) -> ()
 }
@@ -147,11 +151,12 @@ fn main() @io -> () {
             Outer::emit(Inner::ask())
         }
     }
-    println("{out[0]}:{out[1]}:{out[2]}:done")
+    Io::println("{out[0]}:{out[1]}:{out[2]}:done")
 }
 
 -- @case route1_dynamic_dispatch_and_parent_stack_handler_arms run-pass backend=both
 -- @expect-stdout inner:outer
+use ril/io
 eff Tag {
     fn get() -> str
 }
@@ -163,7 +168,7 @@ fn main() @io -> () {
         Tag::get = \-> "inner:{Tag::get()}"
         read()
     }
-    println(result)
+    Io::println(result)
 }
 
 -- @case defer_lifo_order_on_normal_return_panic_and_abort run-pass backend=both
@@ -171,7 +176,8 @@ fn main() @io -> () {
 -- @expect-stdout r2:r1
 -- @expect-stdout p-caught
 -- @expect-stdout a2:a1
-use ril/panic as Panic
+use ril/io
+use ril/panic
 eff Abort {
     ctl stop() -> never
 }
@@ -189,11 +195,11 @@ fn main() @io -> () {
         defer Array::push(mut normal, "n2")
         defer Array::push(mut normal, "n3")
     }
-    println(String::join(ref normal, ":"))
+    Io::println(String::join(ref normal, ":"))
 
     let mut ret_log: []str = []
     assert(early(mut ret_log) == 7)
-    println(String::join(ref ret_log, ":"))
+    Io::println(String::join(ref ret_log, ":"))
 
     let panic_res = Panic::recover(\-> {
         var step = 0
@@ -203,7 +209,7 @@ fn main() @io -> () {
     })
     match panic_res {
         Ok(_) -> panic("expected panic")
-        Err(_) -> println("p-caught")
+        Err(_) -> Io::println("p-caught")
     }
 
     let mut abort_log: []str = []
@@ -213,13 +219,14 @@ fn main() @io -> () {
         defer Array::push(mut abort_log, "a2")
         Abort::stop()
     }
-    println(String::join(ref abort_log, ":"))
+    Io::println(String::join(ref abort_log, ":"))
 }
 
 -- @case single_panic_in_defer_is_catchable_via_panic_recover run-pass backend=both
 -- @expect-stdout normal-defer-panic
 -- @expect-stdout abort-defer-panic
-use ril/panic as Panic
+use ril/io
+use ril/panic
 eff Stop {
     ctl halt() -> never
 }
@@ -231,7 +238,7 @@ fn main() @io -> () {
     })
     match r1 {
         Ok(_) -> panic("expected panic")
-        Err(Panic::Error::Panicked(info)) -> println(Panic::message(info))
+        Err(Panic::Error::Panicked(info)) -> Io::println(Panic::message(info))
     }
 
     let r2 = Panic::recover(\-> {
@@ -243,12 +250,13 @@ fn main() @io -> () {
     })
     match r2 {
         Ok(_) -> panic("expected panic")
-        Err(Panic::Error::Panicked(info)) -> println(Panic::message(info))
+        Err(Panic::Error::Panicked(info)) -> Io::println(Panic::message(info))
     }
 }
 
 -- @case ctl_stack_pool_reuses_stacks_across_many_prompts run-pass backend=both
 -- @expect-stdout 4950
+use ril/io
 eff Tick {
     ctl step(v: int) -> int
 }
@@ -261,5 +269,5 @@ fn main() @io -> () {
             Tick::step(i)
         }
     }
-    println("{total}")
+    Io::println("{total}")
 }

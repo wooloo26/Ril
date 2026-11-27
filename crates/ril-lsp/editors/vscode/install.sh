@@ -5,6 +5,11 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 EXT_NAME="ril-local.ril-lang-0.1.0"
 INSTALLED=0
 
+if [ ! -d "$SCRIPT_DIR/node_modules" ]; then
+    (cd "$SCRIPT_DIR" && pnpm install --frozen-lockfile)
+fi
+(cd "$SCRIPT_DIR" && pnpm run build)
+
 for ext_root in \
     "$HOME/.vscode-server/extensions" \
     "$HOME/.vscode/extensions" \

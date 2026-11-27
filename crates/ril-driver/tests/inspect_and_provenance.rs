@@ -74,7 +74,7 @@ fn main() -> () {
 #[test]
 fn panic_propagation_defer_double_panic_and_recover_panic_sealing() {
     let src = r#"
-use ril/panic as Panic
+use ril/panic
 
 fn read_head(xs: []int) -> int {
     xs[0]

@@ -1086,7 +1086,8 @@ pub fn change(mut holder: .{ var marker: int, via child: Cell }) &mut -> int {
 
 -- @case a_smaller_published_effect_set_is_compatible compat-pass
 -- @baseline
-pub fn report() @io -> () { println("message") }
+use ril/io
+pub fn report() @io -> () { Io::println("message") }
 -- @revision
 pub fn report() -> () { () }
 
@@ -1094,7 +1095,8 @@ pub fn report() -> () { () }
 -- @baseline
 pub fn report() -> () { () }
 -- @revision
-pub fn report() @io -> () { println("message") }
+use ril/io
+pub fn report() @io -> () { Io::println("message") }
 -- ^ E0552
 
 -- @case tightening_an_appended_callable_snapshot_contract_breaks_compatibility compat-fail E0552

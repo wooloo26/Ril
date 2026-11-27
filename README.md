@@ -110,6 +110,24 @@ fn first_three_doubled(xs: []int) -> new []int {
 ```
 
 ```ril
+-- Linear types enforce explicit single consumption while allowing call-scoped ref/mut access.
+sub Fs {
+    pub opaque linear type File(.{ path: str, var written: int })
+    pub fn open(path: str) -> new !<File, str> { Ok(File::(.{ path, written: 0 })) }
+    pub fn path(ref f: File) -> str { inner(ref f).path }
+    pub fn write(mut f: File, n: int) &mut -> () { inner(mut f).written += n }
+    pub fn close(f: File) -> int { let File::(.{ written, .. }) = f; written }
+}
+
+fn log_and_close() -> new !<str, str> {
+    let mut f = Fs::open("app.log")?
+    defer { let _ = Fs::close(f) }          -- Consuming defer discharges 'f' on exit/unwind.
+    Fs::write(mut f, 64)                    -- Call-scoped 'mut' mutates without consuming 'f'.
+    Ok(Fs::path(ref f))                     -- Call-scoped 'ref' observes without consuming 'f'.
+}
+```
+
+```ril
 -- Schema transformations preserve both slot replacement and access modes.
 type Select = \T: .{ .. }, keys: []str -> {
     let selected = Reflect::fields(<T>) |> Array::filter(\(_, key) -> keys |> Array::contains(key))
