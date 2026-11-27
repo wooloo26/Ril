@@ -1,0 +1,305 @@
+#!/bin/sh
+set -eu
+
+# Pre-commit hook for Ril.
+#
+# Environment toggles:
+#   RIL_PRECOMMIT_SKIP=1        Skip all pre-commit checks.
+#   RIL_PRECOMMIT_NO_AUTOFIX=1  Check-only mode (never auto-format or re-stage).
+#   RIL_PRECOMMIT_FULL=1        Also run full CI stress tests (GC stress, stack promote, concurrency).
+
+if [ "${RIL_PRECOMMIT_SKIP:-0}" = "1" ]; then
+    printf '%s\n' '[pre-commit] skipped (RIL_PRECOMMIT_SKIP=1)' >&2
+    exit 0
+fi
+
+# Ensure common user toolchains are on PATH even in non-login / GUI shells.
+for dir in "$HOME/.cargo/bin" "$HOME/.elan/bin" "$HOME/.local/bin"; do
+    if [ -d "$dir" ]; then
+        case ":$PATH:" in
+            *":$dir:"*) ;;
+            *) PATH="$dir:$PATH" ;;
+        esac
+    fi
+done
+export PATH
+
+repo_root=$(git rev-parse --show-toplevel)
+cd "$repo_root"
+
+step() {
+    printf '[pre-commit] %s\n' "$1"
+}
+
+warn() {
+    printf '[pre-commit] warn: %s\n' "$1" >&2
+}
+
+die() {
+    printf '[pre-commit] error: %s\n' "$1" >&2
+    exit 1
+}
+
+is_fully_staged() {
+    git diff --quiet -- "$1"
+}
+
+run_nextest_or_cargo_test() {
+    if command -v cargo-nextest >/dev/null 2>&1; then
+        cargo nextest run "$@"
+    else
+        cargo test "$@"
+    fi
+}
+
+run_script_tool() {
+    tool=$1
+    if command -v uv >/dev/null 2>&1; then
+        uv run --directory scripts --locked "$tool"
+    elif [ -x "scripts/.venv/bin/$tool" ]; then
+        "scripts/.venv/bin/$tool"
+    elif command -v uv.exe >/dev/null 2>&1; then
+        uv.exe run --directory scripts --locked "$tool"
+    else
+        warn "skipping $tool (neither uv nor scripts/.venv/bin/$tool found)"
+        return 0
+    fi
+}
+
+# 1. Always-on staged diff hygiene (merge conflict markers & whitespace errors).
+step 'Checking staged diff for conflict markers and whitespace errors'
+git diff --cached --check
+
+staged_all=$(git -c core.quotepath=false diff --cached --name-only --diff-filter=ACMRD)
+staged_existing=$(git -c core.quotepath=false diff --cached --name-only --diff-filter=ACMR)
+
+if [ -z "$staged_all" ] && [ "${RIL_PRECOMMIT_FULL:-0}" != "1" ]; then
+    exit 0
+fi
+
+has_rust=0
+has_std=0
+has_examples=0
+has_spec=0
+has_docs=0
+has_tests=0
+has_formal=0
+has_scripts=0
+has_vscode=0
+has_shell=0
+
+OLD_IFS=$IFS
+IFS='
+'
+for path in $staged_all; do
+    case "$path" in
+        .githooks/*|*.sh)
+            has_shell=1
+            ;;
+        crates/ril-lsp/editors/vscode/*)
+            has_vscode=1
+            ;;
+        crates/*|runtime/*|fuzz/*|Cargo.toml|Cargo.lock)
+            has_rust=1
+            ;;
+        std/*)
+            has_std=1
+            ;;
+        examples/*)
+            has_examples=1
+            ;;
+        doc/SPEC.md)
+            has_spec=1
+            has_docs=1
+            ;;
+        doc/*|*.md)
+            has_docs=1
+            ;;
+        tests/*)
+            has_tests=1
+            ;;
+        formal/*)
+            has_formal=1
+            ;;
+        scripts/*)
+            has_scripts=1
+            ;;
+    esac
+done
+IFS=$OLD_IFS
+
+full=${RIL_PRECOMMIT_FULL:-0}
+no_autofix=${RIL_PRECOMMIT_NO_AUTOFIX:-0}
+
+# 1b. Shell script syntax check when hooks or .sh scripts changed.
+if [ "$has_shell" = "1" ] && [ -n "$staged_existing" ]; then
+    step 'Checking shell script syntax (sh -n)'
+    OLD_IFS=$IFS
+    IFS='
+'
+    for path in $staged_existing; do
+        case "$path" in
+            .githooks/*|*.sh)
+                if [ -f "$path" ]; then
+                    sh -n "$path"
+                fi
+                ;;
+        esac
+    done
+    IFS=$OLD_IFS
+fi
+
+# 2. Rust auto-formatting, workspace rustfmt check, and clippy.
+if [ "$has_rust" = "1" ] || [ "$full" = "1" ]; then
+    command -v cargo >/dev/null 2>&1 || die 'cargo not found on PATH'
+
+    if [ "$no_autofix" != "1" ] && [ -n "$staged_existing" ] && command -v rustfmt >/dev/null 2>&1; then
+        OLD_IFS=$IFS
+        IFS='
+'
+        for path in $staged_existing; do
+            case "$path" in
+                *.rs)
+                    if [ -f "$path" ] && is_fully_staged "$path"; then
+                        rustfmt --edition 2024 "$path"
+                        if ! git diff --quiet -- "$path"; then
+                            git add -- "$path"
+                            step "Auto-formatted and re-staged $path"
+                        fi
+                    fi
+                    ;;
+            esac
+        done
+        IFS=$OLD_IFS
+    fi
+
+    step 'Checking Rust formatting (cargo fmt --all --check)'
+    cargo fmt --all --check || die "Rust formatting check failed. Run 'cargo fmt --all' and re-stage."
+
+    step 'Running workspace Clippy (-D warnings)'
+    cargo clippy --workspace --all-targets --locked -- -D warnings
+fi
+
+# 3. Ril CLI checks (formatting, hello example, stdlib doctests, SPEC sync).
+need_ril=0
+if [ "$has_rust" = "1" ] || [ "$has_std" = "1" ] || [ "$has_examples" = "1" ] || [ "$has_spec" = "1" ] || [ "$full" = "1" ]; then
+    need_ril=1
+fi
+
+if [ "$need_ril" = "1" ]; then
+    command -v cargo >/dev/null 2>&1 || die 'cargo not found on PATH'
+
+    step 'Building ril CLI binary'
+    cargo build --locked -p ril-cli --bin ril
+
+    if [ -x "./target/debug/ril" ]; then
+        ril_bin="./target/debug/ril"
+    elif [ -x "./target/debug/ril.exe" ]; then
+        ril_bin="./target/debug/ril.exe"
+    else
+        die 'Built ril binary not found under target/debug/'
+    fi
+
+    if [ "$no_autofix" != "1" ] && { [ "$has_std" = "1" ] || [ "$has_examples" = "1" ]; } && [ -n "$staged_existing" ]; then
+        OLD_IFS=$IFS
+        IFS='
+'
+        for path in $staged_existing; do
+            case "$path" in
+                std/*.ril|examples/*.ril)
+                    if [ -f "$path" ] && is_fully_staged "$path"; then
+                        "$ril_bin" fmt "$path"
+                        if ! git diff --quiet -- "$path"; then
+                            git add -- "$path"
+                            step "Auto-formatted and re-staged $path"
+                        fi
+                    fi
+                    ;;
+            esac
+        done
+        IFS=$OLD_IFS
+    fi
+
+    if [ "$has_rust" = "1" ] || [ "$has_std" = "1" ] || [ "$has_examples" = "1" ] || [ "$full" = "1" ]; then
+        step 'Checking Ril formatting (std & examples)'
+        "$ril_bin" fmt --check std examples
+
+        step 'Running examples/hello'
+        "$ril_bin" run examples/hello >/dev/null
+    fi
+
+    if [ "$has_rust" = "1" ] || [ "$has_std" = "1" ] || [ "$full" = "1" ]; then
+        step 'Running stdlib doc tests (ril test --doc std)'
+        "$ril_bin" test --doc std
+    fi
+
+    if [ "$has_rust" = "1" ] || [ "$has_std" = "1" ] || [ "$has_spec" = "1" ] || [ "$full" = "1" ]; then
+        step 'Validating SPEC.md snippets (parse & access)'
+        "$ril_bin" test --sync-spec-md --stage parse
+        "$ril_bin" test --sync-spec-md --stage access
+    fi
+fi
+
+# 4. Conformance suites when tests/ changed (covered in step 8 when full=1).
+if [ "$has_tests" = "1" ] && [ "$full" != "1" ]; then
+    command -v cargo >/dev/null 2>&1 || die 'cargo not found on PATH'
+    step 'Running conformance suites (ril-test)'
+    run_nextest_or_cargo_test -p ril-test --test suites --locked
+fi
+
+# 5. Python tooling & documentation checks.
+if [ "$has_scripts" = "1" ]; then
+    step 'Running scripts quality suite (ruff, mypy, pytest, doc_check)'
+    run_script_tool quality
+elif [ "$has_docs" = "1" ] || [ "$has_spec" = "1" ]; then
+    step 'Running documentation check (doc_check)'
+    run_script_tool doc_check
+fi
+
+# 6. Lean 4 formal verification when formal/ changed.
+if [ "$has_formal" = "1" ]; then
+    if command -v lake >/dev/null 2>&1; then
+        step 'Building and auditing Lean 4 formal proofs'
+        (cd formal && lake build horn-oracle access-check audit)
+        ./formal/.lake/build/bin/access-check
+        ./formal/.lake/build/bin/audit
+        step 'Running Lean Horn oracle interface tests'
+        RIL_HORN_ORACLE="$repo_root/formal/.lake/build/bin/horn-oracle" \
+            cargo test -p ril-test --test interfaces --locked
+    else
+        warn 'skipping formal verification (lake not found on PATH)'
+    fi
+fi
+
+# 7. VS Code extension typecheck when extension files changed.
+if [ "$has_vscode" = "1" ]; then
+    if command -v pnpm >/dev/null 2>&1; then
+        step 'Typechecking VS Code extension (pnpm run typecheck)'
+        (cd crates/ril-lsp/editors/vscode && pnpm run typecheck)
+    elif command -v pnpm.cmd >/dev/null 2>&1; then
+        step 'Typechecking VS Code extension (pnpm.cmd run typecheck)'
+        (cd crates/ril-lsp/editors/vscode && pnpm.cmd run typecheck)
+    else
+        warn 'skipping VS Code extension typecheck (pnpm not found on PATH)'
+    fi
+fi
+
+# 8. Optional full CI stress test suite (RIL_PRECOMMIT_FULL=1).
+if [ "$full" = "1" ]; then
+    command -v cargo >/dev/null 2>&1 || die 'cargo not found on PATH'
+
+    step 'Running full workspace tests with RIL_GC_STRESS=1'
+    RIL_GC_STRESS=1 run_nextest_or_cargo_test --workspace --locked
+
+    step 'Running suites with RIL_OPT_STACK_PROMOTE=1'
+    RIL_GC_STRESS=1 RIL_OPT_STACK_PROMOTE=1 run_nextest_or_cargo_test -p ril-test --test suites --locked
+
+    if command -v cargo-nextest >/dev/null 2>&1; then
+        step 'Running deterministic concurrency stress (10x)'
+        RIL_GC_STRESS=1 cargo nextest run -p ril-test --locked --stress-count 10 -E 'test(/^concurrency_deterministic::/)'
+    else
+        warn 'skipping concurrency stress count (cargo-nextest not found)'
+    fi
+fi
+
+step 'All pre-commit checks passed'
